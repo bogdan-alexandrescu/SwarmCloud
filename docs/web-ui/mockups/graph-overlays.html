@@ -1,0 +1,621 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>SwarmCloud repository graph: four ways to show communities, an issue's territory and the lanes already in it (KG8 mock-ups)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Inter+Tight:wght@400;500;550;600;650;700&display=swap" rel="stylesheet">
+<style>
+/* Layout: one 1180px reading column; the mock-up frames sit in their own sideways scrollers.
+   Page tokens, frame tokens, shell and the icon sprite are copied from diff-viewer.html, which
+   copied them from onboarding.html and components.html (pick A as built). TYPE RULE (owner, 2026-10-01): 12px
+   floor, no all-caps, no tracking. Every frame follows the page's theme toggle; each variant
+   also has its own Light / Dark switch, so one variant can be read in both themes side by side
+   with the page. */
+:root{--bg:#f3f6f9;--surface:#ffffff;--ink:#0d1724;--mute:#4f5d6e;--line:#d6e0ea;--accent:#0369a1;--soft:#e5f3fc;--code:#e9f0f6;--rec:#0a7a55;--recbg:#e3f5ee;--bad:#b42318;--f-display:"Inter Tight",system-ui,-apple-system,sans-serif;--f-mono:"DM Mono",ui-monospace,SFMono-Regular,Menlo,monospace;color-scheme:light}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}}
+:root[data-theme="dark"]{--bg:#06101e;--surface:#0c1a2e;--ink:#eef4fa;--mute:#9fb0c4;--line:#1e3350;--accent:#7cc8f8;--soft:#10294a;--code:#12233b;--rec:#4cd9a0;--recbg:#0d2e25;--bad:#ff8a80;color-scheme:dark}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 var(--f-display);overflow-x:hidden}
+code,.mono{font-family:var(--f-mono);font-size:13px;background:var(--code);padding:1px 5px;border-radius:4px;overflow-wrap:anywhere}
+a{color:var(--accent)}
+a:focus-visible,button:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.wrap{max-width:1180px;margin:0 auto;padding-inline:16px;padding-block:40px 80px}
+.kicker{font:500 12px var(--f-mono);color:var(--accent);margin:0}
+h1{font-size:clamp(28px,5vw,40px);line-height:1.1;margin:.3em 0 .4em;text-wrap:balance}
+h2{font-size:24px;margin:64px 0 8px;padding-top:20px;border-top:1px solid var(--line);text-wrap:balance}
+h2 .n{font:500 13px var(--f-mono);color:var(--accent);margin-right:10px}
+h3.sec{font-size:17px;margin:26px 0 6px}
+.lede{font-size:17px;color:var(--mute);max-width:780px}
+p{max-width:78ch}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:20px 0 0;padding:0;list-style:none}
+.toc a{display:inline-block;padding:6px 12px;border:1px solid var(--line);border-radius:99px;color:var(--ink);text-decoration:none;font-size:13px;background:var(--surface)}
+.toc a:hover{border-color:var(--accent);color:var(--accent)}
+.themebar{display:inline-flex;gap:2px;border:1px solid var(--line);border-radius:99px;padding:2px;background:var(--surface);margin-top:14px}
+.themebar button{border:0;background:none;color:var(--mute);font:500 13px var(--f-display);padding:4px 12px;border-radius:99px;cursor:pointer}
+.themebar button[aria-pressed="true"]{background:var(--soft);color:var(--accent);font-weight:600}
+.variant{margin-top:32px}
+.vh{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.vh h3{margin:0;font-size:22px}
+.vh .themebar{margin:0 0 0 auto}
+.vn{font:500 12px var(--f-mono);color:var(--mute)}
+.rec{font:600 12px var(--f-mono);background:var(--recbg);color:var(--rec);padding:3px 9px;border-radius:99px}
+.fr{margin:14px 0 0;min-width:0}
+.fr figcaption{font-size:13px;color:var(--mute);margin-top:6px}
+.scroller{overflow:auto;border-radius:12px;border:1px solid var(--line);max-width:100%}
+.pair{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap}
+.pair>figure{max-width:100%;overflow-x:auto}
+.idea{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,250px),1fr));gap:16px;margin-top:16px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px}
+.idea h4{margin:0 0 4px;font:600 12px var(--f-mono);color:var(--accent)}
+.idea p,.idea ul{margin:0;font-size:14px}.idea ul{padding-left:18px}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:12px;background:var(--surface);margin-top:14px}
+table.doc{color:inherit;font-family:inherit;border-collapse:collapse;width:100%;font-size:13.5px;min-width:760px;font-variant-numeric:tabular-nums}
+table.doc th,table.doc td{text-align:left;padding:9px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+table.doc th{font:600 12px var(--f-mono);color:var(--mute)}
+table.doc tr:last-child td{border-bottom:0}
+td.src{color:var(--mute);font-size:12.5px}
+.recbox{background:var(--soft);border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);border-radius:14px;padding:18px 20px;margin-top:14px}
+.recbox h3{margin:0 0 6px;font-size:18px}.recbox p,.recbox li{font-size:14.5px}
+.exd{font:500 12px var(--f-mono);color:var(--mute)}
+.fixnote{border-left:3px solid var(--accent);padding:4px 0 4px 12px;color:var(--mute);font-size:14px}
+@media (max-width:600px){.wrap{padding-block:24px 60px}h2{margin-top:44px}}
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}
+
+/* ======== frame tokens: .fx follows the page theme; data-ftheme pins one variant ======== */
+.fx{--f-bg:#f3f6f9;--f-sf:#ffffff;--f-ink:#0d1724;--f-mu:#56657a;--f-ln:#dde5ee;--f-hv:#eef4fa;--f-ac:#0369a1;--f-acs:#e5f3fc;--f-acl:#b6daf2;--s-live:#0a7a55;--s-liveb:#e3f5ee;--s-park:#6b46c1;--s-parkb:#efeafc;--s-bad:#b42318;--s-badb:#fdecea;--s-warn:#8a5a00;--s-warnb:#fdf3dc;--s-neu:#5b6878;--s-neub:#eef1f5;--f-bd:#7d8ea3;--f-sh:0 10px 30px rgba(11,58,122,.12);--hive:url(#g-hive-l);color-scheme:light}
+:root[data-theme="dark"] .fx:not([data-ftheme="light"]),.fx[data-ftheme="dark"]{--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .fx:not([data-ftheme="light"]){--f-bg:#06101e;--f-sf:#0b1829;--f-ink:#eef4fa;--f-mu:#9fb0c4;--f-ln:#1d3049;--f-hv:#11233b;--f-ac:#7cc8f8;--f-acs:#10294a;--f-acl:#1f4a7a;--s-live:#4cd9a0;--s-liveb:#0d2e25;--s-park:#b69cf5;--s-parkb:#251a45;--s-bad:#ff8a80;--s-badb:#3a1512;--s-warn:#f5c451;--s-warnb:#3a2a0c;--s-neu:#9aa8b8;--s-neub:#16263b;--f-bd:#5f7087;--f-sh:0 10px 30px rgba(0,0,0,.5);--hive:url(#g-hive-d);color-scheme:dark}}
+
+/* ======== shell: Sky spine + panel (navigation.html V2, as built) ======== */
+.app{display:flex;background:var(--f-bg);color:var(--f-ink);width:1280px;min-width:1280px;height:820px;font-size:13px;position:relative;text-align:left;font-family:var(--f-display);line-height:1.45;overflow:hidden}
+.app button{font:inherit;color:inherit;cursor:pointer}
+.ic{width:16px;height:16px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round;flex:none}
+.pill{font:600 12px/1 var(--f-mono);padding:4px 8px;border-radius:99px;white-space:nowrap;flex:none}
+.pill.dev{color:var(--f-ac);border:1px solid var(--f-acl);background:var(--f-acs)}
+.av{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#38bdf8,#0b3a7a);color:#fff;font:600 12px/30px var(--f-display);text-align:center;flex:none}
+.ibtn{border:0;background:none;color:var(--f-mu);padding:4px;border-radius:6px;display:inline-flex}
+.ibtn.on{background:var(--f-acs);color:var(--f-ac)}
+.side{flex:none;display:flex;min-height:0}
+.rail{width:84px;background:linear-gradient(180deg,#0b3a7a,#06101e);display:flex;flex-direction:column;align-items:center;padding:16px 0 12px;gap:2px;color:#bcd6ee;--hive:url(#g-hive-b);flex:none}
+.rbrand{padding:2px 0 14px;display:flex}
+.ri{width:72px;display:flex;flex-direction:column;align-items:center;gap:3px;padding:7px 0;border-radius:10px;color:#bcd6ee;position:relative}
+.ri small{font-size:12px;text-align:center;line-height:1.15}
+.ri.on{background:rgba(124,200,248,.2);color:#fff}
+.ri.on::before{content:"";position:absolute;left:-6px;top:10px;bottom:10px;width:3px;border-radius:2px;background:#7cc8f8}
+.ri.rcta{background:#38bdf8;color:#06101e;width:56px;border-radius:12px;font-weight:600}
+.rsep{width:32px;height:1px;background:rgba(255,255,255,.16);margin:6px 0}
+.rgrow{flex:1}
+.rail .av{margin-top:8px;box-shadow:0 0 0 2px rgba(255,255,255,.18)}
+.panel{width:236px;background:var(--f-sf);border-right:1px solid var(--f-ln);display:flex;flex-direction:column;padding:14px 0;flex:none;min-height:0}
+.ph{display:flex;align-items:center;gap:8px;padding:2px 16px 12px}.ph .pill{margin-left:auto}
+.wm{font-weight:650;font-size:16.5px;white-space:nowrap}.wm span{color:var(--f-ac)}
+.pt{font:500 12px var(--f-mono);color:var(--f-mu);padding:8px 18px 6px}
+.pk{display:flex;align-items:center;gap:9px;padding:7px 9px;margin:0 10px;border-radius:8px;color:var(--f-mu);white-space:nowrap;position:relative}
+.pk .pl1{color:var(--f-ink);opacity:.86;flex:1}
+.pk.on{background:var(--f-acs);color:var(--f-ac)}.pk.on .pl1{color:var(--f-ac);opacity:1;font-weight:600}
+.pk.on::before{content:"";position:absolute;left:-10px;top:7px;bottom:7px;width:3px;border-radius:2px;background:var(--f-ac)}
+.cnt{font:500 12px var(--f-mono);color:var(--f-mu);font-variant-numeric:tabular-nums}
+.pscroll{flex:1;overflow-y:auto;min-height:0}
+.pfoot{border-top:1px solid var(--f-ln);padding:10px 16px 0;display:flex;flex-direction:column;line-height:1.3;gap:2px}
+.pfoot b{font-size:13px}.pfoot small{font-size:12px;color:var(--f-mu)}
+.pfoot .pfrow{display:flex;align-items:center;gap:4px}.pfoot .pfrow .seg{margin-left:auto}
+.seg{display:inline-flex;border:1px solid var(--f-ln);border-radius:99px;padding:1px}
+.stamp{font:12px var(--f-mono);color:var(--f-mu);opacity:.85}
+.ct{flex:1;min-width:0;padding:16px 20px;display:flex;flex-direction:column;gap:10px;min-height:0}
+.ct h3{margin:0;font-size:20px}
+.crumb{font-size:12px;color:var(--f-mu)}.crumb b{color:var(--f-ink);font-weight:600}
+.phead{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.phead .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.sub{font-size:12.5px;color:var(--f-mu);margin:0;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.sp{display:inline-flex;align-items:center;gap:6px;padding:3px 10px 3px 8px;border-radius:99px;font-size:12.5px;font-weight:600;white-space:nowrap;flex:none}
+.sp svg{width:12px;height:12px}
+.sp.live{background:var(--s-liveb);color:var(--s-live)}.sp.bad{background:var(--s-badb);color:var(--s-bad)}.sp.neu{background:var(--s-neub);color:var(--s-neu)}.sp.warn{background:var(--s-warnb);color:var(--s-warn)}.sp.park{background:var(--s-parkb);color:var(--s-park)}
+.chip{display:inline-flex;align-items:center;gap:5px;font:500 12px var(--f-mono);padding:2px 8px;border-radius:99px;background:var(--f-hv);color:var(--f-mu);white-space:nowrap}
+.chip.ctx{background:var(--f-acs);color:var(--f-ac);border:1px solid var(--f-acl);font-family:var(--f-display);font-weight:600}
+.chip.hot{outline:2px solid var(--f-ac);outline-offset:2px}
+.btn{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;height:30px;padding:0 11px;font-size:13px;font-weight:550;white-space:nowrap;color:var(--f-ink)}
+.btn.pri{background:var(--f-ac);border-color:var(--f-ac);color:var(--f-sf)}
+.btn.ghost{border-color:transparent;background:none;color:var(--f-mu)}
+.btn.sm{height:26px;padding:0 8px;font-size:12.5px}
+.btn.on{background:var(--f-acs);color:var(--f-ac);border-color:var(--f-acl)}
+.segb{display:inline-flex;border:1px solid var(--f-bd);border-radius:8px;overflow:hidden;flex:none}
+.segb button{border:0;background:var(--f-sf);height:26px;padding:0 9px;font-size:12.5px;color:var(--f-mu)}
+.segb button[aria-pressed="true"]{background:var(--f-acs);color:var(--f-ac);font-weight:600}
+.segb button:disabled{opacity:.5;cursor:not-allowed}
+.card{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:12px;padding:12px 14px;display:flex;flex-direction:column;gap:10px;min-width:0}
+.ch{display:flex;align-items:center;gap:8px;flex-wrap:wrap}.ch b{font-size:14px;font-weight:600}.ch .r{margin-left:auto;display:flex;gap:8px;align-items:center}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--f-ln);flex:none}
+.tabs span{padding:7px 12px;font-size:13px;color:var(--f-mu);border-bottom:2px solid transparent;margin-bottom:-1px;display:flex;gap:6px;align-items:center;white-space:nowrap}
+.tabs span.on{color:var(--f-ac);border-bottom-color:var(--f-ac);font-weight:600}
+.tabs span.hot{outline:2px solid var(--f-ac);outline-offset:-3px;border-radius:6px}
+.tabs em{font:normal 500 12px var(--f-mono);color:var(--f-mu)}
+.app code{font-family:var(--f-mono);font-size:12px;background:var(--f-hv);color:var(--f-ink);padding:1px 5px;border-radius:4px}
+.dash{color:var(--f-mu);border-bottom:1px dotted var(--f-mu);cursor:help}
+.q{display:inline-flex;width:18px;height:18px;border-radius:50%;border:1px solid var(--f-bd);font:600 12px/16px var(--f-display);justify-content:center;color:var(--f-mu);flex:none}
+.scrim{position:absolute;inset:0;background:rgba(6,16,30,.32)}
+
+/* marks: the console's absence encodings (design-system.md §8.6) */
+.mk{display:inline-flex;align-items:center;gap:5px;font-size:12px;color:var(--f-mu);white-space:nowrap}
+.mk i{display:inline-block;width:10px;height:10px;border-radius:50%;flex:none}
+.mk.zero i{border:1.5px solid var(--f-mu)}
+.mk.unread i{border:1.5px dashed var(--s-warn)}
+.mk.partial i{background:linear-gradient(90deg,var(--f-mu) 50%,transparent 50%);border:1.5px solid var(--f-mu)}
+.mk.pend i{border:1.5px solid var(--f-ac);border-right-color:transparent}
+.hatch{background:repeating-linear-gradient(135deg,transparent 0 3px,var(--f-ln) 3px 5px)}
+
+/* ======== phone ======== */
+.phone{width:390px;min-width:390px;height:780px;border-radius:30px;border:10px solid #0b1626;background:var(--f-bg);color:var(--f-ink);overflow:hidden;display:flex;flex-direction:column;font:13px/1.45 var(--f-display);position:relative;text-align:left}
+.phone button{font:inherit;color:inherit;cursor:pointer}
+.phd{background:linear-gradient(90deg,#0b3a7a,#06101e);color:#fff;display:flex;align-items:center;gap:10px;padding:10px 12px;flex:none}
+.phd .t{font-weight:600;font-size:14px;flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.phd .ibtn{color:#bcd6ee}
+.pbody{flex:1;min-height:0;overflow:auto;display:flex;flex-direction:column;gap:8px;padding:10px}
+
+/* ======== graph overlays (this page) ========
+   Community hues: the design system has five series identities (§1.6); a community layer needs
+   one per community. Variant 1 spends eight and repeats them, which is that variant's cost and
+   is said on its frame. Variants 2-4 need no hue per community. */
+.fx{--c0:#3f86d8;--c1:#1f948a;--c2:#8a6ad6;--c3:#9c7620;--c4:#b8487e;--c5:#4f7fa3;--c6:#6f8a2e;--c7:#788492;--ed:#9fb0c4;--edh:#56657a;--gbg:#fbfcfe}
+:root[data-theme="dark"] .fx:not([data-ftheme="light"]),.fx[data-ftheme="dark"]{--c0:#6ea8ec;--c1:#45b8ad;--c2:#a98ce8;--c3:#c99a3a;--c4:#dc6fa3;--c5:#7fa9c9;--c6:#98b552;--c7:#93a0ae;--ed:#3a5272;--edh:#9fb0c4;--gbg:#081425}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]) .fx:not([data-ftheme="light"]){--c0:#6ea8ec;--c1:#45b8ad;--c2:#a98ce8;--c3:#c99a3a;--c4:#dc6fa3;--c5:#7fa9c9;--c6:#98b552;--c7:#93a0ae;--ed:#3a5272;--edh:#9fb0c4;--gbg:#081425}}
+.fx[data-ftheme="light"]{--c0:#3f86d8;--c1:#1f948a;--c2:#8a6ad6;--c3:#9c7620;--c4:#b8487e;--c5:#4f7fa3;--c6:#6f8a2e;--c7:#788492;--ed:#9fb0c4;--edh:#56657a;--gbg:#fbfcfe}
+.gtools{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.gtools .r{margin-left:auto;display:flex;gap:6px}
+.lyr{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--f-bd);background:var(--f-sf);border-radius:8px;height:26px;padding:0 9px;font-size:12.5px;color:var(--f-mu)}
+.lyr[aria-pressed="true"]{color:var(--f-ink);font-weight:600;background:var(--f-hv)}
+.lyr .bx{width:12px;height:12px;border:1.5px solid var(--f-bd);border-radius:3px;display:inline-grid;place-items:center;font-size:10px;line-height:1}
+.lyr[aria-pressed="true"] .bx{background:var(--f-ink);border-color:var(--f-ink);color:var(--f-sf)}
+.gwrap{display:grid;grid-template-columns:620px minmax(0,1fr);gap:12px;min-height:0;flex:1}
+.gc{position:relative;background:var(--gbg);border:1px solid var(--f-ln);border-radius:12px;overflow:hidden;height:520px}
+.gc[data-drawing="network"]{background:var(--f-sf)}
+.gc .tag{position:absolute;left:10px;bottom:8px;font:12px var(--f-mono);color:var(--f-mu);background:color-mix(in srgb,var(--f-sf) 85%,transparent);padding:1px 6px;border-radius:4px}
+.gc .tagr{left:auto;right:10px}
+svg.g{display:block;font-family:var(--f-display)}
+svg.g text{font-size:12px;fill:var(--f-ink)}
+svg.g text.mu{fill:var(--f-mu)}
+svg.g text.b{font-weight:600}
+svg.g .e{stroke:var(--ed);stroke-width:.6;fill:none;opacity:.55}
+svg.g .e.hi{stroke:var(--edh);opacity:.9;stroke-width:1}
+svg.g .me{stroke:var(--ed);fill:none;opacity:.7}
+svg.g .box{fill:var(--f-sf);stroke:var(--f-ln);stroke-width:1}
+svg.g .box.closed{fill:var(--f-sf);stroke:var(--f-bd)}
+svg.g .box.terr{stroke:var(--f-ink);stroke-width:1.5}
+svg.g .box.dim,svg.g .dim{opacity:.18}
+svg.g .n{fill:var(--s-neu);stroke:var(--f-sf);stroke-width:1}
+svg.g .n.dim{opacity:.14}
+svg.g .ring{fill:none;stroke:var(--f-ink);stroke-width:2.2}
+svg.g .ring.exp{stroke-dasharray:3 2;stroke-width:1.5}
+svg.g .seam{fill:var(--f-sf);stroke:var(--f-ink);stroke-width:1.8}
+svg.g .bad{fill:none;stroke:var(--s-bad);stroke-width:2.6}
+svg.g .warn{fill:none;stroke:var(--s-warn);stroke-width:2.2;stroke-dasharray:4 2}
+svg.g .badge rect{fill:var(--f-sf);stroke:var(--f-bd)}
+svg.g .badge text{font:600 12px var(--f-mono);fill:var(--f-ink)}
+svg.g .badge.isbad rect{fill:var(--s-badb);stroke:var(--s-bad)}
+svg.g .badge.isbad text{fill:var(--s-bad)}
+svg.g .badge.iswarn rect{fill:var(--s-warnb);stroke:var(--s-warn)}
+svg.g .badge.iswarn text{fill:var(--s-warn)}
+svg.g .hull{fill:var(--f-hv);stroke:var(--f-bd);stroke-width:1;opacity:.9}
+svg.g .hull.terr{stroke:var(--f-ink);stroke-width:1.5}
+svg.g .meta{fill:var(--f-sf);stroke:var(--f-bd);stroke-width:1.2}
+svg.g .meta.terr{stroke:var(--f-ink);stroke-width:2}
+svg.g .lnk{stroke-width:1.6;fill:none}
+svg.g .lnk.bad{stroke:var(--s-bad);stroke-dasharray:none}
+svg.g .lnk.warn{stroke:var(--s-warn)}
+svg.g .lnk.neu{stroke:var(--f-bd)}
+svg.g .col{fill:none;stroke:var(--f-ln)}
+svg.g [data-act]{cursor:pointer}
+svg.g .card{fill:var(--f-sf);stroke:var(--f-ln)}
+svg.g .card.bad{fill:var(--s-badb);stroke:var(--s-bad);stroke-dasharray:none;stroke-width:1.4}
+svg.g .card.warn{fill:var(--s-warnb);stroke:var(--s-warn);stroke-dasharray:none;stroke-width:1.2}
+svg.g .card.sel{stroke:var(--f-ink);stroke-width:2}
+.side2{display:flex;flex-direction:column;gap:10px;min-width:0;min-height:0;overflow:auto;max-height:520px}
+.lg2{display:flex;flex-direction:column;gap:4px;font-size:12.5px}
+.lg2 .row,.ov .row{display:flex;align-items:center;gap:8px;min-width:0}
+.lg2 .row .nm,.ov .row .nm{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sw{width:12px;height:12px;border-radius:3px;flex:none}
+.gly{width:16px;height:16px;flex:none}
+.ov{display:flex;flex-direction:column;gap:8px}
+.ov .lane{border:1px solid var(--f-ln);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:4px;background:var(--f-sf)}
+.ov .lane.bad{border-color:var(--s-bad);background:var(--s-badb)}
+.ov .lane.warn{border-color:color-mix(in srgb,var(--s-warn) 55%,transparent)}
+.ov .lane.sel{outline:2px solid var(--f-ink);outline-offset:1px}
+.ov .lane small{color:var(--f-mu);font-size:12px}
+.ov .files{display:flex;flex-wrap:wrap;gap:4px}
+.ov .files code{font-size:12px}
+.lb{font:600 12px var(--f-mono);border:1px solid var(--f-bd);border-radius:5px;padding:0 5px;background:var(--f-sf);color:var(--f-ink)}
+.lb.bad{border-color:var(--s-bad);color:var(--s-bad);background:var(--s-badb)}
+.lb.warn{border-color:var(--s-warn);color:var(--s-warn);background:var(--s-warnb)}
+.gfoot{font-size:12px;color:var(--f-mu);display:flex;gap:10px;flex-wrap:wrap}
+.issue{display:flex;align-items:center;gap:8px;font-size:12.5px;flex-wrap:wrap}
+.issue b{font-weight:600}
+/* the matrix (variant 4) */
+table.mxg{border-collapse:separate;border-spacing:0;font-size:12.5px;width:100%;font-variant-numeric:tabular-nums}
+table.mxg th,table.mxg td{padding:5px 6px;border-bottom:1px solid var(--f-ln);text-align:right;white-space:nowrap}
+table.mxg th{white-space:normal;line-height:1.5;font:600 12px var(--f-display);color:var(--f-mu);vertical-align:bottom;text-align:right}
+table.mxg th:first-child,table.mxg td:first-child{text-align:left;position:sticky;left:0;background:var(--f-sf)}
+table.mxg td.c{cursor:pointer}
+table.mxg td.c:hover{background:var(--f-hv)}
+table.mxg td.bad{background:var(--s-badb);color:var(--s-bad);font-weight:600}
+table.mxg td.warn{background:var(--s-warnb);color:var(--s-warn);font-weight:600}
+table.mxg td.sel{outline:2px solid var(--f-ink);outline-offset:-2px}
+table.mxg td.z{color:var(--f-mu)}
+table.mxg tr.out td{color:var(--f-mu)}
+.mxwrap{overflow:auto;border:1px solid var(--f-ln);border-radius:12px;background:var(--f-sf)}
+/* phone */
+.crop{overflow:auto;border:1px solid var(--f-ln);border-radius:10px;background:var(--gbg);flex:none;height:250px}
+.pcard{background:var(--f-sf);border:1px solid var(--f-ln);border-radius:10px;padding:8px 10px;display:flex;flex-direction:column;gap:4px}
+.pcard.bad{border-color:var(--s-bad);background:var(--s-badb)}
+.pcard.warn{border-color:color-mix(in srgb,var(--s-warn) 55%,transparent)}
+.pcard .hd{display:flex;align-items:center;gap:8px;min-height:44px}
+.pcard .hd b{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pcard small{color:var(--f-mu);font-size:12px}
+.prow{display:flex;align-items:center;gap:8px;min-height:32px;border-top:1px solid var(--f-ln);font-size:12.5px}
+.prow code{font-size:12px;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ptabs{display:flex;gap:2px;border-bottom:1px solid var(--f-ln);overflow-x:auto;flex:none}
+.ptabs span{padding:10px 10px;font-size:13px;color:var(--f-mu);white-space:nowrap;border-bottom:2px solid transparent;margin-bottom:-1px}
+.ptabs span.on{color:var(--f-ink);border-bottom-color:var(--f-ink);font-weight:600}
+.phone .segb button{height:36px;padding:0 12px}
+.phone .lyr{height:36px}
+.ph2{font:600 12px var(--f-display);color:var(--f-mu);margin:6px 0 0}
+.costs td b{font-variant-numeric:tabular-nums}
+.shots{font-size:13px;color:var(--mute)}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><linearGradient id="g-hive-l" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#1a96d4"/><stop offset="1" stop-color="#0b3a7a"/></linearGradient><linearGradient id="g-hive-d" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#2b7fd9"/></linearGradient><linearGradient id="g-hive-b" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#ffffff"/><stop offset="1" stop-color="#7dd3fc"/></linearGradient><symbol id="i-overview" viewBox="0 0 24 24"><rect x="3.5" y="3.5" width="7" height="7" rx="1.5"/><rect x="13.5" y="3.5" width="7" height="4.5" rx="1.5"/><rect x="13.5" y="11" width="7" height="9.5" rx="1.5"/><rect x="3.5" y="13.5" width="7" height="7" rx="1.5"/></symbol><symbol id="i-agents" viewBox="0 0 24 24"><rect x="5" y="7.5" width="14" height="11" rx="3"/><path d="M12 4v3.5M9 12.5v1M15 12.5v1M2.5 12v3M21.5 12v3"/></symbol><symbol id="i-workflows" viewBox="0 0 24 24"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M8.2 6h3a3 3 0 0 1 3 3v.8M8.2 18h3a3 3 0 0 0 3-3v-.8"/></symbol><symbol id="i-timeline" viewBox="0 0 24 24"><path d="M4 19.5h16"/><path d="M6.5 16v-4M10.5 16V8M14.5 16v-6M18.5 16V5"/></symbol><symbol id="i-submit" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol><symbol id="i-pools" viewBox="0 0 24 24"><path d="M12 3.5 3.5 8 12 12.5 20.5 8Z"/><path d="m3.5 12 8.5 4.5 8.5-4.5"/><path d="m3.5 16 8.5 4.5 8.5-4.5"/></symbol><symbol id="i-limits" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></symbol><symbol id="i-help" viewBox="0 0 24 24"><circle cx="12" cy="12" r="8.5"/><path d="M9.6 9.5a2.5 2.5 0 0 1 4.8 1c0 1.7-2.4 2-2.4 3.5"/><path d="M12 17.2v.1"/></symbol><symbol id="i-api" viewBox="0 0 24 24"><path d="M3.5 12h3l2.5-6 4 12 2.5-6h5"/></symbol><symbol id="i-menu" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16"/></symbol><symbol id="i-moon" viewBox="0 0 24 24"><path d="M19.5 14.5A8 8 0 0 1 9.5 4.5a8 8 0 1 0 10 10Z"/></symbol><symbol id="i-out" viewBox="0 0 24 24"><path d="M14.5 4.5h3a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2h-3M10 16.5 14.5 12 10 7.5M14.5 12H4"/></symbol><symbol id="i-swap" viewBox="0 0 24 24"><path d="m7 9 5-5 5 5M7 15l5 5 5-5"/></symbol><symbol id="i-lock" viewBox="0 0 24 24"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol><symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="m20 20-4.2-4.2"/></symbol><symbol id="i-up" viewBox="0 0 24 24"><path d="M12 19V5M6 11l6-6 6 6"/></symbol><symbol id="i-branch" viewBox="0 0 24 24"><circle cx="6" cy="5.5" r="2"/><circle cx="6" cy="18.5" r="2"/><circle cx="18" cy="8" r="2"/><path d="M6 7.5v9M18 10a6 6 0 0 1-6 6H8"/></symbol><symbol id="s-queued" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/></symbol><symbol id="s-ready" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><circle cx="6" cy="6" r="1.7" fill="currentColor"/></symbol><symbol id="s-parked" viewBox="0 0 12 12"><rect x="2.6" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/><rect x="7" y="1.8" width="2.4" height="8.4" rx=".8" fill="currentColor"/></symbol><symbol id="s-starting" viewBox="0 0 12 12"><circle cx="6" cy="6" r="4.3" fill="none" stroke="currentColor" stroke-width="1.6"/><path d="M6 1.7a4.3 4.3 0 0 1 0 8.6Z" fill="currentColor"/></symbol><symbol id="s-running" viewBox="0 0 12 12"><circle cx="6" cy="6" r="5.4" fill="none" stroke="currentColor" stroke-width="1" opacity=".45"/><circle cx="6" cy="6" r="3.3" fill="currentColor"/></symbol><symbol id="s-succeeded" viewBox="0 0 12 12"><path d="M2 6.4 4.8 9.1 10 3" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"/></symbol><symbol id="s-failed" viewBox="0 0 12 12"><path d="M6 .8 11.2 6 6 11.2.8 6Z" fill="currentColor"/></symbol><symbol id="s-dead" viewBox="0 0 12 12"><path d="M6 1.2 10.8 6 6 10.8 1.2 6Z" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="m4.4 4.4 3.2 3.2M7.6 4.4 4.4 7.6" stroke="currentColor" stroke-width="1.3"/></symbol><symbol id="s-cancelled" viewBox="0 0 12 12"><rect x="1.5" y="4.8" width="9" height="2.4" rx="1.2" fill="currentColor"/></symbol><symbol id="s-warn" viewBox="0 0 12 12"><path d="M6 1.2 11.2 10.4H.8Z" fill="currentColor"/></symbol><symbol id="i-repo" viewBox="0 0 24 24"><path d="M5.5 4.5h11a2 2 0 0 1 2 2v13h-11a2 2 0 0 1-2-2Z"/><path d="M5.5 17.5a2 2 0 0 1 2-2h11"/><path d="M9 8.5h6"/></symbol><symbol id="i-sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3.8"/><path d="M12 3v2M12 19v2M3 12h2M19 12h2M5.6 5.6 7 7M17 17l1.4 1.4M5.6 18.4 7 17M17 7l1.4-1.4"/></symbol><symbol id="i-monitor" viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="11.5" rx="2"/><path d="M9 20h6M12 16v4"/></symbol></defs></svg>
+<div class="wrap">
+<p class="kicker">SwarmCloud · Work › Repositories › Graph · design lane KG8-MOCK · 2026-10-09</p>
+<h1>The repository graph's overlays: four ways to show communities, an issue's territory and the work already in it</h1>
+<p class="lede">Row KG8 of <a href="../../design/knowledge-graph.md">knowledge-graph.md</a> §6 builds the console's community layer and its issue and lane overlays, and asks for the <q>owner's pick from a mock-up first, as RI13 did</q>. These are four complete answers. Each is drawn in the Structure view and the Network view that GR3 built (PR #929), on desktop and on a 390px phone, in light and dark. The costs, the recommendation and the owner's questions are in <a href="../../design/graph-overlays.md">docs/design/graph-overlays.md</a>.</p>
+<p class="fixnote"><b>What is real and what is example data.</b> The graph is this repository's own: <b>339 modules and 1,575 import edges</b> in <code>apps/</code> at <code>2887032</code>, extracted from the Python and TypeScript imports. The <b>25 communities</b> come from Louvain clustering of that graph (resolution 3, seed 7), standing in for KG2's clustering, which is not built. Each is named after its most-imported module. The territory is computed the way knowledge-graph.md §4.1 describes it. The <b>declared</b> files are the three a plan would name for the example issue. The <b>expanded</b> territory is their importers and imports at depth 1. The <b>seams</b> are the expanded modules with fan-in of 47 or more. The issue, the two lanes' states and the second PR are <b>example data</b>. #929 is the real GR3 PR, and its file list is real. The Network frames are drawn as SVG with a precomputed force layout, to look like GR3's vis-network canvas. They are not vis-network itself.</p>
+<div class="themebar" role="group" aria-label="Page theme"><button data-set-theme="light" aria-pressed="false">Light</button><button data-set-theme="dark" aria-pressed="false">Dark</button><button data-set-theme="system" aria-pressed="true">System</button></div>
+<ul class="toc"><li><a href="#layers">0 · The three layers</a></li><li><a href="#v1">1 · Paint</a></li><li><a href="#v2">2 · Regions</a></li><li><a href="#v3">3 · Lens</a></li><li><a href="#v4">4 · Matrix</a></li><li><a href="#compare">5 · Side by side, with costs</a></li><li><a href="#rec">6 · Recommendation</a></li></ul>
+
+<h2 id="layers"><span class="n">0</span>The three layers, and where their data comes from</h2>
+<div class="tw"><table class="doc"><thead><tr><th>Layer</th><th>What it shows</th><th>Data</th><th>Today</th></tr></thead><tbody>
+<tr><td><b>Communities</b></td><td>The clusters KG2 computes over the module graph, as the graph's grouping. Today the console groups by directory.</td><td><code>GET /v1/repositories/{repo_id}/communities</code> (KG3), from KG2's shard layer</td><td>not served; KG2 and KG3 not built</td></tr>
+<tr><td><b>Issue territory</b></td><td>The files a plan names (<b>declared</b>), expanded to the callers and imports a change there drags in (<b>expanded</b>), with the high fan-in modules everything registers in (<b>seams</b>)</td><td><code>POST /v1/repositories/{repo_id}/territory</code> (KG3): files → expanded territory, seams</td><td>not served</td></tr>
+<tr><td><b>Lanes and PRs</b></td><td>The in-flight lanes and open PRs whose files fall in that territory. A lane on a <b>declared</b> file is a collision; a lane elsewhere in the territory is an overlap warning</td><td>the same KG3 territory answer (overlap with open PRs and in-flight lanes), fed by the lane queue's <code>lane_territories</code></td><td>not served</td></tr>
+</tbody></table></div>
+<p>Every variant uses the same marks, so the variants differ in how they arrange the graph, not in what a mark means. A <b>solid ink ring</b> marks a declared file, a <b>dashed ring</b> the expanded territory and a <b>diamond</b> a seam. A <b>red ring</b> marks a collision and a <b>dashed amber ring</b> an overlap. A <b>letter badge</b> (A–D) names the lane. None of these spends the accent: selection is an ink ring, as design-system.md §1.3 requires. Colour is never the only channel, because every frame lists the same overlap in words beside the graph.</p>
+
+<h2 id="v1"><span class="n">1</span>Paint: every layer is a channel on the flat graph</h2>
+<div class="variant">
+<div class="vh"><h3>Colour by community; rings for the territory; badges for lanes</h3><span class="vn">Variant 1</span><div class="themebar" role="group" aria-label="Theme for variant 1"><button data-vtheme="page" aria-pressed="true">Page theme</button><button data-vtheme="light" aria-pressed="false">Light</button><button data-vtheme="dark" aria-pressed="false">Dark</button></div></div>
+<p>Today's graph, untouched in shape, with three paint layers. Each node is filled with its community's hue. In Structure, the clusters become community boxes outlined in the same hue. The territory and the lanes are rings and badges on the nodes where they fall. Nothing moves when a layer is switched on.</p>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f1s" data-v="1" data-view="structure" tabindex="0" aria-label="Variant 1, Structure view, 1280px"></div></div><figcaption>Structure, 1280 × 820. Toggle the three layers in the tool row; click a lane card to ring its files and dim the rest.</figcaption></figure>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f1n" data-v="1" data-view="network" tabindex="0" aria-label="Variant 1, Network view, 1280px"></div></div><figcaption>Network: the same paint on the force layout.</figcaption></figure>
+<div class="pair" style="margin-top:14px"><figure class="fr" style="margin:0"><div class="phone fx" id="f1p" data-v="1" data-view="structure" tabindex="0" aria-label="Variant 1 at 390px, Structure"></div><figcaption>390px, Structure.</figcaption></figure><figure class="fr" style="margin:0"><div class="phone fx" id="f1q" data-v="1" data-view="network" tabindex="0" aria-label="Variant 1 at 390px, Network"></div><figcaption>390px, Network.</figcaption></figure></div>
+<div class="idea"><div><h4>Optimises</h4><p>Seeing everything at once, with nothing hidden and nothing to learn. It is the cheapest variant to build.</p></div><div><h4>Costs</h4><ul><li>About +3 kB gz (estimate)</li><li>No new route beyond KG3's</li><li>Needs a hue per community</li></ul></div><div><h4>Risks</h4><ul><li><b>Breaks design-system.md §1.6.</b> There are five series identities, and this graph has 25 communities, so the eight hues drawn here repeat. Two communities share a colour and cannot be told apart in greyscale.</li><li>At 2,000 modules the territory is about 37 rings in a hairball (graph-rendering.md §3.4).</li></ul></div></div>
+</div>
+
+<h2 id="v2"><span class="n">2</span>Regions: a community is a region you open, and the issue opens the ones it lands in</h2>
+<div class="variant">
+<div class="vh"><h3>Aggregated by community; the territory decides what is open</h3><span class="rec">recommended</span><span class="vn">Variant 2</span><div class="themebar" role="group" aria-label="Theme for variant 2"><button data-vtheme="page" aria-pressed="true">Page theme</button><button data-vtheme="light" aria-pressed="false">Light</button><button data-vtheme="dark" aria-pressed="false">Dark</button></div></div>
+<p>The graph starts aggregated: one region per community, as knowledge-graph.md §4.7 asks (<q>collapse a community to a node</q>) and as graph-rendering.md §3.4 requires past about 500 nodes. A closed region shows its size, how much of the territory it holds and which lanes touch it. The communities that hold a declared file open by themselves and show their modules with the territory marks. In Network, a closed community is one circle on the community meta-graph, with edge width counting the imports between communities. An open one spreads its modules inside a hull. A side list gives the territory by community and opens or closes each one.</p>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f2s" data-v="2" data-view="structure" tabindex="0" aria-label="Variant 2, Structure view, 1280px"></div></div><figcaption>Structure, 1280 × 820. The three communities holding a declared file are open. Click any region, or a row in "Territory by community", to open or close it. A closed region keeps its place, so opening one never moves another.</figcaption></figure>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f2n" data-v="2" data-view="network" tabindex="0" aria-label="Variant 2, Network view, 1280px"></div></div><figcaption>Network: the community meta-graph, with the three territory communities opened in place.</figcaption></figure>
+<div class="pair" style="margin-top:14px"><figure class="fr" style="margin:0"><div class="phone fx" id="f2p" data-v="2" data-view="structure" tabindex="0" aria-label="Variant 2 at 390px, Structure"></div><figcaption>390px, Structure: one card per territory community, with its modules listed when open.</figcaption></figure><figure class="fr" style="margin:0"><div class="phone fx" id="f2q" data-v="2" data-view="network" tabindex="0" aria-label="Variant 2 at 390px, Network"></div><figcaption>390px, Network.</figcaption></figure></div>
+<div class="idea"><div><h4>Optimises</h4><p>Scale and the plan-approval question: "which parts of the codebase does this issue touch, and who is already there?" The answer is the open regions plus their badges.</p></div><div><h4>Costs</h4><ul><li>About +5 kB gz (estimate): GR3's aggregation, keyed by community instead of directory</li><li>The meta-graph needs KG3's <code>/communities</code> to carry cross-community edge counts</li><li>Network hands vis-network the meta-graph already aggregated: 126 ms to build at 2,034 modules. vis-network's own <code>cluster()</code>, called once per community, took 41 s (§5)</li></ul></div><div><h4>Risks</h4><ul><li>A territory file in a closed region is a count, not a node, until opened.</li><li>The regions move if KG2's communities drift between index runs. KG2's acceptance (Jaccard ≥ 0.9) bounds this.</li></ul></div></div>
+</div>
+
+<h2 id="v3"><span class="n">3</span>Lens: the territory is the drawing, and everything else steps back</h2>
+<div class="variant">
+<div class="vh"><h3>A territory map in Structure; a dimming lens in Network</h3><span class="vn">Variant 3</span><div class="themebar" role="group" aria-label="Theme for variant 3"><button data-vtheme="page" aria-pressed="true">Page theme</button><button data-vtheme="light" aria-pressed="false">Light</button><button data-vtheme="dark" aria-pressed="false">Dark</button></div></div>
+<p>When an issue is chosen, Structure stops drawing the repository and draws only the territory, read left to right. The declared files and seams come first, then the expanded territory grouped by community, then the lanes and PRs, with a line from each lane to the files it shares. Red lines are collisions and amber lines are overlaps. Network keeps the whole graph but dims everything outside the territory, and draws a faint hull for each community the territory crosses.</p>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f3s" data-v="3" data-view="structure" tabindex="0" aria-label="Variant 3, Structure view, 1280px"></div></div><figcaption>Structure: the territory map (it scrolls inside the canvas). Click a lane to ring its files.</figcaption></figure>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f3n" data-v="3" data-view="network" tabindex="0" aria-label="Variant 3, Network view, 1280px"></div></div><figcaption>Network: the lens. The 302 modules outside the territory are dimmed, and the 37 inside it stay at full strength. A lane's files outside the territory stay dimmed too, because they cannot collide with this issue.</figcaption></figure>
+<div class="pair" style="margin-top:14px"><figure class="fr" style="margin:0"><div class="phone fx" id="f3p" data-v="3" data-view="structure" tabindex="0" aria-label="Variant 3 at 390px, Structure"></div><figcaption>390px, Structure.</figcaption></figure><figure class="fr" style="margin:0"><div class="phone fx" id="f3q" data-v="3" data-view="network" tabindex="0" aria-label="Variant 3 at 390px, Network"></div><figcaption>390px, Network.</figcaption></figure></div>
+<div class="idea"><div><h4>Optimises</h4><p>Reading one issue's territory and its collisions as a list with structure, which is the plan-review moment. Its size depends on the territory, not on the repository.</p></div><div><h4>Costs</h4><ul><li>About +6 kB gz (estimate): a second Structure layout, the layered territory map</li><li>Network costs a style pass only</li></ul></div><div><h4>Risks</h4><ul><li>Structure no longer shows the repository while an issue is chosen, so the community layer is only grouping there.</li><li>Two Structure drawings to keep in step.</li></ul></div></div>
+</div>
+
+<h2 id="v4"><span class="n">4</span>Matrix: communities × work, with the graph as the map beside it</h2>
+<div class="variant">
+<div class="vh"><h3>A table that answers first; the graph shows where a cell is</h3><span class="vn">Variant 4</span><div class="themebar" role="group" aria-label="Theme for variant 4"><button data-vtheme="page" aria-pressed="true">Page theme</button><button data-vtheme="light" aria-pressed="false">Light</button><button data-vtheme="dark" aria-pressed="false">Dark</button></div></div>
+<p>The Graph tab leads with a matrix. Each row is a community the territory or a lane touches. The columns are the issue's declared, expanded and seam counts, then one column per lane or PR. A red cell means the lane holds a declared file in that community, and an amber cell means it holds another territory file. Clicking a cell rings its modules on the small graph beside the table, in Structure or Network, and lists them underneath.</p>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f4s" data-v="4" data-view="structure" tabindex="0" aria-label="Variant 4, Structure view, 1280px"></div></div><figcaption>Structure, opened on the collision cell (KG1 in the community holding <code>issueruns.py</code>). Click any cell.</figcaption></figure>
+<figure class="fr"><div class="scroller"><div class="app fx" id="f4n" data-v="4" data-view="network" tabindex="0" aria-label="Variant 4, Network view, 1280px"></div></div><figcaption>Network, the same cell.</figcaption></figure>
+<div class="pair" style="margin-top:14px"><figure class="fr" style="margin:0"><div class="phone fx" id="f4p" data-v="4" data-view="structure" tabindex="0" aria-label="Variant 4 at 390px, Structure"></div><figcaption>390px, Structure: the matrix becomes one card per community.</figcaption></figure><figure class="fr" style="margin:0"><div class="phone fx" id="f4q" data-v="4" data-view="network" tabindex="0" aria-label="Variant 4 at 390px, Network"></div><figcaption>390px, Network.</figcaption></figure></div>
+<div class="idea"><div><h4>Optimises</h4><p>A precise, accessible and testable answer. It is the best phone story, and it suits screen readers and DOM tests, because the answer is a table.</p></div><div><h4>Costs</h4><ul><li>About +4 kB gz (estimate)</li><li>The table renders in milliseconds at any size</li><li>Reuses the shipped Table component</li></ul></div><div><h4>Risks</h4><ul><li>The graph becomes secondary, and the owner asked for a graph layer.</li><li>A matrix shows counts, not shape, so a seam's reach is not visible.</li></ul></div></div>
+</div>
+
+<h2 id="compare"><span class="n">5</span>Side by side, with costs</h2>
+<p>The render times are <b>measured</b> at 2,034 modules and 9,733 edges. That graph is this repository's graph copied six times, with 3% random edges added between the copies, giving 150 communities. The mock-up's own renderers drew it (the functions on this page), in headless Chromium 141 with software rendering on a 6-vCPU container. Each figure is the median of 5 runs, from building the markup to two animation frames later. The Network figures are vis-network 10.0.2 on the same graph, with positions given and physics off: the cost of drawing and updating, not of settling. graph-rendering.md §3.4 measured settling at 7,246 ms for 2,000 modules. The bundle row has a measured part and an estimate. The measured part is the gzipped size of this page's minified renderer for the variant, plus 2.1 kB of marks and overlap list shared by all four. The estimate is what the built TSX will cost, with types, keyboard and tests: about twice that.</p>
+<div class="tw"><table class="doc costs"><thead><tr><th></th><th>1 · Paint</th><th>2 · Regions</th><th>3 · Lens</th><th>4 · Matrix</th></tr></thead><tbody>
+<tr><td>Optimises</td><td>seeing everything, nothing to learn</td><td>scale and "where does this issue land, who is there"</td><td>reading one territory and its collisions</td><td>a precise answer, phone and screen reader</td></tr>
+<tr><td>Structure at 2,034 modules (SVG)</td><td><b>133 ms</b>, 2,231 shapes + 9,733 edges; over GR3's 100 ms task budget unless mounted in chunks</td><td><b>33 ms</b>, 217 shapes (147 closed regions + 3 open)</td><td><b>33 ms</b>, 84 shapes: its size is the territory's, not the repository's</td><td><b>100 ms</b>, table + full mini-map; about 33 ms with an aggregated mini-map</td></tr>
+<tr><td>Network at 2,034 modules (vis-network)</td><td>build <b>918 ms</b>; each overlay change <b>215 ms</b></td><td>meta-graph handed in pre-aggregated (184 nodes, 676 edges): build <b>126 ms</b>, overlay change <b>31 ms</b>. vis-network's own <code>cluster()</code> once per community took <b>41,187 ms</b>, so it must not be used</td><td>build 918 ms; dimming all 2,034 nodes <b>266 ms</b> per change</td><td>mini-map as 1 or 2</td></tr>
+<tr><td>Bundle (gz)</td><td>measured 0.5 kB + 2.1 kB shared; est. <b>+3 kB</b></td><td>measured 1.4 kB + 2.1 kB; est. <b>+5 kB</b></td><td>measured 1.8 kB + 2.1 kB; est. <b>+6 kB</b></td><td>measured 1.4 kB + 2.1 kB; est. <b>+4 kB</b></td></tr>
+<tr><td>New dependency</td><td colspan="4">none in any variant. vis-network is already GR3's lazily loaded Network chunk, pinned at 10.1.2 (about 150 kB gz measured for the 10.0.2 standalone build here; graph-rendering.md measured +159.2 kB with peers)</td></tr>
+<tr><td>Data it needs beyond KG3's routes</td><td>a stable colour per community id</td><td><code>/communities</code> carrying cross-community import counts</td><td>nothing</td><td>nothing</td></tr>
+<tr><td>Fits design-system.md §1.6 (five series)</td><td><b>no</b>: one hue per community</td><td>yes: no hue per community</td><td>yes</td><td>yes</td></tr>
+<tr><td>Phone (390px)</td><td>native-scale crop + overlap list</td><td>a card per territory community; opens to its modules</td><td>declared / seams / expanded lists</td><td><b>best</b>: a card per community with lane counts</td></tr>
+<tr><td>Accessible and DOM-testable</td><td>yes in Structure; the list carries Network</td><td>yes; regions are buttons</td><td>yes</td><td>yes: the answer is a table</td></tr>
+</tbody></table></div>
+
+
+<h2 id="rec"><span class="n">6</span>Recommendation</h2>
+<div class="recbox"><h3>Variant 2, Regions, with variant 4's matrix as the phone view</h3>
+<p><b>Regions</b> is the only variant that answers all three layers at 2,000 modules without a hairball. It is also the shape both design docs already chose: knowledge-graph.md §4.7 asks to <q>collapse a community to a node</q>, and graph-rendering.md §3.4 says the explorer <q>must start aggregated and open by focus</q>. Opening the communities that hold a declared file <em>is</em> that focus. It needs one hue at most, so it stays inside the five series of design-system.md §1.6. On a phone, its territory-by-community cards carry variant 4's per-lane counts.</p>
+<p>The five owner questions (variant, phone, what opens by default, overlap severity, where the overlays are reached from) are in <a href="../../design/graph-overlays.md#owner-questions">graph-overlays.md §5</a> and in the run's <code>questions.json</code>.</p>
+</div>
+</div>
+
+<script id="graphdata" type="application/json">{"ids":["agent-worker/__main__.py","agent-worker/accountlease.py","agent-worker/artifact_manifest.py","agent-worker/checkpoint.py","agent-worker/children.py","agent-worker/config.py","agent-worker/continuation.py","agent-worker/control.py","agent-worker/egress.py","agent-worker/errors.py","agent-worker/expected_outputs.py","agent-worker/findings_epic.py","agent-worker/finishwake.py","agent-worker/forge.py","agent-worker/gitidentity.py","agent-worker/gitops.py","agent-worker/hardening.py","agent-worker/indexrun.py","agent-worker/inputs.py","agent-worker/issue.py","agent-worker/lifecycle.py","agent-worker/logs.py","agent-worker/merge.py","agent-worker/metrics.py","agent-worker/objectstore.py","agent-worker/post_verdict.py","agent-worker/procman.py","agent-worker/publish_scan.py","agent-worker/questions.py","agent-worker/quota.py","agent-worker/redact.py","agent-worker/runners/base.py","agent-worker/runners/browser.py","agent-worker/runners/claude_code.py","agent-worker/runners/cliagent.py","agent-worker/runners/codex.py","agent-worker/runners/generic.py","agent-worker/runners/limits.py","agent-worker/runners/mock.py","agent-worker/runners/stdin_hook.py","agent-worker/runners/streams.py","agent-worker/secrets.py","agent-worker/specverify.py","agent-worker/standalone_outputs.py","agent-worker/startup.py","agent-worker/verdict.py","agent-worker/workspace.py","common/admission.py","common/config.py","common/identity.py","common/logging_setup.py","common/models.py","common/profiles.py","common/specsign.py","common/states.py","quota-broker/accounts.py","quota-broker/accountstore.py","quota-broker/aimd.py","quota-broker/credentials.py","quota-broker/main.py","quota-broker/oauth.py","quota-broker/publishledger.py","quota-broker/secretstore.py","quota-broker/service.py","quota-broker/settings.py","quota-broker/sweeplease.py","quota-broker/usage.py","quota-broker/usagepoll.py","reconciler/__main__.py","reconciler/backends.py","reconciler/checkpoints.py","reconciler/config.py","reconciler/detect.py","reconciler/finishwake.py","reconciler/logs.py","reconciler/model.py","reconciler/progress.py","reconciler/repair.py","reconciler/service.py","reconciler/stopexec.py","reconciler/store.py","scheduler/children.py","scheduler/codec.py","scheduler/credentials.py","scheduler/dispatch.py","scheduler/fairness.py","scheduler/loop.py","scheduler/main.py","scheduler/metrics.py","scheduler/on_step_failure_audit.py","scheduler/settings.py","scheduler/store.py","swarm-api/access.py","swarm-api/accountholds.py","swarm-api/admins.py","swarm-api/agent_output.py","swarm-api/agent_streams.py","swarm-api/attempt_state.py","swarm-api/attempt_totals.py","swarm-api/auth.py","swarm-api/brokerclient.py","swarm-api/checkpoint_content.py","swarm-api/childkey.py","swarm-api/children.py","swarm-api/cifix.py","swarm-api/codec.py","swarm-api/continuation.py","swarm-api/credentials.py","swarm-api/delegation.py","swarm-api/deps.py","swarm-api/errors.py","swarm-api/executioncancel.py","swarm-api/expected_outputs.py","swarm-api/forge.py","swarm-api/forgeapp.py","swarm-api/forgechecks.py","swarm-api/forgewrite.py","swarm-api/gitidentity.py","swarm-api/gittokens.py","swarm-api/groups.py","swarm-api/headroom.py","swarm-api/heartbeats.py","swarm-api/impact.py","swarm-api/inspect.py","swarm-api/issueci.py","swarm-api/issuecomments.py","swarm-api/issueruns.py","swarm-api/issuesweep.py","swarm-api/issuesync.py","swarm-api/json_masking.py","swarm-api/main.py","swarm-api/mergewake.py","swarm-api/metrics.py","swarm-api/objects.py","swarm-api/onboarding.py","swarm-api/outcomes.py","swarm-api/people.py","swarm-api/publish_workspace.py","swarm-api/ratelimit.py","swarm-api/redaction.py","swarm-api/refusals.py","swarm-api/repograph.py","swarm-api/repoindex.py","swarm-api/repositories.py","swarm-api/rollup.py","swarm-api/routes/access.py","swarm-api/routes/accounts.py","swarm-api/routes/admin.py","swarm-api/routes/attempts.py","swarm-api/routes/checkpoints.py","swarm-api/routes/children.py","swarm-api/routes/forgeapp.py","swarm-api/routes/gittokens.py","swarm-api/routes/health.py","swarm-api/routes/issues.py","swarm-api/routes/leases.py","swarm-api/routes/onboarding.py","swarm-api/routes/outcomes.py","swarm-api/routes/people.py","swarm-api/routes/platform.py","swarm-api/routes/repositories.py","swarm-api/routes/runs.py","swarm-api/routes/tasks.py","swarm-api/routes/tenants.py","swarm-api/routes/workflows.py","swarm-api/routes/workspaces.py","swarm-api/runnerinputs.py","swarm-api/schemas.py","swarm-api/served_limits.py","swarm-api/service.py","swarm-api/settings.py","swarm-api/specsigning.py","swarm-api/stalls.py","swarm-api/store.py","swarm-api/task_accounts.py","swarm-api/task_input.py","swarm-api/transcript.py","swarm-api/validation.py","swarm-api/verdictpublish.py","swarm-api/waiting.py","swarm-api/waker.py","swarm-api/workspaces.py","swarm-mcp/auth.py","swarm-mcp/checkout.py","swarm-mcp/cli.py","swarm-mcp/client.py","swarm-mcp/compact.py","swarm-mcp/config.py","swarm-mcp/credentials.py","swarm-mcp/follow.py","swarm-mcp/invocation.py","swarm-mcp/launch.py","swarm-mcp/patches.py","swarm-mcp/profiles.py","swarm-mcp/progress.py","swarm-mcp/render.py","swarm-mcp/runs.py","swarm-mcp/sc.py","swarm-mcp/server.py","swarm-mcp/signin.py","swarm-mcp/workflows.py","swarm-ui/Access.tsx","swarm-ui/Accounts.tsx","swarm-ui/Activity.tsx","swarm-ui/AdminSettings.tsx","swarm-ui/AgentChildren.tsx","swarm-ui/AgentDetail.tsx","swarm-ui/AgentLogs.tsx","swarm-ui/AgentSplit.tsx","swarm-ui/Agents.tsx","swarm-ui/App.tsx","swarm-ui/AppStates.tsx","swarm-ui/ArtifactViewer.tsx","swarm-ui/Artifacts.tsx","swarm-ui/AttemptTimeline.tsx","swarm-ui/Blockers.tsx","swarm-ui/Brand.tsx","swarm-ui/Capacity.tsx","swarm-ui/CardSkeleton.tsx","swarm-ui/CheckpointBrowser.tsx","swarm-ui/CheckpointsPane.tsx","swarm-ui/DataSources.tsx","swarm-ui/DecisionCard.tsx","swarm-ui/Dispatch.tsx","swarm-ui/Dock.tsx","swarm-ui/ErrorBoundary.tsx","swarm-ui/GitHubConnect.tsx","swarm-ui/GitTokens.tsx","swarm-ui/HelpCard.tsx","swarm-ui/HelpSection.tsx","swarm-ui/Holders.tsx","swarm-ui/IssueSubmit.tsx","swarm-ui/Ledger.tsx","swarm-ui/Liveness.tsx","swarm-ui/NotFound.tsx","swarm-ui/Onboarding.tsx","swarm-ui/OnboardingWorkspace.tsx","swarm-ui/Overview.tsx","swarm-ui/OverviewRegions.tsx","swarm-ui/People.tsx","swarm-ui/PlatformCounts.tsx","swarm-ui/ProfileMatrix.tsx","swarm-ui/Profiles.tsx","swarm-ui/QuotaDetail.tsx","swarm-ui/RepoGraph.tsx","swarm-ui/RepoGraphData.ts","swarm-ui/RepoImpact.tsx","swarm-ui/RepoTestMap.tsx","swarm-ui/Repositories.tsx","swarm-ui/RepositoriesData.ts","swarm-ui/RepositoriesDetail.tsx","swarm-ui/RepositoriesParts.tsx","swarm-ui/RepositoriesRegister.tsx","swarm-ui/RunFiles.tsx","swarm-ui/RunIndex.tsx","swarm-ui/RunSteps.tsx","swarm-ui/RunnerPicker.tsx","swarm-ui/Runs.tsx","swarm-ui/Runtimes.tsx","swarm-ui/Shell.tsx","swarm-ui/Spine.tsx","swarm-ui/StagedInputs.tsx","swarm-ui/StopRun.tsx","swarm-ui/Submit.tsx","swarm-ui/SubmitChooser.tsx","swarm-ui/SubmitWorkflow.tsx","swarm-ui/TaskIdLine.tsx","swarm-ui/TaskRef.tsx","swarm-ui/ThemeToggle.tsx","swarm-ui/TimelineLanes.tsx","swarm-ui/TimelineRows.tsx","swarm-ui/WorkflowViews.tsx","swarm-ui/Workflows.tsx","swarm-ui/WorkspaceRefusal.tsx","swarm-ui/agentlist.ts","swarm-ui/api.ts","swarm-ui/capacityPoll.ts","swarm-ui/charts/AttemptPhases.tsx","swarm-ui/charts/CheckpointStrip.tsx","swarm-ui/charts/Diffstat.tsx","swarm-ui/charts/OutcomeLedger.tsx","swarm-ui/charts/PeakMemory.tsx","swarm-ui/charts/TimeSeries.tsx","swarm-ui/charts/TokenSpend.tsx","swarm-ui/charts/parts.tsx","swarm-ui/charts/series.ts","swarm-ui/checks.ts","swarm-ui/components/Banner.tsx","swarm-ui/components/Button.tsx","swarm-ui/components/Card.tsx","swarm-ui/components/Chip.tsx","swarm-ui/components/Code.tsx","swarm-ui/components/EmptyState.tsx","swarm-ui/components/Overlay.tsx","swarm-ui/components/StatePill.tsx","swarm-ui/components/Table.tsx","swarm-ui/components/Tabs.tsx","swarm-ui/components/UsageBar.tsx","swarm-ui/components/glyphs.tsx","swarm-ui/components/icons.tsx","swarm-ui/components/index.ts","swarm-ui/dag.ts","swarm-ui/decision.ts","swarm-ui/diff/DiffView.tsx","swarm-ui/diff/find.ts","swarm-ui/diff/highlight.ts","swarm-ui/diff/lang.ts","swarm-ui/diff/parse.ts","swarm-ui/diff/rows.ts","swarm-ui/diff/storage.ts","swarm-ui/diff/useHighlighter.ts","swarm-ui/duration.ts","swarm-ui/escape.ts","swarm-ui/events.ts","swarm-ui/fetch.ts","swarm-ui/focus.ts","swarm-ui/help.ts","swarm-ui/lanes.ts","swarm-ui/listSnap.ts","swarm-ui/logLines.ts","swarm-ui/logMarks.tsx","swarm-ui/main.tsx","swarm-ui/marks.tsx","swarm-ui/measure.ts","swarm-ui/outcomes.fixture.ts","swarm-ui/outcomes.ts","swarm-ui/pageLimits.ts","swarm-ui/panes.ts","swarm-ui/paths.ts","swarm-ui/primitives.tsx","swarm-ui/shortcuts.ts","swarm-ui/stepviews.ts","swarm-ui/theme.ts","swarm-ui/types.ts","swarm-ui/useInView.ts","swarm-ui/useNow.ts","swarm-ui/wfreview.ts","swarm-ui/words.ts","swarm-ui/workflowlist.ts"],"comm":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,22,0,0,0,0,0,0,24,0,0,0,0,0,0,0,8,5,13,5,6,22,1,5,9,9,9,9,9,9,9,9,9,9,9,9,9,5,5,5,5,5,5,5,5,5,5,5,5,5,6,6,6,6,6,6,6,6,6,6,6,7,8,8,12,12,12,1,13,8,12,1,1,1,1,1,8,16,16,8,1,1,7,7,13,1,13,7,16,6,1,7,12,13,1,13,1,13,12,7,13,16,12,7,16,8,8,8,12,8,7,7,7,16,7,8,1,12,16,1,16,7,22,13,16,7,16,8,22,7,13,1,1,1,8,22,1,22,1,13,1,1,1,1,12,12,1,1,6,1,8,4,4,4,4,4,4,4,4,4,4,4,22,4,4,4,4,4,4,4,23,3,17,3,2,2,2,2,15,3,15,2,2,2,18,15,3,17,2,2,3,2,18,3,15,23,11,3,3,3,18,17,2,20,23,23,20,20,23,3,20,3,3,11,11,11,11,11,11,11,11,11,2,11,14,18,14,3,3,15,2,2,18,18,18,15,3,15,17,17,14,14,18,20,11,3,19,19,19,17,19,19,19,19,19,20,10,10,10,10,10,10,10,14,10,10,10,10,10,10,14,2,21,21,21,21,21,21,21,21,19,2,2,18,3,3,23,15,2,2,15,14,14,17,17,20,3,20,17,15,14,15,23,17,3,14,2,14],"fan":[0,3,2,2,2,3,1,3,2,14,3,1,1,6,2,2,3,2,2,2,3,4,1,3,5,2,4,1,1,2,3,7,0,1,4,1,1,3,0,0,3,4,4,3,3,4,3,19,8,13,5,64,29,3,49,5,2,3,3,0,2,2,1,1,2,3,2,1,0,4,2,5,4,1,2,6,1,1,1,1,2,3,3,3,2,1,2,0,2,0,3,3,3,1,3,1,3,2,3,23,2,2,1,3,4,15,3,1,1,22,47,3,1,17,8,2,7,4,10,2,2,2,1,3,4,3,7,1,2,3,0,1,2,6,3,2,1,2,1,12,1,3,3,11,5,1,2,1,0,0,0,0,0,0,0,0,0,0,0,0,0,1,0,0,0,0,1,15,2,1,3,2,1,8,4,8,1,26,1,1,7,4,3,1,0,17,1,7,3,6,9,1,5,4,4,8,2,3,0,2,5,1,1,1,1,1,9,1,1,2,2,2,5,2,3,6,1,2,1,1,2,1,2,3,1,1,4,1,23,1,2,3,3,1,1,2,2,1,2,1,1,2,1,1,1,4,1,1,1,11,1,13,1,7,1,1,3,1,1,44,3,1,3,3,2,1,2,2,1,2,3,2,1,3,13,52,9,1,1,1,1,1,5,1,8,3,1,1,2,1,5,1,1,1,3,1,1,1,6,4,58,9,2,1,1,2,2,4,2,2,1,7,1,6,52,3,23,1,2,4,3,0,15,8,1,7,3,4,14,19,3,6,2,78,4,25,4,3,1],"spos":[[90,96],[93,102],[73,109],[33,97],[85,85],[58,100],[108,88],[105,94],[160,80],[62,89],[42,65],[52,63],[105,123],[83,72],[66,56],[138,74],[108,100],[10,81],[37,80],[68,69],[86,81],[122,73],[62,83],[123,102],[48,93],[48,81],[133,62],[140,67],[154,98],[143,93],[112,66],[110,46],[253,457],[89,38],[95,60],[110,38],[140,51],[118,58],[127,22],[397,430],[99,51],[40,87],[32,90],[54,108],[128,88],[39,74],[40,102],[498,164],[204,203],[469,266],[200,216],[305,184],[231,448],[305,41],[149,173],[15,284],[25,299],[87,300],[77,268],[54,281],[55,257],[95,273],[77,255],[68,302],[83,288],[45,306],[24,271],[10,270],[213,194],[182,162],[166,185],[185,190],[175,169],[135,158],[228,186],[158,165],[134,172],[162,174],[194,185],[200,162],[170,179],[306,197],[306,211],[281,168],[293,175],[324,196],[286,193],[273,185],[254,205],[272,200],[253,188],[290,205],[426,184],[544,204],[520,169],[388,282],[418,284],[359,301],[217,61],[466,275],[564,183],[378,266],[186,81],[208,55],[250,36],[228,53],[240,29],[510,211],[293,359],[242,363],[525,191],[186,35],[275,63],[404,185],[431,193],[523,268],[265,22],[477,255],[407,178],[271,361],[329,158],[238,82],[383,195],[395,272],[510,285],[251,24],[491,295],[278,45],[508,301],[401,296],[450,174],[493,271],[241,386],[388,255],[424,197],[238,342],[528,172],[552,158],[479,198],[398,281],[566,203],[366,203],[382,186],[402,193],[227,346],[424,211],[555,190],[249,58],[340,293],[218,363],[190,53],[257,379],[405,158],[198,448],[463,298],[225,379],[453,205],[250,343],[553,172],[225,434],[397,204],[487,285],[226,69],[226,29],[215,74],[493,191],[263,445],[231,47],[220,423],[250,51],[444,263],[285,50],[187,99],[214,40],[236,72],[368,280],[419,272],[252,44],[269,41],[340,169],[250,69],[499,179],[39,219],[62,158],[68,209],[66,195],[105,218],[33,205],[10,198],[87,204],[44,198],[86,168],[105,192],[217,459],[108,205],[83,212],[64,179],[56,193],[79,190],[19,186],[93,184],[335,459],[501,67],[356,355],[459,54],[415,63],[383,67],[368,49],[379,64],[125,357],[508,46],[118,384],[389,42],[377,50],[348,70],[492,367],[132,388],[531,59],[350,342],[412,51],[407,70],[563,30],[360,63],[423,384],[519,32],[193,385],[350,451],[315,291],[487,51],[559,52],[517,66],[443,353],[393,364],[434,76],[23,461],[314,452],[288,441],[33,433],[23,441],[290,428],[482,37],[10,423],[526,45],[466,47],[265,268],[272,255],[241,270],[232,294],[287,298],[266,287],[242,283],[281,285],[268,304],[393,58],[302,268],[51,384],[463,366],[32,388],[475,65],[515,50],[129,374],[408,87],[381,82],[446,369],[461,342],[427,371],[121,342],[520,87],[149,374],[322,361],[394,358],[77,374],[76,359],[419,360],[51,441],[272,279],[488,61],[570,372],[590,368],[575,342],[374,361],[546,371],[553,357],[517,347],[575,358],[520,361],[62,426],[166,299],[129,272],[145,306],[195,304],[174,255],[140,279],[142,260],[10,376],[206,283],[198,264],[121,295],[135,293],[192,293],[165,282],[61,372],[361,78],[136,447],[104,461],[173,446],[141,437],[106,446],[112,433],[130,423],[173,460],[574,384],[403,22],[339,79],[457,359],[476,23],[507,53],[353,423],[122,366],[359,37],[373,35],[182,380],[40,373],[84,382],[357,386],[361,369],[79,434],[544,22],[31,448],[384,350],[114,369],[62,364],[167,376],[325,439],[319,348],[490,46],[48,351],[330,72],[89,342]],"npos":[[87,331],[89,341],[44,318],[54,331],[92,326],[75,312],[46,343],[93,307],[28,355],[68,319],[64,351],[34,323],[117,320],[54,320],[86,319],[37,348],[83,355],[39,311],[81,320],[77,329],[65,331],[69,372],[78,298],[82,341],[65,324],[73,297],[42,368],[42,360],[24,345],[95,292],[56,370],[62,383],[145,286],[56,401],[63,362],[49,399],[45,392],[47,372],[47,426],[30,456],[52,381],[66,303],[80,289],[45,326],[78,348],[53,308],[42,334],[157,170],[172,298],[150,182],[165,299],[138,207],[171,232],[106,172],[167,217],[224,373],[215,363],[193,348],[215,405],[210,374],[215,417],[222,415],[228,411],[199,355],[201,378],[215,384],[231,397],[236,393],[198,306],[202,260],[188,259],[193,279],[192,249],[199,230],[214,312],[188,241],[195,234],[189,252],[193,284],[212,275],[180,247],[142,226],[131,230],[160,261],[150,237],[121,233],[142,243],[146,251],[147,273],[131,244],[141,265],[138,232],[114,161],[186,70],[181,138],[86,99],[68,67],[87,139],[168,121],[152,143],[196,85],[97,91],[171,51],[161,104],[140,120],[154,120],[139,106],[185,120],[150,16],[149,104],[160,110],[156,75],[138,93],[112,139],[111,154],[116,112],[128,108],[154,159],[116,144],[148,65],[149,200],[166,150],[98,133],[91,89],[128,131],[128,102],[131,151],[141,141],[123,137],[70,81],[128,179],[137,146],[146,57],[86,74],[106,158],[172,130],[184,133],[214,109],[172,62],[82,93],[186,82],[88,117],[111,131],[118,150],[163,136],[96,154],[189,94],[153,135],[107,138],[132,56],[164,82],[129,75],[107,116],[181,196],[144,157],[181,105],[96,167],[173,91],[198,109],[194,182],[101,139],[138,155],[157,128],[150,91],[175,107],[186,110],[192,210],[154,110],[218,163],[149,134],[169,171],[127,146],[201,64],[149,115],[167,143],[100,108],[61,74],[142,124],[134,135],[158,203],[162,117],[172,140],[333,221],[332,249],[311,223],[315,232],[288,239],[329,229],[341,227],[308,239],[326,235],[324,220],[291,222],[236,233],[292,229],[287,232],[316,242],[311,228],[303,235],[339,235],[306,226],[423,253],[457,258],[453,335],[465,275],[453,201],[474,212],[476,192],[460,213],[428,199],[440,265],[416,173],[488,191],[476,201],[469,201],[464,290],[427,126],[461,277],[451,363],[479,219],[477,234],[429,321],[467,192],[466,335],[443,302],[365,77],[422,262],[401,290],[458,275],[431,292],[462,261],[437,287],[458,346],[468,150],[374,269],[424,241],[435,253],[413,260],[408,248],[429,267],[444,287],[415,232],[457,284],[458,265],[405,324],[404,341],[400,314],[395,309],[410,292],[404,308],[409,307],[406,295],[403,283],[467,217],[413,315],[437,198],[440,325],[436,217],[449,293],[445,267],[420,161],[496,215],[460,182],[449,310],[430,241],[448,322],[421,140],[479,270],[399,84],[459,309],[446,361],[442,201],[453,223],[433,316],[413,250],[427,282],[474,253],[518,281],[516,289],[519,307],[462,372],[511,298],[527,306],[531,280],[514,323],[540,309],[388,272],[382,166],[375,199],[381,178],[397,190],[399,147],[380,193],[378,213],[427,166],[389,160],[393,150],[376,185],[370,170],[389,174],[414,211],[449,211],[484,160],[548,69],[570,24],[562,27],[568,40],[574,37],[574,50],[576,63],[558,16],[502,266],[517,152],[482,182],[442,272],[471,315],[450,277],[455,183],[410,184],[496,177],[493,167],[380,82],[430,212],[444,187],[445,426],[453,378],[381,263],[424,307],[400,257],[452,317],[432,134],[456,202],[381,42],[450,243],[467,358],[449,263],[468,226],[473,165],[482,208]],"edges":[[0,48],[0,50],[0,16],[0,44],[0,5],[0,7],[0,9],[0,12],[0,20],[0,21],[0,23],[0,24],[0,41],[2,43],[3,9],[3,24],[3,46],[4,52],[4,54],[4,1],[4,9],[4,16],[4,18],[5,48],[5,52],[5,2],[5,43],[5,3],[5,9],[5,42],[6,9],[7,47],[7,51],[7,54],[7,1],[7,9],[7,29],[7,44],[7,23],[11,45],[11,13],[12,54],[14,49],[15,8],[15,13],[15,26],[18,54],[18,10],[18,9],[18,24],[19,52],[19,9],[19,13],[20,51],[20,52],[20,54],[20,2],[20,4],[20,6],[20,8],[20,10],[20,15],[20,18],[20,19],[20,28],[20,30],[20,43],[20,45],[20,46],[20,1],[20,3],[20,5],[20,7],[20,9],[20,11],[20,17],[20,13],[20,22],[20,25],[20,42],[20,14],[20,16],[20,23],[20,24],[20,26],[20,29],[20,31],[20,34],[20,37],[20,40],[20,41],[20,44],[21,30],[22,51],[22,54],[22,13],[22,45],[22,9],[22,25],[22,7],[22,42],[22,41],[25,51],[25,54],[25,13],[25,9],[25,24],[25,42],[25,45],[25,41],[27,15],[27,20],[29,51],[29,54],[32,52],[32,31],[33,31],[33,34],[34,10],[34,19],[34,14],[34,21],[34,26],[34,30],[34,31],[34,37],[34,40],[34,27],[34,20],[34,4],[35,31],[35,34],[36,21],[36,26],[36,31],[36,37],[36,40],[38,31],[40,33],[40,35],[40,34],[40,36],[41,51],[41,17],[42,53],[42,9],[42,5],[42,52],[43,46],[44,21],[45,9],[46,9],[47,51],[47,54],[51,54],[56,55],[56,65],[57,51],[58,60],[58,61],[59,50],[59,51],[59,52],[59,57],[59,64],[59,66],[59,60],[59,67],[59,55],[59,56],[59,58],[59,61],[59,62],[59,63],[59,65],[62,58],[63,51],[63,57],[63,64],[63,65],[64,48],[64,57],[64,58],[66,55],[67,66],[67,55],[68,48],[68,71],[68,74],[68,78],[69,49],[69,72],[69,75],[70,54],[70,71],[70,72],[70,75],[71,48],[71,52],[72,49],[72,51],[72,52],[72,54],[72,71],[72,75],[72,69],[73,54],[75,51],[75,54],[76,54],[76,75],[77,51],[77,52],[77,54],[77,69],[77,70],[77,71],[77,73],[77,72],[77,75],[77,76],[77,80],[78,48],[78,50],[78,69],[78,70],[78,71],[78,74],[78,77],[78,79],[78,80],[79,69],[79,72],[80,47],[80,51],[80,54],[80,75],[81,47],[81,51],[81,54],[81,82],[82,51],[82,54],[83,55],[83,56],[83,51],[83,52],[84,49],[84,51],[84,52],[84,83],[84,81],[85,51],[86,47],[86,51],[86,52],[86,54],[86,81],[86,82],[86,83],[86,84],[86,85],[86,88],[86,90],[86,91],[87,51],[87,83],[87,84],[87,86],[87,88],[87,90],[87,91],[87,50],[89,51],[89,86],[89,90],[89,91],[90,48],[90,52],[91,47],[91,51],[91,54],[91,81],[91,82],[92,51],[92,110],[92,113],[92,114],[92,118],[92,134],[92,143],[92,177],[93,110],[94,47],[94,51],[94,110],[95,54],[95,96],[95,97],[95,101],[95,110],[95,123],[95,129],[95,133],[95,139],[95,175],[95,176],[97,51],[97,54],[98,51],[98,105],[98,173],[99,49],[99,110],[99,117],[99,119],[99,170],[100,110],[101,51],[101,110],[101,123],[101,133],[101,139],[101,175],[103,47],[103,49],[103,51],[103,54],[103,117],[103,99],[103,102],[103,105],[103,110],[103,167],[103,111],[103,173],[103,177],[104,47],[104,54],[104,105],[104,106],[104,110],[104,116],[104,124],[104,125],[104,143],[104,144],[104,167],[104,177],[105,51],[105,54],[105,175],[105,177],[106,110],[106,116],[106,143],[106,167],[106,173],[106,177],[107,51],[107,110],[107,177],[109,51],[109,94],[109,99],[109,107],[109,110],[109,111],[109,113],[109,116],[109,119],[109,123],[109,132],[109,133],[109,135],[109,138],[109,144],[109,169],[109,171],[109,170],[109,173],[109,180],[112,177],[113,51],[113,110],[113,139],[113,177],[114,47],[114,51],[114,110],[114,113],[114,118],[114,134],[116,110],[116,113],[116,177],[117,49],[117,177],[118,47],[118,51],[118,54],[118,113],[118,110],[118,139],[119,51],[119,108],[120,47],[120,51],[120,54],[121,51],[121,54],[121,105],[122,51],[122,113],[122,110],[122,118],[122,139],[122,141],[122,142],[122,143],[123,51],[123,96],[123,110],[123,129],[123,133],[123,139],[123,173],[123,175],[124,54],[124,110],[124,115],[124,116],[124,126],[124,128],[124,139],[124,144],[124,167],[124,177],[125,105],[125,126],[125,139],[126,47],[126,51],[126,110],[126,139],[126,167],[126,52],[126,177],[127,51],[127,110],[127,113],[127,126],[127,143],[127,177],[128,51],[128,110],[128,116],[128,125],[128,126],[129,139],[130,49],[130,54],[130,92],[130,109],[130,110],[130,114],[130,177],[130,50],[131,47],[131,54],[131,49],[131,117],[131,99],[131,104],[131,106],[131,110],[131,115],[131,113],[131,116],[131,124],[131,126],[131,143],[131,177],[134,51],[134,113],[134,118],[134,143],[134,173],[134,181],[135,51],[135,52],[135,54],[135,105],[135,110],[135,144],[135,173],[136,47],[136,51],[136,181],[136,94],[136,110],[136,118],[136,137],[137,180],[138,110],[140,110],[141,110],[141,133],[142,47],[142,51],[142,54],[142,99],[142,110],[142,113],[142,118],[142,129],[142,133],[142,141],[142,143],[142,167],[142,175],[143,47],[143,51],[143,52],[143,110],[143,113],[143,118],[143,177],[144,51],[144,54],[145,51],[145,92],[145,99],[145,109],[145,114],[146,93],[146,99],[146,100],[146,109],[146,110],[146,167],[147,49],[147,51],[147,52],[147,98],[147,99],[147,104],[147,105],[147,109],[147,110],[147,121],[147,131],[147,178],[147,180],[147,142],[147,167],[147,174],[147,175],[147,177],[147,127],[147,161],[148,51],[148,52],[148,97],[148,105],[148,109],[148,110],[148,175],[149,101],[149,109],[150,99],[150,103],[150,105],[150,109],[151,99],[151,109],[151,114],[152,99],[152,109],[152,110],[152,113],[152,118],[153,52],[153,99],[153,109],[154,51],[154,99],[154,109],[154,110],[154,113],[154,126],[154,177],[155,54],[155,109],[155,147],[156,51],[156,99],[156,109],[156,134],[156,114],[157,99],[157,109],[157,135],[158,94],[158,99],[158,100],[158,109],[158,136],[158,137],[158,167],[158,146],[159,52],[159,99],[159,109],[159,168],[159,146],[160,51],[160,99],[160,109],[160,114],[160,145],[160,110],[160,113],[160,122],[160,141],[160,142],[160,143],[161,49],[161,51],[161,54],[161,99],[161,109],[161,110],[161,124],[161,113],[161,126],[161,128],[161,167],[161,177],[162,54],[162,95],[162,98],[162,103],[162,99],[162,105],[162,109],[162,110],[162,121],[162,167],[162,174],[162,175],[162,179],[162,180],[163,99],[163,105],[163,109],[163,110],[163,167],[163,177],[164,54],[164,99],[164,98],[164,103],[164,105],[164,174],[164,109],[164,167],[164,172],[164,180],[165,99],[165,109],[165,110],[165,167],[165,181],[166,52],[167,177],[169,51],[169,52],[169,54],[169,117],[169,99],[169,105],[169,104],[169,106],[169,92],[169,110],[169,112],[169,113],[169,114],[169,118],[169,132],[169,143],[169,166],[169,167],[169,168],[169,170],[169,171],[169,173],[169,174],[169,177],[169,180],[169,181],[169,120],[170,48],[170,49],[170,140],[171,53],[171,51],[171,110],[171,177],[173,47],[173,51],[173,54],[173,105],[173,110],[173,111],[174,51],[174,52],[174,54],[174,105],[175,51],[175,139],[175,177],[176,96],[176,139],[177,52],[177,110],[178,53],[178,47],[178,51],[178,54],[178,104],[178,110],[178,113],[178,114],[178,116],[178,118],[178,124],[178,125],[178,143],[178,144],[178,177],[178,180],[179,51],[179,52],[179,54],[179,120],[181,47],[181,49],[181,51],[181,110],[181,177],[182,185],[182,190],[182,187],[183,185],[184,193],[184,194],[184,200],[184,182],[184,185],[184,189],[184,190],[184,192],[184,195],[184,197],[184,187],[185,187],[185,190],[185,199],[185,182],[185,195],[186,54],[186,185],[186,189],[186,194],[186,195],[187,185],[187,190],[187,188],[188,185],[188,187],[189,185],[189,190],[189,195],[190,185],[191,200],[191,185],[191,197],[192,54],[192,185],[192,193],[193,52],[193,185],[194,54],[194,185],[194,189],[194,192],[194,195],[195,54],[195,52],[196,195],[196,200],[196,185],[196,190],[197,54],[197,195],[197,185],[197,189],[197,190],[197,192],[197,200],[197,187],[197,182],[197,188],[197,199],[197,196],[198,52],[198,183],[198,186],[198,187],[198,194],[198,193],[198,200],[198,185],[198,189],[198,190],[198,192],[198,197],[198,191],[198,195],[198,196],[199,188],[199,185],[199,187],[199,190],[200,193],[200,185],[200,189],[200,192],[200,194],[201,275],[201,300],[201,314],[201,226],[201,235],[201,328],[201,251],[201,249],[201,259],[201,333],[201,335],[202,275],[202,274],[202,314],[202,316],[202,276],[202,228],[202,329],[202,300],[202,259],[202,267],[202,335],[202,333],[203,275],[203,209],[203,218],[203,280],[203,314],[203,316],[203,228],[203,232],[203,325],[203,300],[203,329],[203,259],[203,269],[203,270],[203,334],[203,276],[203,335],[203,333],[204,275],[204,314],[204,228],[204,276],[204,259],[204,333],[204,335],[205,206],[205,300],[205,274],[205,275],[205,314],[205,253],[205,335],[205,333],[206,300],[206,275],[206,212],[206,214],[206,215],[206,277],[206,278],[206,279],[206,281],[206,283],[206,274],[206,301],[206,222],[206,302],[206,311],[206,313],[206,337],[206,314],[206,316],[206,228],[206,233],[206,323],[206,329],[206,220],[206,253],[206,259],[206,261],[206,262],[206,335],[206,333],[207,206],[207,275],[207,213],[207,314],[207,319],[207,212],[207,320],[207,253],[207,333],[207,335],[207,300],[208,205],[208,206],[208,207],[208,274],[208,275],[208,210],[208,213],[208,214],[208,220],[208,315],[208,318],[208,253],[208,262],[208,266],[208,215],[208,228],[208,333],[208,335],[208,300],[209,206],[209,266],[209,274],[209,275],[209,215],[209,314],[209,228],[209,318],[209,300],[209,259],[209,260],[209,335],[209,333],[210,274],[210,202],[210,203],[210,204],[210,209],[210,269],[210,208],[210,217],[210,224],[210,314],[210,228],[210,316],[210,328],[210,226],[210,234],[210,327],[210,260],[210,300],[210,229],[210,230],[210,237],[210,235],[210,201],[210,239],[210,240],[210,242],[210,243],[210,258],[210,259],[210,263],[210,264],[210,265],[210,231],[210,257],[210,248],[210,335],[210,272],[211,300],[211,314],[211,333],[212,206],[212,300],[212,275],[212,303],[212,314],[212,228],[212,312],[212,319],[212,320],[212,333],[213,206],[213,300],[213,275],[213,212],[213,301],[213,222],[213,314],[213,329],[213,320],[213,319],[213,253],[213,259],[213,333],[214,206],[214,300],[214,275],[214,311],[214,313],[214,337],[214,314],[214,228],[214,259],[214,333],[215,275],[215,314],[215,333],[216,259],[216,333],[217,275],[217,215],[217,314],[217,316],[217,228],[217,276],[217,230],[217,259],[217,300],[217,333],[218,300],[218,329],[218,334],[219,206],[219,275],[219,212],[219,300],[219,314],[219,333],[220,275],[220,314],[220,253],[220,259],[220,333],[221,314],[221,300],[221,259],[221,327],[222,300],[222,275],[222,214],[222,302],[222,314],[222,329],[222,253],[222,333],[223,316],[223,333],[224,300],[224,221],[224,314],[224,315],[224,316],[224,259],[224,327],[224,335],[225,300],[226,275],[226,300],[226,314],[226,251],[226,259],[226,333],[227,275],[227,300],[227,249],[227,251],[227,259],[227,226],[227,333],[228,315],[228,316],[229,316],[229,328],[229,300],[229,259],[230,275],[230,300],[230,228],[230,322],[230,329],[230,276],[230,259],[230,267],[230,333],[230,335],[231,275],[231,273],[231,314],[231,300],[231,256],[231,259],[231,263],[231,264],[231,333],[231,212],[231,335],[232,300],[232,228],[232,316],[232,325],[232,329],[232,259],[232,270],[232,284],[232,333],[233,333],[233,300],[234,300],[234,328],[235,275],[235,300],[235,226],[235,236],[235,328],[235,251],[235,259],[235,333],[236,275],[236,300],[236,311],[236,314],[236,328],[236,329],[236,251],[236,259],[236,333],[236,335],[237,238],[237,328],[237,275],[237,274],[237,301],[237,323],[237,286],[237,316],[237,228],[237,314],[237,300],[237,329],[237,241],[237,259],[237,335],[237,333],[238,274],[238,275],[238,314],[238,290],[238,329],[238,322],[238,328],[238,259],[238,335],[238,333],[239,275],[239,300],[239,314],[239,236],[239,329],[239,251],[239,259],[239,333],[240,275],[240,314],[240,316],[240,228],[240,329],[240,259],[240,333],[240,335],[240,300],[241,314],[241,276],[241,322],[241,333],[242,275],[242,217],[242,316],[242,228],[242,276],[242,241],[242,259],[242,335],[242,333],[243,275],[243,276],[243,316],[243,228],[243,322],[243,259],[243,335],[243,333],[244,275],[244,300],[244,314],[244,245],[244,249],[244,251],[246,275],[246,300],[246,322],[246,245],[246,249],[246,251],[247,275],[247,300],[247,249],[247,251],[248,275],[248,300],[248,249],[248,251],[248,252],[248,250],[248,227],[248,259],[248,333],[249,314],[249,333],[250,275],[250,300],[250,328],[250,249],[250,314],[250,251],[250,259],[250,244],[250,247],[250,246],[250,333],[251,300],[251,322],[251,259],[251,314],[251,328],[251,335],[251,249],[252,275],[252,300],[252,249],[252,251],[252,259],[252,333],[253,206],[253,300],[253,275],[253,219],[253,329],[253,259],[253,314],[253,333],[254,275],[254,300],[254,314],[254,245],[254,249],[254,251],[254,333],[255,275],[255,290],[255,294],[255,301],[255,311],[255,322],[255,323],[255,259],[255,331],[255,333],[255,271],[255,238],[255,328],[256,275],[256,314],[256,316],[256,329],[256,333],[257,275],[257,314],[257,231],[257,322],[257,300],[257,290],[257,259],[257,331],[257,333],[257,255],[257,335],[257,337],[257,254],[258,275],[258,314],[258,316],[258,228],[258,259],[258,300],[258,333],[259,211],[259,300],[259,314],[259,316],[259,228],[259,329],[259,333],[259,335],[260,274],[260,275],[260,216],[260,300],[260,314],[260,316],[260,322],[260,328],[260,330],[260,333],[260,268],[260,211],[261,301],[261,259],[261,333],[262,275],[262,300],[262,314],[262,333],[263,275],[263,215],[263,223],[263,273],[263,314],[263,316],[263,228],[263,329],[263,256],[263,259],[263,333],[263,300],[264,274],[264,275],[264,300],[264,290],[264,314],[264,228],[264,231],[264,328],[264,330],[264,259],[264,331],[264,333],[264,335],[265,275],[265,223],[265,314],[265,228],[265,273],[265,256],[265,259],[265,263],[265,333],[265,300],[266,300],[267,300],[268,332],[269,275],[269,274],[269,316],[269,313],[269,314],[269,317],[269,322],[269,300],[269,325],[269,259],[269,333],[269,334],[269,284],[269,301],[269,336],[269,335],[270,274],[270,275],[270,232],[270,314],[270,325],[270,329],[271,275],[271,301],[271,314],[271,323],[271,322],[271,300],[271,259],[271,331],[271,333],[272,275],[272,215],[272,301],[272,323],[272,223],[272,259],[272,331],[272,314],[272,322],[272,300],[272,260],[272,262],[272,335],[272,334],[272,333],[272,271],[272,336],[272,338],[273,300],[273,314],[273,328],[274,333],[274,326],[275,314],[275,333],[275,323],[275,326],[275,325],[275,324],[275,249],[275,245],[276,314],[276,228],[276,333],[277,311],[277,333],[277,284],[277,282],[278,311],[278,333],[278,284],[278,282],[279,333],[279,284],[279,282],[280,325],[280,232],[280,329],[280,270],[280,284],[281,275],[281,311],[281,333],[281,284],[281,285],[281,282],[282,316],[282,284],[282,285],[283,285],[283,282],[283,333],[286,326],[286,314],[286,333],[287,298],[287,299],[288,298],[289,298],[290,299],[292,298],[293,288],[294,322],[294,333],[294,298],[295,299],[297,298],[298,322],[300,288],[300,290],[300,294],[300,289],[300,295],[300,296],[300,293],[300,287],[300,297],[300,292],[300,291],[300,299],[301,333],[301,275],[301,323],[301,322],[301,336],[302,333],[303,304],[303,307],[303,308],[303,309],[303,305],[303,306],[303,310],[303,300],[303,276],[304,307],[305,306],[306,307],[306,308],[308,307],[308,309],[310,305],[311,333],[313,333],[316,333],[316,330],[317,313],[317,333],[318,327],[319,333],[320,319],[320,333],[321,210],[321,225],[321,332],[322,333],[324,325],[327,314],[328,274],[328,316],[329,316],[329,228],[329,300],[331,301],[331,313],[331,336],[331,323],[331,333],[333,259],[336,333],[337,294],[337,333],[337,313],[338,331],[338,333]],"names":["agent-worker \u00b7 errors","swarm-api \u00b7 validation","swarm-ui \u00b7 AgentDetail","swarm-ui \u00b7 Shell","swarm-mcp \u00b7 client","reconciler \u00b7 states","scheduler \u00b7 models","swarm-api \u00b7 forge","swarm-api \u00b7 errors","quota-broker \u00b7 accounts","swarm-ui \u00b7 index","swarm-ui \u00b7 api","swarm-api \u00b7 redaction","swarm-api \u00b7 auth","swarm-ui \u00b7 marks","swarm-ui \u00b7 Spine","swarm-api \u00b7 deps","swarm-ui \u00b7 primitives","swarm-ui \u00b7 fetch","swarm-ui \u00b7 parts","swarm-ui \u00b7 paths","swarm-ui \u00b7 parse","swarm-api \u00b7 profiles","swarm-ui \u00b7 types","agent-worker \u00b7 stdin_hook"],"box":[[0,0,170,131],[176,0,139,107],[320,0,124,95],[449,0,124,95],[0,136,118,91],[124,136,114,88],[243,136,107,83],[356,136,107,83],[469,136,107,83],[0,233,105,81],[111,233,105,81],[222,233,103,79],[330,233,99,76],[434,233,99,76],[0,320,99,76],[104,320,99,76],[208,320,95,74],[309,320,95,74],[409,320,93,72],[507,320,93,72],[0,401,89,68],[94,401,89,68],[188,401,85,66],[278,401,85,66],[369,401,56,43]],"cent":[[63,340],[151,115],[478,191],[452,280],[314,231],[190,265],[142,236],[107,146],[183,109],[216,386],[386,180],[406,305],[85,96],[140,149],[448,205],[407,127],[154,84],[455,356],[445,300],[520,295],[399,256],[566,41],[191,215],[434,243],[30,456]],"mcent":[[63,340],[132,40],[515,171],[506,246],[306,222],[218,301],[150,278],[74,214],[264,105],[216,386],[374,181],[345,343],[71,82],[184,158],[444,181],[411,121],[201,66],[465,380],[454,313],[533,312],[370,251],[557,41],[237,234],[436,249],[39,441]],"mpos":[[83,333],[84,341],[48,322],[56,333],[87,329],[73,317],[50,342],[87,313],[35,352],[67,323],[64,349],[40,326],[107,324],[56,324],[82,323],[42,346],[79,352],[44,317],[78,324],[74,331],[65,333],[68,366],[75,306],[78,341],[65,327],[71,305],[46,363],[46,356],[32,344],[89,301],[58,364],[62,375],[219,262],[58,389],[63,358],[52,387],[49,382],[50,366],[50,409],[39,441],[54,373],[66,310],[77,299],[49,329],[75,346],[55,314],[46,335],[247,145],[202,329],[193,187],[196,330],[145,244],[229,241],[97,85],[198,260],[224,374],[215,364],[194,350],[215,405],[210,375],[215,416],[222,414],[228,411],[200,356],[202,379],[215,384],[231,397],[236,393],[224,336],[228,297],[216,296],[220,313],[219,287],[225,271],[238,341],[216,280],[222,274],[217,290],[220,317],[237,309],[209,285],[149,266],[137,271],[171,307],[159,279],[125,274],[149,286],[154,296],[155,321],[137,287],[148,312],[145,273],[82,231],[266,79],[262,124],[72,85],[57,58],[73,118],[145,45],[195,152],[272,89],[81,78],[147,-9],[140,32],[123,44],[134,44],[123,33],[265,112],[199,28],[198,78],[249,105],[136,9],[122,23],[79,206],[78,223],[162,125],[114,35],[196,167],[84,212],[197,55],[158,236],[144,68],[64,200],[76,76],[173,142],[114,30],[176,159],[124,61],[169,147],[58,70],[97,251],[181,155],[196,51],[72,64],[73,228],[211,92],[264,121],[284,105],[257,74],[68,80],[266,87],[52,182],[78,197],[86,219],[206,96],[61,223],[268,95],[133,56],[89,117],[188,50],[142,15],[187,61],[74,181],[233,227],[187,165],[216,78],[61,238],[212,70],[274,105],[238,221],[67,206],[182,163],[137,50],[131,22],[151,34],[266,105],[237,232],[134,36],[248,213],[130,55],[210,177],[113,64],[171,1],[130,40],[144,62],[84,92],[51,64],[125,47],[119,56],[168,239],[140,42],[257,125],[339,204],[338,253],[301,207],[308,223],[260,236],[332,218],[354,214],[295,236],[327,229],[324,202],[265,206],[255,241],[267,218],[258,223],[310,241],[301,216],[287,229],[350,229],[292,213],[430,254],[511,222],[464,368],[520,240],[493,180],[512,190],[513,172],[499,191],[420,153],[493,230],[415,141],[524,171],[513,180],[507,180],[465,307],[420,120],[515,242],[463,384],[516,196],[514,210],[481,290],[505,172],[467,334],[496,269],[392,99],[430,259],[339,326],[512,240],[483,258],[516,225],[449,305],[467,374],[506,134],[340,266],[431,248],[437,254],[387,255],[381,241],[433,262],[497,253],[389,221],[511,250],[512,230],[343,365],[342,384],[338,353],[332,348],[349,328],[342,346],[348,345],[345,332],[341,318],[505,194],[353,354],[434,175],[451,328],[433,192],[502,260],[498,232],[417,136],[532,193],[499,163],[456,319],[445,277],[456,327],[417,127],[535,235],[407,102],[467,354],[460,382],[439,178],[449,198],[446,323],[387,243],[368,317],[529,217],[531,296],[529,305],[532,324],[469,388],[524,315],[541,323],[545,295],[527,342],[555,327],[357,270],[370,167],[362,201],[369,179],[385,191],[387,148],[368,195],[365,215],[425,146],[377,161],[381,151],[363,186],[357,171],[377,175],[402,213],[445,187],[521,143],[538,71],[561,23],[553,27],[559,40],[565,37],[565,51],[567,64],[548,15],[514,280],[551,136],[519,163],[452,296],[526,283],[504,242],[447,217],[412,146],[532,158],[529,149],[399,101],[428,188],[441,165],[460,418],[464,392],[348,259],[476,275],[371,252],[464,358],[422,124],[452,179],[399,83],[444,249],[472,381],[502,227],[463,200],[511,147],[475,184]],"meta":[[0,5,11],[0,22,6],[0,8,1],[0,6,6],[0,13,1],[0,1,1],[6,8,9],[5,8,2],[1,8,24],[7,8,17],[8,13,14],[5,9,2],[5,6,13],[5,13,6],[6,13,5],[1,13,33],[7,13,10],[5,7,4],[6,9,5],[6,7,11],[6,12,5],[1,6,13],[6,16,4],[9,22,1],[5,22,3],[6,22,5],[13,22,3],[16,22,3],[7,22,1],[1,22,6],[12,22,1],[4,22,7],[5,12,2],[1,5,10],[5,16,3],[4,5,5],[1,7,21],[8,16,8],[8,12,4],[1,12,8],[13,16,8],[12,16,4],[1,16,17],[7,16,7],[7,12,7],[12,13,2],[8,22,1],[11,23,19],[10,23,5],[18,23,11],[20,23,8],[3,23,22],[3,11,15],[3,20,15],[3,18,28],[3,17,19],[3,10,11],[11,17,5],[15,17,1],[17,18,5],[10,17,5],[17,23,6],[2,10,12],[2,20,3],[2,11,12],[2,18,14],[2,3,17],[2,23,20],[2,19,7],[2,14,8],[2,17,5],[2,15,3],[15,20,3],[11,15,2],[15,18,5],[3,15,11],[10,15,5],[15,23,4],[3,14,10],[2,21,1],[11,18,12],[14,18,7],[10,11,9],[10,18,6],[17,19,3],[10,20,3],[19,23,7],[11,20,5],[14,20,6],[18,20,7],[17,20,4],[11,14,9],[10,14,8],[14,19,1],[14,23,10],[14,15,2],[14,17,4],[11,19,1],[3,21,1],[3,19,1],[10,21,1]],"declared":[126,142,254],"seams":[333,51,300,275,314,54,110],"expanded":[52,177,99,47,113,167,251,139,143,249,118,175,133,245,124,129,141,125,128,257,131,147,161,122,127,154,160],"lanes":[{"id":"KG1","kind":"lane","label":"KG1 \u00b7 planner graph section","state":"running","files":[126,122],"new":["swarm-api/plancontext.py"],"who":"claude-code \u00b7 running 41m"},{"id":"DIFF2","kind":"lane","label":"DIFF2 \u00b7 Changes tab everywhere","state":"running","files":[206,253,257,275],"new":[],"who":"claude-code \u00b7 running 12m"},{"id":"929","kind":"pr","label":"#929 \u00b7 GR3 repository graph views","state":"open","files":[244,245],"new":["swarm-ui/RepoGraphLayout.ts","swarm-ui/RepoGraphNetwork.tsx"],"who":"open PR"},{"id":"PRX","kind":"pr","label":"PR (example) \u00b7 worker numstat follow-up","state":"open","files":[15,20],"new":[],"who":"open PR \u00b7 example"}],"issue":{"title":"The issue-run plan does not say which index commit its Context card read"}}</script>
+<script>
+/* Page theme: light / dark / system, remembered for this page only (as onboarding.html). */
+(function(){
+  const root=document.documentElement;
+  const KEY='swarm-mockup-theme';
+  function apply(mode){
+    if(mode==='light'||mode==='dark'){root.dataset.theme=mode}else{delete root.dataset.theme;mode='system'}
+    document.querySelectorAll('[data-set-theme]').forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.setTheme===mode)));
+  }
+  let saved='system';try{saved=localStorage.getItem(KEY)||'system'}catch(e){}
+  apply(saved);
+  document.querySelectorAll('[data-set-theme]').forEach(b=>b.addEventListener('click',()=>{const m=b.dataset.setTheme;try{localStorage.setItem(KEY,m)}catch(e){}apply(m)}));
+})();
+const HIVE=`<svg width="44" height="44" viewBox="0 0 32 32" aria-hidden="true" style="fill:var(--hive);stroke:var(--hive)"><polygon points="16,4 26.39,10 26.39,22 16,28 5.61,22 5.61,10" fill="none" stroke-width="1.6" opacity=".5"/><path d="M16 16 16 4M16 16 26.39 22M16 16 5.61 22" fill="none" stroke-width="1.3" opacity=".5"/><g stroke="none"><circle cx="16" cy="4" r="2.6"/><circle cx="26.39" cy="10" r="2.6"/><circle cx="26.39" cy="22" r="2.6"/><circle cx="16" cy="28" r="2.6"/><circle cx="5.61" cy="22" r="2.6"/><circle cx="5.61" cy="10" r="2.6"/><circle cx="16" cy="16" r="4.6"/></g></svg>`;
+
+/* ================= the graph, from this repository ================= */
+const D=JSON.parse(document.getElementById('graphdata').textContent);
+const N=D.ids.length,C=D.names.length;
+const esc=s=>String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const I=id=>`<svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><use href="#${id}"/></svg>`;
+const base=p=>p.slice(p.lastIndexOf('/')+1);
+const trunc=(s,n)=>s.length>n?s.slice(0,Math.max(1,n-1))+'…':s;
+const fmt=n=>n.toLocaleString('en-GB');
+const ROLE=new Array(N).fill(null);
+D.declared.forEach(i=>ROLE[i]='declared');D.expanded.forEach(i=>ROLE[i]='expanded');D.seams.forEach(i=>ROLE[i]='seam');
+const TERR=new Set([...D.declared,...D.expanded,...D.seams]);
+const MEM=Array.from({length:C},()=>[]);D.comm.forEach((c,i)=>MEM[c].push(i));
+const LANES=D.lanes.map((l,k)=>{
+  const bad=l.files.filter(i=>ROLE[i]==='declared'),warn=l.files.filter(i=>TERR.has(i)&&ROLE[i]!=='declared');
+  return {...l,letter:'ABCD'[k],bad,warn,level:bad.length?'bad':warn.length?'warn':'clear'};
+});
+const NL=Array.from({length:N},()=>[]);LANES.forEach(l=>l.files.forEach(i=>NL[i].push(l)));
+/* A node's overlap level: a lane on a declared file is a collision (bad); on the rest of the territory, a warning. */
+const nodeLevel=i=>NL[i].length?(ROLE[i]==='declared'?'bad':TERR.has(i)?'warn':'neu'):null;
+const TC=new Set([...TERR].map(i=>D.comm[i]));
+const DECLC=new Set(D.declared.map(i=>D.comm[i]));
+const cstat=c=>{const m=MEM[c];return {n:m.length,dec:m.filter(i=>ROLE[i]==='declared').length,exp:m.filter(i=>ROLE[i]==='expanded').length,seam:m.filter(i=>ROLE[i]==='seam').length}};
+const clanes=c=>LANES.map(l=>{const fs=l.files.filter(i=>D.comm[i]===c);if(!fs.length)return null;const lv=fs.some(i=>ROLE[i]==='declared')?'bad':fs.some(i=>TERR.has(i))?'warn':'neu';return {l,fs,lv}}).filter(Boolean);
+const rad=i=>Math.min(8,2.2+Math.sqrt(D.fan[i])*.7);
+const ccol=c=>`var(--c${c%8})`;
+const TOPFAN=new Set([...Array(N).keys()].sort((a,b)=>D.fan[b]-D.fan[a]).slice(0,10));
+
+/* ---------- node marks: the same glyphs in every variant ---------- */
+function node(i,x,y,st,o={}){
+  const L=st.layers,r=rad(i),role=L.issue?ROLE[i]:null,lv=L.lanes?nodeLevel(i):null;
+  const sel=st.sel?NL[i].some(l=>l.id===st.sel):false;
+  const dim=(o.dim&&!role&&!(lv&&lv!=='neu'))||(st.sel&&!sel);
+  const fill=o.fill||'';
+  let s=`<g class="${dim?'dim':''}" data-act="node" data-i="${i}"><title>${esc(D.ids[i])}${role?' · '+role:''}${NL[i].length?' · '+NL[i].map(l=>l.label).join(', '):''}</title>`;
+  if(lv==='bad')s+=`<circle class="bad" cx="${x}" cy="${y}" r="${r+7}"/>`;
+  else if(lv==='warn')s+=`<circle class="warn" cx="${x}" cy="${y}" r="${r+6}"/>`;
+  if(role==='seam'){const q=r+4;s+=`<path class="seam" d="M${x} ${y-q}L${x+q} ${y}L${x} ${y+q}L${x-q} ${y}Z"/>`}
+  s+=`<circle class="n" cx="${x}" cy="${y}" r="${r}"${fill?` style="fill:${fill}"`:''}/>`;
+  if(role==='declared')s+=`<circle class="ring" cx="${x}" cy="${y}" r="${r+3.2}"/>`;
+  else if(role==='expanded')s+=`<circle class="ring exp" cx="${x}" cy="${y}" r="${r+3}"/>`;
+  if(sel)s+=`<circle class="ring" cx="${x}" cy="${y}" r="${r+9}"/>`;
+  s+='</g>';
+  const lab=(role==='declared'||role==='seam'||(lv&&lv!=='neu')||sel||(o.labelTop&&TOPFAN.has(i)))&&!dim;
+  return {s,lab:lab?label(i,x,y,r,st,lv):''};
+}
+function label(i,x,y,r,st,lv){
+  const t=base(D.ids[i]);let s=`<text x="${x+r+5}" y="${y+4}" class="${ROLE[i]==='declared'?'b':''}" paint-order="stroke" stroke="var(--gbg)" stroke-width="3">${esc(t)}</text>`;
+  if(st.layers.lanes&&NL[i].length){
+    let bx=x+r+5+t.length*6.6+4;
+    NL[i].forEach(l=>{const c=lv==='bad'?'isbad':lv==='warn'?'iswarn':'';s+=`<g class="badge ${c}"><rect x="${bx}" y="${y-7}" width="14" height="14" rx="3"/><text x="${bx+3.5}" y="${y+4}">${l.letter}</text></g>`;bx+=17});
+  }
+  return s;
+}
+const edgeLines=(P,st,o={})=>{let s='';const hl=st.layers.issue;D.edges.forEach(([a,b])=>{
+  if(o.only&&!o.only(a,b))return;
+  const hi=hl&&(ROLE[a]==='declared'||ROLE[b]==='declared');
+  const dim=o.dim&&!(TERR.has(a)&&TERR.has(b));
+  s+=`<line class="e${hi?' hi':''}${dim?' dim':''}" x1="${P[a][0]}" y1="${P[a][1]}" x2="${P[b][0]}" y2="${P[b][1]}"/>`;
+});return s};
+const svgOpen=(w,h,vb,lbl)=>`<svg class="g" width="${w}" height="${h}" viewBox="${vb}" role="img" aria-label="${esc(lbl)}">`;
+const VB='-10 -12 620 500';
+const laneBadges=(x,y,ls)=>ls.map((o,k)=>`<g class="badge ${o.lv==='bad'?'isbad':o.lv==='warn'?'iswarn':''}"><rect x="${x+k*17}" y="${y}" width="14" height="14" rx="3"/><text x="${x+k*17+3.5}" y="${y+11}">${o.l.letter}</text></g>`).join('');
+
+/* ---------- variant 1: paint every layer onto the flat graph ---------- */
+function g1(st,view){
+  const P=view==='network'?D.npos:D.spos,L=st.layers;let s=svgOpen(620,500,VB,`Module graph, ${view} view, communities ${L.comm?'coloured':'off'}`);
+  if(view==='structure')D.box.forEach(([x,y,w,h],c)=>{s+=`<rect class="box" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"${L.comm?` style="stroke:${ccol(c)};stroke-width:1.5"`:''}/><text x="${x+8}" y="${y+14}" class="mu">${esc(trunc(D.names[c],Math.floor(w/6.4)))}</text>`});
+  s+=edgeLines(P,st);let labs='';
+  for(let i=0;i<N;i++){const o=node(i,P[i][0],P[i][1],st,{fill:L.comm?ccol(D.comm[i]):'',labelTop:!L.issue&&!L.lanes});s+=o.s;labs+=o.lab}
+  return s+labs+'</svg>';
+}
+/* ---------- variant 2: communities are regions; the issue opens the ones it lands in ---------- */
+function g2(st,view){
+  const L=st.layers;let s=svgOpen(620,500,VB,`Module graph by community, ${view} view, ${st.open.size} of ${C} communities open`);let labs='';
+  if(!L.comm){return g1({...st,layers:{...L,comm:false}},view)}
+  if(view==='structure'){
+    D.box.forEach(([x,y,w,h],c)=>{
+      const op=st.open.has(c),cs=cstat(c),t=L.issue&&TC.has(c),ls=L.lanes?clanes(c):[];
+      s+=`<g data-act="open" data-c="${c}"><title>${esc(D.names[c])}: ${cs.n} modules, ${op?'open':'closed'}; click to ${op?'close':'open'}</title><rect class="box${op?'':' closed'}${t?' terr':''}" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"/><text x="${x+8}" y="${y+14}" class="${t?'b':'mu'}">${op?'▾':'▸'} ${esc(trunc(D.names[c],Math.floor(w/6.6)-2))}</text>`;
+      if(!op){
+        s+=`<text x="${x+8}" y="${y+31}" class="mu">${cs.n} modules</text>`;
+        if(t)s+=`<text x="${x+8}" y="${y+47}">${[cs.dec&&cs.dec+' declared',cs.exp&&cs.exp+' expanded',cs.seam&&cs.seam+' seam'].filter(Boolean).join(' · ')}</text>`;
+        if(ls.length)s+=laneBadges(x+8,y+h-22,ls);
+      }
+      s+='</g>';
+    });
+    D.box.forEach(([x,y,w,h],c)=>{if(!st.open.has(c))return;
+      s+=edgeLines(D.spos,st,{only:(a,b)=>D.comm[a]===c&&D.comm[b]===c});
+      MEM[c].forEach(i=>{const o=node(i,D.spos[i][0],D.spos[i][1],st);s+=o.s;labs+=o.lab});
+    });
+  }else{
+    const R=c=>6+Math.sqrt(MEM[c].length)*2.6;
+    const hullR=c=>Math.max(...MEM[c].map(i=>Math.hypot(D.mpos[i][0]-D.mcent[c][0],D.mpos[i][1]-D.mcent[c][1])))+12;
+    D.meta.forEach(([a,b,w])=>{if(w<3)return;const A=D.mcent[a],B=D.mcent[b];s+=`<line class="me" x1="${A[0]}" y1="${A[1]}" x2="${B[0]}" y2="${B[1]}" stroke-width="${Math.min(6,.5+Math.log2(w))}"/>`});
+    for(let c=0;c<C;c++){if(!st.open.has(c))continue;const t=L.issue&&TC.has(c);s+=`<circle class="hull${t?' terr':''}" cx="${D.mcent[c][0]}" cy="${D.mcent[c][1]}" r="${hullR(c)}" data-act="open" data-c="${c}"><title>${esc(D.names[c])}: open; click to close</title></circle>`}
+    for(let c=0;c<C;c++){
+      const [x,y]=D.mcent[c],t=L.issue&&TC.has(c),cs=cstat(c);
+      if(st.open.has(c)){s+=edgeLines(D.mpos,st,{only:(a,b)=>D.comm[a]===c&&D.comm[b]===c});MEM[c].forEach(i=>{const o=node(i,D.mpos[i][0],D.mpos[i][1],st);s+=o.s;labs+=o.lab});labs+=`<text x="${x}" y="${y-hullR(c)-4}" text-anchor="middle" class="b">${esc(D.names[c])}</text>`;continue}
+      const ls=L.lanes?clanes(c):[];
+      s+=`<g data-act="open" data-c="${c}"><title>${esc(D.names[c])}: ${cs.n} modules; click to open</title><circle class="meta${t?' terr':''}" cx="${x}" cy="${y}" r="${R(c)}"/><text x="${x}" y="${y+4}" text-anchor="middle" class="mu">${cs.n}</text></g>`;
+      labs+=`<text x="${x}" y="${y+R(c)+13}" text-anchor="middle" class="${t?'b':'mu'}" paint-order="stroke" stroke="var(--f-sf)" stroke-width="3">${esc(trunc(D.names[c],22))}</text>`;
+      if(ls.length)labs+=laneBadges(x+R(c)-4,y-R(c)-6,ls);
+    }
+  }
+  return s+labs+'</svg>';
+}
+/* ---------- variant 3: the territory is the drawing; everything else steps back ---------- */
+function g3(st,view){
+  const L=st.layers;
+  if(view==='network'){
+    let s=svgOpen(620,500,VB,'Module graph, network view, focused on the issue territory'),labs='';
+    if(L.comm)[...TC].forEach(c=>{const m=MEM[c].filter(i=>TERR.has(i));const cx=m.reduce((a,i)=>a+D.npos[i][0],0)/m.length,cy=m.reduce((a,i)=>a+D.npos[i][1],0)/m.length;const r=Math.max(18,...m.map(i=>Math.hypot(D.npos[i][0]-cx,D.npos[i][1]-cy)))+10;s+=`<circle class="hull" cx="${cx}" cy="${cy}" r="${r}" style="opacity:.55"/>`;labs+=`<text x="${cx}" y="${cy+r+12}" text-anchor="middle" class="mu" paint-order="stroke" stroke="var(--f-sf)" stroke-width="3">${esc(trunc(D.names[c],24))}</text>`});
+    s+=edgeLines(D.npos,st,{dim:L.issue});
+    for(let i=0;i<N;i++){const o=node(i,D.npos[i][0],D.npos[i][1],st,{dim:L.issue});s+=o.s;labs+=o.lab}
+    return s+labs+'</svg>';
+  }
+  /* structure: a territory map, read left to right: declared and seams, expanded by community, lanes */
+  const RH=17,groups=[];const ex=D.expanded.slice();
+  if(L.comm){const by={};ex.forEach(i=>{(by[D.comm[i]]=by[D.comm[i]]||[]).push(i)});Object.keys(by).sort((a,b)=>by[b].length-by[a].length).forEach(c=>groups.push({c:+c,items:by[c]}))}else groups.push({c:null,items:ex});
+  const pos={};let y=22;
+  let s='',labs='';const cards=[];
+  const card=(i,x,yy,w)=>{pos[i]=[x,yy+6];const lv=L.lanes?nodeLevel(i):null;const sel=st.sel&&NL[i].some(l=>l.id===st.sel);cards.push(`<g data-act="node" data-i="${i}"><title>${esc(D.ids[i])}</title><rect class="card${lv==='bad'?' bad':lv==='warn'?' warn':''}${sel?' sel':''}" x="${x}" y="${yy-6}" width="${w}" height="${RH-3}" rx="4"/><text x="${x+6}" y="${yy+5}" class="${ROLE[i]==='declared'?'b':''}">${esc(trunc(base(D.ids[i]),Math.floor(w/6.6)-1))}</text>${L.lanes&&NL[i].length?laneBadges(x+w-NL[i].length*17,yy-6,NL[i].map(l=>({l,lv}))):''}</g>`)};
+  s+=`<text x="0" y="6" class="mu">Declared · ${D.declared.length}</text>`;
+  D.declared.forEach(i=>{y+=0;card(i,0,y,150);y+=RH});
+  y+=14;s+=`<text x="0" y="${y-4}" class="mu">Seams · ${D.seams.length}</text>`;y+=8;
+  D.seams.forEach(i=>{card(i,0,y,150);y+=RH});
+  let y2=22;s+=`<text x="178" y="6" class="mu">Expanded territory · ${ex.length}</text>`;
+  groups.forEach(g=>{if(g.c!==null){s+=`<text x="178" y="${y2+5}" class="mu" style="font-size:12px">${esc(trunc(D.names[g.c],28))} · ${g.items.length}</text>`;y2+=RH}g.items.forEach(i=>{card(i,186,y2,170);y2+=RH});y2+=4});
+  /* the import edges inside the territory, drawn faint between the columns */
+  let es='';D.edges.forEach(([a,b])=>{if(pos[a]&&pos[b]&&D.declared.includes(a)!==D.declared.includes(b)){const A=pos[a],B=pos[b];const ax=A[0]<B[0]?A[0]+150:A[0],bx=A[0]<B[0]?B[0]:B[0]+150;if(Math.abs(A[0]-B[0])<20)return;es+=`<path class="e${L.issue?' hi':''}" d="M${A[0]+150} ${A[1]}C${A[0]+168} ${A[1]} ${B[0]-18} ${B[1]} ${B[0]} ${B[1]}"/>`}});
+  let ly=22;const lx=410;
+  if(L.lanes){s+=`<text x="${lx}" y="6" class="mu">Lanes and open PRs · ${LANES.length}</text>`;
+    LANES.forEach(l=>{const h=52;const hits=[...l.bad,...l.warn];const sel=st.sel===l.id;
+      hits.forEach(i=>{if(!pos[i])return;const P=pos[i];const fx=P[0]+(P[0]===0?150:170);es+=`<path class="lnk ${ROLE[i]==='declared'?'bad':'warn'}" d="M${lx} ${ly+h/2}C${lx-40} ${ly+h/2} ${fx+40} ${P[1]} ${fx} ${P[1]}"/>`});
+      labs+=`<g data-act="lane" data-l="${l.id}"><rect class="card${l.level==='bad'?' bad':l.level==='warn'?' warn':''}${sel?' sel':''}" x="${lx}" y="${ly}" width="190" height="${h}" rx="8"/><g class="badge ${l.level==='bad'?'isbad':l.level==='warn'?'iswarn':''}"><rect x="${lx+8}" y="${ly+8}" width="14" height="14" rx="3"/><text x="${lx+11.5}" y="${ly+19}">${l.letter}</text></g><text x="${lx+28}" y="${ly+19}" class="b">${esc(trunc(l.label,24))}</text><text x="${lx+8}" y="${ly+38}" class="mu">${l.level==='bad'?'shares '+l.bad.length+' declared file':l.level==='warn'?'touches '+l.warn.length+' in territory':'clear of the territory'}${l.files.length-hits.length+l.new.length?' · +'+(l.files.length-hits.length+l.new.length)+' outside':''}</text></g>`;
+      ly+=h+10});}
+  const H=Math.max(y,y2,ly)+30;
+  labs+=`<text x="0" y="${H-8}" class="mu">${N-TERR.size} modules outside the territory are not drawn; Network shows them dimmed.</text>`;
+  return svgOpen(620,H+12,`-10 -12 620 ${H+12}`,'Territory map of the issue: declared files, seams, expanded territory by community, and the lanes that touch it')+es+s+cards.join('')+labs+'</svg>';
+}
+/* ---------- variant 4: a community × work matrix; the graph is the map beside it ---------- */
+const MXROWS=(()=>{const rows=[];for(let c=0;c<C;c++){const cs=cstat(c),ls=LANES.map(l=>l.files.filter(i=>D.comm[i]===c));if(cs.dec+cs.exp+cs.seam||ls.some(x=>x.length))rows.push({c,cs,ls})}return rows.sort((a,b)=>(b.cs.dec*100+b.cs.exp+b.cs.seam)-(a.cs.dec*100+a.cs.exp+a.cs.seam))})();
+function cellFiles(st){if(!st.cell)return null;const [c,k]=st.cell;const m=MEM[c];if(k==='dec')return m.filter(i=>ROLE[i]==='declared');if(k==='exp')return m.filter(i=>ROLE[i]==='expanded');if(k==='seam')return m.filter(i=>ROLE[i]==='seam');if(k==='n')return m;return LANES.find(l=>l.id===k).files.filter(i=>D.comm[i]===c)}
+function matrix(st){
+  const L=st.layers,sel=st.cell?st.cell.join(':'):'';
+  const cellTd=(c,k,v,cls)=>`<td class="c${cls?' '+cls:''}${!v?' z':''}${sel===c+':'+k?' sel':''}" data-act="cell" data-c="${c}" data-k="${k}">${v}</td>`;
+  let h=`<table class="mxg"><thead><tr><th>Community</th><th>modules</th>${L.issue?'<th>declared</th><th>expanded</th><th>seams</th>':''}${L.lanes?LANES.map(l=>`<th title="${esc(l.label)}"><span class="lb${l.level==='clear'?'':' '+l.level}">${l.letter}</span><br>${esc(l.id==='PRX'?'PR':l.kind==='pr'?'#'+l.id:l.id)}</th>`).join(''):''}</tr></thead><tbody>`;
+  MXROWS.forEach(r=>{h+=`<tr><td>${esc(D.names[r.c])}</td>${cellTd(r.c,'n',r.cs.n,'')}${L.issue?cellTd(r.c,'dec',r.cs.dec,'')+cellTd(r.c,'exp',r.cs.exp,'')+cellTd(r.c,'seam',r.cs.seam,''):''}${L.lanes?LANES.map((l,k)=>{const fs=r.ls[k];const lv=fs.some(i=>ROLE[i]==='declared')?'bad':fs.some(i=>TERR.has(i))?'warn':'';return cellTd(r.c,l.id,fs.length,lv)}).join(''):''}</tr>`});
+  const rest=C-MXROWS.length,restN=N-MXROWS.reduce((a,r)=>a+r.cs.n,0);
+  h+=`<tr class="out"><td>${rest} other communities</td><td>${restN}</td>${L.issue?'<td>0</td><td>0</td><td>0</td>':''}${L.lanes?LANES.map(()=>'<td>0</td>').join(''):''}</tr></tbody></table>`;
+  return h;
+}
+function g4(st,view){
+  const P=view==='network'?D.npos:D.spos,L=st.layers,fs=cellFiles(st),F=fs?new Set(fs):null;
+  let s=svgOpen(330,280,VB,`Map of the selected cell's modules, ${view} view`),labs='';
+  if(view==='structure')D.box.forEach(([x,y,w,h],c)=>{const on=st.cell&&st.cell[0]===c;s+=`<rect class="box${on?' terr':''}" x="${x}" y="${y}" width="${w}" height="${h}" rx="10"/>`;if(on)labs+=`<text x="${x+8}" y="${y+14}" class="b">${esc(D.names[c])}</text>`});
+  D.edges.forEach(([a,b])=>{s+=`<line class="e${F&&(F.has(a)||F.has(b))?' hi':''}" style="${F&&(F.has(a)||F.has(b))?'':'opacity:.22'}" x1="${P[a][0]}" y1="${P[a][1]}" x2="${P[b][0]}" y2="${P[b][1]}"/>`});
+  for(let i=0;i<N;i++){const on=F&&F.has(i);const r=rad(i)*(on?1.4:1);s+=`<circle class="n${F&&!on?' dim':''}" cx="${P[i][0]}" cy="${P[i][1]}" r="${r}" style="${L.comm?'fill:'+ccol(D.comm[i]):''}"/>`;if(on)labs+=`<circle class="ring" cx="${P[i][0]}" cy="${P[i][1]}" r="${r+3}"/><text x="${P[i][0]+r+5}" y="${P[i][1]+4}" paint-order="stroke" stroke="var(--gbg)" stroke-width="3" style="font-size:16px">${esc(base(D.ids[i]))}</text>`}
+  return s+labs+'</svg>';
+}
+
+/* ---------- side panel: the overlap, in words (every variant has it; the graph is never the only channel) ---------- */
+function overlap(st,compact){
+  if(!st.layers.lanes)return '<p class="sub">Lanes and PRs are off.</p>';
+  return `<div class="ov">${LANES.map(l=>`<div class="lane ${l.level==='clear'?'':l.level}${st.sel===l.id?' sel':''}" data-act="lane" data-l="${l.id}" role="button" tabindex="0"><div class="row"><span class="lb${l.level==='clear'?'':' '+l.level}">${l.letter}</span><b class="nm">${esc(l.label)}</b></div><small>${esc(l.who)}</small><div class="row" style="font-size:12.5px">${l.level==='bad'?`<span class="sp bad">collides</span><span>shares a declared file</span>`:l.level==='warn'?`<span class="sp warn">overlaps</span><span>touches the territory</span>`:`<span class="sp neu">clear</span><span>no file in the territory</span>`}</div>${compact?'':`<div class="files">${[...l.bad,...l.warn].map(i=>`<code>${esc(base(D.ids[i]))}${ROLE[i]==='seam'?' (seam)':''}</code>`).join('')}${l.new.map(p=>`<code title="a new file has no node until it is indexed">+ ${esc(base(p))} (new)</code>`).join('')}</div>`}</div>`).join('')}</div>`;
+}
+function legend(st,v){
+  const L=st.layers;let h='<div class="lg2">';
+  const glyph=(svg,t)=>`<div class="row"><svg class="gly" viewBox="-8 -8 16 16" aria-hidden="true">${svg}</svg><span class="nm">${t}</span></div>`;
+  if(L.issue){
+    h+=glyph('<circle r="3" fill="var(--s-neu)"/><circle r="6" fill="none" stroke="var(--f-ink)" stroke-width="2"/>',`declared by the plan · ${D.declared.length}`);
+    h+=glyph('<circle r="3" fill="var(--s-neu)"/><circle r="6" fill="none" stroke="var(--f-ink)" stroke-width="1.5" stroke-dasharray="3 2"/>',`expanded territory · ${D.expanded.length}`);
+    h+=glyph('<path d="M0 -7L7 0L0 7L-7 0Z" fill="var(--f-sf)" stroke="var(--f-ink)" stroke-width="1.6"/><circle r="3" fill="var(--s-neu)"/>',`seam (fan-in 47+) · ${D.seams.length}`);
+  }
+  if(L.lanes){
+    h+=glyph('<circle r="6" fill="none" stroke="var(--s-bad)" stroke-width="2.4"/>','a lane on a declared file: collision');
+    h+=glyph('<circle r="6" fill="none" stroke="var(--s-warn)" stroke-width="2" stroke-dasharray="4 2"/>','a lane elsewhere in the territory');
+  }
+  if(L.comm&&v===1){const top=[...Array(C).keys()].sort((a,b)=>MEM[b].length-MEM[a].length);h+=top.slice(0,8).map(c=>`<div class="row"><span class="sw" style="background:${ccol(c)}"></span><span class="nm">${esc(D.names[c])}</span><span class="cnt">${MEM[c].length}</span></div>`).join('')+`<div class="row"><span class="sw" style="background:repeating-linear-gradient(90deg,var(--c0) 0 3px,var(--c1) 3px 6px,var(--c2) 6px 9px)"></span><span class="nm">${C-8} more: the eight hues repeat</span></div>`}
+  return h+'</div>';
+}
+function terrList(st){
+  if(!st.layers.issue)return '';
+  const rows=[...TC].map(c=>({c,cs:cstat(c),ls:clanes(c)})).sort((a,b)=>(b.cs.dec*100+b.cs.exp+b.cs.seam)-(a.cs.dec*100+a.cs.exp+a.cs.seam));
+  return `<div class="lg2">${rows.map(r=>`<div class="row" data-act="open" data-c="${r.c}" style="cursor:pointer"><span class="nm">${st.open.has(r.c)?'▾':'▸'} ${esc(D.names[r.c])}</span><span class="cnt">${r.cs.dec+r.cs.exp+r.cs.seam}/${r.cs.n}</span>${st.layers.lanes?r.ls.map(o=>`<span class="lb${o.lv==='neu'?'':' '+o.lv}">${o.l.letter}</span>`).join(''):''}</div>`).join('')}</div>`;
+}
+
+/* ---------- the shell ---------- */
+function shell(){
+  const rail=`<nav class="rail" aria-label="Sections"><div class="rbrand">${HIVE}</div><span class="ri rcta">${I('i-submit')}<small>Submit</small></span><div class="rsep"></div><span class="ri">${I('i-overview')}<small>Overview</small></span><span class="ri on">${I('i-agents')}<small>Work</small></span><span class="ri">${I('i-pools')}<small>Capacity</small></span><span class="ri">${I('i-limits')}<small>Admin</small></span><div class="rgrow"></div><span class="ri">${I('i-help')}<small>Help</small></span><span class="av">OP</span></nav>`;
+  const pg=(on,icon,label,extra)=>`<span class="pk${on?' on':''}">${I(icon)}<span class="pl1">${label}</span>${extra||''}</span>`;
+  const panel=`<nav class="panel" aria-label="Pages"><div class="ph"><span class="wm">Swarm<span>Cloud</span></span><span class="pill dev">dev</span></div><div class="pscroll"><div class="pt">Work</div>${pg(false,'i-agents','Agents','<span class="cnt">6</span>')}${pg(false,'i-workflows','Workflows','<span class="cnt">2</span>')}${pg(false,'i-branch','Runs','<span class="cnt">1</span>')}${pg(false,'i-timeline','Timeline')}${pg(true,'i-repo','Repositories')}</div><div class="pfoot"><span class="pfrow"><b>Operator</b><span class="seg" role="group" aria-label="Theme"><span class="ibtn">${I('i-sun')}</span><span class="ibtn">${I('i-moon')}</span><span class="ibtn on">${I('i-monitor')}</span></span></span><small>operator@swarm.example.com</small><span class="stamp">swarm.example.com</span></div></nav>`;
+  return `<div class="side">${rail}${panel}</div>`;
+}
+const lyrBtn=(st,k,t)=>`<button class="lyr" data-act="layer" data-k="${k}" aria-pressed="${st.layers[k]}"><span class="bx">${st.layers[k]?'✓':''}</span>${t}</button>`;
+const viewSeg=st=>`<span class="segb" role="group" aria-label="Graph view: Structure / Network"><button data-act="view" data-w="structure" aria-pressed="${st.view==='structure'}">Structure</button><button data-act="view" data-w="network" aria-pressed="${st.view==='network'}">Network</button></span>`;
+const issueLine=()=>`<div class="issue"><span class="chip ctx">Issue · example</span><b>${esc(D.issue.title)}</b><span class="crumb">territory: ${TERR.size} of ${N} modules in ${TC.size} communities</span></div>`;
+const G={1:g1,2:g2,3:g3,4:g4};
+const TITLES={1:'Paint',2:'Regions',3:'Lens',4:'Matrix'};
+function desktop(st){
+  const v=st.v,head=`<div class="crumb">Work › Repositories › <b>bogdan-alexandrescu/SwarmCloud</b></div>
+<div class="phead"><h3>SwarmCloud</h3><span class="sp live"><svg viewBox="0 0 12 12"><use href="#s-succeeded"/></svg>current · 2887032</span><div class="r"><span class="btn sm">Index now</span></div></div>
+<div class="tabs"><span>Overview</span><span class="on">Graph</span><span>Impact</span><span>Test map</span><span>Hot-spots</span><span>Index runs</span><span>Settings</span></div>
+<div class="gtools"><span class="segb" role="group" aria-label="Graph"><button aria-pressed="true">Modules</button><button>Calls</button><button>Tests</button></span>${viewSeg(st)}${lyrBtn(st,'comm','Communities')}${lyrBtn(st,'issue','Issue territory')}${lyrBtn(st,'lanes',`Lanes and PRs · ${LANES.length}`)}<span class="r"><span class="btn sm">−</span><span class="btn sm">+</span><span class="btn sm">Fit</span></span></div>
+${st.layers.issue?issueLine():''}`;
+  const foot=`<div class="gfoot"><span>${N} modules · ${fmt(D.edges.length)} imports · ${C} communities</span><span>index 2887032</span><span>communities: Louvain stand-in for KG2</span><span>issue, lane and PR states: example data</span></div>`;
+  let body;
+  if(v===4){
+    const fs=cellFiles(st);
+    body=`<div class="gwrap" style="grid-template-columns:minmax(0,1fr) 330px"><div class="mxwrap">${matrix(st)}</div><div class="side2"><div class="gc" data-drawing="${st.view}" style="height:280px">${g4(st,st.view)}<span class="tag">${st.view==='network'?'canvas · vis-network':'svg · console'}</span></div><div class="card"><div class="ch"><b>${fs?esc(D.names[st.cell[0]]):'Pick a cell'}</b><span class="r cnt">${fs?fs.length+(fs.length===1?' module':' modules'):''}</span></div>${fs?fs.slice(0,8).map(i=>`<div class="row" style="display:flex;gap:8px;font-size:12.5px"><code>${esc(base(D.ids[i]))}</code><span class="exd">${ROLE[i]||'outside the territory'}</span>${NL[i].map(l=>`<span class="lb${nodeLevel(i)==='neu'?'':' '+nodeLevel(i)}">${l.letter}</span>`).join('')}</div>`).join('')+(fs.length>8?`<span class="exd">${fs.length-8} more</span>`:''):'<span class="exd">A cell opens its modules here and on the map.</span>'}</div></div></div>`;
+  }else{
+    body=`<div class="gwrap"><div class="gc" data-drawing="${st.view}" style="${v===3&&st.view==='structure'?'overflow:auto':''}">${G[v](st,st.view)}<span class="tag">${st.view==='network'?'canvas · vis-network (drawn here as svg)':'svg · console'}</span>${v===2&&st.layers.comm?`<span class="tag tagr">${st.open.size} of ${C} open · click a community</span>`:''}</div>
+<div class="side2">${v===2?`<div class="card"><div class="ch"><b>Territory by community</b><span class="r cnt">in territory / modules</span></div>${terrList(st)||'<span class="exd">Issue territory is off.</span>'}</div>`:''}<div class="card"><div class="ch"><b>Overlap</b><span class="r cnt">${LANES.filter(l=>l.level!=='clear').length} of ${LANES.length}</span></div>${overlap(st,v===2)}</div><div class="card"><div class="ch"><b>Key</b></div>${legend(st,v)}</div></div></div>`;
+  }
+  return `${shell()}<main class="ct">${head}${body}${foot}</main>`;
+}
+function phone(st){
+  const v=st.v,L=st.layers;
+  let crop='';
+  if(v!==4||true){const svg=v===4?g1({...st,layers:{...L,lanes:true,issue:true,comm:L.comm}},st.view):G[v](st,st.view);crop=`<div class="crop" data-crop>${svg}</div><span class="exd">The graph at full size: drag sideways. It is never scaled to 390px (design-system.md §7.2).</span>`}
+  let list='';
+  if(v===1){list=`<div class="ph2">Overlap</div>${overlap(st,true)}<div class="ph2">Key</div>${legend(st,1)}`}
+  if(v===2){list=`<div class="ph2">Territory by community</div>`+[...TC].sort((a,b)=>{const A=cstat(a),B=cstat(b);return (B.dec*100+B.exp+B.seam)-(A.dec*100+A.exp+A.seam)}).map(c=>{const cs=cstat(c),ls=clanes(c),op=st.open.has(c),lv=ls.some(o=>o.lv==='bad')?'bad':ls.some(o=>o.lv==='warn')?'warn':'';return `<div class="pcard ${lv}"><div class="hd" data-act="open" data-c="${c}" role="button" tabindex="0"><b>${op?'▾':'▸'} ${esc(D.names[c])}</b>${L.lanes?ls.map(o=>`<span class="lb${o.lv==='neu'?'':' '+o.lv}">${o.l.letter}</span>`).join(''):''}<span class="cnt">${cs.dec+cs.exp+cs.seam}/${cs.n}</span></div>${op?MEM[c].filter(i=>TERR.has(i)||NL[i].length).map(i=>`<div class="prow"><code>${esc(base(D.ids[i]))}</code><span class="exd">${ROLE[i]||''}</span>${NL[i].map(l=>`<span class="lb${nodeLevel(i)==='neu'?'':' '+nodeLevel(i)}">${l.letter}</span>`).join('')}</div>`).join(''):''}</div>`}).join('')}
+  if(v===3){const rows=(ids)=>ids.map(i=>`<div class="prow"><code>${esc(base(D.ids[i]))}</code>${L.lanes?NL[i].map(l=>`<span class="lb${nodeLevel(i)==='neu'?'':' '+nodeLevel(i)}">${l.letter}</span>`).join(''):''}</div>`).join('');list=`<div class="ph2">Overlap</div>${overlap(st,true)}<div class="pcard"><b>Declared · ${D.declared.length}</b>${rows(D.declared)}</div><div class="pcard"><b>Seams · ${D.seams.length}</b>${rows(D.seams)}</div><div class="pcard"><b>Expanded · ${D.expanded.length}</b>${rows(D.expanded.slice(0,6))}<small>${D.expanded.length-6} more</small></div>`}
+  if(v===4){list=`<div class="ph2">Communities × work</div>`+MXROWS.map(r=>{const cells=LANES.map((l,k)=>{const fs=r.ls[k];if(!fs.length)return '';const lv=fs.some(i=>ROLE[i]==='declared')?'bad':fs.some(i=>TERR.has(i))?'warn':'';return `<span class="lb${lv?' '+lv:''}">${l.letter} ${fs.length}</span>`}).join('');const lv=/lb bad/.test(cells)?'bad':/lb warn/.test(cells)?'warn':'';return `<div class="pcard ${lv}"><div class="hd"><b>${esc(D.names[r.c])}</b><span class="cnt">${r.cs.n}</span></div><small>${[r.cs.dec&&r.cs.dec+' declared',r.cs.exp&&r.cs.exp+' expanded',r.cs.seam&&r.cs.seam+' seams'].filter(Boolean).join(' · ')||'no territory'}</small>${L.lanes&&cells?`<div class="row" style="display:flex;gap:6px;flex-wrap:wrap">${cells}</div>`:''}</div>`}).join('')}
+  return `<div class="phd"><span class="ibtn">${I('i-menu')}</span><span class="t">SwarmCloud</span><span class="ibtn">${I('i-search')}</span></div>
+<div class="ptabs"><span>Overview</span><span class="on">Graph</span><span>Impact</span><span>Test map</span><span>Hot-spots</span></div>
+<div class="pbody">${viewSeg(st)}<div style="display:flex;gap:6px;flex-wrap:wrap">${lyrBtn(st,'comm','Communities')}${lyrBtn(st,'issue','Territory')}${lyrBtn(st,'lanes','Lanes · '+LANES.length)}</div>${L.issue?`<div class="issue"><span class="chip ctx">Issue · example</span><span class="exd">${TERR.size} modules in ${TC.size} communities</span></div>`:''}${crop}${list}</div>`;
+}
+
+/* ---------- frames ---------- */
+const ST={};
+function draw(el){
+  const st=ST[el.id];el.innerHTML=el.classList.contains('phone')?phone(st):desktop(st);
+  const cr=el.querySelector('[data-crop]');
+  if(cr){/* open the crop on the declared files, at full size */const P=st.v===3&&st.view==='structure'?null:(st.view==='network'?D.npos:D.spos);if(P){const xs=D.declared.map(i=>P[i][0]),ys=D.declared.map(i=>P[i][1]);cr.scrollLeft=Math.max(0,xs.reduce((a,b)=>a+b)/xs.length-160);cr.scrollTop=Math.max(0,ys.reduce((a,b)=>a+b)/ys.length-110)}}
+}
+document.querySelectorAll('[data-v]').forEach(el=>{
+  const v=+el.dataset.v;
+  ST[el.id]={v,view:el.dataset.view||'structure',layers:{comm:true,issue:true,lanes:true},open:new Set(DECLC),sel:null,cell:v===4?[D.comm[D.declared[0]],'KG1']:null};
+  draw(el);
+});
+document.addEventListener('click',e=>{
+  const b=e.target.closest('[data-act]');if(!b)return;const el=b.closest('[data-v]');if(!el)return;
+  const st=ST[el.id],a=b.dataset.act;
+  if(a==='view')st.view=b.dataset.w;
+  else if(a==='layer')st.layers[b.dataset.k]=!st.layers[b.dataset.k];
+  else if(a==='open'){const c=+b.dataset.c;st.open.has(c)?st.open.delete(c):st.open.add(c)}
+  else if(a==='lane')st.sel=st.sel===b.dataset.l?null:b.dataset.l;
+  else if(a==='cell')st.cell=[+b.dataset.c,b.dataset.k];
+  else return;
+  draw(el);
+});
+document.addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&e.target.matches('[data-act][role="button"]')){e.preventDefault();e.target.click()}});
+document.querySelectorAll('[data-vtheme]').forEach(b=>b.addEventListener('click',()=>{
+  const sec=b.closest('.variant');const m=b.dataset.vtheme;
+  sec.querySelectorAll('.fx').forEach(x=>{if(m==='page')delete x.dataset.ftheme;else x.dataset.ftheme=m});
+  sec.querySelectorAll('[data-vtheme]').forEach(x=>x.setAttribute('aria-pressed',String(x===b)));
+}));
+</script>
+</body>
+</html>
