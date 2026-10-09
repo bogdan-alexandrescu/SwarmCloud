@@ -3,7 +3,8 @@ the release before it, in the job summary (#625).
 
 WHY. Issue #625 asked that the worker image's size be measured for every
 release. `scripts/image-sizes.sh` measured it only when an operator ran it, so
-the 2026-10-05 bisect had to reconstruct three weeks of sizes after the fact.
+the 2026-10-05 bisect had to read every release's size back out of the
+registry afterwards.
 The shared promote action (.github/actions/release-promote, run by release.yml
 and hotfix.yml alike) now runs `image-sizes.sh --manifest` on the record the
 promotion just wrote, so a jump is on the release's own page.

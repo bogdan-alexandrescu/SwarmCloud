@@ -195,6 +195,23 @@ matching in `build-images.sh` and `push-images.sh` is the scar).
    all, so a later build of the same commit cannot change what is promoted.
 5. The apply pins those digests and the deploy verifies them, unchanged.
 
+**Every promote records its runner images' sizes** (#625). Right after the
+channel moves, `release-promote` runs `scripts/image-sizes.sh --manifest
+build/deployed-images-<env>.json` and appends its table to the job summary:
+for each runner image the promotion wrote (`agent-runtime-*`), the promoted
+digest, its compressed size (the linux/amd64 layer sum a node pulls) and its
+delta from the newest earlier release of that image in Artifact Registry; a
+first release reads "no earlier release", never `+0.0`. It only lists and GETs
+the registry, which the deployer already reads in the promote step itself, so
+it needs no new role. It **cannot fail or hold the release**: the step is
+`continue-on-error` and bounded by `timeout 300`, and an image it cannot
+measure is a row saying so and a failed step, nothing more. It exists because
+#625's start-time question needed every release's size, and until this step
+no release recorded its own, so the 2026-10-05 bisect had to read each one
+back out of the registry.
+`tests/unit/scripts/test_release_size_record.py` holds the step's place and
+flags; `test_image_sizes.py` holds the table.
+
 **What the release does when it cannot reuse.** Each ends in a red job whose
 last line (and a run annotation) names the reason and links the job:
 

@@ -91,7 +91,11 @@ task, the index run, so it moved.
 726-728 MB the bisect measured, instead of the 916 MB the toolchain made it;
 the toolchain's sources and pins moved unchanged, less terraform-ls (below).
 Confirm it on the first release of this change with
-`scripts/image-sizes.sh --since 2026-10-05`.
+`scripts/image-sizes.sh --since 2026-10-05`. Every promote now also writes
+each runner image's compressed size and its delta from the previous release
+to the release job's summary (`image-sizes.sh --manifest`, run by
+`.github/actions/release-promote`; [ci.md](ci.md#images-are-built-once-per-commit-and-the-release-reuses-them)),
+so a later growth shows on the release that brought it.
 
 ### Where DISPATCHED -> STARTING goes (measured 2026-10-07)
 
