@@ -85,7 +85,11 @@
 #                         cannot tell a reused image from a rebuilt one. Each
 #                         manifest entry says which it is: `reused`,
 #                         `built_from` (the commit whose build made the digest)
-#                         and `built_at`.
+#                         and `built_at`, and `build_args`, the values it
+#                         bakes in; an image whose baked values differ from
+#                         its previous digest's is rebuilt whatever the diff.
+#                         Its `/version` and OCI revision label name
+#                         `built_from`, not this commit (docs/ci.md).
 #   --full-build REASON   rebuild every image anyway, recording REASON.
 #
 #   A uv.lock change rebuilds a Python image only if that image's own pruned
@@ -313,7 +317,9 @@ while [[ $# -gt 0 ]]; do
     --inputs)      LIST_INPUTS=1; shift ;;
     --incremental) INCREMENTAL="$2"; shift 2 ;;
     --full-build)  FULL_BUILD_REASON="$2"; shift 2 ;;
-    -h|--help)     sed -n '2,108p' "$0"; exit 0 ;;
+    # The header, up to the first line that is not a comment: a hand-kept
+    # line range drifted every time the header grew (#888 box 92).
+    -h|--help)     awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 0 ;;
     -*)            die "unknown flag: $1" ;;
     *)             TARGETS+=("$1"); shift ;;
   esac
@@ -443,6 +449,41 @@ BUILD_LOGIC=(scripts/build-images.sh scripts/lib/common.sh scripts/lib/ci-built-
 # even on a part of the tree nobody touches.
 REUSE_MAX_AGE_DAYS="${BUILD_REUSE_MAX_AGE_DAYS:-7}"
 
+# PER-TARGET BUILD ARGS, as YAML list items for a docker step's args. Only swarm-ui takes one, and it has to be a BUILD
+# arg rather than a Cloud Run env var: Vite inlines `import.meta.env.VITE_*`
+# when the bundle is compiled, so by the time a container starts, a static
+# bundle has already decided what environment it thinks it is in.
+#
+# ENVIRONMENT is exported by lib/common.sh, so this carries dev to a dev
+# build and prod to a prod one without a second place to keep in step.
+# Defined here, above plan_incremental, because baked_build_args reads it.
+target_build_args() {
+  if [[ "$1" == "swarm-ui" ]]; then
+    printf '%s\n' "      - --build-arg" "      - VITE_SWARM_ENV=${ENVIRONMENT}"
+  fi
+}
+
+# target_build_args' values, one KEY=VALUE a line: what an image bakes in
+# beyond GIT_SHA and BUILD_TIME, and what the manifest records per image as
+# `build_args`. Read from target_build_args' own output, so an arg added there
+# is compared without a second list to keep in step.
+#
+# The reuse decision compares these with the previous record's, so a reused
+# digest is never one built with a different value (#888 box 91). No file
+# change marks a value that comes from outside the tree -- a GitHub variable,
+# say -- so without the comparison an image baked with the old value would be
+# reused until BUILD_REUSE_MAX_AGE_DAYS. Today the only one is ENVIRONMENT,
+# which the record's own environment check already covers; the comparison is
+# for the next one, whatever feeds it.
+baked_build_args() {
+  target_build_args "$1" | sed -n 's/^      - \([A-Za-z_][A-Za-z0-9_]*=.*\)$/\1/p'
+}
+
+# baked_build_args as a JSON array, the form the manifest records.
+baked_build_args_json() {
+  baked_build_args "$1" | jq -R . | jq -sc .
+}
+
 plan_row() {
   local want="$1" i
   for ((i = 0; i < ${#P_NAME[@]}; i++)); do
@@ -546,7 +587,7 @@ rebuild_why() {
 }
 
 plan_incremental() {
-  local prev="$1" t i row digest from at img why prereq grew age_ok logic diff_list
+  local prev="$1" t i row digest from at img why prereq grew age_ok logic diff_list prev_args args
   if [[ -n "${FULL_BUILD_REASON}" ]]; then plan_full "${FULL_BUILD_REASON}"; return 0; fi
   if [[ "${ENVIRONMENT}" == prod ]]; then plan_full "prod is always built whole"; return 0; fi
   if [[ "${prev}" == none || ! -f "${prev}" ]]; then
@@ -576,11 +617,12 @@ plan_incremental() {
     # A digest is the previous record's; the commit and time it was BUILT are
     # the image's own when the previous build reused it too, so a chain of
     # reuses still diffs from, and ages from, the build that made the digest.
-    IFS=$'\t' read -r img digest from at < <(jq -r --arg n "${t}" '
+    IFS=$'\t' read -r img digest from at prev_args < <(jq -r --arg n "${t}" '
         . as $r | [ .images[] | select(.name == $n) ] as $m
-        | if ($m | length) != 1 then ["-", "-", "-", "-"]
+        | if ($m | length) != 1 then ["-", "-", "-", "-", "null"]
           else [ ($m[0].image // "-"), ($m[0].digest // "-"),
-                 ($m[0].built_from // $r.commit // "-"), ($m[0].built_at // $r.built_at // "-") ] end
+                 ($m[0].built_from // $r.commit // "-"), ($m[0].built_at // $r.built_at // "-"),
+                 ($m[0].build_args // null | tojson) ] end
         | @tsv' "${prev}")
     if [[ "${img}" != "${IMAGE_REPO}/${t}" ]]; then
       plan_full "the previous build records ${t} as ${img}, not ${IMAGE_REPO}/${t}"; return 0
@@ -613,6 +655,15 @@ plan_incremental() {
       fi
     done
     why="$(rebuild_why "${t}" "${from}" "${diff_list}")"
+    # A record written before the manifest named build args says nothing; an
+    # image that bakes none has nothing to disagree with, one that bakes any
+    # is rebuilt once, and records them from then on.
+    args="$(baked_build_args_json "${t}")"
+    if [[ "${prev_args}" == null && "${args}" != '[]' ]]; then
+      why=$'build\tits baked build args were not recorded'
+    elif [[ "${prev_args}" != null && "$(jq -c . <<<"${prev_args}")" != "${args}" ]]; then
+      why=$'build\tits baked build args changed'
+    fi
     P_NAME+=("${t}"); P_DIGEST+=("${digest}"); P_FROM+=("${from}"); P_AT+=("${at}")
     P_ACTION+=("${why%%$'\t'*}"); P_WHY+=("${why#*$'\t'} since ${from:0:12}")
   done
@@ -739,19 +790,6 @@ fi
 
 # A Dockerfile with no cloudbuild.yaml gets a generated one. It is written to
 # build/ and kept, so a failed build can be reproduced exactly.
-# PER-TARGET BUILD ARGS, as YAML list items for a docker step's args. Only swarm-ui takes one, and it has to be a BUILD
-  # arg rather than a Cloud Run env var: Vite inlines `import.meta.env.VITE_*`
-  # when the bundle is compiled, so by the time a container starts, a static
-  # bundle has already decided what environment it thinks it is in.
-  #
-# ENVIRONMENT is exported by lib/common.sh, so this carries dev to a dev
-# build and prod to a prod one without a second place to keep in step.
-target_build_args() {
-  if [[ "$1" == "swarm-ui" ]]; then
-    printf '%s\n' "      - --build-arg" "      - VITE_SWARM_ENV=${ENVIRONMENT}"
-  fi
-}
-
 generate_config() {
   local dockerfile="$1" image="$2" out="$3" target="${4:-}"
   # --build-only lists no `images:`, so Cloud Build pushes nothing; the image
@@ -1666,10 +1704,12 @@ for target in ${BUILT[@]+"${BUILT[@]}"} ${REUSED[@]+"${REUSED[@]}"}; do
     built_from="${P_FROM[$row]}"; built_at="${P_AT[$row]}"; reused=true
   fi
   printf '  %-22s %s%s\n' "${target}" "${digest}" "$([[ "${reused}" == false ]] || printf ' (reused, built from %s)' "${built_from:0:12}")" >&2
+  # A reused digest's args equal these: plan_incremental rebuilt it otherwise.
   entries="$(jq -c --arg n "${target}" --arg i "${image}" --arg t "${TAG}" --arg d "${digest}" \
     --arg from "${built_from}" --arg at "${built_at}" --argjson reused "${reused}" \
+    --argjson args "$(baked_build_args_json "${target}")" \
     '. + [{name:$n, image:$i, tag:$t, digest:$d, ref:($i + "@" + $d),
-           built_from:$from, built_at:$at, reused:$reused}]' <<<"${entries}")"
+           built_from:$from, built_at:$at, reused:$reused, build_args:$args}]' <<<"${entries}")"
 done
 
 if [[ "${#MISSING[@]}" -gt 0 ]]; then

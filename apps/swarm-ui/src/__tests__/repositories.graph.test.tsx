@@ -154,7 +154,7 @@ describe('the Modules view (Graph A)', () => {
     await waitFor(() => expect(nodes()).toHaveLength(4), WAIT)
     const svg = document.querySelector('.rg-canvas svg')!
     expect(svg.getAttribute('role')).toBe('img')
-    expect(svg.getAttribute('aria-label')).toBe('Module dependency graph of example-org/example-api, clustered by package')
+    expect(svg.getAttribute('aria-label')).toBe('Module dependency graph of example-org/example-api, clustered by directory')
     expect(Array.from(document.querySelectorAll('.rg-cluster')).map((r) => r.getAttribute('data-cluster'))).toEqual(['src'])
     expect(node('src/api/orders.py').getAttribute('data-heat')).toBe('hot')
     expect(node('src/core/money.py').getAttribute('data-heat')).toBe('cool')
@@ -183,6 +183,8 @@ describe('the Modules view (Graph A)', () => {
     const calls = routes()
     await mount('graph')
     await waitFor(() => expect(visible(inspector().querySelector('h2'))).toBe('src/api/orders.py'), WAIT)
+    // The canvas lays out in a task after the inspector opens (GR3): click what it drew.
+    await waitFor(() => expect(nodes()).toHaveLength(4), WAIT)
     fireEvent.click(node('src/core/orders.py'))
     await waitFor(() => expect(visible(inspector().querySelector('h2'))).toBe('src/core/orders.py'), WAIT)
     expect(node('src/core/orders.py').getAttribute('aria-pressed')).toBe('true')

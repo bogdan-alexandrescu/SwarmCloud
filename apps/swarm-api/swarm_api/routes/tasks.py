@@ -65,6 +65,8 @@ def _event_to_api(event, masking: TaskMasking) -> dict:
     detail can quote the agent anywhere else; every string in it is masked by
     the rules and the literals the task's input named, string by string --
     never by key, because the keys are the platform's (`TaskMasking.leaves`).
+    A lookup key's value (`task_input.LOOKUP_KEYS`) is masked by
+    `TaskMasking.name`, so a clean filename stays findable (#296).
     """
     detail, count = masking.leaves(event.detail)
     return {
@@ -610,10 +612,11 @@ def list_checkpoints(
     a single path segment first, so there is no value of it that reaches
     another tenant's objects.
 
-    WHY ACROSS ATTEMPTS. A resume is by definition a new attempt, and
-    `CheckpointManager.find_latest` scans the whole task prefix to pick what to
-    restore from -- so the checkpoint that matters after a crash was written by
-    the attempt that died. Listing only the current attempt would hide it.
+    WHY ACROSS ATTEMPTS. A resume is by definition a new attempt, and it
+    restores the checkpoint `task.latest_checkpoint` names -- or nothing, with
+    no fallback to the newest one under the prefix (#347) -- so the checkpoint
+    that matters after a crash was written by the attempt that died. Listing
+    only the current attempt would hide it.
 
     THE THREE ANSWERS. A failed LISTING is a 503, never `{"checkpoints": []}`
     with a 200. A checkpoint whose manifest is missing is reported `absent` and

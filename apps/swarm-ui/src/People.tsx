@@ -15,7 +15,8 @@ import { JobSteps } from './OnboardingWorkspace'
 import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
-import type { AdminAuditEntry, LendableAccount, PeopleDoc, PersonClaudeAccount, PersonRow, WorkspaceState } from './types'
+import { tableMode, usePhoneTables } from './capacityPoll'
+import type { AdminAuditEntry, AdminHolder, LendableAccount, PeopleDoc, PersonClaudeAccount, PersonRow, WorkspaceState } from './types'
 import { timeAgo } from './types'
 import './styles/repositories.css'
 import './styles/onboarding.css'
@@ -212,9 +213,9 @@ function Deny({ row, reload }: { row: PersonRow; reload: () => void }) {
   }
   return (
     <span className="pp-deny">
-      <label>
-        Reason, shown to {row.email}
-        <textarea value={reason} maxLength={500} rows={2} onChange={(e) => setReason(e.target.value)} />
+      <label className="c-field">
+        <span className="c-lbl">Reason, shown to {row.email}</span>
+        <textarea className="c-inp" value={reason} maxLength={500} rows={2} onChange={(e) => setReason(e.target.value)} />
       </label>
       <span className="ob-acts">
         <Button size="sm" onClick={() => setOpen(false)}>
@@ -267,9 +268,9 @@ function Ceiling({ row, reload }: { row: PersonRow; reload: () => void }) {
   }
   return (
     <span className="pp-ceiling">
-      <label>
-        Ceiling
-        <input type="number" min={1} step={1} value={value} onChange={(e) => setValue(e.target.value)} aria-label={`Ceiling for ${row.email}`} />
+      <label className="c-field">
+        <span className="c-lbl">Ceiling</span>
+        <input className="c-inp" type="number" min={1} step={1} value={value} onChange={(e) => setValue(e.target.value)} aria-label={`Ceiling for ${row.email}`} />
       </label>
       <Button size="sm" disabled={busy || !whole} onClick={() => void go()}>
         {busy ? 'Saving…' : 'Save'}
@@ -291,9 +292,13 @@ function Loan({ row, lendable, lendableError, reload }: { row: PersonRow; lendab
     )
   }
   if (lendable.length === 0) {
+    // A ZERO IN A SENTENCE READS AS WORDS (owner, 2026-10-09): `[real zero]
+    // accounts to lend` was a table mark set mid-prose. The same rule writes
+    // this screen's other empty lines and the `none pending` chip; that the
+    // zero was measured stays in each one's accessible name.
     return (
       <p className="ur-hint">
-        <Mark kind="zero" say="No account a group or you own can be lent" /> accounts to lend
+        <span aria-label="no accounts to lend (measured)">no accounts to lend</span>
       </p>
     )
   }
@@ -314,9 +319,9 @@ function Loan({ row, lendable, lendableError, reload }: { row: PersonRow; lendab
       {row.loan_request?.state === 'requested' && (
         <Chip>loan requested{row.loan_request.requested_at !== null ? ` ${timeAgo(row.loan_request.requested_at)}` : ''}</Chip>
       )}
-      <label>
-        Account
-        <select value={account} onChange={(e) => setAccount(e.target.value)} aria-label={`Account to lend to ${row.email}`}>
+      <label className="c-field">
+        <span className="c-lbl">Account</span>
+        <select className="c-inp" value={account} onChange={(e) => setAccount(e.target.value)} aria-label={`Account to lend to ${row.email}`}>
           <option value="">choose…</option>
           {lendable.map((a) => (
             <option key={a.account_id} value={a.account_id}>
@@ -347,7 +352,7 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
       {w.workspace_id != null && w.workspace_id !== '' && (
         <>
           {' '}
-          <code>{w.workspace_id}</code>
+          <code className="pp-id">{w.workspace_id}</code>
         </>
       )}
       {w.state === 'failed' && failedAt !== null && <> ({failedAt})</>}
@@ -366,51 +371,103 @@ function Row({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; reload: () 
   const w = row.workspace
   const hasRecord = typeof w.workspace_id === 'string' && w.workspace_id !== ''
   return (
-    <tr data-email={row.email} data-workspace-state={w.state}>
-      <td>{row.email}</td>
-      <td>{row.teams.length > 0 ? row.teams.join(', ') : <Dash why="Resolves to no team" />}</td>
-      <td>{row.github}</td>
-      <td>
+    <tr role="row" data-email={row.email} data-workspace-state={w.state}>
+      <th role="rowheader" scope="row">
+        {row.email}
+      </th>
+      <td role="cell" data-label="Teams">
+        {row.teams.length > 0 ? row.teams.join(', ') : <Dash why="Resolves to no team" />}
+      </td>
+      <td role="cell" data-label="GitHub">
+        {row.github}
+      </td>
+      <td role="cell" data-label="Workspace">
         <WorkspaceCell row={row} />
       </td>
-      <td>
-        {claudeText(row.claude_account)}
-        {row.loan_request?.state === 'requested' && <p className="ur-hint">loan requested</p>}
+      <td role="cell" data-label="Claude account">
+        <div>
+          {claudeText(row.claude_account)}
+          {row.loan_request?.state === 'requested' && <p className="ur-hint">loan requested</p>}
+        </div>
       </td>
-      <td>{row.last_active !== null ? timeAgo(row.last_active) : <Dash why="Not seen active" />}</td>
-      <td className="pp-acts">
-        {hasRecord && w.state === 'requested' && (
-          <span className="ob-acts">
-            <Approve row={row} reload={reload} />
-            <Deny row={row} reload={reload} />
-          </span>
-        )}
-        {/* An admin may approve a denied record at any time, inside the
-            person's 24-hour wait too (§1.3, confirmed by the owner). */}
-        {hasRecord && w.state === 'denied' && (
-          <span className="ob-acts">
-            <Approve row={row} reload={reload} />
-          </span>
-        )}
-        {hasRecord && w.state === 'failed' && (
-          <span className="ob-acts">
-            <Retry row={row} reload={reload} />
-            <Deny row={row} reload={reload} />
-          </span>
-        )}
-        {hasRecord && <Ceiling row={row} reload={reload} />}
-        {hasRecord && <Loan row={row} lendable={doc.lendable_accounts} lendableError={doc.lendable_error} reload={reload} />}
+      <td role="cell" data-label="Last active">
+        {row.last_active !== null ? timeAgo(row.last_active) : <Dash why="Not seen active" />}
+      </td>
+      <td role="cell" data-label="Actions" className="pp-acts-cell">
+        {/* THE ACTIONS STACK IN THEIR CELL (2026-10-09, live at 1456): one
+            group per line, every control as wide as the cell and no wider,
+            so Deny and the Account select stay inside the card. */}
+        <div className="pp-acts">
+          {hasRecord && w.state === 'requested' && (
+            <span className="ob-acts">
+              <Approve row={row} reload={reload} />
+              <Deny row={row} reload={reload} />
+            </span>
+          )}
+          {/* An admin may approve a denied record at any time, inside the
+              person's 24-hour wait too (§1.3, confirmed by the owner). */}
+          {hasRecord && w.state === 'denied' && (
+            <span className="ob-acts">
+              <Approve row={row} reload={reload} />
+            </span>
+          )}
+          {hasRecord && w.state === 'failed' && (
+            <span className="ob-acts">
+              <Retry row={row} reload={reload} />
+              <Deny row={row} reload={reload} />
+            </span>
+          )}
+          {hasRecord && <Ceiling row={row} reload={reload} />}
+          {hasRecord && <Loan row={row} lendable={doc.lendable_accounts} lendableError={doc.lendable_error} reload={reload} />}
+        </div>
       </td>
     </tr>
   )
 }
 
-function Admins({ reload }: { reload: () => void }) {
+function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (email: string) => void }) {
+  if (admins.length === 0) {
+    return (
+      <p className="ur-hint">
+        <span aria-label="no admin role documents (measured)">no admin role documents</span>
+      </p>
+    )
+  }
+  return (
+    <ul className="pp-admin-list" aria-label="Admins">
+      {admins.map((a) => (
+        <li key={a.email} data-email={a.email} data-role={a.role}>
+          <span className="pp-admin-who">
+            <b>{a.email}</b>
+            {a.role === 'owner' && <Chip className="pp-owner">platform owner</Chip>}
+          </span>
+          <span className="ur-hint">
+            {a.role === 'owner'
+              ? 'set by PLATFORM_OWNER in configuration'
+              : `granted by ${a.granted_by ?? 'unknown'}${a.granted_at !== null ? ` ${timeAgo(a.granted_at)}` : ''}`}
+          </span>
+          {/* The owner is not removable here: the API refuses it
+              (OWNER_FROM_CONFIG), so no control offers it. */}
+          {a.role !== 'owner' && (
+            <Button size="sm" kind="ghost" onClick={() => onRemove(a.email)} title={`Remove admin from ${a.email}`}>
+              Remove admin
+            </Button>
+          )}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
-  const [confirm, setConfirm] = useState(false)
+  const [target, setTarget] = useState<string | null>(null)
   const [said, setSaid] = useState<Said | null>(null)
   const typed = email.trim()
+  // An API that predates the list sends no `admins` at all; it is drawn as not
+  // read, and the typed Remove stays, so the action is never lost with it.
+  const admins = Array.isArray(doc.admins) ? doc.admins : null
   const grant = async () => {
     if (busy || typed === '') return
     setBusy(true)
@@ -420,11 +477,11 @@ function Admins({ reload }: { reload: () => void }) {
     reload()
   }
   const remove = async () => {
-    if (busy || typed === '') return
+    if (busy || target === null) return
     setBusy(true)
-    const r = await removeAdmin(typed)
+    const r = await removeAdmin(target)
     setBusy(false)
-    setConfirm(false)
+    setTarget(null)
     setSaid(outcome(r, (d) => `${d.email} is no longer an admin.`))
     reload()
   }
@@ -432,34 +489,44 @@ function Admins({ reload }: { reload: () => void }) {
     <Card className="pp-admins" title="Admins">
       <p className="ur-hint">
         Any admin may grant or remove admin. The platform owner can be changed only by the owner, and the last admin cannot
-        be removed; the API says so when it refuses.
+        be removed; the API says so when it refuses. An admin through an ADMIN_GROUPS group holds no role document and is
+        not listed.
       </p>
-      <span className="ob-acts">
-        <label>
-          Email
-          <input type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+      {admins !== null ? (
+        <AdminList admins={admins} onRemove={setTarget} />
+      ) : (
+        <p className="ur-hint">
+          <Mark kind="unread" say="The admin roles were not read" /> {doc.admins_error ?? 'the admin roles were not served'}
+        </p>
+      )}
+      <span className="ob-acts pp-grant">
+        <label className="c-field">
+          <span className="c-lbl">Email</span>
+          <input className="c-inp" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
         </label>
         <Button size="sm" disabled={busy || typed === ''} onClick={() => void grant()}>
           Grant admin
         </Button>
-        <Button size="sm" kind="ghost" disabled={busy || typed === ''} onClick={() => setConfirm(true)}>
-          Remove admin
-        </Button>
+        {admins === null && (
+          <Button size="sm" kind="ghost" disabled={busy || typed === ''} onClick={() => setTarget(typed)}>
+            Remove admin
+          </Button>
+        )}
       </span>
-      {confirm && (
+      {target !== null && (
         <Dialog
           title="Remove admin"
-          onClose={() => setConfirm(false)}
+          onClose={() => setTarget(null)}
           actions={
             <>
-              <Button onClick={() => setConfirm(false)}>Cancel</Button>
+              <Button onClick={() => setTarget(null)}>Cancel</Button>
               <Button kind="primary" disabled={busy} onClick={() => void remove()}>
                 Remove
               </Button>
             </>
           }
         >
-          <p>Remove admin from {typed}?</p>
+          <p>Remove admin from {target}?</p>
         </Dialog>
       )}
       <SaidLine said={said} />
@@ -472,7 +539,7 @@ function Audit({ entries }: { entries: AdminAuditEntry[] }) {
     <Card className="pp-audit" title="Recent admin actions">
       {entries.length === 0 ? (
         <p className="ur-hint">
-          <Mark kind="zero" say="No admin action is recorded" /> admin actions recorded
+          <span aria-label="no admin actions recorded (measured)">no admin actions recorded</span>
         </p>
       ) : (
         <ol className="pp-audit-list" aria-label="Admin audit">
@@ -490,6 +557,7 @@ function Audit({ entries }: { entries: AdminAuditEntry[] }) {
 
 function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   const rows = pendingFirst(Array.isArray(doc.people) ? doc.people : [])
+  const phone = usePhoneTables()
   return (
     <>
       <Card
@@ -498,36 +566,45 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
         action={
           <Chip>
             {doc.count} {doc.count === 1 ? 'person' : 'people'} ·{' '}
-            {doc.pending === 0 ? <Mark kind="zero" say="No request is waiting for approval" /> : doc.pending} pending
+            {doc.pending === 0 ? <span aria-label="none pending (measured)">none pending</span> : <>{doc.pending} pending</>}
           </Chip>
         }
       >
         {rows.length === 0 ? (
           <p className="ur-hint">
-            <Mark kind="zero" say="No one has signed in" /> people have signed in
+            <span aria-label="no one has signed in (measured)">no one has signed in</span>
           </p>
         ) : (
-          <table className="pools ten-table pp-table">
-            <thead>
-              <tr>
-                <th>Person</th>
-                <th>Teams</th>
-                <th>GitHub</th>
-                <th>Workspace</th>
-                <th>Claude account</th>
-                <th>Last active</th>
-                <th>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((row) => (
-                <Row key={row.email} row={row} doc={doc} reload={reload} />
-              ))}
-            </tbody>
-          </table>
+          /* THE TENANTS PATTERN (Activity.tsx, design-system.md §7.3): the
+              table has its own scroll container inside the card, so nothing
+              in a row can run past the card's edge; below 560px it is a
+              record per person. NOT `.ten-table`: that is Tenants' fixed
+              layout, which without Tenants' colgroup split this table into
+              seven equal columns, pushed Deny and the Account select out of
+              the Actions column, and broke a workspace id at its hyphen. */
+          <div className={`table-wrap ${tableMode(phone)} pp-wrap`}>
+            <table className="pools pp-table" role="table">
+              <thead role="rowgroup">
+                <tr role="row">
+                  <th role="columnheader" scope="col">Person</th>
+                  <th role="columnheader" scope="col">Teams</th>
+                  <th role="columnheader" scope="col">GitHub</th>
+                  <th role="columnheader" scope="col">Workspace</th>
+                  <th role="columnheader" scope="col">Claude account</th>
+                  <th role="columnheader" scope="col">Last active</th>
+                  <th role="columnheader" scope="col">Actions</th>
+                </tr>
+              </thead>
+              <tbody role="rowgroup">
+                {rows.map((row) => (
+                  <Row key={row.email} row={row} doc={doc} reload={reload} />
+                ))}
+              </tbody>
+            </table>
+          </div>
         )}
       </Card>
-      <Admins reload={reload} />
+      <Admins doc={doc} reload={reload} />
       <Audit entries={Array.isArray(doc.audit) ? doc.audit : []} />
     </>
   )

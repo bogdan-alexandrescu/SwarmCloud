@@ -72,7 +72,9 @@ lane:
    The derived checks live in `Overview.tsx:2015 AttentionBody`.
 2. **Charts are not all hand-rolled.** `visx` 4.0.0 ships as four runtime
    dependencies and the library ban (`test_workflow_graph_ui_surface.py:238`)
-   covers `d3`, `recharts`, `reactflow`, `cytoscape` and `vis-network` only.
+   covers `d3`, `recharts`, `reactflow` and `cytoscape` only; `vis-network` is
+   a dependency of the repository graph's Network view and the same test holds
+   it to `RepoGraphNetwork.tsx`.
    `charts/README.md` records the owner's 2026-09-22 decision. **The DAG is
    hand-rolled and stays hand-rolled.** `chart.tokenspend.test.tsx:162` confines
    the visx import to `charts/TimeSeries.tsx`; the dial, the track and the
@@ -1999,6 +2001,16 @@ and what a rewritten test pins.
 | **Still reading** | `.ctl-pending` — a **moving, lighter** sweep, at the exact geometry the value will occupy | nothing; it is temporary | the class present and the box not collapsed |
 | **A truncated list** | `.ctl-table caption` — `showing the 20 longest-running of 143` | `?` topic | the caption's figure, and that it names a total |
 | **A stale reading** | `.ctl-stale-note` banner + `.ctl-stale-body` (dimmed, left rule); rows **stay** | the age, in the banner | the banner, the age, the body class |
+
+**A measured zero in prose is written as words** (owner, 2026-10-09). The
+`real zero` mark (`<Mark kind="zero">`, `.ctl-mark.is-zero`) is for tables,
+figures and fact cards, where it is what separates a measured zero from `not
+measured`. Inside a sentence it reads as a word dropped from the line — the
+Setup page said `your own [real zero] · lent to you [real zero]` — so prose says
+`none of your own`, `no accounts to lend`, `none pending`, and keeps "measured"
+in the accessible name (`aria-label="none of your own (measured)"`). A count
+that was not read is not a zero: it keeps the `not measured` mark in prose too,
+never the word `none`.
 
 ### 8.7 The three distinctions that must never collapse
 
