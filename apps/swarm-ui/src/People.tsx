@@ -292,9 +292,13 @@ function Loan({ row, lendable, lendableError, reload }: { row: PersonRow; lendab
     )
   }
   if (lendable.length === 0) {
+    // A ZERO IN A SENTENCE READS AS WORDS (owner, 2026-10-09): `[real zero]
+    // accounts to lend` was a table mark set mid-prose. The same rule writes
+    // this screen's other empty lines and the `none pending` chip; that the
+    // zero was measured stays in each one's accessible name.
     return (
       <p className="ur-hint">
-        <Mark kind="zero" say="No account a group or you own can be lent" /> accounts to lend
+        <span aria-label="no accounts to lend (measured)">no accounts to lend</span>
       </p>
     )
   }
@@ -425,7 +429,7 @@ function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (ema
   if (admins.length === 0) {
     return (
       <p className="ur-hint">
-        <Mark kind="zero" say="No admin role document is held" /> admin role documents
+        <span aria-label="no admin role documents (measured)">no admin role documents</span>
       </p>
     )
   }
@@ -535,7 +539,7 @@ function Audit({ entries }: { entries: AdminAuditEntry[] }) {
     <Card className="pp-audit" title="Recent admin actions">
       {entries.length === 0 ? (
         <p className="ur-hint">
-          <Mark kind="zero" say="No admin action is recorded" /> admin actions recorded
+          <span aria-label="no admin actions recorded (measured)">no admin actions recorded</span>
         </p>
       ) : (
         <ol className="pp-audit-list" aria-label="Admin audit">
@@ -562,13 +566,13 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
         action={
           <Chip>
             {doc.count} {doc.count === 1 ? 'person' : 'people'} ·{' '}
-            {doc.pending === 0 ? <Mark kind="zero" say="No request is waiting for approval" /> : doc.pending} pending
+            {doc.pending === 0 ? <span aria-label="none pending (measured)">none pending</span> : <>{doc.pending} pending</>}
           </Chip>
         }
       >
         {rows.length === 0 ? (
           <p className="ur-hint">
-            <Mark kind="zero" say="No one has signed in" /> people have signed in
+            <span aria-label="no one has signed in (measured)">no one has signed in</span>
           </p>
         ) : (
           /* THE TENANTS PATTERN (Activity.tsx, design-system.md §7.3): the

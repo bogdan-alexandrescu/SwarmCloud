@@ -65,7 +65,12 @@ PENDING_STATES: frozenset[TaskState] = frozenset(
 _ALLOWED: dict[TaskState, frozenset[TaskState]] = {
     TaskState.SUBMITTED: frozenset({TaskState.QUEUED, TaskState.CANCELLED}),
     TaskState.QUEUED: frozenset({TaskState.READY, TaskState.PARKED, TaskState.CANCELLED}),
-    TaskState.PARKED: frozenset({TaskState.READY, TaskState.CANCELLED, TaskState.DEAD_LETTERED}),
+    # PARKED -> SUCCEEDED: a step the control plane finishes without a worker
+    # (#748, contract request 52). It held no lease, so there is nothing to
+    # release; only swarm-api writes it, guarded on its own claim.
+    TaskState.PARKED: frozenset(
+        {TaskState.READY, TaskState.CANCELLED, TaskState.DEAD_LETTERED, TaskState.SUCCEEDED}
+    ),
     TaskState.READY: frozenset({TaskState.LEASED, TaskState.PARKED, TaskState.CANCELLED}),
     # A lease can be lost before dispatch (reconciler reclaim, limit reduction,
     # cancellation) which returns the task to READY without an attempt.

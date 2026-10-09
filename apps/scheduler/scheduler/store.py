@@ -390,21 +390,50 @@ class SchedulerStore:
             return None
         return task_from_dict(snap.to_dict())
 
-    def parent_ends(self, task_ids: Sequence[str]) -> dict[str, ParentEnd]:
+    def parent_ends(self, task_ids: Sequence[str], *, tenant_id: str) -> dict[str, ParentEnd]:
         """A task's parents: each one's state and, for one that ended, why.
 
         `depends_on` is capped at the workflow step limit, so this is a bounded
         number of point reads, not a scan. The cause rides on the read the state
         already needed: no document is read for it (the review of #217).
+
+        THROUGH THE TENANT GATE (#453). Only a parent of `tenant_id` -- the
+        dependant's own tenant -- is read; another tenant's document is left
+        out, exactly like a missing one, so it is neither a SUCCEEDED parent
+        nor a failed one. And a `state` the contract does not name is left out
+        too, rather than raising. Those are the worker's own rules
+        (`ControlPlane.fetch_parent_states`, which refuses another tenant's
+        parent and reads an unknown state as "not SUCCEEDED") and the
+        reconciler's (`detect._dependencies_met`). When this read was looser,
+        a parent whose task document had been rewritten -- a `tenant_id`
+        forged onto a SUCCEEDED parent -- was promoted here and refused by the
+        worker, every drain: promote -> lease -> park. And reading another
+        tenant's parent cancelled this tenant's child on that tenant's failure
+        and copied its `end_cause` across (invariant 9).
         """
         ends: dict[str, ParentEnd] = {}
         for task_id in dict.fromkeys(task_ids):
             snap = self._db.collection(TASKS).document(task_id).get()
             if snap.exists:
-                data = snap.to_dict()
+                data = snap.to_dict() or {}
+                if data.get("tenant_id") != tenant_id:
+                    # Ids only: whose document it is stays out of the log too.
+                    log.warning(
+                        "a dependency names a task of another tenant; not read",
+                        extra={"tenant_id": tenant_id, "parent_task_id": task_id},
+                    )
+                    continue
+                try:
+                    state = TaskState(data.get("state"))
+                except ValueError:
+                    log.warning(
+                        "a dependency's state is not one the contract names; not SUCCEEDED",
+                        extra={"tenant_id": tenant_id, "parent_task_id": task_id},
+                    )
+                    continue
                 cause = data.get("end_cause")
                 ends[task_id] = ParentEnd(
-                    state=TaskState(data["state"]),
+                    state=state,
                     end_cause=str(cause) if cause is not None else None,
                     cancel_requested=bool(data.get("cancel_requested")),
                     completed_at=as_datetime(data.get("completed_at")),

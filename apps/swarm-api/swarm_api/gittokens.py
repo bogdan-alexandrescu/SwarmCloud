@@ -789,7 +789,8 @@ class GitTokens:
         refusals, then never-verified pairs, then the oldest -- so what one
         pass leaves, the next takes. A pair not reached is not written at
         all. A token whose last attempt failed is retried after
-        REVERIFY_RETRY, not every tick. Only `tenant_id`'s records are read,
+        REVERIFY_RETRY, not every tick -- and is due then, every pair it
+        covers, even when those pairs were verified within the day. Only `tenant_id`'s records are read,
         with its own slots (invariant 9). The defaults are one probe's
         budget (PROBE_BUDGET_SECONDS) and REVERIFY_MAX_PAIRS.
         """
@@ -828,15 +829,22 @@ class GitTokens:
                     and now - attempted < REVERIFY_RETRY and not pending):
                 report.retry_later += 1
                 continue
+            # Its LAST probe did not complete (the slot unreadable, the forge
+            # down) and REVERIFY_RETRY has passed: due now, whether or not its
+            # pairs were verified within the day. Otherwise a "Verify now"
+            # that failed after a good daily probe keeps its probe_error until
+            # the next day's pass, though the cause was fixed minutes later
+            # (2026-10-07: PermissionDenied at 22:55, cleared by hand at 23:59).
+            errored = record.probe_complete is False
             mine = 0
             for rid, name in sorted(covered.items(), key=lambda kv: kv[1]):
                 verified = (docs.get((record.token_id, rid)) or {}).get("verified_at")
-                if rid not in pending and _fresh(verified, now):
+                if rid not in pending and not errored and _fresh(verified, now):
                     report.fresh += 1
                     continue
                 units.append((_priority(rid in pending, verified), index, rid, name))
                 mine += 1
-            if not covered and not _fresh(record.verified_at, now):
+            if not covered and (errored or not _fresh(record.verified_at, now)):
                 # A token covering no registered repository: its account read
                 # alone (login, expiry), once a day.
                 units.append((_priority(False, record.verified_at), index, None, ""))

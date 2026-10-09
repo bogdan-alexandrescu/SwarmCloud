@@ -339,7 +339,12 @@ def task_to_api(
     masker masks `last_error` (the agent's stderr tail), every string in
     `result_summary` (the agent's own summary among them) and the userinfo of
     `repository_url`, each with a count beside it -- see `TaskMasking.text`
-    and `.leaves` for why string by string. The masker comes from
+    and `.leaves` for why string by string. Inside `result_summary` the
+    lookup keys' values (an artifact's `name`/`uri`, a staged input's
+    `filename`/`path`, ids: `task_input.LOOKUP_KEYS`) are masked by
+    `TaskMasking.name`, the function that masks `input_from` and
+    `expected_outputs`, so a clean name is served as written and a masked one
+    still equals its declared copy (#296). The masker comes from
     `task_input.masking_for`, which keeps it per task: a list page of large
     inputs is masked once, not on every refresh.
     """

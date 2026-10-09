@@ -399,7 +399,7 @@ describe('U2: the view modes', () => {
     const seg = document.querySelector('nav[aria-label="Views of this workflow"]')
     expect(seg, 'the page has no view tabs').toBeTruthy()
     const buttons = [...seg!.querySelectorAll<HTMLAnchorElement>('a')]
-    expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Timeline'])
+    expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Timeline', 'Changes'])
     expect(c.querySelector('.wf-viewbar .c-seg'), 'the boxed control is still in the card').toBeNull()
     // The Graph is what the page lands on.
     expect(c.querySelector('.wf-canvas')).toBeTruthy()
