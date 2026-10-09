@@ -834,3 +834,50 @@ def test_an_installation_list_github_did_not_answer_is_not_installed_nowhere(api
     installed = _install_step(api)
     assert installed["state"] == "in_progress"
     assert installed["code"] == "FORGE_UNREACHABLE"
+
+
+# -- Setup's access_verified reads the grants Verify writes (#896) -------------------
+
+
+def _setup_step(api: TestClient, name: str, user: str = "alice") -> dict[str, Any]:
+    answer = api.get("/v1/onboarding", headers=auth_header(user))
+    assert answer.status_code == 200, answer.text
+    return next(s for s in answer.json()["steps"] if s["step"] == name)
+
+
+def test_verifying_a_grant_on_access_completes_setups_access_verified(api, github, db):
+    _connect(api, github)
+    _enable(api)
+    repository = f"{ORG}/repo-0001"
+    assert _grant(api, repository).status_code == 200
+    chosen = _setup_step(api, "repos_chosen")
+    assert chosen["state"] == "done"
+    assert [r["repository"] for r in chosen["evidence"]["repositories"]] == [repository]
+    pending = _setup_step(api, "access_verified")
+    assert pending["state"] == "in_progress"
+    assert [u["repository"] for u in pending["evidence"]["unverified"]] == [repository]
+    answer = api.post(f"/v1/access/grants/{_rid(repository)}/verify",
+                      headers=auth_header("alice"))
+    assert answer.status_code == 200 and answer.json()["passed"] is True, answer.text
+    # The grant was verified and git_token_checks was never written: the
+    # step reads the grant, the record Verify wrote.
+    assert not db.dump("git_token_checks/")
+    verified = _setup_step(api, "access_verified")
+    assert verified["state"] == "done", verified
+    assert verified["evidence"]["repositories"][0]["checks"] == {
+        "clone": "ok", "push": "ok", "open_pull_requests": "ok"}
+
+
+def test_a_refused_check_on_access_fails_setup_naming_the_repository(api, github):
+    _connect(api, github)
+    _enable(api)
+    repository = f"{ORG}/repo-0001"
+    assert _grant(api, repository).status_code == 200
+    github.no_push_git.add(repository)
+    assert api.post(f"/v1/access/grants/{_rid(repository)}/verify",
+                    headers=auth_header("alice")).json()["passed"] is False
+    failed = _setup_step(api, "access_verified")
+    assert failed["state"] == "failed"
+    assert {(i["repository"], i["code"]) for i in failed["issues"]} == {
+        (repository, "PERMISSION_MISSING")}
+    assert failed["issues"][0]["capabilities"] == ["push", "open_pull_requests"]
