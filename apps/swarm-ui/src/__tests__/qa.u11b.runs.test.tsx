@@ -232,9 +232,12 @@ describe('N15: the CI note is true of the run it is drawn on', () => {
   it('draws a dash with its reason, never "none recorded", when the workflow could not be read', async () => {
     // The workflow URL answers 404 (no workflow body served).
     const { container } = await mount(run({ state: 'DONE', terminal: true, workflow_id: WF, pull_request: null }))
+    // The same dash is drawn, with a "still being read" reason, while the
+    // read is in flight: wait for the failed read's reason, not the first dash.
     const dash = await waitFor(() => {
       const d = prFact(container).querySelector('.c-dash')
       expect(d).not.toBeNull()
+      expect(d!.getAttribute('title')).toMatch(/could not be read/)
       return d!
     }, WAIT)
     expect(visible(prFact(container))).not.toMatch(/none recorded/)

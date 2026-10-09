@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, runRepositoryIndex } from './api'
+import { loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, runRepositoryIndex, type RepoDetailRead, type RepoHardStops } from './api'
 import { Banner, Button, Card, Chip, Dash, EmptyState, NamedMark, StatePill, ToneMark, routedClick } from './components'
 import { addressToPath } from './paths'
 import {
@@ -25,7 +25,10 @@ import { formatDuration, timeAgo, TERMINAL_STATES } from './types'
  * map, Hot-spots, Index runs, Settings, Used by -- one tab per part of the
  * index -- with Settings drawn as screen 11's pick A: cards for the schedule,
  * the languages, the graph, the selection policy (P3 / X2, PICKS.md) and the
- * git token that resolves here with its capability row.
+ * git token that resolves here with its capability row; and, where the API
+ * serves them, the hard stops (docs/schedules.md §4.4, lane S11): whether the
+ * repository is the platform's own and its protected paths, the four
+ * defaults marked as the floor a member cannot remove.
  *
  * EVERY FIGURE NAMES THE COMMIT IT DESCRIBES: the meta line carries the index
  * sha and the head sha with when the head was read, and an index behind its
@@ -133,7 +136,7 @@ function DetailBody({
   graph,
   reads,
 }: {
-  d: RepoDetail
+  d: RepoDetailRead
   index: IndexRead
   tab: TabKey
   go: (to: string) => void
@@ -239,7 +242,7 @@ function DetailBody({
           <RunList runs={d.index_runs} />
         </Card>
       )}
-      {tab === 'settings' && <SettingsTab r={r} index={index} go={go} />}
+      {tab === 'settings' && <SettingsTab r={r} index={index} go={go} stops={d.hard_stops ?? null} />}
       {tab === 'used-by' && (
         <Card title="Used by">
           <UsedByList used={d.used_by} go={go} />
@@ -697,7 +700,7 @@ function policyChip(pol: RepoRecord['selection_policy']): string | null {
   return null
 }
 
-function SettingsTab({ r, index, go }: { r: RepoRecord; index: IndexRead; go: (to: string) => void }) {
+function SettingsTab({ r, index, go, stops }: { r: RepoRecord; index: IndexRead; go: (to: string) => void; stops: RepoHardStops | null }) {
   const langRoute = useUrRead(() => loadRepositoryLanguages(r.repo_id), `langs:${r.repo_id}`)
   const langs = languagesRead(langRoute.state, index.state)
   const resolved = useUrRead(() => loadResolvedToken(r.repo_id), `token:${r.repo_id}`)
@@ -745,6 +748,8 @@ function SettingsTab({ r, index, go }: { r: RepoRecord; index: IndexRead; go: (t
               )}
             </UrRegion>
           </Card>
+          {/* Drawn only where the registration serves the fields: an API older than lane S11 has no card to show. */}
+          {stops !== null && <HardStopsCard stops={stops} />}
         </div>
         <div className="ur-stack">
           <Card title="Graph" className="ur-graph">
@@ -815,6 +820,48 @@ function SettingsTab({ r, index, go }: { r: RepoRecord; index: IndexRead; go: (t
         </div>
       </div>
     </>
+  )
+}
+
+/**
+ * The hard stops' two registration fields (docs/schedules.md §4.4). Shown,
+ * not changed, like every card here: `platform` is a platform admin's to set
+ * and clear (audited in admin_audit), and the floor paths are marked so no
+ * one reads them as removable.
+ */
+function HardStopsCard({ stops }: { stops: RepoHardStops }) {
+  const floor = new Set(stops.floor)
+  return (
+    <Card
+      title="Hard stops"
+      className="ur-hardstops"
+      action={stops.platform ? <Chip>platform repository</Chip> : undefined}
+    >
+      <p className="ur-meta" data-platform={stops.platform ? 'true' : 'false'}>
+        <span>
+          Platform repository <b>{stops.platform ? 'yes' : 'no'}</b>
+        </span>
+        <span>set and cleared by a platform admin only</span>
+      </p>
+      <p className="ur-hint">
+        {stops.platform
+          ? "A change to a protected path here is held for the platform owner's approval."
+          : 'A change to a protected path here is held for a second member of the tenant.'}
+      </p>
+      <h3 className="ur-subh">Protected paths</h3>
+      <div className="ur-rows">
+        {stops.hard_stop_paths.map((path) => (
+          <div className="ur-hardstop" key={path} data-floor={floor.has(path) ? 'true' : 'false'}>
+            <code>{path}</code>
+            {floor.has(path) && (
+              <span className="ur-mu" title="One of the four defaults: a member can add paths but cannot remove this one">
+                {' '}default, cannot be removed
+              </span>
+            )}
+          </div>
+        ))}
+      </div>
+    </Card>
   )
 }
 

@@ -49,6 +49,14 @@ def test_an_ordinary_argument_still_passes(value):
         "http://169.254.169.254\\@example.com/",
         "http://[::ffff:169.254.169.254]/",
         "http://2852039166/",
+        # Contract request 57 (#349).
+        "http://[fec0::1]/",
+        "http://[2001:0:4136:e378:8000:63bf:3fff:fdd2]/",
+        "http://[3fff::1]/",
+        "http://[5f00::1]/",
+        "http://metadata.goog/",
+        "http://localhost.localdomain/",
+        "http://example.com../",
     ],
 )
 def test_the_browser_runner_refuses_what_url_refusal_refuses(url):
