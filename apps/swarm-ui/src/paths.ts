@@ -64,6 +64,8 @@ export const FIXED: Readonly<Record<string, string>> = {
   'admin/limits': '/admin/limits',
   'admin/tenants': '/admin/tenants',
   'admin/counts': '/admin/counts',
+  // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
+  'admin/people': '/admin/people',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }
@@ -93,7 +95,12 @@ export function helpGroupOf(topic: string): string | null {
   return t === undefined ? null : t.group
 }
 
-export const TASK_PANES = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints'] as const
+/**
+ * `changes` is the agent's Changes tab (design docs/design/diff-viewer.md §2
+ * variant 2): `/agents/<tab>/<id>/changes`, and `/changes/<file>` with the open
+ * file as ONE encoded segment, so a link can name the file it is about.
+ */
+export const TASK_PANES = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes'] as const
 
 function isAgentTab(s: string | undefined): s is AgentTab {
   return (AGENT_TABS as readonly string[]).includes(s ?? '')
@@ -127,8 +134,14 @@ function listFromQuery(tab: AgentTab, query: string): AgentList {
 }
 
 
-/** The panes of one workflow that are a path segment: `/workflows/<id>/<pane>`. */
-export const WORKFLOW_PANES: readonly string[] = ['table', 'timeline']
+/**
+ * The panes of one workflow that are a path segment: `/workflows/<id>/<pane>`.
+ * `changes` is the workflow's Changes tab (diff-viewer.md §2 variants 2 + 5).
+ */
+export const WORKFLOW_PANES: readonly string[] = ['table', 'timeline', 'changes']
+
+/** The panes of one issue run that are a path segment: `/runs/<id>/changes`. Its page is the bare id. */
+export const RUN_PANES: readonly string[] = ['changes']
 
 /** A repository's tabs that are a path segment: `/repositories/<id>/<tab>`; Overview is the bare id. */
 export const REPO_TABS: readonly string[] = ['graph', 'impact', 'test-map', 'hot-spots', 'index-runs', 'settings', 'used-by']
@@ -181,9 +194,15 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     const base = wf !== null && wf !== '' ? `/workflows/${encodeURIComponent(wf)}${pane}` : '/workflows'
     return rest === '' ? base : `${base}?${rest}`
   }
-  // One issue run rides on the Runs list's query as `run=<id>`: `/runs/<id>`.
+  // One issue run rides on the Runs list's query as `run=<id>`: `/runs/<id>`,
+  // and its Changes tab as `tab=changes`: `/runs/<id>/changes`.
   if (bare === 'work/runs' && query !== '') {
-    const run = new URLSearchParams(query).get('run')
+    const params = new URLSearchParams(query)
+    const run = params.get('run')
+    const tab = params.get('tab')
+    if (run !== null && run !== '' && tab !== null && RUN_PANES.includes(tab)) return `/runs/${encodeURIComponent(run)}/${tab}`
+    // The run's page: the worker's issue comment links here (swarm_api
+    // `run_console_url`, held to this line by test_issue_writeback.py).
     if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}`
   }
   // Work › Repositories (repositories.html): the page rides on the tab's query.
@@ -277,7 +296,13 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   }
 
   if (seg[0] === 'runs' && seg.length >= 2) {
-    return plain(`work/runs?${new URLSearchParams({ run: decodeURIComponent(seg.slice(1).join('/')) }).toString()}`)
+    // A trailing `/changes` is the run's Changes tab, as on a workflow.
+    const last = seg[seg.length - 1] ?? ''
+    const pane = seg.length >= 3 && RUN_PANES.includes(last) ? last : null
+    const idSegs = pane === null ? seg.slice(1) : seg.slice(1, -1)
+    const params = new URLSearchParams({ run: decodeURIComponent(idSegs.join('/')) })
+    if (pane !== null) params.set('tab', pane)
+    return plain(`work/runs?${params.toString()}`)
   }
 
   if (seg[0] === 'repositories' && seg.length >= 2) {

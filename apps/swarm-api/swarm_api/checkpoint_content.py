@@ -79,6 +79,15 @@ runs over compressed bytes. Serving it unredacted is the owner's decision of
 `X-Swarm-Redaction: not-applied` rather than leaving a caller to assume the
 per-file guarantee extends to it.
 
+And every CLI task's archive holds its PROMPT, word for word (issue #244):
+`HOME` is `work/`, so the CLI's own session transcript --
+`work/.claude/projects/<cwd>/<session>.jsonl` for Claude Code,
+`work/.codex/sessions/.../*.jsonl` for Codex -- is archived, and its first user
+message is the prompt. Leaving `input.json` out of the archive does not change
+that. The owner kept it on 2026-09-27, because the tenant downloading the
+archive is the tenant that owns the task. The per-file view masks that member
+like any other text member; the whole-archive download serves it as stored.
+
 Nothing here writes. There is no upload, no delete and no copy on the reader
 this module is given (`objects.ObjectReader`), and the IAM grant behind it is
 `roles/storage.objectViewer`.
@@ -1215,13 +1224,16 @@ class CheckpointContent:
                 handle, head, row, size=size, offset=offset, masking=masking, chunk=self._chunk
             )
 
-        # THE LOOK-BACK, exactly as `read_artifact` takes it (#207): up to
-        # `KEY_LOOKBACK_BYTES` before `offset`, whose last byte tells `_align`
-        # whether the window starts on a token boundary or inside one, and
-        # whose whole tells `_enter_key` whether it starts inside a private
-        # key. With one byte of overlap and no look-back, a page in the middle
-        # of a key longer than a page held neither marker and was served in
-        # clear.
+        # THE LOOK-BACK, SHARED, NOT RESTATED (#207): the same
+        # `KEY_LOOKBACK_BYTES` and the same `_align`, `_enter_key` and
+        # `_decode_window` that `read_artifact` and `read_logs` use, imported
+        # from `inspect`, so a change to how a window is cut or decoded there
+        # is a change here. The look-back reads up to `KEY_LOOKBACK_BYTES`
+        # before `offset`: its last byte tells `_align` whether the window
+        # starts on a token boundary or inside one, and its whole tells
+        # `_enter_key` whether the window starts inside a private key. With
+        # one byte of overlap and no look-back, a page in the middle of a key
+        # longer than a page held neither marker and was served in clear.
         probe = min(offset, KEY_LOOKBACK_BYTES)
         start = min(offset - probe, size)
         end = min(size, offset + window)
@@ -1338,7 +1350,9 @@ class CheckpointContent:
         swarm-api's timeout (Cloud Run allows 60 minutes) is a service-wide
         change and is left to the owner; see redesign-v2.md S3.
 
-        NOT REDACTED, and the headers say so -- see the module docstring. The
+        NOT REDACTED, and the headers say so -- see the module docstring, whose
+        "WHAT IS REDACTED AND WHAT IS NOT" also says the archive carries the
+        task's prompt in the CLI's session transcript (issue #244). The
         manifest's digest travels as `X-Checkpoint-Sha256` when there is one
         and it is a digest, so the caller can verify what they received;
         `X-Checkpoint-Manifest` says whether there was a commit marker at all.
@@ -1442,6 +1456,9 @@ class CheckpointContent:
 # and the metadata named -- and written back the way the worker wrote it
 # (`indent=2`). WHOLE, as one document: a masker needs the whole structure,
 # so there are no windows, and a request for a later offset gets the end.
+#
+# The PROMPT is still in every CLI task's archive, through the CLI's session
+# transcript (issue #244; see the module docstring).
 
 #: The archive member that holds the task's input: `work/input.json`, archived
 #: relative to `work/`.

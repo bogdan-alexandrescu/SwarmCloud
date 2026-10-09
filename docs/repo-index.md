@@ -18,6 +18,12 @@ explorer, test selection for merge, and git tokens per repository and per
 user. The section "Revised 2026-10-04 (owner): AST and LSP" below lists what
 changed and where; still nothing is built and the status stays PROPOSED.
 
+**Extended 2026-10-08 (lane GNX):** how agents use this index's graph (planner,
+implementers, reviewers, fixers, merge, observer, console, orchestrator), and
+GitNexus measured against the indexer, are in
+[design/knowledge-graph.md](design/knowledge-graph.md). That design amends
+request (A) of §6.3 rather than adding a request.
+
 What the design settles, in one line each, with the section that carries the
 detail:
 

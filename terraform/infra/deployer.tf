@@ -16,7 +16,8 @@
 # These bindings are on OUR accounts only -- every platform account modules/iam
 # creates (keys are static, so a fresh project still plans), the tick account the
 # scheduler jobs mint OIDC tokens as, the rollup-sweeper account the
-# workflow-rollup jobs mint theirs as, and swarm-verify. Tenant worker accounts get
+# workflow-rollup jobs mint theirs as, the schedule-tick account the schedule
+# tick mints its own as, and swarm-verify. Tenant worker accounts get
 # the same grant through modules/tenancy's dispatcher_members (main.tf), so a new
 # tenant is covered the day it is created.
 #
@@ -45,6 +46,9 @@ locals {
       "swarm-verify" = google_service_account.verify.email
       # The workflow-rollup jobs mint OIDC tokens as this account (D17).
       "swarm-rollup-sweeper" = module.scheduler.rollup_sweeper_email
+      # The schedule tick's job (lane S4) mints OIDC tokens as this account
+      # (docs/schedules.md SD10). Creating a job that does needs actAs on it.
+      "swarm-schedule-tick" = module.scheduler.schedule_tick_email
     },
   )
 }

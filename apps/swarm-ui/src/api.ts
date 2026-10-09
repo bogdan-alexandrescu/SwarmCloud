@@ -31,6 +31,7 @@ import type {
   AccountAuthorization, AccountExchangeResponse,
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
+  AdminGrantAnswer, AdminRemoveAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
 } from './types'
@@ -517,8 +518,10 @@ export async function loadResourceClasses(): Promise<Result<{ resource_classes: 
  * A task's checkpoints, across every attempt.
  *
  * `GET /v1/tasks/{id}/checkpoints`. Newest attempt first, newest checkpoint
- * first within an attempt -- which is the order a resume would consider them
- * in, because `CheckpointManager.find_latest` scans the whole task prefix.
+ * first within an attempt. That is a reading order, not a resume order: a
+ * resume restores only the checkpoint `task.latest_checkpoint` names (the
+ * page's `latest_checkpoint`, and the row with `is_latest_pointer`), or
+ * nothing -- there is no fallback to the newest one listed (#347).
  *
  * NO EMPTY PREDICATE IS PASSED, deliberately. `checkpoints: []` with
  * `listed: true` is a real answer -- this task has written none -- and the
@@ -5188,9 +5191,41 @@ export async function loadRepositories(): Promise<Result<RepoRecord[]>> {
   return readAs(route('/v1/repositories'), normRepoList, (d) => d.length === 0)
 }
 
-/** `GET /v1/repositories/{repo_id}`: one registration, its last index runs and who used its index. */
-export async function loadRepository(repoId: string): Promise<Result<RepoDetail | null>> {
-  return readAs(route('/v1/repositories/{repo_id}', { repo_id: repoId }), normRepoDetail)
+/**
+ * The registration fields the hard stops read (docs/schedules.md §4.4, lane
+ * S11): `platform`, set and cleared by a platform admin only, and
+ * `hard_stop_paths`, whose `floor` (the four defaults, served by the API so
+ * this file does not restate them) a member cannot remove.
+ */
+export interface RepoHardStops {
+  platform: boolean
+  hard_stop_paths: string[]
+  floor: string[]
+}
+
+/**
+ * The hard-stop fields of a registration, or null when the API did not serve
+ * them (one older than S11): an absent list is not an empty one, and an
+ * absent `platform` is not a confident "no".
+ */
+export function normRepoHardStops(raw: unknown): RepoHardStops | null {
+  if (typeof raw !== 'object' || raw === null) return null
+  const outer = raw as Record<string, unknown>
+  const rec = (typeof outer.repository === 'object' && outer.repository !== null ? outer.repository : outer) as Record<string, unknown>
+  if (typeof rec.platform !== 'boolean' || !Array.isArray(rec.hard_stop_paths)) return null
+  const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
+  return { platform: rec.platform, hard_stop_paths: strings(rec.hard_stop_paths), floor: strings(rec.hard_stop_paths_floor) }
+}
+
+/** A registration's detail with its hard-stop fields, read from the one answer. */
+export type RepoDetailRead = RepoDetail & { hard_stops: RepoHardStops | null }
+
+/** `GET /v1/repositories/{repo_id}`: one registration, its last index runs, who used its index, and its hard stops. */
+export async function loadRepository(repoId: string): Promise<Result<RepoDetailRead | null>> {
+  return readAs(route('/v1/repositories/{repo_id}', { repo_id: repoId }), (raw) => {
+    const d = normRepoDetail(raw)
+    return d === null ? null : { ...d, hard_stops: normRepoHardStops(raw) }
+  })
 }
 
 /** `GET /v1/repositories/{repo_id}/index?format=json`: the current index's structured document. */
@@ -5376,6 +5411,77 @@ export async function exchangeGitHub(body: GitHubExchangeBody): Promise<Result<G
 /** `DELETE /v1/onboarding/github`: revoke at GitHub, disable the slot's versions, delete the caller's grants. */
 export async function disconnectGitHub(): Promise<Result<GitHubDisconnectResponse>> {
   return writeTo(route('/v1/onboarding/github'), 'DELETE') as Promise<Result<GitHubDisconnectResponse>>
+}
+
+// ---------------------------------------------------------------------------
+// Personal workspaces (#847, lane W8; docs/workspaces.md §6.3).
+//
+// The person's routes are swarm_api/routes/workspaces.py and are ALWAYS THE
+// CALLER'S OWN: no route takes a tenant, an email or a workspace id, so the
+// console cannot ask for anyone else's. The admin routes are
+// routes/people.py and address a person by WORKSPACE ID, never an email, so
+// a URL names nobody -- bar the admins routes, which the API defines by
+// email. None takes or answers a credential, an image, a command or a
+// resource spec (invariant 10). The fixture build answers each as not served.
+// ---------------------------------------------------------------------------
+
+/** `GET /v1/workspace`: the caller's own record, or `{state: "none"}`. */
+export async function loadWorkspace(): Promise<Result<WorkspaceView>> {
+  return readAs(route('/v1/workspace'), (raw) => raw as WorkspaceView)
+}
+
+/** `POST /v1/workspace`: request it. 202 made or re-opened, 200 already standing; the record either way. */
+export async function requestWorkspace(): Promise<Result<WorkspaceView>> {
+  return writeTo(route('/v1/workspace'), 'POST', { via: 'console' }) as Promise<Result<WorkspaceView>>
+}
+
+/** `POST /v1/workspace/loan-request`: ask an admin to lend a Claude account. Idempotent. */
+export async function requestLoan(): Promise<Result<LoanRequestAnswer>> {
+  return writeTo(route('/v1/workspace/loan-request'), 'POST', { via: 'console' }) as Promise<Result<LoanRequestAnswer>>
+}
+
+/** `GET /v1/admin/people` (admin): everyone, pending first, the last 50 audit entries, the lendable accounts. */
+export async function loadPeople(): Promise<Result<PeopleDoc>> {
+  return readAs(route('/v1/admin/people'), (raw) => raw as PeopleDoc)
+}
+
+/** `POST /v1/admin/workspaces/{workspace_id}/approve` (admin): approve, then publish the workspace id. */
+export async function approveWorkspace(workspaceId: string): Promise<Result<WorkspaceActionAnswer>> {
+  return writeTo(route('/v1/admin/workspaces/{workspace_id}/approve', { workspace_id: workspaceId }), 'POST') as Promise<Result<WorkspaceActionAnswer>>
+}
+
+/** `POST /v1/admin/workspaces/{workspace_id}/deny` (admin): the reason is shown to the person. */
+export async function denyWorkspace(workspaceId: string, reason: string): Promise<Result<WorkspaceActionAnswer>> {
+  return writeTo(route('/v1/admin/workspaces/{workspace_id}/deny', { workspace_id: workspaceId }), 'POST', { reason }) as Promise<Result<WorkspaceActionAnswer>>
+}
+
+/** `POST /v1/admin/workspaces/{workspace_id}/retry` (admin): from failed or needs_owner, publishes again. */
+export async function retryWorkspace(workspaceId: string): Promise<Result<WorkspaceActionAnswer>> {
+  return writeTo(route('/v1/admin/workspaces/{workspace_id}/retry', { workspace_id: workspaceId }), 'POST') as Promise<Result<WorkspaceActionAnswer>>
+}
+
+/** `PUT /v1/admin/workspaces/{workspace_id}/limits` (admin): the ceiling, `{max_active}` and nothing else. */
+export async function setWorkspaceCeiling(workspaceId: string, maxActive: number): Promise<Result<WorkspaceLimitsAnswer>> {
+  return writeTo(route('/v1/admin/workspaces/{workspace_id}/limits', { workspace_id: workspaceId }), 'PUT', { max_active: maxActive }) as Promise<
+    Result<WorkspaceLimitsAnswer>
+  >
+}
+
+/** `PUT /v1/admin/people/{workspace_id}/loan` (admin): lend an account to the person (`lend: true`) or reclaim it. */
+export async function setWorkspaceLoan(workspaceId: string, accountId: string, lend: boolean): Promise<Result<WorkspaceLoanAnswer>> {
+  return writeTo(route('/v1/admin/people/{workspace_id}/loan', { workspace_id: workspaceId }), 'PUT', { account_id: accountId, lend }) as Promise<
+    Result<WorkspaceLoanAnswer>
+  >
+}
+
+/** `PUT /v1/admin/admins/{email}` (admin): grant admin. Idempotent (`changed: false`). */
+export async function grantAdmin(email: string): Promise<Result<AdminGrantAnswer>> {
+  return writeTo(route('/v1/admin/admins/{email}', { email }), 'PUT') as Promise<Result<AdminGrantAnswer>>
+}
+
+/** `DELETE /v1/admin/admins/{email}` (admin): refused for the owner and for the last admin, with the API's message. */
+export async function removeAdmin(email: string): Promise<Result<AdminRemoveAnswer>> {
+  return writeTo(route('/v1/admin/admins/{email}', { email }), 'DELETE') as Promise<Result<AdminRemoveAnswer>>
 }
 
 // ---------------------------------------------------------------------------

@@ -658,3 +658,86 @@ def test_an_unreadable_slot_is_a_failed_probe_not_a_failed_poll(poll_client, db,
                                 headers={"Authorization": "Bearer token-sweeper"})
     assert response.status_code == 200, response.text
     assert response.json()["report"]["git_tokens"]["failed"] == 1
+
+
+# -- an errored probe is re-probed after REVERIFY_RETRY, not after REVERIFY_EVERY --------
+#
+# 2026-10-07: a "Verify now" at 22:55 could not read the slot (PermissionDenied;
+# the grant was applied minutes later). Every pair the token covers had been
+# verified that day, so each pass skipped them as fresh and the record kept its
+# stale probe_error until someone probed by hand at 23:59. A record whose LAST
+# probe is incomplete is due once REVERIFY_RETRY has passed, fresh pairs or not.
+
+DENIED = ("swarm-api may not read swarm-tenant-eng-git: its accessor grant on the "
+          "tenant's git secret is missing")
+
+
+def test_an_errored_probe_is_reprobed_after_the_retry_not_the_day(
+    db, registry, slots, fake, clock
+) -> None:
+    ten = tenant(db)
+    slots.put("swarm-tenant-eng-git", classic_value())
+    targets = repos(2)
+    report = reverify(registry, ten, targets, slots, fake)
+    assert report.pairs == 2 and record_doc(db, DEFAULT)["probe_complete"] is True
+
+    # "Verify now", ten hours later, while the grant is missing.
+    clock.now = T0 + timedelta(hours=10)
+    slots.raises = forge.IssueReadFailed(DENIED)
+    registry.probe(ten, "eng", DEFAULT, tokens=slots, send=fake)
+    failed_at = clock.now
+    assert record_doc(db, DEFAULT)["probe_complete"] is False
+    assert "may not read" in record_doc(db, DEFAULT)["probe_error"]
+
+    # The grant lands. Inside the retry window the pass still backs off.
+    slots.raises = None
+    slots.asked.clear()
+    clock.now = failed_at + timedelta(minutes=5)
+    report = reverify(registry, ten, targets, slots, fake)
+    assert report.retry_later == 1 and report.probed == 0 and slots.asked == []
+
+    # The first pass after REVERIFY_RETRY probes it again, though every pair
+    # it covers was verified well within the day.
+    clock.now = failed_at + REVERIFY_RETRY
+    report = reverify(registry, ten, targets, slots, fake)
+    assert report.probed == 1 and report.failed == 0
+    assert slots.asked == ["swarm-tenant-eng-git"]
+    doc = record_doc(db, DEFAULT)
+    assert doc["probe_complete"] is True
+    assert not doc.get("probe_error")
+    assert doc["probe_attempted_at"] == failed_at + REVERIFY_RETRY
+
+
+def test_a_complete_probe_still_waits_the_day(db, registry, slots, fake, clock) -> None:
+    ten = tenant(db)
+    slots.put("swarm-tenant-eng-git", classic_value())
+    targets = repos(2)
+    reverify(registry, ten, targets, slots, fake)
+    slots.asked.clear()
+    for later in (REVERIFY_RETRY, 2 * REVERIFY_RETRY, REVERIFY_EVERY - timedelta(minutes=5)):
+        clock.now = T0 + later
+        report = reverify(registry, ten, targets, slots, fake)
+        assert report.probed == 0 and report.fresh == 2 and report.retry_later == 0
+    assert slots.asked == []
+    clock.now = T0 + REVERIFY_EVERY
+    report = reverify(registry, ten, targets, slots, fake)
+    assert report.probed == 1 and report.pairs == 2
+
+
+def test_an_errored_probe_with_no_registered_repository_is_retried_too(
+    db, registry, slots, fake, clock
+) -> None:
+    # A token covering no registered repository: its account read alone,
+    # which is just as stuck behind a fresh verified_at.
+    ten = tenant(db)
+    slots.put("swarm-tenant-eng-git", classic_value())
+    reverify(registry, ten, [], slots, fake)
+    assert record_doc(db, DEFAULT)["probe_complete"] is True
+    clock.now = T0 + timedelta(hours=2)
+    slots.raises = forge.IssueReadFailed(DENIED)
+    registry.probe(ten, "eng", DEFAULT, tokens=slots, send=fake)
+    slots.raises = None
+    clock.now = T0 + timedelta(hours=2) + REVERIFY_RETRY
+    report = reverify(registry, ten, [], slots, fake)
+    assert report.probed == 1
+    assert record_doc(db, DEFAULT)["probe_complete"] is True

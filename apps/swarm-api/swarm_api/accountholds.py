@@ -38,7 +38,10 @@ tenant's" identically, so it is not an oracle either.
 
 A hold with no task at all -- an older worker image, or a hold from before the
 stamp existed -- is `recorded: false`, and the console says "task not
-recorded". That is different from "unverified", and the two are kept apart.
+recorded". That is different from "unverified", and the two are kept apart
+FOR THE PLATFORM ONLY. To a tenant, its own hold naming a task it does not own
+is served as `recorded: false` too (#361): `recorded: true` beside
+`verified: false` told the tenant that a task id it does not own exists.
 
 A SWAP, AND WHO MAY SEE WHERE IT WENT (S13/S14)
 -----------------------------------------------
@@ -181,10 +184,20 @@ class TaskCheck:
 def _work(
     entry: dict[str, Any], *, tenant: str, check: TaskCheck, show_unverified: bool
 ) -> dict[str, Any]:
-    """The task, attempt and verification fields for a hold whose work may be shown."""
+    """The task, attempt and verification fields for a hold whose work may be shown.
+
+    `show_unverified` is the platform's view, and only it is told that a task
+    id the hold's tenant does not own was sent (`recorded: true`,
+    `verified: false`). To anyone else that hold reads exactly as one that
+    named no task (#361): the distinction itself would tell a tenant that a
+    task id it does not own exists.
+    """
     task = _text(entry.get("task_id"))
     verified = bool(task) and check.owns(tenant, task)
-    out: dict[str, Any] = {"recorded": bool(task), "verified": verified}
+    out: dict[str, Any] = {
+        "recorded": bool(task) and (verified or show_unverified),
+        "verified": verified,
+    }
     if task and (verified or show_unverified):
         out["task_id"] = task
         out["attempt"] = check.attempt_number(tenant, task, _text(entry.get("attempt_id")))
@@ -360,12 +373,30 @@ def history_view(
 OWN_PAGE_SCAN_MAX = 5
 
 
-def _cursor_skip(cursor: str | None) -> tuple[datetime | None, int]:
-    """The (instant, skip) of a cursor this service minted, or (None, 0)."""
+#: What marks a BORROWER's cursor, `<instant>|own<k>` (#361). `k` counts the
+#: borrower's OWN spans at that instant it has been served, never the
+#: broker's skip: the broker counts every row at the instant, other tenants'
+#: included, and a borrower cursor carrying that count told the borrower how
+#: many other tenants' spans shared its own span's exact instant. The route
+#: turns `k` back into the broker's skip (`routes/accounts.py`
+#: `_require_own_cursor`). The mark is what refuses a borrower's cursor from
+#: before the change: it was `<instant>|<n>`, and that `n` meant the other
+#: thing.
+OWN_CURSOR_MARK = "own"
+
+
+def own_cursor_position(cursor: str | None) -> tuple[str, datetime, int] | None:
+    """The (stamp, instant, own count) of a borrower cursor, or None for any other."""
     if not cursor:
-        return None, 0
-    instant, _, count = cursor.rpartition("|")
-    return (_instant(instant), int(count)) if count.isdigit() else (None, 0)
+        return None
+    stamp, sep, count = cursor.rpartition("|")
+    if not sep or not count.startswith(OWN_CURSOR_MARK):
+        return None
+    digits = count[len(OWN_CURSOR_MARK):]
+    at = _instant(stamp)
+    if at is None or not (digits.isascii() and digits.isdigit()):
+        return None
+    return stamp, at, int(digits)
 
 
 def own_page(
@@ -382,7 +413,12 @@ def own_page(
     a timestamp a borrower is not shown. So the page is cut after the
     borrower's last own row and the cursor is rebuilt from THAT row, which the
     borrower may know. The rows cut are served again, counted, on the next
-    page. A page with no row of the borrower's at all is followed (at most
+    page.
+
+    `cursor` is the BORROWER's cursor this page was opened with, if any, and
+    the one minted counts the borrower's OWN rows at the instant only
+    (`OWN_CURSOR_MARK`, #361): another tenant's row sharing that exact
+    `assigned_at` is not in the number the borrower is handed. A page with no row of the borrower's at all is followed (at most
     `OWN_PAGE_SCAN_MAX` pages) until one has, because there is no cursor to hand
     back otherwise; past that bound the scan stops, says so, and offers none.
 
@@ -433,21 +469,23 @@ def own_page(
             "a span on this page carries no readable start instant, so the next "
             "page cannot be placed; the history is refused rather than cut short"
         )
-    n = sum(1 for r in kept if _instant(r.get("assigned_at")) == at)
-    from_at, from_skip = _cursor_skip(cursor)
-    if from_at is not None and from_at == at:
-        n += from_skip
+    n = sum(1 for r in kept if mine(r) and _instant(r.get("assigned_at")) == at)
+    came_from = own_cursor_position(cursor)
+    if came_from is not None and came_from[1] == at:
+        n += came_from[2]
     served["spans"] = kept
-    served["next_cursor"] = f"{stamp}|{n}"
+    served["next_cursor"] = f"{stamp}|{OWN_CURSOR_MARK}{n}"
     return served
 
 
 __all__ = [
     "EVERY_ACCOUNT",
+    "OWN_CURSOR_MARK",
     "TaskCheck",
     "Viewer",
     "history_view",
     "holders_view",
+    "own_cursor_position",
     "own_page",
     "viewer_of",
 ]

@@ -582,3 +582,11 @@ groups_impersonate_user = "bogdan@saga.xyz"
 # email is the GitHub repository variable GCP_DEPLOY_SA; both are written by the
 # bootstrap output github_deployer_service_account.
 deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
+
+# The in-platform issue sweeper (swarm-api SWEEP_ENABLED), on in dev from
+# 2026-10-09. Owner decision 2026-10-08: switch it on once PR 898 is deployed
+# (it was, 2026-10-09 02:28Z). This is the platform switch only; the tenant's
+# own switch, its cap of 8 live runs and submit_as are set per tenant through
+# PUT /v1/admin/tenants/eng/issue-sweep, not here (docs/issue-runs.md "Turning
+# it on, for tenant eng"). Left off in prod.
+enable_issue_sweep = true

@@ -36,11 +36,13 @@ import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
 import { routedClick, Segmented, ToneMark } from './components'
+import { Mark } from './primitives'
 import { HelpScreen, helpPageOf } from './HelpSection'
 import { HoldersScreen } from './Holders'
 import { OverviewScreen } from './Overview'
 import { OnboardingScreen, SetupCard } from './Onboarding'
 import { AccessScreen } from './Access'
+import { PeopleScreen } from './People'
 import { PlatformCountsScreen } from './PlatformCounts'
 import { ProfilesScreen } from './Profiles'
 import { QuotaDetailScreen } from './QuotaDetail'
@@ -427,9 +429,10 @@ export const SECTIONS: SectionDef[] = [
     id: 'admin',
     label: 'Admin',
     // The count is named here because Admin is no longer only the things an
-    // operator CHANGES: one of its three panes changes nothing and is a
+    // operator CHANGES: one of its panes changes nothing and is a
     // platform-wide read. That is a widening, said out loud rather than
-    // smuggled in by leaving the old sentence in place.
+    // smuggled in by leaving the old sentence in place. People (#847) is the
+    // fourth pane, and the question's last clause is its.
     //
     // A QUESTION, AS THE OTHER THREE ARE (AH-23). It was an instruction --
     // "Change a ceiling, see who is registered..., and count what it has
@@ -438,13 +441,17 @@ export const SECTIONS: SectionDef[] = [
     // docs/web-ui/redesign.md §2 carries the same words, and
     // tests/sections.test.ts holds the two together.
     question:
-      'What is each ceiling set to, who is registered to use this platform, and how many tasks are in each state?',
+      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, and who is waiting for a workspace?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
       // The id stays `counts`, so `#counts` (LEGACY) and `#history/counts`
       // (MOVED_PANES) both land here.
       { id: 'counts', label: 'Platform counts', admin: true },
+      // #847 W8 (docs/workspaces.md §6.4): who has signed in, their workspace
+      // requests to approve or deny, each person's ceiling and Claude account,
+      // and who is an admin. Admin only, like the three before it.
+      { id: 'people', label: 'People', admin: true },
     ],
   },
 ]
@@ -654,10 +661,10 @@ export const LEGACY_HEADS: readonly string[] = [
  * and transcript, live while it runs. Its address is
  * `#work/task/<id>/artifacts`, as `attempts` is `#work/task/<id>/attempts`.
  */
-export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints'
+export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints' | 'changes'
 
 /** The address segment each non-default pane is written with. `detail` has none. */
-const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints']
+const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes']
 
 export interface Route {
   /** A section id, or REFERENCE. */
@@ -674,6 +681,13 @@ export interface Route {
    * file of a patch is open is never in the address.
    */
   artifact?: string | null
+  /**
+   * The file open in the Changes tab, when the address names one:
+   * `/agents/<tab>/<id>/changes/<path>`, the path ONE encoded segment
+   * (diff-viewer.md §1 pain 3: the URL never named the file). OPTIONAL like
+   * `artifact`; absent opens the patch's first file.
+   */
+  file?: string | null
   /**
    * The agent list's tab and Recent state, when the address names them
    * (OV-10): `#work/running/recent/failed`. OPTIONAL, so every route built
@@ -803,6 +817,12 @@ export function fromAddress(full: string): Route {
       artifact = decodeSegment(rest[rest.length - 1]!)
       rest = rest.slice(0, -1)
     }
+    // ONE FILE OF THE CHANGES TAB: `<id>/changes/<path>`, the same way.
+    let file: string | null = null
+    if (artifact === null && rest.length >= 3 && rest[rest.length - 2] === 'changes') {
+      file = decodeSegment(rest[rest.length - 1]!)
+      rest = rest.slice(0, -1)
+    }
     const last = rest[rest.length - 1]
     const pane = PANE_SEGMENTS.find((p) => p === last) ?? null
     // Task ids are opaque and may contain characters that were encoded on the
@@ -816,6 +836,7 @@ export function fromAddress(full: string): Route {
         taskId: decodeURIComponent(id),
         taskPane: pane ?? 'detail',
         ...(artifact !== null && artifact !== '' ? { artifact } : {}),
+        ...(file !== null && file !== '' ? { file } : {}),
       }
     }
   }
@@ -912,6 +933,7 @@ export function canonical(r: Route): string {
   if (r.taskId !== null) {
     const base = `${WORK}/task/${encodeURIComponent(r.taskId)}`
     if (r.taskPane === 'artifacts' && r.artifact) return `${base}/artifacts/${encodeURIComponent(r.artifact)}`
+    if (r.taskPane === 'changes' && r.file) return `${base}/changes/${encodeURIComponent(r.file)}`
     return r.taskPane === 'detail' ? base : `${base}/${r.taskPane}`
   }
   if (r.sectionId === REFERENCE) return REFERENCE
@@ -960,8 +982,9 @@ function readsKey(r: Route): string {
   // inside the same scope, with the last drawing dimmed, rather than
   // beginning an empty one (#185).
   // Opening an output in the Artifacts pane is not a new screen either: the
-  // pane's reads carry on under the viewer.
-  return canonical({ ...r, list: null, view: null, artifact: null })
+  // pane's reads carry on under the viewer. So is opening a file of the
+  // Changes tab.
+  return canonical({ ...r, list: null, view: null, artifact: null, file: null })
 }
 
 /** One address segment, decoded; a malformed escape is kept as written rather than thrown. */
@@ -1221,6 +1244,7 @@ export function App() {
                 taskId={at.taskId}
                 pane={at.taskPane}
                 artifact={at.artifact ?? null}
+                file={at.file ?? null}
                 closeTo={listAddress}
                 go={go}
                 base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
@@ -1759,6 +1783,8 @@ function SectionBody({
       return <TenantsScreen />
     case 'admin/counts':
       return <PlatformCountsScreen />
+    case 'admin/people':
+      return <PeopleScreen />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash
@@ -1837,11 +1863,12 @@ function ReferenceScreen({ failuresOnly: asked = false }: { failuresOnly?: boole
         // A REAL ZERO, and the one screen in the product where that is true by
         // construction: this page issues no reads of its own. `.is-partial`
         // and `.is-failed` would both be claims; the default variant is the
-        // one that means "we looked and there is nothing".
+        // one that means "we looked and there is nothing". Drawn by `Mark`, not
+        // by hand, so the two words carry their sentence as an accessible name.
         <div className="ctl-empty">
           <h3>
-            <i className="ctl-mark is-zero">real zero</i> Nothing has been read
-            yet in this tab
+            <Mark kind="zero" say="Nothing has been read yet in this tab: this page issues no reads of its own." />{' '}
+            Nothing has been read yet in this tab
           </h3>
           <p>Nothing failed. Open any section and each read registers here.</p>
         </div>

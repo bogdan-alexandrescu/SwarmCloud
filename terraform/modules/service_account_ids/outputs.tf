@@ -18,6 +18,11 @@ output "rollup_sweeper_id" {
   value       = local.rollup_sweeper_id
 }
 
+output "schedule_tick_id" {
+  description = "The account the schedule tick presents to swarm-api (modules/scheduler, docs/schedules.md SD10)."
+  value       = local.schedule_tick_id
+}
+
 output "tenant_worker_prefix" {
   description = "A tenant's worker account id is this plus the tenant key (modules/tenancy)."
   value       = local.tenant_worker_prefix

@@ -108,3 +108,49 @@
   .ac-typed-row > * { flex-basis: 100%; }
   .ac-install .c-btn, .ac-owner-acts .c-btn { min-height: 44px; }
 }
+
+/* #847 W8: the workspace and Claude-account steps' bodies, and Admin › People. */
+.ob-ws { display: grid; gap: 4px; margin-top: 4px; }
+.ob-ws-steps { list-style: none; margin: 4px 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); }
+.ob-ws-steps li { display: flex; align-items: center; gap: 6px; }
+.ob-ws-reason { margin: 2px 0; padding-left: 8px; border-left: 2px solid var(--line); color: var(--text-dim); }
+/* ADMIN › PEOPLE FITS ITS CARD (2026-10-09, seen live at 1456). The table
+   borrowed `.ten-table`, Tenants' fixed layout, without Tenants' colgroup: seven
+   equal columns, `overflow-wrap: anywhere` on every cell, and an Actions column
+   a seventh of the card wide, so Deny and the Account select ran past the
+   card's edge and `w-752763` broke at its hyphen. Now it is `.table-wrap`
+   (Activity.tsx's pattern): the table is laid out by its content inside its own
+   scroll container, its cells wrap at spaces, and the actions stack in their
+   cell, every control as wide as the cell and none with a width of its own
+   wider than it. Below 560px it is a record per person (`tableMode`). */
+.pp-table > tbody > tr > th,
+.pp-table > tbody > tr > td { vertical-align: top; white-space: normal; }
+.pp-table > tbody > tr > th { font-weight: 500; }
+.pp-acts { display: grid; gap: var(--ctl-s2); min-width: 0; }
+.pp-acts .ob-acts { justify-content: flex-start; }
+.pp-deny, .pp-ceiling, .pp-loan { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--ctl-s1) var(--ctl-s2); min-width: 0; }
+.pp-deny > .c-field, .pp-loan > .c-field { flex: 1 1 100%; }
+.pp-acts .c-inp { min-height: var(--h-ctl); max-width: 100%; }
+.pp-deny textarea { display: block; width: 100%; min-width: 0; padding: 6px 10px; resize: vertical; }
+.pp-ceiling input { width: 6em; }
+.pp-loan select { width: 100%; min-width: 0; }
+.pp-acts .ur-hint, .pp-acts [role='status'], .pp-acts [role='alert'] { flex-basis: 100%; margin: 0; }
+/* AN ID IS ONE TOKEN: no break opportunity, at its hyphen or anywhere. */
+.pp-id { font-family: var(--mono); white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+/* A floor for the actions, not a width: auto layout gives the column at least
+   this, and every control inside it is the column's width. On a phone the
+   record's value column is the width instead. */
+@media (min-width: 561px) {
+  .pp-table > tbody > tr > td.pp-acts-cell { min-width: 15rem; }
+}
+@media (max-width: 560px) {
+  .pp-acts .c-btn { min-height: 44px; }
+}
+/* The Admins card: who holds a role document, the owner first and marked. */
+.pp-admin-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--ctl-s2); }
+.pp-admin-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); min-width: 0; }
+.pp-admin-list .ur-hint { margin: 0; }
+.pp-admin-who { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; overflow-wrap: anywhere; }
+.pp-grant { justify-content: flex-start; align-items: flex-end; margin-top: var(--ctl-s3); }
+.pp-grant > .c-field { flex: 0 1 18rem; }
+.pp-audit-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); }

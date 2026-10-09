@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { loadOnboarding } from './api'
 import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
 import { ConnectButton, connectionOf } from './GitHubConnect'
+import { WorkspaceStepDetail } from './OnboardingWorkspace'
 import { addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
@@ -44,6 +45,8 @@ const SUBMIT_TASK = 'work/new'
 /** The steps' names as the mock-up draws them (onboarding.html, Entry A). */
 export const STEP_LABEL: Readonly<Record<OnboardingStepName, string>> = {
   signed_in: 'Sign in',
+  workspace: 'Request your workspace',
+  claude_account: 'Add a Claude account',
   github_connected: 'Connect GitHub',
   app_installed: 'Install the App',
   orgs_enabled: 'Enable orgs',
@@ -84,8 +87,60 @@ function rows(v: unknown): Record<string, unknown>[] {
   return Array.isArray(v) ? v.filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null) : []
 }
 
+/**
+ * REQUIRED, AS THE SERVER JUDGES IT (`onboarding.derive`'s
+ * `s.get("required", True)`): a step with `required` absent or null is
+ * required; only an explicit `false` is not. The workspace steps carry
+ * `required: false` while WORKSPACE_GATE is off, and never hold back
+ * `complete` -- so they must not hold back the count either.
+ */
+export function stepRequired(step: OnboardingStep): boolean {
+  // `required` is not on OnboardingStep's type (types.ts is shared); the
+  // server sends it on the workspace steps only.
+  return !('required' in step) || step.required !== false
+}
+
+/** Done REQUIRED steps: the count's numerator. */
 export function doneCount(doc: OnboardingDoc): number {
-  return doc.steps.filter((s) => s.state === 'done').length
+  return doc.steps.filter((s) => stepRequired(s) && s.state === 'done').length
+}
+
+/**
+ * The count as one line. Required steps only, with the optional ones named
+ * apart: "8 of 8 required done · 1 optional (Request your workspace)". With no optional
+ * step it reads as it always did, "7 of 7 done". Before 2026-10-08 the
+ * denominator was every step, so a complete checklist read "8 of 9 done".
+ */
+export function countLabel(doc: OnboardingDoc): string {
+  const required = doc.steps.filter(stepRequired)
+  const optional = doc.steps.filter((s) => !stepRequired(s))
+  const done = doneCount(doc)
+  if (optional.length === 0) return `${done} of ${required.length} done`
+  const names = optional.map((s) => STEP_LABEL[s.step] ?? s.step).join(', ')
+  return `${done} of ${required.length} required done · ${optional.length} optional (${names})`
+}
+
+function hhmm(iso: string): string | null {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return null
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * A connection whose LAST probe did not complete: its error, and when it was
+ * seen. The error is the probe's, kept until the next probe; the poll probes
+ * such a record again once REVERIFY_RETRY (an hour) has passed
+ * (`GitTokens.reverify`), so its age says how stale it may be. Nothing on
+ * this page re-probes it: this read stays pure.
+ */
+function probeErrorLine(step: OnboardingStep): string | null {
+  if (step.step !== 'github_connected') return null
+  const ev = step.evidence ?? {}
+  const error = str(ev.probe_error)
+  if (ev.probe_complete === true || error === null) return null
+  const at = str(ev.probe_attempted_at)
+  const when = at === null ? null : hhmm(at)
+  return `Last probe did not complete: ${error} (${when === null ? 'time unknown' : `as of ${when}`}; re-checked hourly)`
 }
 
 /** What the step's evidence says, in one line: its last probe, never a guess. */
@@ -141,7 +196,21 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
       const parts = [`${n('passed')} passed`]
       if (n('failed') > 0) parts.push(`${n('failed')} failed`)
       if (n('pending') > 0) parts.push(`${n('pending')} not checked yet`)
-      return parts.join(' · ')
+      // Name the repositories still to verify, so a person knows which
+      // grant's Verify to press on Access (#896).
+      const open = repos
+        .filter((r) => r.result === 'failed' || r.result === 'pending')
+        .map((r) => `${str(r.repository) ?? '?'}${r.result === 'failed' ? ' (failed)' : ''}`)
+      if (open.length === 0) return parts.join(' · ')
+      const shown = open.slice(0, 3).join(', ') + (open.length > 3 ? `, +${open.length - 3} more` : '')
+      return (
+        <>
+          {parts.join(' · ')} · {shown}: press Verify on{' '}
+          <a className="c-link" href={addressToPath(ACCESS)}>
+            Access
+          </a>
+        </>
+      )
     }
     case 'ready': {
       const first = str(ev.first_repository)
@@ -222,10 +291,16 @@ function StepAction({ step, doc, reload }: { step: OnboardingStep; doc: Onboardi
   )
 }
 
-/** The six steps' states as one bar: a glance at how far along this person is. */
+function stepBarLabel(doc: OnboardingDoc): string {
+  const required = doc.steps.filter(stepRequired).length
+  const word = required === doc.steps.length ? '' : 'required '
+  return `${doneCount(doc)} of ${required} ${word}setup steps done`
+}
+
+/** The steps' states as one bar (optional ones too): a glance at how far along this person is. */
 export function StepBar({ doc }: { doc: OnboardingDoc }) {
   return (
-    <div className="ob-bar" role="img" aria-label={`${doneCount(doc)} of ${doc.steps.length} setup steps done`}>
+    <div className="ob-bar" role="img" aria-label={stepBarLabel(doc)}>
       {doc.steps.map((s) => (
         <i key={s.step} className={`is-${s.state}`} />
       ))}
@@ -257,6 +332,8 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
                 <IssueCopy key={`${i.code}:${i.owner ?? ''}:${i.repository ?? ''}:${n}`} code={i.code} copy={i.copy} url={i.url} />
               ))}
               {issues.length === 0 && s.code !== null && s.copy !== null && <IssueCopy code={s.code} copy={s.copy} />}
+              <WorkspaceStepDetail step={s} reload={reload} />
+              {probeErrorLine(s) !== null && <p className="ur-hint ob-probe">{probeErrorLine(s)}</p>}
               {s.step === 'app_installed' && s.state !== 'done' && s.evidence?.waiting_for === undefined && (
                 <p className="ur-hint ob-help">
                   Connecting authorised the App to act as you; installing it on your account or an org is what lets it
@@ -316,7 +393,7 @@ export function SetupCard() {
       action={
         <span className="ur-acts">
           <Chip>
-            {doneCount(d)} of {d.steps.length} done
+            {countLabel(d)}
           </Chip>
           <Button
             kind="ghost"
@@ -369,7 +446,7 @@ export function OnboardingScreen() {
               title={d.complete ? 'Setup is complete' : 'Set up SwarmCloud'}
               action={
                 <Chip>
-                  {doneCount(d)} of {d.steps.length} done
+                  {countLabel(d)}
                 </Chip>
               }
               foot={

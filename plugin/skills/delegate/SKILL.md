@@ -398,6 +398,14 @@ away.
 Nothing was dispatched, so nothing was spent, so say that too: a developer who
 thinks a batch went out and died will not re-run it.
 
+**A 403 `WORKSPACE_NOT_READY` or `NO_CLAUDE_ACCOUNT` is not that.** The API
+answered: the person's own workspace is not ready yet, or has no Claude
+account to run on (docs/workspaces.md §5). The tool error is already the line
+to show, `✕ 403 <code>: <the API's message>` and then `Finish setup with
+/sc:setup.`: show it as it came, and do not retry, re-dispatch or run `swarm
+doctor`. Nothing was created. Work submitted as a team is never refused this
+way.
+
 The fifth tell is the most common and the easiest: **`sign-in required for
 <context>: run … sc login`**. The deployment the developer configured takes
 them signed in as themselves, and they are not yet. Tell them to run the
@@ -576,8 +584,10 @@ each is a way the same prompt does different work:
   remote agent's; the remote spend is the outcome's `cost_usd`, from the
   shared pool;
 * **stopping a row does not cancel its task** — `swarm_cancel` or
-  `swarm workflow-cancel` does — and relaunching a run re-dispatches an
-  `sc:remote` row that had not finished, which is a second task.
+  `swarm workflow-cancel` does — and relaunching a run re-runs every row
+  that did not finish and every row that started after a failed or edited
+  one, completed ones included: each re-run `sc:remote` row dispatches a
+  second task, even when its first task had already completed.
 
 ## The honesty constraint
 
