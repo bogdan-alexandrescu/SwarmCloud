@@ -25,4 +25,5 @@ Once per deployment, roughly in the order they are done.
 ## Incidents
 
 - [Apply the GKE dispatcher RBAC and redispatch](gke-dispatch-redispatch.md): `browser` tasks fail with `jobs.batch is forbidden`, or you are landing the GKE dispatch fix for the first time.
+- [The Cloud Run Jobs start-time support case](cloud-run-start-support-case.md): the owner is filing the Google Cloud support case decided on 2026-10-07 (#625), or a Cloud Run profile's DISPATCHED -> STARTING has jumped again with nothing of ours changed.
 - [Browser pods the reconciler evicts](browser-eviction.md): a browser task was re-queued or failed with `stuck_no_progress`, a task's timeline shows a `generation_fenced` event with `finding: left_running`, or you want to know whether the reconciler is evicting browser pods, and why.
