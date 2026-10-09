@@ -987,9 +987,11 @@ holds a dev plan that changes IAM. `test_release_prod_gate.py` and
 `refs/heads/main` alone. It is **not** on `wif.tf`'s `deployer_workflows`, and
 `test_workflow_id_token_scope.py` keeps it off. What the account can do:
 
-* execute `swarm-verify` and the `swarm-job-*` worker jobs, and read their
-  executions (a custom role conditioned to those names). The suites run
-  *inside* the VPC as swarm-verify, under swarm-verify's own identity;
+* execute `swarm-verify` and the `swarm-job-*` worker jobs, read their
+  executions and cancel a running one (the custom role
+  `swarmAcceptanceRunner`, granted at project level **with no condition**:
+  see below). The suites run *inside* the VPC as swarm-verify, under
+  swarm-verify's own identity;
 * list jobs and read operations, read-only;
 * read the swarm-verify log view;
 * read `releases/` in the state bucket, and no state object.
@@ -1000,10 +1002,34 @@ repository variable `GCP_ACCEPT_SA` to the `github_accept_service_account`
 output. Until then `what dev runs` fails at authentication, and the report
 files that as a red acceptance.
 
-What only a live run proves: that IAM evaluates the role's resource-name
-condition for Cloud Run jobs and executions as documented. A condition that
-matches nothing shows as `Permission 'run.jobs.runWithOverrides' denied` in
-`warm, smoke and GKE proof (dev)`.
+**The runner grant is unconditioned. Owner decision 2026-10-09 (#965).** It
+was conditioned to the job names (`resource.name.endsWith("/jobs/swarm-verify")`,
+`extract("/jobs/{job}").startsWith("swarm-job-")`), and that condition never
+matched any job: Cloud Run does not expose `resource.name` to IAM Conditions.
+Google's "Resource attributes for IAM Conditions" page lists no
+`run.googleapis.com` resource ("Other services and resource types do not
+recognize resource attributes"), and the IAM Policy Troubleshooter, measured
+read-only on 2026-10-09, evaluates the `endsWith` clause as false even with the
+job's name supplied. So `swarm-accept` was denied `run.jobs.get` on
+swarm-verify and `warm, smoke and GKE proof (dev)` was red on every run.
+
+The trade-off the owner accepted: in the **shared** project
+`saga-agents-staging`, the grant reaches **every Cloud Run job, present and
+future** — the other team's, and swarm's own merge job `swarm-job-eng-merge` —
+not only swarm-verify and the worker jobs. What it allows on any of them is
+the role and no more: get a job, start an execution (with overridden
+arguments), read executions and tasks, cancel a running execution. No create,
+update, delete or IAM permission, so it cannot change what a job runs or who
+may run it; `tests/terraform/bootstrap.tftest.hcl` holds both the absent
+condition and those permissions. What bounds the account is that only
+`accept.yml` on `refs/heads/main` can become it. Do not put a job-name
+condition back: it denies every job.
+
+The log-view and `releases/` grants keep their conditions: Cloud Logging and
+Cloud Storage do evaluate `resource.name`. What only a live run proves is that
+those two evaluate as documented; a condition that matches nothing shows as a
+`Permission ... denied` in the step that reads the transcript or
+`releases/dev/applied.json`.
 
 ## Hotfix releases
 
