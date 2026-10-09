@@ -59,13 +59,10 @@ def _attempt_document(**extra: Any) -> dict[str, Any]:
     }
 
 
-def _record(worker: Any, store: Any, tmp_path: Path, *, label: str) -> Any:
+def _record(worker: Any, manager: CheckpointManager, tmp_path: Path, *, label: str) -> Any:
     ws = workspace_mod.create(tmp_path / f"ws-{label}", "att_1")
     (ws.work / "notes.md").write_text(f"{label}\n")
-    record = CheckpointManager(
-        store=store, tenant_id=TENANT, task_id="task_1", attempt_id="att_1",
-        generation=1, logger=_Quiet(),
-    ).create(ws, label=label)
+    record = manager.create(ws, label=label)
     worker.control.record_checkpoint(
         checkpoint_id=record.checkpoint_id, uri=record.uri, size_bytes=record.archive_bytes,
         seq=record.seq, archive_sha256=record.archive_sha256,
@@ -103,8 +100,15 @@ def test_what_record_checkpoint_writes_decodes_to_the_typed_field(
 ):
     seed_attempt(db, task_input=RUN)
     worker, _, _ = worker_factory()
-    first = _record(worker, store, tmp_path, label="first")
-    second = _record(worker, store, tmp_path, label="second")
+    # The attempt's first write, as in production: the document the
+    # checkpoints then merge into.
+    worker.control.record_attempt_start(backend="cloud_run", execution_name=None)
+    manager = CheckpointManager(
+        store=store, tenant_id=TENANT, task_id="task_1", attempt_id="att_1",
+        generation=1, logger=_Quiet(),
+    )
+    first = _record(worker, manager, tmp_path, label="first")
+    second = _record(worker, manager, tmp_path, label="second")
     assert first.checkpoint_id != second.checkpoint_id
 
     document = db.doc("attempts/att_1")
