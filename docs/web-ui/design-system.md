@@ -72,7 +72,9 @@ lane:
    The derived checks live in `Overview.tsx:2015 AttentionBody`.
 2. **Charts are not all hand-rolled.** `visx` 4.0.0 ships as four runtime
    dependencies and the library ban (`test_workflow_graph_ui_surface.py:238`)
-   covers `d3`, `recharts`, `reactflow`, `cytoscape` and `vis-network` only.
+   covers `d3`, `recharts`, `reactflow` and `cytoscape` only; `vis-network` is
+   a dependency of the repository graph's Network view and the same test holds
+   it to `RepoGraphNetwork.tsx`.
    `charts/README.md` records the owner's 2026-09-22 decision. **The DAG is
    hand-rolled and stays hand-rolled.** `chart.tokenspend.test.tsx:162` confines
    the visx import to `charts/TimeSeries.tsx`; the dial, the track and the
