@@ -4661,6 +4661,8 @@ export type IssueRunState =
   | 'FAILED'
   | 'REJECTED'
   | 'CANCELLED'
+  /** The planner found the issue not ready and said why (`IssueRun.not_ready`). Terminal. */
+  | 'NOT_READY'
 
 /** `IssueRef.to_dict()`: the reference in its short form and the two URLs. */
 export interface IssueRefDoc {
@@ -4859,6 +4861,21 @@ export interface IssueRun {
    * a merge's `Closes #N`.
    */
   issue_closed?: boolean | null
+  /** The planner's NOT_READY verdict (`issueruns.NotReadyVerdict`), masked; null on any other run. */
+  not_ready?: RunNotReady | null
+  /** Why an `auto` run's approval waits, e.g. `territory_overlap: run_<id>`; null when nothing holds it. */
+  hold?: string | null
+  /** The member a run the issue sweeper created (`created_by: issue-sweep`) submits as. */
+  on_behalf_of?: string | null
+}
+
+/** `IssueRun.to_api().not_ready`: why the planner found the issue not ready. */
+export interface RunNotReady {
+  /** `already_done`, `owner_decision`, `blocked`, `too_vague`, `security_deferred`, `epic` or `other`; null when unsaid. */
+  kind: string | null
+  reason: string | null
+  /** What would make it ready, one per entry. */
+  needs: string[]
 }
 
 /** `IssueRun.to_api().pull_request`. */
@@ -4990,7 +5007,7 @@ export interface GitHubRefusalDetail {
 // The onboarding checklist, `GET /v1/onboarding` (swarm_api/onboarding.py
 // `derive`): six steps, each derived on every read, never set.
 
-export type OnboardingStepName = 'signed_in' | 'github_connected' | 'app_installed' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
+export type OnboardingStepName = 'signed_in' | 'workspace' | 'claude_account' | 'github_connected' | 'app_installed' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
 
 export type OnboardingStepState = 'todo' | 'in_progress' | 'done' | 'failed' | 'stale'
 
@@ -5013,6 +5030,12 @@ export interface OnboardingStep {
   /** Per step; `GitHubConnectedEvidence` and `OrgsEnabledEvidence` are the two the console reads. */
   evidence: Record<string, unknown>
   issues: OnboardingIssue[]
+  /**
+   * `workspace` and `claude_account` only (#847): true while WORKSPACE_GATE is
+   * on and the caller's tenant is one the gate judges. A step that is not
+   * required never holds back `next_step` or `complete`.
+   */
+  required?: boolean
 }
 
 /**
@@ -5075,6 +5098,164 @@ export interface OnboardingDoc {
   next_step: OnboardingStepName | null
   complete: boolean
   source: string
+}
+
+// ---------------------------------------------------------------------------
+// Personal workspaces (#847, docs/workspaces.md §1, §6.3)
+// ---------------------------------------------------------------------------
+//
+// Typed from apps/swarm-api/swarm_api/workspaces.py (`view`),
+// routes/workspaces.py, people.py (`everyone`, `_row`, `_admin_view`,
+// `lendable`) and admins.py. Field for field what the routes send; nothing
+// here is derived on the client. No route carries a credential, an image, a
+// command or a resource spec (invariant 10).
+
+/** `workspaces.STATES`, plus `none` when there is no record. */
+export type WorkspaceState = 'none' | 'requested' | 'approved' | 'applying' | 'needs_owner' | 'ready' | 'denied' | 'failed'
+
+/** One step of the workspace job (§4.2's ids A1-A9), written by the job only. */
+export interface WorkspaceJobStep {
+  state: 'todo' | 'running' | 'done' | 'failed' | 'held'
+  at?: string | null
+  code?: string | null
+}
+
+/** `GET /v1/workspace`: the caller's own record (`workspaces.view`). Only `state`, `setup_url` and `setup_command` are sent with no record. */
+export interface WorkspaceView {
+  state: WorkspaceState
+  setup_url: string
+  setup_command: string
+  workspace_id?: string | null
+  tenant_id?: string | null
+  request_id?: string | null
+  requested_at?: string | null
+  requested_via?: string | null
+  decision?: { verdict: string | null; reason: string | null; at: string | null } | null
+  limits?: Record<string, number>
+  steps?: Record<string, WorkspaceJobStep>
+  /** `copy` is §4.3's, served from the code, word for word. */
+  failure?: { code: string | null; step: string | null; retryable: boolean | null; at: string | null; copy: string } | null
+  ready_at?: string | null
+  request_again_at?: string | null
+}
+
+/** `POST /v1/workspace/loan-request`. */
+export interface LoanRequestAnswer {
+  state: string | null
+  workspace_id: string | null
+  request_id: string | null
+  requested_at: string | null
+}
+
+/** A record as an admin sees it (`people._admin_view`): the person's view, less the tenant id, with the dispatch. */
+export interface AdminWorkspaceView extends WorkspaceView {
+  dispatch?: {
+    attempts: number | null
+    last_attempt_at: string | null
+    last_published_at: string | null
+    last_ok: boolean | null
+    mode: string | null
+  } | null
+  run?: Record<string, unknown> | null
+  retried_at?: string | null
+  /** Only on a `needs_owner` record: the step the call guard stopped at. */
+  needs_owner_step?: string | null
+}
+
+/** `people._claude_account`: where the person's Claude account comes from. */
+export interface PersonClaudeAccount {
+  source: 'own' | 'lent' | 'provider_key' | 'none'
+  own: number
+  lent: number
+  lent_by: string[]
+  provider_key: boolean
+}
+
+/** One row of `GET /v1/admin/people` (`people._row`). */
+export interface PersonRow {
+  email: string
+  teams: string[]
+  github: 'connected' | 'expired' | 'none'
+  workspace: AdminWorkspaceView
+  claude_account: PersonClaudeAccount
+  loan_request: { state: string | null; requested_at: string | null } | null
+  first_seen: string | null
+  last_seen: string | null
+  last_submitted: string | null
+  last_active: string | null
+}
+
+/** One `admin_audit` entry: a workspace action names a workspace id, an admin change an email. */
+export interface AdminAuditEntry {
+  action: string
+  target_workspace_id?: string | null
+  target_email?: string | null
+  by: string
+  at: string | null
+  detail?: Record<string, unknown>
+}
+
+/** An account this admin may lend (`people.lendable`): a group tenant's, or the admin's own. */
+export interface LendableAccount {
+  account_id: string
+  owner_tenant: string
+  label: string | null
+  state: string | null
+  lend_to: string[]
+}
+
+/** `GET /v1/admin/people`. `lendable_accounts` is null, with `lendable_error`, when the broker did not answer. */
+export interface PeopleDoc {
+  people: PersonRow[]
+  count: number
+  pending: number
+  audit: AdminAuditEntry[]
+  lendable_accounts: LendableAccount[] | null
+  lendable_error: string | null
+}
+
+/** `people._dispatch`: whether the workspace id reached Pub/Sub. A failed publish is not a failed approval. */
+export interface WorkspaceDispatch {
+  published: boolean
+  mode: string
+  reason: string | null
+}
+
+/** approve, retry: the record and its dispatch. deny: the record only. */
+export interface WorkspaceActionAnswer {
+  workspace: AdminWorkspaceView
+  dispatch?: WorkspaceDispatch
+}
+
+/** `PUT /v1/admin/workspaces/{workspace_id}/limits`. */
+export interface WorkspaceLimitsAnswer {
+  workspace: AdminWorkspaceView
+  tenant_written: boolean
+  dispatch: WorkspaceDispatch
+}
+
+/** `PUT /v1/admin/people/{workspace_id}/loan`. */
+export interface WorkspaceLoanAnswer {
+  workspace_id: string
+  account_id: string
+  owner_tenant: string
+  lent: boolean
+  changed: boolean
+}
+
+/** `PUT /v1/admin/admins/{email}` (`admins._to_api`). */
+export interface AdminGrantAnswer {
+  email: string
+  role: string | null
+  granted_by: string | null
+  granted_at: string | null
+  changed: boolean
+}
+
+/** `DELETE /v1/admin/admins/{email}`. */
+export interface AdminRemoveAnswer {
+  email: string
+  removed: boolean
 }
 
 // ---------------------------------------------------------------------------

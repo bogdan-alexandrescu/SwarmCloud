@@ -20,7 +20,8 @@ b0fae05 against the route it should have matched:
 
 MUTATIONS: decode the checkpoint window with `errors="replace"` again (the
 count test goes red); drop `_enter_key` from `_serve_member` or read it no
-look-back (the mid-key pages go red); drop `extra=` from either symlink call
+look-back (the mid-key pages go red, and so does the window that starts
+exactly on a key's first body line -- the issue's reproduction); drop `extra=` from either symlink call
 (the listing or the 422 goes red); drop `literals` from `_text_or_none` (the
 answer test goes red).
 """
@@ -114,6 +115,29 @@ def test_a_key_longer_than_the_window_leaks_from_no_page_of_a_checkpoint_file(cl
         response = _file(client, "id_rsa.txt", offset=offset, limit_bytes=4096)
         assert response.status_code == 200, response.text
         assert not KEY_LEAK.search(response.json()["content"] or ""), offset
+
+
+def test_a_window_starting_on_the_first_body_line_of_a_key_serves_no_key_material(client, db, objects):
+    """The issue's own reproduction (#207): `offset` lands exactly on the byte
+    after the BEGIN line's newline, so the window holds key body and no
+    marker. Only the look-back knows it is inside a key; without it the first
+    body line is the first thing served."""
+    before = "".join(f"line {n:03d} before\n" for n in range(40))
+    pem = _pem_text(_pem_body(200))
+    text = before + pem + "\n" + "after the key\n"
+    _seed(db, objects, [("id_rsa.txt", "file", text)])
+
+    begin_line = pem.split("\n", 1)[0] + "\n"
+    offset = len(before.encode()) + len(begin_line.encode())
+    assert text.encode()[offset:].startswith(b"K0000"), "the offset must land on key body"
+
+    response = _file(client, "id_rsa.txt", offset=offset, limit_bytes=4096)
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "ok", body
+    content = body["content"] or ""
+    assert not KEY_LEAK.search(content), content[:300]
+    assert not content.startswith("K0000"), content[:300]
 
 
 # --------------------------------------------------------------------------
