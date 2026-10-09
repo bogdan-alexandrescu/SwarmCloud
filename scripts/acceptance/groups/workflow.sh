@@ -2,9 +2,10 @@
 # Acceptance group `workflow`: the DAG features, judged by what crossed each
 # edge -- the bytes a step staged, the names a parent was told to write, the
 # one pull request an integrate chain opens, and the cancel a failed parent
-# sends down.
+# sends down -- and a file written before a quota park, carried to the
+# attempt that succeeds and staged from there (#166).
 #
-# The staging and failure checks use `mock`, which costs no quota. The
+# The staging, carry and failure checks use `mock`, which costs no quota. The
 # implement -> review -> fix chain uses claude-code, because `integrate` is
 # about agents' git work; its prompts are one sentence each.
 
@@ -16,6 +17,7 @@
 set -euo pipefail
 
 WF_PAYLOAD_NAME="payload.txt"
+WF_CARRY_NAME="notes.md"
 
 workflow_checks() {
   cat <<'EOF'
@@ -23,12 +25,13 @@ workflow: input_from stages the parent's artifact into the child byte for byte
 workflow: expected_outputs tells the parent what to write, and a missing one fails it before the child runs
 workflow: on_step_failure fail_workflow cancels every dependant, none of which ever held a lease
 workflow: implement -> review -> fix with integrate opens one pull request, with the review's verdict.json staged into fix
+workflow: carry: a file written before a quota park reaches the attempt that succeeds by reference, and the child stages it
 EOF
 }
 
 run_workflow() {
   step "Acceptance: workflow"
-  local stage="" missing="" cascade="" chain="" payload
+  local stage="" missing="" cascade="" chain="" carry="" payload notes
 
   # Staging: `a` writes a known file; `b` stages it. The bytes are checked in
   # b's own checkpoint, which is b's workspace as b saw it.
@@ -41,6 +44,22 @@ run_workflow() {
           {step_id: "a", runner_profile: "mock", input: {prompt: $p, artifact_name: $n, artifact_text: $t, steps: 1, sleep_seconds: 0}},
           {step_id: "b", runner_profile: "mock", depends_on: ["a"], input_from: {a: $n}, input: {prompt: $p, steps: 1, sleep_seconds: 0}}
         ]}')" || stage=""
+
+  # #166's carry, live: docs/workflows.md's recipe, as the owner asked for on
+  # 2026-10-08. `a` writes notes.md and then parks on quota
+  # (artifact_before_park), and the attempt after the park writes nothing
+  # under that name, so the notes.md the task ends with can only be the
+  # parked attempt's, carried by reference. 60 s is over the worker's 45 s
+  # in-place retry ceiling (max_in_worker_retry_delay_seconds), so it parks.
+  notes="$(printf 'written before the park\nrun %s\n' "${ACC_RUN_ID}")"$'\n'
+  ACC_CHECK="workflow: carry"
+  acc_workflow carry "$(jq -nc --argjson m "$(acc_metadata)" --arg p "acceptance ${ACC_RUN_ID} carry" \
+      --arg n "${WF_CARRY_NAME}" --arg t "${notes}" '{
+        priority: 10, metadata: $m,
+        steps: [
+          {step_id: "a", runner_profile: "mock", input: {prompt: $p, quota_exhausted: true, retry_after_seconds: 60, artifact_before_park: true, artifact_name: $n, artifact_text: $t}},
+          {step_id: "b", runner_profile: "mock", depends_on: ["a"], input_from: {a: $n}, input: {prompt: $p, steps: 1, sleep_seconds: 0}}
+        ]}')" || carry=""
 
   # A parent that writes the wrong file: `x` writes other.txt, `y` stages
   # wanted.txt. x's clean exit must FAIL for the missing name, retryably, and
@@ -96,6 +115,7 @@ run_workflow() {
   _wf_check_expected_outputs "${stage}" "${missing}"
   _wf_check_cascade "${cascade}"
   _wf_check_integrate "${chain}"
+  _wf_check_carry "${carry}" "${notes}"
 }
 
 # _wf_final_state WORKFLOW_ID -> the derived workflow state.
@@ -106,15 +126,22 @@ _wf_final_state() {
 }
 
 _wf_check_staging() {
-  local wf="$1" payload="$2" a b state ckpt listing member file content
+  local wf="$1" payload="$2" a b state
   acc_check "workflow: input_from stages the parent's artifact into the child byte for byte"
   [[ -n "${wf}" ]] || { acc_fail "not submitted"; return 0; }
   a="$(workflow_step_task "${wf}" a)"
   b="$(workflow_step_task "${wf}" b)"
   acc_run_to_end state "${b}" || return 0
   acc_assert_eq "SUCCEEDED SUCCEEDED" "$(task_state "${a}") ${state}" "parent and child" "${b}"
-  # b's last checkpoint is its workspace (work/) at the end, so the staged
-  # file is in it exactly as it landed.
+  _wf_check_child_copy "${b}" "${WF_PAYLOAD_NAME}" "${payload}"
+}
+
+# _wf_check_child_copy CHILD NAME EXPECTED -> PASS when the staged file NAME
+# in CHILD's last checkpoint is EXPECTED byte for byte. The child's last
+# checkpoint is its workspace (work/) at the end, so the staged file is in it
+# exactly as it landed.
+_wf_check_child_copy() {
+  local b="$1" name="$2" payload="$3" ckpt listing member file content
   ckpt="$(acc_events "${b}" | acc_checkpoint_ids | tail -n 1)"
   if [[ -z "${ckpt}" ]]; then
     acc_fail "the child wrote no checkpoint to read its workspace from" "${b}"
@@ -125,9 +152,9 @@ _wf_check_staging() {
     acc_fail "could not list ${ckpt}'s files" "${b}"
     return 0
   fi
-  member="$(jq -r --arg n "${WF_PAYLOAD_NAME}" '[.files[]? | (.path // .name) | select(. == $n or endswith("/" + $n))] | first // empty' "${listing}")"
+  member="$(jq -r --arg n "${name}" '[.files[]? | (.path // .name) | select(. == $n or endswith("/" + $n))] | first // empty' "${listing}")"
   if [[ -z "${member}" ]]; then
-    acc_fail "${WF_PAYLOAD_NAME} is not in the child's workspace (${ckpt})" "${b}"
+    acc_fail "${name} is not in the child's workspace (${ckpt})" "${b}"
     return 0
   fi
   file="${ACC_WORK}/wf-member.json"
@@ -143,7 +170,7 @@ _wf_check_staging() {
   content="${ACC_WORK}/wf-member.txt"
   jq -j '.content // ""' "${file}" >"${content}"
   if cmp -s <(printf '%s' "${payload}") "${content}"; then
-    acc_pass "${member} in the child's workspace is the parent's ${WF_PAYLOAD_NAME}, $(wc -c <"${content}" | tr -d ' ') bytes, identical" "${b}"
+    acc_pass "${member} in the child's workspace is the parent's ${name}, $(wc -c <"${content}" | tr -d ' ') bytes, identical" "${b}"
   else
     acc_fail "${member} differs from what the parent wrote: $(cmp <(printf '%s' "${payload}") "${content}" 2>&1 | head -n 1)" "${b}"
   fi
@@ -304,4 +331,83 @@ _wf_check_integrate() {
     acc_fail "could not read PR #${number} back from ${ACC_GITHUB_REPO}" "${fix}"
   fi
   acc_close_pr "${number}" "${branch}" "swarm/${implement}" "swarm/${review}"
+}
+
+# _wf_check_carry WORKFLOW_ID ARTIFACT_TEXT: #166, live. A's parked attempt
+# wrote notes.md; the attempt that succeeded wrote nothing under that name,
+# so A's notes.md can only be the parked attempt's object, listed by reference
+# with `carried_from` (Worker._carry_parked_uploads, read back by id through
+# ControlPlane.parked_uploads), and B stages that object. The dev 403 that
+# reopened #166 was a live measurement; this is the opposite one.
+#
+# acc_run_to_end's ACC_TIMEOUT (900 s by default) covers A's 60 s park plus
+# two mock attempts and B's one, with room for admission.
+_wf_check_carry() {
+  local wf="$1" notes="$2" a b state attempts events parked final artifacts entry count carried uri staged object
+  acc_check "workflow: carry: a file written before a quota park reaches the attempt that succeeds by reference, and the child stages it"
+  [[ -n "${wf}" ]] || { acc_fail "not submitted"; return 0; }
+  a="$(workflow_step_task "${wf}" a)"
+  b="$(workflow_step_task "${wf}" b)"
+  acc_run_to_end state "${b}" || return 0
+  acc_assert_eq "SUCCEEDED SUCCEEDED" "$(task_state "${a}") ${state}" "parent and child" "${b}"
+
+  attempts="$(task_field "${a}" '.attempt_count // 0')"
+  if [[ "${attempts}" -ge 2 ]]; then
+    acc_pass "the parent ran ${attempts} attempts: it parked and resumed" "${a}"
+  else
+    acc_fail "the parent ran ${attempts} attempt(s); the recipe parks its first, so it needs at least 2" "${a}"
+  fi
+
+  # The parked attempt is the one the park's own events name (each event
+  # carries its attempt_id; control.py `_event_write`), and the finishing
+  # attempt is the one that wrote `succeeded`.
+  events="${ACC_WORK}/wf-carry-events.jsonl"
+  if ! acc_events "${a}" >"${events}"; then
+    acc_fail "could not read the parent's events" "${a}"
+    return 0
+  fi
+  parked="$(jq -sr '[.[] | select(.type == "parked" or .type == "quota_exhausted") | select(.attempt_id != null)] | sort_by(.at) | first | .attempt_id // empty' "${events}")"
+  final="$(jq -sr '[.[] | select(.type == "succeeded") | select(.attempt_id != null)] | sort_by(.at) | last | .attempt_id // empty' "${events}")"
+  if [[ -z "${parked}" ]]; then
+    acc_fail "the parent has no parked or quota_exhausted event naming an attempt: it never parked, so nothing was carried" "${a}"
+    return 0
+  fi
+  if [[ -n "${final}" && "${final}" != "${parked}" ]]; then
+    acc_pass "parked on attempt ${parked}, succeeded on attempt ${final}" "${a}"
+  else
+    acc_fail "the parent's succeeded event names attempt '${final:-none}', not one after the parked ${parked}" "${a}"
+  fi
+
+  # A's notes.md: one entry, carried from the parked attempt, pointing at its
+  # object -- and none under the finishing attempt's prefix, which the mock
+  # never wrote.
+  artifacts="$(task_field "${a}" '.result_summary.artifacts // []')"
+  count="$(jq --arg n "${WF_CARRY_NAME}" '[.[]? | select(.name == $n)] | length' <<<"${artifacts}")"
+  entry="$(jq -c --arg n "${WF_CARRY_NAME}" '[.[]? | select(.name == $n)] | first // {}' <<<"${artifacts}")"
+  carried="$(jq -r '.carried_from // "none"' <<<"${entry}")"
+  uri="$(jq -r '.uri // ""' <<<"${entry}")"
+  object="/tasks/${a}/attempts/${parked}/artifacts/${WF_CARRY_NAME}"
+  acc_assert_eq "1 ${parked}" "${count} ${carried}" "${WF_CARRY_NAME} entries in result_summary.artifacts, and its carried_from" "${a}"
+  if [[ "${uri}" == *"${object}" ]]; then
+    acc_pass "${WF_CARRY_NAME}'s uri is the parked attempt's object (${object})" "${a}"
+  else
+    acc_fail "${WF_CARRY_NAME}'s uri is '${uri:-none}', not the parked attempt's ${object}" "${a}"
+  fi
+  if [[ -n "${final}" ]] && jq -e --arg p "/attempts/${final}/artifacts/${WF_CARRY_NAME}" \
+      'any(.[]?; (.uri // "") | endswith($p))' <<<"${artifacts}" >/dev/null 2>&1; then
+    acc_fail "result_summary.artifacts lists a ${WF_CARRY_NAME} under the finishing attempt ${final}: the file was rewritten, not carried" "${a}"
+  else
+    acc_pass "nothing under the finishing attempt's prefix is named ${WF_CARRY_NAME}" "${a}"
+  fi
+
+  # B staged the parked attempt's object, and it arrived whole.
+  staged="$(task_field "${b}" '.result_summary.staged_inputs // []')"
+  if jq -e --arg a "${a}" --arg n "${WF_CARRY_NAME}" --arg o "${object}" \
+      'any(.[]?; (.filename // "") == $n and (.task_id // "") == $a and ((.uri // "") | endswith($o)))' \
+      <<<"${staged}" >/dev/null 2>&1; then
+    acc_pass "the child's result_summary.staged_inputs names ${WF_CARRY_NAME} from the parked attempt's object" "${b}"
+  else
+    acc_fail "the child's staged_inputs does not name ${WF_CARRY_NAME} at ${object}: ${staged}" "${b}"
+  fi
+  _wf_check_child_copy "${b}" "${WF_CARRY_NAME}" "${notes}"
 }
