@@ -23,6 +23,13 @@ and all three live in this file.
   3. READ PATH. There is no read path. This module can write a version and
      report metadata; it has no function that returns payload bytes, so no
      future route can accidentally expose one.
+  4. PROVIDER. The retired #295 App keys (`APP_CREDENTIAL_PROVIDERS`:
+     `git-merge`, `git-review`) and the forge token (`FORGE_PROVIDER`) are
+     refused here, before any write. This is the store-level twin of the
+     routes' `known_providers()` allow-list (#364): that guard is one call
+     site, and a route that forgets it would otherwise reach `_grant_accessor`,
+     which is the hazard itself -- it binds the tenant's WORKER account, and
+     none of these secrets may ever be readable by it.
 
 The plaintext key exists only as a local in `put_credential` and is never
 logged, never written to Firestore, and never included in a response.
@@ -37,6 +44,7 @@ from typing import Any, Protocol
 from swarm_common.models import Tenant
 
 from .errors import UpstreamUnavailable, ValidationFailed
+from .validation import APP_CREDENTIAL_PROVIDERS, FORGE_PROVIDER
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +82,24 @@ class CredentialWriteResult:
 
 class CredentialWriter(Protocol):
     def put_credential(self, tenant: Tenant, provider: str, api_key: str) -> CredentialWriteResult: ...
+
+
+def refuse_unbindable_provider(provider: str) -> None:
+    """Refuse a provider whose secret the worker account must never read.
+
+    Names the provider and never the key: this runs before the key is touched.
+    """
+    if provider in APP_CREDENTIAL_PROVIDERS:
+        raise ValidationFailed(
+            f"provider {provider!r} is an App key: its secret must never be granted "
+            "to the tenant's worker account, so it cannot be stored here (#364)"
+        )
+    if provider == FORGE_PROVIDER:
+        raise ValidationFailed(
+            f"provider {provider!r} is the forge token: its secret must never be granted "
+            "to the tenant's worker account through this path; it is stored only with "
+            "scripts/create-secrets.sh --stdin"
+        )
 
 
 def validate_key_material(api_key: str) -> str:
@@ -120,6 +146,7 @@ class SecretManagerCredentials:
         return f"projects/{self._project_id}"
 
     def put_credential(self, tenant: Tenant, provider: str, api_key: str) -> CredentialWriteResult:
+        refuse_unbindable_provider(provider)
         key = validate_key_material(api_key)
         if not tenant.service_account:
             raise UpstreamUnavailable(
@@ -278,6 +305,7 @@ class InMemoryCredentials:
         self._bindings: dict[str, str] = {}
 
     def put_credential(self, tenant: Tenant, provider: str, api_key: str) -> CredentialWriteResult:
+        refuse_unbindable_provider(provider)
         validate_key_material(api_key)
         if not tenant.service_account:
             raise UpstreamUnavailable(f"tenant {tenant.tenant_id!r} has no service account yet")

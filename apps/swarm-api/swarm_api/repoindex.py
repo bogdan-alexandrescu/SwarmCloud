@@ -215,8 +215,9 @@ MAX_INCREMENTAL_CHANGES = 300
 #: base graph only when it extracted it itself, so a promoted graph of another
 #: version is a full run -- and `choose_kind` says so before the run is
 #: submitted, so it gets the full timeout instead of reading the whole
-#: repository inside the incremental one (lane IX2 review).
-INDEXER_EXTRACTOR_VERSION = "2"
+#: repository inside the incremental one (lane IX2 review). "3" since lane
+#: KG2: module-object call edges, communities, search, fingerprints, flows.
+INDEXER_EXTRACTOR_VERSION = "3"
 #: §3.4 and §3.5: a change to a build or test configuration, a lockfile, a CI
 #: workflow or a language server's configuration changes what `commands`,
 #: `test_map` and the graph mean everywhere, so it forces a full run. The

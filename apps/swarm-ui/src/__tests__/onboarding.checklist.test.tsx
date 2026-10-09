@@ -158,6 +158,9 @@ describe('the Setup page draws the server-derived checklist', () => {
     expect(within(stepEl('access_verified')).getByRole('link', { name: 'Verify access' }).getAttribute('href')).toBe('/access')
     expect(visible(stepEl('repos_chosen'))).toContain('1 granted: octo-dev/example-api (write)')
     expect(visible(stepEl('access_verified'))).toContain('0 passed · 1 not checked yet')
+    // The pending grant is named, with the page its Verify is on (#896).
+    expect(visible(stepEl('access_verified'))).toContain('octo-dev/example-api: press Verify on Access')
+    expect(within(stepEl('access_verified')).getByRole('link', { name: 'Access' }).getAttribute('href')).toBe('/access')
   })
 
   it('re-reads the checklist on Re-check', async () => {

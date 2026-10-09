@@ -30,6 +30,99 @@ For a fleet of coding agents, **provider tokens usually exceed all cloud costs
 combined**. Optimise the number of agent-hours before optimising the price of an
 agent-hour.
 
+### Provider tokens: the prompt-cache TTL (#323)
+
+**Today no TTL is set: Claude Code's default is in force.** Nothing below is
+built. The section records a measurement, the owner's decision not to act on it
+yet, and where the knob would go, so the question is not re-measured from
+scratch. The full working, with the per-task table, is in
+[issue #323](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/323).
+`tests/unit/scripts/test_prompt_cache_ttl_doc.py` fails if the runner starts
+setting a TTL while this section still says the default is in force.
+
+**What was measured** (read 2026-09-29, tenant `eng`, 47 of the 50 newest
+terminal claude-code tasks; the other 3 had no `structured_output`). Prices are
+Opus 5.5 list per MTok: cache write $5 at 5m and $8 at 1h, cache read $0.20,
+output $20.
+
+| | $ | share |
+|---|--:|--:|
+| 1h cache writes | 35.16 | 35% |
+| cache reads | 34.19 | 34% |
+| output | 30.53 | 30% |
+| 5m cache writes (one subagent) | 0.64 | 0.6% |
+| uncached input | 0.01 | 0.0% |
+| **total** | **100.53** | |
+| at 5m, no cache expiry (upper bound) | 87.35 | saving 13.1% |
+| at 5m, gap-adjusted | 91.23 | saving 9.3% |
+
+The largest single line was cache writes at the 1h rate, larger than output.
+The 1h TTL pays only when a request follows the previous one by more than
+5 minutes. Over 1,574 main-chain requests, 5 did, one in each of 5 tasks. 4 of
+those 5 tasks would have cost *more* at 5m, because the prefix is re-written
+after each gap. The gap-adjusted row charges that re-write.
+
+Per-task totals come from the result's `modelUsage`, not its top-level `usage`
+block. `usage` covers only the last init/success pair, so a task the worker
+resumed is under-counted. `task_9be4128488d342208947` was the one case where the
+two disagreed.
+
+**Why the main chain gets 1h.** Claude Code requests 1h for the main
+conversation only under a Claude subscription within plan usage. It requests 5m
+for subagents, and 5m everywhere under API-key billing
+([Claude Code docs](https://code.claude.com/docs/en/prompt-caching#choose-the-ttl-yourself)).
+The runner hands the child `CLAUDE_CODE_OAUTH_TOKEN` when the tenant's
+credential is a subscription token (`cliagent._credential_env`), and the
+observed split, main chain 1h and subagent 5m, matches the subscription column.
+On a subscription the dollars above are notional (`costBasis: "list"`). What
+is actually consumed is plan quota.
+
+**Quota cannot settle it.** Under 1h, a median task drew about 0.3% of a 5h
+window and the p90 about 1.6%. That rests on one `eng:team` reading, so treat it
+as medium confidence. The data cannot separate a 1h write's quota draw from a
+5m write's, because every main-chain write in it was 1h. No amount of history
+from this population can split the two rates. The binding constraint was not
+the 5h window but the shared seats' weekly window, driven by use outside
+SwarmCloud.
+
+**The decision.** Owner, 2026-09-29: no TTL change. The controlled A/B that
+would answer the quota question is parked as not worth two 5h windows. It is
+about 30 tasks per arm on one account with a fresh 5h window, the arms differing
+only in the TTL, sampling `sc accounts --json` every 5 minutes. The method and
+commands are in the issue. Any of these would reopen it:
+
+- the tenant moves to API-key billing. Then 5m is Claude Code's default anyway
+  and the dollars are real;
+- the weekly window stops binding, so the 5h window is what limits;
+- Anthropic documents how a 1h write is weighted against plan quota.
+
+**The knob, if it is reopened.** It is platform-set only. Invariant 10 means a
+caller never supplies env, args or settings, so a per-profile or per-stage TTL
+comes from the profile catalogue. There are three routes, cheapest first:
+
+1. Add `"promptCacheTtl": "5m"` to the settings dict in
+   `apps/agent-worker/agent_worker/runners/claude_code.py::write_headless_settings`.
+   The runner already writes that file and passes it as `--settings` after any
+   `CLAUDE_CODE_ARGS`. That needs no passthrough change and no restated argv.
+   (#323's measurement comment says the child has no settings file. That is
+   wrong: `HOME` is a fresh `work/` with no user settings, but this
+   platform-written file is passed on every run.)
+2. Add `CLAUDE_CODE_PROMPT_CACHE_TTL` to `cliagent._PLAIN_PASSTHROUGH` and set
+   it on the claude-code Job in `terraform/infra/locals.tf`. The child's
+   environment is an allow-list, so setting it on the Job alone does not reach
+   `claude`. This route is the one to take for a per-profile value.
+3. Set `CLAUDE_CODE_ARGS` to the default argv plus
+   `--settings '{"promptCacheTtl":"5m"}'`. This needs no worker change, but it
+   replaces the whole default argv, so every default flag has to be restated.
+   It also puts a second `--settings` before the platform's. How the CLI
+   combines two `--settings` was not checked.
+
+The settings key and the env var need Claude Code v2.1.242 or later.
+`images/agent-runtime-base/Dockerfile` pins `CLAUDE_CODE_VERSION=2.1.283`.
+`subagentPromptCacheTtl` / `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL` govern
+subagents separately. `FORCE_PROMPT_CACHING_5M=1` forces 5m for both and wins
+over everything; `ENABLE_PROMPT_CACHING_1H=1` requests 1h for both.
+
 ---
 
 ## 2. Ceilings you actually own
