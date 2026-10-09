@@ -26,9 +26,10 @@ DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
 VARIABLES = REPO / "terraform" / "infra" / "variables.tf"
 LOCALS = REPO / "terraform" / "infra" / "locals.tf"
 
-#: What dev runs. "off" until the first real approval end to end on SwarmCloud
-#: (WD8); the commit that turns it on changes this and dev.tfvars together.
-DEV_VALUE = "off"
+#: What dev runs. "on" from the commit that turned it on (2026-10-09), which
+#: must not merge before the first real approval end to end on SwarmCloud
+#: (WD8). It changed this and dev.tfvars together.
+DEV_VALUE = "on"
 
 _ASSIGNMENT = re.compile(r'^workspace_gate\s*=\s*"([^"]*)"\s*$', re.M)
 
