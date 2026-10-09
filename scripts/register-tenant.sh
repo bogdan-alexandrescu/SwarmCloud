@@ -1,6 +1,23 @@
 #!/usr/bin/env bash
 # Register a tenant: a Google group, or one person as a personal fallback tenant.
 #
+# A PERSON'S TENANT IS NO LONGER AN OPERATOR'S COMMAND (#847, docs/workspaces.md).
+# A person requests their workspace in the console's setup checklist or with
+# /sc:setup, an admin approves it in Admin > People, and the Cloud Build job
+# swarm-workspace-apply runs THIS script with --workspace (section W) as
+# swarm-workspace-deployer, under the call guard. The approval flow exists
+# because the alternative was an operator per new person, and because the
+# account-IAM power a new worker needs is too wide to hand to swarm-api or to
+# the release deployer (docs/workspaces.md section 2.4).
+#
+# --user stays for an operator's repair and for what predates that flow. A
+# tenant it registers has no workspaces/<tenant> record, so once WORKSPACE_GATE
+# is on its person's own submissions are refused (WORKSPACE_NOT_READY) until a
+# record says ready -- registering by hand does not get a person past the gate.
+# Nothing here removes a workspace, and nothing else does yet: deprovisioning is
+# a later lane, and the call guard refuses every removal. A person leaves by
+# docs/runbooks/tenant-offboarding.md, "A personal workspace".
+#
 # A tenant is the unit of isolation in this platform, so registering one means
 # creating every boundary at once -- there is no "half-registered" state worth
 # having:

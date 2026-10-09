@@ -17,9 +17,12 @@ registry of token slots, the permission probe, resolution order R2) and
 credential is in [merge-step.md](merge-step.md); frozen-contract requests are
 filed in [contract-change-requests.md](contract-change-requests.md), and this
 document only drafts one (§3.3). The checklist's other half, the person's own
-workspace (tenant, identity, namespace) that a locked-down provisioner creates
-during onboarding, before which no task or workflow starts, is designed in
-[workspaces.md](workspaces.md) (#847).
+workspace (tenant, identity, namespace), is designed in
+[workspaces.md](workspaces.md) (#847) and **built** (lanes W1 to W8, on `main`
+by 2026-10-09): the person requests it from this checklist, an admin approves it
+in Admin › People, and a guarded Cloud Build job makes it. Its two steps,
+`workspace` and `claude_account`, are in §2.1 and §2.2, and §4.4 walks through
+them.
 
 What it settles, one line each:
 
@@ -190,8 +193,16 @@ read (a connection record, an enabled org, a grant, a probe result), never a
 flag a client sets, so a step that was done and stopped being true (a revoked
 authorisation, an uninstalled org) shows as such without anyone editing it.
 
-The steps, in order: `signed_in`, `github_connected`, `app_installed`,
-`orgs_enabled`, `repos_chosen`, `access_verified`, `ready`. `app_installed`
+The steps, in order: `signed_in`, `workspace`, `claude_account`,
+`github_connected`, `app_installed`, `orgs_enabled`, `repos_chosen`,
+`access_verified`, `ready`. `workspace` and `claude_account` came with #847
+(workspaces.md §6.1). They follow `signed_in` because they are the slowest
+steps: an admin has to approve the workspace and a job has to make it, so a
+person who asks first can connect GitHub while they wait. They are
+**required** only while `WORKSPACE_GATE` is on and the caller's tenant is
+their own personal one; otherwise the step is served for information and never
+holds back `ready`, because the gate would not refuse that person anyway
+(owner decision WD7: a group tenant's submissions are never gated). `app_installed`
 was added on 2026-10-08 (#780) after the owner connected GitHub, authorised
 the App, never installed it, and found an Access page with no orgs and no
 explanation: authorising the App (Connect) and installing it are two acts at
@@ -205,6 +216,8 @@ first that is not `done`; the plugin resumes there and the console opens there.
 | step | done when | verification probe | failure states |
 |---|---|---|---|
 | `signed_in` | the caller has a verified Google identity and a resolved tenant | the platform's own tenant resolution (per registered group, with `x-goog-user-project`); no forge call | none here: an unresolved tenant is the sign-in's error |
+| `workspace` | the person's record `workspaces/<tenant>` is `ready` | none of its own: the record's state, which only the workspace job's final check (A9) writes after re-reading every object it made (workspaces.md §1.2). `requested`, `approved`, `applying` and `needs_owner` read `in_progress`, with the job's steps | `denied` (with the admin's reason), `failed` (with the job's code and its copy, workspaces.md §4.3) |
+| `claude_account` | the personal tenant has a Claude account to run on: a pool account it owns, one an admin lent it, or a provider key | the gate's own rule (workspaces.md §5.1, 3), so the checklist and the refusal cannot disagree. A loan the person asked for reads `in_progress` until an admin lends one in People | none: without one the step is `todo`, offering "add your own" and "ask an admin to lend one" |
 | `github_connected` | a connection record for this user is `active`, with `forge_login` read from GitHub | `GET /user` with the new token: the login, the account id, and for a PAT the `X-OAuth-Scopes` and `github-authentication-token-expiration` headers; one call | `AUTHORISATION_DENIED`, `AUTHORISATION_EXPIRED`, `REFRESH_FAILED`, `CLASSIC_PAT_BLOCKED` |
 | `app_installed` | the SwarmCloud GitHub App is installed on at least one owner the person reaches; done without a check for a connection that is a token rather than the App | an owner the person enabled was installed when enabled, so it answers with no forge call; otherwise `GET /user/installations` (one refresh of the person's token, the read Work › Access makes) | `FORGE_UNREACHABLE`; with no installation the step is `todo`, offering the App's install page |
 | `orgs_enabled` | at least one owner (the user's account or an org) is enabled and its installation is reachable | `GET /user/installations` paged at 100 per page until a short page, plus `GET /user/orgs` to show orgs with no installation; each owner gets `installed`, `requested` or `not_installed` | `ORG_APPROVAL_PENDING`, `SSO_NOT_AUTHORISED`, `CLASSIC_PAT_BLOCKED`, `FINE_GRAINED_PAT_PENDING` |
@@ -747,6 +760,56 @@ The transcript is the console's flow step for step: the same step ids
 codes, the same copy. A task submitted afterwards for
 `example-org/example-other`, which was not granted, is refused at submission
 with `REPOSITORY_NOT_GRANTED` and "choose it under Access".
+
+### 4.4 The workspace steps, end to end (built, #847)
+
+This is what a new person meets **before** GitHub. It is built: lanes W1 to W8
+of [workspaces.md](workspaces.md) §10, on `main` by 2026-10-09. What is not yet
+proven is one real approval end to end, which is why `WORKSPACE_GATE` is still
+off (below).
+
+1. **The person asks.** In the console, the Setup checklist's `workspace` step
+   has a **Request my workspace** button. In the plugin, `/sc:setup` calls
+   `swarm_setup_workspace`, shows the state, and when there is no record it
+   asks whether to request one; `sc setup` does the same in a terminal. Either
+   way it is one `POST /v1/workspace`, for the caller's own tenant and nobody
+   else's. Asking twice, or in the console and then in the plugin, is the same
+   request. The answer carries the opaque id, `w-` and six hex digits, which is
+   all a screenshot or a public log ever shows of the person.
+2. **They carry on while they wait.** Connecting GitHub, enabling orgs and
+   choosing repositories (§2) do not need the workspace, so the checklist lets
+   them go on. Neither the plugin nor the console waits inside a call for the
+   approval: the plugin says where the request stands and moves on, and the
+   console polls the record.
+3. **An admin approves it in Admin › People**, or denies it with a reason the
+   person sees in the step. A denied person may ask again after 24 hours. An
+   admin may approve their own request, and the audit shows that.
+4. **A Cloud Build job makes the workspace.** The step shows the job's progress
+   (identity, access, namespace, limits, final check) from the record. If the
+   job's call guard stops a call, the step reads "waiting for the platform
+   owner"; if a step fails, it shows the code and its copy, and an admin, not
+   the person, has **Retry**, because each run uses a privileged identity.
+5. **The `claude_account` step.** A ready workspace runs nothing until the
+   person has a Claude account: their own (`sc account add`), or one an admin
+   lends them. "Ask an admin to lend one"
+   (`POST /v1/workspace/loan-request`) puts the request in People.
+
+**With `WORKSPACE_GATE` on**, a submission into the person's own tenant before
+all that is refused at submission, on the console, the API and the plugin
+alike, and nothing is created: `403 WORKSPACE_NOT_READY` with "Your SwarmCloud
+workspace is not ready yet … Finish setup: create your workspace." and a link
+to the step, or `403 NO_CLAUDE_ACCOUNT` with "No Claude account yet. Add your
+own, or ask an admin to lend you one, and then try again." A member of a group
+tenant submits as the group at once, workspace or not.
+
+**With the gate off**, as it shipped, both steps are shown for information and
+nothing is refused. The owner's order (workspaces.md §5.5, WD8) is: everything
+ships off; one real person is approved through the console end to end and runs
+a task; then the existing personal tenants are given `ready` records and the
+gate is turned on, in one step. Turning it on first would refuse every person
+on the platform, because none of them has a `ready` record yet. On 2026-10-07
+#845 shipped a refusal before what a person needed to satisfy it, and every
+person was refused for about two hours; this order is that lesson.
 
 ---
 

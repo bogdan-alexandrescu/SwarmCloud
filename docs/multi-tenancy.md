@@ -9,6 +9,14 @@ a quota budget, provider keys and artifacts. A user in no registered group falls
 back to a personal tenant `u-<local-part>`, so nobody is ever hard-blocked from
 the platform.
 
+**A personal tenant is a workspace an admin approved** (#847,
+[workspaces.md](workspaces.md)). A person asks for it from the console's setup
+checklist or `/sc:setup`, an admin approves it in **Admin › People**, and a
+guarded Cloud Build job makes it. Until it is `ready`, and has a Claude account
+to run on, that person's own submissions are refused with
+`WORKSPACE_NOT_READY` or `NO_CLAUDE_ACCOUNT` once `WORKSPACE_GATE` is on.
+Submissions to a group tenant are never held back (§6 below says why).
+
 ---
 
 ## 1. What a tenant owns
@@ -103,6 +111,17 @@ socket to another's, traffic no IAM scoping ever sees. If the cluster is not
 reachable the script says so and skips that step; nothing on the Cloud Run path
 needs it, and browser-class runners cannot be dispatched for that tenant until
 it is done.
+
+**A person's tenant is not registered this way any more.** The same script
+makes it, in its `--workspace` mode, but no operator types the command: an
+admin's approval in People starts a Cloud Build job that runs it under a call
+guard ([§6](#a-persons-workspace-requested-approved-made-by-a-guarded-job)).
+Personal tenants also live outside Terraform: `terraform/infra/variables.tf`
+refuses a `kind = "user"` entry whose principal is a person, so `dev.tfvars`
+holds group and service tenants only. `u-bogdan` is the one exception, named in
+that validation, until lane W9 moves it out of state without destroying
+anything (not on `main` as of 2026-10-09). The release deployer's per-account
+grant above is therefore never needed for a new person.
 
 ---
 
@@ -445,6 +464,10 @@ described above. See [security.md](security.md#authentication) and
 ## 5. Tenant lifecycle
 
 ```bash
+# A PERSON'S tenant is not registered here: they request their workspace in the
+# setup checklist, an admin approves it in Admin > People, and the guarded
+# Cloud Build job makes it (section 6). These commands are for group tenants.
+
 # Register. A re-run rewrites the whole record, --providers included, so it is
 # not how a provider is added: see --add-provider below.
 ./scripts/register-tenant.sh --group eng@saga.xyz --providers anthropic,openai
@@ -562,8 +585,95 @@ A caller in no registered group gets `u-<local-part>` (so `alice@saga.xyz` ->
   isolated exactly like a group's.
 
 This exists so that onboarding never requires a group change first. It is also
-why `tenant:<id>` pools are created on demand rather than only by Terraform: a
-personal tenant appears the first time its owner submits.
+why `tenant:<id>` pools are created on demand rather than only by Terraform.
+Until `WORKSPACE_GATE` is on, a personal tenant's document and pool still
+appear the first time its owner signs in or submits, with nothing behind them;
+once it is on, they come only from the workspace job below.
+
+### A person's workspace: requested, approved, made by a guarded job
+
+**Why it changed (#847, owner, 2026-10-08).** The tenant document that
+`Store.ensure_tenant` wrote on first sight had **no** service account, bucket
+grant, secret or namespace behind it, so the first task of a new person failed
+at dispatch with a missing identity. On 2026-10-07 `u-bogdan` had no namespace
+until someone made it by hand. The owner asked for the space to be made at
+onboarding, and for nothing to start before it exists. The design, and every
+decision with its options, is [workspaces.md](workspaces.md). This is what was
+built from it, lanes W1 to W8.
+
+**The flow.**
+
+1. **The person asks.** The setup checklist's `workspace` step
+   (`POST /v1/workspace`) or `/sc:setup` and `sc setup`
+   (`swarm_setup_workspace`). The target is always the caller's own
+   `tenant_id_for_user`, never a field of the request. A record
+   `workspaces/<tenant>` is written in `requested`, with a random opaque id,
+   `w-` and six hex digits, that is the only name of the person anything
+   public carries.
+2. **An admin approves it in Admin › People** (or denies it with a reason the
+   person sees). Admin rights come from `admin_roles/` in Firestore and
+   `admin_groups`, and every action writes `admin_audit/`.
+3. **swarm-api publishes the workspace id**, and nothing else, to the Pub/Sub
+   topic `swarm-workspace-apply`. swarm-api is the topic's only publisher. It
+   holds no power to create an identity or change IAM, which is the point:
+   the platform's front door is the most exposed component, so it only records
+   and authorises.
+4. **A Cloud Build trigger of the same name builds `main`** and runs
+   `scripts/cloudbuild/workspace-apply.yaml` as `swarm-workspace-deployer`,
+   which runs `scripts/register-tenant.sh --workspace w-…`. Every `gcloud`,
+   `kubectl` and `curl` the script makes goes through the call guard
+   (`scripts/lib/workspace-guard.sh`, rules C0 to C9 in
+   `scripts/lib/workspace-calls.json`). The guard admits creations and bindings
+   of that one workspace's resources and refuses everything else, including
+   every removal. A refusal stops the run in `needs_owner` for the platform
+   owner; nothing the refused call would have done has happened.
+5. **The job records each step** (A1 to A9) on the record, which the console's
+   progress view and the People pane read. Only the final check (A9), after
+   re-reading every object it made, writes `ready`.
+6. **The person then needs a Claude account**, their own or one an admin lends
+   them in People. A ready workspace with no account runs nothing.
+
+**Why a guard and not IAM.** Writing the Workload Identity and act-as bindings
+on a new worker account needs `iam.serviceAccounts.setIamPolicy`, and IAM
+cannot narrow that to a name prefix: "IAM resources don't provide the resource
+name" to a condition (#334). So the deployer's account-IAM power is
+project-wide in a project shared with another team. The owner accepted that
+on 2026-10-08 with three safeguards: only this trigger can use the identity,
+the code it runs is `CODEOWNERS`-protected on `main`, and an alert fires on any
+change it makes to an account not named `swarm-agent-worker-*`
+([workspaces.md §2.4](workspaces.md#24-the-finding-that-shapes-this-and-the-accepted-risk)
+states the residual risk).
+
+**What the job makes is a tenant like any other** (the table in §1): its own
+worker account, its own `tenants/<id>/` grants, its own forge slot, its own
+namespace with default-deny networking, its own documents. Two differences, each
+deliberate:
+
+* **It makes the act-as grant.** The scheduler and the reconciler get
+  `roles/iam.serviceAccountUser` on the new worker, because the dispatcher
+  creates a tenant's Cloud Run jobs on demand and needs `actAs` on the job's
+  account. The operator's `--group` and `--user` paths still do not make it.
+* **It holds no provider key.** A new person runs on a pool account, so no
+  provider secret is created. Its limits are 8 agents and 8 capacity units,
+  with a namespace quota of 16 pods and 64 vCPU (workspaces.md §8, decided by
+  the owner), and an admin raises them per person in People.
+
+**The gate.** `SubmissionService.workspace_gate` runs first in both submission
+methods every create path reaches. With `WORKSPACE_GATE` on it refuses a
+person's submission into their own tenant until the record is `ready` and the
+tenant has a Claude account, and a refused workflow creates nothing at all. A
+group tenant, a service account and the platform's continuation identities are
+never gated (owner decision WD7): a member of `eng` submits as `eng` at once.
+The gate is at submission, not admission, so invariants 1 to 3 are untouched:
+a refused submission creates and holds nothing. It shipped **off** (WD8)
+because turning it on refuses every personal tenant without a `ready` record,
+and it is turned on only after one real approval has run end to end.
+
+**What is not built.** Deprovisioning: there is no job that removes a
+workspace, by design (C9 refuses every removal), and the state
+`deprovisioned` is reserved. A person leaves by the
+[offboarding runbook](runbooks/tenant-offboarding.md#a-personal-workspace),
+run by hand.
 
 ### Tenant ids are capped at 11 characters
 
