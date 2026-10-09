@@ -819,9 +819,9 @@ def test_previous_gives_up_after_its_own_two_tries_not_the_release_wait_budget(t
 def test_previous_retry_is_its_own_knob(tmp_path):
     proc, _, events, _ = previous(
         tmp_path, lambda c, s: {"runs": [ci_run(371, sha=c[1])]}, FAKE_GH_FAIL="always",
-        CI_PREVIOUS_TRIES="3")
+        CI_PREVIOUS_TRIES="4")
     assert proc.returncode == 1, proc.stderr[-3000:]
-    assert len([e for e in events if e["event"] == "api-failed"]) == 3
+    assert len([e for e in events if e["event"] == "api-failed"]) == 4
 
 
 def test_previous_recovers_from_one_failed_read(tmp_path):
