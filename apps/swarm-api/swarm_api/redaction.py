@@ -324,6 +324,11 @@ class JsonMasker:
     for the same value, and `json.dumps` of it is `json()`'s text, except where
     two keys of one object mask to the same text: an object cannot hold one key
     twice, so the second is served as `<masked key> (2)`, and so on.
+
+    A NUMBER is masked when it holds one of the document's literals (`number()`,
+    #387): it becomes the JSON string `"********"`, as a number under a
+    credential's name does. Every other number, `true`, `false` and `null` is
+    served as it is.
     """
 
     def __init__(self, document: Any, *, literals: Iterable[str] = ()) -> None:
@@ -344,6 +349,21 @@ class JsonMasker:
     def literals(self) -> tuple[str, ...]:
         """What this document named as secret, longest first (`_learned_literals`)."""
         return self._literals
+
+    def number(self, text: str) -> int:
+        """How many of this masker's literals a number's JSON text holds.
+
+        THE rule for a number that holds a learned literal, used by `_walk`
+        (every route that masks through this class: `/input`, `GET
+        /v1/tasks/{id}`, `/transcript`, `/logs`) and by `json_masking._walk`
+        (artifacts), so the routes cannot disagree on it. WHY: a PIN the task
+        named as a string of digits under a credential's name, echoed by the
+        agent as a number, was served in clear, because only strings were
+        compared (the PR #378 review for artifacts, #387 for every other
+        route). The digits are looked for anywhere in the text: as the
+        number, inside a longer one, or in `N.0` and `Ne0`.
+        """
+        return _mask_literals(text, self._literals)[1]
 
     def text(self, value: str, *, remember: bool = True) -> Redacted:
         """One string, masked as a decoded string, then for the document's literals.
@@ -411,7 +431,19 @@ class JsonMasker:
                     if isinstance(item, str) and _open_key(item):
                         through = _key_run_end(items, at)
                 return shaped
-            if node is None or isinstance(node, (bool, int, float)):
+            # bool before int: `True` is an int in Python, and never a literal.
+            if node is None or isinstance(node, bool):
+                return node
+            if isinstance(node, (int, float)):
+                # A decoded number is looked for in its `json.dumps` text, which
+                # writes a float as `48261937.0` however it was stored (`N.0`,
+                # `Ne0`, `Ne7` all decode to a float whose text holds `N`), so
+                # it is found here exactly where the artifact path finds it in
+                # the stored token (#387).
+                found = self.number(json.dumps(node))
+                if found:
+                    total += found
+                    return MASK
                 return node
             # Not JSON: a Firestore timestamp in a hand-written document.
             return walk(str(node))
@@ -549,9 +581,16 @@ def redact_lines(
       * A line whose masking changed nothing is served BYTE FOR BYTE as stored
         -- but only once the TEXT rule has also had a look at it and found
         nothing either (the PR #229 review): the structural walk masks
-        string leaves and credential-named keys' whole values, and nothing
-        else, so a non-string scalar the walk cannot touch is still caught by
-        the text rule before the line is trusted as clean.
+        string leaves, credential-named keys' whole values and numbers that
+        hold a learned literal, and nothing else, so a non-string scalar the
+        walk cannot touch is still caught by the text rule before the line is
+        trusted as clean.
+      * A line the walk masked something in is NOT given that text pass
+        (owner decision, 2026-09-30, `json_masking`'s docstring says why). A
+        number holding a literal the task named is masked by the walk itself
+        (`JsonMasker.number`), so the skipped pass no longer decides whether
+        such a number is served (#387): before, `{"note": "export
+        PASSWORD=<v>", "n": <v as digits>}` served the number in clear.
       * A line whose JSON has the SAME KEY TWICE, at any level, is not
         decoded at all: plain `json.loads` keeps only the last value of a
         repeated key, so `{"note":"export PASSWORD=hunter2","note":"ok"}`
@@ -609,8 +648,10 @@ def redact_lines(
             count += masked.count
         else:
             # The structural walk found nothing to mask -- but it only masks
-            # STRING leaves and credential-named keys' whole values; a scalar
-            # that is not a string (`"api_key": null`) is not one, and the
+            # STRING leaves, credential-named keys' whole values and numbers
+            # holding a learned literal (#387, `JsonMasker.number`, so the
+            # number case never depends on this pass); a scalar that is not
+            # a string (`"api_key": null`) is none of those, and the
             # text rule may still find a credential shape the walk cannot see
             # at all. Run it over the stored line before trusting "nothing
             # here" enough to serve the line byte for byte (the PR #229 review).
