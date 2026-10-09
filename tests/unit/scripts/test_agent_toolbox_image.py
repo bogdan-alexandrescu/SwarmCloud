@@ -29,9 +29,10 @@ WHAT IS ASSERTED, and why each one is a test and not a review comment:
     587.0.0) carries fixable HIGH advisories the promote scan refuses;
   * tools held back from the default build are only the ones that had no
     clean release when last scanned (tofu and tflint, 2026-10-06; trivy left
-    the hold at 0.75.0, #442), the hold is a build argument whose install path
-    is real, not a TODO, and no tool is installed by default at a release the
-    scan recorded as failing;
+    the hold at 0.75.0, #442), each held tool has its OWN build argument whose
+    install path is real, not a TODO -- so whichever vendor ships a clean
+    release first leaves the hold alone, as trivy did -- and no tool is
+    installed by default at a release the scan recorded as failing;
   * docs/versions.md states the same versions the Dockerfile pins.
 
 NOT asserted: that the pinned versions are free of advisories. That is a fact
@@ -75,7 +76,13 @@ REQUIRED_TOOLS = (
 #: clean (#442). Anything else added here is a tool quietly dropped.
 MAY_BE_HELD = {"tofu", "tflint"}
 
-HOLD_ARG = "INSTALL_TOFU_TFLINT"
+#: Each held tool's own default-off build argument. One shared argument meant
+#: neither tool could ship until both had a clean release (#442, 2026-10-07).
+HOLD_ARG_OF = {"tofu": "INSTALL_TOFU", "tflint": "INSTALL_TFLINT"}
+
+#: The argument both tools used to share. It must not come back, in the
+#: Dockerfile or in the docs that tell an operator how to turn the tools on.
+COMBINED_HOLD_ARG = "INSTALL_TOFU" + "_TFLINT"
 
 #: Releases the image scan (`trivy rootfs --scanners vuln --severity
 #: HIGH,CRITICAL --ignore-unfixed`, the promote gate's filter) found a fixable
@@ -180,43 +187,74 @@ def _substitute_args(text: str, values: dict[str, str]) -> str:
 # --------------------------------------------------------------------------- #
 
 
-def _smoke_tool_lists() -> tuple[list[str], list[str]]:
+def _smoke_tool_lists() -> tuple[list[str], dict[str, list[str]]]:
+    """The tools the smoke step always checks, and the ones each argument adds."""
     text = _shell_text(_smoke_step())
     always = re.search(r'\btools="([^"]+)"', text)
-    held = re.search(r'\btools="\$tools ([^"]+)"', text)
     assert always, "the smoke step must name its tools in a tools=\"...\" list"
-    assert held, "the smoke step must add the held tools when the build argument is on"
-    return always.group(1).split(), held.group(1).split()
+    held: dict[str, list[str]] = {}
+    for arg, added in re.findall(
+        r'if \[ "\$\{([A-Z0-9_]+)\}" = "1" \]; then tools="\$tools ([^"]+)"; fi', text
+    ):
+        held.setdefault(arg, []).extend(added.split())
+    assert held, "the smoke step must add the held tools when their build arguments are on"
+    return always.group(1).split(), held
+
+
+def _all_held(held: dict[str, list[str]]) -> list[str]:
+    return [t for tools in held.values() for t in tools]
 
 
 def test_the_smoke_step_names_every_required_tool() -> None:
     always, held = _smoke_tool_lists()
-    missing = [t for t in REQUIRED_TOOLS if t not in always and t not in held]
+    missing = [t for t in REQUIRED_TOOLS if t not in always and t not in _all_held(held)]
     assert not missing, f"the build never checks {missing}"
 
 
 def test_only_the_tools_without_a_clean_release_are_held() -> None:
     _, held = _smoke_tool_lists()
-    assert set(held) <= MAY_BE_HELD, (
-        f"{sorted(set(held) - MAY_BE_HELD)} moved behind {HOLD_ARG}: a tool with a "
-        "clean release goes in the default build"
+    moved = sorted(set(_all_held(held)) - MAY_BE_HELD)
+    assert not moved, (
+        f"{moved} moved behind a hold argument: a tool with a clean release goes in "
+        "the default build"
     )
-    gate = _arg_defaults(_runtime_stage()).get(HOLD_ARG)
-    assert gate is not None, f"{HOLD_ARG} must be a declared build argument"
-    assert _arg_value(gate) in {"0", "1"}
+    args = _arg_defaults(_runtime_stage())
+    for arg in held:
+        gate = args.get(arg)
+        assert gate is not None, f"{arg} must be a declared build argument"
+        assert _arg_value(gate) in {"0", "1"}
 
 
-def _held_blocks(text: str) -> list[str]:
-    """The bodies of every `if [ "${HOLD_ARG}" = "1" ]; then ... fi` in `text`."""
+def test_the_smoke_step_adds_each_held_tool_under_its_own_argument() -> None:
+    always, held = _smoke_tool_lists()
+    want = {
+        arg: [tool]
+        for tool, arg in HOLD_ARG_OF.items()
+        if tool in MAY_BE_HELD and tool not in always
+    }
+    assert held == want, (
+        f"the smoke step adds {held}; each held tool must be added alone, under its own "
+        f"argument: {want}"
+    )
+    visited = 0
+    for arg in want:
+        gate = _arg_defaults(_runtime_stage()).get(arg)
+        assert gate is not None, f"{arg} must be a declared build argument"
+        visited += 1
+    assert visited == len(want) == len(MAY_BE_HELD)
+
+
+def _held_blocks(text: str, arg: str) -> list[str]:
+    """The bodies of every `if [ "${arg}" = "1" ]; then ... fi` in `text`."""
     return re.findall(
-        r'if \[ "\$\{' + HOLD_ARG + r'\}" = "1" \]; then(.*?)\bfi\b', text, flags=re.S
+        r'if \[ "\$\{' + re.escape(arg) + r'\}" = "1" \]; then(.*?)\bfi\b', text, flags=re.S
     )
 
 
 def test_trivy_is_in_the_default_build_and_its_install_is_unconditional() -> None:
     always, held = _smoke_tool_lists()
     assert "trivy" in always, "trivy 0.75.0 scanned clean (#442): the default build checks it"
-    assert "trivy" not in held
+    assert "trivy" not in _all_held(held)
     installs = [
         _shell_text(i) for i in _runtime_stage()
         if i.keyword == "RUN" and "aquasecurity/trivy/releases/download" in _shell_text(i)
@@ -224,21 +262,32 @@ def test_trivy_is_in_the_default_build_and_its_install_is_unconditional() -> Non
     assert len(installs) == 1, "trivy is downloaded by exactly one RUN"
     text = installs[0]
     assert "/usr/local/bin/trivy" in text
-    for block in _held_blocks(text):
-        assert "trivy" not in block, f"trivy is still installed only behind {HOLD_ARG}"
+    for arg in HOLD_ARG_OF.values():
+        for block in _held_blocks(text, arg):
+            assert "trivy" not in block, f"trivy is still installed only behind {arg}"
 
 
-def test_every_held_install_sits_behind_the_hold_argument() -> None:
-    # The converse: tofu and tflint still have no clean release, so their
-    # downloads must be inside the guarded block, or the default build fails
-    # the promote gate over them.
+def test_every_held_install_sits_behind_its_own_hold_argument() -> None:
+    # The converse: tofu and tflint still have no clean release, so each one's
+    # install must be inside its OWN guarded block, or the default build fails
+    # the promote gate over it. Inside the other tool's block would tie the two
+    # together again: neither could ship without the other.
     stage_text = "\n".join(_shell_text(i) for i in _runtime_stage() if i.keyword == "RUN")
-    blocks = "\n".join(_held_blocks(stage_text))
     visited = 0
     for tool in sorted(MAY_BE_HELD):
-        assert f"/usr/local/bin/{tool}" in blocks, f"{tool} is installed outside {HOLD_ARG}"
+        own = "\n".join(_held_blocks(stage_text, HOLD_ARG_OF[tool]))
+        assert f"/usr/local/bin/{tool}" in own, (
+            f"{tool} is not installed inside its own {HOLD_ARG_OF[tool]} block"
+        )
+        for other, arg in HOLD_ARG_OF.items():
+            if other == tool:
+                continue
+            theirs = "\n".join(_held_blocks(stage_text, arg))
+            assert f"/usr/local/bin/{tool}" not in theirs, (
+                f"{tool} is installed inside {arg}, {other}'s hold"
+            )
         visited += 1
-    assert visited == len(MAY_BE_HELD)
+    assert visited == len(MAY_BE_HELD) == 2
 
 
 def test_no_default_tool_is_pinned_at_a_release_the_scan_failed() -> None:
@@ -255,13 +304,41 @@ def test_no_default_tool_is_pinned_at_a_release_the_scan_failed() -> None:
     assert checked >= 1, "no default-build tool was checked against the scan record"
 
 
-def test_the_hold_default_is_off_while_any_held_tool_has_no_clean_release() -> None:
+def test_each_hold_defaults_off_while_its_tool_has_no_clean_release() -> None:
+    # Per tool: a hold whose tool is pinned at a release the scan failed must
+    # default to 0. A tool pinned at a release not in SCANNED_FAILING may default
+    # to 1 -- the other tool's record says nothing about it.
     args = _arg_defaults(_runtime_stage())
-    still_failing = [t for t in MAY_BE_HELD if _arg_value(args[PIN_OF[t]]) in SCANNED_FAILING[PIN_OF[t]]]
-    if still_failing:
-        assert _arg_value(args[HOLD_ARG]) == "0", (
-            f"{HOLD_ARG} defaults on while {sorted(still_failing)} has no clean release"
+    visited = 0
+    for tool in sorted(MAY_BE_HELD):
+        arg = HOLD_ARG_OF[tool]
+        assert arg in args, f"{arg} must be a declared build argument"
+        default = _arg_value(args[arg])
+        assert default in {"0", "1"}, f"{arg}={default}"
+        pinned = _arg_value(args[PIN_OF[tool]])
+        if pinned in SCANNED_FAILING[PIN_OF[tool]]:
+            assert default == "0", (
+                f"{arg} defaults on while {tool} {pinned} has a fixable HIGH in the scan"
+            )
+        visited += 1
+    assert visited == len(MAY_BE_HELD)
+
+
+def test_the_combined_hold_argument_is_gone_from_the_dockerfile_and_docs() -> None:
+    files = [
+        DOCKERFILE,
+        VERSIONS_DOC,
+        REPO / "docs" / "worker-images.md",
+        REPO / "docs" / "BUILD_PROMPT_V2.md",
+    ]
+    visited = 0
+    for path in files:
+        assert COMBINED_HOLD_ARG not in path.read_text(), (
+            f"{path.relative_to(REPO)} still names {COMBINED_HOLD_ARG}; the hold is "
+            f"{sorted(HOLD_ARG_OF.values())}, one per tool"
         )
+        visited += 1
+    assert visited == len(files) == 4
 
 
 def _fake_tools(bin_dir: Path, names: list[str]) -> None:
@@ -272,10 +349,12 @@ def _fake_tools(bin_dir: Path, names: list[str]) -> None:
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
 
-def _run_smoke(tmp_path: Path, present: list[str], hold_on: str) -> subprocess.CompletedProcess[str]:
+def _run_smoke(
+    tmp_path: Path, present: list[str], holds: dict[str, str]
+) -> subprocess.CompletedProcess[str]:
     bin_dir = tmp_path / "bin"
     _fake_tools(bin_dir, present)
-    script = _substitute_args(_shell_text(_smoke_step()), {HOLD_ARG: hold_on})
+    script = _substitute_args(_shell_text(_smoke_step()), holds)
     # The stand-ins first, then ONLY the plumbing the step itself uses, linked
     # into a private directory. Putting /usr/bin on PATH would let a runner's own
     # gh, kubectl, make or docker satisfy the check, and the missing-tool case
@@ -307,27 +386,43 @@ def _shell_for(target: Instruction) -> list[str]:
     return shell
 
 
-@pytest.mark.parametrize("hold_on", ["0", "1"])
-def test_the_smoke_step_passes_and_counts_when_every_tool_is_present(
-    tmp_path: Path, hold_on: str
-) -> None:
+#: (INSTALL_TOFU, INSTALL_TFLINT): both off, each alone, both on. The two
+#: one-on cases are the point of the split: either tool ships without the other.
+HOLD_CASES = [("0", "0"), ("1", "0"), ("0", "1"), ("1", "1")]
+
+
+def _holds(tofu: str, tflint: str) -> dict[str, str]:
+    return {HOLD_ARG_OF["tofu"]: tofu, HOLD_ARG_OF["tflint"]: tflint}
+
+
+def _expected_tools(holds: dict[str, str]) -> list[str]:
     always, held = _smoke_tool_lists()
-    expected = always + (held if hold_on == "1" else [])
-    proc = _run_smoke(tmp_path, expected, hold_on)
+    return always + [t for arg, tools in held.items() if holds.get(arg) == "1" for t in tools]
+
+
+@pytest.mark.parametrize(("tofu", "tflint"), HOLD_CASES)
+def test_the_smoke_step_passes_and_counts_when_every_tool_is_present(
+    tmp_path: Path, tofu: str, tflint: str
+) -> None:
+    holds = _holds(tofu, tflint)
+    expected = _expected_tools(holds)
+    assert ("tofu" in expected) == (tofu == "1")
+    assert ("tflint" in expected) == (tflint == "1")
+    proc = _run_smoke(tmp_path, expected, holds)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert f"toolbox smoke: {len(expected)} tools ok" in proc.stdout, proc.stdout
 
 
-@pytest.mark.parametrize("hold_on", ["0", "1"])
+@pytest.mark.parametrize(("tofu", "tflint"), HOLD_CASES)
 def test_the_smoke_step_fails_the_build_when_any_tool_is_missing(
-    tmp_path: Path, hold_on: str
+    tmp_path: Path, tofu: str, tflint: str
 ) -> None:
-    always, held = _smoke_tool_lists()
-    expected = always + (held if hold_on == "1" else [])
+    holds = _holds(tofu, tflint)
+    expected = _expected_tools(holds)
     visited = 0
     for absent in expected:
         case = tmp_path / absent
-        proc = _run_smoke(case, [t for t in expected if t != absent], hold_on)
+        proc = _run_smoke(case, [t for t in expected if t != absent], holds)
         assert proc.returncode != 0, f"build passed with {absent} missing:\n{proc.stdout}"
         assert absent in proc.stdout + proc.stderr, "the failure must name the missing tool"
         visited += 1
