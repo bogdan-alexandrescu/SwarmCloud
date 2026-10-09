@@ -144,6 +144,10 @@ def test_the_tests_run_in_the_callers_environment_not_common_sh_s(tmp_path: Path
     assert result.returncode == 0, result.stderr
     args = (tmp_path / "env.args").read_text()
     assert args.startswith("-m pytest -q -n auto -p no:warnings ")
+    # Box 102 (#888): the run names its slowest tests, and a test that runs
+    # past a minute dumps its stack, so the next overrun names the slow one.
+    assert "--durations=10" in args.split()
+    assert "faulthandler_timeout=60" in args.split()
     for guard in GUARDS:
         assert guard in args
     for recorded in (dump, tmp_path / "env.parity"):
@@ -164,3 +168,45 @@ def test_ci_doc_and_claude_md_name_it_as_the_pre_finish_command():
     paragraph = claude[claude.index("**A SwarmCloud agent is not this machine.**"):]
     paragraph = paragraph[: paragraph.index("\n\n")]
     assert "scripts/changed-guards.sh" in paragraph
+
+
+def test_an_overrun_names_the_test_that_was_still_running(tmp_path: Path):
+    # Box 102 (#888): lanes reported the 540 s cap reached with nothing naming
+    # the slow test. `timeout` kills pytest with SIGTERM, so `--durations`
+    # never prints on an overrun (measured 2026-10-09 under xdist); what does
+    # survive is the faulthandler dump of a test past its minute, which names
+    # the test's file, line and function. A fake python writes such a dump and
+    # exits 124, as `timeout` does.
+    (tmp_path / "scripts" / "lib").mkdir(parents=True)
+    shutil.copy(SCRIPT, tmp_path / "scripts" / "changed-guards.sh")
+    shutil.copy(REPO / "scripts" / "lib" / "common.sh", tmp_path / "scripts" / "lib" / "common.sh")
+    (tmp_path / "scripts" / "lib" / "check-contract-parity.sh").write_text("#!/usr/bin/env bash\n")
+    for guard in GUARDS:
+        (tmp_path / guard).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / guard).write_text("")
+    slow = tmp_path / "tests" / "unit" / "scripts" / "test_slow_thing.py"
+    dump = [
+        "Timeout (0:01:00)!",
+        "Thread 0x00007b3099e66b80 (most recent call first):",
+        f'  File "{slow}", line 42 in test_waits_forever',
+        '  File "/venv/lib/python3.11/site-packages/_pytest/python.py", line 167 in pytest_pyfunc_call',
+    ] + [f'  File "/venv/lib/python3.11/site-packages/pluggy/_callers.py", line {n} in _multicall'
+         for n in range(40)]
+    python = tmp_path / ".venv" / "bin" / "python"
+    python.parent.mkdir(parents=True)
+    python.write_text("#!/usr/bin/env bash\ncat <<'DUMP'\n" + "\n".join(dump) + "\nDUMP\nexit 124\n")
+    python.chmod(0o755)
+    env = {k: v for k, v in os.environ.items()
+           if k not in {"PROJECT_ID", "IMAGE_REPO", "ENVIRONMENT", "REPO_ROOT", "SWARM_CLONE_BASE"}}
+    env.update(NO_COLOR="1", SWARM_ENV_FILE=str(tmp_path / "no.env"))
+    result = subprocess.run(
+        ["bash", str(tmp_path / "scripts" / "changed-guards.sh"), "--files", "-"],
+        cwd=tmp_path, env=env, input="docs/x.md\n", capture_output=True, text=True, timeout=120,
+    )
+    out = result.stdout + result.stderr
+    assert result.returncode == 1, out
+    assert "ran past 540 s" in out
+    # The dump's test frame is 40 lines above the end of the log, past the
+    # 25-line tail; the script must print it by name anyway.
+    assert "test_slow_thing.py" in out
+    assert "test_waits_forever" in out
