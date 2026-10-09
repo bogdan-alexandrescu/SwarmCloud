@@ -19,12 +19,36 @@
 .rg-main { min-width: 0; }
 .rg-canvas { position: relative; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface-2); overflow: hidden; }
 .rg-zoom { position: absolute; top: 8px; right: 8px; display: inline-flex; gap: 4px; z-index: 1; }
+/* The card's control bar: the Structure | Network switch top-left, opposite
+   zoom and Fit. Both drawings keep the soft bounds' top margin clear of it. */
+.rg-bar { position: absolute; top: 8px; left: 8px; z-index: 1; max-width: calc(100% - 140px); }
+/* The network canvas and its loading state take exactly the SVG's box, so
+   switching drawings never moves the page. */
+.rg-net { display: block; width: 100%; aspect-ratio: 640 / 440; max-height: 470px; outline: none; }
+.rg-net:focus-visible { box-shadow: inset 0 0 0 2px var(--sk-ac); }
+.rg-net[data-failed="true"] { aspect-ratio: auto; height: 48px; }
+.rg-wait { position: absolute; inset: 48px 16px auto; display: flex; flex-direction: column; align-items: center; gap: 8px; margin: 0; padding: 12px; text-align: center; font-size: var(--t-meta); color: var(--text-dim); pointer-events: none; }
+.rg-wait .c-btn { pointer-events: auto; }
+.rg-net.rg-wait { position: static; justify-content: center; inset: auto; }
+.rg-netfail { margin: 0; padding: 8px 12px; font-size: var(--t-meta); color: var(--text-dim); }
+.rg-netlist { display: flex; flex-direction: column; margin: 0; padding: 0 12px 8px; list-style: none; }
+.rg-netlist button { display: flex; width: 100%; justify-content: space-between; gap: 8px; min-height: 32px; padding: 4px 6px; border: 0; border-bottom: 1px solid var(--line-soft); background: none; color: var(--text); font: inherit; font-size: var(--t-meta); text-align: left; cursor: pointer; }
+.rg-netlist button span { font-family: var(--mono); overflow-wrap: anywhere; }
+.rg-netlist button small { color: var(--text-dim); font-size: var(--t-micro); }
+.rg-netlist button[aria-pressed="true"] { color: var(--sk-ac); font-weight: 600; }
+.rg-netlist button:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+/* Over a working canvas the list is for keyboard and screen-reader readers:
+   out of sight until focus enters it, then drawn under the canvas. */
+.rg-netlist.is-quiet:not(:focus-within) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; padding: 0; }
 .rg-svg { display: block; width: 100%; height: auto; max-height: 470px; touch-action: none; cursor: grab; }
 .rg-svg text { font-size: var(--t-micro); fill: var(--text-dim); font-family: var(--font); }
 .rg-cluster { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
 .rg-clabel { fill: var(--text-dim); }
-.rg-edge { stroke: var(--ctl-bd); opacity: .55; }
-.rg-edge.is-on { stroke: var(--sk-ac); opacity: 1; }
+/* stroke-opacity, not opacity: `opacity` gives each of an unclustered view's
+   ~4,000 lines its own transparency layer, and repainting those measured
+   100-330 ms a frame in Chromium (lane GR3). */
+.rg-edge { stroke: var(--ctl-bd); stroke-opacity: .55; }
+.rg-edge.is-on { stroke: var(--sk-ac); stroke-opacity: 1; }
 .rg-node { cursor: pointer; outline: none; }
 .rg-node circle { stroke: var(--surface); stroke-width: 2; }
 .rg-node[data-heat="hot"] circle { fill: var(--s-bad); }
@@ -38,11 +62,23 @@
 /* The label collision pass (QA G4-11, RepoGraphData.ts `placeLabels`): a
    label that would print over another is moved above its node, or, with no
    room either side, hidden until its node is hovered, focused or picked. */
-.rg-node text.is-hidden { opacity: 0; }
-.rg-node:hover text.is-hidden, .rg-node:focus-visible text.is-hidden, .rg-node.is-sel text.is-hidden { opacity: 1; }
+.rg-node text.is-hidden { fill-opacity: 0; visibility: hidden; }
+.rg-node:hover text.is-hidden, .rg-node:focus-visible text.is-hidden, .rg-node.is-sel text.is-hidden { fill-opacity: 1; visibility: visible; }
+/* A big view is mounted a chunk a frame out of sight and shown once whole:
+   every partial frame would otherwise repaint all that was already drawn. */
+.rg-world.is-mounting { visibility: hidden; }
 .rg-node:hover text { fill: var(--text); }
 .rg-legend { display: flex; flex-wrap: wrap; gap: 4px 14px; align-items: center; padding: 8px 12px; border-top: 1px solid var(--line); font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); background: var(--surface); }
-.rg-lg { display: inline-flex; align-items: center; gap: 6px; }
+/* The filtering legend (lane GR3): every band and cluster is a toggle,
+   pressed = shown. A hidden one is struck through as well as faded, so the
+   state is never carried by colour alone. */
+.rg-lgrow { display: inline-flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; }
+.rg-lg, .rg-lgc { display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 0 4px; border: 0; border-radius: var(--r-xs); background: none; color: inherit; font: inherit; cursor: pointer; }
+.rg-lgc { padding: 0 8px; border: 1px solid var(--line); border-radius: var(--r-pill); font-family: var(--mono); }
+.rg-lg:hover, .rg-lgc:hover { color: var(--text); }
+.rg-lg:focus-visible, .rg-lgc:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
+.rg-lg[aria-pressed="false"], .rg-lgc[aria-pressed="false"] { opacity: .55; text-decoration: line-through; }
+.rg-lghid { display: inline-flex; align-items: center; gap: 8px; color: var(--text); }
 .rg-lg > b, .rg-phone i { display: inline-block; width: 10px; height: 10px; border-radius: var(--r-pill); }
 .rg-lg > b[data-heat="hot"], .rg-phone i[data-heat="hot"] { background: var(--s-bad); }
 .rg-lg > b[data-heat="warm"], .rg-phone i[data-heat="warm"] { background: var(--s-warn); }
@@ -65,6 +101,17 @@
 .rg-sym:hover, .rg-prow:hover { background: var(--sk-acs); }
 .rg-sym code, .rg-test code { font-family: var(--mono); overflow-wrap: anywhere; }
 .rg-sym small, .rg-test small, .rg-prow small { color: var(--text-dim); font-size: var(--t-micro); white-space: nowrap; }
+/* The inspector's neighbour list: callers and callees as buttons. */
+.rg-nbs { display: flex; flex-direction: column; gap: 8px; }
+.rg-nb { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.rg-nb h3 { display: flex; align-items: center; gap: 6px; margin: 0 0 2px; font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim); }
+.rg-nb h3 small { font-size: var(--t-micro); color: var(--text); }
+.rg-nb ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; }
+.rg-nbrow { display: flex; width: 100%; align-items: center; justify-content: space-between; gap: 6px; min-height: 28px; padding: 2px 6px; border: 0; border-radius: var(--r-xs); background: none; color: var(--text); font: inherit; font-size: var(--t-micro); text-align: left; cursor: pointer; min-width: 0; }
+.rg-nbrow:hover { background: var(--sk-acs); }
+.rg-nbrow:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.rg-nbrow code { font-family: var(--mono); overflow-wrap: anywhere; min-width: 0; }
+.rg-nbrow small { color: var(--text-dim); white-space: nowrap; }
 .rg-picked { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 0; padding: 0 10px; min-height: 32px; border: 1px solid var(--sk-ac); border-radius: var(--r-ctl); font-size: var(--t-meta); }
 .rg-picked code { font-family: var(--mono); color: var(--sk-ac); font-weight: 600; }
 .rg-picked small { color: var(--text-dim); font-size: var(--t-micro); }
@@ -140,7 +187,8 @@
 @media (max-width: 640px) {
   .rg-canvas { display: none; }
   .rg-phone { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
-  .rg-prow { width: 100%; }
+  .rg-prow { width: 100%; min-height: 44px; }
+  .rg-nbrow { min-height: 44px; }
   .rg-pname { font-family: var(--mono); overflow-wrap: anywhere; }
   .rg-phone i { flex: none; }
   .ri-flow { grid-template-columns: minmax(0, 1fr); }
