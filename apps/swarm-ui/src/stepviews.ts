@@ -63,12 +63,16 @@ import {
 // ---------------------------------------------------------------------------
 
 /** How one open workflow is drawn. The board adds a fourth, `rows`, which is
- *  "none of them open". */
-export type WorkflowView = 'graph' | 'timeline' | 'table'
+ *  "none of them open". `changes` is a tab of the workflow's PAGE only (its
+ *  Changes tab, docs/design/diff-viewer.md §2): a board card never draws it. */
+export type WorkflowView = 'graph' | 'timeline' | 'table' | 'changes'
 
 /** In the order the segmented control shows them: the shape first, then time,
  *  then the table you sort to find the outlier. */
 export const WORKFLOW_VIEWS: readonly WorkflowView[] = ['graph', 'timeline', 'table']
+
+/** Every tab a workflow's address can name: the drawn views, and the page's Changes. */
+export const WORKFLOW_TABS: readonly WorkflowView[] = [...WORKFLOW_VIEWS, 'changes']
 
 /** One word each, naming what you get rather than how it is made -- the rule
  *  `Rows`/`Graph` already follow on the board's own control. */
@@ -76,6 +80,7 @@ export const VIEW_LABEL: Readonly<Record<WorkflowView, string>> = {
   graph: 'Graph',
   timeline: 'Timeline',
   table: 'Table',
+  changes: 'Changes',
 }
 
 // ---------------------------------------------------------------------------

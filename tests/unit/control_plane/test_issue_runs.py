@@ -753,7 +753,10 @@ CHAIN_AS_BEFORE = {
                     "swarm-work.patch holds the last step's diff; the whole change is this "
                     "branch against the default branch. Do not edit files. Write "
                     "$SWARM_ARTIFACTS_DIR/verdict.json: {\"verdict\": \"MERGE\" or \"NOT_YET\", "
-                    "\"findings\": [\"one blocker per entry\"], \"requirements\": []}. "
+                    "\"findings\": [{\"summary\": \"one blocker per entry\", \"file\": "
+                    "\"its repository-relative path\", \"line\": <its line number>, "
+                    "\"side\": \"new\" or \"old\"}], \"requirements\": []}. "
+                    + issueruns.FINDINGS_LOCATION_NOTE
                     + issueruns.NO_CLOSING_KEYWORD
                 ),
             },

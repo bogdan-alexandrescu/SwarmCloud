@@ -7,13 +7,15 @@
 // `published_nothing` and PUBLISH_REFUSED get their own forms; a refused
 // file is named and its content is never shown, so no diff is offered. The
 // six causes of no pull request stay six, and an unrecognised reason is
-// printed as the worker wrote it.
+// printed as the worker wrote it. The diff itself is the Changes tab
+// (diff-viewer.md §2 variant 2): the card links to it, `Changes ›`, and reads
+// no patch of its own.
 //
 // MUTATIONS, one per block: drop `AgCodeLead`; read an absent `base_pin` as
 // not pinned; offer the diff on a credential refusal; read the refusal from
 // the latest attempt only; fold the unrecognised reason into a known bucket.
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentRun } from '../api'
@@ -105,15 +107,31 @@ describe('the card opens with one sentence, then the base pin, then the diff', (
     const pin = code().querySelector('.ag-basepin')!
     expect(first.nextElementSibling).toBe(pin)
     expect(pin.textContent).toBe('Base pinned to 9c4e0b2abc, from plan')
-    // Then the diff, behind its button.
-    expect(pin.nextElementSibling?.querySelector('button')?.textContent).toBe('Show the diff')
+    // Then the way to the diff: the Changes tab, which replaced `Show the diff`.
+    expect(pin.nextElementSibling?.querySelector('a.dt-more')?.textContent).toBe('Changes ›')
   })
 
-  it('opens the per-file diff through the artifact viewer, by the patch’s name', async () => {
-    render(<Run run={run(finished({ base: 'abc', published: false, publish_reason: 'collect', strategy: 'collect', patch: 'change.diff' }))} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Show the diff' }))
-    await waitFor(() => expect(screen.getByRole('region', { name: 'Artifact change.diff' })).toBeTruthy())
-    expect(api.loadArtifactContent).toHaveBeenCalledWith(expect.any(String), 'change.diff')
+  it('links to the Changes tab, switches the split to it, and reads no patch here', () => {
+    const changes = vi.fn()
+    const links = { logs: vi.fn(), attempts: vi.fn(), artifacts: vi.fn(), changes }
+    const t = finished({ base: 'abc', published: false, publish_reason: 'collect', strategy: 'collect', patch: 'change.diff' })
+    render(<Run run={run(t)} links={links} />)
+    const link = screen.getByRole('link', { name: 'Changes ›' })
+    expect(link.getAttribute('href')).toBe(`#work/task/${encodeURIComponent(t.id)}/changes`)
+    expect(link.parentElement?.textContent).toMatch(/change\.diff · 9[,.]?400 bytes/)
+    fireEvent.click(link)
+    expect(changes).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: 'Show the diff' }), 'the in-card viewer is back').toBeNull()
+    expect(api.loadArtifactContent).not.toHaveBeenCalled()
+  })
+
+  it('says the file count beside the link where the worker kept git.files', () => {
+    const files = [
+      { path: 'a.ts', old_path: null, status: 'M' as const, insertions: 1, deletions: 0, binary: false },
+      { path: 'b.ts', old_path: null, status: 'A' as const, insertions: 2, deletions: 0, binary: false },
+    ]
+    render(<Run run={run(finished({ base: 'abc', published: false, publish_reason: 'collect', strategy: 'collect', patch: 'change.diff', files }))} />)
+    expect(screen.getByRole('link', { name: 'Changes ›' }).parentElement?.textContent).toMatch(/2 files · change\.diff/)
   })
 
   it('says a base that was not pinned, with its reason', () => {
@@ -182,7 +200,7 @@ describe('PUBLISH_REFUSED', () => {
     expect(items[0]).toMatch(/config\/test\.env/)
     expect(items[0]).toMatch(/content is never shown/)
     expect(items[1]).toMatch(/Attempt 2 · gen 2 · an unusable pr-title\.txt/)
-    expect(screen.queryByRole('button', { name: 'Show the diff' }), 'the refused file could be read through the diff').toBeNull()
+    expect(screen.queryByRole('link', { name: 'Changes ›' }), 'the refused file could be read through the diff').toBeNull()
   })
 
   it('withholds the diff on a FAILED task whose last attempt was refused for a credential', () => {
@@ -196,7 +214,7 @@ describe('PUBLISH_REFUSED', () => {
     render(<Run run={run(t, [attempt(1, { error: credential('config/test.env') })])} />)
     expect(lead().textContent).toMatch(/Publish refused\. Nothing was pushed\./)
     expect(code().querySelector('.ag-basepin'), 'the base pin follows the lead here too').not.toBeNull()
-    expect(screen.queryByRole('button', { name: 'Show the diff' }), 'the refused file could be read through the diff').toBeNull()
+    expect(screen.queryByRole('link', { name: 'Changes ›' }), 'the refused file could be read through the diff').toBeNull()
   })
 
   it('reads every attempt, then the task’s own last error, then the end cause', () => {

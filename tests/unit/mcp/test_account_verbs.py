@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import sys
+import threading
 
 import pytest
 
@@ -161,14 +163,163 @@ def test_remove_refuses_anything_but_the_label_even_with_assume_yes(monkeypatch,
     assert api.writes() == []
 
 
-def test_the_mcp_remove_needs_confirm_label_equal_to_the_label():
+# -- the MCP remove: confirmed by a person, never by its caller (finding 83) ----
+#
+# It took `confirm_label` and its refusal named the label it wanted, so the
+# agent that called it could call again with that label and confirm its own
+# destructive action. Now the bridge asks the host's human (MCP elicitation).
+
+
+@pytest.fixture
+def host(monkeypatch):
+    """A host that can ask its human; `answers` is what the human gives, and
+    `asked` every prompt the bridge put to them."""
+    asked: list[tuple[str, dict]] = []
+    answers: list = []
+
+    def _elicit(message, schema):
+        asked.append((message, schema))
+        return answers.pop(0)
+
+    monkeypatch.setattr(server, "_elicit", _elicit)
+    server._HOST_CAN_ELICIT.set()
+    yield asked, answers
+    server._HOST_CAN_ELICIT.clear()
+
+
+def _accepted(label):
+    return {"jsonrpc": "2.0", "id": "x", "result": {"action": "accept", "content": {"label": label}}}
+
+
+def _names_the_label(text):
+    return re.search(r"\bwork\b", text) is not None
+
+
+def test_the_mcp_remove_deletes_only_when_the_human_types_the_label(host):
+    asked, answers = host
     api = FakeApi()
-    with pytest.raises(SwarmError):
-        server._call(api, "swarm_account_remove", {"account": "work", "confirm_label": "spare"})
-    assert api.writes() == []
-    body = json.loads(server._call(api, "swarm_account_remove", {"account": "acct_1", "confirm_label": "work"}))
+    answers.append(_accepted("work"))
+    body = json.loads(server._call(api, "swarm_account_remove", {"account": "acct_1"}))
     assert body["broker_answer"] == {"removed": "acct_1", "secret": "retained"}
     assert api.writes() == [("DELETE", "/v1/accounts/acct_1", None)]
+    # The PERSON is shown which account; the caller never is.
+    ((message, schema),) = asked
+    assert _names_the_label(message) and "acct_1" in message
+    assert schema["required"] == ["label"]
+
+
+@pytest.mark.parametrize(
+    "answer",
+    [
+        _accepted("spare"),
+        _accepted("Work"),
+        _accepted(""),
+        {"jsonrpc": "2.0", "id": "x", "result": {"action": "decline"}},
+        {"jsonrpc": "2.0", "id": "x", "result": {"action": "cancel"}},
+        {"jsonrpc": "2.0", "id": "x", "error": {"code": -32601, "message": "no"}},
+        None,  # nobody answered in time
+    ],
+    ids=["other-label", "wrong-case", "empty", "decline", "cancel", "host-error", "timeout"],
+)
+def test_anything_but_the_typed_label_removes_nothing_and_never_names_it(host, answer):
+    _, answers = host
+    api = FakeApi()
+    answers.append(answer)
+    with pytest.raises(SwarmError) as refused:
+        server._call(api, "swarm_account_remove", {"account": "work"})
+    assert api.writes() == []
+    assert "nothing was removed" in str(refused.value)
+    assert not _names_the_label(str(refused.value)), str(refused.value)
+
+
+def test_a_caller_cannot_supply_the_confirmation_as_an_argument(host):
+    """The argument the old tool took is refused, not read: an agent that
+    passes the label it read from `swarm_accounts` confirms nothing."""
+    asked, _ = host
+    api = FakeApi()
+    with pytest.raises(SwarmError, match="does not take"):
+        server._call(api, "swarm_account_remove", {"account": "work", "confirm_label": "work"})
+    assert api.sent == [] and asked == []
+    schema = next(t for t in server.TOOLS if t["name"] == "swarm_account_remove")["inputSchema"]
+    assert set(schema["properties"]) == {"account"}
+
+
+def test_a_host_that_cannot_ask_its_human_removes_nothing_and_names_the_terminal_command():
+    server._HOST_CAN_ELICIT.clear()
+    api = FakeApi()
+    with pytest.raises(SwarmError) as refused:
+        server._call(api, "swarm_account_remove", {"account": "work"})
+    text = str(refused.value)
+    assert api.writes() == []
+    assert "sc account remove acct_1" in text and "nothing was removed" in text
+    assert not _names_the_label(text), text
+
+
+class _Host:
+    """stdin and stdout of a real host: it answers the bridge's elicitation
+    with what its human typed, once the bridge has asked."""
+
+    def __init__(self, typed, *, can_ask=True):
+        self.typed = typed
+        self.can_ask = can_ask
+        self.lines: list[dict] = []
+        self.asked = threading.Event()
+
+    def write(self, text):
+        for line in text.splitlines():
+            if line.strip():
+                message = json.loads(line)
+                self.lines.append(message)
+                if message.get("method") == "elicitation/create":
+                    self.asked.set()
+
+    def flush(self):
+        pass
+
+    def __iter__(self):
+        capabilities = {"elicitation": {}} if self.can_ask else {}
+        yield json.dumps({"jsonrpc": "2.0", "id": 0, "method": "initialize",
+                          "params": {"protocolVersion": "2024-11-05", "capabilities": capabilities}})
+        yield json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "swarm_account_remove", "arguments": {"account": "work"}}})
+        if self.can_ask:
+            assert self.asked.wait(10), "the bridge never asked"
+            request = next(m for m in self.lines if m.get("method") == "elicitation/create")
+            # An unrelated response first: it is dropped, and answers nothing.
+            yield json.dumps({"jsonrpc": "2.0", "id": "someone-else", "result": {}})
+            yield json.dumps({"jsonrpc": "2.0", "id": request["id"],
+                              "result": {"action": "accept", "content": {"label": self.typed}}})
+
+    def answer(self):
+        return next(m for m in self.lines if m.get("id") == 1)["result"]
+
+
+@pytest.mark.parametrize("typed,removed", [("work", True), ("spare", False)])
+def test_the_served_bridge_asks_the_host_and_acts_on_the_human_answer(monkeypatch, typed, removed):
+    api = FakeApi()
+    monkeypatch.setattr(server, "SwarmClient", lambda *a, **k: api)
+    host = _Host(typed)
+    monkeypatch.setattr(sys, "stdout", host)
+    try:
+        server.serve(stdin=host)
+    finally:
+        server._HOST_CAN_ELICIT.clear()
+    answer = host.answer()
+    assert api.writes() == ([("DELETE", "/v1/accounts/acct_1", None)] if removed else [])
+    assert answer.get("isError", False) is (not removed), answer
+    assert [m["id"] for m in host.lines if "id" in m and "method" not in m].count("someone-else") == 0
+
+
+def test_the_served_bridge_without_elicitation_sends_nothing(monkeypatch):
+    api = FakeApi()
+    monkeypatch.setattr(server, "SwarmClient", lambda *a, **k: api)
+    host = _Host("work", can_ask=False)
+    monkeypatch.setattr(sys, "stdout", host)
+    server.serve(stdin=host)
+    answer = host.answer()
+    assert answer["isError"] is True and "sc account remove" in answer["content"][0]["text"]
+    assert api.writes() == []
+    assert not any(m.get("method") == "elicitation/create" for m in host.lines)
 
 
 @pytest.mark.parametrize("tool,state", [

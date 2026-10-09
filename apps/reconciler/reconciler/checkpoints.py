@@ -26,18 +26,22 @@ this module is the only thing that deletes one.
 
 WHAT CAN RESUME FROM A CHECKPOINT
 ---------------------------------
-Two things, and both are visible in the control plane:
+One thing: `task.latest_checkpoint`, the pointer `agent_worker.lifecycle`
+resolves (`Worker._recorded_checkpoint`, through `find_by_uri`). The worker
+restores the checkpoint it names or nothing -- since #347 there is no fallback
+to `CheckpointManager.find_latest()`, which would take the newest manifest
+under the prefix that every agent of the tenant can write.
 
-* `task.latest_checkpoint`, the pointer `agent_worker.lifecycle` reads first
-  (`_restore_checkpoint`); and
-* `CheckpointManager.find_latest()`, the fallback, which scans EVERY manifest
-  under `tenants/<t>/tasks/<task>/attempts/` and takes the newest.
-
-The second is why a single live attempt protects every checkpoint of its task,
-not just the one it wrote: a resumed worker whose pointer fails to resolve will
-happily select an older one. So the reference question is asked per TASK, and
-the answers are exactly the three the lane asked for -- the task is terminal,
-the owning attempt is complete, and nothing later still points at it.
+A single live attempt still protects every checkpoint of its task, not just
+the one the pointer names today, and that is deliberately conservative rather
+than required by the worker: the pointer is not fixed while an attempt is
+alive. `ControlPlane.record_checkpoint` moves it on every checkpoint an
+attempt records, and it is a Firestore field with no document-level IAM
+(docs/multi-tenancy.md), so which checkpoint the next retry will name cannot
+be read off the bucket now. Deleting by "what the pointer names this minute"
+would race the pointer. So the reference question is asked per TASK, and the
+answers are exactly the three the lane asked for -- the task is terminal, the
+owning attempt is complete, and nothing later still points at it.
 
 THE BACKSTOP IS THE FALLBACK, NOT THE RULE
 ------------------------------------------
@@ -293,9 +297,12 @@ def classify(
 
     live = [a for a in attempts if a.completed_at is None]
     if live:
-        # `find_latest()` scans the whole task prefix, so ANY unfinished attempt
-        # of this task can select ANY checkpoint of it -- including one written
-        # by an earlier attempt that has already completed.
+        # An unfinished attempt can still move `task.latest_checkpoint`
+        # (`record_checkpoint`), so while one lives, which checkpoint of this
+        # task a retry would restore is not settled -- including one written
+        # by an earlier attempt that has already completed. Kept per task, on
+        # purpose: the worker restores only the pointer (#347), but the
+        # pointer is not fixed until the attempts are.
         #
         # But the TASK is terminal here, so no scheduler will admit it and no
         # worker will be started for it. The only thing this can be is an
