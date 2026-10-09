@@ -73,6 +73,24 @@ delimiter lines that carry the run id, as data. It is the prompt, not a
 runner input: `issue` is the only input `claude-code` declares, and the
 profiles are frozen.
 
+THE PLANNER SEES THE REPOSITORY'S INDEX (lane KG1, docs/design/knowledge-
+graph.md §4.1; docs/repo-index.md §4.1). When the run's tenant has registered
+the issue's repository and promoted an index of extractor version 3 or later,
+`plancontext` adds two sections before the open work, each between delimiter
+lines carrying the run id: REPO INDEX (repo-index.md) and REPO GRAPH (where
+the issue lands, what calls it and tests it, which open pull requests meet
+it, and the module communities it sits in), sharing one 24 KiB allowance.
+The run records `index_sha` and `index_digest`, so a plan says which index it
+was made from, and `index_context` says why there was none. A planner never
+waits for an index and is never refused for one.
+
+PARALLEL STEPS NEVER SHARE A FILE (§4.9, owner decision 2026-10-08). Two steps
+not on one dependency line whose `files` meet -- the same path, or a directory
+prefix of the other's -- make the plan invalid, and the refusal names both
+steps and the file (`territory_refusal`). It was a sentence in the prompt; a
+plan that broke it was approved and failed at the join. A plan stored before
+the rule is read without it, so it still compiles and keeps its digest.
+
 WHAT IS COMPILED, AND THE FIX-ROUND CAP. The plan's steps become a chain of
 implementer steps, each building on the previous one's branch, followed by
 the review shape #264 built: a review that writes `verdict.json`, and a fix
@@ -416,7 +434,9 @@ class PlanStep(_PlanModel):
     step_id: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9-]*$")
     title: str = Field(min_length=1, max_length=200)
     prompt: str = Field(min_length=1, max_length=16_000)
-    #: Repository paths the step is planned to touch. A plan, not a fence.
+    #: Repository paths the step is planned to touch, or directory prefixes.
+    #: A plan, not a fence for the step itself -- but two steps that run side
+    #: by side may not share one (`parallel_file_conflicts`, §4.9).
     files: list[_Path] | None = Field(default=None, max_length=MAX_STEP_FILES)
     #: The tests the step adds, one per entry, written before the change.
     tests: list[_Line] | None = Field(default=None, max_length=MAX_STEP_TESTS)
@@ -457,8 +477,9 @@ class PlanSpec(_PlanModel):
         return steps
 
     @model_validator(mode="after")
-    def _dependencies(self) -> "PlanSpec":
-        """Every `depends_on` names an earlier step, once; no stage is too wide.
+    def _dependencies(self, info: ValidationInfo) -> "PlanSpec":
+        """Every `depends_on` names an earlier step, once; no stage is too wide;
+        no two steps that run side by side share a file.
 
         Only an EARLIER step may be named, so a valid plan is acyclic by
         construction and its order is already a topological one. A forward
@@ -496,6 +517,13 @@ class PlanSpec(_PlanModel):
                 f"the plan's depends_on run {widest} steps in parallel, over the "
                 f"workflow limit of {MAX_PARALLEL_STEPS}; make some steps depend on others"
             )
+        # After the order checks, which the ancestry below relies on. A plan
+        # STORED before the rule is read without it, as `PlanOverlap.action`
+        # is: it was approved, and must still compile and keep its digest.
+        if not (info.context or {}).get(_STORED):
+            refused = territory_refusal(self.steps)
+            if refused is not None:
+                raise ValueError(refused)
         return self
 
 
@@ -529,6 +557,103 @@ def _deps_of(step: Any) -> list[str] | None:
 
 def _id_of(step: Any) -> str:
     return step["step_id"] if isinstance(step, Mapping) else step.step_id
+
+
+#: The most conflicting pairs one refusal names; the rest are counted.
+MAX_TERRITORY_CONFLICTS_SHOWN = 10
+
+
+def _territory_path(path: Any) -> str:
+    """A step's `files` entry as it is compared: no `./`, no leading or trailing `/`."""
+    return str(path).strip().removeprefix("./").strip("/")
+
+
+def _territory_clash(a: str, b: str) -> bool:
+    """The same path, or one a directory prefix of the other (lane-queue.md §4.1)."""
+    return a == b or b.startswith(a + "/") or a.startswith(b + "/")
+
+
+def _parallel_conflicts(steps: list[Any]) -> list[tuple[str, str, str, str]]:
+    """(step, other step, its entry, the other's entry) for every clash between
+    two steps that are NOT on one dependency line, in plan order.
+
+    On one line means one is an ancestor of the other: it runs after it, on a
+    branch that carries its work, so their edits of one file are sequential.
+    A plan that states `depends_on` nowhere is the chain, every step on one
+    line. Dependencies name only earlier steps (`_dependencies` checked that
+    first), so one pass in plan order builds each step's ancestors.
+    """
+    chain = not _uses_dependencies(steps)
+    ancestors: dict[str, set[str]] = {}
+    files: dict[str, list[str]] = {}
+    previous: str | None = None
+    order: list[str] = []
+    for step in steps:
+        sid = _id_of(step)
+        deps = ([previous] if previous is not None else []) if chain else (_deps_of(step) or [])
+        ancestors[sid] = set(deps).union(*(ancestors.get(d, set()) for d in deps))
+        raw = step.get("files") if isinstance(step, Mapping) else step.files
+        files[sid] = list(dict.fromkeys(p for p in map(_territory_path, raw or []) if p))
+        order.append(sid)
+        previous = sid
+    found: list[tuple[str, str, str, str]] = []
+    for i, one in enumerate(order):
+        for other in order[i + 1:]:
+            if one in ancestors[other] or other in ancestors[one]:
+                continue
+            for a in files[one]:
+                for b in files[other]:
+                    if _territory_clash(a, b):
+                        found.append((one, other, a, b))
+    return found
+
+
+def parallel_file_conflicts(steps: list[Any]) -> list[tuple[str, str, str]]:
+    """(step, other step, the contested path) for every pair of parallel steps
+    whose `files` meet (docs/design/knowledge-graph.md §4.9). One entry per
+    pair, the first clash found; the path is the longer entry -- the file a
+    directory prefix contains."""
+    pairs: dict[tuple[str, str], str] = {}
+    for one, other, a, b in _parallel_conflicts(steps):
+        pairs.setdefault((one, other), max(a, b, key=len))
+    return [(one, other, path) for (one, other), path in pairs.items()]
+
+
+def territory_refusal(steps: list[Any]) -> str | None:
+    """Why a plan whose parallel steps share a file is refused, or None.
+
+    Owner decision 2026-10-08 (knowledge-graph.md §9 Q4): REFUSE, with the
+    reason, so the planner re-plans; never auto-chain the steps. Two parallel
+    steps editing one file meet first in the integrator's 3-way merge
+    (`_compile_staged`), which aborts the conflicting branch and the pull
+    request misses that work -- after a person approved the plan. Only the
+    plan's DECLARED files are checked: the graph may later widen them with
+    the call sites a signature change forces, but a judged edge never decides
+    a refusal (§7.8).
+    """
+    conflicts = _parallel_conflicts(steps)
+    if not conflicts:
+        return None
+    pairs: dict[tuple[str, str], tuple[str, str]] = {}
+    for one, other, a, b in conflicts:
+        pairs.setdefault((one, other), (a, b))
+    named = []
+    for (one, other), (a, b) in list(pairs.items())[:MAX_TERRITORY_CONFLICTS_SHOWN]:
+        if a == b:
+            named.append(f"steps {one!r} and {other!r} both list {a!r}")
+        else:
+            named.append(f"step {one!r} lists {a!r} and step {other!r} lists {b!r}, "
+                         "one inside the other")
+    more = len(pairs) - len(named)
+    count = len(pairs)
+    return (
+        "steps that run in parallel (neither depends on the other) edit the same file "
+        f"({count} pair{'' if count == 1 else 's'}): " + "; ".join(named)
+        + (f"; and {more} more pair{'' if more == 1 else 's'}" if more else "")
+        + ". Two parallel steps editing one file overwrite each other when their work is "
+        "integrated: put them on one dependency line (the later one's depends_on naming "
+        "the earlier, directly or through other steps), or give the file to one step"
+    )
 
 
 def _stages(steps: list[Any]) -> list[list[str]]:
@@ -596,6 +721,15 @@ def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
     changed overlap still needs one, exactly as a planner's plan does.
     """
     plan = parse_plan(value, stored=True)
+    # An edit is a plan written now: parallel steps may not share a file,
+    # whatever the stored plan did (§4.9). Only `action` has a legacy pass.
+    refused = territory_refusal(plan["steps"])
+    if refused is not None:
+        problem = f"steps: {refused}"
+        raise InvalidPlan(
+            "the plan does not match the plan schema: " + problem,
+            detail={"errors": [problem]},
+        )
     legacy = set()
     if isinstance(stored_plan, Mapping):
         for overlap in stored_plan.get("overlaps") or ():
@@ -842,10 +976,35 @@ _READINESS = (
 )
 
 
+#: What the planner is told about the index sections, when it has them
+#: (docs/repo-index.md §4.1; knowledge-graph.md §4.1). The planner still
+#: clones and reads the repository: the index says where to look, not what
+#: the code says, and an index behind the head says so in its first line.
+_CONTEXT_USE = (
+    "\nUse the REPO INDEX above: fill each step's \"tests\" from its test_map, and keep "
+    "steps out of files its territory says are frozen. Use the REPO GRAPH: its "
+    "candidates are where the issue most likely lands, its impact names each "
+    "candidate's callers and covering tests (zero resolved callers is UNKNOWN, never "
+    "safe), its overlaps are open pull requests whose files meet the candidates, and "
+    "its communities are the modules that change together -- plan one step per "
+    "community where you can, and put steps that share a file on one dependency line. "
+    "Both describe the commit named on their first line; read the code before you "
+    "rely on them.\n\n"
+)
+
+
 def planner_prompt(
-    ref: IssueRef, *, run_id: str = "", open_work: Mapping[str, Any] | None = None
+    ref: IssueRef, *, run_id: str = "", open_work: Mapping[str, Any] | None = None,
+    context: str | None = None,
 ) -> str:
-    """The planner's instructions, and the open work as delimited data, under the limit."""
+    """The planner's instructions, the index sections and the open work as
+    delimited data, under the limit.
+
+    `context` is `plancontext.PlanContext.section`: the REPO INDEX and REPO
+    GRAPH sections, already bounded to `plancontext.MAX_CONTEXT_BYTES`, or
+    None (no index, or one that could not be used) for exactly the prompt a
+    run made before the index existed.
+    """
     marker = f"=== OPEN WORK {run_id or 'snapshot'} ==="
     lead = (
         f"Plan the work for GitHub issue {ref.short} ({ref.url}). The issue's title, "
@@ -888,27 +1047,40 @@ def planner_prompt(
         "only ADD code that uses what those other steps wrote, never change it: a step "
         "that must CHANGE code another step wrote lists that step as its last dependency "
         "(or sits on its line), or the integration conflicts and the pull request misses "
-        "work. If you state \"depends_on\" on any step, state it on every step -- a step "
+        "work. A plan whose parallel steps list the same file, or where one lists a "
+        "directory prefix of a file the other lists, is refused, naming the steps and "
+        "the file -- check your steps' \"files\" against that before you write the plan. "
+        "If you state \"depends_on\" on any step, state it on every step -- a step "
         "without it starts at once. "
         'If you leave "depends_on" out of every step, the steps run one after '
         "another, each starting from the previous step's work.\n\n"
         "No other keys. A person reads this plan and approves it before any step runs."
         + _READINESS
     )
+    use = _CONTEXT_USE if context else ""
+    context = context or ""
     if open_work is None:
-        return lead + instructions
-    budget = MAX_PLANNER_PROMPT_BYTES - _utf8(lead) - _utf8(rules) - _utf8(instructions)
-    return lead + _open_work_section(open_work, marker, budget) + rules + instructions
+        return lead + context + use + instructions
+    budget = (MAX_PLANNER_PROMPT_BYTES - _utf8(lead) - _utf8(context) - _utf8(use)
+              - _utf8(rules) - _utf8(instructions))
+    return (lead + context + use + _open_work_section(open_work, marker, budget) + rules
+            + instructions)
 
 
 def planner_task(
-    ref: IssueRef, run_id: str, open_work: Mapping[str, Any] | None = None
+    ref: IssueRef, run_id: str, open_work: Mapping[str, Any] | None = None,
+    context: str | None = None,
 ) -> TaskCreate:
-    """The planner: an ordinary task, signed by `submit_tasks` like any other."""
+    """The planner: an ordinary task, signed by `submit_tasks` like any other.
+
+    The index sections are in the prompt, not a runner input: `issue` is the
+    only input `claude-code` declares, and the profiles are frozen (request A
+    of repo-index.md §6.3 is unfiled, owner decision Q7).
+    """
     return TaskCreate(
         runner_profile=PLANNER_PROFILE,
         input={
-            "prompt": planner_prompt(ref, run_id=run_id, open_work=open_work),
+            "prompt": planner_prompt(ref, run_id=run_id, open_work=open_work, context=context),
             "issue": ref.number,
         },
         repository_url=ref.repository_url,
@@ -1524,6 +1696,16 @@ class IssueRun:
     #: The repository's open issues and pull requests when the run was created
     #: (`forge.read_open_work`), masked. None on runs created before the read.
     open_work: dict[str, Any] | None = None
+    # -- the repository index the planner was given (`plancontext`, lane KG1).
+    # All optional: a run created before them reads as one with no record.
+    #: The commit the index described, and the promoted document's digest:
+    #: which index the plan was made from. None when no index was used.
+    index_sha: str | None = None
+    index_digest: str | None = None
+    #: `plancontext.PlanContext.record`: `state` ("used" | "none"), the
+    #: `reason` when none, and the extractor version, freshness, graph use and
+    #: section size when used. What the console's "context used" chip reads.
+    index_context: dict[str, Any] | None = None
     # -- the write-back to GitHub (`issuesync`). Bookkeeping, not state: a
     # run's truth is this document, never the comment, so none of these is
     # read to decide where a run goes. All optional, so a run stored before
@@ -1652,6 +1834,9 @@ class IssueRun:
             "error": self.error,
             "history": [dict(entry) for entry in self.history],
             "open_work": self.open_work,
+            "index_sha": self.index_sha,
+            "index_digest": self.index_digest,
+            "index_context": dict(self.index_context) if self.index_context is not None else None,
             "plan_comment_id": self.plan_comment_id,
             "status_comment_id": self.status_comment_id,
             "pull_request": None if self.pull_request is None else dict(self.pull_request),
@@ -1712,6 +1897,12 @@ class IssueRun:
             error=data.get("error"),
             history=[dict(entry) for entry in data.get("history") or []],
             open_work=data.get("open_work"),
+            index_sha=_opt_str(data.get("index_sha")),
+            index_digest=_opt_str(data.get("index_digest")),
+            index_context=(
+                dict(data["index_context"]) if isinstance(data.get("index_context"), Mapping)
+                else None
+            ),
             plan_comment_id=_opt_int(data.get("plan_comment_id")),
             status_comment_id=_opt_int(data.get("status_comment_id")),
             pull_request=(
@@ -1790,6 +1981,12 @@ class IssueRun:
             "open_work": (
                 None if self.open_work is None
                 else {**self.open_work, "read_at": _iso(self.open_work.get("read_at"))}
+            ),
+            # Which index the plan was made from, or why there was none.
+            "index_sha": self.index_sha,
+            "index_digest": self.index_digest,
+            "index_context": (
+                None if self.index_context is None else dict(self.index_context)
             ),
             # The write-back: the comment ids, the pull request's link and the
             # last write's error. The digests and the author are bookkeeping.

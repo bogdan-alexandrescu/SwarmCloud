@@ -9329,6 +9329,11 @@ class Worker:
                 "patch_omitted": work.patch_omitted,
             }
         )
+        if work.files is not None:
+            # Absent rather than [] when there was no base to diff against:
+            # [] would claim a measured empty diff.
+            out["files"] = [f.as_record(self._scrub) for f in work.files]
+            out["files_truncated"] = work.files_truncated
         if work.patch_omitted:
             out["patch_note"] = (
                 f"the diff was {work.patch_bytes} bytes, over the "

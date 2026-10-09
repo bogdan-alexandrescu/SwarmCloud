@@ -44,6 +44,7 @@ export type Row =
   | { t: 'line'; file: number; hunk: number; line: number }
   | { t: 'pair'; file: number; hunk: number; left: number | null; right: number | null }
   | { t: 'context'; file: number; gap: number; oldNo: number; newNo: number; text: string }
+  | { t: 'source'; file: number; hunk: number; step: string }
 
 export function rowHeight(r: Row): number {
   return r.t === 'file' ? FILE_H : ROW_H
@@ -130,6 +131,11 @@ export interface RowInput {
   opened: ReadonlySet<string>
   /** The file is collapsed: only its header row is built. */
   collapsed?: boolean
+  /**
+   * The workflow step each hunk of the file came from, or null where none is
+   * named (DiffView's `stepOf`, bound to this file). See `buildRows`.
+   */
+  sourceOf?: (hunk: number) => string | null | undefined
 }
 
 function pairs(h: DiffHunk): Array<[number | null, number | null]> {
@@ -188,8 +194,17 @@ export function buildRows(input: RowInput): Row[] {
     out.push({ t: 'note', file: fi, text: 'no content change' })
     return out
   }
+  // A STEP'S HUNKS ARE INTRODUCED BY A `source` ROW naming the step, drawn
+  // before the first hunk of each run of hunks from one step (variant 5). And
+  // there is NO GAP BETWEEN TWO STEPS' HUNKS: each step diffed against its own
+  // base, so the line numbers either side of that boundary count different
+  // files, and the lines "between" them are not lines of any one file.
+  const step = (hi: number): string | null => input.sourceOf?.(hi) ?? null
   f.hunks.forEach((h, hi) => {
-    gapRows(input, fi, hi, out)
+    const s = step(hi)
+    const crossesSteps = hi > 0 && s !== step(hi - 1)
+    if (!crossesSteps) gapRows(input, fi, hi, out)
+    if (s !== null && (hi === 0 || crossesSteps)) out.push({ t: 'source', file: fi, hunk: hi, step: s })
     out.push({ t: 'hunk', file: fi, hunk: hi })
     if (input.mode === 'split') {
       for (const [left, right] of pairs(h)) out.push({ t: 'pair', file: fi, hunk: hi, left, right })

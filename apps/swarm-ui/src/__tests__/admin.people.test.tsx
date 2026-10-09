@@ -14,7 +14,13 @@
 //   * Lend posts `{account_id, lend: true}` for the account chosen;
 //   * the API's refusal for the last admin is shown as it came;
 //   * zero pending is drawn as a measured zero; an unread lendable list as
-//     not read, never as an empty one.
+//     not read, never as an empty one;
+//   * the layout seen live at 1456 on 2026-10-09: the table has its own scroll
+//     container inside the card and no action control has a width of its own
+//     wider than its cell; a workspace id has no break opportunity; a label
+//     sits a token's gap from its field; below 560px a record per person;
+//   * the Admins card lists who the admins are, the owner first and marked,
+//     and Remove acts on a listed admin.
 //
 // The bodies are `people.People.everyone`'s shape
 // (tests/unit/control_plane/test_people_admin.py). Placeholders only;
@@ -23,6 +29,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 import { SECTIONS } from '../App'
 import { SkyShell } from '../Spine'
 
@@ -70,6 +78,11 @@ function person(email: string, workspace: Json, over: Json = {}): Json {
   }
 }
 
+const ADMINS = [
+  { email: 'owner@example.com', role: 'owner', granted_by: 'config:PLATFORM_OWNER', granted_at: null },
+  { email: 'bob@example.com', role: 'admin', granted_by: 'owner@example.com', granted_at: new Date().toISOString() },
+]
+
 const ACCOUNT = { account_id: 'acct-eng-1', owner_tenant: 'eng', label: 'eng shared', state: 'AVAILABLE', lend_to: [] }
 
 function people(rows: Json[], over: Json = {}): Json {
@@ -80,6 +93,8 @@ function people(rows: Json[], over: Json = {}): Json {
     audit: [],
     lendable_accounts: [ACCOUNT],
     lendable_error: null,
+    admins: ADMINS,
+    admins_error: null,
     ...over,
   }
 }
@@ -112,7 +127,34 @@ const writesOf = (calls: { method: string; url: string; body: unknown }[]) => ca
 
 afterEach(() => {
   vi.unstubAllEnvs()
+  vi.unstubAllGlobals()
 })
+
+const WIDE: CascadeEnv = { width: 1456 }
+const PHONE: CascadeEnv = { width: 390 }
+
+/** Stub `matchMedia`, which jsdom does not have, as a phone or a desktop (honesty.admin.test.tsx's). */
+function media(phone: boolean): void {
+  vi.stubGlobal('matchMedia', (query: string) => ({
+    matches: phone && query.includes('560'),
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }))
+}
+
+/** A CSS length in px at a 16px root, or null for one that is not a fixed length (auto, %, 0, none). */
+function fixedPx(value: string | null): number | null {
+  if (value === null) return null
+  const m = /^(-?\d+(?:\.\d+)?)(px|rem|em|ch)$/.exec(value.trim())
+  if (m === null) return null
+  const n = Number(m[1])
+  return m[2] === 'px' ? n : m[2] === 'ch' ? n * 8 : n * 16
+}
 
 describe('the tab', () => {
   it('is in the Admin section, admin only', () => {
@@ -272,16 +314,129 @@ describe('ceiling and loans', () => {
   })
 })
 
+describe('the layout fits the card (seen live at 1456, 2026-10-09)', () => {
+  it('gives the table its own scroll container, and no action control a width wider than its cell', async () => {
+    // MUTATION: put `ten-table` back on the table (seven equal fixed columns),
+    // drop the `.table-wrap` around it, or give the Deny textarea back its
+    // `min-width: 220px` -- each is what pushed Deny and the select off the card.
+    media(false)
+    await mount(people(ROWS))
+    await waitFor(() => expect(rowOf('alice@example.com')).not.toBeNull(), WAIT)
+    fireEvent.click(within(rowOf('alice@example.com')).getByRole('button', { name: 'Deny' }))
+    const table = document.querySelector<HTMLElement>('.pp-people table')!
+    const wrap = table.parentElement!
+    expect(wrap.classList.contains('table-wrap'), 'the table has no container of its own').toBe(true)
+    expect(wrap.classList.contains('is-scroll')).toBe(true)
+    expect(wrap.closest('.pp-people'), 'the container is not inside the card').not.toBeNull()
+    expect(painted(wrap, 'overflow-x', WIDE)).toBe('auto')
+    expect(painted(table, 'table-layout', WIDE) ?? 'auto', 'a fixed layout splits the columns evenly').toBe('auto')
+
+    const cells = [...document.querySelectorAll<HTMLElement>('td.pp-acts-cell')]
+    expect(cells.length, 'no Actions cell was drawn').toBe(ROWS.length)
+    const floor = fixedPx(painted(cells[0]!, 'min-width', WIDE))
+    expect(floor, 'the Actions column has no floor').not.toBeNull()
+    const controls = cells.flatMap((c) => [...c.querySelectorAll<HTMLElement>('*')])
+    expect(controls.some((el) => el.tagName === 'TEXTAREA'), 'the open Deny form was not drawn').toBe(true)
+    expect(controls.some((el) => el.tagName === 'SELECT'), 'the Account select was not drawn').toBe(true)
+    for (const el of controls) {
+      for (const prop of ['width', 'min-width']) {
+        const px = fixedPx(painted(el, prop, WIDE))
+        if (px === null) continue
+        expect(px, `<${el.tagName.toLowerCase()} class="${el.className}"> ${prop} is wider than its cell`).toBeLessThanOrEqual(floor!)
+      }
+    }
+    for (const el of document.querySelectorAll<HTMLElement>('.pp-acts select, .pp-acts textarea')) {
+      expect(painted(el, 'width', WIDE), `${el.tagName} is not the cell's width`).toBe('100%')
+      expect(painted(el, 'min-width', WIDE)).toBe('0')
+    }
+  })
+
+  it('keeps a workspace id on one line, in mono, with no break opportunity', async () => {
+    // MUTATION: drop `white-space: nowrap` from `.pp-id` (the id broke as
+    // `w-` / `752763`), or put `ten-table`'s `overflow-wrap: anywhere` back.
+    await mount(people(ROWS))
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    const ids = [...document.querySelectorAll<HTMLElement>('code.pp-id')]
+    expect(ids.map((c) => c.textContent)).toContain('w-91c0de')
+    for (const id of ids) {
+      expect(id.children, 'markup inside the id').toHaveLength(0)
+      expect(id.textContent, 'a soft hyphen or zero-width space in the id').not.toMatch(/[\u00ad\u200b]/)
+      for (const env of [WIDE, PHONE]) {
+        expect(painted(id, 'white-space', env), `the id wraps at ${env.width}`).toBe('nowrap')
+        expect(painted(id, 'overflow-wrap', env) ?? 'normal').toBe('normal')
+        expect(painted(id, 'word-break', env) ?? 'normal').toBe('normal')
+        expect(painted(id, 'font-family', env)).toBe('var(--mono)')
+      }
+    }
+  })
+
+  it('sets every label a token gap above its field', async () => {
+    // MUTATION: a bare `<label>` again ('Ceiling' touching its box), or a
+    // `.c-field` without its gap.
+    await mount(people(ROWS))
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    const ceiling = within(rowOf('bob@example.com')).getByLabelText('Ceiling for bob@example.com')
+    const email = within(document.querySelector<HTMLElement>('.pp-admins')!).getByLabelText('Email')
+    for (const field of [ceiling, email]) {
+      const label = field.closest('label')!
+      expect(label.classList.contains('c-field'), `${label.textContent} is not a field`).toBe(true)
+      expect(painted(label, 'display', WIDE)).toBe('flex')
+      expect(painted(label, 'flex-direction', WIDE)).toBe('column')
+      expect(fixedPx(painted(label, 'gap', WIDE)), 'the label touches its field').toBeGreaterThan(0)
+      expect(label.querySelector(':scope > .c-lbl'), 'the label text is not the field label').not.toBeNull()
+    }
+  })
+
+  it('is a record per person on a phone, every cell named', async () => {
+    // MUTATION: a literal `is-scroll` on the wrapper, or a cell without its
+    // `data-label` (its value would sit under no name in the record).
+    media(true)
+    await mount(people(ROWS))
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    const wrap = document.querySelector<HTMLElement>('.pp-people table')!.parentElement!
+    expect(wrap.classList.contains('is-stacked')).toBe(true)
+    expect(painted(wrap, 'overflow-x', PHONE)).toBe('visible')
+    for (const tr of document.querySelectorAll<HTMLElement>('.pp-people tbody tr')) {
+      expect(tr.firstElementChild?.matches('th[scope="row"]'), 'the record has no name').toBe(true)
+      for (const td of tr.querySelectorAll('td')) expect(td.getAttribute('data-label'), 'a cell with no name').toBeTruthy()
+      expect(painted(tr.querySelector('td')!, 'display', PHONE)).toBe('grid')
+    }
+  })
+})
+
 describe('admins and the audit', () => {
-  it("shows the API's last-admin refusal as it came", async () => {
+  it('lists the admins, the platform owner first and marked, with no Remove for the owner', async () => {
+    // MUTATION: drop the owner's chip, or offer the owner a Remove the API refuses.
+    await mount(people(ROWS))
+    const list = await screen.findByRole('list', { name: 'Admins' }, WAIT)
+    const items = [...list.querySelectorAll<HTMLElement>('li')]
+    expect(items.map((li) => li.dataset.email)).toEqual(['owner@example.com', 'bob@example.com'])
+    const owner = items[0]!
+    expect(owner.querySelector('.pp-owner')?.textContent).toBe('platform owner')
+    expect(within(owner).queryByRole('button', { name: 'Remove admin' })).toBeNull()
+    expect(items[1]!.querySelector('.pp-owner')).toBeNull()
+    expect(visible(items[1]!)).toContain('granted by owner@example.com')
+    expect(within(items[1]!).getByRole('button', { name: 'Remove admin' })).toBeDefined()
+  })
+
+  it('draws an unread admin list as not read, and keeps the typed Remove', async () => {
+    await mount(people(ROWS, { admins: null, admins_error: 'RuntimeError' }))
+    await waitFor(() => expect(document.querySelector('.pp-admins .ctl-mark.is-unread')).not.toBeNull(), WAIT)
+    const card = document.querySelector<HTMLElement>('.pp-admins')!
+    expect(visible(card)).toContain('RuntimeError')
+    expect(within(card).queryByRole('list', { name: 'Admins' })).toBeNull()
+    expect(within(card).getByRole('button', { name: 'Remove admin' })).toBeDefined()
+  })
+
+  it("removes a listed admin, and shows the API's last-admin refusal as it came", async () => {
     const message = 'removing bob@example.com would leave no admin; grant someone else first'
     const { calls } = await mount(people(ROWS), {
       'DELETE /v1/admin/admins/bob%40example.com': () => ({ status: 409, body: { code: 'LAST_ADMIN', message } }),
     })
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
     const card = document.querySelector<HTMLElement>('.pp-admins')!
-    fireEvent.change(within(card).getByLabelText('Email'), { target: { value: 'bob@example.com' } })
-    fireEvent.click(within(card).getByRole('button', { name: 'Remove admin' }))
+    const bob = card.querySelector<HTMLElement>('li[data-email="bob@example.com"]')!
+    fireEvent.click(within(bob).getByRole('button', { name: 'Remove admin' }))
     const dialog = await screen.findByRole('dialog', {}, WAIT)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Remove' }))
     await waitFor(() => expect(visible(card)).toContain(`LAST_ADMIN ${message}`), WAIT)
