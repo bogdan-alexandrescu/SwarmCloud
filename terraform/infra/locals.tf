@@ -622,6 +622,13 @@ locals {
       # because it is exactly one account this root creates.
       ROLLUP_SWEEPER_USERS = module.scheduler.rollup_sweeper_email
 
+      # The schedule tick's identity (modules/scheduler, docs/schedules.md
+      # SD10): may call POST /v1/admin/schedules/tick and no other route
+      # (swarm_api.auth.SCHEDULE_TICK_ROUTES, lane S2). Derived, not a tfvars
+      # entry, for the reason ROLLUP_SWEEPER_USERS is. Until S2 ships, ApiSettings
+      # reads it and no route consults it, so it changes nothing the API does.
+      SCHEDULE_TICK_USERS = module.scheduler.schedule_tick_email
+
       # The issue sweeper's platform switch (swarm_api.issuesweep, owner
       # decisions 2026-10-08): POST /v1/admin/issues/sweep starts nothing
       # while it is off, whatever a tenant's own `issue_sweep.enabled` says.

@@ -5,6 +5,7 @@
 #
 #   scripts/image-sizes.sh [--image NAME] [--since YYYY-MM-DD] [--layers]
 #   scripts/image-sizes.sh [--image NAME] --diff OLD NEW
+#   scripts/image-sizes.sh --manifest build/deployed-images-<env>.json
 #
 #   --image NAME   the image (default agent-runtime-base); one path segment of
 #                  ${IMAGE_REPO}, e.g. agent-runtime-indexer
@@ -16,6 +17,14 @@
 #   --diff OLD NEW the bisect step: the layers NEW has that OLD has not (+),
 #                  the ones it dropped (-), and the net change. Each of OLD
 #                  and NEW is a tag (a commit sha, `dev`) or a sha256 digest
+#   --manifest FILE  what one release promoted, as a markdown table for a job
+#                  summary: each runner image (agent-runtime-*) in FILE, the
+#                  deployed-images record push-images.sh writes, with the
+#                  promoted digest, its compressed_mb and its delta_mb from the
+#                  newest EARLIER release of that image in the registry. A
+#                  first release says "no earlier release", never +0.0. A row
+#                  that cannot be measured says so, and the script exits 1
+#                  after the other rows. Not combined with the options above.
 #
 # WHY IT EXISTS (#625). Claude-code container start on Cloud Run Jobs went from
 # a 71 s p50 on 2026-09-24 to ~115 s on 09-30..10-02 and 166-168 s on
@@ -24,6 +33,9 @@
 # could not be checked against a release. The default output is that list, one
 # row per release, oldest first; the row whose delta_mb jumps is the release a
 # growth arrived in, and `--diff` on it and the row before names the layers.
+# `--manifest` is the same measurement taken by every promote
+# (.github/actions/release-promote), so each release records its own size and
+# a jump is visible without anyone running the bisect.
 #
 # WHAT IT MEASURES. compressed_mb is the sum of the linux/amd64 manifest's
 # layer sizes: the gzip bytes a node pulls, which is what an image's pull time
@@ -55,18 +67,24 @@ SINCE=""
 LAYERS=0
 DIFF_OLD=""
 DIFF_NEW=""
+MANIFEST=""
+SINGLE_IMAGE_OPTION=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --image)  [[ $# -ge 2 ]] || die "--image needs a name"; IMAGE="$2"; shift 2 ;;
-    --since)  [[ $# -ge 2 ]] || die "--since needs a date"; SINCE="$2"; shift 2 ;;
-    --layers) LAYERS=1; shift ;;
+    --image)  [[ $# -ge 2 ]] || die "--image needs a name"; IMAGE="$2"; SINGLE_IMAGE_OPTION=1; shift 2 ;;
+    --since)  [[ $# -ge 2 ]] || die "--since needs a date"; SINCE="$2"; SINGLE_IMAGE_OPTION=1; shift 2 ;;
+    --layers) LAYERS=1; SINGLE_IMAGE_OPTION=1; shift ;;
     --diff)   [[ $# -ge 3 ]] || die "--diff needs OLD and NEW (a tag or a sha256 digest each)"
-              DIFF_OLD="$2"; DIFF_NEW="$3"; shift 3 ;;
-    -h|--help) sed -n '2,46p' "$0"; exit 0 ;;
+              DIFF_OLD="$2"; DIFF_NEW="$3"; SINGLE_IMAGE_OPTION=1; shift 3 ;;
+    --manifest) [[ $# -ge 2 ]] || die "--manifest needs a deployed-images record"; MANIFEST="$2"; shift 2 ;;
+    -h|--help) sed -n '2,58p' "$0"; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
+if [[ -n "${MANIFEST}" && "${SINGLE_IMAGE_OPTION}" -eq 1 ]]; then
+  die "--manifest measures every runner image the record names; it takes no --image, --since, --layers or --diff"
+fi
 
 # One path segment of this environment's repository, so nothing here can be
 # pointed at another repository or project through the name.
@@ -93,30 +111,27 @@ signed_mb() { awk -v b="$1" 'BEGIN { printf "%+.1f", b / 1000000 }'; }
 # name, as `tags list` does -- see lib/image-refs.sh); `tags` arrives as a list
 # or as a ", "-joined string depending on the gcloud release, and both read
 # the same here.
-if ! gcloud artifacts docker images list "${IMAGE_REPO}/${IMAGE}" --include-tags --format=json \
-    >"${WORK}/listing.raw" 2>"${WORK}/listing.err"; then
-  redact <"${WORK}/listing.err" | head -n 5 >&2
-  die "could not list ${IMAGE_REPO}/${IMAGE}; reading it needs roles/artifactregistry.reader on ${ARTIFACT_REGISTRY}"
-fi
-jq --arg since "${SINCE}" '
-  [ .[]
-    | { digest: (.version | split("/") | last),
-        created: (.createTime // ""),
-        tags: ((.tags // []) | if type == "string" then (split(",") | map(gsub("^\\s+|\\s+$"; ""))) else . end
-               | map(split("/") | last) | map(select(. != ""))),
-        registry_bytes: ((.metadata.imageSizeBytes // "") | tostring) } ]
-  | group_by(.digest)
-  | map(.[0] + { tags: (map(.tags) | add | unique) })
-  | map(select($since == "" or .created >= $since))
-  | sort_by(.created, .digest)' "${WORK}/listing.raw" >"${WORK}/releases.json" \
-  || die "the registry listing for ${IMAGE} is not the JSON array gcloud documents"
-
-RELEASES="$(jq 'length' "${WORK}/releases.json")"
-[[ "${RELEASES}" -gt 0 ]] || die "no released digest of ${IMAGE} in ${IMAGE_REPO}${SINCE:+ since ${SINCE}}"
-
-# One token for the whole run, minted in THIS shell: access_token caches it in
-# _ACCESS_TOKEN, which a command substitution would throw away and re-mint.
-access_token >/dev/null
+#
+# list_releases -- ${WORK}/releases.json for ${IMAGE}.
+list_releases() {
+  if ! gcloud artifacts docker images list "${IMAGE_REPO}/${IMAGE}" --include-tags --format=json \
+      >"${WORK}/listing.raw" 2>"${WORK}/listing.err"; then
+    redact <"${WORK}/listing.err" | head -n 5 >&2
+    die "could not list ${IMAGE_REPO}/${IMAGE}; reading it needs roles/artifactregistry.reader on ${ARTIFACT_REGISTRY}"
+  fi
+  jq --arg since "${SINCE}" '
+    [ .[]
+      | { digest: (.version | split("/") | last),
+          created: (.createTime // ""),
+          tags: ((.tags // []) | if type == "string" then (split(",") | map(gsub("^\\s+|\\s+$"; ""))) else . end
+                 | map(split("/") | last) | map(select(. != ""))),
+          registry_bytes: ((.metadata.imageSizeBytes // "") | tostring) } ]
+    | group_by(.digest)
+    | map(.[0] + { tags: (map(.tags) | add | unique) })
+    | map(select($since == "" or .created >= $since))
+    | sort_by(.created, .digest)' "${WORK}/listing.raw" >"${WORK}/releases.json" \
+    || die "the registry listing for ${IMAGE} is not the JSON array gcloud documents"
+}
 
 # registry_get PATH ACCEPT OUT -- GET ${REGISTRY_URL}/PATH into OUT, or die
 # naming PATH and the status. -L for blobs: Artifact Registry answers a blob
@@ -181,6 +196,98 @@ resolve() {
   [[ -n "${digest}" ]] || die "${ref} is neither a tag nor a digest of a listed ${IMAGE} release"
   printf '%s' "${digest}"
 }
+
+# --- --manifest: what one release promoted ------------------------------------
+#
+# measure_row NAME IMAGE DIGEST -- one markdown row, or die naming the cause.
+# Run in a subshell per image, so a row that cannot be measured costs only that
+# row. The delta is from the newest release created BEFORE the promoted digest,
+# which is the default mode's delta_mb for that row: a hotfix or redeploy that
+# promotes an older digest is compared with the release before it, not with
+# the newest one in the registry.
+measure_row() {
+  local name="$1" image="$2" digest="$3" created previous previous_created total previous_total
+  [[ "${name}" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "${name}: not one image name"
+  [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "${name}: the record's digest is not a sha256 digest"
+  # This environment's repository only, as push-images.sh --manifest refuses a
+  # record built for another one: nothing in a file reaches another project.
+  [[ "${image}" == "${IMAGE_REPO}/${name}" ]] \
+    || die "${name}: the record names ${image}, not ${IMAGE_REPO}/${name}"
+  IMAGE="${name}"
+  REGISTRY_URL="https://${IMAGE_HOST}/v2/${PROJECT_ID}/${ARTIFACT_REGISTRY}/${IMAGE}"
+  list_releases
+  created="$(jq -r --arg d "${digest}" '[.[] | select(.digest == $d)][0].created // empty' "${WORK}/releases.json")"
+  [[ -n "${created}" ]] || die "${name}: ${digest} is not a listed release of ${IMAGE_REPO}/${name}"
+  jq -r --arg d "${digest}" --arg c "${created}" \
+    '[.[] | select(.digest != $d and .created < $c)] | last // empty | [.digest, .created] | @tsv' \
+    "${WORK}/releases.json" >"${WORK}/previous.tsv"
+  IFS=$'\t' read -r previous previous_created <"${WORK}/previous.tsv" || true
+  manifest_of "${digest}" "${WORK}/manifest.json"
+  total="$(jq '[.layers[].size] | add // 0' "${WORK}/manifest.json")"
+  if [[ -n "${previous:-}" ]]; then
+    manifest_of "${previous}" "${WORK}/manifest.json"
+    previous_total="$(jq '[.layers[].size] | add // 0' "${WORK}/manifest.json")"
+    printf "| %s | \`%s\` | %s | %s | \`%s\` (%s, %s MB) |\n" "${name}" "${digest}" "$(mb "${total}")" \
+      "$(signed_mb "$((total - previous_total))")" "${previous:0:19}" "${previous_created}" "$(mb "${previous_total}")"
+  else
+    printf "| %s | \`%s\` | %s | no earlier release | the first %s in %s |\n" "${name}" "${digest}" \
+      "$(mb "${total}")" "${name}" "${IMAGE_REPO}"
+  fi
+}
+
+if [[ -n "${MANIFEST}" ]]; then
+  [[ -r "${MANIFEST}" ]] || die "cannot read ${MANIFEST}"
+  # Runner images only: the ones a task's container starts from, which is the
+  # start time #625 is about. The control-plane images are promoted too.
+  jq -r '.images | if type == "array" then . else error("no images list") end
+         | .[] | select((.name // "") | startswith("agent-runtime-"))
+         | [.name, (.image // ""), (.digest // "")] | @tsv' "${MANIFEST}" >"${WORK}/runners.tsv" 2>/dev/null \
+    || die "${MANIFEST} is not the deployed-images record push-images.sh writes"
+  label="$(jq -r '"\(.environment // "?") release \(.tag // "?")"' "${MANIFEST}")"
+  runners="$(wc -l <"${WORK}/runners.tsv" | tr -d ' ')"
+  printf '### Runner image sizes: %s\n\n' "${label}"
+  if [[ "${runners}" -eq 0 ]]; then
+    printf 'This release promoted no runner image (agent-runtime-*), so there is no size to record.\n'
+    info "no runner image in ${MANIFEST}; nothing measured"
+    exit 0
+  fi
+  printf 'compressed_mb is the linux/amd64 manifest'"'"'s layer sum, the bytes a node pulls; delta_mb is from the newest earlier release of the image (#625, scripts/image-sizes.sh).\n\n'
+  printf '| image | digest | compressed_mb | delta_mb | against |\n|---|---|---|---|---|\n'
+  access_token >/dev/null
+  visited=0
+  failed=0
+  failed_names=""
+  while IFS=$'\t' read -r name image digest; do
+    visited=$((visited + 1))
+    # </dev/null: nothing in the row reads the record this loop is reading.
+    if ( measure_row "${name}" "${image}" "${digest}" ) </dev/null 2>"${WORK}/row.err"; then
+      redact <"${WORK}/row.err" >&2
+      continue
+    fi
+    redact <"${WORK}/row.err" >&2
+    failed=$((failed + 1))
+    failed_names="${failed_names:+${failed_names}, }${name}"
+    # The row's cause, from the die above it; a markdown cell holds no pipe.
+    # row.err is a file, not a terminal, so common.sh wrote it uncoloured.
+    reason="$(redact <"${WORK}/row.err" | { grep '^ fail ' || true; } | tail -n 1 | sed -e 's/^ fail //' -e 's/|/\\|/g')"
+    printf "| %s | \`%s\` | **not measured** | - | %s |\n" "${name}" "${digest:--}" "${reason:-${name}: see the job log}"
+  done <"${WORK}/runners.tsv"
+  # The count, so a table of one row cannot read as all of them.
+  [[ "${visited}" -eq "${runners}" ]] || die "the record names ${runners} runner images but ${visited} were visited"
+  if [[ "${failed}" -gt 0 ]]; then
+    die "${failed} of ${runners} runner images not measured: ${failed_names}"
+  fi
+  info "${runners} runner images measured from ${IMAGE_REPO}"
+  exit 0
+fi
+
+list_releases
+RELEASES="$(jq 'length' "${WORK}/releases.json")"
+[[ "${RELEASES}" -gt 0 ]] || die "no released digest of ${IMAGE} in ${IMAGE_REPO}${SINCE:+ since ${SINCE}}"
+
+# One token for the whole run, minted in THIS shell: access_token caches it in
+# _ACCESS_TOKEN, which a command substitution would throw away and re-mint.
+access_token >/dev/null
 
 # --- --diff: the bisect step -------------------------------------------------
 if [[ -n "${DIFF_OLD}" ]]; then

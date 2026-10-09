@@ -144,7 +144,9 @@ MANIFEST_NAME = "manifest.json"
 #: rebuildable by `npm ci` and never the agent's work, wherever it sits. The
 #: other entries are HOME's, so a `.cache` inside the checkout is kept. What
 #: stays in regardless: the CLIs' session transcripts (`.claude/`, `.codex/`),
-#: which are not caches.
+#: which are not caches -- and which carry the task's prompt, word for word,
+#: as their first user message. They stay by the owner's decision on #244
+#: (2026-09-27); see `create()`.
 TOOL_CACHES: tuple[str, ...] = (
     ".cache",
     ".npm",
@@ -227,6 +229,13 @@ RESTORE_CHAIN_MAX = 200
 #: reason. File times come from the kernel's coarse clock, a tick or so
 #: behind `time.time_ns()`; a second is far past that on tmpfs.
 RACY_WINDOW_NS = 1_000_000_000
+
+#: A file's bytes are read before its tar member is written (`_add_entry`), so
+#: one that shrinks under the read is archived as read rather than failing the
+#: checkpoint. Up to this much is held in memory; a larger file spills to a
+#: temporary file. 8 MiB keeps the common source file off the disk without
+#: letting one checkpoint hold a large file in memory.
+CHECKPOINT_SPOOL_BYTES = 8 * 1024 * 1024
 
 #: A checkpoint id as `create` writes it; a base named in a header is used to
 #: build a key only when it is one.
@@ -923,6 +932,15 @@ class CheckpointManager:
         # the restore (STEP 4) and before the runner starts, so a resumed
         # attempt reads the one it wrote, never an archived one.
         #
+        # Leaving `input.json` out does NOT keep the prompt out of the archive
+        # (issue #244). HOME is `work/`, so the CLI's own session transcript --
+        # `work/.claude/projects/<cwd>/<session>.jsonl` for Claude Code,
+        # `work/.codex/sessions/.../*.jsonl` for Codex -- is archived too, and
+        # it holds the prompt as its first user message. It stays, by the
+        # owner's decision on #244 (2026-09-27), and the archive download
+        # serves it as stored. See `swarm_api.task_input`'s module docstring
+        # and docs/agent-output.md.
+        #
         # The tool caches under HOME (`TOOL_CACHES`, #286) are left out by
         # `_write_archive` itself, which matches them as it walks.
         skip = frozenset(
@@ -1342,7 +1360,30 @@ class CheckpointManager:
                         f"the checkpoint's files passed {expanded_cap} bytes before "
                         f"compression; refusing it"
                     )
-            tar.addfile(info, handle if info.isreg() else None)
+            if not info.isreg():
+                tar.addfile(info)
+                return 1
+            # A FILE THAT SHRINKS UNDER THE READ IS ARCHIVED AS READ. The header
+            # carries the size, so `tar.addfile` straight from `handle` raised
+            # "unexpected end of data" when the runner truncated the file after
+            # the fstat -- an agent rewriting its state with `write_text` -- and
+            # the whole checkpoint failed. The control-plane-outage checkpoint
+            # (#70) is taken with the runner alive and is never retried, so that
+            # lost the attempt's work. The bytes are read first, at most the
+            # size the fstat saw, and the member is the size actually read. Its
+            # signature is the stat's, recent, so the next checkpoint takes it
+            # again (`RACY_WINDOW_NS`).
+            with tempfile.SpooledTemporaryFile(max_size=CHECKPOINT_SPOOL_BYTES) as spool:
+                remaining = info.size
+                while remaining > 0:
+                    chunk = handle.read(min(remaining, 1024 * 1024))
+                    if not chunk:
+                        break
+                    spool.write(chunk)
+                    remaining -= len(chunk)
+                info.size -= remaining
+                spool.seek(0)
+                tar.addfile(info, spool)
         return 1
 
     # -- ownership ---------------------------------------------------------

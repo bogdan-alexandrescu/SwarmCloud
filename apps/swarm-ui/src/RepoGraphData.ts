@@ -15,7 +15,8 @@
  * screen draws as a dash with its reason -- never 0 (redesign-v2.md,
  * "Honesty rules").
  *
- * THE LAYOUT IS DEPENDENCY-FREE. A force layout of a few hundred nodes is a
+ * THE LAYOUT (RepoGraphLayout.ts, its own module so it leaves the main
+ * bundle: the worker and a lazy import load it) IS DEPENDENCY-FREE. A force layout of a few hundred nodes is a
  * hundred lines; a graph library (d3-force, cytoscape) would be the biggest
  * dependency in the bundle for a picture the force layout below already draws.
  * It is SEEDED BY THE MODULE PATH, not by a random number, so the same graph
@@ -210,20 +211,131 @@ export const LEGEND: Readonly<Record<ColourBy, readonly { heat: Heat; label: str
   ],
 }
 
-// ---- the view: packages collapsed until opened ------------------------------
+// ---- clusters on real structure ---------------------------------------------
 
 /**
- * Past this many modules the canvas starts with ONE NODE PER PACKAGE and opens
- * a package on click: "a force layout of 2,000 modules is a hairball: the
- * built screen must start clustered and expand on click" (the frame's risk).
+ * STRUCTURAL CLUSTERING (design graph-rendering.md §3.2 defect 7). `packageOf`
+ * above is the route's package: the first segment, two under a monorepo root.
+ * A conventional `src/api`, `src/core`, ... layout is all `src` to it, so a
+ * 200-module src/ repository folded into two nodes (`src`, `lib`) and the
+ * rectangles overlapped. The console now clusters by the DIRECTORY TREE the
+ * modules actually sit in:
+ *
+ *   * a group whose members all share one next directory is not a split: the
+ *     walk descends through it (`apps` -> `apps/swarm-api` -> ...), so a
+ *     pass-through root never becomes a cluster of its own;
+ *   * the biggest cluster of at least CLUSTER_SPLIT_AT modules is split into
+ *     its subdirectories, again and again, while the total stays within
+ *     CLUSTER_MAX -- a dozen-odd groups is what a reader can tell apart;
+ *   * modules sitting directly in a directory that also has subdirectories
+ *     stay together under that directory's own name.
+ *
+ * Every cluster is a real directory prefix of its members: nothing is
+ * inferred from edges, so a cluster's name is always a path the reader can
+ * find in the repository. A community id served by the indexer (Graphify's
+ * Leiden step) would replace this rule if the graph route ever serves one.
+ */
+export const CLUSTER_SPLIT_AT = 8
+export const CLUSTER_MAX = 16
+
+interface Part<M> {
+  key: string
+  /** How many directory segments `key` spans: where a further split looks next. */
+  depth: number
+  members: M[]
+  /** Its members have no deeper directory to split on. */
+  final: boolean
+}
+
+/** A module's directories: every segment but its own last one (`src/api/orders.py` -> src, api). */
+function dirsOf(id: string): string[] {
+  if (id === '.') return []
+  return id.split('/').filter((p) => p !== '').slice(0, -1)
+}
+
+function splitPart<M extends { id: string }>(p: Part<M>, dirs: (m: M) => string[]): Part<M>[] | null {
+  for (let d = p.depth; ; d++) {
+    const groups = new Map<string, M[]>()
+    const rest: M[] = []
+    for (const m of p.members) {
+      const ds = dirs(m)
+      const seg = ds[d]
+      if (seg === undefined) rest.push(m)
+      else {
+        const g = groups.get(seg)
+        if (g === undefined) groups.set(seg, [m])
+        else g.push(m)
+      }
+    }
+    if (groups.size === 0) return null
+    // Every member is in one subdirectory: descend through it, it is not a split.
+    if (groups.size === 1 && rest.length === 0) continue
+    const at = (m: M, n: number) => dirs(m).slice(0, n).join('/')
+    const parts: Part<M>[] = [...groups.values()].map((ms) => ({ key: at(ms[0]!, d + 1), depth: d + 1, members: ms, final: false }))
+    if (rest.length > 0) parts.push({ key: at(rest[0]!, d) || '.', depth: d, members: rest, final: true })
+    return parts
+  }
+}
+
+/**
+ * The members of one directory (`prefixDepth` segments deep; 0 is the whole
+ * repository), cut into clusters by the rule above. Sorted by name.
+ */
+export function structuralClusters<M extends { id: string }>(members: readonly M[], prefixDepth = 0): { key: string; depth: number; members: M[] }[] {
+  const dirs = (m: M) => dirsOf(m.id)
+  const root: Part<M> = { key: '', depth: prefixDepth, members: [...members], final: false }
+  let parts = splitPart(root, dirs) ?? [{ ...root, key: members[0] === undefined ? '.' : dirs(members[0]).slice(0, prefixDepth).join('/') || '.', final: true }]
+  for (;;) {
+    const next = parts
+      .filter((p) => !p.final && p.members.length >= CLUSTER_SPLIT_AT)
+      .sort((a, b) => b.members.length - a.members.length || a.key.localeCompare(b.key))[0]
+    if (next === undefined) break
+    const split = splitPart(next, dirs)
+    if (split === null || parts.length - 1 + split.length > CLUSTER_MAX) {
+      next.final = true
+      continue
+    }
+    parts = [...parts.filter((p) => p !== next), ...split]
+  }
+  // A cluster is named for the deepest directory all its members share: `lib/shared`, not `lib`.
+  return parts
+    .map(({ key, depth, members: ms }) => {
+      const common = commonDir(ms.map(dirs))
+      return { key: common.length > key.length && key !== '.' ? common : key, depth, members: ms }
+    })
+    .sort((a, b) => a.key.localeCompare(b.key))
+}
+
+function commonDir(all: string[][]): string {
+  const first = all[0] ?? []
+  let n = first.length
+  for (const ds of all) {
+    let i = 0
+    while (i < n && ds[i] === first[i]) i++
+    n = i
+  }
+  return first.slice(0, n).join('/')
+}
+
+// ---- the view: clusters folded until opened ---------------------------------
+
+/**
+ * Past this many modules the canvas starts with ONE NODE PER CLUSTER -- the
+ * meta-graph, its edges the calls crossing between clusters -- and opens a
+ * cluster on click: "a force layout of 2,000 modules is a hairball: the built
+ * screen must start clustered and expand on click" (the frame's risk). An
+ * opened cluster that is itself past the bound opens into ITS clusters, so a
+ * 2,000-module repository is walked a directory level at a time and never
+ * drawn whole unless the reader turns clustering off.
  */
 export const COLLAPSE_AT = 60
 
 export interface ViewNode {
   id: string
+  /** What the canvas prints: unique within the view (`uniqueLabels`). */
   label: string
   cluster: string
-  /** A package drawn as one node, standing for `members` modules. */
+  /** A cluster drawn as one node, standing for `members` modules. */
   isPackage: boolean
   members: number
   symbols: number | null
@@ -251,54 +363,114 @@ function sumOrNull(values: (number | null)[]): number | null {
   return values.some((v) => v === null) ? null : values.reduce<number>((a, b) => a + (b ?? 0), 0)
 }
 
+/** What a node says on the canvas: a folded cluster carries its member count. */
+export function displayLabel(n: Pick<ViewNode, 'label' | 'isPackage' | 'members'>): string {
+  return n.isPackage ? `${n.label} (${n.members})` : n.label
+}
+
+/** A module's names from shortest to longest: `orders`, `api/orders`, `src/api/orders`, then the id itself. */
+function nameLadder(id: string): string[] {
+  const parts = id.split('/').filter((p) => p !== '')
+  if (parts.length === 0) return [id]
+  const leaf = leafOf(id)
+  const out: string[] = []
+  for (let k = 1; k <= parts.length; k++) out.push([...parts.slice(parts.length - k, -1), leaf].join('/'))
+  out.push(id)
+  return [...new Set(out)]
+}
+
 /**
- * The nodes and edges to draw. Below `COLLAPSE_AT` modules every module is a
- * node; above it every package is one node except those in `open`. A folded
- * package's test reach is null: reach is served per module as a ratio, and the
- * module's reached-symbol count that would weight it is not.
+ * DISAMBIGUATED LABELS (§3.2 defect 10). `leafOf` printed `orders` for
+ * `src/api/orders.py`, `src/core/orders.py` and `src/db/orders.py` alike.
+ * Every module starts at its leaf; every group that still collides climbs one
+ * directory, until no two printed labels in the view are equal. A folded
+ * cluster's label is its full directory, already unique among clusters. The
+ * last rung is the module's id, which is unique by the route.
+ */
+export function uniqueLabels(nodes: readonly ViewNode[]): ViewNode[] {
+  const ladders = nodes.map((n) => (n.isPackage ? [n.label] : nameLadder(n.id)))
+  const rung = nodes.map(() => 0)
+  const text = (i: number) => {
+    const n = nodes[i]!
+    const l = ladders[i]![rung[i]!]!
+    return n.isPackage ? `${l} (${n.members})` : l
+  }
+  for (;;) {
+    const seen = new Map<string, number[]>()
+    nodes.forEach((_, i) => {
+      const t = text(i)
+      const idx = seen.get(t)
+      if (idx === undefined) seen.set(t, [i])
+      else idx.push(i)
+    })
+    let moved = false
+    for (const idx of seen.values()) {
+      if (idx.length < 2) continue
+      for (const i of idx) {
+        if (rung[i]! < ladders[i]!.length - 1) {
+          rung[i] = rung[i]! + 1
+          moved = true
+        }
+      }
+    }
+    if (!moved) break
+  }
+  const out = nodes.map((n, i) => ({ ...n, label: ladders[i]![rung[i]!]! }))
+  // A module whose full id prints like a folded cluster's label ("lib (3)"): name it by its id outright.
+  const counts = new Map<string, number>()
+  for (const n of out) counts.set(displayLabel(n), (counts.get(displayLabel(n)) ?? 0) + 1)
+  return out.map((n) => (!n.isPackage && (counts.get(displayLabel(n)) ?? 0) > 1 ? { ...n, label: `${n.label} · module` } : n))
+}
+
+/**
+ * The nodes and edges to draw. At or below `COLLAPSE_AT` modules every module
+ * is a node, inside its cluster's rectangle; above it every cluster is one
+ * node except those in `open`. An opened cluster past the bound folds into its
+ * own sub-clusters. A folded cluster's test reach is null: reach is served per
+ * module as a ratio, and the module's reached-symbol count that would weight
+ * it is not. With `clusterByPackage` off, every module is drawn, unclustered.
  */
 export function graphView(g: ModuleGraph, open: ReadonlySet<string>, clusterByPackage = true): GraphView {
-  const collapsed = clusterByPackage && g.modules.length > COLLAPSE_AT
-  const clusterOf = (id: string) => (clusterByPackage ? packageOf(id) : '')
   const nodeOf = new Map<string, string>()
-  const byPkg = new Map<string, GraphModule[]>()
-  for (const m of g.modules) {
-    const p = clusterOf(m.id)
-    byPkg.set(p, [...(byPkg.get(p) ?? []), m])
-  }
   const nodes: ViewNode[] = []
-  for (const [pkg, members] of [...byPkg.entries()].sort(([a], [b]) => a.localeCompare(b))) {
-    if (collapsed && !open.has(pkg)) {
-      const id = `pkg:${pkg}`
-      for (const m of members) nodeOf.set(m.id, id)
-      nodes.push({
-        id,
-        label: pkg,
-        cluster: pkg,
-        isPackage: true,
-        members: members.length,
-        symbols: sumOrNull(members.map((m) => m.symbols)),
-        hot_spot_changes: sumOrNull(members.map((m) => m.hot_spot_changes)),
-        test_reach: members.length === 1 ? (members[0]?.test_reach ?? null) : null,
-        languages: [...new Set(members.flatMap((m) => m.languages))].sort(),
-      })
-      continue
-    }
-    for (const m of members) {
-      nodeOf.set(m.id, m.id)
-      nodes.push({
-        id: m.id,
-        label: leafOf(m.id),
-        cluster: pkg,
-        isPackage: false,
-        members: 1,
-        symbols: m.symbols,
-        hot_spot_changes: m.hot_spot_changes,
-        test_reach: m.test_reach,
-        languages: m.languages,
-      })
+  const clusters = new Set<string>()
+  const moduleNode = (m: GraphModule, cluster: string): ViewNode => {
+    nodeOf.set(m.id, m.id)
+    return { id: m.id, label: leafOf(m.id), cluster, isPackage: false, members: 1, symbols: m.symbols, hot_spot_changes: m.hot_spot_changes, test_reach: m.test_reach, languages: m.languages }
+  }
+  const collapsed = clusterByPackage && g.modules.length > COLLAPSE_AT
+  const emit = (parts: { key: string; depth: number; members: GraphModule[] }[], fold: boolean) => {
+    for (const p of parts) {
+      if (fold && !open.has(p.key)) {
+        const id = `pkg:${p.key}`
+        for (const m of p.members) nodeOf.set(m.id, id)
+        clusters.add(p.key)
+        nodes.push({
+          id,
+          label: p.key,
+          cluster: p.key,
+          isPackage: true,
+          members: p.members.length,
+          symbols: sumOrNull(p.members.map((m) => m.symbols)),
+          hot_spot_changes: sumOrNull(p.members.map((m) => m.hot_spot_changes)),
+          test_reach: p.members.length === 1 ? (p.members[0]?.test_reach ?? null) : null,
+          languages: [...new Set(p.members.flatMap((m) => m.languages))].sort(),
+        })
+        continue
+      }
+      if (fold && p.members.length > COLLAPSE_AT) {
+        const sub = structuralClusters(p.members, p.depth)
+        if (sub.length > 1) {
+          emit(sub, true)
+          continue
+        }
+      }
+      clusters.add(p.key)
+      for (const m of p.members) nodes.push(moduleNode(m, p.key))
     }
   }
+  if (clusterByPackage) emit(structuralClusters(g.modules), collapsed)
+  else for (const m of [...g.modules].sort((a, b) => byCode(a.id, b.id))) nodes.push(moduleNode(m, ''))
   const folded = new Map<string, ViewEdge>()
   for (const e of g.edges) {
     const a = nodeOf.get(e.from)
@@ -312,8 +484,17 @@ export function graphView(g: ModuleGraph, open: ReadonlySet<string>, clusterByPa
       was.max_confidence = was.max_confidence === null || e.max_confidence === null ? (was.max_confidence ?? e.max_confidence) : Math.max(was.max_confidence, e.max_confidence)
     }
   }
-  const edges = [...folded.values()].sort((x, y) => (x.from + x.to).localeCompare(y.from + y.to))
-  return { nodes, edges, clusters: [...byPkg.keys()].sort(), collapsed }
+  const edges = [...folded.values()].sort((x, y) => byCode(x.from, y.from) || byCode(x.to, y.to))
+  return { nodes: uniqueLabels(nodes), edges, clusters: clusterByPackage ? [...clusters].sort() : [], collapsed }
+}
+
+/**
+ * Order by code point. `localeCompare` sorting the ~4,000 edges of an
+ * unclustered 2,000-module view was most of a 103 ms main-thread task; ids
+ * are paths, and only a stable order matters here, not a collation.
+ */
+function byCode(a: string, b: string): number {
+  return a < b ? -1 : a > b ? 1 : 0
 }
 
 /** How many other drawn nodes call into / are called from this one. */
@@ -327,194 +508,29 @@ export function degree(view: GraphView, id: string): { callers: number; callees:
   return { callers: callers.size, callees: callees.size }
 }
 
-// ---- the force layout ------------------------------------------------------
-
-/** A 32-bit FNV-1a hash of a string: the seed of a node's first position. */
-export function hash(s: string): number {
-  let h = 0x811c9dc5
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i)
-    h = Math.imul(h, 0x01000193)
-  }
-  return h >>> 0
-}
-
-export interface Placed {
-  x: number
-  y: number
-  r: number
-}
-
-/** A node's label to place: where its node is, its words, and how connected it is. */
-export interface LabelSpot {
-  id: string
-  x: number
-  y: number
-  r: number
-  text: string
-  /** Its degree: the busier node keeps the default place. */
+/** One drawn neighbour of a node, with the resolved calls of the folded edge between them. */
+export interface Neighbour {
+  node: ViewNode
   weight: number
-}
-
-/** Where a label went: below its node (the default), above it, or hidden until hover. */
-export interface LabelPlace {
-  side: 'below' | 'above' | 'hidden'
-  /** The text's baseline. */
-  y: number
-}
-
-/** A label's box, in the canvas's units: the 12px micro type at its average glyph width. */
-const LABEL_CHAR_W = 6.2
-const LABEL_ASCENT = 11
-const LABEL_DESCENT = 3
-
-/**
- * THE LABEL COLLISION PASS (QA G4-11). At 1440 the package labels of a tight
- * cluster (`apps/agent-worker (2)`, `apps/quota-broker (1)`) printed over
- * each other. Labels are placed busiest first, each below its node; one whose
- * box would cross a placed box goes above its node instead, and one that
- * fits in neither place is hidden until its node is hovered, focused or
- * picked -- the node itself and its accessible name are always drawn.
- */
-export function placeLabels(spots: readonly LabelSpot[]): Map<string, LabelPlace> {
-  const order = [...spots].sort((a, b) => b.weight - a.weight || a.id.localeCompare(b.id))
-  const boxes: { x0: number; x1: number; y0: number; y1: number }[] = []
-  const out = new Map<string, LabelPlace>()
-  for (const s of order) {
-    const half = (s.text.length * LABEL_CHAR_W) / 2
-    const below = s.y + s.r + 13
-    const above = s.y - s.r - 5
-    const boxAt = (y: number) => ({ x0: s.x - half, x1: s.x + half, y0: y - LABEL_ASCENT, y1: y + LABEL_DESCENT })
-    const free = (b: { x0: number; x1: number; y0: number; y1: number }) =>
-      boxes.every((o) => b.x1 <= o.x0 || o.x1 <= b.x0 || b.y1 <= o.y0 || o.y1 <= b.y0)
-    let placed: LabelPlace = { side: 'hidden', y: below }
-    for (const [side, y] of [['below', below], ['above', above]] as const) {
-      const b = boxAt(y)
-      if (free(b)) {
-        boxes.push(b)
-        placed = { side, y }
-        break
-      }
-    }
-    out.set(s.id, placed)
-  }
-  return out
-}
-
-export interface Layout {
-  pos: Map<string, Placed>
-  /** One soft rectangle per cluster with more than one node. */
-  boxes: { cluster: string; x: number; y: number; w: number; h: number }[]
-  width: number
-  height: number
-}
-
-/** A node's radius from its symbol count: 8 to 20, by square root; 10 when not served. */
-export function radiusOf(symbols: number | null, isPackage: boolean): number {
-  if (symbols === null) return isPackage ? 14 : 10
-  return Math.max(8, Math.min(20, 6 + Math.sqrt(symbols) * 1.2))
+  max_confidence: number | null
 }
 
 /**
- * A deterministic force layout: clusters start on a ring, members around their
- * cluster's centre at a hashed angle, then `iterations` rounds of pairwise
- * repulsion, edge springs and a pull toward the cluster centre, cooled
- * linearly. No Math.random anywhere: the same view gives the same picture.
+ * THE INSPECTOR'S NEIGHBOUR LIST (§3.2 defect 11): who calls this node and
+ * whom it calls, as nodes of the same view, heaviest first. Read off the
+ * view's own edges, so a neighbour is always a node the canvas draws.
  */
-export function forceLayout(view: GraphView, width = 640, height = 440, iterations = 160): Layout {
-  const pos = new Map<string, Placed>()
-  const n = view.nodes.length
-  if (n === 0) return { pos, boxes: [], width, height }
-  const clusters = view.clusters.length === 0 ? [''] : view.clusters
-  const cx = width / 2
-  const cy = height / 2
-  const ring = clusters.length === 1 ? 0 : Math.min(width, height) * 0.32
-  const centre = new Map<string, { x: number; y: number }>()
-  clusters.forEach((c, i) => {
-    const a = (2 * Math.PI * i) / clusters.length - Math.PI / 2
-    centre.set(c, { x: cx + ring * Math.cos(a), y: cy + ring * Math.sin(a) })
-  })
-  const ids = view.nodes.map((v) => v.id)
-  const xs = new Float64Array(n)
-  const ys = new Float64Array(n)
-  const rs = new Float64Array(n)
-  const home: { x: number; y: number }[] = []
-  view.nodes.forEach((v, i) => {
-    const c = centre.get(v.cluster) ?? { x: cx, y: cy }
-    const h = hash(v.id)
-    const a = ((h % 3600) / 3600) * 2 * Math.PI
-    const d = 20 + ((h >>> 12) % 50)
-    xs[i] = c.x + d * Math.cos(a)
-    ys[i] = c.y + d * Math.sin(a)
-    rs[i] = radiusOf(v.symbols, v.isPackage)
-    home.push(c)
-  })
-  const index = new Map(ids.map((id, i) => [id, i]))
-  const springs = view.edges
-    .map((e) => [index.get(e.from), index.get(e.to)] as const)
-    .filter((p): p is readonly [number, number] => p[0] !== undefined && p[1] !== undefined)
-  const k = Math.sqrt((width * height) / Math.max(n, 1)) * 0.55
-  for (let it = 0; it < iterations; it++) {
-    const t = 1 - it / iterations
-    const fx = new Float64Array(n)
-    const fy = new Float64Array(n)
-    for (let i = 0; i < n; i++) {
-      for (let j = i + 1; j < n; j++) {
-        let dx = xs[i]! - xs[j]!
-        let dy = ys[i]! - ys[j]!
-        let d2 = dx * dx + dy * dy
-        if (d2 < 0.01) {
-          // Two nodes on one point: part them along a hashed direction.
-          const a = ((hash(ids[i]! + ids[j]!) % 360) * Math.PI) / 180
-          dx = Math.cos(a)
-          dy = Math.sin(a)
-          d2 = 1
-        }
-        const d = Math.sqrt(d2)
-        const f = (k * k) / d
-        fx[i] = fx[i]! + (dx / d) * f
-        fy[i] = fy[i]! + (dy / d) * f
-        fx[j] = fx[j]! - (dx / d) * f
-        fy[j] = fy[j]! - (dy / d) * f
-      }
-    }
-    for (const [a, b] of springs) {
-      const dx = xs[b]! - xs[a]!
-      const dy = ys[b]! - ys[a]!
-      const d = Math.max(Math.sqrt(dx * dx + dy * dy), 0.01)
-      const f = (d * d) / k / 4
-      fx[a] = fx[a]! + (dx / d) * f
-      fy[a] = fy[a]! + (dy / d) * f
-      fx[b] = fx[b]! - (dx / d) * f
-      fy[b] = fy[b]! - (dy / d) * f
-    }
-    const step = 12 * t + 0.5
-    for (let i = 0; i < n; i++) {
-      const h = home[i]!
-      fx[i] = fx[i]! + (h.x - xs[i]!) * 0.9
-      fy[i] = fy[i]! + (h.y - ys[i]!) * 0.9
-      const m = Math.sqrt(fx[i]! * fx[i]! + fy[i]! * fy[i]!)
-      if (m > 0) {
-        xs[i] = xs[i]! + (fx[i]! / m) * Math.min(m, step)
-        ys[i] = ys[i]! + (fy[i]! / m) * Math.min(m, step)
-      }
-      const pad = rs[i]! + 18
-      xs[i] = Math.min(width - pad, Math.max(pad, xs[i]!))
-      ys[i] = Math.min(height - pad, Math.max(pad + 14, ys[i]!))
-    }
+export function neighbours(view: GraphView, id: string): { callers: Neighbour[]; callees: Neighbour[] } {
+  const byId = new Map(view.nodes.map((n) => [n.id, n]))
+  const callers: Neighbour[] = []
+  const callees: Neighbour[] = []
+  for (const e of view.edges) {
+    const other = e.to === id ? byId.get(e.from) : e.from === id ? byId.get(e.to) : undefined
+    if (other === undefined) continue
+    ;(e.to === id ? callers : callees).push({ node: other, weight: e.weight, max_confidence: e.max_confidence })
   }
-  view.nodes.forEach((v, i) => pos.set(v.id, { x: Math.round(xs[i]! * 10) / 10, y: Math.round(ys[i]! * 10) / 10, r: rs[i]! }))
-  const boxes: Layout['boxes'] = []
-  for (const c of view.clusters) {
-    const members = view.nodes.filter((v) => v.cluster === c).map((v) => pos.get(v.id)!)
-    if (members.length < 2 || c === '') continue
-    const x0 = Math.min(...members.map((p) => p.x - p.r)) - 14
-    const y0 = Math.min(...members.map((p) => p.y - p.r)) - 24
-    const x1 = Math.max(...members.map((p) => p.x + p.r)) + 14
-    const y1 = Math.max(...members.map((p) => p.y + p.r)) + 22
-    boxes.push({ cluster: c, x: x0, y: y0, w: x1 - x0, h: y1 - y0 })
-  }
-  return { pos, boxes, width, height }
+  const order = (a: Neighbour, b: Neighbour) => b.weight - a.weight || a.node.label.localeCompare(b.node.label)
+  return { callers: callers.sort(order), callees: callees.sort(order) }
 }
 
 // ---------------------------------------------------------------------------

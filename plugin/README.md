@@ -717,7 +717,8 @@ calls in a row that read nothing), or the sc plugin's server is not connected.
 
 **A whole SwarmCloud workflow: `/sc:swarmcloud`.** Its argument is a SwarmCloud
 workflow spec — the same object `swarm workflow` reads — as an object, as JSON
-text, or as the path of the spec file, relative to the session's checkout. A
+text, or as the path of the spec file, relative to the session's checkout and
+inside it (the bridge reads no spec file from outside the checkout). A
 workflow script has no filesystem, so given a path one `sc:workflow` agent
 (label `read spec`) has the bridge read the file with `swarm_workflow_spec`,
 which checks it as `swarm_workflow` would, submits nothing and returns the spec
@@ -915,7 +916,7 @@ it (`sc:remote` still uses that), and so do `swarm tail`, `swarm follow
 | Model | the workflow's `model` option, or the session's | **pinned on the job**: the profile's model. A caller cannot choose it (invariant 10), so a `model` option on the `agent()` call changes only the local row's model |
 | Tokens in `/workflows` | the step's own | **the row's** — haiku relaying the remote run. The remote agent's spend is the outcome's `cost_usd`, drawn from the shared subscription pool; `null` means not recorded, never $0 |
 | Stopping the row | stops the step | stops the ROW only. The SwarmCloud task keeps running; cancel it with `swarm_cancel`, or `swarm workflow-cancel` for a workflow |
-| Relaunching the run | re-runs agents that did not finish | the same, and for `sc:remote` a re-run row DISPATCHES AGAIN — a second task. Under `/sc:swarmcloud` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
+| Relaunching the run | re-runs every agent that did not finish AND every agent that started after a failed or edited one, completed ones included | the same, and for `sc:remote` every re-run row DISPATCHES AGAIN — a second task, even when that row's first task had already completed. Under `/sc:swarmcloud` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
 | Concurrency | the workflow's agent cap | rows beyond the cap start later; their tasks run on SwarmCloud's schedule regardless |
 
 **Which checkout is inferred.** The bridge reads the git checkout of the
@@ -982,7 +983,19 @@ are the same value.
 * `swarm_workflow_spec` reads a spec file from the checkout, checks it, and
   returns it with its digest, submitting nothing — the half of `/sc:swarmcloud` that
   takes a path. A file that is not a spec is refused without its content being
-  repeated.
+  repeated. Only a file UNDER the checkout (`SWARM_CHECKOUT_DIR`, else the
+  directory the bridge runs in) is read, once symlinks are resolved: an
+  absolute path, a `../` or a symlink that leads outside is refused before
+  anything about the file is looked at, because the path arrives through a
+  relay and the bridge can read every file you can. The same rule holds for
+  `spec_path` on `swarm_workflow` and `swarm_workflow_launch`; a spec kept
+  elsewhere is passed as the `spec` object instead.
+* `swarm_account_remove` is confirmed by a PERSON, not by its caller. The
+  bridge asks the host's human, through the host's own prompt (MCP
+  elicitation), to type the account's label; no tool argument counts as that
+  answer, and no refusal names the label, so an agent cannot confirm its own
+  removal. A host that cannot ask its human removes nothing and is told to run
+  `sc account remove <account>` in a terminal, which asks there.
 * `swarm_follow` `format: "progress"` (2026-10-01): no log, one progress line
   per task only when it changed, the state `transitions` since `since`, and a
   finished task's `outcome` reduced to the step result's fields. A call holds
