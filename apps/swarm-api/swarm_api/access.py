@@ -849,11 +849,12 @@ class AccessService:
             "enabled_by": caller.key,
             "checked_at": now,
         }
-        self._db.collection(ORGS).document(doc_id).set(doc)
         if via_token(previous):
             # The App now reaches the owner: the person's token for it is no
-            # longer read by anything, so it is not left enabled.
+            # longer read by anything, so it is not left enabled. BEFORE the
+            # document is overwritten: a disable that fails keeps it (503).
             self._app.revoke_owner_token(caller, match.login)
+        self._db.collection(ORGS).document(doc_id).set(doc)
         log.info("access owner enabled tenant=%s user_hash=%s owner=%s installation=%s",
                  caller.tenant_id, user_hash(caller.key), doc["owner"], match.installation_id)
         return {"org": org_to_api(doc)}
@@ -866,6 +867,11 @@ class AccessService:
             raise NotFound(f"{owner} is not enabled for you in this tenant")
         grants = [g for g in self._mine(GRANTS, caller)
                   if str(g.get("owner") or "").lower() == owner.lower()]
+        # D5: an owner enabled through the person's token loses the token too,
+        # every version of it, so removing the org revokes SwarmCloud's access.
+        # BEFORE the document goes: a disable that fails raises 503 and keeps
+        # it, so removing the owner again still finds the token.
+        slot_versions = self._app.revoke_owner_token(caller, owner) if via_token(doc) else {}
         batch = self._db.batch()
         batch.delete(self._db.collection(ORGS).document(
             org_id_for(caller.tenant_id, caller.key, owner)))
@@ -873,9 +879,6 @@ class AccessService:
             batch.delete(self._db.collection(GRANTS).document(
                 grant_id_for(caller.tenant_id, caller.key, str(grant["repo_id"]))))
         batch.commit()
-        # D5: an owner enabled through the person's token loses the token too,
-        # every version of it, so removing the org revokes SwarmCloud's access.
-        slot_versions = self._app.revoke_owner_token(caller, owner) if via_token(doc) else {}
         unregistered = [g["repo_id"] for g in grants
                         if self._unregister_if_last(caller.tenant_id, str(g["repo_id"]))]
         log.info("access owner disabled tenant=%s user_hash=%s owner=%s grants_deleted=%d",
