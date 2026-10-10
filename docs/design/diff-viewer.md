@@ -279,7 +279,7 @@ stay separate: they touch different files from it and from each other.
 | **DIFF2 · entry points (agents, workflows, issue runs)** | `AgentSplit.tsx`, `AgentDetail.tsx` (Code card), `Workflows.tsx`, `WorkflowViews.tsx`, `Runs.tsx`, `RunSteps.tsx`, `paths.ts`, `App.tsx`, plus a new `WorkflowChanges.tsx` | the Changes tab on all three: route `/agents/<tab>/<id>/changes` (list folded on open, "Changes ›" in the Code card), `/workflows/<id>/changes` and `/runs/<id>/changes` holding variant 5's files × steps matrix, the step inspector link, and the withheld/zero/omitted states | DIFF1; **waits for PRs 910 (`App.tsx`) and 898 (`Runs.tsx`) to merge** |
 | **DIFF4 · data** | `apps/agent-worker/agent_worker/gitops.py`, `apps/swarm-ui/src/types.ts` (`GitSummary`) | keep per-file numstat as `git.files` (path, old_path, status, insertions, deletions, binary), capped with `files_truncated`. `result_summary` is `dict[str, Any]` in the frozen contract (`models.py:334`), so this is **not a contract change** | none; DIFF2 uses it once it lands, and falls back to a dash |
 | **GR1 · graph** (not part of this design) | `Workflows.tsx`, `dag.ts` | the graph lane | **runs after DIFF2**, because both edit `Workflows.tsx` |
-| later · findings | `agent_worker/verdict.py`, `wfreview.ts` | keep `file`, `line`, `side` and the patch digest per finding, for variant 3 | owner go-ahead 2026-10-09; the worker half is built (below), the `wfreview.ts` half waits for DIFF1 and DIFF2 |
+| later · findings | `agent_worker/verdict.py`, `wfreview.ts` | keep `file`, `line`, `side` and the patch digest per finding, for variant 3 | owner go-ahead 2026-10-09; both halves are built (below) |
 
 **Findings by line, worker half (built).** A finding object in `verdict.json`
 may carry `file`, `line` and `side` (`old` | `new`). The worker keeps them in
@@ -298,6 +298,27 @@ round has since changed. A verdict with no location records no new key. The
 compiled issue-run review is asked for this shape (`issueruns.FINDINGS_SHAPE`).
 The control plane's own MERGE publish (`verdictpublish.py`) still records text
 only. That is enough for now, because a MERGE has no fix round to pin against.
+
+**Findings by line, console half (built).** The workflow's and the run's
+Changes matrix (`WorkflowChanges.tsx`) lists every finding of every review
+its gated steps read (`wfreview.reviewFindings`) above the files, and the
+files the review named sort first, tagged "named by the review". The digest
+check is `wfreview.placeFinding`: a finding is pinned only on a step's patch
+that the review read (same task, same file name) and whose bytes as shown
+hash to the recorded `sha256`. The console measures that hash from the
+served text (`WorkflowChanges.patchDigest`) and only when the text IS the
+stored bytes: the whole object, nothing masked, and `invalid_utf8_bytes` a
+measured 0; anything else is "not compared", never a match. A different
+digest is "from an earlier patch"; no line and side, or no digest recorded,
+is "not placed". `DiffView` takes the pinned findings as `pins` and draws
+each as a button in the gutter of the side it names (`old` the removed
+half, `new` the added), in the hunks of the step it names, with the
+severity and summary on hover and focus and a list of buttons above the
+lines that reaches each one by keyboard; a pin whose line is in no hunk is
+listed as not pinned. The worker keeps findings as text, so a severity is
+shown only where the finding object carried one, and "Not graded"
+otherwise. The agent's own Changes tab draws no pins: it holds one task,
+not the gated step that recorded the review.
 
 Every lane runs `scripts/changed-guards.sh`. DIFF1 keeps the existing
 50,000-line windowing test and the no-`innerHTML` test green.
