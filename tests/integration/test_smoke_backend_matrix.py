@@ -302,6 +302,21 @@ OPEN = {"hard_limit": {"integerValue": "10"}, "active": {"integerValue": "0"},
         "enabled": {"booleanValue": True}}
 
 
+def _browser_stands_for_gke() -> dict:
+    """The served catalogue with `generic` unavailable, so `browser` is GKE's row.
+
+    Since contract request 64 `generic` resolves to GKE_AUTOPILOT and, needing
+    no credential, stands for it -- and its resource class is `standard`, the
+    same pool `mock` draws from. Pausing GKE's row alone therefore needs a GKE
+    row with a pool of its own: `browser` (pools/resource:browser), which is
+    the row the matrix picks once `generic` is not available.
+    """
+    served = copy.deepcopy(_catalogue())
+    assert served["runtimes"]["generic"]["resolved_backend"] == "GKE_AUTOPILOT"
+    served["runtimes"]["generic"]["available"] = False
+    return served
+
+
 def test_both_backends_are_exercised_from_the_served_catalogue(tmp_path):
     """The m9prt run, with the matrix working: no python, both backends, exit 0."""
     proc = _run(tmp_path, pools={"resource:standard": OPEN, "resource:browser": OPEN})
@@ -309,8 +324,9 @@ def test_both_backends_are_exercised_from_the_served_catalogue(tmp_path):
         "the suite called a tool the verify image does not have:\n" + _explain(proc)
     )
     assert f"GET {API_URL}/v1/runtimes" in proc.requests, _explain(proc)
-    assert "browser" in proc.submitted, (
-        "no browser task was submitted: GKE_AUTOPILOT went unexercised\n" + _explain(proc)
+    # generic stands for GKE_AUTOPILOT since contract request 64 (#939 option A).
+    assert "generic" in proc.submitted, (
+        "no generic task was submitted: GKE_AUTOPILOT went unexercised\n" + _explain(proc)
     )
     # Twice: the matrix row, and the deep lifecycle case that follows it.
     assert proc.submitted.count("mock") == 2, _explain(proc)
@@ -326,7 +342,8 @@ def test_both_backends_are_exercised_from_the_served_catalogue(tmp_path):
 @pytest.mark.parametrize("closed", [CLOSED, DISABLED], ids=["hard_limit-0", "enabled-false"])
 def test_a_paused_resource_pool_row_is_skipped_not_failed(tmp_path, closed):
     """pools/resource:browser closed by the owner: SKIP, not submitted, exit 0."""
-    proc = _run(tmp_path, pools={"resource:standard": OPEN, "resource:browser": closed})
+    proc = _run(tmp_path, pools={"resource:standard": OPEN, "resource:browser": closed},
+                catalogue=_browser_stands_for_gke())
     assert proc.tripwire == "", _explain(proc)
     assert "browser" not in proc.submitted, (
         "a browser task was submitted into a pool an operator closed; it would sit "
@@ -347,7 +364,7 @@ def test_a_paused_resource_pool_row_is_skipped_not_failed(tmp_path, closed):
 def test_an_absent_pool_is_open_not_paused(tmp_path):
     """No document is unlimited by construction; it must not read as a pause."""
     proc = _run(tmp_path, pools={})
-    assert "browser" in proc.submitted, _explain(proc)
+    assert "generic" in proc.submitted, _explain(proc)
     assert not any("paused" in line for line in _lines(proc, "SKIP")), _explain(proc)
     assert proc.returncode == 0, _explain(proc)
 
@@ -370,6 +387,7 @@ def test_a_pause_is_not_turned_into_a_failure_by_the_strict_switch(tmp_path):
     proc = _run(
         tmp_path,
         pools={"resource:standard": OPEN, "resource:browser": CLOSED},
+        catalogue=_browser_stands_for_gke(),
         extra_env={"SUITE_SKIPS_ARE_FAILURES": "1"},
     )
     assert "browser" not in proc.submitted, _explain(proc)
@@ -380,6 +398,7 @@ def test_a_pause_is_not_turned_into_a_failure_by_the_strict_switch(tmp_path):
 def test_an_unreadable_pool_is_a_failure_not_a_skip(tmp_path):
     """A failed read is not evidence of a pause, and must never become a skip."""
     proc = _run(tmp_path, pools={"resource:browser": CLOSED},
+                catalogue=_browser_stands_for_gke(),
                 extra_env={"FAKE_POOL_READ_STATUS": "500"})
     fails = _lines(proc, "FAIL")
     assert any("could not read pools/resource:browser" in line for line in fails), _explain(proc)
