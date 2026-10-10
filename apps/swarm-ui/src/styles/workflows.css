@@ -423,12 +423,12 @@
 
 /* A MAP NODE: the tint as its fill and the edge as its stroke, held at 1px
    however far the map is scaled down. Unread is the dashed amber. */
-.wf-minimap .wf-mini-node { stroke-width: 1px; vector-effect: non-scaling-stroke; }
-.wf-minimap .wf-mini-node.t-live { fill: var(--s-liveb); stroke: var(--s-live); }
-.wf-minimap .wf-mini-node.t-park { fill: var(--s-parkb); stroke: var(--s-park); }
-.wf-minimap .wf-mini-node.t-bad { fill: var(--s-badb); stroke: var(--s-bad); }
-.wf-minimap .wf-mini-node.t-neu { fill: var(--s-neub); stroke: var(--s-neu); }
-.wf-minimap .wf-mini-node.t-unk { fill: var(--s-warnb); stroke: var(--s-warn); stroke-dasharray: 3 2; }
+.wf-minimap .wf-mini-node, .wf-vmap .wf-mini-node { stroke-width: 1px; vector-effect: non-scaling-stroke; }
+.wf-minimap .wf-mini-node.t-live, .wf-vmap .wf-mini-node.t-live { fill: var(--s-liveb); stroke: var(--s-live); }
+.wf-minimap .wf-mini-node.t-park, .wf-vmap .wf-mini-node.t-park { fill: var(--s-parkb); stroke: var(--s-park); }
+.wf-minimap .wf-mini-node.t-bad, .wf-vmap .wf-mini-node.t-bad { fill: var(--s-badb); stroke: var(--s-bad); }
+.wf-minimap .wf-mini-node.t-neu, .wf-vmap .wf-mini-node.t-neu { fill: var(--s-neub); stroke: var(--s-neu); }
+.wf-minimap .wf-mini-node.t-unk, .wf-vmap .wf-mini-node.t-unk { fill: var(--s-warnb); stroke: var(--s-warn); stroke-dasharray: 3 2; }
 
 /* THE STAGE FILTER A BAND COUNT OPENED, as the canonical removable filter Chip. */
 .wf-filter { display: flex; align-items: center; gap: var(--ctl-s2); margin: 0 0 var(--ctl-s2); }
@@ -663,4 +663,45 @@
 .wf-timeline > .wf-tl-scale { container: wf-tl-scale / inline-size; }
 @container wf-tl-scale (max-width: 420px) {
   .wf-tl-scale > .wf-tl-tick:nth-last-of-type(even):not(:first-of-type) > .wf-tl-tick-label { visibility: hidden; }
+}
+
+/* ---- Graph rendering GR1: critical path and the vertical map -------------- */
+
+/* THE CRITICAL PATH'S EDGES, HEAVIER AND NOTHING ELSE. Weight, not hue: the
+   kind classes keep their colour and dash, so a declared edge on the path is
+   still dashed, and a greyscale screenshot still shows which edges it holds.
+   A lit or faded edge keeps its own treatment over this one. */
+.wf-edges .wf-link.is-critical .wf-edge { stroke-width: 3px; }
+.wf-edges .wf-link.is-critical .wf-edge-halo { stroke-width: 8px; }
+
+/* The caption is one line between the zoom strip and the canvas, in the
+   strip's micro type. The chain wraps rather than widening the card. */
+.wf-critical {
+  margin: 0 0 var(--ctl-s2);
+  font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim);
+}
+.wf-critical-h { font-weight: 600; color: var(--text); }
+.wf-critical-chain { overflow-wrap: anywhere; }
+
+/* THE CANVAS AND ITS VERTICAL MAP SIDE BY SIDE. The wrapper takes the row and
+   scrolls sideways as it did; the map is fixed-width and sticky, so it stays on
+   screen while the page scrolls the canvas past it. The adjacency rules that
+   spaced `.wf-canvas-wrap` (styles.css) are restated against the row. */
+.wf-canvas-row { display: flex; align-items: flex-start; gap: var(--ctl-s2); }
+.wf-canvas-row > .wf-canvas-wrap { flex: 1 1 auto; min-width: 0; }
+.wf-dispatch + .wf-canvas-row,
+.wf-viewbar + .wf-canvas-row { margin-top: var(--ctl-s3); }
+.wf-vmap {
+  flex: none;
+  position: sticky; top: var(--ctl-s3);
+  width: 44px; height: min(60vh, 480px);
+  border: 1px solid var(--line);
+  border-radius: var(--ctl-radius-sm);
+  background: var(--wf-body-bg);
+  overflow: hidden;
+  cursor: pointer;
+}
+.wf-vmap svg { display: block; width: 100%; height: 100%; }
+@media (max-width: 560px) {
+  .wf-card.is-page .wf-vmap { display: none; }
 }
