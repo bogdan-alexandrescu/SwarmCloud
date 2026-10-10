@@ -174,6 +174,37 @@ resource "google_storage_bucket" "artifacts" {
     }
   }
 
+  # Clone bundles and branch-head pointers expire on an `age` clock (issue
+  # #940, docs/clone-bundles.md). The worker writes a one-commit bundle to
+  # tenants/<t>/bundles/<repo_id>/<sha>.swarm-clone.bundle after a clone, and
+  # a later step that clones that sha reads it instead of contacting GitHub.
+  # It is a cache, useful for hours: a miss costs only the old clone.
+  #
+  # The customTime Delete above would keep a bundle artifact_retention_days
+  # (180 in prod), so this rule is separate and keyed on `age`.
+  #
+  # BUCKET-WIDE BY SUFFIX ON PURPOSE. A matches_prefix list cannot reach the
+  # personal `u-<slug>` tenants the API creates at runtime, for the same
+  # reason the customTime rule is bucket-wide. The two suffixes are written
+  # only by the bundle writer, so no checkpoint, repos/ object, artifact or
+  # verdict ends with either; this is the one `age` Delete that cannot reach
+  # a PARKED task's checkpoint (tests/terraform/clone_bundle_lifecycle.tftest.hcl).
+  # Bundles are not on the Nearline rule: they are read soon after writing.
+  #
+  # with_state = "ANY", stated rather than left to the provider's default (a
+  # computed value no plan-time test can read): a head pointer is overwritten
+  # per push, and its noncurrent versions are as stale as the live one.
+  lifecycle_rule {
+    condition {
+      age            = var.clone_bundle_retention_days
+      matches_suffix = [".swarm-clone.bundle", ".swarm-clone.head"]
+      with_state     = "ANY"
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
   # Versioning without expiry is how a bucket quietly becomes the largest line
   # on the bill.
   lifecycle_rule {

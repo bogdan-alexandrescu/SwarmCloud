@@ -759,6 +759,14 @@ NOT_READY_KINDS = (
     "other",
 )
 MAX_NOT_READY_NEEDS = 20
+#: A NOT_READY reason is bounded by TRUNCATION, never refused. The reason is
+#: the planner's answer: refusing a long one turned a correct NOT_READY into a
+#: FAILED run and lost the answer (#977). The input is already bounded --
+#: `routes/runs.py::_read_plan` refuses a plan.json over MAX_PLAN_BYTES -- and
+#: the planner task's plan.json artifact is never rewritten, so it keeps the
+#: full text the marker points to.
+MAX_NOT_READY_REASON_CHARS = 2_000
+NOT_READY_REASON_TRUNCATED = "… [truncated: the full reason is in the planner task's plan.json]"
 
 
 class NotReadyVerdict(_PlanModel):
@@ -769,11 +777,13 @@ class NotReadyVerdict(_PlanModel):
     that finds the issue ready writes a plan. `reason` is a paragraph;
     `needs` lists what would make it ready ("owner decision: ...", "depends
     on #N"), one per entry, and may be empty only when `reason` says it all.
+    A long `reason` is accepted and truncated by `parse_planner_output` to
+    MAX_NOT_READY_REASON_CHARS with a marker, not refused (#977).
     """
 
     ready: Literal[False]
     kind: Literal[NOT_READY_KINDS] | None = None  # type: ignore[valid-type]
-    reason: str = Field(min_length=1, max_length=2_000)
+    reason: str = Field(min_length=1)
     needs: list[_Line] = Field(default_factory=list, max_length=MAX_NOT_READY_NEEDS)
 
 
@@ -811,10 +821,23 @@ def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
             "kind": verdict.kind,
             # Agent text, shown in the console and quoted on the issue:
             # masked here, once, as a run's error is (`failure_text`).
-            "reason": redact_detail(verdict.reason, limit=2_000),
+            "reason": _not_ready_reason(verdict.reason),
             "needs": [redact_detail(need, limit=500) for need in verdict.needs],
         }
     return "plan", parse_plan(value)
+
+
+def _not_ready_reason(reason: str) -> str:
+    """The reason as a run stores it: masked whole, then cut to the limit with a marker.
+
+    Masking comes first so a credential straddling the cut is replaced by its
+    stand-in, never kept as a prefix too short for the scan to recognise.
+    """
+    masked = redact_detail(reason, limit=MAX_PLAN_BYTES)
+    if len(masked) <= MAX_NOT_READY_REASON_CHARS:
+        return masked
+    keep = MAX_NOT_READY_REASON_CHARS - len(NOT_READY_REASON_TRUNCATED)
+    return masked[:keep].rstrip() + NOT_READY_REASON_TRUNCATED
 
 
 def plan_files(plan: Mapping[str, Any] | None) -> set[str]:

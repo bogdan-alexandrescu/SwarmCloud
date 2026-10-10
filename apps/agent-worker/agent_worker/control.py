@@ -118,7 +118,26 @@ from .startup import StartupInterrupted
 #: restores a checkpoint only when its archive digest is the one recorded here
 #: (`Worker._recorded_checkpoint`, #347): the manifest carrying the digest sits
 #: in the bucket, which every agent of the tenant can write.
-CHECKPOINT_DIGESTS_FIELD = "checkpoint_sha256"
+#:
+#: It is the frozen `Attempt.checkpoint_sha256` since contract request 51
+#: (accepted by the owner 2026-10-09), and is looked up on the dataclass rather
+#: than restated: a rename there fails this import, not a retry's restore.
+CHECKPOINT_DIGESTS_FIELD = Attempt.__dataclass_fields__["checkpoint_sha256"].name
+
+
+def recorded_checkpoint_digests(attempt: Mapping[str, Any] | None) -> dict[str, str]:
+    """An attempt document's `checkpoint_sha256`, in the type `Attempt` gives it.
+
+    Only `str -> str` entries are kept, as swarm-api's `codec.attempt_from_dict`
+    keeps them. A missing document, a missing field (an attempt written before
+    #348) or a value that is not a map is the EMPTY map, which contract request
+    51 defines as "no digest recorded": the retry restores nothing from that
+    attempt. It is never read as "anything goes".
+    """
+    raw = attempt.get(CHECKPOINT_DIGESTS_FIELD) if attempt else None
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(k, str) and isinstance(v, str)}
 
 #: What an archive digest is: `hashlib.sha256(...).hexdigest()`, 64 lowercase
 #: hex characters. `record_checkpoint` writes nothing else, and a restore
@@ -1437,9 +1456,9 @@ class ControlPlane:
                 snap.to_dict() or {}, kind="attempt", document_id=self.attempt_id
             )
             existing = list(data.get("checkpoints", []))
-            recorded = data.get(CHECKPOINT_DIGESTS_FIELD)
-            if isinstance(recorded, dict):
-                digests = dict(recorded)
+            # Read back in the typed shape (`Attempt.checkpoint_sha256`,
+            # contract request 51), so the merge below writes only that shape.
+            digests = recorded_checkpoint_digests(data)
         if checkpoint_id not in existing:
             existing.append(checkpoint_id)
         # What the next attempt binds the archive's bytes to (#347): the
@@ -1929,6 +1948,8 @@ class ControlPlane:
         pending: Sequence[str],
         max_wakes: int,
         fallback_seconds: int,
+        counter: str = "wakes",
+        ci_clock: bool = True,
     ) -> bool:
         """A merge step's CI wait: PARKED on CI_PENDING, slot given back.
 
@@ -1952,6 +1973,12 @@ class ControlPlane:
             the scheduler wakes the park then even if swarm-api's tick never
             marks it, so a dead tick or a broken token never strands a merge.
 
+        A wait for the repository's merge slot (`mergeslot.MERGE_SLOT_WAIT`,
+        merge race #295) is refunded on its own `counter`, `slot_waits`,
+        with its own `max_wakes`, and stops the CI clock (`ci_clock` False):
+        its `first_parked_at` is cleared, so the next CI wait starts it
+        afresh and a long queue never reads as `checks_timeout`.
+
         There is no checkpoint and no upload: a worker action keeps no
         workspace (invariant 8's exception, CR 36), and its durable state is
         this record plus GitHub, which the next attempt reads again.
@@ -1971,20 +1998,24 @@ class ControlPlane:
             metadata = dict(task.get("metadata") or {})
             last = metadata.get(MERGE_WAIT_METADATA_KEY)
             last = last if isinstance(last, Mapping) else {}
-            wakes = _count(last.get("wakes"))
+            counts = {name: _count(last.get(name)) for name in ("wakes", "slot_waits")}
+            counts.setdefault(counter, _count(last.get(counter)))
             attempt_count = int(task.get("attempt_count", 0))
-            refund = wakes < max_wakes and attempt_count > 0
+            refund = counts[counter] < max_wakes and attempt_count > 0
             if refund:
-                wakes += 1
+                counts[counter] += 1
+            wakes = counts[counter]
             first = last.get("first_parked_at")
             metadata[MERGE_WAIT_METADATA_KEY] = {
                 "code": code,
                 "head": head,
                 "pull_request": pull_request,
                 "pending": names,
-                "wakes": wakes,
+                **counts,
                 "updates": _count(last.get("updates")),
-                "first_parked_at": first if isinstance(first, datetime) else now,
+                "first_parked_at": (
+                    (first if isinstance(first, datetime) else now) if ci_clock else None
+                ),
                 "parked_at": now,
             }
             payload: dict[str, Any] = {
