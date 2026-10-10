@@ -68,3 +68,10 @@ vulnerabilities:
   - id: CVE-2026-78669
     statement: "golang.org/x/net http2 DoS inside the same vendor-built Go binaries; needs vendor rebuilds."
     expired_at: 2026-10-24
+  # Same class, added the same night (owner, 2026-10-10): the next release after
+  # PR 992 was refused on this id alone, in the same vendor binaries and images,
+  # fixed by the same Go 1.26.9 / 1.27.2. Same bound: a crafted TLS peer can at
+  # worst fail one retried attempt in a sandboxed client container.
+  - id: CVE-2026-97031
+    statement: "Go stdlib crypto/tls DoS (ECH extensions) inside the same vendor-built Go binaries; needs vendor rebuilds."
+    expired_at: 2026-10-24
