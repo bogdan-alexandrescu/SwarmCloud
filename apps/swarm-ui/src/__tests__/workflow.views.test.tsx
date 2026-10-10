@@ -1187,6 +1187,34 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
   })
 
+  it('DIFF2b: links the step to the workflow’s Changes tab filtered to it, counted by its file list', async () => {
+    const files = [
+      { path: 'a.ts', old_path: null, status: 'M' as const, insertions: 1, deletions: 0, binary: false },
+      { path: 'b.ts', old_path: null, status: 'A' as const, insertions: 2, deletions: 0, binary: false },
+    ]
+    const done = task('t_done', 'SUCCEEDED', { result_summary: { git: { base: 'abc', patch: 'swarm-work.patch', files } } })
+    const { container } = oneStepCard(done, [])
+    pick(container as HTMLElement, 'work')
+    const i = inspector(container as HTMLElement)
+    const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
+    expect(link.getAttribute('href')).toBe('/workflows/wf_one/changes?step=work')
+    expect(link.textContent).toBe('Changes · 2 files ›')
+    const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
+  })
+
+  it('DIFF2b: counts a step nobody counted as a dash, never 0', async () => {
+    const running = task('t_run', 'RUNNING', { created_at: iso(-600), started_at: iso(-300) })
+    const { container } = oneStepCard(running, [])
+    pick(container as HTMLElement, 'work')
+    const i = inspector(container as HTMLElement)
+    const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
+    expect(link.textContent).toBe('Changes · — ›')
+    expect(link.getAttribute('title')).toMatch(/written nothing yet/)
+    const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
+  })
+
   it('WF-3: widens a data edge’s clearance with its stroke, from the layer beneath the strokes', () => {
     // The halos moved into one layer under every stroke. The sheet widens a
     // DATA edge's halo through `.wf-link.is-data .wf-edge-halo`, so the halo
