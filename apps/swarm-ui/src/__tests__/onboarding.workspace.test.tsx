@@ -362,3 +362,58 @@ describe('the claude_account step', () => {
     expect(el.querySelector('.ctl-mark.is-zero')).toBeNull()
   })
 })
+
+// AN APPROVAL NOTHING WILL BUILD (2026-10-10, w-752763 sat `approved` for 19
+// hours under "Setting up your workspace"). The record's `provisioning` block is
+// `workspaces.provisioning`'s (tests/unit/control_plane/test_people_admin.py).
+describe('an approved workspace the platform is not advancing', () => {
+  const approvedAt = new Date(Date.now() - 19 * 3600_000).toISOString()
+
+  it('provisioning off: says so in words, with no elapsed counter, no step rows and no live mark', async () => {
+    const r = withId({
+      state: 'approved',
+      decision: { verdict: 'approved', reason: null, at: approvedAt },
+      provisioning: { available: false, waiting_because: 'publishing_off', approved_minutes_ago: 1140 },
+    })
+    await mount(doc(r), () => r)
+    const el = stepEl('workspace')
+    await waitFor(
+      () =>
+        expect(visible(el)).toContain(
+          "Approved, but workspace building isn't switched on in this deployment yet. Your admins have been told. Nothing to do on your side.",
+        ),
+      WAIT,
+    )
+    expect(visible(el)).not.toContain('Setting up your workspace')
+    expect(el.querySelector('ol[aria-label="Workspace set-up steps"]')).toBeNull()
+    // The checklist row's own mark is `warn`, not the haloed `live` one.
+    expect(el.querySelector(':scope > [data-tone]')?.getAttribute('data-tone')).toBe('warn')
+  })
+
+  it('dispatched_unclaimed: taking longer than expected, how long ago it was approved, and the request id', async () => {
+    const r = withId({
+      state: 'approved',
+      decision: { verdict: 'approved', reason: null, at: approvedAt },
+      provisioning: { available: true, waiting_because: 'dispatched_unclaimed', approved_minutes_ago: 47 },
+    })
+    await mount(doc(r), () => r)
+    const el = stepEl('workspace')
+    await waitFor(() => expect(visible(el)).toContain('Taking longer than expected (approved 47 minutes ago)'), WAIT)
+    expect(visible(el)).toContain('req-1')
+    expect(el.querySelector('ol[aria-label="Workspace set-up steps"]')).toBeNull()
+    expect(el.querySelector(':scope > [data-tone]')?.getAttribute('data-tone')).toBe('warn')
+  })
+
+  it('an approval that is moving still draws its steps', async () => {
+    const r = withId({
+      state: 'approved',
+      decision: { verdict: 'approved', reason: null, at: new Date(Date.now() - 60_000).toISOString() },
+      provisioning: { available: true, waiting_because: null, approved_minutes_ago: 1 },
+    })
+    await mount(doc(r), () => r)
+    const el = stepEl('workspace')
+    await waitFor(() => expect(visible(el)).toContain('Setting up your workspace — w-3f9a2c'), WAIT)
+    expect(el.querySelector('ol[aria-label="Workspace set-up steps"]')).not.toBeNull()
+    expect(el.querySelector(':scope > [data-tone]')?.getAttribute('data-tone')).toBe('live')
+  })
+})

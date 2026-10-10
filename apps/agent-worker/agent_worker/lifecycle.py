@@ -145,6 +145,7 @@ from swarm_redaction import redact as redact_text
 
 from . import artifact_manifest as manifest_mod
 from . import children as children_mod
+from . import clonebundle as clonebundle_mod
 from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
@@ -185,10 +186,10 @@ from .checkpoint import (
 from .config import WorkerConfig
 from .control import (
     ARCHIVE_DIGEST_RE,
-    CHECKPOINT_DIGESTS_FIELD,
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     ControlPlane,
     ControlSignals,
+    recorded_checkpoint_digests,
 )
 from .errors import (
     CheckpointError,
@@ -219,9 +220,11 @@ from .gitops import (
     PeerPin,
     branch_commits,
     clone_at_commit,
+    clone_from_bundle,
     commit_dirty,
     commit_tree_onto,
     fetch_branch_tip,
+    fetch_tip_onto_bundle,
     fold_agent_commits,
     hide_from_git,
     merge_branches,
@@ -233,6 +236,7 @@ from .gitops import (
     shallow_clone,
     summarize_work,
     verify_worker_authorship,
+    write_clone_bundle,
 )
 # The helpers every function in `gitops` builds its git commands from. Borrowed
 # rather than restated for `replay_agent_commits` below, so its commands carry
@@ -373,6 +377,13 @@ FORGE_UNREACHABLE = "forge_unreachable"
 #: delay keeps the retry from meeting the same outage at once. Bounded by
 #: `max_attempts`, like every retry.
 FORGE_UNREACHABLE_RETRY_DELAY_SECONDS = 60
+#: How long `_cleanup` waits for a clone bundle's upload (#940) before the
+#: workspace holding the file is destroyed. A bundle is capped at
+#: `clone_bundle_max_bytes` (512 MiB) and goes over Private Google Access,
+#: seconds even at the cap; 30 s covers a slow one without holding a finished
+#: attempt's container for long. Abandoning it costs the next step a forge
+#: clone and nothing else: a write-once upload that never finished is no object.
+CLONE_BUNDLE_UPLOAD_JOIN_SECONDS = 30
 #: Why the worker refused a forge write the task's credential does not allow
 #: (docs/onboarding.md §3.3 steps 3-4, #780 lane OB5). Worker vocabulary in
 #: the error text and `result_summary.forge_check`, like the three above; the
@@ -976,6 +987,10 @@ class Worker:
         # what the agent start reads to say whether this attempt cloned.
         self._clone_marked = False
         self._agent_start_marked = False
+        # The clone bundle's write-once upload (#940), off the start path:
+        # started by `_write_clone_bundle` once the clone is bundled, joined,
+        # bounded, by `_cleanup` before the workspace holding the file goes.
+        self._bundle_upload: threading.Thread | None = None
         # The workflow base pin (`_upstream_base_pin`): what this step's clone
         # started from and why, `result_summary.git.base_pin`. None for a root
         # step, a non-workflow task, a step that starts from an upstream
@@ -4166,13 +4181,15 @@ class Worker:
             refuse(reason="the recording attempt is another tenant's")
             return None
         listed = attempt.get("checkpoints") if attempt else None
-        digests = attempt.get(CHECKPOINT_DIGESTS_FIELD) if attempt else None
+        # `Attempt.checkpoint_sha256` in its typed shape (contract request 51).
+        # Empty when the document has none -- written before #348 -- which is
+        # "no digest recorded", so the retry starts clean.
+        digests = recorded_checkpoint_digests(attempt)
         if (
             attempt is None
             or attempt.get("task_id") != self.cfg.task_id
             or not isinstance(listed, list)
             or record.checkpoint_id not in listed
-            or not isinstance(digests, dict)
             or digests.get(record.checkpoint_id) != record.archive_sha256
         ):
             self.log.error(
@@ -4180,8 +4197,7 @@ class Worker:
                 attempt_id=record.attempt_id,
                 checkpoint_id=record.checkpoint_id,
                 attempt_document=attempt is not None,
-                digest_recorded=isinstance(digests, dict)
-                and record.checkpoint_id in digests,
+                digest_recorded=record.checkpoint_id in digests,
             )
             refuse(reason="no attempt document of this task lists the checkpoint")
             return None
@@ -4414,7 +4430,26 @@ class Worker:
                 and forge_credential_refused(exc),
             )
 
-        if pinned_sha is not None:
+        # CLONE BUNDLES (#940, docs/clone-bundles.md). #721 measured a median
+        # 36.6 s TCP connect to GitHub per clone against 1.7 s of transfer. A
+        # commit some earlier step of this tenant cloned is in a one-commit
+        # bundle under `tenants/<own tenant>/bundles/`, read over Private
+        # Google Access with this worker's own credentials (`self.store`, the
+        # tenant's service account: invariant 9). A pinned step clones from it
+        # and never contacts the forge; a branch-tip step seeds from the
+        # branch's last bundle and fetches only the delta. Any miss or bundle
+        # error is today's clone, below, unchanged. An index run's deep clone
+        # neither reads nor writes one: its 90 days are not a checkout.
+        history_days = indexrun_mod.clone_history_days(self.cfg.runner_profile)
+        bundle = self._bundle_record(history_days)
+        if pinned_sha is not None and bundle["miss_reason"] is None:
+            # No `retry`, no token and no egress wait: nothing here reaches
+            # the forge, which is the whole point.
+            clone = self._clone_pinned_from_bundle(
+                url=url, ref=ref, sha=pinned_sha, destination=destination, record=bundle,
+            )
+
+        if pinned_sha is not None and clone is None:
             try:
                 clone = retry(lambda: clone_at_commit(
                     url=url,
@@ -4432,7 +4467,7 @@ class Worker:
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
                 # forge, and an unpinned clone would be a silent change of base.
-                self._mark_clone_timed(None, tries=tries, pinned=True)
+                self._mark_clone_timed(None, tries=tries, pinned=True, bundle=bundle)
                 self._mark_egress_ready()
                 raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
@@ -4441,7 +4476,7 @@ class Worker:
                     # refuses to trust. The parent's head is not on the
                     # branch any more, which only a force push or a deleted
                     # branch does -- neither of them this platform's.
-                    self._mark_clone_timed(None, tries=tries, pinned=True)
+                    self._mark_clone_timed(None, tries=tries, pinned=True, bundle=bundle)
                     self._mark_egress_ready()
                     raise WorkerError(
                         f"repository clone failed: this step starts from task "
@@ -4460,6 +4495,28 @@ class Worker:
                 )
                 self._base_pin = {"pinned": False, "reason": "fetch_failed"}
         pinned_clone = clone is not None
+        if (
+            clone is None and pinned_sha is None and ref and not pr_branch
+            and bundle["miss_reason"] is None
+        ):
+            # A branch tip: seeded from the branch's last bundle, then the
+            # delta from the forge, through the same `retry` -- the same
+            # tries, waits, credential re-read and `try_log` as the clone
+            # below. A `single-pr` reader or amender is left exactly as it was.
+            try:
+                clone = self._clone_tip_onto_bundle(
+                    url=url, ref=ref, destination=destination, record=bundle,
+                    retry=retry, token=clone_token, peers=peers,
+                )
+            except GitTransient as exc:
+                # The forge did not answer the delta fetch through every try.
+                # Not a second round against the same outage from a full
+                # clone: the attempt ends retryably, as that clone's would.
+                self._mark_clone_timed(
+                    None, tries=tries, pinned=False, source="bundle+delta", bundle=bundle
+                )
+                self._mark_egress_ready()
+                raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         try:
             clone = clone or retry(lambda: shallow_clone(
                 url=url,
@@ -4478,14 +4535,14 @@ class Worker:
                 peers=peers,
                 # An index run reads 90 days of history (hot spots,
                 # co-change); every other step stays one commit deep.
-                history_days=indexrun_mod.clone_history_days(self.cfg.runner_profile),
+                history_days=history_days,
             ))
         except GitTransient as exc:
-            self._mark_clone_timed(None, tries=tries, pinned=False)
+            self._mark_clone_timed(None, tries=tries, pinned=False, bundle=bundle)
             self._mark_egress_ready()
             raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         except GitError as exc:
-            self._mark_clone_timed(None, tries=tries, pinned=False)
+            self._mark_clone_timed(None, tries=tries, pinned=False, bundle=bundle)
             self._mark_egress_ready()
             based = (
                 f"; this step builds on task {builds_on}, whose branch {ref} is "
@@ -4504,7 +4561,16 @@ class Worker:
                     f"tenant git token because {refusal}"
                 ) from exc
             raise WorkerError(f"repository clone failed: {exc}{based}") from exc
-        self._mark_clone_timed(clone, tries=tries, pinned=pinned_clone)
+        source = str(clone.phases.get("source") or "forge")
+        # Bundled BEFORE the agent starts, so the agent never touches what is
+        # bundled; uploaded off the start path. Never fails the step.
+        self._write_clone_bundle(
+            clone, url=url, source=source, record=bundle,
+            head_ref=ref if not pinned_clone else None,
+        )
+        self._mark_clone_timed(
+            clone, tries=tries, pinned=pinned_clone, source=source, bundle=bundle
+        )
         self._mark_egress_ready()
         self._repo_url = clone.url
         self._clone_base = clone.commit
@@ -4539,6 +4605,304 @@ class Worker:
         if refusal:
             info["git_token_refused"] = refusal
         return info
+
+    # -----------------------------------------------------------------------
+    # Clone bundles (#940, docs/clone-bundles.md)
+    # -----------------------------------------------------------------------
+
+    def _bundle_record(self, history_days: int | None) -> dict[str, Any]:
+        """`clone_timed.bundle`, begun: whether a bundle may be read at all, and why not.
+
+        `miss_reason` None means "look"; anything else is why this clone
+        neither reads nor writes one -- the kill switch
+        (`SWARM_CLONE_BUNDLES=0`) or an index run, whose clone is deepened to
+        its history window and is never one commit.
+        """
+        record: dict[str, Any] = {
+            "hit": False, "download_seconds": None, "bytes": None, "written": False,
+            "miss_reason": None,
+        }
+        if not self.cfg.clone_bundles_enabled:
+            record["miss_reason"] = "disabled"
+        elif history_days is not None:
+            record["miss_reason"] = "index_run"
+        return record
+
+    def _fetch_clone_bundle(self, url: str, sha: str, record: dict[str, Any]) -> Path | None:
+        """Download the bundle of `sha` from the worker's OWN tenant's prefix, or None.
+
+        The key is built from `self.cfg.tenant_id` -- this worker's, set by
+        dispatch, never the task's input -- so a tenant only ever reads what
+        its own steps wrote (invariant 9), and the read is `self.store`, the
+        tenant's own service account, over Private Google Access. The file
+        goes to `ws.private`, which the agent is never handed.
+        """
+        assert self.ws is not None
+        key = clonebundle_mod.bundle_key(self.cfg.tenant_id, url, sha)
+        if isinstance(key, clonebundle_mod.NoKey):
+            record["miss_reason"] = "no_key"
+            self.log.info("clone bundle: none can be keyed", reason=key.reason)
+            return None
+        path = self.ws.private / f"{sha}{clonebundle_mod.BUNDLE_SUFFIX}"
+        started = time.monotonic()
+        size = clonebundle_mod.fetch_bundle(
+            self.store, key, path, self.cfg.clone_bundle_max_bytes, log=self.log
+        )
+        record["download_seconds"] = round(time.monotonic() - started, 3)
+        if size is None:
+            record["miss_reason"] = "miss"
+            return None
+        record["bytes"] = size
+        return path
+
+    @staticmethod
+    def _with_download(clone: CloneResult, seconds: float) -> CloneResult:
+        """The clone's time with the bundle's download in it: `clone_timed`'s
+        `seconds` and `total_seconds` are then what the step waited, which is
+        #940's acceptance number."""
+        total = float(clone.phases.get("total_seconds") or clone.duration_seconds)
+        return dataclasses.replace(
+            clone,
+            duration_seconds=float(clone.duration_seconds) + seconds,
+            phases={**clone.phases, "total_seconds": round(total + seconds, 3)},
+        )
+
+    def _clone_pinned_from_bundle(
+        self, *, url: str, ref: str | None, sha: str, destination: Path,
+        record: dict[str, Any],
+    ) -> CloneResult | None:
+        """A pinned sha from its bundle, without contacting the forge; None to
+        clone it from the forge as before (a miss, an over-cap bundle, or any
+        error from the bundle -- the destination is emptied first)."""
+        assert self.ws is not None
+        path = self._fetch_clone_bundle(url, sha, record)
+        if path is None:
+            return None
+        try:
+            clone = clone_from_bundle(
+                bundle=path, url=url, branch=ref, commit=sha, destination=destination,
+                private_dir=self.ws.private, logs_dir=self.ws.logs,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds, logger=self.log,
+            )
+        except Exception as exc:  # noqa: BLE001 -- any bundle failure is today's clone
+            record["miss_reason"] = "bundle_error"
+            gitops_mod._empty_directory(Path(destination))
+            self.log.warning(
+                "clone bundle: the bundle did not clone; cloning from the forge",
+                commit=sha, error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"),
+            )
+            return None
+        finally:
+            path.unlink(missing_ok=True)
+        record["hit"] = True
+        return self._with_download(clone, float(record["download_seconds"] or 0.0))
+
+    def _clone_tip_onto_bundle(
+        self, *, url: str, ref: str, destination: Path, record: dict[str, Any],
+        retry: Callable[[Callable[[], CloneResult]], CloneResult],
+        token: Callable[[], str | None], peers: PeerPin,
+    ) -> CloneResult | None:
+        """A branch's tip: its last bundle, then only the delta from the forge.
+
+        The forge IS contacted (the tip is only known there), through the
+        caller's `retry` -- every try re-seeds from the downloaded bundle,
+        which is local and cheap, because a refused try empties the folder.
+        None to clone as before: no head pointer, no bundle, or any failure
+        that is not the forge's outage (the destination emptied first). A
+        `GitTransient` that outlasted the tries is raised: a full clone would
+        meet the same forge.
+        """
+        assert self.ws is not None
+        ws = self.ws
+        head = clonebundle_mod.head_key(self.cfg.tenant_id, url, ref)
+        if isinstance(head, clonebundle_mod.NoKey):
+            record["miss_reason"] = "no_key"
+            return None
+        seed = clonebundle_mod.read_head(self.store, head, log=self.log)
+        if seed is None:
+            record["miss_reason"] = "no_head"
+            return None
+        path = self._fetch_clone_bundle(url, seed, record)
+        if path is None:
+            return None
+        common = dict(private_dir=ws.private, logs_dir=ws.logs,
+                      timeout_seconds=self.cfg.git_clone_timeout_seconds, logger=self.log)
+
+        def seed_then_delta() -> CloneResult:
+            seeded = clone_from_bundle(bundle=path, url=url, branch=ref, commit=seed,
+                                       destination=destination, **common)
+            tip = fetch_tip_onto_bundle(destination=destination, url=url, ref=ref,
+                                        token=token(), egress=self._egress, peers=peers,
+                                        **common)
+            local = float(seeded.duration_seconds)
+            total = float(tip.phases.get("total_seconds") or tip.duration_seconds)
+            return dataclasses.replace(
+                tip,
+                duration_seconds=float(tip.duration_seconds) + local,
+                phases={**tip.phases, "total_seconds": round(total + local, 3),
+                        "source": "bundle+delta"},
+            )
+
+        try:
+            clone = retry(seed_then_delta)
+        except GitTransient:
+            gitops_mod._empty_directory(Path(destination))
+            raise
+        except Exception as exc:  # noqa: BLE001 -- any other failure is today's clone
+            record["miss_reason"] = "bundle_error"
+            gitops_mod._empty_directory(Path(destination))
+            self.log.warning(
+                "clone bundle: the branch tip did not land onto the bundle; "
+                "cloning from the forge",
+                ref=ref, error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"),
+            )
+            return None
+        finally:
+            path.unlink(missing_ok=True)
+        record["hit"] = True
+        record["seed_commit"] = seed
+        return self._with_download(clone, float(record["download_seconds"] or 0.0))
+
+    def _write_clone_bundle(
+        self, clone: CloneResult, *, url: str, source: str, record: dict[str, Any],
+        head_ref: str | None,
+    ) -> None:
+        """Bundle a depth-1 clone whose commit has no bundle yet, and upload it once.
+
+        "Written once per sha, by whoever clones first": the upload's
+        `ifGenerationMatch=0` precondition (`clonebundle.publish_bundle`).
+        The bundle is written HERE, before the agent starts, so the agent
+        never touches what is bundled; it holds one commit's objects and one
+        ref, never the clone's config, remote URL or credential file, and
+        its object carries a content type only -- no forge token reaches the
+        bundle or its metadata. The upload, and the branch's head pointer
+        after it (`head_ref`: an unpinned branch clone), run in a thread
+        `_cleanup` joins, bounded, so the agent never waits on them. NEVER
+        RAISES: a cache that could not be written costs the next step a
+        forge clone, never this step its outcome.
+        """
+        if record["miss_reason"] in ("disabled", "index_run") or source == "bundle":
+            return  # nothing to write: off, deep, or the bundle just read
+        if clone.empty or not clone.commit or self.ws is None:
+            return
+        ws = self.ws
+        commit = clone.commit
+        key = clonebundle_mod.bundle_key(self.cfg.tenant_id, url, commit)
+        head = (clonebundle_mod.head_key(self.cfg.tenant_id, url, head_ref)
+                if head_ref else None)
+        if isinstance(key, clonebundle_mod.NoKey):
+            return
+        if isinstance(head, clonebundle_mod.NoKey):
+            head = None
+        out = ws.private / f"{commit}.upload{clonebundle_mod.BUNDLE_SUFFIX}"
+        copy: Path | None = None
+        try:
+            known = source == "bundle+delta" and record.get("seed_commit") == commit
+            if not known:
+                try:
+                    known = bool(self.store.exists(key))
+                except Exception:  # noqa: BLE001 -- unknown: the precondition decides
+                    known = False
+            if known:
+                # Its bundle is there; only the branch's pointer may lag.
+                if head is not None and record.get("seed_commit") != commit:
+                    self._start_bundle_upload(None, None, head, commit)
+                return
+            started = time.monotonic()
+            bundled_from = Path(clone.path)
+            if source == "bundle+delta":
+                # The delta fetch leaves the seed's commit in `.git/shallow`
+                # beside the tip's, and a bundle is one commit deep: bundle a
+                # depth-1 local copy of the tip instead (no forge contact).
+                copy = ws.private / "clone-bundle-source"
+                self._depth_one_copy(bundled_from, copy)
+                bundled_from = copy
+            write_clone_bundle(
+                clone=bundled_from, commit=commit, out=out, private_dir=ws.private,
+                logs_dir=ws.logs, timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                logger=self.log,
+            )
+            record["write_seconds"] = round(time.monotonic() - started, 3)
+            record["written"] = True
+            self._start_bundle_upload(key, out, head, commit)
+        except Exception as exc:  # noqa: BLE001 -- a cache write never fails the step
+            out.unlink(missing_ok=True)
+            self.log.warning(
+                "clone bundle: not written", commit=commit,
+                error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"),
+            )
+        finally:
+            if copy is not None:
+                shutil.rmtree(copy, ignore_errors=True)
+
+    def _depth_one_copy(self, repository: Path, copy: Path) -> None:
+        """A depth-1 local clone of `repository`'s HEAD at `copy`: no checkout,
+        no token, no forge -- `file://` of a folder on this disk."""
+        assert self.ws is not None
+        shutil.rmtree(copy, ignore_errors=True)
+        env, config_args, _ = gitops_mod._clone_env("", None, self.ws.private, self.log)
+        gitops_mod._run_git_steps(
+            [["git", *config_args, "clone", "--quiet", "--no-checkout", "--depth", "1",
+              "--no-tags", f"file://{Path(repository).absolute()}", str(copy)]],
+            url="", token=None, private_dir=self.ws.private, env=env, logs_dir=self.ws.logs,
+            timeout_seconds=self.cfg.git_clone_timeout_seconds, logger=self.log,
+            label="git-bundle-copy",
+        )
+
+    def _start_bundle_upload(
+        self, key: str | None, source: Path | None, head: str | None, commit: str
+    ) -> None:
+        """The write-once upload, then the head pointer, in a thread. Never raises."""
+
+        def upload() -> None:
+            try:
+                written = False
+                if key is not None and source is not None:
+                    written = clonebundle_mod.publish_bundle(
+                        self.store, key, source, self.cfg.clone_bundle_max_bytes, log=self.log
+                    )
+                    self.log.info(
+                        "clone bundle published" if written
+                        else "clone bundle not published (already there, or refused)",
+                        commit=commit,
+                    )
+                # The pointer moves only to a bundle that is there: one this
+                # call wrote, or one that already was (`source` None).
+                if head is not None and (written or source is None):
+                    clonebundle_mod.publish_head(self.store, head, commit, log=self.log)
+            except Exception as exc:  # noqa: BLE001 -- a cache write never fails the step
+                self.log.warning("clone bundle: upload failed",
+                                 error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"))
+            finally:
+                if source is not None:
+                    source.unlink(missing_ok=True)
+
+        try:
+            thread = threading.Thread(target=upload, name="clone-bundle-upload", daemon=True)
+            thread.start()
+            self._bundle_upload = thread
+        except Exception as exc:  # noqa: BLE001 -- no thread, no upload; the step goes on
+            if source is not None:
+                source.unlink(missing_ok=True)
+            self.log.warning("clone bundle: the upload could not start",
+                             error=type(exc).__name__)
+
+    def _join_clone_bundle_upload(self) -> None:
+        """Wait, bounded, for the bundle's upload before the workspace goes.
+
+        Called by `_cleanup`, after the attempt's outcome is recorded, so the
+        upload never delays it. Bounded by `CLONE_BUNDLE_UPLOAD_JOIN_SECONDS`;
+        an upload still running then is abandoned with the process, and the
+        write-once precondition means a write that never finished is no
+        object at all, so the next step simply writes it.
+        """
+        thread, self._bundle_upload = self._bundle_upload, None
+        if thread is None:
+            return
+        thread.join(CLONE_BUNDLE_UPLOAD_JOIN_SECONDS)
+        if thread.is_alive():
+            self.log.warning("clone bundle: the upload outlasted its wait; abandoned",
+                             waited_seconds=CLONE_BUNDLE_UPLOAD_JOIN_SECONDS)
 
     def _fail_clone_unreachable(self, reason: str, tries: int) -> Outcome:
         """A retryable failure before the agent ran: the clone's forge did not answer.
@@ -7493,7 +7857,13 @@ class Worker:
             )
 
     def _mark_clone_timed(
-        self, clone: CloneResult | None, *, tries: list[dict[str, Any]], pinned: bool
+        self,
+        clone: CloneResult | None,
+        *,
+        tries: list[dict[str, Any]],
+        pinned: bool,
+        source: str = "forge",
+        bundle: dict[str, Any] | None = None,
     ) -> None:
         """`clone_timed`: where the clone's time went (#667, lane OB1). Once per attempt.
 
@@ -7523,6 +7893,15 @@ class Worker:
         (`gitops.PeerPin`), and the top level the last try's two peers and
         `peer_pinned`, true when any try ran pinned to the probe's address.
         Distinct from `pinned`, which is the workflow BASE pin.
+
+        WHERE THE COMMIT CAME FROM (#940): `source` is `bundle` (the tenant's
+        clone bundle, no forge contact), `bundle+delta` (the branch's last
+        bundle, then the delta from the forge) or `forge` (today's clone);
+        `bundle` is `{hit, download_seconds, bytes, written, miss_reason}`
+        (and `write_seconds` when this step bundled its clone). For a bundle
+        hit `seconds` and `total_seconds` include the download, so
+        `total_seconds` is what the step waited for its repository -- the
+        issue's acceptance number. A bundle hit made no forge try: `tries` 0.
         """
         if self._clone_marked:
             return
@@ -7540,6 +7919,8 @@ class Worker:
             **(clone.phases if clone is not None else {}),
         }
         last = log[-1] if log else {}
+        timings["source"] = source
+        timings["bundle"] = dict(bundle) if bundle is not None else self._bundle_record(None)
         timings.setdefault("probe_peer", last.get("probe_peer"))
         timings.setdefault("git_peer", last.get("git_peer"))
         timings["peer_pinned"] = any(bool(entry.get("peer_pinned")) for entry in log)
@@ -11627,6 +12008,8 @@ class Worker:
             # single release point for every exit path -- see
             # `_release_account`.
             ("release_account", self._release_account),
+            # Before the workspace: the bundle being uploaded is in it.
+            ("join_clone_bundle_upload", self._join_clone_bundle_upload),
             ("destroy_workspace", destroy_workspace),
         ):
             try:
@@ -12194,11 +12577,12 @@ def _private_key_spans(text: str) -> list[tuple[int, int]]:
         if _PEM_HINT not in piece:
             return
         pos = 0
+        # An orphan END is a key's tail even with nothing before it to take
+        # (`_mask_orphan_ends`, #361 box 82): its span may be empty.
         for marker in _PEM_END.finditer(piece):
             start = _tail_start(piece, marker.start(), pos)
-            if start < marker.start():
-                spans.append((low + start, low + marker.start()))
-                pos = marker.start()
+            spans.append((low + start, low + marker.start()))
+            pos = marker.start()
 
     pos = search = 0
     while True:

@@ -502,6 +502,12 @@ module "scheduler" {
   # #748: known at plan time, unlike api_endpoint, so it can gate a count.
   enable_task_finished_push = true
 
+  # #847: swarm-workspace-sweep, the caller of swarm-api's personal-workspace
+  # dispatch sweep and so the stuck-workspace detector. A literal, never a
+  # tfvars variable: it runs even while var.workspace_apply_publish is off,
+  # which is exactly when an approved workspace waits (2026-10-09).
+  enable_workspace_sweep = true
+
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.
   publisher_members = {
@@ -613,6 +619,10 @@ module "monitoring" {
   dead_letter_subscription = "${module.scheduler.dead_letter_topic}-sub"
   safety_tick_job          = "${var.name_prefix}-scheduler-tick"
   enable_safety_tick_alert = var.enable_safety_tick_alert
+
+  # The same string gke_autopilot is given, named from configuration because
+  # that module is behind a `count` (as for workspace_deployer above).
+  gke_cluster_name = "${var.name_prefix}-autopilot"
 
   alert_emails                = var.alert_emails
   extra_notification_channels = var.extra_notification_channels
