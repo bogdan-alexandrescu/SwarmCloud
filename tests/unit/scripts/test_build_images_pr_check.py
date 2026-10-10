@@ -126,15 +126,22 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["images/agent-runtime-browser/cloudbuild.yaml"], {"agent-runtime-browser"}),
         (["images/swarm-ui/nginx.conf"], {"swarm-ui"}),
         (["images/workspace-apply/Dockerfile"], {"workspace-apply"}),
-        # The guard and the build file are the workspace job's checkout, not
-        # its image's: they rebuild swarm-verify (which copies all of
-        # scripts/) and never workspace-apply.
-        (["scripts/lib/workspace-guard.sh", "scripts/cloudbuild/workspace-apply.yaml"], {"swarm-verify"}),
+        (["images/workspace-apply/entry.py"], {"workspace-apply"}),
+        # Since the 2026-10-10 re-decision (WD2: a Cloud Run job, lane W6b) the
+        # workspace job's code is in its image, not in a checkout: the guard,
+        # the job's script and register-tenant.sh rebuild workspace-apply, as
+        # well as swarm-verify (which copies all of scripts/).
+        (["scripts/lib/workspace-guard.sh", "scripts/workspace-apply.sh"], {"swarm-verify", "workspace-apply"}),
+        (["scripts/register-tenant.sh"], {"swarm-verify", "workspace-apply"}),
+        # What render.py (A7) and the guard's expectation read in the image.
+        (["kubernetes/render.py"], {"workspace-apply"}),
+        (["terraform/modules/service_account_ids/main.tf"], {"workspace-apply"}),
+        (["apps/scheduler/scheduler/dispatch.py"], {"swarm-scheduler", "workspace-apply"}),
         # COPY'd files outside images/.
-        (["apps/common/swarm_common/models.py"], PYTHON_SERVICES | WORKER),
+        (["apps/common/swarm_common/models.py"], PYTHON_SERVICES | WORKER | {"workspace-apply"}),
         (["apps/redaction/redaction/scan.py"], WORKER | {"swarm-api"}),
         (["apps/agent-worker/worker/main.py"], WORKER),
-        (["apps/quota-broker/quota_broker/app.py"], {"swarm-quota-broker", "swarm-scheduler"}),
+        (["apps/quota-broker/quota_broker/app.py"], {"swarm-quota-broker", "swarm-scheduler", "workspace-apply"}),
         (["apps/swarm-ui/src/App.tsx"], {"swarm-ui"}),
         # `COPY apps/swarm-ui/package-lock.json*`: a glob source.
         (["apps/swarm-ui/package-lock.json"], {"swarm-ui"}),
@@ -145,7 +152,7 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["uv.lock"], PYTHON_SERVICES | WORKER),
         (["pyproject.toml"], PYTHON_SERVICES | WORKER),
         (["Makefile"], {"swarm-verify"}),
-        (["scripts/lib/common.sh"], {"swarm-verify"}),
+        (["scripts/lib/common.sh"], {"swarm-verify", "workspace-apply"}),
         (["tests/acceptance/fixtures/claude-code/calc.py"], {"swarm-verify"}),
         # What every build's context is filtered through.
         ([".dockerignore"], ALL),
