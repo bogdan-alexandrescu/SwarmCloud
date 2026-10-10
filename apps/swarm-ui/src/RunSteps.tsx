@@ -220,7 +220,25 @@ function roundLabel(round: number): string | null {
   return round === 0 ? null : `fix round ${round}`
 }
 
-function StepLine({ row, go, now }: { row: StepRow; go: (to: string) => void; now: number }) {
+/**
+ * "Changes ›": the run's Changes tab filtered to this step (diff-viewer.md §2
+ * variant 5), by the filter key the tab gives the step -- its id, or
+ * `<round>:<id>` for a CI fix round's.
+ */
+export function StepChanges({ runId, row, go }: { runId: string; row: StepRow; go: (to: string) => void }) {
+  const step = row.round === 0 ? row.stepId : `${row.round}:${row.stepId}`
+  const to = `work/runs?${new URLSearchParams({ run: runId, tab: 'changes', step }).toString()}`
+  const href = addressToPath(to)
+  return (
+    <a className="rn-open rn-changes" href={href} title={`What ${row.stepId} changed, in the run's Changes tab`} onClick={(e) => {
+      if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      e.preventDefault()
+      go(to)
+    }}>Changes ›</a>
+  )
+}
+
+function StepLine({ row, runId, go, now }: { row: StepRow; runId: string; go: (to: string) => void; now: number }) {
   const t = row.task
   const round = roundLabel(row.round)
   return (
@@ -240,7 +258,12 @@ function StepLine({ row, go, now }: { row: StepRow; go: (to: string) => void; no
           </>
         )}
       </span>
-      {row.taskId !== null && <OpenAgent taskId={row.taskId} state={row.task?.state ?? null} go={go} />}
+      {row.taskId !== null && (
+        <span className="rn-srow-links">
+          <OpenAgent taskId={row.taskId} state={row.task?.state ?? null} go={go} />
+          <StepChanges runId={runId} row={row} go={go} />
+        </span>
+      )}
       {/* The merge step's card, across the row's whole width under it. */}
       {row.merge !== null && (
         <div className="rn-srow-merge" style={{ gridColumn: '1 / -1' }}>
@@ -284,7 +307,7 @@ export function StepsCard({ run, read, go, now }: {
       {note}
       {rows.length > 0 && (
         <ol className="rn-srows">
-          {rows.map((r) => <StepLine key={r.key} row={r} go={go} now={now} />)}
+          {rows.map((r) => <StepLine key={r.key} row={r} runId={run.id} go={go} now={now} />)}
         </ol>
       )}
     </section>
