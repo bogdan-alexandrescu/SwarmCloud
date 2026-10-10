@@ -136,6 +136,42 @@ every other rule, so no other rule masks pieces of a key's body first:
   lines are masked (`redact(inside_key=True)`). The download route carries an
   open key whole into its next window instead, so the key is masked in one
   piece.
+* **A key split over JSON strings, in any container** (#385). A document can
+  hold a key as an object's values, a list of objects, nested lists, or an
+  object's *keys* (a PEM pasted into a `.properties` file stores each body
+  line as a key with an empty value). With the END within 64 KiB, the strings
+  from BEGIN through END are masked, whatever containers they sit in. With
+  **no END in reach** -- the key was truncated, or its END lies beyond the page
+  the reader chose -- there is no marker to mask *to*, so the key is followed
+  in document order instead: every string value and object key shaped like
+  key body (base64 or an RFC 1421 header, at least `KEY_BODY_MIN_CHARS`
+  characters or ending in `=` padding) is masked; blank strings are kept and
+  do not end it; it stops at an END string, at the first string *value* that
+  is not body-shaped, or after 64 KiB. That is the text path's no-END rule
+  (stop at the first line that is not key body) restated for JSON. Before
+  #385 only a flat list of strings was followed, so the object, nested-list,
+  list-of-objects and object-key layouts served every body line in clear.
+
+  **Why a length floor.** After a truncated key the next string is as likely
+  an ordinary word as a body line, and short words (`"kept"`, `"done"`, `"ok"`)
+  are all valid base64. Without the floor the run would swallow them, and a
+  reader would lose text that was never a secret. A key's full body lines are
+  64 characters (76 in some tools), so a floor of 16 keeps every short word in
+  clear and masks every full line. `"after the key"` holds spaces, is not
+  base64 at all, and ends the run in clear.
+
+  **The residual, stated plainly:** a key's *last* body line can be any length
+  from 1 to 63, and a final unpadded body line shorter than the floor is
+  served. That is at most 11 bytes of the key's trailing DER (its last
+  integer, not its modulus). A short line ending in `=` is masked.
+
+  Paged reads start the run from the 64 KiB look-back, or from `inside_key`
+  when the look-back found an open key, so a page wholly inside a key -- the
+  middle page of a three-page key, holding neither marker -- masks its body
+  lines and reports the lines it withheld as its redaction count, once for
+  the key, never a count over text it served in clear. The page holding the
+  END stays masked the same way. Both `/artifacts/content` and the raw
+  download follow this rule.
 
 **A key split over a JSON document's containers** is masked from the string
 holding its BEGIN through the one holding its END, within 64 KiB of string
@@ -826,7 +862,12 @@ one set of rules. It is not a second one. It is applied by
    (the mock runner takes that one) is a count, not a credential.
 3. A private key stored as a **list of lines** is masked from the element with
    its BEGIN marker through the one with its END, one count, because no body
-   line holds a marker.
+   line holds a marker. A key with **no END in reach**, split over an
+   object's values, a list of objects, nested lists or an object's keys, is
+   followed in document order by the same run the artifact token path uses
+   (see [Private keys are masked as blocks](#private-keys-are-masked-as-blocks-not-lines),
+   #385), on `/input` and on `/logs` alike: one shared rule, so the three
+   routes cannot disagree about which string ends a truncated key.
 4. A literal that any of those masked (a value under a credential's name, or a
    value the key/value rule found beside `NAME=` in a string or a key) is
    masked **wherever else the input holds it**, the prompt included. At most
