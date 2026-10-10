@@ -448,6 +448,15 @@ class Attempt:
     peak_disk_bytes: int | None = None
     oom_near_miss: bool = False
     checkpoints: list[str] = field(default_factory=list)
+    #: Checkpoint id -> lowercase hex SHA-256 of that checkpoint's archive.
+    #: Written ONLY by the worker's `ControlPlane.record_checkpoint`, in the
+    #: same merge as `checkpoints` and before `task.latest_checkpoint` moves;
+    #: read ONLY by a later attempt of the same task, which restores a
+    #: checkpoint only when its archive matches the digest recorded here (#347).
+    #: Empty means "no digest recorded": a document written before #348, or a
+    #: checkpoint recorded without one. Its retry starts from an empty
+    #: workspace; an empty map is never read as "anything goes".
+    checkpoint_sha256: dict[str, str] = field(default_factory=dict)
 
     # What the attempt SPENT. Added 2026-09-19 as change request #2 in
     # docs/contract-change-requests.md, approved by the platform owner.
