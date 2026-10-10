@@ -14,8 +14,62 @@ in [workflows.md](workflows.md#proposed-a-chain-that-merges-its-own-pull-request
 `-git` token -- "Revised 2026-10-04 (owner)" says what changed and why.**
 **Revised again on 2026-10-06: merging becomes its own step that parks while
 CI runs, updates a branch that is behind, and replaces `auto-merge.yml` --
-the first section below is that design and its build plan (lane MS0); the
-section after it is what is built today.**
+the "Revised 2026-10-06" section below is that design and its build plan
+(lane MS0); the section after it is what is built today.**
+**Revised 2026-10-10: merge steps against one repository take a merge slot,
+one at a time, in submission order -- the first section below.**
+
+## Revised 2026-10-10: one merge step per repository at a time (merge race, part of #295)
+
+**What was measured.** On 2026-10-09, 40 SwarmCloud-opened pull requests
+were left unmerged across the eng tenant. Of the merge steps that did run, 7
+refused `behind_too_often`: the repository's ruleset sets
+`strict_required_status_checks_policy`, so a branch must be up to date with
+`main`; 16 merge steps ran against `main` at once; each merge that landed
+put the others behind, each update cost a full CI run, and three updates was
+the cap. A user-owned repository has no GitHub merge queue (docs/ci.md), and
+`merge_pr` takes one merge step per workflow, so an operator drove the
+queue from a laptop, one `merge_pr` at a time.
+
+**What was built.** `apps/agent-worker/agent_worker/mergeslot.py`: one
+Firestore document per (tenant, repository, base), `merge_slots/{id}`, held
+by at most one merge step.
+
+* A step takes the slot only when its own checks are **green**, so every
+  pull request's first CI run still runs in parallel. Only the
+  update-and-merge tail is serial, and a strict up-to-date rule makes that
+  tail serial anyway: one merge per CI run is the most the base allows.
+* A step that cannot have the slot **parks** (`CI_PENDING`, code
+  `merge_slot_wait`), holding no lease and no pool count (invariant 1). Its
+  wait is counted on `merge_wait.slot_waits` (bound
+  `MERGE_SLOT_MAX_WAITS`), not on the CI wakes, and does not run the
+  `checks_timeout` clock. swarm-api's wake tick skips these parks: their
+  checks are green, so a reading would wake them for nothing.
+* Waiters are taken **in submission order** (the task's `created_at`). A
+  release hands the slot to the first waiter whose task has not ended and
+  writes that task's wake marker, so the scheduler promotes it on its next
+  drain; the fallback instant covers a lost mark.
+* The slot is a **lease**: `MERGE_SLOT_LEASE_SECONDS` (45 min, three CI
+  fallbacks), renewed by every attempt of the holder. A crashed holder's
+  slot frees when the lease runs out, or at once when its task is read
+  terminal. Every slot write is fenced on the attempt's task and lease
+  (invariant 5), and the holder re-reads the slot's generation immediately
+  before each update and merge call.
+* Released on every exit: merged, refused (a red head included), failed and
+  cancelled release it; a CI-fix round or a merge queue gives it back; a CI
+  wait while holding keeps it.
+
+**Why the update allowance changed.** Holding the slot, no sibling merges.
+The updates already on a head when the step took the slot were caused by
+the merges it queued behind, and the first update after taking it catches
+up with them. Only updates beyond that one are counted against
+`MERGE_MAX_BRANCH_UPDATES`, so the count measures a base moved by someone
+outside the slot -- normally zero -- and `behind_too_often` is an anomaly
+again. The cap rose from 3 to 5 because what it counts is no longer the
+platform's own traffic; the reason is beside the value in `merge.py`.
+
+**Contract request 62** asks for a park reason of its own; until then the
+code in `merge_wait.code` is what tells a slot wait from a CI wait.
 
 ## Revised 2026-10-06 (owner): merging is its own step, parked while CI runs
 
@@ -204,15 +258,17 @@ into the branch. The responses map as follows:
 
 * a 422 that says the update conflicts → `merge_conflict`;
 * any other 422 → `head_moved`;
-* more than `MERGE_MAX_BRANCH_UPDATES` (proposed 3) updates →
-  `behind_too_often`, because a base moving faster than CI is a question for
-  a person.
+* more than `MERGE_MAX_BRANCH_UPDATES` (5 since 2026-10-10, was 3) updates
+  made while the step holds its repository's merge slot, past the one
+  catch-up update after taking it → `behind_too_often`, because a base
+  moving under a held slot faster than CI is a question for a person (see
+  "Revised 2026-10-10" below for why only those are counted).
 
 The new head becomes the pinned head. That is a fact about GitHub, never
 about the tenant-writable task document. On every wake the worker walks
 first parents from the live head back to the head the opening step pushed
 (the signed target's recorded `pushed_head`), at most
-`MERGE_MAX_BRANCH_UPDATES` steps. It accepts only these chains:
+`MERGE_MAX_HEAD_UPDATES` (12) steps. It accepts only these chains:
 
 * the head is the pushed head itself;
 * each step down the chain is a two-parent merge commit whose second parent
@@ -293,7 +349,7 @@ the worker from GitHub and the task store.
 | a merge conflict, at merge time or on update | `merge_conflict` (new, split out of `not_mergeable`) | `mergeable: false`, or update-branch's 422 |
 | a failing required check, no fix rounds left | `checks_failed` (built) | the check runs and statuses at the pinned head |
 | CI never settled | `checks_timeout` (new) | `merge_wait.first_parked_at` and `MERGE_CI_MAX_SECONDS` |
-| the base moved faster than CI, more than `MERGE_MAX_BRANCH_UPDATES` times | `behind_too_often` (new) | `merge_wait.updates`, rechecked by the first-parent walk |
+| the base moved under a held merge slot faster than CI, more than `MERGE_MAX_BRANCH_UPDATES` times | `behind_too_often` (new) | the first-parent walk's count, less the slot's `holder.updates_at_acquire` |
 
 The other built refusals stand, each with the same code: `verdict_not_merge`,
 `head_moved`, `pull_request_closed`, `token_lacks_rights`, and the rest. A
