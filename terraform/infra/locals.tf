@@ -635,6 +635,13 @@ locals {
       # Off unless the environment's tfvars sets var.enable_issue_sweep.
       SWEEP_ENABLED = var.enable_issue_sweep ? "true" : "false"
 
+      # D4's refusal of a person's task on a repository they have not chosen
+      # (swarm_api.settings `repository_grants_enforced`, #780 OB10). Until
+      # OB10 it reached swarm-api only by hand, so an apply put it back to
+      # off. Off unless the environment's tfvars sets
+      # var.repository_grants_enforced; service submissions are never refused.
+      REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
+
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
       # this topic, which terraform/bootstrap creates with its Cloud Build

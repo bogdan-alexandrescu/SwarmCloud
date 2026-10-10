@@ -67,8 +67,23 @@ Otherwise, in this order, skipping a step the checklist already shows done:
    state. Ask which installed owners to enable, then call `swarm_setup_orgs`
    with `enable` for each one they name. For an owner the App is not
    installed on, give them `install_url` and say that an org they do not own
-   sends its owners a request, which one of them must approve. If no owner
-   is enabled, say so and stop: setup resumes here next time.
+   sends its owners a request, which one of them must approve. Once they say
+   they asked (or will), call `swarm_setup_orgs` with `request_install` for
+   that org, so setup shows it as pending and re-checks it every 15 minutes.
+   For each entry in `approval_pending`, show its `code` and `copy` word for
+   word, and carry on with their other owners.
+
+   **An org that will not take the App.** When the checklist or a refusal
+   reports `CLASSIC_PAT_BLOCKED`, or the person says an org will not install
+   the App, the fallback is a fine-grained personal access token whose
+   resource owner is that org. They store it **themselves, in a terminal**:
+   tell them to run `uv run sc setup token --owner <org>`, which reads the
+   token from stdin with no echo and never prints it. Never ask for the
+   token here, never accept it in chat, and never offer to run the command
+   for them: no tool here takes a token. When they say it is stored, call
+   `swarm_setup_orgs` again and carry on.
+
+   If no owner is enabled, say so and stop: setup resumes here next time.
 6. **Repositories.** For each enabled owner they want, call
    `swarm_setup_repos` (pass `q` when they name part of a repository, and
    `next_page` to page on) and show the page. Ask which repositories, and
@@ -76,9 +91,20 @@ Otherwise, in this order, skipping a step the checklist already shows done:
    say so before they choose. Call `swarm_setup_grant` once per repository
    **they** named, in the mode **they** named. Never grant one they did not
    name, and never pick a mode for them.
-7. **Verify.** Call `swarm_setup_verify` and show its `text`. For a failure,
-   show its recovery copy and offer to re-check once they have fixed it (an
-   SSO sign-in, an org owner's approval); re-check only when they say so.
+7. **Verify.** Call `swarm_setup_verify` and show its `text`. It reads
+   only. For a failure, show its recovery copy and offer to re-check once
+   they have fixed it (an SSO sign-in, an org owner's approval); re-check
+   only when they say so.
+
+   **The push test is opt-in, one repository at a time.** Reads cannot
+   prove a push. For a write grant, you may *ask* whether they want
+   SwarmCloud to create and delete the branch
+   `swarmcloud/onboarding-check-<nonce>` in that repository as them. Only
+   if they say yes for that repository, call `swarm_setup_verify` with
+   `repositories: [<that one>]` and `push_test: true`, and show its `text`.
+   Never send `push_test` without that yes, never for a read grant, and
+   never for "every grant". If its text says the branch was not deleted,
+   tell them to delete it on GitHub.
 8. **Done.** Call `swarm_setup_status` and show the `checklist`. When
    `complete` is true, say SwarmCloud can clone, push and open pull requests
    as them only in the repositories they chose, and that the Access page or
@@ -93,7 +119,9 @@ authorize URL anywhere but the one line that shows it. If the person pastes a
 token, tell them to revoke it at GitHub: it is now in this session's
 transcript.
 
-**Not run here.** Disabling an org (`uv run sc access remove-org <owner>`)
+**Not run here.** Storing a fallback token
+(`uv run sc setup token --owner <org>`) is theirs to type, because the token
+must reach SwarmCloud without passing through this session. Disabling an org (`uv run sc access remove-org <owner>`)
 deletes every grant under it, and disconnecting
 (`uv run sc access disconnect`) revokes SwarmCloud's access as them at
 GitHub. Both are theirs to type, in a terminal, where each asks for a typed

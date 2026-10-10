@@ -6969,6 +6969,8 @@ class Worker:
             return None
         task = self._task or {}
         url = task.get("repository_url") or self.cfg.repository_url or self._repo_url
+        # Signed, like the suffix: whose token for one owner (D5) this is.
+        submitted_by = task.get("submitted_by")
         try:
             reason = grant_refusal(
                 self.db,
@@ -6977,6 +6979,7 @@ class Worker:
                 repository_url=url if isinstance(url, str) else None,
                 write=write,
                 call_options=self.control.call_options(),
+                submitted_by=submitted_by if isinstance(submitted_by, str) else None,
             )
         except Exception as exc:  # noqa: BLE001 -- a read failure, said by type
             self.log.warning("the forge grant could not be read", error=type(exc).__name__)
