@@ -718,6 +718,33 @@ def test_verify_of_a_migrated_record_needs_no_approval_and_allows_the_deployer(j
     assert _field(job.record(), "failure", "object") == "service account binding"
 
 
+def test_verify_of_a_migrated_record_does_not_require_the_legacy_ksa_binding(job: Job, ready_world: dict) -> None:
+    # A Terraform-made tenant (u-bogdan, W9) binds Workload Identity for
+    # swarm-agent-worker only; the legacy swarm-worker is rendered only where
+    # IAM binds it (kubernetes/README.md). Measured 2026-10-10: A9 failed
+    # w-752763 on exactly this binding.
+    _from_ready(job, ready_world)
+    legacy = f"serviceAccount:{PROJECT}.svc.id.goog[{NAMESPACE}/swarm-worker]"
+
+    def migrate_without_legacy(world: dict) -> None:
+        fields = world["firestore"][f"workspaces/{TENANT}"]["fields"]
+        fields.pop("decision")
+        fields["migrated"] = {"booleanValue": True}
+        for b in world["accounts"][WORKER]["policy"]["bindings"]:
+            if b["role"] == WORKLOAD:
+                b["members"] = [m for m in b["members"] if m != legacy]
+
+    job.edit(migrate_without_legacy)
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 0, _out(proc)
+    # A workspace the job made still needs both.
+    job.edit(lambda w: w["firestore"][f"workspaces/{TENANT}"]["fields"].update(
+        migrated={"booleanValue": False}, decision=_record()["fields"]["decision"]))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1, _out(proc)
+    assert _field(job.record(), "failure", "object") == "service account binding"
+
+
 # ---------------------------------------------------------------------------
 # A1: nothing is written for a record that is not admissible
 # ---------------------------------------------------------------------------
