@@ -42,6 +42,7 @@ from .routes import (
     repositories,
     runs,
     schedule_tick,
+    schedules,
     tasks,
     tenants,
     workflows,
@@ -152,6 +153,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The schedule tick (docs/schedules.md §2, lane S2): one route, admitted
     # to the `swarm-schedule-tick` identity alone (SD10).
     app.include_router(schedule_tick.router)
+    # Schedules (docs/schedules.md §7.1, lane S3): the tenant's own routes,
+    # tenant-scoped like issue runs, and the admin list and actions (§5.3).
+    # A caller names a type from the catalogue, never an image or command.
+    app.include_router(schedules.router)
     # Child tasks (docs/design/child-tasks.md): worker-only routes, which
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.

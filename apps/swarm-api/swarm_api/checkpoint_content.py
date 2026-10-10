@@ -1260,6 +1260,8 @@ class CheckpointContent:
             previous=previous,
             at_eof=chunk.end >= chunk.total_bytes,
             read_end=chunk.end,
+            look_back=chunk.data[:probe],
+            literals=masking.literals,
         )
         raw, begin, inside_key, key_withheld = _enter_key(
             chunk.data, raw=raw, start=begin, end=stop, base=chunk.offset

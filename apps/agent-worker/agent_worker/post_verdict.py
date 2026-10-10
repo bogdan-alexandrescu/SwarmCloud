@@ -174,6 +174,10 @@ class ActionContext:
     #: The task's own `repository_url`, from its VERIFIED spec: the repository
     #: the merge acts on (owner and repo are parsed from it, never a pointer).
     repository_url: str | None = None
+    #: The merge's per-repository slots (`mergeslot.MergeSlots`, merge race,
+    #: #295): one merge step per base at a time. None for any other action;
+    #: a merge given none refuses `merge_slot_unavailable`.
+    merge_slots: Any = None
 
 
 def _outcome(
