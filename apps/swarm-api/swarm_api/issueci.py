@@ -226,7 +226,7 @@ NO_CHANGE_MARKER = "no_change"
 #: at most this many: `agent_worker.merge.MERGE_MAX_BRANCH_UPDATES`, spelled
 #: again because the API image does not carry the worker, and held equal to
 #: it by tests/unit/control_plane/test_issue_run_merge_update.py.
-MERGE_MAX_BRANCH_UPDATES = 3
+MERGE_MAX_BRANCH_UPDATES = 5
 #: The committer of a commit GitHub itself made and signed, as `update-branch`
 #: merges are (`agent_worker.merge.GITHUB_COMMITTER_EMAIL`, held the same way).
 GITHUB_COMMITTER_EMAIL = "noreply@github.com"
