@@ -298,6 +298,29 @@ describe('Automate › Approvals', () => {
     expect(calls.find((c) => c.url === '/v1/approvals/apr_0a1b2c3d:approve')!.body).toEqual({ digest: ITEM.digest })
   })
 
+  it('asks a one-person workspace to type the text the API names, and sends exactly that', async () => {
+    const held = { ...ITEM, approval_id: 'run:run_9', kind: 'hold', subject: { run_id: 'run_9' }, digest: 'd9', hold: { code: 'NEEDS_SECOND_MEMBER', approvers: 'second_member' } }
+    const expected = 'terraform/bootstrap/main.tf'
+    const calls = serve((m, url, body) => {
+      if (m === 'GET' && url === '/v1/approvals') return { status: 200, body: { tenant_id: 'u-operator', approvals: [held] } }
+      if (m === 'GET' && url === '/v1/approvals/run%3Arun_9') return { status: 200, body: { approval: held } }
+      if (m === 'POST' && url === '/v1/approvals/run%3Arun_9:approve') {
+        return (body as Json).confirm === expected
+          ? { status: 200, body: { approval: { ...held, state: 'approved' } } }
+          : { status: 403, body: { code: 'hold_approver_required', message: 'held', detail: { confirm: expected } } }
+      }
+      return null
+    })
+    await mountInbox('item=run%3Arun_9')
+    await waitFor(() => expect(document.querySelector('.au-decide')).not.toBeNull(), WAIT)
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    const field = await screen.findByLabelText(/to confirm/, {}, WAIT)
+    fireEvent.change(field, { target: { value: expected } })
+    fireEvent.click(screen.getAllByRole('button', { name: 'Approve' }).at(-1)!)
+    await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2), WAIT)
+    expect(calls.filter((c) => c.method === 'POST').map((c) => c.body)).toEqual([{ digest: 'd9' }, { digest: 'd9', confirm: expected }])
+  })
+
   it('is split list and detail on a desktop and one column at 390', async () => {
     serve((m, url) => {
       if (m === 'GET' && url === '/v1/approvals') return { status: 200, body: { tenant_id: 'eng', approvals: [ITEM] } }

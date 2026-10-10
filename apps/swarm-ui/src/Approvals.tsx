@@ -135,7 +135,8 @@ function ItemDetail({ item, go, reread }: { item: ApprovalItem; go: (to: string)
   const [busy, setBusy] = useState<'approve' | 'reject' | null>(null)
   const [reason, setReason] = useState('')
   const [error, setError] = useState<ApiError | null>(null)
-  const [confirming, setConfirming] = useState(false)
+  /** The text the API asks a one-person workspace to type, when it has asked. */
+  const [confirming, setConfirming] = useState<string | null>(null)
   useEffect(() => {
     let live = true
     void loadApproval(item.approval_id).then((r) => {
@@ -152,16 +153,19 @@ function ItemDetail({ item, go, reread }: { item: ApprovalItem; go: (to: string)
     const r = await approveItem(item.approval_id, item.digest, confirm)
     setBusy(null)
     if (r.status === 'error') {
-      // A one-person tenant approves its own hold after typing (§4.6, SD11).
-      if (r.error.code === 'confirmation_required') {
-        setConfirming(true)
+      // A one-person tenant approves its own hold after typing the matched
+      // paths (§4.6, SD11): the 403 names the text, and only a first ask
+      // opens the confirm -- a typed text refused again is said as refused.
+      const asked = confirmAsked(r.error)
+      if (asked !== null && confirm === undefined) {
+        setConfirming(asked)
         return
       }
-      setConfirming(false)
+      setConfirming(null)
       setError(r.error)
       return
     }
-    setConfirming(false)
+    setConfirming(null)
     reread()
   }
 
@@ -245,13 +249,21 @@ function ItemDetail({ item, go, reread }: { item: ApprovalItem; go: (to: string)
           Reject
         </Button>
       </div>
-      {confirming && (
-        <TypedConfirm title="Approve your own hold" name={item.summary || item.approval_id} verb="Approve" keep="Leave it" busy={busy === 'approve'} onConfirm={() => void approve(item.summary || item.approval_id)} onClose={() => setConfirming(false)}>
-          You are the only member here, so no second person can approve it. The audit records that you did.
+      {confirming !== null && (
+        <TypedConfirm title="Approve your own hold" name={confirming} verb="Approve" keep="Leave it" busy={busy === 'approve'} onConfirm={() => void approve(confirming)} onClose={() => setConfirming(null)}>
+          You are the only member here, so no second person can approve it. Typing the matched paths says you read them; the audit records that you did.
         </TypedConfirm>
       )}
     </Card>
   )
+}
+
+/** `hold_approver_required` with the text to type in its detail (approvals.py `_hold_refusal`), or null. */
+export function confirmAsked(e: ApiError): string | null {
+  if (e.code !== 'hold_approver_required' && e.code !== 'confirmation_required') return null
+  const d = e.detail
+  const text = typeof d === 'object' && d !== null ? (d as Record<string, unknown>).confirm : undefined
+  return typeof text === 'string' && text !== '' ? text : null
 }
 
 function approverWords(a: unknown): string {
