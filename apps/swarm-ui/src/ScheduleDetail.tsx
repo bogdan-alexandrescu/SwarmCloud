@@ -292,6 +292,8 @@ function Gate({ s, reread }: { s: Schedule; reread: () => void }) {
   useEffect(() => {
     let live = true
     void loadScheduleTypes().then((r) => {
+      // A failed read is an empty catalogue here: the card then says the
+      // floor was not read, rather than reading for ever.
       if (live) setTypes(r.status === 'ok' || r.status === 'stale' ? r.data.types : [])
     })
     return () => {
@@ -316,7 +318,7 @@ function Gate({ s, reread }: { s: Schedule; reread: () => void }) {
           <dd>{typeof g.approval_ttl_hours === 'number' ? `${g.approval_ttl_hours} h, then expires` : <Dash why="not served" />}</dd>
         </dl>
       </Card>
-      <MergeSwitch s={s} floorAllowsAuto={entry === null ? null : entry.floor_gate.merge === 'auto'} reread={reread} />
+      <MergeSwitch s={s} floorAllowsAuto={entry !== null ? entry.floor_gate.merge === 'auto' : types === null ? null : 'unread'} reread={reread} />
     </>
   )
 }
@@ -326,7 +328,7 @@ function Gate({ s, reread }: { s: Schedule; reread: () => void }) {
  * card then says it is reading rather than offering a switch the type may
  * refuse.
  */
-export function MergeSwitch({ s, floorAllowsAuto, reread }: { s: Schedule; floorAllowsAuto: boolean | null; reread: () => void }) {
+export function MergeSwitch({ s, floorAllowsAuto, reread }: { s: Schedule; floorAllowsAuto: boolean | null | 'unread'; reread: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [confirming, setConfirming] = useState(false)
@@ -356,7 +358,9 @@ export function MergeSwitch({ s, floorAllowsAuto, reread }: { s: Schedule; floor
     <Card title="Merging" className="au-switch">
       {floorAllowsAuto === null ? (
         <p className="au-dim">Reading whether this type may merge unattended…</p>
-      ) : !floorAllowsAuto && !auto ? (
+      ) : floorAllowsAuto === 'unread' && !auto ? (
+        <p className="au-dim">Whether {s.type} may merge unattended was not read: the schedule types did not answer, or no longer list it. Now: {GATE_WORDS[s.gate.merge] ?? s.gate.merge}.</p>
+      ) : floorAllowsAuto === false && !auto ? (
         <p>
           {s.type} never merges unattended: its floor keeps merging at “{GATE_WORDS[s.gate.merge] ?? s.gate.merge}”.
         </p>

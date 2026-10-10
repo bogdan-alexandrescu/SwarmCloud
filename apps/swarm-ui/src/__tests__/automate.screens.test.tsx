@@ -202,6 +202,17 @@ describe('one schedule', () => {
     expect(calls.some((c) => c.method === 'PATCH')).toBe(false)
   })
 
+  it('says the floor was not read when the catalogue fails, rather than reading for ever', async () => {
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/schedules/sch_0a1b2c3d4e5f') return { status: 200, body: { schedule: schedule(), firings: [] } }
+      if (m === 'GET' && url === '/v1/schedule-types') return { status: 500, body: { code: 'internal', message: 'boom' } }
+      return null
+    })
+    await mountSchedules('schedule=sch_0a1b2c3d4e5f&tab=gate')
+    await waitFor(() => expect(visible(document.querySelector('.au-switch'))).toContain('was not read'), WAIT)
+    expect(screen.queryByRole('button', { name: 'Switch to fully automatic' })).toBeNull()
+  })
+
   it('offers no switch to a type whose floor never merges unattended', async () => {
     detailRoutes(schedule({ type: 'issue-plan-only', gate: { run: 'auto', plan: 'approve', merge: 'off', approvers: 'members', approval_ttl_hours: 72 } }))
     await mountSchedules('schedule=sch_0a1b2c3d4e5f&tab=gate')
@@ -280,6 +291,13 @@ describe('Automate › Approvals', () => {
     await mountInbox(null)
     await waitFor(() => expect(screen.getByText('Nothing is waiting on you')).toBeTruthy(), WAIT)
     expect(screen.getByText('Nothing is waiting on you').closest('.ctl-empty')!.querySelector('.ctl-mark.is-zero')).not.toBeNull()
+  })
+
+  it('reads an answer without its list as a failure, never as nothing waiting', async () => {
+    serve((m, url) => (m === 'GET' && url === '/v1/approvals' ? { status: 200, body: { tenant_id: 'eng' } } : null))
+    await mountInbox(null)
+    await waitFor(() => expect(document.body.textContent).toContain('answered without its `approvals` list'), WAIT)
+    expect(screen.queryByText('Nothing is waiting on you')).toBeNull()
   })
 
   it('approves the digest shown, and a rejection needs a reason', async () => {

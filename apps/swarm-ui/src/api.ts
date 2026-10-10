@@ -5772,9 +5772,25 @@ function schedNotServed<T>(target: ApiRoute, frame = false): Result<T> {
   }
 }
 
-async function schedRead<T>(target: ApiRoute, isEmpty: (d: T) => boolean = () => false, options: { frame?: boolean } = {}): Promise<Result<T>> {
+/**
+ * A read whose answer must carry the list it is named for. A 200 without it
+ * (an older API, a proxy's page) is an error that says so -- never an empty
+ * list, which would read as "nothing is waiting" when nothing was read.
+ */
+async function schedRead<T>(
+  target: ApiRoute,
+  list: string | null = null,
+  options: { frame?: boolean; emptyWhenNone?: boolean } = {},
+): Promise<Result<T>> {
   if (USE_FIXTURES) return schedNotServed<T>(target, options.frame === true)
-  return read<T>(target, isEmpty, options)
+  const has = (d: unknown): boolean => list === null || (typeof d === 'object' && d !== null && Array.isArray((d as Record<string, unknown>)[list]))
+  // `empty` only for a list page: one schedule with no firings is still a schedule.
+  const none = (d: T): boolean => options.emptyWhenNone === true && list !== null && has(d) && ((d as Record<string, unknown>)[list] as unknown[]).length === 0
+  const r = await read<T>(target, none, { frame: options.frame })
+  if ((r.status === 'ok' || r.status === 'stale') && !has(r.data)) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message: `${target.template} answered without its \`${list}\` list` } }
+  }
+  return r
 }
 
 async function schedWrite<T>(target: ApiRoute, method: 'POST' | 'PATCH' | 'DELETE', body?: unknown): Promise<Result<T>> {
@@ -5784,22 +5800,22 @@ async function schedWrite<T>(target: ApiRoute, method: 'POST' | 'PATCH' | 'DELET
 
 /** `GET /v1/schedules`: the tenant's schedules, by name. Empty is a measured none. */
 export async function loadSchedules(): Promise<Result<{ schedules: Schedule[]; tenant_id: string }>> {
-  return schedRead(route('/v1/schedules'), (d) => d.schedules.length === 0)
+  return schedRead(route('/v1/schedules'), 'schedules', { emptyWhenNone: true })
 }
 
 /** `GET /v1/schedules/{id}`: one schedule with its last 50 firings. */
 export async function loadSchedule(id: string): Promise<Result<{ schedule: Schedule; firings: ScheduleFiring[] }>> {
-  return schedRead(route('/v1/schedules/{id}', { id }))
+  return schedRead(route('/v1/schedules/{id}', { id }), 'firings')
 }
 
 /** `GET /v1/schedules/{id}/audit`: newest first. */
 export async function loadScheduleAudit(id: string): Promise<Result<{ audit: ScheduleAuditEntry[] }>> {
-  return schedRead(route('/v1/schedules/{id}/audit', { id }))
+  return schedRead(route('/v1/schedules/{id}/audit', { id }), 'audit', { emptyWhenNone: true })
 }
 
 /** `GET /v1/schedule-types`: the types this caller may create. */
 export async function loadScheduleTypes(): Promise<Result<{ types: ScheduleType[] }>> {
-  return schedRead(route('/v1/schedule-types'))
+  return schedRead(route('/v1/schedule-types'), 'types')
 }
 
 /** `POST /v1/schedules:preview`: words and the next five firings, from the tick's own parser. */
@@ -5849,7 +5865,7 @@ export async function deleteSchedule(id: string, confirm: string): Promise<Resul
  * figure on the page and so not one of the page's reads.
  */
 export async function loadApprovals(options: { frame?: boolean } = {}): Promise<Result<{ approvals: ApprovalItem[]; tenant_id: string }>> {
-  return schedRead(route('/v1/approvals'), (d) => d.approvals.length === 0, options)
+  return schedRead(route('/v1/approvals'), 'approvals', { ...options, emptyWhenNone: true })
 }
 
 /** `GET /v1/approvals/{id}`: one item with what its kind needs to decide it. */
@@ -5871,7 +5887,7 @@ export async function rejectItem(id: string, reason: string): Promise<Result<{ a
 
 /** `GET /v1/admin/schedules` (admin): every tenant's, with the tick's health (§5.3). */
 export async function loadAdminSchedules(): Promise<Result<AdminSchedules>> {
-  return schedRead(route('/v1/admin/schedules'), (d) => d.schedules.length === 0)
+  return schedRead(route('/v1/admin/schedules'), 'schedules', { emptyWhenNone: true })
 }
 
 export async function adminScheduleAction(id: string, action: 'pause' | 'disable' | 'enable'): Promise<Result<{ schedule: AdminScheduleRow }>> {
