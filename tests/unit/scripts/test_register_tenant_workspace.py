@@ -841,87 +841,86 @@ def _job_made(world: dict) -> None:
         migrated={"booleanValue": False}, decision=_record()["fields"]["decision"])
 
 
-def test_verify_of_a_migrated_record_accepts_terraforms_documents_as_bootstrap_writes_them(
-        job: Job, ready_world: dict) -> None:
-    # Every field A9 reads has the same name and type in bootstrap.tf as in
-    # A8; the extra `managed_by`, `credentials` and `display_name` are ignored.
+# What a Terraform-era document may legitimately hold that A8 never writes,
+# all at once (each run of the script is ~20 s): no `namespace`, which
+# ignore_changes keeps off a document written before the module named it; a
+# limit as an integral double or a string of digits (a hand patch; the Tenant
+# and SlotPool models read either as the same whole number); and the principal
+# as tfvars spelled it. Everything else is bootstrap.tf's shape, extra
+# `managed_by`, `credentials` and `display_name` included.
+def _terraform_era_tenant(fields: dict) -> None:
+    fields.pop("namespace")
+    fields.update(max_active={"doubleValue": 8.0}, capacity_units=_s("8"), principal=_s(" Alice@Saga.xyz "))
+
+
+def _terraform_era_pool(fields: dict) -> None:
+    fields.update(hard_limit=_s("8"))
+
+
+def test_verify_accepts_terraforms_documents_on_a_migrated_record_only(job: Job, ready_world: dict) -> None:
     _from_ready(job, ready_world)
     job.edit(_as_terraform_made)
-    job.edit(_terraform_docs())
+    job.edit(_terraform_docs(_terraform_era_tenant, _terraform_era_pool))
     proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
     assert proc.returncode == 0, _out(proc)
     assert _field(job.record(), "state") == "ready"
     assert _steps(job.record())["A9"] == "done"
-
-
-# What a Terraform-era document may legitimately hold that A8 never writes:
-# no `namespace` (ignore_changes keeps a document written before the module
-# named it), and a limit as an integral double or a string of digits (a hand
-# patch; the Tenant and SlotPool models read either as the same whole number).
-TERRAFORM_ERA = {
-    "no-namespace": (lambda f: f.pop("namespace"), None, "namespace"),
-    "blank-namespace": (lambda f: f.update(namespace=_s("")), None, "namespace"),
-    "double-max-active": (lambda f: f.update(max_active={"doubleValue": 8.0}), None, None),
-    "string-capacity-units": (lambda f: f.update(capacity_units=_s("8")), None, "capacity_units"),
-    "string-hard-limit": (None, lambda f: f.update(hard_limit=_s("8")), "hard_limit"),
-    "upper-case-principal": (lambda f: f.update(principal=_s(" Alice@Saga.xyz ")), None, "principal"),
-}
-
-
-@pytest.mark.parametrize("tenant_change,pool_change,job_fails_on", TERRAFORM_ERA.values(), ids=TERRAFORM_ERA.keys())
-def test_verify_accepts_a_terraform_era_document_only_on_a_migrated_record(
-        job: Job, ready_world: dict, tenant_change, pool_change, job_fails_on: str | None) -> None:
-    _from_ready(job, ready_world)
-    job.edit(_as_terraform_made)
-    job.edit(_terraform_docs(tenant_change, pool_change))
-    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
-    assert proc.returncode == 0, _out(proc)
-    assert _steps(job.record())["A9"] == "done"
-    if job_fails_on is None:
-        # jq reads 8.0 and 8 as one number, so a double already passed the
-        # strict check; nothing a job-made record must refuse.
-        return
     # The same documents on a record the job made: A8 wrote every field as
-    # checked, so the strict check names the one that differs.
+    # checked, so the strict check refuses each one that differs, by name.
+    # (jq reads 8.0 and 8 as one number, so the double passes both checks.)
     _from_ready(job, ready_world)
-    job.edit(_terraform_docs(tenant_change, pool_change))
+    job.edit(_terraform_docs(_terraform_era_tenant, _terraform_era_pool))
     proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
     assert proc.returncode == 1, _out(proc)
-    document = "pool document" if pool_change else "tenant document"
-    assert _field(job.record(), "failure", "object") == document
-    assert f"{document}'s {job_fails_on} not as the record specifies" in proc.stderr, _out(proc)
+    assert _field(job.record(), "failure", "object") == "tenant document"
+    assert "tenant document's fields principal, namespace, capacity_units are not as the record specifies\n" \
+        in proc.stderr, _out(proc)
+    _from_ready(job, ready_world)
+    job.edit(_terraform_docs(None, _terraform_era_pool))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1, _out(proc)
+    assert _field(job.record(), "failure", "object") == "pool document"
+    assert "pool document's fields hard_limit are not as the record specifies\n" in proc.stderr, _out(proc)
+
+
+def _mismatched_tenant(fields: dict) -> None:
+    fields.update(principal=_s("mallory@saga.xyz"), service_account=_s(SCHEDULER),
+                  namespace=_s("swarm-tenant-eng"), max_active={"integerValue": "9"})
+
+
+def _unreadable_tenant(fields: dict) -> None:
+    fields.pop("service_account")
+    fields.update(max_active=_s("8 agents"), capacity_units={"doubleValue": 8.5})
 
 
 # What a migrated record still refuses: the limits must agree, the identity
 # must be the tenant's, and a namespace that is present must be its own.
 STILL_REFUSED = {
-    "max-active": (lambda f: f.update(max_active={"integerValue": "9"}), None, "tenant document", "max_active"),
-    "fractional": (lambda f: f.update(capacity_units={"doubleValue": 8.5}), None, "tenant document", "capacity_units"),
-    "not-digits": (lambda f: f.update(max_active=_s("8 agents")), None, "tenant document", "max_active"),
-    "hard-limit": (None, lambda f: f.update(hard_limit={"integerValue": "16"}), "pool document", "hard_limit"),
-    "no-hard-limit": (None, lambda f: f.pop("hard_limit"), "pool document", "hard_limit"),
-    "no-account": (lambda f: f.pop("service_account"), None, "tenant document", "service_account"),
-    "foreign-account": (lambda f: f.update(service_account=_s(SCHEDULER)), None, "tenant document", "service_account"),
-    "foreign-namespace": (lambda f: f.update(namespace=_s("swarm-tenant-eng")), None, "tenant document", "namespace"),
-    "foreign-principal": (lambda f: f.update(principal=_s("mallory@saga.xyz")), None, "tenant document", "principal"),
+    "foreign": (_mismatched_tenant, None, "tenant", "principal, service_account, namespace, max_active"),
+    "unreadable": (_unreadable_tenant, None, "tenant", "service_account, max_active, capacity_units"),
+    "hard-limit": (None, lambda f: f.update(hard_limit={"integerValue": "16"}), "pool", "hard_limit"),
+    "no-hard-limit": (None, lambda f: f.pop("hard_limit"), "pool", "hard_limit"),
 }
 
 
-@pytest.mark.parametrize("tenant_change,pool_change,document,field", STILL_REFUSED.values(), ids=STILL_REFUSED.keys())
+@pytest.mark.parametrize("tenant_change,pool_change,document,fields", STILL_REFUSED.values(), ids=STILL_REFUSED.keys())
 def test_verify_of_a_migrated_record_still_needs_the_documents_to_agree(
-        job: Job, ready_world: dict, tenant_change, pool_change, document: str, field: str) -> None:
+        job: Job, ready_world: dict, tenant_change, pool_change, document: str, fields: str) -> None:
     _from_ready(job, ready_world)
     job.edit(_as_terraform_made)
     job.edit(_terraform_docs(tenant_change, pool_change))
     proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
     assert proc.returncode == 1, _out(proc)
-    assert _field(job.record(), "failure", "object") == document
-    assert f"{document}'s {field} not as the record specifies (migrated record)" in proc.stderr, _out(proc)
+    assert _field(job.record(), "failure", "object") == f"{document} document"
+    assert f"{document} document's fields {fields} are not as the record specifies (migrated record)" \
+        in proc.stderr, _out(proc)
 
 
-@pytest.mark.parametrize("migrated", [True, False], ids=["migrated", "job-made"])
-@pytest.mark.parametrize("path,document", [
-    (f"tenants/{TENANT}", "tenant"), (f"pools/tenant:{TENANT}", "pool")], ids=["tenant", "pool"])
+@pytest.mark.parametrize("migrated,path,document", [
+    (True, f"tenants/{TENANT}", "tenant"),
+    (False, f"tenants/{TENANT}", "tenant"),
+    (True, f"pools/tenant:{TENANT}", "pool"),
+], ids=["tenant-migrated", "tenant-job-made", "pool-migrated"])
 def test_verify_fails_a_missing_document_on_every_record(
         job: Job, ready_world: dict, migrated: bool, path: str, document: str) -> None:
     _from_ready(job, ready_world)

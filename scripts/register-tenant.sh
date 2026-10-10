@@ -1104,7 +1104,7 @@ ws_doc_check() {
 }
 
 # ws_doc_off FILE PROGRAM [jq --arg ...]: the names of the fields A9 finds not
-# as specified, space-separated; "document" when there is no document; nothing
+# as specified, comma-separated; "document" when there is no document; nothing
 # when all agree. PROGRAM yields an array of names, and may use `$mig` (the
 # record is migrated) and `whole` (a limit as the record states it: on a
 # migrated record also an integral double or a string of digits, see ws_a9).
@@ -1116,7 +1116,7 @@ ws_doc_off() {
   jq -r --argjson mig "${WS_MIGRATED}" "$@" "${FS_JQ}
     def whole: if type == \"number\" then .
       elif \$mig and type == \"string\" and test(\"^[0-9]+$\") then tonumber else null end;
-    if .fields then (doc | ${expression} | join(\" \")) else \"document\" end" "${file}" 2>/dev/null \
+    if .fields then (doc | ${expression} | join(\", \")) else \"document\" end" "${file}" 2>/dev/null \
     || printf 'document'
 }
 
@@ -1126,7 +1126,7 @@ ws_off_err() {
   if [[ "$2" == "document" ]]; then
     err "verify: the ${1} document is missing"
   else
-    err "verify: the ${1} document's ${2} not as the record specifies$([[ "${WS_MIGRATED}" == "true" ]] && printf ' (migrated record)')"
+    err "verify: the ${1} document's fields ${2} are not as the record specifies$([[ "${WS_MIGRATED}" == "true" ]] && printf ' (migrated record)')"
   fi
 }
 
