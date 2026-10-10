@@ -177,6 +177,21 @@ variable "forge_refresh_schedule" {
   default     = "*/15 * * * *"
 }
 
+variable "schedule_tick_schedule" {
+  description = <<-EOT
+    How often POST /v1/admin/schedules/tick runs (docs/schedules.md §2.1).
+
+    Every minute, the design's figure, and not a tuning knob: a schedule's slot
+    is a Unix minute, the per-tenant cap of 5 firings per tick defers the rest
+    to "the next minute" (§2.10), and a firing whose work failed to be created
+    is finished by "the next tick" after 2 minutes (§2.2). A slower tick makes
+    every one of those promises late by the difference. An idle tick reads one
+    page of an index and writes one schedule_ticks document.
+  EOT
+  type        = string
+  default     = "* * * * *"
+}
+
 variable "enable_workspace_sweep" {
   description = "Create swarm-workspace-sweep, the 10-minute caller of swarm-api's personal-workspace dispatch sweep (docs/workspaces.md §2.2). A bool, not derived from api_endpoint, for enable_task_finished_push's reason. The root sets it to true in every environment: the sweep is also the stuck-workspace detector."
   type        = bool
