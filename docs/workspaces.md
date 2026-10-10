@@ -354,13 +354,18 @@ Read by the operator with `gcloud` against `saga-agents-staging`.
   §2.3. It is Google's legacy default grant, and in this shared project the
   other team's workloads may use it, so it is recorded as a residual risk and
   as #1020, to be removed together with that team, never unilaterally.
-* **(1) The refused-update proof: not yet shown.** The probe (a no-op label
-  update of `swarm-verify` as `swarm-scheduler`, which holds `run.jobs.update`
-  but no `actAs` on `swarm-verify`) was refused one step earlier, at
-  impersonation (`iam.serviceAccounts.getAccessToken`, the operator holds no
-  token-creator on `swarm-scheduler`), so it proves nothing either way and
-  changed nothing. The documentation half (above) says `actAs` is checked on
-  every create and update. The live proof stays pending before W4b is applied.
+* **(1) The refused-update proof: shown, 2026-10-10 ~19:05Z.** With a
+  temporary `roles/iam.serviceAccountTokenCreator` for the operator on
+  `swarm-scheduler` only (the owner's approval; removed right after and read
+  back empty), a no-op label update of `swarm-verify` run as `swarm-scheduler`
+  (which holds `run.jobs.update` through `swarmJobDispatcher` but no `actAs`
+  on `swarm-verify`) was refused: `Permission 'iam.serviceaccounts.actAs'
+  denied on service account swarm-verify@...`. The update did not change the
+  account, so Cloud Run checks `actAs` on every update, not only on one that
+  changes the account. It was not the operator's own identity that was
+  refused: the operator holds `actAs` project-wide. Nothing changed (no
+  probe label). The first attempt, without the grant, had been refused at
+  impersonation and proved nothing. **W4b's gate (1) is met.**
 
 ## 1. The request record
 
