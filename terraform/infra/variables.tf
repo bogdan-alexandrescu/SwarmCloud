@@ -854,6 +854,23 @@ variable "repository_grants_enforced" {
   default     = false
 }
 
+variable "workspace_apply_publish" {
+  description = <<-EOT
+    swarm-api's WORKSPACE_APPLY_PUBLISH: whether approving a personal
+    workspace (and its dispatch sweep) publishes the workspace id to the
+    swarm-workspace-apply topic, which starts the workspace job's Cloud Build
+    trigger (docs/workspaces.md §2.1-2.2). OFF by default because the topic
+    and the trigger exist only after the owner's bootstrap apply with
+    enable_workspace_deployer = true (§10): publishing to a topic that does
+    not exist records publish_failed on every sweep. Turn it on in the same
+    release as that apply. Off, nothing is silent: the swarm-workspace-sweep
+    job still runs, and every approved record is logged as workspace_stuck
+    (reason publishing_off), which pages through the workspace-stuck alert.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "manage_project_services" {
   description = "All 18 APIs are already enabled on saga-agents-staging; this holds them enabled rather than turning anything on."
   type        = bool

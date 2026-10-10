@@ -23,13 +23,14 @@
 #
 #   * START swarm-verify and the per-tenant worker jobs (swarm-job-*) and read
 #     their executions -- verify-remote.sh and warm-jobs.sh. A custom role
-#     with exactly those permissions, conditioned to those job names. Not the
-#     merge Job, not any other job, not create/update/delete: it cannot change
-#     what a job runs, only run it (warm-jobs.sh overrides the arguments to
-#     `--self-test`, which is why runWithOverrides is in it).
+#     with exactly those permissions, granted at PROJECT level with NO
+#     condition (owner decision 2026-10-09, #965; see the binding below). Not
+#     create/update/delete and not IAM: it cannot change what a job runs, only
+#     run it (warm-jobs.sh overrides the arguments to `--self-test`, which is
+#     why runWithOverrides is in it).
 #   * LIST jobs and read operations, unconditioned: warm-jobs.sh lists the
-#     worker jobs by label, and a list is checked against the location, which
-#     no job-name condition matches. Read-only; it shows job definitions, which
+#     worker jobs by label, and a list is checked against the location, not a
+#     job. Read-only; it shows job definitions, which
 #     the swarm-verify identity can already read project-wide (run.viewer).
 #   * READ the swarm-verify log view, the same conditioned grant the deployer
 #     has (verify_logs.tf), so a failed group prints its own transcript.
@@ -41,11 +42,12 @@
 # It cannot plan, apply, promote, write a record, take the release lock or
 # touch IAM.
 #
-# WHAT A MOCK PROVIDER CANNOT PROVE: that IAM evaluates the conditions below
-# the way Google documents them for Cloud Run and Cloud Storage resource names.
-# The first accept.yml run after `make bootstrap` is that proof; a condition
-# that matches nothing shows there as `Permission 'run.jobs.runWithOverrides'
-# denied on resource ...` in `warm, smoke and GKE proof (dev)`.
+# WHAT A MOCK PROVIDER CANNOT PROVE: that IAM evaluates the two remaining
+# conditions (the log view and the releases/ prefix) the way Google documents
+# them for Cloud Logging and Cloud Storage resource names. Both services DO
+# expose resource.name to IAM Conditions; Cloud Run does NOT, which is why the
+# runner grant carries none (#965). The first accept.yml run after
+# `make bootstrap` is that proof.
 #
 # APPLIED BY THE OWNER (`make bootstrap`), never by the release. Then set the
 # repository variable GCP_ACCEPT_SA to the `github_accept_service_account`
@@ -61,17 +63,6 @@ locals {
   # than taken from github_allowed_refs: widening the deployer's refs must not
   # widen this account's.
   accept_workflow_ref = "${var.github_repository}/.github/workflows/accept.yml@refs/heads/main"
-
-  # The jobs it may execute. `swarm-verify` is the literal terraform/infra/
-  # verify.tf names its job; worker jobs are `<prefix>-job-<tenant>-<profile>`
-  # (terraform/infra/locals.tf, job_matrix). An execution's name is the job's
-  # with `/executions/<id>` after it, so the job part is extracted and
-  # compared rather than the whole name.
-  accept_job_condition = join(" || ", [
-    "resource.name.endsWith(\"/jobs/swarm-verify\")",
-    "resource.name.extract(\"/jobs/{job}\").startsWith(\"swarm-verify/\")",
-    "resource.name.extract(\"/jobs/{job}\").startsWith(\"${var.name_prefix}-job-\")",
-  ])
 }
 
 resource "google_service_account" "acceptance" {
@@ -97,7 +88,7 @@ resource "google_project_iam_custom_role" "acceptance_runner" {
   project     = var.project_id
   role_id     = "swarmAcceptanceRunner"
   title       = "Swarm Acceptance Runner"
-  description = "managed-by=swarm-terraform; start an execution of a named job, read it and cancel a running one. No create, update, delete or IAM. Granted to the acceptance account, conditioned to swarm-verify and the worker jobs (terraform/bootstrap/acceptance.tf)."
+  description = "managed-by=swarm-terraform; start an execution of a named job, read it and cancel a running one. No create, update, delete or IAM. Granted to the acceptance account at project level, unconditioned: Cloud Run exposes no resource.name to IAM Conditions (terraform/bootstrap/acceptance.tf)."
   stage       = "GA"
 
   permissions = [
@@ -107,8 +98,7 @@ resource "google_project_iam_custom_role" "acceptance_runner" {
     "run.executions.get",
     # accept.yml cancels swarm-verify executions an earlier, cancelled run
     # left running (a GitHub cancel does not stop Cloud Run). Cancel only
-    # stops a running execution; it cannot create or delete one. Conditioned
-    # to the same job names as the rest of this role.
+    # stops a running execution; it cannot create or delete one.
     "run.executions.cancel",
     "run.tasks.get",
   ]
@@ -131,18 +121,38 @@ resource "google_project_iam_custom_role" "acceptance_lister" {
   ]
 }
 
+# UNCONDITIONED, AT PROJECT LEVEL. Owner decision 2026-10-09 (#965).
+#
+# This binding used to carry a condition on the job name
+# (`resource.name.endsWith("/jobs/swarm-verify")` and
+# `extract("/jobs/{job}").startsWith("swarm-job-")`). It never matched any
+# job: Cloud Run does not expose resource.name to IAM Conditions. Google's
+# "Resource attributes for IAM Conditions" page lists no run.googleapis.com
+# resource ("Other services and resource types do not recognize resource
+# attributes"), and the IAM Policy Troubleshooter, measured read-only on
+# 2026-10-09, evaluates the endsWith clause as false even with the job's name
+# supplied. So swarm-accept was denied run.jobs.get on swarm-verify and
+# `warm, smoke and GKE proof (dev)` was red on every run.
+#
+# THE TRADE-OFF THE OWNER ACCEPTED. Unconditioned, this role reaches EVERY
+# Cloud Run job in saga-agents-staging, present and future: the other team's
+# jobs in this shared project, and swarm's own merge job
+# (swarm-job-eng-merge), as well as swarm-verify and the worker jobs. What it
+# can do to any of them is what the role holds and no more: get a job, start
+# an execution (with overridden arguments), read executions and tasks, and
+# cancel a running execution. No create, update, delete or IAM permission, so
+# it cannot change what any job runs or who may run it. What bounds the
+# account is that only accept.yml on refs/heads/main can become it
+# (acceptance_wif above), not a condition.
+#
+# Removing the condition replaces this binding (a condition is part of an IAM
+# member's identity): the plan shows it destroyed and created.
 resource "google_project_iam_member" "acceptance_runs_jobs" {
   count = local.wif_enabled
 
   project = var.project_id
   role    = google_project_iam_custom_role.acceptance_runner[0].name
   member  = "serviceAccount:${google_service_account.acceptance[0].email}"
-
-  condition {
-    title       = "swarm-verify and worker jobs only"
-    description = "Executions of swarm-verify and the per-tenant worker jobs, for accept.yml. Owner decision 2026-10-08."
-    expression  = local.accept_job_condition
-  }
 }
 
 resource "google_project_iam_member" "acceptance_lists_jobs" {

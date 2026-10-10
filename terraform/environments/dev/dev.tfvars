@@ -178,8 +178,13 @@ pool_limits = {
     # per-tenant one and the per-tenant ceiling stops meaning anything. The
     # rule at variables.tf:337 enforces this; it is not a guideline.
     #
-    #   anthropic  eng + u-bogdan + smoke  = 3 x 40 = 120   (set: 120)
+    #   anthropic  eng + smoke             = 2 x 40 = 80    (set: 120)
     #   openai     eng                     = 1 x 40 = 40    (set: 40)
+    #
+    # anthropic stays at 120 after u-bogdan left this map (W9, 2026-10-09),
+    # above the floor of 80, because u-bogdan still runs on the shared
+    # anthropic pool -- as a workspace now -- and W9 is a move that must
+    # change nothing live. Lowering it is a separate decision.
     #
     # anthropic was 100 until smoke declared it for release acceptance
     # (#628): 100 is below the new floor and the plan would refuse it. The
@@ -361,29 +366,17 @@ tenants = {
     capacity_units  = 8
   }
 
-  # A personal fallback tenant. swarm_common.identity maps a caller who is in
-  # none of the registered groups to `u-<local part>`, and that is what an
-  # operator running the smoke test from their laptop actually resolves to:
-  # group membership is resolved through Cloud Identity, and the swarm-api
-  # service account has no permission to read groups, so every human currently
-  # lands here rather than in `eng`. Without a tenant entry there are no
-  # per-tenant Cloud Run Jobs to dispatch to, and an admitted task holds its
-  # lease with nowhere to run.
-  #
-  # Declaring it keeps the dev environment self-testing. In prod, grant the API
-  # service account group-read instead of enumerating humans here.
-  u-bogdan = {
-    kind         = "user"
-    principal    = "bogdan@saga.xyz"
-    display_name = "Bogdan (personal)"
-    # Declaring a provider creates the tenant's OWN Secret Manager container and
-    # its claude-code Cloud Run Job. The key material is not managed here:
-    # scripts/create-secrets.sh adds versions, so no plaintext ever reaches the
-    # Terraform state file, which several teams can read.
-    providers      = ["anthropic"]
-    max_active     = 80
-    capacity_units = 80
-  }
+  # u-bogdan IS NO LONGER HERE (lane W9 of #847, 2026-10-09). It was the
+  # owner's personal fallback tenant -- `u-<local part>`, which a caller in no
+  # registered group resolves to -- declared here so a laptop smoke run had
+  # jobs to dispatch to. Owner decision WD3, 2026-10-08: a person's workspace is
+  # made by the workspace job (scripts/register-tenant.sh --workspace) and
+  # lives outside Terraform state, and terraform/infra/variables.tf refuses a
+  # person in this map. Its account, secret, documents, jobs and grants are
+  # FORGOTTEN, not destroyed, by terraform/infra/removed.tf and
+  # terraform/bootstrap/removed.tf, and belong to the record
+  # `workspaces/u-bogdan` (`migrated = true`; docs/workspaces.md §3.3). Do not
+  # add it back: a person here would be planned again, in a public file.
 }
 
 # allUsers lets the caller's ID token REACH the app, which is the only component
@@ -611,3 +604,14 @@ deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceac
 # PUT /v1/admin/tenants/eng/issue-sweep, not here (docs/issue-runs.md "Turning
 # it on, for tenant eng"). Left off in prod.
 enable_issue_sweep = true
+
+# Personal-workspace publishing (swarm-api WORKSPACE_APPLY_PUBLISH, #847).
+# OFF until the swarm-workspace-apply topic and its Cloud Build trigger exist,
+# which is the owner's one-time bootstrap apply with
+# enable_workspace_deployer = true (docs/workspaces.md §10). Flip this to true
+# in the SAME release as that apply, not before: publishing to a topic that
+# does not exist records publish_failed on every sweep, and not after: while it
+# is off every approved request waits. Off is not silent -- the
+# swarm-workspace-sweep job logs each waiting record as workspace_stuck
+# (reason publishing_off) and the workspace-stuck alert pages on it.
+workspace_apply_publish = false

@@ -3,11 +3,11 @@ import { dismissOnboarding, loadOnboarding } from './api'
 import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
 import type { ApiError } from './fetch'
 import { ConnectButton, connectionOf, Refusal } from './GitHubConnect'
-import { WorkspaceStepDetail } from './OnboardingWorkspace'
+import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
 import { addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
-import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState } from './types'
+import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState, WorkspaceView } from './types'
 import { timeAgo } from './types'
 import './styles/repositories.css'
 import './styles/onboarding.css'
@@ -313,6 +313,15 @@ export function StepBar({ doc }: { doc: OnboardingDoc }) {
   )
 }
 
+/**
+ * A step's mark. An `in_progress` workspace step whose approval nothing will build is `warn`, not the pulsing
+ * `live` mark: the platform does not advance that state by itself, so it must not look as if it were moving.
+ */
+function stepTone(s: OnboardingStep): string {
+  if (s.step === 'workspace' && s.evidence != null && waitingOf(s.evidence as unknown as WorkspaceView) !== null) return 'warn'
+  return STATE_TONE[s.state] ?? 'unknown'
+}
+
 /** The checklist itself, shared by the card and the page. */
 export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => void }) {
   return (
@@ -322,7 +331,7 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
         const next = doc.next_step === s.step
         return (
           <li key={s.step} className={`ob-step is-${s.state}${next ? ' is-next' : ''}`} data-step={s.step} data-state={s.state} aria-current={next ? 'step' : undefined}>
-            <ToneMark tone={STATE_TONE[s.state] ?? 'unknown'} hidden />
+            <ToneMark tone={stepTone(s)} hidden />
             <div className="ob-step-main">
               <p className="ob-step-h">
                 <b>{STEP_LABEL[s.step] ?? s.step}</b> <code>{s.step}</code>

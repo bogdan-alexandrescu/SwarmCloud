@@ -1765,12 +1765,12 @@ def test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment
     that is exactly the shape of the defect.
 
     SCOPED TO THE `worker` CONTAINER, which this test did NOT do when it was
-    written, and that gap was already a live defect. `worker-job-v2.yaml` has an
-    init container (`install-credential`) as well, and the commit that fixed the
-    Errno 30 added `SWARM_ARTIFACTS_DIR` to the INIT container -- which writes
-    one credential file and never touches an artifacts directory -- while the
-    `worker` container, the one that runs the agent and creates the directory,
-    had none. Reading the template as one document sees the name present and
+    written, and that gap was already a live defect. `worker-job-v2.yaml` had an
+    init container (`install-credential`, since removed) as well, and the commit
+    that fixed the Errno 30 added `SWARM_ARTIFACTS_DIR` to the INIT container --
+    which wrote one credential file and never touched an artifacts directory --
+    while the `worker` container, the one that runs the agent and creates the
+    directory, had none. Reading the template as one document sees the name present and
     passes. "Set" and "set on the wrong container" are different facts, and on
     v2 the second one is not even loud: v2 leaves `readOnlyRootFilesystem`
     false on purpose, so `mkdir /artifacts` succeeds, the artifact tree lands on
@@ -1781,9 +1781,10 @@ def test_the_yaml_templates_and_the_scheduler_agree_on_the_container_environment
     MUTATION: delete `SWARM_ARTIFACTS_DIR` from `worker_env` in dispatch.py, or
     from any one of the three templates. This names the variable and the side it
     is missing from. MUTATION FOR THE SCOPING: move `SWARM_ARTIFACTS_DIR` in
-    `worker-job-v2.yaml` from the `worker` container up into the
-    `install-credential` init container -- which is where it actually was --
-    and this fails naming v2. Before the scoping it passed.
+    `worker-job-v2.yaml` from the `worker` container into an init container
+    added for the purpose -- where it actually was, on `install-credential`,
+    before that container was removed -- and this fails naming v2. Before the
+    scoping it passed.
     """
     import re as _re
 
@@ -2523,36 +2524,74 @@ def test_no_cluster_role_binding_exists_anywhere_in_kubernetes():
 
 
 _PROBES = ("livenessProbe", "readinessProbe", "startupProbe")
+_HOOKS = ("postStart", "preStop")
+_CONTAINER_GROUPS = ("initContainers", "containers", "ephemeralContainers")
 
 
-def _exec_probe_commands(node: Any, where: str) -> list[tuple[str, list[str]]]:
-    """Every exec probe's command under NODE, with the container it is on."""
+def _container_commands(node: Any, where: str) -> list[tuple[str, list[str]]]:
+    """Every command a container under NODE runs, with where it is stated.
+
+    A container's own `command:`, its exec probes and its exec lifecycle hooks,
+    for init, regular and ephemeral containers alike. `args:` is not a command:
+    it is handed to whichever binary `command:` (or the image ENTRYPOINT) names.
+    """
     found: list[tuple[str, list[str]]] = []
     if isinstance(node, dict):
         for key, value in node.items():
-            if key in _PROBES and isinstance(value, dict) and "exec" in value:
-                found.append((f"{where} {node.get('name', '?')}.{key}", value["exec"]["command"]))
+            if key in _CONTAINER_GROUPS and isinstance(value, list):
+                for container in value:
+                    if not isinstance(container, dict):
+                        continue
+                    name = f"{where} {key}/{container.get('name', '?')}"
+                    if container.get("command"):
+                        found.append((f"{name}.command", container["command"]))
+                    for probe in _PROBES:
+                        handler = container.get(probe) or {}
+                        if "exec" in handler:
+                            found.append((f"{name}.{probe}", handler["exec"]["command"]))
+                    for hook in _HOOKS:
+                        handler = (container.get("lifecycle") or {}).get(hook) or {}
+                        if "exec" in handler:
+                            found.append((f"{name}.lifecycle.{hook}", handler["exec"]["command"]))
             else:
-                found.extend(_exec_probe_commands(value, where))
+                found.extend(_container_commands(value, where))
     elif isinstance(node, list):
         for item in node:
-            found.extend(_exec_probe_commands(item, where))
+            found.extend(_container_commands(item, where))
     return found
 
 
-def test_every_exec_probe_runs_a_binary_some_image_installs():
+def test_every_command_a_worker_template_runs_is_a_binary_some_image_installs():
     """worker-job-v2.yaml once probed /usr/local/bin/swarm-healthcheck, which no
     Dockerfile installed: the kubelet's exec fails, three failures kill the
     container, and every gVisor attempt dies a minute in. A probe is held to
-    the images, because nothing else runs the binary before a pod does."""
+    the images, because nothing else runs the binary before a pod does.
+
+    WIDENED FROM PROBES TO EVERY COMMAND (epic #888, EPX-B9). The probe-only
+    version passed while the same template's init container ran
+    /usr/local/bin/swarm-install-credential, which no image installs either, so
+    every pod rendered with `--runtime gvisor` failed at init. A probe is one
+    of several places a pod spec names a binary; `command:` on an init, regular
+    or ephemeral container and an exec lifecycle hook are the others, and each
+    fails the pod the same way.
+
+    A relative command is refused rather than looked up: which binary it names
+    depends on the image's PATH, which a Dockerfile grep cannot settle.
+
+    MUTATION: give any container in any worker template
+    `command: ["/usr/local/bin/swarm-not-installed"]`. This fails naming the
+    template, the container and the binary.
+    """
     dockerfiles = "\n".join(p.read_text() for p in sorted((REPO / "images").glob("*/Dockerfile")))
     templates = sorted((KUBERNETES / "worker-templates").glob("*.yaml"))
     assert templates, "no worker templates found"
     missing = []
     for path in templates:
         for doc in documents(path.read_text().replace("__", "x")):
-            for where, command in _exec_probe_commands(doc, path.name):
+            for where, command in _container_commands(doc, path.name):
                 binary = command[0]
                 if not binary.startswith("/") or not re.search(rf"{re.escape(binary)}(?![\w.-])", dockerfiles):
                     missing.append(f"{where}: {binary}")
-    assert not missing, f"exec probes name a binary no images/*/Dockerfile installs: {missing}"
+    assert not missing, (
+        f"worker templates run a binary no images/*/Dockerfile installs: {missing}"
+    )

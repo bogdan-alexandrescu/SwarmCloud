@@ -13,7 +13,8 @@
 //   * a ceiling save sends `{max_active}` and nothing else;
 //   * Lend posts `{account_id, lend: true}` for the account chosen;
 //   * the API's refusal for the last admin is shown as it came;
-//   * zero pending is drawn as a measured zero; an unread lendable list as
+//   * zero pending is prose, `none pending`, with "measured" in its accessible
+//     name and no `real zero` mark (owner, 2026-10-09); an unread lendable list as
 //     not read, never as an empty one;
 //   * the layout seen live at 1456 on 2026-10-09: the table has its own scroll
 //     container inside the card and no action control has a width of its own
@@ -226,12 +227,13 @@ describe('the people table', () => {
     expect(writesOf(calls)[0]).toMatchObject({ method: 'POST', url: '/v1/admin/workspaces/w-fa1000/approve' })
   })
 
-  it('draws zero pending as a measured zero', async () => {
+  it('writes zero pending as words, measured, not as the real-zero mark', async () => {
     await mount(people([ROWS[0]!]))
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
     const chip = document.querySelector<HTMLElement>('.pp-people')!
-    expect(visible(chip)).toContain('1 person')
-    expect(chip.querySelector('.ctl-mark.is-zero')?.textContent).toBe('real zero')
+    expect(visible(chip)).toContain('1 person · none pending')
+    expect(within(chip).getByLabelText('none pending (measured)')).toBeTruthy()
+    expect(chip.querySelector('.ctl-mark.is-zero')).toBeNull()
   })
 
   it('draws an unread lendable list as not read, never as an empty one', async () => {
@@ -447,5 +449,54 @@ describe('admins and the audit', () => {
     await mount(people(ROWS, { audit: [{ action: 'approve', target_workspace_id: 'w-3f9a2c', by: 'bob@example.com', at: now(), detail: {} }] }))
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
     expect(visible(document.querySelector('.pp-audit-list'))).toContain('approve w-3f9a2c by bob@example.com')
+  })
+})
+
+// WORKSPACE BUILDING OFF (2026-10-10, w-752763): `people.everyone`'s
+// `provisioning` figures and each row's `provisioning` block.
+describe('workspace building off in this deployment', () => {
+  const waiting = (id: string) =>
+    ws('approved', id, {
+      decision: { verdict: 'approved', reason: null, at: now() },
+      provisioning: { available: false, waiting_because: 'publishing_off', approved_minutes_ago: 1140 },
+    })
+
+  it('shows one banner with the count, naming where to switch it on', async () => {
+    await mount(
+      people([person('alice@example.com', waiting('w-3f9a2c')), person('erin@example.com', waiting('w-e41000')), ...ROWS.slice(0, 1)], {
+        provisioning: { available: false, approved_waiting: 2 },
+      }),
+    )
+    const banners = await screen.findAllByText(/Workspace building is off in this deployment/, {}, WAIT)
+    expect(banners).toHaveLength(1)
+    expect(visible(banners[0]!.closest('.c-banner') as HTMLElement)).toContain(
+      'Workspace building is off in this deployment: 2 approved requests are waiting',
+    )
+    expect(visible(banners[0]!.closest('.c-banner') as HTMLElement)).toContain('docs/workspaces.md §10')
+    // The waiting rows say so, and draw no live step rows.
+    const row = rowOf('alice@example.com')
+    expect(visible(row)).toContain("workspace building isn't switched on")
+    expect(row.querySelector('ol[aria-label="Workspace set-up steps"]')).toBeNull()
+  })
+
+  it('shows no banner when building is on', async () => {
+    await mount(people(ROWS, { provisioning: { available: true, approved_waiting: 0 } }))
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    expect(screen.queryByText(/Workspace building is off/)).toBeNull()
+  })
+
+  it("Approve says the API's own sentence when the workspace was not sent for building", async () => {
+    const said = 'Approved, and NOT sent for building: workspace provisioning is off in this deployment.'
+    await mount(people(ROWS), {
+      'POST /v1/admin/workspaces/w-3f9a2c/approve': () => ({
+        status: 200,
+        body: { workspace: waiting('w-3f9a2c'), dispatch: { published: false, mode: 'create', reason: 'publishing_off' }, sent_for_building: false, message: said },
+      }),
+    })
+    await waitFor(() => expect(rowOf('alice@example.com')).not.toBeNull(), WAIT)
+    fireEvent.click(within(rowOf('alice@example.com')).getByRole('button', { name: 'Approve' }))
+    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Approve' }))
+    await screen.findByText(said, {}, WAIT)
   })
 })

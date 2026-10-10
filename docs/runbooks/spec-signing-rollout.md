@@ -246,7 +246,21 @@ is fast enough for that.
 `swarm-<env>-spec-signature-invalid` fires on one refusal. It counts the
 worker's ERROR line `spec signature invalid: refusing to run this task` with
 `end_cause = spec_signature_invalid`, from Cloud Run Jobs and GKE pods alike,
-labelled by tenant and `spec_check.reason`. The half that covers contract
+labelled by tenant and `spec_check.reason`.
+
+Only a **worker container's** line counts: a Cloud Run Job named
+`swarm-job-*`, or the container named `worker` in the platform's own GKE
+cluster. The tenant comes from that resource, which the platform sets --
+`tenant_id` from a GKE pod's `swarm-tenant-<tenant>` namespace, `job_name`
+from a Cloud Run Job's name -- never from the line's own `labels.tenant_id`.
+That is because the agent, beside the worker as the same uid, can write a
+JSON line into the container's log through tini's `/proc/1/fd/1`, and nothing
+in a JSON payload is the worker's alone (#346, #354 security review). So an
+agent cannot page in another tenant's name, and no other job or pod in the
+shared project can page at all. It **can** still page from its own worker
+container, under its own job or namespace: a page whose tenant ran an agent at
+that moment, with no refused task in its history, is that agent, not a forged
+spec. The half that covers contract
 request 33's worker actions refusing an **upstream** spec (`MERGE_REFUSED` /
 `VERDICT_REFUSED` with a reason starting `upstream:`) is added when CR 33 is
 built.

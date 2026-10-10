@@ -12,18 +12,31 @@
 # THE PHRASE. In the pull request's BODY (not the title, not the commits):
 #
 #   depends on PR <N>     depends on PR #<N>     depends on #<N>
+#   depends on <owner>/<repo>#<N>
+#   depends on https://github.com/<owner>/<repo>/pull/<N>
 #
-# any case, any whitespace between the words. Only this repository's numbers;
-# the pull request's own number is ignored. Anything else ("see #N",
-# "part of #N", "after #N") is not a dependency.
+# any case, any whitespace between the words, `PR` optional before the last
+# two. A bare number is this repository's; `<owner>/<repo>#<N>` or a URL is
+# read in that repository (#888 box 96: a bare #N always named this one, and
+# a cross-repository dependency was silently ignored). The pull request's own
+# number is ignored. Anything else ("see #N", "part of #N", "after #N") is
+# not a dependency.
 #
-# THE DECISION. For each number it asks REST `repos/<R>/issues/<n>`:
+# NOT IN CODE OR A QUOTE (#888 box 95). A fenced block (``` or ~~~, to its
+# closing fence or the end of the body, as GitHub renders it), an inline code
+# span and a `>` quoted line are dropped before the scan: a pull request that
+# explains this rule, or quotes another's body, is showing the phrase, not
+# saying it.
+#
+# THE DECISION. For each number it asks REST `repos/<R>/issues/<n>`, <R> being
+# the repository the line names:
 #   * a pull request passes only when it is MERGED (`pull_request.merged_at`).
 #     Open refuses; closed without merging refuses too -- what this one
 #     depends on will never land, so the line must be removed or reworded;
 #   * an issue passes only when it is CLOSED;
 #   * a number GitHub answers 404 for refuses: the author named nothing, and
-#     a dependency that cannot be read is not one that landed.
+#     a dependency that cannot be read is not one that landed. In another
+#     repository a private one reads as a 404 too, and refuses the same way.
 #
 # EXIT. 0: every dependency has landed (or none is named). 2: refused, and
 # stdout is the sentence for the refusal comment. Anything else: could not tell
@@ -45,9 +58,15 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 # The phrase, as a jq (Oniguruma) pattern. tests/unit/scripts/
 # test_check_pr_dependencies.py holds docs/ci.md's examples against it.
-DEPENDS_ON='(?i)(?<![A-Za-z0-9_])depends\s+on\s+(?:PR\s*#?|#)([0-9]+)(?![A-Za-z0-9_])'
+# Captures: 1 the repository of a URL, 2 the repository of `owner/repo#N`
+# (neither for a bare number), 3 the number. A repository name is never only
+# dots, so `..` cannot walk the API path.
+REPO_NAME='[A-Za-z0-9-]+/[A-Za-z0-9_.-]*[A-Za-z0-9_-][A-Za-z0-9_.-]*'
+DEPENDS_ON="(?i)(?<![A-Za-z0-9_])depends\\s+on\\s+(?:PR\\s*#?|#|(?:PR\\s+)?https?://github\\.com/(${REPO_NAME})/(?:pull|issues)/|(?:PR\\s+)?(${REPO_NAME})#)([0-9]+)(?![A-Za-z0-9_])"
 
-usage() { sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'; }
+# The header, to its first line that is not a comment: no line range to keep
+# in step with it (#888 box 92 names the hand-kept form).
+usage() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$0"; }
 
 pr=""
 repo="${GH_REPO:-}"
@@ -85,59 +104,94 @@ jq -se --argjson n "${pr}" 'length == 1 and (.[0] | type == "object" and .number
 jq -e '.body == null or (.body | type) == "string"' "${answer}" >/dev/null \
   || die "the answer for #${pr} carries no readable body"
 
+# The body as prose: fenced blocks (to the closing fence, or the end of the
+# body if none closes it, as GitHub renders it), `>` quoted lines and inline
+# code spans removed. A closing fence is the opening one's character, at
+# least as long, alone on its line (CommonMark).
+#
+# One `<owner>/<repo><TAB><n>` line per dependency. This repository named in
+# full is this repository (GitHub's names are case-insensitive), so its own
+# number is ignored however it is written.
 named="${work}/named.txt"
-jq -r --arg re "${DEPENDS_ON}" --argjson self "${pr}" '
-  [ (.body // "") | scan($re) | .[0] | tonumber ]
-  | map(select(. > 0 and . != $self)) | unique | .[]' "${answer}" >"${named}"
+jq -r --arg re "${DEPENDS_ON}" --argjson self "${pr}" --arg this "${repo}" '
+  def prose:
+    gsub("\r"; "")
+    | split("\n")
+    | reduce .[] as $line ({fence: null, kept: []};
+        if .fence != null then
+          ((($line | capture("^ {0,3}(?<f>`{3,}|~{3,})[ \t]*$")) // null) as $c
+           | if $c != null and ($c.f[0:1] == .fence[0:1]) and ($c.f | length) >= (.fence | length)
+             then .fence = null else . end)
+        else
+          ((($line | capture("^ {0,3}(?<f>`{3,}|~{3,})")) // null) as $o
+           | if $o != null then .fence = $o.f
+             elif ($line | test("^\\s*>")) then .
+             else .kept += [$line] end)
+        end)
+    | .kept | join("\n")
+    | gsub("(`+).*?\\1"; " ");
+  [ (.body // "") | prose | scan($re)
+    | { repo: (.[0] // .[1] // $this), n: (.[2] | tonumber) }
+    | if (.repo | ascii_downcase) == ($this | ascii_downcase) then .repo = $this else . end ]
+  | map(select(.n > 0 and (.repo != $this or .n != $self))) | unique
+  | .[] | "\(.repo)\t\(.n)"' "${answer}" >"${named}"
 
 note "### Dependencies of #${pr}"
 note ""
 visited=0
 pending=()
 reasons=()
-while read -r number; do
-  [[ -n "${number}" ]] || continue
+while IFS=$'\t' read -r dep_repo number; do
+  [[ -n "${dep_repo}${number}" ]] || continue
   [[ "${number}" =~ ^[1-9][0-9]*$ ]] || die "not a number among the dependencies: '${number}'"
+  [[ "${dep_repo}" =~ ^${REPO_NAME}$ ]] || die "not a repository among the dependencies: '${dep_repo}'"
   visited=$((visited + 1))
-  item="${work}/item-${number}.json"
-  item_err="${work}/item-${number}.err"
-  if ! gh api "repos/${repo}/issues/${number}" >"${item}" 2>"${item_err}"; then
+  # `#N` in this repository, `owner/repo#N` in any other.
+  ref="#${number}"
+  where="this repository"
+  if [[ "${dep_repo}" != "${repo}" ]]; then
+    ref="${dep_repo}#${number}"
+    where="${dep_repo}"
+  fi
+  item="${work}/item-${visited}.json"
+  item_err="${work}/item-${visited}.err"
+  if ! gh api "repos/${dep_repo}/issues/${number}" >"${item}" 2>"${item_err}"; then
     if grep -q "HTTP 404" "${item_err}"; then
-      note "* **#${number}: not found**"
-      pending+=("${number}")
-      reasons+=("#${number} does not exist in this repository")
+      note "* **${ref}: not found**"
+      pending+=("${ref}")
+      reasons+=("${ref} does not exist in ${where}")
       continue
     fi
     cat "${item_err}" >&2
-    die "could not read whether #${number} has landed"
+    die "could not read whether ${ref} has landed"
   fi
   jq -se --argjson n "${number}" 'length == 1 and (.[0] | .number == $n and (.state | type) == "string")' "${item}" >/dev/null 2>&1 \
-    || die "the answer for #${number} is not a readable issue or pull request"
+    || die "the answer for ${ref} is not a readable issue or pull request"
   # Explicit comparisons throughout: `false // x` is x in jq.
   if jq -e '(.pull_request | type) == "object"' "${item}" >/dev/null; then
     if jq -e '(.pull_request.merged_at | type) == "string"' "${item}" >/dev/null; then
-      note "* #${number}: pull request, merged"
+      note "* ${ref}: pull request, merged"
     elif jq -e '.state == "open"' "${item}" >/dev/null; then
-      note "* **#${number}: pull request, open -- not merged yet**"
-      pending+=("${number}")
-      reasons+=("#${number} is an open pull request that has not merged")
+      note "* **${ref}: pull request, open -- not merged yet**"
+      pending+=("${ref}")
+      reasons+=("${ref} is an open pull request that has not merged")
     else
-      note "* **#${number}: pull request, closed without merging**"
-      pending+=("${number}")
-      reasons+=("#${number} is a pull request that was closed without merging, so it will never land")
+      note "* **${ref}: pull request, closed without merging**"
+      pending+=("${ref}")
+      reasons+=("${ref} is a pull request that was closed without merging, so it will never land")
     fi
   elif jq -e '.state == "closed"' "${item}" >/dev/null; then
-    note "* #${number}: issue, closed"
+    note "* ${ref}: issue, closed"
   else
-    note "* **#${number}: issue, open**"
-    pending+=("${number}")
-    reasons+=("#${number} is an open issue")
+    note "* **${ref}: issue, open**"
+    pending+=("${ref}")
+    reasons+=("${ref} is an open issue")
   fi
 done <"${named}"
 
 info "read ${visited} dependenc(ies) of #${pr}"
 if [[ "${visited}" -eq 0 ]]; then
-  note "#${pr} names no dependency (\`depends on PR <N>\` or \`depends on #<N>\`)."
+  note "#${pr} names no dependency (\`depends on PR <N>\`, \`depends on #<N>\` or \`depends on <owner>/<repo>#<N>\`, outside code and quotes)."
 fi
 
 if [[ ${#pending[@]} -eq 0 ]]; then
@@ -148,5 +202,5 @@ listed=""
 for reason in "${reasons[@]}"; do
   listed="${listed:+${listed}; }${reason}"
 done
-printf '%s\n' "This pull request's body says it depends on something that has not landed: ${listed}. It merges only after each one named with \`depends on PR <N>\` or \`depends on #<N>\` is merged (a pull request) or closed (an issue). Wait for that, or remove the line if it no longer holds."
+printf '%s\n' "This pull request's body says it depends on something that has not landed: ${listed}. It merges only after each one named with \`depends on PR <N>\`, \`depends on #<N>\` or \`depends on <owner>/<repo>#<N>\` is merged (a pull request) or closed (an issue). Wait for that, or remove the line if it no longer holds."
 exit 2
