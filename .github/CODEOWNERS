@@ -2,12 +2,16 @@
 # §2.4, safeguard 2; #847).
 #
 # That identity holds project-wide account-IAM power in a project shared with
-# another team, and Google cannot narrow it. The Cloud Build trigger that runs
-# as it builds `main`, so what merges here IS what the identity will do: the
-# call guard, its rules and shims, the script it runs, the library both
-# source, and the build file. Branch protection must require the code owner's
-# review for these paths, or this file is only a suggestion (the owner's
-# setting, not this repository's).
+# another team, and Google cannot narrow it. Since WD2's re-decision
+# (2026-10-10) the Cloud Run job swarm-workspace-apply runs as it, from the
+# workspace-apply image, and that image carries what the identity will do: the
+# entrypoint that scrubs every override (entry.py), the job's script
+# (workspace-apply.sh), the call guard, its rules and shims, the script it
+# runs, the library both source, and the Dockerfile that decides what the
+# image holds. A merge reaches the identity only when the owner's bootstrap
+# apply moves the image digest; this review is the step before that. Branch
+# protection must require the code owner's review for these paths, or this
+# file is only a suggestion (the owner's setting, not this repository's).
 
 /scripts/lib/workspace-guard.sh         @bogdan-alexandrescu
 /scripts/lib/workspace-calls.json       @bogdan-alexandrescu
@@ -15,5 +19,7 @@
 /scripts/lib/guard-bin/                 @bogdan-alexandrescu
 /scripts/lib/common.sh                  @bogdan-alexandrescu
 /scripts/register-tenant.sh             @bogdan-alexandrescu
-/scripts/cloudbuild/workspace-apply.yaml @bogdan-alexandrescu
+/scripts/workspace-apply.sh             @bogdan-alexandrescu
+/images/workspace-apply/entry.py        @bogdan-alexandrescu
+/images/workspace-apply/Dockerfile      @bogdan-alexandrescu
 /.github/CODEOWNERS                     @bogdan-alexandrescu
