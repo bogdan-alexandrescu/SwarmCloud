@@ -347,3 +347,108 @@ def test_script_avoids_bash4_only_constructs():
     assert "mapfile" not in text and "readarray" not in text
     assert "declare -A" not in text
     assert ",,}" not in text and "^^}" not in text
+
+
+# ---------------------------------------------------------------------------
+# Clone bundles (#940): the same marks, read by `clone.source`.
+
+
+def bundle_mark(task_id, source, seconds, *, ok=True, hit=None, miss_reason=None, at=RECENT):
+    """A `clone_timed` mark in the shape `Worker._mark_clone_timed` writes since #940."""
+    bundle = {"hit": source != "forge" if hit is None else hit, "miss_reason": miss_reason}
+    clone = {"seconds": seconds, "total_seconds": seconds, "ok": ok, "source": source, "bundle": bundle}
+    return _event(task_id, f"att_{task_id}", "clone_timed", {"clone": clone}, at=at)
+
+
+def bundle_docs(*marks):
+    return [{"task_id": m["task_id"], "events": [m], "next_page_token": None} for m in marks]
+
+
+def bundled(n, seconds, *, prefix="b"):
+    return [bundle_mark(f"tsk_{prefix}{i}", "bundle", seconds) for i in range(n)]
+
+
+def fallback(n=1, *, ok=True, reason="miss"):
+    return [
+        bundle_mark(f"tsk_f{i}", "forge", 40.0, ok=ok, hit=False, miss_reason=reason) for i in range(n)
+    ]
+
+
+def bundle_report(marks, **kwargs):
+    kwargs.setdefault("now", NOW)
+    return err.build_bundle_report(err.read_documents(stream(bundle_docs(*marks))), **kwargs)
+
+
+def test_thirty_fast_bundle_clones_with_a_working_fallback_pass():
+    result = bundle_report(bundled(30, 2.0) + fallback(2))
+    assert result["verdict"]["result"] == "PASS", result["verdict"]
+    bundle = next(r for r in result["rows"] if r["source"] == "bundle")
+    assert (bundle["n"], bundle["p50"]) == (30, 2.0)
+    assert result["fallback"] == {"n": 2, "n_ok": 2}
+
+
+def test_fewer_than_thirty_bundle_clones_is_insufficient_n_not_pass():
+    verdict = bundle_report(bundled(29, 1.0) + fallback())["verdict"]
+    assert verdict["result"] == "FAIL" and "insufficient n (29" in verdict["reason"]
+
+
+def test_a_slow_bundle_p50_fails_and_other_sources_do_not_count_toward_it():
+    marks = bundled(30, 6.0) + [bundle_mark(f"tsk_d{i}", "bundle+delta", 1.0) for i in range(40)]
+    verdict = bundle_report(marks + fallback())["verdict"]
+    assert verdict["result"] == "FAIL" and "bundle p50 6.00 s" in verdict["reason"]
+
+
+def test_bundle_clones_that_did_not_land_cannot_carry_a_pass():
+    marks = bundled(14, 1.0) + [bundle_mark(f"tsk_x{i}", "bundle", 0.5, ok=False) for i in range(16)]
+    result = bundle_report(marks + fallback())
+    assert result["verdict"]["result"] == "FAIL", result["verdict"]
+    assert next(r for r in result["rows"] if r["source"] == "bundle")["n_failed"] == 16
+
+
+def test_a_fallback_that_never_ran_is_not_one_that_works():
+    """A forge clone with no bundle lookup (the kill switch: `disabled`) is not the fallback."""
+    disabled = fallback(3, reason="disabled")
+    verdict = bundle_report(bundled(30, 1.0) + disabled)["verdict"]
+    assert verdict["result"] == "FAIL" and "not exercised" in verdict["reason"]
+
+
+@pytest.mark.parametrize("reason", ["miss", "no_key", "bundle_error"])
+def test_a_fallback_clone_that_did_not_land_fails(reason):
+    verdict = bundle_report(bundled(30, 1.0) + fallback(1) + fallback(1, ok=False, reason=reason))["verdict"]
+    assert verdict["result"] == "FAIL" and "did not land" in verdict["reason"]
+
+
+def test_a_mark_from_a_worker_older_than_940_is_unknown_not_forge():
+    old = clone_mark("tsk_old", "att_tsk_old", 37.0)
+    result = err.build_bundle_report(err.read_documents(stream(bundle_docs(old))), now=NOW)
+    assert [r["source"] for r in result["rows"]] == ["unknown"]
+    assert result["fallback"]["n"] == 0
+
+
+def test_a_bundle_mark_older_than_since_is_not_read():
+    marks = bundled(30, 1.0) + [bundle_mark("tsk_old", "bundle", 99.0, at="2026-09-01T00:00:00+00:00")]
+    result = bundle_report(marks + fallback(), since="7d")
+    assert result["visited"]["clone_timed_marks"] == 31
+
+
+def test_bundle_report_cli_exit_codes(tmp_path):
+    run = lambda text, *extra: subprocess.run(  # noqa: E731
+        [sys.executable, str(HELPER), "bundle-report", "--now", NOW, *extra],
+        input=text, capture_output=True, text=True, check=False,
+    )
+    ok = run(stream(bundle_docs(*bundled(30, 2.0), *fallback())))
+    assert ok.returncode == 0, ok.stderr
+    assert "PASS" in ok.stdout and "visited: 31 task(s), 31 clone_timed mark(s)" in ok.stdout
+    assert run(stream(bundle_docs(*bundled(3, 2.0)))).returncode == 1
+    as_json = run(stream(bundle_docs(*bundled(30, 2.0), *fallback())), "--json")
+    assert json.loads(as_json.stdout)["verdict"]["result"] == "PASS"
+    nothing = run(stream([{"task_id": "tsk_x", "events": [], "next_page_token": None}]))
+    assert nothing.returncode == 2 and "no clone_timed marks read" in nothing.stderr
+    assert "PASS" not in nothing.stdout
+
+
+def test_script_routes_clone_bundles_to_the_bundle_report():
+    text = SCRIPT.read_text()
+    assert '--clone-bundles) SUBCOMMAND="bundle-report"' in text
+    assert '"${HELPER}" "${SUBCOMMAND}"' in text
+    assert "--backend does not apply to --clone-bundles" in text
