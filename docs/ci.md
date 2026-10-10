@@ -2141,13 +2141,22 @@ line of its own or anywhere in a sentence:
 depends on PR 840
 depends on PR #840
 depends on #840
+depends on owner/repo#840
+depends on https://github.com/owner/repo/pull/840
 ```
 
-Any case (`Depends on PR 840`), any whitespace between the words. Nothing else
-is read as a dependency: `see #840`, `after #840` and `part of #840` are not,
-and neither is the phrase in the title or in a commit message. A number in
-another repository cannot be written this way, and the pull request's own
-number is ignored.
+Any case (`Depends on PR 840`), any whitespace between the words. A bare
+number is this repository's; `owner/repo#N` and a pull request or issue link
+(`/pull/N`, `/issues/N`) are looked up in the repository they name. A number
+GitHub does not find there (a private repository reads the same) refuses the
+merge. Nothing else is read as a dependency: `see #840`, `after #840` and
+`part of #840` are not, and neither is the phrase in the title or in a commit
+message. The pull request's own number is ignored.
+
+The phrase is read as prose. A `depends on` inside a fenced code block (to its
+closing fence, or the end of the body if none closes it), an inline code span
+or a `>` quoted line is ignored, so a pull request that explains this rule or
+quotes another's body is not made to depend on anything.
 
 The enable job runs the default branch's
 [`scripts/check-pr-dependencies.sh`](../scripts/check-pr-dependencies.sh)
@@ -2161,11 +2170,16 @@ number it asks REST `repos/<R>/issues/<n>`:
 | nothing (404) | never | always: a dependency nobody can read has not landed |
 
 A refusal works like the gate's other refusals: on the label, a comment naming
-each dependency and why, and a failed run; on a re-evaluation, the comment,
-`ready` removed and auto-merge disarmed. **Nothing re-evaluates when the
+each dependency and why, `ready` removed (the comment opens "Not queued for
+auto-merge, and `ready` removed."), and a failed run; on a re-evaluation, the
+same, with auto-merge disarmed too. **Nothing re-evaluates when the
 dependency merges** (its merge is a push to main, not a run at this pull
-request's head), so add `ready` again once it has. A read that fails for any
-reason other than a 404 fails the job, and nothing is armed: fail closed.
+request's head), so add `ready` again once it has. Editing the **body** of an
+open `ready` pull request does re-evaluate: the `requeue-edited` job
+dispatches a re-evaluation (only with the merge App configured), so adding or
+removing the line is looked at then, not at the next CI finish. A read that
+fails for any reason other than a 404 fails the job, and nothing is armed:
+fail closed.
 
 Only `auto-merge.yml` reads the phrase. The SwarmCloud worker's merge step
 (`apps/agent-worker/agent_worker/merge.py`), which merges with the tenant's
