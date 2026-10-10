@@ -5,8 +5,8 @@
 Run job, `swarm-workspace-apply`, not a Cloud Build trigger (§9 WD2).** Lanes
 W1 to W9 have since been built against the Cloud Build shape; §10 says which
 of their pieces the re-decision rewrites, and what is removed once the job
-ships. One choice inside the re-decision, how an approval starts the job, is
-**proposed, awaiting the owner** (§2.1).
+ships. One choice inside the re-decision, how an approval starts the job, was
+**decided by the owner on 2026-10-10: (ii), Pub/Sub through Eventarc and Workflows** (§2.1).
 
 The owner asked on 2026-10-08 for each person's personal space to be
 "onboarded at the time of onboarding a new user in swarmcloud", with "a way to create this via the UI and potentially via the
@@ -60,8 +60,8 @@ What it settles, one line each:
   digest by the owner's bootstrap apply. An execution is started with the
   workspace id and the mode and nothing else that the job will use, and the
   job is the only thing that runs as `swarm-workspace-deployer` (§2.1, §2.4).
-  How an approval starts it, directly from swarm-api or through Pub/Sub,
-  Eventarc and Workflows, is **proposed, awaiting the owner** (§2.1).
+  An approval starts it through Pub/Sub, Eventarc and Workflows: swarm-api only
+  publishes, as built (**decided 2026-10-10, owner: option (ii)**, §2.1).
   Installing it is Terraform alone: no forge connection, no grant to Google's
   Cloud Build agent, no private pool (§10).
 * **The call guard is the bound.** IAM cannot narrow service-account
@@ -300,9 +300,12 @@ What the job does is one script: `scripts/register-tenant.sh --workspace
 w-3f9a2c` (WD3, §4), with every cloud and cluster call it makes passing through
 the call guard (§2.5).
 
-#### How an approval starts the job: proposed, awaiting the owner
+#### How an approval starts the job: decided 2026-10-10 (owner), option (ii)
 
-The re-decision leaves one choice open, and it is the owner's. Both options
+**Decided: (ii).** swarm-api keeps only the publish to one topic; an Eventarc
+trigger hands the message to a Workflows definition that validates the id and
+mode and runs the job with those two arguments, as `swarm-workspace-dispatch`.
+The comparison below is kept as the record of why. Both options
 start the same job with the same two arguments; they differ in who holds the
 power to start it, and so in what a compromised swarm-api could do. The
 question and the recommendation are in this lane's `questions.json`.
@@ -1492,8 +1495,8 @@ all-or-nothing across every pool (invariant 2).
 Each decision keeps its options, for history. **Every decision is now made:**
 the owner decided them all on 2026-10-08, the last (WD2, WD3, WD9 and the
 confirmed defaults) after 05:00 UTC. WD2 was re-decided on 2026-10-10, and one
-choice inside it, how an approval starts the job, is proposed and awaiting the
-owner (§2.1). Superseded options and recommendations
+choice inside it, how an approval starts the job, was decided by the owner the
+same day: (ii) (§2.1). Superseded options and recommendations
 appear only here.
 
 ### WD1. Where do personal worker identities live?
@@ -1592,9 +1595,9 @@ acceptance account and the release deployer can already start this job with
 overrides. The job's entrypoint therefore discards every overridable value but
 its two validated arguments (§2.2 step 0, §2.3, §2.4 R6).
 
-*Proposed, awaiting the owner:* (i) swarm-api runs the job directly, or (ii)
-the existing publish reaches the job through Eventarc and Workflows.
-Recommended: (ii) (§2.1).
+*Decided 2026-10-10 (owner): (ii)*, the existing publish reaches the job
+through Eventarc and Workflows, over (i) swarm-api running the job directly
+(§2.1).
 
 ### WD3. What makes a person's resources?
 
