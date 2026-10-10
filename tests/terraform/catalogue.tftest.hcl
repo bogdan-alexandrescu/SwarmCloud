@@ -103,7 +103,7 @@ run "runner_backends_match_resolve_backend" {
   # /dev/shm that only GKE lets us control, so browser work stays on Autopilot.
   assert {
     condition = alltrue([
-      for profile in ["mock", "generic", "codex", "indexer"] :
+      for profile in ["mock", "generic", "codex"] :
       output.runner_backends[profile] == "CLOUD_RUN_JOB"
     ])
     error_message = "every profile Cloud Run can hold must run on Cloud Run Jobs"
@@ -119,6 +119,14 @@ run "runner_backends_match_resolve_backend" {
   assert {
     condition     = output.runner_backends["claude-code"] == "GKE_AUTOPILOT"
     error_message = "claude-code runs on GKE Autopilot (contract request 53)"
+  }
+
+  # Contract request 63 (owner, 2026-10-10): indexer runs on Autopilot as the
+  # canary for #939, where a new pod's internet path opens in about 1 s
+  # against a new Cloud Run instance's 20 s median.
+  assert {
+    condition     = output.runner_backends["indexer"] == "GKE_AUTOPILOT"
+    error_message = "indexer runs on GKE Autopilot (contract request 63, the canary for #939)"
   }
 
   # Contract request 55's canary is gone: the switch replaced it.
@@ -254,6 +262,13 @@ run "jobs_exist_only_where_a_credential_does" {
     error_message = "the claude-code Cloud Run Jobs are kept until 2026-10-15 as the request 53 rollback; the backend switch must not destroy them"
   }
 
+  # Contract request 63 moved indexer to GKE Autopilot as #939's canary; its
+  # Cloud Run Jobs stay, idle, as the rollback until the owner decides it.
+  assert {
+    condition     = contains(output.job_names, "swarm-job-eng-indexer")
+    error_message = "the indexer Cloud Run Jobs are kept as the request 63 rollback; the backend switch must not destroy them"
+  }
+
   # The fallback keeps exactly what it names: browser, on GKE too, still gets
   # no Cloud Run Job (asserted above), and nor does the removed canary.
   assert {
@@ -265,7 +280,7 @@ run "jobs_exist_only_where_a_credential_does" {
 
   assert {
     condition     = length(output.job_names) == 7
-    error_message = "4 Cloud-Run profiles for eng (mock, generic, codex, indexer) and claude-code's rollback Job, plus 2 credential-free ones for smoke"
+    error_message = "3 Cloud-Run profiles for eng (mock, generic, codex) and claude-code's and indexer's rollback Jobs, plus 2 credential-free ones for smoke"
   }
 
   # #295: post-verdict and claude-code-review are retired (owner decision
@@ -363,11 +378,13 @@ run "the_python_catalogue_is_readable" {
     error_message = "expected 9 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer); the parser read a different number"
   }
 
-  # claude-code's entry carries a comment above its backend; the parser must
-  # read the field, and the last entry (indexer) must not run on past the dict.
+  # claude-code's and indexer's entries carry a comment above their backend;
+  # the parser must read the field, and the last entry (indexer) must not run
+  # on past the dict. merge is read alongside so the check sees a
+  # CLOUD_RUN_JOB entry too, not only GKE ones.
   assert {
-    condition     = output.runner_profiles["claude-code"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "CLOUD_RUN_JOB"
-    error_message = "the parser misread profiles.py: claude-code must read GKE_AUTOPILOT (contract request 53), and indexer must keep CLOUD_RUN_JOB"
+    condition     = output.runner_profiles["claude-code"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "GKE_AUTOPILOT" && output.runner_profiles["merge"].backend == "CLOUD_RUN_JOB"
+    error_message = "the parser misread profiles.py: claude-code (contract request 53) and indexer (contract request 63) must read GKE_AUTOPILOT, and merge must keep CLOUD_RUN_JOB"
   }
 
   assert {

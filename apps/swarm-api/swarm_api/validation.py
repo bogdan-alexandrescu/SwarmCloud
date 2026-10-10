@@ -579,6 +579,8 @@ MERGE_STRATEGIES = ("direct-pr", "integrate")
 #:         an `integrate` workflow whose integrator is gated on a review. A
 #:         re-review step is appended too, on the integrator's pushed head, and
 #:         the merge reads ITS verdict -- the latest one (`REREVIEW_ROUNDS`).
+#:         It is gated like the integrator, so its agent runs only after a
+#:         fix; on MERGE it passes the first review's verdict on unchanged.
 #:         Refused for a workflow with no such review, rather than merging
 #:         unreviewed work, and beside a spec's own merge step.
 #:   off   append none, and refuse a spec that states one: the two disagree.
@@ -2045,6 +2047,7 @@ def validate_step_routing(
     *,
     strategy: str,
     integrator_step_id: str | None,
+    rereview: str | None = None,
 ) -> SinglePrPlan | None:
     """Refuse a verdict gate or a `builds_on` that could not work (#264).
 
@@ -2066,9 +2069,15 @@ def validate_step_routing(
       exists to prevent;
     * under `integrate` the integrator's pull request is the one place the
       verdict is shown, so a gate on any other step would route work that PR
-      says nothing about;
-    * a gated step whose agent does not run writes no artifact, so a step that
-      stages from it would fail every time the gate stayed shut;
+      says nothing about -- except `rereview`, the re-review swarm-api
+      appended under `metadata.merge` "on_merge_verdict" (by id), which is
+      gated on the same review as the integrator so it runs only after a fix
+      (owner decision 2026-10-10, part of #295);
+    * a gated step whose agent does not run writes no artifact but the
+      verdict file it staged, which it re-publishes unchanged
+      (`agent_worker.lifecycle.Worker._republish_staged_verdict`), so a step
+      that stages anything else from it would fail every time the gate
+      stayed shut; staging that verdict file, by the same name, is allowed;
     * `builds_on` names a step whose branch this step clones, so it must be
       upstream (or its branch may not exist yet), and the strategy must push
       every step's branch (`collect` pushes none).
@@ -2103,10 +2112,6 @@ def validate_step_routing(
                 )
 
     ancestors = _ancestors(steps)
-    staged_by: dict[str, list[str]] = {}
-    for step in steps:
-        for source in step.input_from:
-            staged_by.setdefault(source, []).append(step.step_id)
 
     for step in steps:
         if step.when_step is not None:
@@ -2142,7 +2147,7 @@ def validate_step_routing(
                     "only the final step opens a pull request, or 'collect'.",
                     detail={"step_id": step.step_id, "strategy": strategy},
                 )
-            if strategy == "integrate" and step.step_id != integrator_step_id:
+            if strategy == "integrate" and step.step_id not in (integrator_step_id, rereview):
                 raise DispatchOptionError(
                     f"step {step.step_id!r} is gated on a review verdict, but under "
                     f"strategy 'integrate' the step that publishes is "
@@ -2154,14 +2159,23 @@ def validate_step_routing(
                         "integrator_step_id": integrator_step_id,
                     },
                 )
-            if staged_by.get(step.step_id):
+            # The one file a shut gate still publishes is the verdict it read,
+            # passed on byte for byte under the name it staged it by.
+            passed_on = step.input_from.get(step.when_step)
+            other = [
+                s.step_id for s in steps
+                if step.step_id in s.input_from and s.input_from[step.step_id] != passed_on
+            ]
+            if other:
                 raise DagError(
                     f"step {step.step_id!r} is gated on a review verdict, so when the "
-                    "verdict does not name it its agent does not run and it writes "
-                    "no artifact -- but " + ", ".join(repr(s) for s in staged_by[step.step_id])
-                    + " stage a file from it. A gated step cannot be an input_from "
-                    "source.",
-                    detail={"step_id": step.step_id, "staged_by": staged_by[step.step_id]},
+                    "verdict does not name it its agent does not run and the only "
+                    f"artifact it writes is the {passed_on!r} it staged, passed on -- but "
+                    + ", ".join(repr(s) for s in other)
+                    + " stage another file from it. A gated step is an input_from "
+                    f"source only for {passed_on!r}.",
+                    detail={"step_id": step.step_id, "staged_by": other,
+                            "passed_on": passed_on},
                 )
 
         if step.builds_on is not None:
@@ -2361,17 +2375,23 @@ def rereview_step_for(
     caller did not already choose for its review is chosen here (invariant
     10). It builds on the integrator -- its checkout is the head the merge
     will pin -- and stages, by parent, the earlier verdict and whatever the
-    review staged. Its agent always runs: a gated step that does not run its
-    agent writes no verdict for the merge to read (`agent_worker.verdict`),
-    so on a MERGE verdict the head the fix pushed unchanged is reviewed a
-    second time. That costs one review agent on the MERGE path and is said
-    where it is configured (docs/workflows.md).
+    review staged. It is GATED on the same review and verdicts as the
+    integrator (owner decision 2026-10-10, part of #295): its agent runs
+    only when the fix's did, which in implement -> review -> fix is NOT_YET.
+    On MERGE no fix ran, the head is the one the review already judged, and
+    the re-review runs no agent: the worker re-publishes the verdict it
+    staged, the first review's MERGE, byte for byte as its own artifact
+    (`agent_worker.lifecycle.Worker._republish_staged_verdict`), so the
+    merge step reads the same file name from the same step on both paths.
     """
     sources = merge_sources(steps, strategy)
     if (
         strategy != "integrate" or sources is None or sources.review is None
         or not sources.verdict_file or review.get("step_id") != sources.review
     ):
+        return None
+    integrator = next((s for s in steps if s.step_id == sources.pull_request), None)
+    if integrator is None:
         return None
     staged = {**dict(review.get("input_from") or {}), sources.review: sources.verdict_file}
     paths = ", ".join(f"{src}/{name}" for src, name in staged.items())
@@ -2389,6 +2409,9 @@ def rereview_step_for(
         "depends_on": list(dict.fromkeys([sources.pull_request, *staged])),
         "builds_on": sources.pull_request,
         "input_from": staged,
+        # The integrator's own gate: the re-review runs after a fix, and
+        # passes the review's verdict on when there was none.
+        "when": {"step": sources.review, "verdict_in": list(integrator.when_verdicts)},
         "metadata": {
             **dict(review.get("metadata") or {}),
             INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT,

@@ -1,6 +1,7 @@
 """`register-tenant.sh --workspace` makes one person's workspace, under the guard.
 
-docs/workspaces.md §4 (lane W6 of #847). A Cloud Build job runs the script as
+docs/workspaces.md §4 (lane W6 of #847). The Cloud Run job `swarm-workspace-apply`
+runs the script, through scripts/workspace-apply.sh (lane W6b), as
 `swarm-workspace-deployer`, an identity with project-wide account-IAM power in a
 project shared with another team, so what these tests hold is:
 
@@ -919,11 +920,111 @@ def test_malformed_workspace_arguments_are_refused(job: Job, args: list[str], ne
     assert job.calls() == []
 
 
-def test_the_build_file_runs_the_script_behind_the_guard() -> None:
-    build = (REPO / "scripts" / "cloudbuild" / "workspace-apply.yaml").read_text()
-    assert "scripts/register-tenant.sh --workspace" in build
-    assert "guard-bin" in build and "SWARM_CALL_GUARD_ENFORCE=1" in build
-    assert "workspace-guard.sh init --workspace-id" in build
-    assert "CLOUD_LOGGING_ONLY" in build
-    assert "${_BUILDER_IMAGE}" in build, "every step runs in W4's builder image (owner, 2026-10-08)"
-    assert "google-cloud-cli:" not in build and "jq-linux" not in build, "no stock image, no downloaded jq"
+APPLY = REPO / "scripts" / "workspace-apply.sh"
+
+
+def test_the_job_script_runs_the_script_behind_the_guard() -> None:
+    """scripts/workspace-apply.sh, steps 1 to 3 of the Cloud Run job (W6b),
+    replaced the Cloud Build file line for line (WD2 re-decided 2026-10-10)."""
+    assert not (REPO / "scripts" / "cloudbuild" / "workspace-apply.yaml").exists()
+    script = APPLY.read_text()
+    assert os.access(APPLY, os.X_OK)
+    assert '"${SCRIPTS_DIR}/register-tenant.sh" --workspace' in script
+    assert "guard-bin" in script and "SWARM_CALL_GUARD_ENFORCE" in script
+    assert '"${GUARD}" self-test' in script and '"${GUARD}" init --workspace-id' in script
+    assert "google-cloud-cli:" not in script and "jq-linux" not in script, "no stock image, no downloaded jq"
+
+
+@pytest.mark.parametrize("args", [
+    [],
+    [WORKSPACE],
+    [WORKSPACE, "create", "extra"],
+    ["create", WORKSPACE],
+    ["u-alice", "create"],
+    ["w-3F9A2C", "create"],
+    [WORKSPACE, "verify"],
+    [WORKSPACE, "destroy"],
+    ["--workspace", WORKSPACE],
+])
+def test_the_job_script_refuses_anything_but_an_id_and_a_mode(job: Job, args: list[str]) -> None:
+    """Step 1: before the guard is installed or the script runs, nothing is
+    called and no expectation file is written."""
+    proc = subprocess.run([str(APPLY), *args], env=job.env, capture_output=True, text=True,
+                          timeout=120, check=False)
+    assert proc.returncode == 1 and "refused:" in proc.stderr, _out(proc)
+    assert job.calls() == []
+    assert not job.expect.exists()
+
+
+def _stub_tree(tmp: Path) -> Path:
+    """workspace-apply.sh beside the real lib/, with the guard and
+    register-tenant.sh stubbed: each logs what it was asked and exits as told."""
+    scripts = tmp / "tree" / "scripts"
+    shutil.copytree(REPO / "scripts" / "lib", scripts / "lib")
+    shutil.copy2(APPLY, scripts / "workspace-apply.sh")
+    log = tmp / "stub.log"
+    guard = scripts / "lib" / "workspace-guard.sh"
+    guard.write_text(f"""#!/usr/bin/env bash
+set -euo pipefail
+echo "guard $*" >> "{log}"
+case "$1" in
+  self-test) exit "${{STUB_SELFTEST_RC:-0}}" ;;
+  init) echo '{{}}' > "${{SWARM_CALL_GUARD}}" ;;
+esac
+""")
+    register = scripts / "register-tenant.sh"
+    register.write_text(f"""#!/usr/bin/env bash
+set -euo pipefail
+echo "register $* gcloud=$(command -v gcloud) enforce=${{SWARM_CALL_GUARD_ENFORCE}}" >> "{log}"
+exit "${{STUB_RC:-0}}"
+""")
+    for path in (guard, register):
+        path.chmod(0o755)
+    return scripts
+
+
+@pytest.mark.parametrize("script_rc,job_rc", [(0, 0), (3, 0), (1, 1), (2, 2)])
+def test_the_job_script_ends_a_stop_for_the_owner_as_a_success(tmp_path: Path, script_rc: int, job_rc: int) -> None:
+    """register-tenant.sh's 3 is needs_owner: the record says so and the owner
+    decides (§2.5), so the execution ends as a success. Any other failure
+    fails it. And the order holds: self-test, init, then the script, with the
+    shims first on PATH."""
+    scripts = _stub_tree(tmp_path)
+    expect = tmp_path / "guard" / "expect.json"
+    expect.parent.mkdir()
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), "SWARM_CALL_GUARD": str(expect),
+           "SWARM_CALL_GUARD_ENFORCE": "1", "NO_COLOR": "1", "STUB_RC": str(script_rc)}
+    proc = subprocess.run([str(scripts / "workspace-apply.sh"), WORKSPACE, "limits"], env=env,
+                          capture_output=True, text=True, timeout=120, check=False)
+    assert proc.returncode == job_rc, _out(proc)
+    log = (tmp_path / "stub.log").read_text().splitlines()
+    shim = scripts / "lib" / "guard-bin" / "gcloud"
+    assert log == ["guard self-test", f"guard init --workspace-id {WORKSPACE}",
+                   f"register --workspace {WORKSPACE} --mode limits gcloud={shim} enforce=1"], log
+    if script_rc == 3:
+        assert "stopped for the platform owner" in proc.stderr
+
+
+def test_the_job_script_runs_nothing_when_the_guard_fails_its_own_cases(tmp_path: Path) -> None:
+    scripts = _stub_tree(tmp_path)
+    expect = tmp_path / "expect.json"
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path), "SWARM_CALL_GUARD": str(expect),
+           "SWARM_CALL_GUARD_ENFORCE": "1", "NO_COLOR": "1", "STUB_SELFTEST_RC": "1"}
+    proc = subprocess.run([str(scripts / "workspace-apply.sh"), WORKSPACE, "create"], env=env,
+                          capture_output=True, text=True, timeout=120, check=False)
+    assert proc.returncode == 1, _out(proc)
+    assert (tmp_path / "stub.log").read_text().splitlines() == ["guard self-test"]
+    assert not expect.exists()
+
+
+@pytest.mark.parametrize("enforce", [None, "0", ""])
+def test_the_job_script_refuses_to_run_unenforced(tmp_path: Path, enforce: str | None) -> None:
+    scripts = _stub_tree(tmp_path)
+    env = {"PATH": "/usr/local/bin:/usr/bin:/bin", "HOME": str(tmp_path),
+           "SWARM_CALL_GUARD": str(tmp_path / "expect.json"), "NO_COLOR": "1"}
+    if enforce is not None:
+        env["SWARM_CALL_GUARD_ENFORCE"] = enforce
+    proc = subprocess.run([str(scripts / "workspace-apply.sh"), WORKSPACE, "create"], env=env,
+                          capture_output=True, text=True, timeout=120, check=False)
+    assert proc.returncode == 1 and "never runs unguarded" in proc.stderr, _out(proc)
+    assert not (tmp_path / "stub.log").exists()

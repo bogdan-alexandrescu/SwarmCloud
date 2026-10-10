@@ -67,8 +67,8 @@
 #   scripts/register-tenant.sh --group eng@saga.xyz --skip-k8s   # Cloud Run only
 #
 # A person's workspace, from its approved record, under the call guard only --
-# the Cloud Build job scripts/cloudbuild/workspace-apply.yaml runs this (section
-# W below, docs/workspaces.md §4):
+# the Cloud Run job swarm-workspace-apply runs this, through
+# scripts/workspace-apply.sh (section W below, docs/workspaces.md §2.2, §4):
 #   scripts/register-tenant.sh --workspace w-3f9a2c                 # --mode create
 #   scripts/register-tenant.sh --workspace w-3f9a2c --mode limits   # a ceiling change
 #   scripts/register-tenant.sh --workspace w-3f9a2c --mode verify   # A9 only
@@ -143,7 +143,8 @@ done
 # docs/workspaces.md §4 (lane W6 of #847). A person's workspace -- their worker
 # account, its own IAM, their artifact prefix, their forge slot, their
 # namespace and their tenant and pool documents -- is made by THIS script, run
-# by one Cloud Build job (scripts/cloudbuild/workspace-apply.yaml) as
+# by one Cloud Run job, swarm-workspace-apply (images/workspace-apply/entry.py
+# scrubs its environment, scripts/workspace-apply.sh installs the guard), as
 # swarm-workspace-deployer after an admin approves the request in People. That
 # identity holds project-wide account-IAM power Google cannot narrow (§2.4), so
 # this path differs from --group and --user in what it reads and what it may do:
@@ -164,7 +165,7 @@ done
 #     before it reaches Google or the cluster and writes a stop file; this
 #     notices it after every step (including a refusal some read swallowed),
 #     records needs_owner with the step and the rule, and ends. The owner reads
-#     the refused call in the build's private log (§2.5, "What the owner does
+#     the refused call in the execution's private log (§2.5, "What the owner does
 #     then").
 #   * IT NEVER REMOVES ANYTHING. The operator path's repair of a stale
 #     unconditioned bucket binding is a removal, which the guard refuses always
@@ -222,13 +223,18 @@ done
 # recorded rather than refusing the person's work over a quota number.
 #
 # Exit codes: 0 done (or nothing to do), 1 refused or failed, 3 stopped for the
-# owner (needs_owner). The build file reads 3 as "ended, not failed" (§2.2).
+# owner (needs_owner). scripts/workspace-apply.sh reads 3 as "ended, not
+# failed" (§2.2).
 
 WS_ID_RE='^w-[0-9a-f]{6}$'
 WS_TENANT_RE='^u-[a-z0-9]([a-z0-9-]*[a-z0-9])?$'
 # Lower-cased, as swarm-api stores a principal; narrow enough that an address
 # is safe in a Firestore document path and a jq string.
 WS_EMAIL_RE='^[a-z0-9._+-]+@[a-z0-9.-]+$'
+# The run's id, BUILD_ID: in the job, the Cloud Run execution's name, which
+# images/workspace-apply/entry.py checks against this same rule before it
+# passes it on (tests/unit/scripts/test_workspace_apply_entry.py holds the two
+# equal). Kept on one line, in single quotes, for that test.
 WS_BUILD_RE='^[A-Za-z0-9._:-]{1,80}$'
 # §8, decided by the owner 2026-10-08 (WD5): 8 agents and 8 capacity units (a
 # pool of 8), and a namespace of 16 pods and 64 vCPU. 8 people at the ceiling
@@ -245,8 +251,9 @@ WS_MEMORY_GI_PER_CPU=2
 WS_JOBS_PER_POD=4
 WS_EPHEMERAL_GI_PER_POD=10
 # A run claimed longer ago than this and never finished is dead, and its record
-# may be claimed again. Twice the build file's timeout, so no live build is
-# ever mistaken for a dead one.
+# may be claimed again. Twice the job's deadline (1800 seconds, entry.py's own,
+# whatever timeout an execution was given), so no live execution is ever
+# mistaken for a dead one.
 WS_LIVE_RUN_SECONDS=3600
 # §2.2: a transient failure is retried 3 times, after 4, 16 and 64 seconds.
 # The unit tests set this to "0 0 0"; nothing else should.
@@ -1292,8 +1299,10 @@ workspace_main() {
     create|limits|verify) ;;
     *) die "--mode must be create, limits or verify, got '${WORKSPACE_MODE}'" ;;
   esac
+  # Set by entry.py from CLOUD_RUN_EXECUTION; a local-<time> id is the owner's
+  # own run (§2.5, "What the owner does then").
   WS_BUILD_ID="${BUILD_ID:-local-$(date -u +%Y%m%dT%H%M%SZ)}"
-  [[ "${WS_BUILD_ID}" =~ ${WS_BUILD_RE} ]] || die "BUILD_ID '${WS_BUILD_ID}' is not a Cloud Build id"
+  [[ "${WS_BUILD_ID}" =~ ${WS_BUILD_RE} ]] || die "BUILD_ID '${WS_BUILD_ID}' is not a Cloud Run execution name"
   local delays_re='^[0-9]+( [0-9]+)*$'
   [[ "${WS_RETRY_DELAYS}" =~ ${delays_re} ]] \
     || die "SWARM_WORKSPACE_RETRY_DELAYS must be whole seconds separated by spaces, got '${WS_RETRY_DELAYS}'"

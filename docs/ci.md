@@ -2489,6 +2489,25 @@ that exist and to the ones `security.yml` runs on every pull request, so
 renaming a job, adding a path filter to `security.yml`, or widening the
 required list past what always runs fails CI.
 
+### SwarmCloud merges its own pull requests
+
+What main does as of 2026-10-10 (#295):
+
+* **A workflow spec may set `merge: "on_merge_verdict"`** in its `metadata`
+  (`MERGE_ON_VERDICT` in
+  [`validation.py`](../apps/swarm-api/swarm_api/validation.py), #998). That
+  appends a re-review on the integrator's pushed head and a `merge` step,
+  which merges the integrator's pull request only when that review says
+  MERGE and CI is green.
+* **Merge steps on one repository take a single merge slot** and land in
+  submission order, so concurrent merges no longer refuse
+  `behind_too_often` behind each other
+  ([`mergeslot.py`](../apps/agent-worker/agent_worker/mergeslot.py), #1002).
+* **A repository's `merge_policy` sets the default** for a workflow whose
+  `metadata.merge` says nothing (`MERGE_POLICIES` in
+  [`validation.py`](../apps/swarm-api/swarm_api/validation.py), #998;
+  [workflows.md](workflows.md#a-repositorys-merge_policy)).
+
 ## The ruleset on main, and ci-gate
 
 **Owner decision, 2026-09-29.** `main` is protected by a repository ruleset,

@@ -3,9 +3,13 @@
 
 An approval, an admin's retry, a ceiling change and the dispatch sweep each
 publish ONE message to `swarm-workspace-apply` (ApiSettings
-`workspace_apply_topic`). A Cloud Build trigger of the Pub/Sub kind, subscribed
-to that topic and building only `main`, runs `scripts/register-tenant.sh
---workspace` under the call guard (lanes W4, W6). swarm-api holds
+`workspace_apply_topic`). Eventarc and Workflows start the Cloud Run job: an
+Eventarc trigger on that topic hands the message to the Workflows definition
+`swarm-workspace-apply`, which re-checks the workspace id and the mode and runs
+the Cloud Run job `swarm-workspace-apply` with those two as its only arguments,
+as `swarm-workspace-dispatch` (WD2 re-decided 2026-10-10, option (ii); lanes
+W4b, W6b). The job runs `scripts/register-tenant.sh --workspace` under the
+call guard. swarm-api holds
 `roles/pubsub.publisher` on that one topic and nothing else: it records and
 authorises, it never creates an identity or changes IAM.
 
