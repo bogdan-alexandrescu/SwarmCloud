@@ -119,12 +119,16 @@
 # `depends on #<N>`, any case, names something that must land first. The
 # enable job runs main's scripts/check-pr-dependencies.sh beside the closing-
 # references check; while a pull request named that way is not merged, or an
-# issue not closed, the gate refuses like its other refusals (a comment; on a
-# re-evaluation `ready` comes off too). docs/ci.md, "Saying what a pull
-# request depends on". A check that cannot tell fails the job: fail closed.
+# issue not closed, the gate refuses: a comment, and `ready` removed on the
+# label as on a re-evaluation (#888 box 99). Editing the body of an open
+# `ready` pull request dispatches a re-evaluation (`requeue-edited`, #888 box
+# 97), so adding or removing the line is looked at then, not at the next CI
+# finish. docs/ci.md, "Saying what a pull request depends on". A check that
+# cannot tell fails the job: fail closed.
 #
 # tests/unit/scripts/test_auto_merge_workflow.py holds every point above and
-# runs the enable, requeue and disable jobs' shells against a fake `gh`;
+# runs the enable, requeue, requeue-edited and disable jobs' shells against a
+# fake `gh`;
 # test_auto_merge_base_merge.py runs the base-merge classifier against a real
 # git history, and the disable and the retry against a fake `gh`;
 # test_close_merged_issues.py runs the close script the same way.
@@ -440,13 +444,34 @@ jobs:
           fi
 
           # 0b. What the body says this depends on has not landed (the step
-          #    before found it; owner decision 2026-10-08). Refused like the
-          #    items below: on the label a comment and a failed run, `ready`
-          #    kept; on a re-evaluation `ready` removed and auto-merge
-          #    disarmed. Nothing re-evaluates when the dependency merges, so
-          #    the author adds `ready` again then.
+          #    before found it; owner decision 2026-10-08). `ready` comes off
+          #    on the label too, as in item 0, and the comment says so (#888
+          #    box 99): kept, the next CI-finish re-evaluation removed it with
+          #    a second comment long after this one. On a re-evaluation it is
+          #    `refuse`'s, which also disarms. Nothing re-evaluates when the
+          #    dependency merges, so the author adds `ready` again then; an
+          #    edit of the body re-evaluates (the `requeue-edited` job).
           if [[ -n "${DEPENDENCY_REFUSAL:-}" ]]; then
-            refuse "${DEPENDENCY_REFUSAL}"
+            if [[ "${reevaluation}" == "true" ]]; then
+              refuse "${DEPENDENCY_REFUSAL}"
+            fi
+            echo "decision=refused" >>"${GITHUB_OUTPUT}"
+            gh pr edit "${PR_NUMBER}" --remove-label ready
+            body="$(mktemp)"
+            {
+              printf '%s\n' "**Not queued for auto-merge, and \`ready\` removed.** ${DEPENDENCY_REFUSAL}"
+              echo
+              echo "Once it has landed, or the line is gone, add the \`ready\` label again."
+              echo "(.github/workflows/auto-merge.yml, scripts/check-pr-dependencies.sh)"
+            } >"${body}"
+            gh pr comment "${PR_NUMBER}" --body-file "${body}"
+            {
+              echo "### Not queued for auto-merge: a dependency has not landed"
+              echo
+              cat "${body}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            echo "::error::not queued for auto-merge: a dependency has not landed"
+            exit 1
           fi
 
           # 1. A worker's placeholder title. The squash subject below IS the
@@ -888,6 +913,43 @@ jobs:
             count=$((count + 1))
           done <"${numbers}"
           echo "dispatched ${count} re-evaluation(s) for ${RUN_HEAD_SHA}" | tee -a "${GITHUB_STEP_SUMMARY}"
+
+  requeue-edited:
+    name: re-evaluate a ready pull request whose body was edited
+    runs-on: ubuntu-24.04
+    # #888 box 97: adding or removing `depends on` changes the gate's answer,
+    # and nothing looked again until the next label or finishing CI run --
+    # an armed auto-merge merged past a dependency added after the label.
+    # The body only (`changes.body`): a body edit moves no head, so `disable`
+    # ignores it and `ready` stays; the dispatched run is the `enable` job's
+    # re-evaluation, whose refusal drops `ready` and disarms. Not without the
+    # merge App, for the reason `requeue` gives.
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.event.action == 'edited' &&
+      github.event.changes.body != null &&
+      github.event.pull_request.state == 'open' &&
+      contains(github.event.pull_request.labels.*.name, 'ready') &&
+      vars.MERGE_APP_ID != ''
+    permissions:
+      # actions: write -- dispatch this workflow for this pull request. It
+      #   reads nothing: the dispatched run reads the pull request back.
+      actions: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      PR_NUMBER: ${{ github.event.pull_request.number }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - name: dispatch a re-evaluation of this pull request
+        run: |
+          set -euo pipefail
+          if [[ ! "${PR_NUMBER}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::not a pull request number: ${PR_NUMBER}"
+            exit 1
+          fi
+          gh workflow run auto-merge.yml --ref "${DEFAULT_BRANCH}" -f pr="${PR_NUMBER}"
+          echo "dispatched a re-evaluation of #${PR_NUMBER}: its body was edited" | tee -a "${GITHUB_STEP_SUMMARY}"
 
   disable:
     name: disable auto-merge on a new head

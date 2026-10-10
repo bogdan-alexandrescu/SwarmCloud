@@ -52,6 +52,12 @@ variable "enable_safety_tick_alert" {
   default     = true
 }
 
+variable "gke_cluster_name" {
+  description = "The platform's own GKE Autopilot cluster. The spec-refusal metrics count a worker container's line only from this cluster, never from any other in the shared project -- the other team's agents-staging among them (#346 box 51). Null means the name terraform/infra gives it, \"<name_prefix>-autopilot\"."
+  type        = string
+  default     = null
+}
+
 variable "safety_tick_job" {
   description = "Cloud Scheduler job id of the one-minute tick. Its absence is the alert that matters most."
   type        = string

@@ -69,13 +69,17 @@ NOT_READY = {
 
 
 def _issue(number: int, *, minutes_ago: float = 60, labels: tuple[str, ...] = (),
-           title: str = "") -> dict[str, Any]:
+           title: str = "", author: str = "MEMBER") -> dict[str, Any]:
     updated = NOW - timedelta(minutes=minutes_ago)
     return {
         "number": number,
         "title": title or f"issue {number}",
         "labels": [{"name": label} for label in labels],
         "updated_at": updated.isoformat().replace("+00:00", "Z"),
+        # GitHub's own field on every issue it lists: what the issue's author
+        # is to the repository. The sweep starts work only for an issue an
+        # owner, an organisation member or a collaborator opened.
+        "author_association": author,
     }
 
 
@@ -186,9 +190,10 @@ def _candidate(issue: SweepIssue, *, config=SweepConfig(enabled=True), live=None
     )
 
 
-def _sweep_issue(number=42, labels=(), minutes_ago=60.0) -> SweepIssue:
+def _sweep_issue(number=42, labels=(), minutes_ago=60.0, association="MEMBER") -> SweepIssue:
     return SweepIssue(number=number, title="t", labels=tuple(labels),
-                      updated_at=NOW - timedelta(minutes=minutes_ago))
+                      updated_at=NOW - timedelta(minutes=minutes_ago),
+                      author_association=association)
 
 
 def test_the_control_issue_is_a_candidate():
@@ -199,6 +204,41 @@ def test_the_control_issue_is_a_candidate():
 def test_an_epic_blocked_or_security_label_is_skipped(label):
     assert _candidate(_sweep_issue(labels=(label,))) == f"label: {label.lower()}"
     assert _candidate(_sweep_issue(labels=("bug",))) is None
+
+
+@pytest.mark.parametrize("association", ["OWNER", "MEMBER", "COLLABORATOR", "member"])
+def test_an_issue_an_owner_member_or_collaborator_opened_is_a_candidate(association):
+    assert _candidate(_sweep_issue(association=association)) is None
+
+
+@pytest.mark.parametrize("association", [
+    "NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "FIRST_TIMER", "MANNEQUIN", "",
+])
+def test_an_issue_an_outsider_opened_is_skipped(association):
+    # Security review 2026-10-09 (docs/security/review-2026-10-09.md, item 1):
+    # every swept run is auto-approved and auto-merged with the tenant's
+    # credential, so on a public repository anybody's issue would otherwise
+    # become a merged change nobody approved. A merged contributor
+    # (CONTRIBUTOR) holds no write access either, and an association GitHub
+    # did not send is not proof of one.
+    assert _candidate(_sweep_issue(association=association)) == (
+        f"author: {association or 'unknown'}"
+    )
+
+
+def test_the_author_rule_comes_before_every_rule_that_reads_firestore():
+    reads: list[int] = []
+
+    def last_run(number):
+        reads.append(number)
+        return None
+
+    reason = skip_reason(
+        _sweep_issue(association="NONE"), repository=REPOSITORY,
+        config=SweepConfig(enabled=True), live={}, claimed={}, last_run=last_run,
+    )
+    assert reason == "author: NONE"
+    assert reads == []
 
 
 def test_the_tenants_exclusion_list_skips_by_number_and_by_label():
@@ -250,9 +290,9 @@ def test_a_not_ready_verdict_holds_until_the_issue_changes_after_the_runs_last_w
     wrote = NOW - timedelta(minutes=30)
     verdict = _stored_run(RunState.NOT_READY, updated=NOW - timedelta(minutes=31), wrote=wrote)
     # Our own status comment moved updated_at to just after the verdict.
-    unchanged = SweepIssue(number=42, title="t", labels=(), updated_at=wrote + timedelta(seconds=5))
+    unchanged = SweepIssue(number=42, title="t", labels=(), updated_at=wrote + timedelta(seconds=5), author_association="MEMBER")
     assert _candidate(unchanged, last=verdict) == "not_ready_unchanged: run_prev"
-    edited = SweepIssue(number=42, title="t", labels=(), updated_at=wrote + timedelta(minutes=5))
+    edited = SweepIssue(number=42, title="t", labels=(), updated_at=wrote + timedelta(minutes=5), author_association="MEMBER")
     assert _candidate(edited, last=verdict) is None
 
 
@@ -267,7 +307,7 @@ def test_any_ended_run_holds_an_unchanged_issue_too(state):
 
 def test_an_issue_github_gave_no_time_for_is_not_called_changed():
     ended = _stored_run(RunState.NOT_READY)
-    issue = SweepIssue(number=42, title="t", labels=(), updated_at=None)
+    issue = SweepIssue(number=42, title="t", labels=(), updated_at=None, author_association="MEMBER")
     assert _candidate(issue, last=ended) == "not_ready_unchanged: run_prev"
     assert _candidate(issue, last=None) is None
 
@@ -277,6 +317,25 @@ def test_pull_requests_in_the_issue_list_are_never_candidates(client, db, github
     body = _sweep(client).json()
     assert _started(body) == [f"{REPOSITORY}#42"]
     assert all(d["issue"]["number"] != 99 for d in _runs(db).values())
+
+
+def test_an_outsiders_issue_is_never_planned_written_to_or_run(client, db, github, writes):
+    github.issues = [_issue(7, author="NONE"), _issue(8, author="CONTRIBUTOR"), _issue(42)]
+    body = _sweep(client).json()
+    assert _started(body) == [f"{REPOSITORY}#42"]
+    assert _reasons(body) == {
+        f"{REPOSITORY}#7": "author: NONE",
+        f"{REPOSITORY}#8": "author: CONTRIBUTOR",
+    }
+    assert {d["issue"]["number"] for d in _runs(db).values()} == {42}
+    assert body["skipped_by_reason"]["author"] == 2
+
+
+def test_the_sweep_listing_carries_each_issues_author_association(github):
+    github.issues = [_issue(7, author="NONE"), _issue(42)]
+    del github.issues[1]["author_association"]
+    listing = forge.GitHubIssues(send=github).sweep_listing(OWNER, REPO, "t" * 8)
+    assert [(i.number, i.author_association) for i in listing.issues] == [(7, "NONE"), (42, "")]
 
 
 def test_each_skip_reaches_the_route_report_with_its_reason(client, db, github):
@@ -469,7 +528,7 @@ def test_an_ended_run_frees_its_place(client, db, github):
 def test_candidates_start_oldest_updated_first_across_repositories(client, db, github):
     github.issues = [
         _issue(5, minutes_ago=10), _issue(6, minutes_ago=5000), _issue(7, minutes_ago=300),
-        {"number": 8, "title": "no time"},
+        {"number": 8, "title": "no time", "author_association": "MEMBER"},
     ]
     _enable(db, max_live_runs=2)
 

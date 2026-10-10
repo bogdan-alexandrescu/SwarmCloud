@@ -21,6 +21,7 @@ output "scheduler_job_names" {
       google_cloud_scheduler_job.reconciler.name,
       try(google_cloud_scheduler_job.quota_refresh[0].name, ""),
       try(google_cloud_scheduler_job.forge_refresh[0].name, ""),
+      try(google_cloud_scheduler_job.workspace_sweep[0].name, ""),
     ]),
     [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.workflow_rollup[t].name],
     [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.issue_run_advance[t].name],
@@ -31,7 +32,7 @@ output "scheduler_job_names" {
 }
 
 output "rollup_sweeper_email" {
-  description = "The identity the workflow-rollup, issue-run-advance, issue-sweep, repo-index-poll, merge-wake and forge-refresh jobs and the task_finished push subscription present. The root sets swarm-api's ROLLUP_SWEEPER_USERS to it, which is what lets it call POST /v1/admin/workflows/rollup, POST /v1/admin/runs/advance, POST /v1/admin/issues/sweep, POST /v1/admin/repositories/poll, POST /v1/admin/merges/wake, POST /v1/admin/forge/refresh and POST /v1/admin/tasks/finished and nothing else."
+  description = "The identity the workflow-rollup, issue-run-advance, issue-sweep, repo-index-poll, merge-wake, forge-refresh and workspace-sweep jobs and the task_finished push subscription present. The root sets swarm-api's ROLLUP_SWEEPER_USERS to it, which is what lets it call POST /v1/admin/workflows/rollup, POST /v1/admin/runs/advance, POST /v1/admin/issues/sweep, POST /v1/admin/repositories/poll, POST /v1/admin/merges/wake, POST /v1/admin/forge/refresh, POST /v1/admin/workspaces/sweep and POST /v1/admin/tasks/finished and nothing else."
   value       = local.rollup_sweeper_email
 }
 

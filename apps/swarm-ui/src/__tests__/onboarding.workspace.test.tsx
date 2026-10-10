@@ -11,8 +11,10 @@
 //     it stops at ready, and on unmount;
 //   * the claude_account step's [Request a loan] posts and then reads "Loan
 //     requested"; [Add key] goes to Capacity › Accounts;
-//   * a count of zero accounts is drawn as a measured zero (the `real zero`
-//     mark), never as a blank, and nothing is drawn the API did not send.
+//   * a count of zero accounts is prose, so it reads as words -- `none of your
+//     own` -- with "measured" in its accessible name, never the `real zero`
+//     mark and never a blank (owner, 2026-10-09); a count the API did not send
+//     is the `not measured` mark, never `none`.
 //
 // The step evidence is what `onboarding._workspace_step` and `_claude_step`
 // serve (tests/unit/control_plane/test_onboarding_workspace_steps.py).
@@ -288,14 +290,15 @@ describe('the record is read every 5 s until it is ready', () => {
 })
 
 describe('the claude_account step', () => {
-  it('draws zero accounts as measured zeros and offers Add key and a loan', async () => {
+  it('writes zero accounts as words, measured, and offers Add key and a loan', async () => {
     const r = withId({ state: 'ready' })
     await mount(doc(r), () => r)
     const el = stepEl('claude_account')
     expect(within(el).getByText('Add a Claude account')).toBeTruthy()
-    const zeros = el.querySelectorAll('.ctl-mark.is-zero')
-    expect(zeros).toHaveLength(2)
-    expect([...zeros].map((z) => z.textContent)).toEqual(['real zero', 'real zero'])
+    expect(visible(el)).toContain('none of your own · none lent to you')
+    expect(el.querySelector('.ctl-mark.is-zero')).toBeNull()
+    expect(within(el).getByLabelText('none of your own (measured)')).toBeTruthy()
+    expect(within(el).getByLabelText('none lent to you (measured)')).toBeTruthy()
     expect(visible(el)).toContain('Your workspace runs nothing until it has a Claude account to run on.')
     expect(within(el).getByRole('link', { name: 'Add key' }).getAttribute('href')).toBe('/capacity/accounts')
     expect(el.querySelector('#claude-account')).not.toBeNull()
@@ -319,9 +322,78 @@ describe('the claude_account step', () => {
     await mount(doc(r, { own: 2, lent: 0, provider_key: false, loan_request: null }), () => r)
     const el = stepEl('claude_account')
     expect(el.dataset.state).toBe('done')
-    expect(visible(el)).toContain('your own 2')
-    expect(el.querySelectorAll('.ctl-mark.is-zero')).toHaveLength(1)
+    expect(visible(el)).toContain('2 of your own · none lent to you')
+    expect(el.querySelector('.ctl-mark.is-zero')).toBeNull()
     expect(within(el).queryByRole('button')).toBeNull()
     expect(within(el).queryByRole('link', { name: 'Add key' })).toBeNull()
+  })
+
+  it('a count the API did not send is the not-measured mark, never "none"', async () => {
+    const r = withId({ state: 'ready' })
+    await mount(doc(r, { own: 1, provider_key: true, loan_request: null }), () => r)
+    const el = stepEl('claude_account')
+    expect(visible(el)).toContain('1 of your own')
+    const absent = el.querySelectorAll('.ctl-mark.is-absent')
+    expect(absent).toHaveLength(1)
+    expect(absent[0]!.textContent).toBe('not measured')
+    expect(visible(el)).toContain('lent to you')
+    expect(visible(el)).not.toContain('none lent to you')
+    expect(visible(el)).toContain('a provider key')
+    expect(el.querySelector('.ctl-mark.is-zero')).toBeNull()
+  })
+})
+
+// AN APPROVAL NOTHING WILL BUILD (2026-10-10, w-752763 sat `approved` for 19
+// hours under "Setting up your workspace"). The record's `provisioning` block is
+// `workspaces.provisioning`'s (tests/unit/control_plane/test_people_admin.py).
+describe('an approved workspace the platform is not advancing', () => {
+  const approvedAt = new Date(Date.now() - 19 * 3600_000).toISOString()
+
+  it('provisioning off: says so in words, with no elapsed counter, no step rows and no live mark', async () => {
+    const r = withId({
+      state: 'approved',
+      decision: { verdict: 'approved', reason: null, at: approvedAt },
+      provisioning: { available: false, waiting_because: 'publishing_off', approved_minutes_ago: 1140 },
+    })
+    await mount(doc(r), () => r)
+    const el = stepEl('workspace')
+    await waitFor(
+      () =>
+        expect(visible(el)).toContain(
+          "Approved, but workspace building isn't switched on in this deployment yet. Your admins have been told. Nothing to do on your side.",
+        ),
+      WAIT,
+    )
+    expect(visible(el)).not.toContain('Setting up your workspace')
+    expect(el.querySelector('ol[aria-label="Workspace set-up steps"]')).toBeNull()
+    // The checklist row's own mark is `warn`, not the haloed `live` one.
+    expect(el.querySelector(':scope > [data-tone]')?.getAttribute('data-tone')).toBe('warn')
+  })
+
+  it('dispatched_unclaimed: taking longer than expected, how long ago it was approved, and the request id', async () => {
+    const r = withId({
+      state: 'approved',
+      decision: { verdict: 'approved', reason: null, at: approvedAt },
+      provisioning: { available: true, waiting_because: 'dispatched_unclaimed', approved_minutes_ago: 47 },
+    })
+    await mount(doc(r), () => r)
+    const el = stepEl('workspace')
+    await waitFor(() => expect(visible(el)).toContain('Taking longer than expected (approved 47 minutes ago)'), WAIT)
+    expect(visible(el)).toContain('req-1')
+    expect(el.querySelector('ol[aria-label="Workspace set-up steps"]')).toBeNull()
+    expect(el.querySelector(':scope > [data-tone]')?.getAttribute('data-tone')).toBe('warn')
+  })
+
+  it('an approval that is moving still draws its steps', async () => {
+    const r = withId({
+      state: 'approved',
+      decision: { verdict: 'approved', reason: null, at: new Date(Date.now() - 60_000).toISOString() },
+      provisioning: { available: true, waiting_because: null, approved_minutes_ago: 1 },
+    })
+    await mount(doc(r), () => r)
+    const el = stepEl('workspace')
+    await waitFor(() => expect(visible(el)).toContain('Setting up your workspace — w-3f9a2c'), WAIT)
+    expect(el.querySelector('ol[aria-label="Workspace set-up steps"]')).not.toBeNull()
+    expect(el.querySelector(':scope > [data-tone]')?.getAttribute('data-tone')).toBe('live')
   })
 })
