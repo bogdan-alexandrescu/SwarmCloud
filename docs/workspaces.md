@@ -336,6 +336,32 @@ token-creator.**
 
 ---
 
+### W0b, read 2026-10-10: the operator's live half
+
+Read by the operator with `gcloud` against `saga-agents-staging`.
+
+* **(3) Who holds the powers that reach the job (read ~18:45Z,
+  `gcloud projects get-iam-policy`).** At the project level:
+  `swarmJobDispatcher` (and the conditioned `swarmGkeDispatcher`) is held by
+  `swarm-scheduler`; `swarmJobReaper` (and the conditioned `swarmGkeReaper`)
+  by `swarm-reconciler`; `swarmAcceptanceRunner` by `swarm-accept`;
+  `roles/run.admin` by `swarm-tf-deployer` and one owner; `roles/owner` by the
+  two human owners, and `roles/iam.serviceAccountUser` by one of them. **One
+  finding:** the default compute account, `<number>-compute@developer`, holds
+  `roles/editor` on the whole project. Editor carries
+  `iam.serviceAccounts.actAs` and Cloud Run job update and run, so a workload
+  running as the default compute account bypasses the job-level policy of
+  §2.3. It is Google's legacy default grant, and in this shared project the
+  other team's workloads may use it, so it is recorded as a residual risk and
+  as #1020, to be removed together with that team, never unilaterally.
+* **(1) The refused-update proof: not yet shown.** The probe (a no-op label
+  update of `swarm-verify` as `swarm-scheduler`, which holds `run.jobs.update`
+  but no `actAs` on `swarm-verify`) was refused one step earlier, at
+  impersonation (`iam.serviceAccounts.getAccessToken`, the operator holds no
+  token-creator on `swarm-scheduler`), so it proves nothing either way and
+  changed nothing. The documentation half (above) says `actAs` is checked on
+  every create and update. The live proof stays pending before W4b is applied.
+
 ## 1. The request record
 
 ### 1.1 `workspaces/{tenant_id}`
