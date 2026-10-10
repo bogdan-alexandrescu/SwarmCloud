@@ -136,6 +136,18 @@ MIGRATION_VIA = "migration"
 #: making, the resources the tenant already has. Not ready unless migrated: the
 #: job made that one, and there is nothing to move.
 MIGRATABLE = frozenset({REQUESTED, FAILED, DENIED})
+
+
+def never_dispatched(record: Mapping[str, Any] | None) -> bool:
+    """An `approved` record no build was ever sent for: no dispatch attempt and
+    no run. Nothing can be making its resources, so it may be migrated or
+    denied like a `requested` one. Before 2026-10-10 an approved record had no
+    way out but a build claiming it, so one approved while publishing was off
+    (w-752763, 07:09Z 2026-10-09) could be neither migrated, denied nor
+    retried (#847)."""
+    if not record or state_of(record) != APPROVED:
+        return False
+    return not record.get("dispatch") and not record.get("run")
 #: The keys of `limits`, in the order §1.1 lists them.
 LIMIT_KEYS = ("max_active", "capacity_units", "quota_pods", "quota_cpu")
 #: What `migrate` did, or would do.
@@ -710,7 +722,8 @@ class Workspaces:
 
         * No record: created as a request would create it, with a FRESH
           workspace id and its `workspace_ids/` entry, then made ready.
-        * `requested`, `failed` or `denied`: completed IN PLACE. The
+        * `requested`, `failed` or `denied`, or `approved` with no dispatch
+          attempt and no run (`never_dispatched`): completed IN PLACE. The
           workspace id, its index entry and the request id are kept; an
           earlier decision moves to `history`.
         * `ready` and `migrated`: nothing is written (a re-run).
@@ -747,13 +760,14 @@ class Workspaces:
                 action = MIGRATE_NOTHING
             elif before is None:
                 action = MIGRATE_CREATE
-            elif state in MIGRATABLE:
+            elif state in MIGRATABLE or never_dispatched(before):
                 action = MIGRATE_UPDATE
             else:
                 raise Conflict(
                     f"workspace {before.get('workspace_id')} is {state}"
                     + ("" if state != READY else " and was not migrated")
-                    + "; only a requested, failed or denied record, or none, is migrated",
+                    + "; only a requested, failed or denied record, an approved one no build "
+                    "was ever sent for, or none, is migrated",
                     detail={"workspace_id": before.get("workspace_id"), "state": state})
             if expect is not None and action != expect:
                 raise Conflict(

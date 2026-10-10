@@ -275,10 +275,10 @@ class People:
         def _apply(txn: Any) -> dict[str, Any]:
             ref, record = self._resolve(txn, workspace_id)
             state = ws.state_of(record)
-            if state not in DENIABLE:
+            if state not in DENIABLE and not ws.never_dispatched(record):
                 raise WorkspaceWrongState(
                     f"workspace {workspace_id} is {state}; only a requested or failed "
-                    "workspace can be denied",
+                    "workspace, or an approved one no build was ever sent for, can be denied",
                     detail={"workspace_id": workspace_id, "state": state})
             patch: dict[str, Any] = {"state": ws.DENIED, "decision": {
                 "by": by, "at": self._now(), "verdict": ws.DENIED, "reason": reason}}
