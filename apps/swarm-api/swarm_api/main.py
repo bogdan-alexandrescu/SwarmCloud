@@ -42,6 +42,7 @@ from .routes import (
     repositories,
     runs,
     schedule_tick,
+    strandedprs,
     tasks,
     tenants,
     workflows,
@@ -152,6 +153,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The schedule tick (docs/schedules.md §2, lane S2): one route, admitted
     # to the `swarm-schedule-tick` identity alone (SD10).
     app.include_router(schedule_tick.router)
+    # Stranded pull requests (part of #295): GET /v1/stranded-prs, a member's
+    # own tenant's last sweep, and the sweep the scheduler and an admin call.
+    app.include_router(strandedprs.router)
     # Child tasks (docs/design/child-tasks.md): worker-only routes, which
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.
