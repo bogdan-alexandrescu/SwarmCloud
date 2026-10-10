@@ -10,7 +10,10 @@ Chromium needs a large /dev/shm and GKE gives direct control over it.
 It also takes claude-code since contract request 53 (2026-10-08), for its start
 latency: about 23 s there against Cloud Run's 128 s median. And indexer since
 contract request 63 (2026-10-10), the canary for #939: a new GKE pod's internet
-path opens in about 1 s, a new Cloud Run instance's in a median 20 s.
+path opens in about 1 s, a new Cloud Run instance's in a median 20 s. And
+generic, codex and merge since contract requests 64-66 (2026-10-10, #939
+option A), for the same reason; Cloud Run keeps mock, and post-verdict and
+claude-code-review, which were designed to run as accounts of their own.
 
 Per-tenant-per-profile Job resources exist because of a Cloud Run constraint,
 not a preference: Cloud Run sets the service account on the JOB resource and it
