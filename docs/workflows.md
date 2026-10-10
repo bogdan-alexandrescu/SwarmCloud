@@ -289,7 +289,9 @@ recorded by `ControlPlane._record_parked_uploads` and read back through
 attempt's prefix. B then stages `notes.md` from that first attempt's object:
 its `result_summary.staged_inputs` names `notes.md` with a `uri` under A's
 `attempts/<first attempt>/`. `tests/unit/worker/test_parked_uploads_carry.py`
-holds the same run offline.
+holds the same run offline. accept.yml's `workflow` group runs this recipe
+against dev after every release, as `workflow: carry`
+(scripts/acceptance/groups/workflow.sh `_wf_check_carry`).
 
 ## Artifacts pass by reference
 
@@ -670,28 +672,67 @@ integrator still owed its contributors' merge is still never `no_change`.
 
 ### The steps that needed the change are SKIPPED
 
-A step that needs the change a `no_change` step did not make ends SUCCEEDED
-with `result_summary.skipped: {"reason": "nothing to change", "upstream":
-[task ids]}`. It starts no agent, clones nothing (the branch it would start
-from was never pushed), stages nothing and publishes nothing. A step needs an
-upstream's change when it:
+A step with nothing to work on ends SUCCEEDED with `result_summary.skipped:
+{"reason": "nothing to change", "upstream": [task ids]}`. It starts no agent,
+clones nothing, stages nothing and publishes nothing. **A step is skipped only
+when NONE of the changes it reads exists.** A step reads an upstream's change
+when it:
 
-* stages that upstream's `swarm-work.patch` through `input_from`;
+* stages that upstream's `swarm-work.patch` through `input_from` (or anything
+  at all from a SKIPPED upstream, which wrote nothing);
 * starts from that upstream's branch: `builds_on`, a `single-pr` reader or
   amender's author, a merge step's pull request;
-* integrates it, and every step it integrates changed nothing or was skipped.
-  An integrator with at least one contributor that changed something runs, and
-  merges only those; the others are listed under `git.integrated.no_change`,
-  not as `missing`. A contributor that SUCCEEDED having published nothing (a
-  read-only review) is left out the same way, under
-  `git.integrated.read_only`; see the review shape below.
+* integrates it. A contributor that SUCCEEDED having published nothing (a
+  read-only review) is not a change to integrate.
 
-**A skip is transitive**: a step that stages anything from a SKIPPED step is
-skipped too, because a skipped step wrote nothing. A step that stages only the
-verification files of a `no_change` step still runs: those files exist. In the
-review shape below, an implementer with nothing to change skips the review
-(it stages the patch and builds on the implementer) and the fix (it builds on
-the implementer), and the workflow SUCCEEDS with no pull request.
+So a step whose upstreams changed nothing is skipped -- but one that has
+ANOTHER changed input runs:
+
+* **Several staged patches** skip a step only when every one of their
+  upstreams changed nothing or was skipped. With one that changed something,
+  the step runs, stages the patches that exist, and names the rest in
+  `result_summary.staged_inputs_left_nothing` instead of failing on a file
+  that was never written.
+* **A `builds_on` step that changed nothing** pushed no branch, but on its own
+  it no longer skips a step that has another changed input. The worker follows
+  that step's own `builds_on` back to the nearest ancestor that pushed, and
+  clones its branch -- or, with none, the default branch, the base that step
+  itself started from. Each ancestor is read through the tenant-checked
+  upstream read and its signed spec verified as a step of THIS workflow before
+  its `builds_on` is trusted, as a worker action verifies its upstreams: one
+  that does not verify is a refusal naming it, never a silent fall back. The
+  walk is bounded by `max_workflow_steps`. `result_summary.builds_on_resolved`
+  records where the step started (`task_id`, null for the default branch) and
+  which steps it walked past.
+* **An integrator** with at least one contributor that changed something
+  always runs: it clones that base, merges only those contributors (the others
+  are listed under `git.integrated.no_change`, not as `missing`; a read-only
+  review under `git.integrated.read_only`; see the review shape below), and on
+  a MERGE verdict skips only its agent and opens the one pull request from
+  `swarm/<its task>`.
+* A `single-pr` reader or amender, and a merge step, keep the plain rule: each
+  has exactly one branch to read, and nothing else stands in for it.
+
+**Why: #978.** The rule was first written for one implementer, as "skip when
+ANY upstream it needs changed nothing". An issue run with two implement steps
+compiles to a review that stages both patches and builds on the LAST
+implementer, and an integrator that builds on that same one
+(`issueruns._compile_staged`). In wf_ca1807e43ac64d6b8afd (2026-10-09) the
+second implementer changed nothing: the integrator was skipped in 0.4 s,
+cloned nothing and opened no pull request, and the first implementer's pushed
+branch was stranded -- a run whose work existed ended FAILED with "opened no
+pull request". One unchanged step must not discard another's work.
+
+**A skip is transitive**: a step that stages anything from a SKIPPED step, with
+no other changed input, is skipped too, because a skipped step wrote nothing.
+A step that stages only the verification files of a `no_change` step still
+runs: those files exist. In the review shape below, when EVERY implementer has
+nothing to change, the review is skipped (every patch it stages is absent),
+then the fix (its verdict was never written and no contributor changed
+anything), and the workflow SUCCEEDS with no pull request -- the integrator's
+`skipped` marker is what an issue run reads as the work being already on main
+(#646). When at least one implementer changed something, the review reviews
+the patches that exist and the fix integrates them.
 
 **Why SKIPPED is a SUCCEEDED task and not a state of its own.** The frozen
 `TaskState` has no SKIPPED, and the frozen transitions forbid PARKED ->
@@ -763,7 +804,10 @@ What each step does, and why each field is there:
   missing output (`empty_diff`), not retried, unless it says changing nothing
   is a correct result with `allow_empty_diff: true`: then it SUCCEEDS with
   `no_change`, and the review and the fix, which need its change, are SKIPPED
-  (see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff)).
+  -- unless another implementer of the same run changed something, in which
+  case they review and integrate that work and start from the default branch
+  instead of the unpushed one (#978; see
+  [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff)).
 * **The verdict is a file the review writes**, `{"verdict": "MERGE" |
   "NOT_YET", "findings": [...]}`. A finding is a string, or an object whose
   `summary`, `title` or `message` is one. The verdict is read whatever its case
