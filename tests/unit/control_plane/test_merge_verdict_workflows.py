@@ -9,8 +9,9 @@ fix workflows ended at the pull request. What these tests hold:
      and the re-review and reads the re-review's verdict -- the latest one.
      The integrator is still the fix, and integrates only the implementer.
   2. The re-review runs the review's own profile and input, by name, with the
-     re-review preamble before its prompt; it builds on the integrator and
-     stages the earlier verdict and the review's inputs by parent.
+     re-review preamble before its prompt; it builds on the integrator,
+     stages the earlier verdict and the review's inputs by parent, and is
+     gated on the review's NOT_YET like the fix (2026-10-10).
   3. A repository's registered `merge_policy` applies when `metadata.merge`
      says nothing, before the platform default, and only the tenant's own
      registration counts. A policy that cannot apply appends nothing.
@@ -148,9 +149,12 @@ def test_the_rereview_reviews_the_fixs_head_with_the_reviews_own_profile_and_inp
     # Its checkout is the head the integrator pushed: the head the merge pins.
     assert dispatch["builds_on"] == steps["fix"]["task_id"]
     # By parent, so the earlier verdict.json is review/verdict.json and never
-    # the file this step writes; its agent always runs (no gate).
+    # the file this step writes. Gated on the review like the fix (owner
+    # decision 2026-10-10): its agent runs only after a fix, and on MERGE it
+    # passes the review's verdict on (test_rereview_gated_on_not_yet.py).
     assert task["metadata"]["input_layout"] == INPUT_LAYOUT_BY_PARENT
-    assert "verdict_gate" not in dispatch
+    assert dispatch["verdict_gate"] == {"task_id": steps["review"]["task_id"],
+                                        "verdict_in": ["NOT_YET"]}
 
 
 REVIEW_PREAMBLE_HEAD = REREVIEW_PREAMBLE.split("{", 1)[0]
