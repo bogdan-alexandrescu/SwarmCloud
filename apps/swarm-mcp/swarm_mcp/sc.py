@@ -26,6 +26,8 @@ and `sc access` grants, revokes and verifies them later. They change what
 SwarmCloud may do as that person, so they are held out of every grant as the
 account verbs are; `sc setup status`, `sc access list`, `orgs` and `repos`
 read. No token, code or state is printed (see the section's own note).
+`sc setup token --owner <org>` (D5) is the one verb a token goes IN through:
+read from stdin, never an argument, posted once and never printed.
 
 IT ALSO SAYS WHICH CLUSTER, AND WHO YOU ARE ON IT (2026-09-25). `sc context`,
 `sc login`, `sc logout` and `sc whoami` are the `kubectl config` / `gh auth`
@@ -1996,13 +1998,28 @@ def revoke_repository(client: SwarmClient, repository: str) -> dict[str, Any]:
     return client.request("DELETE", f"/v1/access/grants/{repo_id}")
 
 
+#: The checks a push test asks for: the reads, and D6's one write. Named in
+#: full because a body that names `checks` replaces the API's default set.
+PUSH_TEST_CHECKS = ("clone", "push", "pull_request", "push_test")
+
+
 def verify_repositories(
-    client: SwarmClient, repositories: Sequence[str] = ()
+    client: SwarmClient, repositories: Sequence[str] = (), *, push_test: bool = False
 ) -> list[dict[str, Any]]:
     """`POST /v1/access/grants/{repo_id}/verify` for each grant named, or for
     every grant you hold. Reads only (D6): clone, and for a write grant push
     and pull request. A refused call is that repository's answer, not the end
-    of the sweep."""
+    of the sweep.
+
+    `push_test` adds D6's opt-in write: on each NAMED write grant, the API
+    creates and deletes one branch, `swarmcloud/onboarding-check-<nonce>`.
+    It is never run over "every grant", and a read grant is refused here,
+    before anything is sent: SwarmCloud enforces read (D9), so it does not
+    push there, not even a test branch. The caller has had the person
+    confirm it; this function does not ask."""
+    if push_test and not repositories:
+        raise SwarmError("the push test writes a branch, so it runs only on repositories named "
+                         "one by one. Nothing was verified")
     grants = [g for g in access_overview(client).get("grants") or [] if isinstance(g, dict)]
     if repositories:
         by_name = {str(g.get("repository") or "").lower(): g for g in grants}
@@ -2014,14 +2031,20 @@ def verify_repositories(
                     f"you hold no grant on {repository_name(repository)}; nothing was verified. "
                     "Grant it first"
                 )
+            if push_test and grant.get("mode") != "write":
+                raise SwarmError(
+                    f"your grant on {grant.get('repository')} is read, and the push test writes "
+                    "a branch: SwarmCloud enforces read. Change the grant to write first. "
+                    "Nothing was verified")
             picked.append(grant)
         grants = picked
+    body: dict[str, Any] = {"checks": list(PUSH_TEST_CHECKS)} if push_test else {}
     results: list[dict[str, Any]] = []
     for grant in grants:
         row: dict[str, Any] = {"repository": grant.get("repository"), "mode": grant.get("mode")}
         repo_id = grant.get("repo_id")
         try:
-            answer = client.request("POST", f"/v1/access/grants/{repo_id}/verify", payload={})
+            answer = client.request("POST", f"/v1/access/grants/{repo_id}/verify", payload=body)
         except SwarmError as exc:
             row.update(passed=False, checks={}, failures=[{"check": "verify",
                                                             "code": (exc.detail or {}).get("failure_code"),
@@ -2035,6 +2058,10 @@ def verify_repositories(
             checks={name: (check or {}).get("state") for name, check in (checked or {}).items()},
             failures=[f for f in answer.get("failures") or [] if isinstance(f, dict)],
         )
+        if isinstance(answer.get("push_test"), dict):
+            # The branch's name and whether it was left behind: never a token.
+            row["push_test"] = {"branch": answer["push_test"].get("branch"),
+                                "leftover": bool(answer["push_test"].get("leftover"))}
         results.append(row)
     return results
 
@@ -2046,10 +2073,15 @@ def verify_lines(results: Sequence[dict[str, Any]]) -> list[str]:
     for row in results:
         lines.append(f"{row.get('repository')}  ({row.get('mode') or '?'})  "
                      + ("passed" if row.get("passed") else "NOT passed"))
-        for name in ("clone", "push", "pull_request"):
+        for name in PUSH_TEST_CHECKS:
             state = (row.get("checks") or {}).get(name)
             if state is not None:
                 lines.append(f"    {name.replace('_', ' '):<14} {state}")
+        pushed = row.get("push_test")
+        if isinstance(pushed, dict) and pushed.get("branch"):
+            lines.append(f"    test branch    {pushed['branch']} "
+                         + ("was NOT deleted: delete it on GitHub" if pushed.get("leftover")
+                            else "created and deleted"))
         for failure in row.get("failures") or []:
             lines.append(f"    {failure.get('check')}: {failure.get('code') or 'refused'}")
             if failure.get("copy"):
@@ -2068,7 +2100,34 @@ def owners_lines(listing: dict[str, Any]) -> list[str]:
         enabled = ", enabled" if owner.get("enabled") else ""
         sso = ", SSO required" if owner.get("sso") == "required" else ""
         lines.append(f"  {owner.get('owner')!s:<24} {kind:<13} {state}{enabled}{sso}")
+        if owner.get("code") and owner.get("copy"):
+            # ORG_APPROVAL_PENDING (§2.3): the API's copy, word for word.
+            lines += _wrapped(f"{owner['code']}: {owner['copy']}", "      ")
     return lines
+
+
+def approval_pending(listing: dict[str, Any]) -> list[dict[str, Any]]:
+    """The owners waiting on an org owner's approval of the App: each one's
+    §2.3 code and copy as the API served them, and when it was asked for."""
+    return [{"owner": o.get("owner"), "code": o.get("code"), "copy": o.get("copy"),
+             "requested_at": o.get("requested_at")}
+            for o in listing.get("owners") or []
+            if isinstance(o, dict) and o.get("install_state") == "requested"]
+
+
+def request_install(client: SwarmClient, owner: str) -> dict[str, Any]:
+    """`POST /v1/access/orgs/{owner}/install-request`: record that you asked
+    `owner`'s owners to install the App. GitHub shows a user token no
+    pending request, so SwarmCloud records it, shows ORG_APPROVAL_PENDING and
+    re-checks it every 15 minutes. No GitHub call, no body."""
+    named = owner.strip()
+    if not named:
+        raise SwarmError("name the owner whose owners you asked. Nothing was sent")
+    owner = urllib.parse.quote(named, safe="")
+    answer = client.request("POST", f"/v1/access/orgs/{owner}/install-request")
+    if not isinstance(answer, dict):
+        raise SwarmError(f"the install request for {named} answered nothing readable")
+    return answer
 
 
 def repositories_lines(listing: dict[str, Any]) -> list[str]:
@@ -2221,7 +2280,11 @@ def _setup_owners(client: SwarmClient, out, ask: Callable[[str], str],
         out.write(
             f"Install it there, choosing \"Only select repositories\":\n  {url}\n"
             "On an organisation you do not own, GitHub sends its owners a request; it can "
-            "be enabled once one of them approves.\n"
+            "be enabled once one of them approves. Record that you asked with "
+            f"`{terminal_command('sc access request-install <owner>')}`, and setup shows "
+            "ORG_APPROVAL_PENDING and re-checks it every 15 minutes.\n"
+            "If the org will not install it, store a fine-grained token for it instead: "
+            f"`{terminal_command('sc setup token --owner <owner>')}` (read from stdin).\n"
         )
         if not _yes(ask("Open the install page now? [y/N]: "), default=False):
             return enabled
@@ -2326,6 +2389,79 @@ def run_setup(
 def cmd_setup(client: SwarmClient, args, out) -> int:
     return run_setup(client, out, browser=not args.no_browser,
                      timeout=max(1, int(args.timeout)))
+
+
+# -- D5: a fallback token for one owner (`sc setup token --owner <org>`) ------
+#
+# For an org that will not install the App, or that refuses classic tokens:
+# a fine-grained personal access token whose resource owner is that org.
+# THE VALUE IS READ FROM STDIN AND NOWHERE ELSE. There is no `--token`: an
+# argument lands in shell history and in `ps`, and a model granted a shell
+# could be handed one. At a terminal it is read through getpass, with no
+# echo; piped (`... | uv run sc setup token --owner o`), one line. It is
+# posted ONCE, and every line this prints -- the answer, a refusal, an error
+# -- has the value taken out first, in case anything ever echoed it.
+
+#: D5's route: probes the token against the owner, stores it once as a
+#: version of the person's per-owner slot, answers the org and the token's
+#: names, never the value.
+OWNER_TOKEN_PATH = "/v1/onboarding/github/token"
+
+
+def _read_owner_token(owner: str) -> str:
+    stdin = sys.stdin
+    if stdin is not None and getattr(stdin, "isatty", lambda: False)():
+        import getpass
+
+        return getpass.getpass(f"Personal access token for {owner} (input hidden): ").strip()
+    return (stdin.readline() if stdin is not None else "").strip()
+
+
+def _without(text: str, value: str) -> str:
+    return text.replace(value, "[redacted]") if value else text
+
+
+def cmd_setup_token(client: SwarmClient, args, out) -> int:
+    """Exit 0 with the org record, 3 when the API refused the token (§2.3's
+    code and copy), 1 through `main` when the API could not be read."""
+    owner = args.owner.strip()
+    value = _read_owner_token(owner)
+    if not value:
+        raise SwarmError(f"no token was read from stdin for {owner}; nothing was sent")
+    try:
+        answer = client.request("POST", OWNER_TOKEN_PATH,
+                                payload={"owner": owner, "token": value})
+    except SwarmError as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        answered = (bool(detail.get("failure_code"))
+                    or (exc.status is not None and 400 <= exc.status < 500
+                        and exc.status != 401 and not exc.edge))
+        if not answered:
+            raise SwarmError(_without(str(exc), value), status=exc.status, edge=exc.edge,
+                             code=exc.code) from None
+        out.write(_without(f"✕ {refusal_text(exc)}", value) + "\n")
+        out.write(f"Nothing was stored for {owner}.\n")
+        return EXIT_TROUBLE
+    answer = answer if isinstance(answer, dict) else {}
+    if args.json:
+        out.write(_without(json.dumps(answer, indent=2, default=str), value) + "\n")
+        return EXIT_OK
+    org = answer.get("org") if isinstance(answer.get("org"), dict) else {}
+    token = answer.get("token") if isinstance(answer.get("token"), dict) else {}
+    kind = str(token.get("kind") or "personal access token").replace("_", " ")
+    lines = [f"stored a {kind} for {org.get('owner') or owner}"
+             f" (GitHub login {token.get('forge_login') or '?'}, "
+             f"expires {token.get('expires_at') or 'not stated'})"]
+    state = str(org.get("install_state") or "unknown").replace("_", " ")
+    lines.append(f"{org.get('owner') or owner}: {state}"
+                 + (", enabled through your token" if org.get("enabled") else ", not enabled"))
+    lines.append("SwarmCloud uses it as you, for this owner only; it is never shown again. Run "
+                 "this again to replace it; "
+                 f"`{terminal_command('sc access remove-org ' + owner)}` revokes it.")
+    lines.append(f"Next: `{terminal_command('sc access repos ' + owner)}`, then "
+                 f"`{terminal_command('sc access grant <owner/repo> --read')}` (or --write).")
+    _emit([_without(line, value) for line in lines], out)
+    return EXIT_OK
 
 
 def cmd_setup_status(client: SwarmClient, args, out) -> int:
@@ -2481,13 +2617,60 @@ def cmd_access_revoke(client: SwarmClient, args, out) -> int:
 
 
 def cmd_access_verify(client: SwarmClient, args, out) -> int:
-    """Exit 0 when every grant verified passed, 3 when one did not."""
-    results = verify_repositories(client, args.repositories or ())
+    """Exit 0 when every grant verified passed, 3 when one did not.
+
+    `--push-test` is D6's opt-in write, for ONE repository: the API creates
+    and deletes `swarmcloud/onboarding-check-<nonce>` there as you. It runs
+    only after the repository's name is TYPED back, and SWARM_ASSUME_YES is
+    ignored, as for every other write here that a person must mean."""
+    push_test = bool(getattr(args, "push_test", False))
+    if push_test:
+        named = list(args.repositories or ())
+        if len(named) != 1:
+            raise SwarmError("--push-test takes exactly one owner/repo: it creates and deletes "
+                             "a branch there, one repository at a time. Nothing was sent")
+        repository = repository_name(named[0])
+        if os.environ.get("SWARM_ASSUME_YES", "").strip():
+            sys.stderr.write("sc: SWARM_ASSUME_YES is ignored here; a push test is typed\n")
+        typed = _ask(f"create and delete the branch swarmcloud/onboarding-check-<nonce> in "
+                     f"{repository}, as you? Type {repository} to confirm: ")
+        if typed.strip().lower() != repository.lower():
+            raise SwarmError(f"the repository typed was not {repository!r}; nothing was pushed "
+                             "and nothing was sent")
+    results = verify_repositories(client, args.repositories or (), push_test=push_test)
     if args.json:
         out.write(json.dumps(results, indent=2, default=str) + "\n")
     else:
         _emit(verify_lines(results), out)
     return EXIT_OK if results and all(r.get("passed") for r in results) else EXIT_TROUBLE
+
+
+def cmd_access_request_install(client: SwarmClient, args, out) -> int:
+    """Record that you asked an org's owners to install the App, and print
+    the install page to send them. The owner shows ORG_APPROVAL_PENDING until
+    GitHub lists the installation."""
+    owner = args.owner.strip()
+    try:
+        done = request_install(client, owner)
+    except SwarmError as exc:
+        raise _refused(exc) from None
+    if args.json:
+        out.write(json.dumps(done, indent=2, default=str) + "\n")
+        return EXIT_OK
+    org = done.get("org") if isinstance(done.get("org"), dict) else {}
+    if done.get("recorded") is False:
+        out.write(f"{org.get('owner') or owner} is already enabled; nothing was recorded\n")
+    else:
+        out.write(f"recorded: you asked {org.get('owner') or owner}'s owners to install "
+                  "SwarmCloud\n")
+    if org.get("code") and org.get("copy"):
+        _emit(_wrapped(f"{org['code']}: {org['copy']}", "  "), out)
+    url = done.get("install_url")
+    if isinstance(url, str) and url.startswith("https://"):
+        out.write(f"The install page, to open or to send to one of them:\n  {url}\n")
+    else:
+        out.write("This deployment named no install page; ask its operator for it.\n")
+    return EXIT_OK
 
 
 def cmd_access_disconnect(client: SwarmClient, args, out) -> int:
@@ -3550,6 +3733,22 @@ def build_parser() -> argparse.ArgumentParser:
     ss = st_sub.add_parser("status", help="the checklist (exit 0 ready, 3 not ready, 1 unread)")
     _common(ss, root=False)
     ss.set_defaults(func=cmd_setup_status)
+    # NO OPTION TAKES THE VALUE (D5): it is read from stdin, so it never
+    # reaches shell history, `ps` or a model's command line.
+    stk = st_sub.add_parser(
+        "token",
+        help="store a fallback personal access token for one owner, read from stdin "
+             "(exit 0 stored, 3 refused, 1 unread)",
+        description=(
+            "For an org that will not install SwarmCloud's GitHub App, or refuses classic "
+            "tokens: a fine-grained personal access token whose resource owner is that org. "
+            "The token is read from stdin -- typed with no echo at a terminal, or one piped "
+            "line -- and never from an argument; it is posted once and never printed."
+        ),
+    )
+    stk.add_argument("--owner", required=True, help="the GitHub owner the token is for")
+    _common(stk, root=False)
+    stk.set_defaults(func=cmd_setup_token)
 
     acc = sub.add_parser(
         "access",
@@ -3573,6 +3772,12 @@ def build_parser() -> argparse.ArgumentParser:
     aro.add_argument("owner")
     _common(aro, root=False)
     aro.set_defaults(func=cmd_access_remove_org)
+    ari = acc_sub.add_parser(
+        "request-install",
+        help="record that you asked an org's owners to install the App; print its install page")
+    ari.add_argument("owner")
+    _common(ari, root=False)
+    ari.set_defaults(func=cmd_access_request_install)
     arp = acc_sub.add_parser("repos", help="one page of an enabled owner's repositories")
     arp.add_argument("owner")
     arp.add_argument("--page", type=int, default=1)
@@ -3595,6 +3800,9 @@ def build_parser() -> argparse.ArgumentParser:
     av_ = acc_sub.add_parser("verify", help="clone, push, pull request checks (exit 3 if one fails)")
     av_.add_argument("repositories", nargs="*", metavar="owner/repo",
                      help="the grants to verify (default: every one)")
+    av_.add_argument("--push-test", action="store_true",
+                     help="also create and delete swarmcloud/onboarding-check-<nonce> in ONE "
+                          "write grant (type its name to confirm)")
     _common(av_, root=False)
     av_.set_defaults(func=cmd_access_verify)
     ad = acc_sub.add_parser("disconnect", help="revoke SwarmCloud's access as you (type to confirm)")

@@ -747,9 +747,9 @@ even when nobody reads it, because the schedule tick reaches every tenant.
 
 | switch | who | effect |
 |---|---|---|
-| Pause a schedule | any member of its tenant, or an admin | no new firings. Live work continues |
-| Pause and cancel live runs | any member, typed confirmation | the above, plus an ordinary cancel of the firing's live work |
-| Pause all of a tenant's schedules | any member, typed; an admin from §5.3 | every `enabled` schedule of the tenant becomes `paused` with one reason, audited per schedule |
+| Pause a schedule | any member of its tenant, or an admin | no new firings. Live work continues. `POST /v1/schedules/{id}:pause`, or `/v1/admin/schedules/{id}:pause` (§7.1) |
+| Pause and cancel live runs | any member, typed confirmation (the schedule's name) | the above, plus an ordinary cancel of the firing's live work. `POST /v1/schedules/{id}:pause` with `{cancel_live: true, confirm}` (§7.1) |
+| Pause all of a tenant's schedules | any member, typed (the tenant id); an admin from §5.3, typed the same | every `enabled` schedule of the tenant becomes `paused` with one reason, audited per schedule. `POST /v1/schedules:pause-all`, or `/v1/admin/tenants/{tenant_id}/schedules:pause` (§7.1) |
 | `SCHEDULES_ENABLED=false` | the owner, through `api_settings` | the tick returns `{disabled: true}` immediately. Each due slot is recorded as `skipped / SCHEDULES_DISABLED` when the switch is turned back on, under the catch-up policy |
 | Cloud Scheduler `paused` | Terraform (`var.paused`) | the tick is not called at all. The same catch-up applies on resume |
 
@@ -1426,7 +1426,10 @@ shows:
 * state.
 
 Admins may **pause**, **disable** or **re-enable** any schedule, and pause all
-of a tenant's, each audited as `admin:<email>`. They may **not** edit another
+of a tenant's (`POST /v1/admin/tenants/{tenant_id}/schedules:pause`, typed with
+the tenant id, §2.11 and §7.1), each audited as `admin:<email>`. An admin does
+not cancel a tenant's live runs from here: that is the tenant's
+`:pause` with `cancel_live`, or an admin's ordinary cancel of the work itself. They may **not** edit another
 tenant's parameters, gate, scope or spec, and may **not** approve its
 approvals. Those are the tenant's decisions, and an admin's console session is
 not that tenant's identity. They also create platform-scope schedules (§3.13).
@@ -1569,7 +1572,10 @@ All of these are tenant-scoped as in §5.1. The new refusals ship report-only
 | `PATCH /v1/schedules/{id}` | edit, carrying `revision`. A gate below the default needs `is_admin`. `gate.merge: auto` is **refused here** with 422 `use_merge_switch`; the switch has its own route, next row |
 | `POST /v1/schedules/{id}:merge-mode` | the SD3 switch (§4.2): `{mode: "approve" \| "auto", revision, confirm?}`. `auto` is allowed to a member who is not the last editor of the gate, scope or spec (`confirm` carries the typed confirmation in a one-person tenant), allowed only to a platform admin (the admin roles of PR 860, `PLATFORM_OWNER` included) in a `platform: true` repository (Owner decision 2026-10-08), and only where the type's floor permits it. `approve` is allowed to any member. Both write a `schedule_audit` entry in the same transaction |
 | `DELETE /v1/schedules/{id}` | delete (the console's typed confirmation is client-side; the route takes `confirm: <name>`) |
-| `POST /v1/schedules/{id}:pause` · `:resume` · `:run` | `:run` takes `{dry_run?}` and makes a `run_now` firing, under the gate's `run` point |
+| `POST /v1/schedules/{id}:pause` · `:resume` · `:run` | `:pause` takes `{reason?, cancel_live?, confirm?}`; `:run` takes `{dry_run?}` and makes a `run_now` firing, under the gate's `run` point |
+| `POST /v1/schedules/{id}:pause` with `{cancel_live: true, confirm}` | §2.11's "pause and cancel live runs". Any member of the schedule's tenant. `confirm` is the schedule's `name`, typed exactly (surrounding spaces trimmed, as `DELETE` does); missing or different is 422 `confirmation_required` and nothing moves. The schedule is paused as a plain `:pause` pauses it (a `disabled` one is left `disabled`, since it already makes no firings), then every work item of the schedule's `created` firings in this tenant is cancelled through the platform's own cancel: a task through `POST /v1/tasks/{id}/cancel`'s path, a workflow through `POST /v1/workflows/{id}/cancel`'s, an issue run through its live planner task or workflow. Work already ended is reported, not an error. The firing then ends `cancelled` on the tick's ordinary advance (§2.9). Audit: `pause` (when the state moved) and then one `cancel_live` entry, `by` the caller, `detail: {firings, items: [{kind, id, firing_id, result}]}`. Another tenant's id is the 404 a missing one gets (§5.1) |
+| `POST /v1/schedules:pause-all` | §2.11's "pause all of a tenant's schedules". Any member of the caller's tenant, which is the only tenant it reaches. `{confirm, reason?}`: `confirm` is the caller's tenant id, typed exactly; missing or different is 422 `confirmation_required` and nothing moves. Every `enabled` schedule of the tenant becomes `paused` with the one reason, each in its own transaction with its own audit entry `pause_all` (`by` the caller's email, `detail: {from, to, revision, reason}`). `paused`, `auto_paused` and `disabled` ones are left as they are. Answers `{tenant_id, paused: [ids], unchanged: [ids]}` |
+| `POST /v1/admin/tenants/{tenant_id}/schedules:pause` | §5.3: the same for any tenant, `is_admin` only. `{confirm, reason?}`: `confirm` is the `tenant_id` of the path, typed. An unknown tenant is a 404. Each entry is `admin_pause_all`, `by: admin:<email>`. Live runs are not cancelled (§5.3) |
 | `POST /v1/schedules/{id}:take-ownership` | the caller becomes the owner. Audited |
 | `GET /v1/schedules/{id}/firings` · `/{firing_id}` | the history. A firing shows its work links, cost and dry-run output |
 | `GET /v1/schedules/{id}/audit` | the audit, newest first |

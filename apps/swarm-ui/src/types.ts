@@ -5115,7 +5115,18 @@ export interface OnboardingDoc {
   steps: OnboardingStep[]
   next_step: OnboardingStepName | null
   complete: boolean
+  /** The person hid the checklist (`POST /v1/onboarding/dismiss`); every step is served all the same. */
+  dismissed?: boolean
+  dismissed_at?: string | null
   source: string
+}
+
+/** `POST /v1/onboarding/dismiss`: `{dismissed}` in, the caller's own flag out. */
+export interface OnboardingDismissal {
+  tenant_id: string
+  user_hash: string
+  dismissed: boolean
+  dismissed_at: string | null
 }
 
 // ---------------------------------------------------------------------------
@@ -5148,7 +5159,10 @@ export interface WorkspaceView {
   request_id?: string | null
   requested_at?: string | null
   requested_via?: string | null
-  decision?: { verdict: string | null; reason: string | null; at: string | null } | null
+  /** `auto` is true when nobody clicked: the requester is an admin, whose own request is approved automatically (docs/workspaces.md §1.3, owner 2026-10-09). */
+  decision?: { verdict: string | null; reason: string | null; at: string | null; auto?: boolean } | null
+  /** Set on a `requested` record that is not approved automatically because the person's tenant predates self-service setup and is being migrated (§3.3); `copy` is the server's sentence. */
+  held?: { reason: string; copy: string } | null
   limits?: Record<string, number>
   steps?: Record<string, WorkspaceJobStep>
   /** `copy` is §4.3's, served from the code, word for word. */
@@ -5319,8 +5333,8 @@ export interface AdminRemoveAnswer {
 /** A grant's mode (`access.MODES`). Read is enforced by SwarmCloud, not GitHub (D9). */
 export type AccessMode = 'read' | 'write'
 
-/** The checks verify runs (`access.CHECKS`). */
-export type AccessCheckName = 'clone' | 'push' | 'pull_request'
+/** The checks verify runs (`access.CHECKS`), plus D6's opt-in `push_test` (`access.OPT_IN_CHECKS`). */
+export type AccessCheckName = 'clone' | 'push' | 'pull_request' | 'push_test'
 
 /** A check's answer. `not_required` is push and pull request on a read grant. */
 export type AccessCheckState = 'ok' | 'missing' | 'unknown' | 'not_required'
@@ -5330,11 +5344,19 @@ export interface AccessCheck {
   /** The §2.3 code a check that did not pass carries. */
   code: string | null
   checked_at: string | null
+  /** `push_test` only: the `swarmcloud/onboarding-check-<nonce>` branch it created. */
+  branch?: string
+  /** `push_test` only: the delete failed and the branch is still on GitHub. */
+  leftover?: boolean
 }
 
-/** `access.org_to_api`: an owner the person enabled. */
+/** How an owner was enabled: the App's installation, or the person's own token for it (D5). */
+export type AccessOrgMethod = 'app' | 'pat'
+
+/** `access.org_to_api`: an owner the person enabled, or asked to have installed. */
 export interface AccessOrg {
   owner: string
+  method?: AccessOrgMethod
   owner_type: 'User' | 'Organization' | null
   installation_id: number | null
   /** GitHub's `all` or `selected`. */
@@ -5344,7 +5366,12 @@ export interface AccessOrg {
   sso: string | null
   enabled: boolean
   enabled_at: string | null
+  /** When the person asked the org's owners to install the App (ORG_APPROVAL_PENDING). */
+  requested_at?: string | null
   checked_at: string | null
+  /** `ORG_APPROVAL_PENDING` and its §2.3 copy, on a requested owner only. */
+  code?: string
+  copy?: string
 }
 
 /** `access.grant_to_api`: one repository the person chose. */
@@ -5365,6 +5392,8 @@ export interface AccessGrant {
 export interface AccessOverview {
   connection: GitHubConnection | null
   orgs: AccessOrg[]
+  /** Installs the person asked for that GitHub does not list yet (ORG_APPROVAL_PENDING). */
+  requested?: AccessOrg[]
   grants: AccessGrant[]
   tenant_id: string
 }
@@ -5375,11 +5404,41 @@ export interface AccessOwner {
   owner_type: 'User' | 'Organization'
   installation_id: number | null
   repository_selection: string | null
-  install_state: 'installed' | 'not_installed'
+  /** `requested`: asked for, not approved yet (ORG_APPROVAL_PENDING); `token`: enabled through the person's token (D5). */
+  install_state: 'installed' | 'not_installed' | 'requested' | 'token'
   sso: string
   enabled: boolean
   /** The App's install page, for an owner it is not installed on. */
   install_url: string | null
+  method?: AccessOrgMethod
+  requested_at?: string | null
+  /** `ORG_APPROVAL_PENDING` and its §2.3 copy, on a requested owner only. */
+  code?: string
+  copy?: string
+}
+
+/** `POST /v1/access/orgs/{owner}/install-request`. `recorded` is false for an owner already enabled. */
+export interface AccessInstallRequestResponse {
+  org: AccessOrg
+  recorded: boolean
+  install_url: string | null
+  tenant_id: string
+}
+
+/** The fallback token's names, as `POST /v1/onboarding/github/token` answers them: never its value. */
+export interface OwnerTokenNames {
+  token_id: string
+  secret_name: string
+  kind: string
+  forge_login: string | null
+  state: string
+  expires_at: string | null
+}
+
+/** `POST /v1/onboarding/github/token` (D5): the owner it enabled and the token's names. */
+export interface OwnerTokenResponse {
+  org: AccessOrg
+  token: OwnerTokenNames
 }
 
 /** `GET /v1/access/orgs`. */
@@ -5469,6 +5528,8 @@ export interface AccessVerifyResponse {
   grant: AccessGrant
   failures: AccessVerifyFailure[]
   passed: boolean
+  /** Only when `push_test` ran and created its branch: the branch, and whether its delete failed. */
+  push_test?: { branch: string; leftover: boolean }
   tenant_id: string
 }
 

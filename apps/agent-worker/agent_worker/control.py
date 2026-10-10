@@ -1948,6 +1948,8 @@ class ControlPlane:
         pending: Sequence[str],
         max_wakes: int,
         fallback_seconds: int,
+        counter: str = "wakes",
+        ci_clock: bool = True,
     ) -> bool:
         """A merge step's CI wait: PARKED on CI_PENDING, slot given back.
 
@@ -1971,6 +1973,12 @@ class ControlPlane:
             the scheduler wakes the park then even if swarm-api's tick never
             marks it, so a dead tick or a broken token never strands a merge.
 
+        A wait for the repository's merge slot (`mergeslot.MERGE_SLOT_WAIT`,
+        merge race #295) is refunded on its own `counter`, `slot_waits`,
+        with its own `max_wakes`, and stops the CI clock (`ci_clock` False):
+        its `first_parked_at` is cleared, so the next CI wait starts it
+        afresh and a long queue never reads as `checks_timeout`.
+
         There is no checkpoint and no upload: a worker action keeps no
         workspace (invariant 8's exception, CR 36), and its durable state is
         this record plus GitHub, which the next attempt reads again.
@@ -1990,20 +1998,24 @@ class ControlPlane:
             metadata = dict(task.get("metadata") or {})
             last = metadata.get(MERGE_WAIT_METADATA_KEY)
             last = last if isinstance(last, Mapping) else {}
-            wakes = _count(last.get("wakes"))
+            counts = {name: _count(last.get(name)) for name in ("wakes", "slot_waits")}
+            counts.setdefault(counter, _count(last.get(counter)))
             attempt_count = int(task.get("attempt_count", 0))
-            refund = wakes < max_wakes and attempt_count > 0
+            refund = counts[counter] < max_wakes and attempt_count > 0
             if refund:
-                wakes += 1
+                counts[counter] += 1
+            wakes = counts[counter]
             first = last.get("first_parked_at")
             metadata[MERGE_WAIT_METADATA_KEY] = {
                 "code": code,
                 "head": head,
                 "pull_request": pull_request,
                 "pending": names,
-                "wakes": wakes,
+                **counts,
                 "updates": _count(last.get("updates")),
-                "first_parked_at": first if isinstance(first, datetime) else now,
+                "first_parked_at": (
+                    (first if isinstance(first, datetime) else now) if ci_clock else None
+                ),
                 "parked_at": now,
             }
             payload: dict[str, Any] = {

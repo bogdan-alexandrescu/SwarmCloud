@@ -137,6 +137,203 @@ workspace id is `w-3f9a2c`. `<project>` is the platform's project and
   workspace does not change that, and WD6 turns it into a refusal at submission
   (§5).
 
+### W0b, read 2026-10-10: the documentation half
+
+W0b (§10) checks the 2026-10-10 re-decision. This lane could not run `gcloud`
+or read the live project, so it answered what Google's public documentation
+and this repository can answer. Each item below names the page it read and
+that page's "Last updated" date. Every live proof is the operator's and is
+marked **pending**. Items (4) to (6) need the job's first execution after W4b,
+so they are not started.
+
+**(1) Does Cloud Run check `actAs` on every `jobs.update` and `jobs.create`?
+Documentation says yes for create and update, with no exception for an update
+that leaves the account unchanged. Live proof pending, operator.**
+
+* [Configure service identity for jobs](https://docs.cloud.google.com/run/docs/configuring/jobs/service-accounts)
+  (last updated 2026-10-07, read 2026-10-10): "Certain operations, like
+  creating or updating a job, require the deployer account to have
+  permissions on the service identity resource". It also says
+  `roles/iam.serviceAccountUser` "contains the `iam.serviceAccounts.actAs`
+  permission, which is required to attach a service account on the job".
+* The page names *updating* without a qualifier. It does **not** say in so
+  many words that an update leaving the account unchanged is checked. No
+  Google page read on 2026-10-10 says so either way, and so does not
+  contradict it. That gap is why the live proof is still required before W4b
+  is applied: an update from an account holding `run.jobs.update` but no
+  `actAs` on the job's account must be refused with
+  `iam.serviceAccounts.actAs` named. For example, a label change on a
+  throwaway job whose account the probe identity cannot act as.
+* Cloud Run is not among the services with IAM's legacy "attach without
+  `actAs`" behaviour. [Requiring permission to attach service accounts to resources](https://docs.cloud.google.com/iam/docs/service-accounts-actas)
+  (last updated 2026-10-07) lists App Engine, Managed Service for Apache
+  Airflow, Cloud Data Fusion, Dataflow, Managed Service for Apache Spark and
+  Dataform, and does not mention Cloud Run. [Roles for service account authentication](https://docs.cloud.google.com/iam/docs/service-account-permissions)
+  (last updated 2026-10-07) is the page whose note "some Google Cloud services
+  did not always require" `actAs` points at that list.
+* So the documentation does not return the design to the owner. §2.3's
+  "change what it runs" row stands, pending the operator's refusal.
+
+**(2) What `runWithOverrides` can override, and whether `CLOUD_RUN_*` or `LD_*`
+names are accepted.**
+
+* [Method: projects.locations.jobs.run](https://docs.cloud.google.com/run/docs/reference/rest/v2/projects.locations.jobs/run)
+  (last updated 2025-07-09) allows exactly these fields:
+  * `overrides.containerOverrides[]`, each carrying:
+    * `name`, which picks the container;
+    * `args`, which "Will replace existing args";
+    * `clearArgs`;
+    * `env`, which "Will be merged with existing env".
+  * `overrides.taskCount`.
+  * `overrides.timeout`.
+
+  The authorization line names `run.jobs.runWithOverrides` "on the specified
+  resource overrides". There is **no** field for the image, the command, the
+  service account, the network or the volumes.
+* [Execute jobs](https://docs.cloud.google.com/run/docs/execute/jobs#override-job-configuration)
+  (last updated 2026-10-07) agrees: "You can override the arguments,
+  environment variables, number of tasks, and task timeout".
+* The same page adds a fifth override: running a regular job as a **delayed**
+  one, deferred by up to 12 hours. That is
+  [Delay execution of a job](https://docs.cloud.google.com/run/docs/delayed-jobs),
+  **Preview**, a `gcloud beta` flag, and absent from the 2025-07-09 REST
+  reference. It affects availability only: a deferred start is what the sweep
+  already sees as `dispatched_unclaimed` after 10 minutes and dispatches
+  again. If the deferred execution starts later, A1 refuses it, because the
+  record is no longer `approved` (§2.2).
+* **An `env` override may carry a secret reference, not just a value.**
+  [`EnvVar`](https://docs.cloud.google.com/run/docs/reference/rest/v2/Container#EnvVar)
+  (last updated 2026-08-25) has `value` or `valueSource.secretKeyRef`, which
+  Cloud Run resolves as the job's identity. The deployer holds no
+  `secretmanager.versions.access` (§2.3), so such an override fails at the
+  start, and step 0 discards the variable either way (§2.2).
+* **`CLOUD_RUN_*`: documented as reserved in a job's configuration; not
+  documented for overrides.**
+  [Configure environment variables for jobs](https://docs.cloud.google.com/run/docs/configuring/jobs/environment-variables)
+  (last updated 2026-10-07): "The environment variables defined in the
+  container runtime contract are reserved and cannot be set".
+  [The runtime contract](https://docs.cloud.google.com/run/docs/container-contract)
+  (last updated 2026-10-07) lists `CLOUD_RUN_JOB`, `CLOUD_RUN_EXECUTION`,
+  `CLOUD_RUN_TASK_INDEX`, `CLOUD_RUN_TASK_ATTEMPT` and `CLOUD_RUN_TASK_COUNT`
+  for jobs.
+  * Neither page says whether a `jobs.run` override is refused the same way.
+    Live proof pending, operator: an override setting `CLOUD_RUN_TASK_COUNT`
+    on a throwaway job.
+  * Step 0 does not depend on the answer. It takes `CLOUD_RUN_EXECUTION` only
+    through `WS_BUILD_RE`, and a forged `CLOUD_RUN_TASK_COUNT=1` beside a real
+    `taskCount` above one still meets A1's one-transaction claim.
+* **`LD_*`: no documented restriction.** None of the pages above restricts an
+  override's name beyond `EnvVar`'s "Must not exceed 32768 characters", and
+  none names `LD_*` at all. Read from the documentation, an override may set
+  `LD_PRELOAD` and `LD_LIBRARY_PATH`. §2.4 R6 stands as written. Live proof
+  pending, operator.
+* **A `jobs.run` is a Data Access entry, not Admin Activity, and is not
+  logged by default.**
+  * [Cloud Run audit logging](https://docs.cloud.google.com/run/docs/audit-logging)
+    (last updated 2026-10-07) lists `google.cloud.run.v2.Jobs.RunJob` (and
+    v1's) as "Audit log type: Data access", with permissions
+    "`run.jobs.run` - DATA_WRITE" and "`run.jobs.runWithOverrides` -
+    DATA_WRITE". `UpdateJob`, `ReplaceJob` and `SetIamPolicy` are Admin
+    Activity.
+  * [Enable Data Access audit logs](https://docs.cloud.google.com/logging/docs/audit/configure-data-access)
+    (last updated 2026-10-08): "Data Access audit logs are disabled by default
+    for all services but some BigQuery services". They "are stored in the
+    `_Default` bucket unless you've routed them elsewhere". Only Admin
+    Activity, System Event and Access Transparency go to `_Required`
+    ([Routing overview](https://docs.cloud.google.com/logging/docs/routing/overview),
+    last updated 2026-10-08).
+  * **This corrects two places that said Admin Activity:** §2.4's alert on a
+    `jobs.run` from an unexpected caller, and §2.6 item 4. Until Cloud Run's
+    `DATA_WRITE` audit logs are enabled in the project, no entry records who
+    started an execution, so the alert would never fire.
+  * Enabling them is a project-wide audit config per service, so it covers
+    the other team's Cloud Run too. That is W4b's to build and the owner's to
+    accept; this lane's `questions.json` asks.
+  * Whether the entry carries the request's overrides is not stated: pending,
+    the first execution after the config exists.
+
+**(3) Who the repository's Terraform grants, at project level in the shared
+project, `actAs`, token-creator, `run.jobs.run`, `runWithOverrides`,
+`run.jobs.update` or `setIamPolicy`.** Read from `main` at `b6ede3a`. The live
+list is the operator's (pending). A live listing also includes what Terraform
+does not grant: the project's owners and editors, the default compute
+account's Editor if it still has it, and anything granted by hand.
+
+| principal | role | carries | file and resource | condition |
+|---|---|---|---|---|
+| release deployer `swarm-tf-deployer` | `roles/run.admin` | `run.jobs.run`, `runWithOverrides`, `run.jobs.update`, `run.jobs.setIamPolicy`; no `actAs` | `terraform/bootstrap/wif.tf` `google_project_iam_member.deployer_roles["roles/run.admin"]`, from the `deployer_roles` default in `terraform/bootstrap/variables.tf` (line 293) | none: "UNSCOPABLE: Cloud Run is not in IAM's resource-attribute list" (same file) |
+| `swarm-scheduler` | custom `swarmJobDispatcher` | `run.jobs.run`, `runWithOverrides`, `run.jobs.update` (and `create`); no `setIamPolicy`, no `actAs` | role in `terraform/bootstrap/platform_roles.tf` (`job_dispatcher`); grant `module.iam.google_project_iam_member.plain["swarm-scheduler:…/swarmJobDispatcher"]`, `terraform/modules/iam/bindings.tf`, called from `terraform/infra/main.tf` `module "iam"` | none |
+| acceptance `swarm-accept` | custom `swarmAcceptanceRunner` | `run.jobs.run`, `runWithOverrides`; no update, no `setIamPolicy` | `terraform/bootstrap/acceptance.tf` `google_project_iam_custom_role.acceptance_runner`, granted by `google_project_iam_member.acceptance_runs_jobs` | none, removed on purpose (#965) |
+| release deployer | `roles/resourcemanager.projectIamAdmin` | `resourcemanager.projects.setIamPolicy`, so it can grant `swarmJobDispatcher` (run, overrides, update) to any member, itself included; it holds none of the six directly | `terraform/bootstrap/deployer_conditions.tf` `google_project_iam_member.deployer_project_iam_admin` (two chunks), list `deployer_grantable_project_roles` | `hasOnly` over the roles terraform/infra grants. That list carries no `actAs`, token-creator or `run.admin` |
+| `swarm-workspace-deployer` (**not created today**: `enable_workspace_deployer` defaults false) | custom `swarmWorkspaceAccountAdmin` | `iam.serviceAccounts.setIamPolicy` project-wide, so it could grant `actAs` or token-creator on any account, its own included. The guard's rule C3 and the alert of §2.4 bound this, not IAM | `terraform/bootstrap/workspace_deployer.tf` `google_project_iam_member.workspace_deployer["swarmWorkspaceAccountAdmin"]` | none (§2.4, accepted 2026-10-08) |
+
+* **Nothing in this Terraform grants these roles at project level:**
+  `roles/owner`, `roles/editor`, `roles/iam.serviceAccountUser`,
+  `roles/iam.serviceAccountTokenCreator`, `roles/run.developer`,
+  `roles/run.invoker` or the `run.jobsExecutor*` roles. The repository has no
+  `google_project_iam_binding` or `google_project_iam_policy` at all. None of
+  its custom roles lists `iam.serviceAccounts.actAs`, `getAccessToken`,
+  `signBlob`, `signJwt`, `implicitDelegation` or `run.jobs.setIamPolicy`.
+* **Every `actAs` and token-creator grant in the repository is per account,
+  not project-level:**
+  * the release deployer on the default compute account (`wif.tf`
+    `deployer_acts_as_cloudbuild`) and on each platform account
+    (`terraform/infra/deployer.tf` `deployer_acts_as`);
+  * the scheduler, the reconciler and the release deployer on each tenant
+    worker (`terraform/modules/tenancy/main.tf` `act_as`);
+  * swarm-api on itself (`modules/iam/bindings.tf` `api_signs_as_itself`);
+  * the release deployer's per-account `serviceAccountAdmin`
+    (`terraform/bootstrap/deployer_service_accounts.tf` `deployer_admin`),
+    which lets it grant itself `actAs` on those accounts. They do not include
+    `swarm-workspace-deployer`, whose policy the bootstrap writes
+    authoritatively empty.
+* How the role contents were established: the predefined roles' permissions
+  (`run.admin`'s, and the absence of `actAs` from it) come from Google's role
+  reference, not this repository. The custom roles were read from their
+  definitions.
+
+**(4) to (6): pending, they need the job's first execution after W4b.**
+
+**(7) Option (ii): `roles/workflows.invoker`, and the Pub/Sub agent's
+token-creator.**
+
+* **`roles/workflows.invoker` cannot be granted narrower than the project.**
+  * [Workflows roles and permissions](https://docs.cloud.google.com/workflows/docs/access-control)
+    (last updated 2026-10-07) gives "Lowest-level resources where you can
+    grant this role: Project" for the invoker and for every other Workflows
+    role.
+  * No condition can narrow it either: `workflows.googleapis.com`, like
+    `run.googleapis.com`, is absent from the services in
+    [Resource attributes for IAM Conditions](https://docs.cloud.google.com/iam/docs/conditions-resource-attributes)
+    (last updated 2026-10-07).
+  * The Terraform provider has no per-workflow IAM resource; it is the open
+    feature request
+    [hashicorp/terraform-provider-google#13125](https://github.com/hashicorp/terraform-provider-google/issues/13125).
+  * [Roles and permissions for Workflows targets](https://docs.cloud.google.com/eventarc/standard/docs/workflows/roles-permissions)
+    (last updated 2026-10-07) grants `roles/workflows.invoker` "on the
+    project". For a direct Pub/Sub event it does not require
+    `roles/eventarc.eventReceiver`.
+  * **What this means:** `swarm-workspace-dispatch` can start *any* workflow
+    in the shared project, the other team's included, though each workflow
+    then runs as its own account. §2.1 already says "at the project". It has
+    no key and no WIF binding, and only Eventarc uses it. W4b's alert on a
+    change to the dispatch account's IAM is what watches it.
+* **The Pub/Sub token-creator grant is needed only if the Pub/Sub service
+  agent was enabled on or before 8 April 2021.** The same Eventarc page says:
+  "If you enabled the Cloud Pub/Sub service agent on or before April 8, 2021,
+  to support authenticated Pub/Sub push requests, grant the Service Account
+  Token Creator role … Otherwise, this role is granted by default."
+  * The cut-off is the agent's enabling, not the project's creation. A
+    project created after 8 April 2021 cannot have enabled it before, so for
+    such a project the answer is no.
+  * This project's creation date is not in the repository. Pending, operator:
+    `gcloud projects describe <project> --format='value(createTime)'`.
+  * One indirect signal in the repository: three Pub/Sub push subscriptions
+    already present OIDC tokens (the wake push and `task_finished` in
+    `terraform/modules/scheduler/main.tf`, and the execution-cancel push in
+    `execution_cancel.tf` beside it). No Terraform grant gives the agent
+    token-creator. If those pushes deliver, the agent can already mint them.
+
 ---
 
 ## 1. The request record
@@ -162,7 +359,8 @@ Run job reads one record from it by workspace id.
 | `state` | string | swarm-api, the job | §1.2 |
 | `request_id` | string | swarm-api | a fresh UUID for each accepted request or retry; the job logs it, privately |
 | `requested_at`, `requested_via` | timestamp, string | swarm-api | `console`, `plugin` or `api` |
-| `decision` | map or null | swarm-api | `{by, at, verdict: approved/denied, reason}`. `reason` is required for a denial and is shown to the person. `by` is an admin's email; it never leaves Firestore |
+| `decision` | map or null | swarm-api | `{by, at, verdict: approved/denied, reason, auto}`. `reason` is required for a denial and is shown to the person. `auto` is true when an admin's own request was approved automatically (§1.3), with reason `requester is an admin`. `by` is an admin's email; it never leaves Firestore |
+| `held` | string or absent | swarm-api | `migrating` on a `requested` record an admin asked for whose tenant predates the workspace job (§1.3, §3.3): not approved automatically, never published |
 | `limits` | map | swarm-api | `{max_active, capacity_units, quota_pods, quota_cpu}`. Defaults from §8; an admin raises them in People (§6.4) |
 | `run` | map or null | swarm-api, the job | `{build_id, attempt, published_at, mode}` of the current run. Since the 2026-10-10 re-decision `build_id` holds the Cloud Run **execution** name (`swarm-workspace-apply-x7k2p`), which the job reads from `CLOUD_RUN_EXECUTION`; the field keeps its name because W6 and W7 already write it (`register-tenant.sh`, `swarm_api/people.py`), and `register-tenant.sh`'s `WS_BUILD_RE` already admits an execution name. The execution's page is in the project's console, and its log is readable only by the restricted bucket's readers (§2.6) |
 | `steps` | map | the job | `step id → {state: todo/running/done/failed/held, at, code}`, using the ids in §4.2 |
@@ -175,9 +373,9 @@ Run job reads one record from it by workspace id.
 | state | entered when | the person sees | submissions to their own tenant |
 |---|---|---|---|
 | (no record) | never requested | checklist step "Request your workspace", button enabled | refused, `WORKSPACE_NOT_READY` |
-| `requested` | swarm-api accepted a request | "Waiting for an admin to approve" | refused |
+| `requested` | swarm-api accepted a non-admin's request (an admin's goes straight to `approved`, §1.3) | "Waiting for an admin to approve", or, when `held`, that it is being migrated | refused |
 | `denied` | an admin denied it | "Not approved: {reason}", and "Request again" | refused |
-| `approved` | an admin approved it; the dispatch is being made | "Approved. Setting up…" | refused |
+| `approved` | an admin approved it, or it was an admin's own request; the dispatch is being made | "Approved. Setting up…" | refused |
 | `applying` | the job claimed the record | each step of §4.2 with a tick or spinner | refused |
 | `needs_owner` | the call guard stopped a call (§2.5) | "Approved. A change needs the platform owner's review before it can finish." | refused |
 | `failed` | a step failed past its retries | the step's code and copy (§4.3) | refused |
@@ -234,13 +432,42 @@ The write is **one Firestore transaction** that reads the record and then:
   action (§6.4), because it starts a run of a privileged identity.
 
 **Approve and deny** are `POST /v1/admin/workspaces/{workspace_id}/approve`
-and `/deny` (§6.3). Both need `is_admin` (§6.5). Approve is accepted only from
-`requested`; deny from `requested` or `failed`, and it needs a non-empty
-reason of at most 500 characters. Each writes `decision` and an
-`admin_audit` entry in the same transaction. An admin may approve their own
-request: the call guard bounds what any approval can create, so a self-approval
-creates nothing a different admin's approval would not, and the audit shows it
-(confirmed by the owner, 2026-10-08).
+and `/deny` (§6.3). Both need `is_admin` (§6.5). Approve is accepted from
+`requested`, or from `denied` at any time; deny from `requested` or `failed`,
+and it needs a non-empty reason of at most 500 characters. Each writes
+`decision` and an `admin_audit` entry in the same transaction.
+
+**An admin's own request is approved automatically** (owner decision,
+2026-10-09, replacing 2026-10-08's "an admin may approve their own request",
+which left an admin to click Approve on themselves). When the caller of
+`POST /v1/workspace` is an admin (§6.5), the request's own transaction also
+performs the approval: the same code the approve route runs
+(`People._approve_in`), not a copy of it. The record goes straight to
+`approved` with `decision = {by: <the admin>, auto: true, reason: "requester is
+an admin"}`, one `admin_audit` entry `approve_own_workspace_auto` is written,
+and the same publish follows (§2.1). Nothing else is relaxed: checks 1-5 above
+run first, the 24-hour wait after a denial still applies, a `failed` record is
+still a 409, and the limits are §8's defaults, as for anyone. This holds
+because the call guard (§2.5) bounds what any approval can create, so an
+automatic approval creates nothing an admin's click would not. An admin's
+`requested` record that predates the decision is approved the next time they
+ask. A non-admin's request is unchanged: it waits in `requested` for an admin.
+An admin whose role lookup fails is not an admin for this purpose (`is_admin`
+is false), so their request waits too.
+
+**The one exception is a tenant that predates the workspace job** (§3.3):
+`u-bogdan`, whose identity Terraform made. A request for it is never approved
+automatically and never published, because the apply's squat check (A2) would
+fail `IDENTITY_NOT_OURS` on that identity. It is recognised by what the code
+can already read: the tenant document carries Terraform's
+`managed_by = "swarm-terraform"` (`ensure_tenant` and A8 never write it), or
+the record carries `migrated = true`. Such a request stays `requested` with
+`held = "migrating"`, and the person is told the workspace is being migrated,
+not that it waits for an admin. The People pane offers no Approve on a held
+record. A manual approval of it through the API is refused
+`WORKSPACE_MIGRATING`, a new refusal that ships report-only like every other
+(`REFUSAL_WORKSPACE_MIGRATING`, [api-refusals.md](api-refusals.md)). Lane W9's
+migration writes its record instead.
 
 After an approval, swarm-api publishes the workspace id to Pub/Sub (§2.1). A
 failed publish is not a failed approval: the record stays `approved` and the
@@ -334,12 +561,13 @@ workflow ends once the execution has started. The workflow runs as a new
 account, `swarm-workspace-dispatch` (no key, no WIF, its own IAM policy written
 authoritatively empty), which holds the same run role **on the job only**; the
 Eventarc trigger runs as the same account, holding `roles/workflows.invoker`
-(at the project, unless W0b finds Workflows accepts a narrower grant).
+(at the project: W0b (7) found on 2026-10-10 that Workflows accepts no narrower
+grant, §0).
 
 | | (i) swarm-api runs the job | (ii) Pub/Sub → Eventarc → Workflows |
 |---|---|---|
 | **what a compromised swarm-api can do** | start executions with **any arguments and any environment variables**, any task count and any timeout: `runWithOverrides` cannot be narrowed to the arguments. The job's entrypoint must therefore neutralise every override (§2.2 step 0) for swarm-api, the most exposed component, not to hold a lever on the identity with project-wide account-IAM power | publish a message. The workflow forwards a valid id and mode and nothing else, so swarm-api cannot reach the environment, the task count or the timeout. This is today's §2.4 R3, unchanged |
-| **install steps** | one IAM binding on the job; no new API | the Workflows and Eventarc APIs (`terraform/infra/main.tf`'s service list), one workflow, one Eventarc trigger, one account and its two grants. All Terraform; where the project predates April 2021, the Pub/Sub service agent also needs `iam.serviceAccountTokenCreator`, a Terraform grant |
+| **install steps** | one IAM binding on the job; no new API | the Workflows and Eventarc APIs (`terraform/infra/main.tf`'s service list), one workflow, one Eventarc trigger, one account and its two grants. All Terraform; where the Pub/Sub service agent was enabled on or before 8 April 2021, it also needs `iam.serviceAccountTokenCreator`, a Terraform grant (W0b (7), §0) |
 | **swarm-api code** | rewritten publish path (W7b), sweep calls `jobs.run`, a synchronous failure lands on the record | none |
 | **latency to the execution starting** | about a second | a few seconds more (Pub/Sub push, Eventarc, a Workflows execution). Both are noise beside the job's own start and its minutes of work |
 | **cost** | nothing beyond the job | a few Workflows steps and one HTTP call per approval: inside Workflows' monthly free tier at any rate this platform will approve people. Pub/Sub's share is fractions of a cent |
@@ -392,7 +620,8 @@ other image (`scripts/build-images.sh` `ALL_TARGETS`, already); the job runs it
 The build file's three steps become the job's **entrypoint**, preceded by one
 step a build never needed. The job's `command` is fixed in the job spec, which
 no caller can override (Cloud Run's run overrides carry only arguments,
-environment variables, task count and timeout). Steps 1 to 3 are `scripts/workspace-apply.sh`, which replaces
+environment variables, task count and timeout, plus a Preview "delayed"
+execution mode; W0b (2), §0). Steps 1 to 3 are `scripts/workspace-apply.sh`, which replaces
 `scripts/cloudbuild/workspace-apply.yaml` line for line, and step 0 is
 `images/workspace-apply/entry.py` (W6b, W4b; §10):
 
@@ -528,7 +757,7 @@ by a condition: a grant is either a binding **on the job** or project-wide.
 
 | action on the job | needs | who holds it |
 |---|---|---|
-| **change what it runs** (image, command, environment, account, network) | `run.jobs.update` **and** `iam.serviceAccounts.actAs` on `swarm-workspace-deployer` | nobody holds `actAs` on the deployer at the account level: the bootstrap writes that policy authoritatively empty. So only project-level `actAs` holders (the project's owners and editors, and whoever else W0b's dated listing finds) and the owner's bootstrap apply. `swarm-scheduler` holds `run.jobs.update` project-wide (`swarmJobDispatcher`) **but no `actAs` on the deployer**, so it cannot. **W0b must confirm that Cloud Run checks `actAs` on every update of a job whose account is unchanged**; if it does not, the scheduler could swap the image, and the re-decision goes back to the owner before W4b ships |
+| **change what it runs** (image, command, environment, account, network) | `run.jobs.update` **and** `iam.serviceAccounts.actAs` on `swarm-workspace-deployer` | nobody holds `actAs` on the deployer at the account level: the bootstrap writes that policy authoritatively empty. So only project-level `actAs` holders (the project's owners and editors, and whoever else W0b's dated listing finds) and the owner's bootstrap apply. `swarm-scheduler` holds `run.jobs.update` project-wide (`swarmJobDispatcher`) **but no `actAs` on the deployer**, so it cannot. **W0b must confirm that Cloud Run checks `actAs` on every update of a job whose account is unchanged** (documentation half read 2026-10-10: creating or updating a job needs it, with no exception stated; the live refusal is pending, §0 W0b (1)); if it does not, the scheduler could swap the image, and the re-decision goes back to the owner before W4b ships |
 | **create another job, service or build as the deployer** | `actAs` on the deployer | the same project-level holders; the alert on any execution, revision or build as the deployer that is not this job's catches one (§2.4) |
 | **start an execution with its arguments** (`run.jobs.run`) | the job's policy, or project-wide | under option (ii) `swarm-workspace-dispatch`, under option (i) swarm-api, by a binding on the job; project-wide, `swarm-scheduler` (`swarmJobDispatcher`), `swarm-accept` (`swarmAcceptanceRunner`), the release deployer (`roles/run.admin`) and the project's owners and editors |
 | **start one with overrides** (`run.jobs.runWithOverrides`) | the same | the same list. An override can replace the arguments, set environment variables, the task count and the timeout. It cannot change the image, the command, the account or the network. **Does it let a caller change anything beyond the workspace id? In the API, yes**: that is why step 0 (§2.2) discards every environment variable, refuses a task count other than one, keeps its own deadline, and step 1 refuses any argument list but `[<w-id>, <mode>]`. With those, an override can choose which approved workspace runs and nothing else |
@@ -647,9 +876,12 @@ policy, to the identity's own IAM policy, and, under option (ii), to the
 workflow, the Eventarc trigger, the dispatch account's IAM or the topic's IAM
 (under option (i), the topic is gone). New with the job: an alert on any
 `jobs.run` of `swarm-workspace-apply` whose caller is not the dispatcher of the
-chosen option (`swarm-workspace-dispatch`, or swarm-api), read from the Admin
-Activity audit log, which records the caller of every run (and, W0b (2)
-confirms, its overrides).
+chosen option (`swarm-workspace-dispatch`, or swarm-api), read from Cloud Run's
+**Data Access** audit log. W0b (2) found on 2026-10-10 that `RunJob` is a Data
+Access (`DATA_WRITE`) entry, not Admin Activity, and Data Access logs are off by
+default, so this alert needs Cloud Run's `DATA_WRITE` audit logs enabled in the
+project first (§0, W0b (2)). Whether the entry carries the overrides is pending
+the first execution.
 
 **Why this fits #334.** #334 refused project-level account admin to the release
 deployer because that identity applies *any* plan that reaches `main`. Here:
@@ -693,8 +925,9 @@ deployer because that identity applies *any* plan that reaches `main`. Here:
   `LD_LIBRARY_PATH` is read before step 0 can discard it. It can only name
   files already in the image, which a caller cannot add to before the process
   starts, so it can select a library the image ships and not supply one. The
-  image is scanned with every other image, and W0b records whether Cloud Run
-  refuses these names in an override. If the owner wants this closed rather
+  image is scanned with every other image. W0b (2) read on 2026-10-10 that
+  no documentation restricts these names in an override (§0), so they are
+  taken as accepted until the operator's live proof says otherwise. If the owner wants this closed rather
   than argued, step 0 becomes a statically linked binary; that is a change to
   W4b's Dockerfile, not to this design.
 
@@ -792,9 +1025,12 @@ nothing public is left to protect:
    through `redact`, so no credential is written.
 4. **What still reaches every log viewer.** The Admin Activity audit trail is
    routed to `_Required` whatever any sink says. For the job it records each
-   `jobs.run` with its caller and, if W0b (2) finds the request is logged, its
-   overrides, which are the workspace id and the mode, and each account the script creates, which names the tenant id (as
-   it did under Cloud Build). Under option (ii) the workflow logs no call
+   account the script creates, which names the tenant id (as it did under
+   Cloud Build), and every change to the job and its IAM. A `jobs.run` is not
+   in it: W0b (2) found on 2026-10-10 that `RunJob` is a Data Access entry,
+   off by default and written to `_Default` once enabled. Then it carries the
+   caller and, if the request is logged, the overrides: the workspace id and
+   the mode. Under option (ii) the workflow logs no call
    arguments (`call_log_level` `LOG_NONE`), and its event is the opaque id.
 5. **Log lines name the workspace id only** (§2.2), so a screenshot of the
    execution's page or the People pane's run link names nobody.
@@ -1322,7 +1558,7 @@ $ /sc:run "fix the flaky test"
 | route | who | does |
 |---|---|---|
 | `GET /v1/workspace` | any signed-in human | the caller's record (always their own), or `{state: "none"}`. Never another person's |
-| `POST /v1/workspace` | the same | the request of §1.3 |
+| `POST /v1/workspace` | the same | the request of §1.3; an admin's own is approved and published in the same call |
 | `POST /v1/workspace/loan-request` | the same | records a loan request (`loan_requests/{tenant_id}`), idempotent |
 | `GET /v1/admin/people` | admin | §6.4's list |
 | `POST /v1/admin/workspaces/{workspace_id}/approve` | admin | §1.3; publishes the workspace id (§2.1) |
@@ -1703,10 +1939,14 @@ role conditions, plus the alert on any member not named
 
 ### Defaults the owner confirmed
 
-**Decided 2026-10-08 (owner)**, each as this document already proposed:
+**Decided 2026-10-08 (owner)**, each as this document already proposed; item 1 was
+replaced by the owner on 2026-10-09:
 
-1. **An admin may approve their own request**, and the audit records it
-   (§1.3).
+1. **An admin's own request is approved automatically** (decided
+   2026-10-09, replacing 2026-10-08's "an admin may approve their own
+   request", by hand). The decision says `auto: true` and the audit entry is
+   `approve_own_workspace_auto`; a tenant that predates the workspace job is
+   the exception (§1.3).
 2. **A 24-hour wait before re-requesting after a denial.** Admins may still
    approve at any time (§1.3).
 3. **Admins lend only accounts owned by a group tenant or by themselves**

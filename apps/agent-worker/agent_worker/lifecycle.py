@@ -207,6 +207,7 @@ from . import findings_epic as findings_epic_mod
 from . import indexrun as indexrun_mod
 from . import forge as forge_mod
 from . import merge as merge_mod
+from . import mergeslot as mergeslot_mod
 from . import post_verdict as post_verdict_mod
 from . import specverify
 from .forge import ForgeError, RepoAccess, probe_repository, open_pull_request
@@ -839,6 +840,10 @@ class Worker:
         # tenant's wave epic after its own work is done (#638).
         self._verdict_minors: tuple[verdict_mod.MinorFinding, ...] = ()
         self._verdict_minors_dropped = 0
+        # The verdict file that gate read, as staged: `(path on disk, its
+        # input_from name)`. A step whose gate stays shut re-publishes it as
+        # its own artifact (`_republish_staged_verdict`); None with no gate.
+        self._verdict_staged: tuple[Path, str] | None = None
         # Where the pull request text of a step whose verdict gate stayed shut
         # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
         # `implementer`, `label` or None; None when the gate did not shut.
@@ -1912,6 +1917,18 @@ class Worker:
                 task.get("repository_url")
                 if isinstance(task.get("repository_url"), str) else None
             ),
+            # The repository's merge slot (merge race, #295): every slot
+            # write is fenced on this attempt's task and lease, as the park is.
+            merge_slots=(
+                mergeslot_mod.FirestoreMergeSlots(
+                    self.db,
+                    tenant_id=self.cfg.tenant_id,
+                    run_transaction=self.control._run_transaction,
+                    fence=lambda txn: self.control._fenced_task(txn, write="merge slot"),
+                    call_options=self.control.call_options,
+                )
+                if action is WorkerAction.MERGE else None
+            ),
         )
         self.phases.enter("worker_action")
         self.log.info("worker action: no runner is started", action=action.value)
@@ -2054,15 +2071,24 @@ class Worker:
         nothing written and the lease untouched (invariant 5). No checkpoint:
         a worker action keeps no workspace.
         """
+        code = str(wait.get("code") or "checks_pending")
+        # A wait for the repository's merge slot (merge race, #295) is not a
+        # wait for CI: counted on its own bound, and not on the CI clock that
+        # `checks_timeout` reads, so a long queue neither spends the step's CI
+        # wakes nor times its checks out.
+        slot_wait = code == mergeslot_mod.MERGE_SLOT_WAIT
         # Recorded before any metrics export (TEL #718, `_metrics_after_the_record`).
         with self._metrics_after_the_record():
             refunded = self.control.park_ci_pending(
-                code=str(wait.get("code") or "checks_pending"),
+                code=code,
                 head=str(wait.get("head") or ""),
                 pull_request=int(wait.get("pull_request") or 0),
                 pending=[str(name) for name in wait.get("pending") or []],
-                max_wakes=merge_mod.MERGE_CI_MAX_WAKES,
+                max_wakes=(mergeslot_mod.MERGE_SLOT_MAX_WAITS if slot_wait
+                           else merge_mod.MERGE_CI_MAX_WAKES),
                 fallback_seconds=merge_mod.MERGE_CI_FALLBACK_SECONDS,
+                counter="slot_waits" if slot_wait else "wakes",
+                ci_clock=not slot_wait,
             )
         self.log.info("worker action parked until CI settles", action=action.value,
                       code=wait.get("code"), attempt_refunded=refunded)
@@ -5464,6 +5490,7 @@ class Worker:
             ws.work / source.path, task_id=gate.task_id, filename=source.filename
         )
         runs = read.verdict in gate.verdict_in
+        self._verdict_staged = (ws.work / source.path, source.filename)
         self._verdict = {
             "task_id": gate.task_id,
             "file": source.filename,
@@ -5616,7 +5643,9 @@ class Worker:
         gets, so the final checkpoint, the uploads, the publish, the missing-
         output check and the lease release are the ones every other clean
         attempt has. The result it reads is written here, in the runner's
-        shape, saying the agent was skipped and why.
+        shape, saying the agent was skipped and why, and the verdict the gate
+        read is re-published as this step's own artifact
+        (`_republish_staged_verdict`), so a step that stages it reads it.
         """
         ws = self.ws
         assert ws is not None and self._verdict is not None
@@ -5626,6 +5655,7 @@ class Worker:
             # folder: the pull request this step owes is titled by the
             # implementer's own text, or the workflow's label (2026-10-05).
             self._adopt_pull_request_text()
+        self._republish_staged_verdict()
         ws.result_path.write_text(
             json.dumps(
                 {
@@ -5652,6 +5682,35 @@ class Worker:
                 stdout_truncated=False,
                 stderr_truncated=False,
             )
+        )
+
+    def _republish_staged_verdict(self) -> None:
+        """Publish the verdict file this step's shut gate read as its own artifact.
+
+        Owner decision, 2026-10-10 (merge chain follow-up, part of #295): a
+        gated step whose agent does not run used to write no artifact, so a
+        step that stages from it -- the merge step `on_merge_verdict` derives
+        reads the re-review's verdict, and the re-review is gated on the first
+        review's NOT_YET -- found nothing on the MERGE path and refused
+        `verdict_unreadable`. The verdict that decided this step is the one it
+        passes on: copied byte for byte under its `input_from` name, never
+        re-serialised, so the reader sees exactly what the review wrote and
+        `read_verdict` judges it again. When the agent runs it writes its own
+        verdict instead, and this is not called.
+        """
+        ws = self.ws
+        assert ws is not None and self._verdict_staged is not None
+        staged, filename = self._verdict_staged
+        target = ws.artifacts / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Unlinked first, so a name a restored checkpoint left as a link is
+        # replaced rather than written through.
+        target.unlink(missing_ok=True)
+        shutil.copyfile(staged, target)
+        self.log.info(
+            "verdict gate shut: the staged verdict is re-published as this step's artifact",
+            verdict_file=filename,
+            verdict_task_id=self._verdict["task_id"] if self._verdict else None,
         )
 
     def _pr_label(self) -> str | None:
@@ -6947,6 +7006,8 @@ class Worker:
             return None
         task = self._task or {}
         url = task.get("repository_url") or self.cfg.repository_url or self._repo_url
+        # Signed, like the suffix: whose token for one owner (D5) this is.
+        submitted_by = task.get("submitted_by")
         try:
             reason = grant_refusal(
                 self.db,
@@ -6955,6 +7016,7 @@ class Worker:
                 repository_url=url if isinstance(url, str) else None,
                 write=write,
                 call_options=self.control.call_options(),
+                submitted_by=submitted_by if isinstance(submitted_by, str) else None,
             )
         except Exception as exc:  # noqa: BLE001 -- a read failure, said by type
             self.log.warning("the forge grant could not be read", error=type(exc).__name__)

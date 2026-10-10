@@ -212,7 +212,7 @@ def test_a_request_after_24_hours_reopens_a_denied_record_and_keeps_the_reason(c
     _record(db, state="denied", decision=denial)
     shown = client.get("/v1/workspace", headers=auth_header("carol")).json()
     assert shown["decision"] == {"verdict": "denied", "reason": "Use the eng space.",
-                                 "at": denial["at"].isoformat()}
+                                 "at": denial["at"].isoformat(), "auto": False}
     assert "root@saga.xyz" not in str(shown)  # `decision.by` never leaves Firestore
     response = client.post("/v1/workspace", headers=auth_header("carol"))
     assert response.status_code == 202, response.text

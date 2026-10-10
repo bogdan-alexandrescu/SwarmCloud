@@ -212,7 +212,8 @@ def test_a_dry_run_writes_nothing_and_says_what_it_would(db, existing) -> None:
 @pytest.mark.parametrize("state", ["approved", "applying", "needs_owner", "ready"])
 def test_a_record_a_build_may_be_making_or_made_is_refused(db, state) -> None:
     _tenant(db)
-    _requested(db, state=state)
+    # A dispatch attempt is what makes an approved record one a build may hold.
+    _requested(db, state=state, dispatch={"attempts": 1, "last_attempt_at": NOW})
     before = copy.deepcopy(db.docs)
 
     with pytest.raises(Conflict, match=state):
@@ -268,3 +269,32 @@ def test_a_quota_that_is_not_a_whole_number_above_zero_is_refused(db, pods, cpu)
     with pytest.raises(ValueError):
         _store(db).migrate(TENANT, quota_pods=pods, quota_cpu=cpu, apply=True)
     assert set(db.docs) == {f"tenants/{TENANT}"}
+
+
+# --------------------------------------------------------------------------
+# an approved record no build was ever sent for (#847, 2026-10-10)
+# --------------------------------------------------------------------------
+
+def test_an_approved_record_never_dispatched_is_completed_in_place(db) -> None:
+    # w-752763 was approved while publishing was off: no dispatch, no run.
+    _tenant(db)
+    _requested(db, state="approved", dispatch=None, run=None,
+               decision={"by": "owner@example.test", "at": NOW, "verdict": "approved", "reason": None})
+
+    result = _migrate(db)
+
+    assert result["action"] == "update"
+    record = db.docs[f"workspaces/{TENANT}"]
+    assert record["state"] == "ready" and record["migrated"] is True
+    assert record["workspace_id"] == KEPT_ID
+
+
+def test_an_approved_record_with_a_run_is_still_refused(db) -> None:
+    _tenant(db)
+    _requested(db, state="approved", dispatch=None, run={"build_id": "b-1", "attempt": 1})
+    before = copy.deepcopy(db.docs)
+
+    with pytest.raises(Conflict, match="approved"):
+        _migrate(db)
+    assert db.docs == before
+

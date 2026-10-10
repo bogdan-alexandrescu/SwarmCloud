@@ -97,8 +97,9 @@ the review shape #264 built: a review that writes `verdict.json`, and a fix
 gated on `NOT_YET` that is the workflow's one publisher (`integrate`). The
 run's `fix_rounds` (1-5, default 3) is the cap on review-then-fix rounds and
 travels in the workflow's metadata; ONE round is what the platform can
-compile today, because under `integrate` only the integrator may be gated and
-a second review needs a gated step that is not the publisher
+compile today, because under `integrate` only the integrator may be gated
+(and the re-review "on_merge_verdict" appends), and a second review needs a
+gated step that is not the publisher
 (docs/workflows.md, "What this does not do"). The same cap also bounds the
 CI loop's fix rounds after the pull request opens (`issueci`): one
 continuation per red reading, at most `fix_rounds` of them.
@@ -180,6 +181,7 @@ from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
     MERGE_METADATA_KEY,
+    MERGE_ON_VERDICT,
     MERGE_STEP_ID,
     IssueRef,
 )
@@ -1132,6 +1134,20 @@ def _auto_merge_refusal() -> str | None:
             "yourself"
         )
     return None
+
+
+def auto_merge_default(merge_policy: str | None, platform_default: bool) -> bool:
+    """What a run created without saying `auto_merge` gets (WF-MERGE-API).
+
+    The `merge_policy` the tenant registered the issue's repository with
+    when it set one -- "on_merge_verdict" is on, "off" is off -- else the
+    platform's `merge_by_default`. A run's merge already waits for the
+    review's MERGE verdict and green CI (`issueci._merge`), which is what
+    "on_merge_verdict" asks for.
+    """
+    if merge_policy is not None:
+        return merge_policy == MERGE_ON_VERDICT
+    return bool(platform_default)
 
 
 def auto_merge_availability(default: bool = False) -> dict[str, Any]:

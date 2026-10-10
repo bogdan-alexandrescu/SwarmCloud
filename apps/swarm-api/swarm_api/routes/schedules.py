@@ -8,10 +8,13 @@
     PATCH  /v1/schedules/{id}                      edit, carrying `revision`
     DELETE /v1/schedules/{id}?confirm=<name>       delete, with the typed name
     POST   /v1/schedules/{id}:pause | :resume | :run | :take-ownership
+    POST   /v1/schedules/{id}:pause {cancel_live: true, confirm}   and cancel the live runs (§2.11)
+    POST   /v1/schedules:pause-all {confirm}       every enabled schedule of the caller's tenant (§2.11)
     GET    /v1/schedules/{id}/firings[/{firing_id}]
     GET    /v1/schedules/{id}/audit                newest first
     GET    /v1/admin/schedules                     every tenant's, with the tick's health (§5.3)
     POST   /v1/admin/schedules/{id}:pause | :disable | :enable
+    POST   /v1/admin/tenants/{tenant_id}/schedules:pause {confirm}   §5.3's pause-all
 
 NOT HERE: approvals and the SD3 merge switch (`:merge-mode`) are lane S5's;
 the tick (`POST /v1/admin/schedules/tick`) is `routes/schedule_tick.py`. A
@@ -65,7 +68,7 @@ from datetime import datetime, timedelta, timezone
 from itertools import chain
 from typing import Any, Iterable, Mapping
 
-from fastapi import APIRouter, Body, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, Query, Response, status
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, ValidationError
@@ -74,10 +77,13 @@ from swarm_common.admission import _snapshot
 from .. import cronexpr, schedulefire, schedules, scheduletypes
 from ..auth import AuthContext
 from ..deps import AppContext, admin_auth, current_auth, get_context, paged_limit, tenant_scope
-from ..errors import NoClaudeAccount, NotFound, WorkspaceNotReady
+from ..errors import Conflict, NoClaudeAccount, NotFound, WorkspaceNotReady
+from ..issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState
 from ..repositories import COLLECTION as REPOSITORIES
 from ..repositories import Repositories, platform_of
 from ..schedules import ScheduleConflict, ScheduleForbidden, ScheduleInvalid
+from . import tasks as task_routes
+from . import workflows as workflow_routes
 
 log = logging.getLogger(__name__)
 
@@ -142,6 +148,17 @@ class PreviewIn(_Verb):
 
 class ReasonIn(_Verb):
     reason: str | None = Field(default=None, max_length=500)
+
+
+class PauseIn(ReasonIn):
+    #: §2.11 "pause and cancel live runs": `confirm` is then the schedule's name.
+    cancel_live: StrictBool = False
+    confirm: str | None = Field(default=None, max_length=200)
+
+
+class PauseAllIn(ReasonIn):
+    #: The tenant id, typed (§7.1).
+    confirm: str = Field(min_length=1, max_length=200)
 
 
 class RunIn(_Verb):
@@ -712,23 +729,144 @@ def _enabled(doc: Mapping[str, Any], now: datetime) -> dict[str, Any]:
 @router.post("/v1/schedules/{schedule_id}:pause")
 def pause_schedule(
     schedule_id: str,
+    background: BackgroundTasks,
     body: dict[str, Any] | None = Body(default=None),
     auth: AuthContext = Depends(current_auth),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """§2.11: no new firings. Live work continues."""
-    request = _verb(ReasonIn, body)
+    """§2.11: no new firings. Live work continues -- unless `cancel_live`, typed
+    with the schedule's name, which also cancels the work of its live firings."""
+    request = _verb(PauseIn, body)
+    if request.cancel_live:
+        stored = _read(ctx, tenant_id, schedule_id)
+        if request.confirm is None or request.confirm != stored["name"]:
+            raise ScheduleInvalid("confirmation_required",
+                                  "type the schedule's name in `confirm` to cancel its live runs")
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
         if doc["state"] == "disabled":
+            if request.cancel_live:
+                # Disabled already makes no firings; what is asked is the cancel.
+                return None
             raise ScheduleConflict("schedule_disabled", "an admin disabled this schedule")
         if doc["state"] == "paused":
             return None
         return _paused(auth.email, now, request.reason)
 
     doc = _move(ctx, tenant_id, schedule_id, by=auth.email, action="pause", change=change)
-    return {"schedule": schedule_to_api(doc, _now(ctx))}
+    if not request.cancel_live:
+        return {"schedule": schedule_to_api(doc, _now(ctx))}
+    cancelled = _cancel_live(ctx, auth, tenant_id, doc, background)
+    return {"schedule": schedule_to_api(doc, _now(ctx)), "cancelled": cancelled}
+
+
+def _cancel_one(ctx: AppContext, auth: AuthContext, tenant_id: str, kind: str, item_id: str,
+                background: BackgroundTasks) -> str:
+    """One task or workflow through the platform's own cancel route body, so
+    its execution stop, child cascade and wake happen exactly as there."""
+    try:
+        if kind == "task":
+            task_routes.cancel_task(item_id, background, tenant_id=tenant_id, auth=auth, ctx=ctx)
+        else:
+            workflow_routes.cancel_workflow(item_id, background, tenant_id=tenant_id, auth=auth, ctx=ctx)
+    except Conflict:
+        return "already_ended"
+    except NotFound:
+        return "not_found"
+    return "cancel_requested"
+
+
+def _run_targets(ctx: AppContext, tenant_id: str, run_id: str) -> list[tuple[str, str]]:
+    """What an issue run has live: its planner while PLANNING, its workflow
+    while RUNNING, its last CI-fix round while FIXING. The run itself ends
+    `CANCELLED` on its ordinary advance when that work does."""
+    try:
+        run = IssueRuns(ctx.db, now=ctx.now).get(tenant_id, run_id)
+    except NotFound:
+        return []
+    if run.state in TERMINAL_RUN_STATES:
+        return []
+    if run.state == RunState.PLANNING and run.planner_task_id:
+        return [("task", run.planner_task_id)]
+    if run.state == RunState.FIXING and run.ci_fix_workflows:
+        return [("workflow", run.ci_fix_workflows[-1])]
+    if run.workflow_id and run.state in (RunState.APPROVED, RunState.RUNNING, RunState.FIXING):
+        return [("workflow", run.workflow_id)]
+    return []
+
+
+def _cancel_live(ctx: AppContext, auth: AuthContext, tenant_id: str, doc: Mapping[str, Any],
+                 background: BackgroundTasks) -> list[dict[str, Any]]:
+    """§2.11: cancel each work item of the schedule's `created` firings, in this
+    tenant only, then audit what was asked and what each cancel did. The
+    firings end `cancelled` on the tick's advance (§2.9), not here."""
+    live = schedulefire.Ticker(ctx)._of_schedule(doc["schedule_id"], [schedulefire.CREATED])
+    live = [f for f in live if f.get("tenant_id") == tenant_id]
+    results: list[dict[str, Any]] = []
+    for firing in live:
+        for item in firing.get("work") or []:
+            kind, item_id = str(item.get("kind")), str(item.get("id"))
+            if kind in ("task", "workflow"):
+                targets = [(kind, item_id)]
+            elif kind == "issue_run":
+                targets = _run_targets(ctx, tenant_id, item_id)
+            else:
+                targets = []  # an api_action ended when it was recorded
+            outcome = [_cancel_one(ctx, auth, tenant_id, k, i, background) for k, i in targets]
+            results.append({"kind": kind, "id": item_id, "firing_id": firing["firing_id"],
+                            "result": outcome[0] if outcome else "already_ended"})
+    now = _now(ctx)
+
+    @firestore.transactional
+    def _apply(txn: Any) -> None:
+        _audit(txn, ctx, doc, "cancel_live", auth.email, now, {
+            "firings": [f["firing_id"] for f in live], "items": results,
+        })
+
+    _apply(ctx.db.transaction())
+    return results
+
+
+def _pause_all(ctx: AppContext, tenant_id: str, *, by: str, action: str,
+               reason: str | None) -> dict[str, Any]:
+    """§2.11: every `enabled` schedule of the tenant to `paused` with one reason,
+    each through `_move` -- its own transaction re-reading its state, its own
+    audit entry. Any other state is left as it is."""
+    reason = reason or "all of the tenant's schedules were paused"
+    paused: list[str] = []
+    unchanged: list[str] = []
+
+    #: Set on every attempt, so a retried transaction reports what committed.
+    moved: dict[str, bool] = {}
+
+    def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
+        moved[doc["schedule_id"]] = doc["state"] == "enabled"
+        return _paused(by, now, reason) if moved[doc["schedule_id"]] else None
+
+    for row in _tenant_schedules(ctx, tenant_id):
+        try:
+            _move(ctx, tenant_id, row["schedule_id"], by=by, action=action, change=change)
+        except NotFound:
+            continue  # deleted since the list was read: nothing left to pause
+        (paused if moved.get(row["schedule_id"]) else unchanged).append(row["schedule_id"])
+    return {"tenant_id": tenant_id, "paused": sorted(paused), "unchanged": sorted(unchanged)}
+
+
+@router.post("/v1/schedules:pause-all")
+def pause_all_schedules(
+    body: dict[str, Any] | None = Body(default=None),
+    auth: AuthContext = Depends(current_auth),
+    tenant_id: str = Depends(tenant_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """§2.11: a member pauses every enabled schedule of their own tenant, typed
+    with the tenant id. Live work continues."""
+    request = _verb(PauseAllIn, body)
+    if request.confirm != tenant_id:
+        raise ScheduleInvalid("confirmation_required",
+                              "type your tenant's id in `confirm` to pause all of its schedules")
+    return _pause_all(ctx, tenant_id, by=auth.email, action="pause_all", reason=request.reason)
 
 
 @router.post("/v1/schedules/{schedule_id}:resume")
@@ -1015,3 +1153,21 @@ def admin_enable_schedule(
 
     doc = _move(ctx, None, schedule_id, by=by, action="admin_enable", change=change)
     return {"schedule": _admin_row(doc, _now(ctx), 0)}
+
+
+@router.post("/v1/admin/tenants/{tenant_id}/schedules:pause")
+def admin_pause_tenant_schedules(
+    tenant_id: str,
+    body: dict[str, Any] | None = Body(default=None),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """§5.3: an admin pauses all of any tenant's enabled schedules, typed with
+    that tenant id. The tenant may resume each; live work is not cancelled."""
+    request = _verb(PauseAllIn, body)
+    if ctx.store.get_tenant(tenant_id) is None:
+        raise NotFound(f"tenant {tenant_id[:64]!r} not found")
+    if request.confirm != tenant_id:
+        raise ScheduleInvalid("confirmation_required",
+                              "type the tenant's id in `confirm` to pause all of its schedules")
+    return _pause_all(ctx, tenant_id, by=_admin_by(auth), action="admin_pause_all", reason=request.reason)

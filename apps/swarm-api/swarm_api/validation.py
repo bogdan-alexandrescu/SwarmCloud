@@ -574,11 +574,62 @@ MERGE_STRATEGIES = ("direct-pr", "integrate")
 #:
 #:   on    append a `merge` step (when the spec states none); refused for a
 #:         workflow that opens no single pull request, rather than ignored.
+#:   on_merge_verdict
+#:         append a `merge` step that merges ONLY on a review's MERGE verdict:
+#:         an `integrate` workflow whose integrator is gated on a review. A
+#:         re-review step is appended too, on the integrator's pushed head, and
+#:         the merge reads ITS verdict -- the latest one (`REREVIEW_ROUNDS`).
+#:         It is gated like the integrator, so its agent runs only after a
+#:         fix; on MERGE it passes the first review's verdict on unchanged.
+#:         Refused for a workflow with no such review, rather than merging
+#:         unreviewed work, and beside a spec's own merge step.
 #:   off   append none, and refuse a spec that states one: the two disagree.
-#:   absent  the platform's `merge_by_default` decides whether one is
-#:         appended; a spec's own merge step is honoured whatever it says.
+#:   absent  the repository's registered `merge_policy`, else the platform's
+#:         `merge_by_default` ("on"), decides whether one is appended; a
+#:         spec's own merge step is honoured whatever they say.
 MERGE_METADATA_KEY = "merge"
-MERGE_CHOICES = ("on", "off")
+MERGE_ON_VERDICT = "on_merge_verdict"
+MERGE_CHOICES = ("on", "off", MERGE_ON_VERDICT)
+
+#: What a registered repository's `merge_policy` may be (WF-MERGE-API,
+#: 2026-10-10): the default a workflow on it takes when its `metadata.merge`
+#: says nothing, and the default `auto_merge` of an issue run on it. Absent
+#: (never set) defers to the platform's `merge_by_default`. Only these two,
+#: not "on": a default that merges with no review verdict is a decision a job
+#: makes for itself, never one a repository makes for every job on it.
+MERGE_POLICY_OFF = "off"
+MERGE_POLICIES = (MERGE_POLICY_OFF, MERGE_ON_VERDICT)
+
+#: The step id the appended re-review takes, suffixed when a step already has it.
+REREVIEW_STEP_ID = "re-review"
+
+#: Review rounds after the fix under `on_merge_verdict`: ONE. The first review
+#: judges the implementer; the fix runs on NOT_YET; one re-review judges the
+#: fix's pushed head, and the merge reads that verdict. A second NOT_YET stops
+#: the workflow at its merge step (`verdict_not_merge`) with the pull request
+#: open for a person, rather than paying for fix after fix: a review that
+#: still says NOT_YET after one fix is a disagreement a person settles, and an
+#: unbounded loop is a cost nobody chose. The workflow is a DAG fixed at
+#: submission, so a round is a step that exists or not; raising this means
+#: appending fix/re-review pairs, which `rereview_step_for` does not do.
+REREVIEW_ROUNDS = 1
+
+#: What the re-review agent is told before the review's own instructions. The
+#: earlier verdict and the review's inputs are staged by parent, so each lands
+#: at `<step id>/<file>` and the earlier `verdict.json` can never be mistaken
+#: for the one this step writes into `$SWARM_ARTIFACTS_DIR`.
+REREVIEW_PREAMBLE = (
+    "You are the RE-REVIEW of this workflow (one round, after the fix step). "
+    "Your checkout is the head the fix step pushed: the implementer's change "
+    "plus any fix. Review that whole change against the default branch, not "
+    "only the fix. The earlier review's verdict is staged at {verdict_path}; "
+    "check every finding in it is resolved. Write your OWN verdict to "
+    "$SWARM_ARTIFACTS_DIR/{verdict_file} in the same shape: "
+    '{{"verdict": "MERGE" or "NOT_YET", "findings": [...]}}. '
+    "The merge step merges only on your MERGE. Do not edit files.\n\n"
+    "The original review instructions follow, for reference; files they name "
+    "are staged under the directory of the step that produced them ({staged}).\n\n"
+)
 
 #: The signed dispatch block on a merge step naming what it merges. The
 #: worker spells it `agent_worker.merge.MERGE_TARGET_FIELD`;
@@ -1635,7 +1686,7 @@ def resolve_dispatch_options(
     return options
 
 
-def resolve_integrator_step(steps: Sequence[StepSpec]) -> str:
+def resolve_integrator_step(steps: Sequence[StepSpec], rereview: str | None = None) -> str:
     """The step that integrates the others: the workflow's single sink.
 
     Call this only AFTER `validate_dag`, which has already rejected cycles and
@@ -1648,11 +1699,19 @@ def resolve_integrator_step(steps: Sequence[StepSpec]) -> str:
     finite and acyclic so the walk ends at a step nothing depends on, and there
     is only one of those. Transitive feeding is what matters, so a chain
     a -> b -> c is a legal `integrate` workflow with c as the integrator.
+
+    `rereview` is the re-review step swarm-api appended under
+    `metadata.merge` "on_merge_verdict" (`rereview_step_for`), by id: it
+    reviews the integrator's pushed head, so it comes after the integrator
+    and is not one of the steps the integrator integrates.
     """
     # A `merge` step (contract request 47) comes after the integrator and
     # integrates nothing: the integrator is the sink of the OTHER steps.
     # `plan_merge` holds the merge step to depending on it.
-    steps = [step for step in steps if _worker_action(step) is not WorkerAction.MERGE]
+    steps = [
+        step for step in steps
+        if _worker_action(step) is not WorkerAction.MERGE and step.step_id != rereview
+    ]
     if len(steps) < 2:
         raise DispatchOptionError(
             "strategy 'integrate' needs something to integrate: it names a final "
@@ -1988,6 +2047,7 @@ def validate_step_routing(
     *,
     strategy: str,
     integrator_step_id: str | None,
+    rereview: str | None = None,
 ) -> SinglePrPlan | None:
     """Refuse a verdict gate or a `builds_on` that could not work (#264).
 
@@ -2009,9 +2069,15 @@ def validate_step_routing(
       exists to prevent;
     * under `integrate` the integrator's pull request is the one place the
       verdict is shown, so a gate on any other step would route work that PR
-      says nothing about;
-    * a gated step whose agent does not run writes no artifact, so a step that
-      stages from it would fail every time the gate stayed shut;
+      says nothing about -- except `rereview`, the re-review swarm-api
+      appended under `metadata.merge` "on_merge_verdict" (by id), which is
+      gated on the same review as the integrator so it runs only after a fix
+      (owner decision 2026-10-10, part of #295);
+    * a gated step whose agent does not run writes no artifact but the
+      verdict file it staged, which it re-publishes unchanged
+      (`agent_worker.lifecycle.Worker._republish_staged_verdict`), so a step
+      that stages anything else from it would fail every time the gate
+      stayed shut; staging that verdict file, by the same name, is allowed;
     * `builds_on` names a step whose branch this step clones, so it must be
       upstream (or its branch may not exist yet), and the strategy must push
       every step's branch (`collect` pushes none).
@@ -2046,10 +2112,6 @@ def validate_step_routing(
                 )
 
     ancestors = _ancestors(steps)
-    staged_by: dict[str, list[str]] = {}
-    for step in steps:
-        for source in step.input_from:
-            staged_by.setdefault(source, []).append(step.step_id)
 
     for step in steps:
         if step.when_step is not None:
@@ -2085,7 +2147,7 @@ def validate_step_routing(
                     "only the final step opens a pull request, or 'collect'.",
                     detail={"step_id": step.step_id, "strategy": strategy},
                 )
-            if strategy == "integrate" and step.step_id != integrator_step_id:
+            if strategy == "integrate" and step.step_id not in (integrator_step_id, rereview):
                 raise DispatchOptionError(
                     f"step {step.step_id!r} is gated on a review verdict, but under "
                     f"strategy 'integrate' the step that publishes is "
@@ -2097,14 +2159,23 @@ def validate_step_routing(
                         "integrator_step_id": integrator_step_id,
                     },
                 )
-            if staged_by.get(step.step_id):
+            # The one file a shut gate still publishes is the verdict it read,
+            # passed on byte for byte under the name it staged it by.
+            passed_on = step.input_from.get(step.when_step)
+            other = [
+                s.step_id for s in steps
+                if step.step_id in s.input_from and s.input_from[step.step_id] != passed_on
+            ]
+            if other:
                 raise DagError(
                     f"step {step.step_id!r} is gated on a review verdict, so when the "
-                    "verdict does not name it its agent does not run and it writes "
-                    "no artifact -- but " + ", ".join(repr(s) for s in staged_by[step.step_id])
-                    + " stage a file from it. A gated step cannot be an input_from "
-                    "source.",
-                    detail={"step_id": step.step_id, "staged_by": staged_by[step.step_id]},
+                    "verdict does not name it its agent does not run and the only "
+                    f"artifact it writes is the {passed_on!r} it staged, passed on -- but "
+                    + ", ".join(repr(s) for s in other)
+                    + " stage another file from it. A gated step is an input_from "
+                    f"source only for {passed_on!r}.",
+                    detail={"step_id": step.step_id, "staged_by": other,
+                            "passed_on": passed_on},
                 )
 
         if step.builds_on is not None:
@@ -2151,7 +2222,8 @@ def resolve_merge_choice(metadata: Mapping[str, Any]) -> str | None:
         raise DispatchOptionError(
             f"metadata.{MERGE_METADATA_KEY} is {str(value)[:40]!r}; it is one of "
             + ", ".join(repr(c) for c in MERGE_CHOICES)
-            + ", or absent for the platform's default.",
+            + ", or absent for the repository's merge_policy, else the platform's "
+            "default.",
             detail={"field": f"metadata.{MERGE_METADATA_KEY}",
                     "accepted": list(MERGE_CHOICES)},
         )
@@ -2199,7 +2271,7 @@ class MergePlan:
 
 def merge_sources(
     steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
-    named_pull: bool = False,
+    named_pull: bool = False, rereview: str | None = None,
 ) -> MergeSources | None:
     """The pull request a merge step would merge, or None when there is not ONE.
 
@@ -2221,8 +2293,22 @@ def merge_sources(
     `named_pull` is True for a workflow with `merge_pr` (#352), as
     `continuation.resolve_merge_pr` checked it: with NO agent step it merges
     the pull request the caller named, which no task opened.
+
+    `rereview` is the re-review `metadata.merge` "on_merge_verdict" appended
+    (`rereview_step_for`), by id. It is not the integrator -- it comes after
+    it -- and it IS the review the merge reads: the latest verdict, written
+    under the same file name the gate's review wrote.
     """
     agents = [step for step in steps if not is_merge_step(step.runner_profile)]
+    if rereview is not None:
+        if strategy != "integrate":
+            return None
+        rest = merge_sources(
+            [step for step in agents if step.step_id != rereview], strategy, continued_task,
+        )
+        if rest is None or rest.review is None or not rest.verdict_file:
+            return None
+        return MergeSources(rest.pull_request, rereview, rest.verdict_file)
     if named_pull:
         return MergeSources("", named=True) if strategy == "direct-pr" and not agents else None
     if strategy == "direct-pr" and continued_task is not None and not agents:
@@ -2244,7 +2330,7 @@ def merge_sources(
 
 def merge_step_for(
     steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
-    named_pull: bool = False,
+    named_pull: bool = False, rereview: str | None = None,
 ) -> dict[str, Any] | None:
     """The `merge` step swarm-api appends to a workflow, or None if it opens no one PR.
 
@@ -2253,25 +2339,93 @@ def merge_step_for(
     review's verdict file is staged, so the merge reads the verdict the
     publishing step's gate read.
     """
-    sources = merge_sources(steps, strategy, continued_task, named_pull)
+    sources = merge_sources(steps, strategy, continued_task, named_pull, rereview)
     if sources is None:
         return None
-    taken = {step.step_id for step in steps}
-    step_id, n = MERGE_STEP_ID, 1
-    while step_id in taken:
-        n += 1
-        step_id = f"{MERGE_STEP_ID}-{n}"
     return {
-        "step_id": step_id,
+        "step_id": _free_step_id(MERGE_STEP_ID, {step.step_id for step in steps}),
         "runner_profile": MERGE_STEP_ID,
         "depends_on": sources.depends_on(),
         "input_from": sources.input_from(),
     }
 
 
+def _free_step_id(base: str, taken: set[str]) -> str:
+    """`base`, or `base-2`, `base-3`... -- the first id no step has."""
+    step_id, n = base, 1
+    while step_id in taken:
+        n += 1
+        step_id = f"{base}-{n}"
+    return step_id
+
+
+def rereview_step_for(
+    steps: Sequence[StepSpec], review: Mapping[str, Any], strategy: str,
+) -> dict[str, Any] | None:
+    """The re-review step `metadata.merge` "on_merge_verdict" appends, or None.
+
+    None unless the workflow is `integrate` and its integrator is gated on a
+    review (`merge_sources` finds a review and the file the gate stages from
+    it): that is the implement -> review -> fix shape whose fix may change
+    the head after the review judged it. `review` is that review step as
+    submitted (`WorkflowStepCreate.model_dump()`).
+
+    The re-review runs the REVIEW's runner profile, by name, on the review's
+    own input with `REREVIEW_PREAMBLE` before its prompt, so nothing the
+    caller did not already choose for its review is chosen here (invariant
+    10). It builds on the integrator -- its checkout is the head the merge
+    will pin -- and stages, by parent, the earlier verdict and whatever the
+    review staged. It is GATED on the same review and verdicts as the
+    integrator (owner decision 2026-10-10, part of #295): its agent runs
+    only when the fix's did, which in implement -> review -> fix is NOT_YET.
+    On MERGE no fix ran, the head is the one the review already judged, and
+    the re-review runs no agent: the worker re-publishes the verdict it
+    staged, the first review's MERGE, byte for byte as its own artifact
+    (`agent_worker.lifecycle.Worker._republish_staged_verdict`), so the
+    merge step reads the same file name from the same step on both paths.
+    """
+    sources = merge_sources(steps, strategy)
+    if (
+        strategy != "integrate" or sources is None or sources.review is None
+        or not sources.verdict_file or review.get("step_id") != sources.review
+    ):
+        return None
+    integrator = next((s for s in steps if s.step_id == sources.pull_request), None)
+    if integrator is None:
+        return None
+    staged = {**dict(review.get("input_from") or {}), sources.review: sources.verdict_file}
+    paths = ", ".join(f"{src}/{name}" for src, name in staged.items())
+    original = dict(review.get("input") or {})
+    prompt = original.get("prompt")
+    preamble = REREVIEW_PREAMBLE.format(
+        verdict_path=f"{sources.review}/{sources.verdict_file}",
+        verdict_file=sources.verdict_file,
+        staged=paths,
+    )
+    step: dict[str, Any] = {
+        "step_id": _free_step_id(REREVIEW_STEP_ID, {s.step_id for s in steps}),
+        "runner_profile": review.get("runner_profile"),
+        "input": {**original, "prompt": preamble + (prompt if isinstance(prompt, str) else "")},
+        "depends_on": list(dict.fromkeys([sources.pull_request, *staged])),
+        "builds_on": sources.pull_request,
+        "input_from": staged,
+        # The integrator's own gate: the re-review runs after a fix, and
+        # passes the review's verdict on when there was none.
+        "when": {"step": sources.review, "verdict_in": list(integrator.when_verdicts)},
+        "metadata": {
+            **dict(review.get("metadata") or {}),
+            INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT,
+        },
+    }
+    for name in ("resource_class", "timeout_seconds"):
+        if review.get(name) is not None:
+            step[name] = review[name]
+    return step
+
+
 def plan_merge(
     steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
-    named_pull: bool = False,
+    named_pull: bool = False, rereview: str | None = None,
 ) -> MergePlan | None:
     """Refuse a merge step that could not merge what the workflow opened, else plan it.
 
@@ -2318,7 +2472,7 @@ def plan_merge(
                 f"agent and clones nothing, so it takes no `{name}`. Remove it.",
                 detail={"step_id": merge.step_id, "field": name},
             )
-    sources = merge_sources(steps, strategy, continued_task, named_pull)
+    sources = merge_sources(steps, strategy, continued_task, named_pull, rereview)
     if sources is None:
         raise DispatchOptionError(
             f"step {merge.step_id!r} merges the pull request this workflow opens, and "

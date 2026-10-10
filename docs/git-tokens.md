@@ -1,7 +1,8 @@
 # Git tokens: a registry with three scopes, and what each token can do
 
 **Status: PROPOSED 2026-10-04, design and mock-ups only (functionality wave 4,
-lane RI0b, drawn 2026-10-05).** Nothing described here is built. The owner
+lane RI0b, drawn 2026-10-05).** As proposed, nothing here was built; the per-user
+scope since has been, by #780 ("Built for #780" below). The owner
 asked on 2026-10-04 for "a way to visualize the permissions the git token has
 on a given repo or set of repos. We might need to manage different git tokens
 per repo and per user or tenant." This is a sibling of
@@ -27,6 +28,89 @@ What the design settles, in one line each:
 * **Phase 1 needs no frozen-contract change**: the registry, the probe and the
   views work for the tenant default token as it is today. Using a repository
   or user token in a task needs one request (E), written in §8.
+
+---
+
+## Built for #780: per-person slots, the migration policy, retiring the tenant token
+
+Read 2026-10-09. Onboarding ([onboarding.md](onboarding.md)) built the **per
+user** scope of §1 and request E (filed and accepted as request 54). The
+**per repository** scope is still this design only. The rest of this document
+is the design as proposed; where it and this section disagree, this section is
+what runs.
+
+**Per-person slots: one for the App, one per fallback owner.** Both are user
+slots, `swarm-tenant-<tenant>-git-u-<16 hex>`, and both are created by
+swarm-api when the person onboards (D3), not declared by Terraform (so §2's
+S2, not S1):
+
+* **The App slot**, `git-u-<16 hex of sha256(lower-cased email)>`
+  (`apps/swarm-api/swarm_api/gittokens.py::provider_suffix`). It holds the
+  person's GitHub App user access token, kind `app_user`, refreshed by the
+  15-minute sweep.
+* **A fallback slot per owner**, `git-u-<16 hex of sha256(email|owner)>`
+  (`apps/swarm-api/swarm_api/gittokens.py::owner_suffix`). It is for an org
+  that will not install the App, or that refuses classic tokens. It holds the
+  person's own personal access token for that one owner, read from stdin by
+  `uv run sc setup token --owner <org>` or typed into Admin settings. `POST
+  /v1/onboarding/github/token` stores it once and probes it
+  (`apps/swarm-api/swarm_api/forgeapp.py::ForgeApp.store_owner_token`). The
+  route never returns it. Removing that owner under Access disables every
+  version of the slot and marks its record `revoked`
+  (`apps/swarm-api/swarm_api/forgeapp.py::ForgeApp.revoke_owner_token`).
+
+Both names fall under the one prefix-conditioned grant per tenant in
+`terraform/bootstrap/forge_user_slots.tf`. A second slot per person needed no
+IAM change and no frozen-contract change: `Task.forge_credential` already
+accepts `git-u-<hex>`. Readers are as §2 says under U1 (D7): the tenant's
+worker account and swarm-api. The resolver hands a task only its submitter's
+slot.
+
+**Which token a task uses, as built.** Submission resolves it
+(`apps/swarm-api/swarm_api/service.py::SubmissionService._resolve_forge`) and
+signs it into the task. The worker reads that slot at runtime and nothing
+else.
+
+| submitted by | grant on the repository | `REPOSITORY_GRANTS_ENFORCED` | credential |
+|---|---|---|---|
+| a person | `read` or `write`, owner enabled through the App | either | their App slot |
+| a person | `read` or `write`, owner enabled through their fallback token | either | their slot for that owner |
+| a person | none | on | refused, 403 `REPOSITORY_NOT_GRANTED`, "choose it under Access" |
+| a person | none | off | the tenant token, `git`, as before #780 |
+| a service account | not asked | either | the tenant token, `git`, with write |
+
+**The migration policy (owner decisions D4, 2026-10-07 and 2026-10-08).**
+People are refused once enforcement is on. Service submissions keep the tenant
+token: repository indexing, schedules, and the release's acceptance suite in
+the smoke tenant. Such a task shows its credential as tenant token, service
+submission (`apps/swarm-api/swarm_api/codec.py::forge_credential_source`).
+The switch is `var.repository_grants_enforced` in each environment's tfvars:
+on in dev, off in prod, which registers no App
+([api-refusals.md](api-refusals.md)). One caveat while a switch is off: an
+ungranted person's task also runs with `git`, and the label is derived from
+the credential alone, so that task reads "service submission" too.
+
+**How to retire the tenant token.** This is the owner's step, and it is a
+procedure, not a console button. The Access page never got the "retire the
+tenant token" button §3.5 of onboarding.md once sketched, because service
+submissions still read the token.
+
+1. Turn enforcement on for the environment, so no person's task reads `git`
+   any more.
+2. Confirm nothing else does. Every service submission does (indexing,
+   schedules, acceptance), and so does swarm-api's own issue preview and
+   open-work read (`SecretManagerForgeTokens`, §0). The API serves each task's
+   `forge_credential_source`. No screen counts them yet, so the check is a
+   read of the tenant's tasks over the last fortnight. A tenant that still
+   runs service submissions keeps the token, or first moves them to another
+   credential.
+3. Disable the token's enabled version. `gcloud secrets versions list
+   swarm-tenant-<tenant>-git` gives the version number, then `gcloud secrets
+   versions disable <N> --secret swarm-tenant-<tenant>-git` disables it. This
+   is the `create-secrets.sh --disable-previous` semantics, and it can be
+   undone with `versions enable`.
+4. Only once nothing has failed for want of it, revoke the token at GitHub.
+   This is the step that cannot be undone.
 
 ---
 

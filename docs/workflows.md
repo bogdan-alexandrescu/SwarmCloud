@@ -1073,7 +1073,9 @@ carry them: `WorkflowStep` is frozen, so typing them there is contract request
   review of the fixed branch is another review step and another gated step,
   but under `integrate` only the integrator may be gated, so that chain needs
   a gate on a non-integrator whose verdict the PR also carries, which is not
-  built.
+  built for a caller's own steps. The one exception is the re-review
+  `"on_merge_verdict"` appends (below), gated on the same review as the
+  integrator.
 * **It does not check the verdict where it is written.** A malformed verdict
   is found by the gated step, after the review has SUCCEEDED, not by the
   review's own end-of-attempt check, which would retry it.
@@ -1439,16 +1441,92 @@ The review shape above, ending in a merge:
 ```
 
 You do not have to write the last step. **It is opt-in, and chosen in one of
-two places:**
+three places:** the workflow's `metadata.merge` (a spec's top-level `merge`
+key, from the bridge), else the `merge_policy` the tenant registered the
+repository with, else the platform's `merge_by_default`.
 
 | `metadata.merge` on the workflow | the spec states a merge step | result |
 |---|---|---|
-| absent | no | appended when the platform's `merge_by_default` is on (default **off**) and the repository is on github.com |
+| absent | no | the repository's `merge_policy` when it set one (below); else appended when the platform's `merge_by_default` is on (default **off**); either only when the repository is on github.com |
 | absent | yes | the stated step is honoured |
 | `"on"` | no | appended; refused (422) if the workflow opens no single pull request |
 | `"on"` | yes | the stated step is honoured; nothing is doubled |
+| `"on_merge_verdict"` | no | a re-review and a merge that reads it are appended (below); refused (422) unless the workflow is `integrate` with its integrator gated on a review |
+| `"on_merge_verdict"` | yes | refused (422): it derives the merge step itself; use `"on"` to keep yours |
 | `"off"` | no | none |
 | `"off"` | yes | refused (422): the two disagree |
+
+### `on_merge_verdict`: the workflow ends in a merge, on the latest review
+
+**Why it exists.** On 2026-10-09, 40 PRs SwarmCloud opened were left
+unmerged; 30 of them had no merge step at all, because the plugin's
+implement -> review -> fix workflows ended at the pull request. `"on"`
+already appended a merge, but it read the FIRST review's verdict: on
+NOT_YET the fix ran, nothing judged the fix, and the merge refused
+`verdict_not_merge` on a verdict about code that no longer existed.
+
+With `"on_merge_verdict"` on an `integrate` workflow whose integrator is gated
+on a review, swarm-api appends two steps before signing
+(`validation.rereview_step_for`, `merge_step_for`):
+
+| step | what it is | why |
+|---|---|---|
+| `re-review` | the review's own `runner_profile` and `input`, by name, with a preamble before its prompt; `builds_on` the integrator; stages the earlier verdict and the review's inputs **by parent** (`review/verdict.json`); gated like the integrator (`when` the review says `NOT_YET`) | it judges the head the integrator pushed -- the head the merge pins -- and its earlier-verdict file can never be mistaken for the `verdict.json` it writes |
+| `merge` | depends on the integrator and the re-review; stages the re-review's verdict file; its signed `merge_target.review` is the re-review | it merges only on the LATEST verdict, and only when CI is green at the integrator's pushed head |
+
+* **One round, `REREVIEW_ROUNDS = 1`.** A re-review that still says NOT_YET
+  stops the workflow at its merge step (`verdict_not_merge`), with the pull
+  request open for a person. The workflow is a DAG fixed at submission, so
+  a second round would be a second fix/re-review pair, and a review that
+  disagrees with a fix twice is a disagreement a person settles.
+* **The re-review's agent runs only after a fix** (owner decision
+  2026-10-10). It is gated on the same review and verdicts as the integrator
+  (`NOT_YET` in implement -> review -> fix), so on MERGE no review agent is
+  spent a second time on a head nobody changed. A gated step whose agent does
+  not run re-publishes the verdict file it staged, byte for byte under its
+  `input_from` name, as its own artifact
+  (`agent_worker.lifecycle.Worker._republish_staged_verdict`): on MERGE the
+  merge step reads the first review's MERGE through the re-review, on
+  NOT_YET it reads the re-review's own verdict -- the same file name from
+  the same step either way. Before this the re-review ran on MERGE too, one
+  review agent per merged workflow, because a shut gate wrote no artifact
+  and the merge refused `verdict_unreadable`.
+* **Nothing the caller did not choose.** The re-review runs the profile and
+  input the caller already chose for its review; no image, command, backend
+  or resource spec is accepted from anyone (invariant 10).
+* **Refused rather than ignored, when asked for.** Under `collect` nothing
+  opens a pull request; under `direct-pr` every agent step opens its own and
+  no step may be gated, so there is no review to wait on; an ungated
+  integrator has no verdict. Each is a 422 naming the reason and `"on"` /
+  `"off"` as the alternatives.
+
+### A repository's `merge_policy`
+
+`merge_policy` (`"off"` | `"on_merge_verdict"`) is a field of the tenant's
+registration on `/v1/repositories`, and **only a platform admin may set it**
+(a member's create or PATCH carrying it answers 403 before anything is read
+or written). Each change is an `admin_audit` entry
+(`repository_merge_policy_set`) in the transaction that changes the
+registration, as `platform` is. Never set, it reads as `null` and the
+platform's `merge_by_default` decides. A PATCH of `"inherit"` (owner decision
+2026-10-10) clears an override back to that: it stores `null`, under the same
+admin-only check and the same audit entry, `to: null`. A create does not take
+it -- there is nothing to clear -- and it is never stored.
+
+* When a workflow on the repository says nothing in `metadata.merge`, the
+  policy decides. A policy that cannot apply -- a one-step `direct-pr`
+  workflow, a CI fix round, an ungated integrator -- appends nothing and
+  refuses nothing: the tenant did not ask, so an admin's setting must not
+  fail their job.
+* `"on"` is not a policy value. A merge with no review verdict is a choice a
+  job makes for itself, never one a repository makes for every job on it.
+* An issue run created without `auto_merge` takes it from the policy
+  (`"on_merge_verdict"` is true, `"off"` false) before the platform default,
+  and records what it resolved; the issue preview's `auto_merge.default`
+  says the same. The run's own merge already requires its review's MERGE and
+  green CI ([issue-runs.md](issue-runs.md)).
+* Only the tenant's own registration counts: another tenant's policy on the
+  same repository never decides this tenant's default.
 
 `merge_by_default` is the platform setting an admin reads and sets with
 `GET`/`PUT /v1/admin/settings` (`{"merge_by_default": true}`), stored in
