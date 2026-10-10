@@ -268,6 +268,7 @@ started and what it skipped, each with its reason.
 | reason | rule |
 |---|---|
 | (never listed) | pull requests: GitHub's issue list includes them, marked, and the read drops them |
+| `author: <association>` | opened by someone GitHub does not call the repository's `OWNER`, a `MEMBER` of its organisation or a `COLLABORATOR` (`unknown` when GitHub did not say). Every swept run is auto-approved and auto-merged with the tenant's credential, so on a public repository an outsider's issue would otherwise become a merged change no person approved ([security review 2026-10-09](security/review-2026-10-09.md), item 1). A person can still start a run for that issue from the console |
 | `label: <l>` | labelled `epic`, `blocked` or `security` |
 | `excluded: issue` / `excluded: label <l>` | named in the tenant's exclusion list, by number or by label |
 | `live_run: run_<id>` | the issue already has a live (non-terminal) run |

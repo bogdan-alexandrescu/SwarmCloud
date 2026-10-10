@@ -120,6 +120,19 @@ integrator that RAN and opened nothing, or any build step that changed
 something, is still the FAILED above: only "nothing needed changing" is an
 answer.
 
+THAT FAILURE NAMES WHY (#978). wf_ca1807e43ac64d6b8afd (2026-10-09) ended
+FAILED with "opened no pull request" and nothing after it: its integrator
+had been skipped in 0.4 s behind the one implementer it `builds_on`, which
+changed nothing, while the other implementer's pushed branch was stranded.
+So the error now says the integrator's side -- its `result_summary.skipped`
+reason and the upstream it was skipped behind, or, when it ran, its
+`git.publish_reason` -- and the build steps' side: every `implement-*` step
+that changed something, with its task id and the branch it pushed (the work
+an operator has to recover, and where), and every one that left nothing
+(`no_change` / `skipped`). Each is read through the store under the run's
+tenant and the whole is bounded by `failure_text`. The transition and the
+already-on-main answer are unchanged.
+
 INVARIANT 1. CHECKING holds nothing: it is a Firestore document and a
 periodic read. FIXING holds exactly what its one continuation holds, which
 is an ordinary task admitted like any other.
@@ -407,6 +420,77 @@ def _changed_nothing(
     return ran if builds else []
 
 
+def _pushed_branch(task: Any) -> str | None:
+    """The branch a build step recorded it pushed: `result_summary.git.branch`,
+    else the worker's `result_summary.branch.name`."""
+    summary = getattr(task, "result_summary", None)
+    if not isinstance(summary, Mapping):
+        return None
+    git = summary.get("git")
+    branch = git.get("branch") if isinstance(git, Mapping) else None
+    if isinstance(branch, str) and branch:
+        return branch
+    pushed = summary.get("branch")
+    name = pushed.get("name") if isinstance(pushed, Mapping) else None
+    return name if isinstance(name, str) and name else None
+
+
+def _no_pull_reason(ctx: Any, tenant_id: str, workflow: Any, integrator: Any, why: str) -> str:
+    """Why the integrator opened no pull request, and whose work that strands (#978).
+
+    The integrator's side: its `result_summary.skipped` reason and the
+    upstream it was skipped behind, or, when it ran, its `git.publish_reason`.
+    The build steps' side: each `implement-*` step that changed something,
+    with its task id and the branch it pushed -- the work an operator has to
+    recover -- each that left nothing (`no_change` / `skipped`), and each
+    that could not be read. Every task is read through the store under the run's tenant.
+    """
+    summary = getattr(integrator, "result_summary", None)
+    skipped = summary.get(SKIPPED_SUMMARY_KEY) if isinstance(summary, Mapping) else None
+    if isinstance(skipped, Mapping):
+        reason = skipped.get("reason")
+        upstream = skipped.get("upstream")
+        upstream = [u for u in upstream if isinstance(u, str)] if isinstance(upstream, list) else []
+        text = f"it was skipped ({reason if isinstance(reason, str) and reason else 'no reason'})"
+        if upstream:
+            text += " behind " + ", ".join(upstream)
+    elif why:
+        text = f"it ran: {why}"
+    else:
+        text = "it ran and recorded no publish reason"
+    changed: list[str] = []
+    left: list[str] = []
+    unread: list[str] = []
+    for step in getattr(workflow, "steps", None) or []:
+        step_id = getattr(step, "step_id", None)
+        if not isinstance(step_id, str) or not step_id.startswith(IMPLEMENT_PREFIX):
+            continue
+        task_id = getattr(step, "task_id", None)
+        task = None
+        if task_id:
+            try:
+                task = ctx.store.get_task(tenant_id, task_id, submitted_by=None)
+            except NotFound:
+                task = None
+        if task is None:
+            unread.append(f"{step_id} {task_id or '(no task)'}")
+            continue
+        nothing = _left_nothing(task)
+        if nothing is not None:
+            left.append(f"{step_id} {task_id} ({nothing})")
+            continue
+        branch = _pushed_branch(task)
+        where = f"branch {branch}" if branch else "no pushed branch"
+        changed.append(f"{step_id} {task_id} ({where})")
+    if changed:
+        text += "; changed: " + ", ".join(changed)
+    if left:
+        text += "; left nothing: " + ", ".join(left)
+    if unread:
+        text += "; could not be read: " + ", ".join(unread)
+    return text
+
+
 def _read_verification(ctx: Any, tenant_id: str, task_id: str) -> tuple[str | None, str | None]:
     """`(content, problem)`: a build step's verification.md, through the API's masked reader."""
     try:
@@ -491,7 +575,8 @@ def enter_checking(ctx: Any, tenant_id: str, run: IssueRun, workflow: Any) -> Is
             from_states={RunState.RUNNING},
             patch={"pr_task_id": task.id, "error": failure_text(
                 f"the run's workflow {run.workflow_id} succeeded, but its integrator "
-                f"{task.id} opened no pull request" + (f": {why}" if why else "")
+                f"{task.id} opened no pull request: "
+                + _no_pull_reason(ctx, tenant_id, workflow, task, why)
             )},
         )
     checking = runs.transition(
