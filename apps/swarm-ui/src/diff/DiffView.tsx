@@ -22,6 +22,18 @@
 // `pullRequest` puts a link to the PR in the bar; `stepOf` names the workflow
 // step each hunk came from, drawn as a row above that step's hunks.
 //
+// REVIEW FINDINGS BESIDE THEIR LINES (design §2 variant 3). `pins` are the
+// findings a caller has already decided may be pinned on THIS patch -- the
+// digest check is the caller's, because only it knows which patch the review
+// read. The viewer finds each pin's line in the hunks, on the side it names
+// (`old` counts the file before the change, `new` after it), and draws a mark
+// in that side's line-number gutter: severity and summary on hover (`title`)
+// and on focus (the note above the lines), and every pin again in a list of
+// buttons above the lines that opens its file and scrolls to it, so a reader
+// on a keyboard never has to find a mark in a windowed scroller. A pin whose
+// line is in no hunk of the patch is listed as not pinned: the lines between
+// hunks are not in the patch, and a mark on a guessed row is worse than none.
+//
 // THERE IS NO WHOLE-PATCH READING MODE. A patch is read a file at a time; the
 // whole of it is what Copy patch and Download are for.
 //
@@ -110,6 +122,29 @@ import './diff.css'
 
 export type FileSide = 'old' | 'new'
 
+/** A review finding to pin beside the line it names (`DiffViewProps.pins`). */
+export interface DiffPin {
+  id: string
+  /** The file the finding names, as the review wrote it: matched to a file's new or old path. */
+  path: string
+  side: FileSide
+  line: number
+  /** With `stepOf`: the step whose hunks the line counts in. A line of another step's hunk is not this pin's. */
+  step?: string | null
+  /** In words: `Major`, `Not graded`. */
+  severity: string
+  /** The mark's colour: a blocker reads apart from a note. */
+  tone: 'bad' | 'warn' | 'info'
+  summary: string
+}
+
+/** Where a pin's line is in the patch, or null when no hunk holds it. */
+export interface PinPlace {
+  file: number
+  hunk: number
+  line: number
+}
+
 export interface DiffViewProps {
   patch: string
   /**
@@ -182,7 +217,47 @@ export interface DiffViewProps {
    * function (useCallback): a new one rebuilds the open file's rows.
    */
   stepOf?: (path: string, hunk: number) => string | null | undefined
+  /**
+   * Review findings to mark beside their lines (variant 3). Only findings the
+   * caller has checked against THIS patch's digest: the viewer places, it
+   * does not vouch. Pass a stable array (useMemo).
+   */
+  pins?: readonly DiffPin[]
 }
+
+/** Whether a pin names file `f`: its new path, its old path, or the path it is shown by. */
+function pinNames(f: DiffFile, p: DiffPin): boolean {
+  return p.path === f.path || p.path === f.newPath || p.path === f.oldPath
+}
+
+/**
+ * Each pin's line in the patch: the first line of a hunk of a file it names
+ * whose number on the pin's side is the pin's line, in the pin's step when it
+ * names one. Null when there is none -- never the nearest line.
+ */
+export function placePins(
+  files: readonly DiffFile[],
+  pins: readonly DiffPin[],
+  stepOf?: (path: string, hunk: number) => string | null | undefined,
+): Map<string, PinPlace | null> {
+  const out = new Map<string, PinPlace | null>()
+  for (const p of pins) {
+    let at: PinPlace | null = null
+    files.forEach((f, fi) => {
+      if (at !== null || !pinNames(f, p)) return
+      f.hunks.forEach((h, hi) => {
+        if (at !== null) return
+        if (p.step !== undefined && p.step !== null && (stepOf?.(f.path, hi) ?? null) !== p.step) return
+        const li = h.lines.findIndex((l) => (p.side === 'old' ? l.oldNo : l.newNo) === p.line)
+        if (li !== -1) at = { file: fi, hunk: hi, line: li }
+      })
+    })
+    out.set(p.id, at)
+  }
+  return out
+}
+
+const TONE_RANK: Readonly<Record<DiffPin['tone'], number>> = { bad: 0, warn: 1, info: 2 }
 
 /** Below this pane width the viewer is unified and the list is a picker: two columns of code do not fit. */
 export const SPLIT_MIN_WIDTH = 700
@@ -341,7 +416,7 @@ export function fileIndex(files: readonly DiffFile[], path: string | null | unde
 }
 
 function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
-  const { getFile, stepOf, onFileChange, initialFile, fullHeight } = props
+  const { getFile, stepOf, onFileChange, initialFile, fullHeight, pins } = props
   const rootRef = useRef<HTMLElement>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
   const filterRef = useRef<HTMLInputElement>(null)
@@ -374,6 +449,21 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
     () => new Set(files.flatMap((f, fi) => (startsCollapsed(f) ? [fi] : []))),
   )
   const [hunkReveal, setHunkReveal] = useState<{ file: number; hunk: number } | null>(null)
+  // The findings whose mark or list entry was last hovered, focused or chosen.
+  const [activePins, setActivePins] = useState<readonly string[]>([])
+
+  const placed = useMemo(() => placePins(files, pins ?? [], stepOf), [files, pins, stepOf])
+  // `${file}:${hunk}:${line}:${side}` -> the pins on that half of that line, most severe first.
+  const pinsAt = useMemo(() => {
+    const out = new Map<string, DiffPin[]>()
+    for (const p of pins ?? []) {
+      const at = placed.get(p.id)
+      if (!at) continue
+      const key = `${at.file}:${at.hunk}:${at.line}:${p.side}`
+      out.set(key, [...(out.get(key) ?? []), p].sort((a, b) => TONE_RANK[a.tone] - TONE_RANK[b.tone]))
+    }
+    return out
+  }, [pins, placed])
 
   const phone = usePhoneWidth()
   const narrow = width < SPLIT_MIN_WIDTH || phone
@@ -556,6 +646,15 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
     setReveal(m)
   }
 
+  const goToPin = (p: DiffPin): void => {
+    setActivePins([p.id])
+    const at = placed.get(p.id)
+    if (!at) return
+    if (at.file !== selected) open(at.file)
+    expand(at.file)
+    setReveal({ file: at.file, hunk: at.hunk, line: at.line, start: 0, end: 0 })
+  }
+
   const search = (query: string): void => {
     const matches = findMatches(files, everyFile, query)
     setFound({ query, matches })
@@ -675,6 +774,8 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
         collapsed={isCollapsed}
         onToggle={toggle}
         paint={paint}
+        pinsAt={pinsAt}
+        onPins={setActivePins}
       />,
     )
   }
@@ -777,6 +878,9 @@ function Viewer({ files, props }: { files: DiffFile[]; props: DiffViewProps }) {
         )}
 
         <div className="diff-main">
+          {pins !== undefined && pins.length > 0 ? (
+            <PinList pins={pins} placed={placed} files={files} active={activePins} onGo={goToPin} />
+          ) : null}
           <div className="diff-find" role="search" aria-label="Find">
             <input
               ref={findRef}
@@ -1074,9 +1178,95 @@ interface RowProps {
   onToggle: (file: number) => void
   /** The open file's lexer, once loaded: a line's tokens, or null to draw it plain. */
   paint?: (text: string) => Token[] | null
+  /** Review findings by `${file}:${hunk}:${line}:${side}` (`placePins`). */
+  pinsAt: ReadonlyMap<string, DiffPin[]>
+  onPins: (ids: readonly string[]) => void
 }
 
-function RowView({ row, files, context, canExpand, onExpandGap, hits, current, collapsed, onToggle, paint }: RowProps) {
+/**
+ * One line-number gutter cell, with the mark of any finding pinned on that
+ * side of the line: a button, so Tab reaches it, whose `title` is the hover
+ * and whose focus puts the findings in the note above the lines.
+ */
+function NoCell({ n, pins, onPins }: { n: number | null; pins: readonly DiffPin[] | undefined; onPins: (ids: readonly string[]) => void }) {
+  if (pins === undefined || pins.length === 0) return <span className="diff-no">{n ?? ''}</span>
+  const words = pins.map((p) => `${p.severity} finding: ${p.summary}`).join('; ')
+  const show = (): void => onPins(pins.map((p) => p.id))
+  return (
+    <span className="diff-no has-pin">
+      <button
+        type="button"
+        className={`diff-pin is-${pins[0]!.tone}`}
+        aria-label={words}
+        title={words}
+        data-pin-side={pins[0]!.side}
+        onFocus={show}
+        onMouseEnter={show}
+        onClick={show}
+      >
+        {pins.length > 1 ? pins.length : '●'}
+      </button>
+      {n ?? ''}
+    </span>
+  )
+}
+
+/**
+ * THE FINDINGS PINNED ON THIS PATCH, as buttons: each opens its file and
+ * scrolls to its line, so every mark is reachable without hunting for it in
+ * the windowed rows. A pin no hunk holds is listed and says it is not pinned.
+ * The note under the list is the finding last hovered, focused or chosen.
+ */
+function PinList({
+  pins,
+  placed,
+  files,
+  active,
+  onGo,
+}: {
+  pins: readonly DiffPin[]
+  placed: ReadonlyMap<string, PinPlace | null>
+  files: readonly DiffFile[]
+  active: readonly string[]
+  onGo: (p: DiffPin) => void
+}) {
+  const shown = pins.filter((p) => active.includes(p.id))
+  const pinned = pins.filter((p) => placed.get(p.id)).length
+  return (
+    <nav className="diff-pins" aria-label="Review findings on this patch">
+      <p className="diff-pins-head">
+        {pinned} of {pins.length} {pins.length === 1 ? 'finding' : 'findings'} pinned beside {pinned === 1 ? 'its line' : 'their lines'}
+      </p>
+      <ol className="diff-pins-list">
+        {pins.map((p) => {
+          const at = placed.get(p.id)
+          const where = `${at ? files[at.file]!.path : p.path} · ${p.side} ${p.line}`
+          return (
+            <li key={p.id}>
+              {at ? (
+                <button type="button" className="diff-pins-go" aria-pressed={active.includes(p.id)} onClick={() => onGo(p)}>
+                  <span className={`diff-pin-dot is-${p.tone}`} aria-hidden="true">
+                    ●
+                  </span>{' '}
+                  <span className="diff-pins-where">{where}</span> · {p.severity} · {p.summary}
+                </button>
+              ) : (
+                <span className="diff-pins-off">
+                  <span className="diff-pins-where">{where}</span> · {p.severity} · {p.summary} · not pinned: no hunk of this patch holds that line
+                </span>
+              )}
+            </li>
+          )
+        })}
+      </ol>
+      <p className="diff-pins-note" role="status" aria-live="polite" data-testid="diff-pin-note">
+        {shown.map((p) => `${p.severity} · ${p.side} line ${p.line}: ${p.summary}`).join(' · ')}
+      </p>
+    </nav>
+  )
+}
+
+function RowView({ row, files, context, canExpand, onExpandGap, hits, current, collapsed, onToggle, paint, pinsAt, onPins }: RowProps) {
   const f = files[row.file]!
   const common = { 'data-path': f.path, style: { height: rowHeight(row) } }
 
@@ -1148,10 +1338,11 @@ function RowView({ row, files, context, canExpand, onExpandGap, hits, current, c
       )
     case 'line': {
       const l = f.hunks[row.hunk]!.lines[row.line]!
+      const at = `${row.file}:${row.hunk}:${row.line}`
       return (
         <div className={`diff-row diff-line is-${l.kind}`} data-diff-row="line" {...common}>
-          <span className="diff-no">{l.oldNo ?? ''}</span>
-          <span className="diff-no">{l.newNo ?? ''}</span>
+          <NoCell n={l.oldNo} pins={pinsAt.get(`${at}:old`)} onPins={onPins} />
+          <NoCell n={l.newNo} pins={pinsAt.get(`${at}:new`)} onPins={onPins} />
           <span className="diff-sign">{sign(l)}</span>
           <span className="diff-text">
             <LineText
@@ -1180,7 +1371,7 @@ function RowView({ row, files, context, canExpand, onExpandGap, hits, current, c
         }
         return (
           <div className={`diff-half is-${l.kind}`}>
-            <span className="diff-no">{(side === 'old' ? l.oldNo : l.newNo) ?? ''}</span>
+            <NoCell n={side === 'old' ? l.oldNo : l.newNo} pins={pinsAt.get(`${row.file}:${row.hunk}:${idx}:${side}`)} onPins={onPins} />
             <span className="diff-sign">{sign(l)}</span>
             <span className="diff-text">
               <LineText

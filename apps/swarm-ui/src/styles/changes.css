@@ -54,6 +54,22 @@
 .chg-mx-meta { display: grid; gap: 4px; margin: 0 0 8px; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); }
 .chg-mx-meta > p { margin: 0; }
 
+/* VARIANT 3: THE REVIEW'S FINDINGS over the matrix, each saying where it is
+   (WorkflowChanges.tsx `ReviewFindings`); the files the review named sort
+   first and carry a quiet tag. The severity word takes the gutter mark's ink. */
+.chg-fd { display: flex; flex-direction: column; gap: 4px; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); font: var(--t-meta)/var(--lh-meta) var(--font); }
+.chg-fd-head { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 0; color: var(--text-dim); }
+.chg-fd-head > span:first-child { color: var(--text); font-weight: 600; }
+.chg-fd-list { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.chg-fd-item { overflow-wrap: anywhere; }
+.chg-fd-sev { font-weight: 600; }
+.chg-fd-sev.is-bad { color: var(--bad-ink); }
+.chg-fd-sev.is-warn { color: var(--warn-ink); }
+.chg-fd-sev.is-info { color: var(--text-dim); }
+.chg-fd-where { color: var(--text-dim); }
+.chg-fd-where > .chg-mx-file { color: var(--info); }
+.chg-fd-named { display: block; color: var(--text-faint); font: var(--t-micro)/var(--lh-micro) var(--font); }
+
 /* The step inspector's and the run's step row's links to the step's changes. */
 .wf-inspect-changes { font: var(--t-meta)/var(--lh-meta) var(--font); }
 .rn-srow-links { display: inline-flex; flex-wrap: wrap; gap: 0 12px; justify-content: flex-end; }
