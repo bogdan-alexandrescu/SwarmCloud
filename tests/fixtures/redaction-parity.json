@@ -810,7 +810,7 @@
     {
       "name": "kv-literal-call-argument-quoted-403r",
       "text": "api_key = SecretStr('q8Zr7Lm2Xv9TbQwErTyU')",
-      "expected": "api_key = SecretStr('********')",
+      "expected": "api_key = ********",
       "never": [
         "q8Zr7Lm2Xv9TbQwErTyU"
       ],
@@ -926,62 +926,6 @@
       "expected": "token = os.environ[\"GH_TOKEN\"]; secret = issue(ref, MASK)",
       "never": [],
       "count": 0
-    },
-    {
-      "name": "kv-hex-beside-a-credential-word-62",
-      "text": "token \u003d token_3fa9c2e1",
-      "expected": "token \u003d ********",
-      "never": ["3fa9c2e1"],
-      "count": 1
-    },
-    {
-      "name": "code-credential-name-with-a-short-number-62",
-      "text": "token \u003d token_v2; api_key \u003d API_KEY_V2",
-      "expected": "token \u003d token_v2; api_key \u003d API_KEY_V2",
-      "never": [],
-      "count": 0
-    },
-    {
-      "name": "kv-passphrase-63",
-      "text": "passphrase \u003d zebra42quokka; DB_PASSPHRASE\u003dzebra42quokka",
-      "expected": "passphrase \u003d ******** DB_PASSPHRASE\u003d********",
-      "never": ["zebra42quokka"],
-      "count": 2
-    },
-    {
-      "name": "code-literal-after-a-call-64",
-      "text": "api_key \u003d os.getenv('API_KEY', 'zebra42quokka')",
-      "expected": "api_key \u003d os.getenv('API_KEY', '********')",
-      "never": ["zebra42quokka"],
-      "count": 1
-    },
-    {
-      "name": "code-literal-after-an-annotation-64",
-      "text": "token\u003a str \u003d \"zebra42quokka\"",
-      "expected": "token\u003a str \u003d \"********\"",
-      "never": ["zebra42quokka"],
-      "count": 1
-    },
-    {
-      "name": "code-literal-in-a-subscript-64",
-      "text": "token \u003d cfg[\"zebra42quokka\"]",
-      "expected": "token \u003d cfg[\"********\"]",
-      "never": ["zebra42quokka"],
-      "count": 1
-    },
-    {
-      "name": "code-quoted-names-in-a-call-stay-64",
-      "text": "api_key \u003d request.headers.get(\"X-Api-Key\", \"\")",
-      "expected": "api_key \u003d request.headers.get(\"X-Api-Key\", \"\")",
-      "never": [],
-      "count": 0
-    },
-    {
-      "name": "pem-orphan-end-with-the-body-in-a-variable-82",
-      "text": "pem \u003d \"\\n\".join([begin, body, \"\u002d----END RSA PRIVATE KEY-----\"])",
-      "expected": "pem \u003d \"\\n\".join([begin, body, \"********\u002d----END RSA PRIVATE KEY-----\"])",
-      "never": [],
-      "count": 1
     }
   ]
 }

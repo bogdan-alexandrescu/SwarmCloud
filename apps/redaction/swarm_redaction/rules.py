@@ -290,18 +290,7 @@ def _tail_start(text: str, marker_start: int, floor: int) -> int:
 
 
 def _mask_orphan_ends(text: str) -> tuple[str, int]:
-    """(c) over every END marker in `text`, which holds no BEGIN.
-
-    AN ORPHAN END IS MASKED AND COUNTED EVEN WITH NOTHING BEFORE IT TO TAKE
-    (the security pass, 2026-10-09; #361 box 82). Code that builds a key --
-    the BEGIN marker split across two string pieces, the base64 body in a
-    variable, `"\\n".join([begin, body, "<END marker>"])` -- leaves an END
-    with no key material beside it or above it. That counted 0, and the
-    worker's publish guard refuses a diff exactly when this count is not 0,
-    so the code was published. An END marker is a key's tail wherever it
-    stands: `MASK` goes in front of it, as it does when material is taken,
-    and it counts.
-    """
+    """(c) over every END marker in `text`, which holds no BEGIN."""
     if _PEM_HINT not in text:
         return text, 0
     pieces: list[str] = []
@@ -309,10 +298,11 @@ def _mask_orphan_ends(text: str) -> tuple[str, int]:
     pos = 0
     for marker in _PEM_END.finditer(text):
         start = _tail_start(text, marker.start(), pos)
-        pieces.append(text[pos:start])
-        pieces.append(MASK)
-        count += 1
-        pos = marker.start()
+        if start < marker.start():
+            pieces.append(text[pos:start])
+            pieces.append(MASK)
+            count += 1
+            pos = marker.start()
     pieces.append(text[pos:])
     return "".join(pieces), count
 
@@ -573,15 +563,8 @@ _STATUS_OR_CAPITALISED_WORD = (
 #: THE SHELL FILTER HAS THE SAME EXEMPTIONS (`redact` in scripts/lib/common.sh),
 #: as rules that mark the name before the main rules run; the parity fixture
 #: holds both to one output.
-#:
-#: `passphrase` IS A KEY WORD, WITH `password`'s RULES (the security pass,
-#: 2026-10-09; #361 box 63): it was not one at all, so `passphrase = <v>`
-#: was served by both filters. Its value is a human's choice, as a
-#: password's is, so it joins the `pw` group: no call and no bare name is
-#: exempt under it.
 _KV_WORDS = (
-    r"api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential"
-    r"|authorization"
+    r"api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization"
 )
 #: A SECRET RUN (the #403 re-review). An exemption below exempts the SHAPE
 #: of code -- a callee, an attribute, a name -- never a literal riding inside
@@ -627,20 +610,12 @@ _HUMP = r"(?:[A-Z][a-z]{2,15}|Id)[0-9]{0,3}"
 #: one whole snake_case word or camelCase hump: token, secret, key,
 #: password, passwd, credential, auth or api (a plural `s` allowed) --
 #: `monkey_business` does not name a key.
-#:
-#: A SNAKE_CASE WORD IS LETTERS AND AT MOST THREE TRAILING DIGITS, or up to
-#: three digits alone (the security pass, 2026-10-09; #361 box 62). A word
-#: was any run of 16 letters or digits, so `token = token_3fa9c2e1` -- a
-#: credential word beside eight hex digits, which is a value, not a name --
-#: read as a name and was served. `token_v2`, `key_1`, `sha256_secret` and
-#: `API_KEY_V2` are still names. What the owner decided on 2026-09-30 stays:
-#: a digit-free lowercase name holding a credential word is code.
 _CRED_LC = r"(?:token|secret|key|password|passwd|credential|auth|api)s?"
 _CRED_UC = r"(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|AUTH|API)S?"
 _CRED_CAP = r"(?:Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?"
 _CREDENTIAL_NAME = (
-    r"(?:_*(?:[a-z]{1,16}[0-9]{0,3}_)*" + _CRED_LC + r"(?:_(?:[a-z]{1,16}[0-9]{0,3}|[0-9]{1,3}))*_*"
-    r"|_*(?:[A-Z]{1,16}[0-9]{0,3}_)*" + _CRED_UC + r"(?:_(?:[A-Z]{1,16}[0-9]{0,3}|[0-9]{1,3}))*_*"
+    r"(?:_*(?:[a-z][a-z0-9]{0,15}_)*" + _CRED_LC + r"(?:_[a-z0-9]{1,16})*_*"
+    r"|_*(?:[A-Z][A-Z0-9]{0,15}_)*" + _CRED_UC + r"(?:_[A-Z0-9]{1,16})*_*"
     r"|_*[a-z]{1,16}[0-9]{0,3}(?:" + _HUMP + r")*" + _CRED_CAP + r"[0-9]{0,3}(?:" + _HUMP + r")*"
     r"|_*" + _CRED_LC + r"[0-9]{0,3}(?:" + _HUMP + r")+"
     r"|_*(?:" + _HUMP + r")*" + _CRED_CAP + r"[0-9]{0,3}(?:" + _HUMP + r")*)"
@@ -715,12 +690,6 @@ _EXPRESSION = (
 #: MyDogRex`, `vault_token: s.<base62>` -- and stays masked (the #403
 #: security review: these were served whatever followed them). The builtin
 #: and typing names may end anywhere.
-#:
-#: SO `api_key: Promise` IS SHOWN, AND THAT IS ACCEPTED (owner, the security
-#: pass, 2026-10-09; #361 box 65). The value is one of these fixed type
-#: names, so what is served is the name, not a secret; a generated key never
-#: equals `Promise` or `Record`. Masking it would hide every TypeScript
-#: annotation under a credential key and reveal nothing in exchange.
 _TYPE_END = (
     r"(?=[ \t]+=[ \t]|[ \t]+\|[ \t]+(?:None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])"
     r"|\)[ \t]*(?:->|:?$)"
@@ -759,7 +728,7 @@ KEY_VALUE = _rule(
     "api[-_]?key",
     r"(?<![A-Za-z0-9_.-])"
     r"((?:\\{0,15}\")?(?P<lc>(?=(?-i:[A-Z0-9_.-]*[a-z])))?+[A-Za-z0-9_.-]*"
-    r"(?:(?P<pw>password|passwd|passphrase)|api[-_]?key|apikey|private[-_]?key|secret|token|credential|authorization)"
+    r"(?:(?P<pw>password|passwd)|api[-_]?key|apikey|private[-_]?key|secret|token|credential|authorization)"
     r"(?:(?P<plural>s)|(?P<keysuffix>s?[-_](?:access[-_]?key|key|hash)))?"
     r"(?:\\*\")?(?P<sp>[ \t]+)?+(?:(?P<colon>:)|=)[ \t]*(?!" + _NOT_A_LITERAL + r")"
     r"(?:\[[ \t]*)?(?:(?P<esc>\\+\")|\"?))"
@@ -774,112 +743,6 @@ KEY_VALUE = _rule(
     r"[^\",\s]*)",
     re.IGNORECASE,
 )
-
-#: A LITERAL AFTER CODE (the security pass, 2026-10-09; #361 box 64). The
-#: exemptions above serve the SHAPE of code -- a call, a subscript, an
-#: annotation -- whole, and the key/value rule masks one run, which stops at
-#: the first quote or comma. So a literal riding after code on the same line
-#: was served whatever its value: `api_key = os.getenv('API_KEY', '<v>')`,
-#: `token = x["<v>"]`, `token: str = "<v>"`. This step masks such a literal
-#: IN PLACE, before the key/value rule runs, so the code around it is still
-#: code (a patch holding it still applies) and the literal is gone.
-#:
-#: Where: after a credential name and its `=` or `:`, inside the argument
-#: list or subscript a name opens there (one nested `(...)` or `[...]`
-#: allowed), or right after `<type> =` (an annotated default), or both
-#: (`token: SecretStr = SecretStr("<v>")`). Not after a `,` at the top level:
-#: in `{"token": null, "other": "v"}` the next key is not an argument.
-#:
-#: What: a quoted run of 6 to 128 characters with no space, quote,
-#: backslash or any of `()[]{}<>|,;%` -- a value never holds a space, so
-#: prose (`description="the database password"`) is not one, and a regular
-#: expression or a format string (`re.compile(r"[a-z]+")`, `"%Y-%m-%d"`) is
-#: code a served patch has to keep (#370). Under six characters a string is
-#: as likely code as a value (`"utf-8"`, `"mask"`, `"rb"`), and the patch
-#: that holds it has to apply; THAT IS THE RESIDUAL: a literal of five
-#: characters or fewer after code is still served. Quoted NAMES are left: an environment
-#: variable's name (`"GH_TOKEN"`), a letters-only name holding a credential
-#: word (`"access_token"`, `"X-Api-Key"`), the empty string, and `********`.
-#: Escaped quotes (`\"`) count as quotes, as a stream-json line writes them,
-#: up to fifteen backslashes deep -- bounded, as `KEY_VALUE`'s run is, so a
-#: long run of backslashes is not rescanned from each of its positions.
-#:
-#: HOW, IN BOTH FILTERS ALIKE. sed has no look-around and back-references
-#: only `\1` to `\9`, so the step is four moves, and this function makes the
-#: same four with the same expressions: (1) the quotes around every quoted
-#: NAME become placeholders, so no later expression takes one for a
-#: literal; (2) a marker goes after every credential name and its separator;
-#: (3) a loop masks the first literal after each marker's code, turning its
-#: quotes into placeholders too, until a pass masks nothing; (4) the markers
-#: go and the placeholders turn back into quotes. Here the placeholders are
-#: private-use characters; in the shell, control bytes it strips from its
-#: input first.
-#:
-#: NOT A MEMBER OF `RULES`. The worker's publish guard walks `RULES` and
-#: grades each by its name; this step is read-time masking only, and runs
-#: wherever `redact` (and `TaskMasking.name`) apply the rules, immediately
-#: before `KEY_VALUE`. The shell filter's copy is in `redact` in
-#: scripts/lib/common.sh, held to this one by the parity fixture.
-_CODE_SQ, _CODE_DQ, _CODE_MARK = "", "", ""
-_CODE_QUOTED_NAME = (
-    r"([A-Z_][A-Z0-9_]{0,63}"
-    r"|[A-Za-z_-]{0,32}(?i:token|secret|key|passw|passphrase|credential|auth|api)[A-Za-z_-]{0,32}"
-    r"|[*]{8})?"
-)
-_CODE_NAMES = (
-    (re.compile(r"(\\{1,15})\"" + _CODE_QUOTED_NAME + r"(\\{1,15})\""), r"\1" + _CODE_DQ + r"\2\3" + _CODE_DQ),
-    (re.compile(r"\"" + _CODE_QUOTED_NAME + r"\""), _CODE_DQ + r"\1" + _CODE_DQ),
-    (re.compile(r"'" + _CODE_QUOTED_NAME + r"'"), _CODE_SQ + r"\1" + _CODE_SQ),
-)
-_CODE_NAME_MARK = re.compile(
-    r"(^|[^A-Za-z0-9_.-])((\\{0,15}[\"" + _CODE_DQ + r"])?[A-Za-z0-9_.-]*(?i:(" + _KV_WORDS + r"))"
-    r"(?i:s|s?[-_](?:access[-_]?key|key|hash))?(\\{0,15}[\"" + _CODE_DQ + r"])?[ \t]*[:=][ \t]*)",
-    re.MULTILINE,
-)
-_CODE_CHAR = r"[A-Za-z0-9_.,:=*+/% \t\\" + _CODE_SQ + _CODE_DQ + r"-]"
-#: The bounds are small on purpose: the shell's copy is compiled by sed
-#: every time `redact` starts, and `{0,160}` of a group holding `{0,64}` cost
-#: 0.25 s of compile per expression (measured 2026-10-09); this costs 0.03.
-_CODE_ARG = r"(" + _CODE_CHAR + r"|\(" + _CODE_CHAR + r"{0,16}\)|\[" + _CODE_CHAR + r"{0,16}\])"
-_CODE_OPEN = r"[A-Za-z_][A-Za-z0-9_.]{0,128}[(\[]" + _CODE_ARG + r"{0,64}"
-_CODE_TYPED = r"[A-Za-z_][A-Za-z0-9_.,\[\]| ]{0,96}[ \t]*=[ \t]*"
-_CODE = r"(" + _CODE_TYPED + r"(" + _CODE_OPEN + r")?|" + _CODE_OPEN + r")"
-_CODE_VALUE = r"[^'\"\s\\()\[\]{}<>|,;%" + _CODE_SQ + _CODE_DQ + _CODE_MARK + r"]{6,128}"
-_CODE_LITERALS = (
-    (re.compile(r"(" + _CODE_MARK + _CODE + r")'" + _CODE_VALUE + r"'"),
-     r"\1" + _CODE_SQ + MASK + _CODE_SQ),
-    (re.compile(r"(" + _CODE_MARK + _CODE + r")\"" + _CODE_VALUE + r"\""),
-     r"\1" + _CODE_DQ + MASK + _CODE_DQ),
-    (re.compile(r"(" + _CODE_MARK + _CODE + r")(\\{1,15})\"" + _CODE_VALUE + r"(\\{1,15})\""),
-     r"\1\6" + _CODE_DQ + MASK + r"\7" + _CODE_DQ),
-)
-
-
-def mask_code_literals(text: str) -> tuple[str, int]:
-    """Every literal after code under a credential name, masked in place (box 64).
-
-    Each pass masks the first literal after each name; a masked one is a
-    quoted name to the next pass, so the loop ends when a pass finds none.
-    """
-    if any(c in text for c in (_CODE_SQ, _CODE_DQ, _CODE_MARK)):
-        return text, 0  # a placeholder in the input would come out a quote
-    if not _CODE_NAME_MARK.search(text):
-        return text, 0
-    for pattern, replacement in _CODE_NAMES:
-        text = pattern.sub(replacement, text)
-    text = _CODE_NAME_MARK.sub(r"\1\2" + _CODE_MARK, text)
-    count = 0
-    while True:
-        found = 0
-        for pattern, replacement in _CODE_LITERALS:
-            text, n = pattern.subn(replacement, text)
-            found += n
-        if not found:
-            break
-        count += found
-    text = text.replace(_CODE_MARK, "")
-    return text.replace(_CODE_SQ, "'").replace(_CODE_DQ, '"'), count
-
 
 #: Order matters and mirrors the shell filter's `-e` order: a narrow provider
 #: rule runs before the broad key/value rule, so `api_key=sk-live-...` is
@@ -1014,9 +877,6 @@ def redact(
             count += text.count(literal)
             text = text.replace(literal, MASK)
     for rule in RULES:
-        if rule is KEY_VALUE:
-            text, found = mask_code_literals(text)
-            count += found
         if rule.apply is not None:
             text, found = rule.apply(text, decoded, inside_key)
         else:

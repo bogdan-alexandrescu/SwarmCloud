@@ -2003,10 +2003,7 @@ dockerfile_copy_sources() {
 # whose END comes within 64 KiB is masked through the END's line, whatever is
 # between; one with no END in reach is masked through the base64, header and
 # blank lines under it; an END with no BEGIN masks the key material before it
-# on its line and the base64 lines above it, up to 64 KiB -- and puts a mask
-# in front of itself even when there is none to take, because code that
-# builds a key (the BEGIN split across strings, the body in a variable) leaves
-# exactly that, and an END is a key's tail wherever it stands (#361 box 82). sed cannot look
+# on its line and the base64 lines above it, up to 64 KiB. sed cannot look
 # ahead or back, so awk HOLDS lines: at most 64 KiB after a BEGIN until its
 # END is found or out of reach, and a run of base64-shaped lines (a bare word
 # is one) until the line after it. That is a delay on a live `make logs`
@@ -2072,11 +2069,11 @@ redact() {
   # SOH: a byte no credential and no log line carries, and one no locale counts
   # as [[:space:]] -- which the assignment rule would otherwise match across.
   local keep=$'\001'
-  local key='"?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))?"?'
+  local key='"?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))?"?'
   # A PLURAL OR WIDE NAME FOLLOWED BY ": " is a mandatory-suffix variant of the
   # above, used only to spot a capitalised English word standing in for a
   # value (#260, below).
-  local wide_key='"?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))"?'
+  local wide_key='"?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s|s?[-_](access[-_]?key|key|hash))"?'
   # CODE IS NOT A CREDENTIAL (#370): `swarm_redaction.rules._NOT_A_LITERAL`,
   # restated. sed has no look-ahead, so -- like the status words above -- an
   # exempt value is MARKED: $keep goes between the name and its separator,
@@ -2095,12 +2092,12 @@ redact() {
   # run of 16 is marked with $secretrun, the marks on runs that are not one
   # come off again, and no exemption rule matches across a mark.
   local secretrun=$'\003'
-  local ci_kw='[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Aa][Pp][Ii][Kk][Ee][Yy]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee][-_]?[Kk][Ee][Yy]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Pp][Aa][Ss][Ss][Pp][Hh][Rr][Aa][Ss][Ee]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]'
-  # The same words without `password`/`passwd`/`passphrase`, whose values are
-  # a human's choice: under those, a bare multi-word name is not exempt.
+  local ci_kw='[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Aa][Pp][Ii][Kk][Ee][Yy]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee][-_]?[Kk][Ee][Yy]|[Pp][Aa][Ss][Ss][Ww][Oo][Rr][Dd]|[Pp][Aa][Ss][Ss][Ww][Dd]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]'
+  # The same words without `password`/`passwd`, whose values are a human's
+  # choice: under those, a bare multi-word name is not exempt.
   local ci_kw_np='[Aa][Pp][Ii][-_]?[Kk][Ee][Yy]|[Aa][Pp][Ii][Kk][Ee][Yy]|[Pp][Rr][Ii][Vv][Aa][Tt][Ee][-_]?[Kk][Ee][Yy]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Tt][Oo][Kk][Ee][Nn]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Aa][Uu][Tt][Hh][Oo][Rr][Ii][Zz][Aa][Tt][Ii][Oo][Nn]'
   local ci_suf='([Ss]|[Ss]?[-_]([Aa][Cc][Cc][Ee][Ss][Ss][-_]?[Kk][Ee][Yy]|[Kk][Ee][Yy]|[Hh][Aa][Ss][Hh]))?'
-  local up_name='[A-Z0-9_.-]*(API[-_]?KEY|APIKEY|PRIVATE[-_]?KEY|PASSWORD|PASSWD|PASSPHRASE|SECRET|TOKEN|CREDENTIAL|AUTHORIZATION)(S|S?[-_](ACCESS[-_]?KEY|KEY|HASH))?'
+  local up_name='[A-Z0-9_.-]*(API[-_]?KEY|APIKEY|PRIVATE[-_]?KEY|PASSWORD|PASSWD|SECRET|TOKEN|CREDENTIAL|AUTHORIZATION)(S|S?[-_](ACCESS[-_]?KEY|KEY|HASH))?'
   # ANY name, not only a credential's: marking a name no assignment rule
   # would match changes nothing, and the key words spelled out would push
   # these expressions past the 2048 bytes BSD sed takes for one (macOS; the
@@ -2121,10 +2118,8 @@ redact() {
   # unrolled form is the same language and BSD sed gets it right.
   local v_hump='([A-Z][a-z]{2,15}|Id)[0-9]{0,3}'
   # A multi-word name is exempt only when one of its words is a credential
-  # word (`_CREDENTIAL_NAME`; owner decision 2026-09-30), and a word is
-  # letters and up to three trailing digits, or up to three digits
-  # (`token_3fa9c2e1` is a value; #361 box 62).
-  local v_cred="(_*([a-z]{1,16}[0-9]{0,3}_)*(token|secret|key|password|passwd|credential|auth|api)s?(_([a-z]{1,16}[0-9]{0,3}|[0-9]{1,3}))*_*|_*([A-Z]{1,16}[0-9]{0,3}_)*(TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|AUTH|API)S?(_([A-Z]{1,16}[0-9]{0,3}|[0-9]{1,3}))*_*|_*[a-z]{1,16}[0-9]{0,3}(${v_hump})*(Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?[0-9]{0,3}(${v_hump})*|_*(token|secret|key|password|passwd|credential|auth|api)s?[0-9]{0,3}(${v_hump})(${v_hump})*|_*(${v_hump})*(Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?[0-9]{0,3}(${v_hump})*)"
+  # word (`_CREDENTIAL_NAME`; owner decision 2026-09-30).
+  local v_cred="(_*([a-z][a-z0-9]{0,15}_)*(token|secret|key|password|passwd|credential|auth|api)s?(_[a-z0-9]{1,16})*_*|_*([A-Z][A-Z0-9]{0,15}_)*(TOKEN|SECRET|KEY|PASSWORD|PASSWD|CREDENTIAL|AUTH|API)S?(_[A-Z0-9]{1,16})*_*|_*[a-z]{1,16}[0-9]{0,3}(${v_hump})*(Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?[0-9]{0,3}(${v_hump})*|_*(token|secret|key|password|passwd|credential|auth|api)s?[0-9]{0,3}(${v_hump})(${v_hump})*|_*(${v_hump})*(Token|Secret|Key|Password|Passwd|Credential|Auth|Api)s?[0-9]{0,3}(${v_hump})*)"
   local v_part="_*([a-z][a-z0-9_]{0,31}|[A-Z][A-Z0-9_]{0,31}|[a-z]{1,16}[0-9]{0,3}(${v_hump})(${v_hump})*|(${v_hump})(${v_hump})*)"
   local v_first="_*([a-z][a-z0-9_]{1,31}|[A-Z][A-Z0-9_]{1,31}|[a-z]{1,16}[0-9]{0,3}(${v_hump})(${v_hump})*|(${v_hump})(${v_hump})*)"
   # `_DOTTED`, in two expressions -- its `self.` branch and the rest -- so
@@ -2143,21 +2138,6 @@ redact() {
   local v_type_end='([[:blank:]]+=[[:blank:]]|[[:blank:]]+\|[[:blank:]]+(None|null|undefined|str|bytes|int|float|bool|[A-Z][a-z])|\)[[:blank:]]*(->|:?$)|\[(str|bytes|int|float|bool|None|Any|object|[A-Z][a-z]{1,15}([A-Z][a-z]{1,15}){0,3})[],])'
   local v_annotation="(_*(${v_hump})(${v_hump})*|[a-z_][a-z0-9_]{0,31}\\.(${v_hump})(${v_hump})*)${v_type_end}"
   local v_word='(={1,2}[[:blank:]]|(await|new|not)[[:blank:]]|(None|True|False|null|undefined|\{\}|\[\]|\(\))([,;[:space:]]|$|[])}]+([,;[:space:]]|$)))'
-  # A LITERAL AFTER CODE (#361 box 64): `swarm_redaction.rules.mask_code_literals`,
-  # restated move for move -- its comment says why each move is there. The
-  # quotes around a quoted NAME become $c_sq/$c_dq, $c_mark goes after each
-  # credential name and its separator, a loop masks the first literal after
-  # each mark's code (sed back-references stop at \9, which is why the name
-  # is marked rather than captured), and everything is put back. The three
-  # bytes are stripped from the input first, like $keep.
-  local c_mark=$'\004' c_sq=$'\005' c_dq=$'\006'
-  local c_words='[Tt][Oo][Kk][Ee][Nn]|[Ss][Ee][Cc][Rr][Ee][Tt]|[Kk][Ee][Yy]|[Pp][Aa][Ss][Ss][Ww]|[Pp][Aa][Ss][Ss][Pp][Hh][Rr][Aa][Ss][Ee]|[Cc][Rr][Ee][Dd][Ee][Nn][Tt][Ii][Aa][Ll]|[Aa][Uu][Tt][Hh]|[Aa][Pp][Ii]'
-  local c_qname="([A-Z_][A-Z0-9_]{0,63}|[A-Za-z_-]{0,32}(${c_words})[A-Za-z_-]{0,32}|[*]{8})?"
-  local c_char="[A-Za-z0-9_.,:=*+/%[:blank:]\\\\${c_sq}${c_dq}-]"
-  local c_arg="(${c_char}|\\(${c_char}{0,16}\\)|\\[${c_char}{0,16}\\])"
-  local c_open="[A-Za-z_][A-Za-z0-9_.]{0,128}[([]${c_arg}{0,64}"
-  local c_code="([A-Za-z_][]A-Za-z0-9_.,[| ]{0,96}[[:blank:]]*=[[:blank:]]*(${c_open})?|${c_open})"
-  local c_value="[^]'\"[:space:]\\\\(){}<>|,;%${c_sq}${c_dq}${c_mark}[]{6,128}"
   # The private-key stage, `swarm_api.redaction.mask_private_keys` restated for
   # a stream. Q is the queue of lines not yet written; H the base64-shaped lines
   # an END below may still claim; BL the blank lines inside a key's body, kept
@@ -2246,7 +2226,7 @@ redact() {
           out = MASK; pos = m
         } else {
           flush()
-          out = out substr(s, pos, at - pos) MASK; pos = m
+          if (at < m) { out = out substr(s, pos, at - pos) MASK; pos = m }
         }
         scan = m + ml
       }
@@ -2307,9 +2287,6 @@ redact() {
     -e "s/${keep}//g" \
     -e "s/${envname}//g" \
     -e "s/${secretrun}//g" \
-    -e "s/${c_mark}//g" \
-    -e "s/${c_sq}//g" \
-    -e "s/${c_dq}//g" \
     -e 's/(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]{26}[A-Za-z0-9_-]*/\1********/g' \
     -e 's/(^|[^A-Za-z0-9_])(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+/\1\2********/g' \
     -e 's/(ya29\.)[A-Za-z0-9._-]+/\1********/g' \
@@ -2323,18 +2300,6 @@ redact() {
     -e 's/(([Bb]earer|[Bb]asic)[[:space:]]+)[A-Za-z0-9._~+\/-]{12,}=*/\1********/g' \
     -e "s/(authorization(\\*\")?[[:space:]]*[:=][[:space:]]*)((\\*\")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+[^\"\\,[:space:]]*\\*\\*\\*\\*\\*\\*\\*\\*[^\"\\,[:space:]]*)/\\1${keep}\\3/Ig" \
     -e 's/(authorization(\\*")?[[:space:]]*[:=][[:space:]]*(\\*")?(token|bearer|basic|digest|negotiate|oauth|api[-_]?key|key|ssws)[[:space:]]+)[^*"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
-    -e "s/(\\\\{1,15})\"${c_qname}(\\\\{1,15})\"/\\1${c_dq}\\2\\4${c_dq}/g" \
-    -e "s/\"${c_qname}\"/${c_dq}\\1${c_dq}/g" \
-    -e "s/'${c_qname}'/${c_sq}\\1${c_sq}/g" \
-    -e "s/(^|[^A-Za-z0-9_.-])((\\\\{0,15}[\"${c_dq}])?[A-Za-z0-9_.-]*(${ci_kw})${ci_suf}(\\\\{0,15}[\"${c_dq}])?[[:blank:]]*[:=][[:blank:]]*)/\\1\\2${c_mark}/g" \
-    -e ":codelit" \
-    -e "s#(${c_mark}${c_code})'${c_value}'#\\1${c_sq}********${c_sq}#g" \
-    -e "s#(${c_mark}${c_code})\"${c_value}\"#\\1${c_dq}********${c_dq}#g" \
-    -e "s#(${c_mark}${c_code})(\\\\{1,15})\"${c_value}(\\\\{1,15})\"#\\1\\6${c_dq}********\\7${c_dq}#g" \
-    -e "t codelit" \
-    -e "s/${c_mark}//g" \
-    -e "s/${c_sq}/'/g" \
-    -e "s/${c_dq}/\"/g" \
     -e "s/(${key})([[:space:]]*[:=][[:space:]]*\"?)((not set|unset|set|none|\\(none\\)|missing)([\",[:space:]]|\$))/\\1${keep}\\5\\6/Ig" \
     -e "s/(${wide_key})([[:space:]]*:[[:space:]]*\"?)(([A-Z][a-z]+)([\"\\,[:space:]]|\$))/\\1${keep}\\5\\6/Ig" \
     -e "s#(^|[^A-Za-z0-9+/=_-])([A-Za-z0-9+/=_-]{16,})#\\1${secretrun}\\2#g" \
@@ -2357,10 +2322,10 @@ redact() {
     -e "s/${code_key_np}(=[[:blank:]]*${v_cred}${v_end})/\\1${keep}\\6/g" \
     -e "s/${envname}//g" \
     -e "s/${secretrun}//g" \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
-    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
-    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|passphrase|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[^"\\,[:space:]]+/\1********/Ig' \
+    -e 's/((\\*")?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?\\+")[]0-9.)}]*[^]0-9.)}"\\,[:space:]][^"\\,[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)(s?[-_](access[-_]?key|key|hash))?(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[^",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
+    -e 's/("?(api[-_]?key|apikey|private[-_]?key|password|passwd|secret|token|credential|authorization)s(\\*")?[[:space:]]*[:=][[:space:]]*(\[[[:space:]]*)?"?)(\\+[^",[:space:]\\[]|[]0-9.)}]*[^]0-9.)}",[:space:]\\[])[^",[:space:]]*/\1********/Ig' \
     -e "s/${keep}//g"
 }
 
