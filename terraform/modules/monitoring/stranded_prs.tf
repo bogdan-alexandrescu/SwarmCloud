@@ -27,12 +27,9 @@
 # request a person has to look at: the alert is the "anyone being told" the
 # entry exists for. The documentation says what each reason asks of them.
 
+# local.api_services (swarm-api's service names) is defined once, in
+# metrics.tf; a second definition here is a duplicate-local error.
 locals {
-  api_services = coalescelist(
-    [for s in var.service_names : s if endswith(s, "-api")],
-    ["${var.name_prefix}-api"],
-  )
-
   pr_stranded_doc = <<-DOC
     A pull request SwarmCloud opened has been open over two hours and nothing
     is going to merge it. `GET /v1/stranded-prs` lists every one with its

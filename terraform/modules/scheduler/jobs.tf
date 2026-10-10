@@ -141,11 +141,12 @@ module "service_account_ids" {
 # NO create_ignore_already_exists, for the reason modules/iam gives for
 # swarm-tick (#334): a release that meets a 409 should fail rather than adopt
 # an account somebody else made under this name, with their keys and policy.
+# The provider caps description at 256 characters; this one is at 249.
 resource "google_service_account" "rollup_sweeper" {
   project      = var.project_id
   account_id   = module.service_account_ids.rollup_sweeper_id
   display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup, issue-run-advance, issue-sweep, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep jobs and task_finished push; admitted to those nine /v1/admin routes only. No roles."
+  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup, issue-run-advance, issue-sweep, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep jobs and task_finished push; those nine /v1/admin routes only. No roles."
 }
 
 locals {
