@@ -37,6 +37,15 @@ an agent. Skipping it in the scheduler would skip the pull request. The
 scheduler also reads no artifact, and would need a GCS read on its drain path
 to learn the verdict. The worker already has the file on disk, staged.
 
+A SHUT GATE PASSES THE VERDICT ON (2026-10-10, part of #295). A gated step
+whose agent does not run re-publishes the verdict file it staged, byte for
+byte, under its `input_from` name, as its own artifact
+(`lifecycle.Worker._republish_staged_verdict`). That is what lets a step be
+gated AND be staged from: the re-review `on_merge_verdict` appends is gated on
+the first review's NOT_YET, and on MERGE the merge step reads the first
+review's verdict through it. A step that stages any OTHER file from a gated
+step is still refused at submission: only the verdict is passed on.
+
 AN UNREADABLE VERDICT FAILS THE ATTEMPT. It is not read as MERGE, which would
 publish unreviewed work, and not as NOT_YET, which would run a fixer against
 findings that are not there. Every refusal is `InputUnavailable`, so the

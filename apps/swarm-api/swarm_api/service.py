@@ -677,7 +677,8 @@ class SubmissionService:
                     step_specs, rereview=rereview_step_id
                 )
             # A verdict gate and a `builds_on` (#264), once the integrator is
-            # known: under `integrate` only the integrator may be gated. Under
+            # known: under `integrate` only the integrator may be gated, and the
+            # re-review "on_merge_verdict" appended beside it (2026-10-10). Under
             # `single-pr` this is also where the chain's shape is refused or
             # planned (#295), and where a worker-action profile under any other
             # strategy is refused -- AFTER each step's profile is known to be
@@ -690,6 +691,7 @@ class SubmissionService:
                 step_specs,
                 strategy=dispatch.strategy,
                 integrator_step_id=integrator_step_id,
+                rereview=rereview_step_id,
             )
             merge_plan = plan_merge(
                 step_specs, dispatch.strategy,
@@ -788,10 +790,14 @@ class SubmissionService:
                 allow_empty_diff=source.allow_empty_diff,
                 # Kept on a gated step only (`with_routing`): the MERGE path's
                 # pull request title when the implementer wrote none.
-                pr_label=workflow_label(spec.metadata),
+                # Not on the re-review, which is gated on the same review
+                # (2026-10-10) but opens no pull request.
+                pr_label=None if step_id == rereview_step_id else workflow_label(spec.metadata),
                 # Kept on a gated step only too: the step that reads the
-                # verdict files its minors on the tenant's epic.
-                findings_epic=findings_epic,
+                # verdict files its minors on the tenant's epic. The integrator
+                # does; the re-review reads the same verdict and would file
+                # every minor a second time.
+                findings_epic=None if step_id == rereview_step_id else findings_epic,
             )
             if source.input_from and layout_of[step_id] == INPUT_LAYOUT_BY_PARENT:
                 # Each parent's STEP id beside the task id the worker sees in
