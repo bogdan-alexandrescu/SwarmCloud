@@ -12,9 +12,9 @@ Three concrete ways the grep passed a template it should have refused, each
 reproduced below against a copy of the real repository:
 
   * a second container in the same pod inherits nothing, yet the grep found the
-    first container's lines and passed both (`worker-job-v2.yaml`'s init
-    container losing `allowPrivilegeEscalation: false` or `drop: ["ALL"]`, and
-    an unhardened sidecar added to `worker-job.yaml`);
+    first container's lines and passed both (an init container in
+    `worker-job-v2.yaml` without `allowPrivilegeEscalation: false` or
+    `drop: ["ALL"]`, and an unhardened sidecar added to `worker-job.yaml`);
   * `runAsNonRoot: true` at POD level satisfied the grep while the container
     overrode it to `false`, and the container's value is the one that runs;
   * the gVisor class was chosen by grepping for `runtimeClassName: gvisor`, so a
@@ -94,37 +94,62 @@ def test_the_unmodified_templates_pass(tmp_path):
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_an_init_container_without_allow_privilege_escalation_false_is_refused(tmp_path):
-    tree = _copy_tree(tmp_path)
+#: v2 has no init container of its own any more (docs/BUILD_PROMPT_V2.md
+#: §2.6.3, amended 2026-10-01: the worker installs the credential itself), so
+#: the init-container cases inject one. The control below hardens it as the
+#: gate requires; each case then removes one field, so the refusal is caused by
+#: that field and nothing else. The validator judges posture and never runs
+#: the command; it is tini, which every worker image installs.
+_V2_CONTAINERS = "      containers:\n        - name: worker\n"
+
+
+def _inject_init_container(tree: Path, security_context: str) -> None:
     _mutate(
         tree,
         "worker-job-v2.yaml",
+        _V2_CONTAINERS,
+        "      initContainers:\n"
+        "        - name: injected-init\n"
+        "          image: __IMAGE__\n"
+        '          command: ["/usr/bin/tini", "--", "true"]\n'
+        "          securityContext:\n" + security_context + _V2_CONTAINERS,
+    )
+
+
+def test_a_hardened_injected_init_container_passes(tmp_path):
+    """The control for the two below: without it, a refusal could be the
+    injection itself (bad YAML, an anchor that moved) rather than the field."""
+    tree = _copy_tree(tmp_path)
+    _inject_init_container(
+        tree,
         "            runAsUser: 0\n"
         "            allowPrivilegeEscalation: false\n"
         "            capabilities:\n"
-        '              drop: ["ALL"]\n'
-        "          env:\n",
+        '              drop: ["ALL"]\n',
+    )
+    result = _validate(tree)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_an_init_container_without_allow_privilege_escalation_false_is_refused(tmp_path):
+    tree = _copy_tree(tmp_path)
+    _inject_init_container(
+        tree,
         "            runAsUser: 0\n"
         "            capabilities:\n"
-        '              drop: ["ALL"]\n'
-        "          env:\n",
+        '              drop: ["ALL"]\n',
     )
-    _refused(_validate(tree), "install-credential", "allowPrivilegeEscalation")
+    _refused(_validate(tree), "injected-init", "allowPrivilegeEscalation")
 
 
 def test_an_init_container_that_keeps_its_capabilities_is_refused(tmp_path):
     tree = _copy_tree(tmp_path)
-    _mutate(
+    _inject_init_container(
         tree,
-        "worker-job-v2.yaml",
-        "            allowPrivilegeEscalation: false\n"
-        "            capabilities:\n"
-        '              drop: ["ALL"]\n'
-        "          env:\n",
-        "            allowPrivilegeEscalation: false\n"
-        "          env:\n",
+        "            runAsUser: 0\n"
+        "            allowPrivilegeEscalation: false\n",
     )
-    _refused(_validate(tree), "install-credential", "ALL")
+    _refused(_validate(tree), "injected-init", "ALL")
 
 
 def test_a_container_that_overrides_the_pods_run_as_non_root_is_refused(tmp_path):

@@ -605,6 +605,31 @@ resource "google_logging_metric" "worker_action_ended" {
 # of the payload. Nothing writes it until S5 is built; a metric with no writer
 # reads zero, which is what a platform with no holds should read.
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# An approved personal workspace is waiting and nothing is building it
+# (docs/workspaces.md §2.2, #847).
+#
+# WHY THIS EXISTS. On 2026-10-09 the owner's own workspace request was
+# approved and then sat at `approved` for ~19 hours with no dispatch, no
+# failure and nothing to say so: publishing was off, and no job called the
+# dispatch sweep. The setup page showed it as in progress the whole time.
+#
+# THE EMITTER: swarm-api's dispatch sweep (POST /v1/admin/workspaces/sweep,
+# called every 10 minutes by modules/scheduler `workspace_sweep`) logs ONE
+# structured entry per stuck record per hour, `jsonPayload.event =
+# "workspace_stuck"`, with workspace_id, reason, approved_at and
+# minutes_waiting. A record is stuck when it is `approved` and publishing is
+# off (reason publishing_off), or it has had no dispatch attempt for more than
+# 15 minutes (never_dispatched), or its last dispatch is more than 30 minutes
+# old and no build has claimed it (dispatched_unclaimed). The sweep runs that
+# check even with publishing off, so the line exists in exactly the state of
+# 2026-10-09.
+#
+# Only swarm-api, by service name and region: the project is shared. `reason`
+# is a label (three values); workspace_id is not -- it is read from the line,
+# and it is opaque by design, so the line names nobody.
+# ---------------------------------------------------------------------------
 locals {
   api_services = coalescelist(
     [for s in var.service_names : s if endswith(s, "-api")],
@@ -672,5 +697,35 @@ resource "google_logging_metric" "schedule_needs_owner" {
   # An `extra=` field, so top level, not under a bound `labels` object.
   label_extractors = {
     tenant_id = "EXTRACT(jsonPayload.tenant_id)"
+  }
+}
+
+resource "google_logging_metric" "workspace_stuck" {
+  project = var.project_id
+  name    = "${var.name_prefix}/workspace-stuck"
+
+  description = "An approved personal workspace is waiting with nothing building it: swarm-api's dispatch sweep logged workspace_stuck (publishing_off, never_dispatched or dispatched_unclaimed)."
+
+  # Logging query syntax, not Monitoring's: `field=(a OR b)`, not one_of().
+  filter = join(" AND ", [
+    "resource.type=\"cloud_run_revision\"",
+    "resource.labels.service_name=(${join(" OR ", [for s in local.api_services : "\"${s}\""])})",
+    "resource.labels.location=\"${var.region}\"",
+    "jsonPayload.event=\"workspace_stuck\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "reason"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    reason = "EXTRACT(jsonPayload.reason)"
   }
 }

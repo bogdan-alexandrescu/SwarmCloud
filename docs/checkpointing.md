@@ -225,7 +225,11 @@ What is restored, and only when every check holds
 Anything else starts the attempt from an empty workspace, as a first attempt
 does, with one log line saying which check refused it. An attempt document
 written before `checkpoint_sha256` existed records no digest, so a retry of
-such an attempt starts clean once.
+such an attempt starts clean once. The field is the frozen
+`Attempt.checkpoint_sha256` (contract request 51, accepted 2026-10-09), whose
+empty default means exactly that: no digest recorded, never "anything goes".
+No backfill computes digests from the bucket, because the bucket's bytes are
+what the digest exists to distrust.
 
 **What this does and does not stop.** It stops every first attempt, and, on a
 retry, an agent that can write only the bucket: a checkpoint added beside the

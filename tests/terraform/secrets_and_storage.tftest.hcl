@@ -215,22 +215,27 @@ run "a_live_object_is_deleted_by_custom_time_never_by_age" {
     error_message = "artifacts and logs must expire artifact_retention_days after the customTime the worker stamps on them"
   }
 
+  # The clone-bundle rule (issue #940) is the only `age` Delete, and it is
+  # bound to the two bundle suffixes, which no checkpoint key ends with.
   assert {
     condition = length([
       for r in google_storage_bucket.artifacts.lifecycle_rule : r
       if one(r.action).type == "Delete" && coalesce(one(r.condition).age, 0) > 0
+      && sort(coalesce(one(r.condition).matches_suffix, [])) != sort([".swarm-clone.bundle", ".swarm-clone.head"])
     ]) == 0
     error_message = "an age-based Delete rule deletes a PARKED task's only checkpoint on a clock; checkpoints are removed by reconciler/checkpoints.py alone"
   }
 
-  # Every Delete rule is one of three shapes: the customTime clock on LIVE
-  # objects, or one of the two noncurrent-version rules on ARCHIVED ones. A
-  # fourth shape (created_before, matches_prefix, a different with_state) is a
-  # new way to reach a checkpoint and has to be decided, not slipped in.
+  # Every Delete rule is one of four shapes: the customTime clock on LIVE
+  # objects, one of the two noncurrent-version rules on ARCHIVED ones, or the
+  # clone-bundle suffix rule (decided in issue #940). A fifth shape
+  # (created_before, matches_prefix, a different with_state) is a new way to
+  # reach a checkpoint and has to be decided, not slipped in.
   assert {
     condition = alltrue([
       for r in google_storage_bucket.artifacts.lifecycle_rule :
       one(r.condition).with_state == "ARCHIVED" || coalesce(one(r.condition).days_since_custom_time, 0) > 0
+      || sort(coalesce(one(r.condition).matches_suffix, [])) == sort([".swarm-clone.bundle", ".swarm-clone.head"])
       if one(r.action).type == "Delete"
     ])
     error_message = "a Delete rule on live objects that is not keyed on customTime can match a checkpoint"

@@ -315,12 +315,17 @@ _WORKSPACE_STATES = {
 
 
 def _workspace_step(record: dict[str, Any] | None, *, required: bool,
-                    console_url: str) -> dict[str, Any]:
-    shown = ws.view(record, console_url=console_url)
+                    console_url: str, publishing: bool | None = None,
+                    now: datetime | None = None) -> dict[str, Any]:
+    shown = ws.view(record, console_url=console_url, publishing=publishing, now=now)
     state = _WORKSPACE_STATES[shown["state"]]
     evidence = {key: shown.get(key) for key in (
-        "state", "workspace_id", "requested_at", "decision", "steps", "failure", "ready_at",
-        "request_again_at", "setup_url", "setup_command")}
+        "state", "workspace_id", "request_id", "requested_at", "decision", "steps",
+        "failure", "ready_at", "request_again_at", "setup_url", "setup_command")}
+    if "provisioning" in shown:
+        # Whether anything will build an approved record: the console draws
+        # an approval nothing advances as waiting, never as in progress.
+        evidence["provisioning"] = shown["provisioning"]
     code = copy = None
     if shown["state"] == ws.FAILED:
         code, copy = (shown["failure"] or {}).get("code"), (shown["failure"] or {}).get("copy")
@@ -807,6 +812,7 @@ def derive(
     loan: dict[str, Any] | None = None,
     workspace_required: bool = False,
     console_url: str = "",
+    workspace_publishing: bool | None = None,
 ) -> dict[str, Any]:
     """The caller's checklist from evidence. Pure: no read, no write, no clock.
     `installations` is `AccessService.installations`'s answer for an App
@@ -832,7 +838,8 @@ def derive(
     steps = [_step(SIGNED_IN, DONE, checked_at=now, evidence={
         "email": caller.email, "tenant_id": caller.tenant_id, "is_admin": caller.is_admin})]
     steps.append(_workspace_step(workspace, required=workspace_required,
-                                 console_url=console_url))
+                                 console_url=console_url,
+                                 publishing=workspace_publishing, now=now))
     steps.append(_claude_step(accounts or {}, loan, required=workspace_required,
                               console_url=console_url))
     record, via = _connection(caller, records, tenant_lists_git, now)
@@ -896,7 +903,8 @@ def _read_grants(db: Any, caller: Caller) -> list[dict[str, Any]]:
 def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
          installations: Callable[[], dict[str, Any]] | None = None,
          workspaces: "ws.Workspaces | None" = None,
-         workspace_required: bool = False) -> dict[str, Any]:
+         workspace_required: bool = False,
+         workspace_publishing: bool | None = None) -> dict[str, Any]:
     """Read today's records for the caller's tenant and derive. Reads only,
     but for `installations`: called only for an active App connection, it is
     `AccessService.installations` for this caller (see the module note).
@@ -904,7 +912,8 @@ def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
     `workspaces` reads the caller's personal workspace, its loan request and
     the accounts that serve it; without it the two steps derive from nothing
     (`todo`). `workspace_required` is the route's: the gate is on and judges
-    this caller's tenant."""
+    this caller's tenant. `workspace_publishing` is the publisher's `enabled`,
+    for the workspace step's `provisioning` evidence."""
     tokens = GitTokens(db, now=lambda: now)
     records = tokens.list(caller.tenant_id)
     pair_docs = tokens.pair_docs(caller.tenant_id)
@@ -942,6 +951,7 @@ def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
         loan=loan,
         workspace_required=workspace_required,
         console_url=workspaces.console_url if workspaces is not None else "",
+        workspace_publishing=workspace_publishing,
     )
     log.info("onboarding read tenant=%s user_hash=%s next=%s", caller.tenant_id,
              view["user_hash"], view["next_step"])
