@@ -998,7 +998,7 @@ def _verify_opener(ctx: ActionContext, target: MergeTarget, opener: Mapping[str,
     branch the opener's pull request is on, or the target is not this
     continuation's to merge (`workflow_mismatch` too, fail closed).
     swarm-api bound the target to the issue run's record before signing it
-    (`issueci.merge_target_bound`).
+    (`issueci.merge_target_unbound`).
     """
     assert target.pull_request is not None
     if target.pull_request_workflow is None:

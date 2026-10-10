@@ -332,9 +332,23 @@ exits. Runs for different workspaces may run at once.
 
 **The dispatch sweep.** An `approved` record whose publish failed, or whose
 build never claimed it within 10 minutes, is published again by
-`POST /v1/admin/workspaces/sweep`, which the existing `swarm-tick` scheduler
-identity calls every 5 minutes, beside its other admin sweeps. The route
-publishes at most once per record per 10 minutes, and records each attempt.
+`POST /v1/admin/workspaces/sweep`, which the Cloud Scheduler job
+`swarm-workspace-sweep` calls every 10 minutes as the rollup-sweeper account
+(`modules/scheduler` `workspace_sweep`), beside its other admin sweeps. Not
+`swarm-tick`, as this section first said: swarm-api admits `swarm-tick` to no
+admin route, and the route is on `ROLLUP_SWEEPER_ROUTES`. The route publishes
+at most once per record per 10 minutes, and records each attempt.
+
+**Publishing has a switch, and off is not silent.** swarm-api publishes only
+when `WORKSPACE_APPLY_PUBLISH` is on: Terraform's `workspace_apply_publish`,
+false in `dev.tfvars` until the topic and trigger exist. Flip it in the same
+release as the owner's bootstrap apply with `enable_workspace_deployer`
+(§10); before that, every publish would record `publish_failed`. The sweep job
+runs either way, because the sweep is also the detector: it logs one
+`workspace_stuck` entry per stuck record per hour (`reason` `publishing_off`,
+`never_dispatched` or `dispatched_unclaimed`), and the `workspace-stuck` alert
+(`modules/monitoring`) pages on one within 30 minutes. On 2026-10-09 an
+approved request waited ~19 hours with neither in place.
 
 ### 2.3 The dedicated identity and its permissions
 
@@ -1112,7 +1126,7 @@ $ /sc:run "fix the flaky test"
 | `PUT /v1/admin/workspaces/{workspace_id}/limits` | admin | §6.4's ceiling; body `{max_active}` only |
 | `PUT /v1/admin/people/{workspace_id}/loan` | admin | lend or reclaim an account (§6.4) |
 | `PUT /v1/admin/admins/{email}` and `DELETE` | admin | grant or remove admin (§6.5) |
-| `POST /v1/admin/workspaces/sweep` | `swarm-tick` | §2.2's dispatch sweep |
+| `POST /v1/admin/workspaces/sweep` | the rollup sweeper (`swarm-workspace-sweep`, every 10 minutes) | §2.2's dispatch sweep |
 | `GET /v1/onboarding` | (exists) | gains the `workspace` and `claude_account` steps |
 
 Admin routes address a person by **workspace id**, so a URL in a browser

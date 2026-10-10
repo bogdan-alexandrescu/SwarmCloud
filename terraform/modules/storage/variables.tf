@@ -41,6 +41,25 @@ variable "artifact_retention_days" {
   }
 }
 
+variable "clone_bundle_retention_days" {
+  description = <<-EOT
+    Days after upload that a clone bundle (*.swarm-clone.bundle) or a branch
+    head pointer (*.swarm-clone.head) is deleted, for every tenant, mapped or
+    created at runtime. See the lifecycle rule in main.tf.
+  EOT
+  type        = number
+  # 7: a workflow's downstream steps pin to the upstream's base within the
+  # same run, so a bundle is read within hours; a week also covers re-runs
+  # and resumes. A miss costs only today's clone from GitHub, so longer buys
+  # little and shorter risks a resumed workflow paying the clone again.
+  default = 7
+
+  validation {
+    condition     = var.clone_bundle_retention_days >= 1
+    error_message = "clone bundles must survive at least a day: GCS reads age = 0 as delete on the next pass, before a workflow's next step can clone from one."
+  }
+}
+
 variable "log_retention_days" {
   type    = number
   default = 400
