@@ -5,18 +5,23 @@ The harness runs the REAL script and the REAL `swarm_api.workspaces` with no
 credentials: a `sitecustomize` on PYTHONPATH swaps `google.cloud.firestore.
 Client` for tests/unit/control_plane/fakes.FakeFirestore, loaded from and saved
 back to a pickle, so what the script's python wrote is read here afterwards.
-A fake kubectl answers the one quota read the live path makes. The typed
+A fake kubectl answers the one quota read the live path makes, and the fake
+gcloud of tests/unit/scripts/fixtures/workspace_world.py (the one the
+workspace job's tests run behind) holds the forge slot pair. The typed
 confirmation is answered through a pseudo-terminal, because the script refuses
 anything else.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import pickle
 import pty
 import shutil
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -25,6 +30,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[3]
 SCRIPT = REPO / "scripts" / "workspace-migrate-record.sh"
 FAKES_DIR = REPO / "tests" / "unit" / "control_plane"
+WORLD_PY = Path(__file__).resolve().parent / "fixtures" / "workspace_world.py"
 
 pytestmark = pytest.mark.skipif(shutil.which("jq") is None, reason="jq is required")
 
@@ -32,6 +38,12 @@ TENANT = "u-bogdan"
 PRINCIPAL = "bogdan@saga.xyz"
 KEPT_ID = "w-752763"
 REQUEST_ID = "6f1c2d3e-0000-4000-8000-000000000001"
+PROJECT = "saga-agents-staging"
+# The names A6 makes and A9 checks (scripts/lib/workspace-guard.sh expect).
+SLOT = f"swarm-tenant-{TENANT}-git-u-" + hashlib.sha256(PRINCIPAL.encode()).hexdigest()[:16]
+TWIN = SLOT + "-refresh"
+WORKER = f"swarm-agent-worker-{TENANT}@{PROJECT}.iam.gserviceaccount.com"
+READER = "roles/secretmanager.secretAccessor"
 
 SITECUSTOMIZE = f"""
 import atexit, os, pickle, sys
@@ -93,6 +105,11 @@ class World:
         self.kubectl = bin_dir / "kubectl"
         self.kubectl.write_text(FAKE_KUBECTL)
         self.kubectl.chmod(0o755)
+        gcloud = bin_dir / "gcloud"
+        gcloud.write_text(f'#!/bin/sh\nFAKE_TOOL=gcloud exec "{sys.executable}" "{WORLD_PY}" "$@"\n')
+        gcloud.chmod(0o755)
+        self.cloud = tmp / "cloud.json"
+        self.cloud.write_text(json.dumps({"project": PROJECT, "accounts": {}, "secrets": {}, "fail": []}))
         env = {k: v for k, v in os.environ.items()
                if not k.startswith(("SWARM_", "CLOUDSDK_", "GOOGLE_", "KUBECONFIG",
                                     "PROJECT_ID", "ENVIRONMENT", "FIRESTORE_"))}
@@ -100,6 +117,8 @@ class World:
             SWARM_ENV_FILE=str(tmp / "absent.env"),
             SWARM_TEST_FIRESTORE=str(self.file),
             SWARM_KUBECTL=str(self.kubectl),
+            FAKE_WORLD=str(self.cloud),
+            PATH=os.pathsep.join([str(bin_dir), env.get("PATH", "/usr/bin:/bin")]),
             KUBECONFIG=str(tmp / "kubeconfig"),
             PYTHONPATH=os.pathsep.join(filter(None, [str(site), env.get("PYTHONPATH", "")])),
             PROJECT_ID="saga-agents-staging",
@@ -114,6 +133,21 @@ class World:
 
     def read(self) -> dict:
         return pickle.loads(self.file.read_bytes())
+
+    def secrets(self) -> dict:
+        return json.loads(self.cloud.read_text())["secrets"]
+
+    def edit_cloud(self, change) -> None:
+        cloud = json.loads(self.cloud.read_text())
+        change(cloud)
+        self.cloud.write_text(json.dumps(cloud))
+
+    def changes(self) -> list[list[str]]:
+        """gcloud calls that change something."""
+        calls = json.loads(self.cloud.read_text()).get("calls", [])
+        return [c["argv"] for c in calls
+                if any(w in ("create", "add-iam-policy-binding", "set-iam-policy", "delete")
+                       for w in c["argv"][:3])]
 
     def run(self, *args: str, extra_env: dict | None = None, typed: str | None = None,
             ) -> subprocess.CompletedProcess:
@@ -291,3 +325,93 @@ def test_bad_arguments_are_refused_before_anything_is_read(pending, args) -> Non
     assert proc.returncode != 0
     assert pending.read() == before
 
+
+
+# ---------------------------------------------------------------------------
+# The forge slot pair (owner decision 2026-10-10: the migration creates it)
+# ---------------------------------------------------------------------------
+
+
+def _readers(policy: dict) -> set[str]:
+    return {m for b in policy.get("bindings", []) if b["role"] == READER for m in b["members"]}
+
+
+def test_apply_creates_the_empty_slot_pair_and_binds_the_slot_only(pending) -> None:
+    proc = pending.run(TENANT, *QUOTA, "--apply", typed=TENANT)
+
+    assert proc.returncode == 0, proc.stderr
+    secrets = pending.secrets()
+    assert set(secrets) == {SLOT, TWIN}
+    for name in (SLOT, TWIN):
+        assert secrets[name]["labels"]["tenant"] == TENANT
+        assert secrets[name]["labels"]["managed-by"] == "swarm-api"
+    assert secrets[SLOT]["labels"]["provider"] == SLOT.removeprefix(f"swarm-tenant-{TENANT}-")
+    assert _readers(secrets[SLOT]["policy"]) == {f"serviceAccount:{WORKER}"}
+    assert _readers(secrets[TWIN]["policy"]) == set()
+    # Empty: the value arrives when the person connects GitHub.
+    assert not any("versions" in c for c in pending.changes())
+    assert f"created {SLOT}" in proc.stderr and f"created {TWIN}" in proc.stderr
+    assert f"secretAccessor on {SLOT} to {WORKER}" in proc.stderr
+
+
+def test_a_rerun_with_the_slot_present_changes_nothing(pending) -> None:
+    assert pending.run(TENANT, *QUOTA, "--apply", typed=TENANT).returncode == 0
+    secrets = pending.secrets()
+    made = len(pending.changes())
+
+    proc = pending.run(TENANT, *QUOTA, "--apply")
+
+    assert proc.returncode == 0, proc.stderr
+    assert pending.secrets() == secrets
+    assert len(pending.changes()) == made
+    assert f"{SLOT} is present; kept" in proc.stderr
+
+
+def test_a_rerun_finishes_a_pair_an_earlier_run_left_incomplete(pending) -> None:
+    pending.edit_cloud(lambda c: c["fail"].append(
+        {"tool": "gcloud", "words": ["secrets", "add-iam-policy-binding"], "times": 1}))
+    first = pending.run(TENANT, *QUOTA, "--apply", typed=TENANT)
+    assert first.returncode == 1
+    assert "the record is written but the forge slot pair is not complete" in first.stderr
+    assert pending.read()[f"workspaces/{TENANT}"]["migrated"] is True
+
+    # No terminal: the record is migrated, so finishing the pair asks nothing.
+    proc = pending.run(TENANT, *QUOTA, "--apply")
+
+    assert proc.returncode == 0, proc.stderr
+    assert _readers(pending.secrets()[SLOT]["policy"]) == {f"serviceAccount:{WORKER}"}
+
+
+def test_a_dry_run_prints_the_slot_it_would_make_and_makes_nothing(pending) -> None:
+    proc = pending.run(TENANT, *QUOTA)
+
+    assert proc.returncode == 0, proc.stderr
+    assert pending.secrets() == {}
+    assert pending.changes() == []
+    assert f"would create {SLOT}" in proc.stderr and f"would create {TWIN}" in proc.stderr
+    assert f"would grant roles/secretmanager.secretAccessor on {SLOT}" in proc.stderr
+
+
+def test_a_slot_labelled_for_another_tenant_is_not_adopted(pending) -> None:
+    pending.edit_cloud(lambda c: c["secrets"].update({SLOT: {
+        "labels": {"tenant": "u-someone"}, "policy": {"version": 1}}}))
+
+    proc = pending.run(TENANT, *QUOTA, "--apply", typed=TENANT)
+
+    assert proc.returncode == 1
+    assert "labelled for 'u-someone'" in proc.stderr
+    assert set(pending.secrets()) == {SLOT}
+    assert pending.changes() == []
+
+
+def test_the_slot_is_made_by_the_one_shared_function_never_a_copy() -> None:
+    """A6 and the migration source scripts/lib/forge-slot.sh; neither restates it."""
+    lib = REPO / "scripts" / "lib" / "forge-slot.sh"
+    register = REPO / "scripts" / "register-tenant.sh"
+    assert "gcloud secrets create" in lib.read_text()
+    for script in (SCRIPT, register):
+        text = script.read_text()
+        assert "lib/forge-slot.sh" in text and "forge_slot_ensure_pair" in text
+        assert "gcloud secrets create" not in text
+    # register-tenant.sh's operator path binds other secrets; the migration none.
+    assert "add-iam-policy-binding" not in SCRIPT.read_text()

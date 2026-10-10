@@ -30,10 +30,23 @@
 # The namespace's ResourceQuota (`swarm-tenant-quota`) for `quota_pods` and
 # `quota_cpu`, through the swarm cluster's own context only, unless both are
 # given as flags: the verify run compares the record with all four, so the
-# record must say what is live, not what a default says.
+# record must say what is live, not what a default says. Whether the forge
+# slot pair and its binding exist (read in the dry run too).
+#
+# THE FORGE SLOT PAIR. A workspace the job builds gets the person's empty
+# forge slot `swarm-tenant-<tenant>-git-u-<hex>` and its `-refresh` twin in
+# A6, and A9 verifies both; a Terraform-made tenant has neither. Owner
+# decision 2026-10-10: the migration creates them, so every workspace has the
+# same shape. After the record is written (and on a re-run that finds it
+# already migrated, so a pair a failed run left incomplete is finished), the
+# pair is made through scripts/lib/forge-slot.sh -- the path A6 runs, never a
+# copy of it: empty (no value is written; it arrives when the person connects
+# GitHub), labelled tenant=<tenant>, and the worker granted secretAccessor on
+# the SLOT, never the twin. What is present is kept. Creating an empty,
+# labelled secret destroys nothing, so a re-run finishing it asks for nothing.
 #
 # DRY RUN BY DEFAULT. Without --apply it prints the record before and after,
-# redacted, and writes nothing. With --apply it prints the same plan, then
+# redacted, and the slot and binding it would make, and writes nothing. With --apply it prints the same plan, then
 # needs the tenant id TYPED at a terminal (SWARM_ASSUME_YES is ignored), and
 # writes only if the record is still in the state the plan was read from.
 #
@@ -48,6 +61,9 @@ set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/forge-slot.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/forge-slot.sh"
 
 # common.sh's confirm() skips the prompt when SWARM_ASSUME_YES is set. This
 # makes a person's workspace `ready` without the job's evidence, so the tenant
@@ -186,6 +202,73 @@ json.dump(result, sys.stdout, indent=2, sort_keys=True,
 PY
 }
 
+# slot_names PLAN OUT: the forge slot, its twin and the worker's email for the
+# record's principal, as swarm-api names the slot (gittokens.provider_suffix
+# and secret_name_for, the spelling the workspace guard expects) and as
+# swarm_common.identity names the worker. Never restated here.
+slot_names() {
+  local python principal
+  principal="$(jq -r '.after.principal // ""' "$1")"
+  [[ -n "${principal}" ]] || { printf 'the plan names no principal\n' >"${WORK}/names.err"; return 1; }
+  python="$(swarm_python)"
+  # shellcheck disable=SC2086  # swarm_python may print `uv run --project <root> python`
+  SWARM_MIGRATE_TENANT="${TENANT}" SWARM_MIGRATE_PRINCIPAL="${principal}" \
+    ${python} - >"$2" 2>"${WORK}/names.err" <<'PY'
+import json
+import os
+
+from swarm_api.gittokens import Scope, provider_suffix, secret_name_for
+from swarm_common.identity import worker_service_account_id
+
+env = os.environ
+tenant = env["SWARM_MIGRATE_TENANT"]
+slot = secret_name_for(tenant, provider_suffix(Scope.USER, user=env["SWARM_MIGRATE_PRINCIPAL"]))
+print(json.dumps({
+    "slot": slot,
+    "twin": slot + "-refresh",
+    "worker_email": f"{worker_service_account_id(tenant)}@{env['PROJECT_ID']}.iam.gserviceaccount.com",
+}))
+PY
+}
+
+# The plain runners scripts/lib/forge-slot.sh calls (the job passes its
+# guarded ws_call / ws_probe instead), with the same contracts.
+slot_call() {
+  local out="$1"
+  shift
+  "$@" >"${out}" 2>"${WORK}/call.err"
+}
+slot_show_err() {
+  [[ -s "${WORK}/call.err" ]] || return 0
+  redact <"${WORK}/call.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+}
+slot_probe() {
+  if slot_call "$@"; then return 0; fi
+  if gcloud_not_found "$(cat "${WORK}/call.err")"; then return 1; fi
+  slot_show_err
+  return 2
+}
+
+# forge_slot DRY_RUN: the pair, through the one path A6 runs.
+forge_slot() {
+  local rc=0 slot twin email
+  require_cmd gcloud
+  slot_names "${WORK}/plan.json" "${WORK}/names.json" \
+    || { redact <"${WORK}/names.err" >&2; err "could not name the forge slot for ${TENANT}"; return 1; }
+  slot="$(jq -r .slot "${WORK}/names.json")"
+  twin="$(jq -r .twin "${WORK}/names.json")"
+  email="$(jq -r .worker_email "${WORK}/names.json")"
+  FORGE_SLOT_CALL=slot_call FORGE_SLOT_PROBE=slot_probe FORGE_SLOT_SHOW_ERR=slot_show_err \
+    FORGE_SLOT_WORK="${WORK}" FORGE_SLOT_DRY_RUN="$1" \
+    forge_slot_ensure_pair "${TENANT}" "${slot}" "${twin}" "${email}" || rc=$?
+  case "${rc}" in
+    0) return 0 ;;
+    3) err "the forge slot already exists labelled for '${FORGE_SLOT_LABELLED:-nobody}', not ${TENANT}; it is not adopted" ;;
+    4) err "${email} is bound to the forge slot's refresh twin, which no worker may read; it is not repaired here" ;;
+  esac
+  return 1
+}
+
 # show TITLE FILE JQ_PATH: one document of the result, redacted.
 show() {
   printf '\n%s\n' "$1" >&2
@@ -207,6 +290,12 @@ printf '\n' >&2
 case "${ACTION}" in
   nothing)
     ok "workspaces/${TENANT} is already ready and migrated (${WORKSPACE_ID}); nothing to write"
+    if [[ "${APPLY}" -eq 0 ]]; then
+      forge_slot 1 || die "the forge slot pair cannot be made as it stands; see above. Nothing was written."
+      dim "dry run: nothing was written"
+      exit 0
+    fi
+    forge_slot 0 || die "the forge slot pair is not complete; see above. Run this again once the cause is fixed."
     exit 0 ;;
   update)
     info "plan: complete the existing record IN PLACE, keeping workspace id ${WORKSPACE_ID}" ;;
@@ -216,11 +305,12 @@ case "${ACTION}" in
 esac
 
 if [[ "${APPLY}" -eq 0 ]]; then
+  forge_slot 1 || die "the forge slot pair cannot be made as it stands; see above. Nothing was written."
   dim "dry run: nothing was written. To write it: scripts/workspace-migrate-record.sh ${TENANT} --apply"
   exit 0
 fi
 
-confirm "This writes workspaces/${TENANT} as ready and migrated (${ACTION}), and one admin_audit entry, in ${PROJECT_ID}/${FIRESTORE_DATABASE}." "${TENANT}"
+confirm "This writes workspaces/${TENANT} as ready and migrated (${ACTION}), and one admin_audit entry, in ${PROJECT_ID}/${FIRESTORE_DATABASE}, then makes the empty forge slot pair if it is missing." "${TENANT}"
 
 if ! migrate "${WORK}/result.json" 1 "${ACTION}"; then
   redact <"${WORK}/migrate.err" >&2
@@ -229,4 +319,5 @@ fi
 WORKSPACE_ID="$(jq -r '.workspace_id' "${WORK}/result.json")"
 show "written:" "${WORK}/result.json" '.after'
 ok "workspaces/${TENANT} is ready and migrated: ${WORKSPACE_ID} (${ACTION})"
+forge_slot 0 || die "the record is written but the forge slot pair is not complete; see above. Run this again: it finds the record migrated and finishes the pair."
 dim "Next (docs/workspaces.md §3.3, step 4): scripts/register-tenant.sh --workspace ${WORKSPACE_ID} --mode verify, under the call guard"
