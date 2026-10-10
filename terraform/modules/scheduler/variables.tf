@@ -177,6 +177,21 @@ variable "forge_refresh_schedule" {
   default     = "*/15 * * * *"
 }
 
+variable "schedule_tick_schedule" {
+  description = <<-EOT
+    How often POST /v1/admin/schedules/tick runs (docs/schedules.md §2.1).
+
+    Every minute, the design's figure, and not a tuning knob: a schedule's slot
+    is a Unix minute, the per-tenant cap of 5 firings per tick defers the rest
+    to "the next minute" (§2.10), and a firing whose work failed to be created
+    is finished by "the next tick" after 2 minutes (§2.2). A slower tick makes
+    every one of those promises late by the difference. An idle tick reads one
+    page of an index and writes one schedule_ticks document.
+  EOT
+  type        = string
+  default     = "* * * * *"
+}
+
 variable "workflow_rollup_schedule" {
   description = <<-EOT
     How often each tenant's stored workflow states are converged.

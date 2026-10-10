@@ -492,3 +492,69 @@ resource "google_cloud_scheduler_job" "forge_refresh" {
     retry_count = 0
   }
 }
+
+# --- The schedule tick (docs/schedules.md §2.1, lane S4) ----------------------
+#
+# POST /v1/admin/schedules/tick (apps/swarm-api/swarm_api/routes/schedule_tick.py,
+# lane S2) claims every due slot of every enabled schedule, as one firing per
+# slot created inside the transaction that advances the schedule (§2.2), and
+# then creates the firing's work as the schedule's owner in the schedule's
+# tenant (§2.7). A schedule is data; this one job is the only GCP resource
+# schedules ever need, so editing a schedule is never an infrastructure change.
+#
+# ONE JOB, NOT ONE PER TENANT, and NO tenant_id: the route reads
+# `schedules where state == enabled and next_run_at <= now` across every tenant,
+# personal `u-` ones included, which a job keyed on var.tenants would miss
+# (§2.1). The query's composite index is modules/firestore's
+# "schedules-state-next-run".
+#
+# ITS OWN IDENTITY, lane S13's account (owner decision SD10, 2026-10-08), made
+# in main.tf beside this file: swarm-api admits it to this one route
+# (auth.SCHEDULE_TICK_ROUTES through SCHEDULE_TICK_USERS) and its one grant is
+# run.invoker on swarm-api (terraform/infra main.tf, schedule_tick_invokes_api).
+# The OIDC token below is minted BY the account; it is not a grant TO it, so
+# this job adds no IAM member, and tests/terraform/schedule_tick_identity.tftest.hcl
+# still finds exactly one grant. The deployer's actAs on the account, which
+# creating a job that mints its token needs, is S13's (terraform/infra
+# deployer.tf).
+#
+# NO RETRY (§2.1). The next minute's tick is the retry, and every claim is a
+# transaction keyed on the slot, so an overlapping retry repeats reads and never
+# a firing; a Cloud Scheduler retry would only add a second caller to that race.
+#
+# Stopped two ways (§2.11): var.paused stops calling the route at all, and
+# swarm-api's SCHEDULES_ENABLED=false makes the route answer {disabled: true}.
+# Either way the catch-up policy decides what the missed slots do on resume.
+resource "google_cloud_scheduler_job" "schedule_tick" {
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-schedule-tick"
+
+  description = "managed-by=swarm-terraform; fires every tenant's due schedules, one firing per slot (docs/schedules.md)"
+  schedule    = var.schedule_tick_schedule
+  time_zone   = var.time_zone
+  paused      = var.paused
+
+  # The route stops STARTING work at 240 s (schedulefire.TICK_BUDGET_SECONDS,
+  # the repository poll's budget and reason); the deadline leaves it room to
+  # answer, as repo_index_poll's does.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/schedules/tick"
+
+    # Not coalesce(), as the per-tenant jobs use: those are made per
+    # rollup_tenant_ids, which is empty wherever api_endpoint is, while this
+    # job is unconditional, and coalesce() of two empty strings is an error.
+    # The root always passes swarm-api's URL (terraform/infra main.tf).
+    oidc_token {
+      service_account_email = local.schedule_tick_email
+      audience              = var.api_audience != "" ? var.api_audience : trimsuffix(var.api_endpoint, "/")
+    }
+  }
+
+  retry_config {
+    retry_count = 0
+  }
+}
