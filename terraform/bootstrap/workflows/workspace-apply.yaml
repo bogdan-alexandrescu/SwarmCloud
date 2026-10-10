@@ -1,0 +1,68 @@
+# swarm-workspace-apply: the workflow between an approval's Pub/Sub message and
+# one execution of the Cloud Run job of the same name (docs/workspaces.md §2.1,
+# option (ii), owner 2026-10-10; lane W4b of #847). Deployed by
+# terraform/bootstrap/workspace_dispatch.tf, run as swarm-workspace-dispatch.
+#
+# WHAT IT FORWARDS: the message's workspace_id and mode, each checked here, as
+# the execution's two container arguments -- and nothing else. No environment
+# variable, task count or timeout override, so swarm-api, the topic's only
+# granted publisher, can choose which workspace runs and nothing about how
+# (§2.4 R3). The job's entrypoint checks both values again
+# (images/workspace-apply/entry.py, scripts/workspace-apply.sh): neither check
+# alone is load-bearing. Any other field of the message (request_id) is
+# ignored; A1 reads the record itself.
+#
+# A message of any other shape fails this execution before the job is called.
+# Nothing retries it: the dispatch sweep sees the record as
+# dispatched_unclaimed after 10 minutes and publishes again (§2.2).
+#
+# PRIVACY: the workflow's call log level is LOG_NONE (workspace_dispatch.tf),
+# and nothing here calls sys.log, so the only values that reach a log are the
+# opaque workspace id and the mode, in the job's own audit entry (§2.6).
+#
+# The job's project and region are the workflow's own (Workflows' built-in
+# GOOGLE_CLOUD_PROJECT_ID and GOOGLE_CLOUD_LOCATION): the bootstrap creates both
+# in var.region, so no value reaches the call from the event.
+main:
+  params: [event]
+  steps:
+    - decode:
+        assign:
+          - message: ${json.decode(text.decode(base64.decode(event.data.message.data)))}
+    - require_object:
+        switch:
+          - condition: ${get_type(message) != "map"}
+            raise: "refused: the message is not a JSON object"
+    - read:
+        assign:
+          - workspace_id: ${map.get(message, "workspace_id")}
+          - mode: ${map.get(message, "mode")}
+    - check_workspace_id:
+        switch:
+          - condition: ${get_type(workspace_id) != "string"}
+            raise: "refused: workspace_id is not a string"
+          - condition: ${not(text.match_regex(workspace_id, "^w-[0-9a-f]{6}$"))}
+            raise: "refused: workspace_id is not w- and six hex digits"
+    - check_mode:
+        switch:
+          - condition: ${get_type(mode) != "string"}
+            raise: "refused: mode is not a string"
+          - condition: ${not(text.match_regex(mode, "^(create|limits)$"))}
+            raise: "refused: mode is not create or limits"
+    - run_job:
+        call: googleapis.run.v2.projects.locations.jobs.run
+        args:
+          name: ${"projects/" + sys.get_env("GOOGLE_CLOUD_PROJECT_ID") + "/locations/" + sys.get_env("GOOGLE_CLOUD_LOCATION") + "/jobs/swarm-workspace-apply"}
+          body:
+            overrides:
+              containerOverrides:
+                - args:
+                    - ${workspace_id}
+                    - ${mode}
+          # Ends once the execution has started: the job's minutes of work are
+          # its own, and the record is what reports them.
+          connector_params:
+            skip_polling: true
+        result: operation
+    - done:
+        return: "started"
