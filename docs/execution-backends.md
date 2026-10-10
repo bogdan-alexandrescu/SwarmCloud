@@ -13,7 +13,8 @@
 Two backends. Cloud Run Jobs runs almost everything; GKE Autopilot exists for
 the three things Cloud Run cannot do, and, since contract request 53
 (2026-10-08), for `claude-code`, the one thing Cloud Run did too slowly: start
-it (§4).
+it (§4). Since contract request 63 (2026-10-10) `indexer` runs there too, the
+canary for #939: a new Cloud Run instance's internet path opens too slowly.
 
 ---
 
@@ -67,6 +68,7 @@ backend.
 | `claude-code` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 53; its Cloud Run Jobs kept, idle, until 2026-10-15 as the rollback) | anthropic |
 | `codex` | `agent-runtime-base` | standard | Cloud Run Job | openai |
 | `browser` | `agent-runtime-browser` | browser | **GKE Autopilot** | anthropic |
+| `indexer` | `agent-runtime-indexer` | standard | **GKE Autopilot** (contract request 63, the canary for #939; its Cloud Run Jobs kept, idle, as the rollback) | anthropic |
 
 `Backend.AUTO` resolves to Cloud Run when the class fits within 8 vCPU / 32 GiB,
 and to Autopilot otherwise.
@@ -168,6 +170,15 @@ Reserved for:
    Rolling back while the fallback Jobs exist (until 2026-10-15,
    `cloud_run_fallback_profiles` in `terraform/infra/locals.tf`) is one line in
    `profiles.py`, the backend back to `CLOUD_RUN_JOB`, and a release.
+5. **`indexer`, for its internet path** (contract request 63, owner
+   2026-10-10, the canary for #939). A new Cloud Run instance's path to the
+   internet opens a median 20.2 s after start (n=19) against a GKE pod's
+   1.17 s (n=148), through the same Cloud NAT, and every index run starts by
+   cloning. It moves alone, first; the other Cloud Run profiles that reach
+   the internet (`merge`, `generic` with a repository) follow only after it is
+   measured with `scripts/egress-ready-report.sh`. It carries the same
+   node-side costs as `claude-code` above, and rolls back the same way: one
+   line in `profiles.py` while `cloud_run_fallback_profiles` keeps its Jobs.
 
 Every pod carries:
 
