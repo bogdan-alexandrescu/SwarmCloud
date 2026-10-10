@@ -217,7 +217,19 @@ jobs:
           while read -r name; do
             [ -n "${name}" ] || continue
             echo "cancelling swarm-verify execution ${name}"
-            gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet
+            # An execution can finish between the list above and this cancel;
+            # gcloud then answers "Failed to cancel" for one that is already
+            # done (run 38072148450, 2026-10-10: swarm-verify-zkzcx). A failed
+            # cancel is fine only if the execution is no longer running.
+            if ! gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet; then
+              running="$(gcloud run jobs executions describe "${name}" --region "${REGION}" --project "${PROJECT_ID}" \
+                --format 'value(status.runningCount)')"
+              if [ -n "${running}" ] && [ "${running}" != "0" ]; then
+                echo "::error::swarm-verify execution ${name} is still running (${running}) and would not cancel"
+                exit 1
+              fi
+              echo "${name} had already finished; nothing to cancel"
+            fi
             n=$((n + 1))
           done < running.txt
           echo "cancelled ${n} running swarm-verify execution(s)"
