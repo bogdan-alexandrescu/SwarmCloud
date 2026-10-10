@@ -283,6 +283,14 @@ CODECS: tuple[Codec, ...] = (
         decode=attempt_from_dict,
         required=("attempt_id", "task_id", "tenant_id", "created_at"),
         to_api=attempt_to_api,
+        api_omits={
+            # Contract request 51 (accepted 2026-10-09). The archive digests a
+            # retry binds its restore to (#347): read only by a later attempt
+            # of the same task, through Firestore. No API caller needs them,
+            # and the request keeps the response shape unchanged; showing them
+            # to an operator is a separate decision.
+            "checkpoint_sha256": "a worker-to-worker restore binding; contract request 51 does not serve it",
+        },
         # Contract request #26: the CPU reading's age, against the route's
         # own clock, computed from `cpu_measured_at`. And how many masks the
         # served `error` took (the PR #229 review).

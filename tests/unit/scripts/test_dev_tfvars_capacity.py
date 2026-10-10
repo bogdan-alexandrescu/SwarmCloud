@@ -88,6 +88,14 @@ LIVE_TENANTS = {
 #: only the names terraform derives, does not look at them.
 NOT_DERIVED_BY_TERRAFORM = {"provider:mock-provider", "provider:mock-provider:tenant:eng"}
 
+#: Live tenants that left dev.tfvars for a workspace record, and their pools.
+#: u-bogdan moved out of Terraform with lane W9 of #847 on 2026-10-09
+#: (terraform/infra/removed.tf forgets its documents; docs/workspaces.md
+#: §3.3): its tenant and pool documents stay live at the values above, but no
+#: tfvars key states them any more, so they are recorded and not compared.
+MOVED_TO_WORKSPACES = {"u-bogdan"}
+WORKSPACE_POOLS = {"tenant:u-bogdan", "provider:anthropic:tenant:u-bogdan"}
+
 
 def _strip_comments(text: str) -> str:
     return re.sub(r"(?m)#.*$", "", text)
@@ -192,7 +200,7 @@ def test_every_live_pool_terraform_derives_is_stated_at_its_live_value():
     drift = {
         name: {"live": live, "tfvars": derived.get(name)}
         for name, live in {**LIVE_POOLS, **PENDING_POOLS}.items()
-        if name not in NOT_DERIVED_BY_TERRAFORM and derived.get(name) != live
+        if name not in NOT_DERIVED_BY_TERRAFORM | WORKSPACE_POOLS and derived.get(name) != live
     }
     assert not drift, f"dev.tfvars disagrees with the live pools: {drift}"
 
@@ -203,10 +211,21 @@ def test_the_pools_tfvars_cannot_state_are_still_not_derived():
     assert not NOT_DERIVED_BY_TERRAFORM & set(_derived_pools())
 
 
+def test_a_workspace_s_pools_and_limits_are_not_terraform_s():
+    # W9: a person's workspace is never in dev.tfvars, so terraform derives
+    # none of its pools. Each of these is in LIVE_POOLS, so the set is not
+    # empty by accident.
+    _, tenants = _dev()
+    assert WORKSPACE_POOLS <= set(LIVE_POOLS)
+    assert not WORKSPACE_POOLS & set(_derived_pools())
+    assert not MOVED_TO_WORKSPACES & set(tenants)
+    assert MOVED_TO_WORKSPACES <= set(LIVE_TENANTS)
+
+
 def test_every_live_tenant_limit_is_stated_at_its_live_value():
     _, tenants = _dev()
     stated = {t: (cfg["max_active"], cfg["capacity_units"]) for t, cfg in tenants.items()}
-    assert stated == LIVE_TENANTS
+    assert stated == {t: v for t, v in LIVE_TENANTS.items() if t not in MOVED_TO_WORKSPACES}
 
 
 def test_the_doubled_provider_pools_still_satisfy_the_provider_tenant_floor():

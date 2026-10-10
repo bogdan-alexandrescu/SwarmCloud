@@ -145,3 +145,16 @@ def test_the_route_reads_the_persons_own_workspace_from_a_group_tenant(client, d
     body = client.get("/v1/onboarding", headers=auth_header("alice")).json()
     assert _step(body, "workspace")["evidence"]["workspace_id"] == "w-0a0a0a"
     assert _step(body, "claude_account")["state"] == "done"
+
+
+def test_an_approval_nothing_will_build_says_so_in_the_steps_evidence() -> None:
+    record = _record("approved", decision={"verdict": "approved", "at": T0 - timedelta(hours=3),
+                                           "by": "root@saga.xyz", "reason": None})
+    view = derive(CAROL, records=[], pair_docs=[], registrations=[], tenant_lists_git=False,
+                  now=T0, workspace=record, workspace_publishing=False)
+    evidence = _step(view, "workspace")["evidence"]
+    assert evidence["provisioning"] == {"available": False, "waiting_because": "publishing_off",
+                                        "approved_minutes_ago": 180}
+    assert evidence["request_id"] == "req-1"
+    # A caller that does not know the publisher sends no block, not a guess.
+    assert "provisioning" not in _step(_derive(workspace=record), "workspace")["evidence"]

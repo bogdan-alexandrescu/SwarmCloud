@@ -388,7 +388,7 @@ run "the_ci_fixer_is_bound_to_its_one_workflow_on_main" {
 # 2026-10-08, cuts A and C of the release timing report;
 # terraform/bootstrap/acceptance.tf). It starts verification executions and
 # reads release records, so every grant is held to that.
-run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_runs_only_verification" {
+run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_can_only_run_jobs" {
   command = plan
 
   module {
@@ -453,10 +453,27 @@ run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_runs_only_verifi
     error_message = "the only cancel permission is run.executions.cancel, on the runner role"
   }
 
-  # Execution is conditioned to the verification job and the worker jobs.
+  # The runner grant is project-wide and UNCONDITIONED (owner decision
+  # 2026-10-09, #965): Cloud Run exposes no resource.name to IAM Conditions, so
+  # the old job-name condition matched nothing. What bounds it is the role's
+  # permissions (the two asserts above: no create, update, delete or
+  # setIamPolicy, and run.executions.cancel the only cancel), so those are
+  # held here alongside the absent condition.
   assert {
-    condition     = length(google_project_iam_member.acceptance_runs_jobs[0].condition) == 1 && strcontains(google_project_iam_member.acceptance_runs_jobs[0].condition[0].expression, "/jobs/swarm-verify") && strcontains(google_project_iam_member.acceptance_runs_jobs[0].condition[0].expression, "startsWith(\"swarm-job-\")")
-    error_message = "running jobs must be conditioned to swarm-verify and swarm-job-*"
+    condition     = length(google_project_iam_member.acceptance_runs_jobs[0].condition) == 0
+    error_message = "the acceptance runner binding must carry no condition: Cloud Run cannot evaluate one, and a condition here denies every job (#965)"
+  }
+
+  assert {
+    condition     = google_project_iam_member.acceptance_runs_jobs[0].role == "projects/saga-agents-staging/roles/swarmAcceptanceRunner" && google_project_iam_custom_role.acceptance_runner[0].role_id == "swarmAcceptanceRunner"
+    error_message = "the unconditioned project grant must be swarmAcceptanceRunner and nothing broader"
+  }
+
+  # Cloud Logging and Cloud Storage DO evaluate resource.name, so those two
+  # grants keep their conditions.
+  assert {
+    condition     = length(google_project_iam_member.acceptance_reads_verify_logs[0].condition) == 1 && length(google_storage_bucket_iam_member.acceptance_reads_release_records[0].condition) == 1
+    error_message = "the log-view and releases/ grants must stay conditioned"
   }
 
   assert {

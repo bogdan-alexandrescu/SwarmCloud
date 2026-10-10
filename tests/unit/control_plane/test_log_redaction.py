@@ -595,7 +595,9 @@ def test_an_end_out_of_reach_is_an_orphan_and_the_key_stops_at_its_body_in_both_
     assert sum(len(line) + 1 for line in ordinary) > PEM_BLOCK_MAX_CHARS
     text = "\n".join([_pem_marker("BEGIN"), *body, *ordinary, _pem_marker("END"), "after"])
     python, shell = _both(text)
-    expected = "\n".join([_pem_marker("BEGIN") + MASK, *ordinary, _pem_marker("END"), "after"])
+    # The END is an orphan with nothing to take, and is still masked and
+    # counted: an END is a key's tail wherever it stands (#361 box 82).
+    expected = "\n".join([_pem_marker("BEGIN") + MASK, *ordinary, MASK + _pem_marker("END"), "after"])
     assert python == expected, python[:300]
     assert shell == expected, shell[:300]
 
