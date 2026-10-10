@@ -578,10 +578,19 @@ def test_docs_give_each_form_of_the_phrase_and_the_script_reads_each(run_check):
     section = _doc_section()
     block = section.split("```text\n", 1)[1].split("```", 1)[0]
     examples = [line.strip() for line in block.splitlines() if line.strip()]
-    assert len(examples) == 3, examples
+    assert len(examples) == 5, examples
     for example in examples:
-        proc, looked_up, _calls = run_check(_pull(example), [_issue(840, pull=True)])
-        assert proc.returncode == REFUSED and looked_up == [840], example
+        # The two cross-repository examples name `owner/repo`; file the open
+        # pull request under a real other repository so the read lands there.
+        if "owner/repo" in example:
+            body = example.replace("owner/repo", OTHER_REPO)
+            items = [_merged(840), _issue(840, pull=True, repo=OTHER_REPO)]
+            proc, _looked_up, calls = run_check(_pull(body), items)
+            assert proc.returncode == REFUSED, example
+            assert re.findall(r"^api repos/(\S+)/issues/(\d+)", calls, re.MULTILINE) == [(OTHER_REPO, "840")], example
+        else:
+            proc, looked_up, _calls = run_check(_pull(example), [_issue(840, pull=True)])
+            assert proc.returncode == REFUSED and looked_up == [840], example
     assert "scripts/check-pr-dependencies.sh" in section
     assert "Any case" in section
 
