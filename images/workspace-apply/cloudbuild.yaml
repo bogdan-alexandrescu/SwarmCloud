@@ -1,0 +1,90 @@
+# Checked-in build config for workspace-apply.
+#
+# It exists for the reason swarm-verify's does (images/swarm-verify/cloudbuild.yaml):
+# the image carries the job's code -- scripts/, kubernetes/ and one file of
+# terraform/ (images/workspace-apply/Dockerfile, "THE CODE IS COPIED IN") --
+# and the repository's .dockerignore excludes all three ON PURPOSE, so no
+# application image carries operational tooling. A generated config builds
+# from the repository root, where that exclusion applies, and every COPY of
+# those paths fails with "not found in build context".
+#
+# So this image assembles its own context instead of weakening the root rule,
+# in the repository's own layout, so the Dockerfile's COPY lines are the
+# repository paths that scripts/build-images.sh reads as this image's inputs.
+# tests/unit/scripts/test_build_images_pr_check.py runs the assembly below and
+# fails when the Dockerfile copies a path it does not put in the context.
+#
+# `find_recipe()` prefers images/<target>/cloudbuild.yaml over the Dockerfile,
+# so this file is what runs, on main and (push stripped) in a pull request's
+# `--build-only --local`. `build-images.sh` passes exactly `_IMAGE`, `_TAG` and
+# `_TARGET`; ALLOW_LOOSE covers the unused `_TARGET`.
+#
+# .github/CODEOWNERS names the owner on this file: what it copies is what the
+# image -- and so swarm-workspace-deployer -- runs.
+#
+# `$$` is a literal dollar for the shell; `${_VAR}` is a Cloud Build
+# substitution resolved before the shell ever sees it.
+
+# What a generated config is given (BUILD_TIMEOUT and BUILD_MACHINE in
+# scripts/build-images.sh): the gcloud base is large and the Dockerfile's
+# self-tests run gcloud, kubectl and render.py.
+timeout: 3600s
+
+steps:
+  - id: assemble-context
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        # A context containing ONLY what this image copies. Built under
+        # /workspace so the docker step below sees it, and deliberately NOT the
+        # repo root, which is where .dockerignore applies.
+        ctx=/workspace/workspace-apply-ctx
+        rm -rf "$${ctx}"
+        mkdir -p "$${ctx}/images/workspace-apply" "$${ctx}/scripts" \
+          "$${ctx}/apps/common" "$${ctx}/apps/quota-broker" "$${ctx}/apps/scheduler" \
+          "$${ctx}/terraform/modules/service_account_ids"
+        cp images/workspace-apply/Dockerfile "$${ctx}/Dockerfile"
+        cp images/workspace-apply/entry.py "$${ctx}/images/workspace-apply/entry.py"
+        cp scripts/workspace-apply.sh scripts/register-tenant.sh "$${ctx}/scripts/"
+        cp -R scripts/lib "$${ctx}/scripts/lib"
+        cp -R kubernetes "$${ctx}/kubernetes"
+        cp -R apps/common/swarm_common "$${ctx}/apps/common/swarm_common"
+        cp -R apps/quota-broker/quota_broker "$${ctx}/apps/quota-broker/quota_broker"
+        cp -R apps/scheduler/scheduler "$${ctx}/apps/scheduler/scheduler"
+        cp terraform/modules/service_account_ids/main.tf "$${ctx}/terraform/modules/service_account_ids/main.tf"
+        # Fail here, loudly, rather than in a COPY halfway through the build.
+        test -f "$${ctx}/images/workspace-apply/entry.py"
+        test -x "$${ctx}/scripts/workspace-apply.sh"
+        test -x "$${ctx}/scripts/register-tenant.sh"
+        test -x "$${ctx}/scripts/lib/workspace-guard.sh"
+        test -f "$${ctx}/scripts/lib/common.sh"
+        test -x "$${ctx}/kubernetes/apply.sh"
+        test -f "$${ctx}/kubernetes/render.py"
+        test -f "$${ctx}/terraform/modules/service_account_ids/main.tf"
+
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    # BuildKit, as the Dockerfile's `# syntax=` line and a pull request's
+    # buildx replay of this step both assume.
+    env:
+      - DOCKER_BUILDKIT=1
+    args:
+      - build
+      - --platform
+      - linux/amd64
+      - -t
+      - ${_IMAGE}:${_TAG}
+      - /workspace/workspace-apply-ctx
+
+images:
+  - ${_IMAGE}:${_TAG}
+
+options:
+  machineType: E2_HIGHCPU_8
+  logging: CLOUD_LOGGING_ONLY
+  # build-images.sh passes _TARGET to every recipe uniformly; this template has
+  # no use for it, and without this Cloud Build refuses the submit.
+  substitution_option: ALLOW_LOOSE

@@ -246,10 +246,12 @@ def test_the_list_carries_every_pattern_the_old_filter_did():
     stages both lanes run (2026-10-08, observer proposal H), which run only on
     main and are read by test_hotfix_release.py, plus accept.yml (2026-10-08,
     release timing cuts A and C), which runs only after a release completes on
-    main and is read by test_release_acceptance_job.py. MUTATION: drop any one."""
+    main and is read by test_release_acceptance_job.py, plus
+    terraform/modules/service_account_ids/main.tf (2026-10-10), which the
+    workspace-apply image copies in. MUTATION: drop any one."""
     assert set(app_paths()) == {
         "apps/**", "images/**", "kubernetes/**", "scripts/**", "tests/**", "docs/**",
-        "terraform/modules/monitoring/alerts.tf", "plugin/**", ".claude-plugin/**",
+        "terraform/modules/monitoring/alerts.tf", "terraform/modules/service_account_ids/main.tf", "plugin/**", ".claude-plugin/**",
         "pyproject.toml", "uv.lock", "Makefile", "README.md", "CLAUDE.md", "CONTRACT.md",
         ".github/workflows/application.yml", ".github/workflows/release.yml",
         ".github/ISSUE_TEMPLATE/**", ".github/labels.yml", ".github/workflows/iam-refusal-probe.yml",
