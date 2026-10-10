@@ -66,7 +66,9 @@ run "the_claude_code_job_runs_the_pinned_model" {
   }
 
   # indexer is claude-code on the indexer image (contract request 48), so an
-  # index run keeps claude-code's model.
+  # index run keeps claude-code's model. Both now run on GKE Autopilot
+  # (contract requests 53 and 62); these are their rollback Jobs, which must
+  # run the same model the pods do.
   assert {
     condition     = output.job_models["swarm-job-eng-indexer"] == output.job_models["swarm-job-eng-claude-code"]
     error_message = "the indexer Job must run claude-code's model: it is claude-code on another image"
@@ -76,7 +78,7 @@ run "the_claude_code_job_runs_the_pinned_model" {
   # is a statement about seven Jobs and not about an empty map.
   assert {
     condition     = length(output.job_models) == length(output.job_names) && length(output.job_names) == 7
-    error_message = "job_models must have one entry per Job: 5 Cloud-Run profiles for eng (indexer included) plus 2 credential-free ones for smoke"
+    error_message = "job_models must have one entry per Job: 5 Cloud Run Jobs for eng (claude-code's and indexer's rollback Jobs included) plus 2 credential-free ones for smoke"
   }
 
   # codex is an OpenAI CLI, where an Anthropic model name would fail every run;
@@ -98,6 +100,6 @@ run "the_scheduler_hands_the_same_model_to_the_jobs_it_creates" {
 
   assert {
     condition     = length(output.worker_models) == 3 && output.worker_models["claude-code"] == "claude-opus-5-5" && output.worker_models["claude-code-review"] == "claude-opus-5-5" && output.worker_models["indexer"] == "claude-opus-5-5"
-    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's and indexer's (the same: claude-code under its own account, #295; on the indexer image, contract request 48). claude-code runs on GKE Autopilot (contract request 53), so WORKER_MODELS is the only way its MODEL reaches a pod"
+    error_message = "WORKER_MODELS must carry exactly the claude-code model, and claude-code-review's and indexer's (the same: claude-code under its own account, #295; on the indexer image, contract request 48). claude-code and indexer run on GKE Autopilot (contract requests 53 and 62), so WORKER_MODELS is the only way their MODEL reaches a pod"
   }
 }

@@ -168,23 +168,27 @@ fails when a profile's backend moves and this table does not.
 | `browser` | `GKE_AUTOPILOT` | none: Chromium needs the `/dev/shm` GKE gives it |
 | `mock` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
 | `generic` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
+| `indexer` | `GKE_AUTOPILOT` | none used: since contract request 62 (2026-10-10, the canary for #939); each tenant's old Job (one per tenant that registers `anthropic`) is kept idle as the rollback |
 | `merge` | `CLOUD_RUN_JOB` | one per tenant that registers `git` (contract request 47); every MERGE verdict pays a Cloud Run start (#748) |
-| `indexer` | `CLOUD_RUN_JOB` | one per tenant that registers `anthropic` (contract request 48) |
 | `codex` | `CLOUD_RUN_JOB` | one per tenant that registers `openai`; the profile is disabled (`available=False`) |
 | `post-verdict` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); disabled |
 | `claude-code-review` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); retired |
 
-So `mock`, `generic`, `merge`, `indexer` and `codex` are the profiles still
-started on Cloud Run. `scripts/warm-jobs.sh` warms every per-tenant worker Job
-it lists: theirs, and the idle claude-code Jobs until they are removed.
+So `mock`, `generic`, `merge` and `codex` are the profiles still started on
+Cloud Run. `scripts/warm-jobs.sh` warms every per-tenant worker Job it lists:
+theirs, and the idle claude-code and indexer Jobs until they are removed.
 
 ## The `indexer` profile (contract request 48)
 
 Accepted by the owner 2026-10-05. `indexer` was `claude-code` in every field
 but its name and its image: the same runner, resource class, backend,
-timeouts, provider, secrets and inputs. Since contract request 53 moved
-`claude-code` to GKE Autopilot (2026-10-08) the backend differs too: `indexer`
-stays on `CLOUD_RUN_JOB`. swarm-api submits index runs as
+timeouts, provider, secrets and inputs. Contract request 53 moved
+`claude-code` to GKE Autopilot (2026-10-08); contract request 62 (owner,
+2026-10-10) moved `indexer` after it, as the canary for #939: a new Cloud Run
+instance's internet path opens a median 20.2 s after start against GKE's
+1.17 s, through the same NAT, and every index run clones. Its tenants' Cloud
+Run Jobs stay, idle, as the rollback (`cloud_run_fallback_profiles` in
+`terraform/infra/locals.tf`). swarm-api submits index runs as
 `indexer` (`swarm_api.repoindex.INDEXER_PROFILE`), so an index run finds
 `swarm-repo-index`, runs the LSP pass and writes the graph. Terraform mirrors
 it (`terraform/infra/locals.tf`), which puts `agent-runtime-indexer` in
