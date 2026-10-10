@@ -57,6 +57,69 @@ run "the_metric_counts_spec_signature_refusals_from_both_backends" {
   }
 }
 
+# #346 box 51 (#354 security review): the agent runs beside the worker as the
+# same uid, and tini -- PID 1, whose stdout and stderr ARE the container's --
+# stays dumpable, so an agent can write a JSON line to /proc/1/fd/1 that
+# carries this message, this end cause and any `labels.tenant_id` it likes.
+# Nothing in a jsonPayload is the worker's alone. What the container cannot
+# set is the log entry's monitored resource, which the platform fills in: the
+# Cloud Run Job, or the GKE cluster, namespace and container. So the metric
+# counts only lines from a worker container, and names the tenant from the
+# resource, never from the payload.
+run "only_a_worker_container_counts_and_the_resource_names_the_tenant" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/monitoring"
+  }
+
+  # Both refusal metrics: the upstream half is read from the same stdout.
+  assert {
+    condition = alltrue(flatten([
+      for f in [
+        google_logging_metric.spec_signature_invalid.filter,
+        google_logging_metric.spec_upstream_invalid.filter,
+        ] : [
+        strcontains(f, "(resource.type=\"cloud_run_job\" AND resource.labels.job_name=~\"^swarm-job-\")"),
+        strcontains(f, "(resource.type=\"k8s_container\" AND resource.labels.cluster_name=\"swarm-autopilot\" AND resource.labels.container_name=\"worker\")"),
+        !strcontains(f, "resource.type=(\"cloud_run_job\" OR \"k8s_container\")"),
+      ]
+    ]))
+    error_message = "a spec refusal counts only from a worker's Cloud Run Job (swarm-job-*) or the worker container in this platform's own GKE cluster -- never any job or pod in the shared project, the other team's agents-staging cluster included"
+  }
+
+  # Every label the alert groups by comes from the monitored resource or a
+  # bounded payload field; none says which tenant from the payload.
+  assert {
+    condition = alltrue(flatten([
+      for m in [google_logging_metric.spec_signature_invalid, google_logging_metric.spec_upstream_invalid] : [
+        m.label_extractors["tenant_id"] == "REGEXP_EXTRACT(resource.labels.namespace_name, \"^swarm-tenant-(.+)$\")",
+        m.label_extractors["job_name"] == "EXTRACT(resource.labels.job_name)",
+        length([for k, v in m.label_extractors : k if strcontains(v, "jsonPayload.labels")]) == 0,
+      ]
+    ]))
+    error_message = "a spec refusal's tenant must come from its GKE namespace or its Cloud Run Job's name, which the platform sets, never from jsonPayload.labels, which an agent can write"
+  }
+
+  assert {
+    condition = alltrue(flatten([
+      for m in [google_logging_metric.spec_signature_invalid, google_logging_metric.spec_upstream_invalid] : [
+        contains([for l in m.metric_descriptor[0].labels : l.key], "job_name"),
+        contains([for l in m.metric_descriptor[0].labels : l.key], "tenant_id"),
+      ]
+    ]))
+    error_message = "both refusal metrics must declare job_name beside tenant_id (kept: a log-based metric's label is never removed)"
+  }
+
+  assert {
+    condition = alltrue([
+      for c in google_monitoring_alert_policy.spec_signature_invalid[0].conditions :
+      contains(c.condition_threshold[0].aggregations[0].group_by_fields, "metric.label.job_name")
+    ])
+    error_message = "the page must say which Cloud Run Job refused; on that backend the namespace-derived tenant_id is empty"
+  }
+}
+
 run "one_refusal_is_enough_to_alert" {
   command = plan
 
