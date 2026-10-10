@@ -442,6 +442,10 @@ _DEVELOPER_STATE = frozenset(
         "sc.cmd_access_revoke",
         "sc.cmd_access_verify",
         "sc.cmd_access_disconnect",
+        # #780 step 5: storing a fallback token reads a credential from stdin,
+        # and an install request records that the person asked an org.
+        "sc.cmd_setup_token",
+        "sc.cmd_access_request_install",
     }
 )
 

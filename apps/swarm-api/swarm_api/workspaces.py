@@ -213,6 +213,28 @@ _STATE_PHRASE: Mapping[str, str] = {
     NEEDS_OWNER: "is waiting for the platform owner's review",
 }
 
+#: `held` on a `requested` record an admin asked for whose personal tenant
+#: predates the workspace job (§1.3, §3.3): it is not approved automatically,
+#: and never published, because the apply's squat check would fail
+#: IDENTITY_NOT_OURS on the identity Terraform made. Lane W9 moves it.
+HELD_MIGRATING = "migrating"
+
+
+class MigrationHold(Exception):
+    """Raised by an automatic approval (`People._approve_in`, `auto=True`) on
+    a record whose tenant predates the workspace job. Internal, never served:
+    `request` turns it into `held`, and the request still succeeds. It is not
+    an `ApiError`, because a hold is not a refusal (refusals.py)."""
+
+MIGRATING_COPY = (
+    "Your workspace already exists from before self-service setup and is being migrated "
+    "into it by the platform owner. Nothing needs doing on your side; it shows as ready "
+    "once the migration is done.")
+
+_HELD_PHRASE: Mapping[str, str] = {
+    HELD_MIGRATING: "is being migrated by the platform owner",
+}
+
 #: The action every WORKSPACE_NOT_READY message ends on (the owner's words in
 #: #847: "finish setup — create your workspace").
 FINISH_SETUP = "Finish setup: create your workspace."
@@ -300,6 +322,8 @@ def not_ready_message(record: Mapping[str, Any] | None) -> str:
     elif state == FAILED:
         phrase = "could not be created: " + failure_copy(
             (record or {}).get("failure"), (record or {}).get("request_id"))
+    elif state == REQUESTED and (record or {}).get("held") in _HELD_PHRASE:
+        phrase = _HELD_PHRASE[(record or {})["held"]]
     else:
         phrase = _STATE_PHRASE.get(state, _STATE_PHRASE[NONE])
     if state == FAILED:
@@ -323,18 +347,118 @@ def request_again_at(record: Mapping[str, Any] | None) -> datetime | None:
     return at + REREQUEST_WAIT if isinstance(at, datetime) else None
 
 
-def view(record: Mapping[str, Any] | None, *, console_url: str = "") -> dict[str, Any]:
+# --------------------------------------------------------------------------
+# an approved record nobody is advancing (the 2026-10-09 incident, w-752763)
+# --------------------------------------------------------------------------
+
+#: Why an `approved` record is not moving. The three values are the shared
+#: contract with the WS-WIRE lane's alert on `jsonPayload.event =
+#: "workspace_stuck"`: rename one and that alert stops matching it.
+#:
+#:   publishing_off        this deployment publishes nothing
+#:                         (WORKSPACE_APPLY_PUBLISH off, so People holds a
+#:                         `NullWorkspacePublisher`): no build will ever come;
+#:   never_dispatched      publishing is on, yet nothing was attempted for this
+#:                         request NEVER_DISPATCHED_AFTER after the approval;
+#:   dispatched_unclaimed  the first attempt for this request is
+#:                         UNCLAIMED_AFTER old and no build has claimed it.
+STUCK_PUBLISHING_OFF = "publishing_off"
+STUCK_NEVER_DISPATCHED = "never_dispatched"
+STUCK_DISPATCHED_UNCLAIMED = "dispatched_unclaimed"
+#: 15 minutes: the approval publishes at once and the sweep (every 10 minutes)
+#: again, so a record with no attempt after 15 has missed both.
+NEVER_DISPATCHED_AFTER = timedelta(minutes=15)
+#: 30 minutes from the FIRST attempt for this request, not the last: the
+#: sweep re-publishes every 10 minutes, so "the last attempt is 30 minutes
+#: old" never comes true while it runs, which is exactly when a build that
+#: never claims anything has to be noticed.
+UNCLAIMED_AFTER = timedelta(minutes=30)
+
+
+def approved_at(record: Mapping[str, Any] | None) -> datetime | None:
+    """When the record last became `approved`: the later of the admin's
+    approval and a retry, else (a record written by hand) its request."""
+    record = record or {}
+    decision = record.get("decision") or {}
+    at = decision.get("at") if decision.get("verdict") == APPROVED else None
+    seen = [v for v in (at, (record.get("retry") or {}).get("at")) if isinstance(v, datetime)]
+    if seen:
+        return max(seen)
+    requested = record.get("requested_at")
+    return requested if isinstance(requested, datetime) else None
+
+
+def first_dispatched_at(record: Mapping[str, Any] | None) -> datetime | None:
+    """The first dispatch attempt for the record's CURRENT request, or None.
+    An attempt recorded for an earlier request id (before a retry) is not
+    one; a `dispatch` written before it carried a request id counts by its
+    own first (or last) attempt."""
+    record = record or {}
+    dispatch = record.get("dispatch") or {}
+    if not dispatch:
+        return None
+    if "request_id" in dispatch and dispatch.get("request_id") != record.get("request_id"):
+        return None
+    at = dispatch.get("first_attempt_at") or dispatch.get("last_attempt_at")
+    return at if isinstance(at, datetime) else None
+
+
+def waiting_because(record: Mapping[str, Any] | None, *, publishing: bool,
+                    now: datetime) -> str | None:
+    """The stuck rule. None unless the record is `approved` and either
+    publishing is off, or no attempt was made NEVER_DISPATCHED_AFTER after the
+    approval, or the first attempt is UNCLAIMED_AFTER old (the state is still
+    `approved`, so no build claimed it). A record approved a minute ago is
+    not stuck: it is being sent."""
+    if state_of(record) != APPROVED:
+        return None
+    if not publishing:
+        return STUCK_PUBLISHING_OFF
+    first = first_dispatched_at(record)
+    if first is None:
+        since = approved_at(record)
+        if since is not None and now - since > NEVER_DISPATCHED_AFTER:
+            return STUCK_NEVER_DISPATCHED
+        return None
+    if now - first > UNCLAIMED_AFTER:
+        return STUCK_DISPATCHED_UNCLAIMED
+    return None
+
+
+def provisioning(record: Mapping[str, Any] | None, *, publishing: bool,
+                 now: datetime) -> dict[str, Any]:
+    """The `provisioning` block of a view, computed on read: whether this
+    deployment builds workspaces at all, why an approved record is waiting
+    (None when it is not), and how long ago it was approved (None when it is
+    not approved). No secret, email or tenant id."""
+    since = approved_at(record) if state_of(record) == APPROVED else None
+    return {
+        "available": bool(publishing),
+        "waiting_because": waiting_because(record, publishing=publishing, now=now),
+        "approved_minutes_ago": None if since is None
+        else max(0, int((now - since).total_seconds() // 60)),
+    }
+
+
+def view(record: Mapping[str, Any] | None, *, console_url: str = "",
+         publishing: bool | None = None, now: datetime | None = None) -> dict[str, Any]:
     """What a person is shown of their OWN record (`GET /v1/workspace`).
 
     Never the principal and never `decision.by`: the first the caller
     already knows, the second is an admin's address, which never leaves
-    Firestore. The failure's copy is served from its code (§4.3)."""
+    Firestore. The failure's copy is served from its code (§4.3).
+
+    `publishing` is the deployment's publisher's `enabled`; given (with
+    `now`), the view carries the `provisioning` block, so an approved record
+    that nothing will advance says so instead of reading as in progress."""
     state = state_of(record)
     out: dict[str, Any] = {
         "state": state,
         "setup_url": setup_url(console_url, "workspace"),
         "setup_command": SETUP_COMMAND,
     }
+    if publishing is not None and now is not None:
+        out["provisioning"] = provisioning(record, publishing=publishing, now=now)
     if record is None:
         return out
     decision = record.get("decision") or None
@@ -350,7 +474,11 @@ def view(record: Mapping[str, Any] | None, *, console_url: str = "") -> dict[str
             "verdict": decision.get("verdict"),
             "reason": decision.get("reason"),
             "at": _iso(decision.get("at")),
+            # True when nobody clicked: the requester is an admin (§1.3).
+            "auto": decision.get("auto") is True,
         },
+        "held": {"reason": HELD_MIGRATING, "copy": MIGRATING_COPY}
+        if state == REQUESTED and record.get("held") == HELD_MIGRATING else None,
         "limits": dict(record.get("limits") or {}),
         "steps": {k: {**v, "at": _iso(v.get("at"))} if isinstance(v, dict) else v
                   for k, v in (record.get("steps") or {}).items()},
@@ -494,17 +622,42 @@ class Workspaces:
 
     # -- the request (§1.3) ----------------------------------------------------
 
-    def request(self, *, tenant_id: str, principal: str, via: str) -> tuple[int, dict[str, Any]]:
+    def request(
+        self,
+        *,
+        tenant_id: str,
+        principal: str,
+        via: str,
+        approve: Callable[[Any, dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> tuple[int, dict[str, Any]]:
         """One Firestore transaction: read the record, then create, re-open or
         answer it. Returns (HTTP status, the record as stored).
 
         The caller has already been checked as a human in an allowed domain,
-        not a secret admin, and owning `tenant_id` (`routes.workspaces`)."""
+        not a secret admin, and owning `tenant_id` (`routes.workspaces`).
+
+        `approve` is given for an admin's own request (§1.3, owner decision
+        2026-10-09): `People.request_own` passes `People._approve_in`, the
+        approval the admin route makes, and it runs here, inside this
+        transaction, on the record as it stands `requested`. It writes its
+        audit entry and returns the record's patch, which is written with the
+        request in one write; a `MigrationHold` from it leaves the record
+        `requested` and `held` instead (§3.3)."""
         if via not in VIAS:
             raise ValueError(f"via must be one of {VIAS}")
         ref = self._db.collection(WORKSPACES).document(tenant_id)
         now = self._now()
         transaction = self._db.transaction()
+
+        def _decide(txn: Any, record: dict[str, Any]) -> dict[str, Any]:
+            """The patch an automatic approval adds to a `requested` record,
+            or the hold; nothing for a request no approval goes with."""
+            if approve is None:
+                return {}
+            try:
+                return approve(txn, record)
+            except MigrationHold:
+                return {"held": HELD_MIGRATING}
 
         @firestore.transactional
         def _apply(txn: Any) -> tuple[int, dict[str, Any]]:
@@ -515,9 +668,20 @@ class Workspaces:
                 id_ref = self._draw_id(txn)
                 record = self._new_record(tenant_id=tenant_id, workspace_id=id_ref.id,
                                           principal=principal, now=now, via=via)
+                # Every read (the approval's included) before the first write.
+                record.update(_decide(txn, record))
                 txn.set(id_ref, {"tenant_id": tenant_id})
                 txn.set(ref, record)
                 return 202, record
+            if state == REQUESTED and approve is not None:
+                patch = {k: v for k, v in _decide(txn, data).items() if data.get(k) != v}
+                if patch:
+                    txn.update(ref, patch)
+                    # Approving a standing request is this call's doing; a
+                    # hold recorded on it is not a new request.
+                    status = 202 if patch.get("state") == APPROVED else 200
+                    return status, {**data, **patch}
+                return 200, data
             if state in UNCHANGED_ON_REQUEST:
                 return 200, data
             if state == DENIED:
@@ -540,6 +704,7 @@ class Workspaces:
                     "decision": None,
                     "history": [*(data.get("history") or []), previous],
                 }
+                patch.update(_decide(txn, {**data, **patch}))
                 txn.update(ref, patch)
                 return 202, {**data, **patch}
             if state == FAILED:

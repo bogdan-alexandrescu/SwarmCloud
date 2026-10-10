@@ -177,6 +177,50 @@ variable "forge_refresh_schedule" {
   default     = "*/15 * * * *"
 }
 
+variable "schedule_tick_schedule" {
+  description = <<-EOT
+    How often POST /v1/admin/schedules/tick runs (docs/schedules.md §2.1).
+
+    Every minute, the design's figure, and not a tuning knob: a schedule's slot
+    is a Unix minute, the per-tenant cap of 5 firings per tick defers the rest
+    to "the next minute" (§2.10), and a firing whose work failed to be created
+    is finished by "the next tick" after 2 minutes (§2.2). A slower tick makes
+    every one of those promises late by the difference. An idle tick reads one
+    page of an index and writes one schedule_ticks document.
+  EOT
+  type        = string
+  default     = "* * * * *"
+}
+
+variable "enable_workspace_sweep" {
+  description = "Create swarm-workspace-sweep, the 10-minute caller of swarm-api's personal-workspace dispatch sweep (docs/workspaces.md §2.2). A bool, not derived from api_endpoint, for enable_task_finished_push's reason. The root sets it to true in every environment: the sweep is also the stuck-workspace detector."
+  type        = bool
+  default     = false
+}
+
+variable "workspace_sweep_path" {
+  description = "swarm-api's personal-workspace dispatch sweep (docs/workspaces.md §2.2), which the workspace_sweep job POSTs."
+  type        = string
+  default     = "/v1/admin/workspaces/sweep"
+
+  validation {
+    condition     = startswith(var.workspace_sweep_path, "/v1/admin/")
+    error_message = "the workspace sweep is an admin route under /v1/admin/, which swarm-api admits the rollup-sweeper account to by name."
+  }
+}
+
+variable "workspace_sweep_schedule" {
+  description = <<-EOT
+    How often the personal-workspace dispatch sweep runs. Every 10 minutes:
+    the sweep calls a record stuck after 15 minutes with no dispatch attempt
+    and 30 with one nobody claimed, and the workspace-stuck alert looks back
+    30 minutes, so a 10-minute tick puts at least two sweeps inside each of
+    those windows. Each tick reads the approved records only.
+  EOT
+  type        = string
+  default     = "*/10 * * * *"
+}
+
 variable "workflow_rollup_schedule" {
   description = <<-EOT
     How often each tenant's stored workflow states are converged.

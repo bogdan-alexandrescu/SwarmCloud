@@ -13,7 +13,9 @@ with a record:
               together, and, for a ready workspace, a `limits` run
     loan      lend or reclaim a pool account: only one owned by a group tenant
               or by the acting admin's own personal tenant
-    sweep     publish again an `approved` record nobody claimed in 10 minutes
+    sweep     publish again an `approved` record nobody claimed in 10 minutes,
+              and report every `approved` record nothing is advancing
+              (`workspace_stuck`), even when publishing is off
 
 THE RECORD IS ADDRESSED BY WORKSPACE ID, through `workspace_ids/{w-...}`, so a
 URL, a proxy log or a screenshot of the address bar names nobody. Every log
@@ -31,9 +33,22 @@ failure therefore writes no audit entry for a change that did not happen.
 swarm-api NEVER WRITES `ready`. Nothing here does: the job's final check is
 the only writer (§1.2).
 
-A SELF-APPROVAL IS ALLOWED AND AUDITED (owner, 2026-10-08): the call guard
-bounds what any approval can create, so it creates nothing another admin's
-would not, and the entry's `detail.self_approval` says it happened.
+AN ADMIN'S OWN REQUEST IS APPROVED AUTOMATICALLY (owner, 2026-10-09; this
+replaces 2026-10-08's "an admin may approve their own request, by hand").
+`request_own` runs `_approve_in` -- the approval `approve` makes, not a copy
+of it -- inside the request's own transaction, and then the same publish. The
+decision says `auto: true`, and the audit entry is
+`approve_own_workspace_auto`. The call guard bounds what any approval can
+create, so an automatic one creates nothing an admin's click would not.
+
+A TENANT THAT PREDATES THE WORKSPACE JOB IS NEVER APPROVED HERE (§3.3).
+`u-bogdan`'s identity was made by Terraform, whose tenant document carries
+`managed_by = swarm-terraform`, and lane W9 migrates it into a record with
+`migrated = true`. Either holds an admin's own request `requested`
+(`ws.MigrationHold`, not a refusal), so nothing is published that the apply's
+squat check would fail with IDENTITY_NOT_OURS. A manual approval of it is
+refused `WORKSPACE_MIGRATING` through `refusals.refuse`: a new refusal, so it
+ships report-only until its switch is on (refusals.py).
 """
 
 from __future__ import annotations
@@ -49,11 +64,13 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
 
+from . import refusals
 from . import workspaces as ws
 from .admins import AUDIT_COLLECTION
-from .errors import Conflict, NotFound, ValidationFailed
+from .errors import Conflict, NotFound, ValidationFailed, WorkspaceMigrating
 from .gittokens import COLLECTION as GIT_TOKENS
 from .publish_workspace import MODE_CREATE, MODE_LIMITS, WorkspacePublisher
+from .store import TENANTS
 
 log = logging.getLogger(__name__)
 
@@ -64,6 +81,26 @@ DISPATCH_EVERY = timedelta(minutes=10)
 #: Records one sweep call publishes at most. The tick runs every 5 minutes; a
 #: backlog larger than this clears over a few ticks rather than one long call.
 SWEEP_LIMIT = 50
+#: A stuck record is reported at most once per this, through the record's
+#: `stuck_reported_at`. An hour: the sweep runs every 10 minutes, and an alert
+#: fed six identical entries an hour per record is one nobody reads twice.
+STUCK_REPORT_EVERY = timedelta(hours=1)
+#: The `jsonPayload.event` of the report, the contract with the WS-WIRE
+#: lane's log-based alert. Its other fields are workspace_id, reason,
+#: approved_at and minutes_waiting; never an email or a tenant id.
+STUCK_EVENT = "workspace_stuck"
+
+#: What `approve` and `retry` say, so an admin is never told a workspace is
+#: being built when nothing will build it (the 2026-10-09 incident, w-752763).
+NOT_SENT_PUBLISHING_OFF = (
+    "Approved, and NOT sent for building: workspace provisioning is off in this "
+    "deployment (WORKSPACE_APPLY_PUBLISH). The approval is kept and the record waits "
+    "as approved; it is sent by the first sweep after provisioning is switched on "
+    "(docs/workspaces.md §10).")
+NOT_SENT_PUBLISH_FAILED = (
+    "Approved, but the build could not be sent yet. The approval is kept and the "
+    "dispatch sweep sends it again within 10 minutes.")
+SENT = "Approved and sent for building."
 
 #: §1.3: a denial's reason is required, and at most 500 characters.
 MAX_REASON = 500
@@ -89,6 +126,17 @@ AUDIT_SHOWN = 50
 APPROVABLE = frozenset({ws.REQUESTED, ws.DENIED})
 DENIABLE = frozenset({ws.REQUESTED, ws.FAILED})
 RETRYABLE = frozenset({ws.FAILED, ws.NEEDS_OWNER})
+
+#: The value Terraform writes in `managed_by` on every tenant document it owns
+#: (terraform/modules/firestore/bootstrap.tf). `ensure_tenant` and the
+#: workspace job (A8) never write it, so on a personal tenant it means the
+#: identity behind it predates the workspace job (§3.3).
+TERRAFORM_MANAGED = "swarm-terraform"
+
+#: The automatic approval of an admin's own request (§1.3): its audit action
+#: and the reason its decision carries, which the person is shown.
+AUTO_APPROVE_ACTION = "approve_own_workspace_auto"
+AUTO_APPROVE_REASON = "requester is an admin"
 
 #: The loan request's state once an admin has lent an account against it.
 LOAN_LENT = "lent"
@@ -197,6 +245,64 @@ class People:
 
     # -- approve, deny, retry ----------------------------------------------------
 
+    def _predates_workspaces(self, txn: Any, record: Mapping[str, Any]) -> bool:
+        """Whether the person's tenant was made outside the workspace job
+        (§3.3): the record says `migrated`, or the tenant document is
+        Terraform's. Read inside `txn`, before any of its writes."""
+        if record.get("migrated") is True:
+            return True
+        tenant_id = str(record.get("tenant_id") or "")
+        if not tenant_id:
+            return False
+        snap = _snapshot(txn.get(self._db.collection(TENANTS).document(tenant_id)))
+        return snap.exists and (snap.to_dict() or {}).get("managed_by") == TERRAFORM_MANAGED
+
+    def _approve_in(self, txn: Any, record: Mapping[str, Any], *, by: str,
+                    auto: bool = False) -> dict[str, Any]:
+        """THE APPROVAL, for an admin's click and for an admin's own request
+        alike: the state check, the migration check, the decision and its
+        audit entry, inside `txn`. Returns the record's patch; the caller
+        writes it, with whatever else its transaction changes, so the record
+        is written once. Nothing here creates a task or a lease (invariant 1):
+        an approval is a record and, after it, one message."""
+        workspace_id = str(record.get("workspace_id") or "")
+        state = ws.state_of(record)
+        if state not in APPROVABLE:
+            raise WorkspaceWrongState(
+                f"workspace {workspace_id} is {state}; only a requested or denied "
+                "workspace can be approved",
+                detail={"workspace_id": workspace_id, "state": state})
+        if self._predates_workspaces(txn, record):
+            if auto:
+                raise ws.MigrationHold(workspace_id)
+            # Report-only until REFUSAL_WORKSPACE_MIGRATING=on: past this
+            # call the admin's approval goes through.
+            refusals.refuse(WorkspaceMigrating(
+                f"workspace {workspace_id} predates self-service setup and is migrated by "
+                "the platform owner (docs/workspaces.md §3.3), not approved: its identity "
+                "was made by Terraform, so the setup job would refuse it. Nothing was "
+                "changed and nothing was started.",
+                detail={"workspace_id": workspace_id, "state": state}))
+        patch: dict[str, Any] = {
+            "state": ws.APPROVED,
+            "decision": {"by": by, "at": self._now(), "verdict": ws.APPROVED,
+                         "reason": AUTO_APPROVE_REASON if auto else None, "auto": auto},
+        }
+        if state == ws.DENIED:
+            # The earlier denial stays where the admin can read it.
+            patch["history"] = [*(record.get("history") or []), {
+                "request_id": record.get("request_id"),
+                "requested_at": record.get("requested_at"),
+                "decision": record.get("decision"),
+            }]
+        self._audit(txn, AUTO_APPROVE_ACTION if auto else "approve", workspace_id, by, {
+            "self_approval": (record.get("principal") or "").strip().lower() == by,
+            "auto": auto,
+            "from_state": state,
+            "request_id": record.get("request_id"),
+        })
+        return patch
+
     def approve(self, workspace_id: str, *, by: str) -> dict[str, Any]:
         """requested (or denied) -> approved, with the decision and its audit
         in one transaction; then the publish (§2.1)."""
@@ -206,36 +312,34 @@ class People:
         @firestore.transactional
         def _apply(txn: Any) -> dict[str, Any]:
             ref, record = self._resolve(txn, workspace_id)
-            state = ws.state_of(record)
-            if state not in APPROVABLE:
-                raise WorkspaceWrongState(
-                    f"workspace {workspace_id} is {state}; only a requested or denied "
-                    "workspace can be approved",
-                    detail={"workspace_id": workspace_id, "state": state})
-            now = self._now()
-            patch: dict[str, Any] = {
-                "state": ws.APPROVED,
-                "decision": {"by": by, "at": now, "verdict": ws.APPROVED, "reason": None},
-            }
-            if state == ws.DENIED:
-                # The earlier denial stays where the admin can read it.
-                patch["history"] = [*(record.get("history") or []), {
-                    "request_id": record.get("request_id"),
-                    "requested_at": record.get("requested_at"),
-                    "decision": record.get("decision"),
-                }]
+            patch = self._approve_in(txn, record, by=by)
             txn.update(ref, patch)
-            self._audit(txn, "approve", workspace_id, by, {
-                "self_approval": (record.get("principal") or "").strip().lower() == by,
-                "from_state": state,
-                "request_id": record.get("request_id"),
-            })
             return {**record, **patch}
 
         record = _apply(transaction)
         log.info("workspace approved workspace=%s", workspace_id)
         dispatch = self._dispatch(record, MODE_CREATE)
-        return {"workspace": self._admin_view(record), "dispatch": dispatch}
+        return self._decided(record, dispatch)
+
+    def request_own(self, workspaces: ws.Workspaces, *, tenant_id: str, principal: str,
+                    via: str, is_admin: bool) -> tuple[int, dict[str, Any]]:
+        """`POST /v1/workspace` (§1.3): the request, and for an admin the
+        approval in the same transaction, then the same publish `approve`
+        makes. A non-admin's request is W1's, unchanged: it waits for an
+        admin. Returns (HTTP status, the record as stored)."""
+        principal = principal.strip().lower()
+
+        def _auto(txn: Any, record: dict[str, Any]) -> dict[str, Any]:
+            return self._approve_in(txn, record, by=principal, auto=True)
+
+        status, record = workspaces.request(
+            tenant_id=tenant_id, principal=principal, via=via,
+            approve=_auto if is_admin else None)
+        if status == 202 and ws.state_of(record) == ws.APPROVED:
+            log.info("workspace approved automatically workspace=%s",
+                     record.get("workspace_id"))
+            self._dispatch(record, MODE_CREATE)
+        return status, record
 
     def deny(self, workspace_id: str, *, by: str, reason: str) -> dict[str, Any]:
         """requested or failed -> denied. The reason is required and is shown
@@ -329,7 +433,22 @@ class People:
         record = _apply(transaction)
         log.info("workspace retry workspace=%s", workspace_id)
         dispatch = self._dispatch(record, MODE_CREATE)
-        return {"workspace": self._admin_view(record), "dispatch": dispatch}
+        return self._decided(record, dispatch)
+
+    def _decided(self, record: Mapping[str, Any], dispatch: Mapping[str, Any]) -> dict[str, Any]:
+        """An approval's (or a retry's) answer. The decision is durable either
+        way; `sent_for_building` and `message` say plainly whether anything
+        will build it, so a deployment with provisioning off cannot answer an
+        approval as if the workspace were on its way."""
+        sent = bool(dispatch.get("published"))
+        if sent:
+            message = SENT
+        elif dispatch.get("reason") == "publishing_off":
+            message = NOT_SENT_PUBLISHING_OFF
+        else:
+            message = NOT_SENT_PUBLISH_FAILED
+        return {"workspace": self._admin_view(record), "dispatch": dict(dispatch),
+                "sent_for_building": sent, "message": message}
 
     # -- the ceiling ---------------------------------------------------------------
 
@@ -411,8 +530,15 @@ class People:
             data = snap.to_dict() or {}
             previous = data.get("dispatch") or {}
             attempts = int(previous.get("attempts") or 0) + 1
+            # The first attempt for THIS request: the stuck rule measures an
+            # unclaimed dispatch from it, since the sweep refreshes the last
+            # one every 10 minutes. A retry's fresh request id restarts it.
+            first = previous.get("first_attempt_at") \
+                if previous.get("request_id") == request_id else None
             patch: dict[str, Any] = {"dispatch": {
                 "attempts": attempts,
+                "request_id": request_id,
+                "first_attempt_at": first if isinstance(first, datetime) else now,
                 "last_attempt_at": now,
                 "last_published_at": now if published else previous.get("last_published_at"),
                 "last_ok": published,
@@ -431,24 +557,43 @@ class People:
                         record.get("workspace_id"), type(exc).__name__)
 
     def sweep(self) -> dict[str, Any]:
-        """§2.2's dispatch sweep: every `approved` record whose last attempt is
-        at least DISPATCH_EVERY old (or that has none) is published again,
-        at most SWEEP_LIMIT per call. A record published less than ten
-        minutes ago is left alone, so a trigger that is merely slow is not
-        sent the same workspace twice in a row."""
-        if not self._publisher.enabled:
-            return {"publishing": False, "considered": 0, "published": 0,
-                    "failed": 0, "recent": 0, "workspaces": []}
+        """§2.2's dispatch sweep, and the detector for a record nothing is
+        advancing.
+
+        Every `approved` record (at most MAX_PEOPLE) is walked, publishing on
+        or off. Each is checked against the stuck rule
+        (`workspaces.waiting_because`) as it was read, and a stuck one is
+        reported (`_report_stuck`) at most once per STUCK_REPORT_EVERY. Then,
+        only when publishing is on, a record whose last attempt is at least
+        DISPATCH_EVERY old (or that has none) is published again, at most
+        SWEEP_LIMIT per call; one published less than ten minutes ago is left
+        alone, so a trigger that is merely slow is not sent the same workspace
+        twice in a row.
+
+        WHY THE WALK RUNS WITH PUBLISHING OFF: it returned early there until
+        2026-10-10, and w-752763 then sat approved for 19 hours with nobody
+        told. Publishing off is the one state in which no build will ever
+        come, so it is the state that most needs reporting."""
+        publishing = bool(self._publisher.enabled)
         now = self._now()
         query = self._db.collection(ws.WORKSPACES).where(
             filter=FieldFilter("state", "==", ws.APPROVED)).limit(MAX_PEOPLE)
-        considered = published = failed = recent = 0
+        considered = published = failed = recent = stuck = reported = 0
+        reasons: dict[str, int] = {}
         touched: list[dict[str, Any]] = []
         for snap in query.stream():
             record = snap.to_dict() or {}
             if record.get("state") != ws.APPROVED:
                 continue
             considered += 1
+            reason = ws.waiting_because(record, publishing=publishing, now=now)
+            if reason is not None:
+                stuck += 1
+                reasons[reason] = reasons.get(reason, 0) + 1
+                if self._report_stuck(record, reason, now):
+                    reported += 1
+            if not publishing:
+                continue
             last = (record.get("dispatch") or {}).get("last_attempt_at")
             if isinstance(last, datetime) and now - last < DISPATCH_EVERY:
                 recent += 1
@@ -462,10 +607,60 @@ class People:
                 failed += 1
             touched.append({"workspace_id": record.get("workspace_id"),
                             "published": result["published"]})
-        log.info("workspace sweep considered=%d published=%d failed=%d recent=%d",
-                 considered, published, failed, recent)
-        return {"publishing": True, "considered": considered, "published": published,
-                "failed": failed, "recent": recent, "workspaces": touched}
+        log.info("workspace sweep publishing=%s considered=%d published=%d failed=%d "
+                 "recent=%d stuck=%d reported=%d", publishing, considered, published,
+                 failed, recent, stuck, reported)
+        return {"publishing": publishing, "considered": considered, "published": published,
+                "failed": failed, "recent": recent, "stuck": stuck,
+                "stuck_reported": reported, "stuck_reasons": reasons,
+                "workspaces": touched}
+
+    def _report_stuck(self, record: Mapping[str, Any], reason: str, now: datetime) -> bool:
+        """One `workspace_stuck` entry for a stuck record, unless one was
+        written for it less than STUCK_REPORT_EVERY ago. The record's
+        `stuck_reported_at` is written first, in a transaction that re-reads
+        it, so two sweeps at once report it once; the entry is logged only
+        after that write. True when this call reported it.
+
+        The entry names the opaque workspace id and nothing else about the
+        person: no email, no tenant id."""
+        ref = self._record_ref(str(record.get("tenant_id")))
+        request_id = record.get("request_id")
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(ref))
+            if not snap.exists:
+                return False
+            data = snap.to_dict() or {}
+            if data.get("state") != ws.APPROVED or data.get("request_id") != request_id:
+                return False
+            last = data.get("stuck_reported_at")
+            if isinstance(last, datetime) and now - last < STUCK_REPORT_EVERY:
+                return False
+            txn.update(ref, {"stuck_reported_at": now})
+            return True
+
+        try:
+            due = _apply(transaction)
+        except Exception as exc:  # noqa: BLE001 - one record, never the sweep
+            log.warning("workspace stuck report not recorded workspace=%s: %s",
+                        record.get("workspace_id"), type(exc).__name__)
+            return False
+        if not due:
+            return False
+        since = ws.approved_at(record)
+        minutes = None if since is None else max(0, int((now - since).total_seconds() // 60))
+        log.warning(
+            "workspace stuck workspace=%s reason=%s minutes_waiting=%s",
+            record.get("workspace_id"), reason, minutes,
+            extra={"event": STUCK_EVENT,
+                   "workspace_id": record.get("workspace_id"),
+                   "reason": reason,
+                   "approved_at": _iso(since),
+                   "minutes_waiting": minutes})
+        return True
 
     # -- loans ---------------------------------------------------------------------
 
@@ -572,10 +767,15 @@ class People:
                                  r["email"]))
         for row in rows:
             row.pop("_last")
+        approved = sum(1 for r in rows if r["workspace"]["state"] == ws.APPROVED)
         return {
             "people": rows,
             "count": len(rows),
             "pending": sum(1 for r in rows if r["workspace"]["state"] == ws.REQUESTED),
+            # The banner's figures: whether this deployment builds workspaces
+            # at all, and how many approved records wait on it.
+            "provisioning": {"available": bool(self._publisher.enabled),
+                             "approved_waiting": approved},
             "audit": self.audit(),
         }
 
@@ -658,7 +858,8 @@ class People:
         `workspaces.view`), with the dispatch and retry state, and the
         decision's verdict and time. Never `decision.by`, which stays in
         Firestore, and never the tenant id."""
-        out = ws.view(record, console_url=self._console_url)
+        out = ws.view(record, console_url=self._console_url,
+                      publishing=bool(self._publisher.enabled), now=self._now())
         out.pop("tenant_id", None)
         if record:
             dispatch = record.get("dispatch") or {}

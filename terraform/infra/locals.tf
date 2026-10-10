@@ -635,6 +635,25 @@ locals {
       # Off unless the environment's tfvars sets var.enable_issue_sweep.
       SWEEP_ENABLED = var.enable_issue_sweep ? "true" : "false"
 
+      # D4's refusal of a person's task on a repository they have not chosen
+      # (swarm_api.settings `repository_grants_enforced`, #780 OB10). Until
+      # OB10 it reached swarm-api only by hand, so an apply put it back to
+      # off. Off unless the environment's tfvars sets
+      # var.repository_grants_enforced; service submissions are never refused.
+      REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
+
+      # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
+      # #847): approve, retry and the dispatch sweep publish a workspace id to
+      # this topic, which terraform/bootstrap creates with its Cloud Build
+      # trigger when enable_workspace_deployer is on. A literal, the name
+      # bootstrap's workspace_deployer.tf and modules/monitoring both spell.
+      # Publishing stays OFF until var.workspace_apply_publish: off, an
+      # approval sits `approved` and the swarm-workspace-sweep job's sweep
+      # logs it as `workspace_stuck` (reason publishing_off) for the
+      # workspace-stuck alert, rather than nothing saying so (2026-10-09).
+      WORKSPACE_APPLY_TOPIC   = "swarm-workspace-apply"
+      WORKSPACE_APPLY_PUBLISH = var.workspace_apply_publish ? "true" : "false"
+
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no
       # primary version: local.spec_signing_key_version, derived in

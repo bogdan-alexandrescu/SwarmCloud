@@ -838,6 +838,39 @@ variable "enable_issue_sweep" {
   default     = false
 }
 
+variable "repository_grants_enforced" {
+  description = <<-EOT
+    swarm-api's REPOSITORY_GRANTS_ENFORCED (#780 D4, docs/onboarding.md):
+    whether a PERSON's task on a GitHub repository they have not chosen under
+    Access is refused (403 REPOSITORY_NOT_GRANTED). While off, such a task runs
+    with the tenant token, `git`, as before #780. A service-account submission
+    (repository indexing, schedules, the release's acceptance suite) keeps the
+    tenant token either way and says so ("tenant token, service submission").
+    OFF by default, as swarm_api.settings is: on, it refuses every task of every
+    person who has not connected GitHub, so an environment turns it on only once
+    its people can connect (a registered GitHub App, var.enable_github_app).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "workspace_apply_publish" {
+  description = <<-EOT
+    swarm-api's WORKSPACE_APPLY_PUBLISH: whether approving a personal
+    workspace (and its dispatch sweep) publishes the workspace id to the
+    swarm-workspace-apply topic, which starts the workspace job's Cloud Build
+    trigger (docs/workspaces.md §2.1-2.2). OFF by default because the topic
+    and the trigger exist only after the owner's bootstrap apply with
+    enable_workspace_deployer = true (§10): publishing to a topic that does
+    not exist records publish_failed on every sweep. Turn it on in the same
+    release as that apply. Off, nothing is silent: the swarm-workspace-sweep
+    job still runs, and every approved record is logged as workspace_stuck
+    (reason publishing_off), which pages through the workspace-stuck alert.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "manage_project_services" {
   description = "All 18 APIs are already enabled on saga-agents-staging; this holds them enabled rather than turning anything on."
   type        = bool

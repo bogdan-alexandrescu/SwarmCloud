@@ -475,6 +475,20 @@ github_app_slug      = "swarmcloud-saga"
 # (e983d06e, run 37672097489; revision swarm-api-00176). Runbook step 7.
 enable_forge_refresh = true
 
+# D4's refusal is ON in dev (#780 OB10, the migration step). A PERSON's task on
+# a GitHub repository they have not chosen under Access is refused with 403
+# REPOSITORY_NOT_GRANTED ("choose it under Access") instead of running with the
+# tenant token; a person with a grant runs as themselves, through their App
+# slot or their fallback token for that owner. A service submission (repository
+# indexing, schedules, the release's acceptance suite in the smoke tenant) is
+# never refused: it keeps the tenant token and the task says so ("tenant token,
+# service submission"). On here because dev is where people connect: the App
+# above is registered and the refresh sweep runs. BEFORE THIS APPLIES, every
+# person who submits in dev grants the repositories they work in (Work ›
+# Access, or `uv run sc access grant owner/repo --write`), or their tasks are
+# refused. docs/runbooks/onboarding-acceptance.md is the check that it works.
+repository_grants_enforced = true
+
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made
 # CI's deployer need IAP admin rights that could not be scoped to our backends.
@@ -590,3 +604,14 @@ deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceac
 # PUT /v1/admin/tenants/eng/issue-sweep, not here (docs/issue-runs.md "Turning
 # it on, for tenant eng"). Left off in prod.
 enable_issue_sweep = true
+
+# Personal-workspace publishing (swarm-api WORKSPACE_APPLY_PUBLISH, #847).
+# OFF until the swarm-workspace-apply topic and its Cloud Build trigger exist,
+# which is the owner's one-time bootstrap apply with
+# enable_workspace_deployer = true (docs/workspaces.md §10). Flip this to true
+# in the SAME release as that apply, not before: publishing to a topic that
+# does not exist records publish_failed on every sweep, and not after: while it
+# is off every approved request waits. Off is not silent -- the
+# swarm-workspace-sweep job logs each waiting record as workspace_stuck
+# (reason publishing_off) and the workspace-stuck alert pages on it.
+workspace_apply_publish = false

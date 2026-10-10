@@ -399,8 +399,18 @@ locals {
 }
 
 resource "google_logging_metric" "spec_signature_invalid" {
+  # -v2 and create_before_destroy (2026-10-10): adding the job_name label to the
+  # descriptor forces a replacement, and GCP refuses to delete a metric an alert
+  # policy still uses ("Cannot delete metric ... still used"), which failed
+  # release 38029688180's apply. A new name lets the new metric exist first, the
+  # alert move to it, and only then the old one be deleted. The next descriptor
+  # change needs a new suffix for the same reason.
+  lifecycle {
+    create_before_destroy = true
+  }
+
   project = var.project_id
-  name    = "${var.name_prefix}/spec-signature-invalid"
+  name    = "${var.name_prefix}/spec-signature-invalid-v2"
 
   description = "A worker refused to run a task whose step spec did not verify (end cause spec_signature_invalid). Every occurrence is an attack on a parked step or a platform bug."
 
@@ -466,8 +476,18 @@ resource "google_logging_metric" "spec_signature_invalid" {
 # unbounded, and a label carrying it would mint a time series per task.
 # ---------------------------------------------------------------------------
 resource "google_logging_metric" "spec_upstream_invalid" {
+  # -v2 and create_before_destroy (2026-10-10): adding the job_name label to the
+  # descriptor forces a replacement, and GCP refuses to delete a metric an alert
+  # policy still uses ("Cannot delete metric ... still used"), which failed
+  # release 38029688180's apply. A new name lets the new metric exist first, the
+  # alert move to it, and only then the old one be deleted. The next descriptor
+  # change needs a new suffix for the same reason.
+  lifecycle {
+    create_before_destroy = true
+  }
+
   project = var.project_id
-  name    = "${var.name_prefix}/spec-upstream-invalid"
+  name    = "${var.name_prefix}/spec-upstream-invalid-v2"
 
   description = "A merge or post-verdict worker refused because an upstream step's spec did not verify (end cause merge_refused or verdict_refused, spec_check.reason upstream:...). Every occurrence is an attack on the chain or a platform bug."
 
@@ -573,5 +593,159 @@ resource "google_logging_metric" "worker_action_ended" {
   label_extractors = {
     tenant_id = "EXTRACT(jsonPayload.labels.tenant_id)"
     end_cause = "EXTRACT(jsonPayload.end_cause)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Schedules that need a person (docs/schedules.md §4.9, lane S4).
+#
+# Both are swarm-api lines, counted only from swarm-api's own Cloud Run
+# service in this region (local.schedule_log_source): the project is shared,
+# and a prefix match would count another team's services.
+#
+# schedule_auto_paused. THE EMITTER: swarm_api.schedulefire `Firer.pause`
+# (lane S2) logs, at WARNING, `schedule <schedule_id> auto_paused: <CODE>`
+# once per schedule it actually moves -- a person's pause is never overwritten,
+# so a schedule already paused writes nothing. CODE is schedulefire's short,
+# fixed vocabulary (CONSECUTIVE_FAILURES, RUN_OVER_BUDGET, ...), so it is a
+# bounded label. A type that disappears moves its schedules to `disabled`
+# instead, on the same line with `disabled` in place of `auto_paused`; that is
+# a deploy's doing, not a tenant's, and is not counted here.
+#
+# §4.9 asks for the count per tenant. The line names the schedule and not its
+# tenant, and the schedule id is unbounded, so neither is a label: the alert
+# says which code, and the responder reads the tenant from the schedule (Admin
+# › Schedules). A tenant label needs `tenant_id` on the line, which is S2's
+# file (reported in lane S4's pull request).
+#
+# schedule_needs_owner. THE EMITTER this metric expects (lane S5, §4.4 and
+# §4.5): when a hold that needs the owner is created, swarm-api logs, at
+# WARNING, `schedule hold needs the owner` with `tenant_id` and `approval_id`
+# passed through `extra=`, which swarm_common.logging_setup writes at the top
+# of the payload. Nothing writes it until S5 is built; a metric with no writer
+# reads zero, which is what a platform with no holds should read.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# An approved personal workspace is waiting and nothing is building it
+# (docs/workspaces.md §2.2, #847).
+#
+# WHY THIS EXISTS. On 2026-10-09 the owner's own workspace request was
+# approved and then sat at `approved` for ~19 hours with no dispatch, no
+# failure and nothing to say so: publishing was off, and no job called the
+# dispatch sweep. The setup page showed it as in progress the whole time.
+#
+# THE EMITTER: swarm-api's dispatch sweep (POST /v1/admin/workspaces/sweep,
+# called every 10 minutes by modules/scheduler `workspace_sweep`) logs ONE
+# structured entry per stuck record per hour, `jsonPayload.event =
+# "workspace_stuck"`, with workspace_id, reason, approved_at and
+# minutes_waiting. A record is stuck when it is `approved` and publishing is
+# off (reason publishing_off), or it has had no dispatch attempt for more than
+# 15 minutes (never_dispatched), or its last dispatch is more than 30 minutes
+# old and no build has claimed it (dispatched_unclaimed). The sweep runs that
+# check even with publishing off, so the line exists in exactly the state of
+# 2026-10-09.
+#
+# Only swarm-api, by service name and region: the project is shared. `reason`
+# is a label (three values); workspace_id is not -- it is read from the line,
+# and it is opaque by design, so the line names nobody.
+# ---------------------------------------------------------------------------
+locals {
+  api_services = coalescelist(
+    [for s in var.service_names : s if endswith(s, "-api")],
+    ["${var.name_prefix}-api"],
+  )
+
+  # Logging query syntax, not Monitoring's: `field=(a OR b)`, not one_of().
+  schedule_log_source = join(" AND ", [
+    "resource.type=\"cloud_run_revision\"",
+    "resource.labels.service_name=(${join(" OR ", [for s in local.api_services : "\"${s}\""])})",
+    "resource.labels.location=\"${var.region}\"",
+  ])
+}
+
+resource "google_logging_metric" "schedule_auto_paused" {
+  project = var.project_id
+  name    = "${var.name_prefix}/schedule-auto-paused"
+
+  description = "The schedule tick auto-paused a schedule (docs/schedules.md §1.3): it fires nothing until a member resumes it. Labelled by the pause code."
+
+  filter = join(" AND ", [
+    local.schedule_log_source,
+    "jsonPayload.logger=\"swarm_api.schedulefire\"",
+    "jsonPayload.message=~\"^schedule \\\\S+ auto_paused: \"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "code"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    code = "REGEXP_EXTRACT(jsonPayload.message, \"auto_paused: (\\\\S+)\")"
+  }
+}
+
+resource "google_logging_metric" "schedule_needs_owner" {
+  project = var.project_id
+  name    = "${var.name_prefix}/schedule-needs-owner"
+
+  description = "A scheduled run met a hard stop that only the owner may lift (docs/schedules.md §4.4). Labelled by tenant."
+
+  filter = join(" AND ", [
+    local.schedule_log_source,
+    "jsonPayload.message=\"schedule hold needs the owner\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "tenant_id"
+      value_type = "STRING"
+    }
+  }
+
+  # An `extra=` field, so top level, not under a bound `labels` object.
+  label_extractors = {
+    tenant_id = "EXTRACT(jsonPayload.tenant_id)"
+  }
+}
+
+resource "google_logging_metric" "workspace_stuck" {
+  project = var.project_id
+  name    = "${var.name_prefix}/workspace-stuck"
+
+  description = "An approved personal workspace is waiting with nothing building it: swarm-api's dispatch sweep logged workspace_stuck (publishing_off, never_dispatched or dispatched_unclaimed)."
+
+  # Logging query syntax, not Monitoring's: `field=(a OR b)`, not one_of().
+  filter = join(" AND ", [
+    "resource.type=\"cloud_run_revision\"",
+    "resource.labels.service_name=(${join(" OR ", [for s in local.api_services : "\"${s}\""])})",
+    "resource.labels.location=\"${var.region}\"",
+    "jsonPayload.event=\"workspace_stuck\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "reason"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    reason = "EXTRACT(jsonPayload.reason)"
   }
 }

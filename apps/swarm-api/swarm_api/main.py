@@ -43,6 +43,7 @@ from .routes import (
     runs,
     schedule_tick,
     strandedprs,
+    schedules,
     tasks,
     tenants,
     workflows,
@@ -156,6 +157,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # Stranded pull requests (part of #295): GET /v1/stranded-prs, a member's
     # own tenant's last sweep, and the sweep the scheduler and an admin call.
     app.include_router(strandedprs.router)
+    # Schedules (docs/schedules.md §7.1, lane S3): the tenant's own routes,
+    # tenant-scoped like issue runs, and the admin list and actions (§5.3).
+    # A caller names a type from the catalogue, never an image or command.
+    app.include_router(schedules.router)
     # Child tasks (docs/design/child-tasks.md): worker-only routes, which
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.

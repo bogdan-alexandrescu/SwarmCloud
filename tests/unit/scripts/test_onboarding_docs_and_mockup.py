@@ -83,7 +83,9 @@ def test_the_design_doc_exists_and_is_dated():
     head = "\n".join(_text(DESIGN).splitlines()[:12])
     assert "**Status:" in head, "the status line leads, as in docs/git-tokens.md"
     assert "2026-10-07" in head and "#780" in head
-    assert "PROPOSED" in head, "nothing is built; the status must not claim otherwise"
+    # Built since (OB10, #780): the status says so, and which lanes is held by
+    # test_onboarding_migration.py against §5.
+    assert "BUILT" in head and "PROPOSED" not in head, "every lane of §5 has shipped"
 
 
 @pytest.mark.parametrize(
