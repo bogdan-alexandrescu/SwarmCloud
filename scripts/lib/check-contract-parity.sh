@@ -1427,10 +1427,11 @@ else:
             whole = template.read_text()
             # SCOPED TO THE `worker` CONTAINER, and that is the whole point of
             # this check rather than an over-careful detail. worker-job-v2.yaml
-            # has an init container as well, and from the commit that fixed the
+            # had an init container as well (removed since: the worker installs
+            # the credential itself), and from the commit that fixed the
             # Errno 30 until the one that added this check, SWARM_ARTIFACTS_DIR
-            # sat on the INIT container -- which installs a credential and never
-            # writes an artifact -- while the worker container had none. The
+            # sat on the INIT container -- which installed a credential and
+            # never wrote an artifact -- while the worker container had none. The
             # existing assertion in
             # tests/unit/worker/test_kubernetes_manifests.py read each template
             # as one document, so it saw the name present and passed. A

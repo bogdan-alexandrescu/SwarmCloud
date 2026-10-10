@@ -210,8 +210,11 @@ fi
 # that as a known residual, and tests/unit/scripts/test_posture_is_per_container.py
 # measured what it let through, all of it green:
 #
-#   * worker-job-v2's init container losing allowPrivilegeEscalation: false or
-#     drop: ["ALL"] -- the main container's lines satisfied the grep;
+#   * an init container in worker-job-v2 without allowPrivilegeEscalation:
+#     false or drop: ["ALL"] -- the main container's lines satisfied the grep.
+#     v2 has no init container now (the worker installs the credential itself,
+#     docs/BUILD_PROMPT_V2.md §2.6.3), so the test injects one to prove this
+#     still bites;
 #   * an unhardened sidecar beside a hardened worker;
 #   * `runAsNonRoot: true` at POD level while the container overrode it to
 #     false -- and the container's value is the one the kubelet enforces;
