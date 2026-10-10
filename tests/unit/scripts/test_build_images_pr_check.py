@@ -235,6 +235,40 @@ def test_copy_from_a_stage_is_not_an_input(tmp_path):
     assert {t for t, _ in rows} == ALL
 
 
+def test_workspace_apply_builds_from_a_context_holding_every_path_it_copies(tmp_path):
+    """The root .dockerignore excludes scripts/, kubernetes/ and terraform/ on
+    purpose, so workspace-apply -- whose Dockerfile copies from all three --
+    cannot build from the repository root, which is where a generated config
+    builds. Its checked-in recipe assembles a context instead, as swarm-verify's
+    does. This runs that assembly against the checkout and holds every COPY
+    source of the Dockerfile to what it put there: a COPY added without the
+    assembly following is a build that fails "not found in build context" on
+    main. MUTATION: drop a `cp` line from the recipe, or delete the recipe."""
+    recipe = yaml.safe_load((REPO / "images" / "workspace-apply" / "cloudbuild.yaml").read_text())
+    steps = {s["id"]: s for s in recipe["steps"]}
+    ctx_in_build = "/workspace/workspace-apply-ctx"
+    assert steps["build"]["args"][0] == "build" and steps["build"]["args"][-1] == ctx_in_build, steps["build"]
+    assert "-f" not in steps["build"]["args"], "the context's own Dockerfile is the one built"
+
+    ctx = tmp_path / "ctx"
+    script = steps["assemble-context"]["args"][-1].replace("$$", "$").replace(ctx_in_build, str(ctx))
+    proc = subprocess.run(["bash", "-c", script], cwd=REPO, capture_output=True, text=True,
+                          timeout=120, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert (ctx / "Dockerfile").read_text() == (REPO / "images" / "workspace-apply" / "Dockerfile").read_text()
+
+    joined = re.sub(r"\\\n", " ", (REPO / "images" / "workspace-apply" / "Dockerfile").read_text())
+    sources = [
+        src
+        for line in joined.splitlines()
+        if re.match(r"\s*COPY\s", line) and "--from=" not in line
+        for src in line.split()[1:-1]
+    ]
+    assert len(sources) >= 9, sources
+    missing = [src for src in sources if not (ctx / src).exists()]
+    assert not missing, f"images/workspace-apply/cloudbuild.yaml does not put {missing} in the build context"
+
+
 def test_every_image_input_fires_application_yml_on_a_pull_request(tmp_path):
     """The build job lives in application.yml, and runs only when its
     `changes` job says the change reaches the workflow (APP_PATHS, which was

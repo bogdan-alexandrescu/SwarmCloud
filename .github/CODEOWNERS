@@ -7,8 +7,8 @@
 # workspace-apply image, and that image carries what the identity will do: the
 # entrypoint that scrubs every override (entry.py), the job's script
 # (workspace-apply.sh), the call guard, its rules and shims, the script it
-# runs, the library both source, and the Dockerfile that decides what the
-# image holds. A merge reaches the identity only when the owner's bootstrap
+# runs, the library both source, and the Dockerfile and build config that
+# decide what the image holds. A merge reaches the identity only when the owner's bootstrap
 # apply moves the image digest; this review is the step before that. Branch
 # protection must require the code owner's review for these paths, or this
 # file is only a suggestion (the owner's setting, not this repository's).
@@ -22,4 +22,5 @@
 /scripts/workspace-apply.sh             @bogdan-alexandrescu
 /images/workspace-apply/entry.py        @bogdan-alexandrescu
 /images/workspace-apply/Dockerfile      @bogdan-alexandrescu
+/images/workspace-apply/cloudbuild.yaml @bogdan-alexandrescu
 /.github/CODEOWNERS                     @bogdan-alexandrescu

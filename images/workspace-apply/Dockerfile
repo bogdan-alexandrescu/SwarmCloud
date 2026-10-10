@@ -67,8 +67,11 @@
 #
 # THE BUILD CONTEXT. The repository's .dockerignore excludes scripts/,
 # kubernetes/ and terraform/ on purpose (no application image carries operational tooling),
-# so this Dockerfile is built from a context that holds them, as swarm-verify's
-# is (images/swarm-verify/cloudbuild.yaml), never by weakening the root rule.
+# so this Dockerfile is built from a context that holds them, assembled by
+# images/workspace-apply/cloudbuild.yaml as swarm-verify's is
+# (images/swarm-verify/cloudbuild.yaml), never by weakening the root rule. A
+# COPY added below must be added to that assembly too; a test holds the two
+# together (test_build_images_pr_check.py).
 
 # google-cloud-cli 587.0.0, the -stable (Debian trixie) variant, by digest of
 # its multi-arch index: `HEAD
