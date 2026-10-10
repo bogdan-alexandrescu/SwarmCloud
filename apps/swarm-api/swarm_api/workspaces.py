@@ -323,18 +323,118 @@ def request_again_at(record: Mapping[str, Any] | None) -> datetime | None:
     return at + REREQUEST_WAIT if isinstance(at, datetime) else None
 
 
-def view(record: Mapping[str, Any] | None, *, console_url: str = "") -> dict[str, Any]:
+# --------------------------------------------------------------------------
+# an approved record nobody is advancing (the 2026-10-09 incident, w-752763)
+# --------------------------------------------------------------------------
+
+#: Why an `approved` record is not moving. The three values are the shared
+#: contract with the WS-WIRE lane's alert on `jsonPayload.event =
+#: "workspace_stuck"`: rename one and that alert stops matching it.
+#:
+#:   publishing_off        this deployment publishes nothing
+#:                         (WORKSPACE_APPLY_PUBLISH off, so People holds a
+#:                         `NullWorkspacePublisher`): no build will ever come;
+#:   never_dispatched      publishing is on, yet nothing was attempted for this
+#:                         request NEVER_DISPATCHED_AFTER after the approval;
+#:   dispatched_unclaimed  the first attempt for this request is
+#:                         UNCLAIMED_AFTER old and no build has claimed it.
+STUCK_PUBLISHING_OFF = "publishing_off"
+STUCK_NEVER_DISPATCHED = "never_dispatched"
+STUCK_DISPATCHED_UNCLAIMED = "dispatched_unclaimed"
+#: 15 minutes: the approval publishes at once and the sweep (every 10 minutes)
+#: again, so a record with no attempt after 15 has missed both.
+NEVER_DISPATCHED_AFTER = timedelta(minutes=15)
+#: 30 minutes from the FIRST attempt for this request, not the last: the
+#: sweep re-publishes every 10 minutes, so "the last attempt is 30 minutes
+#: old" never comes true while it runs, which is exactly when a build that
+#: never claims anything has to be noticed.
+UNCLAIMED_AFTER = timedelta(minutes=30)
+
+
+def approved_at(record: Mapping[str, Any] | None) -> datetime | None:
+    """When the record last became `approved`: the later of the admin's
+    approval and a retry, else (a record written by hand) its request."""
+    record = record or {}
+    decision = record.get("decision") or {}
+    at = decision.get("at") if decision.get("verdict") == APPROVED else None
+    seen = [v for v in (at, (record.get("retry") or {}).get("at")) if isinstance(v, datetime)]
+    if seen:
+        return max(seen)
+    requested = record.get("requested_at")
+    return requested if isinstance(requested, datetime) else None
+
+
+def first_dispatched_at(record: Mapping[str, Any] | None) -> datetime | None:
+    """The first dispatch attempt for the record's CURRENT request, or None.
+    An attempt recorded for an earlier request id (before a retry) is not
+    one; a `dispatch` written before it carried a request id counts by its
+    own first (or last) attempt."""
+    record = record or {}
+    dispatch = record.get("dispatch") or {}
+    if not dispatch:
+        return None
+    if "request_id" in dispatch and dispatch.get("request_id") != record.get("request_id"):
+        return None
+    at = dispatch.get("first_attempt_at") or dispatch.get("last_attempt_at")
+    return at if isinstance(at, datetime) else None
+
+
+def waiting_because(record: Mapping[str, Any] | None, *, publishing: bool,
+                    now: datetime) -> str | None:
+    """The stuck rule. None unless the record is `approved` and either
+    publishing is off, or no attempt was made NEVER_DISPATCHED_AFTER after the
+    approval, or the first attempt is UNCLAIMED_AFTER old (the state is still
+    `approved`, so no build claimed it). A record approved a minute ago is
+    not stuck: it is being sent."""
+    if state_of(record) != APPROVED:
+        return None
+    if not publishing:
+        return STUCK_PUBLISHING_OFF
+    first = first_dispatched_at(record)
+    if first is None:
+        since = approved_at(record)
+        if since is not None and now - since > NEVER_DISPATCHED_AFTER:
+            return STUCK_NEVER_DISPATCHED
+        return None
+    if now - first > UNCLAIMED_AFTER:
+        return STUCK_DISPATCHED_UNCLAIMED
+    return None
+
+
+def provisioning(record: Mapping[str, Any] | None, *, publishing: bool,
+                 now: datetime) -> dict[str, Any]:
+    """The `provisioning` block of a view, computed on read: whether this
+    deployment builds workspaces at all, why an approved record is waiting
+    (None when it is not), and how long ago it was approved (None when it is
+    not approved). No secret, email or tenant id."""
+    since = approved_at(record) if state_of(record) == APPROVED else None
+    return {
+        "available": bool(publishing),
+        "waiting_because": waiting_because(record, publishing=publishing, now=now),
+        "approved_minutes_ago": None if since is None
+        else max(0, int((now - since).total_seconds() // 60)),
+    }
+
+
+def view(record: Mapping[str, Any] | None, *, console_url: str = "",
+         publishing: bool | None = None, now: datetime | None = None) -> dict[str, Any]:
     """What a person is shown of their OWN record (`GET /v1/workspace`).
 
     Never the principal and never `decision.by`: the first the caller
     already knows, the second is an admin's address, which never leaves
-    Firestore. The failure's copy is served from its code (§4.3)."""
+    Firestore. The failure's copy is served from its code (§4.3).
+
+    `publishing` is the deployment's publisher's `enabled`; given (with
+    `now`), the view carries the `provisioning` block, so an approved record
+    that nothing will advance says so instead of reading as in progress."""
     state = state_of(record)
     out: dict[str, Any] = {
         "state": state,
         "setup_url": setup_url(console_url, "workspace"),
         "setup_command": SETUP_COMMAND,
     }
+    if publishing is not None and now is not None:
+        out["provisioning"] = provisioning(record, publishing=publishing, now=now)
     if record is None:
         return out
     decision = record.get("decision") or None
