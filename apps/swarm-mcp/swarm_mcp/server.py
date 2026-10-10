@@ -3743,6 +3743,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             priority=fields["priority"],
             label=fields["label"],
             title=fields["title"],
+            # Only a whole spec carries `merge`; the `steps` form never did.
+            merge=fields.get("merge"),
         )
         reply = _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest)
