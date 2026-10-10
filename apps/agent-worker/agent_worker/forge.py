@@ -104,6 +104,10 @@ def _message_of(data: Any) -> str:
     return str(data.get("message") or "")[:300] if isinstance(data, dict) else ""
 
 
+def _documentation_url_of(data: Any) -> str:
+    return str(data.get("documentation_url") or "")[:300] if isinstance(data, dict) else ""
+
+
 def transient_status(
     status: int, headers: Mapping[str, str] | None = None, data: Any = None
 ) -> bool:
@@ -1087,11 +1091,16 @@ class ForgeUnavailable(ForgeError):
 class ForgeAnswered(ForgeError):
     """The forge answered with a status the caller did not expect."""
 
-    def __init__(self, status: int, path: str, message: str = "") -> None:
+    def __init__(self, status: int, path: str, message: str = "", *,
+                 documentation_url: str = "") -> None:
         super().__init__(
             f"the forge answered {status} to {path}" + (f": {message}" if message else "")
         )
         self.status = status
+        #: GitHub's own `message` and `documentation_url`, so a caller can tell
+        #: one 403 from another (a plan without the feature is not a missing right).
+        self.message = message
+        self.documentation_url = documentation_url
 
 
 @dataclass(frozen=True)
@@ -1233,7 +1242,8 @@ class PinnedForgeClient:
         """GET, and the body of a 200, or `ForgeAnswered`."""
         response = self.get(path, query=query)
         if response.status != 200:
-            raise ForgeAnswered(response.status, path, _message_of(response.data))
+            raise ForgeAnswered(response.status, path, _message_of(response.data),
+                                documentation_url=_documentation_url_of(response.data))
         return response.data
 
     def paginate(
@@ -1257,7 +1267,8 @@ class PinnedForgeClient:
         for _page in range(max_pages):
             response = self._send("GET", url, path, None)
             if response.status != 200:
-                raise ForgeAnswered(response.status, path, _message_of(response.data))
+                raise ForgeAnswered(response.status, path, _message_of(response.data),
+                                    documentation_url=_documentation_url_of(response.data))
             data = response.data
             page = data.get(key) if key is not None and isinstance(data, dict) else data
             if not isinstance(page, list):
