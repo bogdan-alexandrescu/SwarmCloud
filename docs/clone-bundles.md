@@ -227,5 +227,21 @@ The acceptance, as #940 states it:
 4. For contrast, record the p50 of `forge` steps over the same window. The
    2026-10-06 baseline is the incident's §1.
 
+One command takes it, read-only, through the API with the operator's
+credential:
+
+    scripts/egress-ready-report.sh --clone-bundles --since 7d
+
+It prints n, p50 and p90 of `clone.total_seconds` per `clone.source`, how
+many forge clones after a bundle miss landed, and a verdict. The verdict is
+PASS only when steps 1, 2 and the fallback half of 3 all hold; the `forge`
+row is step 4's contrast. Too few bundled steps is a FAIL (`insufficient n`),
+not a pass. A bundled clone that did not land counts as slower than any that
+did. A fallback that never ran (no forge clone after a `miss`, `no_key` or
+`bundle_error`) is a FAIL, because it was not shown to work. The other half
+of step 3, the same commit as the pin, is not in the mark;
+`tests/unit/worker/test_clone_bundle_git.py` holds it. The arithmetic is
+unit-tested offline in `tests/unit/scripts/test_egress_ready_report.py`.
+
 Report the window, the count and both p50s on #940. The issue stays open
 ("part of #940") until that measurement is posted.
