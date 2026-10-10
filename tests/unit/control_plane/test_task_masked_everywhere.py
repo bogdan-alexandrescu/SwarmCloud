@@ -465,3 +465,26 @@ def test_no_get_route_serves_a_planted_secret_inside_an_input_or_metadata(client
         "/v1/accounts/{account_id}/holders", "/v1/accounts/{account_id}/history",
     ):
         assert template in served_ok, f"{template} never answered 200, so the sweep proved nothing there"
+
+
+def test_a_stored_lone_surrogate_is_served_escaped_not_a_500(client, db):
+    """#361 box 60: `value()` served string leaves raw, and only `json()` escaped
+    a lone surrogate, so a document stored before validation refused one (or a
+    field the input check does not cover) made `GET /v1/tasks/{id}` fail to
+    encode its response. Leaves AND keys are escaped as `json()` escapes them.
+
+    MUTATION: drop the escape from `JsonMasker.value()`'s walk: this is a 500.
+    """
+    _task(
+        db,
+        input_doc={"prompt": "half a pair: \ud800 here", "\udfff key": ["\ud83d"]},
+        metadata={"note": "\udc00"},
+    )
+    response = client.get("/v1/tasks/task_a", headers=auth_header("alice"))
+
+    assert response.status_code == 200, response.text[:200]
+    task = response.json()["task"]
+    assert task["input"]["prompt"] == "half a pair: \\ud800 here"
+    assert task["input"]["\\udfff key"] == ["\\ud83d"]
+    assert task["metadata"]["note"] == "\\udc00"
+    assert task["input_redaction_count"] == 0 and task["metadata_redaction_count"] == 0

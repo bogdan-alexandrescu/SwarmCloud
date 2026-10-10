@@ -7,7 +7,7 @@ import { addressToPath } from './paths'
 import { Mark } from './primitives'
 import { useUrRead } from './RepositoriesParts'
 import { usePoll } from './Shell'
-import type { OnboardingStep, WorkspaceJobStep, WorkspaceView } from './types'
+import type { OnboardingStep, WorkspaceJobStep, WorkspaceView, WorkspaceWaitReason } from './types'
 import { timeAgo } from './types'
 import { useNow } from './useNow'
 
@@ -31,6 +31,13 @@ import { useNow } from './useNow'
  * hidden tab and stops on unmount) and draws the newer of the two. When the
  * record's state moves, the checklist is read again, so the step's own state
  * and next-step mark follow. Nothing here marks a step done.
+ *
+ * AN APPROVAL NOTHING WILL BUILD IS NEVER DRAWN AS IN PROGRESS (2026-10-10,
+ * after w-752763 sat `approved` for 19 hours under a "Setting up" line). The
+ * record's `provisioning` block says whether this deployment builds workspaces
+ * and why an approved record is waiting; while it waits, the body says so in
+ * words, with no elapsed-time counter and no live step rows, because the
+ * platform will not advance it by itself.
  *
  * THE BUTTONS POST ONCE. Each is disabled while its request is in flight, and
  * both routes are idempotent anyway: a second request answers the record as it
@@ -82,6 +89,58 @@ function str(v: unknown): string | null {
 /** The record from the checklist's evidence: the same `workspaces.view` fields, as the step carries them. */
 function fromEvidence(step: OnboardingStep): WorkspaceView {
   return step.evidence as unknown as WorkspaceView
+}
+
+/** The person's words for an approval this deployment will not build (the brief's, verbatim). */
+export const BUILDING_OFF_COPY =
+  "Approved, but workspace building isn't switched on in this deployment yet. Your admins have been told. Nothing to do on your side."
+
+/** "approved N minutes ago", from the API's whole minutes. */
+export function approvedAgo(minutes: number | null | undefined): string {
+  if (typeof minutes !== 'number') return 'approved earlier'
+  return `approved ${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`
+}
+
+/**
+ * Why an `approved` record is not moving, or null when it is (or is not approved, or the API is older than the
+ * `provisioning` block). Provisioning off is a wait whatever else the block says.
+ */
+export function waitingOf(record: WorkspaceView): WorkspaceWaitReason | null {
+  const p = record.provisioning
+  if (record.state !== 'approved' || p === undefined) return null
+  return p.available === false ? 'publishing_off' : p.waiting_because
+}
+
+/** The body for an `approved` record the platform is not advancing. Shared with Admin › People's row. */
+export function ApprovedWaiting({ record }: { record: WorkspaceView }) {
+  const why = waitingOf(record)
+  if (why === null) return null
+  const id = str(record.workspace_id)
+  const rid = str(record.request_id)
+  if (why === 'publishing_off') {
+    return (
+      <p className="ur-small ob-line" data-waiting="publishing_off">
+        {BUILDING_OFF_COPY}
+        {id !== null && (
+          <>
+            {' '}
+            (<code>{id}</code>)
+          </>
+        )}
+      </p>
+    )
+  }
+  return (
+    <p className="ur-small ob-line" data-waiting={why}>
+      Taking longer than expected ({approvedAgo(record.provisioning?.approved_minutes_ago)})
+      {rid !== null && (
+        <>
+          {' '}
+          · request <code>{rid}</code>
+        </>
+      )}
+    </p>
+  )
 }
 
 /** A refused write, as the API said it: its code and its sentence. */
@@ -179,6 +238,10 @@ export function WorkspaceStepBody({ step, reload }: { step: OnboardingStep; relo
     case 'approved':
     case 'applying':
     case 'needs_owner': {
+      if (waitingOf(record) !== null) {
+        body = <ApprovedWaiting record={record} />
+        break
+      }
       const since = instant(record.decision?.at ?? null) ?? instant(requestedAt)
       body = (
         <>
@@ -260,10 +323,31 @@ export function WorkspaceStepBody({ step, reload }: { step: OnboardingStep; relo
   )
 }
 
-/** A count from the server: a measured zero is drawn as one, never as a blank. */
-function Count({ n, what }: { n: unknown; what: string }) {
-  if (typeof n !== 'number') return <Dash why={`The checklist did not say how many ${what}`} />
-  return n === 0 ? <Mark kind="zero" say={`No ${what}: a count of zero`} /> : <b>{n}</b>
+/**
+ * A count from the server, as the phrase it is part of.
+ *
+ * A ZERO IN A SENTENCE READS AS WORDS (owner, 2026-10-09). This line is prose,
+ * and `your own [real zero]` made a reader parse a table mark mid-sentence;
+ * `none of your own` says the same measured zero. The mark stays where a zero
+ * sits in a table, figure or fact card (design-system.md §8.6). That it was
+ * measured survives in the accessible name, `none of your own (measured)`.
+ * A count the checklist did not send is NOT a zero, so it keeps the
+ * `not measured` mark and never the word `none`.
+ */
+function Count({ n, label, of }: { n: unknown; label: string; of: string }) {
+  if (typeof n !== 'number') {
+    return (
+      <>
+        {label} <Mark kind="absent" say={`Not measured: the checklist did not say how many accounts ${of}`} />
+      </>
+    )
+  }
+  if (n === 0) return <span aria-label={`none ${of} (measured)`}>none {of}</span>
+  return (
+    <span>
+      <b>{n}</b> {of}
+    </span>
+  )
 }
 
 /** The `claude_account` step's body. `reload` reads the checklist again. */
@@ -291,7 +375,7 @@ export function ClaudeAccountStepBody({ step, reload }: { step: OnboardingStep; 
   return (
     <div id="claude-account" className="ob-ws" data-claude-state={step.state}>
       <p className="ur-hint ob-line">
-        your own <Count n={ev.own} what="accounts of your own" /> · lent to you <Count n={ev.lent} what="accounts lent to you" />
+        <Count n={ev.own} label="your own" of="of your own" /> · <Count n={ev.lent} label="lent to you" of="lent to you" />
         {ev.provider_key === true && ' · a provider key'}
       </p>
       {step.state !== 'done' && (

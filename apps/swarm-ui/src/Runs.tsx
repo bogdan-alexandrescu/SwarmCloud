@@ -17,7 +17,7 @@ import { useNow } from './useNow'
 import { proseWords, stateWord } from './words'
 import { RunContextCard, SelectedTestsGate, useRunIndex, type RunIndexRead } from './RunIndex'
 import { addressToPath } from './paths'
-import { RunChangesTab } from './WorkflowChanges'
+import { RunChangesTab, changesAtOf, withChangesAt } from './WorkflowChanges'
 import './styles/intake.css'
 import './styles/runs.css'
 
@@ -341,7 +341,11 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
                 {tab === 'changes' ? (
                   <>
                     <RunHeading run={d.run} onHeading={onHeading} />
-                    <RunChangesTab run={d.run} />
+                    <RunChangesTab
+                      run={d.run}
+                      at={changesAtOf(view)}
+                      onAt={(at) => go(`${runAddress(runId)}&${withChangesAt('tab=changes', at)}`)}
+                    />
                   </>
                 ) : (
                   <RunPage run={d.run} reread={reread} go={go} onHeading={onHeading} />
