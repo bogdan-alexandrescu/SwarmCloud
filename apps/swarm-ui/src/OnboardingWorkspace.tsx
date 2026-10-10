@@ -7,7 +7,7 @@ import { addressToPath } from './paths'
 import { Mark } from './primitives'
 import { useUrRead } from './RepositoriesParts'
 import { usePoll } from './Shell'
-import type { OnboardingStep, WorkspaceJobStep, WorkspaceView } from './types'
+import type { OnboardingStep, WorkspaceJobStep, WorkspaceView, WorkspaceWaitReason } from './types'
 import { timeAgo } from './types'
 import { useNow } from './useNow'
 
@@ -31,6 +31,13 @@ import { useNow } from './useNow'
  * hidden tab and stops on unmount) and draws the newer of the two. When the
  * record's state moves, the checklist is read again, so the step's own state
  * and next-step mark follow. Nothing here marks a step done.
+ *
+ * AN APPROVAL NOTHING WILL BUILD IS NEVER DRAWN AS IN PROGRESS (2026-10-10,
+ * after w-752763 sat `approved` for 19 hours under a "Setting up" line). The
+ * record's `provisioning` block says whether this deployment builds workspaces
+ * and why an approved record is waiting; while it waits, the body says so in
+ * words, with no elapsed-time counter and no live step rows, because the
+ * platform will not advance it by itself.
  *
  * THE BUTTONS POST ONCE. Each is disabled while its request is in flight, and
  * both routes are idempotent anyway: a second request answers the record as it
@@ -82,6 +89,58 @@ function str(v: unknown): string | null {
 /** The record from the checklist's evidence: the same `workspaces.view` fields, as the step carries them. */
 function fromEvidence(step: OnboardingStep): WorkspaceView {
   return step.evidence as unknown as WorkspaceView
+}
+
+/** The person's words for an approval this deployment will not build (the brief's, verbatim). */
+export const BUILDING_OFF_COPY =
+  "Approved, but workspace building isn't switched on in this deployment yet. Your admins have been told. Nothing to do on your side."
+
+/** "approved N minutes ago", from the API's whole minutes. */
+export function approvedAgo(minutes: number | null | undefined): string {
+  if (typeof minutes !== 'number') return 'approved earlier'
+  return `approved ${minutes} ${minutes === 1 ? 'minute' : 'minutes'} ago`
+}
+
+/**
+ * Why an `approved` record is not moving, or null when it is (or is not approved, or the API is older than the
+ * `provisioning` block). Provisioning off is a wait whatever else the block says.
+ */
+export function waitingOf(record: WorkspaceView): WorkspaceWaitReason | null {
+  const p = record.provisioning
+  if (record.state !== 'approved' || p === undefined) return null
+  return p.available === false ? 'publishing_off' : p.waiting_because
+}
+
+/** The body for an `approved` record the platform is not advancing. Shared with Admin › People's row. */
+export function ApprovedWaiting({ record }: { record: WorkspaceView }) {
+  const why = waitingOf(record)
+  if (why === null) return null
+  const id = str(record.workspace_id)
+  const rid = str(record.request_id)
+  if (why === 'publishing_off') {
+    return (
+      <p className="ur-small ob-line" data-waiting="publishing_off">
+        {BUILDING_OFF_COPY}
+        {id !== null && (
+          <>
+            {' '}
+            (<code>{id}</code>)
+          </>
+        )}
+      </p>
+    )
+  }
+  return (
+    <p className="ur-small ob-line" data-waiting={why}>
+      Taking longer than expected ({approvedAgo(record.provisioning?.approved_minutes_ago)})
+      {rid !== null && (
+        <>
+          {' '}
+          · request <code>{rid}</code>
+        </>
+      )}
+    </p>
+  )
 }
 
 /** A refused write, as the API said it: its code and its sentence. */
@@ -170,15 +229,23 @@ export function WorkspaceStepBody({ step, reload }: { step: OnboardingStep; relo
       break
     case 'requested':
       body = (
-        <p className="ur-hint ob-line">
-          Workspace requested{id !== null && <> (<code>{id}</code>)</>} — waiting for an admin to approve
-          {requestedAt !== null && <span className="ob-at"> · {timeAgo(requestedAt, now)}</span>}
-        </p>
+        <>
+          <p className="ur-hint ob-line">
+            Workspace requested{id !== null && <> (<code>{id}</code>)</>}
+            {record.held != null ? ' — being migrated' : ' — waiting for an admin to approve'}
+            {requestedAt !== null && <span className="ob-at"> · {timeAgo(requestedAt, now)}</span>}
+          </p>
+          {record.held != null && <p className="ur-small">{record.held.copy}</p>}
+        </>
       )
       break
     case 'approved':
     case 'applying':
     case 'needs_owner': {
+      if (waitingOf(record) !== null) {
+        body = <ApprovedWaiting record={record} />
+        break
+      }
       const since = instant(record.decision?.at ?? null) ?? instant(requestedAt)
       body = (
         <>
@@ -193,6 +260,9 @@ export function WorkspaceStepBody({ step, reload }: { step: OnboardingStep; relo
               </>
             )}
           </p>
+          {record.decision?.auto === true && (
+            <p className="ur-small">Approved automatically, because you are an admin.</p>
+          )}
           {record.state === 'needs_owner' && (
             <p className="ur-small">Approved. A change needs the platform owner&apos;s review before it can finish.</p>
           )}

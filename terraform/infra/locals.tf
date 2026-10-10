@@ -146,7 +146,7 @@ locals {
     # here also puts agent-runtime-indexer in runner_images, so its digest is
     # pinned and handed to the scheduler with the others.
     #
-    # GKE Autopilot since contract request 62 (owner, 2026-10-10), the canary
+    # GKE Autopilot since contract request 63 (owner, 2026-10-10), the canary
     # for #939: a new Cloud Run instance's internet path opens a median 20.2 s
     # after start against GKE's 1.17 s. Its tenants' Cloud Run Jobs are still
     # created, as the rollback, by `cloud_run_fallback_profiles` below.
@@ -181,7 +181,7 @@ locals {
   # --- GKE profiles that keep their Cloud Run Jobs as a rollback -------------
   #
   # claude-code: kept until 2026-10-15 as the request 53 rollback; remove then.
-  # indexer: kept as the contract request 62 rollback (#939's canary, owner
+  # indexer: kept as the contract request 63 rollback (#939's canary, owner
   # 2026-10-10) until the owner decides the canary on its measurement.
   #
   # The Job matrix below makes a Cloud Run Job only for a CLOUD_RUN_JOB
@@ -224,7 +224,7 @@ locals {
   # indexer is claude-code on the indexer image (contract request 48), so an
   # index run keeps the model it ran with as claude-code.
   # claude-code runs on GKE Autopilot (contract request 53), and indexer since
-  # contract request 62, where no Job of this root exists to carry MODEL: the
+  # contract request 63, where no Job of this root exists to carry MODEL: the
   # scheduler's WORKER_MODELS sets it on each pod. Their Cloud Run fallback
   # Jobs (`cloud_run_fallback_profiles`) carry the same model from this map.
   runner_models = {
@@ -641,6 +641,25 @@ locals {
       # while it is off, whatever a tenant's own `issue_sweep.enabled` says.
       # Off unless the environment's tfvars sets var.enable_issue_sweep.
       SWEEP_ENABLED = var.enable_issue_sweep ? "true" : "false"
+
+      # D4's refusal of a person's task on a repository they have not chosen
+      # (swarm_api.settings `repository_grants_enforced`, #780 OB10). Until
+      # OB10 it reached swarm-api only by hand, so an apply put it back to
+      # off. Off unless the environment's tfvars sets
+      # var.repository_grants_enforced; service submissions are never refused.
+      REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
+
+      # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
+      # #847): approve, retry and the dispatch sweep publish a workspace id to
+      # this topic, which terraform/bootstrap creates with its Cloud Build
+      # trigger when enable_workspace_deployer is on. A literal, the name
+      # bootstrap's workspace_deployer.tf and modules/monitoring both spell.
+      # Publishing stays OFF until var.workspace_apply_publish: off, an
+      # approval sits `approved` and the swarm-workspace-sweep job's sweep
+      # logs it as `workspace_stuck` (reason publishing_off) for the
+      # workspace-stuck alert, rather than nothing saying so (2026-10-09).
+      WORKSPACE_APPLY_TOPIC   = "swarm-workspace-apply"
+      WORKSPACE_APPLY_PUBLISH = var.workspace_apply_publish ? "true" : "false"
 
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no

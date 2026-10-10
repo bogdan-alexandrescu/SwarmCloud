@@ -1147,6 +1147,7 @@ export function StepInspector({
   now,
   load = loadAttempts,
   children = null,
+  changes = null,
 }: {
   workflowId: string
   /**
@@ -1191,6 +1192,12 @@ export function StepInspector({
    * checklist. Null everywhere else.
    */
   children?: ReactNode
+  /**
+   * The step's changes (diff-viewer.md §2 variant 2): the workflow's Changes
+   * tab filtered to this step, and the step's file count -- a dash, with its
+   * reason as the title, where nobody counted (`changesCount`). Null: no link.
+   */
+  changes?: { href: string; count: number | string | null; say: string | null } | null
 }) {
   const taskId = row.taskId
   const [read, setRead] = useState<AttemptsRead>({ kind: 'reading' })
@@ -1291,6 +1298,11 @@ export function StepInspector({
         {taskId !== null && (
           <a className="ctl-link wf-inspect-run" href={`#work/task/${encodeURIComponent(taskId)}`}>
             Open agent →
+          </a>
+        )}
+        {changes !== null && (
+          <a className="ctl-link wf-inspect-changes" href={changes.href} title={changes.say ?? undefined}>
+            Changes · {changes.count === null ? '—' : `${changes.count} ${changes.count === 1 ? 'file' : 'files'}`} ›
           </a>
         )}
         <button type="button" className="wf-inspect-close" aria-label="Stop inspecting this step" onClick={onClose}>

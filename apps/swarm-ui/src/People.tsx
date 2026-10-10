@@ -9,9 +9,9 @@ import {
   setWorkspaceCeiling,
   setWorkspaceLoan,
 } from './api'
-import { Button, Card, Chip, Dash, Dialog, ToneMark } from './components'
+import { Banner, Button, Card, Chip, Dash, Dialog, ToneMark } from './components'
 import type { ApiError, Result } from './fetch'
-import { JobSteps } from './OnboardingWorkspace'
+import { ApprovedWaiting, JobSteps, waitingOf } from './OnboardingWorkspace'
 import { Mark } from './primitives'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead, usePoll } from './Shell'
@@ -51,6 +51,11 @@ import './styles/onboarding.css'
  * then most recently active), kept by a stable sort that only lifts
  * `requested` rows. While any row is approved or applying, the list is read
  * again every 5 s so its steps move; at rest it is read once per visit.
+ *
+ * AN APPROVAL NOTHING WILL BUILD IS NOT IN FLIGHT (2026-10-10, w-752763). With
+ * workspace building off in the deployment, one banner says how many approved
+ * requests wait on it and where it is switched on; their rows say they wait,
+ * draw no live step rows, and are not polled for, since nothing moves them.
  */
 
 /** While a run is under way, how often the list is read (as the setup checklist reads a person's record). */
@@ -146,9 +151,13 @@ function Approve({ row, reload }: { row: PersonRow; reload: () => void }) {
     setOpen(false)
     setSaid(
       outcome(r, (d) =>
-        d.dispatch?.published === false
-          ? `Approved. The job was not started yet (${d.dispatch.reason ?? 'not published'}); the dispatch sweep retries it.`
-          : 'Approved. The job is starting.',
+        // The API's own sentence when it sends one: it is the one that knows
+        // whether anything will build this workspace.
+        typeof d.message === 'string' && d.message !== ''
+          ? d.message
+          : d.dispatch?.published === false
+            ? `Approved. The job was not started yet (${d.dispatch.reason ?? 'not published'}); the dispatch sweep retries it.`
+            : 'Approved. The job is starting.',
       ),
     )
     reload()
@@ -362,7 +371,15 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
         </p>
       )}
       {w.state === 'denied' && w.decision?.reason != null && <p className="ur-hint">“{w.decision.reason}”</p>}
-      {(IN_FLIGHT.has(w.state) || w.state === 'needs_owner') && <JobSteps record={w} />}
+      {w.state === 'requested' && w.held != null && (
+        <p className="ur-hint">Being migrated by the platform owner; not approved here</p>
+      )}
+      {w.state !== 'denied' && w.decision?.auto === true && <p className="ur-hint">approved automatically (admin)</p>}
+      {waitingOf(w) !== null ? (
+        <ApprovedWaiting record={w} />
+      ) : (
+        (IN_FLIGHT.has(w.state) || w.state === 'needs_owner') && <JobSteps record={w} />
+      )}
     </div>
   )
 }
@@ -398,7 +415,10 @@ function Row({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; reload: () 
             group per line, every control as wide as the cell and no wider,
             so Deny and the Account select stay inside the card. */}
         <div className="pp-acts">
-          {hasRecord && w.state === 'requested' && (
+          {/* A held record predates self-service setup (§3.3): its job would
+              fail IDENTITY_NOT_OURS (WORKSPACE_MIGRATING once that refusal is
+              switched on), so no approval is offered. */}
+          {hasRecord && w.state === 'requested' && w.held == null && (
             <span className="ob-acts">
               <Approve row={row} reload={reload} />
               <Deny row={row} reload={reload} />
@@ -555,11 +575,25 @@ function Audit({ entries }: { entries: AdminAuditEntry[] }) {
   )
 }
 
+/** One banner while this deployment builds no workspaces: an approval here is kept, and nothing builds it. */
+export function BuildingOff({ doc }: { doc: PeopleDoc }) {
+  const p = doc.provisioning
+  if (p === undefined || p.available !== false) return null
+  const n = p.approved_waiting
+  return (
+    <Banner tone="warn" title={`Workspace building is off in this deployment: ${n} approved request${n === 1 ? '' : 's'} ${n === 1 ? 'is' : 'are'} waiting`}>
+      An approval is kept and sent for building once it is switched on. Where to switch it on:{' '}
+      <code>docs/workspaces.md</code> §10.
+    </Banner>
+  )
+}
+
 function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   const rows = pendingFirst(Array.isArray(doc.people) ? doc.people : [])
   const phone = usePhoneTables()
   return (
     <>
+      <BuildingOff doc={doc} />
       <Card
         className="pp-people"
         title="People"
@@ -614,7 +648,11 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
 export function PeopleScreen() {
   const people = useUrRead(loadPeople, 'people')
   const data = people.state.status === 'ok' || people.state.status === 'stale' ? people.state.data : null
-  const moving = data !== null && Array.isArray(data.people) && data.people.some((r) => IN_FLIGHT.has(r.workspace.state))
+  // A row waiting on something the platform will not do by itself is not moving.
+  const moving =
+    data !== null &&
+    Array.isArray(data.people) &&
+    data.people.some((r) => IN_FLIGHT.has(r.workspace.state) && waitingOf(r.workspace) !== 'publishing_off')
   usePoll(PEOPLE_POLL_MS, people.reload, !moving)
   return (
     <div className="ur-page pp-page">

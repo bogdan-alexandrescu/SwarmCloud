@@ -121,12 +121,12 @@ run "runner_backends_match_resolve_backend" {
     error_message = "claude-code runs on GKE Autopilot (contract request 53)"
   }
 
-  # Contract request 62 (owner, 2026-10-10): indexer runs on Autopilot as the
+  # Contract request 63 (owner, 2026-10-10): indexer runs on Autopilot as the
   # canary for #939, where a new pod's internet path opens in about 1 s
   # against a new Cloud Run instance's 20 s median.
   assert {
     condition     = output.runner_backends["indexer"] == "GKE_AUTOPILOT"
-    error_message = "indexer runs on GKE Autopilot (contract request 62, the canary for #939)"
+    error_message = "indexer runs on GKE Autopilot (contract request 63, the canary for #939)"
   }
 
   # Contract request 55's canary is gone: the switch replaced it.
@@ -262,11 +262,11 @@ run "jobs_exist_only_where_a_credential_does" {
     error_message = "the claude-code Cloud Run Jobs are kept until 2026-10-15 as the request 53 rollback; the backend switch must not destroy them"
   }
 
-  # Contract request 62 moved indexer to GKE Autopilot as #939's canary; its
+  # Contract request 63 moved indexer to GKE Autopilot as #939's canary; its
   # Cloud Run Jobs stay, idle, as the rollback until the owner decides it.
   assert {
     condition     = contains(output.job_names, "swarm-job-eng-indexer")
-    error_message = "the indexer Cloud Run Jobs are kept as the request 62 rollback; the backend switch must not destroy them"
+    error_message = "the indexer Cloud Run Jobs are kept as the request 63 rollback; the backend switch must not destroy them"
   }
 
   # The fallback keeps exactly what it names: browser, on GKE too, still gets
@@ -384,7 +384,7 @@ run "the_python_catalogue_is_readable" {
   # CLOUD_RUN_JOB entry too, not only GKE ones.
   assert {
     condition     = output.runner_profiles["claude-code"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "GKE_AUTOPILOT" && output.runner_profiles["merge"].backend == "CLOUD_RUN_JOB"
-    error_message = "the parser misread profiles.py: claude-code (contract request 53) and indexer (contract request 62) must read GKE_AUTOPILOT, and merge must keep CLOUD_RUN_JOB"
+    error_message = "the parser misread profiles.py: claude-code (contract request 53) and indexer (contract request 63) must read GKE_AUTOPILOT, and merge must keep CLOUD_RUN_JOB"
   }
 
   assert {

@@ -1347,7 +1347,7 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         name="indexer",
         image="agent-runtime-indexer",
         resource_class="standard",
-        # GKE Autopilot since contract request 62 (owner, 2026-10-10), the
+        # GKE Autopilot since contract request 63 (owner, 2026-10-10), the
         # canary for #939: a new Cloud Run instance's internet path opens a
         # median 20.2 s after start (n=19) against GKE's 1.17 s (n=148)
         # through the same NAT. Its tenants' Cloud Run Jobs are kept as the

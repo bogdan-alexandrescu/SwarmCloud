@@ -255,7 +255,7 @@ def test_collect_saying_on_is_refused(client):
 def test_a_merge_choice_that_is_not_on_or_off_is_refused(client, value):
     response = _post(client, _review_shape(metadata={"merge": value}))
     assert response.status_code == 422, response.text
-    assert response.json()["detail"]["accepted"] == ["on", "off"]
+    assert response.json()["detail"]["accepted"] == ["on", "off", "on_merge_verdict"]
 
 
 # --------------------------------------------------------------------------

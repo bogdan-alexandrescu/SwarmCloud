@@ -212,6 +212,16 @@ describe('the people table', () => {
     expect(writesOf(calls)[0]).toMatchObject({ method: 'POST', url: '/v1/admin/workspaces/w-d4n000/retry' })
   })
 
+  it('a held (migrating) request offers no Approve or Deny, and an auto-approved row says so', async () => {
+    const held = person('gus@example.com', ws('requested', 'w-9a5000', { held: { reason: 'migrating', copy: 'x' } }))
+    const auto = person('hal@example.com', ws('approved', 'w-4a1000', { decision: { verdict: 'approved', reason: 'requester is an admin', at: now(), auto: true } }))
+    await mount(people([held, auto]))
+    await waitFor(() => expect(rowOf('gus@example.com')).not.toBeNull(), WAIT)
+    expect(within(rowOf('gus@example.com')).queryByRole('button', { name: /Approve|Deny/ })).toBeNull()
+    expect(visible(rowOf('gus@example.com'))).toContain('Being migrated by the platform owner')
+    expect(visible(rowOf('hal@example.com'))).toContain('approved automatically (admin)')
+  })
+
   it('a denied row may still be approved, and is not offered Retry', async () => {
     const denied = person('fay@example.com', ws('denied', 'w-fa1000', { decision: { verdict: 'denied', reason: 'Use the eng space.', at: now() } }))
     const { calls } = await mount(people([denied]), {
@@ -449,5 +459,54 @@ describe('admins and the audit', () => {
     await mount(people(ROWS, { audit: [{ action: 'approve', target_workspace_id: 'w-3f9a2c', by: 'bob@example.com', at: now(), detail: {} }] }))
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
     expect(visible(document.querySelector('.pp-audit-list'))).toContain('approve w-3f9a2c by bob@example.com')
+  })
+})
+
+// WORKSPACE BUILDING OFF (2026-10-10, w-752763): `people.everyone`'s
+// `provisioning` figures and each row's `provisioning` block.
+describe('workspace building off in this deployment', () => {
+  const waiting = (id: string) =>
+    ws('approved', id, {
+      decision: { verdict: 'approved', reason: null, at: now() },
+      provisioning: { available: false, waiting_because: 'publishing_off', approved_minutes_ago: 1140 },
+    })
+
+  it('shows one banner with the count, naming where to switch it on', async () => {
+    await mount(
+      people([person('alice@example.com', waiting('w-3f9a2c')), person('erin@example.com', waiting('w-e41000')), ...ROWS.slice(0, 1)], {
+        provisioning: { available: false, approved_waiting: 2 },
+      }),
+    )
+    const banners = await screen.findAllByText(/Workspace building is off in this deployment/, {}, WAIT)
+    expect(banners).toHaveLength(1)
+    expect(visible(banners[0]!.closest('.c-banner') as HTMLElement)).toContain(
+      'Workspace building is off in this deployment: 2 approved requests are waiting',
+    )
+    expect(visible(banners[0]!.closest('.c-banner') as HTMLElement)).toContain('docs/workspaces.md §10')
+    // The waiting rows say so, and draw no live step rows.
+    const row = rowOf('alice@example.com')
+    expect(visible(row)).toContain("workspace building isn't switched on")
+    expect(row.querySelector('ol[aria-label="Workspace set-up steps"]')).toBeNull()
+  })
+
+  it('shows no banner when building is on', async () => {
+    await mount(people(ROWS, { provisioning: { available: true, approved_waiting: 0 } }))
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    expect(screen.queryByText(/Workspace building is off/)).toBeNull()
+  })
+
+  it("Approve says the API's own sentence when the workspace was not sent for building", async () => {
+    const said = 'Approved, and NOT sent for building: workspace provisioning is off in this deployment.'
+    await mount(people(ROWS), {
+      'POST /v1/admin/workspaces/w-3f9a2c/approve': () => ({
+        status: 200,
+        body: { workspace: waiting('w-3f9a2c'), dispatch: { published: false, mode: 'create', reason: 'publishing_off' }, sent_for_building: false, message: said },
+      }),
+    })
+    await waitFor(() => expect(rowOf('alice@example.com')).not.toBeNull(), WAIT)
+    fireEvent.click(within(rowOf('alice@example.com')).getByRole('button', { name: 'Approve' }))
+    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Approve' }))
+    await screen.findByText(said, {}, WAIT)
   })
 })

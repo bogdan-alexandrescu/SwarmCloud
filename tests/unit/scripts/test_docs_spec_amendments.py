@@ -71,7 +71,7 @@ def test_the_catalogue_is_what_the_amendment_describes():
     backends = _backends()
     # claude-code: contract request 53, applied 2026-10-08 after request 55's
     # canary (claude-code-gke, removed by the same change). indexer: contract
-    # request 62 (owner, 2026-10-10), the canary for #939.
+    # request 63 (owner, 2026-10-10), the canary for #939.
     assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {"browser", "claude-code", "indexer"}
     assert {n for n, b in backends.items() if b is Backend.CLOUD_RUN_JOB} == {
         "mock",

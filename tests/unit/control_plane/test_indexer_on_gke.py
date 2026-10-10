@@ -1,4 +1,4 @@
-"""indexer runs on GKE Autopilot, the canary for #939 (contract request 62).
+"""indexer runs on GKE Autopilot, the canary for #939 (contract request 63).
 
 Owner decision of 2026-10-10, option A of
 docs/incidents/2026-10-09-egress-open-delay.md: a new Cloud Run instance's
@@ -113,9 +113,9 @@ def test_terraform_keeps_the_indexer_cloud_run_jobs_as_the_rollback():
     assert f'"{PROFILE}"' in fallback.group(1)
 
 
-def test_request_62_records_the_owners_acceptance_and_the_rollback():
+def test_request_63_records_the_owners_acceptance_and_the_rollback():
     text = REQUESTS.read_text(encoding="utf-8")
-    start = text.index("## 62. ")
+    start = text.index("## 63. ")
     end = text.find("\n## 63. ", start)
     section = text[start:end if end != -1 else len(text)]
     # scripts/lib/check-frozen-contract.sh passes a diff under

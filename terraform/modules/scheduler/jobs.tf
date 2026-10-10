@@ -145,7 +145,7 @@ resource "google_service_account" "rollup_sweeper" {
   project      = var.project_id
   account_id   = module.service_account_ids.rollup_sweeper_id
   display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup, issue-run-advance, issue-sweep, repo-index-poll, merge-wake and forge-refresh jobs and the task_finished push. swarm-api admits it to those seven /v1/admin routes only. No project roles."
+  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup, issue-run-advance, issue-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep jobs and task_finished push; admitted to those eight /v1/admin routes only. No roles."
 }
 
 locals {
@@ -490,5 +490,144 @@ resource "google_cloud_scheduler_job" "forge_refresh" {
   # The next tick IS the retry.
   retry_config {
     retry_count = 0
+  }
+}
+
+# --- The schedule tick (docs/schedules.md §2.1, lane S4) ----------------------
+#
+# POST /v1/admin/schedules/tick (apps/swarm-api/swarm_api/routes/schedule_tick.py,
+# lane S2) claims every due slot of every enabled schedule, as one firing per
+# slot created inside the transaction that advances the schedule (§2.2), and
+# then creates the firing's work as the schedule's owner in the schedule's
+# tenant (§2.7). A schedule is data; this one job is the only GCP resource
+# schedules ever need, so editing a schedule is never an infrastructure change.
+#
+# ONE JOB, NOT ONE PER TENANT, and NO tenant_id: the route reads
+# `schedules where state == enabled and next_run_at <= now` across every tenant,
+# personal `u-` ones included, which a job keyed on var.tenants would miss
+# (§2.1). The query's composite index is modules/firestore's
+# "schedules-state-next-run".
+#
+# ITS OWN IDENTITY, lane S13's account (owner decision SD10, 2026-10-08), made
+# in main.tf beside this file: swarm-api admits it to this one route
+# (auth.SCHEDULE_TICK_ROUTES through SCHEDULE_TICK_USERS) and its one grant is
+# run.invoker on swarm-api (terraform/infra main.tf, schedule_tick_invokes_api).
+# The OIDC token below is minted BY the account; it is not a grant TO it, so
+# this job adds no IAM member, and tests/terraform/schedule_tick_identity.tftest.hcl
+# still finds exactly one grant. The deployer's actAs on the account, which
+# creating a job that mints its token needs, is S13's (terraform/infra
+# deployer.tf).
+#
+# NO RETRY (§2.1). The next minute's tick is the retry, and every claim is a
+# transaction keyed on the slot, so an overlapping retry repeats reads and never
+# a firing; a Cloud Scheduler retry would only add a second caller to that race.
+#
+# Stopped two ways (§2.11): var.paused stops calling the route at all, and
+# swarm-api's SCHEDULES_ENABLED=false makes the route answer {disabled: true}.
+# Either way the catch-up policy decides what the missed slots do on resume.
+resource "google_cloud_scheduler_job" "schedule_tick" {
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-schedule-tick"
+
+  description = "managed-by=swarm-terraform; fires every tenant's due schedules, one firing per slot (docs/schedules.md)"
+  schedule    = var.schedule_tick_schedule
+  time_zone   = var.time_zone
+  paused      = var.paused
+
+  # The route stops STARTING work at 240 s (schedulefire.TICK_BUDGET_SECONDS,
+  # the repository poll's budget and reason); the deadline leaves it room to
+  # answer, as repo_index_poll's does.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/schedules/tick"
+
+    # Not coalesce(), as the per-tenant jobs use: those are made per
+    # rollup_tenant_ids, which is empty wherever api_endpoint is, while this
+    # job is unconditional, and coalesce() of two empty strings is an error.
+    # The root always passes swarm-api's URL (terraform/infra main.tf).
+    oidc_token {
+      service_account_email = local.schedule_tick_email
+      audience              = var.api_audience != "" ? var.api_audience : trimsuffix(var.api_endpoint, "/")
+    }
+  }
+
+  retry_config {
+    retry_count = 0
+  }
+}
+
+# --- The personal-workspace dispatch sweep (docs/workspaces.md §2.2, #847) ---
+#
+# POST /v1/admin/workspaces/sweep on swarm-api publishes again the workspace id
+# of an `approved` record whose publish failed or whose build never claimed
+# it, and is the DETECTOR for a record that waits: it logs one
+# `workspace_stuck` entry per stuck record per hour (reason publishing_off,
+# never_dispatched or dispatched_unclaimed), which modules/monitoring counts
+# and pages on. On 2026-10-09 an approved request sat 19 hours with nothing
+# calling this route and nothing saying so; this job is the caller.
+#
+# ALWAYS ON, unlike forge_refresh: with WORKSPACE_APPLY_PUBLISH off the sweep
+# publishes nothing, but it still finds and logs every approved record, so the
+# wait is paged rather than silent. The count is enable_workspace_sweep, a
+# bool for #748's reason (enable_task_finished_push): api_endpoint is unknown
+# at plan in the root, so it cannot gate a count, and a module planned on its
+# own with no endpoint must not build a job that calls nowhere. The root sets
+# it to a literal true, not to a tfvars variable, so no environment can switch
+# the detector off with the thing it detects.
+#
+# ONE JOB, NOT ONE PER TENANT: the route takes no tenant_id. A personal
+# workspace is no tenant of var.tenants (docs/workspaces.md §3.2), and the
+# sweep walks every approved record by its opaque id.
+#
+# SAME IDENTITY as forge_refresh and the per-tenant jobs above: the
+# rollup-sweeper account. swarm-api admits that address -- ROLLUP_SWEEPER_USERS
+# -- to this route (swarm_api.auth.ROLLUP_SWEEPER_ROUTES), and its run.invoker
+# on swarm-api (terraform/infra main.tf, rollup_sweeper_invokes_api) is the
+# edge grant, so this job adds no IAM member. NOT swarm-tick, which
+# docs/workspaces.md §2.2 named: swarm-api admits swarm-tick to no admin
+# route, and it holds no run.invoker on swarm-api, so every call would be
+# refused.
+resource "google_cloud_scheduler_job" "workspace_sweep" {
+  count = var.enable_workspace_sweep ? 1 : 0
+
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-workspace-sweep"
+
+  description = "managed-by=swarm-terraform; re-dispatches approved personal workspaces nobody built and logs each one waiting as workspace_stuck"
+  schedule    = var.workspace_sweep_schedule
+  time_zone   = var.time_zone
+  paused      = var.paused
+
+  # One page of approved records and at most one publish each; bounded by
+  # the API's page size, like the rollup sweep.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}${var.workspace_sweep_path}"
+
+    oidc_token {
+      service_account_email = local.rollup_sweeper_email
+      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
+    }
+  }
+
+  # No retry: the next tick, ten minutes on, IS the retry. A retry racing the
+  # attempt it retries could publish one record twice; the route's own
+  # once-per-10-minutes rule absorbs that, but not retrying keeps it from being
+  # tested every time.
+  retry_config {
+    retry_count = 0
+  }
+
+  lifecycle {
+    precondition {
+      condition     = var.api_endpoint != ""
+      error_message = "enable_workspace_sweep needs api_endpoint: the job POSTs swarm-api's dispatch sweep."
+    }
   }
 }

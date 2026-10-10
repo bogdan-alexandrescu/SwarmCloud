@@ -168,7 +168,7 @@ fails when a profile's backend moves and this table does not.
 | `browser` | `GKE_AUTOPILOT` | none: Chromium needs the `/dev/shm` GKE gives it |
 | `mock` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
 | `generic` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
-| `indexer` | `GKE_AUTOPILOT` | none used: since contract request 62 (2026-10-10, the canary for #939); each tenant's old Job (one per tenant that registers `anthropic`) is kept idle as the rollback |
+| `indexer` | `GKE_AUTOPILOT` | none used: since contract request 63 (2026-10-10, the canary for #939); each tenant's old Job (one per tenant that registers `anthropic`) is kept idle as the rollback |
 | `merge` | `CLOUD_RUN_JOB` | one per tenant that registers `git` (contract request 47); every MERGE verdict pays a Cloud Run start (#748) |
 | `codex` | `CLOUD_RUN_JOB` | one per tenant that registers `openai`; the profile is disabled (`available=False`) |
 | `post-verdict` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); disabled |
@@ -183,7 +183,7 @@ theirs, and the idle claude-code and indexer Jobs until they are removed.
 Accepted by the owner 2026-10-05. `indexer` was `claude-code` in every field
 but its name and its image: the same runner, resource class, backend,
 timeouts, provider, secrets and inputs. Contract request 53 moved
-`claude-code` to GKE Autopilot (2026-10-08); contract request 62 (owner,
+`claude-code` to GKE Autopilot (2026-10-08); contract request 63 (owner,
 2026-10-10) moved `indexer` after it, as the canary for #939: a new Cloud Run
 instance's internet path opens a median 20.2 s after start against GKE's
 1.17 s, through the same NAT, and every index run clones. Its tenants' Cloud

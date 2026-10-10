@@ -48,7 +48,7 @@ def test_the_indexer_profile_is_claude_code_on_the_indexer_image():
         if getattr(indexer, f.name) != getattr(claude, f.name)
     )
     # Contract request 53 (applied 2026-10-08) moved claude-code to GKE
-    # Autopilot, and request 62 (owner, 2026-10-10, #939's canary) moved
+    # Autopilot, and request 63 (owner, 2026-10-10, #939's canary) moved
     # indexer after it: the two share a backend again.
     assert differ == ["image", "name"], (
         f"the owner's decision was claude-code with only its name and image changed; {differ} differ"

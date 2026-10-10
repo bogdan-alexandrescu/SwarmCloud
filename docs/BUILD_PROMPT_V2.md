@@ -55,7 +55,7 @@ disabled for every tenant; no Job exists for them yet):
 | `merge` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `post-verdict` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
-| `indexer` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`; on GKE Autopilot since contract request 62, 2026-10-10, the canary for #939; its tenants' Cloud Run Jobs are kept, idle, as the rollback) |
+| `indexer` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`; on GKE Autopilot since contract request 63, 2026-10-10, the canary for #939; its tenants' Cloud Run Jobs are kept, idle, as the rollback) |
 
 `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`

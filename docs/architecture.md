@@ -265,7 +265,7 @@ p50 128 s / p90 212 s while Autopilot starts it in about 23 s. That buys back
 the node-side failure modes above for the profile that runs nearly every step;
 mandatory periodic checkpointing makes them cost minutes, not the run, and
 does not make them free ([execution-backends.md](execution-backends.md) §4).
-`indexer` followed on 2026-10-10 (contract request 62), the canary for #939,
+`indexer` followed on 2026-10-10 (contract request 63), the canary for #939,
 for its internet path rather than its start: a new Cloud Run instance's opens a
 median 20.2 s after start, a GKE pod's 1.17 s.
 

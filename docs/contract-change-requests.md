@@ -59,7 +59,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 48 | `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain (filed with #625, functionality wave 8, lane IMG) | open |
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
-| 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
+| 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | ACCEPTED by the owner 2026-10-09 and APPLIED by the pull request that adds this line (proposed 2026-10-07, then accepted 2026-10-09) |
 | 52 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | ACCEPTED by the owner 2026-10-09 and APPLIED by the pull request that adds this line (proposed (owner 2026-10-07: not accepted for now), then accepted 2026-10-09) |
 | 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | APPLIED 2026-10-08 (accepted by the owner 2026-10-07, with conditions; switched after request 55's canary passed 5/5) |
 | 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
@@ -70,7 +70,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 59 | `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55) | proposed |
 | 60 | `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87) | proposed |
 | 61 | `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57 | proposed |
-| 62 | `profiles.py`: indexer runs on GKE_AUTOPILOT (canary for #939) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line |
+| 62 | `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI | proposed |
+| 63 | `profiles.py`: indexer runs on GKE_AUTOPILOT (canary for #939) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -8958,10 +8959,37 @@ rows for values nothing writes.
 
 ## 51. `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to
 
-**Status:** proposed, filed 2026-10-07 for #350, the Firestore document-shape
-record of #348 (the fix for S0 #347). A request, not a change: nothing under
-`apps/common/swarm_common/` is edited by it, and the owner accepts or refuses
-it.
+**Status:** ACCEPTED by the owner 2026-10-09 and APPLIED by the pull request
+that adds this line. History: proposed, filed 2026-10-07 for #350, the
+Firestore document-shape record of #348 (the fix for S0 #347), as a request
+that edited nothing; then accepted 2026-10-09, in the operator session, whose
+brief is the record. This edits `apps/common/swarm_common/models.py`, which is
+frozen, and is recorded here as such.
+
+### What was applied
+
+* `Attempt.checkpoint_sha256: dict[str, str] = field(default_factory=dict)`,
+  after `checkpoints`, with the comment the request below gives, word for word.
+* `agent_worker.control.CHECKPOINT_DIGESTS_FIELD` is looked up on the
+  dataclass (`Attempt.__dataclass_fields__["checkpoint_sha256"].name`), so a
+  rename in the contract fails the worker's import rather than a retry's
+  restore. `agent_worker.control.recorded_checkpoint_digests` reads the map
+  in its typed shape, keeping only `str -> str` entries, and both the writer
+  (`ControlPlane.record_checkpoint`) and the reader
+  (`Worker._recorded_checkpoint`) go through it. A missing or malformed map is
+  the empty map: "no digest recorded", and the retry starts clean.
+* `swarm_api.codec.attempt_from_dict` reads it, keeping only `str -> str`
+  entries. `attempt_to_api` does not serve it.
+* `tests/unit/worker/test_checkpoint_digest_contract.py` holds the three
+  together: the worker's key is the frozen field of the requested type and
+  default; what `record_checkpoint` writes decodes identically through both
+  readers; a missing digest is the empty map to both; the API response does
+  not carry it. `tests/unit/worker/test_no_planted_restore.py` adds a retry of
+  an attempt document with no map, which starts clean.
+  `scripts/lib/check-contract-parity.sh` restates no attempt field, so it is
+  unchanged.
+* No migration, as the request says: a pre-#348 document decodes with the
+  empty default.
 
 ### What is true today
 
@@ -10382,9 +10410,84 @@ for them alone.
   `url` inputs accept.
 - **Invariants 1-9.** Untouched.
 
+## 62. `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI
+
+**Status:** proposed, filed 2026-10-10 by the merge-race lane (part of
+[#295](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/295)). A
+request, not a change: nothing under `apps/common/swarm_common/` is edited
+by it, and the slot is built on `ParkReason.CI_PENDING` meanwhile.
+
+### What is true today
+
+Measured 2026-10-10 across the eng tenant: 16 merge steps ran against one
+`main` that requires an up-to-date branch, each landing merge put the rest
+behind, and 7 refused `behind_too_often`. The fix
+(`apps/agent-worker/agent_worker/mergeslot.py`) gives every (tenant,
+repository, base) one merge slot. A step whose checks are green and that
+cannot have the slot parks, holding nothing, until the holder's release
+hands the slot to it.
+
+That park is `ParkReason.CI_PENDING` with the code `merge_slot_wait` in
+`metadata.merge_wait.code`. Everything that must tell the two apart reads
+the code, not the reason:
+
+* `apps/agent-worker/agent_worker/control.py::ControlPlane.park_ci_pending`
+  counts it on `merge_wait.slot_waits`, not `wakes`, and clears
+  `first_parked_at` so `checks_timeout` does not time a queue;
+* `apps/swarm-api/swarm_api/mergewake.py::wake_tenant` skips it, because
+  its checks are green and reading them would wake it every tick;
+* the API's `blocked_by`, the UI and the MCP tools show `CI_PENDING`, so a
+  step queued behind seven merges reads as "waiting for CI".
+
+### Why
+
+A park reason is what a reader -- a person, the UI, a metric -- uses to say
+why a task is not running. "Waiting for CI" for a step whose CI is green is
+the wrong answer, and the code that corrects it lives in a tenant-writable
+metadata field that nothing outside the merge path reads.
+
+### The requested change
+
+In `apps/common/swarm_common/states.py`, beside `CI_PENDING`:
+
+```diff
+     CI_PENDING = "CI_PENDING"
++    #: A merge step whose checks are green waits for its repository's merge
++    #: slot (`agent_worker.mergeslot`); promoted by the scheduler's CI-wait
++    #: sweep on the release's wake marker or the fallback instant.
++    #: Contract request 63.
++    MERGE_SLOT_WAIT = "MERGE_SLOT_WAIT"
+```
+
+**The non-frozen half, in the same change:** the scheduler's
+`_promote_ci_waits` sweeps both reasons; `park_ci_pending` takes the reason
+from the code; `mergewake.wake_tenant` queries `CI_PENDING` alone and drops
+its skip; `mergeslot.FirestoreMergeSlots.wake` guards on the new reason;
+and the UI and MCP park labels name it.
+
+### What it would break if accepted
+
+Every reader that lists park reasons exhaustively (the UI's labels, the MCP
+rows, `docs/api-refusals.md`) needs the new member, and a slot wait parked
+by a worker of the old image during the rollout stays `CI_PENDING` with the
+code -- the sweep must keep reading both until those have drained.
+
+### If it is declined
+
+The slot keeps working as it is: `CI_PENDING` plus the code. Only the label
+a person reads is wrong.
+
+### Invariants
+
+- **Invariant 1.** Unchanged: the wait is a park, holding no lease and no
+  pool count, whichever reason it carries.
+- **Invariant 5.** Unchanged: the slot's writes are fenced on the
+  attempt's task and lease, under either reason.
+- **Invariants 2-4, 6-10.** Untouched.
+
 ---
 
-## 62. `profiles.py`: indexer runs on GKE_AUTOPILOT (canary for #939)
+## 63. `profiles.py`: indexer runs on GKE_AUTOPILOT (canary for #939)
 
 **Status:** ACCEPTED by the owner 2026-10-10, option A of
 `docs/incidents/2026-10-09-egress-open-delay.md` (PR 986), and APPLIED by the
@@ -10470,3 +10573,4 @@ ephemeral-storage limit rather than by memory. Index runs share the
   GSA, its own secrets and GCS prefix.
 - **Invariant 10.** Unchanged: a caller still names `indexer` and cannot choose
   where it runs.
+
