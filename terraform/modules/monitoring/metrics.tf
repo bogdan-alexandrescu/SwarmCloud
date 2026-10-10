@@ -399,8 +399,18 @@ locals {
 }
 
 resource "google_logging_metric" "spec_signature_invalid" {
+  # -v2 and create_before_destroy (2026-10-10): adding the job_name label to the
+  # descriptor forces a replacement, and GCP refuses to delete a metric an alert
+  # policy still uses ("Cannot delete metric ... still used"), which failed
+  # release 38029688180's apply. A new name lets the new metric exist first, the
+  # alert move to it, and only then the old one be deleted. The next descriptor
+  # change needs a new suffix for the same reason.
+  lifecycle {
+    create_before_destroy = true
+  }
+
   project = var.project_id
-  name    = "${var.name_prefix}/spec-signature-invalid"
+  name    = "${var.name_prefix}/spec-signature-invalid-v2"
 
   description = "A worker refused to run a task whose step spec did not verify (end cause spec_signature_invalid). Every occurrence is an attack on a parked step or a platform bug."
 
@@ -466,8 +476,18 @@ resource "google_logging_metric" "spec_signature_invalid" {
 # unbounded, and a label carrying it would mint a time series per task.
 # ---------------------------------------------------------------------------
 resource "google_logging_metric" "spec_upstream_invalid" {
+  # -v2 and create_before_destroy (2026-10-10): adding the job_name label to the
+  # descriptor forces a replacement, and GCP refuses to delete a metric an alert
+  # policy still uses ("Cannot delete metric ... still used"), which failed
+  # release 38029688180's apply. A new name lets the new metric exist first, the
+  # alert move to it, and only then the old one be deleted. The next descriptor
+  # change needs a new suffix for the same reason.
+  lifecycle {
+    create_before_destroy = true
+  }
+
   project = var.project_id
-  name    = "${var.name_prefix}/spec-upstream-invalid"
+  name    = "${var.name_prefix}/spec-upstream-invalid-v2"
 
   description = "A merge or post-verdict worker refused because an upstream step's spec did not verify (end cause merge_refused or verdict_refused, spec_check.reason upstream:...). Every occurrence is an attack on the chain or a platform bug."
 

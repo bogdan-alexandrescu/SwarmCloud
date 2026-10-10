@@ -144,6 +144,7 @@ import logging
 import secrets
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping
+from urllib.parse import quote
 
 from swarm_common.states import TaskState
 
@@ -158,7 +159,7 @@ from .forgechecks import (
     evaluate,
     required_status_checks,
 )
-from .forgewrite import GitHubWriter, PullSnapshot
+from .forgewrite import ForgeWriteNotFound, GitHubWriter, PullSnapshot
 from .issueruns import (
     FIX_STEP,
     IMPLEMENT_PREFIX,
@@ -218,6 +219,19 @@ LOST_ROUND_SECONDS = 600
 #: change (#644). `agent_worker.expected_outputs.NO_CHANGE_SUMMARY_KEY`,
 #: spelled again because the API image does not carry the worker.
 NO_CHANGE_MARKER = "no_change"
+
+#: How many of GitHub's base merges (`update-branch`) an `auto_merge` run
+#: accepts on top of a head one of its tasks pushed. The merge step makes
+#: them itself when the branch is behind, and its first-parent walk accepts
+#: at most this many: `agent_worker.merge.MERGE_MAX_BRANCH_UPDATES`, spelled
+#: again because the API image does not carry the worker, and held equal to
+#: it by tests/unit/control_plane/test_issue_run_merge_update.py.
+MERGE_MAX_BRANCH_UPDATES = 5
+#: The committer of a commit GitHub itself made and signed, as `update-branch`
+#: merges are (`agent_worker.merge.GITHUB_COMMITTER_EMAIL`, held the same way).
+GITHUB_COMMITTER_EMAIL = "noreply@github.com"
+#: What reading a commit and comparing it with the base asks of the credential.
+CONTENTS_READ = "contents: read"
 
 #: The workflow states a round or the compiled workflow can end in.
 _ENDED = {
@@ -905,7 +919,8 @@ def from_checks(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAuth) 
             if run.auto_merge:
                 # Green AND the keyword block written: only now is the pull
                 # request in the shape a merge may land (contract request 47).
-                return _merge(ctx, tenant_id, run, record, head, owner_auth)
+                return _merge(ctx, tenant_id, run, record, head, owner_auth,
+                              writer=writer, token=token, base=pull.base_ref)
             return runs.transition(
                 tenant_id, run.id, RunState.DONE, by=ACTOR, from_states={RunState.CHECKING},
                 patch={"pull_request": record, "green_sha": head},
@@ -1114,6 +1129,89 @@ def pushing_task(
     return None
 
 
+def _base_merge_parent(
+    writer: GitHubWriter, ref: IssueRef, token: str, *, sha: str, base: str
+) -> tuple[str | None, str]:
+    """`(first parent, '')` when `sha` is one of GitHub's base merges, else `(None, why not)`.
+
+    A base merge is what `update-branch` makes: two parents, committed and
+    signed by GitHub itself, whose second parent is already on `base`. Read
+    with the run's own tenant's credential, through the writer's transport
+    (forgewrite has no public commit read; the worker's `ForgeMerger.commit`
+    and `on_base` are the same two requests).
+    """
+    what = f"the commit {ref.repository}@{sha[:12]}"
+    try:
+        data = writer._call(
+            "GET", writer._url(ref, f"commits/{quote(sha, safe='')}"), token, what,
+            needs=CONTENTS_READ,
+        )
+    except ForgeWriteNotFound:
+        return None, f"{sha[:12]} is not a commit GitHub has"
+    data = data if isinstance(data, Mapping) else {}
+    parents = [
+        p.get("sha") for p in data.get("parents") or []
+        if isinstance(p, Mapping) and isinstance(p.get("sha"), str) and p.get("sha")
+    ]
+    if len(parents) != 2:
+        return None, f"{sha[:12]} is not a merge (it has {len(parents)} parents)"
+    detail = data.get("commit") if isinstance(data.get("commit"), Mapping) else {}
+    committer = detail.get("committer") if isinstance(detail.get("committer"), Mapping) else {}
+    verification = (
+        detail.get("verification") if isinstance(detail.get("verification"), Mapping) else {}
+    )
+    email = committer.get("email") if isinstance(committer.get("email"), str) else ""
+    if verification.get("verified") is not True or email.lower() != GITHUB_COMMITTER_EMAIL:
+        return None, f"{sha[:12]} was not committed and signed by GitHub"
+    if not base:
+        return None, "GitHub named no base branch for the pull request"
+    compared = f"{ref.repository} {base}...{parents[1][:12]}"
+    try:
+        comparison = writer._call(
+            "GET",
+            writer._url(ref, f"compare/{quote(base, safe='')}...{quote(parents[1], safe='')}"),
+            token, f"the comparison {compared}", needs=CONTENTS_READ,
+        )
+    except ForgeWriteNotFound:
+        return None, f"{sha[:12]}'s second parent is not on {base}"
+    status = comparison.get("status") if isinstance(comparison, Mapping) else None
+    if status not in ("behind", "identical"):
+        return None, f"{sha[:12]}'s second parent is not on {base}"
+    return parents[0], ""
+
+
+def through_base_merges(
+    writer: GitHubWriter, ref: IssueRef, token: str, *, head: str, base: str,
+    known: Callable[[str], str | None],
+) -> tuple[str | None, str]:
+    """`(what `known` said, '')` for the first head it knows, walking first parents, or
+    `(None, why not)`.
+
+    From `head`, each step down must be one of GitHub's base merges
+    (`_base_merge_parent`) and its first parent is the next step; `known` is
+    asked at every step, `head` first, and must answer within
+    MERGE_MAX_BRANCH_UPDATES steps. The worker's `_updates_onto` walk, read
+    the same way: a merge step that updated a behind branch leaves a head no
+    task pushed, and that head is still this run's to merge, while a
+    person's push -- any other commit -- is not.
+    """
+    steps = 0
+    while True:
+        found = known(head)
+        if found is not None:
+            return found, ""
+        if steps >= MERGE_MAX_BRANCH_UPDATES:
+            return None, (
+                f"it is more than {MERGE_MAX_BRANCH_UPDATES} of GitHub's base merges on top "
+                "of any head this run's tasks pushed"
+            )
+        parent, why = _base_merge_parent(writer, ref, token, sha=head, base=base)
+        if parent is None:
+            return None, why
+        head = parent
+        steps += 1
+
+
 def _review_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:
     """`(verdict, why not)`: the review's `verdict`, read as `evaluate_requirements` reads it."""
     import json
@@ -1153,7 +1251,7 @@ def _merge_refusal(ctx: Any, tenant_id: str, workflow: Any) -> str:
 
 def _merge(
     ctx: Any, tenant_id: str, run: IssueRun, record: dict[str, Any], head: str,
-    owner_auth: OwnerAuth,
+    owner_auth: OwnerAuth, *, writer: GitHubWriter, token: str, base: str,
 ) -> IssueRun:
     """CI is green at `head` and the keyword block is written: merge, once per head.
 
@@ -1164,6 +1262,14 @@ def _merge(
     open and green for a person: the review's verdict is not MERGE, the head
     was not pushed by this run, or the merge step refused (its code and
     message, from the worker). A merge is never resubmitted for the same head.
+
+    THE MERGE STEP MOVES THE HEAD ITSELF. A branch that is behind its base is
+    updated by the step through GitHub's `update-branch`, which makes a base
+    merge no task pushed. So a head is this run's when one of its tasks
+    pushed it OR it is at most MERGE_MAX_BRANCH_UPDATES of GitHub's base
+    merges on top of one (`through_base_merges`), and a merge whose head moved
+    that way from the head it claimed is the same merge, still running, not
+    a new one to submit. Any other head is still refused.
     """
     runs = _runs(ctx)
     now = ctx.now()
@@ -1179,7 +1285,29 @@ def _merge(
             )},
         )
 
-    if current.get("head_sha") == head:
+    def _read_failed(exc: Exception) -> IssueRun:
+        # GitHub did not answer the walk: CHECKING, read again next visit.
+        code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+        message = exc.message if isinstance(exc, ApiError) else f"the commit read failed ({code})"
+        log.warning("issue run %s tenant=%s: merge head not read (%s)", run.id, run.tenant_id, code)
+        return runs.patch(tenant_id, run.id, {"pull_request": {
+            **record, "read_error": failure_text(f"{code}: {message}"),
+        }})
+
+    claimed_head = current.get("head_sha")
+    in_flight = claimed_head == head
+    if not in_flight and claimed_head and current.get("workflow_id"):
+        # The claimed merge's own `update-branch` may have moved the head.
+        try:
+            reached, _ = through_base_merges(
+                writer, run.issue, token, head=head, base=base,
+                known=lambda sha: sha if sha == claimed_head else None,
+            )
+        except Exception as exc:
+            return _read_failed(exc)
+        in_flight = reached is not None
+
+    if in_flight:
         workflow_id = current.get("workflow_id")
         if not workflow_id:
             claimed = _aware(current.get("claimed_at"))
@@ -1203,9 +1331,18 @@ def _merge(
     verdict, why = _review_verdict(ctx, tenant_id, run)
     if verdict != "MERGE":
         return _fail(f"the review's verdict is {verdict}, not MERGE" if verdict else why)
-    pushed_by = _pushing_task(ctx, tenant_id, run, head)
+    try:
+        pushed_by, not_ours = through_base_merges(
+            writer, run.issue, token, head=head, base=base,
+            known=lambda sha: _pushing_task(ctx, tenant_id, run, sha),
+        )
+    except Exception as exc:
+        return _read_failed(exc)
     if pushed_by is None:
-        return _fail(f"its head {head[:12]} was not pushed by any of this run's tasks")
+        return _fail(
+            f"its head {head[:12]} was not pushed by any of this run's tasks, nor reached "
+            f"from one through GitHub's base merges ({not_ours})"
+        )
     unbound = merge_target_unbound(ctx, tenant_id, run, pushed_by)
     if unbound:
         return _fail(unbound)

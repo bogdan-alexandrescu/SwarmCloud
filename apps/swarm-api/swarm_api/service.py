@@ -59,7 +59,7 @@ from .forge import GIT_PROVIDER
 from .forgeapp import GRANTS, ORGS, Caller
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .metrics import ApiMetrics
-from .repositories import Repositories, repo_id_for
+from .repositories import Repositories, merge_policy_of, repo_id_for
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
@@ -73,6 +73,7 @@ from .validation import (
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
     MERGE_METADATA_KEY,
+    MERGE_ON_VERDICT,
     MERGE_STEP_MAX_ATTEMPTS,
     SERVICE_FORGE_ACCESS,
     SINGLE_PR,
@@ -85,9 +86,11 @@ from .validation import (
     is_merge_step,
     is_mergeable_forge,
     merge_repository,
+    merge_sources,
     merge_step_for,
     plan_merge,
     refuse_unmergeable_forge,
+    rereview_step_for,
     refuse_worker_action_outside_single_pr,
     reject_non_finite,
     reject_reserved_metadata,
@@ -656,8 +659,9 @@ class SubmissionService:
             # The merge step (contract request 47): appended here, once the
             # strategy is known and before anything is built or signed, then
             # checked with the rest of the graph.
-            merged_spec = self._with_merge_step(
+            merged_spec, rereview_step_id = self._with_merge_step(
                 spec, step_specs, dispatch.strategy, repository_url,
+                tenant_id=tenant.tenant_id,
                 continued_task=continuation.task_id if continuation else None,
             )
             if merged_spec is not spec:
@@ -669,7 +673,9 @@ class SubmissionService:
             if dispatch.strategy == "integrate":
                 # After validate_dag, which has already rejected the cycles and
                 # dangling dependencies this would otherwise have to reason about.
-                integrator_step_id = resolve_integrator_step(step_specs)
+                integrator_step_id = resolve_integrator_step(
+                    step_specs, rereview=rereview_step_id
+                )
             # A verdict gate and a `builds_on` (#264), once the integrator is
             # known: under `integrate` only the integrator may be gated. Under
             # `single-pr` this is also where the chain's shape is refused or
@@ -689,6 +695,7 @@ class SubmissionService:
                 step_specs, dispatch.strategy,
                 continuation.task_id if continuation else None,
                 named_pull=named_pull is not None,
+                rereview=rereview_step_id,
             )
             if merge_plan is not None:
                 # At submission, never at merge time: a host no `ForgeMerger`
@@ -920,53 +927,80 @@ class SubmissionService:
         strategy: str,
         repository_url: str | None,
         *,
+        tenant_id: str,
         continued_task: str | None = None,
-    ) -> WorkflowCreate:
-        """`spec`, with a `merge` step appended when the merge choice says so.
+    ) -> tuple[WorkflowCreate, str | None]:
+        """`spec`, with a `merge` step appended when the merge choice says so,
+        and the id of the re-review appended with it (None when there is none).
 
-        Contract request 47, owner decisions 2026-10-04. The choice is the
-        workflow's `metadata.merge` ("on" | "off"), else the platform's
-        `merge_by_default` (`Store.get_platform_settings`, default off):
+        Contract request 47, owner decisions 2026-10-04, and WF-MERGE-API
+        (2026-10-10, part of #295). The choice is the workflow's
+        `metadata.merge` ("on" | "on_merge_verdict" | "off"), else the
+        `merge_policy` the tenant registered the repository with ("off" |
+        "on_merge_verdict"), else the platform's `merge_by_default`
+        (`Store.get_platform_settings`, default off), which means "on":
 
           * a spec that states its own merge step keeps it -- unless
-            `metadata.merge` is "off", which contradicts it and is refused;
-          * otherwise, when the choice is on and the workflow opens ONE pull
-            request (`validation.merge_sources`), one merge step is appended,
+            `metadata.merge` is "off", which contradicts it, or
+            "on_merge_verdict", which derives the merge and its re-review
+            itself; both are refused;
+          * "on": when the workflow opens ONE pull request
+            (`validation.merge_sources`), one merge step is appended,
             depending on the step that opens it and on the review if there is
             one, before anything is built or signed;
-          * "on" for a workflow that opens no single pull request is refused,
-            because the caller asked for a merge that would not happen; the
-            platform default simply does not apply to one;
-          * the platform default does not apply to a repository on a host no
-            `ForgeMerger` serves either: the worker harvests a patch there and
-            opens no pull request, so a tenant who never asked for a merge is
-            not refused for an admin's setting. An explicit "on", or a stated
-            merge step, on such a host is still refused at submission.
+          * "on_merge_verdict": only for an `integrate` workflow whose
+            integrator is gated on a review. A re-review of the integrator's
+            pushed head is appended (`rereview_step_for`, one round,
+            `REREVIEW_ROUNDS`), and the merge step depends on the integrator
+            and the re-review and reads the re-review's verdict: the latest;
+          * an explicit "on" or "on_merge_verdict" for a workflow it cannot
+            apply to is refused, because the caller asked for a merge that
+            would not happen; a repository's policy or the platform default
+            simply does not apply to one;
+          * neither default applies to a repository on a host no `ForgeMerger`
+            serves either: the worker harvests a patch there and opens no pull
+            request, so a tenant who never asked for a merge is not refused
+            for an admin's setting. An explicit choice, or a stated merge
+            step, on such a host is still refused at submission.
 
         `single-pr` ends in its own merge step and is left as submitted.
         """
         if strategy == SINGLE_PR:
-            return spec
+            return spec, None
         choice = resolve_merge_choice(spec.metadata)
         stated = [s.step_id for s in spec.steps if is_merge_step(s.runner_profile)]
         if stated:
-            if choice == "off":
+            if choice in ("off", MERGE_ON_VERDICT):
                 raise DispatchOptionError(
-                    f"metadata.{MERGE_METADATA_KEY} is 'off', but step "
-                    f"{stated[0]!r} is a merge step. Remove one or the other.",
+                    f"metadata.{MERGE_METADATA_KEY} is {choice!r}, but step "
+                    f"{stated[0]!r} is a merge step. "
+                    + ("Remove one or the other." if choice == "off" else
+                       "'on_merge_verdict' appends the merge step and its re-review "
+                       "itself: remove the step, or set metadata."
+                       f"{MERGE_METADATA_KEY} to 'on' to keep your own."),
                     detail={"merge_steps": stated, MERGE_METADATA_KEY: choice},
                 )
-            return spec
+            return spec, None
         if choice == "off":
-            return spec
-        if choice is None and (
-            not is_mergeable_forge(repository_url)
-            or not self._store.get_platform_settings().get("merge_by_default")
-        ):
-            return spec
+            return spec, None
+        explicit = choice is not None
+        if not explicit:
+            if not is_mergeable_forge(repository_url):
+                return spec, None
+            policy = self._registered_merge_policy(tenant_id, repository_url)
+            if policy is not None:
+                choice = policy
+            elif self._store.get_platform_settings().get("merge_by_default"):
+                choice = "on"
+            else:
+                return spec, None
+            if choice == "off":
+                return spec, None
+        if choice == MERGE_ON_VERDICT:
+            return self._with_verdict_merge(spec, step_specs, strategy, explicit=explicit)
         appended = merge_step_for(step_specs, strategy, continued_task)
         if appended is None:
-            if choice == "on":
+            if explicit:
                 raise DispatchOptionError(
                     f"metadata.{MERGE_METADATA_KEY} is 'on', but this workflow opens no "
                     "single pull request to merge: "
@@ -977,10 +1011,67 @@ class SubmissionService:
                     + f" Set metadata.{MERGE_METADATA_KEY} to 'off', or change the strategy.",
                     detail={"strategy": strategy, MERGE_METADATA_KEY: choice},
                 )
-            return spec
+            return spec, None
         return spec.model_copy(
             update={"steps": [*spec.steps, WorkflowStepCreate.model_validate(appended)]}
+        ), None
+
+    def _with_verdict_merge(
+        self,
+        spec: WorkflowCreate,
+        step_specs: Sequence[StepSpec],
+        strategy: str,
+        *,
+        explicit: bool,
+    ) -> tuple[WorkflowCreate, str | None]:
+        """`spec` with a re-review and a merge step that reads its verdict.
+
+        Refused when asked for explicitly and the workflow has no review a
+        merge could wait on: `collect` and `single-pr` are not here, and
+        `direct-pr` cannot carry a review (every agent step opens its own pull
+        request, and a gate is refused there), so a merge under it would read
+        no verdict. A repository's policy that cannot apply appends nothing.
+        """
+        by_id = {s.step_id: s for s in spec.steps}
+        sources = merge_sources(step_specs, strategy)
+        rereview = (
+            rereview_step_for(step_specs, by_id[sources.review].model_dump(), strategy)
+            if sources is not None and sources.review in by_id else None
         )
+        if rereview is None:
+            if not explicit:
+                return spec, None
+            raise DispatchOptionError(
+                f"metadata.{MERGE_METADATA_KEY} is '{MERGE_ON_VERDICT}', which merges only "
+                "on a review's MERGE verdict, and this workflow has no review to read one "
+                "from: "
+                + ("strategy 'collect' opens no pull request."
+                   if strategy == "collect" else
+                   "under 'direct-pr' every agent step opens its own pull request and no "
+                   "step may be gated on a review."
+                   if strategy == "direct-pr" else
+                   "its integrator is not gated on a review "
+                   '(`"when": {"step": <review>, "verdict_in": ["NOT_YET"]}` with the '
+                   "review's verdict file in its input_from).")
+                + " Use 'integrate' with implement -> review -> fix, set metadata."
+                f"{MERGE_METADATA_KEY} to 'on' to merge on green CI alone, or 'off'.",
+                detail={"strategy": strategy, MERGE_METADATA_KEY: MERGE_ON_VERDICT},
+            )
+        with_rereview = spec.model_copy(
+            update={"steps": [*spec.steps, WorkflowStepCreate.model_validate(rereview)]}
+        )
+        appended = merge_step_for(
+            self._step_specs(with_rereview), strategy, rereview=rereview["step_id"]
+        )
+        if appended is None:  # rereview_step_for found the same sources: unreachable
+            raise DispatchOptionError(
+                f"the re-review {rereview['step_id']!r} was appended but no merge step "
+                "could be derived from it.",
+                detail={"strategy": strategy, MERGE_METADATA_KEY: MERGE_ON_VERDICT},
+            )
+        return with_rereview.model_copy(
+            update={"steps": [*with_rereview.steps, WorkflowStepCreate.model_validate(appended)]}
+        ), rereview["step_id"]
 
     def _named_pull(self, tenant: Tenant, spec: WorkflowCreate) -> NamedPull | None:
         """`spec.merge_pr`, checked (`continuation.resolve_merge_pr`)."""
@@ -997,22 +1088,36 @@ class SubmissionService:
             writer=self._forge_writer,
         )
 
-    def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
-        """The default branch `tenant_id` registered this repository with, or None.
+    def _registration(self, tenant_id: str, repository_url: str | None) -> dict[str, Any]:
+        """`tenant_id`'s registration of this repository, or {} when there is none.
 
         Read from the tenant's own registration only (`Repositories.find`
         checks the tenant), by the id `repositories.register` stored it
         under, so another tenant's registration of the same repository never
-        names this workflow's base. None when unregistered: the worker then
-        asks GitHub for the default branch itself (MS3).
+        decides anything about this workflow.
         """
         named = merge_repository(repository_url)
         if named is None:
-            return None
+            return {}
         record = Repositories(self._store.db, now=self._now).find(
             tenant_id, repo_id_for(tenant_id, *named)
         )
-        branch = (record or {}).get("default_branch")
+        return record or {}
+
+    def _registered_merge_policy(
+        self, tenant_id: str, repository_url: str | None
+    ) -> str | None:
+        """The `merge_policy` the tenant registered this repository with, or
+        None when it is unregistered or set none (the platform default then)."""
+        return merge_policy_of(self._registration(tenant_id, repository_url))
+
+    def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
+        """The default branch `tenant_id` registered this repository with, or None.
+
+        None when unregistered: the worker then asks GitHub for the default
+        branch itself (MS3).
+        """
+        branch = self._registration(tenant_id, repository_url).get("default_branch")
         return branch if isinstance(branch, str) and branch else None
 
     @staticmethod

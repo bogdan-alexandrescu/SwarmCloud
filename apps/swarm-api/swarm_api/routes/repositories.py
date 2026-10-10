@@ -18,8 +18,9 @@ Who may register: any member of the tenant, as for issue runs. The design's
 this API does not have yet; a platform admin acts in a tenant only as a member
 of it, like everywhere else here.
 
-`platform` (docs/schedules.md §4.4, lane S11) is the one exception to "any
-member": a create or PATCH that CARRIES it -- true or false -- passes
+`platform` (docs/schedules.md §4.4, lane S11) and `merge_policy`
+(WF-MERGE-API, part of #295) are the exceptions to "any member": a create or
+PATCH that CARRIES either -- whatever its value -- passes
 `require_admin` first, before the forge is read or anything is written, so a
 member's answers 403 and an unresolved directory 503. Even then the admin
 acts as a member of the tenant they are in: the registration is read with
@@ -155,11 +156,12 @@ def _tenant(ctx: AppContext, tenant_id: str, auth: AuthContext) -> Tenant:
     )
 
 
-def _platform_admin(fields: set[str], auth: AuthContext) -> str | None:
-    """The admin's email when the body carries `platform`, None when it does
+def _platform_admin(fields: set[str], auth: AuthContext, field: str = "platform") -> str | None:
+    """The admin's email when the body carries `field`, None when it does
     not. A member's answers 403 here (503 when the directory did not say),
-    before anything is read or written."""
-    if "platform" not in fields:
+    before anything is read or written. `platform` and `merge_policy` are the
+    two fields only a platform admin may send."""
+    if field not in fields:
         return None
     require_admin(auth)
     return auth.email
@@ -175,6 +177,7 @@ def create_repository(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     platform_by = _platform_admin(body.model_fields_set, auth)
+    merge_policy_by = _platform_admin(body.model_fields_set, auth, "merge_policy")
     tenant = _tenant(ctx, tenant_id, auth)
     # The caller's own GitHub connection when they have one (lane OB4).
     credential = get_access(request).credential_for(
@@ -183,7 +186,7 @@ def create_repository(
         record, created = register(
             body, tenant, created_by=auth.email, store=_store(ctx),
             tokens=ctx.forge_tokens, forge=ctx.forge, now=ctx.now, credential=credential,
-            platform_by=platform_by,
+            platform_by=platform_by, merge_policy_by=merge_policy_by,
         )
     except ForgeReadError as refused:
         log.info("repository register tenant=%s outcome=%s", tenant_id, refused.code)
@@ -259,7 +262,9 @@ def patch_repository(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     platform_by = _platform_admin(body.model_fields_set, auth)
-    record = _store(ctx).patch(tenant_id, repo_id, body, platform_by=platform_by)
+    merge_policy_by = _platform_admin(body.model_fields_set, auth, "merge_policy")
+    record = _store(ctx).patch(tenant_id, repo_id, body, platform_by=platform_by,
+                               merge_policy_by=merge_policy_by)
     log.info(
         "repository patch tenant=%s repo_id=%s by=%s fields=%s", tenant_id, record["repo_id"],
         auth.email, ",".join(sorted(body.model_dump(exclude_none=True))),
