@@ -16,6 +16,10 @@ from.
 
 The approval, denial, retry and lending routes are lane W7's, under
 `/v1/admin/`, and address a person by workspace id.
+
+EVERY VIEW CARRIES `provisioning` (`workspaces.provisioning`), from the same
+publisher the approval uses: an approved record in a deployment that builds
+no workspaces says so, rather than reading as in progress forever.
 """
 
 from __future__ import annotations
@@ -28,8 +32,10 @@ from fastapi.responses import JSONResponse
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context
 from ..errors import WorkspaceIdTaken, WorkspaceNotForServiceAccounts, WorkspacePrincipalForbidden
+from ..publish_workspace import WorkspacePublisher
 from ..schemas import StrictModel
 from ..workspaces import is_service_identity, personal_tenant_id, view
+from .people import workspace_publisher
 
 router = APIRouter(prefix="/v1/workspace", tags=["workspace"])
 
@@ -70,10 +76,12 @@ def _own(auth: AuthContext, ctx: AppContext) -> tuple[str, str]:
 def get_workspace(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
     tenant_id, _ = _own(auth, ctx)
     workspaces = ctx.submissions.workspaces
-    return view(workspaces.get(tenant_id), console_url=workspaces.console_url)
+    return view(workspaces.get(tenant_id), console_url=workspaces.console_url,
+                publishing=bool(publisher.enabled), now=ctx.now())
 
 
 @router.post("")
@@ -81,6 +89,7 @@ def post_workspace(
     body: WorkspaceRequest | None = None,
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> JSONResponse:
     tenant_id, principal = _own(auth, ctx)
     workspaces = ctx.submissions.workspaces
@@ -88,7 +97,8 @@ def post_workspace(
     status, record = workspaces.request(
         tenant_id=tenant_id, principal=principal, via=(body.via if body else "api"))
     return JSONResponse(status_code=status,
-                        content=view(record, console_url=workspaces.console_url))
+                        content=view(record, console_url=workspaces.console_url,
+                                     publishing=bool(publisher.enabled), now=ctx.now()))
 
 
 @router.post("/loan-request")

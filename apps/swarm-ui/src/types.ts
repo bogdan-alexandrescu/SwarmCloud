@@ -5155,6 +5155,21 @@ export interface WorkspaceView {
   failure?: { code: string | null; step: string | null; retryable: boolean | null; at: string | null; copy: string } | null
   ready_at?: string | null
   request_again_at?: string | null
+  /**
+   * `workspaces.provisioning`, computed on read: whether this deployment builds workspaces at all, and why an
+   * `approved` record is not moving (null while it is). Absent from an older API.
+   */
+  provisioning?: WorkspaceProvisioning
+}
+
+/** Why an approved workspace is waiting: the API's stuck rule (`workspaces.waiting_because`). */
+export type WorkspaceWaitReason = 'publishing_off' | 'never_dispatched' | 'dispatched_unclaimed'
+
+export interface WorkspaceProvisioning {
+  available: boolean
+  waiting_because: WorkspaceWaitReason | null
+  /** Null when the record is not approved. */
+  approved_minutes_ago: number | null
 }
 
 /** `POST /v1/workspace/loan-request`. */
@@ -5230,6 +5245,8 @@ export interface PeopleDoc {
   audit: AdminAuditEntry[]
   lendable_accounts: LendableAccount[] | null
   lendable_error: string | null
+  /** Whether this deployment builds workspaces, and how many approved records wait on it. Absent from an older API. */
+  provisioning?: { available: boolean; approved_waiting: number }
   /** `AdminRoles.holders`: the owner first. Null, with the reason, when the roles were not read; absent from an older API. */
   admins?: AdminHolder[] | null
   admins_error?: string | null
@@ -5254,6 +5271,9 @@ export interface WorkspaceDispatch {
 export interface WorkspaceActionAnswer {
   workspace: AdminWorkspaceView
   dispatch?: WorkspaceDispatch
+  /** Approve and retry: whether anything was sent to build it, said plainly. Absent from an older API. */
+  sent_for_building?: boolean
+  message?: string
 }
 
 /** `PUT /v1/admin/workspaces/{workspace_id}/limits`. */

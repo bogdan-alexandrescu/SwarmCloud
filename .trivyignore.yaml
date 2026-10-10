@@ -44,3 +44,27 @@ vulnerabilities:
   - id: CVE-2026-69192
     statement: "ip-address SSRF, transitive under the agent CLIs; bounded by the egress NetworkPolicy."
     expired_at: 2026-12-17
+
+  # Go standard library and golang.org/x/net net/http denial-of-service bugs,
+  # disclosed 2026-10-09, found in every THIRD-PARTY Go binary our images ship:
+  # docker, gcloud-crc32c, gke-gcloud-auth-plugin, gh, kubectl, terraform,
+  # trivy and gopls (agent-runtime-base, -browser, -indexer, workspace-apply).
+  # We do not build these: each vendor has to rebuild with Go 1.26.9 / 1.27.2
+  # and x/net 0.60.0, and until they ship there is no version we can pin. Every
+  # release from 2026-10-09T17:27Z was refused on these two ids alone, so
+  # nothing merged after that was deployed. Accepted by the owner 2026-10-10.
+  #
+  # What bounds them: both are DoS against an HTTP peer, and these binaries are
+  # clients run inside a non-root, read-only, capability-dropped container for
+  # one attempt, under the egress NetworkPolicy. A crafted response can at worst
+  # fail that attempt, which the platform already retries; it reaches no other
+  # tenant and no control-plane service.
+  #
+  # Revisit by bumping each tool's pinned version in the image Dockerfiles as
+  # vendors release rebuilt binaries. The expiry is short on purpose.
+  - id: CVE-2026-78667
+    statement: "Go stdlib net/http DoS inside vendor-built Go binaries (docker, gcloud helpers, gh, kubectl, terraform, trivy, gopls); needs vendor rebuilds."
+    expired_at: 2026-10-24
+  - id: CVE-2026-78669
+    statement: "golang.org/x/net http2 DoS inside the same vendor-built Go binaries; needs vendor rebuilds."
+    expired_at: 2026-10-24
