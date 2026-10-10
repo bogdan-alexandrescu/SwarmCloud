@@ -1270,6 +1270,13 @@ needs credentials only the owner holds.
    orphaned the id the request, its index entry and Admin › People already
    name. The id is not written here (step 5): the script prints it.
 
+   After the record, the same run **creates the person's empty forge slot
+   pair** (`swarm-tenant-u-bogdan-git-u-<hex>` and its `-refresh` twin,
+   labelled `tenant=u-bogdan`, no value) and grants the worker
+   `secretAccessor` on the slot only, through `scripts/lib/forge-slot.sh`, the
+   function A6 runs, so a migrated workspace has the shape A9 verifies (owner
+   decision 2026-10-10). A re-run with the pair present changes nothing.
+
    The verify run in step 4 reads this record, so it comes first.
 4. **`scripts/register-tenant.sh --workspace <w-id> --mode verify`**, with the id
    step 3 printed (the existing request's), under the
@@ -1278,7 +1285,9 @@ needs credentials only the owner holds.
    checkout and named by `SWARM_CALL_GUARD`, and `scripts/lib/guard-bin`
    first on `PATH`. This is A1 and A9 only. A1 admits a `migrated` record
    whatever its decision (the migration's names no admin), and the narrowed squat inspection allows the release
-   deployer's two Terraform-era bindings on it. A9 re-reads every object.
+   deployer's two Terraform-era bindings on it. A9 re-reads every object,
+   rendering a `migrated` tenant with `swarm-agent-worker` only: a
+   Terraform-made tenant has no legacy `swarm-worker` objects.
 5. **Date the result here**: the plan counts of steps 1 and 2, the record's
    workspace id kept private (§1.1), and the verify run's outcome.
 

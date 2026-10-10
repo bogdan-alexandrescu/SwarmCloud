@@ -746,6 +746,64 @@ def test_verify_of_a_migrated_record_does_not_require_the_legacy_ksa_binding(job
     assert _field(job.record(), "failure", "object") == "service account binding"
 
 
+LEGACY_OBJECTS = (f"ServiceAccount/{NAMESPACE}/swarm-worker", f"RoleBinding/{NAMESPACE}/swarm-worker-legacy")
+
+
+def _as_terraform_made(world: dict) -> None:
+    """u-bogdan's shape (W9, measured 2026-10-10 on w-752763): a migrated
+    record, no legacy swarm-worker binding and no legacy namespace objects."""
+    fields = world["firestore"][f"workspaces/{TENANT}"]["fields"]
+    fields.pop("decision")
+    fields["migrated"] = {"booleanValue": True}
+    legacy = f"serviceAccount:{PROJECT}.svc.id.goog[{NAMESPACE}/swarm-worker]"
+    for b in world["accounts"][WORKER]["policy"]["bindings"]:
+        if b["role"] == WORKLOAD:
+            b["members"] = [m for m in b["members"] if m != legacy]
+    for key in LEGACY_OBJECTS:
+        world["k8s"].pop(key)
+
+
+def test_verify_of_a_migrated_record_renders_without_the_legacy_ksa(job: Job, ready_world: dict) -> None:
+    # A Terraform-made tenant has no swarm-worker KSA (kubernetes/README.md: the
+    # legacy account is rendered only where IAM binds it).
+    _from_ready(job, ready_world)
+    assert all(key in job.read()["k8s"] for key in LEGACY_OBJECTS)
+    job.edit(_as_terraform_made)
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 0, _out(proc)
+    assert _field(job.record(), "state") == "ready"
+    assert _steps(job.record())["A9"] == "done"
+    assert set(job.read()["secrets"]) == {SLOT, TWIN}
+
+
+def test_verify_of_a_job_made_record_still_needs_the_legacy_objects(job: Job, ready_world: dict) -> None:
+    _from_ready(job, ready_world)
+    job.edit(lambda w: w["k8s"].pop(f"ServiceAccount/{NAMESPACE}/swarm-worker"))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1, _out(proc)
+    assert _field(job.record(), "failure", "object") == "ServiceAccount"
+
+
+@pytest.mark.parametrize("missing", [SLOT, TWIN], ids=["slot", "twin"])
+def test_verify_of_a_migrated_record_still_needs_the_forge_slot_pair(
+        job: Job, ready_world: dict, missing: str) -> None:
+    _from_ready(job, ready_world)
+    job.edit(_as_terraform_made)
+    job.edit(lambda w: w["secrets"].pop(missing))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1, _out(proc)
+    assert _field(job.record(), "failure", "object") == "forge slot"
+
+
+def test_verify_of_a_migrated_record_still_needs_the_worker_on_the_slot(job: Job, ready_world: dict) -> None:
+    _from_ready(job, ready_world)
+    job.edit(_as_terraform_made)
+    job.edit(lambda w: w["secrets"][SLOT].update(policy={"version": 1, "etag": "BwX="}))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1, _out(proc)
+    assert _field(job.record(), "failure", "object") == "forge slot binding"
+
+
 # ---------------------------------------------------------------------------
 # A1: nothing is written for a record that is not admissible
 # ---------------------------------------------------------------------------
