@@ -27,6 +27,8 @@ from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from .. import onboarding
 from ..forgeapp import Caller as AccessCaller
+from ..publish_workspace import WorkspacePublisher
+from .people import workspace_publisher
 
 router = APIRouter(prefix="/v1/onboarding", tags=["onboarding"])
 
@@ -37,6 +39,7 @@ def get_onboarding(
     tenant_id: str = Depends(tenant_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
+    publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> dict:
     caller = onboarding.Caller(email=auth.email, tenant_id=tenant_id, is_admin=auth.is_admin)
     tenant = ctx.store.get_tenant(tenant_id)
@@ -52,4 +55,5 @@ def get_onboarding(
         lambda: service.installations(AccessCaller(email=auth.email, tenant_id=tenant_id)))
     return onboarding.read(ctx.db, caller, tenant=tenant, now=ctx.now(),
                            installations=installations, workspaces=workspaces,
-                           workspace_required=required)
+                           workspace_required=required,
+                           workspace_publishing=bool(publisher.enabled))

@@ -1315,6 +1315,319 @@ def clone_at_commit(
     )
 
 
+# ---------------------------------------------------------------------------
+# Clone bundles: a known commit without GitHub on the start path (#940)
+# ---------------------------------------------------------------------------
+#
+# MEASURED (#721): a step's clone spent a median 36.6 s (p90 69.5 s) in the TCP
+# connect to GitHub, against 1.7 s of transfer. The bytes are cheap; reaching
+# the forge is not. A step that needs a commit the platform has already cloned
+# (a workflow step's base pin, a carried parent head) can take it from a git
+# bundle in the tenant's own GCS prefix, which answers over Private Google
+# Access at once, and never contact GitHub at all.
+#
+# The git half lives here and touches no cloud: `write_clone_bundle` turns a
+# fresh depth-1 clone into a one-commit bundle, `clone_from_bundle` turns that
+# bundle back into a repository indistinguishable from `clone_at_commit`'s,
+# and `fetch_tip_onto_bundle` moves such a repository to a branch's newer tip,
+# fetching only the delta. Where a bundle is stored and who may read it is the
+# caller's business; nothing here knows a bucket.
+
+#: The one ref a clone bundle carries. Not a branch: a bundle holds objects
+#: and this name, never the clone's branches, config or remote.
+CLONE_BUNDLE_REF = "refs/swarm/bundle"
+
+
+def _git_stdout(logs_dir: Path, label: str, index: int = 0) -> str:
+    """What step `index` of a `_run_git_steps(label=...)` call wrote to stdout."""
+    try:
+        return (logs_dir / f"{label}-{index}.out.log").read_text(errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def write_clone_bundle(
+    *,
+    clone: Path,
+    commit: str,
+    out: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> int:
+    """Write the one commit a depth-1 clone holds to the bundle `out`; its size in bytes.
+
+    WHY: a later step that needs `commit` clones it from this bundle instead of
+    from GitHub, skipping the connect #721 measured at a median 36.6 s for a
+    1.7 s transfer (`clone_from_bundle`).
+
+    REFUSED (`GitError`, and no `out`) unless the clone is depth 1 at `commit`:
+    `.git/shallow` names exactly `commit`, or there is no `.git/shallow` and
+    `commit` is a root commit. An index run's clone is deepened to 90 days of
+    history (`deepen_history`), and that history is never bundled: a bundle
+    is the cost of one checkout, not of an extractor's window.
+
+    WHAT IS IN IT: the objects of that one commit and one ref,
+    `CLONE_BUNDLE_REF`. A bundle is a pack and a ref list, so the clone's
+    config, its remote URL and any credential file stay out by construction.
+    The ref is created for the bundle and deleted again on every path: git
+    bundles refs, not bare shas.
+    """
+    if not _FULL_SHA_RE.match(commit or ""):
+        raise GitError(f"refusing to bundle {str(commit)[:60]!r}: not a full commit sha")
+    clone = Path(clone)
+    out = Path(out)
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    if not (clone / ".git").is_dir():
+        raise GitError("refusing to bundle: not a git clone")
+    shallow = clone / ".git" / "shallow"
+    if shallow.exists():
+        try:
+            boundary = shallow.read_text(errors="replace").split()
+        except OSError as exc:
+            raise GitError(f"refusing to bundle: .git/shallow unreadable ({type(exc).__name__})") \
+                from None
+        if boundary != [commit]:
+            raise GitError(
+                f"refusing to bundle: the clone is not one commit deep at {commit} "
+                f"({len(boundary)} shallow boundaries)"
+            )
+    # No URL and no token: nothing this function runs reaches a forge.
+    env, config_args, _ = _clone_env("", None, private_dir, logger)
+    g = [git_binary, *config_args, "-C", str(clone)]
+    steps = dict(url="", token=None, private_dir=private_dir, env=env, logs_dir=logs_dir,
+                 timeout_seconds=timeout_seconds, logger=logger)
+    _run_git_steps([[*g, "rev-list", "--count", commit]], label="git-bundle-depth", **steps)
+    count = _git_stdout(logs_dir, "git-bundle-depth")
+    if count != "1":
+        raise GitError(
+            f"refusing to bundle: {commit} has {count or 'unknown'} commits of history, not 1"
+        )
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)
+    try:
+        seconds = _run_git_steps(
+            [
+                [*g, "update-ref", "--no-deref", CLONE_BUNDLE_REF, commit],
+                [*g, "bundle", "create", "--quiet", str(out), CLONE_BUNDLE_REF],
+            ],
+            label="git-bundle", **steps,
+        )
+        size = out.stat().st_size
+    except (GitError, OSError) as exc:
+        out.unlink(missing_ok=True)
+        if isinstance(exc, GitError):
+            raise GitError(str(exc)) from None      # a local step: never a forge outage
+        raise GitError(f"the bundle was not written ({type(exc).__name__})") from None
+    finally:
+        try:
+            _run_git_steps([[*g, "update-ref", "-d", CLONE_BUNDLE_REF]],
+                           label="git-bundle-unref", **steps)
+        except GitError as exc:
+            logger.warning("clone bundle: the temporary ref was not removed",
+                           error=type(exc).__name__)
+    logger.info("clone bundle written", commit=commit, bytes=size, seconds=round(seconds, 2))
+    return size
+
+
+def clone_from_bundle(
+    *,
+    bundle: Path,
+    url: str,
+    branch: str | None,
+    commit: str,
+    destination: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> CloneResult:
+    """Check out exactly `commit` from a clone bundle, without contacting the forge.
+
+    WHY: #721 measured a median 36.6 s TCP connect to GitHub per clone against
+    1.7 s of transfer. A step whose commit is already known (a base pin, a
+    carried parent head) takes it from the bundle `write_clone_bundle` wrote,
+    and GitHub is off its start path entirely. So there is NO `await_egress`
+    here and NO token: the forge is not contacted, and nothing is held that
+    could be sent to it.
+
+    The result is the repository `clone_at_commit` leaves: `origin` is `url`
+    (the forge, not the bundle, so every later fetch, deepen and push behaves
+    as it always did), `.git/shallow` names `commit`, HEAD is detached at it,
+    and no ref or FETCH_HEAD remembers where the bundle was on disk.
+
+    `.git/shallow` is written BEFORE the fetch. Measured 2026-10-09 on git
+    2.39: `git clone x.bundle` of a bundle made from a shallow clone fails
+    "Could not read <parent>", because the commit names a parent the bundle
+    does not hold; with the commit declared a shallow boundary first, the
+    fetch's connectivity check stops there and the commit lands.
+
+    Raises `GitError` -- never `GitTransient`, a bundle is no forge outage to
+    retry -- after emptying `destination`, when the bundle is missing, corrupt
+    or holds another commit: the caller then clones from the forge as before.
+    `phases` carries `source: "bundle"` and `total_seconds`, git's wall time;
+    the caller adds the download.
+    """
+    url = validate_repository_url(url)
+    branch = validate_ref(branch)
+    if not _FULL_SHA_RE.match(commit or ""):
+        raise GitError(f"refusing to pin to {str(commit)[:60]!r}: not a full commit sha")
+    bundle = Path(bundle).absolute()
+    destination = Path(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+
+    env, config_args, _ = _clone_env(url, None, private_dir, logger)
+    g = [git_binary, *config_args, "-C", str(destination)]
+    setup = [
+        [git_binary, *config_args, "init", "--quiet", str(destination)],
+        [*g, "remote", "add", "origin", url],
+    ]
+    land = [
+        [*g, "fetch", "--quiet", "--no-tags", "--", str(bundle), CLONE_BUNDLE_REF],
+        [*g, "checkout", "--quiet", commit],
+    ]
+    total = 0.0
+    trace = _CloneTrace.create(private_dir)
+    env = trace.env(env)
+    steps = dict(url=url, token=None, private_dir=private_dir, env=env, logs_dir=logs_dir,
+                 timeout_seconds=timeout_seconds, logger=logger)
+    phases: dict[str, Any] = {}
+    failed: GitError | None = None
+    try:
+        try:
+            total += _run_git_steps(setup, label="git-bundle-init", **steps)
+            try:
+                (destination / ".git" / "shallow").write_text(commit + "\n")
+            except OSError as exc:
+                raise GitError(f"could not write .git/shallow ({type(exc).__name__})") from None
+            total += _run_git_steps(land, label="git-bundle-clone", **steps)
+            (destination / ".git" / "FETCH_HEAD").unlink(missing_ok=True)
+        except GitError as exc:
+            # A timeout or "connection" text here is the local disk, not the forge.
+            failed = GitError(str(exc)) if isinstance(exc, GitTransient) else exc
+            _empty_directory(destination)
+            raise failed from None
+    finally:
+        phases = trace.collect()
+        phases.update(source="bundle", total_seconds=round(total, 3))
+        if failed is not None:
+            failed.phases = phases
+
+    head = _read_head(destination, private_dir, logs_dir, logger, git_binary)
+    if head != commit:
+        _empty_directory(destination)
+        raise GitError(f"the bundle's checkout landed on {head!r}, not {commit}")
+    logger.info(
+        "repository cloned from a bundle", url=url, ref=branch, commit=head,
+        seconds=round(total, 2), phases=phases,
+    )
+    return CloneResult(
+        path=destination, url=url, ref=branch, commit=head, duration_seconds=total,
+        phases=phases,
+    )
+
+
+def fetch_tip_onto_bundle(
+    *,
+    destination: Path,
+    url: str,
+    ref: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    token: str | None = None,
+    egress: Any = None,
+    peers: PeerPin | None = None,
+    git_binary: str = "git",
+) -> CloneResult:
+    """Move a bundle-seeded repository to the tip of branch `ref`, fetching only the delta.
+
+    WHY: a branch-tip step does not know its commit until it asks the forge,
+    so it still pays GitHub's connect (#721: a median 36.6 s), but the transfer
+    shrinks to what is newer than the branch's last bundle. `destination` must
+    be a `clone_from_bundle` result; its HEAD is offered to the forge as a
+    `have` (`--negotiation-tip=HEAD` -- the seeded repository has no ref the
+    default negotiation would offer), and `--depth 1` keeps the fetch to the
+    tip, as `shallow_clone`'s.
+
+    The forge IS contacted, so this waits for egress and holds the token
+    exactly as `shallow_clone` does: the wait first, the credential file only
+    for the fetch, removed on every path. The repository is then left as
+    `shallow_clone(ref=<branch>)` leaves it: on branch `ref`, tracking
+    `origin/<ref>`.
+
+    A forge that did not answer raises `GitTransient`, so `retry_clone`
+    applies; any `GitError` empties `destination` first, so the caller can
+    clone from the forge into it as before. `phases` carries
+    `source: "bundle+delta"` and `total_seconds`, the fetch's own git time.
+    """
+    url = validate_repository_url(url)
+    ref = validate_ref(ref) or ""
+    if not ref:
+        raise GitError("a delta fetch onto a bundle needs a branch")
+    destination = Path(destination)
+    if not (destination / ".git").is_dir():
+        raise GitError("a delta fetch needs a repository seeded from a bundle")
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    # Before the credential file exists, so a wait does not lengthen its life.
+    await_egress(egress, url, logger)
+
+    env, config_args, cred_file = _clone_env(url, token, private_dir, logger)
+    if peers is not None:
+        config_args += peers.config_args()
+    g = [git_binary, *config_args, "-C", str(destination)]
+    delta = [
+        [
+            *g, "fetch", "--quiet", "--depth", "1", "--no-tags", "--negotiation-tip=HEAD",
+            "origin", f"+refs/heads/{ref}:refs/remotes/origin/{ref}",
+        ],
+        [*g, "checkout", "--quiet", "-B", ref, "--track", f"origin/{ref}"],
+    ]
+    total = 0.0
+    trace = _CloneTrace.create(private_dir)
+    phases: dict[str, Any] = {}
+    failed: GitError | None = None
+    try:
+        total += _run_git_steps(
+            delta, url=url, token=token, private_dir=private_dir, env=trace.env(env),
+            logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+            label="git-bundle-delta",
+        )
+    except GitError as exc:
+        failed = exc
+        _empty_directory(destination)
+        raise
+    finally:
+        _remove_credentials(cred_file, logger)
+        phases = trace.collect()
+        if peers is not None:
+            phases.update(peers.observe(phases))
+        phases.update(source="bundle+delta", total_seconds=round(total, 3))
+        if failed is not None:
+            failed.phases = phases
+
+    head = _read_head(destination, private_dir, logs_dir, logger, git_binary)
+    if head is None:
+        _empty_directory(destination)
+        raise GitError("the delta fetch left no commit checked out")
+    logger.info(
+        "repository moved to the branch tip onto a bundle", url=url, ref=ref, commit=head,
+        seconds=round(total, 2), phases=phases,
+    )
+    return CloneResult(
+        path=destination, url=url, ref=ref, commit=head, duration_seconds=total, phases=phases,
+    )
+
+
 def _empty_directory(path: Path) -> None:
     """Remove everything inside `path`, keeping `path`: a clone needs it empty."""
     for child in list(path.iterdir()) if path.is_dir() else []:
