@@ -11,7 +11,8 @@
 //   * each not-done step's action goes where the work is: Connect GitHub
 //     starts the App's authorisation, the rest open Work › Access;
 //   * on Overview the card shows while setup is incomplete, draws nothing when
-//     it is complete or its read failed, and Hide keeps it hidden on remount;
+//     it is complete or its read failed, and Hide keeps it hidden on remount
+//     (through POST /v1/onboarding/dismiss: onboarding.dismiss.test.tsx);
 //   * a complete checklist offers the first task.
 //
 // Fixtures only; no network. Nothing here is token-shaped.
@@ -273,13 +274,20 @@ describe('the Setup card on Overview (Entry A)', () => {
     expect(container.innerHTML).toBe('')
   })
 
-  it('Hide keeps the card hidden in this browser, and the steps keep their state', async () => {
-    answer(FRESH)
+  it('Hide keeps the card hidden on remount, and the steps keep their state', async () => {
+    let dismissed = false
+    serve((m, url) => {
+      if (m === 'GET' && url === '/v1/onboarding') return { status: 200, body: { ...FRESH, dismissed } }
+      if (m === 'POST' && url === '/v1/onboarding/dismiss') {
+        dismissed = true
+        return { status: 200, body: { tenant_id: 'eng', user_hash: '89abcdef01234567', dismissed: true, dismissed_at: new Date().toISOString() } }
+      }
+      return null
+    })
     const { SetupCard, OnboardingScreen } = await load()
     const first = render(<SetupCard />)
     fireEvent.click(await screen.findByRole('button', { name: 'Hide' }))
-    expect(screen.queryByText('Set up SwarmCloud')).toBeNull()
-    expect(window.localStorage.getItem('swarm.setup.hidden:eng:89abcdef01234567')).toBe('1')
+    await waitFor(() => expect(screen.queryByText('Set up SwarmCloud')).toBeNull())
     first.unmount()
 
     const again = render(<SetupCard />)

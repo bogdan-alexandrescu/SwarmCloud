@@ -46,6 +46,13 @@ WHAT A REGISTRATION IS, AND WHY EACH RULE:
     its floor, and what the hard stops read (`hard_stop_paths_of`) re-applies
     the floor rather than trusting a stored list to hold it. Nothing reads
     either field before lane S5.
+  * `merge_policy` (WF-MERGE-API, 2026-10-10, part of #295): "off" or
+    "on_merge_verdict", the default a workflow on this repository takes when
+    its `metadata.merge` says nothing, and an issue run's default
+    `auto_merge`. Never set, it defers to the platform's `merge_by_default`.
+    Only a platform admin may set it -- it decides whether work merges on
+    its own -- and each change is an `admin_audit` entry in the same
+    transaction, as for `platform`.
   * OPT-IN CONTEXT, NOT A GATE. Nothing here changes what a task may run
     against; `allowed_profiles` narrows by NAME (invariant 10) and is not yet
     a submission check (repo-index.md §1, "How it relates to today").
@@ -93,7 +100,7 @@ from .forge import (
     repository_from,
 )
 from .gittokens import GitTokenRecord, GitTokens, refusal_cause
-from .validation import _ISSUE_OWNER, _ISSUE_REPO, check_repository_url
+from .validation import MERGE_POLICIES, _ISSUE_OWNER, _ISSUE_REPO, check_repository_url
 
 log = logging.getLogger(__name__)
 
@@ -161,6 +168,8 @@ _HARD_STOP_PATH = re.compile(r"^[^\x00-\x1f\x7f]+$")
 #: `admin_audit` actions for a change of `platform`.
 AUDIT_PLATFORM_SET = "repository_platform_set"
 AUDIT_PLATFORM_CLEARED = "repository_platform_cleared"
+#: The `admin_audit` action for a change of `merge_policy`.
+AUDIT_MERGE_POLICY_SET = "repository_merge_policy_set"
 
 #: A branch name, conservatively: git's own ref rules (`git check-ref-format`)
 #: narrowed to the characters a GitHub branch name is seen with. The value is
@@ -317,6 +326,44 @@ def platform_of(data: Mapping[str, Any]) -> bool:
     return data.get("platform") is True
 
 
+def merge_policy_of(data: Mapping[str, Any]) -> str | None:
+    """A registration's `merge_policy`, or None when it set none. A stored
+    value that is not one of `MERGE_POLICIES` reads as none: the platform
+    default then decides, never a value this code does not know."""
+    value = data.get("merge_policy")
+    return value if value in MERGE_POLICIES else None
+
+
+def registered_merge_policy(
+    db: Any, now: Callable[[], datetime], tenant_id: str, owner: str, repo: str,
+) -> str | None:
+    """The `merge_policy` `tenant_id` registered `owner/repo` with, or None.
+
+    The tenant's own registration only (`Repositories.find`), so another
+    tenant's policy on the same repository never decides this tenant's
+    default."""
+    record = Repositories(db, now=now).find(tenant_id, repo_id_for(tenant_id, owner, repo))
+    return merge_policy_of(record or {})
+
+
+def _merge_policy_audit(
+    txn: Any, db: Any, data: Mapping[str, Any], *, to: str, by: str, at: datetime,
+) -> None:
+    """One `admin_audit` entry for a change of `merge_policy`, inside `txn`."""
+    ref = db.collection(AUDIT_COLLECTION).document()
+    txn.set(ref, {
+        "action": AUDIT_MERGE_POLICY_SET,
+        "target_repo_id": data.get("repo_id"),
+        "by": by,
+        "at": at,
+        "detail": {
+            "tenant_id": data.get("tenant_id"),
+            "repository": f"{data.get('owner')}/{data.get('repo')}",
+            "merge_policy": {"from": merge_policy_of(data), "to": to},
+        },
+    })
+
+
 def _platform_audit(
     txn: Any, db: Any, data: Mapping[str, Any], *, to: bool, by: str, at: datetime,
 ) -> None:
@@ -383,6 +430,8 @@ class RepositoryCreate(_Body):
     #: A platform admin's only (the route refuses a member's with a 403).
     platform: StrictBool | None = None
     hard_stop_paths: list[str] | None = Field(default=None, max_length=HARD_STOP_PATHS_MAX)
+    #: A platform admin's only, as `platform` is. Absent: the platform default.
+    merge_policy: Literal["off", "on_merge_verdict"] | None = None
 
     @field_validator("repository")
     @classmethod
@@ -410,8 +459,8 @@ class RepositoryPatch(_Body):
     """What repo-index.md §6.1 lets a PATCH change: schedule, trigger,
     `allowed_profiles`, `default_branch`, `paused`; and the hard stops'
     `platform` (a platform admin's only) and `hard_stop_paths`
-    (docs/schedules.md §4.4). Never the repository, the tenant or anything an
-    index run writes."""
+    (docs/schedules.md §4.4); and `merge_policy` (a platform admin's only).
+    Never the repository, the tenant or anything an index run writes."""
 
     default_branch: str | None = Field(default=None, min_length=1, max_length=255)
     allowed_profiles: list[str] | None = Field(default=None, max_length=len(RUNNER_PROFILES))
@@ -419,6 +468,7 @@ class RepositoryPatch(_Body):
     index: IndexSettings | None = None
     platform: StrictBool | None = None
     hard_stop_paths: list[str] | None = Field(default=None, max_length=HARD_STOP_PATHS_MAX)
+    merge_policy: Literal["off", "on_merge_verdict"] | None = None
 
     @field_validator("default_branch")
     @classmethod
@@ -438,7 +488,7 @@ class RepositoryPatch(_Body):
     @model_validator(mode="after")
     def _changes_something(self) -> "RepositoryPatch":
         top = (self.default_branch, self.allowed_profiles, self.paused, self.platform,
-               self.hard_stop_paths)
+               self.hard_stop_paths, self.merge_policy)
         if all(value is None for value in top) and (
             self.index is None or not self.index.changes()
         ):
@@ -507,6 +557,8 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
         "hard_stop_paths": hard_stop_paths_of(data),
         # Served so the console marks the floor without restating it.
         "hard_stop_paths_floor": list(HARD_STOP_PATHS_DEFAULT),
+        # None: the platform's `merge_by_default` decides.
+        "merge_policy": merge_policy_of(data),
         "created_by": data.get("created_by"),
         "created_at": _iso(data.get("created_at")),
         "updated_at": _iso(data.get("updated_at")),
@@ -576,6 +628,7 @@ class Repositories:
 
     def create(
         self, record: dict[str, Any], *, platform_by: str | None = None,
+        merge_policy_by: str | None = None,
     ) -> tuple[dict[str, Any], bool]:
         """Store `record` unless its id exists. (stored, created) -- in one
         transaction, so two registrations racing store one document.
@@ -585,6 +638,8 @@ class Repositories:
         `admin_audit` entry is written in the same transaction."""
         if platform_of(record) and not platform_by:
             raise ValueError("a platform registration needs the admin who marked it, for the audit")
+        if merge_policy_of(record) is not None and not merge_policy_by:
+            raise ValueError("a registration with a merge_policy needs the admin who set it, for the audit")
         ref = self._ref(record["repo_id"])
         transaction = self._db.transaction()
 
@@ -602,6 +657,10 @@ class Repositories:
             if platform_of(record) and platform_by:
                 _platform_audit(txn, self._db, {**record, "platform": False}, to=True,
                                 by=platform_by, at=self._now())
+            policy = merge_policy_of(record)
+            if policy is not None and merge_policy_by:
+                _merge_policy_audit(txn, self._db, {**record, "merge_policy": None}, to=policy,
+                                    by=merge_policy_by, at=self._now())
             return record, True
 
         return _apply(transaction)
@@ -644,7 +703,7 @@ class Repositories:
 
     def patch(
         self, tenant_id: str, repo_id: str, body: RepositoryPatch, *,
-        platform_by: str | None = None,
+        platform_by: str | None = None, merge_policy_by: str | None = None,
     ) -> dict[str, Any]:
         """The settings a PATCH may change, in one transaction, tenant re-checked.
 
@@ -652,6 +711,8 @@ class Repositories:
         checked, and its `admin_audit` entry is written in this transaction."""
         if body.platform is not None and not platform_by:
             raise Forbidden("only a platform admin may set or clear platform")
+        if body.merge_policy is not None and not merge_policy_by:
+            raise Forbidden("only a platform admin may set merge_policy")
         if not _REPO_ID.match(repo_id or ""):
             raise self.not_found((repo_id or "")[:64])
         ref = self._ref(repo_id)
@@ -680,6 +741,10 @@ class Repositories:
                 changes["platform"] = body.platform
                 _platform_audit(txn, self._db, data, to=body.platform,
                                 by=str(platform_by), at=changes["updated_at"])
+            if body.merge_policy is not None and body.merge_policy != merge_policy_of(data):
+                changes["merge_policy"] = body.merge_policy
+                _merge_policy_audit(txn, self._db, data, to=body.merge_policy,
+                                    by=str(merge_policy_by), at=changes["updated_at"])
             txn.update(ref, changes)
             merged = dict(data)
             merged.update(changes)
@@ -810,6 +875,7 @@ def register(
     now: Callable[[], datetime],
     credential: CredentialSource | None = None,
     platform_by: str | None = None,
+    merge_policy_by: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Register `body.repository` for `tenant`. (record, created).
 
@@ -828,7 +894,7 @@ def register(
         evidence=lambda: store.token_evidence(tenant.tenant_id))
     record = registration_record(body, tenant, read, repo_id=repo_id, created_by=created_by,
                                  at=now(), token_scope=scope, secret_name=secret_name)
-    return store.create(record, platform_by=platform_by)
+    return store.create(record, platform_by=platform_by, merge_policy_by=merge_policy_by)
 
 
 def registration_record(
@@ -887,6 +953,9 @@ def registration_record(
         "platform": body.platform is True,
         "hard_stop_paths": list(
             HARD_STOP_PATHS_DEFAULT if body.hard_stop_paths is None else body.hard_stop_paths),
+        # None defers to the platform's `merge_by_default`; set only when an
+        # admin's request said so (the route checked the role, `create` audits).
+        "merge_policy": body.merge_policy,
         "created_by": created_by,
         "created_at": at,
         "updated_at": at,

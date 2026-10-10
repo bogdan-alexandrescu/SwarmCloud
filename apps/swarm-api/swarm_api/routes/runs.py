@@ -72,10 +72,12 @@ from ..issueruns import (
     plan_digest,
     plan_files,
     planner_task,
+    auto_merge_default,
     refuse_auto_merge,
     territory_overlap,
 )
 from ..issuesync import sync_issue
+from ..repositories import registered_merge_policy
 from ..plancontext import read_plan_context
 from ..reviewcontext import read_review_context
 from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate
@@ -549,14 +551,13 @@ def create_run(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     # Before anything is created: a refused option writes nothing. A run that
-    # does not say takes the platform's `merge_by_default` (contract request
-    # 47), resolved now and recorded on the run, so a later change to the
-    # default does not change a run already made.
-    auto_merge = (
-        body.auto_merge if body.auto_merge is not None
-        else bool(ctx.store.get_platform_settings().get("merge_by_default"))
-    )
-    refuse_auto_merge(auto_merge)
+    # does not say takes the `merge_policy` its tenant registered the issue's
+    # repository with, else the platform's `merge_by_default` (contract
+    # request 47, WF-MERGE-API), resolved once the tenant is known and
+    # recorded on the run, so a later change to either does not change a run
+    # already made.
+    if body.auto_merge is not None:
+        refuse_auto_merge(body.auto_merge)
     ref = parse_issue_ref(body.issue)
     # The repository's open work, read with THIS caller's tenant's forge
     # token (invariant 9) before anything is created: a 403 or 404 refuses
@@ -566,6 +567,14 @@ def create_run(
     # `tenant_for` is the create path's tenant resolution, the one
     # `submit_tasks` runs again below.
     tenant = ctx.submissions.tenant_for(auth)
+    auto_merge = (
+        body.auto_merge if body.auto_merge is not None
+        else auto_merge_default(
+            registered_merge_policy(ctx.db, ctx.now, tenant.tenant_id, ref.owner, ref.repo),
+            bool(ctx.store.get_platform_settings().get("merge_by_default")),
+        )
+    )
+    refuse_auto_merge(auto_merge)
     try:
         open_work = read_open_work(
             ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge, read_at=ctx.now()
