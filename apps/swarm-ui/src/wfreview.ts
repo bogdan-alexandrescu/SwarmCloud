@@ -136,6 +136,147 @@ export function verdictFor(reviewTaskId: string, tasks: readonly Task[]): Verdic
   return null
 }
 
+/**
+ * FINDINGS BESIDE THEIR LINES (docs/design/diff-viewer.md §2 variant 3).
+ *
+ * The gated step's worker keeps, beside `findings` (text), where each finding
+ * said it is -- `finding_locations: [{finding, file, line?, side?}]`, where
+ * `finding` indexes `findings` -- and the patches the review READ, each with
+ * the sha256 its own worker measured as it staged them:
+ * `reviewed_patches: [{task_id, filename, sha256}]` (agent_worker/verdict.py
+ * `FindingLocation`, `reviewed_patches`). The path was validated there and is
+ * displayed here, never opened.
+ */
+export interface ReviewedPatch {
+  readonly taskId: string
+  readonly filename: string
+  readonly sha256: string
+}
+
+export interface ReviewFinding {
+  /** `<review task>:<index>`. */
+  readonly id: string
+  readonly review: string
+  readonly summary: string
+  readonly severity: Severity | 'none'
+  readonly file: string | null
+  /** Set together with `side` or not at all: a line in an unknown half of a patch cannot be placed. */
+  readonly line: number | null
+  readonly side: 'old' | 'new' | null
+  /** Empty when the worker recorded no digest: then nothing is pinned. */
+  readonly patches: readonly ReviewedPatch[]
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/
+
+function reviewedPatchesOf(g: Record<string, unknown>): ReviewedPatch[] {
+  const raw = Array.isArray(g['reviewed_patches']) ? (g['reviewed_patches'] as unknown[]) : []
+  return raw.flatMap((p) =>
+    isRecord(p) && typeof p['task_id'] === 'string' && typeof p['filename'] === 'string' && typeof p['sha256'] === 'string' && SHA256_HEX.test(p['sha256'])
+      ? [{ taskId: p['task_id'], filename: p['filename'], sha256: p['sha256'] }]
+      : [],
+  )
+}
+
+/**
+ * Every finding of every review the gated steps among `tasks` read, once per
+ * review (the first gate that read it, as `verdictFor`), in the review's
+ * order, each with the location the worker kept for it, if any.
+ */
+export function reviewFindings(tasks: readonly Task[]): ReviewFinding[] {
+  const out: ReviewFinding[] = []
+  const seen = new Set<string>()
+  for (const t of tasks) {
+    const g = gateBlock(t)
+    const review = g?.['task_id']
+    if (g === null || typeof review !== 'string' || review === '' || seen.has(review)) continue
+    seen.add(review)
+    const where = new Map<number, Record<string, unknown>>()
+    for (const loc of Array.isArray(g['finding_locations']) ? (g['finding_locations'] as unknown[]) : []) {
+      if (isRecord(loc) && typeof loc['finding'] === 'number' && !where.has(loc['finding'])) where.set(loc['finding'], loc)
+    }
+    const patches = reviewedPatchesOf(g)
+    const raw = Array.isArray(g['findings']) ? (g['findings'] as unknown[]) : []
+    raw.forEach((f, index) => {
+      const summary = findingText(f)
+      if (summary === null) return
+      const loc = where.get(index)
+      const file = typeof loc?.['file'] === 'string' && loc['file'] !== '' ? loc['file'] : null
+      const n = loc?.['line']
+      const sd = loc?.['side']
+      const placed = file !== null && typeof n === 'number' && Number.isInteger(n) && n > 0 && (sd === 'old' || sd === 'new')
+      out.push({
+        id: `${review}:${index}`,
+        review,
+        summary,
+        severity: severityOf(f) ?? 'none',
+        file,
+        line: placed ? (n as number) : null,
+        side: placed ? (sd as 'old' | 'new') : null,
+        patches,
+      })
+    })
+  }
+  return out
+}
+
+/** A patch this page shows, as far as its digest is known. */
+export interface ShownPatch {
+  /** The caller's key for where it is drawn (a matrix column). */
+  readonly key: string
+  readonly label: string
+  readonly taskId: string
+  /** The artifact's name, as the review staged it (`swarm-work.patch`). */
+  readonly name: string
+  /**
+   * The sha256 of the bytes shown: a string once measured; null when it cannot
+   * be (a window, masked text, bytes that are not UTF-8); undefined until read.
+   */
+  readonly digest: string | null | undefined
+  /** The paths the patch changes, null while not known. */
+  readonly files: ReadonlySet<string> | null
+}
+
+export type Placement =
+  | { readonly kind: 'pinned'; readonly key: string; readonly label: string; readonly file: string; readonly line: number; readonly side: 'old' | 'new' }
+  /** The review read a patch these steps have since replaced: its lines may have drifted. */
+  | { readonly kind: 'earlier'; readonly label: string }
+  | { readonly kind: 'unplaced'; readonly why: string }
+  | { readonly kind: 'checking' }
+  | { readonly kind: 'uncompared'; readonly label: string }
+
+/**
+ * THE DIGEST CHECK: where finding `f` may be pinned among the `shown` patches.
+ * Pinned only on a patch the review read, by task and name, whose bytes as
+ * shown hash to the digest the review's worker measured. A finding with no
+ * line and side, or no digest to compare, is not placed; a patch whose digest
+ * differs is "from an earlier patch"; one not yet read, or not measurable
+ * here, is said to be exactly that. Never the nearest line, never a guess.
+ */
+export function placeFinding(f: ReviewFinding, shown: readonly ShownPatch[]): Placement {
+  if (f.file === null) return { kind: 'unplaced', why: 'the review named no file' }
+  if (f.line === null || f.side === null) return { kind: 'unplaced', why: 'the review named the file and no line in it' }
+  if (f.patches.length === 0) return { kind: 'unplaced', why: 'no digest of the patch the review read was recorded, so its line cannot be checked against this one' }
+  const read = (s: ShownPatch) => f.patches.filter((p) => p.taskId === s.taskId && p.filename === s.name)
+  const candidates = shown.filter((s) => read(s).length > 0)
+  if (candidates.length === 0) return { kind: 'unplaced', why: 'the patch the review read is not one shown here' }
+  const same = candidates.filter((s) => typeof s.digest === 'string' && read(s).some((p) => p.sha256 === s.digest))
+  if (same.length > 0) {
+    const holding = same.filter((s) => s.files === null || s.files.has(f.file!))
+    if (holding.length === 1) {
+      const s = holding[0]!
+      return { kind: 'pinned', key: s.key, label: s.label, file: f.file, line: f.line, side: f.side }
+    }
+    return holding.length === 0
+      ? { kind: 'unplaced', why: 'the patch the review read does not change this file' }
+      : { kind: 'unplaced', why: 'the review read several patches that change this file, and the finding does not say which one its line counts in' }
+  }
+  if (candidates.some((s) => s.digest === undefined)) return { kind: 'checking' }
+  const label = candidates.map((s) => s.label).join(', ')
+  if (candidates.some((s) => s.digest === null)) return { kind: 'uncompared', label }
+  return { kind: 'earlier', label }
+}
+
 /** Whether some other step's verdict gate names `taskId`: the step is a review. */
 export function isReviewedBy(taskId: string, tasks: readonly Task[]): boolean {
   return tasks.some((t) => {

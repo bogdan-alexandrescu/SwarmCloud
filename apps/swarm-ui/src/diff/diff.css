@@ -87,3 +87,50 @@
 .diff-tk.is-com { color: var(--text-faint); }
 .diff-tk.is-num { color: var(--sk-ac); }
 .diff-tk.is-key { color: var(--sk-ac); }
+
+/* REVIEW FINDINGS BESIDE THEIR LINES (design §2 variant 3). The mark sits at
+   the start of the side's line-number cell, absolutely, so it takes no width
+   from split's columns and cannot move the row off its windowed offset; it
+   is a button, so Tab reaches it, and its colour is the finding's severity. */
+.diff-no.has-pin { position: relative; }
+.diff-pin {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  margin: 0;
+  padding: 0 2px;
+  border: 0;
+  background: transparent;
+  font: 600 var(--t-micro)/var(--lh-micro) var(--font);
+  cursor: pointer;
+}
+.diff-pin:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.diff-pin.is-bad,
+.diff-pin-dot.is-bad { color: var(--bad-ink); }
+.diff-pin.is-warn,
+.diff-pin-dot.is-warn { color: var(--warn-ink); }
+.diff-pin.is-info,
+.diff-pin-dot.is-info { color: var(--sk-ac); }
+
+/* The list of the patch's pinned findings, above the find box: the keyboard's
+   way to every mark, and the note that says the one last focused. */
+.diff-pins { display: flex; flex-direction: column; gap: var(--ctl-s1); font: var(--t-micro)/var(--lh-micro) var(--font); }
+.diff-pins-head { margin: 0; color: var(--text-dim); }
+.diff-pins-list { display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 0; list-style: none; }
+.diff-pins-go {
+  width: 100%;
+  padding: 2px var(--ctl-s1);
+  border: 1px solid transparent;
+  border-radius: var(--ctl-radius-sm);
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.diff-pins-go[aria-pressed='true'] { border-color: var(--sk-ln); background: var(--surface-2); }
+.diff-pins-go:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
+.diff-pins-off { display: block; padding: 2px var(--ctl-s1); color: var(--text-faint); }
+.diff-pins-where { font-family: var(--mono); }
+.diff-pins-note { margin: 0; color: var(--text); }
