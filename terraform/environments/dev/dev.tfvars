@@ -590,3 +590,14 @@ deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceac
 # PUT /v1/admin/tenants/eng/issue-sweep, not here (docs/issue-runs.md "Turning
 # it on, for tenant eng"). Left off in prod.
 enable_issue_sweep = true
+
+# Personal-workspace publishing (swarm-api WORKSPACE_APPLY_PUBLISH, #847).
+# OFF until the swarm-workspace-apply topic and its Cloud Build trigger exist,
+# which is the owner's one-time bootstrap apply with
+# enable_workspace_deployer = true (docs/workspaces.md §10). Flip this to true
+# in the SAME release as that apply, not before: publishing to a topic that
+# does not exist records publish_failed on every sweep, and not after: while it
+# is off every approved request waits. Off is not silent -- the
+# swarm-workspace-sweep job logs each waiting record as workspace_stuck
+# (reason publishing_off) and the workspace-stuck alert pages on it.
+workspace_apply_publish = false
