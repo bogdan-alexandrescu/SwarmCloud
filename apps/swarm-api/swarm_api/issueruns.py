@@ -97,8 +97,9 @@ the review shape #264 built: a review that writes `verdict.json`, and a fix
 gated on `NOT_YET` that is the workflow's one publisher (`integrate`). The
 run's `fix_rounds` (1-5, default 3) is the cap on review-then-fix rounds and
 travels in the workflow's metadata; ONE round is what the platform can
-compile today, because under `integrate` only the integrator may be gated and
-a second review needs a gated step that is not the publisher
+compile today, because under `integrate` only the integrator may be gated
+(and the re-review "on_merge_verdict" appends), and a second review needs a
+gated step that is not the publisher
 (docs/workflows.md, "What this does not do"). The same cap also bounds the
 CI loop's fix rounds after the pull request opens (`issueci`): one
 continuation per red reading, at most `fix_rounds` of them.

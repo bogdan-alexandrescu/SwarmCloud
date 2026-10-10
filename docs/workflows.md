@@ -1073,7 +1073,9 @@ carry them: `WorkflowStep` is frozen, so typing them there is contract request
   review of the fixed branch is another review step and another gated step,
   but under `integrate` only the integrator may be gated, so that chain needs
   a gate on a non-integrator whose verdict the PR also carries, which is not
-  built.
+  built for a caller's own steps. The one exception is the re-review
+  `"on_merge_verdict"` appends (below), gated on the same review as the
+  integrator.
 * **It does not check the verdict where it is written.** A malformed verdict
   is found by the gated step, after the review has SUCCEEDED, not by the
   review's own end-of-attempt check, which would retry it.
@@ -1469,7 +1471,7 @@ on a review, swarm-api appends two steps before signing
 
 | step | what it is | why |
 |---|---|---|
-| `re-review` | the review's own `runner_profile` and `input`, by name, with a preamble before its prompt; `builds_on` the integrator; stages the earlier verdict and the review's inputs **by parent** (`review/verdict.json`) | it judges the head the integrator pushed -- the head the merge pins -- and its earlier-verdict file can never be mistaken for the `verdict.json` it writes |
+| `re-review` | the review's own `runner_profile` and `input`, by name, with a preamble before its prompt; `builds_on` the integrator; stages the earlier verdict and the review's inputs **by parent** (`review/verdict.json`); gated like the integrator (`when` the review says `NOT_YET`) | it judges the head the integrator pushed -- the head the merge pins -- and its earlier-verdict file can never be mistaken for the `verdict.json` it writes |
 | `merge` | depends on the integrator and the re-review; stages the re-review's verdict file; its signed `merge_target.review` is the re-review | it merges only on the LATEST verdict, and only when CI is green at the integrator's pushed head |
 
 * **One round, `REREVIEW_ROUNDS = 1`.** A re-review that still says NOT_YET
@@ -1477,14 +1479,18 @@ on a review, swarm-api appends two steps before signing
   request open for a person. The workflow is a DAG fixed at submission, so
   a second round would be a second fix/re-review pair, and a review that
   disagrees with a fix twice is a disagreement a person settles.
-* **The re-review's agent always runs, MERGE path included.** A gated step
-  whose agent does not run writes no artifact (`agent_worker.verdict`), so a
-  re-review gated on NOT_YET would leave the merge nothing to read on MERGE.
-  The cost is one review agent per MERGE workflow, and what it buys is a
-  verdict on the exact head being merged (with several contributors, a head
-  the first review never saw). Skipping it on MERGE needs the worker to
-  re-publish a gated step's staged verdict; that is a worker change, not
-  made here.
+* **The re-review's agent runs only after a fix** (owner decision
+  2026-10-10). It is gated on the same review and verdicts as the integrator
+  (`NOT_YET` in implement -> review -> fix), so on MERGE no review agent is
+  spent a second time on a head nobody changed. A gated step whose agent does
+  not run re-publishes the verdict file it staged, byte for byte under its
+  `input_from` name, as its own artifact
+  (`agent_worker.lifecycle.Worker._republish_staged_verdict`): on MERGE the
+  merge step reads the first review's MERGE through the re-review, on
+  NOT_YET it reads the re-review's own verdict -- the same file name from
+  the same step either way. Before this the re-review ran on MERGE too, one
+  review agent per merged workflow, because a shut gate wrote no artifact
+  and the merge refused `verdict_unreadable`.
 * **Nothing the caller did not choose.** The re-review runs the profile and
   input the caller already chose for its review; no image, command, backend
   or resource spec is accepted from anyone (invariant 10).
@@ -1502,7 +1508,10 @@ registration on `/v1/repositories`, and **only a platform admin may set it**
 or written). Each change is an `admin_audit` entry
 (`repository_merge_policy_set`) in the transaction that changes the
 registration, as `platform` is. Never set, it reads as `null` and the
-platform's `merge_by_default` decides.
+platform's `merge_by_default` decides. A PATCH of `"inherit"` (owner decision
+2026-10-10) clears an override back to that: it stores `null`, under the same
+admin-only check and the same audit entry, `to: null`. A create does not take
+it -- there is nothing to clear -- and it is never stored.
 
 * When a workflow on the repository says nothing in `metadata.merge`, the
   policy decides. A policy that cannot apply -- a one-step `direct-pr`
