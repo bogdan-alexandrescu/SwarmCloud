@@ -1288,6 +1288,7 @@ needs credentials only the owner holds.
    deployer's two Terraform-era bindings on it. A9 re-reads every object,
    rendering a `migrated` tenant with `swarm-agent-worker` only: a
    Terraform-made tenant has no legacy `swarm-worker` objects.
+   On a `migrated` record A9 also accepts Terraform's tenant and pool documents where they can legitimately differ (no `namespace`, which `ignore_changes` keeps off a document written before `bootstrap.tf` named it; a limit stored as an integral double or a string of digits; a principal in another case). Both documents must still exist, `service_account` must be the tenant's, and the limits must agree. A failure logs the names of the fields that disagree, never their values (2026-10-10).
 5. **Date the result here**: the plan counts of steps 1 and 2, the record's
    workspace id kept private (§1.1), and the verify run's outcome.
 

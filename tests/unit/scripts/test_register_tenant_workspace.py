@@ -804,6 +804,139 @@ def test_verify_of_a_migrated_record_still_needs_the_worker_on_the_slot(job: Job
     assert _field(job.record(), "failure", "object") == "forge slot binding"
 
 
+# The tenant and pool documents as terraform/modules/firestore/bootstrap.tf
+# writes them (read back through the REST API: an integer is a string inside
+# integerValue), at the ready world's limits (8 and 8, pool min = 8).
+def _terraform_tenant_doc() -> dict:
+    return {"fields": {
+        "tenant_id": _s(TENANT), "kind": _s("user"), "principal": _s(PRINCIPAL), "display_name": _s(""),
+        "max_active": {"integerValue": "8"}, "capacity_units": {"integerValue": "8"},
+        "enabled": {"booleanValue": True}, "service_account": _s(WORKER),
+        "gcs_prefix": _s(f"gs://{BUCKET}/tenants/{TENANT}"), "namespace": _s(NAMESPACE),
+        "credentials": {"arrayValue": {"values": [_s("anthropic")]}}, "managed_by": _s("swarm-terraform"),
+    }, "updateTime": "2026-09-01T00:00:00.000001Z"}
+
+
+def _terraform_pool_doc() -> dict:
+    return {"fields": {
+        "name": _s(f"tenant:{TENANT}"), "hard_limit": {"integerValue": "8"}, "active": {"integerValue": "0"},
+        "enabled": {"booleanValue": True}, "managed_by": _s("swarm-terraform"),
+    }, "updateTime": "2026-09-01T00:00:00.000001Z"}
+
+
+def _terraform_docs(tenant_change=None, pool_change=None):
+    def apply(world: dict) -> None:
+        tenant, pool = _terraform_tenant_doc(), _terraform_pool_doc()
+        if tenant_change:
+            tenant_change(tenant["fields"])
+        if pool_change:
+            pool_change(pool["fields"])
+        world["firestore"][f"tenants/{TENANT}"] = tenant
+        world["firestore"][f"pools/tenant:{TENANT}"] = pool
+    return apply
+
+
+def _job_made(world: dict) -> None:
+    world["firestore"][f"workspaces/{TENANT}"]["fields"].update(
+        migrated={"booleanValue": False}, decision=_record()["fields"]["decision"])
+
+
+def test_verify_of_a_migrated_record_accepts_terraforms_documents_as_bootstrap_writes_them(
+        job: Job, ready_world: dict) -> None:
+    # Every field A9 reads has the same name and type in bootstrap.tf as in
+    # A8; the extra `managed_by`, `credentials` and `display_name` are ignored.
+    _from_ready(job, ready_world)
+    job.edit(_as_terraform_made)
+    job.edit(_terraform_docs())
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 0, _out(proc)
+    assert _field(job.record(), "state") == "ready"
+    assert _steps(job.record())["A9"] == "done"
+
+
+# What a Terraform-era document may legitimately hold that A8 never writes:
+# no `namespace` (ignore_changes keeps a document written before the module
+# named it), and a limit as an integral double or a string of digits (a hand
+# patch; the Tenant and SlotPool models read either as the same whole number).
+TERRAFORM_ERA = {
+    "no-namespace": (lambda f: f.pop("namespace"), None, "namespace"),
+    "blank-namespace": (lambda f: f.update(namespace=_s("")), None, "namespace"),
+    "double-max-active": (lambda f: f.update(max_active={"doubleValue": 8.0}), None, None),
+    "string-capacity-units": (lambda f: f.update(capacity_units=_s("8")), None, "capacity_units"),
+    "string-hard-limit": (None, lambda f: f.update(hard_limit=_s("8")), "hard_limit"),
+    "upper-case-principal": (lambda f: f.update(principal=_s(" Alice@Saga.xyz ")), None, "principal"),
+}
+
+
+@pytest.mark.parametrize("tenant_change,pool_change,job_fails_on", TERRAFORM_ERA.values(), ids=TERRAFORM_ERA.keys())
+def test_verify_accepts_a_terraform_era_document_only_on_a_migrated_record(
+        job: Job, ready_world: dict, tenant_change, pool_change, job_fails_on: str | None) -> None:
+    _from_ready(job, ready_world)
+    job.edit(_as_terraform_made)
+    job.edit(_terraform_docs(tenant_change, pool_change))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 0, _out(proc)
+    assert _steps(job.record())["A9"] == "done"
+    if job_fails_on is None:
+        # jq reads 8.0 and 8 as one number, so a double already passed the
+        # strict check; nothing a job-made record must refuse.
+        return
+    # The same documents on a record the job made: A8 wrote every field as
+    # checked, so the strict check names the one that differs.
+    _from_ready(job, ready_world)
+    job.edit(_terraform_docs(tenant_change, pool_change))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1, _out(proc)
+    document = "pool document" if pool_change else "tenant document"
+    assert _field(job.record(), "failure", "object") == document
+    assert f"{document}'s {job_fails_on} not as the record specifies" in proc.stderr, _out(proc)
+
+
+# What a migrated record still refuses: the limits must agree, the identity
+# must be the tenant's, and a namespace that is present must be its own.
+STILL_REFUSED = {
+    "max-active": (lambda f: f.update(max_active={"integerValue": "9"}), None, "tenant document", "max_active"),
+    "fractional": (lambda f: f.update(capacity_units={"doubleValue": 8.5}), None, "tenant document", "capacity_units"),
+    "not-digits": (lambda f: f.update(max_active=_s("8 agents")), None, "tenant document", "max_active"),
+    "hard-limit": (None, lambda f: f.update(hard_limit={"integerValue": "16"}), "pool document", "hard_limit"),
+    "no-hard-limit": (None, lambda f: f.pop("hard_limit"), "pool document", "hard_limit"),
+    "no-account": (lambda f: f.pop("service_account"), None, "tenant document", "service_account"),
+    "foreign-account": (lambda f: f.update(service_account=_s(SCHEDULER)), None, "tenant document", "service_account"),
+    "foreign-namespace": (lambda f: f.update(namespace=_s("swarm-tenant-eng")), None, "tenant document", "namespace"),
+    "foreign-principal": (lambda f: f.update(principal=_s("mallory@saga.xyz")), None, "tenant document", "principal"),
+}
+
+
+@pytest.mark.parametrize("tenant_change,pool_change,document,field", STILL_REFUSED.values(), ids=STILL_REFUSED.keys())
+def test_verify_of_a_migrated_record_still_needs_the_documents_to_agree(
+        job: Job, ready_world: dict, tenant_change, pool_change, document: str, field: str) -> None:
+    _from_ready(job, ready_world)
+    job.edit(_as_terraform_made)
+    job.edit(_terraform_docs(tenant_change, pool_change))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1, _out(proc)
+    assert _field(job.record(), "failure", "object") == document
+    assert f"{document}'s {field} not as the record specifies (migrated record)" in proc.stderr, _out(proc)
+
+
+@pytest.mark.parametrize("migrated", [True, False], ids=["migrated", "job-made"])
+@pytest.mark.parametrize("path,document", [
+    (f"tenants/{TENANT}", "tenant"), (f"pools/tenant:{TENANT}", "pool")], ids=["tenant", "pool"])
+def test_verify_fails_a_missing_document_on_every_record(
+        job: Job, ready_world: dict, migrated: bool, path: str, document: str) -> None:
+    _from_ready(job, ready_world)
+    if migrated:
+        job.edit(_as_terraform_made)
+        job.edit(_terraform_docs())
+    else:
+        job.edit(_job_made)
+    job.edit(lambda w: w["firestore"].pop(path))
+    proc = job.run("--workspace", WORKSPACE, "--mode", "verify")
+    assert proc.returncode == 1, _out(proc)
+    assert _field(job.record(), "failure", "object") == f"{document} document"
+    assert f"the {document} document is missing" in proc.stderr, _out(proc)
+
+
 # ---------------------------------------------------------------------------
 # A1: nothing is written for a record that is not admissible
 # ---------------------------------------------------------------------------
