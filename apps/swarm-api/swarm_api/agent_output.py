@@ -56,6 +56,7 @@ from .inspect import (
     _attempt_of_artifact_uri,
     _iso,
     _last_boundary,
+    _safe_cut,
     attempt_prefix,
     manifest_attempt,
     parse_tail_header,
@@ -370,16 +371,28 @@ class AgentOutputService:
         *,
         literals: tuple[str, ...] = (),
     ) -> Iterator[bytes]:
-        """The whole object, redacted one whitespace-bounded window at a time.
+        """The whole object, redacted one line-bounded window at a time.
 
-        The same boundary rule the paged routes apply (`inspect._last_boundary`:
-        the last newline, else the last whitespace): each window is cut after
-        it and the remainder carried into the next, so every token is redacted
-        whole. A private key is a TOKEN OF LINES: a window that would end
-        inside one is cut before its BEGIN marker instead, and the key carried
-        whole into the next (up to `redaction.PEM_BLOCK_MAX_CHARS`), so it is
-        masked as one block. Concatenated, the windows are the redaction of the
-        whole object.
+        Each window is cut after its last NEWLINE and the remainder carried
+        into the next, so every line is redacted whole. Not after the last
+        whitespace, as the paged routes must when a line is longer than the
+        page they were asked for (the PR #229 security review, #227): a line
+        longer than one chunk cut at whitespace served `password= <v>` cut
+        after the `=` with `<v>` at the head of the next window, where no name
+        stood before it, and a JSON line cut that way skipped the structural
+        pass. A line is carried whole up to `MAX_TEXT_CARRY`; only a longer
+        one is cut at whitespace (`inspect._last_boundary`).
+
+        Every cut also goes through `inspect._safe_cut`, the rule the paged
+        routes cut by (`redaction.straddled`): never inside a learned literal
+        that holds a newline or a space -- cut at that newline, neither half
+        was the literal and both were served (#227) -- nor between a
+        credential's name and the end of its value, which is what still
+        protects a line past `MAX_TEXT_CARRY`. A private key is a TOKEN OF
+        LINES: a window that would end inside one is cut before its BEGIN
+        marker instead, and the key carried whole into the next (up to
+        `redaction.PEM_BLOCK_MAX_CHARS`), so it is masked as one block.
+        Concatenated, the windows are the redaction of the whole object.
 
         `literals`: this task's own learned literals (the PR #229 review),
         passed to `_scrub` so a window that IS a whole JSON line is masked by
@@ -418,12 +431,16 @@ class AgentOutputService:
                 if buffer:
                     yield window(buffer, ends_on_line=True)
                 return
-            cut = _last_boundary(buffer)
+            cut = buffer.rfind(b"\n")
+            if cut < 0 and len(buffer) >= MAX_TEXT_CARRY:
+                # One line longer than the carry: whitespace after all.
+                cut = _last_boundary(buffer)
             if cut >= 0:
                 begin = open_key_start(buffer, cut + 1)
                 if begin is not None:
                     # -1 when the key is all this window holds: carry it.
                     cut = _last_boundary(buffer[:begin])
+                cut = _safe_cut(buffer, cut, literals)
             if cut >= 0:
                 yield window(buffer[: cut + 1], ends_on_line=buffer[cut : cut + 1] == b"\n")
                 carry = buffer[cut + 1 :]

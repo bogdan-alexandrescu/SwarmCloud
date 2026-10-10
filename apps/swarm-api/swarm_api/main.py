@@ -42,6 +42,7 @@ from .routes import (
     repositories,
     runs,
     schedule_tick,
+    strandedprs,
     schedules,
     tasks,
     tenants,
@@ -153,6 +154,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The schedule tick (docs/schedules.md §2, lane S2): one route, admitted
     # to the `swarm-schedule-tick` identity alone (SD10).
     app.include_router(schedule_tick.router)
+    # Stranded pull requests (part of #295): GET /v1/stranded-prs, a member's
+    # own tenant's last sweep, and the sweep the scheduler and an admin call.
+    app.include_router(strandedprs.router)
     # Schedules (docs/schedules.md §7.1, lane S3): the tenant's own routes,
     # tenant-scoped like issue runs, and the admin list and actions (§5.3).
     # A caller names a type from the catalogue, never an image or command.

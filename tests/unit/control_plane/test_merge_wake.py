@@ -728,3 +728,19 @@ def _members_hold_grants(db):
     from .conftest import TEST_REPOSITORIES, grant_members
 
     grant_members(db, *TEST_REPOSITORIES)
+
+
+def test_a_park_waiting_for_the_merge_slot_is_not_read(db, wake_client, github):
+    """Merge race (#295): a step parked for its repository's merge slot is
+    green -- that is why it asked for the slot -- so reading it would wake it
+    for nothing every tick. The holder's release marks it; the tick skips it.
+    The control is the first test here: the same park as `checks_pending` is
+    read and marked."""
+    parked_merge(db, code=mergewake.MERGE_SLOT_WAIT, pending=[])
+    github.check(HEAD, CHECK, "success")
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["skipped"] == 1 and body["report"]["woken"] == 0, body
+    assert mergewake.WAKE_MARKER not in _wait(db)
+    assert _reads(github) == []

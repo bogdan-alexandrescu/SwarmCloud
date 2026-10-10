@@ -30,6 +30,7 @@ without being obeyed.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -412,6 +413,42 @@ def user_slot_hash(suffix: str) -> str | None:
     return match.group(1) if match else None
 
 
+def _hex16(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _user_key(email: str) -> str:
+    return (email or "").strip().lower()
+
+
+def owner_slot_hash(email: str, owner: str) -> str:
+    """`swarm_api.gittokens.owner_suffix`'s hex (D5): 16 hex of sha256 of
+    `lower(email) + "|" + lower(owner)`. RESTATED, as the grant id is;
+    tests/unit/control_plane/test_fallback_pat.py holds it to swarm-api's."""
+    return _hex16(_user_key(email) + "|" + (owner or "").strip().lower())
+
+
+def _grant_user_hash(hashed: str, submitted_by: str | None,
+                     repository_url: str | None) -> str:
+    """The `user_hash` whose grant stands behind a `git-u-<hex>` slot.
+
+    A person's App slot's hex IS their user_hash. Their token for one owner
+    (D5) is a second user slot whose hex is `owner_slot_hash(email, owner)`:
+    recomputed here from the SIGNED `submitted_by` and the owner of the
+    SIGNED repository URL, it is the submitter's own, and their grant is the
+    one read. Anything else keeps the slot's hex, which names no grant of
+    anyone's, so the task reads as ungranted."""
+    if not submitted_by:
+        return hashed
+    person = _hex16(_user_key(submitted_by))
+    if hashed == person:
+        return hashed
+    match = indexrun._GITHUB_URL.match(repository_url or "")
+    if match is not None and hashed == owner_slot_hash(submitted_by, match.group(1)):
+        return person
+    return hashed
+
+
 def grant_refusal(
     db: Any,
     *,
@@ -420,6 +457,7 @@ def grant_refusal(
     repository_url: str | None,
     write: bool,
     call_options: dict[str, Any] | None = None,
+    submitted_by: str | None = None,
 ) -> str | None:
     """Why the task's grant no longer covers what it is about to do, or None.
 
@@ -442,6 +480,9 @@ def grant_refusal(
     hashed = user_slot_hash(suffix)
     if hashed is None:
         return None
+    # `submitted_by` is the verified document's: a token for one owner (D5)
+    # resolves to its person here, and to nobody else.
+    hashed = _grant_user_hash(hashed, submitted_by, repository_url)
     where = indexrun.target(tenant_id, repository_url)
     if isinstance(where, str):
         return f"no grant can cover this repository: {where}"

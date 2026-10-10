@@ -162,7 +162,8 @@ Run job reads one record from it by workspace id.
 | `state` | string | swarm-api, the job | §1.2 |
 | `request_id` | string | swarm-api | a fresh UUID for each accepted request or retry; the job logs it, privately |
 | `requested_at`, `requested_via` | timestamp, string | swarm-api | `console`, `plugin` or `api` |
-| `decision` | map or null | swarm-api | `{by, at, verdict: approved/denied, reason}`. `reason` is required for a denial and is shown to the person. `by` is an admin's email; it never leaves Firestore |
+| `decision` | map or null | swarm-api | `{by, at, verdict: approved/denied, reason, auto}`. `reason` is required for a denial and is shown to the person. `auto` is true when an admin's own request was approved automatically (§1.3), with reason `requester is an admin`. `by` is an admin's email; it never leaves Firestore |
+| `held` | string or absent | swarm-api | `migrating` on a `requested` record an admin asked for whose tenant predates the workspace job (§1.3, §3.3): not approved automatically, never published |
 | `limits` | map | swarm-api | `{max_active, capacity_units, quota_pods, quota_cpu}`. Defaults from §8; an admin raises them in People (§6.4) |
 | `run` | map or null | swarm-api, the job | `{build_id, attempt, published_at, mode}` of the current run. Since the 2026-10-10 re-decision `build_id` holds the Cloud Run **execution** name (`swarm-workspace-apply-x7k2p`), which the job reads from `CLOUD_RUN_EXECUTION`; the field keeps its name because W6 and W7 already write it (`register-tenant.sh`, `swarm_api/people.py`), and `register-tenant.sh`'s `WS_BUILD_RE` already admits an execution name. The execution's page is in the project's console, and its log is readable only by the restricted bucket's readers (§2.6) |
 | `steps` | map | the job | `step id → {state: todo/running/done/failed/held, at, code}`, using the ids in §4.2 |
@@ -175,9 +176,9 @@ Run job reads one record from it by workspace id.
 | state | entered when | the person sees | submissions to their own tenant |
 |---|---|---|---|
 | (no record) | never requested | checklist step "Request your workspace", button enabled | refused, `WORKSPACE_NOT_READY` |
-| `requested` | swarm-api accepted a request | "Waiting for an admin to approve" | refused |
+| `requested` | swarm-api accepted a non-admin's request (an admin's goes straight to `approved`, §1.3) | "Waiting for an admin to approve", or, when `held`, that it is being migrated | refused |
 | `denied` | an admin denied it | "Not approved: {reason}", and "Request again" | refused |
-| `approved` | an admin approved it; the dispatch is being made | "Approved. Setting up…" | refused |
+| `approved` | an admin approved it, or it was an admin's own request; the dispatch is being made | "Approved. Setting up…" | refused |
 | `applying` | the job claimed the record | each step of §4.2 with a tick or spinner | refused |
 | `needs_owner` | the call guard stopped a call (§2.5) | "Approved. A change needs the platform owner's review before it can finish." | refused |
 | `failed` | a step failed past its retries | the step's code and copy (§4.3) | refused |
@@ -234,13 +235,42 @@ The write is **one Firestore transaction** that reads the record and then:
   action (§6.4), because it starts a run of a privileged identity.
 
 **Approve and deny** are `POST /v1/admin/workspaces/{workspace_id}/approve`
-and `/deny` (§6.3). Both need `is_admin` (§6.5). Approve is accepted only from
-`requested`; deny from `requested` or `failed`, and it needs a non-empty
-reason of at most 500 characters. Each writes `decision` and an
-`admin_audit` entry in the same transaction. An admin may approve their own
-request: the call guard bounds what any approval can create, so a self-approval
-creates nothing a different admin's approval would not, and the audit shows it
-(confirmed by the owner, 2026-10-08).
+and `/deny` (§6.3). Both need `is_admin` (§6.5). Approve is accepted from
+`requested`, or from `denied` at any time; deny from `requested` or `failed`,
+and it needs a non-empty reason of at most 500 characters. Each writes
+`decision` and an `admin_audit` entry in the same transaction.
+
+**An admin's own request is approved automatically** (owner decision,
+2026-10-09, replacing 2026-10-08's "an admin may approve their own request",
+which left an admin to click Approve on themselves). When the caller of
+`POST /v1/workspace` is an admin (§6.5), the request's own transaction also
+performs the approval: the same code the approve route runs
+(`People._approve_in`), not a copy of it. The record goes straight to
+`approved` with `decision = {by: <the admin>, auto: true, reason: "requester is
+an admin"}`, one `admin_audit` entry `approve_own_workspace_auto` is written,
+and the same publish follows (§2.1). Nothing else is relaxed: checks 1-5 above
+run first, the 24-hour wait after a denial still applies, a `failed` record is
+still a 409, and the limits are §8's defaults, as for anyone. This holds
+because the call guard (§2.5) bounds what any approval can create, so an
+automatic approval creates nothing an admin's click would not. An admin's
+`requested` record that predates the decision is approved the next time they
+ask. A non-admin's request is unchanged: it waits in `requested` for an admin.
+An admin whose role lookup fails is not an admin for this purpose (`is_admin`
+is false), so their request waits too.
+
+**The one exception is a tenant that predates the workspace job** (§3.3):
+`u-bogdan`, whose identity Terraform made. A request for it is never approved
+automatically and never published, because the apply's squat check (A2) would
+fail `IDENTITY_NOT_OURS` on that identity. It is recognised by what the code
+can already read: the tenant document carries Terraform's
+`managed_by = "swarm-terraform"` (`ensure_tenant` and A8 never write it), or
+the record carries `migrated = true`. Such a request stays `requested` with
+`held = "migrating"`, and the person is told the workspace is being migrated,
+not that it waits for an admin. The People pane offers no Approve on a held
+record. A manual approval of it through the API is refused
+`WORKSPACE_MIGRATING`, a new refusal that ships report-only like every other
+(`REFUSAL_WORKSPACE_MIGRATING`, [api-refusals.md](api-refusals.md)). Lane W9's
+migration writes its record instead.
 
 After an approval, swarm-api publishes the workspace id to Pub/Sub (§2.1). A
 failed publish is not a failed approval: the record stays `approved` and the
@@ -1322,7 +1352,7 @@ $ /sc:run "fix the flaky test"
 | route | who | does |
 |---|---|---|
 | `GET /v1/workspace` | any signed-in human | the caller's record (always their own), or `{state: "none"}`. Never another person's |
-| `POST /v1/workspace` | the same | the request of §1.3 |
+| `POST /v1/workspace` | the same | the request of §1.3; an admin's own is approved and published in the same call |
 | `POST /v1/workspace/loan-request` | the same | records a loan request (`loan_requests/{tenant_id}`), idempotent |
 | `GET /v1/admin/people` | admin | §6.4's list |
 | `POST /v1/admin/workspaces/{workspace_id}/approve` | admin | §1.3; publishes the workspace id (§2.1) |
@@ -1703,10 +1733,14 @@ role conditions, plus the alert on any member not named
 
 ### Defaults the owner confirmed
 
-**Decided 2026-10-08 (owner)**, each as this document already proposed:
+**Decided 2026-10-08 (owner)**, each as this document already proposed; item 1 was
+replaced by the owner on 2026-10-09:
 
-1. **An admin may approve their own request**, and the audit records it
-   (§1.3).
+1. **An admin's own request is approved automatically** (decided
+   2026-10-09, replacing 2026-10-08's "an admin may approve their own
+   request", by hand). The decision says `auto: true` and the audit entry is
+   `approve_own_workspace_auto`; a tenant that predates the workspace job is
+   the exception (§1.3).
 2. **A 24-hour wait before re-requesting after a denial.** Admins may still
    approve at any time (§1.3).
 3. **Admins lend only accounts owned by a group tenant or by themselves**

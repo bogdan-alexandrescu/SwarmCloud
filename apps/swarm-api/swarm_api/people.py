@@ -33,9 +33,22 @@ failure therefore writes no audit entry for a change that did not happen.
 swarm-api NEVER WRITES `ready`. Nothing here does: the job's final check is
 the only writer (§1.2).
 
-A SELF-APPROVAL IS ALLOWED AND AUDITED (owner, 2026-10-08): the call guard
-bounds what any approval can create, so it creates nothing another admin's
-would not, and the entry's `detail.self_approval` says it happened.
+AN ADMIN'S OWN REQUEST IS APPROVED AUTOMATICALLY (owner, 2026-10-09; this
+replaces 2026-10-08's "an admin may approve their own request, by hand").
+`request_own` runs `_approve_in` -- the approval `approve` makes, not a copy
+of it -- inside the request's own transaction, and then the same publish. The
+decision says `auto: true`, and the audit entry is
+`approve_own_workspace_auto`. The call guard bounds what any approval can
+create, so an automatic one creates nothing an admin's click would not.
+
+A TENANT THAT PREDATES THE WORKSPACE JOB IS NEVER APPROVED HERE (§3.3).
+`u-bogdan`'s identity was made by Terraform, whose tenant document carries
+`managed_by = swarm-terraform`, and lane W9 migrates it into a record with
+`migrated = true`. Either holds an admin's own request `requested`
+(`ws.MigrationHold`, not a refusal), so nothing is published that the apply's
+squat check would fail with IDENTITY_NOT_OURS. A manual approval of it is
+refused `WORKSPACE_MIGRATING` through `refusals.refuse`: a new refusal, so it
+ships report-only until its switch is on (refusals.py).
 """
 
 from __future__ import annotations
@@ -51,11 +64,13 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from swarm_common.admission import _snapshot
 from swarm_common.models import Tenant
 
+from . import refusals
 from . import workspaces as ws
 from .admins import AUDIT_COLLECTION
-from .errors import Conflict, NotFound, ValidationFailed
+from .errors import Conflict, NotFound, ValidationFailed, WorkspaceMigrating
 from .gittokens import COLLECTION as GIT_TOKENS
 from .publish_workspace import MODE_CREATE, MODE_LIMITS, WorkspacePublisher
+from .store import TENANTS
 
 log = logging.getLogger(__name__)
 
@@ -111,6 +126,17 @@ AUDIT_SHOWN = 50
 APPROVABLE = frozenset({ws.REQUESTED, ws.DENIED})
 DENIABLE = frozenset({ws.REQUESTED, ws.FAILED})
 RETRYABLE = frozenset({ws.FAILED, ws.NEEDS_OWNER})
+
+#: The value Terraform writes in `managed_by` on every tenant document it owns
+#: (terraform/modules/firestore/bootstrap.tf). `ensure_tenant` and the
+#: workspace job (A8) never write it, so on a personal tenant it means the
+#: identity behind it predates the workspace job (§3.3).
+TERRAFORM_MANAGED = "swarm-terraform"
+
+#: The automatic approval of an admin's own request (§1.3): its audit action
+#: and the reason its decision carries, which the person is shown.
+AUTO_APPROVE_ACTION = "approve_own_workspace_auto"
+AUTO_APPROVE_REASON = "requester is an admin"
 
 #: The loan request's state once an admin has lent an account against it.
 LOAN_LENT = "lent"
@@ -219,6 +245,64 @@ class People:
 
     # -- approve, deny, retry ----------------------------------------------------
 
+    def _predates_workspaces(self, txn: Any, record: Mapping[str, Any]) -> bool:
+        """Whether the person's tenant was made outside the workspace job
+        (§3.3): the record says `migrated`, or the tenant document is
+        Terraform's. Read inside `txn`, before any of its writes."""
+        if record.get("migrated") is True:
+            return True
+        tenant_id = str(record.get("tenant_id") or "")
+        if not tenant_id:
+            return False
+        snap = _snapshot(txn.get(self._db.collection(TENANTS).document(tenant_id)))
+        return snap.exists and (snap.to_dict() or {}).get("managed_by") == TERRAFORM_MANAGED
+
+    def _approve_in(self, txn: Any, record: Mapping[str, Any], *, by: str,
+                    auto: bool = False) -> dict[str, Any]:
+        """THE APPROVAL, for an admin's click and for an admin's own request
+        alike: the state check, the migration check, the decision and its
+        audit entry, inside `txn`. Returns the record's patch; the caller
+        writes it, with whatever else its transaction changes, so the record
+        is written once. Nothing here creates a task or a lease (invariant 1):
+        an approval is a record and, after it, one message."""
+        workspace_id = str(record.get("workspace_id") or "")
+        state = ws.state_of(record)
+        if state not in APPROVABLE:
+            raise WorkspaceWrongState(
+                f"workspace {workspace_id} is {state}; only a requested or denied "
+                "workspace can be approved",
+                detail={"workspace_id": workspace_id, "state": state})
+        if self._predates_workspaces(txn, record):
+            if auto:
+                raise ws.MigrationHold(workspace_id)
+            # Report-only until REFUSAL_WORKSPACE_MIGRATING=on: past this
+            # call the admin's approval goes through.
+            refusals.refuse(WorkspaceMigrating(
+                f"workspace {workspace_id} predates self-service setup and is migrated by "
+                "the platform owner (docs/workspaces.md §3.3), not approved: its identity "
+                "was made by Terraform, so the setup job would refuse it. Nothing was "
+                "changed and nothing was started.",
+                detail={"workspace_id": workspace_id, "state": state}))
+        patch: dict[str, Any] = {
+            "state": ws.APPROVED,
+            "decision": {"by": by, "at": self._now(), "verdict": ws.APPROVED,
+                         "reason": AUTO_APPROVE_REASON if auto else None, "auto": auto},
+        }
+        if state == ws.DENIED:
+            # The earlier denial stays where the admin can read it.
+            patch["history"] = [*(record.get("history") or []), {
+                "request_id": record.get("request_id"),
+                "requested_at": record.get("requested_at"),
+                "decision": record.get("decision"),
+            }]
+        self._audit(txn, AUTO_APPROVE_ACTION if auto else "approve", workspace_id, by, {
+            "self_approval": (record.get("principal") or "").strip().lower() == by,
+            "auto": auto,
+            "from_state": state,
+            "request_id": record.get("request_id"),
+        })
+        return patch
+
     def approve(self, workspace_id: str, *, by: str) -> dict[str, Any]:
         """requested (or denied) -> approved, with the decision and its audit
         in one transaction; then the publish (§2.1)."""
@@ -228,36 +312,34 @@ class People:
         @firestore.transactional
         def _apply(txn: Any) -> dict[str, Any]:
             ref, record = self._resolve(txn, workspace_id)
-            state = ws.state_of(record)
-            if state not in APPROVABLE:
-                raise WorkspaceWrongState(
-                    f"workspace {workspace_id} is {state}; only a requested or denied "
-                    "workspace can be approved",
-                    detail={"workspace_id": workspace_id, "state": state})
-            now = self._now()
-            patch: dict[str, Any] = {
-                "state": ws.APPROVED,
-                "decision": {"by": by, "at": now, "verdict": ws.APPROVED, "reason": None},
-            }
-            if state == ws.DENIED:
-                # The earlier denial stays where the admin can read it.
-                patch["history"] = [*(record.get("history") or []), {
-                    "request_id": record.get("request_id"),
-                    "requested_at": record.get("requested_at"),
-                    "decision": record.get("decision"),
-                }]
+            patch = self._approve_in(txn, record, by=by)
             txn.update(ref, patch)
-            self._audit(txn, "approve", workspace_id, by, {
-                "self_approval": (record.get("principal") or "").strip().lower() == by,
-                "from_state": state,
-                "request_id": record.get("request_id"),
-            })
             return {**record, **patch}
 
         record = _apply(transaction)
         log.info("workspace approved workspace=%s", workspace_id)
         dispatch = self._dispatch(record, MODE_CREATE)
         return self._decided(record, dispatch)
+
+    def request_own(self, workspaces: ws.Workspaces, *, tenant_id: str, principal: str,
+                    via: str, is_admin: bool) -> tuple[int, dict[str, Any]]:
+        """`POST /v1/workspace` (§1.3): the request, and for an admin the
+        approval in the same transaction, then the same publish `approve`
+        makes. A non-admin's request is W1's, unchanged: it waits for an
+        admin. Returns (HTTP status, the record as stored)."""
+        principal = principal.strip().lower()
+
+        def _auto(txn: Any, record: dict[str, Any]) -> dict[str, Any]:
+            return self._approve_in(txn, record, by=principal, auto=True)
+
+        status, record = workspaces.request(
+            tenant_id=tenant_id, principal=principal, via=via,
+            approve=_auto if is_admin else None)
+        if status == 202 and ws.state_of(record) == ws.APPROVED:
+            log.info("workspace approved automatically workspace=%s",
+                     record.get("workspace_id"))
+            self._dispatch(record, MODE_CREATE)
+        return status, record
 
     def deny(self, workspace_id: str, *, by: str, reason: str) -> dict[str, Any]:
         """requested or failed -> denied. The reason is required and is shown
@@ -275,10 +357,10 @@ class People:
         def _apply(txn: Any) -> dict[str, Any]:
             ref, record = self._resolve(txn, workspace_id)
             state = ws.state_of(record)
-            if state not in DENIABLE:
+            if state not in DENIABLE and not ws.never_dispatched(record):
                 raise WorkspaceWrongState(
                     f"workspace {workspace_id} is {state}; only a requested or failed "
-                    "workspace can be denied",
+                    "workspace, or an approved one no build was ever sent for, can be denied",
                     detail={"workspace_id": workspace_id, "state": state})
             patch: dict[str, Any] = {"state": ws.DENIED, "decision": {
                 "by": by, "at": self._now(), "verdict": ws.DENIED, "reason": reason}}

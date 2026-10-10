@@ -1977,6 +1977,110 @@ function chainRoom(levels: readonly (readonly WorkflowStep[])[], base: number, c
   return chainNodeW(levels, base, column) - base
 }
 
+// ---------------------------------------------------------------------------
+// Crossing reduction -- the order of the steps inside each level (GR1)
+// ---------------------------------------------------------------------------
+//
+// A LEVEL WAS DRAWN IN THE ORDER THE WORKFLOW LISTS IT, and a composer lists
+// steps round by round: api-1, ui-1, worker-1, infra-1, api-2, ... So a fan-out
+// of four specs into twelve implementers braided twelve edges across each
+// other, and the 48-step fixture drew 129 crossings between adjacent stages
+// with both bands open (docs/design/graph-rendering.md §3.2, pain point 1).
+//
+// THIS IS THE SUGIYAMA ORDERING STEP, ALONE: the one step every layered engine
+// (dagre, ELK, vis-network's hierarchical mode) runs and this file did not.
+// Option D of the design, chosen by the owner on 2026-10-08 over adopting a
+// renderer: it cuts the fixture to 30 crossings in about 2 ms with no
+// dependency, and the renderer, bands, zoom tiers and phone cards are untouched.
+//
+// IT REORDERS AND DOES NOTHING ELSE. Every step stays on its own level, none is
+// added and none dropped -- a graph never invents a node (design §6) -- and a
+// level whose order already crosses nothing keeps the order it was listed in,
+// so a workflow that drew cleanly before draws exactly as it did.
+
+/** Crossings between ADJACENT levels when each is drawn in the given order. */
+function orderCrossings(levels: readonly (readonly WorkflowStep[])[]): number {
+  const pos = new Map<string, number>()
+  levels.forEach((lv) => lv.forEach((s, i) => pos.set(s.step_id, i)))
+  let total = 0
+  for (let l = 1; l < levels.length; l++) {
+    const above = levels[l - 1]!
+    const ids = new Set(above.map((s) => s.step_id))
+    const pairs: [number, number][] = []
+    for (const s of levels[l]!) {
+      for (const d of s.depends_on) if (ids.has(d)) pairs.push([pos.get(d)!, pos.get(s.step_id)!])
+    }
+    for (let i = 0; i < pairs.length; i++) {
+      for (let j = i + 1; j < pairs.length; j++) {
+        if ((pairs[i]![0] - pairs[j]![0]) * (pairs[i]![1] - pairs[j]![1]) < 0) total++
+      }
+    }
+  }
+  return total
+}
+
+/** Where each step sits in its level as a fraction 0..1, so neighbours on levels of different widths compare. */
+function spreadOf(levels: readonly (readonly WorkflowStep[])[]): Map<string, number> {
+  const at = new Map<string, number>()
+  levels.forEach((lv) => lv.forEach((s, i) => at.set(s.step_id, lv.length === 1 ? 0.5 : i / (lv.length - 1))))
+  return at
+}
+
+/** One level sorted by the mean place of its neighbours; a step with none keeps its own place (stable). */
+function byBarycentre(level: readonly WorkflowStep[], neighbours: (s: WorkflowStep) => readonly string[], at: ReadonlyMap<string, number>): WorkflowStep[] {
+  const keyed = level.map((s, i) => {
+    let sum = 0
+    let n = 0
+    for (const id of neighbours(s)) {
+      const p = at.get(id)
+      if (p !== undefined) {
+        sum += p
+        n++
+      }
+    }
+    return { s, i, k: n > 0 ? sum / n : level.length === 1 ? 0.5 : i / (level.length - 1) }
+  })
+  keyed.sort((a, b) => a.k - b.k || a.i - b.i)
+  return keyed.map((x) => x.s)
+}
+
+/**
+ * The levels, each reordered to cut the edges crossing between it and its
+ * neighbours: sweep down (each level by its parents' mean place), then up (by
+ * its children's), `sweeps` times, and keep the best order seen -- which is the
+ * listed order whenever no sweep beats it. Deterministic, and O(sweeps × steps ×
+ * levels) plus the crossing count; at the server's 50-step cap it is about a
+ * millisecond (held under 5 ms by `workflow.gr1.test.tsx`).
+ */
+export function orderLevels(levels: readonly (readonly WorkflowStep[])[], sweeps = 4): WorkflowStep[][] {
+  let best = levels.map((lv) => [...lv])
+  let bestCost = orderCrossings(best)
+  if (bestCost === 0) return best
+  const children = new Map<string, string[]>()
+  for (const lv of levels) {
+    for (const s of lv) {
+      for (const d of s.depends_on) {
+        const list = children.get(d)
+        if (list === undefined) children.set(d, [s.step_id])
+        else list.push(s.step_id)
+      }
+    }
+  }
+  const parentsOf = (s: WorkflowStep) => s.depends_on
+  const childrenOf = (s: WorkflowStep) => children.get(s.step_id) ?? []
+  const work = levels.map((lv) => [...lv])
+  for (let it = 0; it < sweeps && bestCost > 0; it++) {
+    for (let l = 1; l < work.length; l++) work[l] = byBarycentre(work[l]!, parentsOf, spreadOf(work))
+    for (let l = work.length - 2; l >= 0; l--) work[l] = byBarycentre(work[l]!, childrenOf, spreadOf(work))
+    const cost = orderCrossings(work)
+    if (cost < bestCost) {
+      best = work.map((lv) => [...lv])
+      bestCost = cost
+    }
+  }
+  return best
+}
+
 export function layoutOf(
   steps: readonly WorkflowStep[],
   expandedStages: ReadonlySet<number> = NO_STAGES_OPEN,
@@ -1986,7 +2090,10 @@ export function layoutOf(
   /** Terminal steps, whose cards reserve no stop strip (D29). */
   settled: ReadonlySet<string> = NO_NOTES,
 ): DagLayout {
-  const levels = levelsOf(steps)
+  // ORDERED WITHIN EACH LEVEL TO CUT CROSSINGS (`orderLevels`, GR1). The
+  // levels themselves -- which step is in which stage -- are `levelsOf`'s,
+  // unchanged, so every stage index a caller keys on still means the same stage.
+  const levels = orderLevels(levelsOf(steps))
   // THE WIDTH EVERY NODE IN THIS LAYOUT GETS, computed once. Every coordinate
   // below is in terms of it rather than of NODE_W, which is now only the full
   // tier's value.
@@ -2872,6 +2979,85 @@ export function stepDuration(state: StepState, now: number, enteredAt: number | 
     text: 'duration unread',
     note: 'No submission time was recorded for this step, so nothing about it can be timed.',
   }
+}
+
+// ---------------------------------------------------------------------------
+// Critical path (GR1)
+// ---------------------------------------------------------------------------
+
+/**
+ * The chain of dependent steps whose MEASURED durations sum longest -- the run
+ * that decided how long the workflow took (design graph-rendering.md §5.1).
+ *
+ * IT NEVER GUESSES A DURATION. Only `stepDuration`'s `ran` arm is a duration;
+ * `running` is elapsed so far and not final, and every other arm is a wait or
+ * an absence. A step with no measured duration breaks the chain, and a broken
+ * chain is not a shorter chain: a step that has not run could yet be the
+ * longest link. So one such step makes the whole answer `unmeasured`, naming
+ * the steps that made it so, and no step is named on a path it might not be on.
+ */
+export type CriticalPath =
+  | { readonly kind: 'measured'; readonly steps: readonly string[]; readonly seconds: number }
+  | { readonly kind: 'unmeasured'; readonly missing: readonly string[] }
+
+/**
+ * `secondsOf` answers a step's measured duration in seconds, or null when it
+ * has none -- the caller reads it off `stepDuration`, so this stays free of the
+ * clock. Dependencies naming a step outside the workflow are ignored, as
+ * `layoutOf` ignores them. Ties go to the step listed first.
+ */
+export function criticalPath(
+  steps: readonly WorkflowStep[],
+  secondsOf: (step: WorkflowStep) => number | null,
+): CriticalPath {
+  const secs = new Map<string, number>()
+  const missing: string[] = []
+  for (const s of steps) {
+    const v = secondsOf(s)
+    if (v === null || !Number.isFinite(v)) missing.push(s.step_id)
+    else secs.set(s.step_id, v)
+  }
+  if (missing.length > 0 || steps.length === 0) return { kind: 'unmeasured', missing }
+  // Longest path, level by level: every parent sits on a lower level than its
+  // child, so its total is final by the time the child reads it.
+  const total = new Map<string, number>()
+  const via = new Map<string, string | null>()
+  for (const level of levelsOf(steps)) {
+    for (const s of level) {
+      let prev: string | null = null
+      let carried = 0
+      for (const d of s.depends_on) {
+        const t = total.get(d)
+        if (t !== undefined && (prev === null || t > carried)) {
+          prev = d
+          carried = t
+        }
+      }
+      total.set(s.step_id, carried + secs.get(s.step_id)!)
+      via.set(s.step_id, prev)
+    }
+  }
+  // IT ENDS WHERE THE WORKFLOW DOES, on a step nothing depends on: with
+  // measured zeros a root ties every chain under it, and a "path" of one root
+  // would be a path that stops halfway.
+  const parents = new Set(steps.flatMap((s) => s.depends_on))
+  let end: string | null = null
+  for (const s of steps) {
+    if (parents.has(s.step_id)) continue
+    if (end === null || total.get(s.step_id)! > total.get(end)!) end = s.step_id
+  }
+  // Only a cycle leaves no step without a child; the scheduler refuses one.
+  if (end === null) return { kind: 'unmeasured', missing: [] }
+  // `seen` because a malformed workflow (a repeated step id) must not hang the
+  // walk back; the scheduler refuses one at submission, but this draws whatever
+  // it is handed.
+  const chain: string[] = []
+  const seen = new Set<string>()
+  for (let at: string | null = end; at !== null && !seen.has(at); at = via.get(at) ?? null) {
+    seen.add(at)
+    chain.unshift(at)
+  }
+  return { kind: 'measured', steps: chain, seconds: total.get(end)! }
 }
 
 // ---------------------------------------------------------------------------

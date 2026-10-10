@@ -844,8 +844,16 @@ ws_claim() {
 # line: Workload Identity for the namespace's two KSAs and act-as for the
 # scheduler and the reconciler.
 ws_account_pairs() {
-  local ksa
+  local ksa mode="${1:-allowed}"
   for ksa in "${WS_KSAS[@]}"; do
+    # "required" (A9) on a MIGRATED record skips the legacy swarm-worker: a
+    # Terraform-made tenant binds swarm-agent-worker only, and swarm-worker is
+    # rendered only where IAM binds it (kubernetes/README.md). It stays in the
+    # "allowed" list, so the squat inspection never calls it foreign.
+    # w-752763's A9 failed on exactly this, 2026-10-10 (#847).
+    if [[ "${mode}" == "required" && "${WS_MIGRATED}" == "true" && "${ksa}" == "swarm-worker" ]]; then
+      continue
+    fi
     printf 'roles/iam.workloadIdentityUser serviceAccount:%s.svc.id.goog[%s/%s]\n' "${PROJECT_ID}" "${WS_NAMESPACE}" "${ksa}"
   done
   printf 'roles/iam.serviceAccountUser serviceAccount:%s\n' "${WS_SCHEDULER}" "${WS_RECONCILER}"
@@ -1193,7 +1201,7 @@ ws_a9() {
     iam_policy_binds_member "${WS_WORK}/account-policy.json" "${role}" "${member}" \
       || { ws_object "service account binding"; return 1; }
     n=$((n + 1))
-  done < <(ws_account_pairs)
+  done < <(ws_account_pairs required)
   # The bucket grants.
   ws_call "${WS_WORK}/bucket-policy.json" gcloud storage buckets get-iam-policy "${WS_BUCKET_URL}" \
     --project "${PROJECT_ID}" --format=json || { ws_show_err; ws_object "bucket grant"; return 1; }

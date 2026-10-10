@@ -1,9 +1,19 @@
 # Onboarding: connect GitHub as yourself, enable orgs, choose repositories
 
-**Status: PROPOSED 2026-10-07, design and mock-ups only (functionality wave
-15, lane C4T, for #780).** Nothing described here is built. The owner asked
-on 2026-10-07 for "an onboarding experience that runs through the console AND
-through the sc plugin, and hand-holds the user through the whole setup":
+**Status: BUILT on 2026-10-09 (#780; proposed 2026-10-07 as a design, functionality
+wave 15, lane C4T).** Every lane of §5 has shipped, each marked there with its
+pull request; the design text below is kept as the record of why. The last
+pieces: the fallback token route `POST /v1/onboarding/github/token` (D5, from
+`uv run sc setup token --owner` and the Admin settings page), the opt-in push
+test that creates and deletes `swarmcloud/onboarding-check-<nonce>` (D6), the
+recorded and re-checked `ORG_APPROVAL_PENDING`, `POST /v1/onboarding/dismiss`,
+and `REPOSITORY_GRANTS_ENFORCED` set from tfvars and on in dev (OB10). §0 and
+§3 point at the code; the issue's four acceptance checks are an owner-run
+procedure, [runbooks/onboarding-acceptance.md](runbooks/onboarding-acceptance.md).
+
+The owner asked on 2026-10-07 for "an onboarding experience that runs through
+the console AND through the sc plugin, and hand-holds the user through the
+whole setup":
 setting up git access, enabling one or more GitHub orgs, and choosing the
 repositories SwarmCloud may read and write, **acting as the user**. Token
 custody is part of this design, not a later pass. The screens are drawn in
@@ -86,6 +96,52 @@ Re-read for this design, not copied from the gap analysis:
 
 Not measured, by brief: whether the `eng` token can see `example-org` at all.
 The probe records no SSO header and no org list, so nothing stored can say.
+
+**Built since, read 2026-10-09.** The bullets above are the starting point
+the design was written against. What replaced them is §5's lanes, each with
+its pull request; the pieces that came last, and where each one lives:
+
+* **A fallback token per person and per owner (D5).** `POST
+  /v1/onboarding/github/token`
+  (`apps/swarm-api/swarm_api/routes/forgeapp.py::store_owner_token`) takes
+  `{owner, token}` once, probes it, and stores it as a new version of the
+  person's slot for that owner
+  (`apps/swarm-api/swarm_api/forgeapp.py::ForgeApp.store_owner_token`). The
+  slot is `git-u-<16 hex of sha256(email|owner)>`
+  (`apps/swarm-api/swarm_api/gittokens.py::owner_suffix`), a second user slot
+  under the same bootstrap prefix condition as the App slot, so no IAM
+  changed. The answer is the org record, never the token. It is sent from
+  `uv run sc setup token --owner <org>`, which reads stdin
+  (`apps/swarm-mcp/swarm_mcp/sc.py::cmd_setup_token`), and from Admin
+  settings (`apps/swarm-ui/src/AdminSettings.tsx` (`export function FallbackTokenCard() {`)).
+  Submission picks that slot for a granted repository of that owner
+  (`apps/swarm-api/swarm_api/service.py::SubmissionService._person_slot`).
+  Removing the owner disables every version of it
+  (`apps/swarm-api/swarm_api/access.py::AccessService.disable`, through
+  `apps/swarm-api/swarm_api/forgeapp.py::ForgeApp.revoke_owner_token`).
+* **The opt-in push test (D6).** Verification reads only, unless the person
+  asks for `push_test` on a write grant. Then one branch,
+  `swarmcloud/onboarding-check-<nonce>`, is created and deleted
+  (`apps/swarm-api/swarm_api/access.py::AccessService._push_test`). It is
+  asked from `uv run sc access verify owner/repo --push-test`
+  (`apps/swarm-mcp/swarm_mcp/sc.py::cmd_access_verify`) and from the Access
+  page's push test column (`apps/swarm-ui/src/Access.tsx` (`function PushTestCell(`)).
+* **Org approval pending, recorded and re-checked.** Asking an org's owners
+  to install the App is recorded
+  (`apps/swarm-api/swarm_api/access.py::AccessService.request_install`, from
+  `apps/swarm-mcp/swarm_mcp/sc.py::cmd_access_request_install` and the
+  Access page). It shows as `ORG_APPROVAL_PENDING` with §2.3's copy until the
+  installation appears. The 15-minute refresh sweep re-checks it
+  (`apps/swarm-api/swarm_api/access.py::AccessService.recheck_requested`).
+* **Hiding the checklist.** `POST /v1/onboarding/dismiss`
+  (`apps/swarm-api/swarm_api/onboarding.py::dismiss`) writes the caller's own
+  `dismissed_at`, and every step keeps its state. The console's Hide and
+  "show on Overview" call it
+  (`apps/swarm-ui/src/api.ts` (`export async function dismissOnboarding(dismissed = true)`)).
+* **The refusal is deployed, not set by hand.** `REPOSITORY_GRANTS_ENFORCED`
+  is `var.repository_grants_enforced`, rendered into swarm-api's environment
+  (`terraform/infra/locals.tf` (`REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"`)).
+  It is on in `terraform/environments/dev/dev.tfvars` and off in prod (§3.5).
 
 ---
 
@@ -342,6 +398,14 @@ Every route below is additive: nothing existing changes shape.
 | `POST /v1/access/grants/{repo_id}/verify` | {checks?}: run clone, push, pull_request now |
 | `GET /v1/access/members` | admin: every member's connection state and grants |
 
+**Every route above is served (2026-10-09).** Two late additions:
+`POST /v1/access/orgs/{owner}/install-request` records an install request
+(`ORG_APPROVAL_PENDING`). `POST /v1/access/grants/{repo_id}/verify` takes
+`{"checks": [..., "push_test"]}` for D6's write. The fallback token route is
+`apps/swarm-api/swarm_api/routes/forgeapp.py::store_owner_token`. Dismiss is
+`apps/swarm-api/swarm_api/onboarding.py::dismiss`, which hides the checklist
+and nothing else.
+
 `GET /v1/repositories/readable` and `POST /v1/repositories` stay; phase 0
 makes the console use `readable`'s paging, and phase 3 makes both resolve the
 caller's own slot (R2's user leg) instead of the tenant token.
@@ -522,19 +586,42 @@ does).
 ### 3.5 Migration from today's single tenant token
 
 `swarm-tenant-<tenant>-git` stays **unchanged**: same secret, same readers,
-same record (`ensure_tenant_default`), same use by the merge step and by
-registration until phase 3. Onboarding adds a user slot beside it; nothing is
-moved. Once a user has connected, their tasks resolve their grant first; a
-task by a user who has not connected keeps using the tenant token while the
-tenant's policy allows it (D4), and the console says which credential a task
-used. The tenant token is retired by the owner, not by a lane: when the
-resolution events show it unused for a fortnight, the Access page offers
-"retire the tenant token", which disables its version with
-`create-secrets.sh --disable-previous` semantics and keeps the record as
+same record (`ensure_tenant_default`), same use by the merge step. Onboarding
+adds user slots beside it and moves nothing. **The policy as built (owner
+decisions D4, 2026-10-07 and 2026-10-08):**
+
+* **A person with a grant** runs as themselves. That is their App slot, or
+  their fallback token's slot when they enabled that owner through one
+  (`apps/swarm-api/swarm_api/service.py::SubmissionService._person_slot`). The
+  grant's mode, `read` or `write`, is signed into the task.
+* **A person with no grant on the repository** is refused at submission with
+  403 `REPOSITORY_NOT_GRANTED`, "choose it under Access"
+  (`apps/swarm-api/swarm_api/validation.py::repository_not_granted`). This
+  happens once `REPOSITORY_GRANTS_ENFORCED` is on. While it is off, the task
+  runs with the tenant token, as before #780
+  (`apps/swarm-api/swarm_api/service.py::SubmissionService._resolve_forge`).
+  The switch is `var.repository_grants_enforced`: **on in dev**, where the
+  App is registered and people can connect, and **off in prod**, which
+  registers no App. On there, every person's task would be refused. Prod
+  changes only on the owner's word.
+* **A service-account submission** (repository indexing, schedules, the
+  release's acceptance suite in the smoke tenant) is never refused. It keeps
+  the tenant token, `git`, with write. The task says so: the API serves
+  `forge_credential_source` as "tenant token, service submission"
+  (`apps/swarm-api/swarm_api/codec.py::forge_credential_source`).
+
+**Retiring the tenant token** is the owner's step, not a lane's, and it is
+not a console button. The Access page never grew one, because service
+submissions still need the token. [git-tokens.md](git-tokens.md) ("Built for
+#780") has the procedure. In short: with enforcement on, no person's task
+reads it. When the tenant runs no service submission on a repository, or
+those have moved to another credential, its version is disabled with
+`create-secrets.sh --disable-previous` semantics and the record kept as
 `revoked`. For `eng` specifically: the owner connects as `example-user`,
 installs the App on their own account (selecting SwarmCloud's repository) and
 on `example-org` (an org owner's action), grants both, and the existing
-classic PAT can then be revoked at GitHub.
+classic PAT can then be revoked at GitHub once nothing service-submitted
+needs it.
 
 ### 3.6 Invariants, each with how it holds
 
@@ -758,18 +845,27 @@ root, since they do not exist yet.
 
 | lane | phase | builds | territory | needs |
 |---|---|---|---|---|
-| OB0 | 0 | the Register picker pages with `next_page` until `capped`, filters by owner, and accepts a typed owner/repo that posts to `POST /v1/repositories` | `apps/swarm-ui/src/RepositoriesRegister.tsx`, `apps/swarm-ui/src/RepositoriesData.ts`, `apps/swarm-ui/src/api.ts` | — |
-| OB0b | 0 | the probe records the `X-GitHub-SSO` header and the orgs a token reaches; the no-access refusal names SSO and the classic-token policy | `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/repositories.py` | — |
-| OB1 | 1 | the onboarding document and `GET /v1/onboarding`, derived from today's records (tenant token, registrations, probe) | new `swarm_api/onboarding.py`, new `swarm_api/routes/onboarding.py`, `apps/swarm-api/swarm_api/main.py` | OB0b |
-| OB2 | 1 | the App's registration runbook and Terraform: client-secret slot, user-slot IAM, refresher grants, the scheduler job, indexes, the custom role | `terraform/modules/secret_manager/`, `terraform/modules/tenancy/`, `terraform/modules/scheduler/jobs.tf`, `terraform/modules/firestore/`, new `runbooks/github-app.md` | — |
-| OB3 | 2 | authorise, exchange, refresh sweep, disconnect; the `app_user` kind; the connection document | new `swarm_api/forgeapp.py`, new `swarm_api/routes/forgeapp.py`, `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/main.py` | OB1, OB2 |
-| OB4 | 3 | the access API (orgs, repositories with paging and search, grants, verify) and register and readable resolving the caller's slot | new `swarm_api/access.py`, new `swarm_api/routes/access.py`, `apps/swarm-api/swarm_api/repositories.py`, `apps/swarm-api/swarm_api/main.py` | OB3 |
-| OB5 | 3 | the worker reads the task's credential, re-reads it before a push, refuses a push on a read grant, re-checks the grant before cloning and before each push or pull request | `apps/agent-worker/agent_worker/lifecycle.py`, `apps/agent-worker/agent_worker/secrets.py` | OB3 |
-| OB6 | 3 | admission parks a task whose connection has failed as `CREDENTIAL_MISSING`, and the credential sweep returns it to `READY` when the connection is active | `apps/scheduler/scheduler/credentials.py`, `apps/scheduler/scheduler/loop.py` | OB3 |
-| OB7 | 4 | submission resolves the grant and refuses an ungranted repository | `apps/swarm-api/swarm_api/validation.py`, `apps/swarm-api/swarm_api/routes/tasks.py` | OB4, OB5 |
-| OB8 | 4 | the console onboarding checklist and the Access page, from the owner's picks | new `src/Onboarding.tsx`, new `src/Access.tsx`, `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/api.ts`, `.github/ISSUE_TEMPLATE/` | OB4 |
-| OB9 | 4 | `sc setup`, `sc access`, the bridge tools, `/sc:setup` | `apps/swarm-mcp/swarm_mcp/sc.py`, `apps/swarm-mcp/swarm_mcp/server.py`, `plugin/README.md`, new `commands/setup.md` | OB4 |
-| OB10 | 5 | migration: tenant-token fallback policy, "retire the tenant token", the docs | `docs/git-tokens.md`, `docs/repo-index.md`, `docs/onboarding.md` | OB7, OB8, OB9 |
+| OB0 | 0 | **built, #802**: the Register picker pages with `next_page` until `capped`, filters by owner, and accepts a typed owner/repo that posts to `POST /v1/repositories` | `apps/swarm-ui/src/RepositoriesRegister.tsx`, `apps/swarm-ui/src/RepositoriesData.ts`, `apps/swarm-ui/src/api.ts` | — |
+| OB0b | 0 | **built, #794**: the probe records the `X-GitHub-SSO` header and the orgs a token reaches; the no-access refusal names SSO and the classic-token policy | `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/repositories.py` | — |
+| OB1 | 1 | **built, #801**: the onboarding document and `GET /v1/onboarding`, derived from today's records (tenant token, registrations, probe) | new `swarm_api/onboarding.py`, new `swarm_api/routes/onboarding.py`, `apps/swarm-api/swarm_api/main.py` | OB0b |
+| OB2 | 1 | **built, #809, #823, #824, #840**: the App's registration runbook and Terraform: client-secret slot, user-slot IAM, refresher grants, the scheduler job, indexes, the custom role | `terraform/modules/secret_manager/`, `terraform/modules/tenancy/`, `terraform/modules/scheduler/jobs.tf`, `terraform/modules/firestore/`, new `runbooks/github-app.md` | — |
+| OB3 | 2 | **built, #821, #828, #837, #864**: authorise, exchange, refresh sweep, disconnect; the `app_user` kind; the connection document | new `swarm_api/forgeapp.py`, new `swarm_api/routes/forgeapp.py`, `apps/swarm-api/swarm_api/gittokens.py`, `apps/swarm-api/swarm_api/main.py` | OB1, OB2 |
+| OB4 | 3 | **built, #832**: the access API (orgs, repositories with paging and search, grants, verify) and register and readable resolving the caller's slot | new `swarm_api/access.py`, new `swarm_api/routes/access.py`, `apps/swarm-api/swarm_api/repositories.py`, `apps/swarm-api/swarm_api/main.py` | OB3 |
+| OB5 | 3 | **built, #836, #843**: the worker reads the task's credential, re-reads it before a push, refuses a push on a read grant, re-checks the grant before cloning and before each push or pull request | `apps/agent-worker/agent_worker/lifecycle.py`, `apps/agent-worker/agent_worker/secrets.py` | OB3 |
+| OB6 | 3 | **built, #829**: admission parks a task whose connection has failed as `CREDENTIAL_MISSING`, and the credential sweep returns it to `READY` when the connection is active | `apps/scheduler/scheduler/credentials.py`, `apps/scheduler/scheduler/loop.py` | OB3 |
+| OB7 | 4 | **built, #845, #857**: submission resolves the grant and refuses an ungranted repository | `apps/swarm-api/swarm_api/validation.py`, `apps/swarm-api/swarm_api/routes/tasks.py` | OB4, OB5 |
+| OB8 | 4 | **built, #846, #863, #870, #899**: the console onboarding checklist and the Access page, from the owner's picks | new `src/Onboarding.tsx`, new `src/Access.tsx`, `apps/swarm-ui/src/App.tsx`, `apps/swarm-ui/src/api.ts`, `.github/ISSUE_TEMPLATE/` | OB4 |
+| OB9 | 4 | **built, #844**: `sc setup`, `sc access`, the bridge tools, `/sc:setup` | `apps/swarm-mcp/swarm_mcp/sc.py`, `apps/swarm-mcp/swarm_mcp/server.py`, `plugin/README.md`, new `commands/setup.md` | OB4 |
+| OB10 | 5 | **built, this lane**: migration: `REPOSITORY_GRANTS_ENFORCED` from tfvars, on in dev; the tenant-token fallback policy and how to retire the tenant token; the docs; the acceptance runbook | `docs/git-tokens.md`, `docs/repo-index.md`, `docs/onboarding.md`, `docs/api-refusals.md`, `terraform/infra/variables.tf`, `terraform/infra/locals.tf`, `terraform/environments/dev/dev.tfvars`, `terraform/environments/prod/prod.tfvars`, new `runbooks/onboarding-acceptance.md` | OB7, OB8, OB9 |
+
+**What came after the lanes, in OB10's pull request (#780's plan, steps 1-5):**
+D5's fallback token route and its per-owner slot, D6's push test, the
+recorded and re-checked `ORG_APPROVAL_PENDING`, `POST /v1/onboarding/dismiss`,
+`sc setup token --owner`, `sc access verify --push-test` and `sc access
+request-install`, and the console's fallback token form, push test column and
+server-side Hide. §0's "Built since" says where each one lives. The issue's
+acceptance is run by the owner, against dev, from
+[runbooks/onboarding-acceptance.md](runbooks/onboarding-acceptance.md).
 
 OB2 and OB3 get the one review (credentials, tenant isolation, IAM); OB2 is
 also the dev-iam review. OB5 needs the frozen request of §3.3 accepted, or

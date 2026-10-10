@@ -14,7 +14,8 @@
 //   * a typed owner/repo is PUT to the id `repositories.repo_id_for` mints,
 //     and its REPO_NOT_INSTALLED copy is drawn with the GitHub page;
 //   * the grants are failures first, Verify POSTs and prints each failure's
-//     copy inline, the write test is said to be not offered;
+//     copy inline, and a write grant offers the opt-in push test
+//     (access.push-test.test.tsx holds what it does);
 //   * not connected: Connect GitHub, and no GitHub-reading route is called;
 //   * connected but installed nowhere (#780, 2026-10-08): the notice says so
 //     with Install on <login> and Install on an organisation…; mixed owners
@@ -332,7 +333,7 @@ describe('a typed owner/repo', () => {
 })
 
 describe('the grants, verified (Verify A)', () => {
-  it('lists failures first, a read grant needs no push, and the write test is not offered', async () => {
+  it('lists failures first, a read grant needs no push, and a write grant offers the push test', async () => {
     api()
     await mount()
     const grid = await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
@@ -343,7 +344,8 @@ describe('the grants, verified (Verify A)', () => {
     expect(svc.querySelector('[data-check="pull_request"] [data-cap]')?.getAttribute('data-cap')).toBe('unknown')
     const docs = grantRow('example-org/example-docs')
     expect(docs.querySelector('[data-check="push"] .c-dash')?.getAttribute('aria-label')).toBe('Push is not needed for a read grant')
-    expect(svc.querySelector('[data-check="write_test"] .c-dash')?.getAttribute('aria-label')).toContain('not served by this API yet')
+    expect(within(svc).getByRole('button', { name: 'Push test' })).toBeTruthy()
+    expect(within(docs).queryByRole('button', { name: 'Push test' })).toBeNull()
   })
 
   it("verifies one grant with POST and prints each failure's copy inline", async () => {

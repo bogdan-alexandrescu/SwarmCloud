@@ -145,10 +145,15 @@ locals {
     # runs as the tenant's worker account, as claude-code's does; listing it
     # here also puts agent-runtime-indexer in runner_images, so its digest is
     # pinned and handed to the scheduler with the others.
+    #
+    # GKE Autopilot since contract request 63 (owner, 2026-10-10), the canary
+    # for #939: a new Cloud Run instance's internet path opens a median 20.2 s
+    # after start against GKE's 1.17 s. Its tenants' Cloud Run Jobs are still
+    # created, as the rollback, by `cloud_run_fallback_profiles` below.
     "indexer" = {
       image          = "agent-runtime-indexer"
       resource_class = "standard"
-      backend        = "CLOUD_RUN_JOB"
+      backend        = "GKE_AUTOPILOT"
       provider       = "anthropic"
       # claude-code's two env-var names, each mapped to the provider id (not a
       # credential), written as a comprehension so no line here has the shape
@@ -175,7 +180,9 @@ locals {
 
   # --- GKE profiles that keep their Cloud Run Jobs as a rollback -------------
   #
-  # Kept until 2026-10-15 as the request 53 rollback; remove then.
+  # claude-code: kept until 2026-10-15 as the request 53 rollback; remove then.
+  # indexer: kept as the contract request 63 rollback (#939's canary, owner
+  # 2026-10-10) until the owner decides the canary on its measurement.
   #
   # The Job matrix below makes a Cloud Run Job only for a CLOUD_RUN_JOB
   # profile, so moving claude-code to GKE Autopilot (contract request 53,
@@ -187,7 +194,7 @@ locals {
   # catalogue's backend, so nothing dispatches to it while the profile names
   # GKE_AUTOPILOT. tests/terraform/catalogue.tftest.hcl holds that the Jobs are
   # still planned.
-  cloud_run_fallback_profiles = ["claude-code"]
+  cloud_run_fallback_profiles = ["claude-code", "indexer"]
 
   # --- the model each profile's agent CLI runs (#226) -----------------------
   #
@@ -216,10 +223,10 @@ locals {
   # while the frozen catalogue holds the profile (contract request 50).
   # indexer is claude-code on the indexer image (contract request 48), so an
   # index run keeps the model it ran with as claude-code.
-  # claude-code runs on GKE Autopilot (contract request 53), where no Job of
-  # this root exists to carry MODEL: the scheduler's WORKER_MODELS sets it on
-  # each pod. Its Cloud Run fallback Jobs (`cloud_run_fallback_profiles`)
-  # carry the same model from this map.
+  # claude-code runs on GKE Autopilot (contract request 53), and indexer since
+  # contract request 63, where no Job of this root exists to carry MODEL: the
+  # scheduler's WORKER_MODELS sets it on each pod. Their Cloud Run fallback
+  # Jobs (`cloud_run_fallback_profiles`) carry the same model from this map.
   runner_models = {
     "claude-code"        = "claude-opus-5-5"
     "claude-code-review" = "claude-opus-5-5"
@@ -634,6 +641,13 @@ locals {
       # while it is off, whatever a tenant's own `issue_sweep.enabled` says.
       # Off unless the environment's tfvars sets var.enable_issue_sweep.
       SWEEP_ENABLED = var.enable_issue_sweep ? "true" : "false"
+
+      # D4's refusal of a person's task on a repository they have not chosen
+      # (swarm_api.settings `repository_grants_enforced`, #780 OB10). Until
+      # OB10 it reached swarm-api only by hand, so an apply put it back to
+      # off. Off unless the environment's tfvars sets
+      # var.repository_grants_enforced; service submissions are never refused.
+      REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
 
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to

@@ -28,11 +28,12 @@ output "scheduler_job_names" {
     [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.issue_sweep[t].name],
     [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.repo_index_poll[t].name],
     [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.merge_wake[t].name],
+    [for t in sort(tolist(var.rollup_tenant_ids)) : google_cloud_scheduler_job.stranded_pr_sweep[t].name],
   )
 }
 
 output "rollup_sweeper_email" {
-  description = "The identity the workflow-rollup, issue-run-advance, issue-sweep, repo-index-poll, merge-wake, forge-refresh and workspace-sweep jobs and the task_finished push subscription present. The root sets swarm-api's ROLLUP_SWEEPER_USERS to it, which is what lets it call POST /v1/admin/workflows/rollup, POST /v1/admin/runs/advance, POST /v1/admin/issues/sweep, POST /v1/admin/repositories/poll, POST /v1/admin/merges/wake, POST /v1/admin/forge/refresh, POST /v1/admin/workspaces/sweep and POST /v1/admin/tasks/finished and nothing else."
+  description = "The identity the workflow-rollup, issue-run-advance, issue-sweep, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh and workspace-sweep jobs and the task_finished push subscription present. The root sets swarm-api's ROLLUP_SWEEPER_USERS to it, which is what lets it call POST /v1/admin/workflows/rollup, POST /v1/admin/runs/advance, POST /v1/admin/issues/sweep, POST /v1/admin/stranded-prs/sweep, POST /v1/admin/repositories/poll, POST /v1/admin/merges/wake, POST /v1/admin/forge/refresh, POST /v1/admin/workspaces/sweep and POST /v1/admin/tasks/finished and nothing else."
   value       = local.rollup_sweeper_email
 }
 
@@ -54,6 +55,11 @@ output "issue_run_advance_schedule" {
 output "issue_sweep_schedule" {
   description = "Exposed so a test can assert how often each tenant's open issues are swept (docs/issue-runs.md Sweeper)."
   value       = var.issue_sweep_schedule
+}
+
+output "stranded_pr_sweep_schedule" {
+  description = "Exposed so a test can assert how often each tenant's SwarmCloud pull requests are swept for stranded ones (part of #295)."
+  value       = var.stranded_pr_sweep_schedule
 }
 
 output "repo_index_poll_schedule" {

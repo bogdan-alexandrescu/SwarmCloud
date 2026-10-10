@@ -207,6 +207,7 @@ from . import findings_epic as findings_epic_mod
 from . import indexrun as indexrun_mod
 from . import forge as forge_mod
 from . import merge as merge_mod
+from . import mergeslot as mergeslot_mod
 from . import post_verdict as post_verdict_mod
 from . import specverify
 from .forge import ForgeError, RepoAccess, probe_repository, open_pull_request
@@ -1912,6 +1913,18 @@ class Worker:
                 task.get("repository_url")
                 if isinstance(task.get("repository_url"), str) else None
             ),
+            # The repository's merge slot (merge race, #295): every slot
+            # write is fenced on this attempt's task and lease, as the park is.
+            merge_slots=(
+                mergeslot_mod.FirestoreMergeSlots(
+                    self.db,
+                    tenant_id=self.cfg.tenant_id,
+                    run_transaction=self.control._run_transaction,
+                    fence=lambda txn: self.control._fenced_task(txn, write="merge slot"),
+                    call_options=self.control.call_options,
+                )
+                if action is WorkerAction.MERGE else None
+            ),
         )
         self.phases.enter("worker_action")
         self.log.info("worker action: no runner is started", action=action.value)
@@ -2054,15 +2067,24 @@ class Worker:
         nothing written and the lease untouched (invariant 5). No checkpoint:
         a worker action keeps no workspace.
         """
+        code = str(wait.get("code") or "checks_pending")
+        # A wait for the repository's merge slot (merge race, #295) is not a
+        # wait for CI: counted on its own bound, and not on the CI clock that
+        # `checks_timeout` reads, so a long queue neither spends the step's CI
+        # wakes nor times its checks out.
+        slot_wait = code == mergeslot_mod.MERGE_SLOT_WAIT
         # Recorded before any metrics export (TEL #718, `_metrics_after_the_record`).
         with self._metrics_after_the_record():
             refunded = self.control.park_ci_pending(
-                code=str(wait.get("code") or "checks_pending"),
+                code=code,
                 head=str(wait.get("head") or ""),
                 pull_request=int(wait.get("pull_request") or 0),
                 pending=[str(name) for name in wait.get("pending") or []],
-                max_wakes=merge_mod.MERGE_CI_MAX_WAKES,
+                max_wakes=(mergeslot_mod.MERGE_SLOT_MAX_WAITS if slot_wait
+                           else merge_mod.MERGE_CI_MAX_WAKES),
                 fallback_seconds=merge_mod.MERGE_CI_FALLBACK_SECONDS,
+                counter="slot_waits" if slot_wait else "wakes",
+                ci_clock=not slot_wait,
             )
         self.log.info("worker action parked until CI settles", action=action.value,
                       code=wait.get("code"), attempt_refunded=refunded)
@@ -6947,6 +6969,8 @@ class Worker:
             return None
         task = self._task or {}
         url = task.get("repository_url") or self.cfg.repository_url or self._repo_url
+        # Signed, like the suffix: whose token for one owner (D5) this is.
+        submitted_by = task.get("submitted_by")
         try:
             reason = grant_refusal(
                 self.db,
@@ -6955,6 +6979,7 @@ class Worker:
                 repository_url=url if isinstance(url, str) else None,
                 write=write,
                 call_options=self.control.call_options(),
+                submitted_by=submitted_by if isinstance(submitted_by, str) else None,
             )
         except Exception as exc:  # noqa: BLE001 -- a read failure, said by type
             self.log.warning("the forge grant could not be read", error=type(exc).__name__)

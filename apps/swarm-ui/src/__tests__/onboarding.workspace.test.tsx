@@ -135,6 +135,26 @@ describe('every record state draws its own copy', () => {
     expect(within(el).queryByRole('button')).toBeNull()
   })
 
+  it('requested and held: says it is being migrated, with the server copy, and never waits for an admin', async () => {
+    const copy = 'Your workspace already exists from before self-service setup and is being migrated.'
+    const r = withId({ state: 'requested', held: { reason: 'migrating', copy } })
+    await mount(doc(r), () => r)
+    const el = stepEl('workspace')
+    await waitFor(() => expect(visible(el)).toContain('Workspace requested (w-3f9a2c) — being migrated'), WAIT)
+    expect(visible(el)).toContain(copy)
+    expect(visible(el)).not.toContain('waiting for an admin')
+    expect(within(el).queryByRole('button')).toBeNull()
+  })
+
+  it("approved automatically: an admin's own request says so", async () => {
+    const r = withId({
+      state: 'approved',
+      decision: { verdict: 'approved', reason: 'requester is an admin', at: new Date().toISOString(), auto: true },
+    })
+    await mount(doc(r), () => r)
+    await waitFor(() => expect(visible(stepEl('workspace'))).toContain('Approved automatically, because you are an admin.'), WAIT)
+  })
+
   it('applying: lists the job steps, each with its own state, the id and the elapsed time', async () => {
     const r = withId({
       state: 'applying',

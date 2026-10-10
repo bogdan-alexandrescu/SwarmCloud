@@ -177,6 +177,21 @@ variable "forge_refresh_schedule" {
   default     = "*/15 * * * *"
 }
 
+variable "schedule_tick_schedule" {
+  description = <<-EOT
+    How often POST /v1/admin/schedules/tick runs (docs/schedules.md §2.1).
+
+    Every minute, the design's figure, and not a tuning knob: a schedule's slot
+    is a Unix minute, the per-tenant cap of 5 firings per tick defers the rest
+    to "the next minute" (§2.10), and a firing whose work failed to be created
+    is finished by "the next tick" after 2 minutes (§2.2). A slower tick makes
+    every one of those promises late by the difference. An idle tick reads one
+    page of an index and writes one schedule_ticks document.
+  EOT
+  type        = string
+  default     = "* * * * *"
+}
+
 variable "enable_workspace_sweep" {
   description = "Create swarm-workspace-sweep, the 10-minute caller of swarm-api's personal-workspace dispatch sweep (docs/workspaces.md §2.2). A bool, not derived from api_endpoint, for enable_task_finished_push's reason. The root sets it to true in every environment: the sweep is also the stuck-workspace detector."
   type        = bool
@@ -265,6 +280,33 @@ variable "issue_sweep_schedule" {
       can(regex("^[0-9]{1,2}$", m)) && !contains([0, 30], tonumber(m)) && tonumber(m) < 60
     ]), false)
     error_message = "issue_sweep_schedule's minute field lists explicit minutes, none of them :00 or :30 (owner decision 2026-10-08), e.g. \"7,37 * * * *\"."
+  }
+}
+
+variable "stranded_pr_sweep_schedule" {
+  description = <<-EOT
+    How often each tenant's SwarmCloud-opened pull requests are swept for ones
+    nothing is going to merge (POST /v1/admin/stranded-prs/sweep,
+    swarm_api.strandedprs, part of #295).
+
+    Every 30 minutes, at :19 and :49 -- never on :00 or :30, where other
+    schedules bunch, and off the issue sweep's :07 and :37, so the two reads
+    of every registered repository with one tenant's token do not share a
+    minute. A pull request counts as stranded only after two hours, so a
+    tighter schedule tells nobody sooner in any way that matters, and spends
+    the token's rate limit.
+  EOT
+  type        = string
+  default     = "19,49 * * * *"
+
+  # The minute field must list explicit minutes, none of them :00 or :30, as
+  # for the issue sweep: a step like "*/30" or a wildcard would land on both.
+  validation {
+    condition = try(alltrue([
+      for m in split(",", split(" ", trimspace(var.stranded_pr_sweep_schedule))[0]) :
+      can(regex("^[0-9]{1,2}$", m)) && !contains([0, 30], tonumber(m)) && tonumber(m) < 60
+    ]), false)
+    error_message = "stranded_pr_sweep_schedule's minute field lists explicit minutes, none of them :00 or :30, e.g. \"19,49 * * * *\"."
   }
 }
 
