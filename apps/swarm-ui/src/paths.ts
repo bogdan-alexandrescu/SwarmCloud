@@ -142,6 +142,12 @@ export const WORKFLOW_PANES: readonly string[] = ['table', 'timeline', 'changes'
 
 /** The panes of one issue run that are a path segment: `/runs/<id>/changes`. Its page is the bare id. */
 export const RUN_PANES: readonly string[] = ['changes']
+/**
+ * The query a run's Changes tab carries: the matrix's step filter and its
+ * open file (`/runs/<id>/changes?step=fix&file=src%2Fa.ts`, diff-viewer.md §2
+ * variant 5). A workflow's carries the same two through its filters.
+ */
+const RUN_PANE_QUERY: readonly string[] = ['step', 'file']
 
 /** A repository's tabs that are a path segment: `/repositories/<id>/<tab>`; Overview is the bare id. */
 export const REPO_TABS: readonly string[] = ['graph', 'impact', 'test-map', 'hot-spots', 'index-runs', 'settings', 'used-by']
@@ -200,7 +206,16 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     const params = new URLSearchParams(query)
     const run = params.get('run')
     const tab = params.get('tab')
-    if (run !== null && run !== '' && tab !== null && RUN_PANES.includes(tab)) return `/runs/${encodeURIComponent(run)}/${tab}`
+    if (run !== null && run !== '' && tab !== null && RUN_PANES.includes(tab)) {
+      // The Changes tab's step filter and open file ride on its query.
+      const rest = new URLSearchParams()
+      for (const k of RUN_PANE_QUERY) {
+        const v = params.get(k)
+        if (v !== null && v !== '') rest.set(k, v)
+      }
+      const path = `/runs/${encodeURIComponent(run)}/${tab}`
+      return rest.toString() === '' ? path : `${path}?${rest.toString()}`
+    }
     // The run's page: the worker's issue comment links here (swarm_api
     // `run_console_url`, held to this line by test_issue_writeback.py).
     if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}`
@@ -301,7 +316,14 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     const pane = seg.length >= 3 && RUN_PANES.includes(last) ? last : null
     const idSegs = pane === null ? seg.slice(1) : seg.slice(1, -1)
     const params = new URLSearchParams({ run: decodeURIComponent(idSegs.join('/')) })
-    if (pane !== null) params.set('tab', pane)
+    if (pane !== null) {
+      params.set('tab', pane)
+      const given = new URLSearchParams(query)
+      for (const k of RUN_PANE_QUERY) {
+        const v = given.get(k)
+        if (v !== null && v !== '') params.set(k, v)
+      }
+    }
     return plain(`work/runs?${params.toString()}`)
   }
 

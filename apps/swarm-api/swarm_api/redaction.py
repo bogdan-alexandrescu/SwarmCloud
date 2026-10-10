@@ -524,12 +524,22 @@ class JsonMasker:
                 self._memo[value] = found
         return found
 
-    def _walk(self, value: Any, *, label_for: Callable[[dict[str, Any], str, str], str]) -> tuple[Any, int]:
+    def _walk(
+        self,
+        value: Any,
+        *,
+        label_for: Callable[[dict[str, Any], str, str], str],
+        served: Callable[[str], str] = lambda text: text,
+    ) -> tuple[Any, int]:
         """`value` with every string, key and credential masked, and the count.
 
         `label_for(out, raw_key, masked_key)` names the entry a key becomes in
         the object being built: `json()` stands a changed or colliding key in
         and restores it in the text, `value()` numbers a collision.
+
+        `served(text)` is applied to every masked string leaf and key before
+        it is placed: `value()` escapes lone surrogates there, `json()` does it
+        to its whole text instead.
         """
         total = 0
         run = _KeyRun()
@@ -543,7 +553,7 @@ class JsonMasker:
                     return MASK
                 masked = self.text(node)
                 total += masked.count
-                return masked.text
+                return served(masked.text)
             if isinstance(node, dict):
                 out: dict[str, Any] = {}
                 for key, item in node.items():
@@ -554,7 +564,7 @@ class JsonMasker:
                     else:
                         name = self.text(raw)
                         total += name.count
-                        label = label_for(out, raw, name.text)
+                        label = label_for(out, raw, served(name.text))
                     if _masks_whole(raw, item):
                         total += 1
                         out[label] = MASK
@@ -631,11 +641,19 @@ class JsonMasker:
             )
             text = placed.sub(lambda m: json.dumps(keys[int(m.group(1))], ensure_ascii=False), text)
         # A lone surrogate (decoded from a `\\ud800` escape) cannot be written as UTF-8: escape it again (PR #378).
-        text = re.sub("[\ud800-\udfff]", lambda m: f"\\u{ord(m.group(0)):04x}", text)
+        text = _escape_surrogates(text)
         return Redacted(text=text, count=total)
 
     def value(self, value: Any) -> tuple[Any, int]:
-        """`value` as a JSON value, masked exactly as `json()` masks it, and the count."""
+        """`value` as a JSON value, masked exactly as `json()` masks it, and the count.
+
+        A lone surrogate in a string or key is served as the six characters
+        `\\ud800`, as `json()` writes it: the response is encoded as UTF-8, which
+        cannot hold one, so a document stored before submission refused them
+        (validation.py) made `GET /v1/tasks/{id}` a 500 (#361 box 60). It is
+        escaped before a collision is numbered, so a key that escapes to
+        another key's text is served as `<key> (2)`, not written over it.
+        """
 
         def numbered(out: dict[str, Any], _raw: str, masked: str) -> str:
             if masked not in out:
@@ -645,7 +663,12 @@ class JsonMasker:
                 n += 1
             return f"{masked} ({n})"
 
-        return self._walk(value, label_for=numbered)
+        return self._walk(value, label_for=numbered, served=_escape_surrogates)
+
+
+def _escape_surrogates(text: str) -> str:
+    """Every surrogate code point in `text` as its `\\uXXXX` escape (PR #378, #361 box 60)."""
+    return re.sub("[\ud800-\udfff]", lambda m: f"\\u{ord(m.group(0)):04x}", text)
 
 
 def redact_json(value: Any, *, indent: int | None = 2) -> Redacted:

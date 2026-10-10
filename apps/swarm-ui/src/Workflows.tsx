@@ -160,7 +160,7 @@ import {
   WfStepMark,
 } from './WorkflowViews'
 import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
-import { WorkflowChangesTab } from './WorkflowChanges'
+import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
 import './styles/workflows.css'
 import './styles/names.css'
 import {
@@ -346,6 +346,11 @@ export function WorkflowsScreen({
   const setView = useCallback((v: string) => (onView !== undefined ? onView(v) : setLocalView(v)), [onView])
   const query = useMemo(() => parseWorkflowQuery(current), [current])
   const choose = useCallback((next: WorkflowQuery) => setView(workflowQueryString(next)), [setView])
+  // THE CHANGES TAB'S STEP FILTER AND OPEN FILE (`?step=&file=`) ride on the
+  // address beside the query, and only on that tab: any other choice is
+  // written by `workflowQueryString`, which drops them.
+  const changesAt = useMemo(() => changesAtOf(current), [current])
+  const chooseChanges = useCallback((at: ChangesAt) => setView(withChangesAt(workflowQueryString(query), at)), [setView, query])
   const stores = useBoardStores()
   const name = useRecentName(query.wf)
 
@@ -381,7 +386,9 @@ export function WorkflowsScreen({
           skeleton={<WorkflowPageSkeleton id={id} query={query} choose={choose} />}
           empty={{ heading: 'No workflows', body: 'Individually submitted tasks appear under Agents.' }}
         >
-          {(d) => <WorkflowPage board={d} id={id} query={query} choose={choose} stores={stores} />}
+          {(d) => (
+            <WorkflowPage board={d} id={id} query={query} choose={choose} stores={stores} changesAt={changesAt} onChangesAt={chooseChanges} />
+          )}
         </Screen>
       </>
     )
@@ -2080,10 +2087,21 @@ function InspectorSlot({
     0,
     refs.findIndex((s) => s.workflowId === workflow.workflow_id),
   )
+  // THE STEP'S CHANGES (diff-viewer.md §2 variant 2): the workflow's Changes
+  // tab filtered to this step, counted by the step's own file count.
+  const stepTask = row.taskId === null ? null : (taskById?.get(row.taskId) ?? null)
+  const changes =
+    row.taskId === null
+      ? null
+      : {
+          href: `/workflows/${encodeURIComponent(workflow.workflow_id)}/changes?${withChangesAt('', { step: row.step.step_id, file: null })}`,
+          ...changesCount(stepTask),
+        }
   return (
     <StepInspector
       workflowId={workflow.workflow_id}
       workflowLabel={label}
+      changes={changes}
       workflowStarted={workflowStartText(workflow, taskById, now)}
       row={row}
       taskState={state.kind === 'state' ? state.state : null}
@@ -5006,12 +5024,17 @@ function WorkflowPage({
   query,
   choose,
   stores,
+  changesAt,
+  onChangesAt,
 }: {
   board: WorkflowBoard
   id: string
   query: WorkflowQuery
   choose: (q: WorkflowQuery) => void
   stores: BoardStores
+  /** The Changes tab's step filter and open file, from the address. */
+  changesAt: ChangesAt
+  onChangesAt: (at: ChangesAt) => void
 }) {
   const workflow = board.workflows.find((w) => w.workflow_id === id) ?? null
   const found = workflow !== null
@@ -5072,7 +5095,7 @@ function WorkflowPage({
           place of the board: it is a reading of the steps' patches, not a
           drawing of the steps. */}
       {query.tab === 'changes' ? (
-        <WorkflowChangesTab workflow={workflow} taskById={board.taskById} />
+        <WorkflowChangesTab workflow={workflow} taskById={board.taskById} at={changesAt} onAt={onChangesAt} />
       ) : (
         <Board board={board} stores={stores} focus={focus} usage={usage} />
       )}
