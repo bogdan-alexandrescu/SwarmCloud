@@ -39,6 +39,7 @@ no per-tenant prefix in Terraform could list.
 
 from __future__ import annotations
 
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -127,6 +128,9 @@ class ObjectStore(Protocol):
     def uri(self, key: str) -> str: ...
     def upload_file(self, key: str, source: Path, content_type: str | None = None) -> int: ...
     def upload_bytes(self, key: str, data: bytes, content_type: str | None = None) -> int: ...
+    def upload_file_if_absent(
+        self, key: str, source: Path, content_type: str | None = None
+    ) -> bool: ...
     def download_file(self, key: str, destination: Path) -> int: ...
     def download_bytes(self, key: str) -> bytes: ...
     def list_keys(self, prefix: str) -> list[str]: ...
@@ -159,6 +163,26 @@ class LocalObjectStore:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
         return len(data)
+
+    def upload_file_if_absent(
+        self, key: str, source: Path, content_type: str | None = None
+    ) -> bool:
+        """Write `source` at `key` only if nothing is there: `O_EXCL`, the
+        local twin of GCS's `ifGenerationMatch=0`. False when something is."""
+        target = self._path(key)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        except FileExistsError:
+            return False
+        try:
+            with os.fdopen(fd, "wb") as handle, open(source, "rb") as reader:
+                shutil.copyfileobj(reader, handle)
+        except BaseException:
+            # A half-written object would win every later writer's O_EXCL.
+            target.unlink(missing_ok=True)
+            raise
+        return True
 
     def download_file(self, key: str, destination: Path) -> int:
         source = self._path(key)
@@ -251,6 +275,23 @@ class GcsObjectStore:
         blob = self._upload_blob(key)
         blob.upload_from_string(data, content_type=content_type or "application/octet-stream")
         return len(data)
+
+    def upload_file_if_absent(
+        self, key: str, source: Path, content_type: str | None = None
+    ) -> bool:
+        """Write `source` at `key` only if no live object is there, in one
+        request: the `ifGenerationMatch=0` precondition. False when one is.
+        Through `_upload_blob`, so it is stamped exactly as `upload_file` is."""
+        from google.api_core.exceptions import PreconditionFailed  # lazy, as the client is
+
+        blob = self._upload_blob(key)
+        try:
+            blob.upload_from_filename(
+                str(source), content_type=content_type, if_generation_match=0
+            )
+        except PreconditionFailed:
+            return False
+        return True
 
     def download_file(self, key: str, destination: Path) -> int:
         blob = self._get_bucket().blob(validate_key(key))

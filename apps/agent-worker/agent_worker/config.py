@@ -247,6 +247,17 @@ class WorkerConfig:
     repository_url: str | None = None
     repository_ref: str | None = None
     git_clone_timeout_seconds: int = 300
+    #: Clone from a bundle of the commit in the tenant's own prefix when one is
+    #: there (`clonebundle`, #940). On by default; `SWARM_CLONE_BUNDLES=0` is
+    #: the kill switch, and with it off every clone is today's clone from the
+    #: forge, so turning it off needs no dispatch change.
+    clone_bundles_enabled: bool = True
+    #: A bundle larger than this is neither written nor read: 512 MiB. The
+    #: workspace is memory-backed tmpfs, so a bundle is held in the task's own
+    #: memory beside the checkout it unpacks into; the same ceiling as
+    #: `max_artifact_bytes`, which already bounds what one attempt writes to
+    #: the bucket. A repository past it clones from the forge, as today.
+    clone_bundle_max_bytes: int = 512 * 1024 * 1024
 
     # Harvest and publish. The DEFAULTS here encode the split the whole feature
     # rests on: harvesting is on because it is read-only and costs one git
@@ -530,6 +541,7 @@ class WorkerConfig:
             heartbeat_meanwhile_max_seconds=3 * settings.lease_timeout_seconds,
             repository_url=repo,
             repository_ref=ref,
+            clone_bundles_enabled=_bool_env("SWARM_CLONE_BUNDLES", True),
             git_harvest_enabled=_bool_env("GIT_HARVEST_ENABLED", True),
             git_publish_enabled=_bool_env("GIT_PUBLISH_ENABLED", True),
             git_harvest_timeout_seconds=_int_env("GIT_HARVEST_TIMEOUT_SECONDS", 120),

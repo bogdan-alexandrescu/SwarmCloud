@@ -318,6 +318,8 @@ def test_every_service_written_key_is_reserved_in_one_place():
         "merge_wait",
         # The reconciler's disk-eviction count (#893).
         "disk_evictions",
+        # A schedule firing's mark on its work (docs/schedules.md §2.7, S2).
+        "schedule",
     )
 
 
