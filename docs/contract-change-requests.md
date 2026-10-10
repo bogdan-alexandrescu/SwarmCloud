@@ -70,6 +70,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 59 | `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55) | proposed |
 | 60 | `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87) | proposed |
 | 61 | `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57 | proposed |
+| 62 | `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI | proposed |
 
 ---
 
@@ -10380,3 +10381,79 @@ for them alone.
 - **Invariant 10.** Strengthened: it narrows what the `browser` profile's
   `url` inputs accept.
 - **Invariants 1-9.** Untouched.
+
+## 62. `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI
+
+**Status:** proposed, filed 2026-10-10 by the merge-race lane (part of
+[#295](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/295)). A
+request, not a change: nothing under `apps/common/swarm_common/` is edited
+by it, and the slot is built on `ParkReason.CI_PENDING` meanwhile.
+
+### What is true today
+
+Measured 2026-10-10 across the eng tenant: 16 merge steps ran against one
+`main` that requires an up-to-date branch, each landing merge put the rest
+behind, and 7 refused `behind_too_often`. The fix
+(`apps/agent-worker/agent_worker/mergeslot.py`) gives every (tenant,
+repository, base) one merge slot. A step whose checks are green and that
+cannot have the slot parks, holding nothing, until the holder's release
+hands the slot to it.
+
+That park is `ParkReason.CI_PENDING` with the code `merge_slot_wait` in
+`metadata.merge_wait.code`. Everything that must tell the two apart reads
+the code, not the reason:
+
+* `apps/agent-worker/agent_worker/control.py::ControlPlane.park_ci_pending`
+  counts it on `merge_wait.slot_waits`, not `wakes`, and clears
+  `first_parked_at` so `checks_timeout` does not time a queue;
+* `apps/swarm-api/swarm_api/mergewake.py::wake_tenant` skips it, because
+  its checks are green and reading them would wake it every tick;
+* the API's `blocked_by`, the UI and the MCP tools show `CI_PENDING`, so a
+  step queued behind seven merges reads as "waiting for CI".
+
+### Why
+
+A park reason is what a reader -- a person, the UI, a metric -- uses to say
+why a task is not running. "Waiting for CI" for a step whose CI is green is
+the wrong answer, and the code that corrects it lives in a tenant-writable
+metadata field that nothing outside the merge path reads.
+
+### The requested change
+
+In `apps/common/swarm_common/states.py`, beside `CI_PENDING`:
+
+```diff
+     CI_PENDING = "CI_PENDING"
++    #: A merge step whose checks are green waits for its repository's merge
++    #: slot (`agent_worker.mergeslot`); promoted by the scheduler's CI-wait
++    #: sweep on the release's wake marker or the fallback instant.
++    #: Contract request 62.
++    MERGE_SLOT_WAIT = "MERGE_SLOT_WAIT"
+```
+
+**The non-frozen half, in the same change:** the scheduler's
+`_promote_ci_waits` sweeps both reasons; `park_ci_pending` takes the reason
+from the code; `mergewake.wake_tenant` queries `CI_PENDING` alone and drops
+its skip; `mergeslot.FirestoreMergeSlots.wake` guards on the new reason;
+and the UI and MCP park labels name it.
+
+### What it would break if accepted
+
+Every reader that lists park reasons exhaustively (the UI's labels, the MCP
+rows, `docs/api-refusals.md`) needs the new member, and a slot wait parked
+by a worker of the old image during the rollout stays `CI_PENDING` with the
+code -- the sweep must keep reading both until those have drained.
+
+### If it is declined
+
+The slot keeps working as it is: `CI_PENDING` plus the code. Only the label
+a person reads is wrong.
+
+### Invariants
+
+- **Invariant 1.** Unchanged: the wait is a park, holding no lease and no
+  pool count, whichever reason it carries.
+- **Invariant 5.** Unchanged: the slot's writes are fenced on the
+  attempt's task and lease, under either reason.
+- **Invariants 2-4, 6-10.** Untouched.
+

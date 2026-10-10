@@ -641,16 +641,69 @@ def test_three_updates_still_merge(tmp_path):
     assert outcome.summary["updates"] == merge.MERGE_MAX_BRANCH_UPDATES
 
 
-def test_a_fourth_update_is_behind_too_often_and_is_not_made(tmp_path):
+def _held_since(world: MergeWorld, updates_at_acquire: int) -> None:
+    """This step took its repository's merge slot with that many updates on its head."""
+    from datetime import datetime, timezone
+
+    from agent_worker import mergeslot
+
+    me = mergeslot.Claimant(TASK, "att_earlier", datetime(2026, 10, 10, tzinfo=timezone.utc))
+    slot = mergeslot.slot_id(merge_world.TENANT, f"{OWNER}/{NAME}", "main")
+    taken = world.slots.transact(slot, lambda doc: mergeslot.acquire(
+        doc, me, tenant_id=merge_world.TENANT, repository=f"{OWNER}/{NAME}", base="main",
+        now=world.slots.now(), updates=updates_at_acquire, ended=set()))
+    assert isinstance(taken, mergeslot.Held)
+
+
+def test_an_update_past_the_allowance_while_holding_the_slot_is_behind_too_often(tmp_path):
+    """Merge race (#295): the catch-up update after taking the slot, then at
+    most MERGE_MAX_BRANCH_UPDATES more -- each a base that moved under a held
+    slot -- and the next is `behind_too_often`, with no call made."""
     world = MergeWorld(tmp_path)
-    assert merge.MERGE_MAX_BRANCH_UPDATES == 3
-    world.pr["head"]["sha"] = _chain(world, merge.MERGE_MAX_BRANCH_UPDATES)
+    assert merge.MERGE_MAX_BRANCH_UPDATES == 5
+    _held_since(world, 0)
+    world.pr["head"]["sha"] = _chain(world, merge.MERGE_MAX_BRANCH_UPDATES + 1)
     world.pr["mergeable_state"] = "behind"
     outcome = merge.run_merge(world.context())
     assert outcome.state is TaskState.FAILED
     assert outcome.end_cause is EndCause.MERGE_REFUSED
     assert outcome.summary["refusal"]["code"] == "behind_too_often"
-    assert "3" in outcome.summary["refusal"]["message"]
+    assert "at most 5 past the catch-up" in outcome.summary["refusal"]["message"]
+    assert world.update_calls() == [] and world.merge_calls() == []
+    # The refusal gave the slot back.
+    assert outcome.summary["merge_slot"]["released"] == "behind_too_often"
+
+
+def test_the_last_update_the_allowance_permits_is_made(tmp_path):
+    """The control: one update fewer while holding is made, and parks."""
+    world = MergeWorld(tmp_path)
+    _held_since(world, 0)
+    world.pr["head"]["sha"] = _chain(world, merge.MERGE_MAX_BRANCH_UPDATES)
+    world.pr["mergeable_state"] = "behind"
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert len(world.update_calls()) == 1
+
+
+def test_updates_made_before_the_slot_was_taken_are_not_counted(tmp_path):
+    """The updates already on the head when the slot was taken were caused by
+    the merges this step queued behind: they spend none of the allowance."""
+    world = MergeWorld(tmp_path)
+    world.pr["head"]["sha"] = _chain(world, merge.MERGE_MAX_BRANCH_UPDATES + 1)
+    world.pr["mergeable_state"] = "behind"
+    outcome = merge.run_merge(world.context())
+    assert outcome.state is TaskState.PARKED, outcome.message
+    assert outcome.summary["merge_slot"]["updates_at_acquire"] == merge.MERGE_MAX_BRANCH_UPDATES + 1
+    assert outcome.summary["updates_while_held"] == 0
+    assert len(world.update_calls()) == 1
+
+
+def test_an_update_the_walk_would_not_accept_is_behind_too_often(tmp_path):
+    world = MergeWorld(tmp_path)
+    world.pr["head"]["sha"] = _chain(world, merge.MERGE_MAX_HEAD_UPDATES)
+    world.pr["mergeable_state"] = "behind"
+    outcome = merge.run_merge(world.context())
+    assert outcome.summary["refusal"]["code"] == "behind_too_often"
     assert world.update_calls() == [] and world.merge_calls() == []
 
 
@@ -723,7 +776,7 @@ def _not_githubs(world: MergeWorld, how: str) -> str:
         world.on_base(PINNED, status="diverged")
         return OTHER
     if how == "more_merges_than_the_bound":
-        return _chain(world, merge.MERGE_MAX_BRANCH_UPDATES + 1)
+        return _chain(world, merge.MERGE_MAX_HEAD_UPDATES + 1)
     raise AssertionError(how)
 
 
