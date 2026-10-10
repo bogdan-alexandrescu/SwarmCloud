@@ -725,7 +725,7 @@ resource "google_monitoring_alert_policy" "spec_signature_invalid" {
         alignment_period     = "300s"
         per_series_aligner   = "ALIGN_DELTA"
         cross_series_reducer = "REDUCE_SUM"
-        group_by_fields      = ["metric.label.tenant_id", "metric.label.reason"]
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.job_name", "metric.label.reason"]
       }
     }
   }
@@ -749,7 +749,7 @@ resource "google_monitoring_alert_policy" "spec_signature_invalid" {
         alignment_period     = "300s"
         per_series_aligner   = "ALIGN_DELTA"
         cross_series_reducer = "REDUCE_SUM"
-        group_by_fields      = ["metric.label.tenant_id", "metric.label.end_cause", "metric.label.reason"]
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.job_name", "metric.label.end_cause", "metric.label.reason"]
       }
     }
   }
