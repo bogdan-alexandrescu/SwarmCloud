@@ -447,9 +447,12 @@ class ApiSettings:
     #: 2026-10-08): the check shipped (#845) before anyone could connect GitHub
     #: and choose repositories, so it refused every person's task. While off, a
     #: person with no grant runs with the tenant token, `git`, with write, as
-    #: before #780; a person WITH a grant still runs with their own slot. It is
-    #: switched on in the migration step (OB10), after the owner's connection
-    #: test (REPOSITORY_GRANTS_ENFORCED=true).
+    #: before #780; a person WITH a grant still runs with their own slot. The
+    #: deployed value is terraform's, var.repository_grants_enforced, rendered
+    #: by terraform/infra/locals.tf (OB10): on in dev, where the GitHub App is
+    #: registered and people can connect; off in prod, which has no App, until
+    #: the owner says otherwise. A service submission is never refused either
+    #: way. This default stays off so a test or a local run refuses nothing.
     repository_grants_enforced: bool = False
 
     # --- the issue sweeper (owner decisions 2026-10-08) ----------------------

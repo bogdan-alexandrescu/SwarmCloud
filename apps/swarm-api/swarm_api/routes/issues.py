@@ -23,7 +23,8 @@ from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..errors import ValidationFailed
 from ..forge import ForgeReadError, IssueIsPullRequest, preview
-from ..issueruns import auto_merge_availability
+from ..issueruns import auto_merge_availability, auto_merge_default
+from ..repositories import registered_merge_policy
 from ..validation import PullRequestReference, parse_issue_ref
 
 log = logging.getLogger(__name__)
@@ -65,6 +66,9 @@ def preview_issue(
         "issue": body,
         "tenant_id": tenant_id,
         "auto_merge": auto_merge_availability(
-            default=bool(ctx.store.get_platform_settings().get("merge_by_default"))
+            default=auto_merge_default(
+                registered_merge_policy(ctx.db, ctx.now, tenant_id, ref.owner, ref.repo),
+                bool(ctx.store.get_platform_settings().get("merge_by_default")),
+            )
         ),
     }

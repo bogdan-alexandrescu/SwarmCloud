@@ -180,6 +180,7 @@ from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
     MERGE_METADATA_KEY,
+    MERGE_ON_VERDICT,
     MERGE_STEP_ID,
     IssueRef,
 )
@@ -1132,6 +1133,20 @@ def _auto_merge_refusal() -> str | None:
             "yourself"
         )
     return None
+
+
+def auto_merge_default(merge_policy: str | None, platform_default: bool) -> bool:
+    """What a run created without saying `auto_merge` gets (WF-MERGE-API).
+
+    The `merge_policy` the tenant registered the issue's repository with
+    when it set one -- "on_merge_verdict" is on, "off" is off -- else the
+    platform's `merge_by_default`. A run's merge already waits for the
+    review's MERGE verdict and green CI (`issueci._merge`), which is what
+    "on_merge_verdict" asks for.
+    """
+    if merge_policy is not None:
+        return merge_policy == MERGE_ON_VERDICT
+    return bool(platform_default)
 
 
 def auto_merge_availability(default: bool = False) -> dict[str, Any]:
