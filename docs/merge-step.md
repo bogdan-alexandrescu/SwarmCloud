@@ -939,7 +939,14 @@ What the built step checks, and how this differs from §4-§5:
   statuses -- rather than refused, because a repository that is not
   SwarmCloud's commonly requires checks that way. A base branch that requires
   NO check needs every reported check green (success, skipped or neutral) and
-  at least one to exist.
+  at least one to exist. **A private repository on a plan without rulesets**
+  answers the rules read 403 "Upgrade to GitHub Pro or make this repository
+  public to enable this feature." (sagaxyz/ai-studio, 2026-10-10). That is
+  not a missing right, so it reads as "no rules", exactly as a 404 does, and
+  the same every-check-green rule applies; it never merges on nothing. Any
+  other 403 is still `token_lacks_rights`. The step records which rule it used
+  as `required_checks_source`: `rulesets`, `classic`, `none_all_checks`, or
+  `none_plan_limited_all_checks`.
 * **Waiting for CI (invariants 1 and 4).** A required check still running, no
   check reported yet on an unprotected branch, or mergeability not computed
   fails the ATTEMPT retryably; the step waits READY for 300 s, holding
