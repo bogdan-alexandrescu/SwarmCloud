@@ -126,15 +126,22 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["images/agent-runtime-browser/cloudbuild.yaml"], {"agent-runtime-browser"}),
         (["images/swarm-ui/nginx.conf"], {"swarm-ui"}),
         (["images/workspace-apply/Dockerfile"], {"workspace-apply"}),
-        # The guard and the build file are the workspace job's checkout, not
-        # its image's: they rebuild swarm-verify (which copies all of
-        # scripts/) and never workspace-apply.
-        (["scripts/lib/workspace-guard.sh", "scripts/cloudbuild/workspace-apply.yaml"], {"swarm-verify"}),
+        (["images/workspace-apply/entry.py"], {"workspace-apply"}),
+        # Since the 2026-10-10 re-decision (WD2: a Cloud Run job, lane W6b) the
+        # workspace job's code is in its image, not in a checkout: the guard,
+        # the job's script and register-tenant.sh rebuild workspace-apply, as
+        # well as swarm-verify (which copies all of scripts/).
+        (["scripts/lib/workspace-guard.sh", "scripts/workspace-apply.sh"], {"swarm-verify", "workspace-apply"}),
+        (["scripts/register-tenant.sh"], {"swarm-verify", "workspace-apply"}),
+        # What render.py (A7) and the guard's expectation read in the image.
+        (["kubernetes/render.py"], {"workspace-apply"}),
+        (["terraform/modules/service_account_ids/main.tf"], {"workspace-apply"}),
+        (["apps/scheduler/scheduler/dispatch.py"], {"swarm-scheduler", "workspace-apply"}),
         # COPY'd files outside images/.
-        (["apps/common/swarm_common/models.py"], PYTHON_SERVICES | WORKER),
+        (["apps/common/swarm_common/models.py"], PYTHON_SERVICES | WORKER | {"workspace-apply"}),
         (["apps/redaction/redaction/scan.py"], WORKER | {"swarm-api"}),
         (["apps/agent-worker/worker/main.py"], WORKER),
-        (["apps/quota-broker/quota_broker/app.py"], {"swarm-quota-broker", "swarm-scheduler"}),
+        (["apps/quota-broker/quota_broker/app.py"], {"swarm-quota-broker", "swarm-scheduler", "workspace-apply"}),
         (["apps/swarm-ui/src/App.tsx"], {"swarm-ui"}),
         # `COPY apps/swarm-ui/package-lock.json*`: a glob source.
         (["apps/swarm-ui/package-lock.json"], {"swarm-ui"}),
@@ -145,7 +152,7 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["uv.lock"], PYTHON_SERVICES | WORKER),
         (["pyproject.toml"], PYTHON_SERVICES | WORKER),
         (["Makefile"], {"swarm-verify"}),
-        (["scripts/lib/common.sh"], {"swarm-verify"}),
+        (["scripts/lib/common.sh"], {"swarm-verify", "workspace-apply"}),
         (["tests/acceptance/fixtures/claude-code/calc.py"], {"swarm-verify"}),
         # What every build's context is filtered through.
         ([".dockerignore"], ALL),
@@ -226,6 +233,40 @@ def test_copy_from_a_stage_is_not_an_input(tmp_path):
     patterns = {p for _, p in rows}
     assert not any(p.startswith("/") for p in patterns), sorted(patterns)
     assert {t for t, _ in rows} == ALL
+
+
+def test_workspace_apply_builds_from_a_context_holding_every_path_it_copies(tmp_path):
+    """The root .dockerignore excludes scripts/, kubernetes/ and terraform/ on
+    purpose, so workspace-apply -- whose Dockerfile copies from all three --
+    cannot build from the repository root, which is where a generated config
+    builds. Its checked-in recipe assembles a context instead, as swarm-verify's
+    does. This runs that assembly against the checkout and holds every COPY
+    source of the Dockerfile to what it put there: a COPY added without the
+    assembly following is a build that fails "not found in build context" on
+    main. MUTATION: drop a `cp` line from the recipe, or delete the recipe."""
+    recipe = yaml.safe_load((REPO / "images" / "workspace-apply" / "cloudbuild.yaml").read_text())
+    steps = {s["id"]: s for s in recipe["steps"]}
+    ctx_in_build = "/workspace/workspace-apply-ctx"
+    assert steps["build"]["args"][0] == "build" and steps["build"]["args"][-1] == ctx_in_build, steps["build"]
+    assert "-f" not in steps["build"]["args"], "the context's own Dockerfile is the one built"
+
+    ctx = tmp_path / "ctx"
+    script = steps["assemble-context"]["args"][-1].replace("$$", "$").replace(ctx_in_build, str(ctx))
+    proc = subprocess.run(["bash", "-c", script], cwd=REPO, capture_output=True, text=True,
+                          timeout=120, check=False)
+    assert proc.returncode == 0, proc.stderr
+    assert (ctx / "Dockerfile").read_text() == (REPO / "images" / "workspace-apply" / "Dockerfile").read_text()
+
+    joined = re.sub(r"\\\n", " ", (REPO / "images" / "workspace-apply" / "Dockerfile").read_text())
+    sources = [
+        src
+        for line in joined.splitlines()
+        if re.match(r"\s*COPY\s", line) and "--from=" not in line
+        for src in line.split()[1:-1]
+    ]
+    assert len(sources) >= 9, sources
+    missing = [src for src in sources if not (ctx / src).exists()]
+    assert not missing, f"images/workspace-apply/cloudbuild.yaml does not put {missing} in the build context"
 
 
 def test_every_image_input_fires_application_yml_on_a_pull_request(tmp_path):

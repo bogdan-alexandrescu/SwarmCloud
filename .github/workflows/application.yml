@@ -468,6 +468,11 @@ jobs:
             # touching only alerts.tf never ran that pin. (Other unit tests read other
             # terraform files and are not triggered by them either; not widened here.)
             terraform/modules/monitoring/alerts.tf
+            # The workspace-apply image copies this file in (common.sh reads the
+            # platform account ids off it for the call guard), so a PR changing only
+            # it must build that image. test_every_image_input_fires_application_yml_
+            # on_a_pull_request holds every image input to this list.
+            terraform/modules/service_account_ids/main.tf
             # tests/unit/mcp reads the plugin and the marketplace manifest -- its
             # skills, its server declaration, the version its bridge is pinned to.
             # Without these, a PR that changed only plugin.json ran none of that.

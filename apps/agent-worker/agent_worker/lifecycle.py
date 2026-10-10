@@ -840,6 +840,10 @@ class Worker:
         # tenant's wave epic after its own work is done (#638).
         self._verdict_minors: tuple[verdict_mod.MinorFinding, ...] = ()
         self._verdict_minors_dropped = 0
+        # The verdict file that gate read, as staged: `(path on disk, its
+        # input_from name)`. A step whose gate stays shut re-publishes it as
+        # its own artifact (`_republish_staged_verdict`); None with no gate.
+        self._verdict_staged: tuple[Path, str] | None = None
         # Where the pull request text of a step whose verdict gate stayed shut
         # came from (`_adopt_pull_request_text`), `{"title", "body"}`, each
         # `implementer`, `label` or None; None when the gate did not shut.
@@ -5486,6 +5490,7 @@ class Worker:
             ws.work / source.path, task_id=gate.task_id, filename=source.filename
         )
         runs = read.verdict in gate.verdict_in
+        self._verdict_staged = (ws.work / source.path, source.filename)
         self._verdict = {
             "task_id": gate.task_id,
             "file": source.filename,
@@ -5638,7 +5643,9 @@ class Worker:
         gets, so the final checkpoint, the uploads, the publish, the missing-
         output check and the lease release are the ones every other clean
         attempt has. The result it reads is written here, in the runner's
-        shape, saying the agent was skipped and why.
+        shape, saying the agent was skipped and why, and the verdict the gate
+        read is re-published as this step's own artifact
+        (`_republish_staged_verdict`), so a step that stages it reads it.
         """
         ws = self.ws
         assert ws is not None and self._verdict is not None
@@ -5648,6 +5655,7 @@ class Worker:
             # folder: the pull request this step owes is titled by the
             # implementer's own text, or the workflow's label (2026-10-05).
             self._adopt_pull_request_text()
+        self._republish_staged_verdict()
         ws.result_path.write_text(
             json.dumps(
                 {
@@ -5674,6 +5682,35 @@ class Worker:
                 stdout_truncated=False,
                 stderr_truncated=False,
             )
+        )
+
+    def _republish_staged_verdict(self) -> None:
+        """Publish the verdict file this step's shut gate read as its own artifact.
+
+        Owner decision, 2026-10-10 (merge chain follow-up, part of #295): a
+        gated step whose agent does not run used to write no artifact, so a
+        step that stages from it -- the merge step `on_merge_verdict` derives
+        reads the re-review's verdict, and the re-review is gated on the first
+        review's NOT_YET -- found nothing on the MERGE path and refused
+        `verdict_unreadable`. The verdict that decided this step is the one it
+        passes on: copied byte for byte under its `input_from` name, never
+        re-serialised, so the reader sees exactly what the review wrote and
+        `read_verdict` judges it again. When the agent runs it writes its own
+        verdict instead, and this is not called.
+        """
+        ws = self.ws
+        assert ws is not None and self._verdict_staged is not None
+        staged, filename = self._verdict_staged
+        target = ws.artifacts / filename
+        target.parent.mkdir(parents=True, exist_ok=True)
+        # Unlinked first, so a name a restored checkpoint left as a link is
+        # replaced rather than written through.
+        target.unlink(missing_ok=True)
+        shutil.copyfile(staged, target)
+        self.log.info(
+            "verdict gate shut: the staged verdict is re-published as this step's artifact",
+            verdict_file=filename,
+            verdict_task_id=self._verdict["task_id"] if self._verdict else None,
         )
 
     def _pr_label(self) -> str | None:

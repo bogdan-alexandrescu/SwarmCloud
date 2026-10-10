@@ -52,7 +52,10 @@ WHAT A REGISTRATION IS, AND WHY EACH RULE:
     `auto_merge`. Never set, it defers to the platform's `merge_by_default`.
     Only a platform admin may set it -- it decides whether work merges on
     its own -- and each change is an `admin_audit` entry in the same
-    transaction, as for `platform`.
+    transaction, as for `platform`. A PATCH may also send "inherit"
+    (`MERGE_POLICY_INHERIT`, owner decision 2026-10-10), which clears the
+    override -- stored null, the platform default again -- under the same
+    admin check and the same audit, `to: null`.
   * OPT-IN CONTEXT, NOT A GATE. Nothing here changes what a task may run
     against; `allowed_profiles` narrows by NAME (invariant 10) and is not yet
     a submission check (repo-index.md §1, "How it relates to today").
@@ -168,8 +171,14 @@ _HARD_STOP_PATH = re.compile(r"^[^\x00-\x1f\x7f]+$")
 #: `admin_audit` actions for a change of `platform`.
 AUDIT_PLATFORM_SET = "repository_platform_set"
 AUDIT_PLATFORM_CLEARED = "repository_platform_cleared"
-#: The `admin_audit` action for a change of `merge_policy`.
+#: The `admin_audit` action for a change of `merge_policy`, a clear included.
 AUDIT_MERGE_POLICY_SET = "repository_merge_policy_set"
+#: What a PATCH sends to clear a repository's `merge_policy` back to the
+#: platform default. Never stored: the stored value is null, which every
+#: reader already takes as "no override" (`merge_policy_of`). A word rather
+#: than a JSON null, because a PATCH field sent as null means "unchanged"
+#: here, as for every other field of `RepositoryPatch`.
+MERGE_POLICY_INHERIT = "inherit"
 
 #: A branch name, conservatively: git's own ref rules (`git check-ref-format`)
 #: narrowed to the characters a GitHub branch name is seen with. The value is
@@ -347,7 +356,7 @@ def registered_merge_policy(
 
 
 def _merge_policy_audit(
-    txn: Any, db: Any, data: Mapping[str, Any], *, to: str, by: str, at: datetime,
+    txn: Any, db: Any, data: Mapping[str, Any], *, to: str | None, by: str, at: datetime,
 ) -> None:
     """One `admin_audit` entry for a change of `merge_policy`, inside `txn`."""
     ref = db.collection(AUDIT_COLLECTION).document()
@@ -468,7 +477,9 @@ class RepositoryPatch(_Body):
     index: IndexSettings | None = None
     platform: StrictBool | None = None
     hard_stop_paths: list[str] | None = Field(default=None, max_length=HARD_STOP_PATHS_MAX)
-    merge_policy: Literal["off", "on_merge_verdict"] | None = None
+    #: "inherit" clears the override (`MERGE_POLICY_INHERIT`); a create has
+    #: nothing to clear and does not take it.
+    merge_policy: Literal["off", "on_merge_verdict", "inherit"] | None = None
 
     @field_validator("default_branch")
     @classmethod
@@ -741,9 +752,10 @@ class Repositories:
                 changes["platform"] = body.platform
                 _platform_audit(txn, self._db, data, to=body.platform,
                                 by=str(platform_by), at=changes["updated_at"])
-            if body.merge_policy is not None and body.merge_policy != merge_policy_of(data):
-                changes["merge_policy"] = body.merge_policy
-                _merge_policy_audit(txn, self._db, data, to=body.merge_policy,
+            to = None if body.merge_policy == MERGE_POLICY_INHERIT else body.merge_policy
+            if body.merge_policy is not None and to != merge_policy_of(data):
+                changes["merge_policy"] = to
+                _merge_policy_audit(txn, self._db, data, to=to,
                                     by=str(merge_policy_by), at=changes["updated_at"])
             txn.update(ref, changes)
             merged = dict(data)
