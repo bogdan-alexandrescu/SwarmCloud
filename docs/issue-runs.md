@@ -409,7 +409,8 @@ at submission, **1-5, default 3** (`schemas.RunCreate`), and bounds:
   the reason in `error` and on the status comment.
 * **Review-then-fix rounds inside the compiled workflow** -- but only **one** is
   compiled today, whatever the cap (`COMPILED_REVIEW_ROUNDS`). Under
-  `integrate` only the integrator may be gated, and a second review needs a
+  `integrate` only the integrator may be gated (and the one re-review
+  `"on_merge_verdict"` appends), and a second caller-built review needs a
   gated step that is not the publisher
   ([workflows.md, "What this does not do"](workflows.md#what-this-does-not-do)).
 

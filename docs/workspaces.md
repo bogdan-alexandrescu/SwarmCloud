@@ -336,6 +336,37 @@ token-creator.**
 
 ---
 
+### W0b, read 2026-10-10: the operator's live half
+
+Read by the operator with `gcloud` against `saga-agents-staging`.
+
+* **(3) Who holds the powers that reach the job (read ~18:45Z,
+  `gcloud projects get-iam-policy`).** At the project level:
+  `swarmJobDispatcher` (and the conditioned `swarmGkeDispatcher`) is held by
+  `swarm-scheduler`; `swarmJobReaper` (and the conditioned `swarmGkeReaper`)
+  by `swarm-reconciler`; `swarmAcceptanceRunner` by `swarm-accept`;
+  `roles/run.admin` by `swarm-tf-deployer` and one owner; `roles/owner` by the
+  two human owners, and `roles/iam.serviceAccountUser` by one of them. **One
+  finding:** the default compute account, `<number>-compute@developer`, holds
+  `roles/editor` on the whole project. Editor carries
+  `iam.serviceAccounts.actAs` and Cloud Run job update and run, so a workload
+  running as the default compute account bypasses the job-level policy of
+  §2.3. It is Google's legacy default grant, and in this shared project the
+  other team's workloads may use it, so it is recorded as a residual risk and
+  as #1020, to be removed together with that team, never unilaterally.
+* **(1) The refused-update proof: shown, 2026-10-10 ~19:05Z.** With a
+  temporary `roles/iam.serviceAccountTokenCreator` for the operator on
+  `swarm-scheduler` only (the owner's approval; removed right after and read
+  back empty), a no-op label update of `swarm-verify` run as `swarm-scheduler`
+  (which holds `run.jobs.update` through `swarmJobDispatcher` but no `actAs`
+  on `swarm-verify`) was refused: `Permission 'iam.serviceaccounts.actAs'
+  denied on service account swarm-verify@...`. The update did not change the
+  account, so Cloud Run checks `actAs` on every update, not only on one that
+  changes the account. It was not the operator's own identity that was
+  refused: the operator holds `actAs` project-wide. Nothing changed (no
+  probe label). The first attempt, without the grant, had been refused at
+  impersonation and proved nothing. **W4b's gate (1) is met.**
+
 ## 1. The request record
 
 ### 1.1 `workspaces/{tenant_id}`
