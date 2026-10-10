@@ -4,7 +4,7 @@ import { loadArtifactContent, loadAttempts, artifactRawUrl } from './api'
 import { patchWindow } from './ArtifactViewer'
 import { publishRefusals } from './AgentDetail'
 import { Button } from './components'
-import { DiffView, httpUrl } from './diff/DiffView'
+import { DiffView, httpUrl, type DiffPin } from './diff/DiffView'
 import { parseUnifiedDiff, type DiffFile } from './diff/parse'
 import { errorHeading, num, type ApiError, type Result } from './fetch'
 import { agentPath } from './OverviewRegions'
@@ -26,6 +26,7 @@ import {
   type Workflow,
 } from './types'
 import { stateWord } from './words'
+import { SEVERITY_LABEL, placeFinding, reviewFindings, type Placement, type ReviewFinding, type ShownPatch } from './wfreview'
 import './styles/changes.css'
 
 /**
@@ -548,6 +549,12 @@ export type PatchRead =
       /** Sections the parser refused; their files are not listed. */
       unparsed: number
       masked: number
+      /**
+       * The sha256 of the patch's bytes, for the findings' digest check
+       * (`wfreview.placeFinding`); null when the text served is not those
+       * bytes -- a window, a masked line, a byte that is not UTF-8.
+       */
+      digest: string | null
     }
 
 /** What is known of one step's changes. */
@@ -734,8 +741,28 @@ export function composeFile(parts: readonly { step: string; section: PatchSectio
   return { patch: header + body, stepOfHunk }
 }
 
+/**
+ * THE DIGEST OF THE PATCH AS STORED, measured from the text served, or null
+ * when that text is not the stored bytes. The review's worker hashed the file
+ * it staged (agent_worker/inputs.py `_sha256`); the API serves the same
+ * object as UTF-8 text, so the two agree exactly when the read is the whole
+ * object, nothing was masked, and no byte was replaced for not being UTF-8.
+ * `invalid_utf8_bytes` must be a measured 0: an older API that does not say
+ * is not compared, because a replaced byte would read as a different patch.
+ */
+export async function patchDigest(data: ArtifactContent): Promise<string | null> {
+  const whole = data.offset === 0 && data.next_offset === null && !data.truncated
+  if (!whole || data.content === null || data.redaction_count > 0 || data.invalid_utf8_bytes !== 0) return null
+  try {
+    const sum = await globalThis.crypto.subtle.digest('SHA-256', new TextEncoder().encode(data.content))
+    return [...new Uint8Array(sum)].map((b) => b.toString(16).padStart(2, '0')).join('')
+  } catch {
+    return null
+  }
+}
+
 /** A patch read's answer as this tab keeps it. */
-function patchReadOf(res: Result<ArtifactContent>): PatchRead {
+async function patchReadOf(res: Result<ArtifactContent>): Promise<PatchRead> {
   if (res.status !== 'ok' && res.status !== 'stale') {
     const error =
       res.status === 'error' ? res.error : ({ kind: 'unreachable', httpStatus: null, code: null, message: 'The read returned a shape this tab does not handle.' } satisfies ApiError)
@@ -748,7 +775,7 @@ function patchReadOf(res: Result<ArtifactContent>): PatchRead {
   const whole = data.offset === 0 && data.next_offset === null && !data.truncated
   const text = whole ? data.content : patchWindow(data.content, data).patch
   const { sections, unparsed } = patchSections(text)
-  return { kind: 'ok', sections, whole, unparsed, masked: data.redacted ? data.redaction_count : 0 }
+  return { kind: 'ok', sections, whole, unparsed, masked: data.redacted ? data.redaction_count : 0, digest: await patchDigest(data) }
 }
 
 interface ReadJob<T> {
@@ -921,8 +948,18 @@ export function ChangesMatrix({
     return columnFacts(c, attemptsOf(c.task), src.kind === 'patch' ? readOf(c.task, src.name) : undefined)
   })
 
+  // The review's findings, each checked against the digest of the patch it
+  // would be pinned on (variant 3, `wfreview.placeFinding`).
+  const findings = reviewFindings(cols.flatMap((c) => (c.task === null ? [] : [c.task])))
+  const shownPatches = shownPatchesOf(cols, facts)
+  const placements = findings.map((f) => placeFinding(f, shownPatches))
+
   const filter = at.step !== null && cols.some((c) => c.key === at.step) ? at.step : null
-  const all = matrixFiles(facts)
+  // Files named by the review sort first, in patch order otherwise: grouped by
+  // what the review said, never by a risk score nobody measured (design §2 variant 3).
+  const named = new Set(findings.flatMap((f) => (f.file === null ? [] : [f.file])))
+  const every = matrixFiles(facts)
+  const all = [...every.filter((p) => named.has(p)), ...every.filter((p) => !named.has(p))]
   const filterAt = filter === null ? -1 : cols.findIndex((c) => c.key === filter)
   const rows = filterAt === -1 ? all : all.filter((p) => cellOf(facts[filterAt]!, p).kind === 'count')
   const file = at.file !== null && rows.includes(at.file) ? at.file : (rows[0] ?? null)
@@ -943,7 +980,7 @@ export function ChangesMatrix({
   })
   const patchJob = (task: Task, name: string): ReadJob<Answer> => ({
     key: patchKey(task, name),
-    load: async () => ({ kind: 'patch', read: patchReadOf(await loadArtifactContent(task.id, name)) }),
+    load: async () => ({ kind: 'patch', read: await patchReadOf(await loadArtifactContent(task.id, name)) }),
   })
   facts.forEach((f, i) => {
     const task = cols[i]!.task
@@ -954,6 +991,12 @@ export function ChangesMatrix({
     if (file === null || task === null || f.kind !== 'patch' || !f.listed) return
     if (filterAt !== -1 && filterAt !== i) return
     if (f.files?.has(file)) jobs.push(patchJob(task, f.name))
+  })
+  // Last, the patches a located finding would be pinned on, for their digests.
+  facts.forEach((f, i) => {
+    const task = cols[i]!.task
+    if (task === null || f.kind !== 'patch' || f.read !== undefined) return
+    if (findings.some((x) => x.line !== null && x.patches.some((p) => p.taskId === task.id && p.filename === f.name))) jobs.push(patchJob(task, f.name))
   })
   // Every render: what is wanted changes with each landing and each choice.
   useEffect(() => queue.start(jobs))
@@ -998,6 +1041,14 @@ export function ChangesMatrix({
           )}
         </p>
       </div>
+      {findings.length > 0 && (
+        <ReviewFindings
+          findings={findings}
+          placements={placements}
+          rows={rows}
+          onOpen={(path, key) => onAt({ step: filter === null || filter === key ? filter : null, file: path })}
+        />
+      )}
       {cols.length === 0 ? (
         <State mark="zero" heading="no steps" say="This has no steps, so nothing changed any file." />
       ) : (
@@ -1028,6 +1079,7 @@ export function ChangesMatrix({
                     <button type="button" className="chg-mx-file mono" aria-pressed={path === file} onClick={() => onAt({ step: filter, file: path })}>
                       {path}
                     </button>
+                    {named.has(path) && <span className="chg-fd-named">named by the review</span>}
                   </th>
                   {cols.map((c, i) => (
                     <td key={c.key} className={shown[i] ? undefined : 'is-dim'}>
@@ -1041,9 +1093,120 @@ export function ChangesMatrix({
           {rows.length === 0 && <EmptyRows cols={cols} facts={facts} filterAt={filterAt} />}
         </div>
       )}
-      {file !== null && <FileByStep path={file} cols={cols} facts={facts} shown={shown} pullRequest={pullRequest ?? null} onRetry={retry} />}
+      {file !== null && (
+        <FileByStep
+          path={file}
+          cols={cols}
+          facts={facts}
+          shown={shown}
+          pullRequest={pullRequest ?? null}
+          onRetry={retry}
+          pins={pinsOf(findings, placements)}
+        />
+      )}
     </div>
   )
+}
+
+/** Each column's patch as the digest check sees it: its task, name, measured digest and files. */
+function shownPatchesOf(cols: readonly StepColumn[], facts: readonly ColumnFacts[]): ShownPatch[] {
+  return cols.flatMap((c, i) => {
+    const f = facts[i]!
+    if (c.task === null || f.kind !== 'patch') return []
+    const digest = f.read === undefined ? undefined : f.read.kind === 'ok' ? f.read.digest : null
+    return [{ key: c.key, label: c.label, taskId: c.task.id, name: f.name, digest, files: f.files === null ? null : new Set(f.files.keys()) }]
+  })
+}
+
+const TONE: Readonly<Record<ReviewFinding['severity'], DiffPin['tone']>> = { blocker: 'bad', major: 'warn', minor: 'info', none: 'info' }
+
+/** The pinned findings, as the viewer's pins, each bound to the step whose hunks its line counts in. */
+function pinsOf(findings: readonly ReviewFinding[], placements: readonly Placement[]): DiffPin[] {
+  return findings.flatMap((f, i) => {
+    const p = placements[i]!
+    if (p.kind !== 'pinned') return []
+    return [{ id: f.id, path: p.file, side: p.side, line: p.line, step: p.label, severity: SEVERITY_LABEL[f.severity], tone: TONE[f.severity], summary: f.summary }]
+  })
+}
+
+/**
+ * THE REVIEW'S FINDINGS, every one, each saying where it is: pinned beside a
+ * line of a named step's patch (a button that opens the file), from an
+ * earlier patch than the one shown, not placed, or not compared -- and why.
+ * Only a pinned finding has a mark in the viewer.
+ */
+function ReviewFindings({
+  findings,
+  placements,
+  rows,
+  onOpen,
+}: {
+  findings: readonly ReviewFinding[]
+  placements: readonly Placement[]
+  rows: readonly string[]
+  onOpen: (path: string, key: string | null) => void
+}) {
+  const count = (k: Placement['kind']) => placements.filter((p) => p.kind === k).length
+  const pinned = count('pinned')
+  const earlier = count('earlier')
+  const unplaced = count('unplaced')
+  return (
+    <section className="chg-fd" aria-label="Review findings">
+      <p className="chg-fd-head">
+        <span>
+          {findings.length} review {findings.length === 1 ? 'finding' : 'findings'}
+        </span>
+        <span>{pinned} pinned</span>
+        {earlier > 0 && <span>{earlier} from an earlier patch</span>}
+        {unplaced > 0 && <span>{unplaced} not placed</span>}
+      </p>
+      <ol className="chg-fd-list">
+        {findings.map((f, i) => {
+          const p = placements[i]!
+          const where = f.file === null ? null : f.line === null ? f.file : `${f.file} · ${f.side} ${f.line}`
+          return (
+            <li key={f.id} className={`chg-fd-item is-${p.kind}`} data-finding={f.id}>
+              <span className={`chg-fd-sev is-${TONE[f.severity]}`}>{SEVERITY_LABEL[f.severity]}</span> <span className="chg-fd-text">{f.summary}</span>{' '}
+              <span className="chg-fd-where">
+                {p.kind === 'pinned' ? (
+                  <button type="button" className="chg-mx-file" onClick={() => onOpen(p.file, p.key)}>
+                    pinned · {p.label} · {where}
+                  </button>
+                ) : (
+                  <>
+                    {where !== null && <span className="mono">{where}</span>}
+                    {where !== null && ' · '}
+                    {placementWords(p)}
+                    {f.file !== null && rows.includes(f.file) && (
+                      <>
+                        {' '}
+                        <button type="button" className="chg-mx-file" aria-label={`Open ${f.file}`} onClick={() => onOpen(f.file!, null)}>
+                          open file
+                        </button>
+                      </>
+                    )}
+                  </>
+                )}
+              </span>
+            </li>
+          )
+        })}
+      </ol>
+    </section>
+  )
+}
+
+function placementWords(p: Exclude<Placement, { kind: 'pinned' }>): string {
+  switch (p.kind) {
+    case 'earlier':
+      return `from an earlier patch: the review read a patch ${p.label} has since replaced, so its line numbers may have drifted; not pinned`
+    case 'unplaced':
+      return `not placed: ${p.why}`
+    case 'checking':
+      return 'checking: reading the patch the review read, to compare its digest; not pinned yet'
+    case 'uncompared':
+      return `not compared: the patch shown for ${p.label} is not its stored bytes (a window, masked, or not UTF-8 throughout, or not read), so its digest cannot be measured here; not pinned`
+  }
 }
 
 /** Why the matrix has no row: a measured zero, or not known yet -- never one dressed as the other. */
@@ -1090,6 +1253,7 @@ function FileByStep({
   shown,
   pullRequest,
   onRetry,
+  pins,
 }: {
   path: string
   cols: readonly StepColumn[]
@@ -1097,6 +1261,8 @@ function FileByStep({
   shown: readonly boolean[]
   pullRequest: { url: string; label: string } | null
   onRetry: (task: Task, name: string) => void
+  /** The pinned findings: only those on a drawn step's section of this file reach the viewer. */
+  pins: readonly DiffPin[]
 }) {
   const parts: { step: string; section: PatchSection }[] = []
   const missing: { col: StepColumn; mark: 'pending' | 'unread' | 'partial'; say: string; retry: (() => void) | null }[] = []
@@ -1126,6 +1292,10 @@ function FileByStep({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const composed = useMemo(() => composeFile(parts), [partsKey])
   const stepOf = useCallback((_: string, hunk: number) => composed.stepOfHunk[hunk] ?? null, [composed])
+  const here = pins.filter((p) => parts.some((x) => x.step === p.step && (p.path === x.section.file.path || p.path === x.section.file.newPath || p.path === x.section.file.oldPath)))
+  const pinsKey = here.map((p) => p.id).join('\0')
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const filePins = useMemo(() => here, [pinsKey])
 
   const meta = (
     <div className="chg-mx-meta" role="note" aria-label="Where these hunks come from">
@@ -1170,6 +1340,7 @@ function FileByStep({
             fullHeight
             initialFile={path}
             stepOf={stepOf}
+            pins={filePins}
             copy={{ label: 'Copy hunks', text: composed.patch }}
             download={{ refused: 'These are several steps’ hunks for one file, each against its own base: not a patch that applies. Each step’s own Changes tab downloads its patch.' }}
             meta={meta}

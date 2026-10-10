@@ -91,6 +91,9 @@ set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/forge-slot.sh
+source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/forge-slot.sh"
 
 GROUP=""
 USER_EMAIL=""
@@ -1040,52 +1043,23 @@ ws_a5() {
   ok "access: granted"
 }
 
-# The person's empty forge slot and its twin, labelled as swarm-api labels the
-# slots it makes (swarm_api.forgeapp.slot_labels), so its later create of the
-# same name finds them and treats ALREADY_EXISTS as success.
-ws_slot_present() {
-  local name="$1" provider="$2" rc=0 labelled
-  ws_probe "${WS_WORK}/slot.json" gcloud secrets describe "${name}" --project "${PROJECT_ID}" --format=json || rc=$?
-  case "${rc}" in
-    0)
-      labelled="$(jq -r '.labels.tenant // ""' "${WS_WORK}/slot.json")"
-      if [[ "${labelled}" != "${WS_TENANT}" ]]; then
-        ws_hold SLOT_NOT_OURS "the forge slot already exists labelled for '${labelled:-nobody}', not this tenant"
-        return 1
-      fi
-      return 0 ;;
-    1)
-      ws_call /dev/null gcloud secrets create "${name}" --project "${PROJECT_ID}" --replication-policy automatic \
-        --labels "managed-by=swarm-api,swarm-tenant=${WS_TENANT},tenant=${WS_TENANT},provider=${provider}" \
-        || { ws_show_err; return 1; }
-      return 0 ;;
-  esac
-  return 1
-}
-
+# The person's empty forge slot and its twin, and the worker's read of the slot
+# (never the twin): scripts/lib/forge-slot.sh, the one path that makes them,
+# which workspace-migrate-record.sh runs too. Through ws_call / ws_probe, so
+# every call has the guard's retry.
 ws_a6() {
-  local suffix="${WS_FORGE_SLOT#swarm-tenant-"${WS_TENANT}"-}"
-  ws_slot_present "${WS_FORGE_SLOT}" "${suffix}" || return 1
-  ws_slot_present "${WS_FORGE_TWIN}" "${suffix}-refresh" || return 1
-  # The refresh twin is the one secret no worker reads
-  # (terraform/bootstrap/forge_user_slots.tf); finding the worker on it is not
-  # something this job repairs.
-  ws_call "${WS_WORK}/twin-policy.json" gcloud secrets get-iam-policy "${WS_FORGE_TWIN}" \
-    --project "${PROJECT_ID}" --format=json || { ws_show_err; return 1; }
-  if jq -e --arg m "serviceAccount:${WS_WORKER_EMAIL}" 'any((.bindings? // [])[]; any(.members[]?; . == $m))' \
-       "${WS_WORK}/twin-policy.json" >/dev/null 2>&1; then
-    ws_hold TWIN_BOUND "the worker is bound to the forge slot's refresh twin, which no worker may read"
-    return 1
-  fi
-  ws_call "${WS_WORK}/slot-policy.json" gcloud secrets get-iam-policy "${WS_FORGE_SLOT}" \
-    --project "${PROJECT_ID}" --format=json || { ws_show_err; return 1; }
-  if ! iam_policy_binds_member "${WS_WORK}/slot-policy.json" roles/secretmanager.secretAccessor \
-       "serviceAccount:${WS_WORKER_EMAIL}"; then
-    ws_call /dev/null gcloud secrets add-iam-policy-binding "${WS_FORGE_SLOT}" --project "${PROJECT_ID}" \
-      --member "serviceAccount:${WS_WORKER_EMAIL}" --role roles/secretmanager.secretAccessor \
-      || { ws_show_err; return 1; }
-  fi
-  ok "forge slot: bound"
+  local rc=0
+  FORGE_SLOT_CALL=ws_call FORGE_SLOT_PROBE=ws_probe FORGE_SLOT_SHOW_ERR=ws_show_err \
+    FORGE_SLOT_WORK="${WS_WORK}" FORGE_SLOT_DRY_RUN=0 \
+    forge_slot_ensure_pair "${WS_TENANT}" "${WS_FORGE_SLOT}" "${WS_FORGE_TWIN}" "${WS_WORKER_EMAIL}" || rc=$?
+  case "${rc}" in
+    0) ok "forge slot: bound" ;;
+    3) ws_hold SLOT_NOT_OURS "the forge slot already exists labelled for '${FORGE_SLOT_LABELLED:-nobody}', not this tenant"
+       return 1 ;;
+    4) ws_hold TWIN_BOUND "the worker is bound to the forge slot's refresh twin, which no worker may read"
+       return 1 ;;
+    *) return 1 ;;
+  esac
 }
 
 # Credentials for the swarm cluster in the job's own kubeconfig, and the API
@@ -1248,10 +1222,16 @@ ws_a9() {
   fi
   n=$((n + 1))
   # Every object the tenant render holds (kubernetes/render.py TENANT_FILES and,
-  # since A4 binds swarm-worker, the older identity too).
+  # since A4 binds swarm-worker, the older identity too). Not on a MIGRATED
+  # record: a Terraform-made tenant binds swarm-agent-worker only, and the
+  # legacy account is rendered only where IAM binds it (kubernetes/README.md),
+  # so it has no swarm-worker objects to find (W9, measured 2026-10-10 on
+  # w-752763). A record the job made still needs both.
+  local -a bound=(--bound-ksa swarm-agent-worker)
+  [[ "${WS_MIGRATED}" == "true" ]] || bound+=(--bound-ksa swarm-worker)
   ws_cluster_connect || return 1
   python3 "${REPO_ROOT}/kubernetes/render.py" tenant --tenant "${WS_TENANT}" --gsa "${WS_WORKER_EMAIL}" \
-    --bound-ksa swarm-agent-worker --bound-ksa swarm-worker 2>/dev/null \
+    "${bound[@]}" 2>/dev/null \
     | python3 -c "${WS_OBJECTS_PY}" >"${WS_WORK}/objects.tsv" \
     || { ws_object "namespace object"; return 1; }
   [[ -s "${WS_WORK}/objects.tsv" ]] || { ws_object "namespace object"; return 1; }

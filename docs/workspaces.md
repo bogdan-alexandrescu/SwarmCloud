@@ -354,13 +354,18 @@ Read by the operator with `gcloud` against `saga-agents-staging`.
   §2.3. It is Google's legacy default grant, and in this shared project the
   other team's workloads may use it, so it is recorded as a residual risk and
   as #1020, to be removed together with that team, never unilaterally.
-* **(1) The refused-update proof: not yet shown.** The probe (a no-op label
-  update of `swarm-verify` as `swarm-scheduler`, which holds `run.jobs.update`
-  but no `actAs` on `swarm-verify`) was refused one step earlier, at
-  impersonation (`iam.serviceAccounts.getAccessToken`, the operator holds no
-  token-creator on `swarm-scheduler`), so it proves nothing either way and
-  changed nothing. The documentation half (above) says `actAs` is checked on
-  every create and update. The live proof stays pending before W4b is applied.
+* **(1) The refused-update proof: shown, 2026-10-10 ~19:05Z.** With a
+  temporary `roles/iam.serviceAccountTokenCreator` for the operator on
+  `swarm-scheduler` only (the owner's approval; removed right after and read
+  back empty), a no-op label update of `swarm-verify` run as `swarm-scheduler`
+  (which holds `run.jobs.update` through `swarmJobDispatcher` but no `actAs`
+  on `swarm-verify`) was refused: `Permission 'iam.serviceaccounts.actAs'
+  denied on service account swarm-verify@...`. The update did not change the
+  account, so Cloud Run checks `actAs` on every update, not only on one that
+  changes the account. It was not the operator's own identity that was
+  refused: the operator holds `actAs` project-wide. Nothing changed (no
+  probe label). The first attempt, without the grant, had been refused at
+  impersonation and proved nothing. **W4b's gate (1) is met.**
 
 ## 1. The request record
 
@@ -1265,6 +1270,13 @@ needs credentials only the owner holds.
    orphaned the id the request, its index entry and Admin › People already
    name. The id is not written here (step 5): the script prints it.
 
+   After the record, the same run **creates the person's empty forge slot
+   pair** (`swarm-tenant-u-bogdan-git-u-<hex>` and its `-refresh` twin,
+   labelled `tenant=u-bogdan`, no value) and grants the worker
+   `secretAccessor` on the slot only, through `scripts/lib/forge-slot.sh`, the
+   function A6 runs, so a migrated workspace has the shape A9 verifies (owner
+   decision 2026-10-10). A re-run with the pair present changes nothing.
+
    The verify run in step 4 reads this record, so it comes first.
 4. **`scripts/register-tenant.sh --workspace <w-id> --mode verify`**, with the id
    step 3 printed (the existing request's), under the
@@ -1273,7 +1285,9 @@ needs credentials only the owner holds.
    checkout and named by `SWARM_CALL_GUARD`, and `scripts/lib/guard-bin`
    first on `PATH`. This is A1 and A9 only. A1 admits a `migrated` record
    whatever its decision (the migration's names no admin), and the narrowed squat inspection allows the release
-   deployer's two Terraform-era bindings on it. A9 re-reads every object.
+   deployer's two Terraform-era bindings on it. A9 re-reads every object,
+   rendering a `migrated` tenant with `swarm-agent-worker` only: a
+   Terraform-made tenant has no legacy `swarm-worker` objects.
 5. **Date the result here**: the plan counts of steps 1 and 2, the record's
    workspace id kept private (§1.1), and the verify run's outcome.
 
