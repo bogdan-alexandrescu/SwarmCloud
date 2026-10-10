@@ -614,6 +614,10 @@ module "monitoring" {
   safety_tick_job          = "${var.name_prefix}-scheduler-tick"
   enable_safety_tick_alert = var.enable_safety_tick_alert
 
+  # The same string gke_autopilot is given, named from configuration because
+  # that module is behind a `count` (as for workspace_deployer above).
+  gke_cluster_name = "${var.name_prefix}-autopilot"
+
   alert_emails                = var.alert_emails
   extra_notification_channels = var.extra_notification_channels
   create_alerts               = var.create_alerts

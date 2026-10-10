@@ -170,7 +170,11 @@ Build job reads one record from it by workspace id.
 
 `ready` is **evidence-derived on the job's side**: it is written only
 after the final verification step (A9) has read back every object. swarm-api
-never writes `ready`, and nothing a client sends can set it. The same rule
+never writes `ready`, and nothing a client sends can set it. The one exception
+is §3.3's migration of a tenant whose resources Terraform already made:
+`Workspaces.migrate`, which no route calls, run by an operator through
+`scripts/workspace-migrate-record.sh`, and followed by a `--mode verify` run
+that reads every object back. The same rule
 applies in `apps/swarm-api/swarm_api/onboarding.py::derive`: a step's state
 comes from evidence, never from a flag a client sets.
 
@@ -657,7 +661,7 @@ added later if the cost matters.
 
 | tenant | today | after |
 |---|---|---|
-| `u-bogdan` | in `dev.tfvars` (providers `anthropic`, 80/80). Account, secrets and jobs in Terraform state. Namespace made by hand on 2026-10-07 | **moved out of Terraform state, without destroying anything.** A pull request removes it from `dev.tfvars` and adds `removed` blocks with `lifecycle { destroy = false }` for its instances of the tenancy, secret_manager, firestore and cloud_run_jobs modules, and, in the bootstrap layer, for its `deployer_admin` grant. **The release plan must show 0 to add, 0 to change, 0 to destroy, and only forgets.** A record `workspaces/u-bogdan` is written with a workspace id, `state = ready`, `migrated = true`, its current limits and its `anthropic` provider. A `--mode verify` run (A9 only) then reads it back; its Terraform-era bindings for the release deployer are on the allowed list for a record with `migrated = true` only |
+| `u-bogdan` | in `dev.tfvars` (providers `anthropic`, 80/80). Account, secrets and jobs in Terraform state. Namespace made by hand on 2026-10-07 | **moved out of Terraform state, without destroying anything.** A pull request removes it from `dev.tfvars` and adds `removed` blocks with `lifecycle { destroy = false }` for its instances of the tenancy, secret_manager, firestore and cloud_run_jobs modules, and, in the bootstrap layer, for its `deployer_admin` grant. **The release plan must show 0 to add, 0 to change, 0 to destroy, and only forgets.** `scripts/workspace-migrate-record.sh u-bogdan --apply` then makes `workspaces/u-bogdan` `ready` with `migrated = true`, its current limits and its `anthropic` provider, **keeping the workspace id of a request that already exists** (below). A `--mode verify` run (A9 only) then reads it back; its Terraform-era bindings for the release deployer are on the allowed list for a record with `migrated = true` only |
 | `u-sw-c90291` (`swarm-verify`) | in `dev.tfvars`, a service account's tenant | unchanged. Service tenants stay in `dev.tfvars` |
 | `u-*` documents created by `ensure_tenant` on first sight (for example `u-admin`) | a tenant document and pool with no infrastructure behind them | no record is written. Each such person sees "Request your workspace", and A8 adopts the existing documents because their principal matches |
 
@@ -668,6 +672,129 @@ left in place; the record's optional `providers` list says so, and is empty
 for every new person (§8). The release deployer's forgotten
 `serviceAccountAdmin` on `u-bogdan`'s account stays until the owner removes it;
 it grants nothing the release still uses.
+
+#### W9, built 2026-10-09: what the pull request does, and what the owner runs after it
+
+**Built (lane W9 of #847, 2026-10-09). Not yet applied: nothing below has run
+against the project.** The pull request must not merge before the owner's go.
+
+* `terraform/environments/dev/dev.tfvars` no longer names `u-bogdan`; a dated
+  comment in its place says why. The anthropic ceiling stays 120, above the
+  new floor of 80 (eng and smoke).
+* `terraform/infra/removed.tf` forgets u-bogdan's **33** instances: its
+  account, its Workload Identity, act-as and project grants, its three bucket
+  grants, its image-pull and broker-invoke grants, its secret and refresh
+  twin with their three authoritative bindings, its tenant document and two
+  pool documents, its four Cloud Run jobs, its five scheduler jobs and its
+  wake-topic publisher grant. `terraform/bootstrap/removed.tf` forgets the
+  **5** grants the bootstrap made for it: the release deployer's
+  `serviceAccountAdmin` on its account (`deployer_admin`), and the four
+  user-slot grants (`forge_slot_version_adder`, `forge_slot_version_manager`,
+  `forge_refresh_reader`, `forge_slot_reader`). Both sets were read from a
+  mock-provider plan with and without u-bogdan, on 2026-10-09.
+* **The `removed` blocks name no instance.** Terraform 1.16 refuses an
+  instance key in `removed` ("Resource instance keys not allowed", checked
+  2026-10-09), and a block naming a whole `for_each` resource would forget
+  every tenant's instance. So each instance is first `moved` to an address
+  nothing declares, and that address is `removed` with `destroy = false`,
+  as `terraform/infra/custom_roles_moved_to_bootstrap.tf` does for the
+  broker's grant. A plan with u-bogdan back in `dev.tfvars` fails ("Moved
+  object still exists"), which is a guard against re-adding it.
+* `tests/terraform/u_bogdan_removed.tftest.hcl` holds it: dev.tfvars names no
+  u-bogdan and the bootstrap plans no grant for it while it still plans eng's;
+  terraform/infra plans no u-bogdan resource while it still plans eng's;
+  every instance a tenant shaped like u-bogdan gets is a `moved` source; every
+  `moved` is u-bogdan's and lands on a `removed` with `destroy = false`. A
+  mock plan has no state, so it cannot show the forget itself. That is step 2.
+* `scripts/workspace-migrate-record.sh` writes the record of step 3 through
+  `swarm_api.workspaces.Workspaces.migrate`, dry run by default. Added on the
+  owner's review of this pull request (2026-10-09), with the in-place rule for
+  a request that already exists. `tests/unit/control_plane/test_workspace_migrate.py`
+  holds the rule (the id kept in place, the fresh create, the no-op re-run, the
+  refusals, a dry run writing nothing) and
+  `tests/unit/scripts/test_workspace_migrate_record.py` runs the real script
+  against a fake Firestore (dry run, `--apply` through a terminal,
+  `SWARM_ASSUME_YES` ignored, the live quota read only through the swarm
+  cluster's context).
+
+**Two things the plan will show that are not forgets.** Neither destroys
+anything:
+
+* **One in-place change: the artifact bucket's Nearline rule.**
+  `terraform/modules/storage` lists each `var.tenants` key's `tasks/` and
+  `verdicts/` prefixes in the bucket's Nearline lifecycle rule
+  (`aged_prefixes`), so the release plans **1 to change**:
+  `module.storage.google_storage_bucket.artifacts`, its `matches_prefix`
+  losing `tenants/u-bogdan/tasks/` and `tenants/u-bogdan/verdicts/`. That is
+  the cost difference §3.2 already accepts for every personal workspace; the
+  Delete rule does not change. If the owner wants a literal 0 to change, the
+  rule needs a `tenants/u-` prefix, which is a change to the storage module and
+  is not in W9's territory.
+* **u-bogdan's four forgotten Cloud Run jobs keep `managed-by=swarm-terraform`.**
+  The dispatcher refreshes the image only of jobs labelled
+  `managed-by=swarm-scheduler` (`apps/scheduler/scheduler/dispatch.py`,
+  `_refresh_image`), so these stay at the image of the last release that
+  applied them. Relabelling them `managed-by=swarm-scheduler` hands them to
+  the dispatcher. That is an owner decision, and it is not done by this PR.
+
+**The owner's steps after merge, in this order.** No agent runs them: each
+needs credentials only the owner holds.
+
+1. **The bootstrap apply of `terraform/bootstrap/removed.tf`**, from `main`,
+   as every bootstrap change is (`scripts/bootstrap.sh`). Its plan must read
+   **0 to add, 0 to change, 0 to destroy**, and list the 5 grants above under
+   "will no longer be managed by Terraform". Anything else is a stop.
+2. **The release's infra plan.** The release after merge plans
+   `terraform/infra`. For u-bogdan it must read **0 to add, 0 to change, 0 to
+   destroy**, and list the 33 instances above as forgotten. The one in-place
+   change it may carry is the bucket rule above. Any destroy or replace naming
+   `u-bogdan` is a stop: do not approve it in `dev-iam`.
+3. **The workspace record: `scripts/workspace-migrate-record.sh u-bogdan`**,
+   first without `--apply` (a dry run that prints the record before and
+   after, redacted, and writes nothing), then with `--apply`, which asks for
+   `u-bogdan` typed at a terminal and ignores `SWARM_ASSUME_YES`. The write is
+   `swarm_api.workspaces.Workspaces.migrate`, one Firestore transaction, so
+   the record's shape is the one `request()` gives a new record and is stated
+   nowhere else. It reads `tenants/u-bogdan` for the principal, the live
+   `max_active` and `capacity_units` (80 and 80) and the provider keys
+   (`anthropic`) that become `providers`, and the namespace's live
+   ResourceQuota (`swarm-tenant-quota`, through the swarm cluster's context
+   only) for `quota_pods` and `quota_cpu`; the verify run compares all four.
+   What it writes depends on the record it finds:
+
+   | the record | what the migration does |
+   |---|---|
+   | `requested`, `failed` or `denied` | **completed in place.** Its `workspace_id`, its `workspace_ids/` entry and its `request_id` are kept; `state` becomes `ready`, `migrated` `true`, `providers` and `limits` as read, `failure` null, `steps` empty; an earlier decision moves to `history` |
+   | none | created as a request creates one, with a **fresh** `workspace_id` and its `workspace_ids/` entry, `requested_via` `migration`, then the same fields |
+   | `ready` and `migrated` | **nothing is written**: a re-run is a no-op and asks nothing |
+   | `approved`, `applying`, `needs_owner`, or `ready` not migrated | refused, nothing written: a build may be making, or made, the same resources |
+
+   Both writes record `decision` `{by: "migration", verdict: "approved",
+   reason: "Terraform-era tenant moved by W9", at}` and one `admin_audit`
+   entry (`action` `migrate`, `target_workspace_id`, `by` `migration`) in the
+   same transaction. `ready_at` stays empty: the verify run writes it. The
+   `--apply` run writes only if the record is still in the state the dry run
+   read; otherwise it refuses and the transaction writes nothing.
+
+   **A request already exists (owner, 2026-10-09).** The owner requested a
+   workspace in the console on 2026-10-09, before this ran, so
+   `workspaces/u-bogdan` is `requested`, with a workspace id and its
+   `workspace_ids/` entry. The migration completes that record in place and
+   keeps its id; writing a fresh id, as this step first said, would have
+   orphaned the id the request, its index entry and Admin › People already
+   name. The id is not written here (step 5): the script prints it.
+
+   The verify run in step 4 reads this record, so it comes first.
+4. **`scripts/register-tenant.sh --workspace <w-id> --mode verify`**, with the id
+   step 3 printed (the existing request's), under the
+   call guard (§2.5): the expectation file from
+   `scripts/lib/workspace-guard.sh init --workspace-id <w-id>`, outside the
+   checkout and named by `SWARM_CALL_GUARD`, and `scripts/lib/guard-bin`
+   first on `PATH`. This is A1 and A9 only. A1 admits a `migrated` record
+   whatever its decision (the migration's names no admin), and the narrowed squat inspection allows the release
+   deployer's two Terraform-era bindings on it. A9 re-reads every object.
+5. **Date the result here**: the plan counts of steps 1 and 2, the record's
+   workspace id kept private (§1.1), and the verify run's outcome.
 
 **`ensure_tenant` stops creating personal tenants.** Once the gate is on
 (WD8), `tenant_for` no longer writes `tenants/u-*` on first sight for a human
@@ -1337,7 +1464,7 @@ phases. New files are named without their root.
 | W6 | 2 | **`register-tenant.sh --workspace`** (§4.1): the record read, the derived-id check, `--mode create`, `limits` and `verify`, A1–A9 with progress writes, **the act-as grant**, the narrowed squat inspection, the forge slot, the refusal to start without the guard; and **the build file** `scripts/cloudbuild/workspace-apply.yaml` (validate, install the guard, run) | `scripts/register-tenant.sh`, new `cloudbuild/workspace-apply.yaml` in scripts/, `tests/unit/scripts/` (new `test_register_tenant_workspace.py`) | W3 |
 | W7 | 2 | People and the approval flow in swarm-api: the admin list, approve, deny, retry, limits, loan, the Pub/Sub publish and the sweep route | `swarm_api/routes/people.py` (W2's new file, extended), new `swarm_api/publish_workspace.py`, `apps/swarm-api/swarm_api/routes/accounts.py` | W1, W2 |
 | W8 | 3 | the console: the checklist steps, the progress view, the Submit banners, Admin → People; the plugin: `sc setup`, `swarm_setup_workspace`, `/sc:setup`; the issue forms' "Where" list | `apps/swarm-ui/src/GitHubConnect.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/src/Submit.tsx`, `apps/swarm-ui/src/SubmitWorkflow.tsx`, `apps/swarm-ui/src/App.tsx`, new `People.tsx` in apps/swarm-ui/src, `apps/swarm-mcp/swarm_mcp/sc.py`, `apps/swarm-mcp/swarm_mcp/server.py`, `plugin/commands/setup.md`, `.github/ISSUE_TEMPLATE/` | W1, W7 |
-| W9 | 4 | **the `u-bogdan` migration**: the `removed` blocks in both layers, its removal from `dev.tfvars`, the record, and a `--mode verify` run; the release's plan must read 0 to add, 0 to change, 0 to destroy | `terraform/infra/removed.tf`, `terraform/bootstrap/removed.tf`, `terraform/environments/dev/dev.tfvars` | W4, W6 |
+| W9 | 4 | **the `u-bogdan` migration**: the `removed` blocks in both layers, its removal from `dev.tfvars`, the record, and a `--mode verify` run; the release's plan must read 0 to add, 0 to change, 0 to destroy | `terraform/infra/removed.tf`, `terraform/bootstrap/removed.tf`, `terraform/environments/dev/dev.tfvars`, `scripts/workspace-migrate-record.sh` | W4, W6 |
 | W10 | 5 | the first real approval end to end, then `WORKSPACE_GATE=on` (WD8); docs: multi-tenancy, offboarding runbook, onboarding, ci.md (the Cloud Build job and where its logs are), register-tenant.sh's header | `docs/multi-tenancy.md`, `docs/runbooks/tenant-offboarding.md`, `docs/onboarding.md`, `docs/ci.md` | W5, W8, W9 |
 | — | later | deprovisioning (§7), with its own guard mode | — | the owner's decision then |
 
@@ -1352,8 +1479,11 @@ phases. New files are named without their root.
   IAM plan waits in `dev-iam`. Custom roles follow
   `docs/runbooks/custom-roles-to-bootstrap.md`.
 * **W5** is an owner-run `kubernetes/apply.sh --policies --confirm`.
-* **W9** is an owner-run bootstrap apply of the `removed` block; the infra half
-  is a release whose plan he checks reads 0 to add, 0 to change, 0 to destroy.
+* **W9** is an owner-run bootstrap apply of the `removed` blocks; the infra
+  half is a release whose plan he checks reads 0 to add, 0 to change, 0 to
+  destroy for u-bogdan; then the record (`scripts/workspace-migrate-record.sh
+  u-bogdan --apply`) and a `--mode verify` run. §3.3 lists
+  the five steps in order (W9 built 2026-10-09, not yet applied).
 * **If W0 needs a Cloud Build private pool** to reach the cluster, creating it
   (and its cost) is his decision then.
 

@@ -25,7 +25,11 @@ whose index document exists is drawn again, so two people never share one.
 STATES (§1.2). `requested` (here), `approved`/`denied` (an admin, W7),
 `applying`, `needs_owner`, `failed` and `ready` (the job, W6). swarm-api NEVER
 writes `ready`: it is evidence the job's final check writes after reading
-back every object, and nothing a client sends can set it.
+back every object, and nothing a client sends can set it. The one exception is
+`Workspaces.migrate` (§3.3), which no route calls: an operator runs it through
+`scripts/workspace-migrate-record.sh` for a Terraform-era tenant whose
+resources already exist, and the `--mode verify` run that follows reads them
+back.
 
 THE GATE (§5) is behind `WORKSPACE_GATE`, which ships OFF (WD8). Off, it reads
 nothing and refuses nothing, `tenant_for` creates personal tenants on first
@@ -56,6 +60,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, tenant_id_for_user
 from swarm_common.models import Tenant
 
+from .admins import AUDIT_COLLECTION
 from .errors import (
     Conflict,
     NoClaudeAccount,
@@ -64,6 +69,7 @@ from .errors import (
     WorkspaceNotRequested,
     WorkspaceRequestTooSoon,
 )
+from .store import TENANTS
 from .validation import is_service_submitter
 
 log = logging.getLogger(__name__)
@@ -114,6 +120,28 @@ DEFAULT_LIMITS: Mapping[str, int] = {
 #: Draws of a workspace id before giving up. 16.7 million ids; a second draw
 #: is already rare, a sixteenth means something other than chance.
 MAX_ID_DRAWS = 16
+
+#: §3.3's migration: who its decision names, and why. Not an email, so no
+#: admin's address is invented for a decision no admin made.
+MIGRATION_BY = "migration"
+MIGRATION_REASON = "Terraform-era tenant moved by W9"
+#: `requested_via` of a record the migration creates: not one of VIAS, because
+#: no person asked for it.
+MIGRATION_VIA = "migration"
+#: States the migration completes IN PLACE, keeping the record's workspace id:
+#: a person may have asked for a workspace before their Terraform-era tenant
+#: moved (u-bogdan did, 2026-10-09: w-752763), and a fresh id would orphan the
+#: one their request, its index entry and any admin's view already name.
+#: Not approved, applying or needs_owner: a build may be about to make, or be
+#: making, the resources the tenant already has. Not ready unless migrated: the
+#: job made that one, and there is nothing to move.
+MIGRATABLE = frozenset({REQUESTED, FAILED, DENIED})
+#: The keys of `limits`, in the order §1.1 lists them.
+LIMIT_KEYS = ("max_active", "capacity_units", "quota_pods", "quota_cpu")
+#: What `migrate` did, or would do.
+MIGRATE_CREATE = "create"
+MIGRATE_UPDATE = "update"
+MIGRATE_NOTHING = "nothing"
 
 #: The Claude provider. A pool account is a Claude subscription
 #: (`quota_broker.accounts.Account.provider` defaults to it) and a provider
@@ -484,30 +512,9 @@ class Workspaces:
             data = snap.to_dict() if snap.exists else None
             state = state_of(data) if data is not None else None
             if data is None:
-                for _ in range(MAX_ID_DRAWS):
-                    workspace_id = self._new_id()
-                    id_ref = self._db.collection(WORKSPACE_IDS).document(workspace_id)
-                    if not _snapshot(txn.get(id_ref)).exists:
-                        break
-                else:
-                    raise Conflict("no free workspace id could be drawn; try again")
-                record = {
-                    "tenant_id": tenant_id,
-                    "workspace_id": workspace_id,
-                    "principal": principal,
-                    "state": REQUESTED,
-                    "request_id": str(uuid.uuid4()),
-                    "requested_at": now,
-                    "requested_via": via,
-                    "decision": None,
-                    "history": [],
-                    "limits": dict(DEFAULT_LIMITS),
-                    "run": None,
-                    "steps": {},
-                    "failure": None,
-                    "ready_at": None,
-                    "migrated": False,
-                }
+                id_ref = self._draw_id(txn)
+                record = self._new_record(tenant_id=tenant_id, workspace_id=id_ref.id,
+                                          principal=principal, now=now, via=via)
                 txn.set(id_ref, {"tenant_id": tenant_id})
                 txn.set(ref, record)
                 return 202, record
@@ -546,6 +553,183 @@ class Workspaces:
         log.info("workspace request workspace=%s state=%s status=%d via=%s",
                  record.get("workspace_id"), record.get("state"), status, via)
         return status, record
+
+    # -- the shape of a new record, shared by the request and the migration --
+
+    def _draw_id(self, txn: Any) -> Any:
+        """The ref of a `workspace_ids/` entry no record holds, read in `txn`.
+        A drawn id whose index document exists is drawn again (§1.3)."""
+        for _ in range(MAX_ID_DRAWS):
+            id_ref = self._db.collection(WORKSPACE_IDS).document(self._new_id())
+            if not _snapshot(txn.get(id_ref)).exists:
+                return id_ref
+        raise Conflict("no free workspace id could be drawn; try again")
+
+    @staticmethod
+    def _new_record(*, tenant_id: str, workspace_id: str, principal: str,
+                    now: datetime, via: str) -> dict[str, Any]:
+        """§1.1's record as a request creates it, in `requested`."""
+        return {
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "principal": principal,
+            "state": REQUESTED,
+            "request_id": str(uuid.uuid4()),
+            "requested_at": now,
+            "requested_via": via,
+            "decision": None,
+            "history": [],
+            "limits": dict(DEFAULT_LIMITS),
+            "run": None,
+            "steps": {},
+            "failure": None,
+            "ready_at": None,
+            "migrated": False,
+        }
+
+    # -- the migration of a Terraform-era tenant (§3.3) -----------------------
+
+    def migrate(
+        self,
+        tenant_id: str,
+        *,
+        quota_pods: int,
+        quota_cpu: int,
+        apply: bool,
+        expect: str | None = None,
+    ) -> dict[str, Any]:
+        """Make `workspaces/{tenant_id}` the `ready`, `migrated` record of a
+        personal tenant whose resources Terraform made (§3.3). One transaction.
+
+        Read from `tenants/{tenant_id}`, which must exist and be a personal
+        tenant whose principal derives to `tenant_id`: the principal, the
+        tenant's live `max_active` and `capacity_units`, and its provider
+        keys (`credentials`) as `providers`. `quota_pods` and `quota_cpu` are
+        the namespace's live ResourceQuota, which the caller read: the verify
+        run compares the record's limits with both.
+
+        * No record: created as a request would create it, with a FRESH
+          workspace id and its `workspace_ids/` entry, then made ready.
+        * `requested`, `failed` or `denied`: completed IN PLACE. The
+          workspace id, its index entry and the request id are kept; an
+          earlier decision moves to `history`.
+        * `ready` and `migrated`: nothing is written (a re-run).
+        * anything else is refused, and nothing is written.
+
+        Both writes record `decision` {by: MIGRATION_BY, verdict: approved,
+        reason: MIGRATION_REASON} and one `admin_audit` entry, in the same
+        transaction. `ready_at` stays empty: the verify run writes it once it
+        has read every object back (§4.2, A9).
+
+        `apply=False` reads and writes nothing; it returns what `apply=True`
+        would write (a created record's id is drawn again then). `expect` is
+        the action a dry run reported: if the record moved since, the write
+        is refused rather than doing something nobody saw.
+
+        Returns {action, workspace_id, before, after}. No route calls this."""
+        if expect is not None and expect not in (MIGRATE_CREATE, MIGRATE_UPDATE, MIGRATE_NOTHING):
+            raise ValueError(f"expect must be one of create, update, nothing; got {expect!r}")
+        quota = {"quota_pods": quota_pods, "quota_cpu": quota_cpu}
+        for name, value in quota.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a whole number above 0, got {value!r}")
+        ref = self._db.collection(WORKSPACES).document(tenant_id)
+        tenant_ref = self._db.collection(TENANTS).document(tenant_id)
+        now = self._now()
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, Any]:
+            snap = _snapshot(txn.get(ref))
+            before = snap.to_dict() if snap.exists else None
+            state = state_of(before) if before is not None else None
+            if before is not None and state == READY and before.get("migrated") is True:
+                action = MIGRATE_NOTHING
+            elif before is None:
+                action = MIGRATE_CREATE
+            elif state in MIGRATABLE:
+                action = MIGRATE_UPDATE
+            else:
+                raise Conflict(
+                    f"workspace {before.get('workspace_id')} is {state}"
+                    + ("" if state != READY else " and was not migrated")
+                    + "; only a requested, failed or denied record, or none, is migrated",
+                    detail={"workspace_id": before.get("workspace_id"), "state": state})
+            if expect is not None and action != expect:
+                raise Conflict(
+                    f"the record changed since the dry run: it said {expect}, it is now {action}; "
+                    "nothing was written. Run it again and read the new plan.",
+                    detail={"workspace_id": (before or {}).get("workspace_id")})
+            if action == MIGRATE_NOTHING:
+                return {"action": action, "workspace_id": before.get("workspace_id"),
+                        "before": before, "after": before}
+
+            tenant_snap = _snapshot(txn.get(tenant_ref))
+            tenant = tenant_snap.to_dict() if tenant_snap.exists else None
+            if not tenant:
+                raise Conflict(f"tenants/{tenant_id} does not exist; there is nothing to migrate")
+            principal = str(tenant.get("principal") or "").strip().lower()
+            if tenant.get("kind") != "user" or not principal \
+                    or personal_tenant_id(principal) != tenant_id:
+                raise Conflict(f"tenants/{tenant_id} is not a personal tenant whose principal "
+                               "derives to its id; only those are migrated")
+            if before is not None and \
+                    str(before.get("principal") or "").strip().lower() != principal:
+                raise Conflict("the workspace record and the tenant name different principals",
+                               detail={"workspace_id": before.get("workspace_id")})
+            limits = {"max_active": tenant.get("max_active"),
+                      "capacity_units": tenant.get("capacity_units"), **quota}
+            for name in LIMIT_KEYS:
+                value = limits[name]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise Conflict(f"tenants/{tenant_id} has no whole {name} above 0 "
+                                   f"(read {value!r})")
+
+            id_ref = None
+            if before is None:
+                id_ref = self._draw_id(txn)
+                base = self._new_record(tenant_id=tenant_id, workspace_id=id_ref.id,
+                                        principal=principal, now=now, via=MIGRATION_VIA)
+            else:
+                base = before
+            history = list(base.get("history") or [])
+            if base.get("decision"):
+                history.append({"request_id": base.get("request_id"),
+                                "requested_at": base.get("requested_at"),
+                                "decision": base.get("decision")})
+            patch: dict[str, Any] = {
+                "state": READY,
+                "migrated": True,
+                "providers": sorted({str(p) for p in (tenant.get("credentials") or [])}),
+                "limits": {name: limits[name] for name in LIMIT_KEYS},
+                "decision": {"by": MIGRATION_BY, "at": now, "verdict": APPROVED,
+                             "reason": MIGRATION_REASON},
+                "history": history,
+                "failure": None,
+                "steps": {},
+                "ready_at": None,
+            }
+            after = {**base, **patch}
+            if apply:
+                if id_ref is not None:
+                    txn.set(id_ref, {"tenant_id": tenant_id})
+                    txn.set(ref, after)
+                else:
+                    txn.update(ref, patch)
+                audit = self._db.collection(AUDIT_COLLECTION).document()
+                txn.set(audit, {"action": "migrate",
+                                "target_workspace_id": after["workspace_id"],
+                                "by": MIGRATION_BY, "at": now,
+                                "detail": {"from_state": state or NONE,
+                                           "request_id": after.get("request_id"),
+                                           "reason": MIGRATION_REASON}})
+            return {"action": action, "workspace_id": after["workspace_id"],
+                    "before": before, "after": after}
+
+        result = _apply(transaction)
+        log.info("workspace migration workspace=%s action=%s applied=%s",
+                 result["workspace_id"], result["action"], apply)
+        return result
 
     # -- the loan request (§6.1) ---------------------------------------------
 
