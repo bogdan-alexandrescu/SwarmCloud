@@ -378,9 +378,9 @@ locals {
     [
       # The five custom roles terraform/infra grants at the project level, by
       # the names both roots read from terraform/modules/custom_role_ids -- so
-      # a custom_role_suffix there moves this list with the grants. In the
-      # order they were listed before, so the rendered condition changes only
-      # by the role it drops. swarmBucketMetadataReader and swarmImagePuller
+      # a custom_role_suffix there moves this list with the grants. The order
+      # here renders nothing: the chunks below are cut from the sorted list
+      # (#227 box 26). swarmBucketMetadataReader and swarmImagePuller
       # are granted on a bucket and a repository, never on the project, and
       # swarmSecretLister is granted by this root; none of the three is here.
       for key in [
@@ -401,7 +401,9 @@ locals {
   }
 
   # roles/resourcemanager.projectIamAdmin's hasOnly() would need every one of
-  # the fifteen deployer_grantable_project_roles in one list, and GCP's linter
+  # the 14 deployer_grantable_project_roles in one list (15 until #69's owner
+  # decision of 2026-09-25, which #150 delivered, took swarmSecretLister off --
+  # still over the limit either way), and GCP's linter
   # (LintValidationUnits/ListLengthCheck) refuses a hasOnly() list over 10
   # elements -- found only at apply, since the mock provider never lints (#275,
   # apply 2026-09-28: "The list argument to hasOnly() cannot have more than 10
@@ -427,7 +429,17 @@ locals {
   # because the chunks partition deployer_grantable_project_roles exactly,
   # with nothing added and nothing left out (proven in
   # tests/terraform/deployer_iam.tftest.hcl).
-  deployer_project_iam_admin_chunks = chunklist(local.deployer_grantable_project_roles, 10)
+  #
+  # SORTED before it is chunked (#227 box 26). A condition is part of a
+  # binding's identity, so a chunk whose list changes is replaced. Cut from the
+  # list as written, reordering it moved roles between chunks and replaced
+  # them all for no change in what CI may grant; sorted, a reorder renders the
+  # same conditions and plans nothing. An added or removed role still shifts
+  # the chunks after it -- that replacement is made safe by the resource's
+  # create_before_destroy, below, not avoided. Switching to the sorted order
+  # replaces both chunks once, at the owner's next bootstrap apply, new grant
+  # first.
+  deployer_project_iam_admin_chunks = chunklist(sort(local.deployer_grantable_project_roles), 10)
 
   deployer_project_iam_admin_conditions = {
     for i, chunk in local.deployer_project_iam_admin_chunks :
@@ -527,6 +539,21 @@ resource "google_project_iam_member" "deployer_project_iam_admin" {
     title       = "only the roles terraform infra grants (chunk ${tonumber(each.key) + 1} of ${length(local.deployer_project_iam_admin_conditions)})"
     description = "Adds or removes members of only the roles in this chunk; all chunks together are every role terraform/infra grants, so CI cannot self-grant owner, editor or another team's roles. Chunked because hasOnly() refuses a list over 10 roles (#275)."
     expression  = each.value
+  }
+
+  # A changed role list changes a chunk's condition, and a condition is part of
+  # the binding's identity, so the chunk is replaced. Destroy-then-create left
+  # a window in which CI held no grant for that chunk's roles, and a release
+  # applying terraform/infra in that window 403s on its own next grant (#227
+  # box 26, PR #277 security review). The new binding is made first: IAM keeps
+  # same-role, same-member bindings apart by their condition, so the two exist
+  # side by side until the old one goes. A chunk is only replaced when its
+  # expression changed, so old and new are never the same binding. While they
+  # coexist the role and member carry up to twice as many conditioned bindings,
+  # which is why tests/terraform/deployer_iam.tftest.hcl holds the chunk count
+  # to half of IAM's 20.
+  lifecycle {
+    create_before_destroy = true
   }
 }
 

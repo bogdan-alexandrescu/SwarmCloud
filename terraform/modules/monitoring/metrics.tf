@@ -346,15 +346,76 @@ resource "google_logging_metric" "dispatch_failures" {
 # step's spec are counted by `spec_upstream_invalid` below, keyed on the reason
 # prefix: MERGE_REFUSED and VERDICT_REFUSED have other, unrelated causes, so
 # this metric must not match them.
+#
+# WHO CAN WRITE THE LINE (#346 box 51, #354 security review). The agent runs
+# beside the worker as the same uid. Its own stdout is a pipe into a file, but
+# tini -- PID 1, whose stdout and stderr ARE the container's log -- is
+# dumpable, so the agent can open /proc/1/fd/1 and write a JSON line carrying
+# this message, this end cause and any `labels.tenant_id` it likes. No
+# jsonPayload field is the worker's alone. What no process in the container
+# can set is the entry's monitored resource: Cloud Run and GKE fill it in. So
+# both refusal metrics (this and spec_upstream_invalid below):
+#
+#   * count only a WORKER container's line (local.spec_refusal_source): a
+#     Cloud Run Job named `<name_prefix>-job-*` (scheduler.dispatch
+#     `job_id_for`, terraform/infra/locals.tf), or the container named
+#     `worker` in this platform's own cluster. Before, any Cloud Run Job or
+#     any pod in the shared project -- the other team's agents-staging
+#     cluster included -- could page CRITICAL with one line;
+#   * name the tenant from that resource, never the payload: `tenant_id` from
+#     the GKE namespace (`swarm-tenant-<tenant>`, dispatch `namespace_for`),
+#     `job_name` from the Cloud Run Job (`<name_prefix>-job-<tenant>-<profile>`,
+#     one Job per tenant and profile). An agent can no longer page in another
+#     tenant's name.
+#
+# WHAT THIS DOES NOT CLOSE: an agent can still write the line into its OWN
+# worker container's log, and that pages -- under its own tenant's job or
+# namespace, which is the attribution the responder starts from. Only a write
+# path the agent cannot reach (a non-dumpable PID 1, or the worker logging
+# through a channel the agent holds no credential for) separates the two, and
+# that is the worker's image, not this filter.
 # ---------------------------------------------------------------------------
+locals {
+  spec_refusal_cluster = coalesce(var.gke_cluster_name, "${var.name_prefix}-autopilot")
+
+  spec_refusal_source = join(" OR ", [
+    "(resource.type=\"cloud_run_job\" AND resource.labels.job_name=~\"^${var.name_prefix}-job-\")",
+    "(resource.type=\"k8s_container\" AND resource.labels.cluster_name=\"${local.spec_refusal_cluster}\" AND resource.labels.container_name=\"worker\")",
+  ])
+
+  # The resource's labels, not the payload's. On Cloud Run tenant_id reads
+  # empty and job_name says which tenant; on GKE the reverse.
+  spec_refusal_identity_extractors = {
+    tenant_id = "REGEXP_EXTRACT(resource.labels.namespace_name, \"^${var.name_prefix}-tenant-(.+)$\")"
+    job_name  = "EXTRACT(resource.labels.job_name)"
+  }
+
+  # Declared after tenant_id, never instead of it: a log-based metric's
+  # existing label is kept, and only added to.
+  spec_refusal_job_label = {
+    key         = "job_name"
+    description = "The worker's Cloud Run Job, <name_prefix>-job-<tenant>-<profile>; empty for a GKE worker, whose tenant is tenant_id."
+  }
+}
+
 resource "google_logging_metric" "spec_signature_invalid" {
+  # -v2 and create_before_destroy (2026-10-10): adding the job_name label to the
+  # descriptor forces a replacement, and GCP refuses to delete a metric an alert
+  # policy still uses ("Cannot delete metric ... still used"), which failed
+  # release 38029688180's apply. A new name lets the new metric exist first, the
+  # alert move to it, and only then the old one be deleted. The next descriptor
+  # change needs a new suffix for the same reason.
+  lifecycle {
+    create_before_destroy = true
+  }
+
   project = var.project_id
-  name    = "${var.name_prefix}/spec-signature-invalid"
+  name    = "${var.name_prefix}/spec-signature-invalid-v2"
 
   description = "A worker refused to run a task whose step spec did not verify (end cause spec_signature_invalid). Every occurrence is an attack on a parked step or a platform bug."
 
   filter = join(" AND ", [
-    "resource.type=(\"cloud_run_job\" OR \"k8s_container\")",
+    "(${local.spec_refusal_source})",
     "jsonPayload.message=\"spec signature invalid: refusing to run this task\"",
     "jsonPayload.end_cause=\"spec_signature_invalid\"",
   ])
@@ -369,6 +430,12 @@ resource "google_logging_metric" "spec_signature_invalid" {
       value_type = "STRING"
     }
 
+    labels {
+      key         = local.spec_refusal_job_label.key
+      value_type  = "STRING"
+      description = local.spec_refusal_job_label.description
+    }
+
     # unsigned, unknown_format, foreign_key_version, not_canonical,
     # signature_mismatch, environment_mismatch -- a short, fixed vocabulary
     # (agent_worker.specverify, #353), so a bounded label.
@@ -378,10 +445,9 @@ resource "google_logging_metric" "spec_signature_invalid" {
     }
   }
 
-  label_extractors = {
-    tenant_id = "EXTRACT(jsonPayload.labels.tenant_id)"
-    reason    = "EXTRACT(jsonPayload.spec_check.reason)"
-  }
+  label_extractors = merge(local.spec_refusal_identity_extractors, {
+    reason = "EXTRACT(jsonPayload.spec_check.reason)"
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -410,13 +476,23 @@ resource "google_logging_metric" "spec_signature_invalid" {
 # unbounded, and a label carrying it would mint a time series per task.
 # ---------------------------------------------------------------------------
 resource "google_logging_metric" "spec_upstream_invalid" {
+  # -v2 and create_before_destroy (2026-10-10): adding the job_name label to the
+  # descriptor forces a replacement, and GCP refuses to delete a metric an alert
+  # policy still uses ("Cannot delete metric ... still used"), which failed
+  # release 38029688180's apply. A new name lets the new metric exist first, the
+  # alert move to it, and only then the old one be deleted. The next descriptor
+  # change needs a new suffix for the same reason.
+  lifecycle {
+    create_before_destroy = true
+  }
+
   project = var.project_id
-  name    = "${var.name_prefix}/spec-upstream-invalid"
+  name    = "${var.name_prefix}/spec-upstream-invalid-v2"
 
   description = "A merge or post-verdict worker refused because an upstream step's spec did not verify (end cause merge_refused or verdict_refused, spec_check.reason upstream:...). Every occurrence is an attack on the chain or a platform bug."
 
   filter = join(" AND ", [
-    "resource.type=(\"cloud_run_job\" OR \"k8s_container\")",
+    "(${local.spec_refusal_source})",
     "jsonPayload.message=\"upstream spec signature invalid: refusing this worker action\"",
     "jsonPayload.end_cause=(\"merge_refused\" OR \"verdict_refused\")",
     "jsonPayload.spec_check.reason=~\"^upstream:\"",
@@ -432,6 +508,12 @@ resource "google_logging_metric" "spec_upstream_invalid" {
       value_type = "STRING"
     }
 
+    labels {
+      key         = local.spec_refusal_job_label.key
+      value_type  = "STRING"
+      description = local.spec_refusal_job_label.description
+    }
+
     # merge_refused or verdict_refused: which worker action refused.
     labels {
       key        = "end_cause"
@@ -445,11 +527,10 @@ resource "google_logging_metric" "spec_upstream_invalid" {
     }
   }
 
-  label_extractors = {
-    tenant_id = "EXTRACT(jsonPayload.labels.tenant_id)"
+  label_extractors = merge(local.spec_refusal_identity_extractors, {
     end_cause = "EXTRACT(jsonPayload.end_cause)"
     reason    = "REGEXP_EXTRACT(jsonPayload.spec_check.reason, \"^upstream:[^:]*:(.*)$\")"
-  }
+  })
 }
 
 # ---------------------------------------------------------------------------
@@ -512,5 +593,159 @@ resource "google_logging_metric" "worker_action_ended" {
   label_extractors = {
     tenant_id = "EXTRACT(jsonPayload.labels.tenant_id)"
     end_cause = "EXTRACT(jsonPayload.end_cause)"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# Schedules that need a person (docs/schedules.md §4.9, lane S4).
+#
+# Both are swarm-api lines, counted only from swarm-api's own Cloud Run
+# service in this region (local.schedule_log_source): the project is shared,
+# and a prefix match would count another team's services.
+#
+# schedule_auto_paused. THE EMITTER: swarm_api.schedulefire `Firer.pause`
+# (lane S2) logs, at WARNING, `schedule <schedule_id> auto_paused: <CODE>`
+# once per schedule it actually moves -- a person's pause is never overwritten,
+# so a schedule already paused writes nothing. CODE is schedulefire's short,
+# fixed vocabulary (CONSECUTIVE_FAILURES, RUN_OVER_BUDGET, ...), so it is a
+# bounded label. A type that disappears moves its schedules to `disabled`
+# instead, on the same line with `disabled` in place of `auto_paused`; that is
+# a deploy's doing, not a tenant's, and is not counted here.
+#
+# §4.9 asks for the count per tenant. The line names the schedule and not its
+# tenant, and the schedule id is unbounded, so neither is a label: the alert
+# says which code, and the responder reads the tenant from the schedule (Admin
+# › Schedules). A tenant label needs `tenant_id` on the line, which is S2's
+# file (reported in lane S4's pull request).
+#
+# schedule_needs_owner. THE EMITTER this metric expects (lane S5, §4.4 and
+# §4.5): when a hold that needs the owner is created, swarm-api logs, at
+# WARNING, `schedule hold needs the owner` with `tenant_id` and `approval_id`
+# passed through `extra=`, which swarm_common.logging_setup writes at the top
+# of the payload. Nothing writes it until S5 is built; a metric with no writer
+# reads zero, which is what a platform with no holds should read.
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# An approved personal workspace is waiting and nothing is building it
+# (docs/workspaces.md §2.2, #847).
+#
+# WHY THIS EXISTS. On 2026-10-09 the owner's own workspace request was
+# approved and then sat at `approved` for ~19 hours with no dispatch, no
+# failure and nothing to say so: publishing was off, and no job called the
+# dispatch sweep. The setup page showed it as in progress the whole time.
+#
+# THE EMITTER: swarm-api's dispatch sweep (POST /v1/admin/workspaces/sweep,
+# called every 10 minutes by modules/scheduler `workspace_sweep`) logs ONE
+# structured entry per stuck record per hour, `jsonPayload.event =
+# "workspace_stuck"`, with workspace_id, reason, approved_at and
+# minutes_waiting. A record is stuck when it is `approved` and publishing is
+# off (reason publishing_off), or it has had no dispatch attempt for more than
+# 15 minutes (never_dispatched), or its last dispatch is more than 30 minutes
+# old and no build has claimed it (dispatched_unclaimed). The sweep runs that
+# check even with publishing off, so the line exists in exactly the state of
+# 2026-10-09.
+#
+# Only swarm-api, by service name and region: the project is shared. `reason`
+# is a label (three values); workspace_id is not -- it is read from the line,
+# and it is opaque by design, so the line names nobody.
+# ---------------------------------------------------------------------------
+locals {
+  api_services = coalescelist(
+    [for s in var.service_names : s if endswith(s, "-api")],
+    ["${var.name_prefix}-api"],
+  )
+
+  # Logging query syntax, not Monitoring's: `field=(a OR b)`, not one_of().
+  schedule_log_source = join(" AND ", [
+    "resource.type=\"cloud_run_revision\"",
+    "resource.labels.service_name=(${join(" OR ", [for s in local.api_services : "\"${s}\""])})",
+    "resource.labels.location=\"${var.region}\"",
+  ])
+}
+
+resource "google_logging_metric" "schedule_auto_paused" {
+  project = var.project_id
+  name    = "${var.name_prefix}/schedule-auto-paused"
+
+  description = "The schedule tick auto-paused a schedule (docs/schedules.md §1.3): it fires nothing until a member resumes it. Labelled by the pause code."
+
+  filter = join(" AND ", [
+    local.schedule_log_source,
+    "jsonPayload.logger=\"swarm_api.schedulefire\"",
+    "jsonPayload.message=~\"^schedule \\\\S+ auto_paused: \"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "code"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    code = "REGEXP_EXTRACT(jsonPayload.message, \"auto_paused: (\\\\S+)\")"
+  }
+}
+
+resource "google_logging_metric" "schedule_needs_owner" {
+  project = var.project_id
+  name    = "${var.name_prefix}/schedule-needs-owner"
+
+  description = "A scheduled run met a hard stop that only the owner may lift (docs/schedules.md §4.4). Labelled by tenant."
+
+  filter = join(" AND ", [
+    local.schedule_log_source,
+    "jsonPayload.message=\"schedule hold needs the owner\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "tenant_id"
+      value_type = "STRING"
+    }
+  }
+
+  # An `extra=` field, so top level, not under a bound `labels` object.
+  label_extractors = {
+    tenant_id = "EXTRACT(jsonPayload.tenant_id)"
+  }
+}
+
+resource "google_logging_metric" "workspace_stuck" {
+  project = var.project_id
+  name    = "${var.name_prefix}/workspace-stuck"
+
+  description = "An approved personal workspace is waiting with nothing building it: swarm-api's dispatch sweep logged workspace_stuck (publishing_off, never_dispatched or dispatched_unclaimed)."
+
+  # Logging query syntax, not Monitoring's: `field=(a OR b)`, not one_of().
+  filter = join(" AND ", [
+    "resource.type=\"cloud_run_revision\"",
+    "resource.labels.service_name=(${join(" OR ", [for s in local.api_services : "\"${s}\""])})",
+    "resource.labels.location=\"${var.region}\"",
+    "jsonPayload.event=\"workspace_stuck\"",
+  ])
+
+  metric_descriptor {
+    metric_kind = "DELTA"
+    value_type  = "INT64"
+    unit        = "1"
+
+    labels {
+      key        = "reason"
+      value_type = "STRING"
+    }
+  }
+
+  label_extractors = {
+    reason = "EXTRACT(jsonPayload.reason)"
   }
 }

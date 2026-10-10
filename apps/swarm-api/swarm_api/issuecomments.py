@@ -347,7 +347,44 @@ def status_phase(run: IssueRun) -> str:
         return "failed"
     if run.state == RunState.REJECTED:
         return "plan rejected"
+    if run.state == RunState.NOT_READY:
+        return "not ready"
     return "cancelled"
+
+
+#: What a NOT_READY verdict's `kind` says on the issue.
+_NOT_READY_KIND_WORDS = {
+    "already_done": "already done on main",
+    "owner_decision": "needs an owner decision",
+    "blocked": "blocked by other work",
+    "too_vague": "too vague to plan",
+    "security_deferred": "deferred security work",
+    "epic": "an epic",
+    "other": "not ready",
+}
+
+
+def _not_ready_lines(verdict: dict, literals: Sequence[str]) -> list[str]:
+    """The planner's reason and needs. Agent text: neutralised like a plan's,
+    so it pings nobody and closes nothing."""
+    kind = _NOT_READY_KIND_WORDS.get(str(verdict.get("kind") or ""), "")
+    out = []
+    if kind:
+        out.append(f"- **Verdict:** {kind}")
+    out += [
+        "",
+        "**Why:** " + neutral(str(verdict.get("reason") or ""), MAX_LINE_CHARS * 4,
+                              literals=literals, one_line=True),
+    ]
+    needs = [str(n) for n in verdict.get("needs") or []]
+    if needs:
+        out += ["", "**Needs:**"]
+        out += [f"- {neutral(n, MAX_LINE_CHARS, literals=literals, one_line=True)}" for n in needs]
+    out += [
+        "",
+        "_The issue is planned again only after it is edited or commented on._",
+    ]
+    return out
 
 
 def render_status_comment(
@@ -389,6 +426,14 @@ def render_status_comment(
         out.append(f"- **CI fix round:** {run.ci_fix_round} of {run.fix_rounds}")
     if run.state == RunState.PLANNED and run.plan_digest:
         out.append(f"- **Plan:** revision {run.plan_revision}, `{run.plan_digest}`")
+    if run.state == RunState.PLANNED and run.hold:
+        out.append(
+            "- **Waiting:** `" + neutral(run.hold, 120, literals=literals, one_line=True)
+            .replace("`", "'") + "` -- another live run's plan edits the same files; "
+            "this one is approved once that run ends"
+        )
+    if run.state == RunState.NOT_READY and run.not_ready:
+        out += _not_ready_lines(run.not_ready, literals)
     if run.error and run.state in (RunState.FAILED, RunState.CANCELLED):
         out += [
             "",

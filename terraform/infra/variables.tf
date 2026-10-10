@@ -366,6 +366,24 @@ variable "tenants" {
     )) == 0
     error_message = "a service account that is a tenant's principal already has a tenant; listing it under another would give it two."
   }
+
+  # A PERSON'S WORKSPACE IS NOT A TERRAFORM TENANT (docs/workspaces.md §3.2,
+  # rule 3; owner decision WD3, 2026-10-08). Personal workspaces are made by
+  # the workspace job and live outside Terraform state, so a plan can never
+  # change or destroy one; a person in this map would be in state, and in a
+  # public tfvars file besides (§2.6). So a `kind = "user"` tenant must be a
+  # SERVICE account's -- swarm-verify's u-sw-c90291 is the one there is.
+  #
+  # u-bogdan is the one exception, and only until lane W9 moves it out of this
+  # map with `removed` blocks (§3.3); W9 deletes it from the list below in the
+  # same change, and from then on the list is empty.
+  validation {
+    condition = alltrue([
+      for t, v in var.tenants :
+      v.kind != "user" || endswith(lower(v.principal), ".iam.gserviceaccount.com") || contains(["u-bogdan"], t)
+    ])
+    error_message = "a `kind = \"user\"` tenant whose principal is a person is a personal workspace, and personal workspaces are made by the workspace job, never by Terraform (docs/workspaces.md §3.2). Ask for it in the console's setup checklist; only a service account's tenant belongs here."
+  }
 }
 
 variable "enable_safety_tick_alert" {
@@ -805,6 +823,52 @@ variable "enable_quota_refresh" {
   description = "Create the Cloud Scheduler tick that recomputes provider quota state and adaptive pool targets."
   type        = bool
   default     = true
+}
+
+variable "enable_issue_sweep" {
+  description = <<-EOT
+    swarm-api's SWEEP_ENABLED: whether POST /v1/admin/issues/sweep -- the
+    per-tenant issue_sweep Cloud Scheduler job, every 30 minutes -- may start
+    issue runs at all (docs/issue-runs.md "Sweeper"). OFF by default, by the
+    new-refusals-ship-off rule: a swept run auto-approves its plan and
+    auto-merges its pull request. A tenant is swept only when this AND its own
+    `issue_sweep.enabled` (PUT /v1/admin/tenants/<id>/issue-sweep) are on.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "repository_grants_enforced" {
+  description = <<-EOT
+    swarm-api's REPOSITORY_GRANTS_ENFORCED (#780 D4, docs/onboarding.md):
+    whether a PERSON's task on a GitHub repository they have not chosen under
+    Access is refused (403 REPOSITORY_NOT_GRANTED). While off, such a task runs
+    with the tenant token, `git`, as before #780. A service-account submission
+    (repository indexing, schedules, the release's acceptance suite) keeps the
+    tenant token either way and says so ("tenant token, service submission").
+    OFF by default, as swarm_api.settings is: on, it refuses every task of every
+    person who has not connected GitHub, so an environment turns it on only once
+    its people can connect (a registered GitHub App, var.enable_github_app).
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "workspace_apply_publish" {
+  description = <<-EOT
+    swarm-api's WORKSPACE_APPLY_PUBLISH: whether approving a personal
+    workspace (and its dispatch sweep) publishes the workspace id to the
+    swarm-workspace-apply topic, which starts the workspace job's Cloud Build
+    trigger (docs/workspaces.md §2.1-2.2). OFF by default because the topic
+    and the trigger exist only after the owner's bootstrap apply with
+    enable_workspace_deployer = true (§10): publishing to a topic that does
+    not exist records publish_failed on every sweep. Turn it on in the same
+    release as that apply. Off, nothing is silent: the swarm-workspace-sweep
+    job still runs, and every approved record is logged as workspace_stuck
+    (reason publishing_off), which pages through the workspace-stuck alert.
+  EOT
+  type        = bool
+  default     = false
 }
 
 variable "manage_project_services" {

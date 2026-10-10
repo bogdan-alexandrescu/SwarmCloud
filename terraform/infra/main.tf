@@ -487,7 +487,13 @@ module "scheduler" {
   # the module's rollup-sweeper account. The audience is the service URL, the
   # same value verify.tf gives its own direct caller of swarm-api. The same
   # tenants get the #454 issue-run tick (`issue_run_advance`), as the same
-  # account, on var.issue_run_advance_schedule's default of every minute.
+  # account, on var.issue_run_advance_schedule's default of every minute,
+  # and the issue sweeper (`issue_sweep`), as the same account, on
+  # var.issue_sweep_schedule's default of :07 and :37 -- which starts nothing
+  # until var.enable_issue_sweep (swarm-api's SWEEP_ENABLED) and the tenant's
+  # own switch are on -- and the stranded-PR sweep (`stranded_pr_sweep`, part
+  # of #295), as the same account, at :19 and :49, which only reads, stores and
+  # logs `pr_stranded` (redrive false; the monitoring module alerts on it).
   api_endpoint      = module.cloud_run.service_urls["swarm-api"]
   rollup_tenant_ids = toset(keys(var.tenants))
 
@@ -497,6 +503,12 @@ module "scheduler" {
 
   # #748: known at plan time, unlike api_endpoint, so it can gate a count.
   enable_task_finished_push = true
+
+  # #847: swarm-workspace-sweep, the caller of swarm-api's personal-workspace
+  # dispatch sweep and so the stuck-workspace detector. A literal, never a
+  # tfvars variable: it runs even while var.workspace_apply_publish is off,
+  # which is exactly when an approved workspace waits (2026-10-09).
+  enable_workspace_sweep = true
 
   # The API publishes a wake message on submission; the reconciler republishes
   # when it returns reclaimed work to READY.
@@ -558,6 +570,21 @@ resource "google_cloud_run_v2_service_iam_member" "rollup_sweeper_invokes_api" {
   member = "serviceAccount:${module.scheduler.rollup_sweeper_email}"
 }
 
+# The schedule tick (docs/schedules.md §2.1, owner decision SD10) calls
+# swarm-api directly too, as its own account, so the edge must let it through
+# before the app's SCHEDULE_TICK_ROUTES check is reached -- the same reason,
+# and the same grant, as rollup_sweeper_invokes_api above. run.invoker on this
+# one service is the account's only grant (held by
+# tests/terraform/schedule_tick_identity.tftest.hcl); the route allow-list
+# narrows it to POST /v1/admin/schedules/tick from there.
+resource "google_cloud_run_v2_service_iam_member" "schedule_tick_invokes_api" {
+  project  = var.project_id
+  location = var.region
+  name     = [for k, _ in module.cloud_run.service_ids : k if k == "swarm-api"][0]
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${module.scheduler.schedule_tick_email}"
+}
+
 # The external front door: an ALB with IAP in front of swarm-api.
 #
 # Gated by a flag rather than by the presence of a hostname, for the reason the
@@ -594,6 +621,10 @@ module "monitoring" {
   dead_letter_subscription = "${module.scheduler.dead_letter_topic}-sub"
   safety_tick_job          = "${var.name_prefix}-scheduler-tick"
   enable_safety_tick_alert = var.enable_safety_tick_alert
+
+  # The same string gke_autopilot is given, named from configuration because
+  # that module is behind a `count` (as for workspace_deployer above).
+  gke_cluster_name = "${var.name_prefix}-autopilot"
 
   alert_emails                = var.alert_emails
   extra_notification_channels = var.extra_notification_channels

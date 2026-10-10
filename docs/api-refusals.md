@@ -86,7 +86,13 @@ Once a refusal has been on in every environment, a release may flip its
 
 `REPOSITORY_NOT_GRANTED` is behind `REPOSITORY_GRANTS_ENFORCED`, which is off
 by default and turned on in the onboarding migration step
-([onboarding.md](onboarding.md)). It isn't one of `SWITCHES`. Its off position
+([onboarding.md](onboarding.md) §3.5). Like a `REFUSAL_` switch, it is set
+from tfvars, not by hand: `var.repository_grants_enforced` in
+`terraform/environments/<env>/<env>.tfvars`, rendered into swarm-api's
+environment by `terraform/infra/locals.tf`. It is on in dev and off in prod,
+which registers no GitHub App, so nobody there could connect and be granted
+anything. It applies to a person's task only: a service submission keeps the
+tenant token either way. It isn't one of `SWITCHES`. Its off position
 doesn't let the request through unchanged; the task runs with the tenant
 token instead (`SubmissionService._resolve_forge`). So it keeps its own
 setting and sits in the established list.

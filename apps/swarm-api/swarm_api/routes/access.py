@@ -4,12 +4,20 @@
     GET    /v1/access                               connection, enabled owners, grants
     GET    /v1/access/orgs                          reachable owners, install_state, sso
     POST   /v1/access/orgs                          {owner}: enable an installed owner
-    DELETE /v1/access/orgs/{owner}                  disable it, and delete its grants
+    DELETE /v1/access/orgs/{owner}                  disable it, and delete its grants (or
+                                                    withdraw an install request)
+    POST   /v1/access/orgs/{owner}/install-request  record that the person asked {owner}'s
+                                                    owners to install the App: the owner
+                                                    shows ORG_APPROVAL_PENDING until GitHub
+                                                    lists the installation, re-checked on
+                                                    every read and by the 15-minute sweep
     GET    /v1/access/orgs/{owner}/repositories     ?page=N&q=text: one page, each with
                                                     registered, granted, mode
     PUT    /v1/access/grants/{repo_id}              {repository, mode}: grant read or write
     DELETE /v1/access/grants/{repo_id}              revoke the grant
-    POST   /v1/access/grants/{repo_id}/verify       {checks?}: clone, push, pull_request now
+    POST   /v1/access/grants/{repo_id}/verify       {checks?}: clone, push, pull_request now;
+                                                    push_test only when named (write grants):
+                                                    creates and deletes one branch (D6)
     GET    /v1/access/members                       admin: every member's connection and
                                                     grants in the caller's tenant
 
@@ -28,7 +36,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from swarm_common.models import Tenant
 
-from ..access import CHECKS, MAX_PAGES, MAX_QUERY_CHARS, AccessService
+from ..access import CHECKS, MAX_PAGES, MAX_QUERY_CHARS, OPT_IN_CHECKS, AccessService
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, tenant_scope
 from ..forgeapp import Caller
@@ -67,8 +75,10 @@ class GrantBody(_Body):
 
 
 class VerifyBody(_Body):
-    checks: list[Literal["clone", "push", "pull_request"]] | None = Field(
-        default=None, min_length=1, max_length=len(CHECKS))
+    # `push_test` is D6's opt-in write: never in the default set, so a body
+    # that does not name it reads only.
+    checks: list[Literal["clone", "push", "pull_request", "push_test"]] | None = Field(
+        default=None, min_length=1, max_length=len(CHECKS) + len(OPT_IN_CHECKS))
 
 
 @router.get("")
@@ -107,6 +117,17 @@ def disable_owner(
     service: AccessService = Depends(get_access),
 ) -> dict:
     return {**service.disable(_caller(auth, tenant_id), owner), "tenant_id": tenant_id}
+
+
+@router.post("/orgs/{owner}/install-request")
+def request_install(
+    owner: str,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    service: AccessService = Depends(get_access),
+) -> dict:
+    # No body: the owner is the path's, the person the verified identity's.
+    return {**service.request_install(_caller(auth, tenant_id), owner), "tenant_id": tenant_id}
 
 
 @router.get("/orgs/{owner}/repositories")

@@ -68,12 +68,18 @@ from ..issueruns import (
     failure_text,
     issue_read_from_preview,
     parse_edited_plan,
-    parse_plan,
+    parse_planner_output,
     plan_digest,
+    plan_files,
     planner_task,
+    auto_merge_default,
     refuse_auto_merge,
+    territory_overlap,
 )
 from ..issuesync import sync_issue
+from ..repositories import registered_merge_policy
+from ..plancontext import read_plan_context
+from ..reviewcontext import read_review_context
 from ..schemas import PlanApprove, PlanEdit, PlanReject, RunCreate
 from ..validation import parse_issue_ref
 
@@ -95,8 +101,10 @@ def _runs(ctx: AppContext) -> IssueRuns:
 # advancing a run from what its tasks say
 # --------------------------------------------------------------------------
 
-def _read_plan(ctx: AppContext, tenant_id: str, task_id: str) -> dict:
-    """`plan.json` out of the planner's artifacts, through the API's own masked reader."""
+def _read_plan(ctx: AppContext, tenant_id: str, task_id: str) -> tuple[str, dict]:
+    """`plan.json` out of the planner's artifacts, through the API's own masked
+    reader: `("plan", plan)`, or `("not_ready", verdict)` when the planner
+    found the issue not ready (`issueruns.parse_planner_output`)."""
     try:
         window = ctx.inspection.read_artifact(
             tenant_id, task_id, submitted_by=None, name=PLAN_FILE, limit_bytes=MAX_PLAN_BYTES
@@ -109,7 +117,7 @@ def _read_plan(ctx: AppContext, tenant_id: str, task_id: str) -> dict:
         raise InvalidPlan(f"the planner task's {PLAN_FILE} is not text")
     if window.get("truncated"):
         raise InvalidPlan(f"the planner task's {PLAN_FILE} is larger than {MAX_PLAN_BYTES} bytes")
-    return parse_plan(window.get("content") or "")
+    return parse_planner_output(window.get("content") or "")
 
 
 def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
@@ -123,7 +131,7 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
         )
     if task.state == TaskState.SUCCEEDED:
         try:
-            plan = _read_plan(ctx, tenant_id, task.id)
+            kind, plan = _read_plan(ctx, tenant_id, task.id)
         except InvalidPlan as refused:
             return runs.transition(
                 tenant_id, run.id, RunState.FAILED, by=SYSTEM,
@@ -133,6 +141,17 @@ def _from_planner(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
             # The bucket, not the plan: the next read tries again.
             log.warning("issue run %s: the planner's %s could not be read yet", run.id, PLAN_FILE)
             return run
+        if kind == "not_ready":
+            # No plan, so nothing to approve and nothing submitted: the run
+            # ends here holding nothing (invariant 1), and its one status
+            # comment carries the reason and the needs (`sync_issue`).
+            log.info(
+                "issue run %s tenant=%s: the planner found %s not ready (%s)",
+                run.id, tenant_id, run.issue.short, plan.get("kind") or "unspecified",
+            )
+            return runs.transition(
+                tenant_id, run.id, RunState.NOT_READY, by=SYSTEM, patch={"not_ready": plan},
+            )
         return runs.transition(
             tenant_id, run.id, RunState.PLANNED, by=SYSTEM,
             patch={"plan": plan, "plan_digest": plan_digest(plan), "plan_revision": 1},
@@ -208,7 +227,10 @@ def _approve(
         },
     )
     try:
-        submission = ctx.submissions.submit_workflow(auth, compile_plan(approved))
+        # The review's IMPACT block from the run's own tenant's index (lane
+        # KG6); None, and today's review prompt, when there is no v3 index.
+        review = read_review_context(ctx, tenant_id, approved)
+        submission = ctx.submissions.submit_workflow(auth, compile_plan(approved, review))
     except Exception as exc:
         reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
         runs.transition(
@@ -260,14 +282,17 @@ def run_owner_auth(ctx: AppContext, run: IssueRun) -> AuthContext:
     tenant = ctx.store.get_tenant(run.tenant_id)
     if tenant is None:
         raise NotFound(f"tenant {run.tenant_id!r} not found")
-    email = run.created_by
+    # A run the sweep created (`created_by: issue-sweep`) names the member it
+    # submits as in `on_behalf_of`: its repository registration's creator,
+    # held to exactly the same membership check below.
+    email = run.on_behalf_of or run.created_by
     if not ctx.authenticator.is_tenant_member(email, tenant):
         log.warning(
             "issue run %s tenant=%s: its creator is no longer a member; nothing submitted",
             run.id, run.tenant_id,
         )
         raise RunOwnerNotMember(
-            f"the run's creator {email or '(not recorded)'} is no longer a member of tenant "
+            f"the run's owner {email or '(not recorded)'} is no longer a member of tenant "
             f"{run.tenant_id!r}, so nothing more is submitted on their behalf"
         )
     return AuthContext(
@@ -301,6 +326,78 @@ def advance_run(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     return sync_issue(ctx, _advance_state(ctx, tenant_id, run))
 
 
+#: The most live runs the territory guard reads per check: the sweeper's cap
+#: is 8 per tenant, and people create runs too.
+TERRITORY_SCAN = 200
+
+#: Runs whose plan is being worked: always ahead of a run waiting for approval.
+_WORKING = frozenset({RunState.APPROVED, RunState.RUNNING, RunState.CHECKING, RunState.FIXING})
+
+
+def territory_conflict(
+    ctx: AppContext, tenant_id: str, run: IssueRun
+) -> tuple[IssueRun, list[str]] | None:
+    """The first live run AHEAD of `run` in its repository whose plan names a
+    file `run`'s plan does, and the shared paths; or None.
+
+    TWO ISSUES THAT EDIT ONE FILE ARE ONE LANE (CLAUDE.md): with up to eight
+    runs a tenant going at once (the sweeper's cap), two of them editing one
+    file is the conflict most likely to cost a pull request, so the second
+    waits for the first to end.
+
+    "Ahead" is a run being worked (APPROVED, RUNNING, CHECKING, FIXING), or
+    an OLDER `auto` run still PLANNED -- the order the tick approves them in.
+    That makes the oldest of any overlapping set free to go, so two waiting
+    runs never wait for each other. A PLANNED run waiting for a person is not
+    ahead: nobody knows when, or whether, it will be approved. A plan whose
+    steps name no files cannot be compared and holds nothing. Only the run's
+    own tenant's runs are read (invariant 9).
+    """
+    ours = plan_files(run.plan)
+    if not ours:
+        return None
+    rows, _ = _runs(ctx).live(tenant_id, limit=TERRITORY_SCAN)
+    repository = run.issue.repository.lower()
+    for other in rows:
+        if other.id == run.id or other.issue.repository.lower() != repository:
+            continue
+        ahead = other.state in _WORKING or (
+            other.state == RunState.PLANNED and other.plan_approval == "auto"
+            and (other.created_at, other.id) < (run.created_at, run.id)
+        )
+        if not ahead:
+            continue
+        shared = territory_overlap(ours, plan_files(other.plan))
+        if shared:
+            return other, shared
+    return None
+
+
+def _territory_hold(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun | None:
+    """Hold an auto run PLANNED while `territory_conflict` finds one, recording
+    why in `hold`; clear a hold that no longer applies. None: approve it now.
+
+    Re-checked on every tick (a PLANNED `auto` run is one the tick visits),
+    so the run is approved on the first tick after the run ahead of it ends.
+    """
+    found = territory_conflict(ctx, tenant_id, run)
+    runs = _runs(ctx)
+    if found is None:
+        if run.hold:
+            runs.patch(tenant_id, run.id, {"hold": None})
+            run.hold = None
+        return None
+    other, shared = found
+    reason = f"territory_overlap: {other.id}"
+    if run.hold != reason:
+        log.info(
+            "issue run %s tenant=%s waits for %s: both plans edit %s",
+            run.id, tenant_id, other.id, ", ".join(shared[:10]),
+        )
+        return runs.patch(tenant_id, run.id, {"hold": reason})
+    return run
+
+
 def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
     """Move `run` as far as its tasks say it has gone. Never raises for a race."""
     try:
@@ -309,6 +406,11 @@ def _advance_state(ctx: AppContext, tenant_id: str, run: IssueRun) -> IssueRun:
         # Only an `auto` run is ever submitted here: a `required` run stays
         # PLANNED, holding nothing (invariant 1), until a person approves it.
         if run.state == RunState.PLANNED and run.plan_approval == "auto" and run.plan_digest:
+            # Not while another live run's plan edits the same files: it
+            # waits, PLANNED and holding nothing, and the tick asks again.
+            held = _territory_hold(ctx, tenant_id, run)
+            if held is not None:
+                return held
             try:
                 run = _approve(
                     ctx, run_owner_auth(ctx, run), tenant_id, run,
@@ -438,43 +540,6 @@ def _read_issue(
 
 
 # --------------------------------------------------------------------------
-# what the issue said at submission
-# --------------------------------------------------------------------------
-
-def _read_issue(
-    ctx: AppContext, auth: AuthContext, tenant_id: str, ref
-) -> tuple[dict | None, dict | None]:
-    """The issue as the preview reads it, for the run to keep; or why it could not be read.
-
-    THE SAME READ AS `GET /v1/issues/preview` (lane U9 item 4): the caller's
-    tenant's forge token, `forge.preview`'s masking and body bound. The token
-    lives inside `preview` only; nothing about it is returned or logged here.
-    A failure does not refuse the run -- the planner reads the issue itself,
-    on the worker -- it is kept as `issue_read_error`, so the run page says
-    why its card is empty instead of pretending the issue had nothing in it.
-    """
-    if ctx.forge_tokens is None or ctx.forge is None:
-        return None, {"code": "read_failed", "message": "this API has no forge reader configured"}
-    tenant = ctx.store.get_tenant(tenant_id) or Tenant(
-        tenant_id=tenant_id,
-        kind="group",
-        principal=auth.tenant_principal or auth.email,
-        created_at=ctx.now(),
-    )
-    try:
-        read = preview(ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge)
-    except ForgeReadError as refused:
-        log.info("issue run read tenant=%s issue=%s outcome=%s", tenant_id, ref.short, refused.code)
-        return None, {"code": refused.code, "message": refused.message}
-    except Exception as exc:  # noqa: BLE001 -- the run is created either way
-        # The type only: an exception's text can quote a request.
-        log.warning("issue run read tenant=%s issue=%s failed (%s)", tenant_id, ref.short, type(exc).__name__)
-        return None, {"code": "read_failed", "message": f"the issue could not be read ({type(exc).__name__})"}
-    log.info("issue run read tenant=%s issue=%s outcome=ok", tenant_id, ref.short)
-    return issue_read_from_preview(read, ctx.now()), None
-
-
-# --------------------------------------------------------------------------
 # routes
 # --------------------------------------------------------------------------
 
@@ -486,14 +551,13 @@ def create_run(
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     # Before anything is created: a refused option writes nothing. A run that
-    # does not say takes the platform's `merge_by_default` (contract request
-    # 47), resolved now and recorded on the run, so a later change to the
-    # default does not change a run already made.
-    auto_merge = (
-        body.auto_merge if body.auto_merge is not None
-        else bool(ctx.store.get_platform_settings().get("merge_by_default"))
-    )
-    refuse_auto_merge(auto_merge)
+    # does not say takes the `merge_policy` its tenant registered the issue's
+    # repository with, else the platform's `merge_by_default` (contract
+    # request 47, WF-MERGE-API), resolved once the tenant is known and
+    # recorded on the run, so a later change to either does not change a run
+    # already made.
+    if body.auto_merge is not None:
+        refuse_auto_merge(body.auto_merge)
     ref = parse_issue_ref(body.issue)
     # The repository's open work, read with THIS caller's tenant's forge
     # token (invariant 9) before anything is created: a 403 or 404 refuses
@@ -503,6 +567,14 @@ def create_run(
     # `tenant_for` is the create path's tenant resolution, the one
     # `submit_tasks` runs again below.
     tenant = ctx.submissions.tenant_for(auth)
+    auto_merge = (
+        body.auto_merge if body.auto_merge is not None
+        else auto_merge_default(
+            registered_merge_policy(ctx.db, ctx.now, tenant.tenant_id, ref.owner, ref.repo),
+            bool(ctx.store.get_platform_settings().get("merge_by_default")),
+        )
+    )
+    refuse_auto_merge(auto_merge)
     try:
         open_work = read_open_work(
             ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge, read_at=ctx.now()
@@ -517,36 +589,79 @@ def create_run(
         "issue run open work tenant=%s issue=%s issues=%d pull_requests=%d",
         tenant.tenant_id, ref.short, len(open_work["issues"]), len(open_work["pull_requests"]),
     )
+    run = start_run(
+        ctx, auth, ref, open_work=open_work, plan_approval=body.plan_approval,
+        auto_merge=auto_merge, fix_rounds=body.fix_rounds,
+    )
+    response.headers["Location"] = f"/v1/runs/{run.id}"
+    return {"run": run.to_api()}
+
+
+def start_run(
+    ctx: AppContext,
+    auth: AuthContext,
+    ref,
+    *,
+    open_work: dict,
+    plan_approval: str,
+    auto_merge: bool,
+    fix_rounds: int,
+    created_by: str | None = None,
+) -> IssueRun:
+    """The planner task, then the run document, then the first write-back.
+
+    POST /v1/runs and the issue sweeper (`issuesweep`) both start a run here.
+    `auth` is who the planner is submitted as -- the caller, or for the sweep
+    the registration's creator -- and it resolves the run's tenant
+    (`submit_tasks` runs `tenant_for`). `created_by` is what the run records
+    as its creator when that is not `auth` (`issue-sweep`); the member it
+    submits as is then kept in `on_behalf_of`, so every later submission is
+    made as them, and only while they are still a member (`run_owner_auth`).
+    Options are the caller's to have checked (`refuse_auto_merge`).
+    """
     run_id = new_id("run")
-    # The planner first, carrying the run's id: a planner without its run is
+    # The issue and the tenant's own index of its repository BEFORE the
+    # planner (lane KG1): the issue's words are what the planner's REPO GRAPH
+    # section is searched for, and the section is in the planner's prompt.
+    # `tenant_for` is the resolution `submit_tasks` runs again below. Neither
+    # read refuses the run: a failed issue read is `issue_read_error`, and a
+    # missing or unreadable index is today's prompt with `index_context`
+    # saying why.
+    tenant_id = ctx.submissions.tenant_for(auth).tenant_id
+    issue_read, issue_read_error = _read_issue(ctx, auth, tenant_id, ref)
+    context = read_plan_context(ctx, tenant_id, ref, run_id=run_id, issue=issue_read,
+                                open_work=open_work)
+    # The planner next, carrying the run's id: a planner without its run is
     # one finished task nobody reads, while a run without its planner would
     # sit PLANNING for ever.
-    submission = ctx.submissions.submit_tasks(auth, [planner_task(ref, run_id, open_work)])
+    submission = ctx.submissions.submit_tasks(
+        auth, [planner_task(ref, run_id, open_work, context=context.section)]
+    )
     planner = submission.tasks[0]
-    # After the planner, in the tenant `submit_tasks` resolved: what the run
-    # page shows under "Read from the issue".
-    issue_read, issue_read_error = _read_issue(ctx, auth, planner.tenant_id, ref)
     now = ctx.now()
     run = _runs(ctx).create(
         IssueRun(
             id=run_id,
             tenant_id=planner.tenant_id,
-            created_by=auth.email,
+            created_by=created_by or auth.email,
             created_at=now,
             updated_at=now,
             state=RunState.PLANNING,
             issue=ref,
-            plan_approval=body.plan_approval,
+            plan_approval=plan_approval,
             auto_merge=auto_merge,
-            fix_rounds=body.fix_rounds,
+            fix_rounds=fix_rounds,
             planner_task_id=planner.id,
             open_work=open_work,
+            index_sha=context.index_sha,
+            index_digest=context.index_digest,
+            index_context=context.record,
             issue_read=issue_read,
             issue_read_error=issue_read_error,
+            on_behalf_of=auth.email if created_by else None,
         )
     )
-    response.headers["Location"] = f"/v1/runs/{run.id}"
-    return {"run": sync_issue(ctx, run).to_api()}
+    return sync_issue(ctx, run)
 
 
 @router.get("")

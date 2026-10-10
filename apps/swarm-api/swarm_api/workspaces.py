@@ -25,7 +25,11 @@ whose index document exists is drawn again, so two people never share one.
 STATES (§1.2). `requested` (here), `approved`/`denied` (an admin, W7),
 `applying`, `needs_owner`, `failed` and `ready` (the job, W6). swarm-api NEVER
 writes `ready`: it is evidence the job's final check writes after reading
-back every object, and nothing a client sends can set it.
+back every object, and nothing a client sends can set it. The one exception is
+`Workspaces.migrate` (§3.3), which no route calls: an operator runs it through
+`scripts/workspace-migrate-record.sh` for a Terraform-era tenant whose
+resources already exist, and the `--mode verify` run that follows reads them
+back.
 
 THE GATE (§5) is behind `WORKSPACE_GATE`, which ships OFF (WD8). Off, it reads
 nothing and refuses nothing, `tenant_for` creates personal tenants on first
@@ -56,6 +60,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.identity import SERVICE_ACCOUNT_EMAIL, tenant_id_for_user
 from swarm_common.models import Tenant
 
+from .admins import AUDIT_COLLECTION
 from .errors import (
     Conflict,
     NoClaudeAccount,
@@ -64,6 +69,7 @@ from .errors import (
     WorkspaceNotRequested,
     WorkspaceRequestTooSoon,
 )
+from .store import TENANTS
 from .validation import is_service_submitter
 
 log = logging.getLogger(__name__)
@@ -114,6 +120,40 @@ DEFAULT_LIMITS: Mapping[str, int] = {
 #: Draws of a workspace id before giving up. 16.7 million ids; a second draw
 #: is already rare, a sixteenth means something other than chance.
 MAX_ID_DRAWS = 16
+
+#: §3.3's migration: who its decision names, and why. Not an email, so no
+#: admin's address is invented for a decision no admin made.
+MIGRATION_BY = "migration"
+MIGRATION_REASON = "Terraform-era tenant moved by W9"
+#: `requested_via` of a record the migration creates: not one of VIAS, because
+#: no person asked for it.
+MIGRATION_VIA = "migration"
+#: States the migration completes IN PLACE, keeping the record's workspace id:
+#: a person may have asked for a workspace before their Terraform-era tenant
+#: moved (u-bogdan did, 2026-10-09: w-752763), and a fresh id would orphan the
+#: one their request, its index entry and any admin's view already name.
+#: Not approved, applying or needs_owner: a build may be about to make, or be
+#: making, the resources the tenant already has. Not ready unless migrated: the
+#: job made that one, and there is nothing to move.
+MIGRATABLE = frozenset({REQUESTED, FAILED, DENIED})
+
+
+def never_dispatched(record: Mapping[str, Any] | None) -> bool:
+    """An `approved` record no build was ever sent for: no dispatch attempt and
+    no run. Nothing can be making its resources, so it may be migrated or
+    denied like a `requested` one. Before 2026-10-10 an approved record had no
+    way out but a build claiming it, so one approved while publishing was off
+    (w-752763, 07:09Z 2026-10-09) could be neither migrated, denied nor
+    retried (#847)."""
+    if not record or state_of(record) != APPROVED:
+        return False
+    return not record.get("dispatch") and not record.get("run")
+#: The keys of `limits`, in the order §1.1 lists them.
+LIMIT_KEYS = ("max_active", "capacity_units", "quota_pods", "quota_cpu")
+#: What `migrate` did, or would do.
+MIGRATE_CREATE = "create"
+MIGRATE_UPDATE = "update"
+MIGRATE_NOTHING = "nothing"
 
 #: The Claude provider. A pool account is a Claude subscription
 #: (`quota_broker.accounts.Account.provider` defaults to it) and a provider
@@ -183,6 +223,28 @@ _STATE_PHRASE: Mapping[str, str] = {
     APPROVED: "is being created",
     APPLYING: "is being created",
     NEEDS_OWNER: "is waiting for the platform owner's review",
+}
+
+#: `held` on a `requested` record an admin asked for whose personal tenant
+#: predates the workspace job (§1.3, §3.3): it is not approved automatically,
+#: and never published, because the apply's squat check would fail
+#: IDENTITY_NOT_OURS on the identity Terraform made. Lane W9 moves it.
+HELD_MIGRATING = "migrating"
+
+
+class MigrationHold(Exception):
+    """Raised by an automatic approval (`People._approve_in`, `auto=True`) on
+    a record whose tenant predates the workspace job. Internal, never served:
+    `request` turns it into `held`, and the request still succeeds. It is not
+    an `ApiError`, because a hold is not a refusal (refusals.py)."""
+
+MIGRATING_COPY = (
+    "Your workspace already exists from before self-service setup and is being migrated "
+    "into it by the platform owner. Nothing needs doing on your side; it shows as ready "
+    "once the migration is done.")
+
+_HELD_PHRASE: Mapping[str, str] = {
+    HELD_MIGRATING: "is being migrated by the platform owner",
 }
 
 #: The action every WORKSPACE_NOT_READY message ends on (the owner's words in
@@ -272,6 +334,8 @@ def not_ready_message(record: Mapping[str, Any] | None) -> str:
     elif state == FAILED:
         phrase = "could not be created: " + failure_copy(
             (record or {}).get("failure"), (record or {}).get("request_id"))
+    elif state == REQUESTED and (record or {}).get("held") in _HELD_PHRASE:
+        phrase = _HELD_PHRASE[(record or {})["held"]]
     else:
         phrase = _STATE_PHRASE.get(state, _STATE_PHRASE[NONE])
     if state == FAILED:
@@ -295,18 +359,118 @@ def request_again_at(record: Mapping[str, Any] | None) -> datetime | None:
     return at + REREQUEST_WAIT if isinstance(at, datetime) else None
 
 
-def view(record: Mapping[str, Any] | None, *, console_url: str = "") -> dict[str, Any]:
+# --------------------------------------------------------------------------
+# an approved record nobody is advancing (the 2026-10-09 incident, w-752763)
+# --------------------------------------------------------------------------
+
+#: Why an `approved` record is not moving. The three values are the shared
+#: contract with the WS-WIRE lane's alert on `jsonPayload.event =
+#: "workspace_stuck"`: rename one and that alert stops matching it.
+#:
+#:   publishing_off        this deployment publishes nothing
+#:                         (WORKSPACE_APPLY_PUBLISH off, so People holds a
+#:                         `NullWorkspacePublisher`): no build will ever come;
+#:   never_dispatched      publishing is on, yet nothing was attempted for this
+#:                         request NEVER_DISPATCHED_AFTER after the approval;
+#:   dispatched_unclaimed  the first attempt for this request is
+#:                         UNCLAIMED_AFTER old and no build has claimed it.
+STUCK_PUBLISHING_OFF = "publishing_off"
+STUCK_NEVER_DISPATCHED = "never_dispatched"
+STUCK_DISPATCHED_UNCLAIMED = "dispatched_unclaimed"
+#: 15 minutes: the approval publishes at once and the sweep (every 10 minutes)
+#: again, so a record with no attempt after 15 has missed both.
+NEVER_DISPATCHED_AFTER = timedelta(minutes=15)
+#: 30 minutes from the FIRST attempt for this request, not the last: the
+#: sweep re-publishes every 10 minutes, so "the last attempt is 30 minutes
+#: old" never comes true while it runs, which is exactly when a build that
+#: never claims anything has to be noticed.
+UNCLAIMED_AFTER = timedelta(minutes=30)
+
+
+def approved_at(record: Mapping[str, Any] | None) -> datetime | None:
+    """When the record last became `approved`: the later of the admin's
+    approval and a retry, else (a record written by hand) its request."""
+    record = record or {}
+    decision = record.get("decision") or {}
+    at = decision.get("at") if decision.get("verdict") == APPROVED else None
+    seen = [v for v in (at, (record.get("retry") or {}).get("at")) if isinstance(v, datetime)]
+    if seen:
+        return max(seen)
+    requested = record.get("requested_at")
+    return requested if isinstance(requested, datetime) else None
+
+
+def first_dispatched_at(record: Mapping[str, Any] | None) -> datetime | None:
+    """The first dispatch attempt for the record's CURRENT request, or None.
+    An attempt recorded for an earlier request id (before a retry) is not
+    one; a `dispatch` written before it carried a request id counts by its
+    own first (or last) attempt."""
+    record = record or {}
+    dispatch = record.get("dispatch") or {}
+    if not dispatch:
+        return None
+    if "request_id" in dispatch and dispatch.get("request_id") != record.get("request_id"):
+        return None
+    at = dispatch.get("first_attempt_at") or dispatch.get("last_attempt_at")
+    return at if isinstance(at, datetime) else None
+
+
+def waiting_because(record: Mapping[str, Any] | None, *, publishing: bool,
+                    now: datetime) -> str | None:
+    """The stuck rule. None unless the record is `approved` and either
+    publishing is off, or no attempt was made NEVER_DISPATCHED_AFTER after the
+    approval, or the first attempt is UNCLAIMED_AFTER old (the state is still
+    `approved`, so no build claimed it). A record approved a minute ago is
+    not stuck: it is being sent."""
+    if state_of(record) != APPROVED:
+        return None
+    if not publishing:
+        return STUCK_PUBLISHING_OFF
+    first = first_dispatched_at(record)
+    if first is None:
+        since = approved_at(record)
+        if since is not None and now - since > NEVER_DISPATCHED_AFTER:
+            return STUCK_NEVER_DISPATCHED
+        return None
+    if now - first > UNCLAIMED_AFTER:
+        return STUCK_DISPATCHED_UNCLAIMED
+    return None
+
+
+def provisioning(record: Mapping[str, Any] | None, *, publishing: bool,
+                 now: datetime) -> dict[str, Any]:
+    """The `provisioning` block of a view, computed on read: whether this
+    deployment builds workspaces at all, why an approved record is waiting
+    (None when it is not), and how long ago it was approved (None when it is
+    not approved). No secret, email or tenant id."""
+    since = approved_at(record) if state_of(record) == APPROVED else None
+    return {
+        "available": bool(publishing),
+        "waiting_because": waiting_because(record, publishing=publishing, now=now),
+        "approved_minutes_ago": None if since is None
+        else max(0, int((now - since).total_seconds() // 60)),
+    }
+
+
+def view(record: Mapping[str, Any] | None, *, console_url: str = "",
+         publishing: bool | None = None, now: datetime | None = None) -> dict[str, Any]:
     """What a person is shown of their OWN record (`GET /v1/workspace`).
 
     Never the principal and never `decision.by`: the first the caller
     already knows, the second is an admin's address, which never leaves
-    Firestore. The failure's copy is served from its code (§4.3)."""
+    Firestore. The failure's copy is served from its code (§4.3).
+
+    `publishing` is the deployment's publisher's `enabled`; given (with
+    `now`), the view carries the `provisioning` block, so an approved record
+    that nothing will advance says so instead of reading as in progress."""
     state = state_of(record)
     out: dict[str, Any] = {
         "state": state,
         "setup_url": setup_url(console_url, "workspace"),
         "setup_command": SETUP_COMMAND,
     }
+    if publishing is not None and now is not None:
+        out["provisioning"] = provisioning(record, publishing=publishing, now=now)
     if record is None:
         return out
     decision = record.get("decision") or None
@@ -322,7 +486,11 @@ def view(record: Mapping[str, Any] | None, *, console_url: str = "") -> dict[str
             "verdict": decision.get("verdict"),
             "reason": decision.get("reason"),
             "at": _iso(decision.get("at")),
+            # True when nobody clicked: the requester is an admin (§1.3).
+            "auto": decision.get("auto") is True,
         },
+        "held": {"reason": HELD_MIGRATING, "copy": MIGRATING_COPY}
+        if state == REQUESTED and record.get("held") == HELD_MIGRATING else None,
         "limits": dict(record.get("limits") or {}),
         "steps": {k: {**v, "at": _iso(v.get("at"))} if isinstance(v, dict) else v
                   for k, v in (record.get("steps") or {}).items()},
@@ -466,17 +634,42 @@ class Workspaces:
 
     # -- the request (§1.3) ----------------------------------------------------
 
-    def request(self, *, tenant_id: str, principal: str, via: str) -> tuple[int, dict[str, Any]]:
+    def request(
+        self,
+        *,
+        tenant_id: str,
+        principal: str,
+        via: str,
+        approve: Callable[[Any, dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> tuple[int, dict[str, Any]]:
         """One Firestore transaction: read the record, then create, re-open or
         answer it. Returns (HTTP status, the record as stored).
 
         The caller has already been checked as a human in an allowed domain,
-        not a secret admin, and owning `tenant_id` (`routes.workspaces`)."""
+        not a secret admin, and owning `tenant_id` (`routes.workspaces`).
+
+        `approve` is given for an admin's own request (§1.3, owner decision
+        2026-10-09): `People.request_own` passes `People._approve_in`, the
+        approval the admin route makes, and it runs here, inside this
+        transaction, on the record as it stands `requested`. It writes its
+        audit entry and returns the record's patch, which is written with the
+        request in one write; a `MigrationHold` from it leaves the record
+        `requested` and `held` instead (§3.3)."""
         if via not in VIAS:
             raise ValueError(f"via must be one of {VIAS}")
         ref = self._db.collection(WORKSPACES).document(tenant_id)
         now = self._now()
         transaction = self._db.transaction()
+
+        def _decide(txn: Any, record: dict[str, Any]) -> dict[str, Any]:
+            """The patch an automatic approval adds to a `requested` record,
+            or the hold; nothing for a request no approval goes with."""
+            if approve is None:
+                return {}
+            try:
+                return approve(txn, record)
+            except MigrationHold:
+                return {"held": HELD_MIGRATING}
 
         @firestore.transactional
         def _apply(txn: Any) -> tuple[int, dict[str, Any]]:
@@ -484,33 +677,23 @@ class Workspaces:
             data = snap.to_dict() if snap.exists else None
             state = state_of(data) if data is not None else None
             if data is None:
-                for _ in range(MAX_ID_DRAWS):
-                    workspace_id = self._new_id()
-                    id_ref = self._db.collection(WORKSPACE_IDS).document(workspace_id)
-                    if not _snapshot(txn.get(id_ref)).exists:
-                        break
-                else:
-                    raise Conflict("no free workspace id could be drawn; try again")
-                record = {
-                    "tenant_id": tenant_id,
-                    "workspace_id": workspace_id,
-                    "principal": principal,
-                    "state": REQUESTED,
-                    "request_id": str(uuid.uuid4()),
-                    "requested_at": now,
-                    "requested_via": via,
-                    "decision": None,
-                    "history": [],
-                    "limits": dict(DEFAULT_LIMITS),
-                    "run": None,
-                    "steps": {},
-                    "failure": None,
-                    "ready_at": None,
-                    "migrated": False,
-                }
+                id_ref = self._draw_id(txn)
+                record = self._new_record(tenant_id=tenant_id, workspace_id=id_ref.id,
+                                          principal=principal, now=now, via=via)
+                # Every read (the approval's included) before the first write.
+                record.update(_decide(txn, record))
                 txn.set(id_ref, {"tenant_id": tenant_id})
                 txn.set(ref, record)
                 return 202, record
+            if state == REQUESTED and approve is not None:
+                patch = {k: v for k, v in _decide(txn, data).items() if data.get(k) != v}
+                if patch:
+                    txn.update(ref, patch)
+                    # Approving a standing request is this call's doing; a
+                    # hold recorded on it is not a new request.
+                    status = 202 if patch.get("state") == APPROVED else 200
+                    return status, {**data, **patch}
+                return 200, data
             if state in UNCHANGED_ON_REQUEST:
                 return 200, data
             if state == DENIED:
@@ -533,6 +716,7 @@ class Workspaces:
                     "decision": None,
                     "history": [*(data.get("history") or []), previous],
                 }
+                patch.update(_decide(txn, {**data, **patch}))
                 txn.update(ref, patch)
                 return 202, {**data, **patch}
             if state == FAILED:
@@ -546,6 +730,185 @@ class Workspaces:
         log.info("workspace request workspace=%s state=%s status=%d via=%s",
                  record.get("workspace_id"), record.get("state"), status, via)
         return status, record
+
+    # -- the shape of a new record, shared by the request and the migration --
+
+    def _draw_id(self, txn: Any) -> Any:
+        """The ref of a `workspace_ids/` entry no record holds, read in `txn`.
+        A drawn id whose index document exists is drawn again (§1.3)."""
+        for _ in range(MAX_ID_DRAWS):
+            id_ref = self._db.collection(WORKSPACE_IDS).document(self._new_id())
+            if not _snapshot(txn.get(id_ref)).exists:
+                return id_ref
+        raise Conflict("no free workspace id could be drawn; try again")
+
+    @staticmethod
+    def _new_record(*, tenant_id: str, workspace_id: str, principal: str,
+                    now: datetime, via: str) -> dict[str, Any]:
+        """§1.1's record as a request creates it, in `requested`."""
+        return {
+            "tenant_id": tenant_id,
+            "workspace_id": workspace_id,
+            "principal": principal,
+            "state": REQUESTED,
+            "request_id": str(uuid.uuid4()),
+            "requested_at": now,
+            "requested_via": via,
+            "decision": None,
+            "history": [],
+            "limits": dict(DEFAULT_LIMITS),
+            "run": None,
+            "steps": {},
+            "failure": None,
+            "ready_at": None,
+            "migrated": False,
+        }
+
+    # -- the migration of a Terraform-era tenant (§3.3) -----------------------
+
+    def migrate(
+        self,
+        tenant_id: str,
+        *,
+        quota_pods: int,
+        quota_cpu: int,
+        apply: bool,
+        expect: str | None = None,
+    ) -> dict[str, Any]:
+        """Make `workspaces/{tenant_id}` the `ready`, `migrated` record of a
+        personal tenant whose resources Terraform made (§3.3). One transaction.
+
+        Read from `tenants/{tenant_id}`, which must exist and be a personal
+        tenant whose principal derives to `tenant_id`: the principal, the
+        tenant's live `max_active` and `capacity_units`, and its provider
+        keys (`credentials`) as `providers`. `quota_pods` and `quota_cpu` are
+        the namespace's live ResourceQuota, which the caller read: the verify
+        run compares the record's limits with both.
+
+        * No record: created as a request would create it, with a FRESH
+          workspace id and its `workspace_ids/` entry, then made ready.
+        * `requested`, `failed` or `denied`, or `approved` with no dispatch
+          attempt and no run (`never_dispatched`): completed IN PLACE. The
+          workspace id, its index entry and the request id are kept; an
+          earlier decision moves to `history`.
+        * `ready` and `migrated`: nothing is written (a re-run).
+        * anything else is refused, and nothing is written.
+
+        Both writes record `decision` {by: MIGRATION_BY, verdict: approved,
+        reason: MIGRATION_REASON} and one `admin_audit` entry, in the same
+        transaction. `ready_at` stays empty: the verify run writes it once it
+        has read every object back (§4.2, A9).
+
+        `apply=False` reads and writes nothing; it returns what `apply=True`
+        would write (a created record's id is drawn again then). `expect` is
+        the action a dry run reported: if the record moved since, the write
+        is refused rather than doing something nobody saw.
+
+        Returns {action, workspace_id, before, after}. No route calls this."""
+        if expect is not None and expect not in (MIGRATE_CREATE, MIGRATE_UPDATE, MIGRATE_NOTHING):
+            raise ValueError(f"expect must be one of create, update, nothing; got {expect!r}")
+        quota = {"quota_pods": quota_pods, "quota_cpu": quota_cpu}
+        for name, value in quota.items():
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a whole number above 0, got {value!r}")
+        ref = self._db.collection(WORKSPACES).document(tenant_id)
+        tenant_ref = self._db.collection(TENANTS).document(tenant_id)
+        now = self._now()
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> dict[str, Any]:
+            snap = _snapshot(txn.get(ref))
+            before = snap.to_dict() if snap.exists else None
+            state = state_of(before) if before is not None else None
+            if before is not None and state == READY and before.get("migrated") is True:
+                action = MIGRATE_NOTHING
+            elif before is None:
+                action = MIGRATE_CREATE
+            elif state in MIGRATABLE or never_dispatched(before):
+                action = MIGRATE_UPDATE
+            else:
+                raise Conflict(
+                    f"workspace {before.get('workspace_id')} is {state}"
+                    + ("" if state != READY else " and was not migrated")
+                    + "; only a requested, failed or denied record, an approved one no build "
+                    "was ever sent for, or none, is migrated",
+                    detail={"workspace_id": before.get("workspace_id"), "state": state})
+            if expect is not None and action != expect:
+                raise Conflict(
+                    f"the record changed since the dry run: it said {expect}, it is now {action}; "
+                    "nothing was written. Run it again and read the new plan.",
+                    detail={"workspace_id": (before or {}).get("workspace_id")})
+            if action == MIGRATE_NOTHING:
+                return {"action": action, "workspace_id": before.get("workspace_id"),
+                        "before": before, "after": before}
+
+            tenant_snap = _snapshot(txn.get(tenant_ref))
+            tenant = tenant_snap.to_dict() if tenant_snap.exists else None
+            if not tenant:
+                raise Conflict(f"tenants/{tenant_id} does not exist; there is nothing to migrate")
+            principal = str(tenant.get("principal") or "").strip().lower()
+            if tenant.get("kind") != "user" or not principal \
+                    or personal_tenant_id(principal) != tenant_id:
+                raise Conflict(f"tenants/{tenant_id} is not a personal tenant whose principal "
+                               "derives to its id; only those are migrated")
+            if before is not None and \
+                    str(before.get("principal") or "").strip().lower() != principal:
+                raise Conflict("the workspace record and the tenant name different principals",
+                               detail={"workspace_id": before.get("workspace_id")})
+            limits = {"max_active": tenant.get("max_active"),
+                      "capacity_units": tenant.get("capacity_units"), **quota}
+            for name in LIMIT_KEYS:
+                value = limits[name]
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise Conflict(f"tenants/{tenant_id} has no whole {name} above 0 "
+                                   f"(read {value!r})")
+
+            id_ref = None
+            if before is None:
+                id_ref = self._draw_id(txn)
+                base = self._new_record(tenant_id=tenant_id, workspace_id=id_ref.id,
+                                        principal=principal, now=now, via=MIGRATION_VIA)
+            else:
+                base = before
+            history = list(base.get("history") or [])
+            if base.get("decision"):
+                history.append({"request_id": base.get("request_id"),
+                                "requested_at": base.get("requested_at"),
+                                "decision": base.get("decision")})
+            patch: dict[str, Any] = {
+                "state": READY,
+                "migrated": True,
+                "providers": sorted({str(p) for p in (tenant.get("credentials") or [])}),
+                "limits": {name: limits[name] for name in LIMIT_KEYS},
+                "decision": {"by": MIGRATION_BY, "at": now, "verdict": APPROVED,
+                             "reason": MIGRATION_REASON},
+                "history": history,
+                "failure": None,
+                "steps": {},
+                "ready_at": None,
+            }
+            after = {**base, **patch}
+            if apply:
+                if id_ref is not None:
+                    txn.set(id_ref, {"tenant_id": tenant_id})
+                    txn.set(ref, after)
+                else:
+                    txn.update(ref, patch)
+                audit = self._db.collection(AUDIT_COLLECTION).document()
+                txn.set(audit, {"action": "migrate",
+                                "target_workspace_id": after["workspace_id"],
+                                "by": MIGRATION_BY, "at": now,
+                                "detail": {"from_state": state or NONE,
+                                           "request_id": after.get("request_id"),
+                                           "reason": MIGRATION_REASON}})
+            return {"action": action, "workspace_id": after["workspace_id"],
+                    "before": before, "after": after}
+
+        result = _apply(transaction)
+        log.info("workspace migration workspace=%s action=%s applied=%s",
+                 result["workspace_id"], result["action"], apply)
+        return result
 
     # -- the loan request (§6.1) ---------------------------------------------
 

@@ -159,7 +159,7 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     expect(chips.textContent).toBe('')
     // The tabs are the address's, the current one already marked; no count
     // is drawn for a read that has not landed.
-    expect(tabLabels(page!)).toEqual(['Graph', 'Table', 'Timeline'])
+    expect(tabLabels(page!)).toEqual(['Graph', 'Table', 'Timeline', 'Changes'])
     expect(page!.querySelector('.c-tabs [aria-current="page"] .c-tab-label')!.textContent).toBe('Table')
     expect(page!.querySelector('.c-tabs em')).toBeNull()
     const body = page!.querySelector('.wfp-skel-body')
@@ -178,7 +178,7 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
       'disabled',
       true,
     )
-    expect(tabLabels(loaded)).toEqual(['Graph', 'Table', 'Timeline'])
+    expect(tabLabels(loaded)).toEqual(['Graph', 'Table', 'Timeline', 'Changes'])
   })
 
   it('lets a tab be chosen during the load: each view is an address, not a control the data drives', () => {
@@ -312,6 +312,7 @@ describe('#113: every `.ctl-pending` loading bar is visible in both themes', () 
       'ArtifactViewer.tsx',
       'Artifacts.tsx',
       'CheckpointBrowser.tsx',
+      'WorkflowChanges.tsx',
     ])
     expect(found.get('ol-pending')).toEqual(['../Activity.tsx'])
   })

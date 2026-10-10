@@ -184,14 +184,17 @@ run "every_switched_role_trades_its_project_wide_grant_for_a_conditioned_one" {
   # allow policy that may share a role and a principal with different
   # condition expressions -- one per projectIamAdmin chunk here, since they
   # are per-chunk bindings rather than one ORed expression (deployer_conditions.tf
-  # explains why). 15 roles / 10 per chunk is 2 today; this guards the day
-  # deployer_grantable_project_roles grows past 200 roles (20 chunks), which
-  # would need a different scheme, not a bigger number here. No documented
+  # explains why). 14 roles / 10 per chunk is 2 today (15 until #150 took
+  # swarmSecretLister off, still 2); this guards the day
+  # deployer_grantable_project_roles grows past 100 roles (10 chunks), which
+  # would need a different scheme, not a bigger number here. Half of 20, not
+  # 20: the chunks are create_before_destroy (#227 box 26), so while a changed
+  # role list replaces them the old and new bindings coexist. No documented
   # limit on total expression length was found for IAM conditions, so none is
   # asserted.
   assert {
-    condition     = length(local.deployer_project_iam_admin_conditions) <= 20
-    error_message = "projectIamAdmin needs more than 20 chunked bindings for the same role and principal, which IAM's allow-policy quota refuses; deployer_grantable_project_roles has outgrown per-chunk bindings and needs a different scheme"
+    condition     = length(local.deployer_project_iam_admin_conditions) <= 10
+    error_message = "projectIamAdmin needs more than 10 chunked bindings for the same role and principal; replaced create_before_destroy, old and new together would pass the 20 IAM's allow-policy quota allows. deployer_grantable_project_roles has outgrown per-chunk bindings and needs a different scheme"
   }
 
   # The type guard is what keeps a name test from refusing every permission in
@@ -735,6 +738,51 @@ run "the_iam_admin_conditions_hasonly_lists_never_exceed_gcps_ten_element_limit"
 # claiming "this is what the owner's apply does". These two runs read the file
 # (./bootstrap_tfvars) and plan bootstrap with exactly what it names.
 # ---------------------------------------------------------------------------
+
+# #227 box 26 (PR #277 security review): a condition is part of an IAM
+# binding's identity, so a chunk whose role list changes is REPLACED. Chunked
+# from the list as written, inserting or reordering one role shifted roles
+# between chunks and replaced every chunk after it -- destroy first, then
+# create, so for that window CI held no projectIamAdmin chunk at all and the
+# apply in progress could 403 on its own next grant.
+run "a_changed_role_list_replaces_iam_admin_chunks_new_grant_first" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_github_wif     = true
+    github_repository     = "saga/agent-swarm-infra"
+    deployer_scoped_roles = ["roles/resourcemanager.projectIamAdmin"]
+  }
+
+  # Chunked from the SORTED list, so reordering the source list renders the
+  # same conditions and plans no change at all.
+  assert {
+    condition     = jsonencode(flatten(local.deployer_project_iam_admin_chunks)) == jsonencode(sort(local.deployer_grantable_project_roles))
+    error_message = "projectIamAdmin chunks must be cut from the sorted grantable list, so reordering deployer_grantable_project_roles moves no role between chunks"
+  }
+
+  # Keyed by chunk position, "0", "1", ...: a role list change edits the
+  # instance at the same key rather than retiring one key and minting another.
+  assert {
+    condition     = toset(keys(google_project_iam_member.deployer_project_iam_admin)) == toset([for i in range(length(local.deployer_project_iam_admin_chunks)) : tostring(i)])
+    error_message = "projectIamAdmin chunk instances must be keyed by chunk position, the same key across a role list change"
+  }
+
+  # The mock provider cannot show lifecycle, so the resource block is read
+  # from the file: whatever replaces a chunk creates the new grant before it
+  # destroys the old one.
+  assert {
+    condition = strcontains(
+      replace(regex("(?s)resource \"google_project_iam_member\" \"deployer_project_iam_admin\" \\{.*?\n\\}", file("../../terraform/bootstrap/deployer_conditions.tf")), "/[ \t]+/", " "),
+      "lifecycle {\n create_before_destroy = true\n }",
+    ) && length(google_project_iam_member.deployer_project_iam_admin) > 0
+    error_message = "google_project_iam_member.deployer_project_iam_admin must carry lifecycle { create_before_destroy = true }: a replaced chunk is otherwise destroyed before its successor exists, and CI holds no projectIamAdmin chunk in between"
+  }
+}
 
 run "terraform_tfvars_as_committed" {
   command = plan

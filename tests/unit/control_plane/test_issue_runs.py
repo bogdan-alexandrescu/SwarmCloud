@@ -271,6 +271,47 @@ def test_a_run_that_does_not_say_takes_the_platform_default(client, default):
     assert _create(client, auto_merge=not default).json()["run"]["auto_merge"] is (not default)
 
 
+def _register_policy(db, tenant_id: str, merge_policy: str | None) -> None:
+    """saga-xyz/widgets, REF's repository, registered with `merge_policy`."""
+    from swarm_api import repositories
+
+    repo_id = repositories.repo_id_for(tenant_id, "saga-xyz", "widgets")
+    db.collection(repositories.COLLECTION).document(repo_id).set({
+        "repo_id": repo_id, "tenant_id": tenant_id, "forge": "github",
+        "owner": "saga-xyz", "repo": "widgets", "merge_policy": merge_policy,
+    })
+
+
+@pytest.mark.parametrize(("policy", "platform", "expected"), [
+    ("on_merge_verdict", False, True),
+    ("off", True, False),
+    (None, True, True),
+    (None, False, False),
+])
+def test_a_run_that_does_not_say_takes_the_repositorys_merge_policy_first(
+    client, db, policy, platform, expected
+):
+    """WF-MERGE-API: the registered repository's `merge_policy`, else the
+    platform's `merge_by_default`. Manual runs defaulted false on 2026-10-09
+    and opened PRs nothing merged."""
+    put = client.put("/v1/admin/settings", headers=auth_header("root"),
+                     json={"merge_by_default": platform})
+    assert put.status_code == 200, put.text
+    _register_policy(db, "eng", policy)
+    response = _create(client)
+    assert response.status_code == 201, response.text
+    assert response.json()["run"]["auto_merge"] is expected
+    # A run that says overrides the policy either way.
+    assert _create(client, auto_merge=not expected).json()["run"]["auto_merge"] is (not expected)
+
+
+def test_another_tenants_merge_policy_never_sets_a_runs_default(client, db):
+    _register_policy(db, "research", "on_merge_verdict")
+    response = _create(client)
+    assert response.status_code == 201, response.text
+    assert response.json()["run"]["auto_merge"] is False
+
+
 def test_auto_merge_availability_says_what_the_refusal_does(monkeypatch):
     # The console reads availability; POST /v1/runs enforces the refusal.
     # They must never disagree: unavailable exactly while the refusal raises.
@@ -303,7 +344,11 @@ def test_a_caller_cannot_pick_the_planners_image_or_profile(client):
 # --------------------------------------------------------------------------
 
 def test_the_machine_is_the_one_454_names():
-    assert RUN_TRANSITIONS[RunState.PLANNING] == {RunState.PLANNED, RunState.FAILED, RunState.CANCELLED}
+    # NOT_READY: the planner's verdict instead of a plan (the issue sweeper,
+    # owner decisions 2026-10-08).
+    assert RUN_TRANSITIONS[RunState.PLANNING] == {
+        RunState.PLANNED, RunState.NOT_READY, RunState.FAILED, RunState.CANCELLED,
+    }
     # FAILED: an `auto` run whose creator left the tenant before the tick approved it.
     assert RUN_TRANSITIONS[RunState.PLANNED] == {
         RunState.PLANNED, RunState.APPROVED, RunState.REJECTED, RunState.CANCELLED, RunState.FAILED,
@@ -319,7 +364,7 @@ def test_the_machine_is_the_one_454_names():
     }
     assert RUN_TRANSITIONS[RunState.FIXING] == {RunState.CHECKING, RunState.FAILED, RunState.CANCELLED}
     assert TERMINAL_RUN_STATES == {
-        RunState.DONE, RunState.FAILED, RunState.REJECTED, RunState.CANCELLED,
+        RunState.DONE, RunState.FAILED, RunState.REJECTED, RunState.CANCELLED, RunState.NOT_READY,
     }
     for state in TERMINAL_RUN_STATES:
         assert RUN_TRANSITIONS[state] == frozenset()
@@ -749,7 +794,10 @@ CHAIN_AS_BEFORE = {
                     "swarm-work.patch holds the last step's diff; the whole change is this "
                     "branch against the default branch. Do not edit files. Write "
                     "$SWARM_ARTIFACTS_DIR/verdict.json: {\"verdict\": \"MERGE\" or \"NOT_YET\", "
-                    "\"findings\": [\"one blocker per entry\"], \"requirements\": []}. "
+                    "\"findings\": [{\"summary\": \"one blocker per entry\", \"file\": "
+                    "\"its repository-relative path\", \"line\": <its line number>, "
+                    "\"side\": \"new\" or \"old\"}], \"requirements\": []}. "
+                    + issueruns.FINDINGS_LOCATION_NOTE
                     + issueruns.NO_CLOSING_KEYWORD
                 ),
             },

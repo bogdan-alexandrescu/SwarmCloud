@@ -177,6 +177,50 @@ variable "forge_refresh_schedule" {
   default     = "*/15 * * * *"
 }
 
+variable "schedule_tick_schedule" {
+  description = <<-EOT
+    How often POST /v1/admin/schedules/tick runs (docs/schedules.md §2.1).
+
+    Every minute, the design's figure, and not a tuning knob: a schedule's slot
+    is a Unix minute, the per-tenant cap of 5 firings per tick defers the rest
+    to "the next minute" (§2.10), and a firing whose work failed to be created
+    is finished by "the next tick" after 2 minutes (§2.2). A slower tick makes
+    every one of those promises late by the difference. An idle tick reads one
+    page of an index and writes one schedule_ticks document.
+  EOT
+  type        = string
+  default     = "* * * * *"
+}
+
+variable "enable_workspace_sweep" {
+  description = "Create swarm-workspace-sweep, the 10-minute caller of swarm-api's personal-workspace dispatch sweep (docs/workspaces.md §2.2). A bool, not derived from api_endpoint, for enable_task_finished_push's reason. The root sets it to true in every environment: the sweep is also the stuck-workspace detector."
+  type        = bool
+  default     = false
+}
+
+variable "workspace_sweep_path" {
+  description = "swarm-api's personal-workspace dispatch sweep (docs/workspaces.md §2.2), which the workspace_sweep job POSTs."
+  type        = string
+  default     = "/v1/admin/workspaces/sweep"
+
+  validation {
+    condition     = startswith(var.workspace_sweep_path, "/v1/admin/")
+    error_message = "the workspace sweep is an admin route under /v1/admin/, which swarm-api admits the rollup-sweeper account to by name."
+  }
+}
+
+variable "workspace_sweep_schedule" {
+  description = <<-EOT
+    How often the personal-workspace dispatch sweep runs. Every 10 minutes:
+    the sweep calls a record stuck after 15 minutes with no dispatch attempt
+    and 30 with one nobody claimed, and the workspace-stuck alert looks back
+    30 minutes, so a 10-minute tick puts at least two sweeps inside each of
+    those windows. Each tick reads the approved records only.
+  EOT
+  type        = string
+  default     = "*/10 * * * *"
+}
+
 variable "workflow_rollup_schedule" {
   description = <<-EOT
     How often each tenant's stored workflow states are converged.
@@ -209,6 +253,61 @@ variable "issue_run_advance_schedule" {
   EOT
   type        = string
   default     = "* * * * *"
+}
+
+variable "issue_sweep_schedule" {
+  description = <<-EOT
+    How often each tenant's registered repositories are swept for open issues
+    to start issue runs on (POST /v1/admin/issues/sweep, docs/issue-runs.md
+    "Sweeper").
+
+    Every 30 minutes, at :07 and :37 -- never on :00 or :30, where other
+    schedules bunch. A planner runs for minutes and a run for hours, so a new
+    candidate waiting up to half an hour costs nothing anyone sees; each sweep
+    reads every registered repository's open issues and pull requests with
+    the tenant's token, so a tighter schedule spends that token's rate limit
+    for no gain. The sweep itself is off until SWEEP_ENABLED and the tenant's
+    own switch are on.
+  EOT
+  type        = string
+  default     = "7,37 * * * *"
+
+  # The minute field must list explicit minutes, none of them :00 or :30: a
+  # step like "*/30" or a wildcard would land on both.
+  validation {
+    condition = try(alltrue([
+      for m in split(",", split(" ", trimspace(var.issue_sweep_schedule))[0]) :
+      can(regex("^[0-9]{1,2}$", m)) && !contains([0, 30], tonumber(m)) && tonumber(m) < 60
+    ]), false)
+    error_message = "issue_sweep_schedule's minute field lists explicit minutes, none of them :00 or :30 (owner decision 2026-10-08), e.g. \"7,37 * * * *\"."
+  }
+}
+
+variable "stranded_pr_sweep_schedule" {
+  description = <<-EOT
+    How often each tenant's SwarmCloud-opened pull requests are swept for ones
+    nothing is going to merge (POST /v1/admin/stranded-prs/sweep,
+    swarm_api.strandedprs, part of #295).
+
+    Every 30 minutes, at :19 and :49 -- never on :00 or :30, where other
+    schedules bunch, and off the issue sweep's :07 and :37, so the two reads
+    of every registered repository with one tenant's token do not share a
+    minute. A pull request counts as stranded only after two hours, so a
+    tighter schedule tells nobody sooner in any way that matters, and spends
+    the token's rate limit.
+  EOT
+  type        = string
+  default     = "19,49 * * * *"
+
+  # The minute field must list explicit minutes, none of them :00 or :30, as
+  # for the issue sweep: a step like "*/30" or a wildcard would land on both.
+  validation {
+    condition = try(alltrue([
+      for m in split(",", split(" ", trimspace(var.stranded_pr_sweep_schedule))[0]) :
+      can(regex("^[0-9]{1,2}$", m)) && !contains([0, 30], tonumber(m)) && tonumber(m) < 60
+    ]), false)
+    error_message = "stranded_pr_sweep_schedule's minute field lists explicit minutes, none of them :00 or :30, e.g. \"19,49 * * * *\"."
+  }
 }
 
 variable "repo_index_poll_schedule" {

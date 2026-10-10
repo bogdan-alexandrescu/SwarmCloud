@@ -18,6 +18,18 @@ explorer, test selection for merge, and git tokens per repository and per
 user. The section "Revised 2026-10-04 (owner): AST and LSP" below lists what
 changed and where; still nothing is built and the status stays PROPOSED.
 
+**Extended 2026-10-08 (lane GNX):** how agents use this index's graph (planner,
+implementers, reviewers, fixers, merge, observer, console, orchestrator), and
+GitNexus measured against the indexer, are in
+[design/knowledge-graph.md](design/knowledge-graph.md). That design amends
+request (A) of §6.3 rather than adding a request.
+
+**Related 2026-10-09 (#940):** a step whose commit is already known clones it
+from a one-commit bundle under `tenants/<tenant>/bundles/<repo_id>/`, keyed by
+the same `repo_id` as this index, instead of contacting GitHub. The index job
+neither reads nor writes those bundles, because its clone is deeper than one
+commit. See [clone-bundles.md](clone-bundles.md).
+
 What the design settles, in one line each, with the section that carries the
 detail:
 
@@ -157,6 +169,37 @@ names the registration's `repo_id`, and the read at registration uses
 whichever token resolves for the registering admin under the order the owner
 picks (git-tokens.md §3.1). The repository's Settings show that token and its
 capability row (mock-ups, section 11).
+
+**Built for #780 (read 2026-10-09): a person's own slots, and who keeps the
+tenant token.** Onboarding ([onboarding.md](onboarding.md)) built the per-user
+half of that registry. A person who connects GitHub gets an App slot,
+`git-u-<16 hex>`. For an org that will not install the App, they get a second
+slot per owner, `git-u-<16 hex of email|owner>`
+(`apps/swarm-api/swarm_api/gittokens.py::owner_suffix`), holding their own
+fallback token for that owner. Registration's read uses the caller's own
+connection when the route resolved one, and the tenant token otherwise
+(`apps/swarm-api/swarm_api/repositories.py::register`). Granting a repository
+under Access registers it for the tenant if nobody had. The record still holds
+no credential field. A task's credential is decided at submission, not by the
+registration:
+
+* **A person** runs with their own slot on a repository they granted, `read`
+  or `write`. Once `REPOSITORY_GRANTS_ENFORCED` is on (dev, from
+  `var.repository_grants_enforced`), a person's task on a repository they did
+  not grant is refused, 403 `REPOSITORY_NOT_GRANTED`. While it is off, it runs
+  with the tenant token.
+* **A service submission keeps the tenant token**, `swarm-tenant-<tenant>-git`.
+  This includes this document's own index runs (§3.1), which repository
+  indexing submits as a service
+  (`apps/swarm-api/swarm_api/repoindex.py::RepoIndex._start`), and the
+  schedules. The task shows its credential as tenant token, service
+  submission. So the index of a repository keeps working for a tenant whose
+  people have not all connected, and indexing never needs a person's grant.
+
+So the tenant token cannot be retired while the tenant indexes repositories:
+step 2 of "retire the tenant token" in [git-tokens.md](git-tokens.md) ("Built
+for #780") checks for exactly this, and the index runs are its commonest
+reader.
 
 **How it relates to today.** Nothing that works today changes. A task with a
 `repository_url` that no registration names still runs exactly as it does:

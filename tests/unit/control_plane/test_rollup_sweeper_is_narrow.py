@@ -81,6 +81,17 @@ DECIDED = frozenset({
     ("POST", "/v1/admin/forge/refresh"),
     ("POST", "/v1/admin/workspaces/sweep"),
     ("POST", "/v1/admin/tasks/finished"),
+    # The issue sweeper (owner decisions 2026-10-08, jobs.tf `issue_sweep`):
+    # it starts issue runs only in the named tenant, each as its repository
+    # registration's creator, never as the sweeper, and only while
+    # SWEEP_ENABLED and the tenant's own switch are on. Like the repository
+    # poll, nobody else may call it (test_issue_sweep.py).
+    ("POST", "/v1/admin/issues/sweep"),
+    # The stranded-PR sweep (part of #295, jobs.tf `stranded_pr_sweep`): it
+    # reads only the named tenant's pull requests and writes only its
+    # `stranded_prs` document; a redrive from this identity is refused
+    # (test_stranded_prs.py), so it can submit nothing.
+    ("POST", "/v1/admin/stranded-prs/sweep"),
 })
 
 REFUSED = [r for r in SWEPT if r not in DECIDED]

@@ -95,8 +95,41 @@ recommended variant of every other screen. Built by lane OB8 as
 
 | Screen | Pick |
 |---|---|
-| 1 · Entry and checklist | **A**: a checklist card on Overview until every step is done, the six step ids the API serves, the failing step's §2.3 copy inline. Hide keeps the steps; Work › Setup still shows them. `POST /v1/onboarding/dismiss` is not built, so Hide is kept per browser |
+| 1 · Entry and checklist | **A**: a checklist card on Overview until every step is done, the six step ids the API serves, the failing step's §2.3 copy inline. Hide keeps the steps; Work › Setup still shows them. Hide posts `POST /v1/onboarding/dismiss` (built, #780 step 3), so it is kept per person on the server, in every browser, and read back as `dismissed` from `GET /v1/onboarding`; Work › Setup's Show on Overview posts `{dismissed: false}` |
 | 2 · Connect GitHub | **A**: one Connect GitHub button for the App (built by OB3 as `GitHubConnect.tsx`) |
 | 3 · Org and repository chooser | **A**: owners on the left (the installations, plus orgs with none), the selected owner's repositories on the right, paged and searched server-side, each Not chosen, Read or Write with push ability shown before Write; "Not listed? type owner/repo" carries the recovery copy |
-| 4 · Verification results | **A**: a grid, failures first, the fix inline; ok / missing / unknown as the permission matrix draws them. Reads only (D6); the opt-in write test is not served yet, and the column says so |
-| 5 · Access | **A**, Work › Access, for each person, **plus B**, the admin's Members view. The page states D9 (SwarmCloud enforces a read grant) and D8 (no workflows write) |
+| 4 · Verification results | **A**: a grid, failures first, the fix inline; ok / missing / unknown as the permission matrix draws them. Reads only by default (D6); a write grant offers the opt-in **Push test**, which asks first, creates and deletes `swarmcloud/onboarding-check-<nonce>`, draws ok / missing / unknown, and names a branch its delete left behind. A read grant is never offered one (D9) |
+| 5 · Access | **A**, Work › Access, for each person, **plus B**, the admin's Members view. The page states D9 (SwarmCloud enforces a read grant) and D8 (no workflows write). An owner enabled by a fallback token says "via token"; Request install on an org opens the App's install page and records `POST /v1/access/orgs/{owner}/install-request`, and the row draws ORG_APPROVAL_PENDING's §2.3 copy, with Re-check and Withdraw request, until GitHub lists the installation |
+| D5 · Fallback token in the console | **Admin settings › GitHub fallback token** (the owner's note on D5, "lets also allow it to be done via the UI admin settings page"), beside `uv run sc setup token --owner <org>`. An owner field and a password input; it posts once to `POST /v1/onboarding/github/token` and stores the **signed-in person's own** token for that owner (the route takes the person from the identity, never the body). The input is cleared whatever the answer, the value is never React state, storage or text, and a refusal draws the server's §2.3 copy. Built in `apps/swarm-ui/src/AdminSettings.tsx` `FallbackTokenCard` |
+
+## Schedules and the Approvals inbox (placement picked 2026-10-08)
+
+Mock-up page: `schedules.html`, drawn by design lane SCHED0 (#892); the design is
+[docs/schedules.md](../../schedules.md). The owner answered the design's eleven
+questions on 2026-10-08. Only the placement is a screen pick; the other screens
+on the page are still recommendations and **have not been picked**.
+
+| Screen or decision | Pick | Why |
+|---|---|---|
+| 2 · Placement | **P3**, a new spine section, **Automate**: Overview · Work · Automate · Capacity · Admin, holding Schedules and the Approvals inbox (SD1) | **Not** the recommended P1 (Work › Schedules). The owner chose a section of its own for the two pages. `App.tsx` `SECTIONS` gains an `automate` section, and the issue forms' "Where" list follows it |
+
+## Diff viewer (picked 2026-10-08)
+
+From `diff-viewer.html` (lane DIFF0) and [`docs/design/diff-viewer.md`](../../design/diff-viewer.md) section 3.
+
+| Decision | Pick |
+|---|---|
+| Variant | **2 + 5, then 3**: the Changes tab on agents, workflows and issue runs; the workflow and run tab holds the files x steps matrix; findings beside lines later |
+| Entry points | **All at once, in one lane** (not agent first, then workflow) |
+| Syntax highlighting | **Yes**, about +6 kB gz, lazy with the Changes tab, React text nodes only (no `innerHTML`) |
+| Phone | **One file at a time** with a picker and an All files sheet |
+
+## Repository graph overlays (drawn 2026-10-09, not picked yet)
+
+Mock-up page: `graph-overlays.html`, drawn by design lane KG8-MOCK for row KG8 of
+[`docs/design/knowledge-graph.md`](../../design/knowledge-graph.md) §6. The design
+is [`docs/design/graph-overlays.md`](../../design/graph-overlays.md). It has four
+variants of the community layer and the issue and lane overlays, each in
+Structure and Network: 1 Paint, 2 Regions, 3 Lens and 4 Matrix. **No variant
+has been picked.** KG8 waits for the owner's answers to that note's §5. The
+page recommends **2, Regions, with 4's per-community cards on the phone**.

@@ -2,7 +2,8 @@
 verification (docs/onboarding.md §2.2, §2.4, §3.1-§3.2; #780, lane OB4).
 
 Owner decisions of 2026-10-07 on #780 this builds: D1 (the GitHub App with
-user access tokens), D6 (verification reads only), D7 (U1: a person acts
+user access tokens), D6 (verification reads only, with one opt-in branch
+write test per repository), D7 (U1: a person acts
 through their own slot only), D9 (a read grant is a read grant: SwarmCloud
 enforces it, at submission in OB7 and in the worker in OB5 -- here it is
 recorded), D10 (chooser A: owners, then the owner's repositories paged and
@@ -47,21 +48,61 @@ WHAT GITHUB IS ASKED (§2.2), each a read:
   * verify: clone is the `upload-pack` advertisement; push (write grants)
     is the `receive-pack` advertisement plus `permissions.push`; pull request
     (write grants) is the installation's `pull_requests: write` plus the
-    same push bit. D6's opt-in branch write test is not built here.
+    same push bit. Each of these is a read.
+
+THE ONE WRITE (D6 b). `push_test` is never in the default check set; it
+runs only when the caller names it, and is refused on a read grant before
+any GitHub call (D9: SwarmCloud enforces read). With the token `_as_owner`
+picks for the owner -- the App user token, or the person's fallback token
+for an owner reached through one (D5) -- it reads the default branch head
+(`GET /repos/{o}/{r}/git/ref/heads/{branch}`), creates
+`refs/heads/swarmcloud/onboarding-check-<16 hex nonce>` there
+(`POST /repos/{o}/{r}/git/refs`) and deletes it in a `finally`. A 403 or 404
+on create is `missing` with PERMISSION_MISSING copy; a 5xx, 429 or network
+error is FORGE_UNREACHABLE and `unknown`, never `missing`, and the delete is
+still tried, since an unanswered create may have been made. A delete that
+fails answers the branch name with `leftover: true` so the person can delete
+it, and logs the branch, never the token. Nothing else in verify writes.
 
 A READ THAT DID NOT COME BACK IS NOT AN ANSWER: a 5xx, a 429 or a network
 error is FORGE_UNREACHABLE (503), a check it decides stays `unknown`, and
 nothing is recorded as failed because of it.
 
-NOT HERE. `ORG_APPROVAL_PENDING` (GitHub does not show a user token an
-install request it is waiting on), the D5 fallback PAT, and the onboarding
-checklist reading these documents (onboarding.py, OB1's) are other lanes'.
+AN OWNER REACHED THROUGH A TOKEN (D5). An org whose admin will not install
+the App is enabled by the person's fallback token for it
+(`ForgeApp.store_owner_token`): its `forge_orgs` document says `method: pat`.
+Everything here that reads under that owner -- its repositories, a grant, a
+verify -- reads with THAT token, from the person's per-owner slot
+(`gittokens.owner_suffix`), never the App's user token; the owners list
+shows it from its document with no GitHub read. Removing the owner disables
+every version of that slot and revokes its record (`ForgeApp.revoke_owner_token`).
+A token's pull-request ability is not readable (a fine-grained token's
+permissions are not exposed), so verify passes it on the push it needs, as
+the probe does (`gittokens.FINE_GRAINED_UNKNOWN`).
+
+AN INSTALL SOMEONE ELSE HAS TO APPROVE (§2.3 ORG_APPROVAL_PENDING). GitHub
+does not show a user access token the install request it is waiting on, so
+SwarmCloud records it: `request_install` (`POST /v1/access/orgs/{owner}/
+install-request`, called by the console and the CLI when the person opens
+the App's install page for an org they do not own) writes their
+`forge_orgs` document with `install_state: requested` and `requested_at`,
+and asks GitHub nothing. A requested owner is NOT an enabled one: it has no
+installation id, so nothing under it is listed, granted or verified, and
+Access lists it under `requested`, not `orgs`. While `GET
+/user/installations` does not list it, the owners list and the checklist say
+ORG_APPROVAL_PENDING with §2.3's copy. As soon as the installation appears
+-- on the next owners read, the next checklist read (`installations` reads
+GitHub whenever a request is pending, whatever else is enabled), or the
+15-minute refresh sweep (`recheck_requested`, the re-check the copy
+promises) -- the document becomes the one `enable` writes, `installed` and
+enabled, keeping `requested_at`. Removing the owner withdraws the request.
 """
 
 from __future__ import annotations
 
 import logging
 import re
+import secrets
 import uuid
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -76,15 +117,20 @@ from swarm_common.models import Tenant, utcnow
 from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable, ValidationFailed
 from .forge import ForgeTokens, git_basic_headers, repository_from
 from .forgeapp import (
+    ACTIVE,
     CONNECTIONS,
     GRANTS,
+    METHOD_PAT,
+    ORGS,
     REFRESH_FAILED,
     REUSE_WHILE_LEFT,
     REVOKED,
+    SSO_URL,
     Caller,
     ForgeApp,
     HttpAnswer,
     HttpSend,
+    RefreshReport,
     _GitHub,
     _Refused,
     _Unanswered,
@@ -94,7 +140,15 @@ from .forgeapp import (
     urllib_send,
     user_hash,
 )
-from .gittokens import Scope, parse_sso_header, provider_suffix, redaction_literal
+from .gittokens import (
+    _CLASSIC_BLOCKED,
+    Scope,
+    owner_suffix,
+    parse_sso_header,
+    provider_suffix,
+    redaction_literal,
+    secret_name_for,
+)
 from .onboarding import recovery_copy
 from .repositories import (
     SCOPE_USER,
@@ -112,15 +166,13 @@ from .validation import _ISSUE_OWNER
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "AccessRefused", "AccessService", "CHECKS", "MODES", "NotConnected", "ORGS",
-    "grant_id_for", "org_id_for",
+    "AccessRefused", "AccessService", "CHECKS", "MODES", "NotConnected", "OPT_IN_CHECKS",
+    "ORGS", "PUSH_TEST", "grant_id_for", "org_id_for",
 ]
 
 # --------------------------------------------------------------------------
 # constants
 # --------------------------------------------------------------------------
-
-ORGS = "forge_orgs"
 
 API = "https://api.github.com"
 _API_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version": "2022-11-28",
@@ -128,7 +180,28 @@ _API_HEADERS = {"Accept": "application/vnd.github+json", "X-GitHub-Api-Version":
 
 MODES = ("read", "write")
 CHECKS = ("clone", "push", "pull_request")
+
+#: D6 (b): the one check that writes. Never in the default set; it runs only
+#: when the caller names it, and only on a write grant.
+PUSH_TEST = "push_test"
+OPT_IN_CHECKS = (PUSH_TEST,)
+
+#: The branch the push test creates and deletes, `<16 hex>` a fresh nonce so
+#: two tests, or a leftover from an earlier one, never collide.
+PUSH_TEST_PREFIX = "swarmcloud/onboarding-check-"
 OK, MISSING, UNKNOWN, NOT_REQUIRED = "ok", "missing", "unknown", "not_required"
+
+#: `forge_orgs.install_state` (§3.1). `requested` is an install the person
+#: asked an org's owners for (ORG_APPROVAL_PENDING): recorded, never enabled,
+#: until GitHub lists the installation and it becomes `installed`.
+INSTALLED = "installed"
+REQUESTED = "requested"
+APPROVAL_PENDING = "ORG_APPROVAL_PENDING"
+
+#: The people whose pending requests one refresh sweep re-reads at GitHub,
+#: one `GET /user/installations` each. Past it the sweep says `out_of_time`
+#: and the next tick, 15 minutes on, takes the rest.
+MAX_RECHECKS_PER_SWEEP = 200
 
 #: GitHub's page size for every list here, and the most pages one request
 #: reads: 1,000 installations, orgs or repositories. Past that a person types
@@ -147,7 +220,6 @@ MAX_DOCS = 1000
 #: Where an org owner installs the App or changes its repositories.
 INSTALL_URL = "https://github.com/apps/{slug}/installations/new"
 INSTALLATION_SETTINGS_URL = "https://github.com/settings/installations/{installation_id}"
-SSO_URL = "https://github.com/orgs/{owner}/sso"
 
 _OWNER = re.compile(rf"^{_ISSUE_OWNER}$")
 _REPO_ID = re.compile(r"^repo_[0-9a-f]{16}$")
@@ -214,18 +286,40 @@ def _iso(value: Any) -> Any:
     return value.isoformat() if isinstance(value, datetime) else value
 
 
+def via_token(org: dict[str, Any] | None) -> bool:
+    """True when the owner is enabled through the person's fallback token (D5)."""
+    return bool(org) and org.get("method") == METHOD_PAT
+
+
+def requested(org: dict[str, Any] | None) -> bool:
+    """True for an install the person asked an org's owners for and GitHub
+    has not shown yet: recorded, not enabled (§2.3 ORG_APPROVAL_PENDING)."""
+    return bool(org) and org.get("install_state") == REQUESTED
+
+
+def pending_copy(owner: str) -> dict[str, Any]:
+    """ORG_APPROVAL_PENDING's code and §2.3 copy for `owner`."""
+    return {"code": APPROVAL_PENDING, "copy": recovery_copy(APPROVAL_PENDING, owner=owner)}
+
+
 def org_to_api(doc: dict[str, Any]) -> dict[str, Any]:
-    return {
+    pending = requested(doc)
+    row = {
         "owner": doc.get("owner"),
+        "method": METHOD_PAT if via_token(doc) else "app",
         "owner_type": doc.get("owner_type"),
         "installation_id": doc.get("installation_id"),
         "repository_selection": doc.get("repository_selection"),
         "install_state": doc.get("install_state"),
         "sso": doc.get("sso"),
-        "enabled": True,
+        "enabled": not pending,
         "enabled_at": _iso(doc.get("enabled_at")),
+        "requested_at": _iso(doc.get("requested_at")),
         "checked_at": _iso(doc.get("checked_at")),
     }
+    if pending:
+        row.update(pending_copy(str(doc.get("owner_login") or doc.get("owner") or "")))
+    return row
 
 
 def grant_to_api(doc: dict[str, Any]) -> dict[str, Any]:
@@ -286,8 +380,11 @@ class _AsUser:
         return answer
 
     def get(self, path: str) -> HttpAnswer:
+        return self.api("GET", path)
+
+    def api(self, method: str, path: str, body: dict[str, Any] | None = None) -> HttpAnswer:
         return self._send(lambda token: self._github._call(
-            "GET", API + path, {**_API_HEADERS, "Authorization": f"Bearer {token}"}, None))
+            method, API + path, {**_API_HEADERS, "Authorization": f"Bearer {token}"}, body))
 
     def git(self, owner: str, repo: str, service: str) -> HttpAnswer:
         url = (f"https://github.com/{quote(owner, safe='')}/{quote(repo, safe='')}.git/"
@@ -327,6 +424,22 @@ class _AsUser:
             if len(data) < PAGE_SIZE:
                 break
         return logins
+
+    def owner_page(self, owner: str, page: int, *, own_account: bool
+                   ) -> tuple[list[Any], int | None, HttpAnswer]:
+        """One page of what a token reaches under `owner` (D5): the person's
+        own repositories, or an org's. GitHub answers a list, with no total."""
+        if own_account:
+            path = "/user/repos?" + urlencode({"affiliation": "owner", "per_page": PAGE_SIZE,
+                                               "page": page})
+        else:
+            path = (f"/orgs/{quote(owner, safe='')}/repos?"
+                    + urlencode({"type": "all", "per_page": PAGE_SIZE, "page": page}))
+        answer = self.get(path)
+        data = answer.json()
+        if answer.status != 200 or not isinstance(data, list):
+            return [], None, answer
+        return data, None, answer
 
     def installation_page(self, installation_id: int, page: int) -> tuple[list[Any], int | None,
                                                                          HttpAnswer]:
@@ -545,6 +658,8 @@ class AccessService:
         self._app = forge_app
         self._github = _GitHub(send)
         self._now = now
+        # ORG_APPROVAL_PENDING's re-check rides the 15-minute refresh sweep.
+        forge_app.on_sweep(self.recheck_requested)
 
     # -- the connection and the person's token -------------------------------
 
@@ -606,6 +721,33 @@ class AccessService:
             token = session.open()
             yield _AsUser(self._github, token, renew=session.renew), session.held(token)
 
+    @contextmanager
+    def _as_owner(self, caller: Caller, org: dict[str, Any] | None
+                  ) -> Iterator[tuple[_AsUser, HeldCredential]]:
+        """The reads under one owner: with the person's token for it when the
+        owner is enabled through one (D5), else with their App user token.
+        The slot is named from the caller and the owner, never a document."""
+        if not via_token(org):
+            with self._as_user(caller) as pair:
+                yield pair
+            return
+        owner = str(org.get("owner") or "")
+        suffix = owner_suffix(caller.key, owner)
+        with ExitStack() as stack:
+            try:
+                token = self._app._slots.read_access(caller.tenant_id, suffix)
+            except Exception as exc:
+                log.warning("access could not read the owner token tenant=%s user_hash=%s "
+                            "owner=%s (%s)", caller.tenant_id, user_hash(caller.key), owner,
+                            type(exc).__name__)
+                raise UpstreamUnavailable(
+                    f"your token for {owner} could not be read ({type(exc).__name__}); store "
+                    f"it again with `uv run sc setup token --owner {owner}`") from None
+            stack.enter_context(redaction_literal(token))
+            yield (_AsUser(self._github, token),
+                   HeldCredential(SCOPE_USER, secret_name_for(caller.tenant_id, suffix), token,
+                                  login=str(org.get("forge_login") or "")))
+
     # -- documents -----------------------------------------------------------
 
     def _mine(self, collection: str, caller: Caller) -> list[dict[str, Any]]:
@@ -640,19 +782,35 @@ class AccessService:
     # -- GET /v1/access --------------------------------------------------------
 
     def overview(self, caller: Caller) -> dict[str, Any]:
-        """The Access page: connection, enabled owners, grants. No forge read."""
+        """The Access page: connection, enabled owners, the installs the
+        person asked for and GitHub has not shown yet, grants. No forge read."""
         doc = self.connection(caller)
         orgs = sorted(self._mine(ORGS, caller), key=lambda d: str(d.get("owner")))
         grants = sorted(self._mine(GRANTS, caller), key=lambda d: str(d.get("repository")))
         return {"connection": connection_to_api(doc) if doc is not None else None,
-                "orgs": [org_to_api(d) for d in orgs],
+                "orgs": [org_to_api(d) for d in orgs if not requested(d)],
+                "requested": [org_to_api(d) for d in orgs if requested(d)],
                 "grants": [grant_to_api(d) for d in grants]}
 
     # -- owners ----------------------------------------------------------------
 
     def owners(self, caller: Caller) -> dict[str, Any]:
-        """Every owner the person reaches, each with its install state."""
-        enabled = {str(d.get("owner")).lower(): d for d in self._mine(ORGS, caller)}
+        """Every owner the person reaches, each with its install state. An
+        owner they asked to install that GitHub now lists is marked installed
+        and enabled here, on this read; one it does not list yet is
+        `requested`, with ORG_APPROVAL_PENDING's copy."""
+        mine = {str(d.get("owner")).lower(): d for d in self._mine(ORGS, caller)}
+        asked = {key: doc for key, doc in mine.items() if requested(doc)}
+        enabled = {key: doc for key, doc in mine.items() if not requested(doc)}
+        tokens = {key: doc for key, doc in enabled.items() if via_token(doc)}
+        connection = self.connection(caller)
+        if tokens and (connection is None or connection.get("state") == REVOKED):
+            # D5: a person who reaches GitHub only through owner tokens has no
+            # App token to list installations with; their owners are the ones
+            # their tokens enabled.
+            rows = sorted((_token_row(doc) for doc in tokens.values()),
+                          key=lambda e: (e["owner_type"] != "User", e["owner"].lower()))
+            return {"owners": rows, "orgs_listed": False, "install_url": self._install_url()}
         with self._as_user(caller) as (github, held):
             own_login = held.login or ""
             try:
@@ -664,6 +822,9 @@ class AccessService:
                 raise AccessRefused("REFRESH_FAILED", "GitHub refused the list of your "
                                     f"installations ({refused.error})", login=own_login,
                                     status=502) from None
+        flipped = self._mark_installed(caller, asked, installed)
+        enabled.update(flipped)
+        asked = {key: doc for key, doc in asked.items() if key not in flipped}
         by_owner: dict[str, dict[str, Any]] = {}
 
         def add(login: str, owner_type: str, inst: _Owner | None) -> None:
@@ -671,16 +832,23 @@ class AccessService:
             entry = by_owner.get(key)
             if entry is None or (inst is not None and entry["installation_id"] is None):
                 doc = enabled.get(key) or {}
-                by_owner[key] = {
+                pending = asked.get(key) if inst is None else None
+                row = {
                     "owner": login,
                     "owner_type": owner_type,
                     "installation_id": inst.installation_id if inst else None,
                     "repository_selection": inst.repository_selection if inst else None,
-                    "install_state": "installed" if inst else "not_installed",
+                    "install_state": INSTALLED if inst else (
+                        REQUESTED if pending else "not_installed"),
                     "sso": doc.get("sso") or "unknown",
-                    "enabled": bool(doc) and inst is not None,
+                    "enabled": bool(doc) and inst is not None and not via_token(doc),
                     "install_url": None if inst else self._install_url(),
+                    "method": "app",
                 }
+                if pending is not None:
+                    row["requested_at"] = _iso(pending.get("requested_at"))
+                    row.update(pending_copy(login))
+                by_owner[key] = row
 
         for inst in installed:
             add(inst.login, inst.owner_type, inst)
@@ -688,6 +856,15 @@ class AccessService:
             add(own_login, "User", None)
         for login in orgs or []:
             add(login, "Organization", None)
+        for doc in asked.values():
+            # Asked for, and not among the person's orgs GitHub listed (an
+            # org that hides membership): still shown, still pending.
+            add(str(doc.get("owner_login") or doc.get("owner")),
+                str(doc.get("owner_type") or "Organization"), None)
+        for key, doc in tokens.items():
+            # Enabled through the person's token for it: what that token
+            # reached when it was stored, never the App's view of the owner.
+            by_owner[key] = _token_row(doc)
         rows = sorted(by_owner.values(), key=lambda e: (e["owner_type"] != "User",
                                                         e["owner"].lower()))
         log.info("access owners tenant=%s user_hash=%s owners=%d installed=%d",
@@ -706,25 +883,37 @@ class AccessService:
         elsewhere (409) or a refused one is `read: False`, never "installed
         nowhere": the step stays in progress rather than sending someone to
         install an App they already installed."""
+        docs = self._mine(ORGS, caller)
         installed = sorted(str(d.get("owner_login") or d.get("owner"))
-                           for d in self._mine(ORGS, caller)
-                           if d.get("install_state") == "installed")
-        if installed:
-            return {"read": True, "source": "enabled", "installed": installed,
-                    "not_installed": [], "install_url": self._install_url()}
+                           for d in docs if d.get("install_state") == INSTALLED)
+        asked = sorted((_requested_row(d) for d in docs if requested(d)),
+                       key=lambda r: r["owner"].lower())
+        enabled_answer = {"read": True, "source": "enabled", "installed": installed,
+                          "not_installed": [], "requested": asked,
+                          "install_url": self._install_url()}
+        if installed and not asked:
+            return enabled_answer
+        # No enabled owner, or an install request pending: GitHub is read, so
+        # an approved request is marked installed on this read (§2.3).
         try:
             found = self.owners(caller)
         except ApiError as refused:
             log.info("access installations unread tenant=%s user_hash=%s code=%s",
                      caller.tenant_id, user_hash(caller.key), refused.code)
+            if installed:
+                # The enabled owners still answer app_installed; the requests
+                # stay pending, as recorded, until a read comes back.
+                return enabled_answer
             return {"read": False, "source": "github", "error": refused.code,
-                    "unreachable": refused.status_code == 503,
+                    "unreachable": refused.status_code == 503, "requested": asked,
                     "install_url": self._install_url()}
         rows = found["owners"]
         return {"read": True, "source": "github",
-                "installed": [r["owner"] for r in rows if r["install_state"] == "installed"],
+                "installed": [r["owner"] for r in rows if r["install_state"] == INSTALLED],
                 "not_installed": [r["owner"] for r in rows
-                                  if r["install_state"] != "installed"],
+                                  if r["install_state"] != INSTALLED],
+                "requested": [{"owner": r["owner"], "requested_at": r.get("requested_at")}
+                              for r in rows if r["install_state"] == REQUESTED],
                 "install_url": found["install_url"]}
 
     def enable(self, caller: Caller, owner: str) -> dict[str, Any]:
@@ -747,9 +936,24 @@ class AccessService:
                 "(an org owner may have to), then enable it", owner=owner, url=url)
             refused.code = "not_installed"
             raise refused
-        now = self._now()
         doc_id = org_id_for(caller.tenant_id, caller.key, match.login)
         previous = self._org(caller, match.login) or {}
+        doc = self._installed_doc(caller, match, previous)
+        if via_token(previous):
+            # The App now reaches the owner: the person's token for it is no
+            # longer read by anything, so it is not left enabled. BEFORE the
+            # document is overwritten: a disable that fails keeps it (503).
+            self._app.revoke_owner_token(caller, match.login)
+        self._db.collection(ORGS).document(doc_id).set(doc)
+        log.info("access owner enabled tenant=%s user_hash=%s owner=%s installation=%s",
+                 caller.tenant_id, user_hash(caller.key), doc["owner"], match.installation_id)
+        return {"org": org_to_api(doc)}
+
+    def _installed_doc(self, caller: Caller, match: _Owner,
+                       previous: dict[str, Any]) -> dict[str, Any]:
+        """The enabled owner's document, as `enable` writes it and as an
+        approved install request becomes. `requested_at` is kept."""
+        now = self._now()
         doc = {
             "tenant_id": caller.tenant_id,
             "user": caller.key,
@@ -760,25 +964,132 @@ class AccessService:
             "installation_id": match.installation_id,
             "repository_selection": match.repository_selection,
             "pull_requests": match.pull_requests,
-            "install_state": "installed",
+            "install_state": INSTALLED,
             "sso": previous.get("sso") or "unknown",
             "enabled_at": previous.get("enabled_at") or now,
             "enabled_by": caller.key,
             "checked_at": now,
         }
-        self._db.collection(ORGS).document(doc_id).set(doc)
-        log.info("access owner enabled tenant=%s user_hash=%s owner=%s installation=%s",
-                 caller.tenant_id, user_hash(caller.key), doc["owner"], match.installation_id)
-        return {"org": org_to_api(doc)}
+        if previous.get("requested_at") is not None:
+            doc["requested_at"] = previous["requested_at"]
+        return doc
+
+    def _mark_installed(self, caller: Caller, asked: dict[str, dict[str, Any]],
+                        installed: list[_Owner]) -> dict[str, dict[str, Any]]:
+        """Every requested owner GitHub now lists among the person's
+        installations, written installed and enabled. Answers them by key."""
+        flipped: dict[str, dict[str, Any]] = {}
+        for inst in installed:
+            key = inst.login.lower()
+            previous = asked.get(key)
+            if previous is None or key in flipped:
+                continue
+            doc = self._installed_doc(caller, inst, previous)
+            self._db.collection(ORGS).document(
+                org_id_for(caller.tenant_id, caller.key, inst.login)).set(doc)
+            flipped[key] = doc
+            log.info("access install request approved tenant=%s user_hash=%s owner=%s "
+                     "installation=%s", caller.tenant_id, user_hash(caller.key), key,
+                     inst.installation_id)
+        return flipped
+
+    # -- install requests (§2.3 ORG_APPROVAL_PENDING) ----------------------------
+
+    def request_install(self, caller: Caller, owner: str) -> dict[str, Any]:
+        """Record that the person asked `owner`'s owners to install the App.
+        No GitHub call: GitHub shows a user token no pending request, which is
+        why it is recorded here. An owner already enabled -- installed, or
+        through the person's token -- is answered as it is and not touched."""
+        check_owner(owner)
+        self._require_active(caller)
+        previous = self._org(caller, owner)
+        if previous is not None and not requested(previous):
+            return {"org": org_to_api(previous), "recorded": False,
+                    "install_url": self._install_url()}
+        now = self._now()
+        doc = {
+            "tenant_id": caller.tenant_id,
+            "user": caller.key,
+            "user_hash": user_hash(caller.key),
+            "owner": owner.lower(),
+            "owner_login": owner,
+            "owner_type": "Organization",
+            "installation_id": None,
+            "repository_selection": None,
+            "install_state": REQUESTED,
+            "sso": (previous or {}).get("sso") or "unknown",
+            "requested_at": (previous or {}).get("requested_at") or now,
+            "requested_by": caller.key,
+            "checked_at": None,
+        }
+        self._db.collection(ORGS).document(
+            org_id_for(caller.tenant_id, caller.key, owner)).set(doc)
+        log.info("access install requested tenant=%s user_hash=%s owner=%s",
+                 caller.tenant_id, user_hash(caller.key), owner.lower())
+        return {"org": org_to_api(doc), "recorded": True, "install_url": self._install_url()}
+
+    def recheck_requested(self, report: RefreshReport, out_of_time: Callable[[], bool]) -> None:
+        """The refresh sweep's re-check (`ForgeApp.on_sweep`): for each person
+        holding a requested owner, one `GET /user/installations` with their
+        OWN token, and every requested owner it lists is marked installed and
+        enabled. A read that did not come back leaves the request as it was.
+        Each document is the person's, in its own tenant: the person is named
+        from the document's tenant and user, and `_mine`-style checks drop one
+        whose hash does not match its user (invariant 9)."""
+        query = self._db.collection(ORGS).where(
+            filter=FieldFilter("install_state", "==", REQUESTED)).limit(MAX_DOCS)
+        people: dict[tuple[str, str], dict[str, dict[str, Any]]] = {}
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            tenant_id, user = doc.get("tenant_id"), doc.get("user")
+            if not requested(doc) or not isinstance(tenant_id, str) \
+                    or not isinstance(user, str) or doc.get("user_hash") != user_hash(user):
+                continue
+            people.setdefault((tenant_id, user), {})[str(doc.get("owner")).lower()] = doc
+        for (tenant_id, user), asked in sorted(people.items())[:MAX_RECHECKS_PER_SWEEP]:
+            if out_of_time():
+                report.out_of_time = True
+                break
+            caller = Caller(email=user, tenant_id=tenant_id)
+            connection = self.connection(caller)
+            if connection is None or connection.get("state") != ACTIVE:
+                continue
+            report.installs_rechecked += 1
+            try:
+                with self._as_user(caller) as (github, _held):
+                    installed = github.installations()
+            except _Unanswered:
+                report.installs_unreachable += 1
+                continue
+            except (_Refused, ApiError) as refused:
+                report.installs_refused += 1
+                log.info("access install re-check refused tenant=%s user_hash=%s (%s)",
+                         tenant_id, user_hash(user), type(refused).__name__)
+                continue
+            flipped = self._mark_installed(caller, asked, installed)
+            report.installs_found += len(flipped)
+            now = self._now()
+            for key in asked:
+                if key not in flipped:
+                    self._db.collection(ORGS).document(
+                        org_id_for(tenant_id, user, key)).update({"checked_at": now})
+        if len(people) > MAX_RECHECKS_PER_SWEEP:
+            report.out_of_time = True
 
     def disable(self, caller: Caller, owner: str) -> dict[str, Any]:
-        """§2.4: delete the owner and every grant under it, in one write."""
+        """§2.4: delete the owner and every grant under it, in one write. For
+        a requested owner, that withdraws the request."""
         check_owner(owner)
         doc = self._org(caller, owner)
         if doc is None:
             raise NotFound(f"{owner} is not enabled for you in this tenant")
         grants = [g for g in self._mine(GRANTS, caller)
                   if str(g.get("owner") or "").lower() == owner.lower()]
+        # D5: an owner enabled through the person's token loses the token too,
+        # every version of it, so removing the org revokes SwarmCloud's access.
+        # BEFORE the document goes: a disable that fails raises 503 and keeps
+        # it, so removing the owner again still finds the token.
+        slot_versions = self._app.revoke_owner_token(caller, owner) if via_token(doc) else {}
         batch = self._db.batch()
         batch.delete(self._db.collection(ORGS).document(
             org_id_for(caller.tenant_id, caller.key, owner)))
@@ -791,7 +1102,8 @@ class AccessService:
         log.info("access owner disabled tenant=%s user_hash=%s owner=%s grants_deleted=%d",
                  caller.tenant_id, user_hash(caller.key), owner.lower(), len(grants))
         return {"owner": owner.lower(), "grants_deleted": len(grants),
-                "unregistered": unregistered,
+                "unregistered": unregistered, "token_revoked": via_token(doc),
+                "slot_versions_disabled": slot_versions,
                 # What GitHub still allows, said plainly (§2.4): the user's
                 # token is not per org, so the installation stays until an
                 # org owner removes it.
@@ -812,24 +1124,39 @@ class AccessService:
         if len(needle) > MAX_QUERY_CHARS:
             raise ValidationFailed(f"q must be at most {MAX_QUERY_CHARS} characters")
         org = self._org(caller, owner)
-        if org is None or not org.get("installation_id"):
+        if org is None or not (org.get("installation_id") or via_token(org)):
             raise NotFound(f"{owner} is not enabled for you in this tenant: enable it first")
-        installation_id = int(org["installation_id"])
+        token = via_token(org)
+        installation_id = 0 if token else int(org["installation_id"])
+        own_account = org.get("owner_type") == "User"
         total: int | None = None
         capped = False
-        with self._as_user(caller) as (github, _held):
+
+        def page_of(github: _AsUser, n: int) -> tuple[list[Any], int | None, HttpAnswer]:
+            if token:
+                return github.owner_page(owner, n, own_account=own_account)
+            return github.installation_page(installation_id, n)
+
+        def refuse(answer: HttpAnswer) -> None:
+            if token:
+                if answer.status != 200:
+                    raise self._owner_refusal(answer, owner, "", org)
+                return
+            self._refuse_listing(caller, answer, owner, installation_id)
+
+        with self._as_owner(caller, org) as (github, _held):
             try:
                 if not needle:
-                    raw, total, answer = github.installation_page(installation_id, page)
-                    self._refuse_listing(caller, answer, owner, installation_id)
+                    raw, total, answer = page_of(github, page)
+                    refuse(answer)
                     window = raw
                     more = len(raw) >= PAGE_SIZE and page < MAX_PAGES
                     capped = len(raw) >= PAGE_SIZE and page == MAX_PAGES
                 else:
                     matched: list[Any] = []
                     for gh_page in range(1, MAX_PAGES + 1):
-                        raw, total, answer = github.installation_page(installation_id, gh_page)
-                        self._refuse_listing(caller, answer, owner, installation_id)
+                        raw, total, answer = page_of(github, gh_page)
+                        refuse(answer)
                         matched += [r for r in raw if needle in _name(r)]
                         if len(raw) < PAGE_SIZE:
                             break
@@ -874,6 +1201,34 @@ class AccessService:
                              "SwarmCloud's installation", owner=owner, repo=repo or owner,
                              url=url, status=403)
 
+    def _owner_refusal(self, answer: HttpAnswer, owner: str, repo: str,
+                       org: dict[str, Any] | None) -> AccessRefused:
+        """`_refusal` for an owner reached through the App; for one reached
+        through the person's token (D5), §2.3's token causes instead: SSO,
+        the classic-token policy, a fine-grained token not yet approved, and
+        otherwise the token's own lack of access to what was read."""
+        if not via_token(org):
+            return self._refusal(answer, owner, repo, (org or {}).get("installation_id"))
+        sso = _sso_owner(answer)
+        if sso is not None:
+            return self._refusal(answer, owner, repo, None)
+        data = answer.json()
+        message = data.get("message") if isinstance(data, dict) else None
+        if answer.status == 403 and isinstance(message, str) and _CLASSIC_BLOCKED.search(message):
+            return AccessRefused("CLASSIC_PAT_BLOCKED",
+                                 f"{owner} does not accept classic personal access tokens",
+                                 owner=owner, status=403)
+        what = f"{owner}/{repo}" if repo else f"{owner}'s repositories"
+        if (org or {}).get("token_kind") == "fine_grained_pat" \
+                and (org or {}).get("owner_type") != "User":
+            return AccessRefused("FINE_GRAINED_PAT_PENDING",
+                                 f"GitHub answered HTTP {answer.status} for {what} to your "
+                                 f"fine-grained token for {owner}", owner=owner, status=403)
+        return AccessRefused("PERMISSION_MISSING",
+                             f"GitHub answered HTTP {answer.status} for {what} to your token "
+                             f"for {owner}", repo=what, login=str((org or {}).get("forge_login")
+                                                                  or ""), status=403)
+
     def _entries(self, caller: Caller, owner: str, raw: list[Any]) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for item in raw:
@@ -913,12 +1268,12 @@ class AccessService:
         if repo_id_for(caller.tenant_id, owner, repo) != repo_id:
             raise ValidationFailed("repo_id is not this tenant's id for that repository")
         org = self._org(caller, owner)
-        if org is None:
+        if org is None or requested(org):
             raise AccessRefused(
                 "REPO_NOT_INSTALLED", f"{owner} is not enabled for you in this tenant: enable "
                 "it under Access first", owner=owner, repo=f"{owner}/{repo}",
                 url=self._install_url() or "")
-        with self._as_user(caller) as (github, held):
+        with self._as_owner(caller, org) as (github, held):
             try:
                 answer = github.get(f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}")
             except _Unanswered:
@@ -926,13 +1281,13 @@ class AccessService:
             # Names only: the credential, value and all, stays inside the `with`.
             secret_name, login = held.secret_name, held.login or ""
         if answer.status != 200:
-            raise self._refusal(answer, owner, repo, org.get("installation_id"))
+            raise self._owner_refusal(answer, owner, repo, org)
         read = repository_from(answer.json())
         if read is None or (read.owner.lower(), read.repo.lower()) != (owner.lower(),
                                                                        repo.lower()):
             raise UpstreamUnavailable(f"GitHub's answer for {owner}/{repo} is not that repository")
         if not read.can_read:
-            raise self._refusal(HttpAnswer(403, {}), owner, repo, org.get("installation_id"))
+            raise self._owner_refusal(HttpAnswer(403, {}), owner, repo, org)
         full = f"{read.owner}/{read.repo}"
         if mode == "write" and read.archived:
             raise AccessRefused("REPO_ARCHIVED", f"{full} is archived on GitHub", repo=full,
@@ -1009,13 +1364,23 @@ class AccessService:
     def verify(self, caller: Caller, repo_id: str,
                checks: list[str] | None = None) -> dict[str, Any]:
         """§2.2 `access_verified` for one grant: clone, and for a write
-        grant push and pull request. Reads only (D6)."""
+        grant push and pull request. Reads only (D6), unless the caller names
+        `push_test`: then, on a write grant only, one branch is created and
+        deleted (`_push_test`)."""
         doc = self._grant(caller, repo_id)
         if doc is None:
             raise NotFound(f"you hold no grant on {repo_id[:64]!r} in this tenant")
         wanted = list(dict.fromkeys(checks or CHECKS))
         owner, repo = str(doc["repository"]).split("/", 1)
         write = doc.get("mode") == "write"
+        if PUSH_TEST in wanted and not write:
+            # D9: SwarmCloud enforces a read grant, so it never pushes where
+            # the person chose read -- not even a test branch. Refused before
+            # the token is opened: nothing reaches GitHub. Not a switch: the
+            # request let through would be the push D9 forbids.
+            raise ValidationFailed(
+                f"push_test writes a branch, and your grant on {doc['repository']} is read: "
+                "SwarmCloud enforces read. Change the grant to write first.")
         org = self._org(caller, owner) or {}
         now = self._now()
         results: dict[str, dict[str, Any]] = {}
@@ -1027,7 +1392,9 @@ class AccessService:
                 failures.append({"check": name, "code": code,
                                  "copy": recovery_copy(code, **fill)})
 
-        with self._as_user(caller) as (github, held):
+        token = via_token(org)
+        pushed: dict[str, Any] | None = None
+        with self._as_owner(caller, org) as (github, held):
             login = held.login or ""
             try:
                 answer = github.get(f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}")
@@ -1039,7 +1406,7 @@ class AccessService:
                 for name in wanted:
                     put(name, UNKNOWN, "FORGE_UNREACHABLE")
             elif read is None:
-                refusal = self._refusal(answer, owner, repo, org.get("installation_id"))
+                refusal = self._owner_refusal(answer, owner, repo, org)
                 code = refusal.detail["failure_code"]
                 for name in wanted:
                     results[name] = {"state": MISSING, "code": code, "checked_at": now}
@@ -1064,14 +1431,19 @@ class AccessService:
                     if not write:
                         put("pull_request", NOT_REQUIRED)
                     else:
-                        try:
-                            installed = github.installations()
-                            inst = next((i for i in installed
-                                         if i.login.lower() == owner.lower()), None)
-                            pr_ok: bool | None = (inst is not None
-                                                  and inst.pull_requests == "write")
-                        except (_Unanswered, _Refused):
-                            pr_ok = None
+                        pr_ok: bool | None
+                        if token:
+                            # A token that pushes opens a pull request; its
+                            # pull-request permission is not readable (D5).
+                            pr_ok = True
+                        else:
+                            try:
+                                installed = github.installations()
+                                inst = next((i for i in installed
+                                             if i.login.lower() == owner.lower()), None)
+                                pr_ok = inst is not None and inst.pull_requests == "write"
+                            except (_Unanswered, _Refused):
+                                pr_ok = None
                         if push_ok is None or pr_ok is None:
                             put("pull_request", UNKNOWN, "FORGE_UNREACHABLE")
                         elif push_ok and pr_ok:
@@ -1079,6 +1451,10 @@ class AccessService:
                         else:
                             put("pull_request", MISSING, "PERMISSION_MISSING",
                                 repo=doc["repository"], login=login)
+                if PUSH_TEST in wanted:
+                    pushed = self._push_test(caller, repo_id, github, owner, repo,
+                                             read.default_branch, now, results, failures,
+                                             login=login)
         stored = {**(doc.get("checks") or {}), **results}
         update = {"checks": stored, "verified_at": now}
         self._db.collection(GRANTS).document(
@@ -1087,9 +1463,106 @@ class AccessService:
         log.info("access verify tenant=%s user_hash=%s repo_id=%s %s", caller.tenant_id,
                  user_hash(caller.key), repo_id,
                  " ".join(f"{k}={v['state']}" for k, v in results.items()))
-        return {"grant": grant_to_api(doc), "failures": failures,
-                "passed": not failures and all(r["state"] in (OK, NOT_REQUIRED)
-                                               for r in results.values())}
+        answer_body = {"grant": grant_to_api(doc), "failures": failures,
+                       "passed": not failures and all(r["state"] in (OK, NOT_REQUIRED)
+                                                      for r in results.values())}
+        if pushed is not None:
+            answer_body["push_test"] = pushed
+        return answer_body
+
+    def _push_test(self, caller: Caller, repo_id: str, github: _AsUser, owner: str,
+                   repo: str, default_branch: str, now: datetime,
+                   results: dict[str, dict[str, Any]], failures: list[dict[str, Any]], *,
+                   login: str) -> dict[str, Any] | None:
+        """D6 (b): the one write verify makes, with the token `_as_owner`
+        picked for the owner. Reads the default branch head, creates
+        `refs/heads/swarmcloud/onboarding-check-<nonce>` there, and deletes
+        it in a `finally`. Records `checks.push_test`; answers the branch and
+        whether it was left behind, or None when nothing was created.
+
+        A 403 or 404 on create is `missing` (PERMISSION_MISSING); a 5xx, a
+        429 or no answer is FORGE_UNREACHABLE and `unknown`, never `missing`.
+        A delete that fails leaves the push proven (`ok`) and answers
+        `leftover: true` with the branch, so the person can delete it."""
+        full = f"{owner}/{repo}"
+        base = f"/repos/{quote(owner, safe='')}/{quote(repo, safe='')}/git"
+
+        def record(state: str, code: str | None = None, copy: str | None = None,
+                   **extra: Any) -> None:
+            results[PUSH_TEST] = {"state": state, "code": code, "checked_at": now, **extra}
+            if code is not None or copy is not None:
+                failures.append({"check": PUSH_TEST, "code": code,
+                                 "copy": copy or recovery_copy(code or "", repo=full,
+                                                               login=login)})
+
+        if not default_branch:
+            record(UNKNOWN, copy=f"{full} has no default branch to test a push from; push a "
+                                 "first commit, then run the push test again.")
+            return None
+        try:
+            head = github.get(f"{base}/ref/heads/{quote(default_branch, safe='/')}")
+        except _Unanswered:
+            record(UNKNOWN, "FORGE_UNREACHABLE")
+            return None
+        data = head.json()
+        target = data.get("object") if isinstance(data, dict) else None
+        sha = target.get("sha") if isinstance(target, dict) else None
+        if head.status in (403, 404):
+            record(MISSING, "PERMISSION_MISSING")
+            return None
+        if head.status != 200 or not isinstance(sha, str) or not re.fullmatch(
+                r"[0-9a-f]{40}|[0-9a-f]{64}", sha):
+            record(UNKNOWN, copy=f"GitHub answered HTTP {head.status} for the head of "
+                                 f"{full}'s {default_branch}, so there is no commit to test "
+                                 "a push from; press Re-check to try again.")
+            return None
+        branch = PUSH_TEST_PREFIX + secrets.token_hex(8)
+        try:
+            created = github.api("POST", f"{base}/refs",
+                                 {"ref": f"refs/heads/{branch}", "sha": sha})
+        except _Unanswered:
+            # Not answered is not refused, and may still have been made: the
+            # delete below is tried all the same.
+            created = None
+        # A create GitHub did not answer may still have been made, so its
+        # delete is tried too; only a refused create is known to leave nothing.
+        maybe_made = created is None or created.status == 201
+        deleted = False
+        try:
+            if created is None:
+                record(UNKNOWN, "FORGE_UNREACHABLE")
+            elif created.status == 201:
+                record(OK)
+            elif created.status in (403, 404):
+                record(MISSING, "PERMISSION_MISSING")
+            else:
+                record(UNKNOWN, copy=f"GitHub answered HTTP {created.status} to the test "
+                                     f"branch in {full}; press Re-check to try again.")
+        finally:
+            if maybe_made:
+                deleted = self._delete_branch(caller, repo_id, github, base, branch,
+                                              must_exist=created is not None)
+        if not maybe_made or (created is None and deleted):
+            return None
+        results[PUSH_TEST].update({"branch": branch, "leftover": not deleted})
+        return {"branch": branch, "leftover": not deleted}
+
+    @staticmethod
+    def _delete_branch(caller: Caller, repo_id: str, github: _AsUser, base: str, branch: str,
+                       *, must_exist: bool) -> bool:
+        """Delete the push test's branch: True when GitHub says it is gone.
+        Logged by name and status, never with the token."""
+        try:
+            answer = github.api("DELETE", f"{base}/refs/heads/{quote(branch, safe='/')}")
+            status: str = str(answer.status)
+            gone = answer.status == 204 or (not must_exist and answer.status in (404, 422))
+        except _Unanswered as exc:
+            status, gone = type(exc).__name__, False
+        if not gone:
+            log.warning("access push_test left its branch tenant=%s user_hash=%s repo_id=%s "
+                        "branch=%s delete=%s", caller.tenant_id, user_hash(caller.key),
+                        repo_id, branch, status)
+        return gone
 
     @staticmethod
     def _advertised(github: _AsUser, owner: str, repo: str, service: str) -> bool | None:
@@ -1137,6 +1610,27 @@ class AccessService:
                 else:
                     row["grants"].append(grant_to_api(doc))
         return {"members": [people[k] for k in sorted(people)]}
+
+
+def _requested_row(doc: dict[str, Any]) -> dict[str, Any]:
+    return {"owner": str(doc.get("owner_login") or doc.get("owner")),
+            "requested_at": _iso(doc.get("requested_at"))}
+
+
+def _token_row(doc: dict[str, Any]) -> dict[str, Any]:
+    """An owner enabled through the person's token (D5), as the owners list
+    shows it: from its document, which the token's probe wrote."""
+    return {
+        "owner": str(doc.get("owner_login") or doc.get("owner")),
+        "owner_type": doc.get("owner_type") or "Organization",
+        "installation_id": None,
+        "repository_selection": None,
+        "install_state": doc.get("install_state") or "token",
+        "sso": doc.get("sso") or "unknown",
+        "enabled": True,
+        "install_url": None,
+        "method": METHOD_PAT,
+    }
 
 
 def _name(raw: Any) -> str:

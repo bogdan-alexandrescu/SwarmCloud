@@ -82,7 +82,40 @@ class Switch:
 
 #: Every switched refusal, by code. Empty on the day this module landed: every
 #: refusal on main then was established and stays enforced.
-SWITCHES: dict[str, Switch] = {}
+SWITCHES: dict[str, Switch] = {
+    # An admin's manual approval of a workspace whose tenant predates the
+    # workspace job (docs/workspaces.md §1.3, §3.3). The People pane offers
+    # no Approve on such a record, so only a direct API call meets it.
+    "WORKSPACE_MIGRATING": Switch(
+        code="WORKSPACE_MIGRATING",
+        why="lane W9's migration has written the record of every tenant "
+        "Terraform made, so no admin needs to approve one by hand",
+    ),
+    # The schedule tick's budget and failure stops (docs/schedules.md §4.3,
+    # §4.4, lane S2). Each refuses a SCHEDULE'S OWN next firing, never a
+    # person's request, and is raised by `schedulefire` through `refuse`.
+    # Off, the firing goes ahead and the log names the stop it would have
+    # made. A departed owner (OWNER_NOT_MEMBER) is NOT here: submitting as
+    # someone who left the tenant is an isolation breach (invariant 9), and
+    # it is the established `owner_not_member` refusal.
+    "BUDGET_EXHAUSTED": Switch(
+        code="BUDGET_EXHAUSTED",
+        why="a schedule's firing is skipped when today's reported spend plus the per-run "
+        "cap for every live item and unreported attempt passes per_day_usd (§4.3). On "
+        "once the budget figures of S1 have been read against real firings' costs",
+    ),
+    "RUN_OVER_BUDGET": Switch(
+        code="RUN_OVER_BUDGET",
+        why="a firing whose work recorded more than per_run_usd ends failed and pauses its "
+        "schedule (§4.3). On once attempts report cost_usd for the schedule's profiles",
+    ),
+    "CONSECUTIVE_FAILURES": Switch(
+        code="CONSECUTIVE_FAILURES",
+        why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
+        "3). On once a schedule's failures are visible in the console (S7), so a "
+        "pause has a screen that says why",
+    ),
+}
 
 
 def _value(name: str, raw: str) -> bool | None:

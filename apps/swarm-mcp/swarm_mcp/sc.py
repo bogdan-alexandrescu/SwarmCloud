@@ -26,6 +26,8 @@ and `sc access` grants, revokes and verifies them later. They change what
 SwarmCloud may do as that person, so they are held out of every grant as the
 account verbs are; `sc setup status`, `sc access list`, `orgs` and `repos`
 read. No token, code or state is printed (see the section's own note).
+`sc setup token --owner <org>` (D5) is the one verb a token goes IN through:
+read from stdin, never an argument, posted once and never printed.
 
 IT ALSO SAYS WHICH CLUSTER, AND WHO YOU ARE ON IT (2026-09-25). `sc context`,
 `sc login`, `sc logout` and `sc whoami` are the `kubectl config` / `gh auth`
@@ -1562,7 +1564,11 @@ def _setup_issues(step: dict[str, Any]) -> list[dict[str, Any]]:
 def _setup_note(step: dict[str, Any]) -> str:
     state = str(step.get("state") or "unknown")
     evidence = step.get("evidence") if isinstance(step.get("evidence"), dict) else {}
-    if step.get("step") == "github_connected" and state in _SETUP_DONE:
+    if step.get("step") == "workspace" and evidence.get("state"):
+        note = workspace_line(evidence)
+    elif step.get("step") == "claude_account":
+        note = claude_line(evidence)
+    elif step.get("step") == "github_connected" and state in _SETUP_DONE:
         login = evidence.get("forge_login") or "an account GitHub did not name"
         note = f"connected as {login}"
         if evidence.get("via") == "tenant":
@@ -1671,6 +1677,212 @@ def refusal_text(exc: SwarmError) -> str:
     if code and recovery:
         return f"{code}: {recovery}"
     return str(exc)
+
+
+# -- personal workspaces (#847, lane W8; docs/workspaces.md §6.2) ------------
+#
+# The person's own workspace and Claude account: the two checklist steps after
+# `signed_in`. The routes are always the CALLER'S OWN (`GET`/`POST
+# /v1/workspace`, `POST /v1/workspace/loan-request`): nothing here names a
+# tenant, an email or a workspace id, so nobody can ask for anyone else's.
+# Nothing here waits for an approval or a job: a request is recorded and
+# answered, and the next `sc setup` or `/sc:setup` reads where it stands.
+
+#: The submission gate's two refusals (§5.2). Every submission verb prints
+#: them through `workspace_refusal_text`, from the one place each surface
+#: prints an error (`main` here, `server._tool_error_text` for the tools).
+WORKSPACE_REFUSALS = ("WORKSPACE_NOT_READY", "NO_CLAUDE_ACCOUNT")
+
+#: The plugin's own spelling of setup, which a tool reply names.
+PLUGIN_SETUP_COMMAND = "/sc:setup"
+
+#: The record's fields a terminal or a tool reply carries. Not `tenant_id`:
+#: it is derived from the person's email, so it is a name, and the opaque
+#: workspace id is what identifies a workspace outside Firestore (§2.6).
+WORKSPACE_FIELDS = ("state", "workspace_id", "requested_at", "decision", "steps", "failure",
+                    "ready_at", "request_again_at", "setup_url", "setup_command")
+
+#: §4.2's console labels, by the job's step id.
+_WORKSPACE_STEP_LABELS = {
+    "A1": "Approved", "A2": "Checking the name is free", "A3": "Identity", "A4": "Identity",
+    "A5": "Access", "A6": "Access", "A7": "Namespace", "A8": "Limits", "A9": "Final check",
+}
+
+
+def api_message(exc: SwarmError) -> str:
+    """The API's own sentence out of a refusal, word for word.
+
+    `SwarmClient` words an API refusal `<METHOD> <path> -> <status>: <message>`
+    and, when the body carried a detail object, appends it as ` (<json>)`
+    (`client._explain_json`). Both are taken off again here, exactly, so what
+    is left is the `message` the API wrote; anything not in that shape is
+    returned whole rather than cut at a guess."""
+    text = str(exc)
+    if exc.status is not None:
+        _head, sep, rest = text.partition(f" -> {exc.status}: ")
+        if sep:
+            text = rest
+    if isinstance(exc.detail, dict) and exc.detail:
+        tail = f" ({json.dumps(exc.detail, default=str)})"
+        if text.endswith(tail):
+            text = text[: -len(tail)]
+    return text
+
+
+def api_refusal(exc: SwarmError) -> str:
+    """`CODE: the API's sentence`, or the error as it came when there is no code."""
+    return f"{exc.code}: {api_message(exc)}" if exc.code else str(exc)
+
+
+def workspace_refusal_text(exc: SwarmError, setup_command: str) -> str | None:
+    """The gate's refusal as §6.2 prints it, or None for any other error:
+
+        ✕ 403 WORKSPACE_NOT_READY: <the API's message, word for word>
+          Finish setup with /sc:setup.
+    """
+    if exc.status != 403 or exc.code not in WORKSPACE_REFUSALS:
+        return None
+    return f"✕ 403 {exc.code}: {api_message(exc)}\n  Finish setup with {setup_command}."
+
+
+def _workspace_shown(record: Any) -> dict[str, Any]:
+    if not isinstance(record, dict) or not isinstance(record.get("state"), str):
+        raise SwarmError("the API answered no workspace record; nothing was read")
+    return {key: record.get(key) for key in WORKSPACE_FIELDS if key in record}
+
+
+def workspace_status(client: SwarmClient) -> dict[str, Any]:
+    """`GET /v1/workspace`: the caller's own record, or `{state: "none"}`."""
+    return _workspace_shown(client.request("GET", "/v1/workspace"))
+
+
+def request_workspace(client: SwarmClient) -> dict[str, Any]:
+    """`POST /v1/workspace`: ask for it. Idempotent: a standing request, an
+    approval under way or a ready workspace is answered as it is (§1.3)."""
+    return _workspace_shown(
+        client.request("POST", "/v1/workspace", payload={"via": SETUP_SURFACE}))
+
+
+def request_loan(client: SwarmClient) -> dict[str, Any]:
+    """`POST /v1/workspace/loan-request`: ask an admin to lend a Claude
+    account. Idempotent; refused until a workspace has been requested."""
+    answer = client.request("POST", "/v1/workspace/loan-request",
+                            payload={"via": SETUP_SURFACE})
+    if not isinstance(answer, dict):
+        raise SwarmError("the API answered no loan request; nothing was read")
+    return {key: answer.get(key) for key in ("state", "workspace_id", "requested_at")}
+
+
+def _steps_done(record: dict[str, Any]) -> str:
+    steps = record.get("steps") if isinstance(record.get("steps"), dict) else {}
+    done = sum(1 for step in _WORKSPACE_STEP_LABELS
+               if isinstance(steps.get(step), dict) and steps[step].get("state") == "done")
+    return f"{done} of {len(_WORKSPACE_STEP_LABELS)} steps done"
+
+
+def workspace_line(record: dict[str, Any]) -> str:
+    """The record's state in one line, with its workspace id."""
+    state = str(record.get("state") or "none")
+    wid = record.get("workspace_id")
+    named = f" ({wid})" if wid else ""
+    if state == "none":
+        return "not requested"
+    if state == "requested":
+        return f"requested{named} — waiting for an admin"
+    if state in ("approved", "applying"):
+        return f"being set up{named} — {_steps_done(record)}"
+    if state == "needs_owner":
+        return (f"approved{named} — a change needs the platform owner's review before "
+                "it can finish")
+    if state == "ready":
+        return f"ready{named}"
+    if state == "denied":
+        reason = str(((record.get("decision") or {}) if isinstance(record.get("decision"), dict)
+                      else {}).get("reason") or "").strip()
+        return f"not approved{named}: {reason}" if reason else f"not approved{named}"
+    if state == "failed":
+        failure = record.get("failure") if isinstance(record.get("failure"), dict) else {}
+        step = _WORKSPACE_STEP_LABELS.get(str(failure.get("step") or ""), failure.get("step"))
+        return f"stopped{named}" + (f" at {step}" if step else "")
+    return state.replace("_", " ")
+
+
+def claude_line(evidence: dict[str, Any]) -> str:
+    """The `claude_account` step's evidence in one line (§5.1 (3)'s sources)."""
+    own, lent = evidence.get("own") or 0, evidence.get("lent") or 0
+    if own:
+        return f"own ({own})"
+    if lent:
+        return f"lent ({lent})"
+    if evidence.get("provider_key"):
+        return "provider key"
+    if evidence.get("loan_request") == "requested":
+        return "loan requested"
+    return "none"
+
+
+def _may_ask_again(record: dict[str, Any]) -> bool:
+    """A denied record may be requested again once its wait is over (§1.3)."""
+    again = record.get("request_again_at")
+    if not again:
+        return True
+    try:
+        at = datetime.fromisoformat(str(again).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    return at <= datetime.now(timezone.utc)
+
+
+def _setup_workspace(client: SwarmClient, view: dict[str, Any], out,
+                     ask: Callable[[str], str]) -> None:
+    """§6.2's two steps, before GitHub: offer the request when there is none
+    (or a denial's wait is over), say where a waiting or applying one stands
+    and move on, then offer a loan when there is no Claude account. Nothing
+    here waits for an admin or the job. An API without the steps skips this."""
+    step = _setup_step(view, "workspace")
+    if not step:
+        return
+    record = step.get("evidence") if isinstance(step.get("evidence"), dict) else {}
+    state = str(record.get("state") or "none")
+    if state == "none" or (state == "denied" and _may_ask_again(record)):
+        question = ("\nRequest your workspace now? An admin approves it; it is ready a few "
+                    "minutes after that. [Y/n] " if state == "none"
+                    else "\nRequest your workspace again? [y/N] ")
+        if _yes(ask(question), default=state == "none"):
+            try:
+                record = request_workspace(client)
+            except SwarmError as exc:
+                out.write(f"  workspace: {api_refusal(exc)}\n")
+            else:
+                state = str(record.get("state") or "none")
+                out.write(f"  {_SETUP_MARKS['in_progress']} {'workspace':<17} "
+                          f"{workspace_line(record)}\n")
+    elif state != "ready":
+        out.write(f"\nYour workspace is {workspace_line(record)}. Carrying on meanwhile.\n")
+
+    claude = _setup_step(view, "claude_account")
+    evidence = claude.get("evidence") if isinstance(claude.get("evidence"), dict) else {}
+    if not claude or claude.get("state") in _SETUP_DONE or \
+            evidence.get("loan_request") == "requested":
+        return
+    if state == "none":
+        out.write("  claude account: an admin lends an account to a workspace; request the "
+                  "workspace first\n")
+        return
+    answer = ask(f"  {_SETUP_MARKS['todo']} {'claude account':<17} none — add one in the "
+                 "console, or ask for a loan? [loan/skip] ").strip().lower()
+    if answer != "loan":
+        out.write("  claude account: skipped. Add your own on Capacity › Accounts in the "
+                  f"console, or with `{terminal_command('sc account add --label <name>')}`\n")
+        return
+    try:
+        request_loan(client)
+    except SwarmError as exc:
+        out.write(f"  claude account: {api_refusal(exc)}\n")
+        return
+    out.write(f"  {_SETUP_MARKS['in_progress']} {'claude account':<17} loan requested\n")
 
 
 def repository_name(text: str) -> str:
@@ -1786,13 +1998,28 @@ def revoke_repository(client: SwarmClient, repository: str) -> dict[str, Any]:
     return client.request("DELETE", f"/v1/access/grants/{repo_id}")
 
 
+#: The checks a push test asks for: the reads, and D6's one write. Named in
+#: full because a body that names `checks` replaces the API's default set.
+PUSH_TEST_CHECKS = ("clone", "push", "pull_request", "push_test")
+
+
 def verify_repositories(
-    client: SwarmClient, repositories: Sequence[str] = ()
+    client: SwarmClient, repositories: Sequence[str] = (), *, push_test: bool = False
 ) -> list[dict[str, Any]]:
     """`POST /v1/access/grants/{repo_id}/verify` for each grant named, or for
     every grant you hold. Reads only (D6): clone, and for a write grant push
     and pull request. A refused call is that repository's answer, not the end
-    of the sweep."""
+    of the sweep.
+
+    `push_test` adds D6's opt-in write: on each NAMED write grant, the API
+    creates and deletes one branch, `swarmcloud/onboarding-check-<nonce>`.
+    It is never run over "every grant", and a read grant is refused here,
+    before anything is sent: SwarmCloud enforces read (D9), so it does not
+    push there, not even a test branch. The caller has had the person
+    confirm it; this function does not ask."""
+    if push_test and not repositories:
+        raise SwarmError("the push test writes a branch, so it runs only on repositories named "
+                         "one by one. Nothing was verified")
     grants = [g for g in access_overview(client).get("grants") or [] if isinstance(g, dict)]
     if repositories:
         by_name = {str(g.get("repository") or "").lower(): g for g in grants}
@@ -1804,14 +2031,20 @@ def verify_repositories(
                     f"you hold no grant on {repository_name(repository)}; nothing was verified. "
                     "Grant it first"
                 )
+            if push_test and grant.get("mode") != "write":
+                raise SwarmError(
+                    f"your grant on {grant.get('repository')} is read, and the push test writes "
+                    "a branch: SwarmCloud enforces read. Change the grant to write first. "
+                    "Nothing was verified")
             picked.append(grant)
         grants = picked
+    body: dict[str, Any] = {"checks": list(PUSH_TEST_CHECKS)} if push_test else {}
     results: list[dict[str, Any]] = []
     for grant in grants:
         row: dict[str, Any] = {"repository": grant.get("repository"), "mode": grant.get("mode")}
         repo_id = grant.get("repo_id")
         try:
-            answer = client.request("POST", f"/v1/access/grants/{repo_id}/verify", payload={})
+            answer = client.request("POST", f"/v1/access/grants/{repo_id}/verify", payload=body)
         except SwarmError as exc:
             row.update(passed=False, checks={}, failures=[{"check": "verify",
                                                             "code": (exc.detail or {}).get("failure_code"),
@@ -1825,6 +2058,10 @@ def verify_repositories(
             checks={name: (check or {}).get("state") for name, check in (checked or {}).items()},
             failures=[f for f in answer.get("failures") or [] if isinstance(f, dict)],
         )
+        if isinstance(answer.get("push_test"), dict):
+            # The branch's name and whether it was left behind: never a token.
+            row["push_test"] = {"branch": answer["push_test"].get("branch"),
+                                "leftover": bool(answer["push_test"].get("leftover"))}
         results.append(row)
     return results
 
@@ -1836,10 +2073,15 @@ def verify_lines(results: Sequence[dict[str, Any]]) -> list[str]:
     for row in results:
         lines.append(f"{row.get('repository')}  ({row.get('mode') or '?'})  "
                      + ("passed" if row.get("passed") else "NOT passed"))
-        for name in ("clone", "push", "pull_request"):
+        for name in PUSH_TEST_CHECKS:
             state = (row.get("checks") or {}).get(name)
             if state is not None:
                 lines.append(f"    {name.replace('_', ' '):<14} {state}")
+        pushed = row.get("push_test")
+        if isinstance(pushed, dict) and pushed.get("branch"):
+            lines.append(f"    test branch    {pushed['branch']} "
+                         + ("was NOT deleted: delete it on GitHub" if pushed.get("leftover")
+                            else "created and deleted"))
         for failure in row.get("failures") or []:
             lines.append(f"    {failure.get('check')}: {failure.get('code') or 'refused'}")
             if failure.get("copy"):
@@ -1858,7 +2100,34 @@ def owners_lines(listing: dict[str, Any]) -> list[str]:
         enabled = ", enabled" if owner.get("enabled") else ""
         sso = ", SSO required" if owner.get("sso") == "required" else ""
         lines.append(f"  {owner.get('owner')!s:<24} {kind:<13} {state}{enabled}{sso}")
+        if owner.get("code") and owner.get("copy"):
+            # ORG_APPROVAL_PENDING (§2.3): the API's copy, word for word.
+            lines += _wrapped(f"{owner['code']}: {owner['copy']}", "      ")
     return lines
+
+
+def approval_pending(listing: dict[str, Any]) -> list[dict[str, Any]]:
+    """The owners waiting on an org owner's approval of the App: each one's
+    §2.3 code and copy as the API served them, and when it was asked for."""
+    return [{"owner": o.get("owner"), "code": o.get("code"), "copy": o.get("copy"),
+             "requested_at": o.get("requested_at")}
+            for o in listing.get("owners") or []
+            if isinstance(o, dict) and o.get("install_state") == "requested"]
+
+
+def request_install(client: SwarmClient, owner: str) -> dict[str, Any]:
+    """`POST /v1/access/orgs/{owner}/install-request`: record that you asked
+    `owner`'s owners to install the App. GitHub shows a user token no
+    pending request, so SwarmCloud records it, shows ORG_APPROVAL_PENDING and
+    re-checks it every 15 minutes. No GitHub call, no body."""
+    named = owner.strip()
+    if not named:
+        raise SwarmError("name the owner whose owners you asked. Nothing was sent")
+    owner = urllib.parse.quote(named, safe="")
+    answer = client.request("POST", f"/v1/access/orgs/{owner}/install-request")
+    if not isinstance(answer, dict):
+        raise SwarmError(f"the install request for {named} answered nothing readable")
+    return answer
 
 
 def repositories_lines(listing: dict[str, Any]) -> list[str]:
@@ -2011,7 +2280,11 @@ def _setup_owners(client: SwarmClient, out, ask: Callable[[str], str],
         out.write(
             f"Install it there, choosing \"Only select repositories\":\n  {url}\n"
             "On an organisation you do not own, GitHub sends its owners a request; it can "
-            "be enabled once one of them approves.\n"
+            "be enabled once one of them approves. Record that you asked with "
+            f"`{terminal_command('sc access request-install <owner>')}`, and setup shows "
+            "ORG_APPROVAL_PENDING and re-checks it every 15 minutes.\n"
+            "If the org will not install it, store a fine-grained token for it instead: "
+            f"`{terminal_command('sc setup token --owner <owner>')}` (read from stdin).\n"
         )
         if not _yes(ask("Open the install page now? [y/N]: "), default=False):
             return enabled
@@ -2033,8 +2306,9 @@ def run_setup(
     sleep: Callable[[float], Any] | None = None,
     clock: Callable[[], float] | None = None,
 ) -> int:
-    """The wizard, from wherever the checklist stands (§4.3): connect GitHub,
-    enable owners, choose repositories, verify, then the checklist again.
+    """The wizard, from wherever the checklist stands (§4.3): the workspace
+    and the Claude account (docs/workspaces.md §6.2), connect GitHub, enable
+    owners, choose repositories, verify, then the checklist again.
 
     Exit 0 when the checklist says ready, 3 when it stopped short of that (a
     step failed, the browser half timed out, or nothing is installed yet);
@@ -2043,6 +2317,7 @@ def run_setup(
     open_browser = open_browser or _open_browser
     view = setup_status(client)
     _emit(setup_checklist(view), out)
+    _setup_workspace(client, view, out, ask)
 
     login = connected_as_you(view)
     if login is None:
@@ -2114,6 +2389,79 @@ def run_setup(
 def cmd_setup(client: SwarmClient, args, out) -> int:
     return run_setup(client, out, browser=not args.no_browser,
                      timeout=max(1, int(args.timeout)))
+
+
+# -- D5: a fallback token for one owner (`sc setup token --owner <org>`) ------
+#
+# For an org that will not install the App, or that refuses classic tokens:
+# a fine-grained personal access token whose resource owner is that org.
+# THE VALUE IS READ FROM STDIN AND NOWHERE ELSE. There is no `--token`: an
+# argument lands in shell history and in `ps`, and a model granted a shell
+# could be handed one. At a terminal it is read through getpass, with no
+# echo; piped (`... | uv run sc setup token --owner o`), one line. It is
+# posted ONCE, and every line this prints -- the answer, a refusal, an error
+# -- has the value taken out first, in case anything ever echoed it.
+
+#: D5's route: probes the token against the owner, stores it once as a
+#: version of the person's per-owner slot, answers the org and the token's
+#: names, never the value.
+OWNER_TOKEN_PATH = "/v1/onboarding/github/token"
+
+
+def _read_owner_token(owner: str) -> str:
+    stdin = sys.stdin
+    if stdin is not None and getattr(stdin, "isatty", lambda: False)():
+        import getpass
+
+        return getpass.getpass(f"Personal access token for {owner} (input hidden): ").strip()
+    return (stdin.readline() if stdin is not None else "").strip()
+
+
+def _without(text: str, value: str) -> str:
+    return text.replace(value, "[redacted]") if value else text
+
+
+def cmd_setup_token(client: SwarmClient, args, out) -> int:
+    """Exit 0 with the org record, 3 when the API refused the token (§2.3's
+    code and copy), 1 through `main` when the API could not be read."""
+    owner = args.owner.strip()
+    value = _read_owner_token(owner)
+    if not value:
+        raise SwarmError(f"no token was read from stdin for {owner}; nothing was sent")
+    try:
+        answer = client.request("POST", OWNER_TOKEN_PATH,
+                                payload={"owner": owner, "token": value})
+    except SwarmError as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        answered = (bool(detail.get("failure_code"))
+                    or (exc.status is not None and 400 <= exc.status < 500
+                        and exc.status != 401 and not exc.edge))
+        if not answered:
+            raise SwarmError(_without(str(exc), value), status=exc.status, edge=exc.edge,
+                             code=exc.code) from None
+        out.write(_without(f"✕ {refusal_text(exc)}", value) + "\n")
+        out.write(f"Nothing was stored for {owner}.\n")
+        return EXIT_TROUBLE
+    answer = answer if isinstance(answer, dict) else {}
+    if args.json:
+        out.write(_without(json.dumps(answer, indent=2, default=str), value) + "\n")
+        return EXIT_OK
+    org = answer.get("org") if isinstance(answer.get("org"), dict) else {}
+    token = answer.get("token") if isinstance(answer.get("token"), dict) else {}
+    kind = str(token.get("kind") or "personal access token").replace("_", " ")
+    lines = [f"stored a {kind} for {org.get('owner') or owner}"
+             f" (GitHub login {token.get('forge_login') or '?'}, "
+             f"expires {token.get('expires_at') or 'not stated'})"]
+    state = str(org.get("install_state") or "unknown").replace("_", " ")
+    lines.append(f"{org.get('owner') or owner}: {state}"
+                 + (", enabled through your token" if org.get("enabled") else ", not enabled"))
+    lines.append("SwarmCloud uses it as you, for this owner only; it is never shown again. Run "
+                 "this again to replace it; "
+                 f"`{terminal_command('sc access remove-org ' + owner)}` revokes it.")
+    lines.append(f"Next: `{terminal_command('sc access repos ' + owner)}`, then "
+                 f"`{terminal_command('sc access grant <owner/repo> --read')}` (or --write).")
+    _emit([_without(line, value) for line in lines], out)
+    return EXIT_OK
 
 
 def cmd_setup_status(client: SwarmClient, args, out) -> int:
@@ -2269,13 +2617,60 @@ def cmd_access_revoke(client: SwarmClient, args, out) -> int:
 
 
 def cmd_access_verify(client: SwarmClient, args, out) -> int:
-    """Exit 0 when every grant verified passed, 3 when one did not."""
-    results = verify_repositories(client, args.repositories or ())
+    """Exit 0 when every grant verified passed, 3 when one did not.
+
+    `--push-test` is D6's opt-in write, for ONE repository: the API creates
+    and deletes `swarmcloud/onboarding-check-<nonce>` there as you. It runs
+    only after the repository's name is TYPED back, and SWARM_ASSUME_YES is
+    ignored, as for every other write here that a person must mean."""
+    push_test = bool(getattr(args, "push_test", False))
+    if push_test:
+        named = list(args.repositories or ())
+        if len(named) != 1:
+            raise SwarmError("--push-test takes exactly one owner/repo: it creates and deletes "
+                             "a branch there, one repository at a time. Nothing was sent")
+        repository = repository_name(named[0])
+        if os.environ.get("SWARM_ASSUME_YES", "").strip():
+            sys.stderr.write("sc: SWARM_ASSUME_YES is ignored here; a push test is typed\n")
+        typed = _ask(f"create and delete the branch swarmcloud/onboarding-check-<nonce> in "
+                     f"{repository}, as you? Type {repository} to confirm: ")
+        if typed.strip().lower() != repository.lower():
+            raise SwarmError(f"the repository typed was not {repository!r}; nothing was pushed "
+                             "and nothing was sent")
+    results = verify_repositories(client, args.repositories or (), push_test=push_test)
     if args.json:
         out.write(json.dumps(results, indent=2, default=str) + "\n")
     else:
         _emit(verify_lines(results), out)
     return EXIT_OK if results and all(r.get("passed") for r in results) else EXIT_TROUBLE
+
+
+def cmd_access_request_install(client: SwarmClient, args, out) -> int:
+    """Record that you asked an org's owners to install the App, and print
+    the install page to send them. The owner shows ORG_APPROVAL_PENDING until
+    GitHub lists the installation."""
+    owner = args.owner.strip()
+    try:
+        done = request_install(client, owner)
+    except SwarmError as exc:
+        raise _refused(exc) from None
+    if args.json:
+        out.write(json.dumps(done, indent=2, default=str) + "\n")
+        return EXIT_OK
+    org = done.get("org") if isinstance(done.get("org"), dict) else {}
+    if done.get("recorded") is False:
+        out.write(f"{org.get('owner') or owner} is already enabled; nothing was recorded\n")
+    else:
+        out.write(f"recorded: you asked {org.get('owner') or owner}'s owners to install "
+                  "SwarmCloud\n")
+    if org.get("code") and org.get("copy"):
+        _emit(_wrapped(f"{org['code']}: {org['copy']}", "  "), out)
+    url = done.get("install_url")
+    if isinstance(url, str) and url.startswith("https://"):
+        out.write(f"The install page, to open or to send to one of them:\n  {url}\n")
+    else:
+        out.write("This deployment named no install page; ask its operator for it.\n")
+    return EXIT_OK
 
 
 def cmd_access_disconnect(client: SwarmClient, args, out) -> int:
@@ -2322,8 +2717,27 @@ _WITHHELD = "withheld: the API did not say it masked this"
 
 def _section(value: Any = None, error: Exception | str | None = None) -> dict[str, Any]:
     if error is not None:
-        return {"value": None, "not_read_because": str(error)}
+        return {"value": None, "not_read_because": _unread_reason(error)}
     return {"value": value}
+
+
+def _unread_reason(error: Exception | str) -> str:
+    """Why a section was not read, WITHOUT the body of a response (#453).
+
+    A `SwarmError` raised for an HTTP answer quotes the API's or the edge's
+    error body in its message (`client._explain`), and that body comes with
+    no redaction count -- so, by `_shown`'s rule, it is withheld, and the
+    section says what the response WAS from the fields the client carries as
+    data: its status, whether Google's edge sent it, and the API's error
+    code. A reason with no status is a sentence the bridge wrote itself (a
+    transport failure, a log with no stream), and is printed.
+    """
+    status = getattr(error, "status", None)
+    if not isinstance(error, SwarmError) or status is None:
+        return str(error)
+    who = "Google's edge" if error.edge else "the API"
+    code = f" (code {error.code})" if error.code else ""
+    return f"{who} answered HTTP {status}{code}; its body is {_WITHHELD}"
 
 
 def _shown(text: Any, count: Any) -> Any:
@@ -2364,7 +2778,10 @@ def _log_tail(client: SwarmClient, task_id: str, attempt_id: str | None, lines: 
         if entry is None or entry.get("status") != "ok":
             status = entry.get("status") if entry else "absent"
             if status == "unreadable":
-                problems.append(f"{stream}: unreadable: {entry.get('detail')}")
+                # The route's `detail` is printed only under its count, like
+                # every other free-text field it serves (`_shown`, #453).
+                detail = _shown(entry.get("detail"), entry.get("detail_redaction_count"))
+                problems.append(f"{stream}: unreadable" + (f": {detail}" if detail else ""))
             continue
         total = entry.get("total_bytes")
         offset = max(0, int(total) - _DEBUG_TAIL_BYTES) if isinstance(total, int) else 0
@@ -3298,7 +3715,8 @@ def build_parser() -> argparse.ArgumentParser:
     # -- onboarding (#780, OB9): `setup` and `access` WRITE, bar the reads --
     st = sub.add_parser(
         "setup",
-        help="connect GitHub as yourself, enable owners, choose repositories, verify",
+        help="request your workspace, connect GitHub as yourself, enable owners, choose "
+             "repositories, verify",
         description=(
             "Walks the onboarding checklist from wherever it stands. Exit 0 when it "
             "ends ready, 3 when it stopped short (a step failed, the browser half "
@@ -3315,6 +3733,22 @@ def build_parser() -> argparse.ArgumentParser:
     ss = st_sub.add_parser("status", help="the checklist (exit 0 ready, 3 not ready, 1 unread)")
     _common(ss, root=False)
     ss.set_defaults(func=cmd_setup_status)
+    # NO OPTION TAKES THE VALUE (D5): it is read from stdin, so it never
+    # reaches shell history, `ps` or a model's command line.
+    stk = st_sub.add_parser(
+        "token",
+        help="store a fallback personal access token for one owner, read from stdin "
+             "(exit 0 stored, 3 refused, 1 unread)",
+        description=(
+            "For an org that will not install SwarmCloud's GitHub App, or refuses classic "
+            "tokens: a fine-grained personal access token whose resource owner is that org. "
+            "The token is read from stdin -- typed with no echo at a terminal, or one piped "
+            "line -- and never from an argument; it is posted once and never printed."
+        ),
+    )
+    stk.add_argument("--owner", required=True, help="the GitHub owner the token is for")
+    _common(stk, root=False)
+    stk.set_defaults(func=cmd_setup_token)
 
     acc = sub.add_parser(
         "access",
@@ -3338,6 +3772,12 @@ def build_parser() -> argparse.ArgumentParser:
     aro.add_argument("owner")
     _common(aro, root=False)
     aro.set_defaults(func=cmd_access_remove_org)
+    ari = acc_sub.add_parser(
+        "request-install",
+        help="record that you asked an org's owners to install the App; print its install page")
+    ari.add_argument("owner")
+    _common(ari, root=False)
+    ari.set_defaults(func=cmd_access_request_install)
     arp = acc_sub.add_parser("repos", help="one page of an enabled owner's repositories")
     arp.add_argument("owner")
     arp.add_argument("--page", type=int, default=1)
@@ -3360,6 +3800,9 @@ def build_parser() -> argparse.ArgumentParser:
     av_ = acc_sub.add_parser("verify", help="clone, push, pull request checks (exit 3 if one fails)")
     av_.add_argument("repositories", nargs="*", metavar="owner/repo",
                      help="the grants to verify (default: every one)")
+    av_.add_argument("--push-test", action="store_true",
+                     help="also create and delete swarmcloud/onboarding-check-<nonce> in ONE "
+                          "write grant (type its name to confirm)")
     _common(av_, root=False)
     av_.set_defaults(func=cmd_access_verify)
     ad = acc_sub.add_parser("disconnect", help="revoke SwarmCloud's access as you (type to confirm)")
@@ -3491,6 +3934,13 @@ def main(argv: list[str] | None = None, out=None) -> int:
         with SwarmClient(context=args.context) as client:
             return args.func(client, args, stream)
     except SwarmError as exc:
+        # THE SUBMISSION GATE'S REFUSAL (#847): the API answered, so this is
+        # not a connection failure and `swarm doctor` is no answer to it. Its
+        # message, word for word, and the command that fixes it.
+        refused = workspace_refusal_text(exc, f"`{terminal_command('sc setup')}`")
+        if refused is not None:
+            print(refused, file=sys.stderr)
+            return EXIT_FAIL
         # The connection itself failed, so there is no snapshot to mark up.
         # Say so on stderr and leave stdout empty rather than printing a screen
         # of dashes that looks like a reading.

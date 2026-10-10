@@ -21,9 +21,11 @@ from __future__ import annotations
 import json
 import math
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
 from pathlib import PurePosixPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from swarm_common.profiles import (
     INT64_MAX,
@@ -572,11 +574,60 @@ MERGE_STRATEGIES = ("direct-pr", "integrate")
 #:
 #:   on    append a `merge` step (when the spec states none); refused for a
 #:         workflow that opens no single pull request, rather than ignored.
+#:   on_merge_verdict
+#:         append a `merge` step that merges ONLY on a review's MERGE verdict:
+#:         an `integrate` workflow whose integrator is gated on a review. A
+#:         re-review step is appended too, on the integrator's pushed head, and
+#:         the merge reads ITS verdict -- the latest one (`REREVIEW_ROUNDS`).
+#:         Refused for a workflow with no such review, rather than merging
+#:         unreviewed work, and beside a spec's own merge step.
 #:   off   append none, and refuse a spec that states one: the two disagree.
-#:   absent  the platform's `merge_by_default` decides whether one is
-#:         appended; a spec's own merge step is honoured whatever it says.
+#:   absent  the repository's registered `merge_policy`, else the platform's
+#:         `merge_by_default` ("on"), decides whether one is appended; a
+#:         spec's own merge step is honoured whatever they say.
 MERGE_METADATA_KEY = "merge"
-MERGE_CHOICES = ("on", "off")
+MERGE_ON_VERDICT = "on_merge_verdict"
+MERGE_CHOICES = ("on", "off", MERGE_ON_VERDICT)
+
+#: What a registered repository's `merge_policy` may be (WF-MERGE-API,
+#: 2026-10-10): the default a workflow on it takes when its `metadata.merge`
+#: says nothing, and the default `auto_merge` of an issue run on it. Absent
+#: (never set) defers to the platform's `merge_by_default`. Only these two,
+#: not "on": a default that merges with no review verdict is a decision a job
+#: makes for itself, never one a repository makes for every job on it.
+MERGE_POLICY_OFF = "off"
+MERGE_POLICIES = (MERGE_POLICY_OFF, MERGE_ON_VERDICT)
+
+#: The step id the appended re-review takes, suffixed when a step already has it.
+REREVIEW_STEP_ID = "re-review"
+
+#: Review rounds after the fix under `on_merge_verdict`: ONE. The first review
+#: judges the implementer; the fix runs on NOT_YET; one re-review judges the
+#: fix's pushed head, and the merge reads that verdict. A second NOT_YET stops
+#: the workflow at its merge step (`verdict_not_merge`) with the pull request
+#: open for a person, rather than paying for fix after fix: a review that
+#: still says NOT_YET after one fix is a disagreement a person settles, and an
+#: unbounded loop is a cost nobody chose. The workflow is a DAG fixed at
+#: submission, so a round is a step that exists or not; raising this means
+#: appending fix/re-review pairs, which `rereview_step_for` does not do.
+REREVIEW_ROUNDS = 1
+
+#: What the re-review agent is told before the review's own instructions. The
+#: earlier verdict and the review's inputs are staged by parent, so each lands
+#: at `<step id>/<file>` and the earlier `verdict.json` can never be mistaken
+#: for the one this step writes into `$SWARM_ARTIFACTS_DIR`.
+REREVIEW_PREAMBLE = (
+    "You are the RE-REVIEW of this workflow (one round, after the fix step). "
+    "Your checkout is the head the fix step pushed: the implementer's change "
+    "plus any fix. Review that whole change against the default branch, not "
+    "only the fix. The earlier review's verdict is staged at {verdict_path}; "
+    "check every finding in it is resolved. Write your OWN verdict to "
+    "$SWARM_ARTIFACTS_DIR/{verdict_file} in the same shape: "
+    '{{"verdict": "MERGE" or "NOT_YET", "findings": [...]}}. '
+    "The merge step merges only on your MERGE. Do not edit files.\n\n"
+    "The original review instructions follow, for reference; files they name "
+    "are staged under the directory of the step that produced them ({staged}).\n\n"
+)
 
 #: The signed dispatch block on a merge step naming what it merges. The
 #: worker spells it `agent_worker.merge.MERGE_TARGET_FIELD`;
@@ -775,6 +826,13 @@ EXPECTED_OUTPUTS_METADATA_KEY = "expected_outputs"
 #: holds for `INPUT_FROM_METADATA_KEY`.
 STARTUP_REFUNDS_METADATA_KEY = "startup_refunds"
 
+#: The reconciler's count of a task's attempts lost to its pod passing its own
+#: disk limit (#893, `reconciler.model.DISK_EVICTIONS_KEY`). A caller who set it
+#: would choose how often its task is retried after an eviction. Restated for
+#: the reason STARTUP_REFUNDS_METADATA_KEY is;
+#: tests/unit/worker/test_worker_evicted.py holds them equal.
+DISK_EVICTIONS_METADATA_KEY = "disk_evictions"
+
 #: Child tasks (contract request 14, docs/design/child-tasks.md §6.4). The
 #: agent's `request_id` on a child, written once by the children route and read
 #: by its dedupe; the awaits refunded so far on a parent, written by the
@@ -794,6 +852,15 @@ CHILD_CASCADE_METADATA_KEY = "child_cascade"
 #: the strings equal.
 MERGE_WAIT_METADATA_KEY = "merge_wait"
 
+#: The mark a schedule's firing puts on the work it creates (docs/schedules.md
+#: §1.5, §2.7, lane S2): `{schedule_id, firing_id, slot, type}`. A caller who
+#: could set it would forge "made by schedule X" on any task, and could plant
+#: a task a schedule's finisher would ADOPT as its own firing's work (§2.2),
+#: so the firing would create nothing and report someone else's outcome.
+#: Written only by `schedulefire`, through `schedule_mark_allowed`. Unsigned:
+#: no worker acts on it, only swarm-api reads it.
+SCHEDULE_METADATA_KEY = "schedule"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -808,6 +875,8 @@ RESERVED_METADATA_KEYS = (
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     CHILD_CASCADE_METADATA_KEY,
     MERGE_WAIT_METADATA_KEY,
+    DISK_EVICTIONS_METADATA_KEY,
+    SCHEDULE_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -1290,6 +1359,7 @@ class DispatchOptions:
         base: str | None = None,
         number: int | None = None,
         head_sha: str | None = None,
+        pull_request_workflow: str | None = None,
     ) -> "DispatchOptions":
         """The `merge` step's target, already resolved to task ids. No role:
         it runs no agent, clones nothing and is integrated by nobody.
@@ -1301,7 +1371,11 @@ class DispatchOptions:
 
         A `merge_pr` workflow (#352) names the pull request by `number` and
         the `head_sha` the caller named instead of by the task that opened
-        it, because no task did; it has no review."""
+        it, because no task did; it has no review.
+
+        A merge-only continuation names `pull_request_workflow` too: the
+        continued task's own workflow, which the worker verifies that task's
+        signed spec against instead of the merge's (#900). It has no review."""
         target: list[tuple[str, Any]]
         if pull_request is None:
             if number is None or head_sha is None:
@@ -1311,6 +1385,10 @@ class DispatchOptions:
                 target.append(("base", base))
             return replace(self, role=None, integrates=(), merge_target=tuple(target))
         target = [("pull_request", pull_request)]
+        if pull_request_workflow is not None:
+            if review is not None or verdict_file is not None:
+                raise ValueError("a continued pull request's merge target names no review")
+            target.append(("pull_request_workflow", pull_request_workflow))
         if review is not None and verdict_file is not None:
             target += [("review", review), ("verdict_file", verdict_file)]
         if base:
@@ -1457,7 +1535,50 @@ _RESERVED_BECAUSE = {
         "step waiting for its pull request's checks, by the worker that parked it "
         "and the tick that wakes it. Drop the key from metadata."
     ),
+    SCHEDULE_METADATA_KEY: (
+        f"metadata.{SCHEDULE_METADATA_KEY} is reserved: it is set only by a "
+        "schedule's firing, on the work that firing created (docs/schedules.md "
+        "§2.7). Drop the key from metadata."
+    ),
+    DISK_EVICTIONS_METADATA_KEY: (
+        f"metadata.{DISK_EVICTIONS_METADATA_KEY} is reserved: it is set only by "
+        "the reconciler, to count attempts lost to the pod passing its own disk "
+        "limit (#893). Drop the key from metadata."
+    ),
 }
+
+
+#: The one `metadata.schedule` value the CURRENT submission may carry, set
+#: only by `schedule_mark_allowed`. None everywhere else, which is every
+#: request a caller makes.
+_SCHEDULE_MARK: ContextVar[Mapping[str, Any] | None] = ContextVar("schedule_mark", default=None)
+
+
+@contextmanager
+def schedule_mark_allowed(mark: Mapping[str, Any]) -> Iterator[None]:
+    """Let THIS submission carry `metadata.schedule == mark`, and nothing else.
+
+    WHY A SCOPED VALUE AND NOT ORDER. Every other reserved key gets past
+    `reject_reserved_metadata` by order: `SubmissionService` adds it after
+    the caller's metadata was checked. The schedule's firing submits through
+    the SAME service methods a person uses (docs/schedules.md §2.7) and
+    service.py is not lane S2's file, so the mark has to travel in the
+    spec's metadata. It is inside the stored task from the one write that
+    creates it -- which is what makes the finisher's
+    lookup by `firing_id` (§2.2) sound: work created and not yet recorded
+    is found, never created twice.
+
+    THE EXEMPTION IS THE EXACT VALUE. Only metadata whose `schedule` equals
+    `mark` passes, and only inside this block, which `schedulefire` alone
+    enters around its own submission call. A request never runs inside it:
+    a ContextVar set in one call is not visible to another request's thread.
+    Anything else under the key is refused as before.
+    """
+    token = _SCHEDULE_MARK.set(dict(mark))
+    try:
+        yield
+    finally:
+        _SCHEDULE_MARK.reset(token)
 
 
 def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
@@ -1492,6 +1613,9 @@ def reject_reserved_metadata(metadata: dict[str, Any]) -> None:
     refusal.
     """
     present = [key for key in RESERVED_METADATA_KEYS if key in metadata]
+    allowed = _SCHEDULE_MARK.get()
+    if allowed is not None and metadata.get(SCHEDULE_METADATA_KEY) == allowed:
+        present.remove(SCHEDULE_METADATA_KEY)
     if not present:
         return
     raise DispatchOptionError(
@@ -1560,7 +1684,7 @@ def resolve_dispatch_options(
     return options
 
 
-def resolve_integrator_step(steps: Sequence[StepSpec]) -> str:
+def resolve_integrator_step(steps: Sequence[StepSpec], rereview: str | None = None) -> str:
     """The step that integrates the others: the workflow's single sink.
 
     Call this only AFTER `validate_dag`, which has already rejected cycles and
@@ -1573,11 +1697,19 @@ def resolve_integrator_step(steps: Sequence[StepSpec]) -> str:
     finite and acyclic so the walk ends at a step nothing depends on, and there
     is only one of those. Transitive feeding is what matters, so a chain
     a -> b -> c is a legal `integrate` workflow with c as the integrator.
+
+    `rereview` is the re-review step swarm-api appended under
+    `metadata.merge` "on_merge_verdict" (`rereview_step_for`), by id: it
+    reviews the integrator's pushed head, so it comes after the integrator
+    and is not one of the steps the integrator integrates.
     """
     # A `merge` step (contract request 47) comes after the integrator and
     # integrates nothing: the integrator is the sink of the OTHER steps.
     # `plan_merge` holds the merge step to depending on it.
-    steps = [step for step in steps if _worker_action(step) is not WorkerAction.MERGE]
+    steps = [
+        step for step in steps
+        if _worker_action(step) is not WorkerAction.MERGE and step.step_id != rereview
+    ]
     if len(steps) < 2:
         raise DispatchOptionError(
             "strategy 'integrate' needs something to integrate: it names a final "
@@ -2076,7 +2208,8 @@ def resolve_merge_choice(metadata: Mapping[str, Any]) -> str | None:
         raise DispatchOptionError(
             f"metadata.{MERGE_METADATA_KEY} is {str(value)[:40]!r}; it is one of "
             + ", ".join(repr(c) for c in MERGE_CHOICES)
-            + ", or absent for the platform's default.",
+            + ", or absent for the repository's merge_policy, else the platform's "
+            "default.",
             detail={"field": f"metadata.{MERGE_METADATA_KEY}",
                     "accepted": list(MERGE_CHOICES)},
         )
@@ -2124,7 +2257,7 @@ class MergePlan:
 
 def merge_sources(
     steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
-    named_pull: bool = False,
+    named_pull: bool = False, rereview: str | None = None,
 ) -> MergeSources | None:
     """The pull request a merge step would merge, or None when there is not ONE.
 
@@ -2146,8 +2279,22 @@ def merge_sources(
     `named_pull` is True for a workflow with `merge_pr` (#352), as
     `continuation.resolve_merge_pr` checked it: with NO agent step it merges
     the pull request the caller named, which no task opened.
+
+    `rereview` is the re-review `metadata.merge` "on_merge_verdict" appended
+    (`rereview_step_for`), by id. It is not the integrator -- it comes after
+    it -- and it IS the review the merge reads: the latest verdict, written
+    under the same file name the gate's review wrote.
     """
     agents = [step for step in steps if not is_merge_step(step.runner_profile)]
+    if rereview is not None:
+        if strategy != "integrate":
+            return None
+        rest = merge_sources(
+            [step for step in agents if step.step_id != rereview], strategy, continued_task,
+        )
+        if rest is None or rest.review is None or not rest.verdict_file:
+            return None
+        return MergeSources(rest.pull_request, rereview, rest.verdict_file)
     if named_pull:
         return MergeSources("", named=True) if strategy == "direct-pr" and not agents else None
     if strategy == "direct-pr" and continued_task is not None and not agents:
@@ -2169,7 +2316,7 @@ def merge_sources(
 
 def merge_step_for(
     steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
-    named_pull: bool = False,
+    named_pull: bool = False, rereview: str | None = None,
 ) -> dict[str, Any] | None:
     """The `merge` step swarm-api appends to a workflow, or None if it opens no one PR.
 
@@ -2178,25 +2325,84 @@ def merge_step_for(
     review's verdict file is staged, so the merge reads the verdict the
     publishing step's gate read.
     """
-    sources = merge_sources(steps, strategy, continued_task, named_pull)
+    sources = merge_sources(steps, strategy, continued_task, named_pull, rereview)
     if sources is None:
         return None
-    taken = {step.step_id for step in steps}
-    step_id, n = MERGE_STEP_ID, 1
-    while step_id in taken:
-        n += 1
-        step_id = f"{MERGE_STEP_ID}-{n}"
     return {
-        "step_id": step_id,
+        "step_id": _free_step_id(MERGE_STEP_ID, {step.step_id for step in steps}),
         "runner_profile": MERGE_STEP_ID,
         "depends_on": sources.depends_on(),
         "input_from": sources.input_from(),
     }
 
 
+def _free_step_id(base: str, taken: set[str]) -> str:
+    """`base`, or `base-2`, `base-3`... -- the first id no step has."""
+    step_id, n = base, 1
+    while step_id in taken:
+        n += 1
+        step_id = f"{base}-{n}"
+    return step_id
+
+
+def rereview_step_for(
+    steps: Sequence[StepSpec], review: Mapping[str, Any], strategy: str,
+) -> dict[str, Any] | None:
+    """The re-review step `metadata.merge` "on_merge_verdict" appends, or None.
+
+    None unless the workflow is `integrate` and its integrator is gated on a
+    review (`merge_sources` finds a review and the file the gate stages from
+    it): that is the implement -> review -> fix shape whose fix may change
+    the head after the review judged it. `review` is that review step as
+    submitted (`WorkflowStepCreate.model_dump()`).
+
+    The re-review runs the REVIEW's runner profile, by name, on the review's
+    own input with `REREVIEW_PREAMBLE` before its prompt, so nothing the
+    caller did not already choose for its review is chosen here (invariant
+    10). It builds on the integrator -- its checkout is the head the merge
+    will pin -- and stages, by parent, the earlier verdict and whatever the
+    review staged. Its agent always runs: a gated step that does not run its
+    agent writes no verdict for the merge to read (`agent_worker.verdict`),
+    so on a MERGE verdict the head the fix pushed unchanged is reviewed a
+    second time. That costs one review agent on the MERGE path and is said
+    where it is configured (docs/workflows.md).
+    """
+    sources = merge_sources(steps, strategy)
+    if (
+        strategy != "integrate" or sources is None or sources.review is None
+        or not sources.verdict_file or review.get("step_id") != sources.review
+    ):
+        return None
+    staged = {**dict(review.get("input_from") or {}), sources.review: sources.verdict_file}
+    paths = ", ".join(f"{src}/{name}" for src, name in staged.items())
+    original = dict(review.get("input") or {})
+    prompt = original.get("prompt")
+    preamble = REREVIEW_PREAMBLE.format(
+        verdict_path=f"{sources.review}/{sources.verdict_file}",
+        verdict_file=sources.verdict_file,
+        staged=paths,
+    )
+    step: dict[str, Any] = {
+        "step_id": _free_step_id(REREVIEW_STEP_ID, {s.step_id for s in steps}),
+        "runner_profile": review.get("runner_profile"),
+        "input": {**original, "prompt": preamble + (prompt if isinstance(prompt, str) else "")},
+        "depends_on": list(dict.fromkeys([sources.pull_request, *staged])),
+        "builds_on": sources.pull_request,
+        "input_from": staged,
+        "metadata": {
+            **dict(review.get("metadata") or {}),
+            INPUT_LAYOUT_METADATA_KEY: INPUT_LAYOUT_BY_PARENT,
+        },
+    }
+    for name in ("resource_class", "timeout_seconds"):
+        if review.get(name) is not None:
+            step[name] = review[name]
+    return step
+
+
 def plan_merge(
     steps: Sequence[StepSpec], strategy: str, continued_task: str | None = None,
-    named_pull: bool = False,
+    named_pull: bool = False, rereview: str | None = None,
 ) -> MergePlan | None:
     """Refuse a merge step that could not merge what the workflow opened, else plan it.
 
@@ -2243,7 +2449,7 @@ def plan_merge(
                 f"agent and clones nothing, so it takes no `{name}`. Remove it.",
                 detail={"step_id": merge.step_id, "field": name},
             )
-    sources = merge_sources(steps, strategy, continued_task, named_pull)
+    sources = merge_sources(steps, strategy, continued_task, named_pull, rereview)
     if sources is None:
         raise DispatchOptionError(
             f"step {merge.step_id!r} merges the pull request this workflow opens, and "

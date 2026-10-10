@@ -52,7 +52,7 @@ import logging
 import re
 import time as _time
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as _replace
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Iterable
@@ -151,6 +151,25 @@ def provider_suffix(scope: Scope | str, *, repo_id: str | None = None,
     if not user:
         raise ValidationFailed("a user slot needs the user's email", detail={"field": "user"})
     return f"{GIT_PROVIDER}-u-{_hex16(_user_key(user))}"
+
+
+def owner_suffix(user: str, owner: str) -> str:
+    """D5 (#780; docs/onboarding.md §3.1): a person's fallback token for ONE
+    owner is a second user slot, `git-u-` + 16 hex of sha256 of
+    `lower(email) + "|" + lower(owner)`.
+
+    The same shape as `provider_suffix`'s user slot, on purpose: the frozen
+    `FORGE_CREDENTIAL` accepts it, and its secret falls under
+    terraform/bootstrap/forge_user_slots.tf's `swarm-tenant-<t>-git-u-` prefix,
+    so neither the contract nor IAM changes. The hex is not the person's
+    `user_hash`, so whoever recognises it (the scheduler's admission, the
+    worker's grant read) recomputes it from the signed `submitted_by` and the
+    repository's owner: never from a document.
+    """
+    if not user or not owner:
+        raise ValidationFailed("an owner slot needs the user's email and the owner",
+                               detail={"field": "owner"})
+    return f"{GIT_PROVIDER}-u-{_hex16(_user_key(user) + '|' + owner.strip().lower())}"
 
 
 def slot_key(scope: Scope | str, *, repo_id: str | None = None, user: str | None = None) -> str:
@@ -433,6 +452,28 @@ def record_for_slot(
         user=_user_key(user) if scope is Scope.USER and user else None,
         repositories=({repo_id: repository.strip()} if scope is Scope.REPOSITORY
                       and repository and repo_id else {}),
+    )
+
+
+def owner_token_id(tenant_id: str, user: str, owner: str) -> str:
+    """The `git_tokens` id of a person's per-owner slot: its key is the
+    email and the owner, so it never collides with their App slot's."""
+    return token_id_for(tenant_id, Scope.USER, _user_key(user) + "|" + owner.strip().lower())
+
+
+def owner_record(tenant_id: str, *, user: str, owner: str, repo_ids: Iterable[str] = (),
+                 registered_by: str, now: datetime) -> GitTokenRecord:
+    """The record of a person's per-owner slot (`owner_suffix`): a user
+    record with its own token id and slot, `repo_ids` narrowed to the
+    person's grants under that owner (§3.1). Pure."""
+    base = record_for_slot(tenant_id, Scope.USER, user=user, repo_ids=repo_ids,
+                           registered_by=registered_by, now=now)
+    suffix = owner_suffix(user, owner)
+    return _replace(
+        base,
+        token_id=owner_token_id(tenant_id, user, owner),
+        provider_suffix=suffix,
+        secret_name=secret_name_for(tenant_id, suffix),
     )
 
 
@@ -789,7 +830,8 @@ class GitTokens:
         refusals, then never-verified pairs, then the oldest -- so what one
         pass leaves, the next takes. A pair not reached is not written at
         all. A token whose last attempt failed is retried after
-        REVERIFY_RETRY, not every tick. Only `tenant_id`'s records are read,
+        REVERIFY_RETRY, not every tick -- and is due then, every pair it
+        covers, even when those pairs were verified within the day. Only `tenant_id`'s records are read,
         with its own slots (invariant 9). The defaults are one probe's
         budget (PROBE_BUDGET_SECONDS) and REVERIFY_MAX_PAIRS.
         """
@@ -828,15 +870,22 @@ class GitTokens:
                     and now - attempted < REVERIFY_RETRY and not pending):
                 report.retry_later += 1
                 continue
+            # Its LAST probe did not complete (the slot unreadable, the forge
+            # down) and REVERIFY_RETRY has passed: due now, whether or not its
+            # pairs were verified within the day. Otherwise a "Verify now"
+            # that failed after a good daily probe keeps its probe_error until
+            # the next day's pass, though the cause was fixed minutes later
+            # (2026-10-07: PermissionDenied at 22:55, cleared by hand at 23:59).
+            errored = record.probe_complete is False
             mine = 0
             for rid, name in sorted(covered.items(), key=lambda kv: kv[1]):
                 verified = (docs.get((record.token_id, rid)) or {}).get("verified_at")
-                if rid not in pending and _fresh(verified, now):
+                if rid not in pending and not errored and _fresh(verified, now):
                     report.fresh += 1
                     continue
                 units.append((_priority(rid in pending, verified), index, rid, name))
                 mine += 1
-            if not covered and not _fresh(record.verified_at, now):
+            if not covered and (errored or not _fresh(record.verified_at, now)):
                 # A token covering no registered repository: its account read
                 # alone (login, expiry), once a day.
                 units.append((_priority(False, record.verified_at), index, None, ""))
@@ -1757,6 +1806,7 @@ _SSO_ORG_URL = re.compile(r"^https://github\.com/orgs/([A-Za-z0-9-]{1,39})/sso(?
 _CLASSIC_BLOCKED = re.compile(r"forbids access via a personal access tokens? \(classic\)",
                               re.IGNORECASE)
 _REPOS_PATH = re.compile(r"^/repos/([^/]+)/([^/]+)(/.*)?$")
+_ORGS_PATH = re.compile(r"^/orgs/([^/]+)(/.*)?$")
 _GIT_PATH = re.compile(r"^/([^/]+)/[^/]+\.git/")
 
 #: §2.3's code for each cause a refused registration names.
@@ -1810,9 +1860,10 @@ def parse_sso_header(value: str | None) -> dict[str, Any] | None:
 
 
 def _url_owner(url: str) -> str | None:
-    """The owner of the repository a probe URL reads, if it reads one."""
+    """The owner of the repository a probe URL reads, if it reads one, or
+    the org an `/orgs/{owner}/...` read names (D5's owner read)."""
     path = _urlparse(url).path
-    match = _REPOS_PATH.match(path) or _GIT_PATH.match(path)
+    match = _REPOS_PATH.match(path) or _GIT_PATH.match(path) or _ORGS_PATH.match(path)
     if match and _LOGIN.match(match.group(1)):
         return match.group(1)
     return None
@@ -1927,6 +1978,94 @@ def refusal_cause(owner: str, repo: str, record: GitTokenRecord | None) -> dict[
                 f"token behind SAML single sign-on; if {owner} is one, authorise the token "
                 f"for it at {SSO_SETTINGS_URL}.")
     return {"code": ACCOUNT_CANNOT_SEE, "org": owner, "message": message, "evidence_at": at}
+
+
+# --------------------------------------------------------------------------
+# D5: what a fallback token reaches in ONE owner (#780)
+# --------------------------------------------------------------------------
+#
+# A person stores a personal access token for one owner (an org that will not
+# install the App, or their own account). Before it is stored, the probe's own
+# reads say whether it reaches that owner: the account and its orgs
+# (`probe_token`), one page of the owner's repositories, and each repository
+# the person already chose there. SSO and the classic-token policy are read
+# from GitHub's answers exactly as the probe reads them (`_note_reach`).
+
+#: The most granted repositories one store reads under the owner.
+MAX_OWNER_REPOSITORIES = 5
+#: The kinds a fallback token may be.
+PAT_KINDS = ("fine_grained_pat", "classic_pat")
+
+
+@dataclass
+class OwnerReach:
+    """What one fallback token reaches in `owner`. Logins, names and statuses."""
+
+    owner: str
+    result: ProbeResult
+    #: The owner's repository list: its HTTP status, None when not read.
+    listing_status: int | None = None
+    #: How many repositories that page listed.
+    listed: int = 0
+    #: Granted repositories under the owner that answered 404.
+    hidden: list[str] = field(default_factory=list)
+    #: A read that did not come back, in the probe's own words.
+    unanswered: str | None = None
+
+    @property
+    def own_account(self) -> bool:
+        login = self.result.forge_login or ""
+        return bool(login) and login.lower() == self.owner.lower()
+
+
+def owner_listing_url(owner: str, *, own_account: bool, page: int = 1) -> str:
+    """One page of the repositories a token reaches under `owner`: the
+    person's own (`/user/repos?affiliation=owner`) or an org's
+    (`/orgs/{owner}/repos?type=all`)."""
+    host = f"https://{_forge.GITHUB_API_HOST}"
+    if own_account:
+        return f"{host}/user/repos?affiliation=owner&per_page={ORG_PAGE_SIZE}&page={page}"
+    return (f"{host}/orgs/{_quote(owner, safe='')}/repos?type=all&per_page={ORG_PAGE_SIZE}"
+            f"&page={page}")
+
+
+def probe_owner(
+    value: str,
+    owner: str,
+    repositories: Iterable[str],
+    *,
+    send: Any,
+    now: datetime,
+    timeout: float = PROBE_TIMEOUT_SECONDS,
+) -> OwnerReach:
+    """Probe a fallback token against one owner. GETs only; nothing is
+    written. `repositories` are `owner/repo` names the person granted there.
+
+    The value is registered with the redaction filter for every read and is
+    held by nothing this returns."""
+    result = probe_token(value, (), send=send, now=now, timeout=timeout)
+    reach = OwnerReach(owner=owner, result=result)
+    if result.rejected or not result.account_complete:
+        return reach
+    with redaction_literal(value):
+        forge = _Forge(value, send, result, timeout)
+        try:
+            answer = forge.get(owner_listing_url(owner, own_account=reach.own_account),
+                               f"the repositories of {owner}")
+            reach.listing_status = answer.status
+            if answer.status == 200 and isinstance(answer.data, list):
+                reach.listed = len(answer.data)
+            for name in list(repositories)[:MAX_OWNER_REPOSITORIES]:
+                repo_owner, _, repo = name.partition("/")
+                if repo_owner.lower() != owner.lower() or not repo:
+                    continue
+                read = forge.get(_api(repo_owner, repo), f"/repos/{name}")
+                if read.status == 404:
+                    reach.hidden.append(name)
+        except _Unanswered as unanswered:
+            reach.unanswered = str(unanswered)
+        forge = None
+    return reach
 
 
 # --------------------------------------------------------------------------

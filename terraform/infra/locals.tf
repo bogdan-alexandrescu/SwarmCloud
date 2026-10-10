@@ -145,10 +145,15 @@ locals {
     # runs as the tenant's worker account, as claude-code's does; listing it
     # here also puts agent-runtime-indexer in runner_images, so its digest is
     # pinned and handed to the scheduler with the others.
+    #
+    # GKE Autopilot since contract request 63 (owner, 2026-10-10), the canary
+    # for #939: a new Cloud Run instance's internet path opens a median 20.2 s
+    # after start against GKE's 1.17 s. Its tenants' Cloud Run Jobs are still
+    # created, as the rollback, by `cloud_run_fallback_profiles` below.
     "indexer" = {
       image          = "agent-runtime-indexer"
       resource_class = "standard"
-      backend        = "CLOUD_RUN_JOB"
+      backend        = "GKE_AUTOPILOT"
       provider       = "anthropic"
       # claude-code's two env-var names, each mapped to the provider id (not a
       # credential), written as a comprehension so no line here has the shape
@@ -175,7 +180,9 @@ locals {
 
   # --- GKE profiles that keep their Cloud Run Jobs as a rollback -------------
   #
-  # Kept until 2026-10-15 as the request 53 rollback; remove then.
+  # claude-code: kept until 2026-10-15 as the request 53 rollback; remove then.
+  # indexer: kept as the contract request 63 rollback (#939's canary, owner
+  # 2026-10-10) until the owner decides the canary on its measurement.
   #
   # The Job matrix below makes a Cloud Run Job only for a CLOUD_RUN_JOB
   # profile, so moving claude-code to GKE Autopilot (contract request 53,
@@ -187,7 +194,7 @@ locals {
   # catalogue's backend, so nothing dispatches to it while the profile names
   # GKE_AUTOPILOT. tests/terraform/catalogue.tftest.hcl holds that the Jobs are
   # still planned.
-  cloud_run_fallback_profiles = ["claude-code"]
+  cloud_run_fallback_profiles = ["claude-code", "indexer"]
 
   # --- the model each profile's agent CLI runs (#226) -----------------------
   #
@@ -216,10 +223,10 @@ locals {
   # while the frozen catalogue holds the profile (contract request 50).
   # indexer is claude-code on the indexer image (contract request 48), so an
   # index run keeps the model it ran with as claude-code.
-  # claude-code runs on GKE Autopilot (contract request 53), where no Job of
-  # this root exists to carry MODEL: the scheduler's WORKER_MODELS sets it on
-  # each pod. Its Cloud Run fallback Jobs (`cloud_run_fallback_profiles`)
-  # carry the same model from this map.
+  # claude-code runs on GKE Autopilot (contract request 53), and indexer since
+  # contract request 63, where no Job of this root exists to carry MODEL: the
+  # scheduler's WORKER_MODELS sets it on each pod. Their Cloud Run fallback
+  # Jobs (`cloud_run_fallback_profiles`) carry the same model from this map.
   runner_models = {
     "claude-code"        = "claude-opus-5-5"
     "claude-code-review" = "claude-opus-5-5"
@@ -621,6 +628,38 @@ locals {
       # (swarm_api.auth.ROLLUP_SWEEPER_ROUTES). Derived, not a tfvars entry,
       # because it is exactly one account this root creates.
       ROLLUP_SWEEPER_USERS = module.scheduler.rollup_sweeper_email
+
+      # The schedule tick's identity (modules/scheduler, docs/schedules.md
+      # SD10): may call POST /v1/admin/schedules/tick and no other route
+      # (swarm_api.auth.SCHEDULE_TICK_ROUTES, lane S2). Derived, not a tfvars
+      # entry, for the reason ROLLUP_SWEEPER_USERS is. Until S2 ships, ApiSettings
+      # reads it and no route consults it, so it changes nothing the API does.
+      SCHEDULE_TICK_USERS = module.scheduler.schedule_tick_email
+
+      # The issue sweeper's platform switch (swarm_api.issuesweep, owner
+      # decisions 2026-10-08): POST /v1/admin/issues/sweep starts nothing
+      # while it is off, whatever a tenant's own `issue_sweep.enabled` says.
+      # Off unless the environment's tfvars sets var.enable_issue_sweep.
+      SWEEP_ENABLED = var.enable_issue_sweep ? "true" : "false"
+
+      # D4's refusal of a person's task on a repository they have not chosen
+      # (swarm_api.settings `repository_grants_enforced`, #780 OB10). Until
+      # OB10 it reached swarm-api only by hand, so an apply put it back to
+      # off. Off unless the environment's tfvars sets
+      # var.repository_grants_enforced; service submissions are never refused.
+      REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
+
+      # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
+      # #847): approve, retry and the dispatch sweep publish a workspace id to
+      # this topic, which terraform/bootstrap creates with its Cloud Build
+      # trigger when enable_workspace_deployer is on. A literal, the name
+      # bootstrap's workspace_deployer.tf and modules/monitoring both spell.
+      # Publishing stays OFF until var.workspace_apply_publish: off, an
+      # approval sits `approved` and the swarm-workspace-sweep job's sweep
+      # logs it as `workspace_stuck` (reason publishing_off) for the
+      # workspace-stuck alert, rather than nothing saying so (2026-10-09).
+      WORKSPACE_APPLY_TOPIC   = "swarm-workspace-apply"
+      WORKSPACE_APPLY_PUBLISH = var.workspace_apply_publish ? "true" : "false"
 
       # The step-spec key version every submission is signed with (contract
       # request 34). A full version name, because an asymmetric key has no

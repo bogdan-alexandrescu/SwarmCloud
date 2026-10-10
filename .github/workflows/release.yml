@@ -8,7 +8,31 @@
 #         -> APPROVAL: the one job that names an environment. prod waits here
 #            for its required reviewer; dev has none and passes straight on
 #         -> promote those DIGESTS, all or nothing (scanning them again)
-#         -> plan, apply, deploy, smoke
+#         -> plan, apply, deploy (prod: and warm, smoke, the GKE proof)
+#
+# ON DEV THE RELEASE ENDS AT THE DEPLOY (owner decision 2026-10-08, cuts A, B
+# and C of the release timing report; docs/ci.md, "The release timeline").
+# Warming the worker jobs, the smoke test, the GKE proof and acceptance run in
+# .github/workflows/accept.yml, which starts when this run completes and
+# judges whatever dev runs then -- the SHA in releases/dev/applied.json
+# (scripts/lib/release-order.sh). They used to hold this workflow's
+# `release-dev` lock for 70 of its 100 min p50 (deploy and smoke 23.6,
+# acceptance 45.4, measured over 22 runs), and every later push queued behind
+# them. A red acceptance now opens an issue; it no longer stands between the
+# next commit and dev. PROD IS UNCHANGED: it never ran acceptance, and its
+# deploy still warms, smokes and proves GKE inside this run.
+#
+# THE STEPS OF EACH STAGE ARE IN .github/actions/release-*, composite actions
+# this file and hotfix.yml -- the hotfix lane, owner decision 2026-10-08,
+# observer proposal H -- both run, so the two lanes cannot drift. Composite
+# actions and not a reusable workflow, because the deployer trusts workflow
+# FILES by `job_workflow_ref`, which for a reusable workflow names the called
+# file (terraform/bootstrap/wif.tf, #457). Every gate stays HERE: the
+# approval, the dev-iam job, each job's `if:`, each job's checkout and
+# authentication. On dev the stages share one release lock with the hotfix
+# lane and never move dev backwards (scripts/lib/release-order.sh): a release
+# whose commit is older than what the hotfix lane already shipped stops,
+# green, "superseded" (docs/ci.md, "Hotfix releases").
 #
 # ONE BUILD PER COMMIT (owner decision, 2026-09-24; docs/ci.md). This workflow
 # used to build all eight images itself while application.yml built them too,
@@ -77,6 +101,13 @@
 
 name: release
 
+# A DISPATCH SAYS WHICH ENVIRONMENT IN ITS NAME, because the name is the only
+# part of a dispatch's inputs a `workflow_run` event carries: accept.yml reads
+# it so a completed PROD release cannot cancel, or start, dev's acceptance.
+# A push (always dev) renders '' and keeps GitHub's own name, the commit's
+# headline -- an empty run-name is the documented "use the default".
+run-name: ${{ github.event_name == 'workflow_dispatch' && format('release {0} {1}', inputs.environment, github.ref_name) || '' }}
+
 on:
   push:
     branches: [main]
@@ -87,6 +118,7 @@ on:
       - "kubernetes/**"
       - "scripts/**"
       - ".github/workflows/release.yml"
+      - ".github/actions/release-*/**"
   workflow_dispatch:
     inputs:
       environment:
@@ -102,8 +134,8 @@ on:
 # Least privilege at workflow level (epic #352 item 9, docs/merge-step.md M4/R4).
 # `id-token: write` lets a job mint a Google identity token through workload
 # identity federation, so it is declared only on the jobs that authenticate to
-# Google (build, promote, infrastructure, infrastructure-iam, deploy,
-# acceptance). `verify` runs the merged repository's own tests and must not be
+# Google (build, promote, infrastructure, infrastructure-iam, deploy).
+# `verify` runs the merged repository's own tests and must not be
 # able to mint one. A job-level `permissions:` block REPLACES this one.
 permissions:
   contents: read
@@ -129,10 +161,27 @@ jobs:
   # -------------------------------------------------------------------------
   # Gate. Nothing is built or applied until the cheap checks pass -- a release
   # that fails its unit tests after deploying is a rollback, not a release.
+  #
+  # ON A PUSH THIS JOB IS SKIPPED, AND THAT IS NOT A WEAKER GATE (owner
+  # decision 2026-10-08, cut B of the release timing report). A push to main
+  # starts application.yml on the same SHA, which runs the unit suite
+  # (`python`, sharded, every file on main), shellcheck and the destroy-guard
+  # self-test (`shell`, `python-checks`) and the manifests -- and its `build
+  # images` job `needs: [python, shell, manifests]`. On a push `build` below
+  # takes CI's image record with `--reuse-ci only` and refuses to build its
+  # own, so the record this release ships CANNOT EXIST unless those checks
+  # passed on this very commit. Running them again here was 26.4 min p50 of
+  # the `release-dev` lock (22 successful runs, measured 2026-10-08) proving
+  # what CI had already proven. On a workflow_dispatch -- every prod release,
+  # and a dev dispatch that may build its own images (`or-build`), or redeploy
+  # with `skip_build` and no CI record at all -- nothing upstream has proven
+  # the commit, so it runs. Every job that needs it states the same rule:
+  # `verify` succeeded, or it was skipped on a push.
   # -------------------------------------------------------------------------
   verify:
     name: verify
     runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v5
 
@@ -159,8 +208,9 @@ jobs:
   # already pinned it, and every fresh install of that version failed to
   # fetch its bridge. This job creates it, on the commit being released.
   #
-  # After `verify`, because a tag is what users' installs resolve: a commit
-  # whose unit tests fail is not one to hand them. On main only -- a
+  # After `verify` (on a push, after `build` found CI's record), because a tag
+  # is what users' installs resolve: a commit whose unit tests fail is not one
+  # to hand them. On main only -- a
   # workflow_dispatch can name another branch, and a tag made from it would
   # pin users to a commit main never had.
   #
@@ -172,9 +222,8 @@ jobs:
   #
   # `contents: write` is granted on THIS job, not the workflow, whose default
   # stays `contents: read`: the jobs that build, plan and deploy run a great
-  # deal of code and none of it needs to write to the repository. (The other
-  # job holding it is `acceptance`, for its own sweep; see its header.) This
-  # job runs nothing but checkout, jq and git.
+  # deal of code and none of it needs to write to the repository. This job is
+  # the only one here holding it, and runs nothing but checkout, jq and git.
   #
   # A bump that touches ONLY plugin/ starts no release (plugin/** is not in
   # `on.push.paths`). It is tagged by the next release whose commit descends
@@ -184,7 +233,13 @@ jobs:
   plugin-tag:
     name: tag the plugin's bridge (sc-v<version>)
     runs-on: ubuntu-24.04
-    needs: [verify]
+    needs: [verify, build]
+    # AFTER A PROVEN COMMIT. On a dispatch that is `verify`. On a push `verify`
+    # is skipped (see its header) and the proof is `build`: it found CI's image
+    # record for this SHA, which application.yml writes only after its unit
+    # tests, shellcheck and manifests passed. `!cancelled()` only so the job
+    # can run past that skip; each branch still demands a success.
+    if: ${{ !cancelled() && (needs.verify.result == 'success' || (github.event_name == 'push' && needs.verify.result == 'skipped' && needs.build.result == 'success')) }}
     # MAIN ONLY, said on each STEP rather than on the job. A job-level
     # `github.ref` is outside what tests/unit/scripts/test_release_prod_gate.py
     # can evaluate (its release contexts carry no ref), and a job-level `if:`
@@ -278,7 +333,9 @@ jobs:
     name: images and scan (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     needs: [verify]
-    if: github.event.inputs.skip_build != 'true'
+    # !cancelled() only to run past the `verify` a push skips (see its header):
+    # on a push the CI record this job demands IS the proof of verify.
+    if: ${{ !cancelled() && (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'push')) && github.event.inputs.skip_build != 'true' }}
     # actions: read is what lets this job see application.yml's run of the
     # same commit and download its record (scripts/lib/ci-built-images.sh).
     # A job-level block REPLACES the workflow's, so the other two are restated.
@@ -287,7 +344,7 @@ jobs:
       id-token: write
       actions: read
     outputs:
-      tag: ${{ steps.images.outputs.tag }}
+      tag: ${{ steps.stage.outputs.tag }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
@@ -303,104 +360,19 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v3
 
-      - name: the images CI built for this commit
-        id: images
-        # NO SECOND CLOUD BUILD ON A PUSH. `--reuse-ci only` waits for
-        # application.yml's `build images` job for this exact commit (up to 45
-        # minutes -- it is usually ~11 behind the push) and fetches the manifest
-        # it recorded. That run exists and is not stopped by later pushes:
-        # application.yml gives each commit on main a concurrency group of its
-        # own, because GitHub cancels a PENDING run when a newer one joins its
-        # group, and this workflow's path filter means the newer push may start
-        # no release to take this one's place. If that job FAILED, or never
-        # built this commit (someone cancelled it), this step fails and says
-        # which, with the URL and the re-runs that would ship THIS commit; it
-        # does not quietly build instead.
-        #
-        # DISPATCHED BY HAND it is `--reuse-ci or-build`: a commit CI never
-        # built for this environment is built here, by the same script with
-        # the same tag -- one path, not a second copy of it. That includes
-        # every prod release, because application.yml builds for dev and
-        # swarm-ui bakes its environment into the bundle when it is compiled.
-        # A build CI tried and FAILED is still a failure, dispatched or not.
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REUSE_CI: ${{ github.event_name == 'workflow_dispatch' && 'or-build' || 'only' }}
-        run: |
-          set -euo pipefail
-          ./scripts/build-images.sh --reuse-ci "${REUSE_CI}"
-          echo "tag=$(jq -r '.tag' "build/images-${ENVIRONMENT}.json")" >> "$GITHUB_OUTPUT"
-
-      # INSTALLED BECAUSE THE PROMOTION GATE NEEDS IT, and it was not.
-      #
-      # `push-images.sh --scan` runs trivy against each digest and refuses to
-      # attach a channel tag to an image with fixable HIGH/CRITICAL findings.
-      # This job, when it still built its own images, authenticated, built
-      # every image through Cloud Build -- about eighteen minutes of work --
-      # and then failed on:
-      #
-      #     fail trivy not found but scanning is on; install it or pass --no-scan
-      #
-      # measured on run 35954830712, the first release run that ever got past
-      # authentication. The script's message is exactly right and names both
-      # remedies; `--no-scan` is the wrong one, because the scan is what stands
-      # between a fixable CRITICAL and a channel tag pointing at it.
-      #
-      # security.yml reaches trivy through `aquasecurity/trivy-action`, which is
-      # the right shape there -- it scans and uploads SARIF. Here a SCRIPT needs
-      # the binary on PATH, so it is installed with the project's own installer
-      # at the same pinned version rather than by a second action whose output
-      # nothing would read.
-      - name: install trivy
-        run: |
-          set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
-          trivy --version
-
-      - name: scan the recorded digests (nothing is promoted yet)
-        # BEFORE THE APPROVAL, AND ONLY READING. `--scan-only` makes every
-        # check the promotion makes -- each recorded digest confirmed in
-        # Artifact Registry, a record built for another environment refused,
-        # every digest trivy-scanned, one refusal failing the lot -- and then
-        # stops: no channel tag moves and no deploy manifest is written
-        # (tests/unit/scripts/test_push_images_scan_only.py). So a prod
-        # reviewer approves a set that has already passed, instead of one the
-        # promotion refuses a minute after the approval.
-        run: ./scripts/push-images.sh --manifest "build/images-${ENVIRONMENT}.json" --channel "${ENVIRONMENT}" --scan-only
-
-      - name: hand the scanned record to the promotion
-        # The record the step above scanned, uploaded only once it passed, so
-        # the promotion after the approval promotes exactly these digests and
-        # not a second reading of anything.
-        uses: actions/upload-artifact@v6
+      - name: the images CI built for this commit, scanned (nothing is promoted yet)
+        id: stage
+        # .github/actions/release-images, shared with hotfix.yml: the record
+        # application.yml built for this commit (`--reuse-ci`: NO SECOND
+        # CLOUD BUILD ON A PUSH -- `only`; dispatched by hand, `or-build`),
+        # every digest scanned with `--scan-only`, the scanned record handed
+        # to `promote`, and what the approval would release written to the
+        # summary. It MOVES NOTHING.
+        uses: ./.github/actions/release-images
         with:
-          name: scanned-images-${{ github.event.inputs.environment || 'dev' }}
-          path: build/images-${{ github.event.inputs.environment || 'dev' }}.json
-          retention-days: 30
-
-      - name: what the approval would release
-        # Written BEFORE the approval, so a prod reviewer can read it on the
-        # run's summary page while the run waits.
-        #
-        # The prose below never names the apply by its command: the gate test
-        # (test_release_prod_gate.py) reads every `run:` as text and errs
-        # toward calling a step prod-facing, so an echoed "terraform apply"
-        # made this pre-approval step count as an apply.
-        run: |
-          set -euo pipefail
-          record="build/images-${ENVIRONMENT}.json"
-          {
-            echo "### Scanned, not promoted: $(jq -r '.tag' "${record}") for ${ENVIRONMENT}"
-            echo
-            echo "Nothing has moved yet. Once \`approval (${ENVIRONMENT})\` succeeds -- for prod, once its"
-            echo "required reviewer approves -- \`promote\` scans these digests again and moves"
-            echo "\`:${ENVIRONMENT}\` to exactly them, and the apply job after it deploys them."
-            echo
-            echo "| image | digest |"
-            echo "|---|---|"
-            jq -r '.images[] | "| \(.name) | `\(.digest)` |"' "${record}"
-          } >> "$GITHUB_STEP_SUMMARY"
+          environment: ${{ env.ENVIRONMENT }}
+          lane: release
+          reuse_ci: ${{ github.event_name == 'workflow_dispatch' && 'or-build' || 'only' }}
 
   # -------------------------------------------------------------------------
   # THE APPROVAL. The only job in this workflow that names prod or dev, so
@@ -421,7 +393,8 @@ jobs:
     needs: [verify, build]
     # !cancelled(), not always(): it runs past a `build` that skip_build
     # skipped, and a cancelled run asks nobody to approve anything.
-    if: ${{ !cancelled() && needs.verify.result == 'success' && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true')) }}
+    # `verify` succeeded, or a push skipped it (see its header).
+    if: ${{ !cancelled() && (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'push')) && (needs.build.result == 'success' || (needs.build.result == 'skipped' && github.event.inputs.skip_build == 'true')) }}
     environment: ${{ github.event.inputs.environment || 'dev' }}
     # THE ATTEMPT THIS APPROVAL CLEARED. A partial re-run keeps this job, and
     # this output with it, from the attempt it ran in; every prod job after
@@ -464,17 +437,26 @@ jobs:
       contents: read
       id-token: write
     needs: [build, approval]
-    # No status function, so GitHub also requires every job upstream to have
-    # succeeded; the explicit test is what a reader checks. A `skip_build`
-    # redeploy skips `build`, and with it this job: it promotes nothing. On
-    # prod, only in the attempt the approval cleared (see the header).
-    if: needs.build.result == 'success' && needs.approval.result == 'success' && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt)
+    # !cancelled() and not the default success(): success() looks at every
+    # job upstream, transitively, and on a push that includes the `verify` a
+    # push skips (see its header), so a bare condition never promoted on a
+    # push. `build` and `approval` must each have SUCCEEDED, said explicitly,
+    # and `approval` itself required `verify` (or the push skip). A
+    # `skip_build` redeploy skips `build`, and with it this job: it promotes
+    # nothing. On prod, only in the attempt the approval cleared (see the
+    # header).
+    if: ${{ !cancelled() && needs.build.result == 'success' && needs.approval.result == 'success' && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
     steps:
+      # Full history: the order guard asks git whether the commit already out
+      # is an ancestor of this one, which a depth-1 clone cannot answer.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - id: auth
         uses: google-github-actions/auth@v3
@@ -484,52 +466,16 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v3
 
-      - name: fetch the record `build` scanned
-        uses: actions/download-artifact@v7
-        with:
-          name: scanned-images-${{ github.event.inputs.environment || 'dev' }}
-          path: build/
-
-      # The promotion scans again, so it needs trivy here too -- see `build`'s
-      # install step for why it is installed this way and pinned.
-      - name: install trivy
-        run: |
-          set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
-          trivy --version
-
       - name: scan and promote the recorded digests
-        # THOSE DIGESTS, NOT A TAG. `--manifest` promotes the digest each image
-        # was built as, from the record `build` obtained and scanned; each is
-        # confirmed in Artifact Registry first, and a record built for another
-        # environment is refused. `:<tag>` is not read at all, so a later build
-        # of the same commit cannot change what this release promotes.
-        #
-        # SCANNED AGAIN, deliberately. `--scan` is the promotion's own gate,
-        # and the approval may come hours after `build`'s scan, against a
-        # vulnerability database that has learned something since. Measured on
-        # release 36059484794: scanning and promoting all eight images took
-        # 75 seconds (21:29:50-21:31:05), so the second scan costs about a
-        # minute.
-        #
-        # ALL OR NOTHING. push-images.sh scans EVERY digest before any channel
-        # tag moves, and one image with fixable HIGH/CRITICAL findings promotes
-        # none of them. Run 35969538707 scanned and tagged one image at a time,
-        # so seven images were already on :dev when swarm-ui was refused, and
-        # :dev described a release nobody built. A tag that fails to move
-        # part-way is put back, and the manifest below is written only after
-        # every tag has moved -- so on failure there is no artifact to upload.
-        # If the put-back itself fails, the step's last line says the channel
-        # is MIXED and names the images; a `skip_build` redeploy reads the
-        # channel, so put those back (the commands are in the log) first.
-        run: ./scripts/push-images.sh --manifest "build/images-${ENVIRONMENT}.json" --channel "${ENVIRONMENT}" --scan
-
-      - uses: actions/upload-artifact@v6
+        # .github/actions/release-promote, shared with hotfix.yml: fetch the
+        # record `build` scanned, scan it AGAIN and promote THOSE DIGESTS, ALL
+        # OR NOTHING (push-images.sh --manifest --scan), and hand the deploy
+        # manifest on. On dev, under the release lock and only FORWARDS: if a
+        # newer commit is already promoted or applied (the hotfix lane), it
+        # moves nothing and ends green (scripts/lib/release-order.sh).
+        uses: ./.github/actions/release-promote
         with:
-          name: deployed-images-${{ github.event.inputs.environment || 'dev' }}
-          path: build/deployed-images-*.json
-          retention-days: 30
+          environment: ${{ env.ENVIRONMENT }}
 
   # -------------------------------------------------------------------------
   # Infrastructure. Plans immediately before applying rather than trusting an
@@ -571,19 +517,24 @@ jobs:
     # it runs only in the attempt the approval cleared: "Re-run failed jobs"
     # after a lock timeout skips it, and `stale-approval` says to re-run all
     # jobs (see the header).
-    if: ${{ !cancelled() && needs.verify.result == 'success' && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true')) && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
+    # `verify` succeeded, or a push skipped it (see its header).
+    if: ${{ !cancelled() && (needs.verify.result == 'success' || (needs.verify.result == 'skipped' && github.event_name == 'push')) && needs.approval.result == 'success' && (needs.promote.result == 'success' || (needs.promote.result == 'skipped' && github.event.inputs.skip_build == 'true')) && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
     # Read by `infrastructure-iam` and `deploy`. On prod the classification
     # does not run and all three are empty.
     outputs:
-      iam: ${{ steps.iam.outputs.iam }}
-      plan_uri: ${{ steps.held.outputs.uri }}
-      plan_sha256: ${{ steps.held.outputs.sha256 }}
+      iam: ${{ steps.stage.outputs.iam }}
+      plan_uri: ${{ steps.stage.outputs.plan_uri }}
+      plan_sha256: ${{ steps.stage.outputs.plan_sha256 }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
     steps:
+      # Full history, for the order guard (see `promote`).
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - id: auth
         uses: google-github-actions/auth@v3
@@ -598,139 +549,32 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
 
-      - name: init
-        run: |
-          terraform -chdir=${{ env.TF_ROOT }} init -input=false -reconfigure \
-            -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}" \
-            -backend-config="prefix=infra/${ENVIRONMENT}"
-
-      # THE APPLY IS THE DEPLOY, AND IT DEPLOYS DIGESTS.
-      #
-      # terraform/infra takes `image_refs` -- one sha256 digest per image -- and
-      # refuses to plan while any image has none. This job used to plan with the
-      # tfvars alone, which meant `image_tag = "bootstrap"`: every service and
-      # every worker job planned onto a tag that does not exist. It never got
-      # that far only because no release had yet passed its build.
-      - name: fetch the promotion manifest
-        if: needs.promote.result == 'success'
-        uses: actions/download-artifact@v7
+      - name: pin, plan, guard, classify and apply
+        id: stage
+        # .github/actions/release-apply, shared with hotfix.yml:
+        #
+        #   * THE APPLY IS THE DEPLOY, AND IT DEPLOYS DIGESTS: every image is
+        #     pinned by digest (scripts/lib/image-refs.sh) from this run's
+        #     promotion, or -- a `skip_build` redeploy -- from what the channel
+        #     holds now, written down so `deploy` verifies exactly that;
+        #   * plan, then the shared-project guard (scripts/lib/plan-guard.sh,
+        #     the SAME implementation `make destroy` uses);
+        #   * on dev, does this plan change IAM (owner decision 2026-09-28,
+        #     #268; scripts/lib/iam-plan.jq): 'false' applies here; 'true' is
+        #     HELD -- the saved plan's sha256 recorded and the plan copied to
+        #     the state bucket, never a workflow artifact -- for
+        #     `infrastructure-iam`; an empty answer is applied nowhere;
+        #   * prod: applied, as before, behind `approval (prod)`;
+        #   * on dev, all of it under the release lock, and only FORWARDS: a
+        #     commit older than what the hotfix lane already shipped applies
+        #     nothing and ends green (scripts/lib/release-order.sh).
+        uses: ./.github/actions/release-apply
         with:
-          name: deployed-images-${{ github.event.inputs.environment || 'dev' }}
-          path: build/
-
-      - name: pin every image by digest
-        # From this run's promotion when it built; otherwise from what the
-        # channel tag points at NOW, written down as a manifest so the deploy
-        # job verifies exactly what this apply pinned even if someone moves
-        # the tag in between. scripts/lib/image-refs.sh refuses a tag.
-        run: |
-          set -euo pipefail
-          manifest="build/deployed-images-${ENVIRONMENT}.json"
-          if [ -f "${manifest}" ]; then
-            ./scripts/lib/image-refs.sh --manifest "${manifest}" \
-              --out "build/image-refs-${ENVIRONMENT}.tfvars.json"
-          else
-            ./scripts/lib/image-refs.sh --channel "${ENVIRONMENT}" --write-manifest "${manifest}" \
-              --out "build/image-refs-${ENVIRONMENT}.tfvars.json"
-          fi
-
-      - uses: actions/upload-artifact@v6
-        with:
-          name: pinned-images-${{ github.event.inputs.environment || 'dev' }}
-          path: build/deployed-images-*.json
-          retention-days: 30
-
-      - name: plan
-        run: |
-          set -euo pipefail
-          terraform -chdir=${{ env.TF_ROOT }} plan -input=false -lock-timeout=180s \
-            -var-file="../environments/${ENVIRONMENT}/${ENVIRONMENT}.tfvars" \
-            -var-file="${GITHUB_WORKSPACE}/build/image-refs-${ENVIRONMENT}.tfvars.json" \
-            -out=plan.tfplan -no-color | tee "${TF_ROOT}/plan.txt"
-          terraform -chdir=${{ env.TF_ROOT }} show -json plan.tfplan > "${TF_ROOT}/plan.json"
-
-      - name: shared-project guard
-        # The SAME implementation `make destroy` uses -- scripts/lib/plan-guard.sh
-        # over scripts/lib/destroy-guard.jq -- not a restatement of it.
-        #
-        # This step used to re-implement the rule as an awk type regex, and the
-        # two drifted. destroy-guard.jq exempts IAM edges by SHAPE
-        # (`_iam_(member|binding|policy)$`); the awk exempted only
-        # `google_project_iam`, so a plan deleting any of
-        # google_storage_bucket_iam_member, google_pubsub_topic_iam_member,
-        # google_secret_manager_secret_iam_binding,
-        # google_artifact_registry_repository_iam_member,
-        # google_cloud_run_v2_service_iam_member or
-        # google_pubsub_subscription_iam_member was blocked from production.
-        # Those are exactly the resources that disappear when a tenant is
-        # removed or a tenant's provider list changes -- routine applies.
-        # (The awk also exempted `google_firestore_` while destroy.sh's own list
-        # did not, so the two Track D guards disagreed in both directions.)
-        #
-        # It also now enforces the forward half of the rule: everything the plan
-        # CREATES must carry managed-by=swarm-terraform, because `make destroy`
-        # refuses to delete anything that does not.
-        run: ./scripts/lib/plan-guard.sh --plan "${TF_ROOT}/plan.json" --mode apply
-
-      - name: does this plan change IAM
-        id: iam
-        # DEV ONLY, and prod is untouched: its one approval is `approval
-        # (prod)` above, which already covers every plan.
-        #
-        # Owner decision, 2026-09-28 (#268): a dev plan that creates, updates,
-        # replaces, deletes or forgets a custom role or an IAM member, binding
-        # or policy is applied only in the `dev-iam` environment, behind the
-        # owner's review; every other dev plan applies here, as before. The rule
-        # is scripts/lib/iam-plan.jq, reached through plan-guard.sh, and it
-        # classifies the JSON of plan.tfplan -- the one file either apply
-        # applies. The IAM rows go to this job's summary, on the run's page,
-        # where the reviewer reads them while `dev-iam` waits.
-        #
-        # stdout is exactly `true` or `false`; anything the classifier cannot
-        # read exits non-zero, which fails this job, and nothing is applied.
-        if: env.ENVIRONMENT != 'prod'
-        run: |
-          set -euo pipefail
-          iam="$(./scripts/lib/plan-guard.sh --plan "${TF_ROOT}/plan.json" --classify-iam --summary "${GITHUB_STEP_SUMMARY}")"
-          case "${iam}" in
-            true|false) echo "iam=${iam}" >> "$GITHUB_OUTPUT" ;;
-            *) echo "::error::the IAM classification answered '${iam}'"; exit 1 ;;
-          esac
-
-      - name: hold the saved plan for the dev-iam review
-        id: held
-        # THE SAME PLAN, NOT A RE-PLAN. The rows the owner approves were read
-        # from plan.tfplan, so plan.tfplan is what the dev-iam job applies:
-        # this step records its sha256 as a job output and copies it to the
-        # state bucket, and that job refuses a file whose sha256 differs.
-        # Terraform itself refuses a saved plan whose state has moved on.
-        #
-        # THE STATE BUCKET, NOT A WORKFLOW ARTIFACT. This repository is public,
-        # and a saved plan holds every planned value in plaintext; the state
-        # bucket already holds the same values in the state, has public access
-        # prevention enforced, and the deployer is objectAdmin on it
-        # (terraform/bootstrap). The object is deleted once it is applied.
-        if: steps.iam.outputs.iam == 'true'
-        env:
-          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-        run: |
-          set -euo pipefail
-          uri="gs://${TF_STATE_BUCKET}/plans/${ENVIRONMENT}/${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}/plan.tfplan"
-          sha="$(sha256sum "${TF_ROOT}/plan.tfplan" | cut -d' ' -f1)"
-          gcloud storage cp --no-user-output-enabled "${TF_ROOT}/plan.tfplan" "${uri}"
-          echo "uri=${uri}" >> "$GITHUB_OUTPUT"
-          echo "sha256=${sha}" >> "$GITHUB_OUTPUT"
-          {
-            echo "Held for review: \`${uri}\`, sha256 \`${sha}\`. Nothing in this plan has been applied."
-            echo
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      - name: apply
-        # prod: always, as before. dev: only a plan classified free of IAM --
-        # an explicit 'false'. 'true' is applied by the dev-iam job; an empty
-        # answer is applied nowhere rather than un-gated.
-        if: env.ENVIRONMENT == 'prod' || steps.iam.outputs.iam == 'false'
-        run: terraform -chdir=${{ env.TF_ROOT }} apply -input=false -lock-timeout=180s plan.tfplan
+          environment: ${{ env.ENVIRONMENT }}
+          lane: release
+          # A `skip_build` redeploy promoted nothing: pin the channel instead.
+          promoted: ${{ needs.promote.result == 'success' && 'true' || 'false' }}
+          lock_timeout: 180s
 
   # -------------------------------------------------------------------------
   # A DEV PLAN THAT CHANGES IAM, APPLIED AFTER THE OWNER APPROVES IT (owner
@@ -778,8 +622,14 @@ jobs:
       REGION: ${{ vars.GCP_REGION }}
       PLAN_URI: ${{ needs.infrastructure.outputs.plan_uri }}
       PLAN_SHA256: ${{ needs.infrastructure.outputs.plan_sha256 }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
     steps:
+      # Full history for the order guard (scripts/lib/release-order.sh): this
+      # job takes the same release lock as `terraform apply` -- an IAM apply is
+      # an apply, and the hotfix lane must not interleave with it.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - id: auth
         uses: google-github-actions/auth@v3
@@ -794,6 +644,18 @@ jobs:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
           terraform_wrapper: false
 
+      - name: take the release lock
+        id: lock
+        run: ./scripts/lib/release-order.sh lock --environment "${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+
+      - name: is a newer commit already out
+        # The owner may approve hours later. If a newer commit has been
+        # applied since (the hotfix lane), this plan would roll dev back: it
+        # is not applied, the job ends green, and `deploy` finds the
+        # same answer.
+        id: order
+        run: ./scripts/lib/release-order.sh check --environment "${ENVIRONMENT}"
+
       - name: init
         # The same backend and the same commit as the job that planned, so the
         # same providers from the same lock file: a saved plan applies only in
@@ -804,6 +666,7 @@ jobs:
             -backend-config="prefix=infra/${ENVIRONMENT}"
 
       - name: fetch the plan the owner reviewed
+        if: steps.order.outputs.superseded != 'true'
         run: |
           set -euo pipefail
           if [ -z "${PLAN_URI}" ] || [ -z "${PLAN_SHA256}" ]; then
@@ -814,16 +677,34 @@ jobs:
           echo "${PLAN_SHA256}  ${TF_ROOT}/plan.tfplan" | sha256sum -c -
 
       - name: apply the reviewed plan
+        id: apply
+        if: steps.order.outputs.superseded != 'true'
         run: terraform -chdir=${{ env.TF_ROOT }} apply -input=false -lock-timeout=180s plan.tfplan
+
+      - name: record what dev now runs
+        if: steps.apply.outcome == 'success'
+        run: ./scripts/lib/release-order.sh record --environment "${ENVIRONMENT}" --what applied
 
       - name: drop the held plan
         run: gcloud storage rm --no-user-output-enabled "${PLAN_URI}"
 
+      - name: release the release lock
+        # always(): a failed or cancelled apply must not leave dev locked until
+        # the lock goes stale. It deletes only THIS job's lock (by generation).
+        if: always() && steps.lock.outputs.generation != ''
+        env:
+          GENERATION: ${{ steps.lock.outputs.generation }}
+        run: ./scripts/lib/release-order.sh unlock --environment "${ENVIRONMENT}" --generation "${GENERATION}"
+
   # -------------------------------------------------------------------------
-  # Deploy and prove it works.
+  # Deploy and prove it is what was promoted. On prod, also prove it works:
+  # warm, smoke and the GKE proof, as before. On dev those three moved to
+  # .github/workflows/accept.yml with acceptance (see the header), so this
+  # job ends once the digests are verified and the tenant namespaces applied,
+  # and the `release-dev` lock goes with it.
   # -------------------------------------------------------------------------
   deploy:
-    name: deploy and smoke (${{ github.event.inputs.environment || 'dev' }})
+    name: deploy (${{ github.event.inputs.environment || 'dev' }})
     runs-on: ubuntu-24.04
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).
@@ -850,12 +731,21 @@ jobs:
     # !cancelled() rather than always(), for the reason on `infrastructure`:
     # it runs past a `build` that skip_build skipped, and a cancel stops it.
     if: ${{ !cancelled() && needs.infrastructure.result == 'success' && (github.event.inputs.environment == 'prod' || needs.infrastructure.outputs.iam == 'false' || needs.infrastructure-iam.result == 'success') && (github.event.inputs.environment != 'prod' || needs.approval.outputs.attempt == github.run_attempt) }}
+    # Whether a newer commit reached dev during this job (the hotfix lane). No
+    # job here reads it now that acceptance is accept.yml's, which asks
+    # releases/dev/applied.json instead; it stays for the run's own record.
+    outputs:
+      superseded: ${{ steps.verify.outputs.superseded == 'true' || steps.smoke.outputs.superseded == 'true' }}
     env:
       ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       REGION: ${{ vars.GCP_REGION }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
     steps:
+      # Full history, for the order guard (see `promote`).
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - id: auth
         uses: google-github-actions/auth@v3
@@ -875,33 +765,19 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v3
 
-      - name: fetch the digests the apply pinned
-        # The manifest the infrastructure job pinned and applied, not a second
-        # resolution of the channel: the two would differ if the tag moved in
-        # between, and then this job would be verifying something that was
-        # never applied. (This step used to reconstruct the manifest itself,
-        # from a hand-kept list of six images that omitted swarm-ui and
-        # swarm-verify.)
-        uses: actions/download-artifact@v7
-        with:
-          name: pinned-images-${{ github.event.inputs.environment || 'dev' }}
-          path: build/
-
       - name: verify every service, job and worker image runs the pinned digests
         id: verify
-        # The apply above IS the deploy; this proves it. A service serving an
-        # older digest reported healthy through every check the pipeline had
-        # (docs/audits/2026-09-20/tag-vs-digest.md). --verify-only compares
-        # every service's template, every terraform-managed job, and the
-        # scheduler's WORKER_IMAGE_REFS against the manifest, digest to digest.
-        #
-        # --no-health: the /readyz probe cannot run from this runner. It needs an
-        # ID token (the auth step no longer mints one -- see its comment) and the
-        # services' ingress refuses a runner anyway, which deploy.sh already
-        # records as "not reachable from here". Release 36036058352 failed right
-        # here with "no ID token available" once #36 dropped the token. Health is
-        # proven by the next step, which runs the smoke suite INSIDE the VPC.
-        run: ./scripts/lib/deploy.sh --verify-only --no-health --wait 600 --manifest "build/deployed-images-${ENVIRONMENT}.json"
+        # .github/actions/release-verify, shared with hotfix.yml. The apply IS
+        # the deploy; this proves it, digest to digest, against the manifest
+        # the apply pinned (`deploy.sh --verify-only --no-health`: the /readyz
+        # probe cannot run from this runner -- the smoke test proves health
+        # INSIDE the VPC: below on prod, in accept.yml on dev). On dev it first asks whether a newer commit
+        # has reached dev since, and a verification that fails because one
+        # arrived meanwhile ends green with superseded=true, which stops every
+        # step below: the newer release proves itself.
+        uses: ./.github/actions/release-verify
+        with:
+          environment: ${{ env.ENVIRONMENT }}
 
       - name: warm each Cloud Run worker job once on its new digest
         # #363, measured 2026-10-07: the first execution of each Cloud Run job
@@ -912,13 +788,16 @@ jobs:
         # on that flag before reading its configuration: no lease, no Firestore,
         # no task state (agent_worker.__main__.self_test).
         #
+        # PROD ONLY HERE. On dev accept.yml warms, as its first step, the same
+        # digests this run verified (see the header).
+        #
         # ONLY AFTER the verify step proved every job runs the promoted digest:
         # warming the old digest would warm nothing. A failed warm run is a
         # slower first task, not a broken release, so the script warns and
         # exits 0; continue-on-error keeps even a refused name (the only
         # non-zero exit) from failing the release. !cancelled(), not always():
         # it executes jobs in the environment, and a cancel stops it.
-        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
+        if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         continue-on-error: true
         timeout-minutes: 30
         run: ./scripts/warm-jobs.sh
@@ -936,97 +815,39 @@ jobs:
       # So it runs on the project's own interpreter, synced from the lockfile
       # as `verify` syncs it, and only when the apply runs.
       - uses: astral-sh/setup-uv@v7
-        if: ${{ !cancelled() && steps.verify.outcome == 'success' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
         with:
           enable-cache: true
           python-version: ${{ env.PYTHON_VERSION }}
 
       - name: sync the project's Python for kubernetes/render.py
-        if: ${{ !cancelled() && steps.verify.outcome == 'success' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' && vars.APPLY_TENANT_NAMESPACES == 'true' }}
         run: uv sync --frozen --all-extras
 
       - name: apply each tenant namespace with its step-spec public keys
-        # CONTRACT REQUEST 34 (#342), owner decision 2026-09-29 on #353: a GKE
-        # browser pod reads the step-spec public keys from the
-        # `swarm-spec-verify-keys` ConfigMap in its tenant's namespace, mounted
-        # read-only -- never from its `env:`, which the scheduler renders per
-        # task. There is no Kubernetes provider in terraform/infra, so the
-        # ConfigMap is rendered by kubernetes/render.py from the apply's own
-        # output (`spec_verify_keys_configmap`) and applied by
-        # kubernetes/apply.sh together with the rest of each tenant's
-        # namespace. Every release refreshes it, so a rotated or revoked key
-        # version reaches GKE in the same release that reaches Cloud Run.
-        #
-        # BEFORE the smoke test and the GKE proof, so nothing this release
-        # dispatches runs against the previous release's keys.
-        #
-        # SWITCHED BY vars.APPLY_TENANT_NAMESPACES, off until the owner turns
-        # it on, like PROVE_GKE_DISPATCH below. This is the first time
-        # apply.sh runs from CI rather than from an operator's workstation, and
-        # it reads the cluster's network, the tenant GSAs' IAM policies and the
-        # control plane's uniqueIds as the deployer; a first run that fails
-        # must not be what turns every release red. When it is off, the step
-        # SAYS so, and GKE pods keep whatever ConfigMap was last applied (none,
-        # before the first: the mount is optional, and a worker with no keys
-        # refuses a signed task as CANNOT_START rather than run it unverified).
-        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
-        env:
-          APPLY_TENANT_NAMESPACES: ${{ vars.APPLY_TENANT_NAMESPACES }}
-          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
-        run: |
-          set -euo pipefail
-          if [ "${APPLY_TENANT_NAMESPACES}" != "true" ]; then
-            echo "::notice title=Tenant namespaces not applied::vars.APPLY_TENANT_NAMESPACES is not 'true' -- this release did not refresh any tenant namespace or its swarm-spec-verify-keys ConfigMap."
-            exit 0
-          fi
-          # The outputs of the apply this release just made: the same backend
-          # and prefix the infrastructure job planned against. Read-only.
-          terraform -chdir=${{ env.TF_ROOT }} init -input=false -reconfigure \
-            -backend-config="bucket=${TF_STATE_BUCKET}" \
-            -backend-config="prefix=infra/${ENVIRONMENT}"
-          mkdir -p build
-          terraform -chdir=${{ env.TF_ROOT }} output -json spec_verify_keys_configmap > build/spec-verify-keys.json
-          terraform -chdir=${{ env.TF_ROOT }} output -json tenant_namespaces > build/tenant-namespaces.json
-          GKE_CLUSTER="$(terraform -chdir=${{ env.TF_ROOT }} output -raw gke_cluster_name)"
-          export GKE_CLUSTER GKE_LOCATION="${REGION}"
-          if [ -z "${GKE_CLUSTER}" ]; then
-            echo "::notice title=No GKE cluster::this environment has no GKE cluster, so there is no tenant namespace to apply."
-            exit 0
-          fi
-          gcloud components install gke-gcloud-auth-plugin --quiet
-          gcloud container clusters get-credentials "${GKE_CLUSTER}" \
-            --project "${PROJECT_ID}" --location "${GKE_LOCATION}"
-          context="gke_${PROJECT_ID}_${GKE_LOCATION}_${GKE_CLUSTER}"
-          # apply.sh runs render.py with ${PYTHON_BIN:-python3}: the project's
-          # synced interpreter, never the runner's bare one (see above). Its
-          # imports are checked once here, before any tenant is applied, so a
-          # missing package fails the step before it writes to the cluster.
-          export PYTHON_BIN="${GITHUB_WORKSPACE}/.venv/bin/python"
-          "${PYTHON_BIN}" kubernetes/render.py --help >/dev/null
-          jq -r 'keys[]' build/tenant-namespaces.json > build/tenants.txt
-          # A while-read over a file, not `for t in $(...)`: see CLAUDE.md,
-          # "Empty output is not success" -- the count is printed and checked.
-          applied=0
-          while IFS= read -r tenant; do
-            [ -n "${tenant}" ] || continue
-            ./kubernetes/apply.sh --tenant "${tenant}" \
-              --context "${context}" --cluster "${GKE_CLUSTER}" \
-              --spec-verify-keys build/spec-verify-keys.json --confirm
-            applied=$((applied + 1))
-          done < build/tenants.txt
-          if [ "${applied}" -eq 0 ]; then
-            echo "::error::terraform output tenant_namespaces named no tenant; nothing was applied"
-            exit 1
-          fi
-          echo "applied ${applied} tenant namespace(s) with swarm-spec-verify-keys"
+        # .github/actions/release-namespaces, shared with hotfix.yml (CONTRACT
+        # REQUEST 34, #342): every tenant namespace with its
+        # swarm-spec-verify-keys ConfigMap, BEFORE the smoke test and the GKE
+        # proof so nothing this release dispatches runs against the previous
+        # release's keys. SWITCHED BY vars.APPLY_TENANT_NAMESPACES, off until
+        # the owner turns it on; when off, the step SAYS so.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        uses: ./.github/actions/release-namespaces
+        with:
+          environment: ${{ env.ENVIRONMENT }}
+          apply_tenant_namespaces: ${{ vars.APPLY_TENANT_NAMESPACES }}
 
       - name: smoke test (inside the VPC)
         # The `mock` profile needs no provider key, so this proves the whole
         # path -- submit, admit, dispatch, run, release -- without depending on
         # any tenant's credential. verify-remote.sh executes scripts/smoke-test.sh
         # in the swarm-verify Cloud Run job, which IS in the VPC, and exits with
-        # the job's exit code.
-        run: ./scripts/verify-remote.sh smoke-test
+        # the job's exit code. PROD ONLY HERE: on dev accept.yml runs it,
+        # against the SHA releases/dev/applied.json names. On prod
+        # `release-order.sh unless-superseded` is the command alone.
+        id: smoke
+        if: github.event.inputs.environment == 'prod' && steps.verify.outputs.superseded != 'true'
+        run: ./scripts/lib/release-order.sh unless-superseded --environment "${ENVIRONMENT}" -- ./scripts/verify-remote.sh smoke-test
 
       - name: prove GKE dispatch with one browser task
         # docs/incidents/2026-09-24-gke-dispatch.md section 5: every browser
@@ -1056,7 +877,9 @@ jobs:
         # every release teaches everyone to ignore the release. Set the repository
         # variable PROVE_GKE_DISPATCH=true in the same change that restores the
         # browser limit. When it is off the step still runs and SAYS it skipped.
-        if: ${{ !cancelled() && steps.verify.outcome == 'success' }}
+        #
+        # PROD ONLY HERE, like the smoke test: on dev accept.yml runs it.
+        if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' && steps.smoke.outputs.superseded != 'true' }}
         run: |
           if [ "${{ vars.PROVE_GKE_DISPATCH }}" != "true" ]; then
             echo "::notice title=GKE proof skipped::vars.PROVE_GKE_DISPATCH is not 'true' -- browser admission is paused; nothing about GKE was proven by this release."
@@ -1081,108 +904,6 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
   # -------------------------------------------------------------------------
-  # ACCEPTANCE: real tasks, judged by what they produced (owner decision,
-  # 2026-09-29). Smoke proves a task reaches SUCCEEDED; every browser task that
-  # screenshotted about:blank did that. scripts/acceptance/run.sh asserts the
-  # OUTPUTS -- pixels, patch lines, staged bytes, a pull request's title -- and
-  # docs/acceptance.md says why each check asserts what it does.
-  #
-  # DEV ONLY, as its name says: it spends subscription quota on six small
-  # claude-code tasks and opens real pull requests on the sandbox, which is a
-  # price for dev's confidence, not a step of a prod release. It never starts
-  # on prod (tests/unit/scripts/test_release_acceptance_job.py).
-  #
-  # THE SMOKE TENANT AND THE PRIVATE SANDBOX (owner decision 2026-10-05,
-  # #628). The suite submits for the `smoke` tenant (X-Swarm-Tenant) and its
-  # tasks clone, and open their pull requests on, the private sandbox
-  # repository -- both from scripts/acceptance/config.sh, never from this
-  # workflow's own repository, which it used to fill with fixture pull
-  # requests (58 since 09-30, each running full CI). The suite refuses to run
-  # in any other tenant or against a publicly readable repository.
-  # tests/unit/scripts/test_acceptance_target.py holds all of that, and that
-  # nothing here or in scripts/acceptance/ names this repository.
-  #
-  # Its own job, after `deploy`, so a red acceptance is re-run alone with
-  # "Re-run failed jobs" -- without redeploying -- and so it cannot hide a
-  # smoke failure: it starts only when `deploy` (which runs smoke) succeeded.
-  #
-  # SAME CREDENTIALS AS SMOKE: the suite runs inside the VPC as the swarm-verify
-  # job, through verify-remote.sh, one execution per group (the job's timeout
-  # is 30 minutes, and the groups together would not fit). A FAIL in any group
-  # fails this job, and so the release.
-  #
-  # THE SANDBOX'S TOKEN, the repository secret SWARM_SANDBOX_GITHUB_TOKEN, is
-  # handed to three steps only, and never to the suite: the swarm-verify job
-  # holds no GitHub credential. Before the suite, sandbox-sync.sh writes this
-  # commit's tests/acceptance/fixtures/ to the sandbox's main and checks the
-  # fixture issue; after it, github-verify.sh reads the pull requests the
-  # suite opened back (title, body, diff, merged branches -- the assertions
-  # the suite itself cannot make without a token) and fails the job on any
-  # defect, and then github-cleanup.sh closes the pull requests and
-  # branches the direct-pr and integrate checks opened there (only swarm/task_
-  # branches whose changes lie entirely under tests/acceptance/fixtures/). The
-  # job's own GITHUB_TOKEN reaches only this repository, so it is read-only
-  # here: nothing in this job writes to it. A missing secret fails the sync
-  # step loudly, and the suite never starts against an unsynced sandbox.
-  # -------------------------------------------------------------------------
-  acceptance:
-    name: acceptance (dev)
-    runs-on: ubuntu-24.04
-    needs: [deploy]
-    if: ${{ !cancelled() && needs.deploy.result == 'success' && github.event.inputs.environment != 'prod' }}
-    permissions:
-      contents: read
-      id-token: write
-    env:
-      ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
-      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      REGION: ${{ vars.GCP_REGION }}
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: google-github-actions/auth@v3
-        with:
-          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
-          service_account: ${{ vars.GCP_DEPLOY_SA }}
-
-      - uses: google-github-actions/setup-gcloud@v3
-
-      - name: put this commit's fixtures on the sandbox
-        env:
-          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
-        run: ./scripts/acceptance/sandbox-sync.sh
-
-      # When the suite starts, so github-verify.sh judges only the pull
-      # requests this run opened, not one an earlier, unswept run left.
-      - name: note when the suite starts
-        id: started
-        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
-
-      - name: acceptance suite (inside the VPC)
-        id: suite
-        # Every group runs even when an earlier one failed: verify-remote.sh
-        # runs all its targets and exits non-zero at the end naming the ones
-        # that failed.
-        run: ./scripts/verify-remote.sh acceptance/mock acceptance/generic acceptance/claude-code acceptance/workflow acceptance/browser
-
-      # The suite cannot read the private sandbox back (swarm-verify holds no
-      # GitHub token) and SKIPs those assertions; this step makes them here,
-      # with the sandbox token, before the sweep closes anything. A failure
-      # here fails the job; the sweep still runs after it.
-      - name: read the suite's pull requests back from the sandbox
-        if: ${{ !cancelled() && steps.started.outputs.at != '' }}
-        env:
-          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
-          SWARM_ACCEPTANCE_SINCE: ${{ steps.started.outputs.at }}
-        run: ./scripts/acceptance/github-verify.sh
-
-      - name: close the pull requests and branches the suite opened on the sandbox
-        if: ${{ !cancelled() }}
-        env:
-          SWARM_ACCEPTANCE_GITHUB_TOKEN: ${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}
-        run: ./scripts/acceptance/github-cleanup.sh
-
-  # -------------------------------------------------------------------------
   # A PARTIAL RE-RUN OF PROD GOES RED, AND SAYS WHY. On prod, `promote`,
   # `infrastructure` and `deploy` run only in the attempt `approval` cleared
   # (see the header), so "Re-run failed jobs" or "Re-run this job" skips
@@ -1198,14 +919,15 @@ jobs:
   stale-approval:
     name: prod approval is from an earlier attempt
     runs-on: ubuntu-24.04
-    needs: [approval, promote, infrastructure, deploy, acceptance]
+    needs: [approval, promote, infrastructure, deploy]
     if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && needs.approval.result == 'success' && needs.approval.outputs.attempt != github.run_attempt }}
     env:
       APPROVED_ATTEMPT: ${{ needs.approval.outputs.attempt }}
     steps:
       - name: say what to do instead
         # The message never names the apply by its command, for the reason on
-        # `build`'s summary step: the gate test reads every run: as text.
+        # the summary step in .github/actions/release-images: the gate test
+        # reads every run: as text.
         run: |
           echo "::error title=Nothing was released -- re-run ALL jobs::The prod approval was given in attempt ${APPROVED_ATTEMPT}; this is attempt ${GITHUB_RUN_ATTEMPT}, a partial re-run, which GitHub does not ask anyone to approve. So promote, the apply and the deploy were skipped and this attempt changed nothing in prod. Use 'Re-run all jobs': the approval runs again and waits for its reviewer."
           {

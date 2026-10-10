@@ -62,8 +62,9 @@ same way a quota wait does. Every layer waits as a Firestore row.
 `swarm-ui` console. Per-tenant Cloud Scheduler ticks advance issue runs, wake
 merge steps, poll registered repositories for index runs and sweep workflow
 rollups. **Execution plane** — Cloud Run Jobs for `mock`, `generic`,
-`claude-code`, `codex` and the repository `indexer`; GKE Autopilot for
-`browser` alone. The full picture is in
+`codex` and `merge`; GKE Autopilot for `browser`, `claude-code` (contract
+request 53) and the repository `indexer` (contract request 63, the canary
+for #939). The full picture is in
 [`docs/architecture.md`](docs/architecture.md).
 
 **Clients.** One Python package, `apps/swarm-mcp`, ships three commands: `swarm`

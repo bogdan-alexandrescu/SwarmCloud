@@ -30,6 +30,8 @@ from __future__ import annotations
 
 import json
 import re
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -593,7 +595,9 @@ def test_an_end_out_of_reach_is_an_orphan_and_the_key_stops_at_its_body_in_both_
     assert sum(len(line) + 1 for line in ordinary) > PEM_BLOCK_MAX_CHARS
     text = "\n".join([_pem_marker("BEGIN"), *body, *ordinary, _pem_marker("END"), "after"])
     python, shell = _both(text)
-    expected = "\n".join([_pem_marker("BEGIN") + MASK, *ordinary, _pem_marker("END"), "after"])
+    # The END is an orphan with nothing to take, and is still masked and
+    # counted: an END is a key's tail wherever it stands (#361 box 82).
+    expected = "\n".join([_pem_marker("BEGIN") + MASK, *ordinary, MASK + _pem_marker("END"), "after"])
     assert python == expected, python[:300]
     assert shell == expected, shell[:300]
 
@@ -615,6 +619,137 @@ def test_the_lines_above_an_orphan_end_are_taken_only_as_far_as_a_key_reaches():
     expected = "\n".join([*lines[:kept], MASK + _pem_marker("END")])
     assert python == expected, python[-300:]
     assert shell == expected, shell[-300:]
+
+
+# --------------------------------------------------------------------------
+# #206 as its author wrote it, and the two guarantees no case above pins
+# --------------------------------------------------------------------------
+#
+# The fix landed earlier: `redact()` runs an awk stage ahead of its sed rules
+# that masks a key as a block, the way `mask_private_keys` does. What these
+# hold is the issue's own repro, the streaming `make logs FOLLOW=1` depends on,
+# and a drift check that can still see the private-key rule now that it is no
+# longer one of the `-e` expressions `_shell_redact_rules()` reads.
+
+def _house_redact_function() -> str:
+    source = (REPO / "scripts/lib/common.sh").read_text()
+    match = re.search(r"^redact\(\) \{\n.*?^\}\n", source, re.MULTILINE | re.DOTALL)
+    assert match, "redact() is no longer where this test expects it in common.sh"
+    return match.group(0)
+
+
+def test_the_issue_206_repro_masks_the_whole_block_and_the_control_line():
+    """Steps to reproduce, line for line: a `password:` control line, a BEGIN
+    marker, the two base64 body lines of `fake-key-line-1` and `-2`, an END.
+    Measured before the fix, the body and the END came out in clear."""
+    import base64
+
+    control = "password: " + "notareal" + "value123"
+    body = [base64.b64encode(f"fake-key-line-{n}".encode()).decode() for n in (1, 2)]
+    text = "\n".join([control, _pem_marker("BEGIN"), *body, _pem_marker("END")])
+
+    shell = _house_filter_text(text)
+
+    assert shell == "\n".join(["password: " + MASK, _pem_marker("BEGIN") + MASK]), shell
+    for line in body:
+        assert line not in shell, f"a body line came through: {shell!r}"
+    assert "END" not in shell, f"the END line came through: {shell!r}"
+    assert shell == redact(text).text, "the terminal and the API differ on the issue's input"
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="needs a pseudo-terminal")
+def test_the_house_filter_streams_a_line_outside_a_key_before_its_input_ends():
+    """`make logs FOLLOW=1` pipes a tail that never ends through `redact` to a
+    terminal. A line outside a key must reach the terminal while the input is
+    still open -- held until EOF, a followed log shows nothing at all -- and a
+    line inside an open key must not reach it in clear, then or later.
+
+    stdout is a pseudo-terminal because that is where the command writes, and
+    because a stage that is block-buffered on a pipe is line-buffered on one:
+    the test sees what an operator sees."""
+    import os
+    import pty
+    import select
+    import subprocess
+    import tty
+
+    def read_for(fd: int, seconds: float, until: str | None = None) -> str:
+        got = b""
+        deadline = time.monotonic() + seconds
+        while (left := deadline - time.monotonic()) > 0:
+            ready, _, _ = select.select([fd], [], [], left)
+            if not ready:
+                break
+            try:
+                chunk = os.read(fd, 65536)
+            except OSError:  # EIO on Linux once the last writer has gone
+                break
+            if not chunk:
+                break
+            got += chunk
+            if until is not None and until in got.decode(errors="replace"):
+                break
+        return got.decode(errors="replace").replace("\r\n", "\n")
+
+    master, slave = pty.openpty()
+    tty.setraw(slave)
+    proc = subprocess.Popen(
+        ["bash", "-c", _house_redact_function() + "redact\n"],
+        stdin=subprocess.PIPE,
+        stdout=slave,
+        stderr=subprocess.DEVNULL,
+    )
+    os.close(slave)
+    try:
+        control = "password: " + "notareal" + "value123"
+        proc.stdin.write((control + "\n").encode())
+        proc.stdin.flush()
+        seen = read_for(master, 10, until="\n")
+        assert seen == "password: " + MASK + "\n", (
+            f"a line outside any key did not arrive while the input was open: {seen!r}"
+        )
+
+        key_line = _pem_body(1)[0]
+        proc.stdin.write((_pem_marker("BEGIN") + "\n" + key_line + "\n").encode())
+        proc.stdin.flush()
+        held = read_for(master, 1)
+        assert key_line not in held, f"a line inside an open key was printed: {held!r}"
+
+        proc.stdin.close()
+        proc.wait(timeout=30)
+        rest = held + read_for(master, 10)
+        assert key_line not in rest, f"the key's body came out at EOF: {rest!r}"
+        assert rest == _pem_marker("BEGIN") + MASK + "\n", rest
+        assert proc.returncode == 0
+    finally:
+        proc.kill()
+        proc.wait()
+        os.close(master)
+
+
+def test_the_drift_check_still_finds_the_private_key_rule_in_the_awk_stage():
+    """`_shell_redact_rules()` reads the `-e` expressions, and the private-key
+    rule left them for the awk stage, so the drift check above can no longer
+    see it. This finds it where it lives: delete the awk stage, stop piping
+    through it, or rename the API's rule, and this fails."""
+    function = _house_redact_function()
+    program = re.search(r"^  local pem='\n(.*?)^  '\n", function, re.MULTILINE | re.DOTALL)
+    assert program, "redact() no longer defines its private-key awk program as `local pem='...'`"
+    awk = program.group(1)
+    assert re.search(r'awk\b[^\n|]*"\$\{pem\}"\s*\|\s*sed\b', function), (
+        "redact() defines the awk program but no longer runs its input through it"
+    )
+
+    begre = re.search(r'^\s*BEGRE = "([^"]*)"', awk, re.MULTILINE)
+    endre = re.search(r'^\s*ENDRE = "([^"]*)"', awk, re.MULTILINE)
+    assert begre and endre, "the awk stage lost its BEGRE/ENDRE markers"
+    assert "PRIVATE KEY" in begre.group(1), begre.group(1)
+    assert "PRIVATE KEY" in endre.group(1), endre.group(1)
+
+    rules = [rule for rule in RULES if rule.name == "private_key_block"]
+    assert len(rules) == 1, "swarm_api.redaction no longer has its private_key_block rule"
+    assert rules[0].shell_marker in begre.group(1), (rules[0].shell_marker, begre.group(1))
+    assert rules[0].shell_marker in endre.group(1), (rules[0].shell_marker, endre.group(1))
 
 
 def test_an_escaped_empty_value_is_left_alone_by_both_filters():

@@ -19,7 +19,6 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-import yaml
 
 REPO = Path(__file__).resolve().parents[3]
 DEV_TFVARS = REPO / "terraform" / "environments" / "dev" / "dev.tfvars"
@@ -61,8 +60,11 @@ def test_the_key_ring_is_unlabelable_and_the_iam_members_are_exempt_by_shape():
 
 
 def _deploy_steps() -> list[dict]:
-    workflow = yaml.safe_load(RELEASE.read_text())
-    return workflow["jobs"]["deploy"]["steps"]
+    # With the composite actions it runs flattened into their steps
+    # (.github/actions/release-namespaces holds this one).
+    from .test_release_reuses_ci_images import _workflow
+
+    return _workflow(RELEASE.name)["jobs"]["deploy"]["steps"]
 
 
 def _spec_keys_step() -> tuple[int, dict]:

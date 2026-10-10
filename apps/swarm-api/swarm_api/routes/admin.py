@@ -57,7 +57,10 @@ from ..schemas import (
 from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
-from .runs import advance_tenant_runs
+from ..issuesweep import SweepConfig, SweepSubmitterNotMember, sweep_tenant
+from ..issuesweep import get_config as get_sweep_config
+from ..issuesweep import set_config as set_sweep_config
+from .runs import advance_tenant_runs, start_run
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -962,6 +965,40 @@ def registration_owner_auth(ctx: AppContext, tenant_id: str):
     return _owner
 
 
+def sweep_submitter_auth(ctx: AppContext, tenant_id: str):
+    """email -> the AuthContext a swept run is submitted as: the tenant's named member.
+
+    Same shape as `registration_owner_auth` (built from the stored tenant,
+    never the caller; nothing wider than an ordinary member) but the address
+    is the tenant's `issue_sweep.submit_as`, not a registration's creator, and
+    membership is asked of the directory on every call.
+    """
+
+    def _submitter(email: str) -> AuthContext:
+        tenant = ctx.store.get_tenant(tenant_id)
+        if tenant is None:
+            raise NotFound(f"tenant {tenant_id!r} not found")
+        email = (email or "").strip().lower()
+        if not email or not ctx.authenticator.is_tenant_member(email, tenant):
+            raise SweepSubmitterNotMember(
+                f"issue_sweep.submit_as {email or '(unset)'} is not a current member of "
+                f"tenant {tenant_id!r}, so nothing is swept on their behalf"
+            )
+        return AuthContext(
+            principal=Principal(
+                email=email,
+                subject=f"issue-sweep:{tenant_id}",
+                domain=email.rsplit("@", 1)[-1],
+                groups=(),
+            ),
+            tenant_id=tenant_id,
+            is_admin=False,
+            tenant_principal=tenant.principal,
+        )
+
+    return _submitter
+
+
 @router.post("/repositories/poll")
 def poll_repositories(
     tenant_id: str = Query(..., min_length=1),
@@ -1007,6 +1044,83 @@ def poll_repositories(
         # Only the registrations that could not be polled, by id and code. A
         # healthy tick returns an empty list, which is an answer.
         "failures": report.failures,
+    }
+
+
+@router.post("/issues/sweep")
+def sweep_issues(
+    tenant_id: str = Query(..., min_length=1),
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Start issue runs for one tenant's ready-looking open issues (owner, 2026-10-08).
+
+    Called every 30 minutes by the per-tenant Cloud Scheduler job
+    `issue_sweep` (terraform/modules/scheduler/jobs.tf). For each of the
+    tenant's registered repositories it lists the open issues with the
+    tenant's token, skips what docs/issue-runs.md "Sweeper" lists, and starts
+    an `auto`, `auto_merge`, two-fix-round run for the rest, oldest-updated
+    first, until the tenant has its cap of live runs (`issuesweep`). Whether
+    an issue is READY is the planner's call: it answers NOT_READY with a
+    reason, posted on the issue.
+
+    ONLY THE SCHEDULER'S IDENTITY, as the repository poll: the rollup
+    sweeper, admitted by `auth.ROLLUP_SWEEPER_ROUTES`. Not an admin either --
+    an operator who wants a sweep now runs the job. OFF unless SWEEP_ENABLED
+    and the tenant's `issue_sweep.enabled` are both on; off, it answers
+    which switch is off and starts nothing.
+
+    TENANT IS EXPLICIT, as on the other ticks. Each run is submitted in that
+    tenant as the member named in its `issue_sweep.submit_as`
+    (`sweep_submitter_auth`), never the caller and never the registrant; a
+    tenant without a current-member `submit_as` is skipped, with the reason in
+    `tenant_skipped`. Its planner waits for admission like any task.
+    """
+    if not auth.is_rollup_sweeper:
+        raise Forbidden(
+            "POST /v1/admin/issues/sweep is the issue_sweep scheduler job's; run the job, "
+            "or start a run on the issue with POST /v1/runs"
+        )
+    report = sweep_tenant(
+        ctx, tenant_id, owner_auth=sweep_submitter_auth(ctx, tenant_id), start_run=start_run,
+    )
+    ctx.metrics.admin_actions.labels(action="issue_sweep").inc()
+    return report.to_api()
+
+
+@router.get("/tenants/{tenant_id}/issue-sweep")
+def get_issue_sweep(
+    tenant_id: str,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The tenant's issue-sweep settings (`issuesweep.SweepConfig`), and
+    whether the platform switch SWEEP_ENABLED is on: both must be."""
+    return {
+        "tenant_id": tenant_id,
+        "issue_sweep": get_sweep_config(ctx.db, tenant_id).model_dump(),
+        "platform_enabled": bool(ctx.settings.sweep_enabled),
+    }
+
+
+@router.put("/tenants/{tenant_id}/issue-sweep")
+def set_issue_sweep(
+    tenant_id: str,
+    body: SweepConfig,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Replace the tenant's issue-sweep settings: `enabled` (default off),
+    `max_live_runs` (default 8), `submit_as` (the member swept runs are
+    submitted as; required for a sweep to start anything), and the issues the sweep never starts, by
+    number (`exclude_issues`) or label (`exclude_labels`). Whole, not merged:
+    what is sent is what the next sweep reads."""
+    config = set_sweep_config(ctx.db, tenant_id, body)
+    ctx.metrics.admin_actions.labels(action="issue_sweep_settings").inc()
+    return {
+        "tenant_id": tenant_id,
+        "issue_sweep": config.model_dump(),
+        "platform_enabled": bool(ctx.settings.sweep_enabled),
     }
 
 

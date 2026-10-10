@@ -5,7 +5,7 @@ output "dashboard_id" {
 output "log_metric_names" {
   value = sort(concat(
     [for m in google_logging_metric.events : m.name],
-    [google_logging_metric.peak_rss.name, google_logging_metric.oom_near_miss.name, google_logging_metric.spec_signature_invalid.name, google_logging_metric.spec_upstream_invalid.name, google_logging_metric.worker_action_ended.name],
+    [google_logging_metric.peak_rss.name, google_logging_metric.oom_near_miss.name, google_logging_metric.spec_signature_invalid.name, google_logging_metric.spec_upstream_invalid.name, google_logging_metric.worker_action_ended.name, google_logging_metric.schedule_auto_paused.name, google_logging_metric.schedule_needs_owner.name, google_logging_metric.workspace_stuck.name, google_logging_metric.pr_stranded.name],
   ))
 }
 
@@ -19,6 +19,10 @@ output "log_metric_filters" {
       (google_logging_metric.spec_signature_invalid.name) = google_logging_metric.spec_signature_invalid.filter
       (google_logging_metric.spec_upstream_invalid.name)  = google_logging_metric.spec_upstream_invalid.filter
       (google_logging_metric.worker_action_ended.name)    = google_logging_metric.worker_action_ended.filter
+      (google_logging_metric.pr_stranded.name)            = google_logging_metric.pr_stranded.filter
+      (google_logging_metric.schedule_auto_paused.name)   = google_logging_metric.schedule_auto_paused.filter
+      (google_logging_metric.schedule_needs_owner.name)   = google_logging_metric.schedule_needs_owner.filter
+      (google_logging_metric.workspace_stuck.name)        = google_logging_metric.workspace_stuck.filter
     },
   )
 }
@@ -52,5 +56,8 @@ output "alert_policy_names" {
     google_monitoring_alert_policy.tasks_dead_lettered[*].display_name,
     google_monitoring_alert_policy.spec_signature_invalid[*].display_name,
     google_monitoring_alert_policy.worker_action_ended[*].display_name,
+    google_monitoring_alert_policy.pr_stranded[*].display_name,
+    google_monitoring_alert_policy.schedule_needs_attention[*].display_name,
+    google_monitoring_alert_policy.workspace_stuck[*].display_name,
   )
 }

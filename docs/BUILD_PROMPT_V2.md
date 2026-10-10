@@ -55,7 +55,7 @@ disabled for every tenant; no Job exists for them yet):
 | `merge` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `post-verdict` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
 | `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` |
-| `indexer` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`) |
+| `indexer` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`; on GKE Autopilot since contract request 63, 2026-10-10, the canary for #939; its tenants' Cloud Run Jobs are kept, idle, as the rollback) |
 
 `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`
@@ -684,7 +684,9 @@ in the default build. `tofu`, `tflint` and `trivy` were held back: no
 published release of them passed the promote gate's fixable-HIGH/CRITICAL scan
 that day. `trivy` joined the default build at 0.75.0, which scanned clean on
 2026-10-06 (#442); `tofu` and `tflint` are still installed only with
-`--build-arg INSTALL_TOFU_TFLINT=1`. The pinned versions,
+`--build-arg INSTALL_TOFU=1` and `--build-arg INSTALL_TFLINT=1`, one argument
+per tool so either can join the default build alone (re-scanned 2026-10-09:
+neither has a clean release yet). The pinned versions,
 and why two of them differ from the operator pins quoted below, are in
 [`versions.md`](versions.md#agent-image-toolbox). The image still runs every
 tool as uid 10001; it does not provide root.

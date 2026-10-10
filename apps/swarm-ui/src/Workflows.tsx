@@ -26,6 +26,7 @@ import { classUnits, useResourceClasses } from './Blockers'
 import {
   autoTier,
   censusWord,
+  criticalPath,
   depUnits,
   edgeKinds,
   edgePath,
@@ -50,6 +51,7 @@ import {
   dueSteps,
   noAgentSpend,
   CANVAS_COLUMN,
+  CANVAS_HEIGHT,
   PANEL_COLUMN,
   DECLARED_WORDS,
   NEVER_STARTED_WORD,
@@ -60,6 +62,7 @@ import {
   type DagBand,
   type DagLayout,
   type DagShape,
+  type CriticalPath,
   type EdgeKind,
   type EdgeProvenance,
   type MixPart,
@@ -128,6 +131,7 @@ import {
   bytesLabel,
   consequenceOf,
   dispatchOf,
+  formatDuration,
   stateGlyph,
   stateTone,
   stepState,
@@ -160,6 +164,8 @@ import {
   WfStepMark,
 } from './WorkflowViews'
 import { gateVerdictOf, isReviewedBy, mergeOf, skippedByVerdict, verdictFor, type MergeRead, type VerdictRead } from './wfreview'
+import { WorkflowChangesTab, changesAtOf, changesCount, withChangesAt, type ChangesAt } from './WorkflowChanges'
+import { Mark } from './primitives'
 import './styles/workflows.css'
 import './styles/names.css'
 import {
@@ -345,6 +351,11 @@ export function WorkflowsScreen({
   const setView = useCallback((v: string) => (onView !== undefined ? onView(v) : setLocalView(v)), [onView])
   const query = useMemo(() => parseWorkflowQuery(current), [current])
   const choose = useCallback((next: WorkflowQuery) => setView(workflowQueryString(next)), [setView])
+  // THE CHANGES TAB'S STEP FILTER AND OPEN FILE (`?step=&file=`) ride on the
+  // address beside the query, and only on that tab: any other choice is
+  // written by `workflowQueryString`, which drops them.
+  const changesAt = useMemo(() => changesAtOf(current), [current])
+  const chooseChanges = useCallback((at: ChangesAt) => setView(withChangesAt(workflowQueryString(query), at)), [setView, query])
   const stores = useBoardStores()
   const name = useRecentName(query.wf)
 
@@ -380,7 +391,9 @@ export function WorkflowsScreen({
           skeleton={<WorkflowPageSkeleton id={id} query={query} choose={choose} />}
           empty={{ heading: 'No workflows', body: 'Individually submitted tasks appear under Agents.' }}
         >
-          {(d) => <WorkflowPage board={d} id={id} query={query} choose={choose} stores={stores} />}
+          {(d) => (
+            <WorkflowPage board={d} id={id} query={query} choose={choose} stores={stores} changesAt={changesAt} onChangesAt={chooseChanges} />
+          )}
         </Screen>
       </>
     )
@@ -1137,7 +1150,11 @@ export function WorkflowCard({
   // always passes both, so on the real screen these are never read.
   const [localView, setLocalView] = useState<WorkflowView>(viewProp ?? 'graph')
   const [localPick, setLocalPick] = useState<string | null>(null)
-  const view: WorkflowView = onView !== undefined ? (viewProp ?? 'graph') : localView
+  const asked: WorkflowView = onView !== undefined ? (viewProp ?? 'graph') : localView
+  // A CARD DRAWS THE GRAPH, THE TABLE OR THE TIMELINE. Changes is a tab of the
+  // workflow's page, drawn there in place of the board (WorkflowChanges.tsx),
+  // so a card that is somehow asked for it draws its graph.
+  const view = asked === 'changes' ? 'graph' : asked
   const chooseView = (v: WorkflowView) => (onView !== undefined ? onView(workflow.workflow_id, v) : setLocalView(v))
   const picked = onPick !== undefined ? (pickedProp ?? null) : localPick
   // WHETHER A READER HAS PICKED A STEP ON THIS CARD (QA G3-28): the page's
@@ -1945,7 +1962,7 @@ function WorkflowSteps({
   usage: UsageRead
   /** The table's head-row title, where it sits under the Graph. */
   title?: string | null
-  view: Exclude<WorkflowView, 'graph'>
+  view: Exclude<WorkflowView, 'graph' | 'changes'>
   picked: string | null
   onPick: (stepId: string) => void
   /** The inspector, drawn under the picked row or track (#110); null when it is docked or closed. */
@@ -2075,10 +2092,21 @@ function InspectorSlot({
     0,
     refs.findIndex((s) => s.workflowId === workflow.workflow_id),
   )
+  // THE STEP'S CHANGES (diff-viewer.md §2 variant 2): the workflow's Changes
+  // tab filtered to this step, counted by the step's own file count.
+  const stepTask = row.taskId === null ? null : (taskById?.get(row.taskId) ?? null)
+  const changes =
+    row.taskId === null
+      ? null
+      : {
+          href: `/workflows/${encodeURIComponent(workflow.workflow_id)}/changes?${withChangesAt('', { step: row.step.step_id, file: null })}`,
+          ...changesCount(stepTask),
+        }
   return (
     <StepInspector
       workflowId={workflow.workflow_id}
       workflowLabel={label}
+      changes={changes}
       workflowStarted={workflowStartText(workflow, taskById, now)}
       row={row}
       taskState={state.kind === 'state' ? state.state : null}
@@ -2519,33 +2547,7 @@ function Minimap({
         aria-hidden
         focusable="false"
       >
-        {layout.bands.map((b) => {
-          // A FAILURE, NOT A CANCELLATION: the same rule, for the same reason,
-          // as the band's own `.has-failure` below.
-          const broken = stageCensus(b.steps, taskById).failed > 0
-          return (
-            <rect
-              key={`band-${b.level}`}
-              className={`wf-mini-band${broken ? ' is-bad' : ''}`}
-              x={b.x}
-              y={b.y}
-              width={b.w}
-              height={b.h}
-            />
-          )
-        })}
-        {layout.nodes.map((n) => (
-          <rect
-            key={n.step.step_id}
-            // THE NODE'S OWN TINT (#405, owner 2026-10-01): the state pair the
-            // card, the table row and the timeline span are drawn in.
-            className={`wf-mini-node ${lookClass(stepLook(stepState(n.step, taskById)))}`}
-            x={n.x}
-            y={n.y}
-            width={layout.nodeW}
-            height={n.h}
-          />
-        ))}
+        <MiniMarks layout={layout} taskById={taskById} />
         {measured && view.w < layout.width && (
           <rect
             className="wf-mini-view"
@@ -2557,6 +2559,152 @@ function Minimap({
         )}
       </svg>
     </div>
+  )
+}
+
+/** What both maps draw: every band, in the bad tone when a step in it failed, and every node in its own tint. */
+function MiniMarks({ layout, taskById }: { layout: DagLayout; taskById: ReadonlyMap<string, Task> | null }) {
+  return (
+    <>
+      {layout.bands.map((b) => {
+        // A FAILURE, NOT A CANCELLATION: the same rule, for the same reason,
+        // as the band's own `.has-failure` below.
+        const broken = stageCensus(b.steps, taskById).failed > 0
+        return (
+          <rect
+            key={`band-${b.level}`}
+            className={`wf-mini-band${broken ? ' is-bad' : ''}`}
+            x={b.x}
+            y={b.y}
+            width={b.w}
+            height={b.h}
+          />
+        )
+      })}
+      {layout.nodes.map((n) => (
+        <rect
+          key={n.step.step_id}
+          // THE NODE'S OWN TINT (#405, owner 2026-10-01): the state pair the
+          // card, the table row and the timeline span are drawn in.
+          className={`wf-mini-node ${lookClass(stepLook(stepState(n.step, taskById)))}`}
+          x={n.x}
+          y={n.y}
+          width={layout.nodeW}
+          height={n.h}
+        />
+      ))}
+    </>
+  )
+}
+
+/**
+ * WHERE YOU ARE DOWN A CANVAS TALLER THAN THE SCREEN (GR1; graph-rendering.md
+ * §3.2, pain point 2). The horizontal map above states the wrapper's scroll and
+ * nothing else; a 48-step run with both bands open is 4,740px tall, about five
+ * screens, and the page's own scroll is the position a reader loses there.
+ *
+ * THE SAME CONTRACT AS `Minimap`: `role="img"` with the position in its
+ * accessible name, a pointer shortcut for those with a pointer, and nothing
+ * only it can do -- the page scrolls natively and tabbing to a step brings it
+ * into view. Drawn only when the canvas is taller than the window (or, before
+ * anything has been measured, than `CANVAS_HEIGHT`), and sticky beside the
+ * canvas so it stays on screen while the page scrolls past.
+ *
+ * Layout only: it reads `layoutOf`'s geometry and the step tints the canvas
+ * already draws, and states no number the canvas does not.
+ */
+function VerticalMinimap({
+  layout,
+  taskById,
+  canvasRef,
+}: {
+  layout: DagLayout
+  taskById: ReadonlyMap<string, Task> | null
+  canvasRef: { readonly current: HTMLDivElement | null }
+}) {
+  // `h === 0` means the canvas has not been laid out -- first paint, and every
+  // test, because jsdom answers 0 for every box.
+  const [view, setView] = useState<{ top: number; h: number; screen: number }>({ top: 0, h: 0, screen: 0 })
+  const sync = useCallback(() => {
+    const el = canvasRef.current
+    if (el === null) return
+    const box = el.getBoundingClientRect()
+    const screen = window.innerHeight
+    const top = Math.max(0, -box.top)
+    const h = box.height > 0 ? Math.max(0, Math.min(layout.height, screen - box.top) - top) : 0
+    // Compared before it is set, as `syncView` is: this runs on every scroll.
+    setView((v) => (v.top === top && v.h === h && v.screen === screen ? v : { top, h, screen }))
+  }, [canvasRef, layout.height])
+  useEffect(() => {
+    sync()
+    window.addEventListener('scroll', sync, { passive: true })
+    window.addEventListener('resize', sync)
+    return () => {
+      window.removeEventListener('scroll', sync)
+      window.removeEventListener('resize', sync)
+    }
+  }, [sync])
+
+  const screen = view.screen > 0 ? view.screen : CANVAS_HEIGHT
+  if (layout.height <= screen) return null
+  const tall = Math.round(layout.height)
+  const label =
+    view.h > 0
+      ? `Map of the canvas, top to bottom. It is ${tall} pixels tall; ${Math.round(view.h)} of them are on screen, starting ${Math.round(view.top)} pixels from the top. The page scrolls, and tabbing to a step brings it into view.`
+      : `Map of the canvas, top to bottom. It is ${tall} pixels tall, taller than the ${Math.round(screen)} pixel screen. How much of it is on screen has not been measured. The page scrolls, and tabbing to a step brings it into view.`
+  return (
+    <div
+      className="wf-vmap"
+      role="img"
+      aria-label={label}
+      onPointerDown={(e) => {
+        const strip = e.currentTarget.getBoundingClientRect()
+        const canvas = canvasRef.current?.getBoundingClientRect()
+        // Unlaid-out boxes answer 0; dividing by one would scroll to NaN.
+        if (strip.height <= 0 || canvas === undefined || canvas.height <= 0) return
+        const y = ((e.clientY - strip.top) / strip.height) * layout.height
+        // Centred on the point, as the horizontal map centres its jump.
+        window.scrollTo({ top: Math.max(0, window.scrollY + canvas.top + y - window.innerHeight / 2) })
+      }}
+    >
+      <svg viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none" aria-hidden focusable="false">
+        <MiniMarks layout={layout} taskById={taskById} />
+        {view.h > 0 && view.h < layout.height && (
+          <rect className="wf-mini-view" x={0} y={view.top} width={layout.width} height={view.h} />
+        )}
+      </svg>
+    </div>
+  )
+}
+
+/**
+ * THE CRITICAL PATH'S CAPTION (GR1): `critical path · 41m` and the steps on
+ * it, in order, every one of which has a measured duration -- or, while any
+ * step has none, `critical path` with the `absent` Mark, naming the steps that
+ * have not been measured. Never a partial chain: a step that has not run could
+ * yet be the longest link, so a path through the measured ones alone would be a
+ * guess drawn as a fact.
+ */
+function CriticalPathNote({ path, total }: { path: CriticalPath; total: number }) {
+  if (path.kind === 'unmeasured') {
+    const named = path.missing.slice(0, 3).join(', ')
+    const more = path.missing.length > 3 ? ` and ${path.missing.length - 3} more` : ''
+    const why =
+      path.missing.length === 0
+        ? 'no step ends the workflow, so its dependencies form a cycle and no chain has an end.'
+        : `${path.missing.length} of ${total} steps have no measured duration (${named}${more}). It is drawn once every step has run, because a step that has not run could be on it.`
+    return (
+      <p className="wf-critical is-unmeasured">
+        critical path <Mark kind="absent" say={`Critical path not measured: ${why}`} />
+      </p>
+    )
+  }
+  const took = formatDuration(path.seconds * 1000)
+  return (
+    <p className="wf-critical" title="The chain of dependent steps whose measured run times sum longest. Its edges are drawn heavier.">
+      <span className="wf-critical-h">critical path · {took}</span>{' '}
+      <span className="wf-critical-chain">{path.steps.join(' → ')}</span>
+    </p>
   )
 }
 
@@ -2774,6 +2922,18 @@ function WorkflowGraph({
   const focusStep = hovered ?? picked
   const edgeLight = (e: { from: string; to: string }): string =>
     focusStep === null ? '' : e.from === focusStep || e.to === focusStep ? ' is-lit' : ' is-faded'
+  // THE CRITICAL PATH (GR1): the chain whose MEASURED durations sum longest,
+  // from `stepDuration`'s `ran` arm and nothing else -- a running step's
+  // elapsed time is not final, and a wait is not work. Its edges are drawn
+  // heavier; while any step has no measured duration there is no path to draw.
+  const critical = criticalPath(workflow.steps, (s) => {
+    const d = stepDuration(stepState(s, taskById), now)
+    return d.kind === 'ran' ? d.seconds : null
+  })
+  const criticalEdges = new Set<string>()
+  if (critical.kind === 'measured') {
+    for (let i = 1; i < critical.steps.length; i++) criticalEdges.add(`${critical.steps[i - 1]}->${critical.steps[i]}`)
+  }
 
   // WHERE THE VIEWPORT IS, for the minimap. Read off the wrapper rather than
   // computed, because it is the one number on this screen that genuinely is a
@@ -2781,6 +2941,7 @@ function WorkflowGraph({
   // viewport, and a reader on a 1920 monitor is looking at more of the canvas
   // than any constant here knows about.
   const wrapRef = useRef<HTMLDivElement | null>(null)
+  const canvasRef = useRef<HTMLDivElement | null>(null)
   const [view, setView] = useState<{ left: number; w: number }>({ left: 0, w: 0 })
   const syncView = useCallback(() => {
     const el = wrapRef.current
@@ -2953,6 +3114,10 @@ function WorkflowGraph({
           <EdgeKey />
         </div>
       )}
+      {/* ITS OWN LINE, NOT THE ZOOM STRIP'S: the strip is view chrome and holds
+          no data mark (WF-14), and an unmeasured path is one. */}
+      {layout.edges.length > 0 && <CriticalPathNote path={critical} total={workflow.steps.length} />}
+      <div className="wf-canvas-row">
       <div className="wf-canvas-wrap" ref={wrapRef} onScroll={syncView}>
         <div className="wf-graph">
           {/* THE LEVEL RAIL, WHICH WAS A ROW OF COLUMN CAPTIONS. When levels ran
@@ -2976,7 +3141,7 @@ function WorkflowGraph({
               </li>
             ))}
           </ol>
-          <div className="wf-canvas" style={{ width: layout.width, height: layout.height }}>
+          <div className="wf-canvas" ref={canvasRef} style={{ width: layout.width, height: layout.height }}>
             <svg
               className="wf-edges"
               width={layout.width}
@@ -3050,7 +3215,9 @@ function WorkflowGraph({
                 // that one dependency draws one mark is unchanged.
                 <g
                   key={`${e.from}->${e.to}`}
-                  className={`${linkClass(kinds.get(`${e.from}->${e.to}`) ?? 'order')}${edgeLight(e)}`}
+                  className={`${linkClass(kinds.get(`${e.from}->${e.to}`) ?? 'order')}${edgeLight(e)}${
+                    criticalEdges.has(`${e.from}->${e.to}`) ? ' is-critical' : ''
+                  }`}
                   data-edge={`${e.from}->${e.to}`}
                 >
                   <path
@@ -3137,6 +3304,8 @@ function WorkflowGraph({
             ))}
           </div>
         </div>
+      </div>
+      <VerticalMinimap layout={layout} taskById={taskById} canvasRef={canvasRef} />
       </div>
     </>
   )
@@ -5001,12 +5170,17 @@ function WorkflowPage({
   query,
   choose,
   stores,
+  changesAt,
+  onChangesAt,
 }: {
   board: WorkflowBoard
   id: string
   query: WorkflowQuery
   choose: (q: WorkflowQuery) => void
   stores: BoardStores
+  /** The Changes tab's step filter and open file, from the address. */
+  changesAt: ChangesAt
+  onChangesAt: (at: ChangesAt) => void
 }) {
   const workflow = board.workflows.find((w) => w.workflow_id === id) ?? null
   const found = workflow !== null
@@ -5063,7 +5237,14 @@ function WorkflowPage({
     <div className="wfp">
       <WorkflowHead workflow={workflow} taskById={board.taskById} reload={stores.reload} usage={usage} />
       <WfTabs id={workflow.workflow_id} query={query} view={query.tab} steps={workflow.steps.length} onView={focus.onView} />
-      <Board board={board} stores={stores} focus={focus} usage={usage} />
+      {/* THE CHANGES TAB (diff-viewer.md §2 variants 2 + 5) is drawn in
+          place of the board: it is a reading of the steps' patches, not a
+          drawing of the steps. */}
+      {query.tab === 'changes' ? (
+        <WorkflowChangesTab workflow={workflow} taskById={board.taskById} at={changesAt} onAt={onChangesAt} />
+      ) : (
+        <Board board={board} stores={stores} focus={focus} usage={usage} />
+      )}
     </div>
   )
 }
@@ -5113,8 +5294,8 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
   )
 }
 
-/** The page's tabs, in the frame's order: the Graph, the Table with its count, the Timeline. */
-const PAGE_TABS: readonly WorkflowView[] = ['graph', 'table', 'timeline']
+/** The page's tabs, in the frame's order: the Graph, the Table with its count, the Timeline, Changes. */
+const PAGE_TABS: readonly WorkflowView[] = ['graph', 'table', 'timeline', 'changes']
 
 /**
  * UNDERLINE TABS UNDER THE TITLE (workflows.html B; components.html A

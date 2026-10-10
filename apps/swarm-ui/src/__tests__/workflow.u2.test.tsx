@@ -418,7 +418,7 @@ describe('the workflow page head (#503, workflows.html frame B)', () => {
       return t!
     })
     const buttons = [...tabs.querySelectorAll('a')]
-    expect(buttons.map((b) => b.textContent)).toEqual(['Graph', 'Table4', 'Timeline'])
+    expect(buttons.map((b) => b.textContent)).toEqual(['Graph', 'Table4', 'Timeline', 'Changes'])
     expect(buttons[0]!.getAttribute('aria-current')).toBe('page')
     expect(buttons[1]!.getAttribute('href')).toMatch(/^\/workflows\/wf_broker\/table/)
     expect(tabs.querySelector('em')!.textContent).toBe('4')

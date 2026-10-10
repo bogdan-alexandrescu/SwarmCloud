@@ -32,9 +32,36 @@ That also gives each group its own execution and its own 30-minute timeout
 (`terraform/infra/verify.tf`); the five together would not fit in one.
 
 Each check prints `PASS`, `FAIL` or `SKIP` with a one-line reason and the task
-id, and the run exits non-zero when any check failed. The release runs every
-group in the `acceptance (dev)` job after `deploy and smoke`, and a `FAIL` fails
-the release.
+id, and the run exits non-zero when any check failed. `accept.yml` runs every
+group after a dev release completes, one matrix job per group in two waves
+that fit the smoke tenant's ceiling, after its own warm and smoke. A `FAIL`
+fails that group's job and opens (or updates) the one acceptance issue; it no
+longer fails the release ([ci.md, "The release timeline"](ci.md#the-release-timeline)).
+
+## What accept.yml's identity may run
+
+`accept.yml` starts these executions as its own account, `swarm-accept`
+(`terraform/bootstrap/acceptance.tf`; [ci.md, "Its identity is not the
+deployer"](ci.md#its-identity-is-not-the-deployer)). Its custom role
+`swarmAcceptanceRunner` — get a job, start an execution, read executions and
+tasks, cancel a running execution; no create, update, delete or IAM — is
+granted at **project level with no condition**. Owner decision 2026-10-09
+(#965).
+
+Why no condition: the grant used to be conditioned to `swarm-verify` and
+`swarm-job-*` by job name, and that condition never matched anything. Cloud
+Run does not expose `resource.name` to IAM Conditions (Google's "Resource
+attributes for IAM Conditions" lists no `run.googleapis.com` resource, and the
+IAM Policy Troubleshooter evaluated `resource.name.endsWith("/jobs/swarm-verify")`
+as false with the name supplied), so the account was denied `run.jobs.get` on
+swarm-verify and every acceptance run failed before its first check.
+
+The trade-off, accepted by the owner: `saga-agents-staging` is a shared
+project, and the unconditioned grant reaches **every Cloud Run job in it,
+present and future**, including the other team's and swarm's own merge job
+(`swarm-job-eng-merge`). It can start, read and cancel their executions; it
+cannot change, create, delete or re-permission any of them. Do not restore a
+job-name condition: Cloud Run would deny every job again.
 
 ## Where it runs: the smoke tenant and a private sandbox
 
@@ -178,6 +205,7 @@ that file.**
 | expected_outputs | `a`'s `metadata.expected_outputs` names the file `b` stages; a parent that writes the wrong file ends `FAILED outputs_missing`, `result_summary.expected_outputs_missing` names the file, it was retried to `max_attempts`, and its child ends `CANCELLED` having never held a lease |
 | on_step_failure | a failing root's child and grandchild both end `CANCELLED workflow_sweep` with no lease ever, and the workflow's derived state is `FAILED` (the fail_workflow sweep in `apps/scheduler/scheduler/loop.py` `_sweep_failed_workflow` cancels every not-started step of the workflow ahead of the per-parent `failed_parent` cascade, dependent or not, and always records `end_cause=WORKFLOW_SWEEP`) |
 | integrate chain | implement (fix the bug, stage its `change.diff`) -> review (apply the staged `change.diff`, judge it, write `verdict.json`, then reverse the patch) -> fix (read the staged `verdict.json`, write `verdict-seen.txt` and `pr-title.txt`), strategy `integrate`: all three succeed, review's `result_summary.staged_inputs` lists implement's `change.diff` (without it review would be judging repository_ref's unfixed fixture, not implement's work -- strategy `integrate` gives a non-integrator step no other way to see an upstream step's tree, docs/workflows.md), exactly one pull request exists and fix opened it, fix read the verdict review wrote (`MERGE`), the pull request's body lists the implement branch as merged, and its diff removes the bug line (those two are read back from the private sandbox, and are a SKIP in a run with no token for it, as the release's is). Then the pull request and every branch are cleaned up |
+| carry | docs/workflows.md's park-and-carry recipe: `a` (mock, `quota_exhausted` + `artifact_before_park`) writes `notes.md` and parks, then succeeds on a later attempt that writes nothing; `a`'s `result_summary.artifacts` has one `notes.md`, whose `carried_from` is the attempt the `parked` event names and whose `uri` is that attempt's object, none under the finishing attempt's prefix; `b` succeeds, its `staged_inputs` names that object, and its checkpoint's `notes.md` is `a`'s bytes. It exists because #166 was reopened by a live dev measurement (a 403), and only a live measurement the other way closes it: the owner asked for this one on 2026-10-08 |
 
 ### browser
 

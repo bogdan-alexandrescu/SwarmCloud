@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 from dataclasses import dataclass, replace
-from typing import Any, Protocol
+from typing import Any, Mapping, Protocol
 
 from swarm_common.identity import (
     AuthError,
@@ -136,6 +137,15 @@ class AuthContext:
     #: personal fallback the frozen `resolve_tenant` derives, which no route
     #: it can reach reads -- the rollup route takes its tenant as a parameter.
     is_rollup_sweeper: bool = False
+    #: On `SCHEDULE_TICK_USERS` (`schedule_tick_users`): the identity the
+    #: one-minute schedule tick presents, `swarm-schedule-tick` (docs/
+    #: schedules.md §2.1, owner decision SD10). May call the routes in
+    #: `SCHEDULE_TICK_ROUTES` and nothing else, by the same two gates as the
+    #: rollup sweeper. NOT an admin, NOT a tenant member and NOT the rollup
+    #: sweeper: its reach (due schedules across tenants) differs from the
+    #: sweeper's (one named tenant), so it is a different account on a
+    #: different list, and the sweeper's route set is not widened.
+    is_schedule_tick: bool = False
     #: The verified token's `name` claim, cleaned for a commit identity
     #: (`gitidentity.clean_name`); "" when the token carries none -- an IAP
     #: assertion never does. Read from claims already verified, never asked of
@@ -363,6 +373,15 @@ class Authenticator:
         # (a hand-built authenticator in a test) means configuration alone
         # decides admin, which is exactly the behaviour before §6.5.
         self.admin_roles = admin_roles
+        # Read once, here, at process start: an address on two lists is
+        # refused before the service takes a request (`schedule_tick_users`).
+        self._schedule_tick_users = frozenset(schedule_tick_users(settings))
+
+    @property
+    def schedule_tick_configured(self) -> bool:
+        """Whether any address is admitted as the schedule tick. False until
+        lane S13 renders SCHEDULE_TICK_USERS: the tick then admits nobody."""
+        return bool(self._schedule_tick_users)
 
     def authenticate(
         self,
@@ -463,6 +482,28 @@ class Authenticator:
         # carries no such prefix. Stripped here, once, for BOTH paths, so
         # `principal.subject` is the bare id either way.
         subject = subject.removeprefix("accounts.google.com:")
+
+        # THE SCHEDULE TICK (docs/schedules.md §2.1, SD10), first, for the
+        # rollup sweeper's reasons below: a service-account address is in no
+        # Workspace domain and no group, and a failed directory lookup must
+        # not 503 a job that runs every minute. `schedule_tick_users` refused
+        # an address that is also on any other list, at start.
+        if email and email in self._schedule_tick_users:
+            if claims.get("email_verified") is not True:
+                raise AuthError("the schedule tick requires a verified email claim")
+            principal = Principal(
+                email=email,
+                subject=subject,
+                domain=email.rsplit("@", 1)[1],
+                groups=(),
+            )
+            return AuthContext(
+                principal=principal,
+                tenant_id=resolve_tenant(principal, ()),
+                is_admin=False,
+                tenant_principal=email,
+                is_schedule_tick=True,
+            )
 
         # THE ROLLUP SWEEPER (D17), before anything else is asked, for the
         # reasons the listed path below gives: a service-account address is in
@@ -857,8 +898,95 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # finished task's own tenant's token, for that tenant's gated
         # integrator, and moves only a step it claimed (`verdictpublish`).
         ("POST", "/v1/admin/tasks/finished"),
+        # The issue sweeper (owner decisions 2026-10-08, jobs.tf
+        # `issue_sweep`): lists one tenant's registered repositories' open
+        # issues with that tenant's token and starts issue runs for the
+        # candidates, each as its registration's creator
+        # (`routes.admin.registration_owner_auth`), never as the sweeper.
+        # Off unless SWEEP_ENABLED and the tenant's own switch say otherwise.
+        # Like the repository poll, the sweeper alone may call it.
+        ("POST", "/v1/admin/issues/sweep"),
+        # The stranded-PR sweep (part of #295, jobs.tf `stranded_pr_sweep`):
+        # reads one tenant's registered repositories' open pull requests with
+        # that tenant's token, stores the rows and logs `pr_stranded`. It
+        # submits nothing for this identity: `redrive: true` is refused unless
+        # the caller is an admin (routes/strandedprs.py).
+        ("POST", "/v1/admin/stranded-prs/sweep"),
     }
 )
+
+
+#: Every route the SCHEDULE TICK (`SCHEDULE_TICK_USERS`, the
+#: `swarm-schedule-tick` account, docs/schedules.md §2.1 and owner decision
+#: SD10) may call, under ROLLUP_SWEEPER_ROUTES' rule and for its reason: an
+#: ALLOW-LIST, so a route added later is closed to the tick until named here.
+#:
+#: One route. It reads due schedules ACROSS tenants -- a reach the rollup
+#: sweeper's per-tenant routes do not have -- and submits nothing as itself:
+#: every firing is submitted as the schedule's stored owner, in the
+#: schedule's stored tenant, while the directory still says they are a member
+#: (`schedulefire.schedule_owner_auth`). The route also refuses an admin
+#: (`routes.schedule_tick`), so this list is the whole of who may tick.
+#: tests/unit/control_plane/test_schedule_tick.py holds this set to the
+#: decided one and sweeps every authenticated route against it.
+SCHEDULE_TICK_ROUTES: frozenset[tuple[str, str]] = frozenset(
+    {
+        ("POST", "/v1/admin/schedules/tick"),
+    }
+)
+
+#: The environment variable lane S13 renders into swarm-api's environment
+#: (terraform: `swarm-schedule-tick`'s email). Read by `schedule_tick_users`.
+SCHEDULE_TICK_USERS_ENV = "SCHEDULE_TICK_USERS"
+
+
+def schedule_tick_users(
+    settings: Any, environ: Mapping[str, str] | None = None
+) -> tuple[str, ...]:
+    """The addresses admitted as the schedule tick, lower-cased.
+
+    `ApiSettings.schedule_tick_users` when settings carries it, else
+    `SCHEDULE_TICK_USERS` from the environment, comma-separated. settings.py
+    is not this lane's file (docs/schedules.md §9, S2), so the variable is
+    read here until a settings field exists; the field, once added, wins.
+
+    UNSET IS NOBODY. With no value the tick route admits no caller at all --
+    not an admin, not the rollup sweeper -- so before S13 renders the
+    variable, the tick is closed rather than open to whoever else can reach
+    /v1/admin (`routes.schedule_tick` says so in its 403).
+
+    An address that is also on ROLLUP_SWEEPER_USERS, ADMIN_USERS,
+    ADMIN_POOL_USERS, ALLOWED_USERS or PLATFORM_OWNER is refused at start,
+    for settings.py's reason: two roles on one address make which applies
+    depend on the order this module asks. A service-account address only:
+    a person's address here would let that person tick every tenant.
+    """
+    configured = getattr(settings, "schedule_tick_users", None)
+    if configured is None:
+        environ = os.environ if environ is None else environ
+        configured = environ.get(SCHEDULE_TICK_USERS_ENV, "").split(",")
+    users = tuple(dict.fromkeys(u.strip().lower() for u in configured if u and u.strip()))
+    for user in users:
+        if "@" not in user or not user.endswith(".gserviceaccount.com"):
+            raise ValueError(
+                f"{SCHEDULE_TICK_USERS_ENV} names {user!r}; it takes the schedule tick's "
+                "service-account address only"
+            )
+    owner = (getattr(settings, "platform_owner", "") or "").strip().lower()
+    for name, values in (
+        ("ROLLUP_SWEEPER_USERS", getattr(settings, "rollup_sweeper_users", ())),
+        ("ADMIN_USERS", getattr(settings, "admin_users", ())),
+        ("ADMIN_POOL_USERS", getattr(settings, "admin_pool_users", ())),
+        ("ALLOWED_USERS", getattr(settings, "allowed_users", ())),
+        ("PLATFORM_OWNER", (owner,) if owner else ()),
+    ):
+        overlap = sorted(set(users) & {v.strip().lower() for v in values})
+        if overlap:
+            raise ValueError(
+                f"{SCHEDULE_TICK_USERS_ENV} and {name} both name {', '.join(overlap)}; "
+                "the schedule tick may call one route and is no other kind of caller"
+            )
+    return users
 
 
 #: Every route a CONTINUATION-SCOPED account (member_scope="continuation") may
@@ -901,8 +1029,9 @@ CONTINUATION_ROUTES: frozenset[tuple[str, str]] = frozenset({
 def require_continuation_route(
     ctx: AuthContext, route: tuple[str, str] | None
 ) -> AuthContext:
-    """A continuation-scoped caller may reach only CONTINUATION_ROUTES, and
-    the rollup sweeper only ROLLUP_SWEEPER_ROUTES.
+    """A continuation-scoped caller may reach only CONTINUATION_ROUTES, the
+    rollup sweeper only ROLLUP_SWEEPER_ROUTES, and the schedule tick only
+    SCHEDULE_TICK_ROUTES.
 
     The per-route default-deny `deps.current_auth` applies to EVERY
     authenticated request, which is why the sweeper's is here too: a route
@@ -913,6 +1042,11 @@ def require_continuation_route(
     immediately. `route=None` (no route matched) fails closed, same as
     `require_admin`.
     """
+    if ctx.is_schedule_tick:
+        if route is not None and route in SCHEDULE_TICK_ROUTES:
+            return ctx
+        method, path = route if route else ("?", "unmatched")
+        raise Forbidden(f"the schedule tick may not call {method} {path}")
     if ctx.is_rollup_sweeper:
         if route is not None and route in ROLLUP_SWEEPER_ROUTES:
             return ctx
@@ -958,6 +1092,11 @@ def require_admin(
     # test_a_pool_admin_whose_admin_lookup_failed_can_still_narrow_the_pool.
     if ctx.is_pool_admin and route is not None and route in POOL_ADMIN_ROUTES:
         return ctx
+    if ctx.is_schedule_tick:
+        if route is not None and route in SCHEDULE_TICK_ROUTES:
+            return ctx
+        method, path = route if route else ("?", "unmatched")
+        raise Forbidden(f"the schedule tick may not call {method} {path}")
     if ctx.is_rollup_sweeper:
         if route is not None and route in ROLLUP_SWEEPER_ROUTES:
             return ctx

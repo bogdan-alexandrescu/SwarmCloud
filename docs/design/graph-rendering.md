@@ -3,10 +3,18 @@
 **Status: design, lane GFY (2026-10-08), owner request of 2026-10-08. Nothing
 here changes a screen.** It evaluates Graphify
 (<https://github.com/Graphify-Labs/graphify>) and asks the owner the decisions
-in section 8 (also filed as the lane's `questions.json`). A prototype is
-committed under `apps/swarm-ui/src/proto/`. No route reaches it, `vite build`
-never sees it, and the production bundle's hash is unchanged with it in the
-tree (section 2.4). The knowledge-graph design (lane GNX,
+in section 8 (also filed as the lane's `questions.json`). A prototype was
+built under `apps/swarm-ui/src/proto/` to take the measurements below; it is
+deleted from this branch (section 2.4), so the tree carries no prototype and no
+`vis-network` dependency.
+
+**GR1 has shipped (PR 1007, merged after this was written).** Where this
+document says "today's renderer", it means the renderer as it stood when the
+measurements were taken, before GR1. Main's workflow graph now orders each
+level to cut edge crossings (`dag.ts` `orderLevels`, called from `layoutOf`),
+draws its measured critical path (`criticalPath`) and has a vertical minimap
+(`VerticalMinimap` in `Workflows.tsx`) for a tall canvas. The sections that
+describe the pre-GR1 state say so in place. The knowledge-graph design (lane GNX,
 `docs/design/knowledge-graph.md`) had not landed on main when this was written.
 Section 5.2 says where the two meet.
 
@@ -114,7 +122,7 @@ rendering one.
 * **jsdom.** Graphify has no browser tests (its 349 test files are Python).
   vis-network in jsdom **throws**: `Not implemented:
   HTMLCanvasElement.prototype.getContext (without installing the canvas npm
-  package)`, measured in `src/proto/proto.test.tsx`. Making it run needs the
+  package)`, measured by the prototype's vitest file (deleted, section 2.4). Making it run needs the
   native `canvas` package or a mock. Even then, a canvas has no DOM nodes for a
   test to find.
 
@@ -155,7 +163,7 @@ all of them reported **0** findings.
 | License | repository's own | Apache-2.0 OR MIT | MIT + MIT | MIT |
 | Added, min / gz | 0 | 669.0 kB / **159.2 kB** | 179.9 kB / 59.3 kB + 48.2 kB / 16.8 kB | 443.9 kB / 141.5 kB |
 | Drawing | HTML cards over one SVG (DAG); SVG (repo) | canvas | DOM nodes + SVG edges | canvas |
-| Layered/DAG layout | `dag.ts` `layoutOf`: levels, stage bands, skip-level lanes, **no crossing reduction** | hierarchical mode with `edgeMinimization` | dagre (Sugiyama) or ELK* | dagre/ELK/klay extensions |
+| Layered/DAG layout | `dag.ts` `layoutOf`: levels, stage bands, skip-level lanes; **no crossing reduction when measured, since added by GR1** (`orderLevels`) | hierarchical mode with `edgeMinimization` | dagre (Sugiyama) or ELK* | dagre/ELK/klay extensions |
 | Force layout | `RepoGraphData.ts` `forceLayout`, O(n²), main thread | Barnes-Hut / forceAtlas2, with stabilise-then-freeze | none built in | cose / fcose (extension) |
 | Collapse / expand | stage bands (DAG); package clusters above 60 (repo) | clustering API, manual | sub-flows, manual | compound nodes; expand-collapse extension |
 | Keyboard, screen reader | native buttons (DAG); `role="button"` + `tabIndex` (repo) | canvas only; keyboard pans and zooms | nodes are DOM, focusable | canvas only |
@@ -167,45 +175,27 @@ all of them reported **0** findings.
 440.0 kB gz bundled. That is both a license question for the owner and the
 largest option measured. dagre is the MIT, 16.8 kB alternative.
 
-### 2.4 The prototype
+### 2.4 The prototype (deleted)
 
-The prototype lives in `apps/swarm-ui/src/proto/`, imported by nothing in the
-app:
+The measurements here came from a prototype in `apps/swarm-ui/src/proto/`: a
+48- and 200-step workflow fixture, a barycentric ordering pass with a crossing
+counter that measured on `layoutOf`'s own geometry, a vis-network rendering of
+both graphs with Graphify's options, a dev-server-only side-by-side preview
+page, and a vitest file that printed the numbers quoted in this document.
+`vis-network` 10.1.2 was pinned exactly as a devDependency for it. `vite build`
+before and after gave the same bundle (`index-BB349dhz.js`, 1,564.85 kB /
+477.78 kB gz), so no byte of it shipped.
 
-* `fixtures.ts`:
-  * `protoWorkflow(rounds)`: a 48-step workflow at the default 3 rounds, or
-    200 steps at 22, built from `types.ts` `Workflow` / `WorkflowStep` / `Task`.
-    Its states are scripted for one instant and labelled as a fixture on
-    screen. A step whose parents have not all succeeded has no task, so it is
-    never given a state.
-  * `protoGraphBody(n)`: the raw `GET /v1/repositories/{id}/graph` body for
-    `n` modules in six packages, seeded, so every picture is the same.
-* `layered.ts`, option D:
-  * `barycentricOrder`, the ordering pass;
-  * `orderCrossings`;
-  * `drawnCrossings`, which counts crossings on `layoutOf`'s own geometry, so
-    the number is what a reader sees.
-* `GraphifyWorkflow.tsx`, options A and B: both graphs drawn by vis-network.
-  * The repo graph uses Graphify's options verbatim and its golden-angle seed.
-  * The DAG uses vis-network's hierarchical layout on `levelsOf`'s levels.
-  * Colours come from the console's tokens, re-read on a theme change.
-  * There is a screen-reader list beside the canvas.
-* `preview.html` / `preview.tsx`: the dev-server-only page that puts today's
-  renderers and the prototypes side by side. Run `VITE_LIVE=1 npx vite` and
-  open
-  `/src/proto/preview.html?graph=dag|repo&r=today|layered|graphify&theme=light|dark[&n=2000&flat=1]`.
-  It answers the graph route from the fixture itself, so it makes no network
-  call.
-* `proto.test.tsx`: holds three things:
-  * the ordering pass invents, drops and moves no step;
-  * crossings at least halve;
-  * the canvas renderer says in place that jsdom has no canvas.
-
-  It also prints the measurements quoted here.
-
-`vis-network` is pinned exactly (`10.1.2`) as a **devDependency** because only
-the prototype imports it. `vite build` before and after: `index-BB349dhz.js`,
-1,564.85 kB / 477.78 kB gz, the same hash. No byte of the prototype ships.
+Owner decision 2026-10-08 was that GR1 deletes the prototype. GR1 shipped the
+ordering pass inside `dag.ts` (`orderLevels`) with its own tests
+(`workflow.gr1.test.tsx`), so the prototype's copy is redundant and this branch
+removes `src/proto/`, the `vis-network` devDependency and its lockfile entries.
+The figures below stay as measured; the code is in this branch's earlier
+commits if they need reproducing. The workflow-graph test guard
+(`test_the_graph_renders_an_svg_path_for_every_edge`) rightly refuses
+`vis-network` in `package.json`; lane GR3 adds it as a lazily loaded
+dependency under the owner addition in section 8 and amends that guard in the
+same PR.
 
 ### 2.5 Screenshots
 
@@ -233,7 +223,7 @@ preview page, into the lane's artifacts at `screens/`:
 
 | Surface | File and symbol | How it is drawn |
 |---|---|---|
-| Workflow DAG | `Workflows.tsx` `WorkflowGraph` (line 2652, private, rendered by the exported `WorkflowCard` at 1238); layout `dag.ts` `layoutOf` (1980) | HTML step cards (`button.node`, `aria-pressed`) absolutely placed over one `<svg class="wf-edges" aria-hidden>`. Two passes: halos, then strokes. Levels run top to bottom from `levelsOf` (51). A stage too wide for the column folds into a band (`StageBand` 3179, `role="group"`, `aria-expanded`). Semantic zoom tiers (figures / details / names), not scaling. A horizontal minimap. Below 560 px, `WfPhoneStages` (3341). |
+| Workflow DAG | `Workflows.tsx` `WorkflowGraph` (line 2652, private, rendered by the exported `WorkflowCard` at 1238); layout `dag.ts` `layoutOf` (1980) | HTML step cards (`button.node`, `aria-pressed`) absolutely placed over one `<svg class="wf-edges" aria-hidden>`. Two passes: halos, then strokes. Levels run top to bottom from `levelsOf` (51). A stage too wide for the column folds into a band (`StageBand` 3179, `role="group"`, `aria-expanded`). Semantic zoom tiers (figures / details / names), not scaling. A horizontal minimap (since GR1 also a `VerticalMinimap` for a tall canvas, and a measured critical-path stroke and caption). Below 560 px, `WfPhoneStages` (3341). |
 | Workflow table / timeline | `WorkflowViews.tsx` | Rows and lanes, not node-and-edge. |
 | Workflow composer | `SubmitWorkflow.tsx` | **No DAG preview.** Stages as `.wfb-stage` blocks (449-450, 564-599) with a fixed 22×26 down-arrow between them (567-572). |
 | Repo modules | `RepoGraph.tsx` `ModuleCanvas`; `RepoGraphData.ts` `forceLayout` (424), `graphView` (260) | Hand SVG. A deterministic O(n²) force layout, 160 iterations, seeded by an id hash. Package rectangles. Folds to packages above `COLLAPSE_AT = 60` (220). Zoom −/+/Fit and drag-pan, no wheel. `role="button"` + `tabIndex=0` nodes. At ≤640 px, a module list. |
@@ -244,7 +234,7 @@ preview page, into the lane's artifacts at `screens/`:
 
 ### 3.2 Pain points, with evidence
 
-**Workflow DAG**
+**Workflow DAG** (points 1, 2 and 4 are as measured before GR1; GR1 has since shipped the fix for each)
 
 1. **Edges cross because a level is drawn in listing order.** `layoutOf`
    places a level's steps in the order the workflow lists them. It reorders
@@ -355,9 +345,10 @@ make. A renderer choice cannot make it.
 
 The ordering pass is not Graphify's: it is the Sugiyama step every layered
 engine (dagre, ELK, vis-network's hierarchical mode) runs, and Graphify does not
-have it. It is written out in `src/proto/layered.ts` `barycentricOrder`:
-four down-and-up sweeps keeping the best order. It is proven to keep every step
-on its own level (`proto.test.tsx`).
+have it. It shipped in GR1 as `dag.ts` `orderLevels` (the prototype's `barycentricOrder`
+was the model): `sweeps` down-and-up passes (four by default) keeping the best
+order seen, which is the listed order whenever no sweep beats it. Its tests are
+`workflow.gr1.test.tsx`.
 
 ### 4.2 Repository knowledge-graph explorer
 
@@ -379,12 +370,12 @@ neither as well as what they have.
 
 | Place | Improvement | Data it reads (never invented) |
 |---|---|---|
-| `WorkflowGraph` | **Crossing reduction** (option D). | `depends_on` only. |
-| `WorkflowGraph` | **Critical-path highlight**: the chain of steps whose measured durations sum longest, drawn as a heavier edge stroke plus a "critical path · 41m" caption. | `dag.ts` `stepDuration`. A step with no measured duration breaks the chain: the caption then says "critical path not measured" with the Mark primitive (`primitives.tsx` `Mark kind="absent"`). It never guesses a duration. |
+| `WorkflowGraph` | **Crossing reduction** (option D). **Shipped in GR1** (`orderLevels`). | `depends_on` only. |
+| `WorkflowGraph` | **Critical-path highlight**: the chain of steps whose measured durations sum longest, drawn as a heavier edge stroke plus a "critical path · 41m" caption. | `dag.ts` `stepDuration`. A step with no measured duration breaks the chain: the caption then says "critical path not measured" with the Mark primitive (`primitives.tsx` `Mark kind="absent"`). It never guesses a duration. **Shipped in GR1** (`criticalPath`). |
 | `WorkflowGraph` | **Collapse a stage.** Exists for wide stages. Extend it to any stage whose steps all succeeded, so a finished prefix folds to one band. | `stageCensus`. |
 | `WorkflowGraph` | **Live state overlay.** Exists (1 Hz). Add a ring on the stage band that holds the most recently changed step. | Task `updated_at`. |
 | `WorkflowViews.tsx` timeline | **Plan vs actual.** Draw each step's declared stage beside the moment it actually started, so a step held back by capacity (invariant 1: `QUEUED` and `PARKED` cost nothing) reads as waiting, not as late work. | `started_at`, `stepDuration` kinds. A step with no `started_at` is drawn as not started, never at zero. |
-| `WorkflowGraph` | **Vertical minimap**, for runs over one screen tall (pain point 2). | Layout only. |
+| `WorkflowGraph` | **Vertical minimap**, for runs over one screen tall (pain point 2). | Layout only. **Shipped in GR1** (`VerticalMinimap`). |
 | `SubmitWorkflow.tsx` | **DAG preview while composing**, through the same `layoutOf` at the names tier, with no state marks: a draft step has no task, and drawing one as "queued" would be a fake state. | The draft's `depends_on`. |
 
 ### 5.2 Repository and knowledge graph
@@ -445,8 +436,9 @@ no file). GR2 and GR4 follow as above. The graph work's bundle budget is
 per-lane figures above sit inside it.
 
 **Owner decision 2026-10-08: the prototype stays until GR1 lands, and GR1
-deletes it.** When GR1 lands, `src/proto/` and the `vis-network` devDependency
-are deleted in the same PR.
+deletes it.** GR1 landed (PR 1007) without deleting it, because the prototype
+was still only on this design branch; this branch deletes `src/proto/` and the
+`vis-network` devDependency, so the decision is carried out here.
 
 ## 8. Owner decisions
 

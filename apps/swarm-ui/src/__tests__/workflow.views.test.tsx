@@ -399,7 +399,7 @@ describe('U2: the view modes', () => {
     const seg = document.querySelector('nav[aria-label="Views of this workflow"]')
     expect(seg, 'the page has no view tabs').toBeTruthy()
     const buttons = [...seg!.querySelectorAll<HTMLAnchorElement>('a')]
-    expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Timeline'])
+    expect(buttons.map((b) => b.firstChild?.textContent)).toEqual(['Graph', 'Table', 'Timeline', 'Changes'])
     expect(c.querySelector('.wf-viewbar .c-seg'), 'the boxed control is still in the card').toBeNull()
     // The Graph is what the page lands on.
     expect(c.querySelector('.wf-canvas')).toBeTruthy()
@@ -1183,6 +1183,34 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     expect(run.getAttribute('href')).toBe('#work/task/t_run')
     expect(run.classList.contains('ctl-link'), 'the run link is unclassed and falls back to UA blue').toBe(true)
     // Let the attempt read the inspector started settle inside the test.
+    const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
+  })
+
+  it('DIFF2b: links the step to the workflow’s Changes tab filtered to it, counted by its file list', async () => {
+    const files = [
+      { path: 'a.ts', old_path: null, status: 'M' as const, insertions: 1, deletions: 0, binary: false },
+      { path: 'b.ts', old_path: null, status: 'A' as const, insertions: 2, deletions: 0, binary: false },
+    ]
+    const done = task('t_done', 'SUCCEEDED', { result_summary: { git: { base: 'abc', patch: 'swarm-work.patch', files } } })
+    const { container } = oneStepCard(done, [])
+    pick(container as HTMLElement, 'work')
+    const i = inspector(container as HTMLElement)
+    const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
+    expect(link.getAttribute('href')).toBe('/workflows/wf_one/changes?step=work')
+    expect(link.textContent).toBe('Changes · 2 files ›')
+    const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
+    await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
+  })
+
+  it('DIFF2b: counts a step nobody counted as a dash, never 0', async () => {
+    const running = task('t_run', 'RUNNING', { created_at: iso(-600), started_at: iso(-300) })
+    const { container } = oneStepCard(running, [])
+    pick(container as HTMLElement, 'work')
+    const i = inspector(container as HTMLElement)
+    const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
+    expect(link.textContent).toBe('Changes · — ›')
+    expect(link.getAttribute('title')).toMatch(/written nothing yet/)
     const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
     await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
   })

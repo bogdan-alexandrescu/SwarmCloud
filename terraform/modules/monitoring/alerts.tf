@@ -725,7 +725,7 @@ resource "google_monitoring_alert_policy" "spec_signature_invalid" {
         alignment_period     = "300s"
         per_series_aligner   = "ALIGN_DELTA"
         cross_series_reducer = "REDUCE_SUM"
-        group_by_fields      = ["metric.label.tenant_id", "metric.label.reason"]
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.job_name", "metric.label.reason"]
       }
     }
   }
@@ -749,7 +749,7 @@ resource "google_monitoring_alert_policy" "spec_signature_invalid" {
         alignment_period     = "300s"
         per_series_aligner   = "ALIGN_DELTA"
         cross_series_reducer = "REDUCE_SUM"
-        group_by_fields      = ["metric.label.tenant_id", "metric.label.end_cause", "metric.label.reason"]
+        group_by_fields      = ["metric.label.tenant_id", "metric.label.job_name", "metric.label.end_cause", "metric.label.reason"]
       }
     }
   }
@@ -853,6 +853,145 @@ resource "google_monitoring_alert_policy" "worker_action_ended" {
   }
 
   # Merged, not just inherited, like the spec-signature policy: this one must
+  # carry the marker `make destroy` keys on even if a caller passes labels
+  # without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
+
+# ---------------------------------------------------------------------------
+# A SCHEDULE NEEDS A PERSON (docs/schedules.md §4.9, lane S4)
+# ---------------------------------------------------------------------------
+#
+# One policy, two conditions, on the existing alert channel (alert_emails), as
+# §4.9 says: "the same alert". Either fires it. Both are one event being
+# enough: an auto-paused schedule fires nothing until a member resumes it, and
+# a hold that needs the owner waits for the owner and nobody else. Neither
+# holds capacity while it waits (invariant 1), so the cost of the wait is
+# lateness, which is what the email is for.
+resource "google_monitoring_alert_policy" "schedule_needs_attention" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-schedule-needs-attention"
+  combiner     = "OR"
+  severity     = "WARNING"
+
+  conditions {
+    display_name = "A schedule was auto-paused (schedule_auto_paused)"
+
+    condition_threshold {
+      # Monitoring requires a resource.type restriction on a log-based
+      # metric's condition; swarm-api is a Cloud Run service.
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.schedule_auto_paused.name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.code"]
+      }
+    }
+  }
+
+  conditions {
+    display_name = "A scheduled run needs the owner (schedule_needs_owner)"
+
+    condition_threshold {
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.schedule_needs_owner.name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "300s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.tenant_id"]
+      }
+    }
+  }
+
+  notification_channels = local.notification_channels
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "A schedule needs a person. **Auto-paused:** the schedule tick paused a schedule and it fires nothing until a member resumes it; the series names the pause code, and swarm-api's WARNING line `schedule <id> auto_paused: <code>` names the schedule. Admin › Schedules shows it with its tenant and reason. Resume it once the cause is fixed; its catch-up policy decides what the missed slots do. **Needs the owner:** a scheduled run met a hard stop only the owner may lift; the series names the tenant and the inbox item is marked owner. Neither holds capacity while it waits. See docs/schedules.md sections 1.3, 4.4 and 4.9.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  # Merged, not just inherited, as worker_action_ended's: the marker `make
+  # destroy` keys on must be there even if a caller passes labels without it.
+  user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })
+}
+
+# ---------------------------------------------------------------------------
+# An approved personal workspace is waiting (metrics.tf, workspace_stuck).
+#
+# ONE IS ENOUGH: a person who was told "approved" is waiting on a build that
+# is not coming, and on 2026-10-09 that wait lasted 19 hours unseen. The sweep
+# logs each stuck record once an hour, so a 30-minute window catches every
+# one, and a record that stays stuck re-notifies hourly rather than going
+# quiet after the first page. WARNING, like a dead-lettered task: nothing is
+# broken for anyone else, but a person is blocked until someone looks.
+# ---------------------------------------------------------------------------
+resource "google_monitoring_alert_policy" "workspace_stuck" {
+  count = var.create_alerts ? 1 : 0
+
+  project      = var.project_id
+  display_name = "swarm-${var.environment}-workspace-stuck"
+  combiner     = "OR"
+  severity     = "WARNING"
+
+  conditions {
+    display_name = "An approved personal workspace has waited with nothing building it"
+
+    condition_threshold {
+      # Monitoring requires a resource.type restriction on a log-based
+      # metric's condition, matching the metric's own filter.
+      filter = join(" AND ", [
+        "resource.type = \"cloud_run_revision\"",
+        "metric.type = \"logging.googleapis.com/user/${google_logging_metric.workspace_stuck.name}\"",
+      ])
+
+      comparison      = "COMPARISON_GT"
+      threshold_value = 0
+      duration        = "0s"
+
+      aggregations {
+        alignment_period     = "1800s"
+        per_series_aligner   = "ALIGN_DELTA"
+        cross_series_reducer = "REDUCE_SUM"
+        group_by_fields      = ["metric.label.reason"]
+      }
+    }
+  }
+
+  notification_channels = local.notification_channels
+
+  documentation {
+    mime_type = "text/markdown"
+    content   = "An approved personal workspace is waiting and nothing is building it. Read swarm-api's `workspace_stuck` log entries (jsonPayload.event): `workspace_id` is the record (open it in Admin -> People), `minutes_waiting` how long. `reason` says why: `publishing_off` means WORKSPACE_APPLY_PUBLISH is off (terraform var.workspace_apply_publish), so no approval is ever sent to the workspace job -- turn it on in the same release as the owner's bootstrap apply with enable_workspace_deployer (docs/workspaces.md section 10); `never_dispatched` means no publish was attempted for 15 minutes; `dispatched_unclaimed` means a publish is more than 30 minutes old and no build claimed it -- check the swarm-workspace-apply topic and its Cloud Build trigger. Retry from People once the cause is fixed. See docs/workspaces.md section 2.2.${local.alert_docs_suffix}"
+  }
+
+  alert_strategy {
+    auto_close = "86400s"
+  }
+
+  # Merged, not just inherited, like the worker-action policy: this one must
   # carry the marker `make destroy` keys on even if a caller passes labels
   # without it.
   user_labels = merge(var.labels, { "managed-by" = "swarm-terraform" })

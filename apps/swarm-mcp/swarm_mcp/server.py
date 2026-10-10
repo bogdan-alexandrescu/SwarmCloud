@@ -40,6 +40,7 @@ import weakref
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from swarm_common.profiles import RESOURCE_CLASSES
 
@@ -164,6 +165,20 @@ _NEEDS_LOCAL_SCHEMA: dict[str, Any] = {
     ),
 }
 
+_FILES_SCHEMA: dict[str, Any] = {
+    "type": "array",
+    "items": {"type": "string"},
+    "description": (
+        "The repository paths (or `dir/` prefixes) this unit will EDIT -- its "
+        "territory. Read by this bridge and never sent: the repository's knowledge "
+        "graph expands them to the callers and tests a change reaches, and the reply's "
+        "`territory_warning` names every open pull request, live issue-run step, other "
+        "unit of this call, or still-running task this session dispatched that already "
+        "holds part of it. A warning, never a refusal. Silent when the repository has "
+        "no version-3 index."
+    ),
+}
+
 #: A batch entry's fields: what one `swarm_dispatch` takes for one task, with
 #: the profile under the API's own name. Read by `_dispatch_batch`, so the
 #: schema and the check cannot disagree.
@@ -182,12 +197,13 @@ _BATCH_TASK_SCHEMA: dict[str, Any] = {
         "strategy": {"type": "string", "enum": list(_DISPATCH_STRATEGIES), "default": "collect"},
         "label": {"type": "string", "description": "A short name, for the UI."},
         "inputs": _INPUTS_SCHEMA,
+        "files": _FILES_SCHEMA,
     },
     "required": ["prompt"],
 }
 
 #: The `swarm_dispatch` arguments that describe ONE task, refused beside `tasks`.
-_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs")
+_SINGLE_TASK_ARGS = ("prompt", "profile", "repo", "ref", "infer", "strategy", "label", "inputs", "files")
 
 #: `swarm_account_pause`/`resume`/`drain` share one shape.
 _ACCOUNT_STATE_SCHEMA: dict[str, Any] = {
@@ -217,7 +233,7 @@ TOOLS: list[dict[str, Any]] = [
             "swarm_wait or swarm_result for the outcome.\n"
             "\n"
             "SEVERAL INDEPENDENT TASKS ARE ONE CALL: pass `tasks` -- a list of "
-            "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs} "
+            "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs, files} "
             "-- instead of `prompt` and the fields beside it. They are sent as ONE "
             "request, every task id comes back in the order given, and a list "
             "longer than the API's max_batch_size is refused before anything is "
@@ -233,7 +249,13 @@ TOOLS: list[dict[str, Any]] = [
             "Launch it at once with the Workflow tool, {scriptPath: "
             "<rows.script_path>, args: <rows.args>}, as `rows.start_now` says; "
             "`rows.error` means it could not be written, and `/sc attach --all` "
-            "gives the task its row instead."
+            "gives the task its row instead.\n"
+            "\n"
+            "TERRITORY: a task that names the files it will edit (`files`) is "
+            "checked against the repository's knowledge graph before it is sent; "
+            "the reply's `territory_warning` names every open pull request, live "
+            "issue-run step, other task of the call or still-running task of this "
+            "session it overlaps. The task is sent either way."
         ),
         "inputSchema": {
             "type": "object",
@@ -289,6 +311,7 @@ TOOLS: list[dict[str, Any]] = [
                 },
                 "label": {"type": "string", "description": "A short name, for the UI."},
                 "inputs": _INPUTS_SCHEMA,
+                "files": _FILES_SCHEMA,
                 "tasks": {
                     "type": "array",
                     "minItems": 1,
@@ -784,7 +807,14 @@ TOOLS: list[dict[str, Any]] = [
             "read). `spec_digest` checks all three. With no repository named and no `infer`, "
             "no step clones a repository. `infer: true` clones the repository and "
             "pushed branch of the checkout this bridge runs in for EVERY step, "
-            "pinned at its current commit, under the same rules as swarm_dispatch."
+            "pinned at its current commit, under the same rules as swarm_dispatch.\n"
+            "\n"
+            "TERRITORY: a step may name the files it will edit (`files`, never sent). "
+            "Steps that declare them are checked against the repository's knowledge "
+            "graph before submission, and the reply's `territory_warning` names every "
+            "open pull request, live issue-run step, still-running task of this session, "
+            "or step of this workflow NOT on its dependency line that overlaps one. The "
+            "workflow is submitted either way."
         ),
         "inputSchema": {
             "type": "object",
@@ -805,7 +835,8 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "string",
                     "description": (
                         "In place of `spec`: the path of a JSON workflow spec file, "
-                        "relative to this checkout or absolute. The bridge reads the "
+                        "relative to this checkout or absolute, and under the checkout "
+                        "either way (a path outside it is refused). The bridge reads the "
                         "bytes itself -- checked as swarm_workflow_spec checks them -- "
                         "so a long spec reaches the API without being retyped."
                     ),
@@ -954,6 +985,7 @@ TOOLS: list[dict[str, Any]] = [
                                 ),
                             },
                             "inputs": _INPUTS_SCHEMA,
+                            "files": _FILES_SCHEMA,
                             "stage": {
                                 "type": "string",
                                 "description": (
@@ -1037,7 +1069,9 @@ TOOLS: list[dict[str, Any]] = [
             "For /sc:swarmcloud given a path: a workflow script has no filesystem, so "
             "the bridge reads the file, and the script checks the spec relayed "
             "back against this digest before it submits. `path` is relative to "
-            "the checkout, or absolute; the reply's `path` is the file actually "
+            "the checkout, or absolute; either way the file must be UNDER the "
+            "checkout once symlinks are resolved -- anything outside it is "
+            "refused and not read. The reply's `path` is the file actually "
             "read. A file that is not JSON, or not a workflow spec, is refused "
             "without its content being repeated.\n"
             "\n"
@@ -1051,7 +1085,7 @@ TOOLS: list[dict[str, Any]] = [
             "properties": {
                 "path": {
                     "type": "string",
-                    "description": "The spec file: relative to this checkout, or absolute.",
+                    "description": "The spec file, under this checkout: relative to it, or absolute.",
                 },
             },
             "required": ["path"],
@@ -1079,7 +1113,7 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "spec": {"type": "object", "description": "The workflow spec about to be run."},
-                "spec_path": {"type": "string", "description": "Its file, relative to this checkout or absolute."},
+                "spec_path": {"type": "string", "description": "Its file, under this checkout: relative to it, or absolute."},
                 "attach": {"type": "string", "description": "A workflow id, or \"all\"."},
             },
         },
@@ -1323,8 +1357,9 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_setup_status",
         "description": (
             "The caller's SwarmCloud onboarding checklist, the one the console "
-            "draws: six steps in order (signed_in, github_connected, "
-            "orgs_enabled, repos_chosen, access_verified, ready), each todo, "
+            "draws: the steps in order (signed_in, workspace, claude_account, "
+            "github_connected, app_installed, orgs_enabled, repos_chosen, "
+            "access_verified, ready, as the API serves them), each todo, "
             "in_progress, done, failed or stale, with every failure's code and "
             "its recovery copy word for word, and `next_step` (null when ready). "
             "`checklist` is the text to show. `connected_as_you` is the GitHub "
@@ -1341,6 +1376,29 @@ TOOLS: list[dict[str, Any]] = [
                     "type": "integer", "minimum": 0, "maximum": 600, "default": 0,
                     "description": "Hold until GitHub is connected as you, up to this long.",
                 },
+            },
+        },
+    },
+    {
+        "name": "swarm_setup_workspace",
+        "description": (
+            "The caller's OWN personal workspace (docs/workspaces.md): the "
+            "isolated space their tasks and workflows run in, and the checklist's "
+            "`workspace` and `claude_account` steps. `action` `status` (the "
+            "default) reads it; `request` asks for it -- an admin approves it in "
+            "the console and a job sets it up a few minutes later; asking again "
+            "changes nothing -- and `loan` asks an admin to lend a Claude account "
+            "(refused until the workspace was requested). Returns `workspace` "
+            "(state, workspace_id, the job's steps, a failure's copy word for "
+            "word) and `text`. It never waits for the approval or the job: read "
+            "it again later, or call swarm_setup_status. Takes no other argument."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string", "enum": ["status", "request", "loan"],
+                           "default": "status",
+                           "description": "status reads; request and loan post once, then read."},
             },
         },
     },
@@ -1373,12 +1431,24 @@ TOOLS: list[dict[str, Any]] = [
             "not installed on (an org the person does not own sends its owners a "
             "request). With `enable`, enables that installed owner first; an "
             "owner without the App is refused with REPO_NOT_INSTALLED and its "
-            "recovery copy."
+            "recovery copy. `approval_pending` lists each owner whose owners the "
+            "person asked to install the App and has not yet approved it, with "
+            "ORG_APPROVAL_PENDING and its recovery copy word for word; it re-checks "
+            "on its own every 15 minutes. With `request_install`, records first "
+            "that the person asked that org's owners -- only when they say they "
+            "did, or will. An org that will not install the App takes a "
+            "fine-grained token instead, which the person stores THEMSELVES in a "
+            "terminal, with sc's setup token verb for that org (/sc:setup names it): no tool takes a "
+            "token, and none may be asked for in chat."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "enable": {"type": "string", "description": "An installed owner's login to enable."},
+                "request_install": {
+                    "type": "string",
+                    "description": "An org whose owners the person asked to install the App.",
+                },
             },
         },
     },
@@ -1439,16 +1509,26 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "Check what SwarmCloud can do as the caller in each granted "
             "repository (or only those named): clone, and for a write grant push "
-            "and pull request -- reads only, nothing is pushed. Per repository: "
-            "`passed`, each check's state (ok / missing / unknown / not_required) "
-            "and every failure's code and recovery copy. `unknown` with "
-            "FORGE_UNREACHABLE means GitHub did not answer, not that it failed."
+            "and pull request -- reads only by default, nothing is pushed. Per "
+            "repository: `passed`, each check's state (ok / missing / unknown / "
+            "not_required) and every failure's code and recovery copy. `unknown` "
+            "with FORGE_UNREACHABLE means GitHub did not answer, not that it "
+            "failed. `push_test: true` is the one write (D6): in each NAMED write "
+            "grant, SwarmCloud creates and deletes the branch "
+            "swarmcloud/onboarding-check-<nonce> as the person. Send it only after "
+            "asking them and hearing yes for that repository; it needs "
+            "`repositories`, and a read grant is refused."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "repositories": {"type": "array", "items": {"type": "string"},
                                  "description": "owner/repo each; default every grant."},
+                "push_test": {
+                    "type": "boolean", "default": False,
+                    "description": "Also create and delete a test branch in each named "
+                                   "write grant. Only when the person said yes.",
+                },
             },
         },
     },
@@ -1531,9 +1611,11 @@ TOOLS: list[dict[str, Any]] = [
     {
         "name": "swarm_account_remove",
         "description": (
-            "REMOVE one of YOUR accounts from the pool. Destructive, so it needs "
-            "`confirm_label` equal to the account's label, typed back; anything "
-            "else sends nothing. The broker removes the pool entry and KEEPS the "
+            "REMOVE one of YOUR accounts from the pool. Destructive, so the HUMAN "
+            "confirms it: the bridge asks them, through this host's own prompt, "
+            "to type the account's label, and nothing the caller passes counts "
+            "as that answer. A host that cannot ask its human sends nothing, and "
+            "the reply names the terminal command that asks there instead. The broker removes the pool entry and KEEPS the "
             "account's secret (its answer, returned verbatim, says so). Drain it "
             "first if agents are running on it."
         ),
@@ -1541,12 +1623,8 @@ TOOLS: list[dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "account": {"type": "string", "description": "The account's label or id."},
-                "confirm_label": {
-                    "type": "string",
-                    "description": "The account's label, exactly. Nothing is sent unless it matches.",
-                },
             },
-            "required": ["account", "confirm_label"],
+            "required": ["account"],
         },
     },
     {
@@ -1601,6 +1679,73 @@ TOOLS: list[dict[str, Any]] = [
         "inputSchema": {
             "type": "object",
             "properties": {"width": {"type": "integer", "default": 80}},
+        },
+    },
+    {
+        "name": "swarm_territory",
+        "description": (
+            "Before dispatching parallel lanes: which files would each one reach, "
+            "and who already holds them. Each lane's `files` (paths or `dir/` "
+            "prefixes it will edit) are expanded by the repository's knowledge graph "
+            "to the callers a change forces and the tests that cover them, with the "
+            "seams among them; then intersected with the repository's open pull "
+            "requests, the tenant's live issue-run steps, the other lanes given here "
+            "and the tasks this session dispatched that are still running. Every "
+            "overlap names both sides. Read-only; sends nothing.\n"
+            "\n"
+            "`status` says what the answer rests on: `checked`; `no_index` (the "
+            "repository has no version-3 graph, so only the named paths were "
+            "compared); `unregistered`; `unchecked` with the `reason`. "
+            "`not_read` lists what could not be read, which is never the same as "
+            "no overlap. swarm_dispatch and swarm_workflow make the same check "
+            "when a unit declares `files`, and warn without refusing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "One unit's files: repository paths or `dir/` prefixes.",
+                },
+                "lanes": {
+                    "type": "array",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string", "description": "How the answer names this lane."},
+                            "files": {"type": "array", "items": {"type": "string"}},
+                        },
+                        "required": ["files"],
+                    },
+                    "description": (
+                        "Several units at once, instead of `files`: each one's "
+                        "territory, and every pair that overlaps."
+                    ),
+                },
+                "repo": {"type": "string", "description": "The repository: a URL or owner/repo."},
+                "infer": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "With no `repo`: this checkout's repository, as swarm_dispatch infers it.",
+                },
+                "depth": {
+                    "type": "integer",
+                    "description": "How many caller hops to expand (the API takes 1, the default, or 2).",
+                },
+                "exclude_runs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Issue-run ids left out of the overlap: the caller's own.",
+                },
+                "exclude_pull_requests": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "description": "Pull request numbers left out of the overlap: the caller's own.",
+                },
+            },
+            "required": [],
         },
     },
     {
@@ -1832,6 +1977,511 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[s
     return rows
 
 
+# --------------------------------------------------------------------------
+# territory: `swarm_territory` and the dispatch-time warning (lane KG7,
+# docs/design/knowledge-graph.md §4.8)
+# --------------------------------------------------------------------------
+#
+# WHY A WARNING AND NOT A REFUSAL. "Two issues that edit the same file are one
+# lane" (CLAUDE.md, Issues) was checked by reading, and parallel lanes handed
+# one file kept arriving at merge as conflicts. A unit that names the files it
+# will edit (`files`) is now expanded by swarm-api's territory route (KG3) to
+# the callers and tests a change to them reaches, and every overlap with an
+# open pull request, a live issue-run step, another unit of the same
+# submission or a task this session dispatched that is still in flight is
+# NAMED in the reply, both sides. The dispatch still goes: whether two lanes
+# should be chained, merged or run anyway is the orchestrator's judgement,
+# and the territory is built from graph facts that a stale index can miss
+# (§7.8, judgement in gates). The row's target is "unannounced → 0", not
+# "overlapping → 0".
+#
+# WHY SILENT WITHOUT A V3 INDEX. Below format 3 the graph has no fact-edge
+# communities, and with no promoted graph at all the route can only compare
+# the named paths; a warning built from that is the hand-reading this
+# replaces, with a confidence it has not earned. So a repository that is not
+# registered, has no promoted graph, or has one older than
+# TERRITORY_INDEX_FORMAT adds nothing to the reply. A route that FAILED is a
+# different case -- "not read is never no overlap" -- and says so in
+# `territory_unchecked`. `swarm_territory`, asked directly, always says which.
+#
+# `files` IS READ HERE AND NEVER SENT. The platform has no such field on a
+# task or a workflow step (`WorkflowStepCreate` forbids extras), so it is
+# stripped before `workflows.build_steps`/`read_spec` see a step, the way
+# `stage` is a display-only key there.
+
+#: The first shard format whose graph carries KG2's communities and fact edges
+#: (`swarm_api.territory.INDEX_FORMAT`). Below it the warning is silent.
+TERRITORY_INDEX_FORMAT = 3
+
+#: How many units one territory check reads. One route call per unit; a batch
+#: is bounded by max_batch_size before this matters, a workflow by its step
+#: ceiling. Units past this are not checked, and the reply says so.
+MAX_TERRITORY_LANES = 20
+
+#: How many units dispatched with declared files this session remembers, per
+#: client, to compare later dispatches with while they are in flight.
+MAX_REMEMBERED_LANES = 50
+
+#: Shared paths shown per overlap; `shared_total` carries the full count.
+MAX_SHARED_SHOWN = 10
+
+#: Concurrent territory reads for one check.
+TERRITORY_READ_WORKERS = 8
+
+
+
+def _declared_files(value: Any, where: str) -> list[str] | None:
+    """A unit's `files`: None when it declares none; refused when it is not a list of paths."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list) or not all(isinstance(f, str) and f.strip() for f in value):
+        raise SwarmError(
+            f"{where}'s `files` is a list of repository paths or `dir/` prefixes, each a "
+            "non-empty string. Nothing was sent"
+        )
+    files = list(dict.fromkeys(f.strip() for f in value))
+    return files or None
+
+
+def _without_files(steps: Any) -> Any:
+    """Workflow steps with the bridge-only `files` key removed (see above)."""
+    if not isinstance(steps, list):
+        return steps
+    return [
+        {k: v for k, v in step.items() if k != "files"} if isinstance(step, dict) else step
+        for step in steps
+    ]
+
+
+def _spec_without_files(spec: Any) -> Any:
+    if not isinstance(spec, dict) or not isinstance(spec.get("steps"), list):
+        return spec
+    return {**spec, "steps": _without_files(spec["steps"])}
+
+
+def _repo_slug(url: Any) -> tuple[str, str] | None:
+    """`(owner, repo)` of a GitHub repository URL (https, ssh, git@) or `owner/repo`."""
+    text = str(url or "").strip()
+    if not text:
+        return None
+    if "://" not in text and "@" not in text and ":" not in text:
+        host, path = "github.com", text
+    else:
+        try:
+            parts = urlsplit(checkout.https_url(text))
+        except SwarmError:
+            return None
+        host, path = (parts.hostname or "").lower(), parts.path
+    segments = [s for s in path.strip("/").split("/") if s]
+    if host != "github.com" or len(segments) != 2:
+        return None
+    owner, repo = segments
+    if repo.endswith(".git"):
+        repo = repo[:-4]
+    return (owner, repo) if owner and repo else None
+
+
+def _conflicts(a: str, b: str) -> bool:
+    """`swarm_api.territory.conflicts`: equal, or one a `dir/` prefix of the other."""
+    if a == b:
+        return True
+    return (a.endswith("/") and b.startswith(a)) or (b.endswith("/") and a.startswith(b))
+
+
+def _territory_paths(answer: dict[str, Any]) -> list[tuple[str, str]]:
+    """`swarm_api.territory.territory_paths` over a route answer: (entry, why)."""
+    out = [(str(e), "named") for e in answer.get("named") or []]
+    out += [(str(r.get("path")), "caller") for r in answer.get("callers") or [] if isinstance(r, dict)]
+    out += [(str(r.get("path")), "test") for r in answer.get("tests") or [] if isinstance(r, dict)]
+    return out
+
+
+def _seams(answer: dict[str, Any]) -> set[str]:
+    return {str(s.get("path")) for s in answer.get("seams") or [] if isinstance(s, dict)}
+
+
+def _shared(named: list[str], territory: list[tuple[str, str]], seams: set[str]) -> list[dict[str, Any]]:
+    """Each of `named` that falls inside `territory`, as the route's `shared` rows."""
+    rows = []
+    for path in sorted(set(named)):
+        for entry, why in territory:
+            if _conflicts(entry, path):
+                rows.append({"path": path, "entry": entry, "why": why,
+                             "seam": path in seams or entry in seams})
+                break
+    return rows
+
+
+def _between(a: str, ta: dict[str, Any], b: str, tb: dict[str, Any]) -> list[dict[str, Any]]:
+    """Where lane `a` and lane `b` overlap: either's named files inside the other's territory."""
+    seams = _seams(ta) | _seams(tb)
+    shared = _shared(list(tb.get("named") or []), _territory_paths(ta), seams)
+    known = {row["path"] for row in shared}
+    shared += [row for row in _shared(list(ta.get("named") or []), _territory_paths(tb), seams)
+               if row["path"] not in known]
+    return shared
+
+
+def _has_index(answer: dict[str, Any]) -> bool:
+    version = answer.get("format_version")
+    return (answer.get("graph_digest") is not None and isinstance(version, int)
+            and not isinstance(version, bool) and version >= TERRITORY_INDEX_FORMAT)
+
+
+#: Units this session dispatched with declared files, per client, while they
+#: may still be in flight: {task_id, lane, slug, answer}. Weakly keyed, as
+#: `_DISPATCHED` is, for the same reason.
+_IN_FLIGHT: "weakref.WeakKeyDictionary[Any, list[dict[str, Any]]]" = weakref.WeakKeyDictionary()
+_IN_FLIGHT_LOCK = threading.Lock()
+
+
+def _overlap_row(lane: str, other: dict[str, Any], shared: list[dict[str, Any]],
+                 total: int | None = None) -> dict[str, Any]:
+    if other["kind"] == "pull_request":
+        name = f"open pull request #{other.get('number')}"
+    elif other["kind"] == "issue_run_step":
+        name = (f"issue run {other.get('run_id')} (issue #{other.get('issue')}, step "
+                f"{other.get('step_id')!r}, {other.get('state')})")
+    elif other["kind"] == "dispatched_task":
+        name = f"in-flight task {other.get('task_id')} ({other.get('lane')})"
+    else:
+        name = f"{other.get('lane')} of this same call"
+    paths = ", ".join(row["path"] for row in shared[:3])
+    more = (total or len(shared)) - min(3, len(shared))
+    return {
+        "lane": lane,
+        "with": other,
+        "shared": shared[:MAX_SHARED_SHOWN],
+        "shared_total": total if total is not None else len(shared),
+        "says": f"{lane} overlaps {name} on {paths}" + (f" and {more} more" if more > 0 else ""),
+    }
+
+
+def _territory_check(
+    client: Any,
+    repository_url: Any,
+    lanes: list[dict[str, Any]],
+    *,
+    related: Any = None,
+    depth: int | None = None,
+    exclude_runs: list[str] | None = None,
+    exclude_pull_requests: list[int] | None = None,
+) -> dict[str, Any]:
+    """Every lane's territory and every overlap it has, or why there are none.
+
+    `lanes` is `[{"lane": name, "files": [...]}]`. `related(a, b)` says two
+    lanes of THIS call are on one dependency line, so their overlap is the
+    plan and not a collision; without it every pair is compared.
+
+    `status` is `checked`, `no_index` (silent at dispatch), `no_repository`,
+    `unregistered` or `unchecked` (with `reason`).
+    """
+    lanes = [lane for lane in lanes if lane.get("files")]
+    if not lanes:
+        return {"status": "no_files", "lanes": {}, "overlaps": []}
+    slug = _repo_slug(repository_url)
+    if slug is None:
+        return {"status": "no_repository", "lanes": {}, "overlaps": [],
+                "reason": "the unit names no GitHub repository, so it has no registered graph"}
+    try:
+        record = client.registration(*slug)
+    except SwarmError as exc:
+        if exc.status == 404:
+            return {"status": "unregistered", "lanes": {}, "overlaps": [],
+                    "reason": "this deployment serves no repository registrations"}
+        return {"status": "unchecked", "lanes": {}, "overlaps": [],
+                "reason": f"the repository's registration could not be read: {exc}"[:400]}
+    if not record or not record.get("repo_id"):
+        return {"status": "unregistered", "lanes": {}, "overlaps": [],
+                "reason": f"{slug[0]}/{slug[1]} is not registered to this tenant, so it has no graph"}
+    repo_id = str(record["repo_id"])
+    checked, skipped = lanes[:MAX_TERRITORY_LANES], [lane["lane"] for lane in lanes[MAX_TERRITORY_LANES:]]
+
+    def read(lane: dict[str, Any]) -> dict[str, Any]:
+        return client.territory(repo_id, lane["files"], depth=depth,
+                                exclude_runs=exclude_runs or (),
+                                exclude_pull_requests=exclude_pull_requests or ())
+
+    answers: dict[str, dict[str, Any]] = {}
+    with ThreadPoolExecutor(max_workers=min(TERRITORY_READ_WORKERS, len(checked)),
+                            thread_name_prefix="swarm-mcp-territory") as pool:
+        futures = [(lane["lane"], pool.submit(read, lane)) for lane in checked]
+        for name, future in futures:
+            try:
+                answers[name] = future.result()
+            except SwarmError as exc:
+                if exc.status == 404:
+                    return {"status": "no_index", "lanes": {}, "overlaps": [], "repo_id": repo_id,
+                            "reason": "this deployment has no territory route for the repository"}
+                return {"status": "unchecked", "lanes": {}, "overlaps": [], "repo_id": repo_id,
+                        "reason": f"the territory of {name} could not be read: {exc}"[:400]}
+    first = next(iter(answers.values()))
+    index = {k: first.get(k) for k in ("index_sha", "head_sha", "behind_by", "stale",
+                                         "graph_digest", "format_version")}
+    overlaps: list[dict[str, Any]] = []
+    not_read: list[str] = []
+    for name, answer in answers.items():
+        overlap = answer.get("overlap") or {}
+        read_state = overlap.get("pull_requests_read") or {}
+        if read_state and read_state.get("ok") is False:
+            not_read.append(f"{name}: the open pull requests could not be read "
+                            f"({read_state.get('code')})")
+        unread = overlap.get("pull_requests_unread") or []
+        if unread:
+            not_read.append(f"{name}: the files of pull request(s) "
+                            f"{', '.join('#' + str(n) for n in unread)} were not read")
+        undeclared = overlap.get("lanes_undeclared") or []
+        if undeclared:
+            runs = ", ".join(sorted({str(u.get("run_id")) for u in undeclared if isinstance(u, dict)}))
+            not_read.append(f"{name}: issue run(s) {runs} have declared no files yet")
+        for pull in overlap.get("pull_requests") or []:
+            overlaps.append(_overlap_row(
+                name, {"kind": "pull_request", "number": pull.get("number"), "title": pull.get("title")},
+                list(pull.get("shared") or []), pull.get("shared_total")))
+        for run in overlap.get("lanes") or []:
+            overlaps.append(_overlap_row(
+                name, {"kind": "issue_run_step", **{k: run.get(k) for k in
+                       ("run_id", "issue", "step_id", "state", "pull_request")}},
+                list(run.get("shared") or []), run.get("shared_total")))
+    names = list(answers)
+    for i, a in enumerate(names):
+        for b in names[i + 1:]:
+            if related is not None and related(a, b):
+                continue
+            shared = _between(a, answers[a], b, answers[b])
+            if shared:
+                overlaps.append(_overlap_row(a, {"kind": "this_call", "lane": b}, shared))
+    with _IN_FLIGHT_LOCK:
+        remembered = [r for r in _IN_FLIGHT.get(client, []) if r["slug"] == slug]
+    for row in remembered:
+        try:
+            state = str((client.task(row["task_id"]) or {}).get("state") or "")
+        except SwarmError:
+            not_read.append(f"in-flight task {row['task_id']} ({row['lane']}) could not be read")
+            continue
+        if state in TERMINAL:
+            with _IN_FLIGHT_LOCK:
+                held = _IN_FLIGHT.get(client, [])
+                if row in held:
+                    held.remove(row)
+            continue
+        for name, answer in answers.items():
+            shared = _between(name, answer, row["lane"], row["answer"])
+            if shared:
+                overlaps.append(_overlap_row(
+                    name, {"kind": "dispatched_task", "task_id": row["task_id"],
+                           "lane": row["lane"], "state": state}, shared))
+    result: dict[str, Any] = {"status": "checked", "lanes": answers, "overlaps": overlaps,
+                              "not_read": not_read, "repo_id": repo_id, "index": index,
+                              "slug": slug}
+    if not all(_has_index(a) for a in answers.values()):
+        # The route still compared the NAMED paths; `swarm_territory` shows
+        # that, and a dispatch says nothing (see the section's note).
+        result.update(status="no_index", reason=(
+            "the repository has no promoted graph of index format "
+            f"{TERRITORY_INDEX_FORMAT} or later, so the named files were not expanded "
+            "to their callers and tests"))
+    if skipped:
+        result["not_checked"] = skipped
+    return result
+
+
+def _territory_reply(check: dict[str, Any]) -> dict[str, Any]:
+    """What a dispatch reply gains from a check: a warning, a note, or nothing."""
+    if check["status"] == "unchecked":
+        return {"territory_unchecked": check["reason"]}
+    if check["status"] != "checked":
+        return {}  # no repository, not registered, no v3 index: silent.
+    not_read = list(check.get("not_read") or [])
+    if check.get("not_checked"):
+        not_read.append(f"not checked (past {MAX_TERRITORY_LANES} units): "
+                        + ", ".join(check["not_checked"]))
+    if not check["overlaps"] and not not_read:
+        return {}
+    warning: dict[str, Any] = {
+        "overlaps": check["overlaps"],
+        "index": check.get("index"),
+    }
+    if check["overlaps"]:
+        warning["warning"] = (
+            f"DISPATCHED ANYWAY, with {len(check['overlaps'])} territory overlap(s): "
+            + "; ".join(row["says"] for row in check["overlaps"][:5])
+            + ". Lanes that edit the same files conflict at merge -- two issues that edit "
+            "the same file are one lane (CLAUDE.md). Chain them with depends_on, fold "
+            "them into one unit, or cancel one; this bridge does not decide which"
+        )
+    if not_read:
+        warning["not_read"] = not_read
+    return {"territory_warning": warning}
+
+
+def _territory_of_units(
+    client: Any, units: list[tuple[Any, dict[str, Any]]], *, related: Any = None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Check `units` -- `(repository_url, {lane, files})` -- one check per repository.
+
+    Returns the reply's additions (`_territory_reply`, merged) and the checks,
+    for `_remember_territory` once the units are sent.
+    """
+    groups: dict[Any, list[dict[str, Any]]] = {}
+    for url, lane in units:
+        if lane.get("files") and url:
+            groups.setdefault(url, []).append(lane)
+    checks = [_territory_check(client, url, lanes, related=related) for url, lanes in groups.items()]
+    merged: dict[str, Any] = {}
+    for check in checks:
+        reply = _territory_reply(check)
+        if "territory_unchecked" in reply:
+            merged.setdefault("territory_unchecked", []).append(reply["territory_unchecked"])
+        if "territory_warning" in reply:
+            warning = merged.setdefault("territory_warning", {"overlaps": []})
+            add = reply["territory_warning"]
+            warning["overlaps"] += add["overlaps"]
+            warning.setdefault("index", add.get("index"))
+            if add.get("not_read"):
+                warning.setdefault("not_read", []).extend(add["not_read"])
+    if "territory_unchecked" in merged:
+        merged["territory_unchecked"] = "; ".join(merged["territory_unchecked"])
+    warning = merged.get("territory_warning")
+    if warning is not None and warning["overlaps"]:
+        # One sentence over every repository's overlaps, worded as one check's.
+        warning["warning"] = _territory_reply(
+            {"status": "checked", "overlaps": warning["overlaps"]})["territory_warning"]["warning"]
+    return merged, checks
+
+
+def _remember_territory(client: Any, check: dict[str, Any], sent: list[tuple[str, str]]) -> None:
+    """Hold each sent unit's territory against later dispatches: `(lane, task_id)`."""
+    if check.get("status") != "checked":
+        return
+    with _IN_FLIGHT_LOCK:
+        held = _IN_FLIGHT.setdefault(client, [])
+        for lane, task_id in sent:
+            answer = check["lanes"].get(lane)
+            if answer is not None and task_id:
+                held.append({"task_id": task_id, "lane": lane, "slug": check["slug"],
+                             "answer": answer})
+        del held[:max(0, len(held) - MAX_REMEMBERED_LANES)]
+
+
+def _dependency_lines(steps: list[Any]) -> Any:
+    """`related(a, b)` for workflow steps: one is upstream of the other.
+
+    Upstream through `depends_on`, `input_from` and `builds_on`. A cycle or a
+    dangling id is the API's to refuse; here it only stops the walk.
+    """
+    parents: dict[str, set[str]] = {}
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        sid = str(step.get("step_id") or "").strip()
+        ups = {str(d) for d in step.get("depends_on") or [] if isinstance(d, str)}
+        if isinstance(step.get("input_from"), dict):
+            ups |= {str(k) for k in step["input_from"]}
+        if isinstance(step.get("builds_on"), str):
+            ups.add(step["builds_on"])
+        parents[sid] = ups
+
+    def ancestors(sid: str) -> set[str]:
+        seen: set[str] = set()
+        stack = list(parents.get(sid, ()))
+        while stack:
+            up = stack.pop()
+            if up not in seen:
+                seen.add(up)
+                stack.extend(parents.get(up, ()))
+        return seen
+
+    lines = {sid: ancestors(sid) for sid in parents}
+    return lambda a, b: a in lines.get(b, set()) or b in lines.get(a, set())
+
+
+def _step_lanes(steps: Any) -> list[dict[str, Any]]:
+    """`[{lane: step_id, files}]` for the steps of a workflow that declare files."""
+    lanes = []
+    for index, step in enumerate(steps if isinstance(steps, list) else []):
+        if not isinstance(step, dict):
+            continue
+        sid = str(step.get("step_id") or "").strip() or f"step[{index}]"
+        files = _declared_files(step.get("files"), f"step {sid!r}")
+        if files:
+            lanes.append({"lane": sid, "files": files})
+    return lanes
+
+
+def _territory_tool(client: Any, args: dict[str, Any]) -> str:
+    """`swarm_territory`: the knowledge graph's answer to "who else holds these files"."""
+    if (args.get("files") is None) == (args.get("lanes") is None):
+        raise SwarmError("swarm_territory takes `files` (one unit) or `lanes` (several), exactly one")
+    if args.get("lanes") is not None:
+        raw = args["lanes"]
+        if not isinstance(raw, list) or not raw:
+            raise SwarmError("`lanes` is a non-empty list of {name, files}")
+        lanes = []
+        for index, item in enumerate(raw):
+            if not isinstance(item, dict):
+                raise SwarmError(f"lanes[{index}] is not an object {{name, files}}")
+            name = str(item.get("name") or "").strip() or f"lanes[{index}]"
+            files = _declared_files(item.get("files"), f"lanes[{index}]")
+            if not files:
+                raise SwarmError(f"lanes[{index}] names no files")
+            lanes.append({"lane": name, "files": files})
+        if len({lane["lane"] for lane in lanes}) != len(lanes):
+            raise SwarmError("two of `lanes` share a name; name each lane once")
+    else:
+        files = _declared_files(args.get("files"), "swarm_territory")
+        if not files:
+            raise SwarmError("`files` names no path")
+        lanes = [{"lane": "files", "files": files}]
+    if len(lanes) > MAX_TERRITORY_LANES:
+        raise SwarmError(f"swarm_territory reads at most {MAX_TERRITORY_LANES} lanes at once")
+    depth = args.get("depth")
+    if depth is not None and (not isinstance(depth, int) or isinstance(depth, bool) or depth < 1):
+        raise SwarmError("`depth` is a positive integer (the API takes 1 or 2)")
+    repository = checkout.resolve(repo=args.get("repo"), ref=None, infer=_flag(args, "infer"))
+    if not repository.url:
+        raise SwarmError("swarm_territory needs `repo`, or `infer: true` inside a checkout: "
+                         + "; ".join(repository.notes))
+    runs = args.get("exclude_runs") or []
+    pulls = args.get("exclude_pull_requests") or []
+    if not isinstance(runs, list) or not all(isinstance(r, str) and r.strip() for r in runs):
+        raise SwarmError("`exclude_runs` is a list of issue-run ids")
+    if not isinstance(pulls, list) or not all(
+            isinstance(n, int) and not isinstance(n, bool) and n > 0 for n in pulls):
+        raise SwarmError("`exclude_pull_requests` is a list of pull request numbers")
+    check = _territory_check(client, repository.url, lanes, depth=depth,
+                             exclude_runs=runs, exclude_pull_requests=pulls)
+    answer: dict[str, Any] = {"repository": repository.as_dict(), "status": check["status"]}
+    if check.get("reason"):
+        answer["reason"] = check["reason"]
+    if check.get("index"):
+        answer["index"] = check["index"]
+    answer["lanes"] = [
+        {
+            "lane": name,
+            "named": t.get("named"),
+            "unknown": t.get("unknown") or [],
+            "callers": [r.get("path") for r in t.get("callers") or [] if isinstance(r, dict)],
+            "tests": [r.get("path") for r in t.get("tests") or [] if isinstance(r, dict)],
+            "seams": t.get("seams") or [],
+            "communities": [{"id": c.get("id"), "label": c.get("label")}
+                            for c in t.get("communities") or [] if isinstance(c, dict)],
+            "truncated": t.get("truncated") or [],
+        }
+        for name, t in check["lanes"].items()
+    ]
+    if check["status"] in ("checked", "no_index"):
+        answer["overlaps"] = check["overlaps"]
+        answer["overlap_count"] = len(check["overlaps"])
+        if check.get("not_read"):
+            answer["not_read"] = check["not_read"]
+        if check.get("not_checked"):
+            answer["not_checked"] = check["not_checked"]
+    return json.dumps(answer, indent=2)
+
+
 def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -> str:
     """`swarm_dispatch` with `tasks`: every task checked, then ONE request (S7).
 
@@ -1853,6 +2503,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         )
     accepted = set(_BATCH_TASK_SCHEMA["properties"])
     prepared: list[tuple[dict[str, Any], tuple, Any, str | None]] = []
+    units: list[tuple[Any, dict[str, Any]]] = []
     seen: dict[tuple, int] = {}
     for index, item in enumerate(tasks):
         where = f"swarm_dispatch tasks[{index}]"
@@ -1888,6 +2539,11 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
                 "Nothing was sent"
             )
         seen[signature] = index
+        label = item.get("label")
+        units.append((repository.url, {
+            "lane": f"tasks[{index}]" + (f" ({label})" if isinstance(label, str) and label.strip() else ""),
+            "files": _declared_files(item.get("files"), where),
+        }))
         payload = task_payload(
             prompt=prompt,
             runner_profile=profile,
@@ -1899,6 +2555,9 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
         )
         prepared.append((payload, signature, repository, strategy))
 
+    # THE TERRITORY, read before the one send and reported after it: a
+    # warning, never a refusal (see "territory" above).
+    territory, checks = _territory_of_units(client, units)
     created = client.dispatch_batch([payload for payload, *_ in prepared])
     # The request reached the API, so every signature is remembered BEFORE the
     # answer is judged: a reply this bridge cannot read is not proof nothing
@@ -1940,6 +2599,10 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
     }
     if limit_note:
         answer["max_batch_size_unread_because"] = limit_note
+    answer.update(territory)
+    for check in checks:
+        _remember_territory(client, check, [(lane["lane"], task_id)
+                                            for (_, lane), task_id in zip(units, ids)])
     return json.dumps(answer, indent=2)
 
 
@@ -1947,7 +2610,7 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
     """What `swarm_result` says of one read task: `describe_task`, `failure`
     on a failure, and `outputs`. One function for `swarm_result` and
     `swarm_collect`, so a collected result is a result."""
-    described = describe_task(task)
+    described = describe_task(task, client)
     # ONLY ON A FAILURE, and only here. `explain_failure` costs one extra
     # round trip to the attempts route, which is where the exit code, the
     # backend that actually ran and the earlier attempts' errors live --
@@ -2202,13 +2865,30 @@ def _read_spec_file(path: str, *, base: Path) -> dict[str, Any]:
     relay and may name any file this user can read; only a file that parses
     and passes `read_spec` is returned, and every refusal names the path and
     what is wrong, never what the file holds.
+
+    ONLY A FILE UNDER THE CHECKOUT IS READ (epic #227, finding 25). The path
+    arrives through a relay, so a reader that took any absolute path, or a
+    `../` or a symlink out of the checkout, would read any file this user can
+    -- an SSH key, a cloud credential -- and only a refusal that happened to
+    hide the content stood between that file and a tool reply. Both the
+    checkout and the target are resolved, symlinks included, BEFORE the check,
+    and the check comes before anything about the target (whether it exists,
+    its size) is looked at, so a refusal says nothing about a file outside.
     """
+    root = base.expanduser().resolve()
     target = Path(path).expanduser()
     if not target.is_absolute():
-        target = base / target
+        target = root / target
     target = target.resolve()
+    if not target.is_relative_to(root):
+        raise SwarmError(
+            f"{path} is outside this bridge's checkout, {root}; a workflow spec is read "
+            f"only from a file under the checkout ({checkout.CHECKOUT_DIR_ENV}, else the "
+            "directory the bridge runs in), after symlinks are resolved. Nothing was read: "
+            "move the spec into the checkout, or pass the spec object as `spec`"
+        )
     if not target.is_file():
-        raise SwarmError(f"{path} is not a file in {base} (looked for {target})")
+        raise SwarmError(f"{path} is not a file in {root} (looked for {target})")
     size = target.stat().st_size
     if size > MAX_SPEC_FILE_BYTES:
         raise SwarmError(
@@ -2230,7 +2910,7 @@ def _read_spec_file(path: str, *, base: Path) -> dict[str, Any]:
                 f"accepted: {sorted(workflows.SPEC_KEYS)}"
             )
     try:
-        workflows.read_spec(document, where=str(target))
+        workflows.read_spec(_spec_without_files(document), where=str(target))
     except SwarmError as exc:
         raise SwarmError(f"{target} is not a workflow spec: {exc}") from None
     except (TypeError, ValueError):
@@ -2382,8 +3062,9 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
 
 
 _SETUP_TOOLS = frozenset(
-    {"swarm_setup_status", "swarm_setup_connect", "swarm_setup_orgs", "swarm_setup_repos",
-     "swarm_setup_grant", "swarm_setup_revoke", "swarm_setup_verify", "swarm_access"}
+    {"swarm_setup_status", "swarm_setup_workspace", "swarm_setup_connect", "swarm_setup_orgs",
+     "swarm_setup_repos", "swarm_setup_grant", "swarm_setup_revoke", "swarm_setup_verify",
+     "swarm_access"}
 )
 
 #: The longest `swarm_setup_status` holds for GitHub: the authorize link's life.
@@ -2432,6 +3113,23 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                     answer["not_connected"] = sc.not_connected_text(wait)
                 return reply(answer)
             return reply(_setup_view(sc.setup_status(client)))
+        if name == "swarm_setup_workspace":
+            # ONE POST AT MOST, THEN ONE READ, AND NO WAIT (invariant 4's
+            # spirit): an approval is a person's, minutes or days away, and a
+            # tool call held open for it holds the session. The record says
+            # where it stands; /sc:setup reads it again.
+            action = args.get("action") or "status"
+            if action not in ("status", "request", "loan"):
+                raise SwarmError(
+                    f"action is status, request or loan, not {action!r}. Nothing was sent")
+            answer: dict[str, Any] = {"action": action}
+            if action == "request":
+                sc.request_workspace(client)
+            elif action == "loan":
+                answer["loan_request"] = sc.request_loan(client)
+            record = sc.workspace_status(client)
+            return reply({**answer, "workspace": record, "text": sc.workspace_line(record),
+                          "setup_command": sc.PLUGIN_SETUP_COMMAND})
         if name == "swarm_setup_connect":
             already = sc.connected_as_you(sc.setup_status(client))
             if already is not None:
@@ -2445,15 +3143,22 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
                                   "the person approves in the browser"})
         if name == "swarm_setup_orgs":
             owner = args.get("enable")
-            enabled = None
+            asked = args.get("request_install")
+            enabled = requested = None
+            if asked is not None:
+                done = sc.request_install(client, _text_arg(args, "request_install", name))
+                requested = done.get("org") if isinstance(done, dict) else None
             if owner is not None:
                 done = sc.enable_owner(client, _text_arg(args, "enable", name))
                 enabled = done.get("org") if isinstance(done, dict) else None
             listing = sc.access_owners(client)
             answer = {"owners": listing.get("owners"), "install_url": listing.get("install_url"),
-                      "orgs_listed": listing.get("orgs_listed")}
+                      "orgs_listed": listing.get("orgs_listed"),
+                      "approval_pending": sc.approval_pending(listing)}
             if owner is not None:
                 answer["enabled"] = enabled
+            if asked is not None:
+                answer["install_requested"] = requested
             return reply(answer)
         if name == "swarm_setup_repos":
             page = _int_arg(args, "page", 1)
@@ -2469,7 +3174,13 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             wanted = args.get("repositories") or []
             if not isinstance(wanted, list) or not all(isinstance(r, str) for r in wanted):
                 raise SwarmError("repositories is a list of owner/repo. Nothing was verified")
-            results = sc.verify_repositories(client, wanted)
+            push_test = args.get("push_test", False)
+            if not isinstance(push_test, bool):
+                raise SwarmError("push_test is true or false. Nothing was verified")
+            if push_test and not wanted:
+                raise SwarmError("push_test needs `repositories`, each named by the person who "
+                                 "said yes to it. Nothing was verified")
+            results = sc.verify_repositories(client, wanted, push_test=push_test)
             return reply({"results": results, "text": "\n".join(sc.verify_lines(results)),
                           "passed": bool(results) and all(r.get("passed") for r in results)})
         overview = sc.access_overview(client)
@@ -2477,6 +3188,12 @@ def _setup_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     except SwarmError as exc:
         if isinstance(exc.detail, dict) and exc.detail.get("failure_code"):
             raise sc._refused(exc) from None  # noqa: SLF001
+        if name == "swarm_setup_workspace" and exc.code:
+            # The workspace routes' refusals carry an upper-case code and a
+            # sentence for the person (`WORKSPACE_REQUEST_TOO_SOON`,
+            # `WORKSPACE_NOT_REQUESTED`, ...): both, word for word.
+            raise SwarmError(sc.api_refusal(exc), status=exc.status, edge=exc.edge,
+                             code=exc.code, detail=exc.detail) from None
         raise
 
 
@@ -2678,6 +3395,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 "request, so it needs a repository, and this dispatch has none: "
                 + "; ".join(repository.notes)
             )
+        # THE TERRITORY of the files the task declares: read before the send,
+        # reported after it, and never a reason not to send.
+        lane = {"lane": args.get("label") or "this task",
+                "files": _declared_files(args.get("files"), "swarm_dispatch")}
+        territory, checks = _territory_of_units(client, [(repository.url, lane)])
         task = client.dispatch(
             prompt=args["prompt"],
             runner_profile=profile,
@@ -2722,6 +3444,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             }, task)
         # Its live row, started by the session from this reply (#830).
         reply["rows"] = _dispatch_rows([(task_id, args.get("label") or None, task)])
+        reply.update(territory)
+        for check in checks:
+            _remember_territory(client, check, [(lane["lane"], task_id)])
         return json.dumps(reply, indent=2)
 
     if name == "swarm_follow" and (args.get("format") or "json") not in ("json", "lines", "progress"):
@@ -2806,7 +3531,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # what the agent actually produced.
         for task in report["tasks"]:
             if task["read"] == "ok" and task["terminal"]:
-                task["result"] = describe_task(client.task(task["task_id"]))
+                task["result"] = describe_task(client.task(task["task_id"]), client)
         # The same position as `cursor`, as one token, for a caller that would
         # rather not copy a nested object back by hand.
         report["since"] = progress.encode_since(
@@ -2854,7 +3579,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             for task_id in list(pending):
                 task = client.task(task_id)
                 if task.get("state") in TERMINAL:
-                    finished[task_id] = describe_task(task)
+                    finished[task_id] = describe_task(task, client)
                     pending.remove(task_id)
             remaining = deadline - time.monotonic()
             if not pending or remaining <= 0:
@@ -2871,13 +3596,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         return json.dumps(out, indent=2)
 
     if name == "swarm_profiles":
-        # NO CLIENT CALL. The catalogue is the frozen contract, which this
-        # process already holds, so this is the one tool that answers without a
-        # round trip -- and, usefully, the one tool that still answers when the
-        # cluster cannot be reached at all. A session can at least tell the
-        # developer which names exist while `swarm doctor` works out why
-        # nothing else does.
-        return json.dumps({"profiles": catalogue.catalogue()}, indent=2)
+        # The PLATFORM's catalogue (`GET /v1/runtimes`), because this
+        # bridge's copy is as old as the installed plugin. Still answers when
+        # the cluster cannot be reached, from the copy, labelled
+        # `catalogue_source` -- see `catalogue.served_catalogue`.
+        return json.dumps(catalogue.served_catalogue(client), indent=2)
 
     if name == "swarm_tenants":
         # Two GETs. A `tenant` setting the caller is not a member of comes back
@@ -2963,6 +3686,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
     if name == "swarm_workflow" and args.get("merge_pr") is not None:
         return _workflow_merge_pr(client, args)
 
+    if name == "swarm_territory":
+        return _territory_tool(client, args)
+
     if name == "swarm_workflow":
         # BY REFERENCE (measured 2026-10-01): a spec a relay retyped came back
         # altered three times in one evening. `spec_path` and `spec_ref` put
@@ -3011,7 +3737,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                     "changed on its way here -- by whoever retyped it -- so NOTHING was "
                     "submitted. Pass the spec exactly as given, character for character"
                 )
-            fields = workflows.read_spec(args["spec"], where="swarm_workflow's `spec`")
+            fields = workflows.read_spec(_spec_without_files(args["spec"]), where="swarm_workflow's `spec`")
             repo, ref = fields["repository_url"], fields["repository_ref"]
         else:
             if expected_digest not in (None, ""):
@@ -3022,7 +3748,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             if args.get("steps") is None:
                 raise SwarmError("swarm_workflow needs `steps`, or a whole `spec` (inline, `spec_path` or `spec_ref`)")
             fields = {
-                "steps": workflows.build_steps(args.get("steps")),
+                "steps": workflows.build_steps(_without_files(args.get("steps"))),
                 "strategy": args.get("strategy"),
                 "carrier": args.get("carrier"),
                 "on_step_failure": args.get("on_step_failure"),
@@ -3033,6 +3759,13 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             repo, ref = args.get("repo"), args.get("ref")
         repository = checkout.resolve(
             repo=repo, ref=ref, infer=_flag(args, "infer")
+        )
+        # THE TERRITORY of every step that declares files; two steps on one
+        # dependency line are the plan, not a collision.
+        step_lanes = _step_lanes(given_steps)
+        territory, checks = _territory_of_units(
+            client, [(repository.url, lane) for lane in step_lanes],
+            related=_dependency_lines(given_steps if isinstance(given_steps, list) else []),
         )
         envelope = workflows.submit(
             client,
@@ -3045,9 +3778,20 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             priority=fields["priority"],
             label=fields["label"],
             title=fields["title"],
+            # Only a whole spec carries `merge`; the `steps` form never did.
+            merge=fields.get("merge"),
         )
-        return _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
-                                 digest=digest, expected_digest=expected_digest)
+        reply = _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
+                                  digest=digest, expected_digest=expected_digest)
+        if not territory and not checks:
+            return reply
+        created = json.loads(reply)
+        created.update(territory)
+        tasks = {str(step.get("step_id")): step.get("task_id") for step in created.get("steps") or []}
+        for check in checks:
+            _remember_territory(client, check, [(lane["lane"], tasks.get(lane["lane"]))
+                                                for lane in step_lanes])
+        return json.dumps(created, indent=2)
 
     if name in ("swarm_workflow_status", "swarm_workflow_result"):
         # ONE read for both. The difference is only how much of each step's task
@@ -3067,7 +3811,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             because it returns None on the state check before touching the
             client.
             """
-            out = describe_task(task)
+            out = describe_task(task, client)
             failure = explain_failure(client, task)
             if failure is not None:
                 out["failure"] = failure
@@ -3139,19 +3883,24 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         )
 
     if name == "swarm_account_remove":
-        # DESTRUCTIVE, so the label is typed back: `confirm_label` must be the
-        # resolved account's label exactly, or nothing is sent. A tool cannot
-        # prompt the way `sc account remove` does; this argument is that
-        # prompt's answer, given by whoever made the call.
+        # DESTRUCTIVE, so a HUMAN types the label (#453, finding 83). This
+        # took `confirm_label` as an argument, and its refusal named the label
+        # it wanted: a typo guard, since the agent that made the call could
+        # repeat it with that label -- which `swarm_accounts` lists anyway --
+        # and confirm its own removal. So no argument is the answer any more.
+        # The bridge asks the host's human (MCP elicitation), the way `sc
+        # account remove` asks at a terminal, and a refusal never says what
+        # the answer should have been.
         from .sc import remove_account, resolve_account
 
         account = resolve_account(client, str(args["account"]))
         label = str(account.get("label") or "")
-        if not label or str(args.get("confirm_label") or "").strip() != label:
+        if not label:
             raise SwarmError(
-                f"`confirm_label` must be this account's label, {label!r}, exactly; nothing "
-                "was removed"
+                f"account {account.get('account_id')} has no label to type back, so it cannot "
+                "be confirmed here; nothing was removed"
             )
+        _human_typed_label(account, label)
         return json.dumps(
             {
                 "account_id": account.get("account_id"),
@@ -3200,6 +3949,15 @@ def _tool_error_text(exc: SwarmError) -> str:
     API itself -- a 409, a validation error -- means the request arrived, and
     doctor, which explains how a request fails to arrive, is no answer to it.
     """
+    from .sc import PLUGIN_SETUP_COMMAND, workspace_refusal_text
+
+    # THE SUBMISSION GATE'S REFUSAL (#847, docs/workspaces.md §6.2), from
+    # every submitting tool at once -- swarm_dispatch, swarm_workflow and
+    # swarm_run_issue -- because they all fail through here: the
+    # API's message word for word, and the command that fixes it.
+    refused = workspace_refusal_text(exc, PLUGIN_SETUP_COMMAND)
+    if refused is not None:
+        return refused
     text = str(exc)
     if getattr(exc, "edge", False):
         text = text.rstrip().rstrip(".") + (
@@ -3305,6 +4063,114 @@ def _error(message_id: Any, code: int, message: str) -> None:
         sys.stdout.flush()
 
 
+#: WHETHER THE HOST CAN ASK ITS HUMAN A QUESTION (MCP elicitation), as its
+#: `initialize` declared. Read only by `swarm_account_remove`: a host that
+#: cannot ask gets a refusal naming the terminal command, never a confirmation
+#: the calling agent could supply itself.
+_HOST_CAN_ELICIT = threading.Event()
+
+#: How long `swarm_account_remove` waits for the human's answer. A person reads
+#: the prompt and types a label; five minutes is ample for that, and a prompt
+#: left unanswered removes nothing.
+ELICIT_TIMEOUT_SECONDS = 300.0
+
+#: Elicitations in flight, by the id of the request this bridge sent: the host
+#: answers on stdin, which `serve` reads, while the asking call waits in its
+#: worker thread.
+_ELICITING: dict[str, tuple[threading.Event, list[dict[str, Any]]]] = {}
+_ELICIT_LOCK = threading.Lock()
+
+
+def _elicit(message: str, schema: dict[str, Any]) -> dict[str, Any] | None:
+    """Ask the host's human through the host (`elicitation/create`).
+
+    The host's whole JSON-RPC response, or None when none came within
+    `ELICIT_TIMEOUT_SECONDS`. The answer is typed by the person at the host,
+    into the host's own prompt: the model that made the tool call neither sees
+    the request nor writes its answer.
+    """
+    request_id = f"swarm-elicit-{secrets.token_hex(8)}"
+    answered = threading.Event()
+    box: list[dict[str, Any]] = []
+    with _ELICIT_LOCK:
+        _ELICITING[request_id] = (answered, box)
+    try:
+        line = json.dumps({
+            "jsonrpc": "2.0",
+            "id": request_id,
+            "method": "elicitation/create",
+            "params": {"message": message, "requestedSchema": schema},
+        }) + "\n"
+        with _WRITE_LOCK:
+            sys.stdout.write(line)
+            sys.stdout.flush()
+        if not answered.wait(ELICIT_TIMEOUT_SECONDS):
+            return None
+        return box[0]
+    finally:
+        with _ELICIT_LOCK:
+            _ELICITING.pop(request_id, None)
+
+
+def _deliver_elicitation(message: dict[str, Any]) -> None:
+    """Hand the host's response to the call waiting on it; any other is dropped."""
+    message_id = message.get("id")
+    if not isinstance(message_id, str):
+        return
+    with _ELICIT_LOCK:
+        waiting = _ELICITING.get(message_id)
+    if waiting is None:
+        return
+    answered, box = waiting
+    box.append(message)
+    answered.set()
+
+
+def _human_typed_label(account: dict[str, Any], label: str) -> None:
+    """Return only when the host's human typed `label`; otherwise refuse.
+
+    EVERY REFUSAL LEAVES THE LABEL OUT. The one this replaced named it, which
+    told the caller exactly what to send next.
+    """
+    command = terminal_command(f"sc account remove {account.get('account_id')}")
+    if not _HOST_CAN_ELICIT.is_set():
+        raise SwarmError(
+            "removing an account needs its label typed by a person, and this host did not "
+            "say it can ask one (MCP elicitation); nothing was removed. Run "
+            f"`{command}` in a terminal: it asks for the label there"
+        )
+    reply = _elicit(
+        f"An agent asked to REMOVE the SwarmCloud account {label} "
+        f"({account.get('account_id')}) from the pool. The broker keeps its secret. "
+        "Type the account's label to confirm; anything else removes nothing.",
+        {
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "title": "Account label",
+                    "description": "The label of the account to remove, exactly.",
+                },
+            },
+            "required": ["label"],
+        },
+    )
+    if reply is None:
+        raise SwarmError(
+            f"nobody answered the confirmation within {int(ELICIT_TIMEOUT_SECONDS)}s; "
+            "nothing was removed"
+        )
+    result = reply.get("result")
+    if not isinstance(result, dict) or result.get("action") != "accept":
+        raise SwarmError(
+            "the removal was not confirmed (declined, cancelled, or the host could not "
+            f"ask); nothing was removed. `{command}` asks at a terminal instead"
+        )
+    typed = (result.get("content") or {}).get("label") if isinstance(result.get("content"), dict) else None
+    if not isinstance(typed, str) or typed.strip() != label:
+        raise SwarmError("the label typed was not this account's; nothing was removed")
+
+
 def serve(stdin=None, stdout=None) -> int:
     """The stdio loop. One JSON-RPC message per line, both directions.
 
@@ -3380,6 +4246,11 @@ def serve(stdin=None, stdout=None) -> int:
             message_id = message.get("id")
 
             if method == "initialize":
+                capabilities = (message.get("params") or {}).get("capabilities") or {}
+                if isinstance(capabilities, dict) and isinstance(capabilities.get("elicitation"), dict):
+                    _HOST_CAN_ELICIT.set()
+                else:
+                    _HOST_CAN_ELICIT.clear()
                 _respond(
                     message_id,
                     {
@@ -3394,6 +4265,10 @@ def serve(stdin=None, stdout=None) -> int:
                 _respond(message_id, {"tools": TOOLS})
             elif method == "tools/call":
                 calls.submit(_answer, message_id, message.get("params") or {})
+            elif method is None and message_id is not None:
+                # A RESPONSE, to a request this bridge sent (an elicitation).
+                # A response is never answered, whatever it matches.
+                _deliver_elicitation(message)
             elif message_id is not None:
                 _error(message_id, -32601, f"method not found: {method}")
         # Leaving the `with` waits for every call still running, so a host

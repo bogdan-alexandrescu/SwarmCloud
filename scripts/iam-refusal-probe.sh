@@ -13,8 +13,9 @@
 #     api.getAttribute("iam.googleapis.com/modifiedGrantsByRole", []).hasOnly([...])
 #
 # (terraform/bootstrap/deployer_conditions.tf), whose lists together are the
-# fifteen project roles terraform/infra grants -- one conditioned binding per
-# chunk of at most 10 roles since #275, because hasOnly() refuses a longer list. Nothing in the pipeline ever asks for a
+# 14 project roles terraform/infra grants (15 until #150 took swarmSecretLister
+# off) -- one conditioned binding per chunk of at most 10 roles since #275,
+# because hasOnly() refuses a longer list. Nothing in the pipeline ever asks for a
 # role off that list, so nothing has shown the refusal side works. This script
 # asks for one: `gcloud projects add-iam-policy-binding` of PROBE_ROLE to the
 # deployer itself.
@@ -32,13 +33,25 @@
 # It is a constant, not a workflow input, so a dispatcher cannot aim the probe
 # at roles/owner.
 #
+# WHAT A REFUSAL STANDS FOR (#69). hasOnly() treats every role it does not list
+# alike, so a refusal of roles/browser is a refusal of any other unlisted role
+# -- in particular of swarmSecretLister, whose project-wide
+# secretmanager.secrets.setIamPolicy reaches the other team's secrets and which
+# left the grantable list for that reason. That inference holds exactly when no
+# live chunk lists swarmSecretLister, so preflight checks it (matching the role
+# id `.../roles/swarmSecretLister` under any project prefix) and the summary
+# says it. The probe NEVER asks for swarmSecretLister itself: were the
+# condition broken, the deployer would hold that permission until the revert.
+#
 # THE VERDICT, per subcommand:
 #
 #   preflight  READ-ONLY. Refuses to go on unless the verdict can only be the
 #              condition's: the conditioned projectIamAdmin bindings (one per
 #              <=10-role chunk since #275) are live and the unconditioned one
 #              is gone, every one's condition is the modifiedGrantsByRole
-#              hasOnly() test and none lists PROBE_ROLE, the deployer holds no PROBE_ROLE binding already (so
+#              hasOnly() test and none lists PROBE_ROLE or swarmSecretLister
+#              (#69: see "WHAT A REFUSAL STANDS FOR"), the deployer holds no
+#              PROBE_ROLE binding already (so
 #              the revert can never remove one this run did not make), and no
 #              OTHER role the deployer holds carries
 #              resourcemanager.projects.setIamPolicy (a custom role it cannot
@@ -71,6 +84,9 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 # The role asked for. See "WHY roles/browser" above before changing it.
 PROBE_ROLE="roles/browser"
+# The role #69 took off the grantable list. Matched by role id, so any project
+# prefix counts; preflight stops if a live chunk lists it. Never asked for.
+SECRET_LISTER_ID="swarmSecretLister"
 # The deployer grant whose condition is under test.
 SCOPED_ROLE="roles/resourcemanager.projectIamAdmin"
 # The permission a project policy write is checked against. A second role
@@ -253,26 +269,29 @@ cmd_preflight() {
 
   #    Since #275 that grant is one conditioned binding per chunk of at most 10
   #    roles (hasOnly() refuses a longer list; deployer_conditions.tf), so there
-  #    are as many bindings as chunks -- two for fifteen roles. A grant is
+  #    are as many bindings as chunks -- two for 14 roles. A grant is
   #    admitted if ANY binding's condition admits it, so EVERY one must be the
   #    bare modifiedGrantsByRole hasOnly() test (the whole expression: one
   #    `|| true` appended to a chunk would admit everything) and none may list
-  #    PROBE_ROLE. The list is parsed, not grepped, so either quote style counts.
+  #    PROBE_ROLE. Nor may any list swarmSecretLister (#69): a refusal of
+  #    PROBE_ROLE stands for it only while it is unlisted everywhere. The list
+  #    is parsed, not grepped, so either quote style counts.
   local chunks_file chunk_verdict n_chunks=0
   chunks_file="${WORK}/scoped-conditions.txt"
-  # shellcheck disable=SC2016  # $m, $r, $p and $e are jq variables, not shell ones.
+  # shellcheck disable=SC2016  # $m, $r, $p, $s and $e are jq variables, not shell ones.
   local chunk_program='
     .bindings[]
     | select(.role == $r and .condition != null and any((.members // [])[]; . == $m))
     | (.condition.expression // "") as $e
     | (($e | capture("^\\s*api\\.getAttribute\\([\"\u0027]iam\\.googleapis\\.com/modifiedGrantsByRole[\"\u0027],\\s*\\[\\]\\)\\.hasOnly\\(\\[(?<list>[^\\]]*)\\]\\)\\s*$")) // null) as $c
+    | ($c.list // "" | split(",") | map(gsub("^\\s+|\\s+$"; "") | gsub("^[\"\u0027]|[\"\u0027]$"; ""))) as $listed
     | (if $c == null then "not-hasonly"
-       elif any(($c.list | split(","))[];
-                (gsub("^\\s+|\\s+$"; "") | gsub("^[\"\u0027]|[\"\u0027]$"; "")) == $p)
-       then "lists-probe"
+       elif any($listed[]; . == $p) then "lists-probe"
+       elif any($listed[]; endswith("/roles/" + $s)) then "lists-secret-lister"
        else "ok" end)
       + "\t" + ((.condition.title // "") | gsub("[\\t\\n]"; " "))'
-  jq -r --arg m "${member}" --arg r "${SCOPED_ROLE}" --arg p "${PROBE_ROLE}" "${chunk_program}" \
+  jq -r --arg m "${member}" --arg r "${SCOPED_ROLE}" --arg p "${PROBE_ROLE}" --arg s "${SECRET_LISTER_ID}" \
+    "${chunk_program}" \
     "${policy}" >"${chunks_file}"
   while IFS="$(printf '\t')" read -r chunk_verdict title; do
     n_chunks=$((n_chunks + 1))
@@ -281,6 +300,10 @@ cmd_preflight() {
       lists-probe)
         annotate error "probe not run" "the live condition \"${title}\" lists ${PROBE_ROLE}"
         die "the conditioned ${SCOPED_ROLE} binding \"${title}\" lists ${PROBE_ROLE}, so a grant of it would be admitted by design and prove nothing. Nothing was attempted."
+        ;;
+      lists-secret-lister)
+        annotate error "probe not run" "the live condition \"${title}\" lists ${SECRET_LISTER_ID} (#69)"
+        die "the conditioned ${SCOPED_ROLE} binding \"${title}\" lists ${SECRET_LISTER_ID}, which #69 took off the grantable list: the deployer may grant itself project-wide secretmanager.secrets.setIamPolicy, and a refusal of ${PROBE_ROLE} would not stand for it. Re-apply terraform/bootstrap from main. Nothing was attempted."
         ;;
       *)
         annotate error "probe not run" "the live condition \"${title}\" is not the modifiedGrantsByRole one"
@@ -294,7 +317,7 @@ cmd_preflight() {
     annotate error "probe not run" "checked ${n_chunks} of ${scoped} conditioned ${SCOPED_ROLE} bindings"
     die "counted ${scoped} conditioned ${SCOPED_ROLE} binding(s) on the deployer but checked ${n_chunks}. Nothing was attempted."
   fi
-  ok "the deployer's ${SCOPED_ROLE} is conditioned in ${scoped} binding(s), with no unconditioned twin; each is a modifiedGrantsByRole hasOnly() list, and none lists ${PROBE_ROLE}"
+  ok "the deployer's ${SCOPED_ROLE} is conditioned in ${scoped} binding(s), with no unconditioned twin; each is a modifiedGrantsByRole hasOnly() list, none lists ${PROBE_ROLE}, and no chunk lists ${SECRET_LISTER_ID}"
 
   # 2. The revert removes PROBE_ROLE from the deployer. It must never remove a
   #    binding this run did not make, so none may exist before it.
@@ -371,6 +394,8 @@ cmd_preflight() {
   fi
   ok "checked $((n_roles - n_unread)) of ${n_roles} other role(s) the deployer holds: none carries ${SET_PERMISSION}"
 
+  # hasOnly() treats every unlisted role alike: say what a refusal also covers.
+  step_summary "* preflight: no chunk lists \`${SECRET_LISTER_ID}\`, so a refusal of ${PROBE_ROLE} also stands for a self-grant of \`${SECRET_LISTER_ID}\` (#69), which this probe never asks for."
   set_output unread "${n_unread}"
   set_output ready true
   if [[ "${n_unread}" -eq 0 ]]; then
@@ -548,7 +573,7 @@ cmd_summary() {
   esac
   case "${PREFLIGHT_OUTCOME:-}/${GRANT_VERDICT:-}/${REVERT_OUTCOME:-}/${landed}" in
     success/refused/success/no)
-      meaning="**PASS.** The deployer asked for \`${PROBE_ROLE}\`, IAM refused it with PERMISSION_DENIED, and the policy read back afterwards has no such binding. One unlisted role is refused under the modifiedGrantsByRole condition. This does not show the roleAdmin route closed (#79)." ;;
+      meaning="**PASS.** The deployer asked for \`${PROBE_ROLE}\`, IAM refused it with PERMISSION_DENIED, and the policy read back afterwards has no such binding. One unlisted role is refused under the modifiedGrantsByRole condition, and preflight found no chunk listing \`swarmSecretLister\`, so the refusal stands for a self-grant of it too (#69). This does not show the roleAdmin route closed (#79)." ;;
     success/granted/*|success/*/*/yes)
       meaning="**FAIL: $(admitted). Reopen #68.** Read the revert step: it says whether the binding was removed." ;;
     success/refused/*)

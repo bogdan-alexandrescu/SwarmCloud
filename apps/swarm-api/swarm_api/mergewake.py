@@ -165,6 +165,14 @@ BRANCH_UPDATE_PENDING = "branch_update_pending"
 #: The worker's park code after it put the pull request in its base's merge
 #: queue (`agent_worker.merge.MERGE_QUEUED`).
 MERGE_QUEUED = "merge_queued"
+
+#: The park code of a merge step waiting for its repository's merge slot
+#: (`agent_worker.mergeslot.MERGE_SLOT_WAIT`, merge race #295, held equal by
+#: tests/unit/worker/test_merge_slot.py). Not a reading of its checks: they
+#: were green when it parked, so reading them would wake it for nothing every
+#: CI_READ_SECONDS. The holder's release marks it when the slot is handed to
+#: it, and the worker's fallback instant covers a lost mark; the tick skips it.
+MERGE_SLOT_WAIT = "merge_slot_wait"
 #: The wake reason of a queued pull request that left the queue unmerged.
 DEQUEUED = "dequeued"
 
@@ -656,6 +664,10 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
             wait = _mapping(_mapping(doc.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
             if wait.get(WAKE_MARKER):
                 # Marked already: the scheduler wakes it. Nothing to read.
+                continue
+            if wait.get("code") == MERGE_SLOT_WAIT:
+                # Waiting for the merge slot, not for CI: the release wakes it.
+                report.skipped += 1
                 continue
             if not _due(wait, now):
                 report.skipped += 1

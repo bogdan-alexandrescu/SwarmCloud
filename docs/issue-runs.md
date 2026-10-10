@@ -18,6 +18,7 @@ the module docstrings, which are the reference:
 | the write-back to the issue and the pull request | `apps/swarm-api/swarm_api/issuesync.py`, `issuecomments.py`, `forgewrite.py` |
 | the open-work read the planner is shown | `apps/swarm-api/swarm_api/forge.py` (`read_open_work`) |
 | the tick | `POST /v1/admin/runs/advance`, `terraform/modules/scheduler/jobs.tf` (`issue_run_advance`) |
+| the sweeper, and the territory guard | `apps/swarm-api/swarm_api/issuesweep.py`, `POST /v1/admin/issues/sweep`, `jobs.tf` (`issue_sweep`); `routes/runs.py` `territory_conflict` |
 | the surfaces | console `Work › Submit from a GitHub issue` and `Work › Runs` (`apps/swarm-ui/src/IssueSubmit.tsx`, `Runs.tsx`); `sc run --issue`, `sc plan approve\|edit\|reject` and the MCP tools ([plugin/README.md](../plugin/README.md#planning-and-running-a-github-issue)) |
 
 ```
@@ -25,6 +26,7 @@ PLANNING ─► PLANNED ─► APPROVED ─► RUNNING ─► CHECKING ─► DO
    │          │  ▲ edit                │        │   ▲
    │          │  └─┘                   │        ▼   │ one continues_task per round
    │          ├─► REJECTED             │      FIXING ┘
+   ├─► NOT_READY (the planner's verdict: no plan, a reason, what it needs)
    ▼          ▼                        ▼        ▼
  FAILED / CANCELLED  ◄─────────────────┴────────┘   (FAILED at the cap, with the excerpt)
 ```
@@ -226,6 +228,173 @@ rest of the page is still advanced.
 in `var.tenants`. Its runs advance on every read, and an `auto` run in one waits
 for someone to look.
 
+## Sweeper: SwarmCloud finds the issues to work on
+
+Owner decisions, 2026-10-08: readiness is decided by the **planner**, not by a
+label; the sweeper runs **inside the platform on a schedule**; at most **8 live
+issue runs per tenant**; plans **auto-approve** and pull requests
+**auto-merge** through the merge step.
+
+`google_cloud_scheduler_job.issue_sweep` (one per registered tenant, named
+`swarm-issue-sweep-<tenant>`, at `:07` and `:37` -- every 30 minutes, never on
+the hour or the half hour) calls `POST /v1/admin/issues/sweep?tenant_id=<t>` as
+the same `swarm-rollup-sweeper` identity and OIDC audience as the tick above.
+swarm-api admits that identity to the route by name
+(`auth.ROLLUP_SWEEPER_ROUTES`) and, like the repository poll, admits **nobody
+else** -- not an admin: an operator who wants a sweep now runs the job
+(`gcloud scheduler jobs run swarm-issue-sweep-eng --location <region>`). The
+job adds no IAM binding: its one grant, `run.invoker` on swarm-api, is the
+rollup's.
+
+### What it picks
+
+For each of the tenant's **registered repositories**
+([repo-index.md §1](repo-index.md)), it lists the open issues with the
+tenant's forge credential -- the token the planner's open-work read already
+uses -- oldest-updated first, and the open pull requests with their text. Every
+issue that survives the skips below is a candidate. Candidates from every
+repository are ordered **oldest-updated first** (the issue nobody has touched
+longest is the one most likely waiting on nobody), and a run is started for
+each until the tenant has `max_live_runs` live runs. Each run is created with
+`plan_approval: auto`, `auto_merge: true` and `fix_rounds: 2`, records
+`created_by: issue-sweep`, and its planner is shown the repository's open work
+in the same snapshot shape a console-created run's is -- built from the
+sweep's one listing of the repository, so its issues are the oldest-updated
+hundred rather than the newest. The route returns -- and logs -- what it
+started and what it skipped, each with its reason.
+
+### What it skips
+
+| reason | rule |
+|---|---|
+| (never listed) | pull requests: GitHub's issue list includes them, marked, and the read drops them |
+| `author: <association>` | opened by someone GitHub does not call the repository's `OWNER`, a `MEMBER` of its organisation or a `COLLABORATOR` (`unknown` when GitHub did not say). Every swept run is auto-approved and auto-merged with the tenant's credential, so on a public repository an outsider's issue would otherwise become a merged change no person approved ([security review 2026-10-09](security/review-2026-10-09.md), item 1). A person can still start a run for that issue from the console |
+| `label: <l>` | labelled `epic`, `blocked` or `security` |
+| `excluded: issue` / `excluded: label <l>` | named in the tenant's exclusion list, by number or by label |
+| `live_run: run_<id>` | the issue already has a live (non-terminal) run |
+| `open_pull_request: #<n>` | an open pull request's title or body says `Closes`, `Fixes` or `Resolves #N` (or `owner/repo#N`, or the issue's URL), or `part of #N` |
+| `not_ready_unchanged: run_<id>` | its last run ended `NOT_READY` and the issue has not been edited or commented on since |
+| `unchanged_since_run: run_<id> (<STATE>)` | its last run ended any other way -- done, failed, rejected, cancelled -- and nothing changed on the issue since |
+| `cap: <n> live runs` | the tenant already has its cap of live runs |
+
+(A tenant-level skip is not a row here: with `submit_as` unset or not a member
+the whole tenant is skipped -- see "Turning it on", item 3.)
+
+A repository whose open pull requests number more than one sweep reads (300) is
+not swept at all (`too_many_pull_requests`): an unread pull request could claim
+any issue.
+
+**"Not changed since" means since the run's own last write.** The run's status
+comment is itself an edit of the issue and moves GitHub's `updated_at`; compared
+with the verdict's time, every `NOT_READY` issue would look edited and be
+planned again every half hour. A run records when its write-back last wrote
+(`last_writeback_at`), and the issue counts as changed only when `updated_at`
+is later than that by more than a minute (GitHub's clock against ours). The
+same rule holds for a run that ended any other way, so an issue whose run
+failed, or was found already on main without every requirement met, is not
+re-planned -- at the cost of a planner and a workflow -- every 30 minutes until
+someone touches it.
+
+### Why the planner decides readiness
+
+A `ready` label is a second thing to keep true by hand, and an issue nobody
+labelled reads the same as one somebody judged not ready. The planner already
+reads the issue, the repository and the open work, so it answers instead of a
+plan, in `plan.json`:
+
+```json
+{"ready": false, "kind": "blocked",
+ "reason": "The retry path is rewritten by #612, which is open.",
+ "needs": ["depends on #612"]}
+```
+
+`kind` is one of `already_done` (with the files, functions and tests that show
+it), `owner_decision`, `blocked`, `too_vague`, `security_deferred`, `epic` or
+`other`. The run moves to the terminal state `NOT_READY`, **holds nothing**
+(no task, workflow or lease after the planner -- invariant 1), and its one
+status comment on the issue carries the reason and the needs. `NOT_READY` is a
+new state rather than `REJECTED` with `rejected_by: planner` because `RunState`
+is this service's, not the frozen contract's (`apps/common/swarm_common` does
+not define it), and a rejection is a person turning down a plan -- here there
+is no plan.
+
+### The territory guard
+
+Two issues that edit one file are one lane (CLAUDE.md), and eight runs at once
+make that the likeliest way to lose a pull request. So before **any** `auto`
+approval, the plan's step `files` are compared with those of every other live
+run's plan in the same repository and tenant (`routes/runs.py`
+`territory_conflict`): the same path, or a directory one names and the other
+edits inside. On an overlap the run waits in `PLANNED`, holding nothing, with
+`hold: "territory_overlap: run_<id>"` -- shown in the console and on the
+issue's status comment -- and the tick checks again every minute; it is
+approved on the first tick after the other run ends.
+
+Only a run **ahead** of it holds it: one being worked (`APPROVED`, `RUNNING`,
+`CHECKING`, `FIXING`), or an **older** `auto` run still `PLANNED`. So the oldest
+of any overlapping set always goes, and two waiting runs never wait for each
+other. A `PLANNED` run waiting for a person holds nothing -- nobody knows when,
+or whether, it will be approved -- and a plan whose steps name no files cannot
+be compared and is not held.
+
+### The cap
+
+`max_live_runs` per tenant, default 8 (1-50). A run is live from `PLANNING`
+until it ends; `NOT_READY` is an end. Runs a person started count too: the cap
+is the tenant's concurrent issue-run work, not the sweeper's share of it.
+
+### Turning it on, for tenant `eng`
+
+Off by default, twice over (the new-refusals-ship-off rule of PR 873):
+
+1. **The platform switch**, swarm-api's `SWEEP_ENABLED`. Set
+   `enable_issue_sweep = true` in `terraform/environments/<env>/<env>.tfvars`
+   and let the release apply it. With it off every sweep answers
+   `"disabled_by": "SWEEP_ENABLED"` and starts nothing.
+2. **The tenant's switch**, on the tenant document: an admin sends
+   `PUT /v1/admin/tenants/eng/issue-sweep`, authenticated as for any other
+   admin route, with the body
+
+   ```json
+   {"enabled": true, "max_live_runs": 8, "exclude_issues": [], "exclude_labels": [],
+    "submit_as": "alice@saga.xyz"}
+   ```
+
+   `GET` on the same path reads it back with `platform_enabled`. The `PUT`
+   replaces the settings whole. With it off a sweep answers
+   `"disabled_by": "tenant"`.
+
+3. **`submit_as`, the member the work is submitted as** (owner decision
+   2026-10-08). Every swept run is submitted as this address, set per tenant in
+   the same `PUT` body, and is **independent of who registered each
+   repository**. It is explicit because the alternative -- the repository poll's
+   rule, the registrant -- made the attribution of eight concurrent merging
+   runs an accident of who once clicked "register", and left it changing
+   whenever someone re-registered a repository. The run keeps the member as
+   `on_behalf_of`, and every later submission (the auto approval, CI fix
+   rounds, the merge) is made as them and only while they are still a member.
+
+   The sweep **refuses to start runs for a tenant whose `submit_as` is unset
+   or is not a current member**: it skips that tenant, reads nothing, logs the
+   reason and returns it as `"tenant_skipped": "submit_as_unset"` or
+   `"submit_as_not_member: <address>"`. It never falls back to the registrant
+   silently. Membership is asked of the directory again on **every**
+   submission, so a member removed mid-sweep stops the rest of that sweep
+   (`start_failed: submit_as_not_member`). To fix a skipped tenant, `PUT` a
+   `submit_as` that is a current member.
+
+Owner confirmations, 2026-10-08, of two behaviours as built: **any ended run
+waits for the issue to change** (not only `NOT_READY`), and **unapproved
+`PLANNED` runs do not hold the territory guard**.
+
+### Excluding issues
+
+`exclude_issues` takes issue numbers and `exclude_labels` labels
+(case-insensitive). The owner's deferred security set -- epic #476's children
+-- goes in `exclude_issues` by number, or gets a label that goes in
+`exclude_labels`. `epic`, `blocked` and `security` are skipped whatever the
+list says.
+
 ## The fix-round cap is the only guardrail, and one round is one continuation
 
 Owner decision on #454: "The retry cap on gates is the only guardrail chosen."
@@ -341,8 +510,10 @@ the merge is now the CI loop's last move:
   again. `issueruns.auto_merge_availability`, served on the issue preview,
   reads the same rule, so the console's switch is enabled exactly when
   `POST /v1/runs` would accept it, and `422 auto_merge_unavailable` creates
-  nothing when it would not. A run that does not say takes the platform's
-  `merge_by_default` (default off).
+  nothing when it would not. A run that does not say takes the `merge_policy`
+  its tenant registered the repository with (`"on_merge_verdict"` on, `"off"`
+  off), else the platform's `merge_by_default` (default off)
+  ([workflows.md](workflows.md#a-repositorys-merge_policy)).
 * **The compiled workflow never merges.** It and every CI fix round say
   `metadata.merge: "off"`, whatever the run or the platform default says: a
   merge inside the workflow would run before the API wrote `Closes #N` into
@@ -460,7 +631,7 @@ integrator branch.
 | claim | test |
 |---|---|
 | off is the default | `test_issue_runs.py::test_the_defaults_are_required_approval_no_auto_merge_and_three_fix_rounds` |
-| on is accepted while the `merge` profile is enabled, and recorded on the run; a run that does not say takes `merge_by_default` | `test_issue_runs.py::test_auto_merge_is_accepted_and_recorded_on_the_run`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_platform_default` |
+| on is accepted while the `merge` profile is enabled, and recorded on the run; a run that does not say takes the repository's `merge_policy`, else `merge_by_default` | `test_issue_runs.py::test_auto_merge_is_accepted_and_recorded_on_the_run`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_platform_default`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_repositorys_merge_policy_first` |
 | the console's availability and the API's refusal are one rule: unavailable, naming #295 and the profile's reason, exactly when the profile is disabled | `test_issue_runs.py::test_auto_merge_availability_says_what_the_refusal_does` |
 | the compiled workflow and every fix round carry no merge, whatever the run or the default says | `test_issue_runs.py::test_the_compiled_workflow_always_says_merge_off`, `test_issue_runs.py::test_an_auto_merge_run_submits_its_workflow_with_no_merge_step`, `test_issue_run_auto_merge.py::test_the_compiled_workflow_and_a_fix_round_never_carry_a_merge` |
 | green with the keyword block written submits ONE merge continuing the task that pushed the head; not before the block is written | `test_issue_run_auto_merge.py::test_green_with_the_keyword_written_submits_one_merge_continuing_the_integrator`, `test_issue_run_auto_merge.py::test_no_merge_while_the_keyword_block_is_not_written` |

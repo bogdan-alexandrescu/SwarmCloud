@@ -55,13 +55,42 @@ see that the body came up short. There is no `Content-Length`, for the reason
 in `CheckpointContent.download`: Cloud Run refuses an unchunked HTTP/1
 response over 32 MiB.
 
-Text is redacted in windows. Each window is cut at the last whitespace (a
-newline if there is one), and the remainder is carried into the next window,
-so every token is redacted whole. The concatenated windows equal the
-redaction of the whole object. The one exception is a run with no whitespace
-that is longer than 4 MiB: it is cut at that length, and a credential could
-be split there. The paged routes withhold such a run instead, but a download
+Text is redacted in windows. Each window is cut at its last newline, and the
+remainder is carried into the next window, so every line is redacted whole.
+The concatenated windows equal the redaction of the whole object. A line is
+carried whole up to 4 MiB; only a longer one is cut at whitespace, and a run
+with no whitespace longer than 4 MiB is cut at that length, where a credential
+could be split. The paged routes withhold such a run instead, but a download
 cannot withhold part of a file without corrupting it.
+
+**A window boundary never falls inside a secret that holds whitespace**
+(security pass SEC-REDACT-A, #227). The download used to cut at the last
+whitespace, as the paged routes still must when a line is longer than the page
+asked for, and whitespace is not a boundary everywhere: a learned literal
+holding a newline, cut at that newline, served both halves, neither of which
+was the literal; and a line longer than one window, cut after the `=` and
+space that follow a `password` name, served the value at the head of the next
+window with no name before it (a quoted value holding a space, under an
+`api_key` member, the same). Every cut, on
+the download and on the paged routes (`/logs`, `/artifacts/content`, a
+checkpoint's files), now asks one rule, `redaction.straddled`, whether it
+crosses such a span, and is moved back before one; a page whose `offset` a
+caller chose inside one starts after it, found through the look-back the page
+already reads. A span that may run past the bytes read counts as crossing:
+text is held for the next window rather than served in halves. A paged window
+that holds nothing but such a span is withheld with a `detail`, as a token
+longer than the window is.
+
+**A JSON line the masker does not decode still has its credentials masked
+whole** (#227). A line over `JSON_LINE_MAX_CHARS`, one with a duplicate key,
+one a window cut, or one with text before its JSON, is masked by the text
+rules, whose key/value rule takes a value up to its first space. Such text
+now has every credential-named member's string, list or object masked whole,
+at the escape depth its key is written at, as the structural walk masks it.
+And a learned literal is looked for as JSON writes it inside a string, once and
+twice escaped (`\"`, `\\`, `\u00e9` and raw UTF-8), not only as written: in
+text nothing decoded, a literal holding a quote, a backslash or a non-ASCII
+character was never found.
 
 **Text that is not UTF-8 downloads as itself** (#188 review). A window is
 decoded with `surrogateescape` and encoded back the same way, so a byte that
@@ -69,9 +98,14 @@ is not UTF-8 passes through exactly as stored and only a credential-shaped run
 changes. It used to be decoded with `errors="replace"`, so a Latin-1 CSV came
 down with every such byte turned into U+FFFD, and nothing said so. A JSON
 string cannot carry such a byte, so the paged routes (`/artifacts/content`,
-`/logs`) still show it as U+FFFD, but they now count it: `invalid_utf8_bytes`
-on every window read, with a sentence in `detail` when it is not 0, and null
-when nothing was read.
+`/logs`, and the checkpoint member read
+`/v1/tasks/{id}/checkpoints/{n}/files/{path}`) still show it as U+FFFD, but
+they now count it: `invalid_utf8_bytes` on every window read, with a sentence
+in `detail` when it is not 0, and null when nothing was read. The checkpoint
+member read decoded with `errors="replace"` and counted nothing until #207;
+it now cuts, looks back and decodes each window with the same `inspect`
+helpers as the other two, imported rather than copied, because a second copy
+of the window logic is how this route fell behind them in the first place.
 
 ## Private keys are masked as blocks, not lines
 
@@ -102,6 +136,55 @@ every other rule, so no other rule masks pieces of a key's body first:
   lines are masked (`redact(inside_key=True)`). The download route carries an
   open key whole into its next window instead, so the key is masked in one
   piece.
+* **A key split over JSON strings, in any container** (#385). A document can
+  hold a key as an object's values, a list of objects, nested lists, or an
+  object's *keys* (a PEM pasted into a `.properties` file stores each body
+  line as a key with an empty value). With the END within 64 KiB, the strings
+  from BEGIN through END are masked, whatever containers they sit in. With
+  **no END in reach** -- the key was truncated, or its END lies beyond the page
+  the reader chose -- there is no marker to mask *to*, so the key is followed
+  in document order instead: every string value and object key shaped like
+  key body (base64 or an RFC 1421 header, at least `KEY_BODY_MIN_CHARS`
+  characters or ending in `=` padding) is masked; blank strings are kept and
+  do not end it; it stops at an END string, at the first string *value* that
+  is not body-shaped, or after 64 KiB. That is the text path's no-END rule
+  (stop at the first line that is not key body) restated for JSON. Before
+  #385 only a flat list of strings was followed, so the object, nested-list,
+  list-of-objects and object-key layouts served every body line in clear.
+
+  **Why a length floor.** After a truncated key the next string is as likely
+  an ordinary word as a body line, and short words (`"kept"`, `"done"`, `"ok"`)
+  are all valid base64. Without the floor the run would swallow them, and a
+  reader would lose text that was never a secret. A key's full body lines are
+  64 characters (76 in some tools), so a floor of 16 keeps every short word in
+  clear and masks every full line. `"after the key"` holds spaces, is not
+  base64 at all, and ends the run in clear.
+
+  **The residual, stated plainly:** a key's *last* body line can be any length
+  from 1 to 63, and a final unpadded body line shorter than the floor is
+  served. That is at most 11 bytes of the key's trailing DER (its last
+  integer, not its modulus). A short line ending in `=` is masked.
+
+  Paged reads start the run from the 64 KiB look-back, or from `inside_key`
+  when the look-back found an open key, so a page wholly inside a key -- the
+  middle page of a three-page key, holding neither marker -- masks its body
+  lines and reports the lines it withheld as its redaction count, once for
+  the key, never a count over text it served in clear. The page holding the
+  END stays masked the same way. Both `/artifacts/content` and the raw
+  download follow this rule.
+
+**A key split over a JSON document's containers** is masked from the string
+holding its BEGIN through the one holding its END, within 64 KiB of string
+content, whatever containers either sits in, on every route (#361). The
+artifact path has done this since #378. `JsonMasker`, which `/logs` and
+`/input` mask a decoded document with, followed a key only through a flat
+list, so `{"secret": [BEGIN], "x": <body>, "z": END}`, with the BEGIN inside a
+value masked whole under a credential's name, served the body. It now applies
+the artifact path's rule to the decoded document (`_split_key_lines`). It works
+by value, not position: a string between a BEGIN and its END is masked
+wherever else it appears in that document too. That over-masks, and it was
+chosen over a positional walk, because a route that draws one block of a
+document (the prompt on `/input`) cannot share a position with the rest.
 
 Lines that a tool numbered (`cat -n`, or an agent's file-read tool) still count
 as key lines. Every scan is linear, not one backtracking pattern: a lazy
@@ -779,7 +862,12 @@ one set of rules. It is not a second one. It is applied by
    (the mock runner takes that one) is a count, not a credential.
 3. A private key stored as a **list of lines** is masked from the element with
    its BEGIN marker through the one with its END, one count, because no body
-   line holds a marker.
+   line holds a marker. A key with **no END in reach**, split over an
+   object's values, a list of objects, nested lists or an object's keys, is
+   followed in document order by the same run the artifact token path uses
+   (see [Private keys are masked as blocks](#private-keys-are-masked-as-blocks-not-lines),
+   #385), on `/input` and on `/logs` alike: one shared rule, so the three
+   routes cannot disagree about which string ends a truncated key.
 4. A literal that any of those masked (a value under a credential's name, or a
    value the key/value rule found beside `NAME=` in a string or a key) is
    masked **wherever else the input holds it**, the prompt included. At most
@@ -908,9 +996,9 @@ which found "nothing serves the raw input" false as first written):
 | where | what it held | now |
 |---|---|---|
 | `last_error`, each attempt's `error`, each event's `detail` | the agent's stderr tail, which echoes whatever the prompt made it run | every string masked by the task's masker -- the rules and every literal the input and metadata named -- with `last_error_redaction_count`, `error_redaction_count`, `detail_redaction_count`. String by string, never by key: the keys are the platform's (`credential` in a park's detail is which kind of credential, not one). |
-| `result_summary` | the agent's own summary text (up to 4,000 characters), its output tails | the same, with `result_summary_redaction_count`. An artifact's `name` and `uri`, a staged input's `filename` and `path`, and ids are served as stored (`task_input.LOOKUP_KEYS`): a client matches them exactly, and the rules would take `eye-tracking-summary.md` for a JWT. |
+| `result_summary` | the agent's own summary text (up to 4,000 characters), its output tails | the same, with `result_summary_redaction_count`. An artifact's `name` and `uri`, a staged input's `filename` and `path`, and ids (`task_input.LOOKUP_KEYS`, in `result_summary` and in an event's `detail`) are masked by `TaskMasking.name`, the function that masks `metadata.input_from` and `metadata.expected_outputs` (#296), and counted. A client matches these exactly, and the text rules would take `eye-tracking-summary.md` for a JWT, so `name` leaves a clean name byte for byte. They were once served as stored, which served a credential-shaped filename, or one carrying a literal the task named, in clear beside its masked declared copy; the API never serves a credential-shaped string back (owner decision 2026-09-26). Because `name` is deterministic and masks both copies, a masked staged or produced name still equals the masked declared one: mask, then match. The artifact listing (`GET /v1/tasks/{id}/artifacts`) still serves names as stored, because `/artifacts/content` is fetched by that exact name. |
 | `repository_url` | a caller-supplied URL, often with the forge token in it | refused at submission when it carries userinfo that can hold a credential (`validation.check_repository_url`, a 422 naming the tenant's git secret as the way to clone a private repository); one stored before is served with the userinfo masked, `repository_url_redaction_count` beside it |
-| `input.json` in a checkpoint | the whole input, as the worker wrote it | excluded from every archive, under any label (owner decision 2026-09-27): the worker rewrites it at every attempt's prepare, after the restore, so nothing needs it restored; one in an older archive is served by the checkpoint file view whole, through the task's masker |
+| `input.json` in a checkpoint | the whole input, as the worker wrote it | excluded from every archive, under any label (owner decision 2026-09-27): the worker rewrites it at every attempt's prepare, after the restore, so nothing needs it restored; one in an older archive is served by the checkpoint file view whole, through the task's masker. The prompt is still in the archive, in the CLI's session transcript: see the #244 paragraph below |
 | the runner's `child started` line | the prompt, inside argv | the prompt's length; `/logs` also masks the task's literals in every window |
 
 **One path still serves it as stored, and the owner has ruled** (issue #244,
@@ -938,6 +1026,20 @@ does, as a JSON value rather than its text, with the same count. A client that
 reads `input.prompt` gets the masked prompt. Where two keys of one object mask
 to the same text, the second is served as `<masked key> (2)`, because an
 object cannot hold a key twice.
+
+A literal the task named is masked when it comes back as a JSON **number**,
+on every route, by one rule: `JsonMasker.number`. A task that submits
+eight or more digits as a string under a credential's name, and whose agent
+echoes `{"n": <the same digits>}`, gets the number served as the JSON string `"********"` and counted,
+whether it is the number itself, inside a longer one, or `N.0`. Before #387
+the artifact routes masked it (PR #378) through their own copy of the rule,
+while `JsonMasker` returned every number untouched, so `/input`, `GET
+/v1/tasks/{id}` and `/logs` served the digits in clear: on a log line the
+structural walk masked anything else in, `redact_lines` skips its text pass
+(owner decision, 2026-09-30), and nothing else looked at a number. Two
+copies of one rule had already drifted once; `json_masking` now calls the
+same method, and `tests/unit/control_plane/test_learned_number_literal_387.py`
+holds the routes to one answer.
 
 The CLI and the MCP tools say `masked N`: `swarm status` ends each line with
 it, `swarm result` prints `masked 3  (input 2 · metadata 1)`, `swarm

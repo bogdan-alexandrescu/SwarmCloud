@@ -51,16 +51,41 @@
 # A pull request's run of the same commit is never reused: it builds nothing
 # (its OIDC ref cannot mint a token), and it is not the branch being released.
 #
+# --previous: THE BUILD BEFORE THIS ONE (owner decision 2026-10-08, observer
+# proposal H; docs/ci.md "Main builds only the images a commit changed").
+# application.yml's `build images` asks this before it builds, so that
+# build-images.sh --incremental rebuilds only the images the commit changed
+# and re-tags the previous digests of the rest. It answers a different
+# question -- what is the newest record CI made, on BRANCH, of a commit that
+# is an ANCESTOR of --sha? -- and never waits for a build still running:
+#
+#   exit 0  the record is at --out, checked to name its own run's commit and
+#           this environment
+#   exit 3  there is none to build on, with the reason on the last line: no
+#           completed run of an ancestor in the newest CI_PREVIOUS_LOOK runs
+#           built and kept a record, or this checkout has no history to tell
+#           an ancestor by (a shallow clone)
+#   exit 1  the API could not be read after CI_PREVIOUS_TRIES tries (default
+#           2, CI_PREVIOUS_POLL 5s apart)
+#
+# The caller builds everything on 3 and on 1 alike: a full build is the safe
+# answer to "I could not tell", only a slower one. That is also why --previous
+# does not retry with the lookup's 5 x 30s: two minutes of retries on the
+# critical path of every build, to avoid a build that costs ~10. --sha itself is never
+# "previous": a re-run of its build means it is to be built again.
+#
 # Usage:
 #   scripts/lib/ci-built-images.sh --sha <40 hex> --environment dev --out build/images-dev.json
 #                                  [--if-absent fail|build] [--repo owner/name]
 #                                  [--workflow application.yml] [--job 'build images']
 #                                  [--branch main]
+#        scripts/lib/ci-built-images.sh --previous --sha <40 hex> --environment dev --out FILE
 #
 # Needs `gh` authenticated for the repository -- GH_TOKEN, with actions: read.
 # CI_BUILD_WAIT (default 2700s) bounds the wait for a running build,
 # CI_BUILD_APPEAR (default 300s) the wait for its run to appear at all, and
-# CI_BUILD_POLL (default 30s) is the interval between looks.
+# CI_BUILD_POLL (default 30s) is the interval between looks. --previous uses
+# CI_PREVIOUS_TRIES and CI_PREVIOUS_POLL instead (see above).
 
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
@@ -93,18 +118,34 @@ POLL="${CI_BUILD_POLL:-30}"
 # Consecutive failed reads before giving up. A transient 502 is retried; an API
 # that stays unreadable is reported as unreadable, never as a missing build.
 API_TRIES="${CI_BUILD_API_TRIES:-5}"
+# --previous reads at most this many of BRANCH's newest completed runs. Each
+# one it looks into costs two API calls (its jobs, its artifacts); 20 covers
+# a day of merges, and a record older than that is past build-images.sh's
+# seven-day reuse limit more often than not.
+PREVIOUS_LOOK="${CI_PREVIOUS_LOOK:-20}"
+# --previous's own retry: a failed read falls back to a full build, never to a
+# wrong answer, so it is retried once, briefly, rather than CI_BUILD_API_TRIES
+# times CI_BUILD_POLL apart (#888 box 93). Long enough to ride out a single
+# 502; an API down for longer costs one full build, not two minutes of waiting.
+PREVIOUS_TRIES="${CI_PREVIOUS_TRIES:-2}"
+PREVIOUS_POLL="${CI_PREVIOUS_POLL:-5}"
+PREVIOUS=0
+IF_ABSENT_SET=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --sha)         SHA="$2"; shift 2 ;;
     --environment) ENV_NAME="$2"; shift 2 ;;
     --out)         OUT="$2"; shift 2 ;;
-    --if-absent)   IF_ABSENT="$2"; shift 2 ;;
+    --if-absent)   IF_ABSENT="$2"; IF_ABSENT_SET=1; shift 2 ;;
+    --previous)    PREVIOUS=1; shift ;;
     --repo)        REPO="$2"; shift 2 ;;
     --workflow)    WORKFLOW="$2"; shift 2 ;;
     --job)         JOB="$2"; shift 2 ;;
     --branch)      BRANCH="$2"; shift 2 ;;
-    -h|--help)     sed -n '2,60p' "$0"; exit 0 ;;
+    # The header, up to the first line that is not a comment: a hand-kept
+    # line range drifted every time the header grew (#888 box 92).
+    -h|--help)     awk 'NR > 1 { if (!/^#/) exit; print }' "$0"; exit 0 ;;
     *)             die "unknown argument: $1" ;;
   esac
 done
@@ -119,10 +160,16 @@ case "${IF_ABSENT}" in
 esac
 [[ "${REPO}" =~ ^[^/[:space:]]+/[^/[:space:]]+$ ]] \
   || die "no repository to ask: set GITHUB_REPOSITORY or pass --repo owner/name"
-for knob in WAIT APPEAR API_TRIES; do
-  [[ "${!knob}" =~ ^[0-9]+$ ]] || die "CI_BUILD_${knob} must be a whole number of seconds (or tries), not '${!knob}'"
+[[ "${PREVIOUS}" -eq 0 || "${IF_ABSENT_SET}" -eq 0 ]] \
+  || die "--previous never builds and never waits; it takes no --if-absent"
+for knob in WAIT APPEAR API_TRIES PREVIOUS_LOOK PREVIOUS_TRIES; do
+  name="CI_BUILD_${knob}"
+  [[ "${knob}" != PREVIOUS_* ]] || name="CI_${knob}"
+  [[ "${!knob}" =~ ^[0-9]+$ ]] || die "${name} must be a whole number of seconds (or tries, or runs), not '${!knob}'"
 done
 [[ "${POLL}" =~ ^[0-9]+(\.[0-9]+)?$ ]] || die "CI_BUILD_POLL must be a number of seconds, not '${POLL}'"
+[[ "${PREVIOUS_POLL}" =~ ^[0-9]+(\.[0-9]+)?$ ]] \
+  || die "CI_PREVIOUS_POLL must be a number of seconds, not '${PREVIOUS_POLL}'"
 
 require_cmd gh jq
 
@@ -134,11 +181,14 @@ WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-ci-images.XXXXXX")"
 trap 'rm -rf "${WORK}"' EXIT
 API_ERR="${WORK}/api.err"
 
+ERROR_TITLE="release images"
+[[ "${PREVIOUS}" -eq 0 ]] || ERROR_TITLE="previous build"
+
 # A red job's last line is the one a reader sees; on Actions it is also raised
 # as an annotation, so it shows on the run's summary page without opening logs.
 fail_with() {
   if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
-    printf '::error title=release images::%s\n' "$*" >&2
+    printf '::error title=%s::%s\n' "${ERROR_TITLE}" "$*" >&2
   fi
   die "$*"
 }
@@ -219,7 +269,7 @@ survey() {
         local found=""
         if ! found="$(artifact_state "${run_id}")"; then return 1; fi
         if [[ "${found}" == present ]]; then
-          fetch "${run_id}" "${url}" || return 1
+          fetch "${run_id}" "${url}" "${SHA}" || return 1
           VERDICT="reuse"; V_URL="${url}"
           return 0
         fi
@@ -279,12 +329,12 @@ artifact_state() {
         else "absent" end' "${WORK}/artifacts.json"
 }
 
-# Download the record from run $1 and check it describes this commit and this
-# environment before it goes anywhere near OUT. A download that fails is an
+# Download the record from run $1 (job URL $2) and check it describes commit
+# $3 and this environment before it goes anywhere near OUT. A download that fails is an
 # unreadable API (returns 1, retried); a record that is WRONG is fatal here and
 # now -- rebuilding over it would hide whatever produced it.
 fetch() {
-  local run_id="$1" job_url="$2" dir="${WORK}/record-$1" record got_commit got_env count
+  local run_id="$1" job_url="$2" want="$3" dir="${WORK}/record-$1" record got_commit got_env count
   rm -rf "${dir}"
   mkdir -p "${dir}"
   gh run download "${run_id}" --repo "${REPO}" --name "${ARTIFACT}" --dir "${dir}" \
@@ -301,8 +351,8 @@ fetch() {
   count="$(jq '.images | length' "${record}")"
   # PROVENANCE. The run was chosen by its head sha, and this checks the record
   # agrees -- it is the manifest, not the run, that names the digests promoted.
-  if [[ "${got_commit}" != "${SHA}" ]]; then
-    fail_with "${RECORD} from ${job_url} says it was built from '${got_commit:-no commit at all}', not ${SHA}; refusing to release images whose record does not name this commit"
+  if [[ "${got_commit}" != "${want}" ]]; then
+    fail_with "${RECORD} from ${job_url} says it was built from '${got_commit:-no commit at all}', not ${want}; refusing to release or build on images whose record does not name this commit"
   fi
   if [[ "${got_env}" != "${ENV_NAME}" ]]; then
     fail_with "${RECORD} from ${job_url} was built for '${got_env:-no environment}', not '${ENV_NAME}'; swarm-ui bakes its environment in at build time, so it is not these images"
@@ -313,7 +363,7 @@ fetch() {
   mkdir -p "$(dirname -- "${OUT}")"
   cp "${record}" "${OUT}.tmp"
   mv -f "${OUT}.tmp" "${OUT}"
-  ok "${count} image(s) ${WORKFLOW} built for ${SHA} (${ENV_NAME}): ${job_url}"
+  ok "${count} image(s) ${WORKFLOW} recorded for ${want} (${ENV_NAME}): ${job_url}"
 }
 
 absent() {
@@ -330,6 +380,78 @@ absent() {
   # CI's run, which builds it, and then of this release, which reuses it.
   fail_with "CI never built ${SHA} for ${ENV_NAME}: $1. A release on a push promotes only what ${WORKFLOW} built for its commit and submits no build of its own, so nothing is promoted. To ship this commit: re-run ${WORKFLOW}'s run for it so it builds, then re-run this release. To dispatch release.yml instead: it builds what CI did not, but it releases main's head -- the only ref the deployer trusts -- so it ships this commit together with everything merged after it."
 }
+
+# ---------------------------------------------------------------------------
+# --previous: the newest record of an ancestor, read once, never waited for.
+# ---------------------------------------------------------------------------
+# Sets VERDICT to reuse (the record is at OUT) or none (V_WHY says why), and
+# returns non-zero when the API could not be read.
+survey_previous() {
+  VERDICT=""; V_URL=""; V_WHY=""
+  local seen=0 looked=0 run_id run_sha run_url state url found
+  api "repos/${REPO}/actions/workflows/${WORKFLOW}/runs?branch=${BRANCH}&status=completed&exclude_pull_requests=true&per_page=100" \
+    "${WORK}/runs.json" || return 1
+  jq -r --arg b "${BRANCH}" --arg sha "${SHA}" '
+      [ (.workflow_runs // [])[]
+        | select(.head_branch == $b and .event != "pull_request" and .head_sha != $sha) ]
+      | sort_by(.id) | reverse | .[]
+      | [ (.id | tostring), .head_sha, (.html_url // "-") ] | @tsv' "${WORK}/runs.json" >"${WORK}/runs.tsv" || return 1
+  while IFS=$'\t' read -r run_id run_sha run_url; do
+    [[ "${looked}" -lt "${PREVIOUS_LOOK}" ]] || break
+    looked=$((looked + 1))
+    # A commit this checkout does not have, or one that is not behind --sha
+    # (a later merge whose run finished first), is not a base to build on.
+    if ! git -C "${REPO_ROOT}" merge-base --is-ancestor "${run_sha}" "${SHA}" </dev/null >/dev/null 2>&1; then
+      continue
+    fi
+    seen=$((seen + 1))
+    api "repos/${REPO}/actions/runs/${run_id}/jobs?per_page=100" "${WORK}/jobs.json" || return 1
+    IFS=$'\t' read -r state url < <(jq -r --arg n "${JOB}" '
+        [ (.jobs // [])[] | select(.name == $n or (.name | startswith($n + " / "))) ] as $j
+        | if ($j | length) > 0 and all($j[]; .status == "completed" and .conclusion == "success")
+          then ["success", ($j[0].html_url // "-")] else ["no", "-"] end
+        | @tsv' "${WORK}/jobs.json") || return 1
+    [[ "${state}" == success ]] || continue
+    if ! found="$(artifact_state "${run_id}")"; then return 1; fi
+    [[ "${found}" == present ]] || continue
+    fetch "${run_id}" "${url}" "${run_sha}" || return 1
+    VERDICT="reuse"; V_URL="${url}"
+    return 0
+  done <"${WORK}/runs.tsv"
+  VERDICT="none"
+  V_WHY="none of the newest ${looked} completed ${WORKFLOW} run(s) on ${BRANCH} (${seen} of them of an ancestor of ${SHA:0:12}) has a successful '${JOB}' job with an ${ARTIFACT} record"
+  return 0
+}
+
+if [[ "${PREVIOUS}" -eq 1 ]]; then
+  step "The newest ${WORKFLOW} build of an ancestor of ${SHA} (${ENV_NAME})"
+  if ! git -C "${REPO_ROOT}" cat-file -e "${SHA}^{commit}" 2>/dev/null; then
+    info "this checkout does not have ${SHA}'s history, so no ancestor can be told apart; nothing to build on"
+    exit 3
+  fi
+  if [[ "$(git -C "${REPO_ROOT}" rev-parse --is-shallow-repository 2>/dev/null || true)" == true ]]; then
+    info "this checkout is shallow, so an ancestor cannot be told apart from a stranger; nothing to build on (check out with fetch-depth: 0)"
+    exit 3
+  fi
+  FAILED_READS=0
+  while :; do
+    rc=0
+    survey_previous || rc=$?
+    if [[ "${rc}" -eq 0 ]]; then break; fi
+    FAILED_READS=$((FAILED_READS + 1))
+    reason="$(api_reason)"
+    warn "could not read the GitHub API (${FAILED_READS} of ${PREVIOUS_TRIES}): ${reason:-no reason given}"
+    if [[ "${FAILED_READS}" -ge "${PREVIOUS_TRIES}" ]]; then
+      fail_with "could not read ${WORKFLOW}'s runs on ${BRANCH} after ${PREVIOUS_TRIES} tries (${reason:-no reason given}); with no previous build known, every image is built"
+    fi
+    sleep "${PREVIOUS_POLL}"
+  done
+  if [[ "${VERDICT}" == reuse ]]; then
+    exit 0
+  fi
+  info "nothing to build on: ${V_WHY}"
+  exit 3
+fi
 
 # ---------------------------------------------------------------------------
 # Look until there is an answer.

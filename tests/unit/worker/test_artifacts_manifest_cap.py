@@ -650,3 +650,50 @@ def test_a_file_past_the_cap_is_not_reported_as_uploaded_unredacted(db, store, t
     assert lines == [f"c.bin: not uploaded: {OVER_CAP}"], lines
     # Left where the agent put it: not uploaded is not deleted.
     assert (ws.artifacts / "c.bin").exists()
+
+
+# ---------------------------------------------------------------------------
+# the log names every skipped file, and counts by reason (#227)
+# ---------------------------------------------------------------------------
+
+#: The worker's WARNING line naming every file `artifacts_skipped` lists, and
+#: every one past the summary's first 50.
+SKIPPED_LINE = "artifacts skipped"
+
+
+def test_every_skipped_name_is_in_the_log_past_the_summarys_first_50(
+    db, worker_factory, series_cli, log_stream
+):
+    """A byte cap of 1 keeps every file in the pod. The summary lists 50; the
+    log used to carry only the count, so the 51st on were named nowhere. Each
+    is named now, 100 to a line, with its cause."""
+    _seed(db, {"series": [["s{:03d}.txt", 120]]})
+
+    _run(worker_factory, max_artifact_bytes=1)
+    skipped = skipped_names(_summary(db).get("artifacts_skipped"))
+    assert len(skipped) == 50, len(skipped)
+
+    records = _logged(log_stream, SKIPPED_LINE)
+    assert records and all(record["severity"] == "WARNING" for record in records), records
+    logged = [line for record in records for line in record["files"]]
+    for index in range(120):
+        assert f"s{index:03d}.txt: not uploaded: cap" in logged, (index, logged[:5])
+    assert records[0]["count"] == len(logged)
+
+
+def test_the_not_uploaded_line_counts_the_cap_and_the_long_names_apart(
+    db, worker_factory, series_cli, log_stream
+):
+    """The pane says "N over the cap" from `artifacts_over_cap`, which counts
+    only the cap; the log's count also held the names too long to upload. The
+    log states each number by its reason, and the cap's is the pane's."""
+    long_name = f"{'a' * 200}/{'b' * 60}.txt"
+    _seed(db, {"series": [["f{:03d}.txt", 20], [long_name, 1]]})
+
+    assert _run(worker_factory, max_artifact_files=10) == ExitCode.OK
+    _succeeded(db)
+    over_cap = _summary(db)[OVER_CAP_KEY]
+    records = _logged(log_stream, NOT_UPLOADED_LINE)
+    assert records, "no not-uploaded line"
+    assert records[0]["by_reason"] == {OVER_CAP: over_cap, NAME_TOO_LONG: 1}, records[0]
+    assert records[0]["count"] == over_cap + 1

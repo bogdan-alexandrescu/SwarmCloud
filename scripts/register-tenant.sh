@@ -844,8 +844,16 @@ ws_claim() {
 # line: Workload Identity for the namespace's two KSAs and act-as for the
 # scheduler and the reconciler.
 ws_account_pairs() {
-  local ksa
+  local ksa mode="${1:-allowed}"
   for ksa in "${WS_KSAS[@]}"; do
+    # "required" (A9) on a MIGRATED record skips the legacy swarm-worker: a
+    # Terraform-made tenant binds swarm-agent-worker only, and swarm-worker is
+    # rendered only where IAM binds it (kubernetes/README.md). It stays in the
+    # "allowed" list, so the squat inspection never calls it foreign.
+    # w-752763's A9 failed on exactly this, 2026-10-10 (#847).
+    if [[ "${mode}" == "required" && "${WS_MIGRATED}" == "true" && "${ksa}" == "swarm-worker" ]]; then
+      continue
+    fi
     printf 'roles/iam.workloadIdentityUser serviceAccount:%s.svc.id.goog[%s/%s]\n' "${PROJECT_ID}" "${WS_NAMESPACE}" "${ksa}"
   done
   printf 'roles/iam.serviceAccountUser serviceAccount:%s\n' "${WS_SCHEDULER}" "${WS_RECONCILER}"
@@ -1193,7 +1201,7 @@ ws_a9() {
     iam_policy_binds_member "${WS_WORK}/account-policy.json" "${role}" "${member}" \
       || { ws_object "service account binding"; return 1; }
     n=$((n + 1))
-  done < <(ws_account_pairs)
+  done < <(ws_account_pairs required)
   # The bucket grants.
   ws_call "${WS_WORK}/bucket-policy.json" gcloud storage buckets get-iam-policy "${WS_BUCKET_URL}" \
     --project "${PROJECT_ID}" --format=json || { ws_show_err; ws_object "bucket grant"; return 1; }
@@ -1400,7 +1408,10 @@ APP_PROVIDERS="$(app_credential_providers)" \
   whether a provider's key is a GitHub App's -- which the worker must never read -- cannot be
   checked. Nothing was changed."
 is_app_provider() {
-  printf '%s\n' "${APP_PROVIDERS}" | grep -Fqx -- "$1"
+  # A here-string, not `printf | grep -q`: bash line-buffers printf into a pipe,
+  # grep -q exits at its first match, the next line's write takes SIGPIPE, and
+  # pipefail turns a match into a miss -- intermittently, by scheduling.
+  grep -Fqx -- "$1" <<<"${APP_PROVIDERS}"
 }
 
 # retired_app_provider_refusal PROVIDER  ->  the one message both paths die with.
@@ -1442,7 +1453,9 @@ if [[ "${ADD_PROVIDER_GIVEN}" -eq 1 ]]; then
   KNOWN_PROVIDERS="$(known_providers)" \
     || die "could not read the provider list from swarm_api.validation and agent_worker.secrets
   (python's error is above), so '${ADD_PROVIDER}' cannot be checked against it. Nothing was changed."
-  if ! printf '%s\n' "${KNOWN_PROVIDERS}" | grep -Fqx -- "${ADD_PROVIDER}"; then
+  # Here-string for the reason given at is_app_provider: piped, a known provider
+  # that is not the last line could intermittently be refused as unknown.
+  if ! grep -Fqx -- "${ADD_PROVIDER}" <<<"${KNOWN_PROVIDERS}"; then
     die "provider '${ADD_PROVIDER}' is not one this platform reads a key for. Known providers:
   $(printf '%s\n' "${KNOWN_PROVIDERS}" | paste -sd, - | sed 's/,/, /g')
   (swarm_api.validation.known_providers(), plus agent_worker.secrets.GIT_PROVIDER). Nothing was changed."

@@ -31,7 +31,9 @@ found the claim "nothing serves the raw input" false as first written):
   * `input.json` inside a checkpoint: no longer archived (`agent_worker.
     checkpoint`, which the worker rewrites at every attempt's prepare anyway),
     and one in an archive written before that is served by the file view
-    through this masker (`checkpoint_content`);
+    through this masker (`checkpoint_content`). That does NOT take the
+    prompt out of the archive: the CLI's transcript carries it -- see ONE
+    PATH STILL SERVES IT AS STORED below;
   * the runner's `child started` line, which logged the prompt inside argv:
     it logs the prompt's length now (`runners/cliagent.py`), and `/logs`
     masks this task's literals in every window (`redaction.redact_lines`).
@@ -181,6 +183,7 @@ from datetime import datetime
 from typing import Any
 
 from swarm_common.models import Task
+from swarm_redaction import mask_code_literals
 
 from .redaction import (
     KEY_VALUE,
@@ -240,19 +243,49 @@ NAME_METADATA_KEYS: frozenset[str] = frozenset({"input_from", "expected_outputs"
 #: EVERY OTHER FAMILY (AWS key ids, `ghp_`/`github_pat_`, `AIza`, `xox?-`,
 #: `ya29.`, `Bearer`/`Basic`) also runs UNANCHORED, with `RULES`' own pattern
 #: and no boundary check at all -- their prefixes are distinctive enough (four
-#: or more characters, a fixed case, no ordinary word contains them) that a
-#: filename producing one by chance is not a real risk, and anchoring them
-#: would have the opposite defect: `notesAKIAIOSFODNN7EXAMPLE.md`, `xghp_...`
-#: and `keyAIzaSy...` are real credentials GLUED to a preceding word, and a
+#: or more characters, a fixed case) that anchoring them would have the
+#: opposite defect: `notesAKIAIOSFODNN7EXAMPLE.md`, `xghp_...` and
+#: `keyAIzaSy...` are real credentials GLUED to a preceding word, and a
 #: boundary check would leave them in clear.
-_NAME_SK = re.compile(r"(?<![A-Za-z0-9])(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+")
-_NAME_JWT = re.compile(r"(eyJ[A-Za-z0-9_-]{5,})\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+")
+#:
+#: ORDINARY WORDS DO CONTAIN TWO OF THEM, AND THAT IS ACCEPTED (owner, the
+#: security pass, 2026-10-09; #227 boxes 33 and 34). A plural before `_`
+#: holds `ghs_` (`laughs_compilation.md` is served `laughs_********`), and an
+#: uppercase word can hold `ASIA` (`EASTASIAPACIFIC.csv` is served
+#: `EASTASIAPACI********.csv`). That is OVER-masking: it hides nothing, the
+#: declared and served copies of the name still mask alike and so still
+#: pair, and the price of anchoring either family is serving a glued real
+#: token in clear, which is the defect this comment exists to prevent.
+#:
+#: A KEY GLUED TO A WORD (the security pass, 2026-10-09, #227 box 35). The
+#: lookbehind alone served `desk` + a real key whole, "by design". A glued
+#: `sk-` is now taken when the run after it is 32 characters or more -- the
+#: length `RULES`' own `openai_key` takes a glued key at -- AND that run mixes
+#: a digit, a capital and a lowercase letter, which a generated key does and
+#: a descriptive filename (`task-summary-of-the-integration-tests-2024.md`,
+#: all lowercase) does not. A run that has all three by chance is masked:
+#: over-masking a name hides nothing (#227 boxes 33 and 34), and the declared
+#: and served copies still mask alike.
+#:
+#: AN UNSIGNED JWT (box 36). `alg: none` leaves the signature segment empty --
+#: `header.payload.` -- and the third segment was `+`, so the pattern needed
+#: a signature to match. It is `*` now: the two dots and `eyJ` are the shape.
+_NAME_SK = re.compile(
+    r"(?:(?<![A-Za-z0-9])|(?=sk-[A-Za-z0-9_-]{32})(?=sk-[A-Za-z0-9_-]*[0-9])"
+    r"(?=sk-[A-Za-z0-9_-]*[A-Z])(?=sk-[A-Za-z0-9_-]*[a-z]))"
+    r"(sk-[A-Za-z0-9_-]{6})[A-Za-z0-9_-]+"
+)
+_NAME_JWT = re.compile(r"(eyJ[A-Za-z0-9_-]{5,})\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*")
 
 #: Inside what the task collected about itself (`result_summary`, an event's
 #: `detail`), the keys whose string values are identifiers a client looks
-#: things up by, served as stored (`TaskMasking.leaves`): an artifact's `name`
-#: and `uri`, a staged input's `filename` and `path` (the workflow graph matches
-#: them against what was declared), and ids. Every other string is masked.
+#: things up by: an artifact's `name` and `uri`, a staged input's `filename`
+#: and `path` (the workflow graph matches them against what was declared), and
+#: ids. `TaskMasking.leaves` masks these by `TaskMasking.name`, not by the
+#: masker's text rules (#296): a clean name stays byte for byte and findable,
+#: and a credential-shaped one masks exactly as its declared copy under
+#: `NAME_METADATA_KEYS` does, so the two still pair. Every other string is
+#: masked as text.
 LOOKUP_KEYS = frozenset(
     {"name", "uri", "key", "filename", "path", "attempt_id", "task_id", "checkpoint_id"}
 )
@@ -367,10 +400,13 @@ class TaskMasking:
         (fourth round). Every OTHER family (AWS key ids, `ghp_`/
         `github_pat_`, `AIza`, `xox?-`, `ya29.`, `Bearer`/`Basic`) and the
         private-key and key/value rules also run UNANCHORED, exactly as
-        `RULES` applies them elsewhere: their prefixes are distinctive enough
-        that gluing to a preceding letter or digit is a real credential, not
-        a false positive, and a boundary check on them would serve
-        `notesAKIA...`, `xghp_...` and `keyAIzaSy...` in clear. Then every
+        `RULES` applies them elsewhere: gluing one to a preceding letter or
+        digit is a real credential far more often than a word, and a
+        boundary check on them would serve `notesAKIA...`, `xghp_...` and
+        `keyAIzaSy...` in clear (the words that do hold one, `laughs_` and
+        `EASTASIA`, are over-masked; see `_NAME_SK`'s comment). A glued
+        `sk-` is taken when it is long and mixed enough to be generated, and
+        a JWT with an empty signature is taken too. Then every
         literal the input and the caller's metadata named. Nothing is
         remembered, so the same name masks the same way wherever it is
         served.
@@ -392,6 +428,8 @@ class TaskMasking:
             if rule.apply is not None:
                 text, found = rule.apply(text, True, False)
             elif rule is KEY_VALUE:
+                text, found = mask_code_literals(text)
+                count += found
                 text, found = rule.pattern.subn(r"\1" + MASK, text)
             elif rule.name == "openai_key":
                 text, found = _NAME_SK.subn(r"\1" + MASK, text)
@@ -450,11 +488,18 @@ class TaskMasking:
     def leaves(self, value: Any) -> tuple[Any, int]:
         """A platform-written value with every string in it masked; keys and shape as stored.
 
-        Except a string directly under one of `LOOKUP_KEYS`: those are the
-        names and locations a client matches EXACTLY (an artifact's `name`
-        against a staged file, a `uri`), which the artifact listing serves as
-        stored anyway. The rules would take `eye-tracking-summary.md` for a
-        JWT, and a masked name is an artifact nobody can find.
+        A string directly under one of `LOOKUP_KEYS` is masked by `name`
+        instead: those are the names and locations a client matches EXACTLY
+        (a staged input's `filename` against `metadata.input_from`, an
+        artifact's `name` against `metadata.expected_outputs`, a `uri`). The
+        text rules would take `eye-tracking-summary.md` for a JWT, and a
+        masked clean name is an artifact nobody can find; `name` leaves it
+        byte for byte. But serving these as stored (as before #296) served a
+        credential-shaped filename, or one carrying a literal the task named,
+        in clear beside its masked declared copy -- and the API never serves
+        a credential-shaped string back (owner decision 2026-09-26). `name`
+        is deterministic and is what masks the declared copy, so mask-then-
+        match still pairs them. Each mask is counted.
         """
         total = 0
 
@@ -462,7 +507,9 @@ class TaskMasking:
             nonlocal total
             if isinstance(node, str):
                 if key in LOOKUP_KEYS:
-                    return node
+                    named, found = self.name(node)
+                    total += found
+                    return named
                 masked = self.masker.text(node, remember=False)
                 total += masked.count
                 return masked.text

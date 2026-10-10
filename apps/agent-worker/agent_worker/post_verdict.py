@@ -132,8 +132,9 @@ class ActionContext:
     store: ObjectStore
     #: The tenant-gated upstream read (`inputs.fetch_upstream_task`).
     fetch_upstream: Callable[[str], dict[str, Any]]
-    #: `specverify.verify_upstream_spec` bound to this worker's keys.
-    verify_upstream: Callable[[str, Mapping[str, Any]], Any]
+    #: `specverify.upstream_verifier`: `verify_upstream_spec` bound to this
+    #: worker's keys and workflow; `merge` alone passes `of_workflow` (#900).
+    verify_upstream: Callable[..., Any]
     #: Reads this action's App secret; raises `secrets.CredentialMissing`
     #: when the tenant has not registered it.
     read_app_key: Callable[[], forge_mod.AppKey]
@@ -173,6 +174,10 @@ class ActionContext:
     #: The task's own `repository_url`, from its VERIFIED spec: the repository
     #: the merge acts on (owner and repo are parsed from it, never a pointer).
     repository_url: str | None = None
+    #: The merge's per-repository slots (`mergeslot.MergeSlots`, merge race,
+    #: #295): one merge step per base at a time. None for any other action;
+    #: a merge given none refuses `merge_slot_unavailable`.
+    merge_slots: Any = None
 
 
 def _outcome(

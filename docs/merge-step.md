@@ -14,8 +14,62 @@ in [workflows.md](workflows.md#proposed-a-chain-that-merges-its-own-pull-request
 `-git` token -- "Revised 2026-10-04 (owner)" says what changed and why.**
 **Revised again on 2026-10-06: merging becomes its own step that parks while
 CI runs, updates a branch that is behind, and replaces `auto-merge.yml` --
-the first section below is that design and its build plan (lane MS0); the
-section after it is what is built today.**
+the "Revised 2026-10-06" section below is that design and its build plan
+(lane MS0); the section after it is what is built today.**
+**Revised 2026-10-10: merge steps against one repository take a merge slot,
+one at a time, in submission order -- the first section below.**
+
+## Revised 2026-10-10: one merge step per repository at a time (merge race, part of #295)
+
+**What was measured.** On 2026-10-09, 40 SwarmCloud-opened pull requests
+were left unmerged across the eng tenant. Of the merge steps that did run, 7
+refused `behind_too_often`: the repository's ruleset sets
+`strict_required_status_checks_policy`, so a branch must be up to date with
+`main`; 16 merge steps ran against `main` at once; each merge that landed
+put the others behind, each update cost a full CI run, and three updates was
+the cap. A user-owned repository has no GitHub merge queue (docs/ci.md), and
+`merge_pr` takes one merge step per workflow, so an operator drove the
+queue from a laptop, one `merge_pr` at a time.
+
+**What was built.** `apps/agent-worker/agent_worker/mergeslot.py`: one
+Firestore document per (tenant, repository, base), `merge_slots/{id}`, held
+by at most one merge step.
+
+* A step takes the slot only when its own checks are **green**, so every
+  pull request's first CI run still runs in parallel. Only the
+  update-and-merge tail is serial, and a strict up-to-date rule makes that
+  tail serial anyway: one merge per CI run is the most the base allows.
+* A step that cannot have the slot **parks** (`CI_PENDING`, code
+  `merge_slot_wait`), holding no lease and no pool count (invariant 1). Its
+  wait is counted on `merge_wait.slot_waits` (bound
+  `MERGE_SLOT_MAX_WAITS`), not on the CI wakes, and does not run the
+  `checks_timeout` clock. swarm-api's wake tick skips these parks: their
+  checks are green, so a reading would wake them for nothing.
+* Waiters are taken **in submission order** (the task's `created_at`). A
+  release hands the slot to the first waiter whose task has not ended and
+  writes that task's wake marker, so the scheduler promotes it on its next
+  drain; the fallback instant covers a lost mark.
+* The slot is a **lease**: `MERGE_SLOT_LEASE_SECONDS` (45 min, three CI
+  fallbacks), renewed by every attempt of the holder. A crashed holder's
+  slot frees when the lease runs out, or at once when its task is read
+  terminal. Every slot write is fenced on the attempt's task and lease
+  (invariant 5), and the holder re-reads the slot's generation immediately
+  before each update and merge call.
+* Released on every exit: merged, refused (a red head included), failed and
+  cancelled release it; a CI-fix round or a merge queue gives it back; a CI
+  wait while holding keeps it.
+
+**Why the update allowance changed.** Holding the slot, no sibling merges.
+The updates already on a head when the step took the slot were caused by
+the merges it queued behind, and the first update after taking it catches
+up with them. Only updates beyond that one are counted against
+`MERGE_MAX_BRANCH_UPDATES`, so the count measures a base moved by someone
+outside the slot -- normally zero -- and `behind_too_often` is an anomaly
+again. The cap rose from 3 to 5 because what it counts is no longer the
+platform's own traffic; the reason is beside the value in `merge.py`.
+
+**Contract request 62** asks for a park reason of its own; until then the
+code in `merge_wait.code` is what tells a slot wait from a CI wait.
 
 ## Revised 2026-10-06 (owner): merging is its own step, parked while CI runs
 
@@ -204,15 +258,17 @@ into the branch. The responses map as follows:
 
 * a 422 that says the update conflicts → `merge_conflict`;
 * any other 422 → `head_moved`;
-* more than `MERGE_MAX_BRANCH_UPDATES` (proposed 3) updates →
-  `behind_too_often`, because a base moving faster than CI is a question for
-  a person.
+* more than `MERGE_MAX_BRANCH_UPDATES` (5 since 2026-10-10, was 3) updates
+  made while the step holds its repository's merge slot, past the one
+  catch-up update after taking it → `behind_too_often`, because a base
+  moving under a held slot faster than CI is a question for a person (see
+  "Revised 2026-10-10" below for why only those are counted).
 
 The new head becomes the pinned head. That is a fact about GitHub, never
 about the tenant-writable task document. On every wake the worker walks
 first parents from the live head back to the head the opening step pushed
 (the signed target's recorded `pushed_head`), at most
-`MERGE_MAX_BRANCH_UPDATES` steps. It accepts only these chains:
+`MERGE_MAX_HEAD_UPDATES` (12) steps. It accepts only these chains:
 
 * the head is the pushed head itself;
 * each step down the chain is a two-parent merge commit whose second parent
@@ -293,7 +349,7 @@ the worker from GitHub and the task store.
 | a merge conflict, at merge time or on update | `merge_conflict` (new, split out of `not_mergeable`) | `mergeable: false`, or update-branch's 422 |
 | a failing required check, no fix rounds left | `checks_failed` (built) | the check runs and statuses at the pinned head |
 | CI never settled | `checks_timeout` (new) | `merge_wait.first_parked_at` and `MERGE_CI_MAX_SECONDS` |
-| the base moved faster than CI, more than `MERGE_MAX_BRANCH_UPDATES` times | `behind_too_often` (new) | `merge_wait.updates`, rechecked by the first-parent walk |
+| the base moved under a held merge slot faster than CI, more than `MERGE_MAX_BRANCH_UPDATES` times | `behind_too_often` (new) | the first-parent walk's count, less the slot's `holder.updates_at_acquire` |
 
 The other built refusals stand, each with the same code: `verdict_not_merge`,
 `head_moved`, `pull_request_closed`, `token_lacks_rights`, and the rest. A
@@ -883,7 +939,14 @@ What the built step checks, and how this differs from §4-§5:
   statuses -- rather than refused, because a repository that is not
   SwarmCloud's commonly requires checks that way. A base branch that requires
   NO check needs every reported check green (success, skipped or neutral) and
-  at least one to exist.
+  at least one to exist. **A private repository on a plan without rulesets**
+  answers the rules read 403 "Upgrade to GitHub Pro or make this repository
+  public to enable this feature." (sagaxyz/ai-studio, 2026-10-10). That is
+  not a missing right, so it reads as "no rules", exactly as a 404 does, and
+  the same every-check-green rule applies; it never merges on nothing. Any
+  other 403 is still `token_lacks_rights`. The step records which rule it used
+  as `required_checks_source`: `rulesets`, `classic`, `none_all_checks`, or
+  `none_plan_limited_all_checks`.
 * **Waiting for CI (invariants 1 and 4).** A required check still running, no
   check reported yet on an unprotected branch, or mergeability not computed
   fails the ATTEMPT retryably; the step waits READY for 300 s, holding
@@ -925,6 +988,25 @@ that head. A CI fix round is not re-reviewed (#454): the merge after one
 rests on the review's verdict of the code before the round and on green
 required checks. A merge-only continuation is a tenant member's: the
 continuation-scoped CI-fixer account (request 30) is refused one.
+
+**A merge-only continuation verifies its task against THAT task's workflow
+(#900).** The task it merges ran in an earlier workflow -- the run's, or a
+fix round's -- and the merge runs in its own. Verifying the task's signed
+spec against the merge's own workflow, as every other upstream is, made
+every issue run's auto-merge end `spec_unverified ... workflow_mismatch`. So
+the signed `merge_target` also names `pull_request_workflow`, the task's
+workflow as swarm-api read it from the task's record at submission
+(`continuation.resolve_continuation`), and the worker verifies the task's
+spec against that (`merge._verify_opener`): a forged or edited spec is still
+`signature_mismatch`, an honest spec of any other workflow still
+`workflow_mismatch`. Authority is bound twice, separately from the
+signature. The issue-run loop refuses to submit unless the run's record names
+that task and workflow (`issueci.merge_target_unbound`: `run.pr_task_id` of
+`run.workflow_id`, or a CI-fix task of one of `run.ci_fix_workflows`), and
+the worker refuses (`workflow_mismatch`) unless its own signed dispatch block
+`continues` the branch the task's pull request is on. A merge inside the
+workflow that opened the pull request names no `pull_request_workflow` and is
+checked against its own workflow exactly as before.
 
 **Operator step: the merge Job needs `git` in the tenant's providers.** The
 merge profile now runs on the tenant's `-git` token, so its Job exists only
@@ -1032,6 +1114,9 @@ with the section that carries the detail:
   the owner decided it is not** — recorded as an accepted residual, R4 (§7,
   §11 open question (b)). **Status, 2026-10-01: closed for every workflow
   once #457 is merged and the bootstrap root is applied** — see R4.
+  The bootstrap apply, and the check that it took effect, is
+  [runbooks/deployer-trust-pin.md](runbooks/deployer-trust-pin.md). It is still
+  pending.
 * **M5.** A required check with no `app_id` is refused, never satisfied by a
   legacy commit status (§5.2, §6).
 * Minors, round 1–2: worker-action profiles skip checkpoint restore (§1.3);
@@ -2512,9 +2597,10 @@ review**, or **the merge credential**.
     `tests/unit/scripts/test_release_id_token_scope.py`);
   * **a trust pin** — the deployer's workload identity binding names
     `attribute.job_workflow_ref` = `<repo>/.github/workflows/<file>@refs/heads/main`
-    for exactly the five files that authenticate as it (`release.yml`,
+    for exactly the files that authenticate as it (`release.yml`,
     `application.yml`, `terraform.yml`, `security.yml`,
-    `iam-refusal-probe.yml`; `terraform/bootstrap/wif.tf`
+    `iam-refusal-probe.yml` and, since 2026-10-08, `hotfix.yml`;
+    `terraform/bootstrap/wif.tf`
     `deployer_workflows`), so a workflow added later is refused whatever it
     grants itself.
 
@@ -2522,6 +2608,13 @@ review**, or **the merge credential**.
   which only the owner applies; until that apply, a workflow file that is not
   on the list and grants itself `id-token` (for example `ci-fix.yml`, which
   does at workflow level) can still present a token the deployer accepts.
+  The owner applies it, and checks the result against the live IAM policy, with
+  [runbooks/deployer-trust-pin.md](runbooks/deployer-trust-pin.md):
+  `scripts/verify-deployer-trust.sh` before (it fails, naming the `repo_ref`
+  member), `scripts/bootstrap.sh --target
+  'google_service_account_iam_member.deployer_wif'`, then the verifier again
+  (`checked N members, all pinned to workflow files`) and the next run on `main`.
+  This closes only when that runbook's log has a row.
   What remains by design: every job that legitimately authenticates runs
   merged code as the deployer, which is what `touches_protected_paths` (T6)
   is for. Release `verify` does not authenticate; these do, each from a
@@ -2532,7 +2625,9 @@ review**, or **the merge credential**.
   `scripts/iam-refusal-probe.sh` from `main`); and in `release.yml`
   `build`, `acceptance`, `infrastructure`, `infrastructure-iam`, `deploy`
   and `promote`. Read 2026-10-07 by listing every job that runs
-  `google-github-actions/auth` in those five files.
+  `google-github-actions/auth` in those five files. Since 2026-10-08 the hotfix
+  lane adds `images`, `promote`, `infrastructure` and `deploy` in `hotfix.yml`
+  (docs/ci.md, "Hotfix releases"); its `gate` does not authenticate.
 * **R5.** T12: today, any identity with write access — including `-git` — can
   still use the ordinary PR-merge route on `main`, even though `main-protection`
   (M1) has closed the direct-push bypass. M2's restrict-updates ruleset, with

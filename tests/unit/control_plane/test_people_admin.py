@@ -424,7 +424,8 @@ def test_a_failed_record_can_be_denied_and_its_approval_is_kept(client, db) -> N
 
 @pytest.mark.parametrize("state", ["approved", "applying", "ready", "denied"])
 def test_deny_is_refused_outside_requested_and_failed(client, db, state) -> None:
-    _record(db, state=state)
+    # Dispatched: an approved record never sent to a build may be denied (#847).
+    _record(db, state=state, dispatch={"attempts": 1})
     response = _post(client, f"/v1/admin/workspaces/{CAROL_WS}/deny", json={"reason": "no"})
     assert response.status_code == 409
     assert _rec(db)["state"] == state
@@ -669,11 +670,13 @@ def test_an_ordinary_member_cannot_call_the_sweep(client, db, publisher) -> None
     assert publisher.messages == []
 
 
-def test_with_publishing_off_the_sweep_says_so_and_writes_nothing(client, db, publisher) -> None:
+def test_with_publishing_off_the_sweep_says_so_and_publishes_nothing(client, db, publisher) -> None:
     publisher.enabled = False
     _record(db, state="approved")
     body = _post(client, "/v1/admin/workspaces/sweep").json()
     assert body["publishing"] is False and body["published"] == 0
+    assert publisher.messages == []
+    # No attempt is recorded; the one write is the stuck report's dedupe stamp.
     assert "dispatch" not in _rec(db)
 
 
@@ -801,3 +804,206 @@ def test_no_log_line_names_an_email_or_a_personal_tenant_id(client, db, pool, ca
     for line in people_lines:
         assert "@" not in line, line
         assert "u-carol" not in line, line
+
+
+# --------------------------------------------------------------------------
+# an approved record nothing advances (the 2026-10-09 incident, w-752763)
+# --------------------------------------------------------------------------
+
+def _approved(db, *, minutes_ago: float, **fields) -> dict:
+    at = _now() - timedelta(minutes=minutes_ago)
+    return _record(db, state="approved", requested_at=at,
+                   decision={"by": ROOT, "at": at, "verdict": "approved", "reason": None},
+                   **fields)
+
+
+def _stuck_entries(caplog) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if getattr(r, "event", None) == "workspace_stuck"]
+
+
+def test_with_publishing_off_the_sweep_still_reports_an_approved_record_as_stuck(
+        client, db, publisher, caplog) -> None:
+    publisher.enabled = False
+    _approved(db, minutes_ago=19 * 60)
+    caplog.set_level(logging.INFO, logger="swarm_api")
+    body = _post(client, "/v1/admin/workspaces/sweep").json()
+    assert body["publishing"] is False
+    assert (body["considered"], body["stuck"], body["stuck_reported"]) == (1, 1, 1)
+    assert body["stuck_reasons"] == {"publishing_off": 1}
+    [entry] = _stuck_entries(caplog)
+    assert entry.workspace_id == CAROL_WS and entry.reason == "publishing_off"
+    assert 19 * 60 - 1 <= entry.minutes_waiting <= 19 * 60
+    assert isinstance(entry.approved_at, str)
+    assert isinstance(_rec(db)["stuck_reported_at"], datetime)
+
+
+def test_the_stuck_entry_is_one_json_line_with_the_contracts_fields_and_no_person(
+        client, db, publisher, caplog) -> None:
+    from swarm_common.logging_setup import CloudLoggingFormatter
+
+    publisher.enabled = False
+    _approved(db, minutes_ago=30)
+    caplog.set_level(logging.INFO, logger="swarm_api")
+    _post(client, "/v1/admin/workspaces/sweep")
+    [entry] = _stuck_entries(caplog)
+    payload = json.loads(CloudLoggingFormatter().format(entry))
+    assert payload["event"] == "workspace_stuck"
+    assert {"workspace_id", "reason", "approved_at", "minutes_waiting"} <= set(payload)
+    line = json.dumps(payload)
+    assert CAROL not in line and "u-carol" not in line
+
+
+def test_a_stuck_record_is_reported_at_most_once_an_hour(client, db, publisher, caplog) -> None:
+    publisher.enabled = False
+    _approved(db, minutes_ago=120)
+    caplog.set_level(logging.INFO, logger="swarm_api")
+    assert _post(client, "/v1/admin/workspaces/sweep").json()["stuck_reported"] == 1
+    second = _post(client, "/v1/admin/workspaces/sweep").json()
+    # Still stuck, and counted so, but not reported again within the hour.
+    assert (second["stuck"], second["stuck_reported"]) == (1, 0)
+    assert len(_stuck_entries(caplog)) == 1
+    _rec(db)["stuck_reported_at"] = _now() - timedelta(minutes=61)
+    assert _post(client, "/v1/admin/workspaces/sweep").json()["stuck_reported"] == 1
+    assert len(_stuck_entries(caplog)) == 2
+
+
+def test_with_publishing_on_a_record_never_dispatched_for_15_minutes_is_stuck(
+        client, db, publisher, caplog) -> None:
+    _approved(db, minutes_ago=20)
+    _approved(db, tenant_id="u-a", workspace_id="w-00000a", principal="a@saga.xyz",
+              minutes_ago=5)
+    caplog.set_level(logging.INFO, logger="swarm_api")
+    body = _post(client, "/v1/admin/workspaces/sweep").json()
+    assert body["publishing"] is True and body["stuck_reasons"] == {"never_dispatched": 1}
+    assert [e.workspace_id for e in _stuck_entries(caplog)] == [CAROL_WS]
+    # Both are still sent: a report never replaces the dispatch.
+    assert body["published"] == 2
+
+
+def test_with_publishing_on_a_dispatch_unclaimed_for_30_minutes_is_stuck(
+        client, db, publisher, caplog) -> None:
+    rec = _approved(db, minutes_ago=90)
+    rec["dispatch"] = {"attempts": 5, "request_id": rec["request_id"],
+                       "first_attempt_at": _now() - timedelta(minutes=40),
+                       "last_attempt_at": _now() - timedelta(minutes=2), "last_ok": True}
+    young = _approved(db, tenant_id="u-a", workspace_id="w-00000a", principal="a@saga.xyz",
+                      minutes_ago=90)
+    young["dispatch"] = {"attempts": 1, "request_id": young["request_id"],
+                         "first_attempt_at": _now() - timedelta(minutes=20),
+                         "last_attempt_at": _now() - timedelta(minutes=2), "last_ok": True}
+    caplog.set_level(logging.INFO, logger="swarm_api")
+    body = _post(client, "/v1/admin/workspaces/sweep").json()
+    assert body["stuck_reasons"] == {"dispatched_unclaimed": 1}
+    assert [e.workspace_id for e in _stuck_entries(caplog)] == [CAROL_WS]
+
+
+def test_an_attempt_for_an_earlier_request_is_not_a_dispatch_of_this_one() -> None:
+    now = _now()
+    record = {"state": "approved", "request_id": "new",
+              "decision": {"verdict": "approved", "at": now - timedelta(minutes=20)},
+              "dispatch": {"request_id": "old", "first_attempt_at": now - timedelta(hours=3),
+                           "last_attempt_at": now - timedelta(hours=3)}}
+    assert ws.waiting_because(record, publishing=True, now=now) == "never_dispatched"
+
+
+@pytest.mark.parametrize("state", ["requested", "applying", "needs_owner", "ready", "failed"])
+def test_only_an_approved_record_is_ever_stuck(state) -> None:
+    now = _now()
+    record = {"state": state, "requested_at": now - timedelta(days=2)}
+    assert ws.waiting_because(record, publishing=False, now=now) is None
+    assert ws.waiting_because(record, publishing=True, now=now) is None
+
+
+def test_the_first_attempt_is_kept_across_attempts_and_restarts_with_a_new_request(
+        db) -> None:
+    clock = {"t": _now()}
+    rec = _record(db, state="approved")
+    people = people_mod.People(db, publisher=FakePublisher(), now=lambda: clock["t"])
+    first = clock["t"]
+    people._dispatch(rec, pw.MODE_CREATE)
+    clock["t"] = first + timedelta(minutes=11)
+    people._dispatch(rec, pw.MODE_CREATE)
+    stored = _rec(db)["dispatch"]
+    assert stored["first_attempt_at"] == first and stored["last_attempt_at"] == clock["t"]
+    assert stored["request_id"] == rec["request_id"]
+    retried = {**rec, "request_id": str(uuid.uuid4())}
+    _rec(db)["request_id"] = retried["request_id"]
+    clock["t"] = first + timedelta(minutes=50)
+    people._dispatch(retried, pw.MODE_CREATE)
+    assert _rec(db)["dispatch"]["first_attempt_at"] == clock["t"]
+
+
+# -- the provisioning block and the approval's answer ------------------------------
+
+def test_the_persons_view_says_an_approval_waits_because_publishing_is_off(
+        client, db, publisher) -> None:
+    publisher.enabled = False
+    _approved(db, minutes_ago=42)
+    body = client.get("/v1/workspace", headers=auth_header("carol")).json()
+    assert body["provisioning"]["available"] is False
+    assert body["provisioning"]["waiting_because"] == "publishing_off"
+    assert 41 <= body["provisioning"]["approved_minutes_ago"] <= 42
+    assert set(body["provisioning"]) == {"available", "waiting_because", "approved_minutes_ago"}
+
+
+def test_the_persons_view_names_an_unclaimed_dispatch_and_nothing_for_a_moving_one(
+        client, db, publisher) -> None:
+    rec = _approved(db, minutes_ago=60)
+    rec["dispatch"] = {"attempts": 3, "request_id": rec["request_id"],
+                       "first_attempt_at": _now() - timedelta(minutes=55),
+                       "last_attempt_at": _now() - timedelta(minutes=5), "last_ok": True}
+    body = client.get("/v1/workspace", headers=auth_header("carol")).json()
+    assert body["provisioning"]["available"] is True
+    assert body["provisioning"]["waiting_because"] == "dispatched_unclaimed"
+    rec["dispatch"]["first_attempt_at"] = _now() - timedelta(minutes=3)
+    body = client.get("/v1/workspace", headers=auth_header("carol")).json()
+    assert body["provisioning"]["waiting_because"] is None
+
+
+def test_a_view_with_no_record_or_one_not_approved_carries_the_block_without_a_wait(
+        client, db, publisher) -> None:
+    publisher.enabled = False
+    body = client.get("/v1/workspace", headers=auth_header("carol")).json()
+    assert body["provisioning"] == {"available": False, "waiting_because": None,
+                                    "approved_minutes_ago": None}
+    _record(db, state="ready")
+    body = client.get("/v1/workspace", headers=auth_header("carol")).json()
+    assert body["provisioning"]["waiting_because"] is None
+
+
+def test_with_publishing_off_the_approval_says_it_was_not_sent_for_building(
+        client, db, publisher) -> None:
+    publisher.enabled = False
+    _record(db)
+    body = _post(client, f"/v1/admin/workspaces/{CAROL_WS}/approve").json()
+    assert body["sent_for_building"] is False
+    assert "NOT sent for building" in body["message"]
+    assert "provisioning is off" in body["message"]
+    assert body["workspace"]["provisioning"]["waiting_because"] == "publishing_off"
+    assert _rec(db)["state"] == "approved"
+
+
+def test_with_publishing_on_the_approval_says_it_was_sent(client, db, publisher) -> None:
+    _record(db)
+    body = _post(client, f"/v1/admin/workspaces/{CAROL_WS}/approve").json()
+    assert body["sent_for_building"] is True and body["message"] == people_mod.SENT
+    assert body["workspace"]["provisioning"] == {
+        "available": True, "waiting_because": None, "approved_minutes_ago": 0}
+
+
+def test_the_people_list_carries_the_provisioning_figures_for_its_banner(
+        client, db, publisher) -> None:
+    publisher.enabled = False
+    _approved(db, minutes_ago=10)
+    body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+    assert body["provisioning"] == {"available": False, "approved_waiting": 1}
+    row = next(r for r in body["people"] if r["email"] == CAROL)
+    assert row["workspace"]["provisioning"]["waiting_because"] == "publishing_off"
+
+
+def test_an_approved_record_never_dispatched_may_be_denied(client, db) -> None:
+    _record(db, state="approved", dispatch=None, run=None)
+    response = _post(client, f"/v1/admin/workspaces/{CAROL_WS}/deny", json={"reason": "no build was sent"})
+    assert response.status_code == 200
+    assert _rec(db)["state"] == "denied"
+

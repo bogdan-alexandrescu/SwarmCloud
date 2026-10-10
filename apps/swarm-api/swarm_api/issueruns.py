@@ -22,6 +22,11 @@
                  red at `fix_rounds`.
       CANCELLED  the planner, the workflow or a fix round was cancelled.
       REJECTED   the plan was turned down.
+      NOT_READY  the planner found the issue not ready to work on and said why
+                 (`NotReadyVerdict`) instead of writing a plan: already done on
+                 main, an owner decision, blocked by other work, too vague,
+                 deferred security work, or an epic. Terminal, holds nothing,
+                 and the status comment carries the reason and what it needs.
 
 WHY A WAITING RUN COSTS NOTHING (invariant 1). The planner is a task like any
 other; once it has ended, a PLANNED run is a Firestore document and nothing
@@ -67,6 +72,24 @@ the run as `open_work`, and puts it in the planner's prompt between two
 delimiter lines that carry the run id, as data. It is the prompt, not a
 runner input: `issue` is the only input `claude-code` declares, and the
 profiles are frozen.
+
+THE PLANNER SEES THE REPOSITORY'S INDEX (lane KG1, docs/design/knowledge-
+graph.md §4.1; docs/repo-index.md §4.1). When the run's tenant has registered
+the issue's repository and promoted an index of extractor version 3 or later,
+`plancontext` adds two sections before the open work, each between delimiter
+lines carrying the run id: REPO INDEX (repo-index.md) and REPO GRAPH (where
+the issue lands, what calls it and tests it, which open pull requests meet
+it, and the module communities it sits in), sharing one 24 KiB allowance.
+The run records `index_sha` and `index_digest`, so a plan says which index it
+was made from, and `index_context` says why there was none. A planner never
+waits for an index and is never refused for one.
+
+PARALLEL STEPS NEVER SHARE A FILE (§4.9, owner decision 2026-10-08). Two steps
+not on one dependency line whose `files` meet -- the same path, or a directory
+prefix of the other's -- make the plan invalid, and the refusal names both
+steps and the file (`territory_refusal`). It was a sentence in the prompt; a
+plan that broke it was approved and failed at the join. A plan stored before
+the rule is read without it, so it still compiles and keeps its digest.
 
 WHAT IS COMPILED, AND THE FIX-ROUND CAP. The plan's steps become a chain of
 implementer steps, each building on the previous one's branch, followed by
@@ -157,6 +180,7 @@ from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
     MERGE_METADATA_KEY,
+    MERGE_ON_VERDICT,
     MERGE_STEP_ID,
     IssueRef,
 )
@@ -216,6 +240,23 @@ REVIEW_STEP = "review"
 FIX_STEP = "fix"
 IMPLEMENT_PREFIX = "impl-"
 
+#: How the compiled review is told to write a finding. Objects, each saying
+#: where its blocker is, so the console can pin it beside its line (diff
+#: viewer variant 3, docs/design/diff-viewer.md). The worker reads `summary`
+#: as the finding's text exactly as it read a string, and keeps `file`,
+#: `line` and `side` only after validating them (`agent_worker.verdict`);
+#: a finding that gives none of them is a finding as before.
+FINDINGS_SHAPE = (
+    '"findings": [{"summary": "one blocker per entry", "file": "its repository-relative '
+    'path", "line": <its line number>, "side": "new" or "old"}]'
+)
+FINDINGS_LOCATION_NOTE = (
+    "Give file, line and side only for a blocker at one line of the diff: side is new "
+    "when the line number counts in the changed file, old when it counts in the file "
+    "before the change (a removed line). Leave them out otherwise; a blocker with no "
+    "line is still a blocker. "
+)
+
 #: The review rounds `compile_plan` emits, whatever the cap (module docstring).
 COMPILED_REVIEW_ROUNDS = 1
 
@@ -262,11 +303,19 @@ class RunState(str, Enum):
     FAILED = "FAILED"
     REJECTED = "REJECTED"
     CANCELLED = "CANCELLED"
+    #: The planner's verdict that the issue is not ready (`NotReadyVerdict`).
+    #: A state of its own rather than REJECTED with `rejected_by: planner`:
+    #: RunState is this module's, not the frozen contract's, and a rejection
+    #: is a person turning a plan down -- there is no plan here to turn down.
+    NOT_READY = "NOT_READY"
 
 
 RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
-    # The planner ends: a plan, a failure, or a cancellation of the planner.
-    RunState.PLANNING: frozenset({RunState.PLANNED, RunState.FAILED, RunState.CANCELLED}),
+    # The planner ends: a plan, a NOT_READY verdict instead of one, a
+    # failure, or a cancellation of the planner.
+    RunState.PLANNING: frozenset(
+        {RunState.PLANNED, RunState.NOT_READY, RunState.FAILED, RunState.CANCELLED}
+    ),
     # PLANNED -> PLANNED is an edit: a new plan, a new digest, still waiting.
     # PLANNED -> FAILED is an `auto` run whose creator left the tenant before
     # the tick approved it: nothing is submitted as them (`run_owner_auth`).
@@ -295,6 +344,7 @@ RUN_TRANSITIONS: dict[RunState, frozenset[RunState]] = {
     RunState.FAILED: frozenset(),
     RunState.REJECTED: frozenset(),
     RunState.CANCELLED: frozenset(),
+    RunState.NOT_READY: frozenset(),
 }
 
 TERMINAL_RUN_STATES: frozenset[RunState] = frozenset(
@@ -385,7 +435,9 @@ class PlanStep(_PlanModel):
     step_id: str = Field(min_length=1, max_length=40, pattern=r"^[a-z0-9][a-z0-9-]*$")
     title: str = Field(min_length=1, max_length=200)
     prompt: str = Field(min_length=1, max_length=16_000)
-    #: Repository paths the step is planned to touch. A plan, not a fence.
+    #: Repository paths the step is planned to touch, or directory prefixes.
+    #: A plan, not a fence for the step itself -- but two steps that run side
+    #: by side may not share one (`parallel_file_conflicts`, §4.9).
     files: list[_Path] | None = Field(default=None, max_length=MAX_STEP_FILES)
     #: The tests the step adds, one per entry, written before the change.
     tests: list[_Line] | None = Field(default=None, max_length=MAX_STEP_TESTS)
@@ -426,8 +478,9 @@ class PlanSpec(_PlanModel):
         return steps
 
     @model_validator(mode="after")
-    def _dependencies(self) -> "PlanSpec":
-        """Every `depends_on` names an earlier step, once; no stage is too wide.
+    def _dependencies(self, info: ValidationInfo) -> "PlanSpec":
+        """Every `depends_on` names an earlier step, once; no stage is too wide;
+        no two steps that run side by side share a file.
 
         Only an EARLIER step may be named, so a valid plan is acyclic by
         construction and its order is already a topological one. A forward
@@ -465,6 +518,13 @@ class PlanSpec(_PlanModel):
                 f"the plan's depends_on run {widest} steps in parallel, over the "
                 f"workflow limit of {MAX_PARALLEL_STEPS}; make some steps depend on others"
             )
+        # After the order checks, which the ancestry below relies on. A plan
+        # STORED before the rule is read without it, as `PlanOverlap.action`
+        # is: it was approved, and must still compile and keep its digest.
+        if not (info.context or {}).get(_STORED):
+            refused = territory_refusal(self.steps)
+            if refused is not None:
+                raise ValueError(refused)
         return self
 
 
@@ -498,6 +558,103 @@ def _deps_of(step: Any) -> list[str] | None:
 
 def _id_of(step: Any) -> str:
     return step["step_id"] if isinstance(step, Mapping) else step.step_id
+
+
+#: The most conflicting pairs one refusal names; the rest are counted.
+MAX_TERRITORY_CONFLICTS_SHOWN = 10
+
+
+def _territory_path(path: Any) -> str:
+    """A step's `files` entry as it is compared: no `./`, no leading or trailing `/`."""
+    return str(path).strip().removeprefix("./").strip("/")
+
+
+def _territory_clash(a: str, b: str) -> bool:
+    """The same path, or one a directory prefix of the other (lane-queue.md §4.1)."""
+    return a == b or b.startswith(a + "/") or a.startswith(b + "/")
+
+
+def _parallel_conflicts(steps: list[Any]) -> list[tuple[str, str, str, str]]:
+    """(step, other step, its entry, the other's entry) for every clash between
+    two steps that are NOT on one dependency line, in plan order.
+
+    On one line means one is an ancestor of the other: it runs after it, on a
+    branch that carries its work, so their edits of one file are sequential.
+    A plan that states `depends_on` nowhere is the chain, every step on one
+    line. Dependencies name only earlier steps (`_dependencies` checked that
+    first), so one pass in plan order builds each step's ancestors.
+    """
+    chain = not _uses_dependencies(steps)
+    ancestors: dict[str, set[str]] = {}
+    files: dict[str, list[str]] = {}
+    previous: str | None = None
+    order: list[str] = []
+    for step in steps:
+        sid = _id_of(step)
+        deps = ([previous] if previous is not None else []) if chain else (_deps_of(step) or [])
+        ancestors[sid] = set(deps).union(*(ancestors.get(d, set()) for d in deps))
+        raw = step.get("files") if isinstance(step, Mapping) else step.files
+        files[sid] = list(dict.fromkeys(p for p in map(_territory_path, raw or []) if p))
+        order.append(sid)
+        previous = sid
+    found: list[tuple[str, str, str, str]] = []
+    for i, one in enumerate(order):
+        for other in order[i + 1:]:
+            if one in ancestors[other] or other in ancestors[one]:
+                continue
+            for a in files[one]:
+                for b in files[other]:
+                    if _territory_clash(a, b):
+                        found.append((one, other, a, b))
+    return found
+
+
+def parallel_file_conflicts(steps: list[Any]) -> list[tuple[str, str, str]]:
+    """(step, other step, the contested path) for every pair of parallel steps
+    whose `files` meet (docs/design/knowledge-graph.md §4.9). One entry per
+    pair, the first clash found; the path is the longer entry -- the file a
+    directory prefix contains."""
+    pairs: dict[tuple[str, str], str] = {}
+    for one, other, a, b in _parallel_conflicts(steps):
+        pairs.setdefault((one, other), max(a, b, key=len))
+    return [(one, other, path) for (one, other), path in pairs.items()]
+
+
+def territory_refusal(steps: list[Any]) -> str | None:
+    """Why a plan whose parallel steps share a file is refused, or None.
+
+    Owner decision 2026-10-08 (knowledge-graph.md §9 Q4): REFUSE, with the
+    reason, so the planner re-plans; never auto-chain the steps. Two parallel
+    steps editing one file meet first in the integrator's 3-way merge
+    (`_compile_staged`), which aborts the conflicting branch and the pull
+    request misses that work -- after a person approved the plan. Only the
+    plan's DECLARED files are checked: the graph may later widen them with
+    the call sites a signature change forces, but a judged edge never decides
+    a refusal (§7.8).
+    """
+    conflicts = _parallel_conflicts(steps)
+    if not conflicts:
+        return None
+    pairs: dict[tuple[str, str], tuple[str, str]] = {}
+    for one, other, a, b in conflicts:
+        pairs.setdefault((one, other), (a, b))
+    named = []
+    for (one, other), (a, b) in list(pairs.items())[:MAX_TERRITORY_CONFLICTS_SHOWN]:
+        if a == b:
+            named.append(f"steps {one!r} and {other!r} both list {a!r}")
+        else:
+            named.append(f"step {one!r} lists {a!r} and step {other!r} lists {b!r}, "
+                         "one inside the other")
+    more = len(pairs) - len(named)
+    count = len(pairs)
+    return (
+        "steps that run in parallel (neither depends on the other) edit the same file "
+        f"({count} pair{'' if count == 1 else 's'}): " + "; ".join(named)
+        + (f"; and {more} more pair{'' if more == 1 else 's'}" if more else "")
+        + ". Two parallel steps editing one file overwrite each other when their work is "
+        "integrated: put them on one dependency line (the later one's depends_on naming "
+        "the earlier, directly or through other steps), or give the file to one step"
+    )
 
 
 def _stages(steps: list[Any]) -> list[list[str]]:
@@ -565,6 +722,15 @@ def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
     changed overlap still needs one, exactly as a planner's plan does.
     """
     plan = parse_plan(value, stored=True)
+    # An edit is a plan written now: parallel steps may not share a file,
+    # whatever the stored plan did (§4.9). Only `action` has a legacy pass.
+    refused = territory_refusal(plan["steps"])
+    if refused is not None:
+        problem = f"steps: {refused}"
+        raise InvalidPlan(
+            "the plan does not match the plan schema: " + problem,
+            detail={"errors": [problem]},
+        )
     legacy = set()
     if isinstance(stored_plan, Mapping):
         for overlap in stored_plan.get("overlaps") or ():
@@ -584,6 +750,117 @@ def parse_edited_plan(value: Any, stored_plan: Any) -> dict[str, Any]:
                 detail={"errors": [problem]},
             )
     return plan
+
+
+#: Why a planner may find an issue not ready. The owner's list (2026-10-08);
+#: `other` is for a reason the planner can state but the list does not name.
+NOT_READY_KINDS = (
+    "already_done", "owner_decision", "blocked", "too_vague", "security_deferred", "epic",
+    "other",
+)
+MAX_NOT_READY_NEEDS = 20
+#: A NOT_READY reason is bounded by TRUNCATION, never refused. The reason is
+#: the planner's answer: refusing a long one turned a correct NOT_READY into a
+#: FAILED run and lost the answer (#977). The input is already bounded --
+#: `routes/runs.py::_read_plan` refuses a plan.json over MAX_PLAN_BYTES -- and
+#: the planner task's plan.json artifact is never rewritten, so it keeps the
+#: full text the marker points to.
+MAX_NOT_READY_REASON_CHARS = 2_000
+NOT_READY_REASON_TRUNCATED = "… [truncated: the full reason is in the planner task's plan.json]"
+
+
+class NotReadyVerdict(_PlanModel):
+    """The planner's answer when the issue is not ready: no plan, and why.
+
+    `ready` is the explicit field the owner asked for (2026-10-08: readiness
+    is the PLANNER's call, not a label's): it must be `false` -- a planner
+    that finds the issue ready writes a plan. `reason` is a paragraph;
+    `needs` lists what would make it ready ("owner decision: ...", "depends
+    on #N"), one per entry, and may be empty only when `reason` says it all.
+    A long `reason` is accepted and truncated by `parse_planner_output` to
+    MAX_NOT_READY_REASON_CHARS with a marker, not refused (#977).
+    """
+
+    ready: Literal[False]
+    kind: Literal[NOT_READY_KINDS] | None = None  # type: ignore[valid-type]
+    reason: str = Field(min_length=1)
+    needs: list[_Line] = Field(default_factory=list, max_length=MAX_NOT_READY_NEEDS)
+
+
+def parse_planner_output(value: Any) -> tuple[str, dict[str, Any]]:
+    """What the planner wrote in `plan.json`: `("plan", plan)` or `("not_ready", verdict)`.
+
+    A JSON object carrying `"ready": false` is a `NotReadyVerdict` and is
+    checked as strictly as a plan is; `"ready": true` beside a plan is
+    accepted and dropped, so the plan digests exactly as one written without
+    it. Anything else is a plan, through `parse_plan`.
+    """
+    if isinstance(value, (str, bytes)):
+        try:
+            value = json.loads(value)
+        except (ValueError, UnicodeDecodeError):
+            raise InvalidPlan(f"{PLAN_FILE} is not JSON") from None
+    if isinstance(value, Mapping) and "ready" in value:
+        ready = value.get("ready")
+        if ready is True:
+            return "plan", parse_plan({k: v for k, v in value.items() if k != "ready"})
+        if ready is not False:
+            raise InvalidPlan('"ready" is true (and a plan follows) or false (and a reason does)')
+        try:
+            verdict = NotReadyVerdict.model_validate(dict(value))
+        except ValidationError as exc:
+            problems = [
+                f"{'.'.join(str(p) for p in e.get('loc') or ()) or 'verdict'}: {e.get('msg')}"
+                for e in exc.errors()
+            ]
+            raise InvalidPlan(
+                "the not-ready verdict does not match its schema: " + "; ".join(problems),
+                detail={"errors": problems},
+            ) from None
+        return "not_ready", {
+            "kind": verdict.kind,
+            # Agent text, shown in the console and quoted on the issue:
+            # masked here, once, as a run's error is (`failure_text`).
+            "reason": _not_ready_reason(verdict.reason),
+            "needs": [redact_detail(need, limit=500) for need in verdict.needs],
+        }
+    return "plan", parse_plan(value)
+
+
+def _not_ready_reason(reason: str) -> str:
+    """The reason as a run stores it: masked whole, then cut to the limit with a marker.
+
+    Masking comes first so a credential straddling the cut is replaced by its
+    stand-in, never kept as a prefix too short for the scan to recognise.
+    """
+    masked = redact_detail(reason, limit=MAX_PLAN_BYTES)
+    if len(masked) <= MAX_NOT_READY_REASON_CHARS:
+        return masked
+    keep = MAX_NOT_READY_REASON_CHARS - len(NOT_READY_REASON_TRUNCATED)
+    return masked[:keep].rstrip() + NOT_READY_REASON_TRUNCATED
+
+
+def plan_files(plan: Mapping[str, Any] | None) -> set[str]:
+    """Every path a plan's steps say they touch, normalised for comparison."""
+    files: set[str] = set()
+    for step in (plan or {}).get("steps") or []:
+        for path in (step.get("files") if isinstance(step, Mapping) else None) or []:
+            norm = str(path).strip().removeprefix("./").strip("/")
+            if norm:
+                files.add(norm)
+    return files
+
+
+def territory_overlap(ours: set[str], theirs: set[str]) -> list[str]:
+    """The paths two plans share: the same file, or a directory one names and
+    the other edits inside. Sorted, so the reason a run waits reads the same
+    on every tick."""
+    shared = set()
+    for a in ours:
+        for b in theirs:
+            if a == b or b.startswith(a + "/") or a.startswith(b + "/"):
+                shared.add(min(a, b, key=len))
+    return sorted(shared)
 
 
 def plan_stages(plan: Mapping[str, Any]) -> list[list[str]]:
@@ -700,10 +977,58 @@ def _open_work_section(work: Mapping[str, Any], marker: str, budget: int) -> str
     return head + body + tail
 
 
+#: The readiness criteria (owner decision 2026-10-08: the planner decides
+#: whether an issue is ready, not a label). The last part of every planner
+#: prompt; `parse_planner_output` reads the answer.
+_READINESS = (
+    "\n\nFIRST DECIDE WHETHER THE ISSUE IS READY TO WORK ON. It is NOT ready when: "
+    "its work is already done on the default branch (name the files, functions and "
+    "tests that show it -- that is the evidence); it needs a decision only the "
+    "repository's owner can make and the issue does not record one; it is blocked by "
+    "another open issue or pull request that must land first; it is too vague to "
+    "state its requirements; it is security work the owner has deferred; or it is an "
+    "epic -- a tracking issue whose work is its child issues. If it is not ready, do "
+    f"not write a plan: write $SWARM_ARTIFACTS_DIR/{PLAN_FILE} as exactly\n"
+    '  {"ready": false, "kind": "already_done" | "owner_decision" | "blocked" | '
+    '"too_vague" | "security_deferred" | "epic" | "other",\n'
+    '   "reason": "<why, with the evidence>",\n'
+    '   "needs": ["<what would make it ready, one per entry, e.g. owner decision: '
+    '<the question>, or depends on #N>"]}\n'
+    "and nothing else. SwarmCloud posts the reason and the needs on the issue and plans "
+    "it again only after the issue is edited or commented on. If it is ready, write "
+    'the plan above, without a "ready" key.'
+)
+
+
+#: What the planner is told about the index sections, when it has them
+#: (docs/repo-index.md §4.1; knowledge-graph.md §4.1). The planner still
+#: clones and reads the repository: the index says where to look, not what
+#: the code says, and an index behind the head says so in its first line.
+_CONTEXT_USE = (
+    "\nUse the REPO INDEX above: fill each step's \"tests\" from its test_map, and keep "
+    "steps out of files its territory says are frozen. Use the REPO GRAPH: its "
+    "candidates are where the issue most likely lands, its impact names each "
+    "candidate's callers and covering tests (zero resolved callers is UNKNOWN, never "
+    "safe), its overlaps are open pull requests whose files meet the candidates, and "
+    "its communities are the modules that change together -- plan one step per "
+    "community where you can, and put steps that share a file on one dependency line. "
+    "Both describe the commit named on their first line; read the code before you "
+    "rely on them.\n\n"
+)
+
+
 def planner_prompt(
-    ref: IssueRef, *, run_id: str = "", open_work: Mapping[str, Any] | None = None
+    ref: IssueRef, *, run_id: str = "", open_work: Mapping[str, Any] | None = None,
+    context: str | None = None,
 ) -> str:
-    """The planner's instructions, and the open work as delimited data, under the limit."""
+    """The planner's instructions, the index sections and the open work as
+    delimited data, under the limit.
+
+    `context` is `plancontext.PlanContext.section`: the REPO INDEX and REPO
+    GRAPH sections, already bounded to `plancontext.MAX_CONTEXT_BYTES`, or
+    None (no index, or one that could not be used) for exactly the prompt a
+    run made before the index existed.
+    """
     marker = f"=== OPEN WORK {run_id or 'snapshot'} ==="
     lead = (
         f"Plan the work for GitHub issue {ref.short} ({ref.url}). The issue's title, "
@@ -746,26 +1071,40 @@ def planner_prompt(
         "only ADD code that uses what those other steps wrote, never change it: a step "
         "that must CHANGE code another step wrote lists that step as its last dependency "
         "(or sits on its line), or the integration conflicts and the pull request misses "
-        "work. If you state \"depends_on\" on any step, state it on every step -- a step "
+        "work. A plan whose parallel steps list the same file, or where one lists a "
+        "directory prefix of a file the other lists, is refused, naming the steps and "
+        "the file -- check your steps' \"files\" against that before you write the plan. "
+        "If you state \"depends_on\" on any step, state it on every step -- a step "
         "without it starts at once. "
         'If you leave "depends_on" out of every step, the steps run one after '
         "another, each starting from the previous step's work.\n\n"
         "No other keys. A person reads this plan and approves it before any step runs."
+        + _READINESS
     )
+    use = _CONTEXT_USE if context else ""
+    context = context or ""
     if open_work is None:
-        return lead + instructions
-    budget = MAX_PLANNER_PROMPT_BYTES - _utf8(lead) - _utf8(rules) - _utf8(instructions)
-    return lead + _open_work_section(open_work, marker, budget) + rules + instructions
+        return lead + context + use + instructions
+    budget = (MAX_PLANNER_PROMPT_BYTES - _utf8(lead) - _utf8(context) - _utf8(use)
+              - _utf8(rules) - _utf8(instructions))
+    return (lead + context + use + _open_work_section(open_work, marker, budget) + rules
+            + instructions)
 
 
 def planner_task(
-    ref: IssueRef, run_id: str, open_work: Mapping[str, Any] | None = None
+    ref: IssueRef, run_id: str, open_work: Mapping[str, Any] | None = None,
+    context: str | None = None,
 ) -> TaskCreate:
-    """The planner: an ordinary task, signed by `submit_tasks` like any other."""
+    """The planner: an ordinary task, signed by `submit_tasks` like any other.
+
+    The index sections are in the prompt, not a runner input: `issue` is the
+    only input `claude-code` declares, and the profiles are frozen (request A
+    of repo-index.md §6.3 is unfiled, owner decision Q7).
+    """
     return TaskCreate(
         runner_profile=PLANNER_PROFILE,
         input={
-            "prompt": planner_prompt(ref, run_id=run_id, open_work=open_work),
+            "prompt": planner_prompt(ref, run_id=run_id, open_work=open_work, context=context),
             "issue": ref.number,
         },
         repository_url=ref.repository_url,
@@ -794,6 +1133,20 @@ def _auto_merge_refusal() -> str | None:
             "yourself"
         )
     return None
+
+
+def auto_merge_default(merge_policy: str | None, platform_default: bool) -> bool:
+    """What a run created without saying `auto_merge` gets (WF-MERGE-API).
+
+    The `merge_policy` the tenant registered the issue's repository with
+    when it set one -- "on_merge_verdict" is on, "off" is off -- else the
+    platform's `merge_by_default`. A run's merge already waits for the
+    review's MERGE verdict and green CI (`issueci._merge`), which is what
+    "on_merge_verdict" asks for.
+    """
+    if merge_policy is not None:
+        return merge_policy == MERGE_ON_VERDICT
+    return bool(platform_default)
 
 
 def auto_merge_availability(default: bool = False) -> dict[str, Any]:
@@ -1081,7 +1434,7 @@ def verification_text(readings: list[tuple[str, str | None, str | None]]) -> str
     return redact_detail("\n\n".join(parts), limit=MAX_VERIFICATION_CHARS)
 
 
-def compile_plan(run: "IssueRun") -> WorkflowCreate:
+def compile_plan(run: "IssueRun", review_context: str | None = None) -> WorkflowCreate:
     """The approved plan as a workflow: implementers, review, gated fix.
 
     A plan whose steps state no `depends_on` compiles to a chain; one that
@@ -1089,14 +1442,16 @@ def compile_plan(run: "IssueRun") -> WorkflowCreate:
     compiles to this same shape with one implementer step: the mode is the
     planner's statement, and the shape is fixed here. Each step's prompt
     carries its planned files and tests; the review's carries the plan's
-    requirements, in both shapes.
+    requirements, in both shapes, and `review_context` when there is one:
+    `reviewcontext.read_review_context`'s IMPACT block (lane KG6), already
+    delimited and bounded. None is today's review prompt.
     """
     refuse_auto_merge(run.auto_merge)
     if run.plan is None:
         raise InvalidPlan("this run has no plan to compile")
     plan = parse_plan(run.plan, stored=True)
     if _uses_dependencies(plan["steps"]):
-        return _workflow(run, _compile_staged(run, plan))
+        return _workflow(run, _compile_staged(run, plan, review_context))
     ref = run.issue
     steps: list[dict[str, Any]] = []
     previous: str | None = None
@@ -1143,11 +1498,13 @@ def compile_plan(run: "IssueRun") -> WorkflowCreate:
             "prompt": (
                 f"Review the change on this branch for GitHub issue {ref.short} against the "
                 f"approved plan: {plan['summary']}\n\n" + _requirements_text(plan)
+                + _review_impact(review_context)
                 + f"{PATCH_FILE} holds the last step's diff; "
                 "the whole change is this branch against the default branch. Do not edit "
                 f"files. Write $SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
-                '{"verdict": "MERGE" or "NOT_YET", "findings": ["one blocker per entry"]'
-                + _requirements_shape(plan) + "}. " + NO_CLOSING_KEYWORD
+                '{"verdict": "MERGE" or "NOT_YET", ' + FINDINGS_SHAPE
+                + _requirements_shape(plan) + "}. " + FINDINGS_LOCATION_NOTE
+                + NO_CLOSING_KEYWORD
             ),
         },
     })
@@ -1184,7 +1541,13 @@ def _step_prompt(ref: IssueRef, plan: Mapping[str, Any], index: int, step: Mappi
     )
 
 
-def _compile_staged(run: "IssueRun", plan: Mapping[str, Any]) -> list[dict[str, Any]]:
+def _review_impact(review_context: str | None) -> str:
+    """The review's IMPACT block (lane KG6) and a blank line, or nothing."""
+    return f"{review_context.rstrip()}\n\n" if review_context else ""
+
+
+def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
+                    review_context: str | None = None) -> list[dict[str, Any]]:
     """Implementers wired by the plan's `depends_on`, then review and the gated fix.
 
     A step with no dependency starts from the default branch at once. A step
@@ -1272,6 +1635,7 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any]) -> list[dict[str, 
             "prompt": (
                 f"Review the change for GitHub issue {ref.short} against the approved plan: "
                 f"{plan['summary']}\n\n" + _requirements_text(plan)
+                + _review_impact(review_context)
                 + f"The plan's steps ran in {len(plan_stages(plan))} stages, "
                 "some side by side on separate branches, and the pull request will carry ALL "
                 "of their work together. This branch holds the last step's line of work; "
@@ -1282,8 +1646,9 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any]) -> list[dict[str, 
                 "the integrated change -- every diff together, including where "
                 "two of them touch the same code. Do not edit files. Write "
                 f"$SWARM_ARTIFACTS_DIR/{VERDICT_FILE}: "
-                '{"verdict": "MERGE" or "NOT_YET", "findings": ["one blocker per entry"]'
-                + _requirements_shape(plan) + "}. " + NO_CLOSING_KEYWORD
+                '{"verdict": "MERGE" or "NOT_YET", ' + FINDINGS_SHAPE
+                + _requirements_shape(plan) + "}. " + FINDINGS_LOCATION_NOTE
+                + NO_CLOSING_KEYWORD
             ),
         },
     })
@@ -1379,6 +1744,16 @@ class IssueRun:
     #: The repository's open issues and pull requests when the run was created
     #: (`forge.read_open_work`), masked. None on runs created before the read.
     open_work: dict[str, Any] | None = None
+    # -- the repository index the planner was given (`plancontext`, lane KG1).
+    # All optional: a run created before them reads as one with no record.
+    #: The commit the index described, and the promoted document's digest:
+    #: which index the plan was made from. None when no index was used.
+    index_sha: str | None = None
+    index_digest: str | None = None
+    #: `plancontext.PlanContext.record`: `state` ("used" | "none"), the
+    #: `reason` when none, and the extractor version, freshness, graph use and
+    #: section size when used. What the console's "context used" chip reads.
+    index_context: dict[str, Any] | None = None
     # -- the write-back to GitHub (`issuesync`). Bookkeeping, not state: a
     # run's truth is this document, never the comment, so none of these is
     # read to decide where a run goes. All optional, so a run stored before
@@ -1462,6 +1837,23 @@ class IssueRun:
     #: True once the write-back closed the issue -- only an already_on_main
     #: run with every planned requirement met (`requirements_met`) is closed.
     issue_closed: bool | None = None
+    # -- the issue sweeper (`issuesweep`, owner decisions 2026-10-08). All
+    # optional, so a run stored before them reads as one a person created.
+    #: The planner's NOT_READY verdict, `{kind, reason, needs}` (masked);
+    #: set by the transition to NOT_READY and by nothing else.
+    not_ready: dict[str, Any] | None = None
+    #: Why an `auto` run's approval is waiting, e.g. `territory_overlap:
+    #: run_<id>` -- another live run's plan in the same repository names a
+    #: file this plan does. None when nothing holds it.
+    hold: str | None = None
+    #: The member a run the SWEEP created submits as (`created_by` is
+    #: `issue-sweep`): its repository registration's creator, asked of the
+    #: directory again on every submission (`routes.runs.run_owner_auth`).
+    on_behalf_of: str | None = None
+    #: When the write-back last wrote to the issue. A comment edit moves the
+    #: issue's `updated_at`; the sweep needs to tell its own write from a
+    #: person's edit (`issuesweep`).
+    last_writeback_at: datetime | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -1490,6 +1882,9 @@ class IssueRun:
             "error": self.error,
             "history": [dict(entry) for entry in self.history],
             "open_work": self.open_work,
+            "index_sha": self.index_sha,
+            "index_digest": self.index_digest,
+            "index_context": dict(self.index_context) if self.index_context is not None else None,
             "plan_comment_id": self.plan_comment_id,
             "status_comment_id": self.status_comment_id,
             "pull_request": None if self.pull_request is None else dict(self.pull_request),
@@ -1516,6 +1911,10 @@ class IssueRun:
             "verification_comment_id": self.verification_comment_id,
             "last_verification_posted": self.last_verification_posted,
             "issue_closed": self.issue_closed,
+            "not_ready": dict(self.not_ready) if self.not_ready is not None else None,
+            "hold": self.hold,
+            "on_behalf_of": self.on_behalf_of,
+            "last_writeback_at": self.last_writeback_at,
         }
 
     @classmethod
@@ -1546,6 +1945,12 @@ class IssueRun:
             error=data.get("error"),
             history=[dict(entry) for entry in data.get("history") or []],
             open_work=data.get("open_work"),
+            index_sha=_opt_str(data.get("index_sha")),
+            index_digest=_opt_str(data.get("index_digest")),
+            index_context=(
+                dict(data["index_context"]) if isinstance(data.get("index_context"), Mapping)
+                else None
+            ),
             plan_comment_id=_opt_int(data.get("plan_comment_id")),
             status_comment_id=_opt_int(data.get("status_comment_id")),
             pull_request=(
@@ -1581,6 +1986,15 @@ class IssueRun:
             issue_closed=(
                 data["issue_closed"] if isinstance(data.get("issue_closed"), bool) else None
             ),
+            not_ready=(
+                dict(data["not_ready"]) if isinstance(data.get("not_ready"), Mapping) else None
+            ),
+            hold=_opt_str(data.get("hold")),
+            on_behalf_of=_opt_str(data.get("on_behalf_of")),
+            last_writeback_at=(
+                data["last_writeback_at"]
+                if isinstance(data.get("last_writeback_at"), datetime) else None
+            ),
         )
 
     def to_api(self) -> dict[str, Any]:
@@ -1615,6 +2029,12 @@ class IssueRun:
             "open_work": (
                 None if self.open_work is None
                 else {**self.open_work, "read_at": _iso(self.open_work.get("read_at"))}
+            ),
+            # Which index the plan was made from, or why there was none.
+            "index_sha": self.index_sha,
+            "index_digest": self.index_digest,
+            "index_context": (
+                None if self.index_context is None else dict(self.index_context)
             ),
             # The write-back: the comment ids, the pull request's link and the
             # last write's error. The digests and the author are bookkeeping.
@@ -1674,6 +2094,17 @@ class IssueRun:
             "verification": self.verification,
             "verification_comment_id": self.verification_comment_id,
             "issue_closed": self.issue_closed,
+            # The sweeper: the planner's NOT_READY verdict, why an auto
+            # approval waits, and whom a swept run submits as.
+            "not_ready": (
+                None if self.not_ready is None else {
+                    "kind": _opt_str(self.not_ready.get("kind")),
+                    "reason": _opt_str(self.not_ready.get("reason")),
+                    "needs": [str(n) for n in self.not_ready.get("needs") or []],
+                }
+            ),
+            "hold": self.hold,
+            "on_behalf_of": self.on_behalf_of,
         }
 
 
@@ -1723,6 +2154,9 @@ PATCHABLE_FIELDS: frozenset[str] = frozenset({
     "requirements_met", "requirements_unmet", "requirements_note",
     "merge",
     "verification_comment_id", "last_verification_posted", "issue_closed",
+    # The sweeper's bookkeeping: why an auto approval waits (cleared when it
+    # stops waiting), and when the write-back last wrote to the issue.
+    "hold", "last_writeback_at",
 })
 
 
@@ -1841,6 +2275,53 @@ class IssueRuns:
         ]
         rows.sort(key=lambda r: (r.created_at, r.id))
         return rows[:limit], len(rows) > limit
+
+    def live(self, tenant_id: str, *, limit: int) -> tuple[list[IssueRun], bool]:
+        """Up to `limit` of the tenant's NON-TERMINAL runs, oldest first, and
+        whether there were more. PLANNED runs waiting for a person included:
+        they are live work on their issue, and they count against the
+        sweeper's cap (`issuesweep`). Index: issue-runs-tenant-state-created.
+        """
+        live_states = sorted(s.value for s in RunState if s not in TERMINAL_RUN_STATES)
+        query = (
+            self._db.collection(RUNS_COLLECTION)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("state", "in", live_states))
+            .order_by("created_at", direction=firestore.Query.ASCENDING)
+            .limit(limit + 1)
+        )
+        rows = [IssueRun.from_firestore(snap.to_dict()) for snap in query.stream()]
+        rows = [
+            row for row in rows
+            if row.tenant_id == tenant_id and row.state not in TERMINAL_RUN_STATES
+        ]
+        rows.sort(key=lambda r: (r.created_at, r.id))
+        return rows[:limit], len(rows) > limit
+
+    def for_issue(self, tenant_id: str, ref: IssueRef, *, limit: int = 50) -> list[IssueRun]:
+        """The tenant's runs of ONE issue, newest first, at most `limit`.
+
+        Equality filters only, so Firestore serves it by merging the
+        automatic single-field indexes and it needs no composite index; the
+        order is applied here. Filtered again in the application, as every
+        read is.
+        """
+        query = (
+            self._db.collection(RUNS_COLLECTION)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("issue.number", "==", ref.number))
+            .where(filter=FieldFilter("issue.repo", "==", ref.repo))
+            .where(filter=FieldFilter("issue.owner", "==", ref.owner))
+            .limit(limit)
+        )
+        rows = [IssueRun.from_firestore(snap.to_dict()) for snap in query.stream()]
+        rows = [
+            row for row in rows
+            if row.tenant_id == tenant_id and row.issue.number == ref.number
+            and row.issue.repository.lower() == ref.repository.lower()
+        ]
+        rows.sort(key=lambda r: (r.created_at, r.id), reverse=True)
+        return rows
 
     def transition(
         self,

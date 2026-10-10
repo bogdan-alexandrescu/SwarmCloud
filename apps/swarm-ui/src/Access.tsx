@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   disableAccessOwner, disconnectGitHub, enableAccessOwner, loadAccess, loadAccessMembers, loadAccessOwners,
-  loadAccessRepositories, putAccessGrant, revokeAccessGrant, typedRepoId, verifyAccessGrant,
+  loadAccessRepositories, putAccessGrant, requestAccessInstall, revokeAccessGrant, typedRepoId, verifyAccessGrant,
 } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, Dash, EmptyState, ToneMark } from './components'
 import type { ApiError, Result } from './fetch'
@@ -36,10 +36,24 @@ import './styles/onboarding.css'
  *   * D8 -- the App asks for contents, pull requests, issues and checks (read);
  *     not workflows write, so a change under `.github/workflows/` cannot be
  *     pushed through SwarmCloud;
- *   * D6 -- verification reads only. The opt-in write test (create and delete
- *     `swarmcloud/onboarding-check-<nonce>`) is not served by OB4's verify
- *     (`access.py`: "D6's opt-in branch write test is not built here"), so its
- *     column says not offered yet and nothing on this page writes to GitHub.
+ *   * D6 -- verification reads only by default. The opt-in Push test, on a
+ *     write grant only, creates and deletes one
+ *     `swarmcloud/onboarding-check-<nonce>` branch (`access.verify` with
+ *     `checks: ["push_test"]`). It is the one thing on this page that writes
+ *     to a repository, so it asks first, names the branch pattern and the
+ *     repository, and when the delete failed names the branch left behind so
+ *     the person can delete it.
+ *
+ * AN OWNER ENABLED BY TOKEN (D5) says "via token": the person stored a
+ * fallback token for it (Admin settings, or `sc setup token --owner`), and
+ * SwarmCloud reaches it with that token, not the App.
+ *
+ * AN INSTALL SOMEONE ELSE APPROVES (§2.3 ORG_APPROVAL_PENDING). GitHub shows
+ * a user token no pending install request, so Request install on an org
+ * opens the App's install page -- where GitHub offers a non-owner its request
+ * form -- and records the request with `POST .../install-request`. The row
+ * then draws the §2.3 copy the server sent until GitHub lists the
+ * installation (re-checked on every owners read and by the 15-minute sweep).
  *
  * CHOOSER A: owners on the left -- the installations, plus the person's orgs
  * with none -- and the selected owner's repositories on the right, ONE PAGE AT
@@ -179,7 +193,8 @@ export function AccessPolicy() {
         <li data-rule="D6">
           <b>Verifying only reads.</b> Clone reads the upload-pack advertisement, Push the receive-pack advertisement
           and your push permission, Pull request the installation's pull-request permission. Nothing is written to
-          GitHub. The opt-in write test is not offered yet.
+          GitHub unless you ask: Push test, on a write grant, creates one branch named{' '}
+          <code>swarmcloud/onboarding-check-&lt;nonce&gt;</code> and deletes it again.
         </li>
       </ul>
     </Card>
@@ -295,6 +310,8 @@ function Connection({ connection, onChange }: { connection: GitHubConnection | n
 
 function ownerWords(o: AccessOwner): string {
   const kind = o.owner_type === 'User' ? 'your account' : 'organisation'
+  if (o.method === 'pat') return `${kind} · via token`
+  if (o.install_state === 'requested') return `${kind} · install requested`
   if (o.install_state !== 'installed') return `${kind} · not installed`
   return `${kind} · ${o.repository_selection === 'all' ? 'all repositories' : 'selected repositories'}`
 }
@@ -354,6 +371,37 @@ function Owners({
     onChange()
   }
 
+  // GitHub decides on its own page whether this person installs or requests;
+  // the page opens first, in the click, so no popup blocker stands between
+  // them, and the request is recorded beside it. An owner already enabled
+  // answers `recorded: false` and is drawn as it is on the re-read.
+  async function request(o: AccessOwner) {
+    if (busy !== null) return
+    if (isGitHubUrl(o.install_url)) window.open(o.install_url, '_blank', 'noopener,noreferrer')
+    setBusy(o.owner)
+    setRefused(null)
+    const res = await requestAccessInstall(o.owner)
+    setBusy(null)
+    if (res.status === 'error') {
+      setRefused({ owner: o.owner, error: res.error })
+      return
+    }
+    onChange()
+  }
+
+  /** Withdraw a request: the same DELETE as Remove, which for a requested owner deletes only the request. */
+  async function withdraw(owner: string) {
+    setBusy(owner)
+    setRefused(null)
+    const res = await disableAccessOwner(owner)
+    setBusy(null)
+    if (res.status === 'error') {
+      setRefused({ owner, error: res.error })
+      return
+    }
+    onChange()
+  }
+
   return (
     <div className="ac-owners">
       <ul className="ac-owner-list" aria-label="Owners your connection reaches">
@@ -404,6 +452,15 @@ function Owners({
                       Remove
                     </Button>
                   )
+                ) : o.install_state === 'requested' ? (
+                  <>
+                    <Button size="sm" disabled={busy !== null} onClick={onChange}>
+                      Re-check
+                    </Button>
+                    <Button size="sm" kind="ghost" busy={busy === o.owner} disabled={busy !== null && busy !== o.owner} onClick={() => void withdraw(o.owner)}>
+                      Withdraw request
+                    </Button>
+                  </>
                 ) : o.install_state === 'installed' ? (
                   <Button
                     size="sm"
@@ -415,13 +472,34 @@ function Owners({
                     Enable
                   </Button>
                 ) : isGitHubUrl(o.install_url) ? (
-                  <ButtonLink size="sm" kind="primary" href={o.install_url} target="_blank" rel="noreferrer">
-                    Install on {o.owner}
-                  </ButtonLink>
+                  <>
+                    <ButtonLink size="sm" kind="primary" href={o.install_url} target="_blank" rel="noreferrer">
+                      Install on {o.owner}
+                    </ButtonLink>
+                    {o.owner_type === 'Organization' && (
+                      <Button
+                        size="sm"
+                        busy={busy === o.owner}
+                        disabled={busy !== null && busy !== o.owner}
+                        title={`Not an owner of ${o.owner}? GitHub lets you ask its owners to install the App`}
+                        onClick={() => void request(o)}
+                      >
+                        Request install
+                      </Button>
+                    )}
+                  </>
                 ) : (
                   <Dash why="The App's install page is not configured on this API" />
                 )}
               </div>
+              {o.install_state === 'requested' && typeof o.copy === 'string' && (
+                <div className="ob-issue" data-code={o.code ?? 'ORG_APPROVAL_PENDING'}>
+                  <p className="ur-small">
+                    <b>{o.code ?? 'ORG_APPROVAL_PENDING'}</b> {o.copy}
+                  </p>
+                  {typeof o.requested_at === 'string' && <small className="ur-mu">asked {timeAgo(o.requested_at)}</small>}
+                </div>
+              )}
               {refused !== null && refused.owner === o.owner && (
                 <AccessRefusal error={refused.error} title={`${o.owner} was not changed`} onRetry={onChange} />
               )}
@@ -722,9 +800,27 @@ function CheckCell({ grant, name, label }: { grant: AccessGrant; name: AccessChe
   return <UrCap label={label} cell={{ state, reason }} word={state} />
 }
 
+/**
+ * D6's opt-in push test, as the grid draws it. A read grant is never offered
+ * one: SwarmCloud enforces read (D9), and the API refuses it before GitHub is
+ * reached. A write grant shows its last answer -- ok, missing or unknown,
+ * unknown never a pass -- or that it has not been run.
+ */
+function PushTestCell({ grant, check }: { grant: AccessGrant; check: AccessCheck | undefined }) {
+  if (grant.mode !== 'write') return <Dash why="Push test is not offered on a read grant: SwarmCloud never pushes there (D9)" />
+  if (check === undefined) return <UrCap label="Push test" cell={{ state: 'unknown', reason: 'Not run: it is opt-in' }} word="not run" />
+  const state = check.state === 'ok' || check.state === 'missing' ? check.state : 'unknown'
+  const reason = [check.code, check.checked_at ? `run ${timeAgo(check.checked_at)}` : null].filter(Boolean).join(' · ') || null
+  return <UrCap label="Push test" cell={{ state, reason }} word={state} />
+}
+
 function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => void }) {
   const [busy, setBusy] = useState<string | null>(null)
   const [failures, setFailures] = useState<Record<string, AccessVerifyFailure[]>>({})
+  /** The grant whose push test is waiting for a yes. Nothing is written before it. */
+  const [confirming, setConfirming] = useState<string | null>(null)
+  /** Each push test's own answer, newest first over the overview's: the person just ran it. */
+  const [pushed, setPushed] = useState<Record<string, AccessCheck>>({})
   const [refused, setRefused] = useState<{ repo: string; error: ApiError } | null>(null)
   const [all, setAll] = useState(false)
   const [filter, setFilter] = useState('')
@@ -742,6 +838,26 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
       return
     }
     if (res.status === 'ok') setFailures((f) => ({ ...f, [g.repo_id]: res.data.failures }))
+  }
+
+  async function pushTest(g: AccessGrant): Promise<void> {
+    setConfirming(null)
+    setBusy(g.repo_id)
+    setRefused(null)
+    const res = await verifyAccessGrant(g.repo_id, ['push_test'])
+    setBusy(null)
+    if (res.status === 'error') {
+      setRefused({ repo: g.repo_id, error: res.error })
+      return
+    }
+    if (res.status !== 'ok') return
+    const check = res.data.grant.checks.push_test
+    const answered = res.data.push_test
+    if (check !== undefined) {
+      setPushed((p) => ({ ...p, [g.repo_id]: answered !== undefined ? { ...check, ...answered } : check }))
+    }
+    setFailures((f) => ({ ...f, [g.repo_id]: res.data.failures }))
+    onChange()
   }
 
   async function verifyAll() {
@@ -807,13 +923,14 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
             {CHECKS.map((c) => (
               <span key={c.key}>{c.label}</span>
             ))}
-            <span>Write test</span>
+            <span>Push test</span>
             <span />
           </div>
           <ul className="ac-grid" aria-label="Your granted repositories, failures first">
             {sorted.map((g) => {
               const rank = grantRank(g)
               const fails = failures[g.repo_id] ?? []
+              const pushCheck = pushed[g.repo_id] ?? g.checks.push_test
               return (
                 <li key={g.repo_id} className={`ac-grant is-rank-${rank}`} data-repo={g.repository} data-rank={rank}>
                   <div className="ac-row-name">
@@ -846,18 +963,57 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
                       <CheckCell grant={g} name={c.key} label={c.label} />
                     </span>
                   ))}
-                  <span className="ac-cell" data-check="write_test">
-                    <span className="ac-cell-l">Write test</span>
-                    <Dash why="The opt-in write test (D6) is not served by this API yet; verification only reads" />
+                  <span className="ac-cell" data-check="push_test">
+                    <span className="ac-cell-l">Push test</span>
+                    <PushTestCell grant={g} check={pushCheck} />
                   </span>
                   <span className="ac-grant-acts">
                     <Button size="sm" busy={busy === g.repo_id} onClick={() => void verify(g).then(onChange)}>
                       Verify
                     </Button>
+                    {g.mode === 'write' && (
+                      <Button size="sm" disabled={busy === g.repo_id} onClick={() => setConfirming(g.repo_id)}>
+                        Push test
+                      </Button>
+                    )}
                     <Button size="sm" kind="ghost" disabled={busy === g.repo_id} onClick={() => void change(g, 'remove')}>
                       Remove
                     </Button>
                   </span>
+                  {confirming === g.repo_id && (
+                    <div className="ac-fails">
+                      <Banner
+                        tone="warn"
+                        title={`Write a test branch to ${g.repository}?`}
+                        actions={
+                          <>
+                            <Button kind="primary" size="sm" onClick={() => void pushTest(g)}>
+                              Run push test
+                            </Button>
+                            <Button size="sm" onClick={() => setConfirming(null)}>
+                              Cancel
+                            </Button>
+                          </>
+                        }
+                      >
+                        <p className="ur-small">
+                          SwarmCloud creates one branch, <code>swarmcloud/onboarding-check-&lt;nonce&gt;</code>, at the
+                          head of {g.repository}'s default branch, as you, and deletes it straight away. It is the only
+                          check that writes to GitHub.
+                        </p>
+                      </Banner>
+                    </div>
+                  )}
+                  {pushCheck?.leftover === true && typeof pushCheck.branch === 'string' && (
+                    <div className="ac-fails">
+                      <Banner tone="warn" title="A test branch was left behind" role="status">
+                        <p className="ur-small">
+                          The push worked, but GitHub did not confirm the delete, so <code>{pushCheck.branch}</code> was
+                          left behind in {g.repository}. Delete it on GitHub; SwarmCloud does not push to it.
+                        </p>
+                      </Banner>
+                    </div>
+                  )}
                   {fails.length > 0 && (
                     <div className="ac-fails">
                       {fails.map((f, i) => (

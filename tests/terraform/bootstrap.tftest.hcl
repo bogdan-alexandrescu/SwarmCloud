@@ -384,6 +384,123 @@ run "the_ci_fixer_is_bound_to_its_one_workflow_on_main" {
   }
 }
 
+# accept.yml federates as its own account, never the deployer (owner decision
+# 2026-10-08, cuts A and C of the release timing report;
+# terraform/bootstrap/acceptance.tf). It starts verification executions and
+# reads release records, so every grant is held to that.
+run "the_acceptance_identity_is_bound_to_accept_yml_on_main_and_can_only_run_jobs" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  override_resource {
+    target          = google_iam_workload_identity_pool.github
+    override_during = plan
+    values = {
+      name = "projects/209012342332/locations/global/workloadIdentityPools/swarm-github"
+    }
+  }
+
+  override_resource {
+    target          = google_project_iam_custom_role.acceptance_runner
+    override_during = plan
+    values = {
+      name = "projects/saga-agents-staging/roles/swarmAcceptanceRunner"
+    }
+  }
+
+  variables {
+    enable_github_wif = true
+    github_repository = "saga/agent-swarm-infra"
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.acceptance_wif[0].member == "principalSet://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/saga/agent-swarm-infra/.github/workflows/accept.yml@refs/heads/main"
+    error_message = "the acceptance identity must be federated to exactly accept.yml on refs/heads/main, and nothing wider"
+  }
+
+  assert {
+    condition     = google_service_account_iam_member.acceptance_wif[0].role == "roles/iam.workloadIdentityUser"
+    error_message = "accept.yml federates through workloadIdentityUser; no key, and no hop from the deployer"
+  }
+
+  assert {
+    condition     = google_service_account.acceptance[0].account_id != google_service_account.deployer[0].account_id
+    error_message = "the acceptance identity must not be the deployer"
+  }
+
+  # Run and read, never change: no create, update, delete or IAM permission.
+  # The one exception is run.executions.cancel on the runner role, which
+  # accept.yml uses to stop swarm-verify executions an earlier cancelled run
+  # left running; it cannot create or delete anything.
+  assert {
+    condition = alltrue([
+      for p in setunion(google_project_iam_custom_role.acceptance_runner[0].permissions, google_project_iam_custom_role.acceptance_lister[0].permissions) :
+      !can(regex("\\.(create|update|delete|setIamPolicy)$", p))
+    ])
+    error_message = "the acceptance roles may start, read and cancel executions only"
+  }
+
+  assert {
+    condition = alltrue([
+      for p in google_project_iam_custom_role.acceptance_lister[0].permissions : !can(regex("\\.cancel$", p))
+      ]) && alltrue([
+      for p in google_project_iam_custom_role.acceptance_runner[0].permissions :
+      !can(regex("\\.cancel$", p)) || p == "run.executions.cancel"
+    ])
+    error_message = "the only cancel permission is run.executions.cancel, on the runner role"
+  }
+
+  # The runner grant is project-wide and UNCONDITIONED (owner decision
+  # 2026-10-09, #965): Cloud Run exposes no resource.name to IAM Conditions, so
+  # the old job-name condition matched nothing. What bounds it is the role's
+  # permissions (the two asserts above: no create, update, delete or
+  # setIamPolicy, and run.executions.cancel the only cancel), so those are
+  # held here alongside the absent condition.
+  assert {
+    condition     = length(google_project_iam_member.acceptance_runs_jobs[0].condition) == 0
+    error_message = "the acceptance runner binding must carry no condition: Cloud Run cannot evaluate one, and a condition here denies every job (#965)"
+  }
+
+  assert {
+    condition     = google_project_iam_member.acceptance_runs_jobs[0].role == "projects/saga-agents-staging/roles/swarmAcceptanceRunner" && google_project_iam_custom_role.acceptance_runner[0].role_id == "swarmAcceptanceRunner"
+    error_message = "the unconditioned project grant must be swarmAcceptanceRunner and nothing broader"
+  }
+
+  # Cloud Logging and Cloud Storage DO evaluate resource.name, so those two
+  # grants keep their conditions.
+  assert {
+    condition     = length(google_project_iam_member.acceptance_reads_verify_logs[0].condition) == 1 && length(google_storage_bucket_iam_member.acceptance_reads_release_records[0].condition) == 1
+    error_message = "the log-view and releases/ grants must stay conditioned"
+  }
+
+  assert {
+    condition     = google_project_iam_member.acceptance_reads_verify_logs[0].condition[0].expression == "resource.name == \"projects/saga-agents-staging/locations/global/buckets/_Default/views/swarm-verify\""
+    error_message = "the acceptance identity may read the swarm-verify log view and no other log"
+  }
+
+  # The state bucket also holds every root's state: releases/ only.
+  assert {
+    condition     = google_storage_bucket_iam_member.acceptance_reads_release_records[0].role == "roles/storage.objectViewer" && google_storage_bucket_iam_member.acceptance_reads_release_records[0].condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-tfstate-saga-agents-staging/objects/releases/\")"
+    error_message = "the acceptance identity may read releases/ in the state bucket, never a state object"
+  }
+}
+
+run "the_acceptance_identity_is_absent_without_wif" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  assert {
+    condition     = length(google_service_account.acceptance) == 0 && length(google_service_account_iam_member.acceptance_wif) == 0
+    error_message = "no acceptance identity exists while GitHub workload identity is off"
+  }
+}
+
 run "the_ci_fixer_binding_is_absent_until_an_account_is_named" {
   command = plan
 
@@ -489,10 +606,10 @@ run "the_deployer_is_bound_to_its_workflow_files_on_main" {
   # Compared whole, as a set: a file added, dropped or widened fails here.
   assert {
     condition = toset([for m in values(google_service_account_iam_member.deployer_wif) : m.member]) == toset([
-      for f in ["application.yml", "iam-refusal-probe.yml", "release.yml", "security.yml", "terraform.yml"] :
+      for f in ["application.yml", "hotfix.yml", "iam-refusal-probe.yml", "release.yml", "security.yml", "terraform.yml"] :
       "principalSet://iam.googleapis.com/projects/209012342332/locations/global/workloadIdentityPools/swarm-github/attribute.job_workflow_ref/saga/agent-swarm-infra/.github/workflows/${f}@refs/heads/main"
     ])
-    error_message = "the deployer must be federated to exactly release.yml, application.yml, terraform.yml, security.yml and iam-refusal-probe.yml on refs/heads/main"
+    error_message = "the deployer must be federated to exactly release.yml, hotfix.yml, application.yml, terraform.yml, security.yml and iam-refusal-probe.yml on refs/heads/main"
   }
 
   # Said separately from the equality above, so that relaxing it cannot
@@ -536,8 +653,8 @@ run "the_deployer_pin_covers_every_allowed_ref" {
   }
 
   assert {
-    condition     = length(google_service_account_iam_member.deployer_wif) == 10
-    error_message = "one binding per (workflow file, allowed ref): five files on two refs"
+    condition     = length(google_service_account_iam_member.deployer_wif) == 12
+    error_message = "one binding per (workflow file, allowed ref): six files on two refs"
   }
 
   assert {

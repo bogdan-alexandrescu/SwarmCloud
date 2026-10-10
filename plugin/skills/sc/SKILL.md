@@ -163,13 +163,16 @@ The one verb that writes: it spends the shared pool, a step at a time.
    shared pool". Then run it; do not wait for a reply the developer did not
    ask to give.
 3. Call `swarm_workflow_launch` with `{spec_path: "<its absolute path>"}`
-   given a file, or `{spec: <the spec object>}` given JSON text, and launch
+   given a file under this session's checkout (the bridge refuses a spec
+   file outside it; pass such a file's parsed object as `spec` instead), or
+   `{spec: <the spec object>}` given JSON text, and launch
    the `script_path` it returns (see "Every run is titled after its
    workflow"). Run that script with the spec OBJECT as its args — never
    a bare path, and never the JSON as a string: a path makes a haiku agent
    retype the spec, which is how long specs came back altered and were
-   refused. Given a file, the args are `{spec: <the spec object>, spec_path:
-   "<its absolute path>"}`; given JSON text, `{spec: <the spec object>}`.
+   refused. Given a file under the checkout, the args are `{spec: <the spec
+   object>, spec_path: "<its absolute path>"}`; given JSON text, or a file
+   outside the checkout, `{spec: <the spec object>}`.
    `spec_path` beside the object is a reference, not the spec: the bridge
    reads those exact bytes for the submission and checks them against the
    digest of the object, so nothing is retyped and a spec that changed on the

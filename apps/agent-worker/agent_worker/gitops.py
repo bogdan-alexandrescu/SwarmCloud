@@ -39,6 +39,7 @@ leaves either way) and would turn away public repositories that work today.
 
 from __future__ import annotations
 
+import errno
 import ipaddress
 import json
 import os
@@ -701,7 +702,6 @@ def _write_credentials(url: str, token: str, private_dir: Path) -> Path | None:
     host = _credential_host(url)
     if host is None:
         return None
-    private_dir.mkdir(parents=True, exist_ok=True)
     cred_file = private_dir / ".git-credentials"
     entry = urlunparse(
         (
@@ -719,22 +719,39 @@ def _write_credentials(url: str, token: str, private_dir: Path) -> Path | None:
     # and a file created with the default mode is readable until the chmod.
     # Whatever is at the name is unlinked first -- unlink never follows a
     # link -- and O_EXCL then refuses anything that appears in between.
+    #
+    # Any OSError here is a GitError (#346): a folder the agent planted at the
+    # name fails unlink with EISDIR, and every caller lets anything but a
+    # GitError escape the publish as a crash. The message names the error
+    # class and errno only -- never the path, never what was being written.
     try:
-        cred_file.unlink()
-    except FileNotFoundError:
-        pass
-    fd = os.open(
-        cred_file,
-        os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-        stat.S_IRUSR | stat.S_IWUSR,
-    )
-    try:
-        data = (entry + "\n").encode()
-        view = memoryview(data)
-        while view:
-            view = view[os.write(fd, view):]
-    finally:
-        os.close(fd)
+        private_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            cred_file.unlink()
+        except FileNotFoundError:
+            pass
+        fd = os.open(
+            cred_file,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            stat.S_IRUSR | stat.S_IWUSR,
+        )
+        try:
+            data = (entry + "\n").encode()
+            view = memoryview(data)
+            while view:
+                view = view[os.write(fd, view):]
+        except OSError:
+            # No caller is handed the path to remove, so a part-written
+            # token is removed here.
+            cred_file.unlink(missing_ok=True)
+            raise
+        finally:
+            os.close(fd)
+    except OSError as exc:
+        code = errno.errorcode.get(exc.errno or -1, "no errno")
+        raise GitError(
+            f"could not write the git credential file ({type(exc).__name__}: {code})"
+        ) from None
     return cred_file
 
 
@@ -1298,6 +1315,319 @@ def clone_at_commit(
     )
 
 
+# ---------------------------------------------------------------------------
+# Clone bundles: a known commit without GitHub on the start path (#940)
+# ---------------------------------------------------------------------------
+#
+# MEASURED (#721): a step's clone spent a median 36.6 s (p90 69.5 s) in the TCP
+# connect to GitHub, against 1.7 s of transfer. The bytes are cheap; reaching
+# the forge is not. A step that needs a commit the platform has already cloned
+# (a workflow step's base pin, a carried parent head) can take it from a git
+# bundle in the tenant's own GCS prefix, which answers over Private Google
+# Access at once, and never contact GitHub at all.
+#
+# The git half lives here and touches no cloud: `write_clone_bundle` turns a
+# fresh depth-1 clone into a one-commit bundle, `clone_from_bundle` turns that
+# bundle back into a repository indistinguishable from `clone_at_commit`'s,
+# and `fetch_tip_onto_bundle` moves such a repository to a branch's newer tip,
+# fetching only the delta. Where a bundle is stored and who may read it is the
+# caller's business; nothing here knows a bucket.
+
+#: The one ref a clone bundle carries. Not a branch: a bundle holds objects
+#: and this name, never the clone's branches, config or remote.
+CLONE_BUNDLE_REF = "refs/swarm/bundle"
+
+
+def _git_stdout(logs_dir: Path, label: str, index: int = 0) -> str:
+    """What step `index` of a `_run_git_steps(label=...)` call wrote to stdout."""
+    try:
+        return (logs_dir / f"{label}-{index}.out.log").read_text(errors="replace").strip()
+    except OSError:
+        return ""
+
+
+def write_clone_bundle(
+    *,
+    clone: Path,
+    commit: str,
+    out: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> int:
+    """Write the one commit a depth-1 clone holds to the bundle `out`; its size in bytes.
+
+    WHY: a later step that needs `commit` clones it from this bundle instead of
+    from GitHub, skipping the connect #721 measured at a median 36.6 s for a
+    1.7 s transfer (`clone_from_bundle`).
+
+    REFUSED (`GitError`, and no `out`) unless the clone is depth 1 at `commit`:
+    `.git/shallow` names exactly `commit`, or there is no `.git/shallow` and
+    `commit` is a root commit. An index run's clone is deepened to 90 days of
+    history (`deepen_history`), and that history is never bundled: a bundle
+    is the cost of one checkout, not of an extractor's window.
+
+    WHAT IS IN IT: the objects of that one commit and one ref,
+    `CLONE_BUNDLE_REF`. A bundle is a pack and a ref list, so the clone's
+    config, its remote URL and any credential file stay out by construction.
+    The ref is created for the bundle and deleted again on every path: git
+    bundles refs, not bare shas.
+    """
+    if not _FULL_SHA_RE.match(commit or ""):
+        raise GitError(f"refusing to bundle {str(commit)[:60]!r}: not a full commit sha")
+    clone = Path(clone)
+    out = Path(out)
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    if not (clone / ".git").is_dir():
+        raise GitError("refusing to bundle: not a git clone")
+    shallow = clone / ".git" / "shallow"
+    if shallow.exists():
+        try:
+            boundary = shallow.read_text(errors="replace").split()
+        except OSError as exc:
+            raise GitError(f"refusing to bundle: .git/shallow unreadable ({type(exc).__name__})") \
+                from None
+        if boundary != [commit]:
+            raise GitError(
+                f"refusing to bundle: the clone is not one commit deep at {commit} "
+                f"({len(boundary)} shallow boundaries)"
+            )
+    # No URL and no token: nothing this function runs reaches a forge.
+    env, config_args, _ = _clone_env("", None, private_dir, logger)
+    g = [git_binary, *config_args, "-C", str(clone)]
+    steps = dict(url="", token=None, private_dir=private_dir, env=env, logs_dir=logs_dir,
+                 timeout_seconds=timeout_seconds, logger=logger)
+    _run_git_steps([[*g, "rev-list", "--count", commit]], label="git-bundle-depth", **steps)
+    count = _git_stdout(logs_dir, "git-bundle-depth")
+    if count != "1":
+        raise GitError(
+            f"refusing to bundle: {commit} has {count or 'unknown'} commits of history, not 1"
+        )
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.unlink(missing_ok=True)
+    try:
+        seconds = _run_git_steps(
+            [
+                [*g, "update-ref", "--no-deref", CLONE_BUNDLE_REF, commit],
+                [*g, "bundle", "create", "--quiet", str(out), CLONE_BUNDLE_REF],
+            ],
+            label="git-bundle", **steps,
+        )
+        size = out.stat().st_size
+    except (GitError, OSError) as exc:
+        out.unlink(missing_ok=True)
+        if isinstance(exc, GitError):
+            raise GitError(str(exc)) from None      # a local step: never a forge outage
+        raise GitError(f"the bundle was not written ({type(exc).__name__})") from None
+    finally:
+        try:
+            _run_git_steps([[*g, "update-ref", "-d", CLONE_BUNDLE_REF]],
+                           label="git-bundle-unref", **steps)
+        except GitError as exc:
+            logger.warning("clone bundle: the temporary ref was not removed",
+                           error=type(exc).__name__)
+    logger.info("clone bundle written", commit=commit, bytes=size, seconds=round(seconds, 2))
+    return size
+
+
+def clone_from_bundle(
+    *,
+    bundle: Path,
+    url: str,
+    branch: str | None,
+    commit: str,
+    destination: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> CloneResult:
+    """Check out exactly `commit` from a clone bundle, without contacting the forge.
+
+    WHY: #721 measured a median 36.6 s TCP connect to GitHub per clone against
+    1.7 s of transfer. A step whose commit is already known (a base pin, a
+    carried parent head) takes it from the bundle `write_clone_bundle` wrote,
+    and GitHub is off its start path entirely. So there is NO `await_egress`
+    here and NO token: the forge is not contacted, and nothing is held that
+    could be sent to it.
+
+    The result is the repository `clone_at_commit` leaves: `origin` is `url`
+    (the forge, not the bundle, so every later fetch, deepen and push behaves
+    as it always did), `.git/shallow` names `commit`, HEAD is detached at it,
+    and no ref or FETCH_HEAD remembers where the bundle was on disk.
+
+    `.git/shallow` is written BEFORE the fetch. Measured 2026-10-09 on git
+    2.39: `git clone x.bundle` of a bundle made from a shallow clone fails
+    "Could not read <parent>", because the commit names a parent the bundle
+    does not hold; with the commit declared a shallow boundary first, the
+    fetch's connectivity check stops there and the commit lands.
+
+    Raises `GitError` -- never `GitTransient`, a bundle is no forge outage to
+    retry -- after emptying `destination`, when the bundle is missing, corrupt
+    or holds another commit: the caller then clones from the forge as before.
+    `phases` carries `source: "bundle"` and `total_seconds`, git's wall time;
+    the caller adds the download.
+    """
+    url = validate_repository_url(url)
+    branch = validate_ref(branch)
+    if not _FULL_SHA_RE.match(commit or ""):
+        raise GitError(f"refusing to pin to {str(commit)[:60]!r}: not a full commit sha")
+    bundle = Path(bundle).absolute()
+    destination = Path(destination)
+    destination.mkdir(parents=True, exist_ok=True)
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+
+    env, config_args, _ = _clone_env(url, None, private_dir, logger)
+    g = [git_binary, *config_args, "-C", str(destination)]
+    setup = [
+        [git_binary, *config_args, "init", "--quiet", str(destination)],
+        [*g, "remote", "add", "origin", url],
+    ]
+    land = [
+        [*g, "fetch", "--quiet", "--no-tags", "--", str(bundle), CLONE_BUNDLE_REF],
+        [*g, "checkout", "--quiet", commit],
+    ]
+    total = 0.0
+    trace = _CloneTrace.create(private_dir)
+    env = trace.env(env)
+    steps = dict(url=url, token=None, private_dir=private_dir, env=env, logs_dir=logs_dir,
+                 timeout_seconds=timeout_seconds, logger=logger)
+    phases: dict[str, Any] = {}
+    failed: GitError | None = None
+    try:
+        try:
+            total += _run_git_steps(setup, label="git-bundle-init", **steps)
+            try:
+                (destination / ".git" / "shallow").write_text(commit + "\n")
+            except OSError as exc:
+                raise GitError(f"could not write .git/shallow ({type(exc).__name__})") from None
+            total += _run_git_steps(land, label="git-bundle-clone", **steps)
+            (destination / ".git" / "FETCH_HEAD").unlink(missing_ok=True)
+        except GitError as exc:
+            # A timeout or "connection" text here is the local disk, not the forge.
+            failed = GitError(str(exc)) if isinstance(exc, GitTransient) else exc
+            _empty_directory(destination)
+            raise failed from None
+    finally:
+        phases = trace.collect()
+        phases.update(source="bundle", total_seconds=round(total, 3))
+        if failed is not None:
+            failed.phases = phases
+
+    head = _read_head(destination, private_dir, logs_dir, logger, git_binary)
+    if head != commit:
+        _empty_directory(destination)
+        raise GitError(f"the bundle's checkout landed on {head!r}, not {commit}")
+    logger.info(
+        "repository cloned from a bundle", url=url, ref=branch, commit=head,
+        seconds=round(total, 2), phases=phases,
+    )
+    return CloneResult(
+        path=destination, url=url, ref=branch, commit=head, duration_seconds=total,
+        phases=phases,
+    )
+
+
+def fetch_tip_onto_bundle(
+    *,
+    destination: Path,
+    url: str,
+    ref: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    token: str | None = None,
+    egress: Any = None,
+    peers: PeerPin | None = None,
+    git_binary: str = "git",
+) -> CloneResult:
+    """Move a bundle-seeded repository to the tip of branch `ref`, fetching only the delta.
+
+    WHY: a branch-tip step does not know its commit until it asks the forge,
+    so it still pays GitHub's connect (#721: a median 36.6 s), but the transfer
+    shrinks to what is newer than the branch's last bundle. `destination` must
+    be a `clone_from_bundle` result; its HEAD is offered to the forge as a
+    `have` (`--negotiation-tip=HEAD` -- the seeded repository has no ref the
+    default negotiation would offer), and `--depth 1` keeps the fetch to the
+    tip, as `shallow_clone`'s.
+
+    The forge IS contacted, so this waits for egress and holds the token
+    exactly as `shallow_clone` does: the wait first, the credential file only
+    for the fetch, removed on every path. The repository is then left as
+    `shallow_clone(ref=<branch>)` leaves it: on branch `ref`, tracking
+    `origin/<ref>`.
+
+    A forge that did not answer raises `GitTransient`, so `retry_clone`
+    applies; any `GitError` empties `destination` first, so the caller can
+    clone from the forge into it as before. `phases` carries
+    `source: "bundle+delta"` and `total_seconds`, the fetch's own git time.
+    """
+    url = validate_repository_url(url)
+    ref = validate_ref(ref) or ""
+    if not ref:
+        raise GitError("a delta fetch onto a bundle needs a branch")
+    destination = Path(destination)
+    if not (destination / ".git").is_dir():
+        raise GitError("a delta fetch needs a repository seeded from a bundle")
+    private_dir = Path(private_dir)
+    private_dir.mkdir(parents=True, exist_ok=True)
+    # Before the credential file exists, so a wait does not lengthen its life.
+    await_egress(egress, url, logger)
+
+    env, config_args, cred_file = _clone_env(url, token, private_dir, logger)
+    if peers is not None:
+        config_args += peers.config_args()
+    g = [git_binary, *config_args, "-C", str(destination)]
+    delta = [
+        [
+            *g, "fetch", "--quiet", "--depth", "1", "--no-tags", "--negotiation-tip=HEAD",
+            "origin", f"+refs/heads/{ref}:refs/remotes/origin/{ref}",
+        ],
+        [*g, "checkout", "--quiet", "-B", ref, "--track", f"origin/{ref}"],
+    ]
+    total = 0.0
+    trace = _CloneTrace.create(private_dir)
+    phases: dict[str, Any] = {}
+    failed: GitError | None = None
+    try:
+        total += _run_git_steps(
+            delta, url=url, token=token, private_dir=private_dir, env=trace.env(env),
+            logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+            label="git-bundle-delta",
+        )
+    except GitError as exc:
+        failed = exc
+        _empty_directory(destination)
+        raise
+    finally:
+        _remove_credentials(cred_file, logger)
+        phases = trace.collect()
+        if peers is not None:
+            phases.update(peers.observe(phases))
+        phases.update(source="bundle+delta", total_seconds=round(total, 3))
+        if failed is not None:
+            failed.phases = phases
+
+    head = _read_head(destination, private_dir, logs_dir, logger, git_binary)
+    if head is None:
+        _empty_directory(destination)
+        raise GitError("the delta fetch left no commit checked out")
+    logger.info(
+        "repository moved to the branch tip onto a bundle", url=url, ref=ref, commit=head,
+        seconds=round(total, 2), phases=phases,
+    )
+    return CloneResult(
+        path=destination, url=url, ref=ref, commit=head, duration_seconds=total, phases=phases,
+    )
+
+
 def _empty_directory(path: Path) -> None:
     """Remove everything inside `path`, keeping `path`: a clone needs it empty."""
     for child in list(path.iterdir()) if path.is_dir() else []:
@@ -1408,6 +1738,51 @@ class CommitSummary:
     binary_files: int
 
 
+#: The most per-file rows `summarize_work` keeps in `result_summary.git.files`.
+#: 500 because a row is about 100 bytes of JSON, so a full list stays near 50
+#: KB -- well inside a Firestore document's 1 MiB, which also carries the
+#: commits, the dirty list and everything else in the result summary -- while
+#: covering every change a reviewer reads file by file: a change past 500
+#: files is a vendored tree or a generated one, and the viewer windows the
+#: patch itself for those. `files_truncated` says when the cap was hit, so a
+#: reader never takes the first 500 for the whole change.
+MAX_FILES_LISTED = 500
+
+#: `git diff --name-status` letters, folded to the four the viewer draws.
+#: `T` (a type change, file <-> symlink) is a modification of the path; `C`
+#: never appears, because copy detection is not asked for. Anything else git
+#: may add later reads as `M` rather than as a letter no reader knows.
+_FILE_STATUS = {"A": "A", "M": "M", "D": "D", "R": "R", "T": "M"}
+
+
+@dataclass(frozen=True)
+class FileChange:
+    """One file of the harvested diff: repository paths and counts, never content."""
+
+    path: str
+    #: The path before a rename, else None.
+    old_path: str | None
+    #: One of A, M, D, R.
+    status: str
+    #: Both None on a binary file: git prints "-" for its counts, and a zero
+    #: would claim the file changed no lines rather than that lines do not apply.
+    insertions: int | None
+    deletions: int | None
+    binary: bool
+
+    def as_record(self, scrub: Any) -> dict[str, Any]:
+        """The `result_summary.git.files` row, both paths passed through `scrub`
+        -- a path is agent-chosen text bound for Firestore, like the dirty list."""
+        return {
+            "path": scrub(self.path),
+            "old_path": scrub(self.old_path) if self.old_path is not None else None,
+            "status": self.status,
+            "insertions": self.insertions,
+            "deletions": self.deletions,
+            "binary": self.binary,
+        }
+
+
 @dataclass(frozen=True)
 class WorkSummary:
     """What the agent did to the repository, as facts rather than a guess."""
@@ -1427,6 +1802,11 @@ class WorkSummary:
     patch_omitted: bool
     insertions: int
     deletions: int
+    #: One row per file of the patch's diff, at most `MAX_FILES_LISTED`. None
+    #: when there was no base to diff against, which is "not measured", not
+    #: "no files"; an empty tuple is a measured empty diff.
+    files: tuple[FileChange, ...] | None = None
+    files_truncated: bool = False
 
     @property
     def is_empty(self) -> bool:
@@ -1659,8 +2039,8 @@ def _git_text_full(
     THE FILE IS READ WITH `newline=""` FOR THE SAME REASON `\r` MUST NOT
     DISAPPEAR (#259 review, M2). Universal-newline translation also turns a
     LONE `\r` inside a line (no `\n` after it) into a `\n`, which splits that
-    one line into two. `lifecycle._adds_a_credential` reads only lines
-    starting with `+`; a line the translation split in two loses its `+`
+    one line into two. The publish scan (`lifecycle._DiffLeakScanner`) reads
+    only lines starting with `+`; a line the translation split in two loses its `+`
     prefix on the second half, so a credential that started after an embedded
     `\r` was read as un-prefixed context and never scanned. `newline=""`
     disables the translation: whatever bytes the stream carried are what this
@@ -1846,6 +2226,78 @@ def _parse_log(stream: str) -> tuple[list[CommitSummary], int, int]:
     return commits, total_add, total_del
 
 
+def _parse_file_changes(numstat: str, name_status: str) -> list[FileChange]:
+    """Join `git diff -z -M --numstat` and `--name-status` output into rows.
+
+    `-z` on both: without it git C-quotes a path holding a tab, a newline or a
+    non-ASCII byte, and a rename prints as `old => new` in one field. With it,
+    a numstat record is `adds TAB dels TAB path NUL`, or for a rename
+    `adds TAB dels TAB NUL old NUL new NUL`; a name-status record is
+    `letter NUL path NUL`, or `R<score> NUL old NUL new NUL`. The two are
+    joined on the new path rather than by position, so a reordering in some
+    future git costs a status letter, not a wrong one.
+
+    Only NUL-TERMINATED fields are read: the piece after the last NUL is
+    either empty or the tail of a capture cut at its byte cap, and reading a
+    cut path would list a file that does not exist.
+    """
+    statuses: dict[str, str] = {}
+    fields = name_status.split("\0")[:-1]
+    i = 0
+    while i + 1 < len(fields):
+        letter = fields[i]
+        if not letter:
+            break
+        if letter[0] in "RC":
+            if i + 2 >= len(fields):
+                break
+            statuses[fields[i + 2]] = letter[0]
+            i += 3
+        else:
+            statuses[fields[i + 1]] = letter[0]
+            i += 2
+
+    rows: list[FileChange] = []
+    fields = numstat.split("\0")[:-1]
+    i = 0
+    while i < len(fields):
+        head = fields[i]
+        if not head:
+            break
+        cells = head.split("\t", 2)
+        if len(cells) < 3:
+            break
+        adds, dels, path = cells
+        old_path: str | None = None
+        step = 1
+        if path == "":
+            # A rename: the two paths follow as their own NUL-ended fields.
+            if i + 2 >= len(fields):
+                break
+            old_path, path = fields[i + 1], fields[i + 2]
+            step = 3
+        i += step
+        binary = adds == "-" or dels == "-"
+        try:
+            insertions = None if binary else int(adds)
+            deletions = None if binary else int(dels)
+        except ValueError:
+            continue
+        letter = statuses.get(path, "R" if old_path is not None else "M")
+        status = _FILE_STATUS.get(letter, "M")
+        rows.append(
+            FileChange(
+                path=path,
+                old_path=old_path if status == "R" else None,
+                status=status,
+                insertions=insertions,
+                deletions=deletions,
+                binary=binary,
+            )
+        )
+    return rows
+
+
 def summarize_work(
     *,
     repo: Path,
@@ -1935,6 +2387,36 @@ def summarize_work(
             # than failing the harvest.
             logger.warning("could not list commits against the clone base", base=base)
 
+    # Per-file counts of the SAME diff the patch below is taken from, so a
+    # reader can say "12 files +886 -866" and draw the file list before it
+    # reads the patch -- and still can when the patch was over its cap and
+    # discarded. `-M` because a rename is what a reviewer wants to see rather
+    # than a delete beside an add; the same `--no-ext-diff --no-textconv` as
+    # the patch, for the same reason (#259). Paths only: neither command
+    # prints a line of content.
+    files: tuple[FileChange, ...] | None = None
+    files_truncated = False
+    if base:
+        diff_args = ["--no-color", "--no-ext-diff", "--no-textconv", "-z", "-M", base, "--"]
+        numstat_code, numstat_text, numstat_cut = _git_text_full(
+            [*g, "diff", "--numstat", *diff_args],
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug="harvest-numstat",
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+        status_code_, status_listing = run([*g, "diff", "--name-status", *diff_args], "harvest-name-status")
+        if numstat_code == 0:
+            rows = _parse_file_changes(numstat_text, status_listing if status_code_ == 0 else "")
+            files = tuple(rows[:MAX_FILES_LISTED])
+            # A capture cut at its byte cap ends mid-list: the rows parsed are
+            # true, but they are not all of them.
+            files_truncated = len(rows) > MAX_FILES_LISTED or numstat_cut
+        else:
+            logger.warning("could not list the changed files against the clone base", base=base)
+
     patch_name: str | None = None
     patch_bytes = 0
     omitted = False
@@ -1986,6 +2468,8 @@ def summarize_work(
         patch_omitted=omitted,
         insertions=adds,
         deletions=dels,
+        files=files,
+        files_truncated=files_truncated,
     )
 
 
@@ -2983,8 +3467,18 @@ def read_head_as_data(clone: Path) -> str | None:
             "the clone's HEAD is a symbolic ref outside refs/heads/; the worker "
             "follows no other ref, and nothing was pushed"
         )
-    loose = _read_in_git_dir(clone, *name.split("/"), cap=_REF_FILE_MAX_BYTES)
-    if loose is not None:
+    fd = _open_ref_file(clone, *name.split("/"), what="the branch the clone's HEAD names")
+    if fd is not None:
+        try:
+            loose = _read_capped_fd(fd, _REF_FILE_MAX_BYTES)
+        finally:
+            os.close(fd)
+        if loose is None:
+            raise GitError(
+                "the branch the clone's HEAD names is a file past "
+                f"{_REF_FILE_MAX_BYTES} bytes; the worker follows no such ref, and "
+                "nothing was pushed"
+            )
         value = loose.decode("ascii", "replace").strip()
         if _OBJECT_ID.match(value):
             return value
@@ -2992,15 +3486,95 @@ def read_head_as_data(clone: Path) -> str | None:
             "the branch the clone's HEAD names is not an object id (a symbolic "
             "ref, or damaged); the worker follows no further ref, and nothing was pushed"
         )
-    packed = _read_in_git_dir(clone, "packed-refs", cap=_PACKED_REFS_MAX_BYTES)
-    if packed is not None:
-        for line in packed.decode("utf-8", "surrogateescape").splitlines():
-            if not line or line[0] in "#^":
+    fd = _open_ref_file(clone, "packed-refs", what="the clone's packed-refs")
+    if fd is None:
+        return None
+    try:
+        return _packed_ref(fd, name.encode("utf-8", "surrogateescape"))
+    finally:
+        os.close(fd)
+
+
+def _open_ref_file(clone: Path, *names: str, what: str) -> int | None:
+    """`<clone>/.git/<names...>` open for reading, None when it does not exist.
+
+    Opened as `_read_in_git_dir` opens a file: one component at a time, with
+    O_NOFOLLOW and O_NONBLOCK. A ref that EXISTS but is not a regular file --
+    a link at it or at a folder above it, a FIFO, a directory -- raises
+    `GitError` (#346). It used to read as absent, and the caller then took the
+    branch from `packed-refs`: the agent could hide its loose ref behind a link
+    and have the worker publish whatever older line `packed-refs` held. Only a
+    component that is missing (ENOENT) is absence.
+    """
+    fds: list[int] = []
+    try:
+        try:
+            fds.append(os.open(clone / ".git", os.O_RDONLY | _DIRECTORY | _NOFOLLOW))
+            for folder in names[:-1]:
+                fds.append(
+                    os.open(folder, os.O_RDONLY | _DIRECTORY | _NOFOLLOW, dir_fd=fds[-1])
+                )
+            fd = os.open(names[-1], os.O_RDONLY | _NOFOLLOW | _NONBLOCK, dir_fd=fds[-1])
+        except FileNotFoundError:
+            return None
+        except OSError as exc:
+            raise GitError(
+                f"{what} is not a regular file reached without a link "
+                f"({errno.errorcode.get(exc.errno or 0, 'error')}); nothing was pushed"
+            ) from None
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            os.close(fd)
+            raise GitError(f"{what} exists but is not a regular file; nothing was pushed")
+        return fd
+    finally:
+        for opened in reversed(fds):
+            os.close(opened)
+
+
+def _packed_ref(fd: int, name: bytes) -> str | None:
+    """The object id `packed-refs`, open as `fd`, gives `name`, or None.
+
+    STREAMED (#346). The whole file -- up to `_PACKED_REFS_MAX_BYTES` -- used to
+    be read, decoded and split into a list of every line before one was
+    matched. It is read in 64 KiB chunks now, line by line, and reading stops
+    at the matching line or the cap. No line longer than `_REF_FILE_MAX_BYTES`
+    is held: a ref line is an object id and a name, and an over-long line
+    cannot be the one asked for, so it is skipped as it arrives.
+    """
+    total = 0
+    pending = b""
+    skipping = False
+    while total <= _PACKED_REFS_MAX_BYTES:
+        chunk = os.read(fd, 64 * 1024)
+        if not chunk:
+            break
+        total += len(chunk)
+        lines = (pending + chunk).split(b"\n")
+        pending = lines.pop()
+        for line in lines:
+            if skipping:
+                skipping = False
                 continue
-            oid, _, ref = line.partition(" ")
-            if ref.strip() == name and _OBJECT_ID.match(oid):
+            oid = _packed_line_oid(line, name)
+            if oid is not None:
                 return oid
+        if len(pending) > _REF_FILE_MAX_BYTES:
+            pending, skipping = b"", True
+    if not skipping and total <= _PACKED_REFS_MAX_BYTES:
+        return _packed_line_oid(pending, name)
     return None
+
+
+def _packed_line_oid(line: bytes, name: bytes) -> str | None:
+    """The object id of one `packed-refs` line when it names `name`, else None."""
+    line = line.rstrip(b"\r")
+    if not line or line[:1] in (b"#", b"^"):
+        return None
+    oid, _, ref = line.partition(b" ")
+    if ref.strip() != name:
+        return None
+    text = oid.decode("ascii", "replace")
+    return text if _OBJECT_ID.match(text) else None
 
 
 _CONFIG_SECTION = re.compile(r'^\[\s*([A-Za-z0-9.-]+)\s*(?:"((?:[^"\\]|\\.)*)")?\s*\](.*)$')
@@ -3190,8 +3764,12 @@ def mirror_worktree(
     and never through a link.
 
     `hidden_names` are top-level names the worker hides from git in the clone
-    (`hide_from_git`, the `./artifacts` link, #226); they are written to this
-    repository's own `.git/info/exclude`, which the worker owns, AFTER
+    (`hide_from_git`, the `./artifacts` link, #226). They are NOT COPIED: an
+    exclude pattern alone does not hide them, because the tree's own
+    `.gitignore` -- copied in, and read -- outranks `.git/info/exclude`, and a
+    `!/artifacts` there un-hid the worker's link (#346). A name that is not
+    in the tree cannot be published by any pattern. They are still written to
+    this repository's own `.git/info/exclude`, which the worker owns, AFTER
     `agent_excludes` -- the patterns of the agent's own `.git/info/exclude`
     and `core.excludesFile`, read as data by `read_agent_excludes` -- so a
     `!` pattern of the agent's cannot un-hide the worker's names (in one
@@ -3242,6 +3820,7 @@ def mirror_worktree(
 
     copied = 0
     nested = 0
+    hidden = set(hidden_names)
     stack: list[tuple[Path, Path]] = [(source, dest)]
     try:
         while stack:
@@ -3250,6 +3829,9 @@ def mirror_worktree(
                 listing = list(entries)
             for entry in listing:
                 if entry.name == ".git":
+                    continue
+                if here == source and entry.name in hidden:
+                    # The worker's own top-level names: see the docstring.
                     continue
                 src = Path(entry.path)
                 dst = there / entry.name

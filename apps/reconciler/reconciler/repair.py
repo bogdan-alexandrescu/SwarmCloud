@@ -1722,6 +1722,11 @@ class Reconciler:
             return self._repair_stuck(finding, outcome)
         cannot_start = finding.kind is FindingKind.WORKER_CANNOT_START
         ended_at_startup = finding.kind is FindingKind.WORKER_ENDED_AT_STARTUP
+        # A pod kubelet evicted for passing its own disk limit is retried once
+        # and then failed, counted inside the repair's transaction (#893).
+        disk_eviction = finding.kind is FindingKind.WORKER_EVICTED and bool(
+            finding.detail.get("disk_limit")
+        )
         # The ended-at-startup rule is about a task in these states, and its
         # fence and its requeue are each refused, inside their transactions,
         # for a task that has left them since the snapshot (#198). Passed only
@@ -1744,7 +1749,7 @@ class Reconciler:
                 f"would invalidate, release and fail the task: {finding.reason}"
                 if cannot_start
                 else f"would invalidate, release and requeue the task: {finding.reason}"
-                if ended_at_startup
+                if ended_at_startup or finding.kind is FindingKind.WORKER_EVICTED
                 else f"would invalidate and requeue the task, releasing nothing: {finding.reason}"
                 if leaseless
                 else "would terminate, then invalidate, release and repair in one transaction"
@@ -1823,6 +1828,11 @@ class Reconciler:
                 what = finding.detail.get("what_ended") or finding.reason
                 error = f"reconciled: {what}"
                 refund_limit = self._config.startup_refund_limit
+            # Likewise the disk-eviction count: the store appends whether this
+            # eviction is retried or ends the task.
+            if disk_eviction and to_state is TaskState.READY:
+                what = finding.detail.get("what_ended") or finding.reason
+                error = f"reconciled: {what}"
             plan = RepairPlan(
                 to_state=to_state,
                 # Only the task this finding is actually about. A snapshot is
@@ -1837,6 +1847,7 @@ class Reconciler:
                 # or (spent attempts on a requeue) its worker was lost.
                 failed_cause=EndCause.CANNOT_START if cannot_start else EndCause.LOST_WORKER,
                 startup_refund_limit=refund_limit,
+                disk_eviction=disk_eviction,
             )
         fence_guard: dict[str, Any] = dict(guard)
         if orphan_lease and finding.lease_id:

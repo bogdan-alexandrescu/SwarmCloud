@@ -717,7 +717,8 @@ calls in a row that read nothing), or the sc plugin's server is not connected.
 
 **A whole SwarmCloud workflow: `/sc:swarmcloud`.** Its argument is a SwarmCloud
 workflow spec — the same object `swarm workflow` reads — as an object, as JSON
-text, or as the path of the spec file, relative to the session's checkout. A
+text, or as the path of the spec file, relative to the session's checkout and
+inside it (the bridge reads no spec file from outside the checkout). A
 workflow script has no filesystem, so given a path one `sc:workflow` agent
 (label `read spec`) has the bridge read the file with `swarm_workflow_spec`,
 which checks it as `swarm_workflow` would, submits nothing and returns the spec
@@ -915,7 +916,7 @@ it (`sc:remote` still uses that), and so do `swarm tail`, `swarm follow
 | Model | the workflow's `model` option, or the session's | **pinned on the job**: the profile's model. A caller cannot choose it (invariant 10), so a `model` option on the `agent()` call changes only the local row's model |
 | Tokens in `/workflows` | the step's own | **the row's** — haiku relaying the remote run. The remote agent's spend is the outcome's `cost_usd`, drawn from the shared subscription pool; `null` means not recorded, never $0 |
 | Stopping the row | stops the step | stops the ROW only. The SwarmCloud task keeps running; cancel it with `swarm_cancel`, or `swarm workflow-cancel` for a workflow |
-| Relaunching the run | re-runs agents that did not finish | the same, and for `sc:remote` a re-run row DISPATCHES AGAIN — a second task. Under `/sc:swarmcloud` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
+| Relaunching the run | re-runs every agent that did not finish AND every agent that started after a failed or edited one, completed ones included | the same, and for `sc:remote` every re-run row DISPATCHES AGAIN — a second task, even when that row's first task had already completed. Under `/sc:swarmcloud` the finished `Submit` is replayed from cache, so rows re-follow the same tasks |
 | Concurrency | the workflow's agent cap | rows beyond the cap start later; their tasks run on SwarmCloud's schedule regardless |
 
 **Which checkout is inferred.** The bridge reads the git checkout of the
@@ -982,7 +983,19 @@ are the same value.
 * `swarm_workflow_spec` reads a spec file from the checkout, checks it, and
   returns it with its digest, submitting nothing — the half of `/sc:swarmcloud` that
   takes a path. A file that is not a spec is refused without its content being
-  repeated.
+  repeated. Only a file UNDER the checkout (`SWARM_CHECKOUT_DIR`, else the
+  directory the bridge runs in) is read, once symlinks are resolved: an
+  absolute path, a `../` or a symlink that leads outside is refused before
+  anything about the file is looked at, because the path arrives through a
+  relay and the bridge can read every file you can. The same rule holds for
+  `spec_path` on `swarm_workflow` and `swarm_workflow_launch`; a spec kept
+  elsewhere is passed as the `spec` object instead.
+* `swarm_account_remove` is confirmed by a PERSON, not by its caller. The
+  bridge asks the host's human, through the host's own prompt (MCP
+  elicitation), to type the account's label; no tool argument counts as that
+  answer, and no refusal names the label, so an agent cannot confirm its own
+  removal. A host that cannot ask its human removes nothing and is told to run
+  `sc account remove <account>` in a terminal, which asks there.
 * `swarm_follow` `format: "progress"` (2026-10-01): no log, one progress line
   per task only when it changed, the state `transitions` since `since`, and a
   finished task's `outcome` reduced to the step result's fields. A call holds
@@ -1049,7 +1062,7 @@ repositories here sees one checklist. Every step's state is read from `GET
 |---|---|---|---|
 | `/sc:setup` | `/sc:setup` | `/sc:setup status` | `swarm_setup_grant`, `swarm_setup_revoke`, `swarm_setup_verify` |
 | MCP | `swarm_setup_connect`, `swarm_setup_orgs`, `swarm_setup_repos`, `swarm_setup_grant`, `swarm_setup_verify` | `swarm_setup_status`, `swarm_access` | `swarm_setup_revoke` |
-| terminal | `uv run sc setup` | `uv run sc setup status`, `uv run sc access list` | `uv run sc access grant o/r --read\|--write`, `revoke o/r`, `verify [o/r]`, `add-org`, `remove-org`, `disconnect` |
+| terminal | `uv run sc setup` | `uv run sc setup status`, `uv run sc access list` | `uv run sc access grant o/r --read\|--write`, `revoke o/r`, `verify [o/r]`, `verify o/r --push-test`, `add-org`, `request-install`, `remove-org`, `disconnect`; `uv run sc setup token --owner <org>` |
 
 **Connecting happens in your browser.** `sc setup` and `swarm_setup_connect`
 ask the API for an authorize link, open it, and print it once in case the
@@ -1072,6 +1085,42 @@ API reads a repository once as you and refuses write on one that is archived
 or that you cannot push to, with the recovery copy of docs/onboarding.md §2.3,
 which both surfaces print word for word. Verifying reads only: nothing is
 pushed.
+
+**An org that needs its owners' approval.** On an org you do not own, GitHub
+sends the install to its owners as a request and shows your token nothing
+about it, so SwarmCloud records it: `uv run sc access request-install <org>`
+(or `swarm_setup_orgs` with `request_install`) records that you asked and
+prints the install page to send them. The org then shows
+`ORG_APPROVAL_PENDING` with its recovery copy — in `sc access orgs`, in
+`swarm_setup_orgs`'s `approval_pending` and on the checklist — and is
+re-checked every 15 minutes until GitHub lists the installation.
+
+**An org that will not install the App** (or that answers
+`CLASSIC_PAT_BLOCKED`) takes a fine-grained personal access token whose
+resource owner is that org (docs/onboarding.md D5). You store it yourself, in
+a terminal:
+
+```bash
+uv run sc setup token --owner <org>      # typed with no echo
+pass show github/<org> | uv run sc setup token --owner <org>   # or one piped line
+```
+
+It is read from stdin and from nowhere else — there is no `--token`, because
+an argument lands in shell history and `ps` — posted once to
+`POST /v1/onboarding/github/token`, and never printed: the answer is the org
+and the token's kind, login and expiry. It exits 0 when stored, 3 when the
+API refused it (with §2.3's code and copy: SSO, classic-token policy, a
+fine-grained token still awaiting approval) and 1 when the API could not be
+read. `/sc:setup` tells you to run it and never asks for the token in chat;
+no bridge tool takes one. Removing the org (`remove-org`) revokes it.
+
+**The push test is opt-in** (D6). `uv run sc access verify <owner/repo>
+--push-test` creates and deletes one branch,
+`swarmcloud/onboarding-check-<nonce>`, in one write grant, as you — the only
+real proof of push. It asks you to type the repository's name and ignores
+`SWARM_ASSUME_YES`; a read grant is refused before anything is sent.
+`/sc:setup` offers it only after asking, per repository, and then calls
+`swarm_setup_verify` with `push_test: true`.
 
 `sc setup` exits 0 when the checklist ends ready, 3 when it stopped short (a
 step failed, the browser half timed out, nothing installed yet) and 1 when

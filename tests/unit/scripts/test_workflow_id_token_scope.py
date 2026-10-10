@@ -50,7 +50,14 @@ NEEDS_ID_TOKEN = {
     "terraform.yml": {"plan"},
     "security.yml": {"images"},
     "iam-refusal-probe.yml": {"probe"},
-    "release.yml": {"build", "promote", "infrastructure", "infrastructure-iam", "deploy", "acceptance"},
+    "release.yml": {"build", "promote", "infrastructure", "infrastructure-iam", "deploy"},
+    # The hotfix lane (owner decision 2026-10-08, observer proposal H): its
+    # `gate` reads labels with no Google identity.
+    "hotfix.yml": {"images", "promote", "infrastructure", "deploy"},
+    # Post-deploy acceptance (owner decision 2026-10-08, cuts A and C), as its
+    # OWN account, not the deployer (terraform/bootstrap/acceptance.tf).
+    # `sandbox` and `sandbox-results` talk only to GitHub.
+    "accept.yml": {"target", "quiesce", "smoke", "acceptance", "acceptance-2", "report"},
 }
 
 WIF_TF = REPO / "terraform" / "bootstrap" / "wif.tf"
@@ -217,3 +224,20 @@ def test_the_ci_fixer_workflow_is_not_trusted_as_the_deployer():
         "ci-fix.yml has its own account (terraform/bootstrap/ci_fix.tf); trusting it as the "
         "deployer hands a job that comments on pull requests projectIamAdmin on a shared project"
     )
+
+
+def test_acceptance_federates_as_its_own_account_never_the_deployer():
+    """accept.yml starts verification jobs and reads release records; it needs
+    none of the deployer's run.admin, projectIamAdmin or state bucket. MUTATION:
+    point one of its auth steps at GCP_DEPLOY_SA, or add accept.yml to
+    deployer_workflows."""
+    assert "accept.yml" not in _deployer_workflows_in_terraform()
+    jobs = _workflow("accept.yml")["jobs"]
+    accounts = {
+        str((step.get("with") or {}).get("service_account", ""))
+        for job in jobs.values()
+        for step in _auth_steps(job)
+    }
+    assert accounts == {"${{ vars.GCP_ACCEPT_SA }}"}, accounts
+    bound = (REPO / "terraform" / "bootstrap" / "acceptance.tf").read_text()
+    assert '.github/workflows/accept.yml@refs/heads/main"' in bound

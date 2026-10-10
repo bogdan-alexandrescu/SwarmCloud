@@ -201,13 +201,25 @@ _URL_REFUSED_V4_NETWORKS = (
 #: that is neither IPv4-mapped nor a NAT64/6to4 embedding (both unwrapped to
 #: an IPv4 address and checked against the list above instead; see
 #: `_embedded_v4`).
+#:
+#: Teredo (`2001::/32`) also embeds IPv4 addresses, but is refused outright
+#: rather than unwrapped: its client IPv4 is XOR-obfuscated and its server
+#: IPv4 is a second embedded address, so unwrapping it would be this rule
+#: reproducing a tunnelling scheme instead of refusing it -- the subset of
+#: what Chromium accepts that `url_refusal`'s docstring states. Site-local,
+#: Teredo, `3fff::/20` and `5f00::/16` were added by contract request 57
+#: (#349), after the #345 security review found each accepted.
 _URL_REFUSED_V6_NETWORKS = (
     ipaddress.ip_network("::1/128"),  # loopback
     ipaddress.ip_network("::/128"),  # unspecified
     ipaddress.ip_network("100::/64"),  # discard-only, RFC 6666
+    ipaddress.ip_network("2001::/32"),  # Teredo, RFC 4380 (refused, not unwrapped)
     ipaddress.ip_network("2001:db8::/32"),  # documentation
+    ipaddress.ip_network("3fff::/20"),  # documentation, RFC 9637
+    ipaddress.ip_network("5f00::/16"),  # SRv6 SIDs, RFC 9602; not globally routable
     ipaddress.ip_network("fc00::/7"),  # unique local
     ipaddress.ip_network("fe80::/10"),  # link-local
+    ipaddress.ip_network("fec0::/10"),  # site-local, deprecated by RFC 3879
     ipaddress.ip_network("ff00::/8"),  # multicast
 )
 
@@ -257,8 +269,16 @@ _URL_IPV4_COMPATIBLE_PREFIX = ipaddress.ip_network("::/96")
 #: suffix closes only the specific, well-known `.svc` shorthand.
 _URL_REFUSED_SUFFIXES = (".internal", ".local", ".localhost", ".svc")
 
+#: Names refused EXACTLY, not as suffixes (contract request 57, #349):
+#: `metadata.goog` is the metadata server's other name, and
+#: `localhost.localdomain` is the loopback name many resolvers still carry.
+#: Not a `.goog` suffix: `.goog` is a real gTLD Google serves public pages on,
+#: so a suffix would refuse public sites to catch one name.
+_URL_REFUSED_HOSTS = ("metadata.goog", "localhost.localdomain")
+
 #: How much of a refused value a refusal repeats. A caller who sent three
-#: hundred digits needs the bound, not the digits back.
+#: hundred digits needs the bound, not the digits back. A value containing
+#: '@' is not repeated at all (`RunnerInput.check`, contract request 57).
 _SHOWN_VALUE_CHARS = 40
 
 
@@ -347,6 +367,16 @@ def url_refusal(value: str) -> str:
     is never a real page address, and the specific `.svc` shorthand below,
     which is the one case named in the review that is also a fixed, known
     string rather than an open-ended shape.
+
+    ADDED BY CONTRACT REQUEST 57 (#349), after the #345 security review found
+    each accepted: site-local `fec0::/10`, Teredo `2001::/32`, documentation
+    `3fff::/20` and SRv6 `5f00::/16` (`_URL_REFUSED_V6_NETWORKS`); the exact
+    names `metadata.goog` and `localhost.localdomain` (`_URL_REFUSED_HOSTS`);
+    and a host ending in two dots. A host loses at most ONE trailing dot, so
+    the fully-qualified `example.com.` is accepted while `example.com..`
+    reaches the empty-label check and is refused as `a..b` is. The same
+    request makes `RunnerInput.check` never repeat a value containing '@',
+    which is what keeps "never served by the API" true of a refused URL too.
     """
     if len(value) > _URL_MAX_CHARS:
         return f"it is longer than {_URL_MAX_CHARS} characters"
@@ -363,7 +393,11 @@ def url_refusal(value: str) -> str:
         return "only http and https are opened"
     if parsed.username is not None or parsed.password is not None:
         return "it carries credentials, which would be stored with the task and shown with it"
-    host = (parsed.hostname or "").rstrip(".")
+    host = parsed.hostname or ""
+    # At most ONE trailing dot: `example.com.` is a fully-qualified name, but
+    # `.rstrip(".")` also made `example.com..` into an accepted host while
+    # `a..b` was refused (request 57). A second dot is an empty label.
+    host = host.removesuffix(".")
     if not host:
         return "it has no host"
     # An IP LITERAL IS CHECKED BEFORE THE HOST-CHARACTER RULE, not after: an
@@ -403,6 +437,8 @@ def url_refusal(value: str) -> str:
             return "its host is a single label, which only the cluster's search path resolves"
         if host.endswith(_URL_REFUSED_SUFFIXES):
             return "its host is a cluster or node-local name"
+        if host in _URL_REFUSED_HOSTS:
+            return "its host is the metadata server's other name or a loopback name"
         return ""
     if isinstance(address, ipaddress.IPv6Address):
         if address.ipv4_mapped is not None:
@@ -578,7 +614,17 @@ class RunnerInput:
 
         def refuse(detail: str = "") -> InputRefused:
             shown = repr(value)
-            if len(shown) > _SHOWN_VALUE_CHARS:
+            # A VALUE CONTAINING '@' IS NEVER REPEATED, of any kind (contract
+            # request 57, #349): a URL's userinfo sits before its '@', and an
+            # object or list refusal repeats a repr that can hold a nested
+            # `url`. Blunt on purpose. Masking only the userinfo needs a parse
+            # of exactly the URL being refused -- the one a parser already
+            # disagreed about -- and `http:user:pw@host` has no `//` for a
+            # pattern to anchor on. Not repeating it at all cannot leak, and
+            # keeps `url_refusal`'s "never served by the API" true.
+            if "@" in shown:
+                shown = f"<a value of {len(shown)} characters, not repeated because it contains '@'>"
+            elif len(shown) > _SHOWN_VALUE_CHARS:
                 shown = f"{shown[:_SHOWN_VALUE_CHARS]}... ({len(shown)} characters)"
             return InputRefused(
                 f"{wanted}, not {shown}{detail}", key=key, expected=expected
@@ -1301,7 +1347,13 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         name="indexer",
         image="agent-runtime-indexer",
         resource_class="standard",
-        backend=Backend.CLOUD_RUN_JOB,
+        # GKE Autopilot since contract request 63 (owner, 2026-10-10), the
+        # canary for #939: a new Cloud Run instance's internet path opens a
+        # median 20.2 s after start (n=19) against GKE's 1.17 s (n=148)
+        # through the same NAT. Its tenants' Cloud Run Jobs are kept as the
+        # rollback (terraform/infra/locals.tf `cloud_run_fallback_profiles`):
+        # rolling back is this one line, back to CLOUD_RUN_JOB.
+        backend=Backend.GKE_AUTOPILOT,
         runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
         provider="anthropic",
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),

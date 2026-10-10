@@ -1,0 +1,69 @@
+/* --- THE CHANGES TAB (docs/design/diff-viewer.md §2 variant 2) ------------ */
+/* THE VIEWER FILLS THE PANE (DiffView `fullHeight`): the pane does not
+   scroll, the file list and the lines scroll inside the viewer, as the Logs
+   tab's body does. WorkflowChanges.tsx. */
+.ag-split > .ag-split-pane.is-changes { display: flex; flex-direction: column; overflow: hidden; }
+.ag-split-pane.is-changes > .chg-tab { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.chg-patch { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.chg-diff { flex: 1 1 auto; min-height: 0; }
+
+/* THE SUMMARY LINE: the base, the patch and its size, the masked count. */
+.chg-sum { display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline; margin: 0 0 8px; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); }
+.chg-window { display: inline-flex; gap: 6px; align-items: baseline; }
+
+/* VARIANT 5: THE FILES x STEPS MATRIX (WorkflowChanges.tsx `ChangesMatrix`).
+   The step chips and the summary over a card holding the table, which
+   scrolls on its own both ways; the open file's hunks by step under it, the
+   viewer at a height of its own, since the page, not a pane, scrolls here. */
+.chg-note { margin: 0 0 10px; color: var(--text-dim); max-width: 72ch; }
+.chg-mx { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.chg-mx-bar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: baseline; }
+.chg-mx-bar > .chg-sum { margin: 0 0 0 auto; }
+.chg-mx-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chg-mx-chip {
+  min-height: 28px; padding: 2px 10px; border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  background: var(--surface); color: var(--text); font: var(--t-meta)/var(--lh-meta) var(--font); cursor: pointer;
+}
+.chg-mx-chip.mono { font-family: var(--mono); }
+.chg-mx-chip[aria-pressed="true"] { border-color: var(--info); color: var(--info); }
+.chg-mx-chip:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.chg-mx-card { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.chg-mx-table { border-collapse: collapse; width: 100%; font: var(--t-meta)/var(--lh-meta) var(--font); font-variant-numeric: tabular-nums; }
+.chg-mx-table th, .chg-mx-table td { padding: 4px 10px; border-bottom: 1px solid var(--line-soft); text-align: left; vertical-align: top; }
+.chg-mx-table thead th { position: sticky; top: 0; z-index: 1; background: var(--surface-2); font-weight: 600; white-space: nowrap; }
+.chg-mx-step > span { display: block; }
+.chg-mx-say { font-weight: 400; color: var(--text-dim); }
+.chg-mx-agent { font-weight: 400; }
+.chg-mx-table .is-dim { opacity: .45; }
+.chg-mx-table tbody th { font-weight: 400; }
+.chg-mx-table tr.is-on > * { background: var(--surface-2); }
+.chg-mx-file {
+  padding: 0; border: 0; background: none; color: var(--text); font: var(--t-meta)/var(--lh-meta) var(--mono);
+  text-align: left; overflow-wrap: anywhere; cursor: pointer;
+}
+.chg-mx-file[aria-pressed="true"] { font-weight: 600; }
+.chg-mx-file:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
+.chg-mx-cell { white-space: nowrap; font-family: var(--mono); }
+.chg-mx-cell.is-none { color: var(--text-faint); }
+/* NOT KNOWN IS HATCHED, never blank and never `·` (the mock-up's state row). */
+.chg-mx-cell.is-unknown { display: inline-block; min-width: 4ch; min-height: 1em; background: var(--ctl-hatch); border-radius: var(--ctl-radius-sm); color: var(--text-dim); }
+.chg-mx-cell.is-pending { opacity: .6; }
+.chg-mx-card > .chg-state { margin: 10px; }
+.chg-mx-file-view { display: flex; flex-direction: column; min-width: 0; }
+.chg-mx-diff { height: 70vh; }
+.chg-mx-meta { display: grid; gap: 4px; margin: 0 0 8px; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); }
+.chg-mx-meta > p { margin: 0; }
+
+/* The step inspector's and the run's step row's links to the step's changes. */
+.wf-inspect-changes { font: var(--t-meta)/var(--lh-meta) var(--font); }
+.rn-srow-links { display: inline-flex; flex-wrap: wrap; gap: 0 12px; justify-content: flex-end; }
+
+/* ON A PHONE THE COLUMN IS THE ONE SCROLLER (agents.css G2-01), so the pane
+   has no height to fill: the viewer is given most of the screen instead. */
+@media (max-width: 560px) {
+  .ag-split > .ag-split-pane.is-changes { display: block; overflow: visible; }
+  .ag-split-pane.is-changes .chg-diff { height: 80vh; }
+  .chg-mx-bar > .chg-sum { margin-left: 0; }
+  .chg-mx-chips { flex-wrap: nowrap; overflow-x: auto; }
+  .chg-mx-diff { height: 80vh; }
+}

@@ -214,8 +214,10 @@ spec:
               mountPath: /workspace
             # readOnlyRootFilesystem means every writable path must be declared.
             # These three are the only ones the worker and its toolchain need:
-            # the workspace, the process temp dir, and the home directory that
-            # npm, uv and git write caches into.
+            # the workspace (also the agent's HOME and TMPDIR, so its npm, uv
+            # and git caches), the worker's own temp dir (checkpoint archives,
+            # and any literal /tmp an agent writes), and the worker's HOME.
+            # Their sizes, and what each holds, are GKE_DISK's (#893).
             - name: tmp
               mountPath: /tmp
             - name: home

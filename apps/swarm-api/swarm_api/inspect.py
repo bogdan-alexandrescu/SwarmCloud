@@ -74,6 +74,7 @@ from .redaction import (
     open_key_start,
     redact_detail,
     redact_lines,
+    straddled,
 )
 from .store import Store
 from .task_input import masking_for
@@ -145,9 +146,10 @@ _UNDECODABLE = re.compile("[\udc80-\udcff]")
 def attempts_prefix(*, tenant_id: str, task_id: str) -> str:
     """The ONLY prefix a checkpoint of this task can live under.
 
-    Identical to `agent_worker.checkpoint.attempts_prefix`, which is what
-    `CheckpointManager.find_latest` scans -- so "what this route lists" and
-    "what a resuming worker would consider" are the same set by construction.
+    Identical to `agent_worker.checkpoint.attempts_prefix`, the prefix
+    `CheckpointManager.find_by_uri` confines `task.latest_checkpoint` to -- so
+    every checkpoint a resuming worker could restore is one this route lists,
+    by construction. A worker restores only the one the pointer names (#347).
     """
     return f"{TENANTS_ROOT}{tenant_id}/tasks/{task_id}/attempts/"
 
@@ -405,12 +407,14 @@ class InspectionService:
     ) -> dict[str, Any]:
         """Every checkpoint of one task, newest attempt first.
 
-        ACROSS ATTEMPTS, not just the current one, because that is what a
-        resume actually considers: `CheckpointManager.find_latest` scans the
-        whole `.../attempts/` prefix and takes the newest committed manifest,
-        so a checkpoint written by the attempt that died is the one a retry
-        restores from. A screen that showed only the live attempt's checkpoints
-        would omit the only one that matters after a crash.
+        ACROSS ATTEMPTS, not just the current one, because a resume is a new
+        attempt: the checkpoint it restores is the one `task.latest_checkpoint`
+        names, written by the attempt that died, so a screen that showed only
+        the live attempt's checkpoints would omit the only one that matters
+        after a crash. The worker restores THAT checkpoint or nothing -- it does
+        not scan the prefix for the newest manifest (#347) -- so the listing is
+        not a list of restore candidates: a row the pointer does not name is
+        never restored, however new or `resumable` it is.
 
         WHAT `resumable` MEANS. Exactly what `CheckpointManager._owns` plus
         `restore` would accept: a manifest exists and parses, it names THIS
@@ -510,9 +514,12 @@ class InspectionService:
         Four outcomes, and they are not interchangeable. `outside_this_task` in
         particular is a real finding rather than a formatting detail: it is a
         pointer a resuming worker would REFUSE (`find_by_uri` resolves only
-        inside this task's own prefix and falls back to `find_latest`), so a
-        UI that rendered it as the current checkpoint would show a restore
-        source that will never be used.
+        inside this task's own prefix), so a UI that rendered it as the current
+        checkpoint would show a restore source that will never be used. The
+        worker has no fallback (#347): a refused pointer, like a `missing` or
+        `unset` one, restores nothing and the attempt starts from an empty
+        workspace, so no other checkpoint of the listing is the restore source
+        either.
         """
         raw = task.latest_checkpoint
         if not raw:
@@ -524,8 +531,8 @@ class InspectionService:
                 "checkpoint_id": None,
                 "detail": (
                     "the pointer does not name a checkpoint under this task's own "
-                    "prefix, so a resuming worker would ignore it and fall back to "
-                    "the newest committed checkpoint it can find"
+                    "prefix, so a resuming worker would ignore it and start from "
+                    "an empty workspace"
                 ),
             }
         if pointer_prefix not in known:
@@ -1008,7 +1015,13 @@ class InspectionService:
 
         at_eof = chunk.end >= chunk.total_bytes
         raw, start, end, withheld = _align(
-            raw, start=start, previous=previous, at_eof=at_eof, read_end=chunk.end
+            raw,
+            start=start,
+            previous=previous,
+            at_eof=at_eof,
+            read_end=chunk.end,
+            look_back=raw_full[:probe],
+            literals=literals,
         )
         raw, start, inside_key, key_withheld = _enter_key(
             raw_full, raw=raw, start=start, end=end, base=chunk.offset
@@ -1177,12 +1190,15 @@ class InspectionService:
         previous = chunk.data[probe - 1 : probe] if probe else b""
         raw = chunk.data[probe:]
         start = chunk.offset + probe
+        literals = masking_for(task).literals
         raw, start, end, withheld = _align(
             raw,
             start=start,
             previous=previous,
             at_eof=chunk.end >= chunk.total_bytes,
             read_end=chunk.end,
+            look_back=chunk.data[:probe],
+            literals=literals,
         )
         raw, start, inside_key, key_withheld = _enter_key(
             chunk.data, raw=raw, start=start, end=end, base=chunk.offset
@@ -1211,7 +1227,7 @@ class InspectionService:
         scrubbed = redact_json_window(
             text,
             inside_key=inside_key,
-            literals=masking_for(task).literals,
+            literals=literals,
             fragment=fragment,
             context=context,
         )
@@ -1602,8 +1618,48 @@ def _last_boundary(data: bytes) -> int:
     return max(data.rfind(bytes([c])) for c in _WHITESPACE)
 
 
+def _safe_cut(data: bytes, cut: int, literals: tuple[str, ...] = (), *, floor: int = 0) -> int:
+    """`cut` -- the index of the byte to cut AFTER -- moved back until it cuts through nothing.
+
+    "Nothing" is `redaction.straddled`'s answer: no learned literal and no
+    credential's name-and-value span crosses the boundary (#227). Each step
+    moves to the last boundary (`_last_boundary`) before the span that
+    crossed it, so it ends. -1 when no boundary at or after `floor` is left.
+    The paged routes (`_align`) and the raw download
+    (`agent_output._redacted_text`) both cut through here.
+    """
+    while cut >= floor:
+        span = straddled(data, cut + 1, literals)
+        if span is None:
+            return cut
+        back = _last_boundary(data[floor : max(span[0], floor)])
+        cut = floor + back if back >= 0 else -1
+    return -1
+
+
+def _next_whitespace(data: bytes, at: int) -> int:
+    """The index of the first whitespace byte at or after `at`, or -1."""
+    found = [i for i in (data.find(bytes([c]), at) for c in _WHITESPACE) if i >= 0]
+    return min(found) if found else -1
+
+
+#: Why a window held nothing: what a boundary may not cut is longer than it.
+_SPAN_DETAIL = (
+    "this window lies inside a credential's value, or a value the task named "
+    "as secret, that runs past the window, so nothing of it could be served "
+    "without splitting it; raise limit_bytes"
+)
+
+
 def _align(
-    raw: bytes, *, start: int, previous: bytes, at_eof: bool, read_end: int
+    raw: bytes,
+    *,
+    start: int,
+    previous: bytes,
+    at_eof: bool,
+    read_end: int,
+    look_back: bytes = b"",
+    literals: tuple[str, ...] = (),
 ) -> tuple[bytes, int, int, str | None]:
     """Move both ends of the window onto token boundaries.
 
@@ -1627,27 +1683,47 @@ def _align(
     next window. The boundary byte is KEPT, so concatenating every window
     reproduces the object exactly.
 
-    WHEN THERE IS NO BOUNDARY AT ALL -- a single token longer than the window --
-    nothing can be served safely, so nothing is: empty content, the offset
-    advanced past what was read, and a `detail` saying why. It always makes
-    progress, and it says what it did rather than returning a fragment.
+    WHAT ELSE A BOUNDARY MAY NOT CROSS (#227, the PR #229 security review).
+    Whitespace is not a token boundary inside a learned literal that holds a
+    newline or a space, nor between a credential's name and the end of its
+    value (a `password` name, its `=`, a space and the value; or a quoted
+    value holding a space under an `api_key` member): a window cut there served
+    each half, masked by nothing. `redaction.straddled` names those spans --
+    the same rule the raw download cuts by -- and the tail is moved back
+    before one (`_safe_cut`). `look_back` is the bytes read before `start`
+    (ending in `previous`), so a head a caller chose INSIDE one is moved past
+    its end, then to the next whitespace as above. `literals`: the task's.
+
+    WHEN THERE IS NO BOUNDARY AT ALL -- a single token longer than the window,
+    or such a span -- nothing can be served safely, so nothing is: empty
+    content, the offset advanced past what was read, and a `detail` saying
+    why. It always makes progress, and it says what it did rather than
+    returning a fragment.
 
     Returns `(bytes, start, end, detail)` where `start` and `end` are absolute
     offsets into the object.
     """
     detail = None
-    if previous and previous not in _WHITESPACE:
-        head = min(
-            (i for i, byte in enumerate(raw) if bytes([byte]) in _WHITESPACE),
-            default=-1,
-        )
-        if head < 0:
-            return b"", start, read_end, (
-                "this window began inside a token that is longer than the window, so "
-                "nothing could be served without splitting it; raise limit_bytes"
-            )
-        raw = raw[head + 1 :]
-        start += head + 1
+    back = look_back or previous
+    data = back + raw
+    head = len(back)
+    while head > 0:
+        if previous and data[head - 1 : head] not in _WHITESPACE:
+            space = _next_whitespace(data, head)
+            if space < 0:
+                return b"", start, read_end, (
+                    "this window began inside a token that is longer than the window, so "
+                    "nothing could be served without splitting it; raise limit_bytes"
+                )
+            head = space + 1
+        span = straddled(data, head, literals) if head < len(data) else None
+        if span is None:
+            break
+        if span[1] > len(data):
+            return b"", start, read_end, _SPAN_DETAIL
+        head = span[1]
+    start += head - len(back)
+    raw = data[head:]
 
     if at_eof:
         return raw, start, start + len(raw), detail
@@ -1658,7 +1734,10 @@ def _align(
             "this window fell inside a token longer than the window, so nothing "
             "could be served without splitting it; raise limit_bytes"
         )
-    raw = raw[: cut + 1]
+    cut = _safe_cut(data, head + cut, literals, floor=head)
+    if cut < 0:
+        return b"", start, read_end, _SPAN_DETAIL
+    raw = data[head : cut + 1]
     return raw, start, start + len(raw), detail
 
 

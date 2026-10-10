@@ -225,7 +225,14 @@ and started, and failed inside the pod. Each is a 422 at the door now.
   `user:password@`, and name a public host: the metadata server, private and
   cluster addresses, `.internal`, `.local`, `.localhost` and `.svc` names, a
   single-label host and any host that is not plain ASCII letters, digits, dots
-  and hyphens are refused (`url_refusal` in the frozen catalogue). That check
+  and hyphens are refused (`url_refusal` in the frozen catalogue). Contract
+  request 57 (#349) added site-local (`fec0::/10`), Teredo (`2001::/32`,
+  refused outright because its embedded IPv4 is obfuscated) and the reserved
+  `3fff::/20` and `5f00::/16` IPv6 ranges, the exact names `metadata.goog` and
+  `localhost.localdomain`, and a host ending in two dots (`example.com..` is
+  refused like `a..b`; the fully-qualified `example.com.` is still accepted).
+  A refusal never repeats a value containing `@`, so a 422 cannot quote a
+  URL's `user:password@` back. That check
   is **not** the SSRF control -- it sees the URL typed, never a redirect, a
   page's subresources or what a name resolves to in the pod. The worker's
   NetworkPolicy is the control.
@@ -282,7 +289,9 @@ recorded by `ControlPlane._record_parked_uploads` and read back through
 attempt's prefix. B then stages `notes.md` from that first attempt's object:
 its `result_summary.staged_inputs` names `notes.md` with a `uri` under A's
 `attempts/<first attempt>/`. `tests/unit/worker/test_parked_uploads_carry.py`
-holds the same run offline.
+holds the same run offline. accept.yml's `workflow` group runs this recipe
+against dev after every release, as `workflow: carry`
+(scripts/acceptance/groups/workflow.sh `_wf_check_carry`).
 
 ## Artifacts pass by reference
 
@@ -663,28 +672,67 @@ integrator still owed its contributors' merge is still never `no_change`.
 
 ### The steps that needed the change are SKIPPED
 
-A step that needs the change a `no_change` step did not make ends SUCCEEDED
-with `result_summary.skipped: {"reason": "nothing to change", "upstream":
-[task ids]}`. It starts no agent, clones nothing (the branch it would start
-from was never pushed), stages nothing and publishes nothing. A step needs an
-upstream's change when it:
+A step with nothing to work on ends SUCCEEDED with `result_summary.skipped:
+{"reason": "nothing to change", "upstream": [task ids]}`. It starts no agent,
+clones nothing, stages nothing and publishes nothing. **A step is skipped only
+when NONE of the changes it reads exists.** A step reads an upstream's change
+when it:
 
-* stages that upstream's `swarm-work.patch` through `input_from`;
+* stages that upstream's `swarm-work.patch` through `input_from` (or anything
+  at all from a SKIPPED upstream, which wrote nothing);
 * starts from that upstream's branch: `builds_on`, a `single-pr` reader or
   amender's author, a merge step's pull request;
-* integrates it, and every step it integrates changed nothing or was skipped.
-  An integrator with at least one contributor that changed something runs, and
-  merges only those; the others are listed under `git.integrated.no_change`,
-  not as `missing`. A contributor that SUCCEEDED having published nothing (a
-  read-only review) is left out the same way, under
-  `git.integrated.read_only`; see the review shape below.
+* integrates it. A contributor that SUCCEEDED having published nothing (a
+  read-only review) is not a change to integrate.
 
-**A skip is transitive**: a step that stages anything from a SKIPPED step is
-skipped too, because a skipped step wrote nothing. A step that stages only the
-verification files of a `no_change` step still runs: those files exist. In the
-review shape below, an implementer with nothing to change skips the review
-(it stages the patch and builds on the implementer) and the fix (it builds on
-the implementer), and the workflow SUCCEEDS with no pull request.
+So a step whose upstreams changed nothing is skipped -- but one that has
+ANOTHER changed input runs:
+
+* **Several staged patches** skip a step only when every one of their
+  upstreams changed nothing or was skipped. With one that changed something,
+  the step runs, stages the patches that exist, and names the rest in
+  `result_summary.staged_inputs_left_nothing` instead of failing on a file
+  that was never written.
+* **A `builds_on` step that changed nothing** pushed no branch, but on its own
+  it no longer skips a step that has another changed input. The worker follows
+  that step's own `builds_on` back to the nearest ancestor that pushed, and
+  clones its branch -- or, with none, the default branch, the base that step
+  itself started from. Each ancestor is read through the tenant-checked
+  upstream read and its signed spec verified as a step of THIS workflow before
+  its `builds_on` is trusted, as a worker action verifies its upstreams: one
+  that does not verify is a refusal naming it, never a silent fall back. The
+  walk is bounded by `max_workflow_steps`. `result_summary.builds_on_resolved`
+  records where the step started (`task_id`, null for the default branch) and
+  which steps it walked past.
+* **An integrator** with at least one contributor that changed something
+  always runs: it clones that base, merges only those contributors (the others
+  are listed under `git.integrated.no_change`, not as `missing`; a read-only
+  review under `git.integrated.read_only`; see the review shape below), and on
+  a MERGE verdict skips only its agent and opens the one pull request from
+  `swarm/<its task>`.
+* A `single-pr` reader or amender, and a merge step, keep the plain rule: each
+  has exactly one branch to read, and nothing else stands in for it.
+
+**Why: #978.** The rule was first written for one implementer, as "skip when
+ANY upstream it needs changed nothing". An issue run with two implement steps
+compiles to a review that stages both patches and builds on the LAST
+implementer, and an integrator that builds on that same one
+(`issueruns._compile_staged`). In wf_ca1807e43ac64d6b8afd (2026-10-09) the
+second implementer changed nothing: the integrator was skipped in 0.4 s,
+cloned nothing and opened no pull request, and the first implementer's pushed
+branch was stranded -- a run whose work existed ended FAILED with "opened no
+pull request". One unchanged step must not discard another's work.
+
+**A skip is transitive**: a step that stages anything from a SKIPPED step, with
+no other changed input, is skipped too, because a skipped step wrote nothing.
+A step that stages only the verification files of a `no_change` step still
+runs: those files exist. In the review shape below, when EVERY implementer has
+nothing to change, the review is skipped (every patch it stages is absent),
+then the fix (its verdict was never written and no contributor changed
+anything), and the workflow SUCCEEDS with no pull request -- the integrator's
+`skipped` marker is what an issue run reads as the work being already on main
+(#646). When at least one implementer changed something, the review reviews
+the patches that exist and the fix integrates them.
 
 **Why SKIPPED is a SUCCEEDED task and not a state of its own.** The frozen
 `TaskState` has no SKIPPED, and the frozen transitions forbid PARKED ->
@@ -756,7 +804,10 @@ What each step does, and why each field is there:
   missing output (`empty_diff`), not retried, unless it says changing nothing
   is a correct result with `allow_empty_diff: true`: then it SUCCEEDS with
   `no_change`, and the review and the fix, which need its change, are SKIPPED
-  (see [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff)).
+  -- unless another implementer of the same run changed something, in which
+  case they review and integrate that work and start from the default branch
+  instead of the unpushed one (#978; see
+  [an empty diff can succeed](#an-empty-diff-can-succeed-allow_empty_diff)).
 * **The verdict is a file the review writes**, `{"verdict": "MERGE" |
   "NOT_YET", "findings": [...]}`. A finding is a string, or an object whose
   `summary`, `title` or `message` is one. The verdict is read whatever its case
@@ -829,10 +880,19 @@ What each step does, and why each field is there:
 
 On MERGE the fix step starts **no agent** (owner decision, 2026-10-05: a fix
 agent after a MERGE was paid for and could only add unreviewed change). The
-integrator path still runs: it merges the implementer's branch and opens the
-one pull request, and the step ends SUCCEEDED with
-`result_summary.skipped_agent: "review verdict MERGE"` beside
-`verdict_gate.agent_ran: false`. NOT_YET is unchanged: the fix agent runs.
+step ends SUCCEEDED with `result_summary.skipped_agent: "review verdict
+MERGE"` beside `verdict_gate.agent_ran: false`. NOT_YET is unchanged: the fix
+agent runs.
+
+**With one contributor, the control plane now opens the pull request itself**
+(since contract request 52 was accepted by the owner on 2026-10-09): swarm-api
+creates the branch and opens the pull request with no worker, no lease and no
+clone, and the step records `published_by: "control_plane"`. That saves about
+116 s and one Cloud Run execution per MERGE workflow, the cost measured on
+2026-10-06 of starting a container only to push a branch that already exists
+(below). With several contributors, or whenever swarm-api declines, the
+integrator path runs as before: a worker merges the contributors' branches and
+opens the one pull request.
 
 What titles that pull request, since no agent wrote the `pr-title.txt` an
 integrator owes:
@@ -857,7 +917,7 @@ refused on attribution or a task id, every mention neutralised.
 label -- nothing is generated, and the missing title fails the attempt as it
 always has; a step given an `issue` input is titled from the issue instead.
 
-#### When swarm-api opens it without a worker (#748, behind contract request 52)
+#### When swarm-api opens it without a worker (#748, contract request 52)
 
 Starting a worker only to open that pull request cost 116 s from the review's
 end, and one execution and one lease, on the three MERGE workflows measured on
@@ -955,13 +1015,18 @@ If swarm-api never decides (a lost push, or swarm-api down), the hold ends and
 the step goes to its worker. A claim older than 300 s is ignored too. A worker
 that then finds the pull request already open adopts it.
 
-**Off until contract request 52 is applied.** The frozen state machine has no
-PARKED -> SUCCEEDED edge (`swarm_common.states._ALLOWED`), and a step that
-never had a lease cannot honestly pass through RUNNING. Until the owner
-accepts the request, both swarm-api and the scheduler's hold read
-`can_transition(PARKED, SUCCEEDED)` as false and do nothing, and every MERGE
-workflow publishes through its worker. The ~100 s and one execution per
-MERGE workflow are not saved until then.
+**On since contract request 52 was applied.** The path shipped switched off,
+because the frozen state machine had no PARKED -> SUCCEEDED edge
+(`swarm_common.states._ALLOWED`) and a step that never had a lease cannot
+honestly pass through RUNNING. The owner accepted the request on 2026-10-09,
+and the edge is now in `_ALLOWED`. Both swarm-api (`contract_allows`) and the
+scheduler's hold still read `can_transition(PARKED, SUCCEEDED)`, so the
+switch stays the frozen contract and not a setting. The hold also needs
+`CONTROL_PUBLISH_HOLD_SECONDS` above 0 (60 s in the root; 0, the code
+default, holds nothing and every MERGE workflow goes to its worker). Taking a
+lease instead, so the step could pass through RUNNING, was rejected: it books
+capacity for work that needs none, and puts a second admission writer beside
+the scheduler (invariant 2).
 
 ### What is refused at submission
 
@@ -1374,16 +1439,85 @@ The review shape above, ending in a merge:
 ```
 
 You do not have to write the last step. **It is opt-in, and chosen in one of
-two places:**
+three places:** the workflow's `metadata.merge` (a spec's top-level `merge`
+key, from the bridge), else the `merge_policy` the tenant registered the
+repository with, else the platform's `merge_by_default`.
 
 | `metadata.merge` on the workflow | the spec states a merge step | result |
 |---|---|---|
-| absent | no | appended when the platform's `merge_by_default` is on (default **off**) and the repository is on github.com |
+| absent | no | the repository's `merge_policy` when it set one (below); else appended when the platform's `merge_by_default` is on (default **off**); either only when the repository is on github.com |
 | absent | yes | the stated step is honoured |
 | `"on"` | no | appended; refused (422) if the workflow opens no single pull request |
 | `"on"` | yes | the stated step is honoured; nothing is doubled |
+| `"on_merge_verdict"` | no | a re-review and a merge that reads it are appended (below); refused (422) unless the workflow is `integrate` with its integrator gated on a review |
+| `"on_merge_verdict"` | yes | refused (422): it derives the merge step itself; use `"on"` to keep yours |
 | `"off"` | no | none |
 | `"off"` | yes | refused (422): the two disagree |
+
+### `on_merge_verdict`: the workflow ends in a merge, on the latest review
+
+**Why it exists.** On 2026-10-09, 40 PRs SwarmCloud opened were left
+unmerged; 30 of them had no merge step at all, because the plugin's
+implement -> review -> fix workflows ended at the pull request. `"on"`
+already appended a merge, but it read the FIRST review's verdict: on
+NOT_YET the fix ran, nothing judged the fix, and the merge refused
+`verdict_not_merge` on a verdict about code that no longer existed.
+
+With `"on_merge_verdict"` on an `integrate` workflow whose integrator is gated
+on a review, swarm-api appends two steps before signing
+(`validation.rereview_step_for`, `merge_step_for`):
+
+| step | what it is | why |
+|---|---|---|
+| `re-review` | the review's own `runner_profile` and `input`, by name, with a preamble before its prompt; `builds_on` the integrator; stages the earlier verdict and the review's inputs **by parent** (`review/verdict.json`) | it judges the head the integrator pushed -- the head the merge pins -- and its earlier-verdict file can never be mistaken for the `verdict.json` it writes |
+| `merge` | depends on the integrator and the re-review; stages the re-review's verdict file; its signed `merge_target.review` is the re-review | it merges only on the LATEST verdict, and only when CI is green at the integrator's pushed head |
+
+* **One round, `REREVIEW_ROUNDS = 1`.** A re-review that still says NOT_YET
+  stops the workflow at its merge step (`verdict_not_merge`), with the pull
+  request open for a person. The workflow is a DAG fixed at submission, so
+  a second round would be a second fix/re-review pair, and a review that
+  disagrees with a fix twice is a disagreement a person settles.
+* **The re-review's agent always runs, MERGE path included.** A gated step
+  whose agent does not run writes no artifact (`agent_worker.verdict`), so a
+  re-review gated on NOT_YET would leave the merge nothing to read on MERGE.
+  The cost is one review agent per MERGE workflow, and what it buys is a
+  verdict on the exact head being merged (with several contributors, a head
+  the first review never saw). Skipping it on MERGE needs the worker to
+  re-publish a gated step's staged verdict; that is a worker change, not
+  made here.
+* **Nothing the caller did not choose.** The re-review runs the profile and
+  input the caller already chose for its review; no image, command, backend
+  or resource spec is accepted from anyone (invariant 10).
+* **Refused rather than ignored, when asked for.** Under `collect` nothing
+  opens a pull request; under `direct-pr` every agent step opens its own and
+  no step may be gated, so there is no review to wait on; an ungated
+  integrator has no verdict. Each is a 422 naming the reason and `"on"` /
+  `"off"` as the alternatives.
+
+### A repository's `merge_policy`
+
+`merge_policy` (`"off"` | `"on_merge_verdict"`) is a field of the tenant's
+registration on `/v1/repositories`, and **only a platform admin may set it**
+(a member's create or PATCH carrying it answers 403 before anything is read
+or written). Each change is an `admin_audit` entry
+(`repository_merge_policy_set`) in the transaction that changes the
+registration, as `platform` is. Never set, it reads as `null` and the
+platform's `merge_by_default` decides.
+
+* When a workflow on the repository says nothing in `metadata.merge`, the
+  policy decides. A policy that cannot apply -- a one-step `direct-pr`
+  workflow, a CI fix round, an ungated integrator -- appends nothing and
+  refuses nothing: the tenant did not ask, so an admin's setting must not
+  fail their job.
+* `"on"` is not a policy value. A merge with no review verdict is a choice a
+  job makes for itself, never one a repository makes for every job on it.
+* An issue run created without `auto_merge` takes it from the policy
+  (`"on_merge_verdict"` is true, `"off"` false) before the platform default,
+  and records what it resolved; the issue preview's `auto_merge.default`
+  says the same. The run's own merge already requires its review's MERGE and
+  green CI ([issue-runs.md](issue-runs.md)).
+* Only the tenant's own registration counts: another tenant's policy on the
+  same repository never decides this tenant's default.
 
 `merge_by_default` is the platform setting an admin reads and sets with
 `GET`/`PUT /v1/admin/settings` (`{"merge_by_default": true}`), stored in

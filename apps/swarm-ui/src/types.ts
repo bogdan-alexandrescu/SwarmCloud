@@ -1265,6 +1265,24 @@ export interface GitSummary {
   dirty?: string[]
   dirty_count?: number
   dirty_truncated?: boolean
+  /**
+   * One row per file of the patch's diff (`git diff -M <base>`, committed and
+   * uncommitted work together), so counts are known before the patch is read
+   * and even when it was omitted. Capped at 500 rows (`MAX_FILES_LISTED` in
+   * `gitops.py`); `files_truncated` says the cap was hit. Absent on a summary
+   * written before the field, or when there was no base to diff against.
+   * A binary file has `binary: true` and null counts. Paths only, never content.
+   */
+  files?: Array<{
+    path: string
+    /** The path before a rename, else null. */
+    old_path: string | null
+    status: 'A' | 'M' | 'D' | 'R'
+    insertions: number | null
+    deletions: number | null
+    binary: boolean
+  }>
+  files_truncated?: boolean
   /** Artifact name of the patch, matched against `artifacts[]` to get its URI. */
   patch?: string | null
   patch_bytes?: number
@@ -4661,6 +4679,8 @@ export type IssueRunState =
   | 'FAILED'
   | 'REJECTED'
   | 'CANCELLED'
+  /** The planner found the issue not ready and said why (`IssueRun.not_ready`). Terminal. */
+  | 'NOT_READY'
 
 /** `IssueRef.to_dict()`: the reference in its short form and the two URLs. */
 export interface IssueRefDoc {
@@ -4859,6 +4879,21 @@ export interface IssueRun {
    * a merge's `Closes #N`.
    */
   issue_closed?: boolean | null
+  /** The planner's NOT_READY verdict (`issueruns.NotReadyVerdict`), masked; null on any other run. */
+  not_ready?: RunNotReady | null
+  /** Why an `auto` run's approval waits, e.g. `territory_overlap: run_<id>`; null when nothing holds it. */
+  hold?: string | null
+  /** The member a run the issue sweeper created (`created_by: issue-sweep`) submits as. */
+  on_behalf_of?: string | null
+}
+
+/** `IssueRun.to_api().not_ready`: why the planner found the issue not ready. */
+export interface RunNotReady {
+  /** `already_done`, `owner_decision`, `blocked`, `too_vague`, `security_deferred`, `epic` or `other`; null when unsaid. */
+  kind: string | null
+  reason: string | null
+  /** What would make it ready, one per entry. */
+  needs: string[]
 }
 
 /** `IssueRun.to_api().pull_request`. */
@@ -4990,7 +5025,7 @@ export interface GitHubRefusalDetail {
 // The onboarding checklist, `GET /v1/onboarding` (swarm_api/onboarding.py
 // `derive`): six steps, each derived on every read, never set.
 
-export type OnboardingStepName = 'signed_in' | 'github_connected' | 'app_installed' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
+export type OnboardingStepName = 'signed_in' | 'workspace' | 'claude_account' | 'github_connected' | 'app_installed' | 'orgs_enabled' | 'repos_chosen' | 'access_verified' | 'ready'
 
 export type OnboardingStepState = 'todo' | 'in_progress' | 'done' | 'failed' | 'stale'
 
@@ -5013,6 +5048,12 @@ export interface OnboardingStep {
   /** Per step; `GitHubConnectedEvidence` and `OrgsEnabledEvidence` are the two the console reads. */
   evidence: Record<string, unknown>
   issues: OnboardingIssue[]
+  /**
+   * `workspace` and `claude_account` only (#847): true while WORKSPACE_GATE is
+   * on and the caller's tenant is one the gate judges. A step that is not
+   * required never holds back `next_step` or `complete`.
+   */
+  required?: boolean
 }
 
 /**
@@ -5074,7 +5115,210 @@ export interface OnboardingDoc {
   steps: OnboardingStep[]
   next_step: OnboardingStepName | null
   complete: boolean
+  /** The person hid the checklist (`POST /v1/onboarding/dismiss`); every step is served all the same. */
+  dismissed?: boolean
+  dismissed_at?: string | null
   source: string
+}
+
+/** `POST /v1/onboarding/dismiss`: `{dismissed}` in, the caller's own flag out. */
+export interface OnboardingDismissal {
+  tenant_id: string
+  user_hash: string
+  dismissed: boolean
+  dismissed_at: string | null
+}
+
+// ---------------------------------------------------------------------------
+// Personal workspaces (#847, docs/workspaces.md §1, §6.3)
+// ---------------------------------------------------------------------------
+//
+// Typed from apps/swarm-api/swarm_api/workspaces.py (`view`),
+// routes/workspaces.py, people.py (`everyone`, `_row`, `_admin_view`,
+// `lendable`) and admins.py. Field for field what the routes send; nothing
+// here is derived on the client. No route carries a credential, an image, a
+// command or a resource spec (invariant 10).
+
+/** `workspaces.STATES`, plus `none` when there is no record. */
+export type WorkspaceState = 'none' | 'requested' | 'approved' | 'applying' | 'needs_owner' | 'ready' | 'denied' | 'failed'
+
+/** One step of the workspace job (§4.2's ids A1-A9), written by the job only. */
+export interface WorkspaceJobStep {
+  state: 'todo' | 'running' | 'done' | 'failed' | 'held'
+  at?: string | null
+  code?: string | null
+}
+
+/** `GET /v1/workspace`: the caller's own record (`workspaces.view`). Only `state`, `setup_url` and `setup_command` are sent with no record. */
+export interface WorkspaceView {
+  state: WorkspaceState
+  setup_url: string
+  setup_command: string
+  workspace_id?: string | null
+  tenant_id?: string | null
+  request_id?: string | null
+  requested_at?: string | null
+  requested_via?: string | null
+  /** `auto` is true when nobody clicked: the requester is an admin, whose own request is approved automatically (docs/workspaces.md §1.3, owner 2026-10-09). */
+  decision?: { verdict: string | null; reason: string | null; at: string | null; auto?: boolean } | null
+  /** Set on a `requested` record that is not approved automatically because the person's tenant predates self-service setup and is being migrated (§3.3); `copy` is the server's sentence. */
+  held?: { reason: string; copy: string } | null
+  limits?: Record<string, number>
+  steps?: Record<string, WorkspaceJobStep>
+  /** `copy` is §4.3's, served from the code, word for word. */
+  failure?: { code: string | null; step: string | null; retryable: boolean | null; at: string | null; copy: string } | null
+  ready_at?: string | null
+  request_again_at?: string | null
+  /**
+   * `workspaces.provisioning`, computed on read: whether this deployment builds workspaces at all, and why an
+   * `approved` record is not moving (null while it is). Absent from an older API.
+   */
+  provisioning?: WorkspaceProvisioning
+}
+
+/** Why an approved workspace is waiting: the API's stuck rule (`workspaces.waiting_because`). */
+export type WorkspaceWaitReason = 'publishing_off' | 'never_dispatched' | 'dispatched_unclaimed'
+
+export interface WorkspaceProvisioning {
+  available: boolean
+  waiting_because: WorkspaceWaitReason | null
+  /** Null when the record is not approved. */
+  approved_minutes_ago: number | null
+}
+
+/** `POST /v1/workspace/loan-request`. */
+export interface LoanRequestAnswer {
+  state: string | null
+  workspace_id: string | null
+  request_id: string | null
+  requested_at: string | null
+}
+
+/** A record as an admin sees it (`people._admin_view`): the person's view, less the tenant id, with the dispatch. */
+export interface AdminWorkspaceView extends WorkspaceView {
+  dispatch?: {
+    attempts: number | null
+    last_attempt_at: string | null
+    last_published_at: string | null
+    last_ok: boolean | null
+    mode: string | null
+  } | null
+  run?: Record<string, unknown> | null
+  retried_at?: string | null
+  /** Only on a `needs_owner` record: the step the call guard stopped at. */
+  needs_owner_step?: string | null
+}
+
+/** `people._claude_account`: where the person's Claude account comes from. */
+export interface PersonClaudeAccount {
+  source: 'own' | 'lent' | 'provider_key' | 'none'
+  own: number
+  lent: number
+  lent_by: string[]
+  provider_key: boolean
+}
+
+/** One row of `GET /v1/admin/people` (`people._row`). */
+export interface PersonRow {
+  email: string
+  teams: string[]
+  github: 'connected' | 'expired' | 'none'
+  workspace: AdminWorkspaceView
+  claude_account: PersonClaudeAccount
+  loan_request: { state: string | null; requested_at: string | null } | null
+  first_seen: string | null
+  last_seen: string | null
+  last_submitted: string | null
+  last_active: string | null
+}
+
+/** One `admin_audit` entry: a workspace action names a workspace id, an admin change an email. */
+export interface AdminAuditEntry {
+  action: string
+  target_workspace_id?: string | null
+  target_email?: string | null
+  by: string
+  at: string | null
+  detail?: Record<string, unknown>
+}
+
+/** An account this admin may lend (`people.lendable`): a group tenant's, or the admin's own. */
+export interface LendableAccount {
+  account_id: string
+  owner_tenant: string
+  label: string | null
+  state: string | null
+  lend_to: string[]
+}
+
+/** `GET /v1/admin/people`. `lendable_accounts` is null, with `lendable_error`, when the broker did not answer. */
+export interface PeopleDoc {
+  people: PersonRow[]
+  count: number
+  pending: number
+  audit: AdminAuditEntry[]
+  lendable_accounts: LendableAccount[] | null
+  lendable_error: string | null
+  /** Whether this deployment builds workspaces, and how many approved records wait on it. Absent from an older API. */
+  provisioning?: { available: boolean; approved_waiting: number }
+  /** `AdminRoles.holders`: the owner first. Null, with the reason, when the roles were not read; absent from an older API. */
+  admins?: AdminHolder[] | null
+  admins_error?: string | null
+}
+
+/** One `admin_roles/` holder. An ADMIN_GROUPS member has no document and is not listed. */
+export interface AdminHolder {
+  email: string
+  role: 'owner' | 'admin'
+  granted_by: string | null
+  granted_at: string | null
+}
+
+/** `people._dispatch`: whether the workspace id reached Pub/Sub. A failed publish is not a failed approval. */
+export interface WorkspaceDispatch {
+  published: boolean
+  mode: string
+  reason: string | null
+}
+
+/** approve, retry: the record and its dispatch. deny: the record only. */
+export interface WorkspaceActionAnswer {
+  workspace: AdminWorkspaceView
+  dispatch?: WorkspaceDispatch
+  /** Approve and retry: whether anything was sent to build it, said plainly. Absent from an older API. */
+  sent_for_building?: boolean
+  message?: string
+}
+
+/** `PUT /v1/admin/workspaces/{workspace_id}/limits`. */
+export interface WorkspaceLimitsAnswer {
+  workspace: AdminWorkspaceView
+  tenant_written: boolean
+  dispatch: WorkspaceDispatch
+}
+
+/** `PUT /v1/admin/people/{workspace_id}/loan`. */
+export interface WorkspaceLoanAnswer {
+  workspace_id: string
+  account_id: string
+  owner_tenant: string
+  lent: boolean
+  changed: boolean
+}
+
+/** `PUT /v1/admin/admins/{email}` (`admins._to_api`). */
+export interface AdminGrantAnswer {
+  email: string
+  role: string | null
+  granted_by: string | null
+  granted_at: string | null
+  changed: boolean
+}
+
+/** `DELETE /v1/admin/admins/{email}`. */
+export interface AdminRemoveAnswer {
+  email: string
+  removed: boolean
 }
 
 // ---------------------------------------------------------------------------
@@ -5089,8 +5333,8 @@ export interface OnboardingDoc {
 /** A grant's mode (`access.MODES`). Read is enforced by SwarmCloud, not GitHub (D9). */
 export type AccessMode = 'read' | 'write'
 
-/** The checks verify runs (`access.CHECKS`). */
-export type AccessCheckName = 'clone' | 'push' | 'pull_request'
+/** The checks verify runs (`access.CHECKS`), plus D6's opt-in `push_test` (`access.OPT_IN_CHECKS`). */
+export type AccessCheckName = 'clone' | 'push' | 'pull_request' | 'push_test'
 
 /** A check's answer. `not_required` is push and pull request on a read grant. */
 export type AccessCheckState = 'ok' | 'missing' | 'unknown' | 'not_required'
@@ -5100,11 +5344,19 @@ export interface AccessCheck {
   /** The §2.3 code a check that did not pass carries. */
   code: string | null
   checked_at: string | null
+  /** `push_test` only: the `swarmcloud/onboarding-check-<nonce>` branch it created. */
+  branch?: string
+  /** `push_test` only: the delete failed and the branch is still on GitHub. */
+  leftover?: boolean
 }
 
-/** `access.org_to_api`: an owner the person enabled. */
+/** How an owner was enabled: the App's installation, or the person's own token for it (D5). */
+export type AccessOrgMethod = 'app' | 'pat'
+
+/** `access.org_to_api`: an owner the person enabled, or asked to have installed. */
 export interface AccessOrg {
   owner: string
+  method?: AccessOrgMethod
   owner_type: 'User' | 'Organization' | null
   installation_id: number | null
   /** GitHub's `all` or `selected`. */
@@ -5114,7 +5366,12 @@ export interface AccessOrg {
   sso: string | null
   enabled: boolean
   enabled_at: string | null
+  /** When the person asked the org's owners to install the App (ORG_APPROVAL_PENDING). */
+  requested_at?: string | null
   checked_at: string | null
+  /** `ORG_APPROVAL_PENDING` and its §2.3 copy, on a requested owner only. */
+  code?: string
+  copy?: string
 }
 
 /** `access.grant_to_api`: one repository the person chose. */
@@ -5135,6 +5392,8 @@ export interface AccessGrant {
 export interface AccessOverview {
   connection: GitHubConnection | null
   orgs: AccessOrg[]
+  /** Installs the person asked for that GitHub does not list yet (ORG_APPROVAL_PENDING). */
+  requested?: AccessOrg[]
   grants: AccessGrant[]
   tenant_id: string
 }
@@ -5145,11 +5404,41 @@ export interface AccessOwner {
   owner_type: 'User' | 'Organization'
   installation_id: number | null
   repository_selection: string | null
-  install_state: 'installed' | 'not_installed'
+  /** `requested`: asked for, not approved yet (ORG_APPROVAL_PENDING); `token`: enabled through the person's token (D5). */
+  install_state: 'installed' | 'not_installed' | 'requested' | 'token'
   sso: string
   enabled: boolean
   /** The App's install page, for an owner it is not installed on. */
   install_url: string | null
+  method?: AccessOrgMethod
+  requested_at?: string | null
+  /** `ORG_APPROVAL_PENDING` and its §2.3 copy, on a requested owner only. */
+  code?: string
+  copy?: string
+}
+
+/** `POST /v1/access/orgs/{owner}/install-request`. `recorded` is false for an owner already enabled. */
+export interface AccessInstallRequestResponse {
+  org: AccessOrg
+  recorded: boolean
+  install_url: string | null
+  tenant_id: string
+}
+
+/** The fallback token's names, as `POST /v1/onboarding/github/token` answers them: never its value. */
+export interface OwnerTokenNames {
+  token_id: string
+  secret_name: string
+  kind: string
+  forge_login: string | null
+  state: string
+  expires_at: string | null
+}
+
+/** `POST /v1/onboarding/github/token` (D5): the owner it enabled and the token's names. */
+export interface OwnerTokenResponse {
+  org: AccessOrg
+  token: OwnerTokenNames
 }
 
 /** `GET /v1/access/orgs`. */
@@ -5239,6 +5528,8 @@ export interface AccessVerifyResponse {
   grant: AccessGrant
   failures: AccessVerifyFailure[]
   passed: boolean
+  /** Only when `push_test` ran and created its branch: the branch, and whether its delete failed. */
+  push_test?: { branch: string; leftover: boolean }
   tenant_id: string
 }
 

@@ -1,11 +1,13 @@
 import { useState, type ReactNode } from 'react'
-import { loadOnboarding } from './api'
+import { dismissOnboarding, loadOnboarding } from './api'
 import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
-import { ConnectButton, connectionOf } from './GitHubConnect'
+import type { ApiError } from './fetch'
+import { ConnectButton, connectionOf, Refusal } from './GitHubConnect'
+import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
 import { addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
-import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState } from './types'
+import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState, WorkspaceView } from './types'
 import { timeAgo } from './types'
 import './styles/repositories.css'
 import './styles/onboarding.css'
@@ -31,10 +33,14 @@ import './styles/onboarding.css'
  * action: Connect GitHub here, the rest on Work › Access, where OB4's routes
  * act. Re-check is a fresh read, which is a fresh derivation.
  *
- * HIDE IS THIS BROWSER'S. §3.2 drafts `POST /v1/onboarding/dismiss`, and no
- * lane has built it, so Hide is kept in localStorage per tenant and person:
- * the steps keep their state, Work › Setup still shows them, and another
- * browser still shows the card. Said on the card, not implied.
+ * HIDE IS THE PERSON'S, KEPT BY THE SERVER (§3.1-§3.2). Hide posts
+ * `POST /v1/onboarding/dismiss`, which sets `dismissed_at` on the caller's own
+ * onboarding document, and the card is drawn only while `GET /v1/onboarding`
+ * answers `dismissed: false` -- so a person who hid it does not meet it again
+ * in another browser or on the plugin's surface. It was a localStorage flag
+ * until that route was built (#780, step 3), which hid the card in one browser
+ * only. The steps keep their state, Work › Setup still shows them, and Show on
+ * Overview there posts `{dismissed: false}`.
  */
 
 export const SETUP = 'work/setup'
@@ -44,6 +50,8 @@ const SUBMIT_TASK = 'work/new'
 /** The steps' names as the mock-up draws them (onboarding.html, Entry A). */
 export const STEP_LABEL: Readonly<Record<OnboardingStepName, string>> = {
   signed_in: 'Sign in',
+  workspace: 'Request your workspace',
+  claude_account: 'Add a Claude account',
   github_connected: 'Connect GitHub',
   app_installed: 'Install the App',
   orgs_enabled: 'Enable orgs',
@@ -84,8 +92,60 @@ function rows(v: unknown): Record<string, unknown>[] {
   return Array.isArray(v) ? v.filter((r): r is Record<string, unknown> => typeof r === 'object' && r !== null) : []
 }
 
+/**
+ * REQUIRED, AS THE SERVER JUDGES IT (`onboarding.derive`'s
+ * `s.get("required", True)`): a step with `required` absent or null is
+ * required; only an explicit `false` is not. The workspace steps carry
+ * `required: false` while WORKSPACE_GATE is off, and never hold back
+ * `complete` -- so they must not hold back the count either.
+ */
+export function stepRequired(step: OnboardingStep): boolean {
+  // `required` is not on OnboardingStep's type (types.ts is shared); the
+  // server sends it on the workspace steps only.
+  return !('required' in step) || step.required !== false
+}
+
+/** Done REQUIRED steps: the count's numerator. */
 export function doneCount(doc: OnboardingDoc): number {
-  return doc.steps.filter((s) => s.state === 'done').length
+  return doc.steps.filter((s) => stepRequired(s) && s.state === 'done').length
+}
+
+/**
+ * The count as one line. Required steps only, with the optional ones named
+ * apart: "8 of 8 required done · 1 optional (Request your workspace)". With no optional
+ * step it reads as it always did, "7 of 7 done". Before 2026-10-08 the
+ * denominator was every step, so a complete checklist read "8 of 9 done".
+ */
+export function countLabel(doc: OnboardingDoc): string {
+  const required = doc.steps.filter(stepRequired)
+  const optional = doc.steps.filter((s) => !stepRequired(s))
+  const done = doneCount(doc)
+  if (optional.length === 0) return `${done} of ${required.length} done`
+  const names = optional.map((s) => STEP_LABEL[s.step] ?? s.step).join(', ')
+  return `${done} of ${required.length} required done · ${optional.length} optional (${names})`
+}
+
+function hhmm(iso: string): string | null {
+  const at = new Date(iso)
+  if (Number.isNaN(at.getTime())) return null
+  return `${String(at.getHours()).padStart(2, '0')}:${String(at.getMinutes()).padStart(2, '0')}`
+}
+
+/**
+ * A connection whose LAST probe did not complete: its error, and when it was
+ * seen. The error is the probe's, kept until the next probe; the poll probes
+ * such a record again once REVERIFY_RETRY (an hour) has passed
+ * (`GitTokens.reverify`), so its age says how stale it may be. Nothing on
+ * this page re-probes it: this read stays pure.
+ */
+function probeErrorLine(step: OnboardingStep): string | null {
+  if (step.step !== 'github_connected') return null
+  const ev = step.evidence ?? {}
+  const error = str(ev.probe_error)
+  if (ev.probe_complete === true || error === null) return null
+  const at = str(ev.probe_attempted_at)
+  const when = at === null ? null : hhmm(at)
+  return `Last probe did not complete: ${error} (${when === null ? 'time unknown' : `as of ${when}`}; re-checked hourly)`
 }
 
 /** What the step's evidence says, in one line: its last probe, never a guess. */
@@ -141,7 +201,21 @@ function stepLine(step: OnboardingStep, doc: OnboardingDoc): ReactNode {
       const parts = [`${n('passed')} passed`]
       if (n('failed') > 0) parts.push(`${n('failed')} failed`)
       if (n('pending') > 0) parts.push(`${n('pending')} not checked yet`)
-      return parts.join(' · ')
+      // Name the repositories still to verify, so a person knows which
+      // grant's Verify to press on Access (#896).
+      const open = repos
+        .filter((r) => r.result === 'failed' || r.result === 'pending')
+        .map((r) => `${str(r.repository) ?? '?'}${r.result === 'failed' ? ' (failed)' : ''}`)
+      if (open.length === 0) return parts.join(' · ')
+      const shown = open.slice(0, 3).join(', ') + (open.length > 3 ? `, +${open.length - 3} more` : '')
+      return (
+        <>
+          {parts.join(' · ')} · {shown}: press Verify on{' '}
+          <a className="c-link" href={addressToPath(ACCESS)}>
+            Access
+          </a>
+        </>
+      )
     }
     case 'ready': {
       const first = str(ev.first_repository)
@@ -222,15 +296,30 @@ function StepAction({ step, doc, reload }: { step: OnboardingStep; doc: Onboardi
   )
 }
 
-/** The six steps' states as one bar: a glance at how far along this person is. */
+function stepBarLabel(doc: OnboardingDoc): string {
+  const required = doc.steps.filter(stepRequired).length
+  const word = required === doc.steps.length ? '' : 'required '
+  return `${doneCount(doc)} of ${required} ${word}setup steps done`
+}
+
+/** The steps' states as one bar (optional ones too): a glance at how far along this person is. */
 export function StepBar({ doc }: { doc: OnboardingDoc }) {
   return (
-    <div className="ob-bar" role="img" aria-label={`${doneCount(doc)} of ${doc.steps.length} setup steps done`}>
+    <div className="ob-bar" role="img" aria-label={stepBarLabel(doc)}>
       {doc.steps.map((s) => (
         <i key={s.step} className={`is-${s.state}`} />
       ))}
     </div>
   )
+}
+
+/**
+ * A step's mark. An `in_progress` workspace step whose approval nothing will build is `warn`, not the pulsing
+ * `live` mark: the platform does not advance that state by itself, so it must not look as if it were moving.
+ */
+function stepTone(s: OnboardingStep): string {
+  if (s.step === 'workspace' && s.evidence != null && waitingOf(s.evidence as unknown as WorkspaceView) !== null) return 'warn'
+  return STATE_TONE[s.state] ?? 'unknown'
 }
 
 /** The checklist itself, shared by the card and the page. */
@@ -242,7 +331,7 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
         const next = doc.next_step === s.step
         return (
           <li key={s.step} className={`ob-step is-${s.state}${next ? ' is-next' : ''}`} data-step={s.step} data-state={s.state} aria-current={next ? 'step' : undefined}>
-            <ToneMark tone={STATE_TONE[s.state] ?? 'unknown'} hidden />
+            <ToneMark tone={stepTone(s)} hidden />
             <div className="ob-step-main">
               <p className="ob-step-h">
                 <b>{STEP_LABEL[s.step] ?? s.step}</b> <code>{s.step}</code>
@@ -257,6 +346,8 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
                 <IssueCopy key={`${i.code}:${i.owner ?? ''}:${i.repository ?? ''}:${n}`} code={i.code} copy={i.copy} url={i.url} />
               ))}
               {issues.length === 0 && s.code !== null && s.copy !== null && <IssueCopy code={s.code} copy={s.copy} />}
+              <WorkspaceStepDetail step={s} reload={reload} />
+              {probeErrorLine(s) !== null && <p className="ur-hint ob-probe">{probeErrorLine(s)}</p>}
               {s.step === 'app_installed' && s.state !== 'done' && s.evidence?.waiting_for === undefined && (
                 <p className="ur-hint ob-help">
                   Connecting authorised the App to act as you; installing it on your account or an org is what lets it
@@ -274,30 +365,6 @@ export function Checklist({ doc, reload }: { doc: OnboardingDoc; reload: () => v
   )
 }
 
-// ---------------------------------------------------------------------------
-// Hide, kept in this browser (see the note at the top)
-// ---------------------------------------------------------------------------
-
-function hideKey(doc: OnboardingDoc): string {
-  return `swarm.setup.hidden:${doc.tenant_id}:${doc.user_hash}`
-}
-
-export function setupHidden(doc: OnboardingDoc): boolean {
-  try {
-    return window.localStorage.getItem(hideKey(doc)) === '1'
-  } catch {
-    return false
-  }
-}
-
-function hideSetup(doc: OnboardingDoc): void {
-  try {
-    window.localStorage.setItem(hideKey(doc), '1')
-  } catch {
-    // Storage refused (private mode): the card hides for this visit only.
-  }
-}
-
 /**
  * ENTRY A, THE CARD ON OVERVIEW. It draws nothing until the read lands, and
  * nothing when the read failed or is not served: Overview's own reads are
@@ -306,9 +373,26 @@ function hideSetup(doc: OnboardingDoc): void {
 export function SetupCard() {
   const doc = useUrRead(loadOnboarding, 'onboarding')
   const [hidden, setHidden] = useState(false)
+  const [hiding, setHiding] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
   if (doc.state.status !== 'ok' && doc.state.status !== 'stale') return null
   const d = doc.state.data
-  if (d.complete || !Array.isArray(d.steps) || hidden || setupHidden(d)) return null
+  if (d.complete || !Array.isArray(d.steps) || hidden || d.dismissed === true) return null
+
+  // Hidden only once the server has kept it: a refused dismiss leaves the
+  // card where it was and says so, rather than hiding it for this visit and
+  // bringing it back on the next.
+  async function hide() {
+    setHiding(true)
+    setRefused(null)
+    const res = await dismissOnboarding(true)
+    setHiding(false)
+    if (res.status === 'error') {
+      setRefused(res.error)
+      return
+    }
+    setHidden(true)
+  }
   return (
     <Card
       className="ob-card"
@@ -316,16 +400,9 @@ export function SetupCard() {
       action={
         <span className="ur-acts">
           <Chip>
-            {doneCount(d)} of {d.steps.length} done
+            {countLabel(d)}
           </Chip>
-          <Button
-            kind="ghost"
-            size="sm"
-            onClick={() => {
-              hideSetup(d)
-              setHidden(true)
-            }}
-          >
+          <Button kind="ghost" size="sm" busy={hiding} onClick={() => void hide()}>
             Hide
           </Button>
           <ButtonLink kind="primary" size="sm" href={addressToPath(SETUP)}>
@@ -334,11 +411,12 @@ export function SetupCard() {
         </span>
       }
     >
+      {refused !== null && <Refusal error={refused} title="The checklist could not be hidden" />}
       <StepBar doc={d} />
       <Checklist doc={d} reload={doc.reload} />
       <p className="ur-hint">
-        This card leaves Overview by itself once every step is done. Hide keeps every step as it is, in this browser
-        only; Work › Setup still shows them.
+        This card leaves Overview by itself once every step is done. Hide keeps every step as it is, for you in every
+        browser; Work › Setup still shows them.
       </p>
     </Card>
   )
@@ -368,9 +446,12 @@ export function OnboardingScreen() {
               className="ob-card"
               title={d.complete ? 'Setup is complete' : 'Set up SwarmCloud'}
               action={
-                <Chip>
-                  {doneCount(d)} of {d.steps.length} done
-                </Chip>
+                <span className="ur-acts">
+                  <Chip>
+                    {countLabel(d)}
+                  </Chip>
+                  {d.dismissed === true && !d.complete && <ShowOnOverview reload={doc.reload} />}
+                </span>
               }
               foot={
                 <>
@@ -388,5 +469,34 @@ export function OnboardingScreen() {
         }
       </UrRegion>
     </div>
+  )
+}
+
+/**
+ * A hidden checklist's way back onto Overview: `{dismissed: false}`, then a
+ * fresh read, so the button goes once the server says the card is shown.
+ */
+function ShowOnOverview({ reload }: { reload: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  return (
+    <>
+      <Button
+        size="sm"
+        busy={busy}
+        onClick={() => {
+          setBusy(true)
+          setRefused(null)
+          void dismissOnboarding(false).then((res) => {
+            setBusy(false)
+            if (res.status === 'error') setRefused(res.error)
+            else reload()
+          })
+        }}
+      >
+        Show on Overview
+      </Button>
+      {refused !== null && <Refusal error={refused} title="The checklist is still hidden from Overview" />}
+    </>
   )
 }
