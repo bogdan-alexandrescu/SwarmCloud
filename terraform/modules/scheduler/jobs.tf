@@ -141,11 +141,12 @@ module "service_account_ids" {
 # NO create_ignore_already_exists, for the reason modules/iam gives for
 # swarm-tick (#334): a release that meets a 409 should fail rather than adopt
 # an account somebody else made under this name, with their keys and policy.
+# The provider caps description at 256 characters; this one is at 249.
 resource "google_service_account" "rollup_sweeper" {
   project      = var.project_id
   account_id   = module.service_account_ids.rollup_sweeper_id
   display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup, issue-run-advance, issue-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep jobs and task_finished push; admitted to those eight /v1/admin routes only. No roles."
+  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup, issue-run-advance, issue-sweep, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep jobs and task_finished push; those nine /v1/admin routes only. No roles."
 }
 
 locals {
@@ -307,6 +308,75 @@ resource "google_cloud_scheduler_job" "issue_sweep" {
   # No retry: a retry would read every repository again, and the next sweep
   # is half an hour away. A live run is never started twice for one issue --
   # the sweep skips an issue with a live run -- so an overlap only re-reads.
+  retry_config {
+    retry_count = 0
+  }
+}
+
+# --- The stranded-PR sweep (part of #295) -------------------------------------
+#
+# POST /v1/admin/stranded-prs/sweep (apps/swarm-api/swarm_api/routes/
+# strandedprs.py, swarm_api.strandedprs.sweep_tenant) lists one tenant's
+# registered repositories' open pull requests with that tenant's token, keeps
+# the ones that tenant's tasks opened, classifies every one open over two hours
+# that nothing is going to merge (held, conflict, checks_red, ci_never_ran,
+# behind, merge_failed, no_merge_step), stores the rows GET /v1/stranded-prs
+# serves, and logs one `pr_stranded` entry per pull request per six hours --
+# which the monitoring module's pr-stranded metric counts and alerts on. On
+# 2026-10-09, 40 SwarmCloud pull requests were left open and nobody was told.
+#
+# REDRIVE FALSE, ALWAYS. The body says so explicitly, and swarm-api refuses
+# `redrive: true` from this identity anyway: submitting merges is an admin's
+# call (`POST ... {"redrive": true}`), so a leaked scheduler token reads and
+# logs, and submits nothing.
+#
+# EVERY 30 MINUTES, AT :19 AND :49 (var.stranded_pr_sweep_schedule): clear of
+# :00 and :30, where schedules bunch, and of the issue sweep's :07 and :37, so
+# the two reads of every registered repository with one tenant token do not
+# land in the same minute. A pull request is stranded only after two hours, so
+# half an hour more before anyone is told costs nothing anyone sees.
+#
+# SAME TENANTS AND SAME IDENTITY as the jobs above: the route takes exactly one
+# tenant_id, and swarm-api admits the rollup-sweeper account to it by name
+# (swarm_api.auth.ROLLUP_SWEEPER_ROUTES). NOT the platform tick (swarm-tick):
+# swarm-api admits only ROLLUP_SWEEPER_USERS to the sweeper routes, so a job
+# presenting swarm-tick would be refused 403 on every call. Its one grant,
+# run.invoker on swarm-api, is already the rollup's (terraform/infra main.tf,
+# rollup_sweeper_invokes_api), so this job adds no IAM member.
+
+resource "google_cloud_scheduler_job" "stranded_pr_sweep" {
+  for_each = var.rollup_tenant_ids
+
+  project = var.project_id
+  region  = var.region
+  name    = "${var.name_prefix}-stranded-pr-sweep-${each.key}"
+
+  description = "managed-by=swarm-terraform; stranded_pr_sweep: finds tenant ${each.key}'s SwarmCloud pull requests nothing is going to merge and logs pr_stranded (redrive false)"
+  schedule    = var.stranded_pr_sweep_schedule
+  time_zone   = var.time_zone
+  paused      = var.paused
+
+  # The route stops reading GitHub at 240 s (strandedprs.SWEEP_BUDGET_SECONDS)
+  # and reports `truncated`, so it answers inside this deadline.
+  attempt_deadline = "300s"
+
+  http_target {
+    http_method = "POST"
+    uri         = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/stranded-prs/sweep?tenant_id=${urlencode(each.key)}"
+    body        = base64encode(jsonencode({ redrive = false }))
+    headers = {
+      "Content-Type" = "application/json"
+    }
+
+    oidc_token {
+      service_account_email = local.rollup_sweeper_email
+      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
+    }
+  }
+
+  # No retry: a retry would read every repository again, and the next sweep
+  # is half an hour away. The log dedupe is per pull request, so an overlap
+  # does not page twice inside six hours.
   retry_config {
     retry_count = 0
   }

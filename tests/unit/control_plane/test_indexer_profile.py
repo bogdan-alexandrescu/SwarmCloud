@@ -47,13 +47,13 @@ def test_the_indexer_profile_is_claude_code_on_the_indexer_image():
         f.name for f in dataclasses.fields(indexer)
         if getattr(indexer, f.name) != getattr(claude, f.name)
     )
-    # Contract request 53 (applied 2026-10-08) moved claude-code alone to GKE
-    # Autopilot; indexer stays on Cloud Run Jobs, so the backend differs too.
-    assert differ == ["backend", "image", "name"], (
-        f"the owner's decision was claude-code with only its name and image changed, "
-        f"and request 53 moved only claude-code's backend; {differ} differ"
+    # Contract request 53 (applied 2026-10-08) moved claude-code to GKE
+    # Autopilot, and request 63 (owner, 2026-10-10, #939's canary) moved
+    # indexer after it: the two share a backend again.
+    assert differ == ["image", "name"], (
+        f"the owner's decision was claude-code with only its name and image changed; {differ} differ"
     )
-    assert indexer.backend.value == "CLOUD_RUN_JOB" and claude.backend.value == "GKE_AUTOPILOT"
+    assert indexer.backend.value == "GKE_AUTOPILOT" and claude.backend.value == "GKE_AUTOPILOT"
 
 
 def test_only_the_indexer_profile_runs_the_indexer_image():
