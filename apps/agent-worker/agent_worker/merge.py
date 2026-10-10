@@ -214,6 +214,26 @@ _CONFLICT = re.compile(r"conflict", re.IGNORECASE)
 #: merge queue: GitHub's "Changes must be made through the merge queue",
 #: alone (405) or under "Repository rule violations found" (422).
 _MERGE_QUEUE = re.compile(r"merge queue", re.IGNORECASE)
+#: A 403 that is GitHub's plan answer, not a missing right: a private
+#: repository on a plan without rulesets (or branch protection) is answered
+#: "Upgrade to GitHub Pro or make this repository public to enable this
+#: feature." (measured on sagaxyz/ai-studio, 2026-10-10). Read as "the plan
+#: has none", exactly as a 404 is; any other 403 still refuses.
+_PLAN_LACKS_FEATURE = re.compile(
+    r"upgrade to github pro|make this repository public to enable this feature",
+    re.IGNORECASE,
+)
+#: Where GitHub's own error bodies point. A `documentation_url` elsewhere is
+#: not GitHub's plan answer, whatever its message says.
+_GITHUB_DOCS = re.compile(r"^https://docs\.github\.com/", re.IGNORECASE)
+
+#: `RequiredChecks.source`: where the required checks came from, recorded as
+#: the step's `required_checks_source`. The two `none_*` sources read nothing
+#: required, so every check at the head must be green and one must exist.
+CHECKS_FROM_RULESETS = "rulesets"
+CHECKS_FROM_CLASSIC = "classic"
+CHECKS_NONE_ALL_CHECKS = "none_all_checks"
+CHECKS_NONE_PLAN_LIMITED = "none_plan_limited_all_checks"
 
 #: The hosts `GitHubMerger` can merge on: github.com, where the tenant's
 #: token may be sent at all (`forge.may_receive_forge_token`, #307).
@@ -386,6 +406,8 @@ class RequiredChecks:
 
     checks: tuple[forge_mod.RequiredCheck, ...] = ()
     protected: bool = False
+    #: Which rule the checks were read by: one of the `CHECKS_*` sources.
+    source: str = CHECKS_NONE_ALL_CHECKS
 
 
 @dataclass(frozen=True)
@@ -449,6 +471,18 @@ class ForgeMerger(Protocol):
 
 class UnsupportedForge(ValueError):
     """The repository is on a host no `ForgeMerger` serves."""
+
+
+def plan_lacks_feature(exc: BaseException) -> bool:
+    """A 403 that is GitHub saying the repository's plan has no such feature
+    (`_PLAN_LACKS_FEATURE`), with GitHub's documentation link if it gave one.
+    Any other 403, and every other status, is not."""
+    if getattr(exc, "status", None) != 403:
+        return False
+    if not _PLAN_LACKS_FEATURE.search(str(getattr(exc, "message", "") or "")):
+        return False
+    url = str(getattr(exc, "documentation_url", "") or "")
+    return not url or _GITHUB_DOCS.search(url) is not None
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -531,17 +565,31 @@ class GitHubMerger:
         read gives classic protection, which needs only read access to see
         (`protection.required_status_checks`). Both, because a repository may
         use either, and a required check read from one alone would be missed.
+
+        A 404, or a 403 that is GitHub's plan answer (`plan_lacks_feature`: a
+        private repository on a plan without rulesets), reads as "none"; any
+        other answer raises. `source` records which rule the step then used.
         """
+        plan_limited = False
         try:
             rules = self._client.rules_for_branch(self.owner, self.repo, branch)
         except forge_mod.ForgeAnswered as exc:
-            if getattr(exc, "status", None) != 404:
+            if plan_lacks_feature(exc):
+                plan_limited = True
+            elif getattr(exc, "status", None) != 404:
                 raise
             rules = []
         found = {(c.context, c.app_id): c for c in forge_mod.required_status_checks(rules)}
-        branch_doc = _mapping(
-            self._client.get_ok(f"{self._base}/branches/{quote(branch, safe='')}")
-        )
+        from_rulesets = bool(found)
+        try:
+            branch_doc = _mapping(
+                self._client.get_ok(f"{self._base}/branches/{quote(branch, safe='')}")
+            )
+        except forge_mod.ForgeAnswered as exc:
+            if not plan_lacks_feature(exc):
+                raise
+            plan_limited = True
+            branch_doc = {}
         protection = _mapping(_mapping(branch_doc.get("protection")).get("required_status_checks"))
         for check in protection.get("checks") or []:
             check = _mapping(check)
@@ -555,7 +603,15 @@ class GitHubMerger:
             ):
                 found[(context, None)] = forge_mod.RequiredCheck(context, None)
         protected = bool(rules) or branch_doc.get("protected") is True
-        return RequiredChecks(checks=tuple(found.values()), protected=protected)
+        if from_rulesets:
+            source = CHECKS_FROM_RULESETS
+        elif found:
+            source = CHECKS_FROM_CLASSIC
+        elif plan_limited and not protected:
+            source = CHECKS_NONE_PLAN_LIMITED
+        else:
+            source = CHECKS_NONE_ALL_CHECKS
+        return RequiredChecks(checks=tuple(found.values()), protected=protected, source=source)
 
     def checks_at(self, sha: str) -> list[CheckFacts]:
         """Every check run, and every commit status, reported at `sha`."""
@@ -1172,6 +1228,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     required = merger.required_checks(pr.base_ref or "")
     checks = merger.checks_at(head)
     summary["required_checks"] = sorted({c.context for c in required.checks})
+    summary["required_checks_source"] = required.source
     pending: list[str] = []
     failed: list[str] = []
     if required.checks:
@@ -1185,8 +1242,10 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 failed.append(f"{check.context} ("
                               + ", ".join(sorted({str(r['conclusion']) for r in mine})) + ")")
     else:
-        # No protection, or protection that requires no check: every check
-        # reported at the head must be green, and there must be one.
+        # No protection, or protection that requires no check, or a plan that
+        # has neither rulesets nor protection to read (`required.source`
+        # `none_plan_limited_all_checks`): every check reported at the head
+        # must be green, and there must be one.
         if not checks:
             return wait("no_checks",
                         f"{pr.base_ref} requires no check and none has reported at "
