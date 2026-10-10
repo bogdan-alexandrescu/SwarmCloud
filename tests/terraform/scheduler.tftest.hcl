@@ -383,6 +383,95 @@ run "the_issue_sweep_runs_per_tenant_every_half_hour_off_the_hour_as_the_sweeper
   }
 }
 
+# The stranded-PR sweep (part of #295): one job per registered tenant, every
+# 30 minutes at :19 and :49 -- off :00, :30 and the issue sweep's :07/:37 --
+# presenting the rollup sweeper, which swarm-api admits to
+# POST /v1/admin/stranded-prs/sweep by name (swarm_api.auth.ROLLUP_SWEEPER_ROUTES),
+# always with redrive false.
+run "the_stranded_pr_sweep_runs_per_tenant_every_half_hour_as_the_sweeper_without_redrive" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    rollup_tenant_ids = ["eng", "research"]
+    api_endpoint      = "https://swarm-api-abcdef-uc.a.run.app/"
+  }
+
+  assert {
+    condition     = toset(keys(google_cloud_scheduler_job.stranded_pr_sweep)) == toset(["eng", "research"])
+    error_message = "every registered tenant gets exactly one stranded-PR sweep, keyed by its tenant id"
+  }
+
+  assert {
+    condition     = google_cloud_scheduler_job.stranded_pr_sweep["eng"].http_target[0].uri == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/stranded-prs/sweep?tenant_id=eng"
+    error_message = "the sweep must call the route swarm_api/routes/strandedprs.py serves, with the tenant as the query parameter it requires"
+  }
+
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.stranded_pr_sweep :
+      job.http_target[0].http_method == "POST"
+      && jsondecode(base64decode(job.http_target[0].body)) == { redrive = false }
+      && job.http_target[0].headers["Content-Type"] == "application/json"
+    ])
+    error_message = "the sweep is a POST whose JSON body says redrive false: the scheduler reports and logs, it never submits merges"
+  }
+
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.stranded_pr_sweep :
+      job.http_target[0].oidc_token[0].service_account_email == google_cloud_scheduler_job.issue_sweep[t].http_target[0].oidc_token[0].service_account_email
+      && job.http_target[0].oidc_token[0].audience == google_cloud_scheduler_job.issue_sweep[t].http_target[0].oidc_token[0].audience
+      && job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
+      && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
+    ])
+    error_message = "the stranded-PR sweep presents the issue sweep's identity and audience -- the rollup sweeper, which swarm-api admits to the route -- never swarm-tick, which it would refuse"
+  }
+
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.stranded_pr_sweep : job.schedule == "19,49 * * * *"
+    ]) && output.stranded_pr_sweep_schedule == "19,49 * * * *"
+    error_message = "the stranded-PR sweep runs every 30 minutes at :19 and :49 by default"
+  }
+
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.stranded_pr_sweep :
+      startswith(job.description, "managed-by=swarm-terraform;")
+      && job.attempt_deadline == "300s" && job.retry_config[0].retry_count == 0
+    ])
+    error_message = "every stranded-PR sweep carries managed-by=swarm-terraform, answers inside 300 s and is not retried"
+  }
+
+  assert {
+    condition     = strcontains(google_service_account.rollup_sweeper.description, "stranded-pr-sweep")
+    error_message = "the sweeper account's description names every job that presents it"
+  }
+
+  assert {
+    condition     = contains(output.scheduler_job_names, "swarm-stranded-pr-sweep-eng") && contains(output.scheduler_job_names, "swarm-stranded-pr-sweep-research")
+    error_message = "scheduler_job_names must list every stranded-PR sweep"
+  }
+}
+
+run "the_stranded_pr_sweep_schedule_refuses_the_hour_and_the_half_hour" {
+  command = plan
+
+  module {
+    source = "../../terraform/modules/scheduler"
+  }
+
+  variables {
+    stranded_pr_sweep_schedule = "*/30 * * * *"
+  }
+
+  expect_failures = [var.stranded_pr_sweep_schedule]
+}
+
 # A schedule on :00 or :30, or a step that lands on them, is refused.
 run "the_issue_sweep_schedule_refuses_the_hour_and_the_half_hour" {
   command = plan

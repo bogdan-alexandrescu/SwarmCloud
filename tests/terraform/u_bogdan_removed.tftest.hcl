@@ -304,6 +304,11 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
     }
   }
 
+  # A per-tenant instance added AFTER u-bogdan left (W9, 2026-10-09) never
+  # existed for it, so there is nothing to forget and it is not counted:
+  # stranded_pr_sweep (part of #295, 2026-10-10). Add such a job to the
+  # `contains([...], n)` lists below, never a `moved` for an instance that was
+  # never created.
   # A test cannot address a child module's resources, so the instances are
   # read through the root's outputs: the account, the tenant document, the
   # pools, the secrets, the jobs and the scheduler jobs -- 14 of the 33. Each
@@ -318,7 +323,7 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
       [for p in output.pool_names : "module.firestore.google_firestore_document.pool[\"${replace(p, "w9-stand-in", "u-bogdan")}\"]" if strcontains(p, "w9-stand-in")],
       [for id in values(output.tenant_secret_ids["w9-stand-in"]) : "module.secret_manager.google_secret_manager_secret.this[\"${replace(id, "w9-stand-in", "u-bogdan")}\"]"],
       [for j in output.job_names : "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"${replace(j, "w9-stand-in", "u-bogdan")}\"]" if strcontains(j, "w9-stand-in")],
-      [for n in output.scheduler_jobs : "module.scheduler.google_cloud_scheduler_job.${replace(trimsuffix(trimprefix(n, "swarm-"), "-w9-stand-in"), "-", "_")}[\"u-bogdan\"]" if strcontains(n, "w9-stand-in")],
+      [for n in output.scheduler_jobs : "module.scheduler.google_cloud_scheduler_job.${replace(trimsuffix(trimprefix(n, "swarm-"), "-w9-stand-in"), "-", "_")}[\"u-bogdan\"]" if strcontains(n, "w9-stand-in") && !contains(["swarm-stranded-pr-sweep-w9-stand-in"], n)],
     )) == 14
     error_message = "a tenant shaped like u-bogdan no longer gets the 14 output-visible instances (account, tenant document, 2 pools, 1 secret, 4 jobs, 5 scheduler jobs); a per-tenant resource changed, so re-read the set and terraform/infra/removed.tf together"
   }
@@ -331,7 +336,7 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
         [for p in output.pool_names : "module.firestore.google_firestore_document.pool[\"${replace(p, "w9-stand-in", "u-bogdan")}\"]" if strcontains(p, "w9-stand-in")],
         [for id in values(output.tenant_secret_ids["w9-stand-in"]) : "module.secret_manager.google_secret_manager_secret.this[\"${replace(id, "w9-stand-in", "u-bogdan")}\"]"],
         [for j in output.job_names : "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"${replace(j, "w9-stand-in", "u-bogdan")}\"]" if strcontains(j, "w9-stand-in")],
-        [for n in output.scheduler_jobs : "module.scheduler.google_cloud_scheduler_job.${replace(trimsuffix(trimprefix(n, "swarm-"), "-w9-stand-in"), "-", "_")}[\"u-bogdan\"]" if strcontains(n, "w9-stand-in")],
+        [for n in output.scheduler_jobs : "module.scheduler.google_cloud_scheduler_job.${replace(trimsuffix(trimprefix(n, "swarm-"), "-w9-stand-in"), "-", "_")}[\"u-bogdan\"]" if strcontains(n, "w9-stand-in") && !contains(["swarm-stranded-pr-sweep-w9-stand-in"], n)],
       ) : contains([for m in regexall("(?ms)^moved \\{\\s*from\\s*=\\s*(\\S+)", file("../../terraform/infra/removed.tf")) : m[0]], a)
     ])
     error_message = "an instance terraform/infra makes for a tenant shaped like u-bogdan is not the `from` of a `moved` in terraform/infra/removed.tf: the release would DESTROY it"
