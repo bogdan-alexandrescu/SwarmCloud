@@ -424,7 +424,8 @@ def test_a_failed_record_can_be_denied_and_its_approval_is_kept(client, db) -> N
 
 @pytest.mark.parametrize("state", ["approved", "applying", "ready", "denied"])
 def test_deny_is_refused_outside_requested_and_failed(client, db, state) -> None:
-    _record(db, state=state)
+    # Dispatched: an approved record never sent to a build may be denied (#847).
+    _record(db, state=state, dispatch={"attempts": 1})
     response = _post(client, f"/v1/admin/workspaces/{CAROL_WS}/deny", json={"reason": "no"})
     assert response.status_code == 409
     assert _rec(db)["state"] == state
@@ -998,3 +999,11 @@ def test_the_people_list_carries_the_provisioning_figures_for_its_banner(
     assert body["provisioning"] == {"available": False, "approved_waiting": 1}
     row = next(r for r in body["people"] if r["email"] == CAROL)
     assert row["workspace"]["provisioning"]["waiting_because"] == "publishing_off"
+
+
+def test_an_approved_record_never_dispatched_may_be_denied(client, db) -> None:
+    _record(db, state="approved", dispatch=None, run=None)
+    response = _post(client, f"/v1/admin/workspaces/{CAROL_WS}/deny", json={"reason": "no build was sent"})
+    assert response.status_code == 200
+    assert _rec(db)["state"] == "denied"
+
