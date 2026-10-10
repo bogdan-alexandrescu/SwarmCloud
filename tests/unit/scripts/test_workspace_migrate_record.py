@@ -243,6 +243,9 @@ def test_a_wrong_typed_answer_writes_nothing(pending) -> None:
 def test_a_record_a_build_may_be_making_is_refused(pending) -> None:
     docs = pending.read()
     docs[f"workspaces/{TENANT}"]["state"] = "approved"
+    # A dispatch attempt is what makes an approved record one a build may hold;
+    # an approved record never dispatched is migrated (#847, 2026-10-10).
+    docs[f"workspaces/{TENANT}"]["dispatch"] = {"attempts": 1}
     pending.write(docs)
 
     proc = pending.run(TENANT, *QUOTA, "--apply", typed=TENANT)
