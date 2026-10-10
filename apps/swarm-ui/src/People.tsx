@@ -371,6 +371,10 @@ function WorkspaceCell({ row }: { row: PersonRow }) {
         </p>
       )}
       {w.state === 'denied' && w.decision?.reason != null && <p className="ur-hint">“{w.decision.reason}”</p>}
+      {w.state === 'requested' && w.held != null && (
+        <p className="ur-hint">Being migrated by the platform owner; not approved here</p>
+      )}
+      {w.state !== 'denied' && w.decision?.auto === true && <p className="ur-hint">approved automatically (admin)</p>}
       {waitingOf(w) !== null ? (
         <ApprovedWaiting record={w} />
       ) : (
@@ -411,7 +415,10 @@ function Row({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; reload: () 
             group per line, every control as wide as the cell and no wider,
             so Deny and the Account select stay inside the card. */}
         <div className="pp-acts">
-          {hasRecord && w.state === 'requested' && (
+          {/* A held record predates self-service setup (§3.3): its job would
+              fail IDENTITY_NOT_OURS (WORKSPACE_MIGRATING once that refusal is
+              switched on), so no approval is offered. */}
+          {hasRecord && w.state === 'requested' && w.held == null && (
             <span className="ob-acts">
               <Approve row={row} reload={reload} />
               <Deny row={row} reload={reload} />

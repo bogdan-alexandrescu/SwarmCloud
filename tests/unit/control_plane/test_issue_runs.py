@@ -271,6 +271,47 @@ def test_a_run_that_does_not_say_takes_the_platform_default(client, default):
     assert _create(client, auto_merge=not default).json()["run"]["auto_merge"] is (not default)
 
 
+def _register_policy(db, tenant_id: str, merge_policy: str | None) -> None:
+    """saga-xyz/widgets, REF's repository, registered with `merge_policy`."""
+    from swarm_api import repositories
+
+    repo_id = repositories.repo_id_for(tenant_id, "saga-xyz", "widgets")
+    db.collection(repositories.COLLECTION).document(repo_id).set({
+        "repo_id": repo_id, "tenant_id": tenant_id, "forge": "github",
+        "owner": "saga-xyz", "repo": "widgets", "merge_policy": merge_policy,
+    })
+
+
+@pytest.mark.parametrize(("policy", "platform", "expected"), [
+    ("on_merge_verdict", False, True),
+    ("off", True, False),
+    (None, True, True),
+    (None, False, False),
+])
+def test_a_run_that_does_not_say_takes_the_repositorys_merge_policy_first(
+    client, db, policy, platform, expected
+):
+    """WF-MERGE-API: the registered repository's `merge_policy`, else the
+    platform's `merge_by_default`. Manual runs defaulted false on 2026-10-09
+    and opened PRs nothing merged."""
+    put = client.put("/v1/admin/settings", headers=auth_header("root"),
+                     json={"merge_by_default": platform})
+    assert put.status_code == 200, put.text
+    _register_policy(db, "eng", policy)
+    response = _create(client)
+    assert response.status_code == 201, response.text
+    assert response.json()["run"]["auto_merge"] is expected
+    # A run that says overrides the policy either way.
+    assert _create(client, auto_merge=not expected).json()["run"]["auto_merge"] is (not expected)
+
+
+def test_another_tenants_merge_policy_never_sets_a_runs_default(client, db):
+    _register_policy(db, "research", "on_merge_verdict")
+    response = _create(client)
+    assert response.status_code == 201, response.text
+    assert response.json()["run"]["auto_merge"] is False
+
+
 def test_auto_merge_availability_says_what_the_refusal_does(monkeypatch):
     # The console reads availability; POST /v1/runs enforces the refusal.
     # They must never disagree: unavailable exactly while the refusal raises.

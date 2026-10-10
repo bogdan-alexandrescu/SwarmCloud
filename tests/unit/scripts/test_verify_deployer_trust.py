@@ -94,6 +94,19 @@ if args[:3] == ["iam", "service-accounts", "get-iam-policy"]:
     sys.exit(0)
 
 if args[:4] == ["iam", "workload-identity-pools", "providers", "describe"]:
+    flags = dict(a[2:].split("=", 1) for a in args[5:] if a.startswith("--") and "=" in a)
+    # Real gcloud refuses a project NUMBER here, and the provider's resource
+    # name only ever carries the number (#980).
+    if flags.get("project", "").isdigit():
+        sys.stderr.write(
+            "ERROR: (gcloud.iam.workload-identity-pools.providers.describe) The value of"
+            " --project flag was set to Project number. To use this command, set it to"
+            " PROJECT ID instead.\n"
+        )
+        sys.exit(1)
+    if flags.get("workload-identity-pool") != "swarm-github" or flags.get("location") != "global":
+        sys.stderr.write("ERROR: (gcloud.iam.workload-identity-pools.providers.describe) NOT_FOUND\n")
+        sys.exit(1)
     print(json.dumps({"name": state["provider"], "attributeCondition": state["condition"]}))
     sys.exit(0)
 
@@ -310,6 +323,23 @@ def test_exactly_the_expected_set_passes_and_prints_the_count(tmp_path):
     proc = Verifier(tmp_path, policy).run()
     assert proc.returncode == 0, proc.output
     assert f"checked {len(expected)} members, all pinned to workflow files" in proc.output, proc.output
+
+
+def test_the_provider_is_described_with_the_project_id_not_its_number(tmp_path):
+    """MUTATION: pass the number parsed from the provider name (#980)."""
+    verifier = Verifier(tmp_path, _policy(*_expected().values()))
+    proc = verifier.run()
+    assert proc.returncode == 0, proc.output
+    assert f"checked {len(_expected())} members, all pinned to workflow files" in proc.output, proc.output
+
+    describes = [
+        call for call in verifier.calls("gcloud")
+        if call[:4] == ["iam", "workload-identity-pools", "providers", "describe"]
+    ]
+    assert describes, "the verifier never described the provider"
+    for call in describes:
+        assert "--project=swarm-trust-test" in call, call
+        assert f"--project={PROJECT_NUMBER}" not in call, call
 
 
 # ---------------------------------------------------------------------------

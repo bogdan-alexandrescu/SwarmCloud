@@ -109,6 +109,17 @@ The scheduler does not verify the signature, and need not: a task whose
 credential is read. What a rewrite could do here is park a task, or admit one
 the worker then refuses -- never hand a worker a credential.
 
+A PERSON'S TOKEN FOR ONE OWNER (D5, #780). An org whose admin will not
+install the App is reached through the person's fallback token for it, a
+second user slot `git-u-<16 hex of sha256(email|owner)>`
+(`swarm_api.gittokens.owner_suffix`). Its hex is not the person's
+`user_hash`, so it is recognised by recomputing it from the signed
+`submitted_by` and the owner of the signed `repository_url`: a match is the
+submitter's own token for that owner, and runs while their `forge_orgs`
+document says the owner is enabled through it (`method: pat`) -- removing the
+owner deletes that document, and a task signed before the removal parks
+CONNECTION_MISSING. A token has no refresh, so no App connection is asked.
+
 The document shapes are OB3's (`swarm_api.forgeapp`) and §3.1's, read by id
 and never written. The id recipes are RESTATED below because the scheduler's
 image does not carry swarm-api; tests/unit/control_plane/
@@ -180,7 +191,9 @@ class ForgeAnswer(str, Enum):
     #: The task needs no user slot (`needs_user_slot`): its signed
     #: `forge_credential` is `git`, None or a repository token.
     NO_USER_SLOT = "no_user_slot"
-    #: The connection is `active`: the refresh sweep keeps its token fresh.
+    #: The connection is `active`: the refresh sweep keeps its token fresh. Or,
+    #: for the submitter's token for one owner (D5), that owner is enabled
+    #: through it.
     ACTIVE = "active"
     #: swarm-api's sweep could not refresh the token. The person reconnects.
     REFRESH_FAILED = "refresh_failed"
@@ -320,6 +333,10 @@ class AccountPool:
 #: (`ACTIVE`, `REFRESH_FAILED`, `REVOKED`). Restated: see the module docstring.
 CONNECTIONS = "forge_connections"
 GRANTS = "forge_grants"
+#: `swarm_api.forgeapp.ORGS` and `METHOD_PAT`: an owner a person enabled, and
+#: the method that says it was through their token for it (D5).
+ORGS = "forge_orgs"
+_METHOD_PAT = "pat"
 _STATES = {
     "active": ForgeAnswer.ACTIVE,
     "refresh_failed": ForgeAnswer.REFRESH_FAILED,
@@ -344,6 +361,12 @@ def _user_key(email: str) -> str:
 def user_hash(email: str) -> str:
     """`swarm_api.forgeapp.user_hash`: 16 hex of sha256 of the lower-cased email."""
     return _hex16(_user_key(email))
+
+
+def owner_slot_hash(email: str, owner: str) -> str:
+    """`swarm_api.gittokens.owner_suffix`'s hex: 16 hex of sha256 of
+    `lower(email) + "|" + lower(owner)`."""
+    return _hex16(_user_key(email) + "|" + (owner or "").strip().lower())
 
 
 def connection_id_for(tenant_id: str, email: str) -> str:
@@ -430,6 +453,23 @@ class ForgeConnections:
             return ForgeAnswer.CONNECTION_MISSING
         return _STATES.get(str(doc.get("state") or ""), ForgeAnswer.UNRECOGNISED)
 
+    def owner_token_state(self, task: Task, owner: str) -> ForgeAnswer:
+        """The submitter's token for `owner` (D5): ACTIVE while their
+        `forge_orgs` document in the task's tenant says the owner is enabled
+        through it, CONNECTION_MISSING once it is removed."""
+        doc = self._read(
+            ORGS, f"{task.tenant_id}__{user_hash(task.submitted_by)}__{owner.lower()}",
+            task.tenant_id,
+        )
+        if (
+            doc is None
+            or _user_key(str(doc.get("user") or "")) != _user_key(task.submitted_by)
+            or str(doc.get("owner") or "") != owner.lower()
+            or doc.get("method") != _METHOD_PAT
+        ):
+            return ForgeAnswer.CONNECTION_MISSING
+        return ForgeAnswer.ACTIVE
+
 
 #: A user slot's suffix, `swarm_api.gittokens.provider_suffix(Scope.USER, ...)`:
 #: its hex is the person's `user_hash`. Anchored, like `FORGE_CREDENTIAL`.
@@ -460,14 +500,19 @@ def forge_answer(task: Task, forge: ForgeConnections) -> ForgeAnswer:
     The connection is the submitter's (`submitted_by`, signed), and the slot
     must be theirs: swarm-api names a person's task by that person's own slot,
     so a slot whose hex is not the submitter's has no connection this task
-    may rely on, and parks as one missing.
+    may rely on, and parks as one missing. Theirs is their App slot (hex =
+    `user_hash`) or their token for the repository's owner (hex =
+    `owner_slot_hash`, D5); a token for another owner is not theirs here.
     """
     hashed = user_slot_hash(task)
     if hashed is None:
         return ForgeAnswer.NO_USER_SLOT
-    if hashed != user_hash(task.submitted_by):
-        return ForgeAnswer.CONNECTION_MISSING
-    return forge.connection_state(task)
+    if hashed == user_hash(task.submitted_by):
+        return forge.connection_state(task)
+    named = github_repository(getattr(task, "repository_url", None))
+    if named is not None and hashed == owner_slot_hash(task.submitted_by, named[0]):
+        return forge.owner_token_state(task, named[0])
+    return ForgeAnswer.CONNECTION_MISSING
 
 
 def credential_for(

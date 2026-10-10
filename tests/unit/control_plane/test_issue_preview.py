@@ -171,6 +171,24 @@ def test_the_preview_says_auto_merge_is_available_and_what_a_run_gets_by_default
     assert _preview(client).json()["auto_merge"]["default"] is True
 
 
+def test_the_previews_default_is_the_repositorys_merge_policy_first(make, db):
+    """WF-MERGE-API: the form's default is what POST /v1/runs would record --
+    the registered repository's `merge_policy`, else the platform default."""
+    from swarm_api import repositories
+
+    client, _, _ = make()
+    repo_id = repositories.repo_id_for("eng", "saga-xyz", "widgets")
+    db.docs["control/settings"] = {"merge_by_default": True}
+    db.docs[f"repositories/{repo_id}"] = {
+        "repo_id": repo_id, "tenant_id": "eng", "owner": "saga-xyz", "repo": "widgets",
+        "merge_policy": "off",
+    }
+    assert _preview(client).json()["auto_merge"]["default"] is False
+    db.docs["control/settings"] = {"merge_by_default": False}
+    db.docs[f"repositories/{repo_id}"]["merge_policy"] = "on_merge_verdict"
+    assert _preview(client).json()["auto_merge"]["default"] is True
+
+
 def test_an_issue_url_previews_the_same_issue(make):
     client, _, transport = make()
     response = _preview(client, "https://github.com/saga-xyz/widgets/issues/42")
