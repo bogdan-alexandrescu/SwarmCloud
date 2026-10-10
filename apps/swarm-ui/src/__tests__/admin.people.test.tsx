@@ -212,6 +212,16 @@ describe('the people table', () => {
     expect(writesOf(calls)[0]).toMatchObject({ method: 'POST', url: '/v1/admin/workspaces/w-d4n000/retry' })
   })
 
+  it('a held (migrating) request offers no Approve or Deny, and an auto-approved row says so', async () => {
+    const held = person('gus@example.com', ws('requested', 'w-9a5000', { held: { reason: 'migrating', copy: 'x' } }))
+    const auto = person('hal@example.com', ws('approved', 'w-4a1000', { decision: { verdict: 'approved', reason: 'requester is an admin', at: now(), auto: true } }))
+    await mount(people([held, auto]))
+    await waitFor(() => expect(rowOf('gus@example.com')).not.toBeNull(), WAIT)
+    expect(within(rowOf('gus@example.com')).queryByRole('button', { name: /Approve|Deny/ })).toBeNull()
+    expect(visible(rowOf('gus@example.com'))).toContain('Being migrated by the platform owner')
+    expect(visible(rowOf('hal@example.com'))).toContain('approved automatically (admin)')
+  })
+
   it('a denied row may still be approved, and is not offered Retry', async () => {
     const denied = person('fay@example.com', ws('denied', 'w-fa1000', { decision: { verdict: 'denied', reason: 'Use the eng space.', at: now() } }))
     const { calls } = await mount(people([denied]), {

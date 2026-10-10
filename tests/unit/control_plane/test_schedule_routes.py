@@ -14,6 +14,10 @@ WHAT IS HELD HERE
   `gate.merge: auto` refused to `PATCH` (`use_merge_switch`, the switch is
   S5's); a run-now submitted as the stored owner; the admin view and its
   pause, disable and enable, audited as `admin:<email>` (§5.3).
+* §2.11's two switches (§7.1): pause-all, a member's over their own tenant
+  only and an admin's over any, typed with the tenant id; and `:pause` with
+  `cancel_live`, typed with the schedule's name, cancelling only that
+  schedule's live work through the platform's own cancel.
 
 No cloud and no emulator: the in-memory Firestore and the real app. No type's
 executor is built yet (lanes S6, S10), so the tests mark the first types'
@@ -625,3 +629,161 @@ def test_an_admin_cannot_edit_another_tenants_schedule(client, db) -> None:
 def test_an_admin_action_on_a_missing_id_is_a_404(client) -> None:
     response = client.post("/v1/admin/schedules/sch_ffffffffffff:disable", headers=auth_header("root"))
     assert response.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# §2.11's switches: pause all, and pause and cancel live runs (§7.1)
+# ---------------------------------------------------------------------------
+
+
+def _theirs(client) -> str:
+    return create(client, "bob", scope={"mode": "repos", "repo_ids": [THEIR_REPO]})["schedule_id"]
+
+
+def _actions(db, sid: str) -> list[tuple[str, str]]:
+    rows = [v for k, v in db.docs.items() if k.startswith("schedule_audit/") and v["schedule_id"] == sid]
+    return sorted((r["action"], r["by"]) for r in rows)
+
+
+def test_a_member_pauses_all_of_their_own_tenants_schedules_and_none_of_anothers(client, ctx, db) -> None:
+    first = create(client, name="one")["schedule_id"]
+    second = create(client, name="two")["schedule_id"]
+    already = create(client, name="three")["schedule_id"]
+    assert client.post(f"/v1/schedules/{already}:pause", headers=auth_header("alice")).status_code == 200
+    theirs = _theirs(client)
+    at(ctx, NOW + timedelta(minutes=1))
+    response = client.post("/v1/schedules:pause-all", json={"confirm": "eng", "reason": "incident"},
+                           headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    assert response.json() == {"tenant_id": "eng", "paused": sorted([first, second]), "unchanged": [already]}
+    for sid in (first, second):
+        doc = stored(db, sid)
+        assert doc["state"] == "paused" and doc["next_run_at"] is None
+        assert doc["pause"]["reason"] == "incident" and doc["pause"]["by"] == "alice@saga.xyz"
+        entry = audit(client, sid)[0]
+        assert (entry["action"], entry["by"]) == ("pause_all", "alice@saga.xyz")
+        assert entry["detail"]["reason"] == "incident"
+    # The one already paused keeps its own pause and gets no entry.
+    assert ("pause_all", "alice@saga.xyz") not in _actions(db, already)
+    # Another tenant's is untouched, and alice cannot name it.
+    assert stored(db, theirs)["state"] == "enabled" and _actions(db, theirs) == [("create", "bob@saga.xyz")]
+    other = client.post("/v1/schedules:pause-all", json={"confirm": "research"}, headers=auth_header("alice"))
+    assert other.status_code == 422
+    assert stored(db, theirs)["state"] == "enabled"
+
+
+@pytest.mark.parametrize("payload", [None, {}, {"confirm": ""}, {"confirm": "Eng"}, {"confirm": "eng-x"},
+                                     {"confirm": "eng", "tenant_id": "research"}])
+def test_pause_all_needs_the_tenant_id_typed(client, db, payload) -> None:
+    sid = create(client)["schedule_id"]
+    response = client.post("/v1/schedules:pause-all", json=payload, headers=auth_header("alice"))
+    assert response.status_code == 422, response.text
+    assert stored(db, sid)["state"] == "enabled"
+    assert _actions(db, sid) == [("create", "alice@saga.xyz")]
+
+
+def test_an_admin_pauses_any_tenants_schedules_and_only_that_tenants(client, ctx, db) -> None:
+    mine = create(client)["schedule_id"]
+    theirs = _theirs(client)
+    at(ctx, NOW + timedelta(minutes=1))
+    response = client.post("/v1/admin/tenants/research/schedules:pause", json={"confirm": "research"},
+                           headers=auth_header("root"))
+    assert response.status_code == 200, response.text
+    assert response.json()["paused"] == [theirs]
+    assert stored(db, theirs)["state"] == "paused"
+    assert stored(db, theirs)["pause"]["by"] == "admin:root@saga.xyz"
+    entry = audit(client, theirs, "bob")[0]
+    assert (entry["action"], entry["by"], entry["tenant_id"]) == ("admin_pause_all", "admin:root@saga.xyz",
+                                                                  "research")
+    assert stored(db, mine)["state"] == "enabled"
+    # The tenant may lift it.
+    assert client.post(f"/v1/schedules/{theirs}:resume", headers=auth_header("bob")).status_code == 200
+
+
+def test_the_admin_pause_all_is_typed_admin_only_and_names_a_real_tenant(client, db) -> None:
+    theirs = _theirs(client)
+    path = "/v1/admin/tenants/research/schedules:pause"
+    member = client.post(path, json={"confirm": "research"}, headers=auth_header("bob"))
+    assert member.status_code == 403, member.text
+    for payload in (None, {"confirm": "eng"}, {"confirm": "researc"}):
+        wrong = client.post(path, json=payload, headers=auth_header("root"))
+        assert wrong.status_code == 422, wrong.text
+    missing = client.post("/v1/admin/tenants/nobody/schedules:pause", json={"confirm": "nobody"},
+                          headers=auth_header("root"))
+    assert missing.status_code == 404
+    assert stored(db, theirs)["state"] == "enabled"
+    assert _actions(db, theirs) == [("create", "bob@saga.xyz")]
+
+
+def _task_states(db) -> dict[str, str]:
+    return {t["metadata"][SCHEDULE_METADATA_KEY]["schedule_id"]: t["state"] for t in tasks(db)}
+
+
+def test_cancel_live_cancels_only_that_schedules_live_runs(client, ctx, db, executor) -> None:
+    target = create(client, name="target")["schedule_id"]
+    sibling = create(client, name="sibling")["schedule_id"]
+    theirs = _theirs(client)
+    for sid, user in ((target, "alice"), (sibling, "alice"), (theirs, "bob")):
+        fired = client.post(f"/v1/schedules/{sid}:run", json={}, headers=auth_header(user))
+        assert fired.status_code == 200 and fired.json()["firing"]["state"] == "created", fired.text
+    assert set(_task_states(db).values()) == {"READY"}
+    at(ctx, NOW + timedelta(minutes=1))
+    response = client.post(f"/v1/schedules/{target}:pause", json={"cancel_live": True, "confirm": "target"},
+                           headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    assert stored(db, target)["state"] == "paused"
+    assert _task_states(db) == {target: "CANCELLED", sibling: "READY", theirs: "READY"}
+    [item] = response.json()["cancelled"]
+    assert item["kind"] == "task" and item["result"] == "cancel_requested"
+    # Both entries fall in one millisecond of the frozen clock, where the
+    # audit's newest-first id breaks the tie at random: compare them as a set.
+    entries = {e["action"]: e for e in audit(client, target)}
+    assert set(entries) == {"create", "run_now", "pause", "cancel_live"}
+    assert entries["cancel_live"]["by"] == "alice@saga.xyz" and entries["cancel_live"]["detail"]["items"] == [item]
+    # The sibling is neither paused nor cancelled.
+    assert stored(db, sibling)["state"] == "enabled"
+
+
+def test_cancel_live_cancels_a_workflow_through_its_own_cancel(client, db, executor) -> None:
+    executor.kind = "workflow"
+    sid = create(client)["schedule_id"]
+    assert client.post(f"/v1/schedules/{sid}:run", json={}, headers=auth_header("alice")).status_code == 200
+    response = client.post(f"/v1/schedules/{sid}:pause", json={"cancel_live": True, "confirm": "nightly sweep"},
+                           headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    assert [i["kind"] for i in response.json()["cancelled"]] == ["workflow"]
+    assert set(_task_states(db).values()) == {"CANCELLED"}
+    workflows = [v for k, v in db.docs.items() if k.startswith("workflows/") and k.count("/") == 1]
+    assert [w.get("cancel_requested") for w in workflows] == [True]
+
+
+@pytest.mark.parametrize("payload", [{"cancel_live": True}, {"cancel_live": True, "confirm": "nightly"},
+                                     {"cancel_live": True, "confirm": "Nightly Sweep"},
+                                     {"cancel_live": "yes", "confirm": "nightly sweep"}])
+def test_cancel_live_needs_the_schedules_name_typed(client, db, executor, payload) -> None:
+    sid = create(client)["schedule_id"]
+    assert client.post(f"/v1/schedules/{sid}:run", json={}, headers=auth_header("alice")).status_code == 200
+    response = client.post(f"/v1/schedules/{sid}:pause", json=payload, headers=auth_header("alice"))
+    assert response.status_code == 422, response.text
+    assert stored(db, sid)["state"] == "enabled"
+    assert set(_task_states(db).values()) == {"READY"}
+    # The control: the same switch, typed right, pauses and cancels.
+    typed = client.post(f"/v1/schedules/{sid}:pause", json={"cancel_live": True, "confirm": "nightly sweep"},
+                        headers=auth_header("alice"))
+    assert typed.status_code == 200, typed.text
+    assert stored(db, sid)["state"] == "paused" and set(_task_states(db).values()) == {"CANCELLED"}
+
+
+def test_cancel_live_on_another_tenants_schedule_is_a_404_and_cancels_nothing(client, db, executor) -> None:
+    theirs = _theirs(client)
+    assert client.post(f"/v1/schedules/{theirs}:run", json={}, headers=auth_header("bob")).status_code == 200
+    before = dict(stored(db, theirs))
+    response = client.post(f"/v1/schedules/{theirs}:pause", json={"cancel_live": True, "confirm": "nightly sweep"},
+                           headers=auth_header("alice"))
+    missing = client.post("/v1/schedules/sch_ffffffffffff:pause",
+                          json={"cancel_live": True, "confirm": "nightly sweep"}, headers=auth_header("alice"))
+    assert response.status_code == missing.status_code == 404
+    assert response.json()["code"] == missing.json()["code"] == "not_found"
+    assert stored(db, theirs) == before
+    assert set(_task_states(db).values()) == {"READY"}
+

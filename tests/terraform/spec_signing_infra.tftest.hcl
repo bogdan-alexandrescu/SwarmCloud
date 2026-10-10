@@ -141,7 +141,7 @@ run "workers_trust_every_enabled_version_and_no_other" {
   # The control for every Job assertion below: seven Jobs, not an empty map.
   assert {
     condition     = length(output.job_spec_env) == 7
-    error_message = "job_spec_env must cover every worker Job: 5 Cloud Run profiles for eng (indexer included) plus 2 credential-free ones for smoke"
+    error_message = "job_spec_env must cover every worker Job: 5 Cloud Run Jobs for eng (claude-code's and indexer's rollback Jobs included) plus 2 credential-free ones for smoke"
   }
 
   assert {

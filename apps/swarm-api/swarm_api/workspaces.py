@@ -136,6 +136,18 @@ MIGRATION_VIA = "migration"
 #: making, the resources the tenant already has. Not ready unless migrated: the
 #: job made that one, and there is nothing to move.
 MIGRATABLE = frozenset({REQUESTED, FAILED, DENIED})
+
+
+def never_dispatched(record: Mapping[str, Any] | None) -> bool:
+    """An `approved` record no build was ever sent for: no dispatch attempt and
+    no run. Nothing can be making its resources, so it may be migrated or
+    denied like a `requested` one. Before 2026-10-10 an approved record had no
+    way out but a build claiming it, so one approved while publishing was off
+    (w-752763, 07:09Z 2026-10-09) could be neither migrated, denied nor
+    retried (#847)."""
+    if not record or state_of(record) != APPROVED:
+        return False
+    return not record.get("dispatch") and not record.get("run")
 #: The keys of `limits`, in the order §1.1 lists them.
 LIMIT_KEYS = ("max_active", "capacity_units", "quota_pods", "quota_cpu")
 #: What `migrate` did, or would do.
@@ -211,6 +223,28 @@ _STATE_PHRASE: Mapping[str, str] = {
     APPROVED: "is being created",
     APPLYING: "is being created",
     NEEDS_OWNER: "is waiting for the platform owner's review",
+}
+
+#: `held` on a `requested` record an admin asked for whose personal tenant
+#: predates the workspace job (§1.3, §3.3): it is not approved automatically,
+#: and never published, because the apply's squat check would fail
+#: IDENTITY_NOT_OURS on the identity Terraform made. Lane W9 moves it.
+HELD_MIGRATING = "migrating"
+
+
+class MigrationHold(Exception):
+    """Raised by an automatic approval (`People._approve_in`, `auto=True`) on
+    a record whose tenant predates the workspace job. Internal, never served:
+    `request` turns it into `held`, and the request still succeeds. It is not
+    an `ApiError`, because a hold is not a refusal (refusals.py)."""
+
+MIGRATING_COPY = (
+    "Your workspace already exists from before self-service setup and is being migrated "
+    "into it by the platform owner. Nothing needs doing on your side; it shows as ready "
+    "once the migration is done.")
+
+_HELD_PHRASE: Mapping[str, str] = {
+    HELD_MIGRATING: "is being migrated by the platform owner",
 }
 
 #: The action every WORKSPACE_NOT_READY message ends on (the owner's words in
@@ -300,6 +334,8 @@ def not_ready_message(record: Mapping[str, Any] | None) -> str:
     elif state == FAILED:
         phrase = "could not be created: " + failure_copy(
             (record or {}).get("failure"), (record or {}).get("request_id"))
+    elif state == REQUESTED and (record or {}).get("held") in _HELD_PHRASE:
+        phrase = _HELD_PHRASE[(record or {})["held"]]
     else:
         phrase = _STATE_PHRASE.get(state, _STATE_PHRASE[NONE])
     if state == FAILED:
@@ -450,7 +486,11 @@ def view(record: Mapping[str, Any] | None, *, console_url: str = "",
             "verdict": decision.get("verdict"),
             "reason": decision.get("reason"),
             "at": _iso(decision.get("at")),
+            # True when nobody clicked: the requester is an admin (§1.3).
+            "auto": decision.get("auto") is True,
         },
+        "held": {"reason": HELD_MIGRATING, "copy": MIGRATING_COPY}
+        if state == REQUESTED and record.get("held") == HELD_MIGRATING else None,
         "limits": dict(record.get("limits") or {}),
         "steps": {k: {**v, "at": _iso(v.get("at"))} if isinstance(v, dict) else v
                   for k, v in (record.get("steps") or {}).items()},
@@ -594,17 +634,42 @@ class Workspaces:
 
     # -- the request (§1.3) ----------------------------------------------------
 
-    def request(self, *, tenant_id: str, principal: str, via: str) -> tuple[int, dict[str, Any]]:
+    def request(
+        self,
+        *,
+        tenant_id: str,
+        principal: str,
+        via: str,
+        approve: Callable[[Any, dict[str, Any]], dict[str, Any]] | None = None,
+    ) -> tuple[int, dict[str, Any]]:
         """One Firestore transaction: read the record, then create, re-open or
         answer it. Returns (HTTP status, the record as stored).
 
         The caller has already been checked as a human in an allowed domain,
-        not a secret admin, and owning `tenant_id` (`routes.workspaces`)."""
+        not a secret admin, and owning `tenant_id` (`routes.workspaces`).
+
+        `approve` is given for an admin's own request (§1.3, owner decision
+        2026-10-09): `People.request_own` passes `People._approve_in`, the
+        approval the admin route makes, and it runs here, inside this
+        transaction, on the record as it stands `requested`. It writes its
+        audit entry and returns the record's patch, which is written with the
+        request in one write; a `MigrationHold` from it leaves the record
+        `requested` and `held` instead (§3.3)."""
         if via not in VIAS:
             raise ValueError(f"via must be one of {VIAS}")
         ref = self._db.collection(WORKSPACES).document(tenant_id)
         now = self._now()
         transaction = self._db.transaction()
+
+        def _decide(txn: Any, record: dict[str, Any]) -> dict[str, Any]:
+            """The patch an automatic approval adds to a `requested` record,
+            or the hold; nothing for a request no approval goes with."""
+            if approve is None:
+                return {}
+            try:
+                return approve(txn, record)
+            except MigrationHold:
+                return {"held": HELD_MIGRATING}
 
         @firestore.transactional
         def _apply(txn: Any) -> tuple[int, dict[str, Any]]:
@@ -615,9 +680,20 @@ class Workspaces:
                 id_ref = self._draw_id(txn)
                 record = self._new_record(tenant_id=tenant_id, workspace_id=id_ref.id,
                                           principal=principal, now=now, via=via)
+                # Every read (the approval's included) before the first write.
+                record.update(_decide(txn, record))
                 txn.set(id_ref, {"tenant_id": tenant_id})
                 txn.set(ref, record)
                 return 202, record
+            if state == REQUESTED and approve is not None:
+                patch = {k: v for k, v in _decide(txn, data).items() if data.get(k) != v}
+                if patch:
+                    txn.update(ref, patch)
+                    # Approving a standing request is this call's doing; a
+                    # hold recorded on it is not a new request.
+                    status = 202 if patch.get("state") == APPROVED else 200
+                    return status, {**data, **patch}
+                return 200, data
             if state in UNCHANGED_ON_REQUEST:
                 return 200, data
             if state == DENIED:
@@ -640,6 +716,7 @@ class Workspaces:
                     "decision": None,
                     "history": [*(data.get("history") or []), previous],
                 }
+                patch.update(_decide(txn, {**data, **patch}))
                 txn.update(ref, patch)
                 return 202, {**data, **patch}
             if state == FAILED:
@@ -710,7 +787,8 @@ class Workspaces:
 
         * No record: created as a request would create it, with a FRESH
           workspace id and its `workspace_ids/` entry, then made ready.
-        * `requested`, `failed` or `denied`: completed IN PLACE. The
+        * `requested`, `failed` or `denied`, or `approved` with no dispatch
+          attempt and no run (`never_dispatched`): completed IN PLACE. The
           workspace id, its index entry and the request id are kept; an
           earlier decision moves to `history`.
         * `ready` and `migrated`: nothing is written (a re-run).
@@ -747,13 +825,14 @@ class Workspaces:
                 action = MIGRATE_NOTHING
             elif before is None:
                 action = MIGRATE_CREATE
-            elif state in MIGRATABLE:
+            elif state in MIGRATABLE or never_dispatched(before):
                 action = MIGRATE_UPDATE
             else:
                 raise Conflict(
                     f"workspace {before.get('workspace_id')} is {state}"
                     + ("" if state != READY else " and was not migrated")
-                    + "; only a requested, failed or denied record, or none, is migrated",
+                    + "; only a requested, failed or denied record, an approved one no build "
+                    "was ever sent for, or none, is migrated",
                     detail={"workspace_id": before.get("workspace_id"), "state": state})
             if expect is not None and action != expect:
                 raise Conflict(

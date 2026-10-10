@@ -403,6 +403,50 @@ locals {
         { field_path = "user_hash", order = "ASCENDING" },
       ]
     }
+
+    # ---- schedules (docs/schedules.md, lane S4) ------------------------------
+    # The tick's one query (§2.1):
+    #     schedules where state == "enabled" and next_run_at <= now
+    #     order by next_run_at
+    # An equality on one field and a range and order on another, so Firestore
+    # serves it only from this index -- the shape of tasks-state-next-eligible
+    # above. NO tenant_id: the tick reads every tenant's due schedules, `u-`
+    # ones included, and is the one caller allowed to (SD10). `schedules` is a
+    # top-level collection, so COLLECTION scope covers every tenant. Without
+    # the index the tick answers FAILED_PRECONDITION and nothing ever fires.
+    "schedules-state-next-run" = {
+      collection  = "schedules"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "next_run_at", order = "ASCENDING" },
+      ]
+    }
+
+    # A schedule's firings, newest slot first (§1.2): the schedule's detail
+    # page and its history. The route reads the schedule first, under the
+    # caller's tenant, so schedule_id alone is already tenant-scoped.
+    "schedule-firings-schedule-slot" = {
+      collection  = "schedule_firings"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "schedule_id", order = "ASCENDING" },
+        { field_path = "slot", order = "DESCENDING" },
+      ]
+    }
+
+    # The approvals inbox (§4.5): one tenant's items in one state, oldest
+    # request first, which is also the order they expire in (§4.7). tenant_id
+    # leads, as in every tenant-scoped index here (invariant 9).
+    "approvals-tenant-state-requested" = {
+      collection  = "approvals"
+      query_scope = "COLLECTION"
+      fields = [
+        { field_path = "tenant_id", order = "ASCENDING" },
+        { field_path = "state", order = "ASCENDING" },
+        { field_path = "requested_at", order = "ASCENDING" },
+      ]
+    }
   }
 }
 
@@ -498,5 +542,29 @@ resource "google_firestore_field" "account_holds_ttl" {
 
   # Never queried on; the history query orders on assigned_at. The default
   # single-field index would be write amplification on every hold.
+  index_config {}
+}
+
+# Schedule firings (docs/schedules.md §1.2) and the tick's per-minute reports
+# (§2.10) are records, not state: a firing is kept 90 days and a tick report 7,
+# and swarm_api.schedulefire stamps each with `expire_at` (FIRING_TTL,
+# TICK_TTL) when it writes it. Without a policy that field is inert and both
+# collections grow without bound -- schedule_ticks by 1,440 documents a day.
+# The schedule's audit (§4.8) keeps the decisions for longer, so nothing a
+# person needs to answer for is lost here. The field name is schedulefire's,
+# not var.event_ttl_field, for account_holds_ttl's reason: that variable
+# switches off the audit-trail TTLs and must not make these keep for ever.
+resource "google_firestore_field" "schedule_records_ttl" {
+  for_each = toset(["schedule_firings", "schedule_ticks"])
+
+  project    = var.project_id
+  database   = google_firestore_database.this.name
+  collection = each.value
+  field      = "expire_at"
+
+  ttl_config {}
+
+  # Never queried on. The default single-field index would be a write
+  # amplification on every firing and every tick.
   index_config {}
 }

@@ -1347,7 +1347,13 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         name="indexer",
         image="agent-runtime-indexer",
         resource_class="standard",
-        backend=Backend.CLOUD_RUN_JOB,
+        # GKE Autopilot since contract request 63 (owner, 2026-10-10), the
+        # canary for #939: a new Cloud Run instance's internet path opens a
+        # median 20.2 s after start (n=19) against GKE's 1.17 s (n=148)
+        # through the same NAT. Its tenants' Cloud Run Jobs are kept as the
+        # rollback (terraform/infra/locals.tf `cloud_run_fallback_profiles`):
+        # rolling back is this one line, back to CLOUD_RUN_JOB.
+        backend=Backend.GKE_AUTOPILOT,
         runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
         provider="anthropic",
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),

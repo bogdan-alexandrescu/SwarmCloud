@@ -1036,6 +1036,7 @@ def cmd_workflow(client: SwarmClient, args) -> int:
         priority=spec["priority"],
         label=args.label or spec["label"],
         title=workflows.check_title(getattr(args, "title", None), where="--title") or spec["title"],
+        merge=spec["merge"],
     )
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")

@@ -42,6 +42,13 @@ STRAY = "never" + secrets.token_hex(12)
 
 REPOS = ["example-user/example-api", "example-user/example-site"]
 
+INSTALL_URL = "https://github.com/apps/swarmcloud/installations/new"
+#: §2.3's ORG_APPROVAL_PENDING copy, as the API serves it.
+APPROVAL_COPY = ("You asked {owner}'s owners to install SwarmCloud. Nothing can be read in "
+                 "{owner} until one of them approves it in {owner}'s settings › GitHub Apps. "
+                 "You can carry on with your other orgs; this step re-checks on its own every "
+                 "15 minutes, or press Re-check.")
+
 
 def _step(name, state, **evidence):
     return {"step": name, "state": state, "code": None, "copy": None, "checked_at": None,
@@ -64,6 +71,8 @@ class FakeApi:
         self.grants: dict[str, dict] = {}
         self.verified: set[str] = set()
         self.grant_error: SwarmError | None = None
+        #: Owners the person asked to install the App on (ORG_APPROVAL_PENDING).
+        self.requested: set[str] = set()
 
     # -- helpers --------------------------------------------------------------
     def writes(self):
@@ -98,6 +107,12 @@ class FakeApi:
             {"owner": "example-org", "owner_type": "Organization", "installation_id": None,
              "install_state": "not_installed", "sso": "unknown", "enabled": False,
              "install_url": "https://github.com/apps/swarmcloud/installations/new"},
+        ] + [
+            {"owner": owner, "owner_type": "Organization", "installation_id": None,
+             "install_state": "requested", "sso": "unknown", "enabled": False,
+             "requested_at": "2026-10-09T00:00:00+00:00", "code": "ORG_APPROVAL_PENDING",
+             "copy": APPROVAL_COPY.format(owner=owner)}
+            for owner in sorted(self.requested)
         ], "orgs_listed": True, "install_url": "https://github.com/apps/swarmcloud/installations/new",
             "tenant_id": TENANT}
 
@@ -134,6 +149,14 @@ class FakeApi:
         if (method, path) == ("POST", "/v1/access/orgs"):
             self.enabled.add(payload["owner"])
             return {"org": {"owner": payload["owner"], "enabled": True}, "tenant_id": TENANT}
+        if method == "POST" and path.startswith("/v1/access/orgs/") \
+                and path.endswith("/install-request"):
+            owner = path.split("/")[4]
+            self.requested.add(owner)
+            org = {"owner": owner, "install_state": "requested", "enabled": False,
+                   "code": "ORG_APPROVAL_PENDING", "copy": APPROVAL_COPY.format(owner=owner)}
+            return {"org": org, "recorded": True, "install_url": INSTALL_URL,
+                    "tenant_id": TENANT}
         if method == "GET" and path.startswith("/v1/access/orgs/") and "/repositories?" in path:
             return self._repos(path.split("/")[4])
         if method == "PUT" and path.startswith("/v1/access/grants/"):
@@ -158,8 +181,13 @@ class FakeApi:
                       "push": {"state": "ok" if grant["mode"] == "write" else "not_required"},
                       "pull_request": {"state": "ok" if grant["mode"] == "write"
                                        else "not_required"}}
+            answer = {"grant": grant, "failures": [], "passed": True, "tenant_id": TENANT}
+            if "push_test" in ((payload or {}).get("checks") or []):
+                branch = "swarmcloud/onboarding-check-" + secrets.token_hex(4)
+                checks["push_test"] = {"state": "ok", "branch": branch, "leftover": False}
+                answer["push_test"] = {"branch": branch, "leftover": False}
             grant["checks"] = checks
-            return {"grant": grant, "failures": [], "passed": True, "tenant_id": TENANT}
+            return answer
         raise SwarmError(f"{method} {path} -> 500: the fake has no such route", status=500)
 
 
@@ -496,3 +524,165 @@ def test_a_grant_tool_call_with_an_argument_it_does_not_take_sends_nothing():
         server._call(api, "swarm_setup_grant",
                      {"repository": REPOS[0], "mode": "write", "token": "x"})
     assert api.sent == []
+
+
+# -- D6's push test, the install request, and the fallback token (#780, step 5) ---
+
+
+def _verify_posts(api):
+    return [(p, b) for m, p, b in api.sent if m == "POST" and p.endswith("/verify")]
+
+
+def test_access_verify_reads_only_unless_the_push_test_is_asked_for():
+    api = FakeApi(connected=True)
+    _cli(["access", "grant", REPOS[0], "--write"], api)
+    _cli(["access", "verify", REPOS[0]], api)
+    assert [body for _, body in _verify_posts(api)] == [{}], "a plain verify names no check"
+
+
+def test_access_verify_push_test_runs_once_the_repository_name_is_typed(monkeypatch):
+    monkeypatch.setenv("SWARM_ASSUME_YES", "1")
+    api = FakeApi(connected=True)
+    _cli(["access", "grant", REPOS[0], "--write"], api)
+    code, text = _cli(["access", "verify", REPOS[0], "--push-test"], api, stdin=REPOS[0] + "\n")
+    assert code == sc.EXIT_OK
+    posts = _verify_posts(api)
+    assert len(posts) == 1
+    assert "push_test" in posts[0][1]["checks"]
+    assert {"clone", "push", "pull_request"} <= set(posts[0][1]["checks"]), \
+        "the push test is added to the reads, not instead of them"
+    assert "swarmcloud/onboarding-check-" in text
+
+
+@pytest.mark.parametrize("typed", ["", "y", "yes", REPOS[1], "example-user"])
+def test_access_verify_push_test_refuses_without_the_typed_name_even_with_assume_yes(
+        typed, monkeypatch):
+    monkeypatch.setenv("SWARM_ASSUME_YES", "1")
+    api = FakeApi(connected=True)
+    _cli(["access", "grant", REPOS[0], "--write"], api)
+    before = len(api.sent)
+    with pytest.raises(SwarmError, match="nothing was"):
+        _cli(["access", "verify", REPOS[0], "--push-test"], api, stdin=typed + "\n")
+    assert api.sent[before:] == [], "nothing is read or sent before the name is typed"
+
+
+def test_access_verify_push_test_names_exactly_one_repository():
+    api = FakeApi(connected=True)
+    for argv in (["access", "verify", "--push-test"],
+                 ["access", "verify", REPOS[0], REPOS[1], "--push-test"]):
+        with pytest.raises(SwarmError, match="one owner/repo"):
+            _cli(argv, api, stdin=REPOS[0] + "\n")
+    assert api.sent == []
+
+
+def test_access_verify_push_test_on_a_read_grant_sends_no_verify():
+    api = FakeApi(connected=True)
+    _cli(["access", "grant", REPOS[0], "--read"], api)
+    with pytest.raises(SwarmError, match="read"):
+        _cli(["access", "verify", REPOS[0], "--push-test"], api, stdin=REPOS[0] + "\n")
+    assert _verify_posts(api) == []
+
+
+def test_the_verify_tool_sends_push_test_only_when_asked():
+    api = FakeApi(connected=True)
+    server._call(api, "swarm_setup_grant", {"repository": REPOS[0], "mode": "write"})
+    server._call(api, "swarm_setup_verify", {"repositories": [REPOS[0]]})
+    server._call(api, "swarm_setup_verify", {"repositories": [REPOS[0]], "push_test": False})
+    assert [body for _, body in _verify_posts(api)] == [{}, {}]
+    body = json.loads(server._call(api, "swarm_setup_verify",
+                                   {"repositories": [REPOS[0]], "push_test": True}))
+    posts = _verify_posts(api)
+    assert len(posts) == 3 and "push_test" in posts[2][1]["checks"]
+    assert "swarmcloud/onboarding-check-" in body["text"]
+
+
+def test_the_verify_tool_push_test_needs_named_repositories_and_a_real_bool():
+    api = FakeApi(connected=True)
+    server._call(api, "swarm_setup_grant", {"repository": REPOS[0], "mode": "write"})
+    before = len(api.sent)
+    with pytest.raises(SwarmError, match="repositories"):
+        server._call(api, "swarm_setup_verify", {"push_test": True})
+    with pytest.raises(SwarmError, match="push_test"):
+        server._call(api, "swarm_setup_verify", {"repositories": [REPOS[0]], "push_test": "yes"})
+    assert api.sent[before:] == []
+    schema = next(t for t in server.TOOLS if t["name"] == "swarm_setup_verify")["inputSchema"]
+    assert schema["properties"]["push_test"] == {**schema["properties"]["push_test"],
+                                                 "type": "boolean", "default": False}
+
+
+def test_access_request_install_records_it_and_prints_the_install_url():
+    api = FakeApi(connected=True)
+    code, text = _cli(["access", "request-install", "example-org"], api)
+    assert code == sc.EXIT_OK
+    assert api.writes() == [("POST", "/v1/access/orgs/example-org/install-request", None)]
+    assert INSTALL_URL in text
+    assert "ORG_APPROVAL_PENDING" in text
+
+
+def test_access_orgs_shows_a_pending_approval_with_its_copy():
+    api = FakeApi(connected=True)
+    api.requested.add("example-pending")
+    _, text = _cli(["access", "orgs"], api)
+    flat = " ".join(text.split())  # the copy is wrapped to the terminal
+    assert "ORG_APPROVAL_PENDING" in flat
+    assert APPROVAL_COPY.format(owner="example-pending") in flat
+
+
+def test_the_orgs_tool_reports_org_approval_pending_and_records_a_request():
+    api = FakeApi(connected=True)
+    api.requested.add("example-pending")
+    body = json.loads(server._call(api, "swarm_setup_orgs", {}))
+    assert body["approval_pending"] == [{
+        "owner": "example-pending", "code": "ORG_APPROVAL_PENDING",
+        "copy": APPROVAL_COPY.format(owner="example-pending"),
+        "requested_at": "2026-10-09T00:00:00+00:00"}]
+    assert api.writes() == []
+    body = json.loads(server._call(api, "swarm_setup_orgs", {"request_install": "example-org"}))
+    assert api.writes() == [("POST", "/v1/access/orgs/example-org/install-request", None)]
+    assert body["install_requested"]["owner"] == "example-org"
+    assert {o["owner"] for o in body["approval_pending"]} == {"example-org", "example-pending"}
+
+
+_SETUP_MD = Path(__file__).resolve().parents[3] / "plugin" / "commands" / "setup.md"
+
+#: A tool input whose name says it carries a credential.
+_CREDENTIAL_INPUT = ("token", "pat", "secret", "password", "credential", "key", "value", "code")
+
+
+def test_setup_md_sends_the_fallback_token_to_the_terminal_and_grants_no_tool_that_takes_one():
+    text = _SETUP_MD.read_text()
+    front, body = text.split("---", 2)[1:]
+    assert "uv run sc setup token --owner" in body
+    assert "CLASSIC_PAT_BLOCKED" in body
+    granted = sorted({line.strip()[2:].rsplit("__", 1)[1] for line in front.splitlines()
+                      if line.strip().startswith("- mcp__")})
+    assert len(granted) >= len(SETUP_TOOLS), granted
+    tools = {tool["name"]: tool for tool in server.TOOLS}
+    takes = {}
+    for name in granted:
+        names = set((tools[name]["inputSchema"].get("properties") or {}))
+        bad = sorted(n for n in names if any(w in n.lower().split("_") for w in _CREDENTIAL_INPUT))
+        if bad:
+            takes[name] = bad
+    assert takes == {}, f"/sc:setup grants tools that take a credential: {takes}"
+
+
+#: Inputs named `token` that are not credentials: a listing's page cursor.
+_CURSORS = {"page_token"}
+
+
+def test_no_bridge_tool_takes_a_token():
+    offending = []
+    for tool in server.TOOLS:
+        for name in (tool.get("inputSchema") or {}).get("properties") or {}:
+            if name not in _CURSORS and any(w in name.lower().split("_") for w in ("token", "pat", "secret", "password")):
+                offending.append(f"{tool['name']}.{name}")
+    assert len(server.TOOLS) > 10
+    assert offending == []
+
+
+def test_readme_names_the_fallback_and_the_push_test():
+    readme = (_SETUP_MD.parents[1] / "README.md").read_text()
+    assert "uv run sc setup token --owner" in readme
+    assert "--push-test" in readme
+    assert "request-install" in readme

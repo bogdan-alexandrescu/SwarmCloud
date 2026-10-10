@@ -70,6 +70,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 59 | `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55) | proposed |
 | 60 | `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87) | proposed |
 | 61 | `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57 | proposed |
+| 62 | `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI | proposed |
+| 63 | `profiles.py`: indexer runs on GKE_AUTOPILOT (canary for #939) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -10407,3 +10409,168 @@ for them alone.
 - **Invariant 10.** Strengthened: it narrows what the `browser` profile's
   `url` inputs accept.
 - **Invariants 1-9.** Untouched.
+
+## 62. `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI
+
+**Status:** proposed, filed 2026-10-10 by the merge-race lane (part of
+[#295](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/295)). A
+request, not a change: nothing under `apps/common/swarm_common/` is edited
+by it, and the slot is built on `ParkReason.CI_PENDING` meanwhile.
+
+### What is true today
+
+Measured 2026-10-10 across the eng tenant: 16 merge steps ran against one
+`main` that requires an up-to-date branch, each landing merge put the rest
+behind, and 7 refused `behind_too_often`. The fix
+(`apps/agent-worker/agent_worker/mergeslot.py`) gives every (tenant,
+repository, base) one merge slot. A step whose checks are green and that
+cannot have the slot parks, holding nothing, until the holder's release
+hands the slot to it.
+
+That park is `ParkReason.CI_PENDING` with the code `merge_slot_wait` in
+`metadata.merge_wait.code`. Everything that must tell the two apart reads
+the code, not the reason:
+
+* `apps/agent-worker/agent_worker/control.py::ControlPlane.park_ci_pending`
+  counts it on `merge_wait.slot_waits`, not `wakes`, and clears
+  `first_parked_at` so `checks_timeout` does not time a queue;
+* `apps/swarm-api/swarm_api/mergewake.py::wake_tenant` skips it, because
+  its checks are green and reading them would wake it every tick;
+* the API's `blocked_by`, the UI and the MCP tools show `CI_PENDING`, so a
+  step queued behind seven merges reads as "waiting for CI".
+
+### Why
+
+A park reason is what a reader -- a person, the UI, a metric -- uses to say
+why a task is not running. "Waiting for CI" for a step whose CI is green is
+the wrong answer, and the code that corrects it lives in a tenant-writable
+metadata field that nothing outside the merge path reads.
+
+### The requested change
+
+In `apps/common/swarm_common/states.py`, beside `CI_PENDING`:
+
+```diff
+     CI_PENDING = "CI_PENDING"
++    #: A merge step whose checks are green waits for its repository's merge
++    #: slot (`agent_worker.mergeslot`); promoted by the scheduler's CI-wait
++    #: sweep on the release's wake marker or the fallback instant.
++    #: Contract request 63.
++    MERGE_SLOT_WAIT = "MERGE_SLOT_WAIT"
+```
+
+**The non-frozen half, in the same change:** the scheduler's
+`_promote_ci_waits` sweeps both reasons; `park_ci_pending` takes the reason
+from the code; `mergewake.wake_tenant` queries `CI_PENDING` alone and drops
+its skip; `mergeslot.FirestoreMergeSlots.wake` guards on the new reason;
+and the UI and MCP park labels name it.
+
+### What it would break if accepted
+
+Every reader that lists park reasons exhaustively (the UI's labels, the MCP
+rows, `docs/api-refusals.md`) needs the new member, and a slot wait parked
+by a worker of the old image during the rollout stays `CI_PENDING` with the
+code -- the sweep must keep reading both until those have drained.
+
+### If it is declined
+
+The slot keeps working as it is: `CI_PENDING` plus the code. Only the label
+a person reads is wrong.
+
+### Invariants
+
+- **Invariant 1.** Unchanged: the wait is a park, holding no lease and no
+  pool count, whichever reason it carries.
+- **Invariant 5.** Unchanged: the slot's writes are fenced on the
+  attempt's task and lease, under either reason.
+- **Invariants 2-4, 6-10.** Untouched.
+
+---
+
+## 63. `profiles.py`: indexer runs on GKE_AUTOPILOT (canary for #939)
+
+**Status:** ACCEPTED by the owner 2026-10-10, option A of
+`docs/incidents/2026-10-09-egress-open-delay.md` (PR 986), and APPLIED by the
+pull request that adds this entry. Canary first: this moves ONLY `indexer`;
+the other profiles on Cloud Run Jobs follow after the canary is measured.
+
+### The measurement
+
+A new Cloud Run instance's internet path opens a median **20.2 s** after start
+(n=19), against GKE Autopilot's **1.17 s** (n=148) through the same Cloud NAT
+(`egress_ready_seconds`, the per-step mark #721 (a) added; the #939
+investigation, PR 986). The wait sits inside every clone a Cloud Run step
+makes, and nothing the step does shortens it.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, the `"indexer"` entry:
+
+```diff
+     "indexer": RunnerProfile(
+         name="indexer",
+         image="agent-runtime-indexer",
+         resource_class="standard",
+-        backend=Backend.CLOUD_RUN_JOB,
++        backend=Backend.GKE_AUTOPILOT,
+```
+
+Nothing else in the frozen package changes. `indexer` is again claude-code in
+every field but its name and its image (contract request 48), now that both run
+on Autopilot. The GKE path needs nothing new for it: the dispatcher renders the
+default worker Job for any profile, with the image from `WORKER_IMAGE_REFS`
+(where `agent-runtime-indexer`'s digest is already pinned), MODEL from
+`WORKER_MODELS` (which already names `indexer`), and the `TENANT_ID` and
+`ARTIFACT_BUCKET` the index run's graph writer takes as its target
+(`agent_worker.indexrun.phase_env`). The `standard` class's GKE disk layout
+(`GKE_DISK`, workspace 5 + /tmp 4 + HOME 1 GiB) is claude-code's, and the
+index run keeps its scratch inside the workspace (`ws.tmp`).
+
+The non-frozen follow-ups, in the same change: `terraform/infra/locals.tf`
+mirrors the backend and adds `indexer` to `cloud_run_fallback_profiles`, so
+the tenants' `swarm-job-<tenant>-indexer` Cloud Run Jobs stay, idle, as the
+rollback; `tests/terraform/catalogue.tftest.hcl` holds both; and the docs that
+named indexer's backend name the new one.
+
+### Rollback
+
+Set `indexer`'s backend back to `Backend.CLOUD_RUN_JOB` and release. While
+`indexer` is in `cloud_run_fallback_profiles` its Cloud Run Jobs still exist,
+so no Terraform apply is needed.
+
+### What it would break
+
+What request 53 recorded for claude-code, now for index runs too: Autopilot
+nodes can end a pod by auto-repair or pressure eviction, which extended run
+time does not suppress, and periodic checkpointing makes that cost minutes,
+not the run. The workspace is a disk `emptyDir`, bounded by the pod's
+ephemeral-storage limit rather than by memory. Index runs share the
+`GKE_AUTOPILOT` backend ceiling (dev 100) with claude-code and browser.
+
+### The follow-up list: profiles still on CLOUD_RUN_JOB after this change
+
+| profile | reaches the internet? |
+|---|---|
+| `merge` | yes: GitHub, to merge with the tenant's `-git` token |
+| `claude-code-review` | yes: GitHub and the Anthropic API (retired, `available=False`, no Job) |
+| `generic` | yes when its task names a repository: the worker clones it from GitHub, and `npm-ci` / `uv-sync` fetch from package registries |
+| `codex` | yes: GitHub and the OpenAI API (disabled, `available=False`) |
+| `post-verdict` | yes: GitHub (disabled, `available=False`, no Job) |
+| `mock` | no |
+
+### Invariants
+
+- **Invariant 1.** Unchanged: a GKE pod is created only for a leased task; an
+  unschedulable pod is a DISPATCHED lease bounded by the dispatch deadline,
+  never a backlog.
+- **Invariant 2.** Unchanged: admission reserves the `GKE_AUTOPILOT` backend
+  pool instead of `CLOUD_RUN_JOB`, in the same single transaction.
+- **Invariants 3, 4, 5, 8.** Unchanged: the same worker image ENTRYPOINT, the
+  generation in the pod's env and Job name, `backoffLimit: 0`.
+- **Invariant 6.** Preserved: no Spot; `safe-to-evict: "false"` on Job and pod.
+- **Invariant 7.** Preserved: the GKE manifest sets requests == limits.
+- **Invariant 9.** Unchanged: the tenant's namespace and KSA bound to its own
+  GSA, its own secrets and GCS prefix.
+- **Invariant 10.** Unchanged: a caller still names `indexer` and cannot choose
+  where it runs.
+
