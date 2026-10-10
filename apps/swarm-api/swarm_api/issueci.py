@@ -148,6 +148,7 @@ from urllib.parse import quote
 
 from swarm_common.states import TaskState
 
+from . import approvals, refusals
 from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable
 from .forgechecks import (
     FAILED,
@@ -171,16 +172,20 @@ from .issueruns import (
     STEP_PROFILE,
     VERDICT_FILE,
     VERIFICATION_FILE,
+    HoldApproverRequired,
     IssueRun,
     IssueRuns,
     RunState,
     failure_text,
+    hard_stop_hold,
     requirements_finding,
     verification_finding,
     verification_text,
+    widen_hold,
 )
 from .issuesync import _tenant, keyword_mark, sync_pull_request
 from .redaction import redact
+from .repositories import Repositories, hard_stop_paths_of, platform_of, repo_id_for
 from .reviewcontext import read_fix_context
 from .rollup import SKIPPED_SUMMARY_KEY
 from .schemas import WorkflowCreate
@@ -919,6 +924,11 @@ def from_checks(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAuth) 
             if run.auto_merge:
                 # Green AND the keyword block written: only now is the pull
                 # request in the shape a merge may land (contract request 47).
+                # And only past the §4.4 stops at the merge point, and the
+                # merge approval a hold or a `merge: approve` gate asks for.
+                waiting = merge_gate(ctx, tenant_id, run, record, head, token=token)
+                if waiting is not None:
+                    return waiting
                 return _merge(ctx, tenant_id, run, record, head, owner_auth,
                               writer=writer, token=token, base=pull.base_ref)
             return runs.transition(
@@ -1210,6 +1220,94 @@ def through_base_merges(
             return None, why
         head = parent
         steps += 1
+
+
+# --------------------------------------------------------------------------
+# The merge point's hard stops and merge approval (docs/schedules.md §4.4-§4.5)
+# --------------------------------------------------------------------------
+
+#: The most changed files read for the merge-point check. A pull request past
+#: it cannot be shown to be clear of the protected paths, so it is treated as
+#: one whose files could not be read.
+MERGE_FILES_CAP = 300
+
+
+def _changed_files(ctx: Any, run: IssueRun, number: int, token: str) -> list[str] | None:
+    """The pull request's changed files, read with the run's own tenant's
+    token through the forge API, or None when they could not all be read."""
+    issues = getattr(ctx, "forge", None)
+    if issues is None:
+        return None
+    try:
+        files, cut = issues._pull_files(run.issue, number, token, MERGE_FILES_CAP)
+    except Exception as exc:  # noqa: BLE001 -- a read that fails is not a clear list
+        log.warning("issue run %s: changed files not read (%s)", run.id, type(exc).__name__)
+        return None
+    if files is None or cut:
+        return None
+    return list(files)
+
+
+def merge_gate(
+    ctx: Any, tenant_id: str, run: IssueRun, record: dict[str, Any], head: str, *, token: str,
+) -> IssueRun | None:
+    """None: the merge may go ahead. Otherwise the run, still CHECKING, waiting.
+
+    THE PLAN'S FILES ARE ADVISORY, so the stops are checked again here, on
+    the pull request's own changed files, before the merge continuation is
+    submitted (§4.4): once per head, widening the run's hold (never
+    narrowing it). A run whose hold blocks -- the security-class stop
+    always, the others once their switch is on -- or whose schedule's gate
+    says `merge: approve` (`merge_approval: "required"`) merges only once a
+    `merge` approval has been given AT THIS HEAD (`merge_approved`); until
+    then one `merge` record waits in the inbox, and a push supersedes it.
+    The SD3 switch cannot open a hold: it only decides `merge_approval`.
+    """
+    runs = _runs(ctx)
+    now = ctx.now()
+    hold = run.approval_hold
+    if record.get("files_checked_head") != head:
+        files = _changed_files(ctx, run, int(record["number"]), token)
+        if files is None:
+            if approvals.hold_blocks(hold) or refusals.enforced(HoldApproverRequired.code):
+                # A hard stop cannot be shown clear: the merge waits for a
+                # read that works, as a failed CI read does.
+                return runs.patch(tenant_id, run.id, {"pull_request": {
+                    **record, "read_error": failure_text(
+                        "the pull request's changed files could not all be read, so the merge "
+                        "waits: the protected paths are checked on them before any merge"
+                    ),
+                }})
+        else:
+            ref = run.issue
+            registration = Repositories(ctx.db, now=ctx.now).find(
+                tenant_id, repo_id_for(tenant_id, ref.owner, ref.repo)
+            ) or {}
+            hold = widen_hold(hold, hard_stop_hold(
+                files, platform=platform_of(registration),
+                hard_stop_paths=hard_stop_paths_of(registration), issue_read=run.issue_read, at=now,
+            ))
+            record["files_checked_head"] = head
+    changes: dict[str, Any] = {}
+    if hold != run.approval_hold:
+        changes["approval_hold"] = hold
+        approvals.announce_hold(run, run.approval_hold, hold)
+        run.approval_hold = hold
+    blocks = approvals.hold_blocks(hold)
+    if hold and not blocks:
+        # Report-only: the merge goes ahead and the log names the stop.
+        refusals.refuse(HoldApproverRequired(
+            f"run {run.id} is held {hold.get('code')} at merge ({', '.join(hold.get('reasons') or [])})"
+        ))
+    approved_here = (run.merge_approved or {}).get("head_sha") == head
+    if not (blocks or run.merge_approval == "required") or approved_here:
+        if changes:
+            runs.patch(tenant_id, run.id, changes)
+        return None
+    verdict, _why = _review_verdict(ctx, tenant_id, run)
+    approvals.request_merge(ctx.db, now, run, head_sha=head, verdict=verdict)
+    log.info("issue run %s tenant=%s: merge of %s waits for approval", run.id, tenant_id, head[:12])
+    return runs.patch(tenant_id, run.id, {**changes, "pull_request": record})
 
 
 def _review_verdict(ctx: Any, tenant_id: str, run: IssueRun) -> tuple[str | None, str]:

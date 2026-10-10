@@ -172,7 +172,7 @@ from pydantic import (
 from swarm_common.admission import _snapshot
 from swarm_common.models import utcnow
 
-from .errors import Conflict, NotFound, ValidationFailed
+from .errors import Conflict, Forbidden, NotFound, ValidationFailed
 from .redaction import redact_detail
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from swarm_common.profiles import RUNNER_PROFILES
@@ -365,6 +365,14 @@ class PlanChanged(Conflict):
 
 class InvalidPlan(ValidationFailed):
     code = "invalid_plan"
+
+
+class HoldApproverRequired(Forbidden):
+    """403: the run is held by a §4.4 stop and this approver is not one the
+    hold admits (§4.5). Report-only behind `refusals.SWITCHES` for every stop
+    but the security-class one, which is enforced from its first day."""
+
+    code = "hold_approver_required"
 
 
 class AutoMergeUnavailable(ValidationFailed):
@@ -862,6 +870,244 @@ def territory_overlap(ours: set[str], theirs: set[str]) -> list[str]:
             if a == b or b.startswith(a + "/") or a.startswith(b + "/"):
                 shared.add(min(a, b, key=len))
     return sorted(shared)
+
+
+# --------------------------------------------------------------------------
+# Hard stops at plan and at merge (docs/schedules.md §4.4, §4.5, lane S5)
+# --------------------------------------------------------------------------
+#
+# THE HOLD LIVES ON THE RUN, so no approve path can step round it: the
+# console's, `sc plan approve`, `swarm_plan_approve` and the tick's
+# auto-approval all go through `routes.runs._approve`, which reads it. It is
+# kept in `approval_hold`, not `hold`: `hold` was already SWEEP's string for
+# a territory wait (`territory_overlap: run_<id>`), which a tick sets and
+# clears, while this one is set once and is only ever widened.
+#
+# WHAT A HOLD IS: `{code, approvers, reasons, matched, set_at}`. `code` is
+# NEEDS_OWNER in a `platform: true` repository (only PLATFORM_OWNER, who is a
+# member of the platform's tenant, decides it) and NEEDS_SECOND_MEMBER
+# anywhere else (any member but the run's creator, its last plan editor and
+# its schedule's last gate editor; a one-person tenant types a confirmation).
+# SD11. `reasons` names which stops matched, `matched` the paths or label.
+
+#: §4.4's hold codes and the approvers each forces (§4.6).
+HOLD_NEEDS_OWNER = "NEEDS_OWNER"
+HOLD_NEEDS_SECOND_MEMBER = "NEEDS_SECOND_MEMBER"
+APPROVERS_OWNER_ONLY = "owner_only"
+APPROVERS_SECOND_MEMBER = "second_member"
+
+#: The stops a hold can carry. `security` is enforced from its first day
+#: (owner decision 2026-10-08, SD3); the others ship report-only behind
+#: `refusals.SWITCHES["hold_approver_required"]` (PR 873's rule).
+STOP_IAM = "iam"
+STOP_CONTRACT = "contract"
+STOP_PROTECTED_PATH = "protected_path"
+STOP_SECURITY = "security"
+ENFORCED_STOPS = frozenset({STOP_SECURITY})
+
+#: The `.github/workflows/` refusal's code. Refused, never held: the forge
+#: credential cannot push those files (§0), so the step would fail after
+#: spending. The run moves PLANNING -> FAILED with this code in `error`.
+WORKFLOWS_PATH = "WORKFLOWS_PATH"
+WORKFLOWS_PATTERN = ".github/workflows/**"
+
+#: IAM and Terraform bootstrap, held in EVERY repository whatever its
+#: registration says: a repository nobody registered has no
+#: `hard_stop_paths`, and these are not a tenant's to waive.
+IAM_PATTERNS: tuple[str, ...] = ("terraform/bootstrap/**", "**/iam*.tf")
+#: "any google_*_iam_* change": a resource type named in a step's prompt.
+_IAM_RESOURCE = re.compile(r"\bgoogle_[a-z0-9_]*_iam_[a-z0-9_]+\b")
+#: The frozen contract, held only where the registration is `platform: true`.
+CONTRACT_PATTERNS: tuple[str, ...] = ("apps/common/swarm_common/**",)
+
+#: A security-class issue: the label, or the bug form's severity S0
+#: (`.github/ISSUE_TEMPLATE/bug_report.yml`, rendered `### Severity` then
+#: the chosen option on its own paragraph).
+SECURITY_LABEL = "security"
+_SEVERITY_S0 = re.compile(r"^#{1,6}\s*Severity\s*\n+\s*S0\b", re.IGNORECASE | re.MULTILINE)
+
+#: A path-shaped token in a step's prompt: the plan's `files` are advisory,
+#: so the prompt is read for the paths too. Holding on a mention is cheap (a
+#: person decides); refusing on one is not, so the workflow refusal reads
+#: `files` only.
+_PROMPT_PATH = re.compile(r"[A-Za-z0-9_.*-]+(?:/[A-Za-z0-9_.*-]+)+/?|\b[A-Z][A-Z_]*OWNERS\b|\biam[A-Za-z0-9_-]*\.tf\b")
+#: Bounds on what one plan contributes to `matched`, so a hold stays a line.
+MAX_HOLD_MATCHED = 20
+
+
+def _glob_regex(pattern: str) -> re.Pattern[str]:
+    """A gitignore-style glob: `**` crosses directories, `*` and `?` do not,
+    and a pattern with no `/` matches a file of that name at any depth."""
+    pattern = pattern.strip().removeprefix("./").lstrip("/")
+    anchored = "/" in pattern.rstrip("/")
+    out = []
+    i = 0
+    while i < len(pattern):
+        if pattern.startswith("**/", i):
+            out.append("(?:.*/)?")
+            i += 3
+        elif pattern.startswith("**", i):
+            out.append(".*")
+            i += 2
+        elif pattern[i] == "*":
+            out.append("[^/]*")
+            i += 1
+        elif pattern[i] == "?":
+            out.append("[^/]")
+            i += 1
+        else:
+            out.append(re.escape(pattern[i]))
+            i += 1
+    body = "".join(out)
+    return re.compile(("" if anchored else "(?:.*/)?") + body + r"\Z")
+
+
+def path_matches(path: str, pattern: str) -> bool:
+    """Whether a repository path -- or a directory a plan names -- falls under
+    `pattern`. A directory matches a `dir/**` pattern at the directory itself,
+    since a plan may name `terraform/bootstrap` for everything under it."""
+    norm = str(path).strip().removeprefix("./").strip("/")
+    if not norm:
+        return False
+    if _glob_regex(pattern).match(norm):
+        return True
+    if pattern.endswith("/**"):
+        return _glob_regex(pattern[:-3]).match(norm) is not None
+    return False
+
+
+def _matching(paths: Any, patterns: Any) -> list[str]:
+    return sorted({p for p in paths for pat in patterns if path_matches(p, pat)})
+
+
+def prompt_paths(plan: Mapping[str, Any] | None) -> set[str]:
+    """The path-shaped tokens of a plan's step prompts and its summary."""
+    found: set[str] = set()
+    texts = [str((plan or {}).get("summary") or "")]
+    texts += [str(s.get("prompt") or "") for s in (plan or {}).get("steps") or [] if isinstance(s, Mapping)]
+    for text in texts:
+        for token in _PROMPT_PATH.findall(text):
+            found.add(token.strip("/.") if token.endswith(".") else token.strip("/"))
+    return {p for p in found if p}
+
+
+def workflow_paths(plan: Mapping[str, Any] | None) -> list[str]:
+    """The `.github/workflows/` files a plan's steps NAME in `files`: refused at plan."""
+    return _matching(plan_files(plan), (WORKFLOWS_PATTERN,))
+
+
+def is_security_issue(issue_read: Mapping[str, Any] | None) -> list[str]:
+    """What makes the run's issue security-class (§4.4), as hold `matched` entries."""
+    if not issue_read:
+        return []
+    found = []
+    labels = [str(label).strip().lower() for label in issue_read.get("labels") or []]
+    if SECURITY_LABEL in labels:
+        found.append(f"label:{SECURITY_LABEL}")
+    if _SEVERITY_S0.search(str(issue_read.get("body") or "")):
+        found.append("severity:S0")
+    return found
+
+
+def hard_stop_hold(
+    paths: Any,
+    *,
+    platform: bool,
+    hard_stop_paths: Any,
+    issue_read: Mapping[str, Any] | None = None,
+    prompt_text: str = "",
+    at: datetime | None = None,
+) -> dict[str, Any] | None:
+    """The hold §4.4's stops put on a run whose work touches `paths`, or None.
+
+    Pure: the caller passes the plan's files (and the prompt's paths) at
+    plan, or the pull request's changed files at merge, and the
+    registration's `platform` and `hard_stop_paths` (`repositories.
+    hard_stop_paths_of`, the four defaults included). The workflow pattern
+    is left out of the protected paths: those files are refused, not held.
+    """
+    paths = sorted({str(p) for p in paths if str(p).strip()})
+    reasons: list[str] = []
+    matched: list[str] = []
+    iam = _matching(paths, IAM_PATTERNS) + sorted(set(_IAM_RESOURCE.findall(prompt_text)))
+    if iam:
+        reasons.append(STOP_IAM)
+        matched += iam
+    if platform:
+        contract = _matching(paths, CONTRACT_PATTERNS)
+        if contract:
+            reasons.append(STOP_CONTRACT)
+            matched += contract
+    protected = [p for p in hard_stop_paths or () if p != WORKFLOWS_PATTERN]
+    protected_hits = [p for p in _matching(paths, protected) if p not in matched]
+    if protected_hits:
+        reasons.append(STOP_PROTECTED_PATH)
+        matched += protected_hits
+    security = is_security_issue(issue_read)
+    if security:
+        reasons.append(STOP_SECURITY)
+        matched += security
+    if not reasons:
+        return None
+    return {
+        "code": HOLD_NEEDS_OWNER if platform else HOLD_NEEDS_SECOND_MEMBER,
+        "approvers": APPROVERS_OWNER_ONLY if platform else APPROVERS_SECOND_MEMBER,
+        "reasons": reasons,
+        "matched": list(dict.fromkeys(matched))[:MAX_HOLD_MATCHED],
+        "set_at": at,
+    }
+
+
+def plan_hold(
+    plan: Mapping[str, Any] | None,
+    *,
+    platform: bool,
+    hard_stop_paths: Any,
+    issue_read: Mapping[str, Any] | None = None,
+    at: datetime | None = None,
+) -> dict[str, Any] | None:
+    """`hard_stop_hold` over a plan: its `files`, and the paths its prompts name."""
+    texts = " ".join(
+        str(s.get("prompt") or "") for s in (plan or {}).get("steps") or [] if isinstance(s, Mapping)
+    )
+    return hard_stop_hold(
+        plan_files(plan) | prompt_paths(plan), platform=platform, hard_stop_paths=hard_stop_paths,
+        issue_read=issue_read, prompt_text=texts, at=at,
+    )
+
+
+def widen_hold(current: Mapping[str, Any] | None, found: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The hold after a re-check: AN EDIT CAN ADD A HOLD BUT NEVER CLEARS ONE.
+
+    Otherwise a member could edit the IAM file out of the plan and approve
+    it, when the plan's files are advisory. Reasons and matches are unioned;
+    NEEDS_OWNER outranks NEEDS_SECOND_MEMBER; the first `set_at` is kept.
+    """
+    if not current:
+        return dict(found) if found else None
+    if not found:
+        return dict(current)
+    owner = HOLD_NEEDS_OWNER in (current.get("code"), found.get("code"))
+    return {
+        "code": HOLD_NEEDS_OWNER if owner else HOLD_NEEDS_SECOND_MEMBER,
+        "approvers": APPROVERS_OWNER_ONLY if owner else APPROVERS_SECOND_MEMBER,
+        "reasons": list(dict.fromkeys([*(current.get("reasons") or []), *(found.get("reasons") or [])])),
+        "matched": list(dict.fromkeys([*(current.get("matched") or []), *(found.get("matched") or [])]))[
+            :MAX_HOLD_MATCHED
+        ],
+        "set_at": current.get("set_at") or found.get("set_at"),
+    }
+
+
+def hold_always_enforced(hold: Mapping[str, Any] | None) -> bool:
+    """Whether a hold carries a stop that is enforced whatever its switch says."""
+    return bool(hold) and bool(ENFORCED_STOPS & set(hold.get("reasons") or ()))
+
+
+def hold_confirmation(hold: Mapping[str, Any]) -> str:
+    """What a one-person tenant types to approve its own hold (§4.6, SD11):
+    the matched paths, as the hold names them."""
+    return ", ".join(str(m) for m in hold.get("matched") or [])
 
 
 def plan_stages(plan: Mapping[str, Any]) -> list[list[str]]:
@@ -1855,6 +2101,24 @@ class IssueRun:
     #: issue's `updated_at`; the sweep needs to tell its own write from a
     #: person's edit (`issuesweep`).
     last_writeback_at: datetime | None = None
+    # -- approvals and hard stops (docs/schedules.md §4.4-§4.5, lane S5). All
+    # optional, so a run stored before them reads as unheld and unscheduled.
+    #: The §4.4 hold (`plan_hold`): `{code, approvers, reasons, matched,
+    #: set_at}`, or None. Set where the plan is stored, widened by every plan
+    #: edit and by the merge-time read of the pull request's files, and never
+    #: cleared: only its approver approving, or anyone rejecting, ends it.
+    approval_hold: dict[str, Any] | None = None
+    #: "required" when the run's merge waits for a `merge` approval even with
+    #: no hold: a schedule whose gate says `merge: approve` (§4.2). None: an
+    #: `auto_merge` run merges once CI and the review say so.
+    merge_approval: str | None = None
+    #: The `merge` approval given, `{head_sha, by, at, approval_id}`: the
+    #: merge may be submitted at THAT head only (§4.5's digest).
+    merge_approved: dict[str, Any] | None = None
+    #: The firing that created the run, `metadata.schedule` as on a task
+    #: (§2.7): `{schedule_id, firing_id, slot, type}`. Stored under
+    #: `metadata.schedule`, the path `IssueRuns.for_firing` queries.
+    schedule: dict[str, Any] | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -1916,6 +2180,10 @@ class IssueRun:
             "hold": self.hold,
             "on_behalf_of": self.on_behalf_of,
             "last_writeback_at": self.last_writeback_at,
+            "approval_hold": dict(self.approval_hold) if self.approval_hold is not None else None,
+            "merge_approval": self.merge_approval,
+            "merge_approved": dict(self.merge_approved) if self.merge_approved is not None else None,
+            "metadata": {"schedule": dict(self.schedule)} if self.schedule is not None else {},
         }
 
     @classmethod
@@ -1996,6 +2264,16 @@ class IssueRun:
                 data["last_writeback_at"]
                 if isinstance(data.get("last_writeback_at"), datetime) else None
             ),
+            approval_hold=(
+                dict(data["approval_hold"]) if isinstance(data.get("approval_hold"), Mapping)
+                else None
+            ),
+            merge_approval=_opt_str(data.get("merge_approval")),
+            merge_approved=(
+                dict(data["merge_approved"]) if isinstance(data.get("merge_approved"), Mapping)
+                else None
+            ),
+            schedule=_schedule_mark(data.get("metadata")),
         )
 
     def to_api(self) -> dict[str, Any]:
@@ -2106,7 +2384,27 @@ class IssueRun:
             ),
             "hold": self.hold,
             "on_behalf_of": self.on_behalf_of,
+            # §4.4-§4.5: the hard-stop hold and who may decide it, whether
+            # the merge waits for an approval, the one given, and the firing
+            # that made the run.
+            "approval_hold": (
+                None if self.approval_hold is None else {
+                    **self.approval_hold, "set_at": _iso(self.approval_hold.get("set_at")),
+                }
+            ),
+            "merge_approval": self.merge_approval,
+            "merge_approved": (
+                None if self.merge_approved is None else {
+                    **self.merge_approved, "at": _iso(self.merge_approved.get("at")),
+                }
+            ),
+            "schedule": None if self.schedule is None else dict(self.schedule),
         }
+
+
+def _schedule_mark(metadata: Any) -> dict[str, Any] | None:
+    mark = metadata.get("schedule") if isinstance(metadata, Mapping) else None
+    return dict(mark) if isinstance(mark, Mapping) else None
 
 
 def _opt_int(value: Any) -> int | None:
@@ -2158,6 +2456,9 @@ PATCHABLE_FIELDS: frozenset[str] = frozenset({
     # The sweeper's bookkeeping: why an auto approval waits (cleared when it
     # stops waiting), and when the write-back last wrote to the issue.
     "hold", "last_writeback_at",
+    # §4.4-§4.5 (lane S5): the hard-stop hold, only ever widened
+    # (`widen_hold`), and the merge approval given at one head.
+    "approval_hold", "merge_approved",
 })
 
 
@@ -2322,6 +2623,45 @@ class IssueRuns:
             and row.issue.repository.lower() == ref.repository.lower()
         ]
         rows.sort(key=lambda r: (r.created_at, r.id), reverse=True)
+        return rows
+
+    def planned(self, tenant_id: str, *, limit: int) -> tuple[list[IssueRun], bool]:
+        """Up to `limit` of the tenant's PLANNED runs, oldest first, and whether
+        there were more: what the approvals inbox projects (docs/schedules.md
+        §4.5). Equality filters only (`tenant_id`, `state`), so no composite
+        index; ordered here, and filtered again in the application."""
+        query = (
+            self._db.collection(RUNS_COLLECTION)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("state", "==", RunState.PLANNED.value))
+            .limit(limit + 1)
+        )
+        rows = [IssueRun.from_firestore(snap.to_dict()) for snap in query.stream()]
+        rows = [row for row in rows if row.tenant_id == tenant_id and row.state == RunState.PLANNED]
+        rows.sort(key=lambda r: (r.created_at, r.id))
+        return rows[:limit], len(rows) > limit
+
+    def for_firing(self, tenant_id: str, firing_id: str, *, limit: int = 50) -> list[IssueRun]:
+        """The tenant's runs a schedule firing made (`metadata.schedule.firing_id`).
+
+        What a retried firing reads before it creates a run, so a run created
+        and not recorded is adopted, never created twice (§2.2) -- the lookup
+        S2 left to this lane. An equality filter on the tenant and the firing
+        id, served by the automatic single-field indexes, and filtered again
+        in the application, as every read is.
+        """
+        query = (
+            self._db.collection(RUNS_COLLECTION)
+            .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+            .where(filter=FieldFilter("metadata.schedule.firing_id", "==", firing_id))
+            .limit(limit)
+        )
+        rows = [IssueRun.from_firestore(snap.to_dict()) for snap in query.stream()]
+        rows = [
+            row for row in rows
+            if row.tenant_id == tenant_id and (row.schedule or {}).get("firing_id") == firing_id
+        ]
+        rows.sort(key=lambda r: (r.created_at, r.id))
         return rows
 
     def transition(
