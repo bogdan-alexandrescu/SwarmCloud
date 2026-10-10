@@ -185,10 +185,10 @@ from .checkpoint import (
 from .config import WorkerConfig
 from .control import (
     ARCHIVE_DIGEST_RE,
-    CHECKPOINT_DIGESTS_FIELD,
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     ControlPlane,
     ControlSignals,
+    recorded_checkpoint_digests,
 )
 from .errors import (
     CheckpointError,
@@ -4166,13 +4166,15 @@ class Worker:
             refuse(reason="the recording attempt is another tenant's")
             return None
         listed = attempt.get("checkpoints") if attempt else None
-        digests = attempt.get(CHECKPOINT_DIGESTS_FIELD) if attempt else None
+        # `Attempt.checkpoint_sha256` in its typed shape (contract request 51).
+        # Empty when the document has none -- written before #348 -- which is
+        # "no digest recorded", so the retry starts clean.
+        digests = recorded_checkpoint_digests(attempt)
         if (
             attempt is None
             or attempt.get("task_id") != self.cfg.task_id
             or not isinstance(listed, list)
             or record.checkpoint_id not in listed
-            or not isinstance(digests, dict)
             or digests.get(record.checkpoint_id) != record.archive_sha256
         ):
             self.log.error(
@@ -4180,8 +4182,7 @@ class Worker:
                 attempt_id=record.attempt_id,
                 checkpoint_id=record.checkpoint_id,
                 attempt_document=attempt is not None,
-                digest_recorded=isinstance(digests, dict)
-                and record.checkpoint_id in digests,
+                digest_recorded=record.checkpoint_id in digests,
             )
             refuse(reason="no attempt document of this task lists the checkpoint")
             return None
@@ -12194,11 +12195,12 @@ def _private_key_spans(text: str) -> list[tuple[int, int]]:
         if _PEM_HINT not in piece:
             return
         pos = 0
+        # An orphan END is a key's tail even with nothing before it to take
+        # (`_mask_orphan_ends`, #361 box 82): its span may be empty.
         for marker in _PEM_END.finditer(piece):
             start = _tail_start(piece, marker.start(), pos)
-            if start < marker.start():
-                spans.append((low + start, low + marker.start()))
-                pos = marker.start()
+            spans.append((low + start, low + marker.start()))
+            pos = marker.start()
 
     pos = search = 0
     while True:
