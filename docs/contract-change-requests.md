@@ -59,7 +59,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 48 | `profiles.py`: no runner profile runs `agent-runtime-indexer`, so index runs cannot reach the repo-index toolchain (filed with #625, functionality wave 8, lane IMG) | open |
 | 49 | `states.py`: a merge step waiting for its pull request's checks has no park reason (docs/merge-step.md 2026-10-06 request (A), lane MS1) | accepted by the owner 2026-10-06 (#352), to be applied by lane MS2 |
 | 50 | `profiles.py` / `models.py`: retire the disabled `single-pr` catalogue entries (docs/merge-step.md 2026-10-06 request (B), lane MS1) | open; removal decided by the owner 2026-10-06 for a cleanup lane |
-| 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | proposed |
+| 51 | `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to (#350, part of S0 #347) | ACCEPTED by the owner 2026-10-09 and APPLIED by the pull request that adds this line (proposed 2026-10-07, then accepted 2026-10-09) |
 | 52 | `states.py`: a step the control plane finishes without a worker cannot end SUCCEEDED from PARKED (#748) | ACCEPTED by the owner 2026-10-09 and APPLIED by the pull request that adds this line (proposed (owner 2026-10-07: not accepted for now), then accepted 2026-10-09) |
 | 53 | `profiles.py`: run the `claude-code` profile on GKE Autopilot, whose fresh-node start p90 is 120 s against Cloud Run's 212 s (#363, #625, #667; the owner's pre-set rule of 2026-10-07 met) | APPLIED 2026-10-08 (accepted by the owner 2026-10-07, with conditions; switched after request 55's canary passed 5/5) |
 | 54 | `models.py` / `specsign.py`: a task does not say which forge credential it uses, or whether it may write (request E of docs/onboarding.md §3.3, part of #780) | APPLIED 2026-10-07 (accepted by the owner 2026-10-07) |
@@ -8957,10 +8957,37 @@ rows for values nothing writes.
 
 ## 51. `models.py`: `Attempt` does not type `checkpoint_sha256`, the digest a retry binds its restore to
 
-**Status:** proposed, filed 2026-10-07 for #350, the Firestore document-shape
-record of #348 (the fix for S0 #347). A request, not a change: nothing under
-`apps/common/swarm_common/` is edited by it, and the owner accepts or refuses
-it.
+**Status:** ACCEPTED by the owner 2026-10-09 and APPLIED by the pull request
+that adds this line. History: proposed, filed 2026-10-07 for #350, the
+Firestore document-shape record of #348 (the fix for S0 #347), as a request
+that edited nothing; then accepted 2026-10-09, in the operator session, whose
+brief is the record. This edits `apps/common/swarm_common/models.py`, which is
+frozen, and is recorded here as such.
+
+### What was applied
+
+* `Attempt.checkpoint_sha256: dict[str, str] = field(default_factory=dict)`,
+  after `checkpoints`, with the comment the request below gives, word for word.
+* `agent_worker.control.CHECKPOINT_DIGESTS_FIELD` is looked up on the
+  dataclass (`Attempt.__dataclass_fields__["checkpoint_sha256"].name`), so a
+  rename in the contract fails the worker's import rather than a retry's
+  restore. `agent_worker.control.recorded_checkpoint_digests` reads the map
+  in its typed shape, keeping only `str -> str` entries, and both the writer
+  (`ControlPlane.record_checkpoint`) and the reader
+  (`Worker._recorded_checkpoint`) go through it. A missing or malformed map is
+  the empty map: "no digest recorded", and the retry starts clean.
+* `swarm_api.codec.attempt_from_dict` reads it, keeping only `str -> str`
+  entries. `attempt_to_api` does not serve it.
+* `tests/unit/worker/test_checkpoint_digest_contract.py` holds the three
+  together: the worker's key is the frozen field of the requested type and
+  default; what `record_checkpoint` writes decodes identically through both
+  readers; a missing digest is the empty map to both; the API response does
+  not carry it. `tests/unit/worker/test_no_planted_restore.py` adds a retry of
+  an attempt document with no map, which starts clean.
+  `scripts/lib/check-contract-parity.sh` restates no attempt field, so it is
+  unchanged.
+* No migration, as the request says: a pre-#348 document decodes with the
+  empty default.
 
 ### What is true today
 

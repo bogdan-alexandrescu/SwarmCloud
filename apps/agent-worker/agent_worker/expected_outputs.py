@@ -114,7 +114,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Collection, Iterable, Mapping, Sequence
 
 #: The key under `task.metadata`, and the key `input.json` carries it under.
 #:
@@ -612,24 +612,43 @@ def nothing_to_work_on(
     branch_from: Sequence[str],
     integrates: Sequence[str],
     left: Mapping[str, str | None],
+    builds_on: str = "",
+    read_only: Collection[str] = (),
 ) -> list[str]:
     """The upstream task ids whose missing change leaves this step nothing to
     do, in the order met; empty when the step runs.
 
-    `left` is `left_nothing` of each upstream read. A step NEEDS an upstream's
-    change when it:
+    `left` is `left_nothing` of each upstream read. A step READS an
+    upstream's change when it:
 
       * stages that upstream's `swarm-work.patch` (`input_from`) -- or stages
         anything at all from a SKIPPED upstream, which wrote nothing;
-      * starts from that upstream's branch (`branch_from`: `builds_on`, a
-        `single-pr` author, a merge step's pull request), which a step with
-        no change never pushed;
-      * integrates it, and every upstream it integrates left nothing. An
-        integrator with one contributor that changed something still runs,
-        and merges only that one (`Worker._integrates_with_changes`).
+      * starts from that upstream's branch: `builds_on`, or `branch_from` (a
+        `single-pr` author, a merge step's pull request);
+      * integrates it (`integrates`, given only while integration is
+        pending), less the `read_only` contributors -- a review that writes
+        only `verdict.json` -- which never had a change to merge.
+
+    THE STEP IS SKIPPED ONLY WHEN NONE OF THE CHANGES IT READS EXISTS (#978).
+    Written for one implementer, the rule skipped a step when ANY upstream it
+    read left nothing; an issue run with two implement steps, whose review
+    and integrator build on the LAST one, then stranded the other's pushed
+    branch whenever the last changed nothing. So:
+
+      * a missing change is reported only while no other changed input
+        exists: a patch staged from an upstream that changed something, or,
+        for an integrator, a contributor that did;
+      * a `builds_on` upstream that left nothing does not, on its own, skip a
+        step that has such an input: the worker starts it from the nearest
+        ancestor along `builds_on` that pushed, else the default branch
+        (`Worker._builds_on_base`);
+      * `branch_from` keeps the old rule: a `single-pr` reader or a merge has
+        exactly one branch to read, and nothing else stands in for it.
 
     A step that stages only another file from a `no_change` upstream -- the
-    verification it ran -- still runs: that file exists.
+    verification it ran -- still runs: that file exists. An integrator with
+    every contributor unchanged is skipped as before, which issueci's
+    `already_on_main` reads (#646).
     """
     needed: list[str] = []
 
@@ -637,16 +656,36 @@ def nothing_to_work_on(
         if task_id not in needed:
             needed.append(task_id)
 
+    changed = False
     for task_id, filename in input_from.items():
         what = left.get(task_id)
-        if what == SKIPPED_SUMMARY_KEY or (
-            what == NO_CHANGE_SUMMARY_KEY and filename == WORK_PATCH_NAME
-        ):
+        if unstaged_left_nothing(filename, what):
             add(task_id)
+        elif what is None and filename == WORK_PATCH_NAME:
+            changed = True
+    single_branch = False
     for task_id in branch_from:
         if left.get(task_id) is not None:
             add(task_id)
-    if integrates and all(left.get(task_id) is not None for task_id in integrates):
-        for task_id in integrates:
-            add(task_id)
+            single_branch = True
+    if builds_on and left.get(builds_on) is not None:
+        add(builds_on)
+    if integrates:
+        if any(left.get(t) is None and t not in read_only for t in integrates):
+            changed = True
+        elif all(left.get(task_id) is not None for task_id in integrates):
+            for task_id in integrates:
+                add(task_id)
+    if changed and not single_branch:
+        return []
     return needed
+
+
+def unstaged_left_nothing(filename: str, left: str | None) -> bool:
+    """True when a declared input from an upstream that `left` nothing does
+    not exist to stage: its `swarm-work.patch` (a `no_change` step wrote
+    none), or anything from a SKIPPED step (it wrote nothing). A step that
+    runs because another of its inputs changed stages the rest (#978)."""
+    return left == SKIPPED_SUMMARY_KEY or (
+        left == NO_CHANGE_SUMMARY_KEY and filename == WORK_PATCH_NAME
+    )

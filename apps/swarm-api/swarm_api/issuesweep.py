@@ -18,6 +18,8 @@ issue needs (`issueruns.NotReadyVerdict`), the run ends holding nothing
 (invariant 1), and the reason is posted on the issue. So the sweep only skips
 what it can decide without reading the issue's text:
 
+    author      the issue was opened by someone who is not an owner, an
+                organisation member or a collaborator of the repository
     label       labelled `epic`, `blocked` or `security`
     excluded    named in the tenant's exclusion list, by number or label
     live_run    the issue already has a live run
@@ -99,6 +101,21 @@ SWEEP_FIX_ROUNDS = 2
 
 #: Labels never swept, whatever the tenant's exclusion list says.
 SKIP_LABELS = frozenset({"epic", "blocked", "security"})
+
+#: The only `author_association` values whose issues the sweep starts work
+#: for: the repository's owner, a member of its organisation, a collaborator.
+#: Security review 2026-10-09 (docs/security/review-2026-10-09.md, item 1).
+#: Every swept run is `plan_approval: auto` and `auto_merge: true` and runs
+#: with the tenant's forge credential, so without this an issue ANYBODY opened
+#: on a public registered repository became an agent run holding that
+#: credential and a merged change no person approved -- the planner's
+#: readiness verdict and the review step are an agent reading the outsider's
+#: own text, not a gate against it. CONTRIBUTOR (someone who once had a commit
+#: merged), FIRST_TIME_CONTRIBUTOR, FIRST_TIMER, MANNEQUIN and NONE hold no
+#: write access, and an association GitHub did not send is not proof of one.
+#: A person may still start a run for any issue from the console, where they
+#: see the plan before approving it, or approve it automatically by choice.
+TRUSTED_AUTHORS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 
 #: The tenant document's field, beside the frozen `Tenant` type's fields
 #: rather than one of them (rule 1), as `findings_epic` is.
@@ -287,6 +304,9 @@ def skip_reason(
     through. `live` is keyed by (lower-cased `owner/repo`, number); `claimed`
     maps an issue number to the open pull request that claims it.
     """
+    association = (issue.author_association or "").strip().upper()
+    if association not in TRUSTED_AUTHORS:
+        return f"author: {association or 'unknown'}"
     labels = {label.lower() for label in issue.labels}
     never = sorted(labels & SKIP_LABELS)
     if never:
