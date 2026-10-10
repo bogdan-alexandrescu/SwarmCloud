@@ -328,5 +328,11 @@ def test_every_route_is_covered() -> None:
         "capacity/catalogue",
         "admin/limits",
         "admin/counts",
+        # Automate (docs/schedules.md §6.1, SD1): the section added 2026-10-08,
+        # its two pages, and its admin view beside Tenants. Named so that the
+        # literal `automate` entry is held to parse, not merely to exist.
+        "automate/schedules",
+        "automate/approvals",
+        "admin/schedules",
     ):
         assert expected in {r[0] for r in ROUTES}, f"{expected} is not in the route table"

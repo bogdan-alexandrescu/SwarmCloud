@@ -66,6 +66,12 @@ export const FIXED: Readonly<Record<string, string>> = {
   'admin/counts': '/admin/counts',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
   'admin/people': '/admin/people',
+  // docs/schedules.md §6.1 (SD1): the Automate section's two pages, and the
+  // admin cross-tenant view beside Tenants. One schedule is `/schedules/<id>`,
+  // one inbox item `/approvals/<id>` (below).
+  'automate/schedules': '/schedules',
+  'automate/approvals': '/approvals',
+  'admin/schedules': '/admin/schedules',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }
@@ -84,6 +90,7 @@ const FIXED_BACK: Readonly<Record<string, string>> = Object.fromEntries(
 export const SECTION_ROOTS: Readonly<Record<string, string>> = {
   '/work': 'work/running',
   '/capacity': 'capacity/pools',
+  '/automate': 'automate/schedules',
   '/admin': 'admin/limits',
 }
 
@@ -148,6 +155,14 @@ export const RUN_PANES: readonly string[] = ['changes']
  * variant 5). A workflow's carries the same two through its filters.
  */
 const RUN_PANE_QUERY: readonly string[] = ['step', 'file']
+
+/**
+ * A schedule's tabs that are a path segment: `/schedules/<id>/<tab>`. History
+ * is the bare id (docs/schedules.md §6.2: run history is the first tab and
+ * the reason to open the page). `edit` is the edit form, `/schedules/new` the
+ * create form.
+ */
+export const SCHEDULE_TABS: readonly string[] = ['budget', 'gate', 'settings', 'audit']
 
 /** A repository's tabs that are a path segment: `/repositories/<id>/<tab>`; Overview is the bare id. */
 export const REPO_TABS: readonly string[] = ['graph', 'impact', 'test-map', 'hot-spots', 'index-runs', 'settings', 'used-by']
@@ -219,6 +234,24 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     // The run's page: the worker's issue comment links here (swarm_api
     // `run_console_url`, held to this line by test_issue_writeback.py).
     if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}`
+  }
+  // Automate › Schedules (§6.2): one schedule, its tab, or a form, on the query.
+  if (bare === 'automate/schedules' && query !== '') {
+    const q = new URLSearchParams(query)
+    const id = q.get('schedule')
+    const page = q.get('page')
+    if (page === 'new') return '/schedules/new'
+    if (id !== null && id !== '') {
+      const base = `/schedules/${encodeURIComponent(id)}`
+      if (page === 'edit') return `${base}/edit`
+      const tab = q.get('tab')
+      return tab !== null && SCHEDULE_TABS.includes(tab) ? `${base}/${tab}` : base
+    }
+  }
+  // Automate › Approvals: one item rides on the query as `item=<id>`.
+  if (bare === 'automate/approvals' && query !== '') {
+    const item = new URLSearchParams(query).get('item')
+    if (item !== null && item !== '') return `/approvals/${encodeURIComponent(item)}`
   }
   // Work › Repositories (repositories.html): the page rides on the tab's query.
   if (bare === 'work/repositories' && query !== '') {
@@ -341,6 +374,19 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
       if (v !== null) extra[k] = v
     }
     return at({ repo, tab, ...extra })
+  }
+
+  if (seg[0] === 'schedules' && seg.length >= 2) {
+    const at = (q: Record<string, string>) => plain(`automate/schedules?${new URLSearchParams(q).toString()}`)
+    if (seg[1] === 'new' && seg.length === 2) return at({ page: 'new' })
+    const id = decodeURIComponent(seg[1] ?? '')
+    const tail = seg[2]
+    if (tail === 'edit') return at({ schedule: id, page: 'edit' })
+    return tail !== undefined && SCHEDULE_TABS.includes(tail) ? at({ schedule: id, tab: tail }) : at({ schedule: id })
+  }
+
+  if (seg[0] === 'approvals' && seg.length >= 2) {
+    return plain(`automate/approvals?${new URLSearchParams({ item: decodeURIComponent(seg.slice(1).join('/')) }).toString()}`)
   }
 
   if (seg[0] === 'help' && seg.length >= 2) {

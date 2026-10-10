@@ -1,0 +1,116 @@
+/* ==========================================================================
+   AUTOMATE -- Schedules, one schedule, its form, Approvals, Admin › Schedules,
+   Overview's "Waiting on you" card and the spine's badge (docs/schedules.md
+   §6; lane S7). Classes are `au-`.
+
+   The docs/web-ui rules: theme tokens and the sky-blue brand, the 12px
+   floor, sentence case, no letter-spacing. Each screen has a 390px frame:
+   below 720px a table row becomes a card of label/value lines, and the inbox's
+   split list and detail (variant B) becomes one column (variant A).
+   ========================================================================== */
+
+/* ---- the spine's badge: pending approvals on the Automate item ----------- */
+.sk-bdg {
+  position: absolute; top: 2px; right: 8px; min-width: 18px; height: 18px; padding: 0 5px;
+  border-radius: 9px; background: #f5c451; color: #06101e;
+  font: 600 var(--t-micro)/var(--lh-flush) var(--mono); text-align: center; display: inline-grid; place-items: center;
+}
+
+/* ---- shared ---------------------------------------------------------------- */
+.au-list, .au-detail, .au-edit { display: grid; gap: 12px; min-width: 0; }
+.au-bar { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 12px; }
+.au-field { display: flex; flex-direction: column; gap: 4px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.au-field select { min-height: 32px; border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--surface); color: var(--text); font-size: var(--t-meta); padding: 0 8px; }
+.au-dim { color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.au-num { font-variant-numeric: tabular-nums; }
+.au-spend { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0 4px; }
+.au-bad { color: var(--s-bad); }
+.au-grow { flex: 1 1 auto; }
+.au-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.au-said { flex-basis: 100%; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.au-state { white-space: nowrap; }
+.au-state.is-paused, .au-state.is-auto_paused { color: var(--s-warn); }
+.au-state.is-disabled { color: var(--text-dim); }
+.au-pend {
+  margin-left: 6px; padding: 0 6px; border-radius: 9px; background: var(--surface-2); color: var(--s-warn);
+  font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap;
+}
+.au-tag {
+  padding: 0 6px; border: 1px solid var(--line); border-radius: 9px; color: var(--text-dim);
+  font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap;
+}
+.au-dl { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.au-dl > dt { color: var(--text-dim); }
+.au-dl > dd { margin: 0; min-width: 0; overflow-wrap: anywhere; color: var(--text); }
+
+/* ---- the tables: Schedules, one schedule's history, Admin › Schedules ----- */
+.au-table-wrap { overflow-x: auto; min-width: 0; }
+.au-table { width: 100%; border-collapse: collapse; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.au-table th {
+  text-align: left; font-weight: 500; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro);
+  padding: 6px 8px; border-bottom: 1px solid var(--line); white-space: nowrap;
+}
+.au-table td { padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--text); min-width: 0; overflow-wrap: anywhere; }
+.au-name { font-weight: 600; }
+.au-row-acts { display: flex; flex-wrap: wrap; gap: 6px; }
+.au-work { display: flex; flex-wrap: wrap; gap: 2px 8px; }
+
+/* ---- built-in rows (SD7) ---------------------------------------------------- */
+.au-builtin > h2 { margin: 8px 0 2px; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; color: var(--text); }
+.au-builtin-rows { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 0; }
+.au-builtin-row {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-height: 32px; padding: 4px 0;
+  border-top: 1px solid var(--line); font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+.au-builtin-row > a { margin-left: auto; }
+
+/* ---- one schedule ----------------------------------------------------------- */
+.au-tabs { margin: 4px 0 0; }
+.au-switch .au-acts { margin: 8px 0; }
+.au-params > summary { cursor: pointer; color: var(--sk-ac); font-size: var(--t-meta); line-height: var(--lh-meta); }
+.au-params pre { margin: 6px 0 0; padding: 8px 10px; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-ctl); background: var(--surface-2); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: pre-wrap; }
+.au-audit { margin: 0; padding-left: 18px; display: grid; gap: 4px; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+
+/* ---- the form ----------------------------------------------------------------- */
+.au-form { display: grid; gap: 12px; min-width: 0; max-width: 880px; }
+.au-form .c-field { margin-bottom: 8px; }
+.au-scope { display: grid; gap: 4px; margin: 0; padding: 0; border: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.au-repos { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 2px 12px; }
+.au-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.au-when, .au-gate { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px 12px; }
+.au-json { min-height: 96px; padding: 6px 10px; }
+.au-preview { font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.au-preview > p { margin: 0 0 4px; }
+.au-next { border-collapse: collapse; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.au-next th, .au-next td { text-align: left; padding: 2px 16px 2px 0; }
+.au-next th { color: var(--text-dim); font-weight: 500; font-size: var(--t-micro); line-height: var(--lh-micro); }
+
+/* ---- the inbox: split list and detail (B) on a desktop ------------------------ */
+.au-inbox { display: grid; grid-template-columns: minmax(260px, 2fr) minmax(0, 3fr); gap: 16px; min-width: 0; }
+.au-inbox-list { display: grid; gap: 8px; align-content: start; min-width: 0; }
+.au-items { margin: 0; padding: 0; list-style: none; display: grid; gap: 0; }
+.au-item > a {
+  display: grid; gap: 2px; padding: 8px 10px; border-bottom: 1px solid var(--line); border-radius: var(--r-ctl);
+  color: var(--text); text-decoration: none; font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.au-item.is-on > a { background: var(--surface-2); }
+.au-item > a:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.au-item-s { overflow-wrap: anywhere; }
+.au-kind { font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--sk-ac); }
+.au-kind.is-hold { color: var(--s-warn); }
+.au-inbox-detail { min-width: 0; }
+.au-decide .c-field { margin-top: 8px; }
+
+/* ---- the phone frame ------------------------------------------------------- */
+@media (max-width: 719px) {
+  /* Each row a card: the head is hidden and each cell says its own label. */
+  .au-table thead { display: none; }
+  .au-table, .au-table tbody, .au-table tr, .au-table td { display: block; width: 100%; }
+  .au-table tr { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .au-table td { border: 0; padding: 2px 0; }
+  .au-table td::before { content: attr(data-label) ' · '; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+  /* The inbox is one column (A): the list, then the open item under it. */
+  .au-inbox { grid-template-columns: minmax(0, 1fr); }
+  .au-dl { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .au-dl > dd { margin-bottom: 6px; }
+}

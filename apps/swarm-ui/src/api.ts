@@ -5588,3 +5588,296 @@ export async function typedRepoId(tenantId: string, repository: string): Promise
   const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
   return `repo_${hex.slice(0, 16)}`
 }
+
+// ---------------------------------------------------------------------------
+// Automate › Schedules and Approvals, and Admin › Schedules (docs/schedules.md
+// §6, §7.1; lane S7). The routes are swarm-api's routes/schedules.py and
+// routes/approvals.py (lanes S3 and S5). These are their shapes as served:
+// `schedule_to_api`, `firing_to_api`, `_admin_row`, `approvals.to_api` and
+// `project_run`. A field this client does not find is drawn as a dash with
+// its reason, never as a zero.
+//
+// NO FIXTURES, as for Repositories: the fixture build invents no schedules and
+// answers every one of these routes as not served.
+// ---------------------------------------------------------------------------
+
+export type ScheduleState = 'enabled' | 'paused' | 'auto_paused' | 'disabled'
+export type GateRun = 'auto' | 'approve'
+export type GateMerge = 'off' | 'approve' | 'auto'
+
+/** `gate` as stored: resolved, defaults filled in (§4.2). */
+export interface ScheduleGate {
+  run: GateRun
+  plan: GateRun
+  merge: GateMerge
+  /** `members`, `owner_only`, or a list of members (§4.6). */
+  approvers: 'members' | 'owner_only' | string[]
+  approval_ttl_hours: number
+}
+
+/** Today's reported spend in the schedule's zone; `partial` when an attempt never reported (§4.3). */
+export interface SpendToday {
+  day: string
+  reported_usd: number
+  unreported_attempts: number
+  coverage: 'complete' | 'partial'
+}
+
+export interface ScheduleLastFiring {
+  firing_id?: string
+  slot?: string | null
+  outcome?: string | null
+  ended_at?: string | null
+}
+
+/** One `schedules/` document as `schedule_to_api` serves it (§1.1). */
+export interface Schedule {
+  schedule_id: string
+  tenant_id: string
+  name: string
+  type: string
+  scope: { mode: 'repos' | 'all' | 'platform'; repo_ids?: string[] }
+  cron: string
+  timezone: string
+  params: Record<string, unknown>
+  gate: ScheduleGate
+  budget: { per_run_usd?: number | null; per_day_usd?: number | null; max_concurrent?: number | null }
+  policy: { overlap?: string; catch_up?: string; jitter?: boolean; dry_run?: boolean }
+  state: ScheduleState
+  pause: { by?: string; at?: string; reason?: string | null; code?: string | null } | null
+  owner: string
+  created_by?: string
+  updated_by?: string
+  updated_at?: string
+  next_run_at: string | null
+  last_firing: ScheduleLastFiring | null
+  consecutive_failures?: number
+  revision: number
+  /** The cron in words, from the tick's own parser; null when it does not parse. */
+  words: string | null
+  /** The risk tier (§4.1), or null when the type is no longer in the catalogue. */
+  tier: string | null
+  spend_today: SpendToday
+  pending_approvals: number
+}
+
+/** One `schedule_firings/` document (§1.2). */
+export interface ScheduleFiring {
+  firing_id: string
+  schedule_id: string
+  tenant_id: string
+  type?: string
+  slot: string | null
+  fired_at: string | null
+  trigger: 'cron' | 'catch_up' | 'run_now' | 'queued' | string
+  state: string
+  work?: { kind: string; id: string; repo_id?: string | null }[]
+  skip?: { code: string; detail?: string | null } | null
+  outcome?: string | null
+  cost?: { reported_usd?: number; unreported_attempts?: number } | null
+  approval_id?: string | null
+}
+
+export interface ScheduleAuditEntry {
+  action: string
+  by: string
+  at: string
+  detail?: Record<string, unknown>
+}
+
+/** One row of `GET /v1/schedule-types` (`scheduletypes.describe`). */
+export interface ScheduleType {
+  name: string
+  description: string
+  default_gate: Partial<ScheduleGate>
+  floor_gate: Partial<ScheduleGate>
+  min_interval_minutes: number
+  scopes: string[]
+  creatable_scopes: string[]
+  available: boolean
+  disabled_reason: string | null
+  params_schema?: Record<string, unknown>
+}
+
+/** `POST /v1/schedules:preview` (§6.3), from the tick's own parser. */
+export interface SchedulePreview {
+  words: string
+  next: string[]
+  min_gap_minutes: number
+  refusal: { code: string; reason?: string; message?: string } | null
+}
+
+/** An inbox item: an `approvals/` record, or a PLANNED issue run projected into it (§4.5). */
+export interface ApprovalItem {
+  approval_id: string
+  tenant_id: string
+  kind: 'run' | 'plan' | 'merge' | 'proposal' | 'spec' | 'hold'
+  subject: { schedule_id?: string | null; firing_id?: string | null; run_id?: string | null; pr?: number | null; issue?: string | null }
+  digest: unknown
+  summary: string
+  approvers: unknown
+  state: 'pending' | 'approved' | 'rejected' | 'expired' | 'superseded'
+  requested_at: string | null
+  expires_at: string | null
+  hold?: { code?: string; approvers?: string; matched?: unknown } | null
+  projected?: boolean
+}
+
+/** One row of `GET /v1/admin/schedules` (`_admin_row`): never the parameters, gate or spec (§5.3). */
+export interface AdminScheduleRow {
+  schedule_id: string
+  tenant_id: string
+  name: string
+  type: string
+  tier: string | null
+  cron: string
+  timezone: string
+  words: string | null
+  next_run_at: string | null
+  last_outcome: string | null
+  last_firing_at: string | null
+  spend_today: SpendToday
+  pending_approvals: number
+  state: ScheduleState
+  pause: Schedule['pause']
+  owner: string
+}
+
+export interface AdminSchedules {
+  schedules: AdminScheduleRow[]
+  next_page_token: string | null
+  tick: { window_minutes: number; ticks: number; errors: number; fired: number; max_lateness_seconds: number | null } | null
+}
+
+/** The body of a create or an edit: by type NAME, never an image or a command (invariant 10). */
+export interface ScheduleBody {
+  name?: string
+  type?: string
+  scope?: { mode: 'repos' | 'all'; repo_ids?: string[] }
+  cron?: string
+  timezone?: string
+  params?: Record<string, unknown>
+  gate?: Partial<Omit<ScheduleGate, 'merge'>> & { merge?: 'off' | 'approve' }
+  revision?: number
+  client_request_id?: string
+}
+
+function schedNotServed<T>(target: ApiRoute, frame = false): Result<T> {
+  // The spine's badge read is the frame's, made on every page: noting it would
+  // put a failed row in API reads on a build that never asked the API.
+  if (!frame) noteFixtureProbe(target, 0, false)
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no schedule or approval routes.' },
+  }
+}
+
+async function schedRead<T>(target: ApiRoute, isEmpty: (d: T) => boolean = () => false, options: { frame?: boolean } = {}): Promise<Result<T>> {
+  if (USE_FIXTURES) return schedNotServed<T>(target, options.frame === true)
+  return read<T>(target, isEmpty, options)
+}
+
+async function schedWrite<T>(target: ApiRoute, method: 'POST' | 'PATCH' | 'DELETE', body?: unknown): Promise<Result<T>> {
+  if (USE_FIXTURES) return schedNotServed<T>(target)
+  return write(target, method, body) as Promise<Result<T>>
+}
+
+/** `GET /v1/schedules`: the tenant's schedules, by name. Empty is a measured none. */
+export async function loadSchedules(): Promise<Result<{ schedules: Schedule[]; tenant_id: string }>> {
+  return schedRead(route('/v1/schedules'), (d) => d.schedules.length === 0)
+}
+
+/** `GET /v1/schedules/{id}`: one schedule with its last 50 firings. */
+export async function loadSchedule(id: string): Promise<Result<{ schedule: Schedule; firings: ScheduleFiring[] }>> {
+  return schedRead(route('/v1/schedules/{id}', { id }))
+}
+
+/** `GET /v1/schedules/{id}/audit`: newest first. */
+export async function loadScheduleAudit(id: string): Promise<Result<{ audit: ScheduleAuditEntry[] }>> {
+  return schedRead(route('/v1/schedules/{id}/audit', { id }))
+}
+
+/** `GET /v1/schedule-types`: the types this caller may create. */
+export async function loadScheduleTypes(): Promise<Result<{ types: ScheduleType[] }>> {
+  return schedRead(route('/v1/schedule-types'))
+}
+
+/** `POST /v1/schedules:preview`: words and the next five firings, from the tick's own parser. */
+export async function previewSchedule(cron: string, timezone: string, type: string | null): Promise<Result<{ preview: SchedulePreview }>> {
+  const body: Record<string, string> = { cron, timezone }
+  if (type !== null && type !== '') body.type = type
+  return schedWrite(route('/v1/schedules:preview'), 'POST', body)
+}
+
+export async function createSchedule(body: ScheduleBody): Promise<Result<{ schedule: Schedule; created: boolean }>> {
+  return schedWrite(route('/v1/schedules'), 'POST', body)
+}
+
+/** `PATCH /v1/schedules/{id}`, carrying the revision it read (409 `schedule_changed` when stale). */
+export async function editSchedule(id: string, body: ScheduleBody): Promise<Result<{ schedule: Schedule }>> {
+  return schedWrite(route('/v1/schedules/{id}', { id }), 'PATCH', body)
+}
+
+/** The SD3 switch (§4.2): its own audited route; `confirm` is the typed name in a one-person tenant. */
+export async function setMergeMode(id: string, mode: 'approve' | 'auto', revision: number, confirm?: string): Promise<Result<{ schedule: Schedule }>> {
+  const body: Record<string, unknown> = { mode, revision }
+  if (confirm !== undefined) body.confirm = confirm
+  return schedWrite(route('/v1/schedules/{id}:merge-mode', { id }), 'POST', body)
+}
+
+export async function pauseSchedule(id: string, reason: string): Promise<Result<{ schedule: Schedule }>> {
+  return schedWrite(route('/v1/schedules/{id}:pause', { id }), 'POST', reason.trim() === '' ? {} : { reason: reason.trim() })
+}
+
+export async function resumeSchedule(id: string): Promise<Result<{ schedule: Schedule }>> {
+  return schedWrite(route('/v1/schedules/{id}:resume', { id }), 'POST', {})
+}
+
+/** `:run` makes a `run_now` firing, under the gate's `run` point. */
+export async function runScheduleNow(id: string, dryRun: boolean): Promise<Result<{ firing: ScheduleFiring }>> {
+  return schedWrite(route('/v1/schedules/{id}:run', { id }), 'POST', { dry_run: dryRun })
+}
+
+/** `DELETE` takes the typed name as `confirm` (§7.1). */
+export async function deleteSchedule(id: string, confirm: string): Promise<Result<{ deleted: string }>> {
+  return schedWrite(route('/v1/schedules/{id}', { id }, new URLSearchParams({ confirm })), 'DELETE')
+}
+
+/**
+ * `GET /v1/approvals`: the inbox, `approvals/` plus projected PLANNED runs.
+ * Empty is nothing waiting. `frame` for the spine's badge, which is not a
+ * figure on the page and so not one of the page's reads.
+ */
+export async function loadApprovals(options: { frame?: boolean } = {}): Promise<Result<{ approvals: ApprovalItem[]; tenant_id: string }>> {
+  return schedRead(route('/v1/approvals'), (d) => d.approvals.length === 0, options)
+}
+
+/** `GET /v1/approvals/{id}`: one item with what its kind needs to decide it. */
+export async function loadApproval(id: string): Promise<Result<{ approval: ApprovalItem; run?: unknown } & Record<string, unknown>>> {
+  return schedRead(route('/v1/approvals/{id}', { id }))
+}
+
+/** Approve THE DIGEST SHOWN; a changed subject is refused (`merge_changed`, `plan_changed`). */
+export async function approveItem(id: string, digest: unknown, confirm?: string): Promise<Result<{ approval: ApprovalItem }>> {
+  const body: Record<string, unknown> = { digest }
+  if (confirm !== undefined) body.confirm = confirm
+  return schedWrite(route('/v1/approvals/{id}:approve', { id }), 'POST', body)
+}
+
+/** A rejection needs a reason (§4.5). */
+export async function rejectItem(id: string, reason: string): Promise<Result<{ approval: ApprovalItem }>> {
+  return schedWrite(route('/v1/approvals/{id}:reject', { id }), 'POST', { reason })
+}
+
+/** `GET /v1/admin/schedules` (admin): every tenant's, with the tick's health (§5.3). */
+export async function loadAdminSchedules(): Promise<Result<AdminSchedules>> {
+  return schedRead(route('/v1/admin/schedules'), (d) => d.schedules.length === 0)
+}
+
+export async function adminScheduleAction(id: string, action: 'pause' | 'disable' | 'enable'): Promise<Result<{ schedule: AdminScheduleRow }>> {
+  // Spelled out per verb: test_runtimes_screen.py reads these literals, and a
+  // template hole in the verb matches no route the API declares.
+  const path = action === 'pause' ? '/v1/admin/schedules/{id}:pause'
+    : action === 'disable' ? '/v1/admin/schedules/{id}:disable' : '/v1/admin/schedules/{id}:enable'
+  return schedWrite(route(path, { id }), 'POST', {})
+}

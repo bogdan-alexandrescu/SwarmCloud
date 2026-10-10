@@ -902,7 +902,9 @@ export async function read<T>(
  */
 export async function write(
   target: ApiRoute,
-  method: 'POST' | 'PUT' | 'DELETE',
+  // PATCH for `PATCH /v1/schedules/{id}` (docs/schedules.md §7.1), the first
+  // route this client edits in place rather than replaces.
+  method: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   body?: unknown,
 ): Promise<Result<unknown>> {
   const startedAt = Date.now()

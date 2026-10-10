@@ -361,6 +361,10 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/quota'], floor: 160 },
   { name: 'admin', routes: ['admin/limits', 'admin/tenants', 'admin/counts', 'admin/people'], floor: 120 },
+  // Automate (docs/schedules.md §6.1) and its admin view. The fixture build
+  // serves no schedule route, so each draws its not-served panel inside the
+  // shell; 171 shapes were measured on 2026-10-10, and the floor sits under it.
+  { name: 'automate', routes: ['automate/schedules', 'automate/approvals', 'admin/schedules'], floor: 120 },
 ]
 
 /** The old single sweep's floor, which the slices' floors must add up to. */

@@ -45,10 +45,10 @@ describe('the rail names Help (#136)', () => {
 })
 
 describe('Admin pages do not repeat admin (#136)', () => {
-  it('reads Pool limits, Tenants, Platform counts and People with no admin mark', () => {
+  it('reads Pool limits, Tenants, Schedules, Platform counts and People with no admin mark', () => {
     shell('admin', 'limits')
     const pages = [...document.querySelectorAll('.sk-panel .sk-pk')]
-    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['Pool limits', 'Tenants', 'Platform counts', 'People'])
+    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['Pool limits', 'Tenants', 'Schedules', 'Platform counts', 'People'])
     for (const p of pages) {
       expect(p.textContent ?? '').not.toMatch(/admin/i)
       expect(p.querySelector('.sk-adm')).toBeNull()
@@ -71,7 +71,7 @@ describe('the admin mark sits only on an admin page among others (#136)', () => 
       SECTIONS.filter((s) => s.tabs.some((t) => !t.admin)).flatMap((s) => s.tabs.filter((t) => t.admin).map((t) => t.id)),
     )
     const marked = new Set(
-      (['work', 'capacity', 'admin'] as const).flatMap((sec) =>
+      (['work', 'automate', 'capacity', 'admin'] as const).flatMap((sec) =>
         PANEL_PAGES[sec].flatMap((p) => [
           ...(p.admin === true ? [p.key] : []),
           ...(p.kids ?? []).filter((k) => k.admin === true).map((k) => k.key),
@@ -86,7 +86,7 @@ describe('the admin mark sits only on an admin page among others (#136)', () => 
 describe('Help names each screen as the panel does (#131)', () => {
   it('uses the panel label for every screen an action opens', () => {
     const labels = new Map<string, string>()
-    for (const sec of ['work', 'capacity', 'admin'] as const) {
+    for (const sec of ['work', 'automate', 'capacity', 'admin'] as const) {
       for (const p of PANEL_PAGES[sec]) {
         labels.set(p.to, p.label)
         for (const k of p.kids ?? []) labels.set(k.to, k.label)

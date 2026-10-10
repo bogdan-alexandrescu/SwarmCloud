@@ -24,7 +24,7 @@ import { join } from 'node:path'
 import { act, render, screen } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { App, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, canonical, fromHash } from '../App'
+import { App, AUTOMATE, CAPACITY, INTERNAL_LINKS_MAY_NOT_USE_ALIASES, SECTIONS, WORK, canonical, fromHash } from '../App'
 import { HELP_ROUTE } from '../help'
 
 /**
@@ -103,6 +103,10 @@ describe('internal navigation links', () => {
     const ids = SECTIONS.map((s) => s.id)
     expect(ids, 'the WORK constant names no section').toContain(WORK)
     expect(ids, 'the CAPACITY constant names no section').toContain(CAPACITY)
+    // Automate (docs/schedules.md §6.1): a literal `automate` in SECTIONS, and
+    // the constant `fromAddress` and `spineOf` compare against.
+    expect(ids, 'the AUTOMATE constant names no section').toContain(AUTOMATE)
+    expect(ids.slice(0, 5), 'the spine is Overview · Work · Automate · Capacity · Admin').toEqual(['overview', 'work', 'automate', 'capacity', 'admin'])
   })
 
   it('finds links to check, so an empty sweep cannot pass as a clean one', () => {

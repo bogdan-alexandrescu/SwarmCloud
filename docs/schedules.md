@@ -1521,6 +1521,19 @@ with a regex, and every tab needs a `SectionBody` case. S7 reads how both
 tests parse sections before it edits them, and records any difference
 here.
 
+**S7, 2026-10-10.** Both parsers read the literal `automate` entry as
+written: `_sections` in `test_nav_headings_agree.py` (which
+`test_issue_forms.py` imports) walks each entry to its `tabs: [...]`, and the
+forms test reads paths from `paths.ts` `FIXED`. So `test_issue_forms.py` was
+**not** edited; the forms gained "Automate › Schedules (/schedules)",
+"Automate › Approvals (/approvals)" and "Admin › Schedules
+(/admin/schedules)". Two places beyond S7's territory had to follow the new
+section, and did: `Spine.tsx` (the spine and panel draw their own list of
+sections and pages, held to `SECTIONS` by `spine.labels.test.tsx`) and
+`paths.ts` (an address with no `FIXED` path opens Overview). Admin's question
+gained a clause for its new tab, in `docs/web-ui/redesign.md` §2 too, which
+`apps/swarm-ui/tests/sections.test.ts` holds verbatim.
+
 ### 6.2 Screens
 
 Each screen is drawn in 2-3 variants in the mock-ups, with a recommendation.
