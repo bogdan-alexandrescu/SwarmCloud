@@ -906,6 +906,12 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # Off unless SWEEP_ENABLED and the tenant's own switch say otherwise.
         # Like the repository poll, the sweeper alone may call it.
         ("POST", "/v1/admin/issues/sweep"),
+        # The stranded-PR sweep (part of #295, jobs.tf `stranded_pr_sweep`):
+        # reads one tenant's registered repositories' open pull requests with
+        # that tenant's token, stores the rows and logs `pr_stranded`. It
+        # submits nothing for this identity: `redrive: true` is refused unless
+        # the caller is an admin (routes/strandedprs.py).
+        ("POST", "/v1/admin/stranded-prs/sweep"),
     }
 )
 
