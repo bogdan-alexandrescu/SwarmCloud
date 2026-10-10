@@ -78,6 +78,8 @@ run "nothing_under_repos_is_cold_stored_or_deleted_by_age" {
   # Every Delete on LIVE objects is keyed on customTime alone, which an
   # object under repos/ never carries: no `age`, no `created_before`, no
   # `num_newer_versions`. Any of those would match an unstamped index copy.
+  # The one exception is the clone-bundle rule, bound to suffixes no repos/
+  # key ends with (clone_bundle_lifecycle.tftest.hcl holds it there).
   assert {
     condition = alltrue([
       for r in google_storage_bucket.artifacts.lifecycle_rule :
@@ -85,6 +87,7 @@ run "nothing_under_repos_is_cold_stored_or_deleted_by_age" {
       && coalesce(one(r.condition).age, 0) == 0
       && (one(r.condition).created_before == null || one(r.condition).created_before == "")
       if one(r.action).type == "Delete" && one(r.condition).with_state != "ARCHIVED"
+      && length(coalesce(one(r.condition).matches_suffix, [])) == 0
     ])
     error_message = "a Delete rule on live objects that is not keyed on customTime alone can reach tenants/<t>/repos/"
   }

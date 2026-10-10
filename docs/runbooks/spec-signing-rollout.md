@@ -113,7 +113,7 @@ detail has `phase: verify_spec` and `spec_check.reason: legacy_unsigned`.
 * a new task's document carries `spec_signature`, `spec_key_version` (the full
   name of version 1) and `spec_format`;
 * its worker logs `spec signature verified`;
-* the `spec-signature-invalid` metric stays at zero.
+* the `spec-signature-invalid-v2` metric stays at zero.
 
 If swarm-api answers 503 on submissions, KMS refused the signature: check the
 `signer` grant and `SPEC_SIGNING_KEY_VERSION`.

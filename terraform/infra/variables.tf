@@ -838,6 +838,22 @@ variable "enable_issue_sweep" {
   default     = false
 }
 
+variable "repository_grants_enforced" {
+  description = <<-EOT
+    swarm-api's REPOSITORY_GRANTS_ENFORCED (#780 D4, docs/onboarding.md):
+    whether a PERSON's task on a GitHub repository they have not chosen under
+    Access is refused (403 REPOSITORY_NOT_GRANTED). While off, such a task runs
+    with the tenant token, `git`, as before #780. A service-account submission
+    (repository indexing, schedules, the release's acceptance suite) keeps the
+    tenant token either way and says so ("tenant token, service submission").
+    OFF by default, as swarm_api.settings is: on, it refuses every task of every
+    person who has not connected GitHub, so an environment turns it on only once
+    its people can connect (a registered GitHub App, var.enable_github_app).
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "workspace_apply_publish" {
   description = <<-EOT
     swarm-api's WORKSPACE_APPLY_PUBLISH: whether approving a personal

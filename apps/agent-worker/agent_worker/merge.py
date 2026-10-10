@@ -90,8 +90,9 @@ from swarm_common.models import EndCause, utcnow
 from swarm_common.states import TERMINAL_STATES, TaskState
 
 from . import forge as forge_mod
+from . import mergeslot
 from . import verdict as verdict_mod
-from .errors import ExitCode, InputUnavailable
+from .errors import ExitCode, FencedError, InputUnavailable
 from .post_verdict import (
     ActionContext,
     ActionOutcome,
@@ -152,12 +153,28 @@ MERGE_CI_MAX_WAKES = 60
 #: exists to avoid.
 MERGE_CI_FALLBACK_SECONDS = 900
 
-#: How many times the step updates a branch that is behind before it refuses
-#: `behind_too_often`. 3, the design's figure: each update costs a full CI run
-#: (10-20 min here), and a base that moves faster than CI three times running
-#: is a question for a person, not a loop. The first-parent walk accepts at
-#: most this many of GitHub's base merges on top of the pushed head.
-MERGE_MAX_BRANCH_UPDATES = 3
+#: How many times the step updates its branch WHILE HOLDING its repository's
+#: merge slot (`mergeslot`), beyond the one catch-up update its first reading
+#: after taking the slot may need, before it refuses `behind_too_often`.
+#: Until 2026-10-10 this counted every update and was 3: with 16 merge steps
+#: racing one `main`, every sibling's merge put the rest behind, and 7 of
+#: them refused (merge race, #295). Holding the slot, no sibling merges, so
+#: what is counted is only a base moved by someone outside the slot -- a
+#: person's push, a merge made by hand -- and is normally zero. 5, raised
+#: from 3 because the count is no longer a measure of the platform's own
+#: traffic: a burst of hand merges during one CI run should not fail a
+#: step, while five of them, each costing a CI run (10-20 min here) with the
+#: slot held and the queue behind it waiting, is a question for a person.
+MERGE_MAX_BRANCH_UPDATES = 5
+
+#: How many of GitHub's base merges the first-parent walk accepts on top of
+#: the pushed head, in all: the updates counted above, plus a catch-up each
+#: time the step took the slot again (after a CI-fix round's release, or a
+#: lease that ran out), plus updates an earlier attempt made before this
+#: repository had a slot. Also a cap: a step at it refuses
+#: `behind_too_often` rather than make an update the walk would not accept.
+#: 12 = MERGE_MAX_BRANCH_UPDATES + 7 re-takes, far past any path measured.
+MERGE_MAX_HEAD_UPDATES = 12
 
 #: How long, from `merge_wait.first_parked_at`, the step waits for CI before
 #: it refuses `checks_timeout`, naming what is still pending. 6 h, the
@@ -214,6 +231,26 @@ _CONFLICT = re.compile(r"conflict", re.IGNORECASE)
 #: merge queue: GitHub's "Changes must be made through the merge queue",
 #: alone (405) or under "Repository rule violations found" (422).
 _MERGE_QUEUE = re.compile(r"merge queue", re.IGNORECASE)
+#: A 403 that is GitHub's plan answer, not a missing right: a private
+#: repository on a plan without rulesets (or branch protection) is answered
+#: "Upgrade to GitHub Pro or make this repository public to enable this
+#: feature." (measured on sagaxyz/ai-studio, 2026-10-10). Read as "the plan
+#: has none", exactly as a 404 is; any other 403 still refuses.
+_PLAN_LACKS_FEATURE = re.compile(
+    r"upgrade to github pro|make this repository public to enable this feature",
+    re.IGNORECASE,
+)
+#: Where GitHub's own error bodies point. A `documentation_url` elsewhere is
+#: not GitHub's plan answer, whatever its message says.
+_GITHUB_DOCS = re.compile(r"^https://docs\.github\.com/", re.IGNORECASE)
+
+#: `RequiredChecks.source`: where the required checks came from, recorded as
+#: the step's `required_checks_source`. The two `none_*` sources read nothing
+#: required, so every check at the head must be green and one must exist.
+CHECKS_FROM_RULESETS = "rulesets"
+CHECKS_FROM_CLASSIC = "classic"
+CHECKS_NONE_ALL_CHECKS = "none_all_checks"
+CHECKS_NONE_PLAN_LIMITED = "none_plan_limited_all_checks"
 
 #: The hosts `GitHubMerger` can merge on: github.com, where the tenant's
 #: token may be sent at all (`forge.may_receive_forge_token`, #307).
@@ -386,6 +423,8 @@ class RequiredChecks:
 
     checks: tuple[forge_mod.RequiredCheck, ...] = ()
     protected: bool = False
+    #: Which rule the checks were read by: one of the `CHECKS_*` sources.
+    source: str = CHECKS_NONE_ALL_CHECKS
 
 
 @dataclass(frozen=True)
@@ -449,6 +488,18 @@ class ForgeMerger(Protocol):
 
 class UnsupportedForge(ValueError):
     """The repository is on a host no `ForgeMerger` serves."""
+
+
+def plan_lacks_feature(exc: BaseException) -> bool:
+    """A 403 that is GitHub saying the repository's plan has no such feature
+    (`_PLAN_LACKS_FEATURE`), with GitHub's documentation link if it gave one.
+    Any other 403, and every other status, is not."""
+    if getattr(exc, "status", None) != 403:
+        return False
+    if not _PLAN_LACKS_FEATURE.search(str(getattr(exc, "message", "") or "")):
+        return False
+    url = str(getattr(exc, "documentation_url", "") or "")
+    return not url or _GITHUB_DOCS.search(url) is not None
 
 
 def _mapping(value: Any) -> Mapping[str, Any]:
@@ -531,17 +582,31 @@ class GitHubMerger:
         read gives classic protection, which needs only read access to see
         (`protection.required_status_checks`). Both, because a repository may
         use either, and a required check read from one alone would be missed.
+
+        A 404, or a 403 that is GitHub's plan answer (`plan_lacks_feature`: a
+        private repository on a plan without rulesets), reads as "none"; any
+        other answer raises. `source` records which rule the step then used.
         """
+        plan_limited = False
         try:
             rules = self._client.rules_for_branch(self.owner, self.repo, branch)
         except forge_mod.ForgeAnswered as exc:
-            if getattr(exc, "status", None) != 404:
+            if plan_lacks_feature(exc):
+                plan_limited = True
+            elif getattr(exc, "status", None) != 404:
                 raise
             rules = []
         found = {(c.context, c.app_id): c for c in forge_mod.required_status_checks(rules)}
-        branch_doc = _mapping(
-            self._client.get_ok(f"{self._base}/branches/{quote(branch, safe='')}")
-        )
+        from_rulesets = bool(found)
+        try:
+            branch_doc = _mapping(
+                self._client.get_ok(f"{self._base}/branches/{quote(branch, safe='')}")
+            )
+        except forge_mod.ForgeAnswered as exc:
+            if not plan_lacks_feature(exc):
+                raise
+            plan_limited = True
+            branch_doc = {}
         protection = _mapping(_mapping(branch_doc.get("protection")).get("required_status_checks"))
         for check in protection.get("checks") or []:
             check = _mapping(check)
@@ -555,7 +620,15 @@ class GitHubMerger:
             ):
                 found[(context, None)] = forge_mod.RequiredCheck(context, None)
         protected = bool(rules) or branch_doc.get("protected") is True
-        return RequiredChecks(checks=tuple(found.values()), protected=protected)
+        if from_rulesets:
+            source = CHECKS_FROM_RULESETS
+        elif found:
+            source = CHECKS_FROM_CLASSIC
+        elif plan_limited and not protected:
+            source = CHECKS_NONE_PLAN_LIMITED
+        else:
+            source = CHECKS_NONE_ALL_CHECKS
+        return RequiredChecks(checks=tuple(found.values()), protected=protected, source=source)
 
     def checks_at(self, sha: str) -> list[CheckFacts]:
         """Every check run, and every commit status, reported at `sha`."""
@@ -981,7 +1054,7 @@ def _verify_opener(ctx: ActionContext, target: MergeTarget, opener: Mapping[str,
     branch the opener's pull request is on, or the target is not this
     continuation's to merge (`workflow_mismatch` too, fail closed).
     swarm-api bound the target to the issue run's record before signing it
-    (`issueci.merge_target_bound`).
+    (`issueci.merge_target_unbound`).
     """
     assert target.pull_request is not None
     if target.pull_request_workflow is None:
@@ -1019,6 +1092,10 @@ def _merge_with_token(run: _Run, *, number: int, pinned: str, branch: str | None
                           "the merge step merges on github.com only, and this workflow's "
                           "repository is not there")
     summary["repository"] = repository
+    if ctx.merge_slots is None:
+        return run.refuse("merge_slot_unavailable",
+                          "this worker has no merge slot store, and a merge without the "
+                          "repository's slot races every other merge into the same base")
 
     # ---- §2.2 6-7: the token, at merge time only.
     from .secrets import CredentialMissing
@@ -1042,9 +1119,24 @@ def _merge_with_token(run: _Run, *, number: int, pinned: str, branch: str | None
         return run.refuse("forge_unsupported", str(exc))
     finally:
         del token
+    slot = _slot_use(ctx, repository, own)
+    try:
+        outcome = _forge_outcome(run, merger, slot, number=number, pinned=pinned,
+                                 branch=branch, own=own, fix_heads=fix_heads)
+        return _settle(run, slot, merger, outcome)
+    finally:
+        del merger
+
+
+def _forge_outcome(run: _Run, merger: ForgeMerger, slot: mergeslot.SlotUse, *, number: int,
+                   pinned: str, branch: str | None, own: Mapping[str, Any],
+                   fix_heads: list[tuple[str, str]]) -> ActionOutcome:
+    """`_with_forge`, with the forge's errors read as the step's outcome."""
+    summary = run.summary
+    repository = merger.full_name
     try:
         return _with_forge(run, merger, number=number, pinned=pinned,
-                           branch=branch, own=own, fix_heads=fix_heads)
+                           branch=branch, own=own, fix_heads=fix_heads, slot=slot)
     except forge_mod.ForgeRedirectRefused as exc:
         cause = EndCause.MERGE_FAILED if summary.get("merge_called") else EndCause.MERGE_REFUSED
         return refusal(summary, cause, exc.code, str(exc))
@@ -1063,19 +1155,20 @@ def _merge_with_token(run: _Run, *, number: int, pinned: str, branch: str | None
                               f"the tenant's token cannot read {repository} as needed ({exc})")
         cause = EndCause.MERGE_FAILED if summary.get("merge_called") else EndCause.MERGE_REFUSED
         return refusal(summary, cause, getattr(exc, "code", "forge_refused"), str(exc))
-    finally:
-        del merger
 
 
 def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 branch: str | None, own: Mapping[str, Any] | None = None,
-                fix_heads: list[tuple[str, str]] | None = None) -> ActionOutcome:
+                fix_heads: list[tuple[str, str]] | None = None,
+                slot: mergeslot.SlotUse | None = None) -> ActionOutcome:
     """§2.2 8-10 and §5, with the token in hand. Raises the forge's errors.
 
     `pinned` is the head the opening step pushed; `fix_heads` the heads this
     workflow's CI-fix rounds pushed (`_fix_round_heads`). The head this
     attempt acts at is GitHub's live head, accepted only through `_accept`.
-    `own` is the step's own document, for its CI-fix rounds.
+    `own` is the step's own document, for its CI-fix rounds. `slot` is the
+    repository's merge slot (`mergeslot`): taken once the checks are green,
+    confirmed before every forge write, given back by `_settle`.
     """
     own = own or {}
     fix_heads = fix_heads or []
@@ -1097,6 +1190,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         return run.refuse("base_not_default",
                           f"pull request #{number} targets {pr.base_ref}, not the repository's "
                           f"default branch {default or '(unreadable)'}")
+    if slot is not None:
+        slot.base = default
     if pr.merged:
         if pr.head_sha is not None and _accept(
             merger, head=pr.head_sha, pinned=pinned, fix_heads=fix_heads, base=default
@@ -1154,6 +1249,11 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if title_is_placeholder(pr.title):
         return run.refuse("title_placeholder",
                           "the pull request's title is the worker's placeholder")
+    if slot is not None:
+        # The slot's heartbeat: a holder -- an earlier attempt of this step,
+        # or a waiter a release handed it to -- renews its lease on every
+        # attempt, whatever this one goes on to read.
+        slot.renew(updates=updates)
 
     def wait(code: str, message: str, pending: list[str]) -> ActionOutcome:
         waited = _ci_wait_age(ctx)
@@ -1172,6 +1272,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     required = merger.required_checks(pr.base_ref or "")
     checks = merger.checks_at(head)
     summary["required_checks"] = sorted({c.context for c in required.checks})
+    summary["required_checks_source"] = required.source
     pending: list[str] = []
     failed: list[str] = []
     if required.checks:
@@ -1185,8 +1286,10 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 failed.append(f"{check.context} ("
                               + ", ".join(sorted({str(r['conclusion']) for r in mine})) + ")")
     else:
-        # No protection, or protection that requires no check: every check
-        # reported at the head must be green, and there must be one.
+        # No protection, or protection that requires no check, or a plan that
+        # has neither rulesets nor protection to read (`required.source`
+        # `none_plan_limited_all_checks`): every check reported at the head
+        # must be green, and there must be one.
         if not checks:
             return wait("no_checks",
                         f"{pr.base_ref} requires no check and none has reported at "
@@ -1199,6 +1302,13 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         return _red(run, own, head=head, failed=failed, wait=wait)
     if pending:
         return wait("checks_pending", f"at {head}: " + ", ".join(sorted(pending)), pending)
+
+    # Green: from here on this step updates and merges, which only the
+    # holder of the repository's merge slot may do. Waiting is a park.
+    if slot is not None and slot.held is None:
+        taken = slot.acquire(updates=updates)
+        if isinstance(taken, mergeslot.Waiting):
+            return _slot_wait(run, taken, head=head, number=number, base=default)
 
     rereads = 0
     while pr.mergeable is None and rereads < MERGEABLE_REREADS:
@@ -1217,11 +1327,14 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                     f"GitHub had not computed mergeability after {MERGEABLE_REREADS} rereads", [])
     if pr.mergeable_state == "behind":
         return _update_branch(run, merger, number=number, head=head, updates=updates,
-                              base=default)
+                              base=default, slot=slot)
 
     # ---- §2.2 8: fencing and cancel, immediately before the call.
     if ctx.recheck():
         return cancelled(summary)
+    lost = _slot_lost(run, slot, head=head, number=number, base=default, updates=updates)
+    if lost is not None:
+        return lost
 
     # ---- §5.3: the merge, squashed, pinned to the head the checks are green at.
     message = provenance(ctx, merger, number=number, pinned=head)
@@ -1246,7 +1359,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 summary.pop("merge_called")
                 summary["merge_answered"] = {"status": answer.status, "message": answer.message}
                 return _update_branch(run, merger, number=number, head=head, updates=updates,
-                                      base=default)
+                                      base=default, slot=slot)
             if _CONFLICT.search(answer.message):
                 return run.refuse("merge_conflict",
                                   f"GitHub refused the merge ({answer.status}){detail}")
@@ -1362,13 +1475,13 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str) -> 
     the live head, each step down must be a two-parent commit GitHub itself
     committed and signed, whose second parent is already on `base`; its first
     parent is the next step. It must reach `pushed` within
-    MERGE_MAX_BRANCH_UPDATES steps. A fact about GitHub, never about the
+    MERGE_MAX_HEAD_UPDATES steps. A fact about GitHub, never about the
     tenant-writable task document, so a lost attempt's update is re-derived
     here and a forged count changes nothing. Anything else is `head_moved`.
     """
     steps = 0
     while head != pushed:
-        if steps >= MERGE_MAX_BRANCH_UPDATES:
+        if steps >= MERGE_MAX_HEAD_UPDATES:
             return None
         try:
             commit = merger.commit(head)
@@ -1387,22 +1500,38 @@ def _updates_onto(merger: ForgeMerger, *, head: str, pushed: str, base: str) -> 
 
 
 def _update_branch(run: _Run, merger: ForgeMerger, *, number: int, head: str, updates: int,
-                   base: str) -> ActionOutcome:
+                   base: str, slot: mergeslot.SlotUse | None = None) -> ActionOutcome:
     """GitHub merges the base into a branch that is behind; then park at the new head.
 
     A write to the forge, so the fencing and cancel recheck runs first and a
-    stale worker raises out of it with no call made (invariant 5).
-    `expected_head_sha` is the head the checks were read at: GitHub refuses
-    the update if anyone pushed in between.
+    stale worker raises out of it with no call made (invariant 5), and then
+    the slot is confirmed this step's. `expected_head_sha` is the head the
+    checks were read at: GitHub refuses the update if anyone pushed in
+    between.
+
+    THE ALLOWANCE COUNTS ONLY WHAT MOVED THE BASE WHILE THIS STEP HELD THE
+    SLOT. Updates already on the head when the slot was taken
+    (`Held.updates_at_acquire`) were caused by the merges this step queued
+    behind, and the first update after taking it catches up with them; any
+    further one means the base moved under a held slot, which no SwarmCloud
+    merge does. `MERGE_MAX_BRANCH_UPDATES` of those is `behind_too_often`.
     """
     ctx, summary = run.ctx, run.summary
-    if updates >= MERGE_MAX_BRANCH_UPDATES:
+    held = slot.held if slot is not None else None
+    since = max(0, updates - (held.updates_at_acquire if held is not None else 0))
+    summary["updates_while_held"] = since
+    if since > MERGE_MAX_BRANCH_UPDATES or updates >= MERGE_MAX_HEAD_UPDATES:
         return run.refuse("behind_too_often",
-                          f"pull request #{number} is behind {base} again after {updates} "
-                          f"updates (at most {MERGE_MAX_BRANCH_UPDATES}): the base moves "
+                          f"pull request #{number} is behind {base} again after {since} "
+                          f"update(s) while it held the merge slot ({updates} in all; at most "
+                          f"{MERGE_MAX_BRANCH_UPDATES} past the catch-up, "
+                          f"{MERGE_MAX_HEAD_UPDATES} in all): the base moves under the slot "
                           "faster than CI")
     if ctx.recheck():
         return cancelled(summary)
+    lost = _slot_lost(run, slot, head=head, number=number, base=base, updates=updates)
+    if lost is not None:
+        return lost
     answer = merger.update_branch(number, expected_head_sha=head)
     detail = f": {answer.message}" if answer.message else ""
     if answer.status == 422:
@@ -1463,6 +1592,120 @@ def _accept(merger: ForgeMerger, *, head: str, pinned: str,
         if updates is not None:
             return updates, task_id
     return None
+
+
+# ---------------------------------------------------------------------------
+# The repository's merge slot (merge race, #295; `mergeslot`)
+# ---------------------------------------------------------------------------
+
+#: The park codes on which a holder gives the slot back: a CI-fix round runs
+#: an agent for as long as it takes, and a merge queue serialises the merges
+#: itself. The next green reading takes the slot again.
+_RELEASE_ON_PARK = frozenset({CI_FIX_PENDING, CI_FIX_RUNNING, MERGE_QUEUED})
+
+
+def _slot_use(ctx: ActionContext, repository: str,
+              own: Mapping[str, Any]) -> mergeslot.SlotUse:
+    """This attempt's view of its repository's slot. FIFO is by the step's
+    `created_at`, its submission; one that cannot be read queues as of now."""
+    slots = ctx.merge_slots
+    submitted = own.get("created_at")
+    if not isinstance(submitted, datetime) or submitted.tzinfo is None:
+        submitted = slots.now()
+    return mergeslot.SlotUse(
+        slots=slots,
+        me=mergeslot.Claimant(ctx.task_id, ctx.attempt_id, submitted),
+        repository=repository,
+        task_state=lambda task_id: _task_state(ctx, task_id),
+        log=ctx.log,
+    )
+
+
+def _task_state(ctx: ActionContext, task_id: str) -> TaskState | None:
+    """A task's state through the tenant-gated read; None when it cannot be read."""
+    try:
+        return TaskState(_mapping(ctx.fetch_upstream(task_id)).get("state"))
+    except Exception:  # noqa: BLE001 - unreadable is not ended: a live holder keeps its slot
+        return None
+
+
+def _slot_wait(run: _Run, waiting: mergeslot.Waiting, *, head: str, number: int,
+               base: str) -> ActionOutcome:
+    """Another step holds the slot: park CI_PENDING as `MERGE_SLOT_WAIT`, holding nothing."""
+    return run.wait(mergeslot.MERGE_SLOT_WAIT,
+                    f"#{number} is green at {head} and waits for {base}'s merge slot, held by "
+                    f"{waiting.holder or 'nobody'}: {waiting.position} of {waiting.waiters} "
+                    "waiting, in submission order",
+                    head=head, pull_request=number, pending=[])
+
+
+def _slot_lost(run: _Run, slot: mergeslot.SlotUse | None, *, head: str, number: int,
+               base: str, updates: int) -> ActionOutcome | None:
+    """None when this attempt still holds its slot, immediately before a forge write.
+
+    A slot that ran out and was taken over is queued for again, as on any
+    green reading: a park, or -- handed straight back -- the write goes on
+    at the new generation."""
+    if slot is None:
+        return None
+    try:
+        slot.confirm()
+        return None
+    except mergeslot.SlotLost as exc:
+        run.summary["merge_slot_lost"] = str(exc)
+    taken = slot.acquire(updates=updates)
+    if isinstance(taken, mergeslot.Waiting):
+        return _slot_wait(run, taken, head=head, number=number, base=base)
+    return None
+
+
+def _settle(run: _Run, slot: mergeslot.SlotUse, merger: ForgeMerger,
+            outcome: ActionOutcome) -> ActionOutcome:
+    """Give the slot back on every exit that ends the step, or stops it merging.
+
+    Merged, refused, failed and cancelled release it, handing it to the first
+    live waiter and waking that waiter's park. A CI wait while holding keeps
+    it (the holder renews it on its next attempt); a CI-fix round or a merge
+    queue gives it back (`_RELEASE_ON_PARK`); a retry keeps it, and if the
+    retry never comes the lease runs out. A crash releases nothing: the lease
+    does, or the first waiter that reads the holder's task ended. A stale
+    worker never reaches here -- `FencedError` raises past it.
+
+    A slot write that fails is recorded and the outcome stands: what the
+    step did on the forge is done, and the lease frees the slot.
+    """
+    wait = outcome.ci_wait
+    code = wait.get("code") if isinstance(wait, Mapping) else None
+    try:
+        if code == mergeslot.MERGE_SLOT_WAIT or outcome.retryable or (
+            outcome.credential_missing is not None
+        ):
+            pass
+        elif wait is not None and code not in _RELEASE_ON_PARK:
+            pass
+        else:
+            if slot.base is None:
+                slot.base = _slot_base(run.ctx, merger)
+            refused = _mapping(outcome.summary.get("refusal")).get("code")
+            slot.release(str(code or refused or outcome.state.value.lower()))
+    except FencedError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - the lease frees what a failed write kept
+        slot.record["error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+        if run.ctx.log is not None:
+            run.ctx.log.warning("merge slot not released", error=type(exc).__name__)
+    if slot.record:
+        outcome.summary["merge_slot"] = dict(slot.record)
+    return outcome
+
+
+def _slot_base(ctx: ActionContext, merger: ForgeMerger) -> str | None:
+    """The base an exit before the pull request was read releases the slot of."""
+    try:
+        base = parse_merge_target(ctx.dispatch).base
+    except TargetInvalid:
+        return None
+    return base or merger.default_branch()
 
 
 def _own_doc(ctx: ActionContext) -> Mapping[str, Any]:

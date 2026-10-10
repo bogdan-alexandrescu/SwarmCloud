@@ -547,6 +547,13 @@ def event_from_dict(data: dict[str, Any]) -> TaskEvent:
     )
 
 
+def _checkpoint_digests(value: Any) -> dict[str, str]:
+    """`Attempt.checkpoint_sha256` from a stored value: its `str -> str` entries only."""
+    if not isinstance(value, dict):
+        return {}
+    return {k: v for k, v in value.items() if isinstance(k, str) and isinstance(v, str)}
+
+
 def attempt_from_dict(data: dict[str, Any]) -> Attempt:
     return Attempt(
         attempt_id=data["attempt_id"],
@@ -565,6 +572,13 @@ def attempt_from_dict(data: dict[str, Any]) -> Attempt:
         peak_disk_bytes=data.get("peak_disk_bytes"),
         oom_near_miss=bool(data.get("oom_near_miss", False)),
         checkpoints=list(data.get("checkpoints") or []),
+        # CONTRACT REQUEST 51 (accepted by the owner 2026-10-09): the archive
+        # digest of each checkpoint, which the worker's `record_checkpoint`
+        # writes and a retry binds its restore to (#347). This decoder used to
+        # drop it, as it once dropped the spend fields below. Only `str -> str`
+        # entries are kept; a missing or malformed map is the empty default,
+        # "no digest recorded". `attempt_to_api` does not serve it.
+        checkpoint_sha256=_checkpoint_digests(data.get("checkpoint_sha256")),
         # THE FIVE SPEND FIELDS, which this decoder used to drop.
         #
         # `control.record_spend` merge-sets all five into the attempt document

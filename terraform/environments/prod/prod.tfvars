@@ -159,3 +159,11 @@ alert_emails = [
 # 1-4). This is also the variable's default; writing it here keeps a later edit
 # of the default from silently relaxing prod.
 spec_signature_mode = "enforce"
+
+# D4's refusal of a person's task on a repository they have not chosen (#780
+# OB10) stays OFF in prod, explicitly, until the owner decides otherwise. Prod
+# registers no GitHub App (enable_github_app is unset), so nobody here can
+# connect GitHub and choose a repository: on, it would refuse every person's
+# task. While off, such a task runs with the tenant token, as before #780.
+# Asked of the owner in the OB10 lane's questions.json.
+repository_grants_enforced = false

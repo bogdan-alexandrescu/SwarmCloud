@@ -31,12 +31,13 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
-from agent_worker import post_verdict
+from agent_worker import mergeslot, post_verdict
 from agent_worker.errors import FencedError
 from agent_worker.objectstore import LocalObjectStore
 from agent_worker.specverify import UpstreamSpecUnverified
 
 from fake_github import FakeGitHub, fresh_token
+from fakes import FakeFirestore, FakeTransactionRunner
 
 TENANT = "eng"
 WORKFLOW = "wf_1"
@@ -149,6 +150,14 @@ class MergeWorld:
         #: Whether the update leaves the branch behind again (a base moving on).
         self.behind_after_update = False
         self._shas = count(1)
+        #: The repository's merge slots (merge race, #295), in memory: a
+        #: world's step is alone in its repository unless a test seeds one.
+        self.slot_db = FakeFirestore()
+        self.slots = mergeslot.FirestoreMergeSlots(
+            self.slot_db, tenant_id=TENANT,
+            run_transaction=FakeTransactionRunner(self.slot_db).run,
+            fence=lambda _txn: None,
+        )
         self._routes()
 
     # -- GitHub ----------------------------------------------------------
@@ -280,4 +289,5 @@ class MergeWorld:
             transport=self.github, sleep=self.slept.append,
             register_secret=self.log.register_secret,
             read_git_token=read_token, repository_url=self.repository_url,
+            merge_slots=self.slots,
         )

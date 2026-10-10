@@ -510,8 +510,10 @@ the merge is now the CI loop's last move:
   again. `issueruns.auto_merge_availability`, served on the issue preview,
   reads the same rule, so the console's switch is enabled exactly when
   `POST /v1/runs` would accept it, and `422 auto_merge_unavailable` creates
-  nothing when it would not. A run that does not say takes the platform's
-  `merge_by_default` (default off).
+  nothing when it would not. A run that does not say takes the `merge_policy`
+  its tenant registered the repository with (`"on_merge_verdict"` on, `"off"`
+  off), else the platform's `merge_by_default` (default off)
+  ([workflows.md](workflows.md#a-repositorys-merge_policy)).
 * **The compiled workflow never merges.** It and every CI fix round say
   `metadata.merge: "off"`, whatever the run or the platform default says: a
   merge inside the workflow would run before the API wrote `Closes #N` into
@@ -629,7 +631,7 @@ integrator branch.
 | claim | test |
 |---|---|
 | off is the default | `test_issue_runs.py::test_the_defaults_are_required_approval_no_auto_merge_and_three_fix_rounds` |
-| on is accepted while the `merge` profile is enabled, and recorded on the run; a run that does not say takes `merge_by_default` | `test_issue_runs.py::test_auto_merge_is_accepted_and_recorded_on_the_run`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_platform_default` |
+| on is accepted while the `merge` profile is enabled, and recorded on the run; a run that does not say takes the repository's `merge_policy`, else `merge_by_default` | `test_issue_runs.py::test_auto_merge_is_accepted_and_recorded_on_the_run`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_platform_default`, `test_issue_runs.py::test_a_run_that_does_not_say_takes_the_repositorys_merge_policy_first` |
 | the console's availability and the API's refusal are one rule: unavailable, naming #295 and the profile's reason, exactly when the profile is disabled | `test_issue_runs.py::test_auto_merge_availability_says_what_the_refusal_does` |
 | the compiled workflow and every fix round carry no merge, whatever the run or the default says | `test_issue_runs.py::test_the_compiled_workflow_always_says_merge_off`, `test_issue_runs.py::test_an_auto_merge_run_submits_its_workflow_with_no_merge_step`, `test_issue_run_auto_merge.py::test_the_compiled_workflow_and_a_fix_round_never_carry_a_merge` |
 | green with the keyword block written submits ONE merge continuing the task that pushed the head; not before the block is written | `test_issue_run_auto_merge.py::test_green_with_the_keyword_written_submits_one_merge_continuing_the_integrator`, `test_issue_run_auto_merge.py::test_no_merge_while_the_keyword_block_is_not_written` |

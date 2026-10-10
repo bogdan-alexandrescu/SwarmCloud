@@ -128,6 +128,12 @@ SPEC_KEYS = frozenset(
         # goes as `metadata.unit`: WorkflowCreate forbids extra top-level
         # fields, so it never travels as one.
         "title",
+        # Whether the workflow ends in a merge (WF-MERGE-API, part of #295):
+        # "on" | "on_merge_verdict" | "off", or absent for the repository's
+        # registered merge_policy, else the platform default. Sent as
+        # `metadata.merge`, for the reason `title` is; swarm-api checks the
+        # value (`validation.MERGE_CHOICES`) and derives the steps.
+        "merge",
     }
 )
 
@@ -382,7 +388,7 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
 
     Returns `steps` built by `build_steps`, and the spec's `strategy`,
     `carrier`, `repository_url`, `repository_ref`, `on_step_failure`,
-    `priority`, `label` and `title` as given (None when absent). The caller decides what
+    `priority`, `label`, `title` and `merge` as given (None when absent). The caller decides what
     overrides them -- the terminal's flags, or the repository the bridge infers
     from a checkout.
     """
@@ -407,6 +413,7 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         "priority": document.get("priority"),
         "label": document.get("label"),
         "title": title,
+        "merge": document.get("merge"),
     }
 
 
@@ -423,6 +430,7 @@ def submit(
     label: str | None = None,
     title: str | None = None,
     merge_pr: dict[str, Any] | None = None,
+    merge: str | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
 
@@ -438,6 +446,7 @@ def submit(
             "origin": "swarm-mcp",
             **({"unit": label} if label else {}),
             **({"title": title} if title else {}),
+            **({"merge": merge} if merge is not None else {}),
         },
     }
     if strategy:

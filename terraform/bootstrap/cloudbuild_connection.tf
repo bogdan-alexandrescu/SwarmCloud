@@ -18,9 +18,9 @@
 #     being made, so a name condition here could never match. Creating a secret
 #     reads and changes no existing secret.
 #   * secretmanager.secrets.setIamPolicy and getIamPolicy, CONDITIONED to
-#     secrets whose name starts with the connection's name. The agent names the
-#     secret "<connection>-github-oauthtoken-<hex>", so this admits the
-#     connection's own secret and no other team's. Secret Manager does expose
+#     secrets whose name starts with "<connection>-github-oauthtoken-", the
+#     name the agent gives the connection's secret, so it admits that secret
+#     and no other, not even swarm-github-app-*. Secret Manager does expose
 #     resource.name to IAM Conditions, as projects/<NUMBER>/secrets/<id>
 #     (deployer_conditions.tf, forge_user_slots.tf).
 #
@@ -35,7 +35,14 @@ locals {
   # The connection's name, and so the prefix of the secret the agent creates.
   # A literal: widening it is a reviewed change, not a tfvars edit.
   cloudbuild_connection_name = "swarm-github"
-  cloudbuild_agent_member    = local.wif_enabled == 1 ? "serviceAccount:service-${data.google_project.this[0].number}@gcp-sa-cloudbuild.iam.gserviceaccount.com" : ""
+  # The exact prefix of the secret Google's agent creates for the connection,
+  # "<connection>-github-oauthtoken-<hex>". NOT "<connection>-": that also
+  # matched swarm-github-app-client-secret and swarm-github-app-private-key,
+  # the platform's own GitHub App credentials (found 2026-10-10 right after the
+  # first apply, narrowed the same night). A prefix here must never be a
+  # prefix of another secret's name: check `gcloud secrets list` before widening it.
+  cloudbuild_connection_secret_prefix = "${local.cloudbuild_connection_name}-github-oauthtoken-"
+  cloudbuild_agent_member             = local.wif_enabled == 1 ? "serviceAccount:service-${data.google_project.this[0].number}@gcp-sa-cloudbuild.iam.gserviceaccount.com" : ""
 }
 
 resource "google_project_iam_custom_role" "cloudbuild_connection_secret_create" {
@@ -81,6 +88,6 @@ resource "google_project_iam_member" "cloudbuild_connection_secret_policy" {
   condition {
     title       = "the ${local.cloudbuild_connection_name} connection's own secret"
     description = "Secrets the Cloud Build agent created for the ${local.cloudbuild_connection_name} connection, and no other."
-    expression  = "resource.type == \"secretmanager.googleapis.com/Secret\" && resource.name.startsWith(\"projects/${data.google_project.this[0].number}/secrets/${local.cloudbuild_connection_name}-\")"
+    expression  = "resource.type == \"secretmanager.googleapis.com/Secret\" && resource.name.startsWith(\"projects/${data.google_project.this[0].number}/secrets/${local.cloudbuild_connection_secret_prefix}\")"
   }
 }
