@@ -55,13 +55,42 @@ see that the body came up short. There is no `Content-Length`, for the reason
 in `CheckpointContent.download`: Cloud Run refuses an unchunked HTTP/1
 response over 32 MiB.
 
-Text is redacted in windows. Each window is cut at the last whitespace (a
-newline if there is one), and the remainder is carried into the next window,
-so every token is redacted whole. The concatenated windows equal the
-redaction of the whole object. The one exception is a run with no whitespace
-that is longer than 4 MiB: it is cut at that length, and a credential could
-be split there. The paged routes withhold such a run instead, but a download
+Text is redacted in windows. Each window is cut at its last newline, and the
+remainder is carried into the next window, so every line is redacted whole.
+The concatenated windows equal the redaction of the whole object. A line is
+carried whole up to 4 MiB; only a longer one is cut at whitespace, and a run
+with no whitespace longer than 4 MiB is cut at that length, where a credential
+could be split. The paged routes withhold such a run instead, but a download
 cannot withhold part of a file without corrupting it.
+
+**A window boundary never falls inside a secret that holds whitespace**
+(security pass SEC-REDACT-A, #227). The download used to cut at the last
+whitespace, as the paged routes still must when a line is longer than the page
+asked for, and whitespace is not a boundary everywhere: a learned literal
+holding a newline, cut at that newline, served both halves, neither of which
+was the literal; and a line longer than one window, cut after the `=` and
+space that follow a `password` name, served the value at the head of the next
+window with no name before it (a quoted value holding a space, under an
+`api_key` member, the same). Every cut, on
+the download and on the paged routes (`/logs`, `/artifacts/content`, a
+checkpoint's files), now asks one rule, `redaction.straddled`, whether it
+crosses such a span, and is moved back before one; a page whose `offset` a
+caller chose inside one starts after it, found through the look-back the page
+already reads. A span that may run past the bytes read counts as crossing:
+text is held for the next window rather than served in halves. A paged window
+that holds nothing but such a span is withheld with a `detail`, as a token
+longer than the window is.
+
+**A JSON line the masker does not decode still has its credentials masked
+whole** (#227). A line over `JSON_LINE_MAX_CHARS`, one with a duplicate key,
+one a window cut, or one with text before its JSON, is masked by the text
+rules, whose key/value rule takes a value up to its first space. Such text
+now has every credential-named member's string, list or object masked whole,
+at the escape depth its key is written at, as the structural walk masks it.
+And a learned literal is looked for as JSON writes it inside a string, once and
+twice escaped (`\"`, `\\`, `\u00e9` and raw UTF-8), not only as written: in
+text nothing decoded, a literal holding a quote, a backslash or a non-ASCII
+character was never found.
 
 **Text that is not UTF-8 downloads as itself** (#188 review). A window is
 decoded with `surrogateescape` and encoded back the same way, so a byte that
@@ -143,6 +172,19 @@ every other rule, so no other rule masks pieces of a key's body first:
   the key, never a count over text it served in clear. The page holding the
   END stays masked the same way. Both `/artifacts/content` and the raw
   download follow this rule.
+
+**A key split over a JSON document's containers** is masked from the string
+holding its BEGIN through the one holding its END, within 64 KiB of string
+content, whatever containers either sits in, on every route (#361). The
+artifact path has done this since #378. `JsonMasker`, which `/logs` and
+`/input` mask a decoded document with, followed a key only through a flat
+list, so `{"secret": [BEGIN], "x": <body>, "z": END}`, with the BEGIN inside a
+value masked whole under a credential's name, served the body. It now applies
+the artifact path's rule to the decoded document (`_split_key_lines`). It works
+by value, not position: a string between a BEGIN and its END is masked
+wherever else it appears in that document too. That over-masks, and it was
+chosen over a positional walk, because a route that draws one block of a
+document (the prompt on `/input`) cannot share a position with the rest.
 
 Lines that a tool numbered (`cat -n`, or an agent's file-read tool) still count
 as key lines. Every scan is linear, not one backtracking pattern: a lazy

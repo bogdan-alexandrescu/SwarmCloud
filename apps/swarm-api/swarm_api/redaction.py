@@ -40,6 +40,7 @@ JSON document by its structure (`JsonMasker`), a log by its lines
 
 from __future__ import annotations
 
+import functools
 import json
 import re
 import secrets
@@ -468,6 +469,9 @@ class JsonMasker:
         the task's input and metadata to a log line's masker, so a value the
         caller named as a credential is masked in the agent's output too.
         """
+        # Every string a private key split over containers covers, from a
+        # BEGIN to its END (`_split_key_lines`, #361): masked by `text()`.
+        self._key_material = _split_key_lines(document)
         learned = _learned_literals(document)
         extra = tuple(v for v in literals if v not in learned)
         self._literals = tuple(sorted(learned + extra, key=len, reverse=True))
@@ -515,6 +519,10 @@ class JsonMasker:
         request (`task_input.masking_for`), whose memory must stay the
         document's size.
         """
+        if value in self._key_material:
+            # A line of a key a BEGIN before it opened: its one mask was
+            # counted where the BEGIN was (`_split_key_lines`).
+            return Redacted(text=MASK, count=0)
         found = self._memo.get(value)
         if found is None:
             first = redact(value, decoded=True)
@@ -671,19 +679,130 @@ def _escape_surrogates(text: str) -> str:
     return re.sub("[\ud800-\udfff]", lambda m: f"\\u{ord(m.group(0)):04x}", text)
 
 
+def _split_key_lines(document: Any) -> frozenset[str]:
+    """The strings a private key split over a document's containers covers, BEGIN excluded.
+
+    WHY (#361, the #378 re-review's probe p2). `JsonMasker` followed a key's
+    lines only through a flat list (`_key_run_end`). A BEGIN marker inside a
+    value masked WHOLE under a credential's name -- `{"secret": [BEGIN],
+    "x": <body>, "y": <body>, "z": END}` -- is never walked, so the members
+    after it were masked one by one, matched nothing, and `/logs` and
+    `/input` served the key's body. The artifact path has masked exactly this
+    since #378 (`json_masking._structure`), and this is its rule over a
+    decoded document: a string -- value or key -- that leaves a key open
+    (`_open_key`) runs to the next string holding an END marker, in document
+    order and whatever containers either sits in, a value masked whole
+    included, when the string VALUE content between is within
+    `PEM_BLOCK_MAX_CHARS`; every string VALUE after the BEGIN through the END
+    is key material. A key with no END in reach is left to the flat-list rule.
+
+    By value, not position: `text()` masks a string wherever it appears in
+    the document, so an ordinary word that sits between a BEGIN and its END
+    is masked everywhere else in the document too. Over-masking, chosen over
+    a positional walk the routes drawing one block of a document cannot share.
+    """
+    order: list[tuple[bool, str]] = []
+
+    def visit(node: Any) -> None:
+        if isinstance(node, str):
+            order.append((False, node))
+        elif isinstance(node, dict):
+            for key, item in node.items():
+                order.append((True, _key_text(key)))
+                visit(item)
+        elif isinstance(node, (list, tuple)):
+            for item in node:
+                visit(item)
+        elif node is not None and not isinstance(node, (bool, int, float)):
+            order.append((False, str(node)))
+
+    visit(document)
+    if not any(_PEM_HINT in text for _, text in order):
+        return frozenset()
+    material: set[str] = set()
+    pending: list[tuple[int, int]] = []  # (the open string's index, `size` after it)
+    size = 0
+    for index, (is_key, text) in enumerate(order):
+        if pending and _PEM_HINT in text and _PEM_END.search(text) is not None:
+            reached = [opened for opened, after in pending if size - after <= PEM_BLOCK_MAX_CHARS]
+            if reached:
+                material.update(t for k, t in order[min(reached) + 1 : index + 1] if not k and t.strip())
+            pending = []
+        if not is_key:
+            size += len(text) + 1
+        if _open_key(text):
+            pending.append((index, size))
+    return frozenset(material)
+
+
 def redact_json(value: Any, *, indent: int | None = 2) -> Redacted:
     """One JSON value, masked by its structure as `JsonMasker` does, with the count."""
     return JsonMasker(value).json(value, indent=indent)
 
 
 def _mask_literals(text: str, literals: Iterable[str]) -> tuple[str, int]:
-    """Every occurrence of each literal, longest first, masked; and how many."""
+    """Every occurrence of each literal, in each written form, longest first, masked; and how many.
+
+    A FORM is the literal as written, or JSON-escaped once or twice
+    (`_literal_forms`): `/logs` and the artifact routes hand this raw JSON
+    text whenever a line is not decoded (cut, over `JSON_LINE_MAX_CHARS`, a
+    duplicate key, a prefix before the JSON), and in that text a literal
+    holding `"`, `\\` or a non-ASCII character is `\\"`, `\\\\`,
+    `\\u00e9`, so looking for it only as written served it in clear (the PR
+    #229 review, #227). Over decoded text an escaped form can only match where
+    a string holds the literal escaped again -- a JSON document inside a
+    string -- which is the literal too.
+    """
     count = 0
-    for literal in literals:
-        if literal and literal in text:
-            count += text.count(literal)
-            text = text.replace(literal, MASK)
+    for form in _forms_of(tuple(literals)):
+        if form in text:
+            count += text.count(form)
+            text = text.replace(form, MASK)
     return text, count
+
+
+#: A `\\uXXXX` escape, so its hex can be written upper case as some encoders do.
+_UNICODE_ESCAPE = re.compile(r"\\u[0-9a-f]{4}")
+
+
+@functools.lru_cache(maxsize=4096)
+def _literal_forms(literal: str) -> tuple[str, ...]:
+    """`literal` as written, and as JSON text writes it inside a string, once and twice.
+
+    Each level both ways `json.dumps` writes non-ASCII (`\\u00e9` and raw),
+    with upper-case hex, and with `/` as `\\/` (both are valid JSON escapes
+    other encoders choose). Twice, because an agent's stream-json line holds
+    a tool's JSON output as a string: one escape per level. A literal with no
+    character JSON escapes is the same text at every level.
+    """
+    forms = {literal}
+    if literal.isascii() and not any(ch in literal for ch in '"\\/') and all(ch >= " " for ch in literal):
+        return (literal,)
+    level = {literal}
+    for _ in range(2):
+        written: set[str] = set()
+        for form in level:
+            for ascii_only in (True, False):
+                escaped = json.dumps(form, ensure_ascii=ascii_only)[1:-1]
+                written.add(escaped)
+                written.add(_UNICODE_ESCAPE.sub(lambda m: "\\u" + m.group(0)[2:].upper(), escaped))
+                written.add(escaped.replace("/", "\\/"))
+        forms |= written
+        level = written
+    return tuple(sorted(forms, key=len, reverse=True))
+
+
+@functools.lru_cache(maxsize=256)
+def _forms_of(literals: tuple[str, ...]) -> tuple[str, ...]:
+    """Every form of every literal, longest first, so a form inside a longer one never masks first."""
+    forms = {form for literal in literals if literal for form in _literal_forms(literal)}
+    return tuple(sorted(forms, key=len, reverse=True))
+
+
+@functools.lru_cache(maxsize=256)
+def _encoded_forms(literals: tuple[str, ...]) -> tuple[bytes, ...]:
+    """`_forms_of` as the UTF-8 bytes a stored object holds them as (`straddled`)."""
+    return tuple(form.encode("utf-8", "surrogatepass") for form in _forms_of(literals))
 
 
 #: A log line longer than this is masked as text, never decoded: `json.loads`
@@ -797,6 +916,9 @@ def redact_lines(
         is masked by `redact`, in runs, so a private key printed over many
         lines is still one block. `inside_key` applies to the window's first
         run only, which is where a paged reader's look-back found the key open.
+        A credential-named JSON member in such text is then masked WHOLE
+        (`_mask_credential_members`, #227): the key/value rule alone took a
+        quoted value up to its first space and served the rest.
       * `literals`: values the task named as secret (`TaskMasking.literals`),
         masked after the rules wherever they appear, in every case above.
     """
@@ -812,9 +934,10 @@ def redact_lines(
             return
         body = "".join(run)
         scrubbed = redact(body, inside_key=inside_key and first_run)
-        masked, found = _mask_literals(scrubbed.text, literals)
+        members, whole = _mask_credential_members(scrubbed.text)
+        masked, found = _mask_literals(members, literals)
         pieces.append(masked)
-        count += scrubbed.count + found
+        count += scrubbed.count + whole + found
         run.clear()
         first_run = False
 
@@ -855,6 +978,278 @@ def redact_lines(
                 pieces.append(line)
     flush()
     return Redacted(text="".join(pieces), count=count)
+
+
+# --------------------------------------------------------------------------
+# Text that is JSON but was not decoded: a credential's member, masked whole
+# --------------------------------------------------------------------------
+#
+# WHY (the PR #229 review, #227). A line `redact_lines` does not decode -- one
+# over `JSON_LINE_MAX_CHARS`, one with a duplicate key, one a window cut, one
+# with text before its JSON -- goes to the text rules, whose key/value rule
+# takes a value up to its first space: a `password` member whose string held
+# two words served the second, and a `secret` member holding a list served
+# every word after the first word of its first element. The structural
+# walk masks those values WHOLE (`_masks_whole`), so the text path now does
+# too, for every `"KEY": value` member whose key names a credential
+# (`_CREDENTIAL_KEY`, the walk's rule): a string to its closing quote, a list
+# or an object to its closing bracket, at the escape depth the key is written
+# at -- `"k"` in a line, `\"k\"` inside a string of one. A value that does not
+# close on its line is masked to the end of the line. Over-masking where the
+# walk would not mask -- a `"max_tokens": "..."` string -- is the walk's own
+# choice for a string, and it is preferred to serving half a value.
+
+#: A JSON member's key at escape depth 0 (`"k"`), 1 (`\"k\"`) or deeper, and
+#: its colon. The key holds no quote or backslash: a credential's name never does.
+_MEMBER_KEY = re.compile(r'(?<!\\)(\\*)"([^"\\\n]{1,256})\1"[ \t]*:[ \t]*')
+#: What a container scan stops at.
+_CONTAINER_STOP = re.compile(r'["\[\]{}\n]')
+
+
+def _quote_depth(backslashes: int) -> int | None:
+    """The escape depth a quote preceded by this many backslashes delimits at: 0, 1, 3, 7..."""
+    depth = 0
+    while (1 << depth) - 1 < backslashes:
+        depth += 1
+    return depth if (1 << depth) - 1 == backslashes and depth <= 3 else None
+
+
+def _delimits(text: str, at: int, depth: int) -> bool:
+    """Whether the quote at `at` opens or closes a string at `depth`.
+
+    At depth 0 a quote closes when an even number of backslashes stand before
+    it; at depth `d` the run is `2**d - 1` more than a multiple of `2**(d+1)`.
+    """
+    run = 0
+    i = at - 1
+    while i >= 0 and text[i] == "\\":
+        run += 1
+        i -= 1
+    return run % (2 << depth) == (1 << depth) - 1
+
+
+def _string_end(text: str, quote: int, depth: int) -> tuple[int, bool]:
+    """Past the closing quote of the string opened at `quote`, and whether it closed on its line."""
+    at = quote + 1
+    while True:
+        close = text.find('"', at)
+        newline = text.find("\n", at)
+        if close < 0 or 0 <= newline < close:
+            return (len(text) if newline < 0 else newline), False
+        if _delimits(text, close, depth):
+            return close + 1, True
+        at = close + 1
+
+
+def _container_end(text: str, opened: int, depth: int) -> tuple[int, bool]:
+    """Past the bracket closing the container opened at `opened`, and whether it closed on its line."""
+    level = 0
+    at = opened
+    while True:
+        found = _CONTAINER_STOP.search(text, at)
+        if found is None:
+            return len(text), False
+        at = found.start()
+        char = text[at]
+        if char == "\n":
+            return at, False
+        if char == '"':
+            if _delimits(text, at, depth):
+                at, closed = _string_end(text, at, depth)
+                if not closed:
+                    return at, False
+                continue
+        elif char in "[{":
+            level += 1
+        else:
+            level -= 1
+            if level == 0:
+                return at + 1, True
+        at += 1
+
+
+def _member_value_end(text: str, key: re.Match[str]) -> tuple[int, int, bool] | None:
+    """`(start, end, closed)` of the string or container value after a member's key, else None.
+
+    `start` is the value's first character -- the bracket, or the first
+    character inside the quotes -- and `end` is past the closing quote's
+    delimiter or bracket, or the end of the line when it does not close.
+    """
+    run = key.group(1)
+    depth = _quote_depth(len(run))
+    if depth is None:
+        return None
+    at = key.end()
+    if text.startswith(run + '"', at):
+        quote = at + len(run)
+        end, closed = _string_end(text, quote, depth)
+        return quote + 1, end, closed
+    if text[at : at + 1] in ("[", "{"):
+        end, closed = _container_end(text, at, depth)
+        return at, end, closed
+    return None
+
+
+def _mask_credential_members(text: str) -> tuple[str, int]:
+    """Every credential-named JSON member's string or container value in `text`, masked whole.
+
+    The rule is in the comment block above. Run AFTER the text rules: where the
+    key/value rule already masked the value's first word the member is not
+    counted again, so one value is one count.
+    """
+    if '"' not in text or _CREDENTIAL_KEY.search(text) is None:
+        return text, 0
+    pieces: list[str] = []
+    count = 0
+    pos = 0
+    for key in _MEMBER_KEY.finditer(text):
+        if key.start() < pos or _CREDENTIAL_KEY.search(key.group(2)) is None:
+            continue
+        found = _member_value_end(text, key)
+        if found is None:
+            continue
+        start, end, closed = found
+        if text[start] in "[{":
+            inner = text[start + 1 : end - 1 if closed else end]
+            if not inner.strip(" \t\r,[]{}\"\\"):
+                continue  # `[]`, `{}`: nothing a credential could be
+            quote = key.group(1) + '"'
+            new, stop = quote + MASK + quote, end
+            already = inner.lstrip(" \t\r[{\"\\").startswith(MASK)
+        else:
+            stop = end - len(key.group(1)) - 1 if closed else end
+            inner = text[start:stop]
+            if not inner.strip() or inner == MASK:
+                continue  # a blank string, as `_masks_whole` draws it; or done already
+            new = MASK
+            already = inner.startswith(MASK)
+        pieces.append(text[pos:start])
+        pieces.append(new)
+        count += 0 if already else 1
+        pos = stop
+    if not pieces:
+        return text, 0
+    pieces.append(text[pos:])
+    return "".join(pieces), count
+
+
+# --------------------------------------------------------------------------
+# Where a window of stored text may be cut
+# --------------------------------------------------------------------------
+#
+# WHY (the PR #229 security review, #227). The paged routes (`inspect._align`:
+# `/logs`, `/artifacts/content`, a checkpoint's files) and the raw download
+# (`agent_output._redacted_text`) cut a window after whitespace so no TOKEN is
+# split. Two things cross whitespace and were split anyway, each half then
+# masked by nothing:
+#
+#   * a LEARNED LITERAL holding a newline or a space: cut at that newline,
+#     neither half is the literal, and both were served;
+#   * a CREDENTIAL'S NAME AND ITS VALUE: a line longer than a window, cut after
+#     the `=` after a `password` name and the space after it, served the
+#     value at the head of the next window, where no name stood before it. A
+#     quoted value holding a space, under a `password` member, the same.
+#
+# `straddled` is THE rule both windowings ask, so they cannot disagree: a
+# boundary falls inside such a span, or it does not. The tail of a window is
+# moved back before the span; a head a caller chose inside one is moved past
+# it. A span that may run past the bytes read (a literal's prefix ending
+# them, a name whose value was not read yet) counts as crossing: the window
+# is held back, never served half. Holding text for the next window costs
+# nothing; masking cannot help a half that matches no rule.
+
+#: A credential's name and the separator before its value, on one line:
+#: the name then `=` or `:`, the name quoted as a JSON key at any escape
+#: depth, a space before the separator allowed, or the name alone
+#: where the bytes read end (its `=` is not read yet). Latin-1 decoded, so a
+#: match's offsets are byte offsets. The name's runs are bounded so a long
+#: run of identifier characters costs linear time, not quadratic.
+_ASSIGNMENT = re.compile(
+    r'(?<![A-Za-z0-9_.-])(\\*)"?[A-Za-z0-9_.-]{0,128}?(?:' + _CREDENTIAL_WORD + r')[A-Za-z0-9_.-]{0,128}'
+    r'(?:\\*")?[ \t]*(?:(?P<sep>[=:])[ \t]*|\Z)',
+    re.IGNORECASE,
+)
+#: An unquoted value: what the key/value rule's value class takes, to its end.
+_BARE_VALUE = re.compile(r'[^\s",]*')
+
+
+def _assignment_end(line: str, name: re.Match[str], *, read_to_end: bool) -> int:
+    """Where the value after a credential's name ends in `line`; `len(line) + 1` when not read yet."""
+    unread = len(line) + 1 if read_to_end else len(line)
+    at = name.end()
+    if name.group("sep") is None or at >= len(line):
+        return unread
+    if line[at] == "[":
+        # `password=[ <v>`: the key/value rule's `[` -- or a JSON list.
+        bracket = _quote_depth(len(name.group(1)))
+        end, closed = _container_end(line, at, bracket if bracket is not None else 0)
+        return end if closed else unread
+    quoted = re.compile(r"\\*\"").match(line, at)
+    if quoted is not None:
+        depth = _quote_depth(quoted.end() - at - 1)
+        if depth is not None:
+            end, closed = _string_end(line, quoted.end() - 1, depth)
+            return end if closed else unread
+    if line[at] == "{":
+        end, closed = _container_end(line, at, 0)
+        return end if closed else unread
+    end = _BARE_VALUE.match(line, at).end()  # type: ignore[union-attr]
+    return unread if end >= len(line) else end
+
+
+def _literal_across(data: bytes, at: int, literals: tuple[str, ...]) -> tuple[int, int] | None:
+    """The span of a literal occurrence -- any written form -- that a boundary at `at` falls inside.
+
+    Found from the two bytes around the boundary: each place a form holds
+    them is a candidate occurrence, kept when it agrees with every byte of
+    `data` it overlaps. An occurrence may start before `data` or end after
+    it (a prefix ending the bytes read), which is the case that matters.
+    """
+    pair = data[at - 1 : at + 1]
+    span: tuple[int, int] | None = None
+    for form in _encoded_forms(literals):
+        size = len(form)
+        found = form.find(pair)
+        while 0 <= found <= size - 2:
+            begin = at - 1 - found
+            low, high = max(begin, 0), min(begin + size, len(data))
+            if data[low:high] == form[low - begin : high - begin]:
+                if span is None:
+                    span = (begin, begin + size)
+                else:
+                    span = (min(span[0], begin), max(span[1], begin + size))
+            found = form.find(pair, found + 1)
+    return span
+
+
+def straddled(data: bytes, at: int, literals: Iterable[str] = ()) -> tuple[int, int] | None:
+    """The span a window boundary before `data[at]` would cut through, or None.
+
+    `(start, end)` as offsets into `data`; `start` may be negative and `end`
+    past `len(data)` when the span runs beyond the bytes read. The rule is in
+    the comment block above. `literals`: the task's learned literals.
+    """
+    if at <= 0:
+        return None
+    spans: list[tuple[int, int]] = []
+    literal = _literal_across(data, at, tuple(literals))
+    if literal is not None:
+        spans.append(literal)
+    if data[at - 1 : at] != b"\n":
+        line_start = data.rfind(b"\n", 0, at) + 1
+        line_end = data.find(b"\n", at)
+        read_to_end = line_end < 0
+        line = data[line_start : len(data) if read_to_end else line_end].decode("latin-1")
+        for name in _ASSIGNMENT.finditer(line):
+            begin = line_start + name.start()
+            if begin >= at:
+                break
+            end = line_start + _assignment_end(line, name, read_to_end=read_to_end)
+            if begin < at < end:
+                spans.append((begin, end))
+    if not spans:
+        return None
+    return min(s for s, _ in spans), max(e for _, e in spans)
 
 
 def redact_detail(message: str, *, limit: int = 400) -> str:

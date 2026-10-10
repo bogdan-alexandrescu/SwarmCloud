@@ -153,12 +153,16 @@ if [[ -z "${PROVIDER}" ]]; then
   err "github_workload_identity_provider is empty; the provider's condition was not read"
 else
   # projects/<number>/locations/<loc>/workloadIdentityPools/<pool>/providers/<id>
-  IFS=/ read -r _ P_PROJECT _ P_LOCATION _ P_POOL _ P_ID <<<"${PROVIDER}"
+  # The resource name only ever carries the project NUMBER, and describe
+  # refuses a number ("set it to PROJECT ID instead", #980). The pool lives in
+  # var.project_id (terraform/bootstrap/wif.tf), which is common.sh's
+  # PROJECT_ID, so the number is discarded and PROJECT_ID is passed.
+  IFS=/ read -r _ _ _ P_LOCATION _ P_POOL _ P_ID <<<"${PROVIDER}"
   [[ -n "${P_ID:-}" ]] || die "cannot parse the provider name '${PROVIDER}'"
   run_quiet "gcloud iam workload-identity-pools providers describe" \
     gcloud iam workload-identity-pools providers describe "${P_ID}" \
     --workload-identity-pool="${P_POOL}" --location="${P_LOCATION}" \
-    --project="${P_PROJECT}" --format=json
+    --project="${PROJECT_ID}" --format=json
   CONDITION="$(jq -r '.attributeCondition // ""' "${WORK}/out")"
   if [[ -z "${CONDITION}" ]]; then
     FAILED=1
