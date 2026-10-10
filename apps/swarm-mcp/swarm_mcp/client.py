@@ -1609,6 +1609,85 @@ class SwarmClient:
             raise run_refusal(exc, run_id=run_id, sent_digest=plan_digest) from exc
         return unwrap_run(data, f"rejecting run {run_id}")
 
+    # -- the knowledge graph (lane KG7) -------------------------------------
+    def registration(self, owner: str, repo: str) -> dict[str, Any] | None:
+        """The caller's tenant's registration of `owner/repo`, or None.
+
+        Matched on the lower-cased `owner/repo` the API serves, because that
+        is how the API names one registration (`repositories.repo_id_for`);
+        the `repo_id` itself is a hash of the tenant, which this side does not
+        always know. Walks at most REGISTRATION_PAGES pages of
+        `GET /v1/repositories`: a tenant with more registrations than that is
+        answered None, the same as an unregistered repository.
+        """
+        wanted = f"{owner}/{repo}".lower()
+        token: str | None = None
+        for _ in range(REGISTRATION_PAGES):
+            query = urllib.parse.urlencode([("page_token", token)] if token else [])
+            data = self.request("GET", f"/v1/repositories?{query}", timeout=TERRITORY_TIMEOUT)
+            rows = data.get("repositories") if isinstance(data, dict) else None
+            if not isinstance(rows, list):
+                raise SwarmError(
+                    "GET /v1/repositories answered without a `repositories` list; this "
+                    "deployment has no registration route this client speaks to"
+                )
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                if f"{row.get('owner')}/{row.get('repo')}".lower() == wanted:
+                    return row
+            token = data.get("next_page_token") or None
+            if not token:
+                return None
+        return None
+
+    def territory(
+        self,
+        repo_id: str,
+        files: list[str],
+        *,
+        depth: int | None = None,
+        exclude_runs: Sequence[str] = (),
+        exclude_pull_requests: Sequence[int] = (),
+    ) -> dict[str, Any]:
+        """`POST /v1/repositories/{repo_id}/territory` (lane KG3): files -> the
+        territory a change to them reaches, its seams, and the open pull
+        requests and live issue-run steps that already hold part of it.
+
+        Read-only. The tenant is the route's (`tenant_scope`), never a
+        parameter here, and so is every token the route reads the forge with.
+        """
+        payload: dict[str, Any] = {"files": list(files)}
+        if depth is not None:
+            payload["depth"] = depth
+        if exclude_runs:
+            payload["exclude_runs"] = list(exclude_runs)
+        if exclude_pull_requests:
+            payload["exclude_pull_requests"] = list(exclude_pull_requests)
+        # `repo_id` is the API's own (`registration`), never a caller's text.
+        data = self.request(
+            "POST", f"/v1/repositories/{repo_id}/territory",
+            payload=payload, timeout=TERRITORY_TIMEOUT,
+        )
+        if not isinstance(data, dict) or not isinstance(data.get("named"), list):
+            raise SwarmError(
+                f"POST /v1/repositories/{repo_id}/territory answered without a `named` "
+                "list; this deployment's territory route is not the one this client speaks to"
+            )
+        return data
+
+
+#: How many pages of `GET /v1/repositories` `registration` reads before it
+#: gives up. A page is the API's default page size; ten covers every tenant
+#: this platform has, and a dispatch must not spend its latency on a listing.
+REGISTRATION_PAGES = 10
+
+#: Seconds one knowledge-graph read may take. The territory route reads the
+#: forge for open pull requests (seconds, `territory.OPEN_PULLS_TTL_SECONDS`
+#: caches it); a dispatch waits for it, so it is bounded well under the
+#: default 60.
+TERRITORY_TIMEOUT = 20
+
 
 def tenant_listing(client: Any) -> dict[str, Any]:
     """What `swarm tenants` and `swarm_tenants` show: the choices, one marked.

@@ -112,11 +112,13 @@ import base64
 import dataclasses
 import fnmatch
 import functools
+import hashlib
 import json
 import math
 import os
 import re
 import shutil
+import stat
 import sys
 import threading
 import time
@@ -126,6 +128,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator, NamedTuple, Sequence
 
+from swarm_common.config import Settings
 from swarm_common.models import EndCause, ProviderState, retries_exhausted, utcnow
 from swarm_common.profiles import (
     RESOURCE_CLASSES,
@@ -136,10 +139,13 @@ from swarm_common.profiles import (
 )
 from swarm_common.states import EventType, ParkReason, TaskState
 from swarm_redaction import KEY_VALUE as CREDENTIAL_KEY_VALUE
+from swarm_redaction import MASK as CREDENTIAL_MASK
 from swarm_redaction import RULES as CREDENTIAL_RULES
+from swarm_redaction import redact as redact_text
 
 from . import artifact_manifest as manifest_mod
 from . import children as children_mod
+from . import clonebundle as clonebundle_mod
 from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
@@ -180,10 +186,10 @@ from .checkpoint import (
 from .config import WorkerConfig
 from .control import (
     ARCHIVE_DIGEST_RE,
-    CHECKPOINT_DIGESTS_FIELD,
     CHILD_AWAIT_RESUMES_METADATA_KEY,
     ControlPlane,
     ControlSignals,
+    recorded_checkpoint_digests,
 )
 from .errors import (
     CheckpointError,
@@ -214,9 +220,11 @@ from .gitops import (
     PeerPin,
     branch_commits,
     clone_at_commit,
+    clone_from_bundle,
     commit_dirty,
     commit_tree_onto,
     fetch_branch_tip,
+    fetch_tip_onto_bundle,
     fold_agent_commits,
     hide_from_git,
     merge_branches,
@@ -228,6 +236,7 @@ from .gitops import (
     shallow_clone,
     summarize_work,
     verify_worker_authorship,
+    write_clone_bundle,
 )
 # The helpers every function in `gitops` builds its git commands from. Borrowed
 # rather than restated for `replay_agent_commits` below, so its commands carry
@@ -368,6 +377,13 @@ FORGE_UNREACHABLE = "forge_unreachable"
 #: delay keeps the retry from meeting the same outage at once. Bounded by
 #: `max_attempts`, like every retry.
 FORGE_UNREACHABLE_RETRY_DELAY_SECONDS = 60
+#: How long `_cleanup` waits for a clone bundle's upload (#940) before the
+#: workspace holding the file is destroyed. A bundle is capped at
+#: `clone_bundle_max_bytes` (512 MiB) and goes over Private Google Access,
+#: seconds even at the cap; 30 s covers a slow one without holding a finished
+#: attempt's container for long. Abandoning it costs the next step a forge
+#: clone and nothing else: a write-once upload that never finished is no object.
+CLONE_BUNDLE_UPLOAD_JOIN_SECONDS = 30
 #: Why the worker refused a forge write the task's credential does not allow
 #: (docs/onboarding.md §3.3 steps 3-4, #780 lane OB5). Worker vocabulary in
 #: the error text and `result_summary.forge_check`, like the three above; the
@@ -444,6 +460,14 @@ CONTROL_PLANE_OUTAGE = "control_plane_outage"
 #: mints them, and nothing that could make the derived branch name a path
 #: (`..`, `/`) or an option (a leading `-`).
 _TASK_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_\-]{0,127}$")
+
+#: The most steps one workflow may have, read from the FROZEN `Settings`
+#: default rather than restated. It bounds the walk back along `builds_on`
+#: (`Worker._builds_on_base`, #978): each step of the chain is a distinct
+#: step of one workflow, so a longer chain is a document nobody of ours wrote.
+_MAX_WORKFLOW_STEPS: int = next(
+    f.default for f in dataclasses.fields(Settings) if f.name == "max_workflow_steps"
+)
 _FULL_SHA_RE = re.compile(r"[0-9a-f]{40}")
 
 #: How `forge.open_pull_request` words the forge's own refusal of a pull
@@ -735,6 +759,10 @@ class Worker:
         # kill the test runner. Returns the PIDs still alive after the reap --
         # empty means clean, non-empty means refuse to publish.
         self.reap_before_publish: Callable[[], tuple[int, ...]] = self._default_reap
+        # The clean publish repository's `.git/config` as the worker built it,
+        # keyed by the repository (`_build_clean_repo`), re-checked after the
+        # second reap before the credential-bearing publish (#346 box 40).
+        self._publish_config_seals: dict[str, str | None] = {}
         # A worker action's seams (#295): the forge transport (None is the
         # real, no-redirect one in `forge._open`), the environment its Job's
         # forge record is read from, and the bounded pause between two
@@ -794,6 +822,16 @@ class Worker:
         # on -- the question every debugging of a wrong workflow output starts
         # with, and one the workspace cannot answer because it is destroyed.
         self._staged_inputs: list[inputs_mod.StagedInput] = []
+        # The declared inputs NOT staged because their upstream left nothing
+        # to stage -- a no-change step's patch, anything of a skipped step --
+        # while another input of this step changed something (#978). Each is
+        # `{task_id, filename, left}`, and `result_summary` names them.
+        self._inputs_left_nothing: list[dict[str, str]] = []
+        # Where this step starts when it `builds_on` a step that left nothing
+        # (`_builds_on_base`, #978): (the task whose branch is cloned, or ""
+        # for the default branch; the no-change steps walked past). None
+        # until resolved.
+        self._builds_on_resolved: tuple[str, list[str]] | None = None
         # The verdict this step's gate read (#264), as `result_summary` and the
         # pull request report it; None for a step with no gate.
         self._verdict: dict[str, Any] | None = None
@@ -949,6 +987,10 @@ class Worker:
         # what the agent start reads to say whether this attempt cloned.
         self._clone_marked = False
         self._agent_start_marked = False
+        # The clone bundle's write-once upload (#940), off the start path:
+        # started by `_write_clone_bundle` once the clone is bundled, joined,
+        # bounded, by `_cleanup` before the workspace holding the file goes.
+        self._bundle_upload: threading.Thread | None = None
         # The workflow base pin (`_upstream_base_pin`): what this step's clone
         # started from and why, `result_summary.git.base_pin`. None for a root
         # step, a non-workflow task, a step that starts from an upstream
@@ -4139,13 +4181,15 @@ class Worker:
             refuse(reason="the recording attempt is another tenant's")
             return None
         listed = attempt.get("checkpoints") if attempt else None
-        digests = attempt.get(CHECKPOINT_DIGESTS_FIELD) if attempt else None
+        # `Attempt.checkpoint_sha256` in its typed shape (contract request 51).
+        # Empty when the document has none -- written before #348 -- which is
+        # "no digest recorded", so the retry starts clean.
+        digests = recorded_checkpoint_digests(attempt)
         if (
             attempt is None
             or attempt.get("task_id") != self.cfg.task_id
             or not isinstance(listed, list)
             or record.checkpoint_id not in listed
-            or not isinstance(digests, dict)
             or digests.get(record.checkpoint_id) != record.archive_sha256
         ):
             self.log.error(
@@ -4153,8 +4197,7 @@ class Worker:
                 attempt_id=record.attempt_id,
                 checkpoint_id=record.checkpoint_id,
                 attempt_document=attempt is not None,
-                digest_recorded=isinstance(digests, dict)
-                and record.checkpoint_id in digests,
+                digest_recorded=record.checkpoint_id in digests,
             )
             refuse(reason="no attempt document of this task lists the checkpoint")
             return None
@@ -4277,7 +4320,11 @@ class Worker:
         pr_branch = (
             self._pr_author_branch() if self._pr_role() in ("reader", "amender") else ""
         )
-        builds_on = "" if pr_branch else self._dispatch_builds_on()
+        declared_builds_on = "" if pr_branch else self._dispatch_builds_on()
+        # A `builds_on` step that left nothing pushed no branch: this step
+        # starts from the nearest ancestor that did, or from the default
+        # branch exactly as a step with no `builds_on` does (#978).
+        builds_on = self._builds_on_base() if declared_builds_on else ""
         continued = "" if pr_branch else continuation_mod.clone_ref(
             task.get("metadata"), self.cfg.git_branch_prefix
         )
@@ -4383,7 +4430,26 @@ class Worker:
                 and forge_credential_refused(exc),
             )
 
-        if pinned_sha is not None:
+        # CLONE BUNDLES (#940, docs/clone-bundles.md). #721 measured a median
+        # 36.6 s TCP connect to GitHub per clone against 1.7 s of transfer. A
+        # commit some earlier step of this tenant cloned is in a one-commit
+        # bundle under `tenants/<own tenant>/bundles/`, read over Private
+        # Google Access with this worker's own credentials (`self.store`, the
+        # tenant's service account: invariant 9). A pinned step clones from it
+        # and never contacts the forge; a branch-tip step seeds from the
+        # branch's last bundle and fetches only the delta. Any miss or bundle
+        # error is today's clone, below, unchanged. An index run's deep clone
+        # neither reads nor writes one: its 90 days are not a checkout.
+        history_days = indexrun_mod.clone_history_days(self.cfg.runner_profile)
+        bundle = self._bundle_record(history_days)
+        if pinned_sha is not None and bundle["miss_reason"] is None:
+            # No `retry`, no token and no egress wait: nothing here reaches
+            # the forge, which is the whole point.
+            clone = self._clone_pinned_from_bundle(
+                url=url, ref=ref, sha=pinned_sha, destination=destination, record=bundle,
+            )
+
+        if pinned_sha is not None and clone is None:
             try:
                 clone = retry(lambda: clone_at_commit(
                     url=url,
@@ -4401,7 +4467,7 @@ class Worker:
             except GitTransient as exc:
                 # Not a fall back to the branch tip: the tip is on the same
                 # forge, and an unpinned clone would be a silent change of base.
-                self._mark_clone_timed(None, tries=tries, pinned=True)
+                self._mark_clone_timed(None, tries=tries, pinned=True, bundle=bundle)
                 self._mark_egress_ready()
                 raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
             except GitError as exc:
@@ -4410,7 +4476,7 @@ class Worker:
                     # refuses to trust. The parent's head is not on the
                     # branch any more, which only a force push or a deleted
                     # branch does -- neither of them this platform's.
-                    self._mark_clone_timed(None, tries=tries, pinned=True)
+                    self._mark_clone_timed(None, tries=tries, pinned=True, bundle=bundle)
                     self._mark_egress_ready()
                     raise WorkerError(
                         f"repository clone failed: this step starts from task "
@@ -4429,6 +4495,28 @@ class Worker:
                 )
                 self._base_pin = {"pinned": False, "reason": "fetch_failed"}
         pinned_clone = clone is not None
+        if (
+            clone is None and pinned_sha is None and ref and not pr_branch
+            and bundle["miss_reason"] is None
+        ):
+            # A branch tip: seeded from the branch's last bundle, then the
+            # delta from the forge, through the same `retry` -- the same
+            # tries, waits, credential re-read and `try_log` as the clone
+            # below. A `single-pr` reader or amender is left exactly as it was.
+            try:
+                clone = self._clone_tip_onto_bundle(
+                    url=url, ref=ref, destination=destination, record=bundle,
+                    retry=retry, token=clone_token, peers=peers,
+                )
+            except GitTransient as exc:
+                # The forge did not answer the delta fetch through every try.
+                # Not a second round against the same outage from a full
+                # clone: the attempt ends retryably, as that clone's would.
+                self._mark_clone_timed(
+                    None, tries=tries, pinned=False, source="bundle+delta", bundle=bundle
+                )
+                self._mark_egress_ready()
+                raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         try:
             clone = clone or retry(lambda: shallow_clone(
                 url=url,
@@ -4447,14 +4535,14 @@ class Worker:
                 peers=peers,
                 # An index run reads 90 days of history (hot spots,
                 # co-change); every other step stays one commit deep.
-                history_days=indexrun_mod.clone_history_days(self.cfg.runner_profile),
+                history_days=history_days,
             ))
         except GitTransient as exc:
-            self._mark_clone_timed(None, tries=tries, pinned=False)
+            self._mark_clone_timed(None, tries=tries, pinned=False, bundle=bundle)
             self._mark_egress_ready()
             raise _CloneUnreachable(self._scrub(str(exc)[-600:]), exc.tries) from exc
         except GitError as exc:
-            self._mark_clone_timed(None, tries=tries, pinned=False)
+            self._mark_clone_timed(None, tries=tries, pinned=False, bundle=bundle)
             self._mark_egress_ready()
             based = (
                 f"; this step builds on task {builds_on}, whose branch {ref} is "
@@ -4473,7 +4561,16 @@ class Worker:
                     f"tenant git token because {refusal}"
                 ) from exc
             raise WorkerError(f"repository clone failed: {exc}{based}") from exc
-        self._mark_clone_timed(clone, tries=tries, pinned=pinned_clone)
+        source = str(clone.phases.get("source") or "forge")
+        # Bundled BEFORE the agent starts, so the agent never touches what is
+        # bundled; uploaded off the start path. Never fails the step.
+        self._write_clone_bundle(
+            clone, url=url, source=source, record=bundle,
+            head_ref=ref if not pinned_clone else None,
+        )
+        self._mark_clone_timed(
+            clone, tries=tries, pinned=pinned_clone, source=source, bundle=bundle
+        )
         self._mark_egress_ready()
         self._repo_url = clone.url
         self._clone_base = clone.commit
@@ -4491,8 +4588,13 @@ class Worker:
             "ref": clone.ref,
             "commit": clone.commit,
         }
-        if builds_on:
-            info["builds_on"] = builds_on
+        if declared_builds_on:
+            info["builds_on"] = declared_builds_on
+        if self._builds_on_resolved is not None and self._builds_on_resolved[1]:
+            info["builds_on_resolved"] = {
+                "task_id": builds_on or None,
+                "left_nothing": list(self._builds_on_resolved[1]),
+            }
         if pr_branch:
             info["pr_role"] = self._pr_role()
         if carried:
@@ -4503,6 +4605,304 @@ class Worker:
         if refusal:
             info["git_token_refused"] = refusal
         return info
+
+    # -----------------------------------------------------------------------
+    # Clone bundles (#940, docs/clone-bundles.md)
+    # -----------------------------------------------------------------------
+
+    def _bundle_record(self, history_days: int | None) -> dict[str, Any]:
+        """`clone_timed.bundle`, begun: whether a bundle may be read at all, and why not.
+
+        `miss_reason` None means "look"; anything else is why this clone
+        neither reads nor writes one -- the kill switch
+        (`SWARM_CLONE_BUNDLES=0`) or an index run, whose clone is deepened to
+        its history window and is never one commit.
+        """
+        record: dict[str, Any] = {
+            "hit": False, "download_seconds": None, "bytes": None, "written": False,
+            "miss_reason": None,
+        }
+        if not self.cfg.clone_bundles_enabled:
+            record["miss_reason"] = "disabled"
+        elif history_days is not None:
+            record["miss_reason"] = "index_run"
+        return record
+
+    def _fetch_clone_bundle(self, url: str, sha: str, record: dict[str, Any]) -> Path | None:
+        """Download the bundle of `sha` from the worker's OWN tenant's prefix, or None.
+
+        The key is built from `self.cfg.tenant_id` -- this worker's, set by
+        dispatch, never the task's input -- so a tenant only ever reads what
+        its own steps wrote (invariant 9), and the read is `self.store`, the
+        tenant's own service account, over Private Google Access. The file
+        goes to `ws.private`, which the agent is never handed.
+        """
+        assert self.ws is not None
+        key = clonebundle_mod.bundle_key(self.cfg.tenant_id, url, sha)
+        if isinstance(key, clonebundle_mod.NoKey):
+            record["miss_reason"] = "no_key"
+            self.log.info("clone bundle: none can be keyed", reason=key.reason)
+            return None
+        path = self.ws.private / f"{sha}{clonebundle_mod.BUNDLE_SUFFIX}"
+        started = time.monotonic()
+        size = clonebundle_mod.fetch_bundle(
+            self.store, key, path, self.cfg.clone_bundle_max_bytes, log=self.log
+        )
+        record["download_seconds"] = round(time.monotonic() - started, 3)
+        if size is None:
+            record["miss_reason"] = "miss"
+            return None
+        record["bytes"] = size
+        return path
+
+    @staticmethod
+    def _with_download(clone: CloneResult, seconds: float) -> CloneResult:
+        """The clone's time with the bundle's download in it: `clone_timed`'s
+        `seconds` and `total_seconds` are then what the step waited, which is
+        #940's acceptance number."""
+        total = float(clone.phases.get("total_seconds") or clone.duration_seconds)
+        return dataclasses.replace(
+            clone,
+            duration_seconds=float(clone.duration_seconds) + seconds,
+            phases={**clone.phases, "total_seconds": round(total + seconds, 3)},
+        )
+
+    def _clone_pinned_from_bundle(
+        self, *, url: str, ref: str | None, sha: str, destination: Path,
+        record: dict[str, Any],
+    ) -> CloneResult | None:
+        """A pinned sha from its bundle, without contacting the forge; None to
+        clone it from the forge as before (a miss, an over-cap bundle, or any
+        error from the bundle -- the destination is emptied first)."""
+        assert self.ws is not None
+        path = self._fetch_clone_bundle(url, sha, record)
+        if path is None:
+            return None
+        try:
+            clone = clone_from_bundle(
+                bundle=path, url=url, branch=ref, commit=sha, destination=destination,
+                private_dir=self.ws.private, logs_dir=self.ws.logs,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds, logger=self.log,
+            )
+        except Exception as exc:  # noqa: BLE001 -- any bundle failure is today's clone
+            record["miss_reason"] = "bundle_error"
+            gitops_mod._empty_directory(Path(destination))
+            self.log.warning(
+                "clone bundle: the bundle did not clone; cloning from the forge",
+                commit=sha, error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"),
+            )
+            return None
+        finally:
+            path.unlink(missing_ok=True)
+        record["hit"] = True
+        return self._with_download(clone, float(record["download_seconds"] or 0.0))
+
+    def _clone_tip_onto_bundle(
+        self, *, url: str, ref: str, destination: Path, record: dict[str, Any],
+        retry: Callable[[Callable[[], CloneResult]], CloneResult],
+        token: Callable[[], str | None], peers: PeerPin,
+    ) -> CloneResult | None:
+        """A branch's tip: its last bundle, then only the delta from the forge.
+
+        The forge IS contacted (the tip is only known there), through the
+        caller's `retry` -- every try re-seeds from the downloaded bundle,
+        which is local and cheap, because a refused try empties the folder.
+        None to clone as before: no head pointer, no bundle, or any failure
+        that is not the forge's outage (the destination emptied first). A
+        `GitTransient` that outlasted the tries is raised: a full clone would
+        meet the same forge.
+        """
+        assert self.ws is not None
+        ws = self.ws
+        head = clonebundle_mod.head_key(self.cfg.tenant_id, url, ref)
+        if isinstance(head, clonebundle_mod.NoKey):
+            record["miss_reason"] = "no_key"
+            return None
+        seed = clonebundle_mod.read_head(self.store, head, log=self.log)
+        if seed is None:
+            record["miss_reason"] = "no_head"
+            return None
+        path = self._fetch_clone_bundle(url, seed, record)
+        if path is None:
+            return None
+        common = dict(private_dir=ws.private, logs_dir=ws.logs,
+                      timeout_seconds=self.cfg.git_clone_timeout_seconds, logger=self.log)
+
+        def seed_then_delta() -> CloneResult:
+            seeded = clone_from_bundle(bundle=path, url=url, branch=ref, commit=seed,
+                                       destination=destination, **common)
+            tip = fetch_tip_onto_bundle(destination=destination, url=url, ref=ref,
+                                        token=token(), egress=self._egress, peers=peers,
+                                        **common)
+            local = float(seeded.duration_seconds)
+            total = float(tip.phases.get("total_seconds") or tip.duration_seconds)
+            return dataclasses.replace(
+                tip,
+                duration_seconds=float(tip.duration_seconds) + local,
+                phases={**tip.phases, "total_seconds": round(total + local, 3),
+                        "source": "bundle+delta"},
+            )
+
+        try:
+            clone = retry(seed_then_delta)
+        except GitTransient:
+            gitops_mod._empty_directory(Path(destination))
+            raise
+        except Exception as exc:  # noqa: BLE001 -- any other failure is today's clone
+            record["miss_reason"] = "bundle_error"
+            gitops_mod._empty_directory(Path(destination))
+            self.log.warning(
+                "clone bundle: the branch tip did not land onto the bundle; "
+                "cloning from the forge",
+                ref=ref, error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"),
+            )
+            return None
+        finally:
+            path.unlink(missing_ok=True)
+        record["hit"] = True
+        record["seed_commit"] = seed
+        return self._with_download(clone, float(record["download_seconds"] or 0.0))
+
+    def _write_clone_bundle(
+        self, clone: CloneResult, *, url: str, source: str, record: dict[str, Any],
+        head_ref: str | None,
+    ) -> None:
+        """Bundle a depth-1 clone whose commit has no bundle yet, and upload it once.
+
+        "Written once per sha, by whoever clones first": the upload's
+        `ifGenerationMatch=0` precondition (`clonebundle.publish_bundle`).
+        The bundle is written HERE, before the agent starts, so the agent
+        never touches what is bundled; it holds one commit's objects and one
+        ref, never the clone's config, remote URL or credential file, and
+        its object carries a content type only -- no forge token reaches the
+        bundle or its metadata. The upload, and the branch's head pointer
+        after it (`head_ref`: an unpinned branch clone), run in a thread
+        `_cleanup` joins, bounded, so the agent never waits on them. NEVER
+        RAISES: a cache that could not be written costs the next step a
+        forge clone, never this step its outcome.
+        """
+        if record["miss_reason"] in ("disabled", "index_run") or source == "bundle":
+            return  # nothing to write: off, deep, or the bundle just read
+        if clone.empty or not clone.commit or self.ws is None:
+            return
+        ws = self.ws
+        commit = clone.commit
+        key = clonebundle_mod.bundle_key(self.cfg.tenant_id, url, commit)
+        head = (clonebundle_mod.head_key(self.cfg.tenant_id, url, head_ref)
+                if head_ref else None)
+        if isinstance(key, clonebundle_mod.NoKey):
+            return
+        if isinstance(head, clonebundle_mod.NoKey):
+            head = None
+        out = ws.private / f"{commit}.upload{clonebundle_mod.BUNDLE_SUFFIX}"
+        copy: Path | None = None
+        try:
+            known = source == "bundle+delta" and record.get("seed_commit") == commit
+            if not known:
+                try:
+                    known = bool(self.store.exists(key))
+                except Exception:  # noqa: BLE001 -- unknown: the precondition decides
+                    known = False
+            if known:
+                # Its bundle is there; only the branch's pointer may lag.
+                if head is not None and record.get("seed_commit") != commit:
+                    self._start_bundle_upload(None, None, head, commit)
+                return
+            started = time.monotonic()
+            bundled_from = Path(clone.path)
+            if source == "bundle+delta":
+                # The delta fetch leaves the seed's commit in `.git/shallow`
+                # beside the tip's, and a bundle is one commit deep: bundle a
+                # depth-1 local copy of the tip instead (no forge contact).
+                copy = ws.private / "clone-bundle-source"
+                self._depth_one_copy(bundled_from, copy)
+                bundled_from = copy
+            write_clone_bundle(
+                clone=bundled_from, commit=commit, out=out, private_dir=ws.private,
+                logs_dir=ws.logs, timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                logger=self.log,
+            )
+            record["write_seconds"] = round(time.monotonic() - started, 3)
+            record["written"] = True
+            self._start_bundle_upload(key, out, head, commit)
+        except Exception as exc:  # noqa: BLE001 -- a cache write never fails the step
+            out.unlink(missing_ok=True)
+            self.log.warning(
+                "clone bundle: not written", commit=commit,
+                error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"),
+            )
+        finally:
+            if copy is not None:
+                shutil.rmtree(copy, ignore_errors=True)
+
+    def _depth_one_copy(self, repository: Path, copy: Path) -> None:
+        """A depth-1 local clone of `repository`'s HEAD at `copy`: no checkout,
+        no token, no forge -- `file://` of a folder on this disk."""
+        assert self.ws is not None
+        shutil.rmtree(copy, ignore_errors=True)
+        env, config_args, _ = gitops_mod._clone_env("", None, self.ws.private, self.log)
+        gitops_mod._run_git_steps(
+            [["git", *config_args, "clone", "--quiet", "--no-checkout", "--depth", "1",
+              "--no-tags", f"file://{Path(repository).absolute()}", str(copy)]],
+            url="", token=None, private_dir=self.ws.private, env=env, logs_dir=self.ws.logs,
+            timeout_seconds=self.cfg.git_clone_timeout_seconds, logger=self.log,
+            label="git-bundle-copy",
+        )
+
+    def _start_bundle_upload(
+        self, key: str | None, source: Path | None, head: str | None, commit: str
+    ) -> None:
+        """The write-once upload, then the head pointer, in a thread. Never raises."""
+
+        def upload() -> None:
+            try:
+                written = False
+                if key is not None and source is not None:
+                    written = clonebundle_mod.publish_bundle(
+                        self.store, key, source, self.cfg.clone_bundle_max_bytes, log=self.log
+                    )
+                    self.log.info(
+                        "clone bundle published" if written
+                        else "clone bundle not published (already there, or refused)",
+                        commit=commit,
+                    )
+                # The pointer moves only to a bundle that is there: one this
+                # call wrote, or one that already was (`source` None).
+                if head is not None and (written or source is None):
+                    clonebundle_mod.publish_head(self.store, head, commit, log=self.log)
+            except Exception as exc:  # noqa: BLE001 -- a cache write never fails the step
+                self.log.warning("clone bundle: upload failed",
+                                 error=self._scrub(f"{type(exc).__name__}: {str(exc)[:300]}"))
+            finally:
+                if source is not None:
+                    source.unlink(missing_ok=True)
+
+        try:
+            thread = threading.Thread(target=upload, name="clone-bundle-upload", daemon=True)
+            thread.start()
+            self._bundle_upload = thread
+        except Exception as exc:  # noqa: BLE001 -- no thread, no upload; the step goes on
+            if source is not None:
+                source.unlink(missing_ok=True)
+            self.log.warning("clone bundle: the upload could not start",
+                             error=type(exc).__name__)
+
+    def _join_clone_bundle_upload(self) -> None:
+        """Wait, bounded, for the bundle's upload before the workspace goes.
+
+        Called by `_cleanup`, after the attempt's outcome is recorded, so the
+        upload never delays it. Bounded by `CLONE_BUNDLE_UPLOAD_JOIN_SECONDS`;
+        an upload still running then is abandoned with the process, and the
+        write-once precondition means a write that never finished is no
+        object at all, so the next step simply writes it.
+        """
+        thread, self._bundle_upload = self._bundle_upload, None
+        if thread is None:
+            return
+        thread.join(CLONE_BUNDLE_UPLOAD_JOIN_SECONDS)
+        if thread.is_alive():
+            self.log.warning("clone bundle: the upload outlasted its wait; abandoned",
+                             waited_seconds=CLONE_BUNDLE_UPLOAD_JOIN_SECONDS)
 
     def _fail_clone_unreachable(self, reason: str, tries: int) -> Outcome:
         """A retryable failure before the agent ran: the clone's forge did not answer.
@@ -4709,6 +5109,30 @@ class Worker:
         declared = inputs_mod.declared_inputs(task.get("metadata"))
         if not declared:
             return []
+        # AN INPUT WHOSE UPSTREAM LEFT NOTHING IS NOT STAGED, AND IS NAMED
+        # (#978). This step was not skipped, so another of its inputs changed
+        # something (`expected_mod.nothing_to_work_on`): the review of two
+        # implementers, one of which changed nothing, reviews the one patch
+        # that exists instead of failing on the one that was never written.
+        self._inputs_left_nothing = []
+        kept: list[inputs_mod.DeclaredInput] = []
+        for item in declared:
+            left = self._upstream_left(item.upstream_task_id)
+            if expected_mod.unstaged_left_nothing(item.filename, left):
+                self._inputs_left_nothing.append({
+                    "task_id": item.upstream_task_id, "filename": item.filename,
+                    "left": str(left),
+                })
+            else:
+                kept.append(item)
+        if self._inputs_left_nothing:
+            self.log.info(
+                "declared inputs not staged: their upstream steps left nothing",
+                left_nothing=[dict(i) for i in self._inputs_left_nothing],
+            )
+        declared = kept
+        if not declared:
+            return []
         staged = inputs_mod.stage_inputs(
             declared,
             work=ws.work,
@@ -4819,6 +5243,12 @@ class Worker:
         and the signed dispatch block's `builds_on`, `pr_author` (a
         `single-pr` reader or amender clones the author's branch), merge
         target and `integrates`. A step that names none reads nothing.
+
+        `builds_on` is passed apart from the other branches (#978): a step it
+        names that left nothing does not skip a step with another changed
+        input, which then starts from `_builds_on_base`. The read-only
+        contributors (`published_nothing`, #760) are passed so a review that
+        ran is not counted as a change to integrate.
         """
         block = self._dispatch_block()
         declared = (task.get("metadata") or {}).get("input_from")
@@ -4829,8 +5259,6 @@ class Worker:
         }
         branch_from: list[str] = []
         builds_on = self._dispatch_builds_on()
-        if builds_on:
-            branch_from.append(builds_on)
         author = block.get("pr_author")
         if self._pr_role() in ("reader", "amender") and isinstance(author, str) and (
             _TASK_ID_RE.match(author.strip())
@@ -4844,13 +5272,115 @@ class Worker:
             [t for t in self._dispatch_integrates() if _TASK_ID_RE.match(t)]
             if self._integration_is_pending() else []
         )
-        upstream = list(dict.fromkeys([*input_from, *branch_from, *integrates]))
+        upstream = list(dict.fromkeys(
+            [*input_from, *branch_from, *([builds_on] if builds_on else []), *integrates]
+        ))
         if not upstream:
             return []
-        left = {task_id: self._upstream_left(task_id) for task_id in upstream}
+        summaries = {task_id: self._succeeded_upstream_summary(task_id) for task_id in upstream}
+        left = {task_id: expected_mod.left_nothing(summaries[task_id]) for task_id in upstream}
+        read_only = [t for t in integrates if published_nothing(summaries[t])]
         return expected_mod.nothing_to_work_on(
             input_from=input_from, branch_from=branch_from, integrates=integrates, left=left,
+            builds_on=builds_on, read_only=read_only,
         )
+
+    def _builds_on_base(self) -> str:
+        """The task whose pushed branch this step starts from, or "" for the
+        default branch (#978).
+
+        The signed `builds_on`, when that step changed something -- or when
+        it cannot be read, so the clone meets the refusal it always did, with
+        its words. When it left nothing (`no_change`, or skipped) it pushed no
+        branch, and this step runs only because another of its inputs changed
+        (`_nothing_to_work_on`): the walk follows that step's OWN `builds_on`
+        back to the nearest ancestor that pushed, and with none, the default
+        branch -- the base that step itself started from.
+
+        Each ancestor whose dispatch block is followed is read through the
+        tenant-checked upstream read and its signed spec verified as a step of
+        THIS workflow (`specverify.upstream_verifier`, as a worker action
+        verifies its upstreams), because its `builds_on` decides what this step
+        clones. One that does not verify, cannot be read, or names something
+        that is not a task id is a refusal naming it -- never a silent fall
+        back to the default branch. The walk is bounded by the workflow's step
+        count and refuses a cycle.
+        """
+        if self._builds_on_resolved is not None:
+            return self._builds_on_resolved[0]
+        declared = self._dispatch_builds_on()
+        walked: list[str] = []
+        base = declared
+        if declared:
+            raw_workflow = (self._task or {}).get("workflow_id")
+            verify = specverify.upstream_verifier(
+                self.cfg, raw_workflow if isinstance(raw_workflow, str) else None
+            )
+            current = declared
+            base = ""
+            for _ in range(_MAX_WORKFLOW_STEPS):
+                try:
+                    document = inputs_mod.fetch_upstream_task(
+                        self.db, upstream_task_id=current, tenant_id=self.cfg.tenant_id,
+                        call_options=self.control.call_options(),
+                    )
+                except InputUnavailable as exc:
+                    if current == declared:
+                        base = declared
+                        break
+                    raise WorkerError(
+                        f"this step builds on task {declared}, which left nothing to "
+                        f"build on; its ancestor {current} could not be read ({exc}), "
+                        "so the branch to start from is unknown and nothing was cloned"
+                    ) from exc
+                summary = (
+                    document.get("result_summary")
+                    if document.get("state") == TaskState.SUCCEEDED.value else None
+                )
+                if expected_mod.left_nothing(summary) is None:
+                    base = current
+                    break
+                walked.append(current)
+                try:
+                    verify(current, document)
+                except specverify.UpstreamSpecUnverified as exc:
+                    raise WorkerError(
+                        f"this step builds on task {declared}, which left nothing to "
+                        f"build on, and the signed spec of task {current} did not "
+                        f"verify ({exc.why}); its builds_on is not trusted to choose "
+                        "the branch to start from, so nothing was cloned"
+                    ) from exc
+                metadata = document.get("metadata")
+                block = metadata.get("dispatch") if isinstance(metadata, dict) else None
+                raw = block.get("builds_on") if isinstance(block, dict) else None
+                if raw is None or (isinstance(raw, str) and not raw.strip()):
+                    break
+                if not isinstance(raw, str) or not _TASK_ID_RE.match(raw.strip()):
+                    raise WorkerError(
+                        f"this step builds on task {declared}, which left nothing to "
+                        f"build on, and task {current}'s dispatch block names builds_on "
+                        f"{str(raw)[:80]!r}, which is not a task id; nothing was cloned"
+                    )
+                current = raw.strip()
+                if current in walked or current == self.cfg.task_id:
+                    raise WorkerError(
+                        f"this step builds on task {declared}, and the builds_on chain "
+                        f"from it returns to task {current}; nothing was cloned"
+                    )
+            else:
+                raise WorkerError(
+                    f"this step builds on task {declared}, and the builds_on chain from "
+                    f"it is longer than a workflow's {_MAX_WORKFLOW_STEPS} steps; "
+                    "nothing was cloned"
+                )
+        self._builds_on_resolved = (base, walked)
+        if walked:
+            self.log.info(
+                "builds_on: the step this one builds on left nothing; starting from "
+                + (f"task {base}'s branch" if base else "the default branch"),
+                builds_on=declared, left_nothing=walked, base=base or None,
+            )
+        return base
 
     def _finish_nothing_to_change(self, upstream: list[str]) -> Outcome:
         """End this step SUCCEEDED, SKIPPED for "nothing to change" (2026-10-05).
@@ -5140,7 +5670,9 @@ class Worker:
         so nothing writes the `pr-title.txt` an integrator owes. In order:
 
           1. the implementer's own `pr-title.txt` and `pr-body.md` -- the
-             uploaded artifacts of the `builds_on` step, located through the
+             uploaded artifacts of the `builds_on` step (or, when that step
+             changed nothing, of the step this one started from, else the
+             first contributor that changed something; #978), located through the
              tenant-checked upstream read and its successful attempt's
              manifest (`inputs.artifact_reference`, whose key must lie under
              this tenant's prefix for that task), at most
@@ -5160,6 +5692,12 @@ class Worker:
         assert ws is not None and self._verdict is not None
         source: dict[str, str | None] = {"title": None, "body": None}
         upstream = self._dispatch_builds_on()
+        if upstream and self._upstream_left(upstream) is not None:
+            # The step this one builds on changed nothing (#978): its text,
+            # if any, describes no change. The ancestor this step started
+            # from, else the first contributor that changed something.
+            changed = self._integrates_with_changes()
+            upstream = self._builds_on_base() or (changed[0] if changed else "")
         document: dict[str, Any] | None = None
         if upstream:
             try:
@@ -7319,7 +7857,13 @@ class Worker:
             )
 
     def _mark_clone_timed(
-        self, clone: CloneResult | None, *, tries: list[dict[str, Any]], pinned: bool
+        self,
+        clone: CloneResult | None,
+        *,
+        tries: list[dict[str, Any]],
+        pinned: bool,
+        source: str = "forge",
+        bundle: dict[str, Any] | None = None,
     ) -> None:
         """`clone_timed`: where the clone's time went (#667, lane OB1). Once per attempt.
 
@@ -7349,6 +7893,15 @@ class Worker:
         (`gitops.PeerPin`), and the top level the last try's two peers and
         `peer_pinned`, true when any try ran pinned to the probe's address.
         Distinct from `pinned`, which is the workflow BASE pin.
+
+        WHERE THE COMMIT CAME FROM (#940): `source` is `bundle` (the tenant's
+        clone bundle, no forge contact), `bundle+delta` (the branch's last
+        bundle, then the delta from the forge) or `forge` (today's clone);
+        `bundle` is `{hit, download_seconds, bytes, written, miss_reason}`
+        (and `write_seconds` when this step bundled its clone). For a bundle
+        hit `seconds` and `total_seconds` include the download, so
+        `total_seconds` is what the step waited for its repository -- the
+        issue's acceptance number. A bundle hit made no forge try: `tries` 0.
         """
         if self._clone_marked:
             return
@@ -7366,6 +7919,8 @@ class Worker:
             **(clone.phases if clone is not None else {}),
         }
         last = log[-1] if log else {}
+        timings["source"] = source
+        timings["bundle"] = dict(bundle) if bundle is not None else self._bundle_record(None)
         timings.setdefault("probe_peer", last.get("probe_peer"))
         timings.setdefault("git_peer", last.get("git_peer"))
         timings["peer_pinned"] = any(bool(entry.get("peer_pinned")) for entry in log)
@@ -9505,6 +10060,7 @@ class Worker:
                 clone=repo, workspace_root=ws.root, home=ws.work, logger=self.log
             ),
         )
+        self._publish_config_seals[str(publish_repo)] = _config_seal(publish_repo)
         return publish_repo
 
     def _publish_git(
@@ -9699,6 +10255,27 @@ class Worker:
                 surviving_pids=list(survivors),
             )
             return out
+        # THE PUBLISH REPOSITORY IS STILL THE ONE THE WORKER BUILT (#346 box
+        # 40, security pass 2026-10-09). A repository the harvest built after
+        # the FIRST reap sat on disk until this second one; anything that ran
+        # in between could have written its `.git/config` -- a
+        # `core.sshCommand`, a credential helper, a remote, an `include` --
+        # which every git below reads with the tenant token in hand. No such
+        # process should exist (the first reap's escape is closed), so this
+        # is the belt: the config must be byte for byte what
+        # `_build_clean_repo` left, a regular file and not a link, or nothing
+        # is published.
+        if publish_repo is not None:
+            sealed = self._publish_config_seals.get(str(publish_repo), "unsealed")
+            if sealed == "unsealed" or _config_seal(publish_repo) != sealed:
+                out["published"] = False
+                out["publish_reason"] = (
+                    "refusing to publish: the publish repository's .git/config changed "
+                    "between the harvest and the pre-publish reap; the tenant credential "
+                    "is not put in hand with a configuration the worker did not write"
+                )
+                self.log.error("refusing to publish: the publish repository's config changed")
+                return out
 
         auto_committed = False
         folded = 0
@@ -11003,6 +11580,15 @@ class Worker:
             }
         if self._staged_inputs:
             summary["staged_inputs"] = [item.as_dict() for item in self._staged_inputs]
+        if self._inputs_left_nothing:
+            summary["staged_inputs_left_nothing"] = [dict(i) for i in self._inputs_left_nothing]
+        if self._builds_on_resolved is not None and self._builds_on_resolved[1]:
+            # Where a step that builds on a no-change step started (#978).
+            summary["builds_on_resolved"] = {
+                "builds_on": self._dispatch_builds_on(),
+                "task_id": self._builds_on_resolved[0] or None,
+                "left_nothing": list(self._builds_on_resolved[1]),
+            }
         # This dict becomes `task.result_summary`, a Firestore document that
         # every reader of the task can see. It is scrubbed on the way out for
         # the same reason the files above are.
@@ -11422,6 +12008,8 @@ class Worker:
             # single release point for every exit path -- see
             # `_release_account`.
             ("release_account", self._release_account),
+            # Before the workspace: the bundle being uploaded is in it.
+            ("join_clone_bundle_upload", self._join_clone_bundle_upload),
             ("destroy_workspace", destroy_workspace),
         ):
             try:
@@ -11700,8 +12288,9 @@ LeakPredicate = Callable[[str, str], "CredentialHit | None"]
 #: The rule name a refusal gives for a task's registered secret.
 REGISTERED_SECRET_RULE = "registered_secret"
 
-#: The new-file start line of a `-U0` hunk header: `@@ -a[,b] +c[,d] @@`.
-_HUNK_NEW_START = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)")
+#: The new-file start line, and line count, of a `-U0` hunk header:
+#: `@@ -a[,b] +c[,d] @@`.
+_HUNK_NEW_START = re.compile(r"@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))?")
 
 
 def _first_difference(original: str, scrubbed: str) -> int:
@@ -11769,6 +12358,14 @@ class _DiffLeakScanner:
         self._buf: list[str] = []
         self._buf_len = 0
         self._carry = ""
+        # WHERE EACH FILE GAINED LINES (#361 box 79): the new file's path
+        # (unquoted) to its added line ranges, `(first line, count)`, one per
+        # hunk. `-U0` shows no line the branch kept, so an added key body
+        # between an unchanged BEGIN/END pair carries no marker here; the
+        # caller reads the new file around these ranges
+        # (`_added_inside_a_private_key`).
+        self.added: dict[str, list[tuple[int, int]]] = {}
+        self._added_key = ""
 
     def feed(self, data: bytes) -> None:
         if self.hit is None:
@@ -11855,13 +12452,20 @@ class _DiffLeakScanner:
             self._add("\n")
         elif self._mode == "header":
             name = self._header_line[4:].rstrip("\r")
-            if len(name) > 1 and name.startswith('"') and name.endswith('"'):
+            quoted = len(name) > 1 and name.startswith('"') and name.endswith('"')
+            if quoted:
                 name = name[1:-1]
             self._path = name[2:] if name.startswith("b/") else name
+            self._added_key = _c_unquote(self._path) if quoted else self._path
         elif self._mode == "hunk":
             start = _HUNK_NEW_START.match(self._header_line)
             if start is not None:
                 self._hunks.append((self._file_lines, int(start.group(1))))
+                count = 1 if start.group(2) is None else int(start.group(2))
+                if count and self._added_key and self._added_key != "/dev/null":
+                    self.added.setdefault(self._added_key, []).append(
+                        (int(start.group(1)), count)
+                    )
         self._mode, self._head, self._header_line = None, "", ""
 
     # -- scanning ------------------------------------------------------------
@@ -11909,6 +12513,177 @@ class _DiffLeakScanner:
             self._scan(last=True)
         self._carry = ""
         self._file_lines, self._window_line, self._hunks = 0, 0, []
+        self._added_key = ""
+
+
+def _config_seal(repo: Path) -> str | None:
+    """A digest of `repo/.git/config`, read without following a link, or None
+    when it is missing or is not a regular file (#346 box 40)."""
+    try:
+        fd = os.open(Path(repo) / ".git" / "config", os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as handle:
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            return None
+        return hashlib.sha256(handle.read()).hexdigest()
+
+
+def _c_unquote(body: str) -> str:
+    """A path git C-quoted in a diff header (the quotes already removed), as
+    the path itself: `\\t`, `\\"`, `\\\\` and octal byte escapes undone."""
+    simple = {"a": 7, "b": 8, "t": 9, "n": 10, "v": 11, "f": 12, "r": 13, '"': 34, "\\": 92}
+    raw = body.encode("utf-8", "surrogateescape")
+    out = bytearray()
+    i = 0
+    while i < len(raw):
+        byte = raw[i]
+        if byte == 92 and i + 1 < len(raw):
+            following = chr(raw[i + 1])
+            if following in simple:
+                out.append(simple[following])
+                i += 2
+                continue
+            octal = raw[i + 1 : i + 4]
+            if len(octal) == 3 and all(48 <= b <= 55 for b in octal):
+                out.append(int(octal, 8) & 0xFF)
+                i += 4
+                continue
+        out.append(byte)
+        i += 1
+    return out.decode("utf-8", "replace")
+
+
+def _private_key_spans(text: str) -> list[tuple[int, int]]:
+    """The spans of `text` main's private-key rule masks, as `(start, end)`.
+
+    `swarm_redaction.rules.mask_private_keys` (decoded=False, not inside a
+    key), step for step and with its own helpers, so "inside a key" means
+    exactly what the private-key rule means everywhere else on the platform
+    (owner decision, 2026-10-01). A test rebuilds `mask_private_keys`'s output
+    from these spans for every shape it masks.
+    """
+    from swarm_redaction.rules import _PEM_BEGIN, _PEM_END, _PEM_HINT, _block_end, _tail_start
+
+    if _PEM_HINT not in text:
+        return []
+    ends = [(m.start(), m.end()) for m in _PEM_END.finditer(text)]
+    end_starts = [start for start, _ in ends]
+    end_ends = [end for _, end in ends]
+    spans: list[tuple[int, int]] = []
+
+    def orphans(low: int, high: int) -> None:
+        piece = text[low:high]
+        if _PEM_HINT not in piece:
+            return
+        pos = 0
+        # An orphan END is a key's tail even with nothing before it to take
+        # (`_mask_orphan_ends`, #361 box 82): its span may be empty.
+        for marker in _PEM_END.finditer(piece):
+            start = _tail_start(piece, marker.start(), pos)
+            spans.append((low + start, low + marker.start()))
+            pos = marker.start()
+
+    pos = search = 0
+    while True:
+        begin = _PEM_BEGIN.search(text, search)
+        if begin is None:
+            break
+        orphans(pos, begin.start())
+        stop = _block_end(text, begin.end(), end_starts, end_ends, to_end=False)
+        spans.append((begin.end(), stop))
+        pos = stop
+        search = max(stop, begin.end())
+    orphans(pos, len(text))
+    return spans
+
+
+#: The most of one file the private-key context check reads (#361 box 79). A
+#: bigger file holding a key marker, with lines added to it, is refused: the
+#: check cannot tell, so it fails closed.
+KEY_CONTEXT_MAX_BYTES = 32 * 1024 * 1024
+#: How many paths one `git grep` is given.
+_KEY_CONTEXT_PATHS_PER_GREP = 200
+
+
+def _added_inside_a_private_key(
+    added: dict[str, list[tuple[int, int]]],
+    *,
+    git: list[str],
+    rev: str,
+    repo: Path,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+) -> ScanHit | None:
+    """The first added line that falls inside a private key of the NEW file
+    `rev` holds, or None (#361 box 79, security pass 2026-10-09).
+
+    The scans read a `-U0` diff, which shows no line the branch kept: a key
+    body put between an existing, unchanged BEGIN/END pair (a test stub
+    replaced by a real key) adds no marker, so the private-key rule never saw
+    one, and the key was published. This asks the whole new file instead:
+    `git grep` names the files at `rev` holding a marker; for each that gained
+    lines, the file is streamed (never stored) and main's private-key spans
+    (`_private_key_spans`) are laid over the added ranges. An added line
+    inside a span is refused as `private_key_block`, on its line.
+    """
+    if not added:
+        return None
+    from swarm_redaction.rules import _PEM_HINT
+
+    kwargs: dict[str, Any] = {
+        "repo": repo, "private_dir": private_dir, "logs_dir": logs_dir,
+        "timeout_seconds": timeout_seconds, "logger": logger,
+    }
+    paths = sorted(added)
+    marked: list[str] = []
+    for index in range(0, len(paths), _KEY_CONTEXT_PATHS_PER_GREP):
+        chunk = paths[index : index + _KEY_CONTEXT_PATHS_PER_GREP]
+        code, listing, truncated = _git_text_full(
+            [*git, "grep", "-l", "-z", "--no-color", "--no-textconv", "-F", "-e", _PEM_HINT,
+             rev, "--", *(":(literal)" + path for path in chunk)],
+            slug="publish-key-context-grep", **kwargs,
+        )
+        # `git grep` exits 1 when nothing matched.
+        if code not in (0, 1) or truncated:
+            raise GitError("could not search the branch's files for private-key markers")
+        prefix = rev + ":"
+        for entry in listing.split("\0"):
+            if entry:
+                marked.append(entry[len(prefix):] if entry.startswith(prefix) else entry)
+    for path in marked:
+        ranges = added.get(path)
+        if not ranges:
+            continue
+        chunks: list[bytes] = []
+        size = [0]
+
+        def keep(data: bytes) -> None:
+            if size[0] <= KEY_CONTEXT_MAX_BYTES:
+                chunks.append(data)
+            size[0] += len(data)
+
+        code = _git_stream(
+            [*git, "cat-file", "blob", f"{rev}:{path}"],
+            slug="publish-key-context-read", consume=keep, **kwargs,
+        )
+        if code != 0:
+            raise GitError("could not read a file the branch adds lines to")
+        if size[0] > KEY_CONTEXT_MAX_BYTES:
+            return ScanHit(path, "private_key_block", ranges[0][0])
+        text = b"".join(chunks).decode("utf-8", "replace")
+        spans = _private_key_spans(text)
+        if not spans:
+            continue
+        for start, end in spans:
+            first = text.count("\n", 0, start) + 1
+            last = first + text.count("\n", start, max(end - 1, start))
+            for line, count in ranges:
+                if line <= last and line + count - 1 >= first:
+                    return ScanHit(path, "private_key_block", max(line, first))
+    return None
 
 
 def _scan_diff_stream(
@@ -11922,8 +12697,16 @@ def _scan_diff_stream(
     slug: str,
     timeout_seconds: int,
     logger: Any,
+    new_rev: str | None = None,
+    git: list[str] | None = None,
 ) -> tuple[int, ScanHit | None]:
-    """Run a `git diff` and scan everything it adds; (exit code, the first hit or None)."""
+    """Run a `git diff` and scan everything it adds; (exit code, the first hit or None).
+
+    With `new_rev` (the diff's new side) and `git` (the git argv prefix), a
+    diff that added nothing credential-shaped is also asked whether an added
+    line sits inside a private key of the new file
+    (`_added_inside_a_private_key`, #361 box 79).
+    """
     scanner = _DiffLeakScanner(leaks, window=SCAN_WINDOW_CHARS, overlap=overlap)
     code = _git_stream(
         argv,
@@ -11935,7 +12718,13 @@ def _scan_diff_stream(
         logger=logger,
         consume=scanner.feed,
     )
-    return code, scanner.close()
+    hit = scanner.close()
+    if code == 0 and hit is None and new_rev is not None and git is not None:
+        hit = _added_inside_a_private_key(
+            scanner.added, git=git, rev=new_rev, repo=repo, private_dir=private_dir,
+            logs_dir=logs_dir, timeout_seconds=timeout_seconds, logger=logger,
+        )
+    return code, hit
 
 
 # -- the tiered, path-aware publish guard (#373) ------------------------------
@@ -11959,6 +12748,12 @@ def _scan_diff_stream(
 #   found inputs main refuses and the branch published. #373's real blocker
 #   was the generic key=value rule in redaction tests, not PEM markers; a
 #   test builds its marker at runtime.
+#   SECURITY PASS, 2026-10-09 (owner decision: un-deferred): main's rule is
+#   also laid over the WHOLE new file wherever an added line falls inside a
+#   key it holds (`_added_inside_a_private_key`, #361 box 79), and a free
+#   base64 blob that is key material without any marker -- encrypted-key
+#   ciphertext or a plaintext DER key -- is refused as
+#   `headerless_private_key` (`_headerless_key_at`, #361 box 80).
 # * TIER 2, outside test paths: the generic rules refuse as before, except
 #   for a REFERENCE (owner decisions, 2026-10-02; `_is_a_reference`): a value
 #   that is wholly one `${name}` slot, or -- not under a password name and
@@ -11966,7 +12761,9 @@ def _scan_diff_stream(
 #   KNOWN reference shape. Vendor rules are not relaxed.
 # * TIER 3, in test paths: a generic match refuses only when its value looks
 #   like a credential (`_looks_like_a_credential`). The loose tier is test
-#   CODE only (`is_test_path`).
+#   CODE only (`is_test_path`), never vendored third-party code (#361 box
+#   73), and a placeholder word counts only standing alone, beside nothing
+#   credential-shaped (#361 boxes 72 and 74).
 #
 # `swarm_redaction.RULES` is unchanged: read-time masking shares it, and a
 # false positive there costs one masked word, not a refused publish.
@@ -12013,9 +12810,19 @@ CREDENTIAL_MIN_CHARS = 16
 #: (`p4ssw0rd-p4ssw0rd` is 3.0) sit below.
 CREDENTIAL_MIN_ENTROPY_BITS = 3.5
 
-#: A value holding any of these is a placeholder, not a credential: a mask,
-#: a run of x, a `<name>` or `${VAR}` slot, or a word that says so.
-_PLACEHOLDER = re.compile(r"\*|x{4,}|<[^>]*>|\$\{[^}]*\}|fake|test|dummy|example", re.IGNORECASE)
+#: What marks a value as a placeholder rather than a credential: a mask, a run
+#: of x, a `<name>` or `${VAR}` slot, or a word that says so. A WORD COUNTS
+#: ONLY STANDING ALONE (#361 box 72, security pass 2026-10-09): bounded by a
+#: character that is not a letter or digit, or by the value's edge. As a
+#: substring it let `latest`, `attest` and any real value with `test` glued
+#: into it read as a fixture in a test path. And a placeholder does not hide
+#: what stands BESIDE it: `_looks_like_a_credential` judges each segment left
+#: once it is removed, so `db-test-<24 random characters>` is a credential and
+#: `fake-unmasked-credential-000` is not.
+_PLACEHOLDER = re.compile(
+    r"\*+|x{4,}|<[^>]*>|\$\{[^}]*\}|(?<![A-Za-z0-9])(?:fake|test|dummy|example)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
 
 #: Where a refusal names a private key: its first BEGIN or END marker.
 _PEM_MARKER = re.compile(r"-----(?:BEGIN|END) [A-Z ]*PRIVATE KEY-----")
@@ -12037,6 +12844,14 @@ _TEST_FILE = re.compile(r"(?:test_.+\..+|.+_test\..+|.+\.(?:test|spec)\..+)")
 #: NEVER a test path, even under `tests/`: the files real credentials live in.
 #: Matched against the file name; `*credential*` also against every directory.
 _NEVER_TEST_FILES = (".env*", "*.pem", "*.key", "*credential*", "*secret*.json")
+#: Directories that hold THIRD-PARTY code (#361 box 73, security pass
+#: 2026-10-09). A `test/` inside `node_modules/` or `vendor/` is a package's
+#: tests, not the agent's: the loose tier exists so the agent's own tests can
+#: assert on fixtures, and a vendored tree is copied in, not written to that
+#: end. Anything under one of these is judged strictly (compared lower-cased).
+_THIRD_PARTY_DIRS = frozenset(
+    {"node_modules", "vendor", "third_party", "third-party", "bower_components", "site-packages"}
+)
 
 
 def is_test_path(path: str) -> bool:
@@ -12048,8 +12863,9 @@ def is_test_path(path: str) -> bool:
     and it sits under a `tests/`, `test/` or `__tests__/` directory at any
     depth (case-insensitive) or is named `test_*`, `*_test.*`, `*.test.*` or
     `*.spec.*`. A file named `*credential*` -- or under a `*credential*`
-    directory -- never is. An empty or unknown path is not one: the guard
-    falls to its stricter tier when it cannot tell.
+    directory, or under a third-party directory (`_THIRD_PARTY_DIRS`) --
+    never is. An empty or unknown path is not one: the guard falls to its
+    stricter tier when it cannot tell.
     """
     if not path:
         return False
@@ -12060,6 +12876,8 @@ def is_test_path(path: str) -> bool:
     if any(fnmatch.fnmatchcase(name, pattern) for pattern in _NEVER_TEST_FILES):
         return False
     if any("credential" in part.lower() for part in parts[:-1]):
+        return False
+    if any(part.lower() in _THIRD_PARTY_DIRS for part in parts[:-1]):
         return False
     if any(part.lower() in _TEST_DIRS for part in parts[:-1]):
         return True
@@ -12080,15 +12898,25 @@ def _shannon_bits(value: str) -> float:
 def _looks_like_a_credential(value: str) -> bool:
     """True when `value` is shaped like a real credential rather than a
     fixture: at least `CREDENTIAL_MIN_CHARS` characters, letters AND digits,
-    at least `CREDENTIAL_MIN_ENTROPY_BITS` of entropy per character, and no
-    placeholder (`_PLACEHOLDER`)."""
+    at least `CREDENTIAL_MIN_ENTROPY_BITS` of entropy per character.
+
+    A value holding a placeholder (`_PLACEHOLDER`) is a fixture only when no
+    segment beside it -- what is left once the placeholders are removed,
+    split at every character that is not a letter or digit -- is itself
+    credential-shaped (#361 box 72): `test-password-123` and
+    `fake-unmasked-credential-000` are fixtures, `db-test-<random>` is not.
+    """
     if len(value) < CREDENTIAL_MIN_CHARS:
         return False
-    if _PLACEHOLDER.search(value):
-        return False
+    if _PLACEHOLDER.search(value) is not None:
+        rest = _PLACEHOLDER.sub(" ", value)
+        return any(_looks_like_a_credential(part) for part in _NOT_ALNUM.split(rest))
     if not any(c.isalpha() for c in value) or not any(c.isdigit() for c in value):
         return False
     return _shannon_bits(value) >= CREDENTIAL_MIN_ENTROPY_BITS
+
+
+_NOT_ALNUM = re.compile(r"[^A-Za-z0-9]+")
 
 
 def _decodes_as_a_jwt(token: str) -> bool:
@@ -12114,16 +12942,47 @@ def _decodes_as_a_jwt(token: str) -> bool:
     return isinstance(decoded, dict) and "alg" in decoded
 
 
-#: Words that mark a vendor-shaped fixture as one.
-_VENDOR_PLACEHOLDER = re.compile(r"example|test|fake|x{4,}", re.IGNORECASE)
+#: Words that mark a vendor-shaped fixture as one, each STANDING ALONE in the
+#: token (#361 box 74): an `sk-` key whose tail is `test-aaaa` says it is a
+#: fixture; an AWS key id ending `<12 random>TEST` only has the word glued to
+#: a real-shaped key.
+_VENDOR_PLACEHOLDER = re.compile(
+    r"(?<![A-Za-z0-9])(?:example|test|fake|dummy)(?![A-Za-z0-9])|x{4,}", re.IGNORECASE
+)
+#: The shortest segment beside a vendor placeholder that can be key material:
+#: a key's variable part is 16 to 40 random characters, and a fixture's
+#: segments are words, digit runs or a few letters (an `sk-` tail of
+#: `ant-test-0000`, a `ya29.` tail of `fake-access-token`).
+_VENDOR_SEGMENT_MIN_CHARS = 8
+#: The vendors' own documented example values, matched whole. AWS's access key
+#: id example glues EXAMPLE into the key, which box 74 no longer accepts from
+#: an arbitrary key; this value is the published one, nothing else.
+_DOCUMENTED_EXAMPLES = frozenset({"AKIA" + "IOSFODNN7" + "EXAMPLE"})
 
 
-def _is_explicit_placeholder(tail: str) -> bool:
-    """True when a vendor token's variable part says it is a fixture: it holds
-    EXAMPLE, test, fake or a run of four x, or is one repeated character."""
-    return (
-        _VENDOR_PLACEHOLDER.search(tail) is not None
-        or (len(tail) >= 4 and len(set(tail)) == 1)
+def _is_explicit_placeholder(tail: str, token: str = "") -> bool:
+    """True when a vendor token's variable part says it is a fixture: it is
+    one repeated character, the vendor's documented example (`token`), or it
+    holds a placeholder word standing alone or a run of four x AND no segment
+    left beside them is key-shaped (#361 box 74): at least
+    `_VENDOR_SEGMENT_MIN_CHARS` characters, six of them distinct, not only
+    digits, and mixing letters with digits or upper with lower case.
+    """
+    if token in _DOCUMENTED_EXAMPLES:
+        return True
+    if len(tail) >= 4 and len(set(tail)) == 1:
+        return True
+    if _VENDOR_PLACEHOLDER.search(tail) is None:
+        return False
+    return not any(
+        len(part) >= _VENDOR_SEGMENT_MIN_CHARS
+        and len(set(part)) >= 6
+        and not part.isdigit()
+        and (
+            (any(c.isdigit() for c in part) and any(c.isalpha() for c in part))
+            or (any(c.isupper() for c in part) and any(c.islower() for c in part))
+        )
+        for part in _NOT_ALNUM.split(_VENDOR_PLACEHOLDER.sub(" ", tail))
     )
 
 
@@ -12366,7 +13225,7 @@ def _match_counts(rule: Any, match: re.Match[str], in_tests: bool) -> bool:
         return True
     prefix = _VENDOR_PREFIX.match(match.group(0))
     tail = match.group(0)[prefix.end():] if prefix is not None else match.group(0)
-    return not _is_explicit_placeholder(tail)
+    return not _is_explicit_placeholder(tail, match.group(0))
 
 
 def _credential_in(path: str, added: str) -> CredentialHit | None:
@@ -12404,6 +13263,133 @@ def _credential_in(path: str, added: str) -> CredentialHit | None:
                 continue
             if _match_counts(rule, match, in_tests):
                 return CredentialHit(rule.name, start)
+    at = _headerless_key_at(added)
+    if at is not None:
+        return CredentialHit(HEADERLESS_KEY_RULE, at)
+    return None
+
+
+# -- key material with no marker in the added text (#361 box 80) --------------
+#
+# SECURITY PASS, 2026-10-09 (owner decision: the pass is un-deferred). The
+# private-key rule is main's `mask_private_keys`, which needs a BEGIN or END
+# marker in the text it is given. Traditional encrypted PEM ciphertext held in
+# a variable, with its `Proc-Type`/`DEK-Info` headers and markers built
+# somewhere else (another file, an unchanged line, a runtime join), carries no
+# marker, and was published. So the guard also refuses a free base64 blob
+# that IS key material on its own terms, in every path and tier:
+#
+# * ciphertext: at least `CIPHERTEXT_MIN_BYTES` decoded, a whole number of
+#   8-byte cipher blocks (DES, 3DES and AES-CBC, every cipher a traditional
+#   PEM names), random on both readings -- the base64 text at least
+#   `CIPHERTEXT_MIN_CHAR_BITS` per character, which no word, path or
+#   identifier reaches, and the bytes as varied as random bytes are -- and not
+#   a file format's magic (an image, an archive, a font);
+# * a plaintext DER private key: one DER SEQUENCE spanning the blob that opens
+#   with a key's version INTEGER (PKCS#1, SEC1, PKCS#8) or an encrypted
+#   PKCS#8's PBES algorithm. A certificate opens otherwise, and passes.
+#
+# A blob is the base64 runs a wrapped or concatenated literal is made of --
+# joined across whitespace, quotes, `+` and escaped newlines, never across a
+# `,` or `:` that separates two values -- and ends at its `=` padding.
+#
+# RESIDUAL RISK: a blob under 128 bytes, one cut by anything but those
+# joiners, base64url or any other encoding, and ciphertext deliberately padded
+# off the block size all pass. The guard stops a key committed by mistake or
+# by habit; an agent set on smuggling bytes past a pattern can always encode
+# them past it, and CI's secret scan still runs after the push.
+
+#: The rule name a refusal gives for headerless key material.
+HEADERLESS_KEY_RULE = "headerless_private_key"
+#: The smallest encrypted key: an EC P-256 key's DER is 121 bytes, padded to 128.
+CIPHERTEXT_MIN_BYTES = 128
+#: Uniform base64 over 172 characters measures about 5.7 bits a character;
+#: prose, identifiers and paths stay well under 5.
+CIPHERTEXT_MIN_CHAR_BITS = 5.2
+#: Leading bytes of formats that are high-entropy and are not keys.
+_NOT_KEY_MAGIC = (
+    b"\x89PNG", b"\xff\xd8\xff", b"GIF8", b"\x1f\x8b", b"PK\x03\x04", b"%PDF", b"wOFF",
+    b"wOF2", b"RIFF", b"\x00asm", b"BZh", b"\xfd7zXZ", b"\x28\xb5\x2f\xfd", b"OggS",
+    b"ID3", b"fLaC", b"7z\xbc\xaf", b"\x00\x00\x01\x00", b"\x1aE\xdf\xa3",
+)
+#: The DER that opens a private key's SEQUENCE: version 0 or 1 (PKCS#1, PKCS#8,
+#: SEC1), or an encrypted PKCS#8's PBES1/PBES2 (1.2.840.113549.1.5) or PKCS#12
+#: PBE (1.2.840.113549.1.12.1) algorithm.
+_DER_KEY_VERSION = (b"\x02\x01\x00", b"\x02\x01\x01")
+_DER_PBE_OIDS = (b"\x06\x09\x2a\x86\x48\x86\xf7\x0d\x01\x05", b"\x06\x0a\x2a\x86\x48\x86\xf7\x0d\x01\x0c\x01")
+#: One run of standard base64, at least 16 characters, with its padding.
+_BASE64_RUN = re.compile(r"[A-Za-z0-9+/]{16,}(={1,2})?")
+#: What may join two runs of one wrapped or concatenated literal.
+_BASE64_JOIN = re.compile(r"(?:[ \t\r\n\"'`+]|\\[nr])*")
+#: How far apart two runs of one literal may be.
+_BASE64_JOIN_MAX = 64
+_HEX_ONLY = re.compile(r"[0-9A-Fa-f]+")
+
+
+def _der_total(data: bytes) -> tuple[int, int] | None:
+    """(header length, total length) of the DER SEQUENCE `data` opens, or None."""
+    if len(data) < 2 or data[0] != 0x30:
+        return None
+    first = data[1]
+    if first < 0x80:
+        return 2, 2 + first
+    width = first - 0x80
+    if width == 0 or width > 3 or len(data) < 2 + width:
+        return None
+    return 2 + width, 2 + width + int.from_bytes(data[2 : 2 + width], "big")
+
+
+def _is_key_material(blob: str) -> bool:
+    """Whether one joined base64 blob is a private key or its ciphertext (box 80)."""
+    if len(blob) < (CIPHERTEXT_MIN_BYTES * 4 + 2) // 3:
+        return False
+    if len(blob.rstrip("=")) % 4 == 1 or _HEX_ONLY.fullmatch(blob):
+        return False
+    try:
+        raw = base64.b64decode(blob + "=" * (-len(blob) % 4))
+    except ValueError:
+        return False
+    der = _der_total(raw)
+    if der is not None and der[1] == len(raw):
+        inner = raw[der[0] :]
+        if inner.startswith(_DER_KEY_VERSION):
+            return True
+        nested = _der_total(inner)
+        return nested is not None and inner[nested[0] :].startswith(_DER_PBE_OIDS)
+    if len(raw) < CIPHERTEXT_MIN_BYTES or len(raw) % 8 or raw.startswith(_NOT_KEY_MAGIC):
+        return False
+    if not (any(c.isupper() for c in blob) and any(c.islower() for c in blob)
+            and any(c.isdigit() for c in blob)):
+        return False
+    if _shannon_bits(blob.rstrip("=")) < CIPHERTEXT_MIN_CHAR_BITS:
+        return False
+    # As varied as random bytes: half the distinct values a uniform draw of
+    # this many bytes is expected to show, and no more printable ASCII than
+    # three in five (uniform bytes are 37% printable).
+    expected = 256 * (1 - math.exp(-len(raw) / 256))
+    printable = sum(32 <= b < 127 for b in raw)
+    return len(set(raw)) >= expected / 2 and printable * 5 < len(raw) * 3
+
+
+def _headerless_key_at(added: str) -> int | None:
+    """Where the first headerless key blob in `added` starts, or None (box 80)."""
+    start = end = -1
+    pieces: list[str] = []
+    for run in _BASE64_RUN.finditer(added):
+        joined = (
+            pieces
+            and run.start() - end <= _BASE64_JOIN_MAX
+            and not pieces[-1].endswith("=")
+            and _BASE64_JOIN.fullmatch(added, end, run.start()) is not None
+        )
+        if not joined:
+            if pieces and _is_key_material("".join(pieces)):
+                return start
+            start, pieces = run.start(), []
+        pieces.append(run.group())
+        end = run.end()
+    if pieces and _is_key_material("".join(pieces)):
+        return start
     return None
 
 
@@ -12538,6 +13524,8 @@ def _first_leaking_commit(
             ],
             leaks=leaks,
             overlap=overlap,
+            new_rev=sha,
+            git=git,
             repo=repo,
             private_dir=private_dir,
             logs_dir=logs_dir,
@@ -12637,6 +13625,8 @@ def final_tree_leak(
         ],
         leaks=leaks,
         overlap=overlap,
+        new_rev="HEAD",
+        git=g,
         slug="publish-final-diff",
         **run_kwargs,
     )
@@ -12644,9 +13634,41 @@ def final_tree_leak(
         raise GitError("could not diff the branch against the clone base")
     if hit is not None:
         # The rule and the line tell the retry what to remove (#373); the
-        # value is never in it, and the caller scrubs the reason anyway.
+        # value is never in it, and the caller scrubs the reason anyway. The
+        # PATH is the agent's choice, so it is shown masked and cut
+        # (`_reason_path`, #361 box 71). The literal stays whole on one line:
+        # swarm-api's outcome classifier and its test read it.
+        hit = hit._replace(path=_reason_path(hit.path))
         return f"the final tree adds a credential in {hit.path} (rule {hit.rule}, line {hit.line}); remove it"
     return None
+
+
+#: The longest a refusal shows a file's path, in characters (#361 box 71).
+REASON_PATH_MAX_CHARS = 160
+#: A run of token characters in a path, judged as a possible credential.
+_PATH_TOKEN = re.compile(r"[A-Za-z0-9+=_\-]{16,}")
+
+
+def _reason_path(path: str) -> str:
+    """`path` as a refusal may show it (#361 box 71, security pass 2026-10-09).
+
+    The path is the AGENT's choice, and the reason reaches the task's error,
+    its result summary and the log, where the caller's scrub replaces only
+    REGISTERED secrets: a file named after a token it minted was echoed
+    whole. So the shown path has every non-printable character replaced, every
+    credential-shaped run masked -- `swarm_redaction.redact`'s rules (a
+    `ghp_` name) and any run `_looks_like_a_credential` accepts (a random
+    directory name) -- and is cut to `REASON_PATH_MAX_CHARS`, keeping the
+    end, where the file's own name is.
+    """
+    shown = "".join(c if c.isprintable() else "?" for c in path) or "a file"
+    shown = redact_text(shown).text
+    shown = _PATH_TOKEN.sub(
+        lambda m: CREDENTIAL_MASK if _looks_like_a_credential(m.group()) else m.group(), shown
+    )
+    if len(shown) > REASON_PATH_MAX_CHARS:
+        shown = "..." + shown[-(REASON_PATH_MAX_CHARS - 3) :]
+    return shown
 
 
 def replay_agent_commits(

@@ -20,21 +20,38 @@ wrong:
     skipped step wrote nothing at all.
   * A dependant that stages only the verification files of a no-change step
     still runs: those files exist.
+  * A step is skipped only when NONE of the changes it reads exists (#978).
+    Staging two patches, one from a step that changed something, it runs and
+    stages the one that exists; staging only no-change patches, it is
+    skipped. Building on a no-change step with another changed input, it
+    starts from the nearest ancestor along `builds_on` that pushed -- read
+    through the tenant-checked upstream read, its signed spec verified as
+    this workflow's -- or from the default branch, never from a branch that
+    was never pushed; an ancestor whose spec does not verify is refused by
+    name.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+import shutil
+import subprocess
+from pathlib import Path
+
 import pytest
 
 from agent_worker import expected_outputs as expected_mod
-from agent_worker.errors import ExitCode
+from agent_worker import lifecycle
+from agent_worker import workspace as workspace_mod
+from agent_worker.errors import ExitCode, WorkerError
 from agent_worker.lifecycle import PATCH_NAME
 from swarm_common.states import TaskState
 
+import spec_keys
 from worker_seeds import TENANT, seed_attempt
 from test_input_from import run_upstream
+from test_strategy_end_to_end import local_urls, origin  # noqa: F401 -- fixtures
 
 MISSING_CAUSES_KEY = "expected_outputs_missing_causes"
 
@@ -326,3 +343,200 @@ def test_a_dependant_of_a_step_that_changed_something_runs(
     assert worker.run() == ExitCode.OK
     assert "skipped" not in db.doc("tasks/task_2")["result_summary"]
     assert runner_inputs[-1]["task_id"] == "task_2"
+
+
+# ---------------------------------------------------------------------------
+# a step is skipped only when NONE of the changes it reads exists (#978)
+# ---------------------------------------------------------------------------
+#
+# wf_ca1807e43ac64d6b8afd: two implement steps, the review staging both
+# patches and building on the second, the integrator building on the second.
+# The second changed nothing, so the review was skipped for it and the
+# integrator was skipped in 0.4 s, while the first step's pushed branch was
+# never merged into anything.
+
+WORKFLOW = "wf_978"
+PATCH_TEXT = "diff --git a/a.txt b/a.txt\n+from the step that changed something\n"
+
+
+def _two_patches(db: Any) -> None:
+    _seed_dependant(
+        db,
+        input_from={"task_a": PATCH_NAME, "task_b": PATCH_NAME},
+        dispatch={"input_parents": {"task_a": "impl_a", "task_b": "impl_b"}},
+        depends_on=["task_a", "task_b"],
+    )
+
+
+def test_a_step_staging_two_patches_runs_when_one_upstream_changed(
+    db, worker_factory, runner_inputs
+):
+    run_upstream(db, worker_factory, task_id="task_a", attempt_id="att_a", lease_id="lease_a",
+                 artifact_name=PATCH_NAME, artifact_text=PATCH_TEXT)
+    _seed_upstream(db, "task_b", {"no_change": True, "artifacts": []})
+    _two_patches(db)
+    worker, _config, _ = worker_factory(task_id="task_2", attempt_id="att_2", lease_id="lease_2")
+
+    assert worker.run() == ExitCode.OK
+
+    task = db.doc("tasks/task_2")
+    assert task["state"] == TaskState.SUCCEEDED.value, task.get("last_error")
+    summary = task["result_summary"]
+    assert "skipped" not in summary
+    # Only the patch that exists was staged; the step that changed nothing is
+    # named, not refused as an input that could not be staged.
+    assert [(item["task_id"], item["path"]) for item in summary["staged_inputs"]] == [
+        ("task_a", f"impl_a/{PATCH_NAME}")
+    ]
+    assert summary["staged_inputs_left_nothing"] == [
+        {"task_id": "task_b", "filename": PATCH_NAME, "left": "no_change"}
+    ]
+    assert runner_inputs[-1]["task_id"] == "task_2"
+    assert [item["task_id"] for item in runner_inputs[-1]["staged_inputs"]] == ["task_a"]
+
+
+def test_a_step_staging_only_no_change_patches_is_skipped(db, worker_factory, monkeypatch):
+    _seed_upstream(db, "task_a", {"no_change": True, "artifacts": []})
+    _seed_upstream(db, "task_b", {"no_change": True, "artifacts": []})
+    _two_patches(db)
+
+    assert _run_without_an_agent(worker_factory, monkeypatch) == ExitCode.OK
+    _assert_skipped(db, ["task_a", "task_b"])
+
+
+def _git(cwd: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", *args],
+        cwd=str(cwd), check=True, capture_output=True,
+    )
+
+
+def _push_branch(origin: Path, tmp_path: Path, task_id: str, filename: str) -> None:
+    """Push `swarm/<task_id>`, holding `filename`, as that step's publish would."""
+    work = tmp_path / f"push-{task_id}"
+    subprocess.run(["git", "clone", "-q", str(origin), str(work)], check=True,
+                   capture_output=True)
+    _git(work, "checkout", "-qb", f"swarm/{task_id}")
+    (work / filename).write_text(f"work from {task_id}\n")
+    _git(work, "add", "-A")
+    _git(work, "commit", "-qm", f"{task_id} work")
+    _git(work, "push", "-q", "origin", f"swarm/{task_id}")
+
+
+def _seed_step_of_the_workflow(db: Any, task_id: str, summary: dict[str, Any], *,
+                               builds_on: str | None = None, sign: bool = True) -> None:
+    """A SUCCEEDED step of this workflow, signed as swarm-api signs one."""
+    dispatch: dict[str, Any] = {"strategy": "integrate", "role": "contributor"}
+    if builds_on:
+        dispatch["builds_on"] = builds_on
+    doc = {
+        "id": task_id, "task_id": task_id, "tenant_id": TENANT, "workflow_id": WORKFLOW,
+        "state": TaskState.SUCCEEDED.value, "runner_profile": "mock",
+        "input": {"prompt": "implement it"}, "metadata": {"dispatch": dispatch},
+        "result_summary": summary,
+    }
+    if sign:
+        spec_keys.sign_document(doc, task_id)
+    db.seed(f"tasks/{task_id}", doc)
+
+
+def _cloning_worker(worker_factory: Any, origin: Path, monkeypatch: Any,
+                    dispatch: dict[str, Any], input_from: dict[str, str]) -> tuple[Any, dict]:
+    worker, config, _ = worker_factory(
+        task_id="task_2", attempt_id="att_2", lease_id="lease_2",
+        repository_url=f"file://{origin}",
+    )
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    task = {
+        "task_id": "task_2", "workflow_id": WORKFLOW,
+        "metadata": {"input_from": input_from,
+                     "dispatch": {"carrier": "checkpoints", **dispatch}},
+    }
+    worker._task = task
+    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    return worker, task
+
+
+needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="git is not installed")
+
+
+@needs_git
+def test_builds_on_a_no_change_step_clones_the_nearest_ancestor_that_pushed(
+    db, worker_factory, monkeypatch, origin, local_urls, tmp_path
+):
+    # task_root pushed; task_mid built on it and changed nothing; this step
+    # builds on task_mid and integrates task_other, which changed something.
+    _push_branch(origin, tmp_path, "task_root", "root.txt")
+    _push_branch(origin, tmp_path, "task_other", "other.txt")
+    _seed_step_of_the_workflow(db, "task_root", {"git": {"published": True}})
+    _seed_step_of_the_workflow(db, "task_mid", {"no_change": True}, builds_on="task_root")
+    _seed_step_of_the_workflow(db, "task_other", {"git": {"published": True}})
+    worker, task = _cloning_worker(
+        worker_factory, origin, monkeypatch,
+        {"strategy": "integrate", "role": "integrator", "builds_on": "task_mid",
+         "integrates": ["task_root", "task_mid", "task_other"]},
+        {},
+    )
+
+    assert worker._nothing_to_work_on(task) == []
+    info = worker._maybe_clone(task)
+
+    assert info is not None and info["ref"] == "swarm/task_root"
+    assert info["builds_on"] == "task_mid"
+    assert info["builds_on_resolved"] == {"task_id": "task_root", "left_nothing": ["task_mid"]}
+    assert (worker.ws.work / lifecycle.REPO_DIR_NAME / "root.txt").is_file()
+
+
+@needs_git
+def test_builds_on_a_no_change_root_with_another_changed_input_clones_the_default_branch(
+    db, worker_factory, monkeypatch, origin, local_urls, tmp_path
+):
+    # The review of #978: it stages both implementers' patches and builds on
+    # the second, a root step that changed nothing and pushed no branch.
+    _push_branch(origin, tmp_path, "task_a", "a.txt")
+    _seed_step_of_the_workflow(db, "task_a", {"git": {"published": True}})
+    _seed_step_of_the_workflow(db, "task_b", {"no_change": True})
+    worker, task = _cloning_worker(
+        worker_factory, origin, monkeypatch,
+        {"strategy": "collect", "builds_on": "task_b",
+         "input_parents": {"task_a": "impl_a", "task_b": "impl_b"}},
+        {"task_a": PATCH_NAME, "task_b": PATCH_NAME},
+    )
+
+    assert worker._nothing_to_work_on(task) == []
+    info = worker._maybe_clone(task)
+
+    assert info is not None and info["ref"] != "swarm/task_b"
+    assert info["builds_on_resolved"] == {"task_id": None, "left_nothing": ["task_b"]}
+    repo = worker.ws.work / lifecycle.REPO_DIR_NAME
+    assert (repo / "README.md").is_file()
+    assert not (repo / "a.txt").exists()
+
+
+@needs_git
+def test_an_ancestor_whose_spec_does_not_verify_is_refused_by_name(
+    db, worker_factory, monkeypatch, origin, local_urls, tmp_path
+):
+    _push_branch(origin, tmp_path, "task_root", "root.txt")
+    _push_branch(origin, tmp_path, "task_other", "other.txt")
+    _seed_step_of_the_workflow(db, "task_root", {"git": {"published": True}})
+    # task_mid's dispatch block is what would name the branch to start from,
+    # and nobody signed it: it is not trusted, and not silently skipped over.
+    _seed_step_of_the_workflow(db, "task_mid", {"no_change": True}, builds_on="task_root",
+                               sign=False)
+    _seed_step_of_the_workflow(db, "task_other", {"git": {"published": True}})
+    worker, task = _cloning_worker(
+        worker_factory, origin, monkeypatch,
+        {"strategy": "integrate", "role": "integrator", "builds_on": "task_mid",
+         "integrates": ["task_mid", "task_other"]},
+        {},
+    )
+
+    with pytest.raises(WorkerError) as refused:
+        worker._maybe_clone(task)
+
+    message = str(refused.value)
+    assert "task_mid" in message
+    assert "did not verify" in message
+    assert "unsigned" in message
+    assert not (worker.ws.work / lifecycle.REPO_DIR_NAME / "root.txt").exists()

@@ -2534,8 +2534,27 @@ _WITHHELD = "withheld: the API did not say it masked this"
 
 def _section(value: Any = None, error: Exception | str | None = None) -> dict[str, Any]:
     if error is not None:
-        return {"value": None, "not_read_because": str(error)}
+        return {"value": None, "not_read_because": _unread_reason(error)}
     return {"value": value}
+
+
+def _unread_reason(error: Exception | str) -> str:
+    """Why a section was not read, WITHOUT the body of a response (#453).
+
+    A `SwarmError` raised for an HTTP answer quotes the API's or the edge's
+    error body in its message (`client._explain`), and that body comes with
+    no redaction count -- so, by `_shown`'s rule, it is withheld, and the
+    section says what the response WAS from the fields the client carries as
+    data: its status, whether Google's edge sent it, and the API's error
+    code. A reason with no status is a sentence the bridge wrote itself (a
+    transport failure, a log with no stream), and is printed.
+    """
+    status = getattr(error, "status", None)
+    if not isinstance(error, SwarmError) or status is None:
+        return str(error)
+    who = "Google's edge" if error.edge else "the API"
+    code = f" (code {error.code})" if error.code else ""
+    return f"{who} answered HTTP {status}{code}; its body is {_WITHHELD}"
 
 
 def _shown(text: Any, count: Any) -> Any:
@@ -2576,7 +2595,10 @@ def _log_tail(client: SwarmClient, task_id: str, attempt_id: str | None, lines: 
         if entry is None or entry.get("status") != "ok":
             status = entry.get("status") if entry else "absent"
             if status == "unreadable":
-                problems.append(f"{stream}: unreadable: {entry.get('detail')}")
+                # The route's `detail` is printed only under its count, like
+                # every other free-text field it serves (`_shown`, #453).
+                detail = _shown(entry.get("detail"), entry.get("detail_redaction_count"))
+                problems.append(f"{stream}: unreadable" + (f": {detail}" if detail else ""))
             continue
         total = entry.get("total_bytes")
         offset = max(0, int(total) - _DEBUG_TAIL_BYTES) if isinstance(total, int) else 0
