@@ -325,7 +325,8 @@ export function UrRadio<K extends string>({
   disabled?: boolean
 }) {
   return (
-    <div className="c-seg ur-radio" role="radiogroup" aria-label={label}>
+    // A whole group disabled is a value shown, not a choice refused: drawn read-only, at full contrast (V046).
+    <div className={disabled ? 'c-seg ur-radio is-readonly' : 'c-seg ur-radio'} role="radiogroup" aria-label={label} aria-readonly={disabled || undefined}>
       {options.map((o) => (
         <button
           key={o.key}
