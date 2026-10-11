@@ -72,6 +72,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 61 | `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57 | proposed |
 | 62 | `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI | proposed |
 | 63 | `profiles.py`: indexer runs on GKE_AUTOPILOT (canary for #939) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line |
+| 64 | `profiles.py`: generic runs on GKE_AUTOPILOT (#939 option A) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured |
+| 65 | `profiles.py`: codex runs on GKE_AUTOPILOT (#939 option A) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured |
+| 66 | `profiles.py`: merge runs on GKE_AUTOPILOT (#939 option A); post-verdict and claude-code-review stay on CLOUD_RUN_JOB | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured; conflicts with proposed request 60's item 2 (see 60's amendment) |
+| 67 | `profiles.py`: a `claude-code-browser` runner profile, claude-code on agent-runtime-browser | ACCEPTED by the owner 2026-10-11 and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -10309,6 +10313,18 @@ Nothing in today's catalogue: both worker-action profiles already satisfy
 all three. A future worker-action profile that wants a mounted secret or a
 GKE backend has to come back here, which is the point.
 
+**Amendment 2026-10-10 (contract request 66):** that is no longer true of
+item 2. Request 66 (accepted by the owner, option A of #939) moves `merge` to
+`GKE_AUTOPILOT`, so the `backend is not Backend.CLOUD_RUN_JOB` check written
+above would refuse the catalogue at import. Item 2's premise -- "a worker
+action's whole isolation is its own Cloud Run Job's service account" -- is
+contract requests 33 and 35's, and request 47 (owner, 2026-10-04) retired it
+for `merge`: merge runs as the tenant's worker account on either backend, the
+identity the GKE pod's KSA is bound to. If request 60 is accepted, item 2
+has to name the profiles that DO run as an account of their own
+(`post-verdict` today) instead of every worker action, or be dropped. Items 1
+and 3 are unaffected. The decision is the owner's.
+
 ### If it is declined
 
 The three stay one catalogue edit from live, held only by review: a
@@ -10574,3 +10590,274 @@ ephemeral-storage limit rather than by memory. Index runs share the
 - **Invariant 10.** Unchanged: a caller still names `indexer` and cannot choose
   where it runs.
 
+---
+
+## 64. `profiles.py`: generic runs on GKE_AUTOPILOT (#939 option A)
+
+**Status:** ACCEPTED by the owner 2026-10-10, option A of #939
+(`docs/incidents/2026-10-09-egress-open-delay.md`, PR 986), and APPLIED by the
+pull request that adds this entry. That pull request is HELD: the owner merges
+it after measuring request 63's indexer canary (PR 991, deployed 2026-10-10).
+Requests 64, 65 and 66 are the follow-up list request 63 recorded.
+
+### The measurement
+
+Request 63's: a new Cloud Run instance's internet path opens a median
+**20.2 s** after start (n=19), against GKE Autopilot's **1.17 s** (n=148),
+through the same Cloud NAT (`egress_ready_seconds`, #721 (a); PR 986). A
+generic task that names a repository clones it first, and `npm-ci` and
+`uv-sync` fetch from package registries, so the wait sits inside it.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, `_GENERIC_PROFILE` (the `"generic"`
+entry is built from it):
+
+```diff
+ _GENERIC_PROFILE = RunnerProfile(
+     name="generic",
+     image="agent-runtime-base",
+     resource_class="standard",
+-    backend=Backend.CLOUD_RUN_JOB,
++    backend=Backend.GKE_AUTOPILOT,
+```
+
+Nothing else in the frozen package changes for it. The GKE path needs nothing
+new: the dispatcher renders the default worker Job for any profile, with
+`agent-runtime-base` from `WORKER_IMAGE_REFS`; generic starts no model, so no
+MODEL. The runner child's HOME and TMPDIR are inside the workspace
+(`Workspace.child_env`), so npm's and uv's caches land on the `standard`
+class's 5 GiB disk workspace (`GKE_DISK`), as claude-code's do.
+
+The non-frozen follow-ups, in the same change: `terraform/infra/locals.tf`
+mirrors the backend and adds `generic` to `cloud_run_fallback_profiles`, so
+every tenant's `swarm-job-<tenant>-generic` Cloud Run Job stays, idle, as the
+rollback; `tests/terraform/catalogue.tftest.hcl` holds both;
+`tests/unit/control_plane/test_internet_profiles_on_gke.py` pins the backend;
+and the docs that named generic's backend name the new one.
+
+**The smoke suite's GKE row changes with it.** `scripts/smoke-test.sh` covers
+each backend with one profile, preferring one that needs no credential, so
+GKE_AUTOPILOT's row becomes `generic` (its fixture clones this public
+repository and runs `pytest`) instead of `browser`. That row now also proves
+the GKE internet path; it no longer submits a browser task or its page-load
+fixture check. `tests/unit/scripts/test_smoke_covers_every_backend.py`
+follows.
+
+### Rollback
+
+Set `_GENERIC_PROFILE`'s backend back to `Backend.CLOUD_RUN_JOB` and release.
+While `generic` is in `cloud_run_fallback_profiles` its Cloud Run Jobs still
+exist, so no Terraform apply is needed.
+
+### What it would break
+
+What request 63 recorded for indexer: Autopilot nodes can end a pod by
+auto-repair or pressure eviction, which extended run time does not suppress,
+and periodic checkpointing makes that cost minutes. A full workspace evicts
+the pod instead of failing a write with ENOSPC. Generic tasks share the
+`GKE_AUTOPILOT` backend ceiling (dev 100) with claude-code, browser and
+indexer.
+
+### Invariants
+
+- **Invariant 1.** Unchanged: a GKE pod is created only for a leased task.
+- **Invariant 2.** Unchanged: admission reserves the `GKE_AUTOPILOT` backend
+  pool instead of `CLOUD_RUN_JOB`, in the same single transaction.
+- **Invariants 3, 4, 5, 8.** Unchanged: the same worker ENTRYPOINT, the
+  generation in the pod's env and Job name, `backoffLimit: 0`.
+- **Invariant 6.** Preserved: no Spot; `safe-to-evict: "false"` on Job and pod.
+- **Invariant 7.** Preserved: the GKE manifest sets requests == limits.
+- **Invariant 9.** Unchanged: the tenant's namespace and KSA bound to its own
+  GSA, its own secrets and GCS prefix.
+- **Invariant 10.** Unchanged: a caller still names `generic` and cannot
+  choose where it runs.
+
+---
+
+## 65. `profiles.py`: codex runs on GKE_AUTOPILOT (#939 option A)
+
+**Status:** ACCEPTED by the owner 2026-10-10, option A of #939, and APPLIED
+by the pull request that adds this entry, held with request 64 until the
+indexer canary is measured.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, the `"codex"` entry:
+
+```diff
+     "codex": RunnerProfile(
+         name="codex",
+         image="agent-runtime-base",
+         resource_class="standard",
+-        backend=Backend.CLOUD_RUN_JOB,
++        backend=Backend.GKE_AUTOPILOT,
+```
+
+codex clones from GitHub and calls the OpenAI API, so request 64's
+measurement is its reason too. It is disabled (`available=False`, 2026-09-23),
+so nothing dispatches to it either way today; moving it now means re-enabling
+it is still one word, not one word and a backend switch. On GKE no secret is
+projected: the worker reads `swarm-tenant-<tenant>-openai` from Secret Manager
+itself (`agent_worker/secrets.py`) under the pod's KSA, as it reads
+claude-code's key. No MODEL: codex's CLI takes no Anthropic model name.
+
+The non-frozen follow-ups are request 64's: `locals.tf` mirrors the backend
+and adds `codex` to `cloud_run_fallback_profiles` (each tenant that registers
+`openai` keeps its `swarm-job-<tenant>-codex`), the catalogue test holds both,
+and the docs follow.
+
+### Rollback
+
+`codex`'s backend back to `Backend.CLOUD_RUN_JOB` and a release; its Jobs
+exist while it is in `cloud_run_fallback_profiles`.
+
+### What it would break
+
+Request 64's, should it be re-enabled.
+
+### Invariants
+
+As request 64: 1-8 unchanged or preserved by the same GKE manifest; 9 the
+tenant's own namespace, KSA and secret; 10 a caller still names `codex`.
+
+---
+
+## 66. `profiles.py`: merge runs on GKE_AUTOPILOT (#939 option A); post-verdict and claude-code-review stay on CLOUD_RUN_JOB
+
+**Status:** ACCEPTED by the owner 2026-10-10, option A of #939, and APPLIED
+by the pull request that adds this entry, held with request 64 until the
+indexer canary is measured. **It conflicts with proposed request 60's item 2**
+(see the amendment recorded there): the owner decides which gives way.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, the `"merge"` entry:
+
+```diff
+     "merge": RunnerProfile(
+         name="merge",
+         image="agent-runtime-base",
+         resource_class="standard",
+-        backend=Backend.CLOUD_RUN_JOB,
++        backend=Backend.GKE_AUTOPILOT,
+```
+
+A merge reads GitHub's checks and then merges, so every MERGE verdict paid a
+Cloud Run start and request 64's internet-path wait (#748). The incident's
+option A left `merge` out because request 60 would refuse a GKE worker action;
+that rule's reason is a worker action's own service account, and merge has
+had none since contract request 47 (owner, 2026-10-04): it runs as the
+tenant's worker account and reads the tenant's `-git` secret at merge time
+through `resolve_git_token`. On GKE the pod's KSA is bound to that same
+account, so it reads the same secret. The merge action reads no Job-rendered
+environment (`agent_worker/merge.py` takes its target from the task's
+`repository_url`), mounts no secret (`secrets=()`), and starts no runner.
+
+The non-frozen follow-ups are request 64's: `locals.tf` mirrors the backend
+and adds `merge` to `cloud_run_fallback_profiles` (each tenant that registers
+`git` keeps its `swarm-job-<tenant>-merge`, as
+`tests/terraform/merge_step_iam.tftest.hcl` already holds), the catalogue
+test holds the backend, and the docs follow.
+
+### What does not move, and why
+
+| profile | stays on `CLOUD_RUN_JOB` because |
+|---|---|
+| `post-verdict` | It was designed to run as its own Job's service account, `swarm-<tenant>-post-verdict` (request 35), and its action reads `FORGE_HOST`/`FORGE_OWNER`/`FORGE_REPO` and the review App's ids from the environment Terraform renders onto that Job (`agent_worker.forge.forge_target_from_env`). A GKE pod runs as the tenant's one worker KSA and carries neither. Disabled (`available=False`), no Job. |
+| `claude-code-review` | It was designed to run as its own account, `swarm-<tenant>-review` (request 36), which a GKE pod cannot be. Retired (`available=False`), no Job; request 50 decides whether it leaves the catalogue. |
+| `mock` | It reaches no internet. |
+
+Neither of the first two runs anywhere today, so nothing waits on them.
+
+### Rollback
+
+`merge`'s backend back to `Backend.CLOUD_RUN_JOB` and a release; its Jobs
+exist while it is in `cloud_run_fallback_profiles`.
+
+### What it would break
+
+Request 64's node-side costs, for a step bounded at 600 s. And request 60 as
+written: accepting it unchanged after this would make `__post_init__` refuse
+`merge`, so the catalogue would not import.
+
+### Invariants
+
+As request 64: 1-8 unchanged or preserved by the same GKE manifest. **9**
+unchanged: merge already ran as the tenant's worker account, now through its
+namespace's KSA; the `-git` token is still never mounted, written or logged.
+**10**: a caller still names `merge` and cannot choose where it runs.
+
+---
+
+## 67. `profiles.py`: a `claude-code-browser` runner profile, claude-code on agent-runtime-browser
+
+**Status:** ACCEPTED by the owner 2026-10-11, and APPLIED by the pull request
+that adds this entry.
+
+### Why
+
+An agent could not render or screenshot a page. `browser` is a scripted
+runner: it opens `input.url` or plays `input.actions` and needs one of them,
+so it cannot look at a page it has just built or follow a bug report's steps
+on its own judgement. `claude-code` can, but its image, agent-runtime-base,
+carries no Chromium. agent-runtime-browser (agent-runtime-base plus Playwright
+and Chromium, `images/agent-runtime-browser/Dockerfile`) is already built,
+scanned and promoted by every release. Visual QA and reproducing a UI bug
+need the agent and the browser in one pod.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, a new entry in `RUNNER_PROFILES`:
+
+```python
+"claude-code-browser": RunnerProfile(
+    name="claude-code-browser",
+    image="agent-runtime-browser",
+    resource_class="browser",
+    backend=Backend.GKE_AUTOPILOT,
+    runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+    provider="anthropic",
+    secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+    secrets_any_of=True,
+    timeout_seconds=7200,
+    inputs=_CLI_AGENT_INPUTS,
+),
+```
+
+It is `claude-code` in every field but three: its name; its image; and its
+resource class, `browser` (8 vCPU, 16 GiB, 2 units), because the image needs
+it: the GKE pod mounts a 2 GiB memory-medium tmpfs at `/dev/shm` for Chromium
+and that tmpfs counts against the memory limit before a tab is open. Its
+backend is GKE Autopilot, as claude-code's is and as the browser image's must
+be: Cloud Run cannot size `/dev/shm`. Its runner is claude-code's, so it
+takes the same prompt handling, the same `issue` input (request 28), the same
+credential choice and the same model (`local.runner_models`).
+
+The non-frozen follow-ups, in the same pull request: the Terraform mirror
+(`runner_profiles`, `runner_models`); the worker's `cli_agent_spec` and the
+API's `AGENT_STREAM_FILES`, so its streams are claude-code's; the claude-code
+runner passes `PLAYWRIGHT_BROWSERS_PATH` to the CLI when the image sets it,
+and tells the agent Chromium launches only with its sandbox off (no user
+namespaces, every capability dropped -- the pod is the isolation); the UI's
+and the plugin's profile lists; the parity script; the runner-profiles doc.
+
+### Rollback
+
+Delete the entry and its mirrors (the follow-ups above) and release. No Cloud
+Run Job exists for it (a GKE profile gets none), so nothing in Terraform is
+destroyed but the pool document Terraform made for it.
+
+### What it would break
+
+Nothing that exists: a new name. It costs a `browser` resource class, twice a
+`standard` step's units, so a tenant's browser pool ceiling is shared with the
+scripted `browser` profile.
+
+### Invariants
+
+1-8 unchanged: the same GKE manifest, requests == limits from the `browser`
+class, on-demand only, checkpointing as claude-code's. **9**: the tenant's own
+namespace, KSA and secret, as claude-code's. **10**: a caller names
+`claude-code-browser`; the image, class and backend are the catalogue's, and a
+task that sends an image is refused as every task is.

@@ -99,14 +99,17 @@ run "runner_backends_match_resolve_backend" {
     source = "../../terraform/infra"
   }
 
-  # Cloud Run Jobs takes everything it can hold. Chromium needs a large
-  # /dev/shm that only GKE lets us control, so browser work stays on Autopilot.
+  # mock reaches no internet, so #939's option A left it on Cloud Run Jobs;
+  # post-verdict and claude-code-review were designed to run as their own
+  # accounts, which a GKE pod cannot be (contract request 66). Chromium needs
+  # a large /dev/shm that only GKE lets us control, so browser work stays on
+  # Autopilot.
   assert {
     condition = alltrue([
-      for profile in ["mock", "generic", "codex"] :
+      for profile in ["mock", "post-verdict", "claude-code-review"] :
       output.runner_backends[profile] == "CLOUD_RUN_JOB"
     ])
-    error_message = "every profile Cloud Run can hold must run on Cloud Run Jobs"
+    error_message = "mock, post-verdict and claude-code-review stay on Cloud Run Jobs (contract request 66 says why)"
   }
 
   assert {
@@ -129,6 +132,23 @@ run "runner_backends_match_resolve_backend" {
     error_message = "indexer runs on GKE Autopilot (contract request 63, the canary for #939)"
   }
 
+  # Contract request 67 (owner, 2026-10-11): claude-code on the browser image
+  # runs where the browser image must, on Autopilot, sized by the browser class.
+  assert {
+    condition     = output.runner_backends["claude-code-browser"] == "GKE_AUTOPILOT"
+    error_message = "claude-code-browser runs on GKE Autopilot (contract request 67): Cloud Run cannot size Chromium's /dev/shm"
+  }
+
+  # Contract requests 64, 65 and 66 (owner, 2026-10-10, #939 option A, after
+  # the indexer canary): the remaining profiles that reach the internet follow.
+  assert {
+    condition = alltrue([
+      for profile in ["generic", "codex", "merge"] :
+      output.runner_backends[profile] == "GKE_AUTOPILOT"
+    ])
+    error_message = "generic, codex and merge run on GKE Autopilot (contract requests 64, 65 and 66, #939 option A)"
+  }
+
   # Contract request 55's canary is gone: the switch replaced it.
   assert {
     condition     = !contains(keys(output.runner_backends), "claude-code-gke")
@@ -136,8 +156,8 @@ run "runner_backends_match_resolve_backend" {
   }
 
   assert {
-    condition     = length(output.runner_backends) == 9
-    error_message = "nine runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review and contract request 48's indexer"
+    condition     = length(output.runner_backends) == 10
+    error_message = "ten runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer and contract request 67's claude-code-browser"
   }
 }
 
@@ -175,7 +195,7 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
       for r in [
         "runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser",
         "runner:merge", "runner:post-verdict", "runner:claude-code-review",
-        "runner:indexer",
+        "runner:indexer", "runner:claude-code-browser",
       ] :
       contains(output.pool_names, r)
     ])
@@ -269,6 +289,14 @@ run "jobs_exist_only_where_a_credential_does" {
     error_message = "the indexer Cloud Run Jobs are kept as the request 63 rollback; the backend switch must not destroy them"
   }
 
+  # Contract requests 64 and 65 moved generic and codex to GKE Autopilot; their
+  # Cloud Run Jobs stay, idle, as the rollback. merge's is held the same way in
+  # merge_step_iam.tftest.hcl, where a tenant registers git.
+  assert {
+    condition     = contains(output.job_names, "swarm-job-eng-generic") && contains(output.job_names, "swarm-job-eng-codex") && contains(output.job_names, "swarm-job-smoke-generic")
+    error_message = "the generic and codex Cloud Run Jobs are kept as the request 64 and 65 rollback; the backend switch must not destroy them"
+  }
+
   # The fallback keeps exactly what it names: browser, on GKE too, still gets
   # no Cloud Run Job (asserted above), and nor does the removed canary.
   assert {
@@ -280,7 +308,7 @@ run "jobs_exist_only_where_a_credential_does" {
 
   assert {
     condition     = length(output.job_names) == 7
-    error_message = "3 Cloud-Run profiles for eng (mock, generic, codex) and claude-code's and indexer's rollback Jobs, plus 2 credential-free ones for smoke"
+    error_message = "mock for eng and the rollback Jobs of claude-code, indexer, generic and codex, plus 2 credential-free ones for smoke"
   }
 
   # #295: post-verdict and claude-code-review are retired (owner decision
@@ -374,17 +402,17 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 9
-    error_message = "expected 9 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer); the parser read a different number"
+    condition     = length(output.runner_profiles) == 10
+    error_message = "expected 10 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser); the parser read a different number"
   }
 
   # claude-code's and indexer's entries carry a comment above their backend;
-  # the parser must read the field, and the last entry (indexer) must not run
-  # on past the dict. merge is read alongside so the check sees a
+  # the parser must read the field, and the last entry (claude-code-browser,
+  # contract request 67) must not run on past the dict. post-verdict is read alongside so the check sees a
   # CLOUD_RUN_JOB entry too, not only GKE ones.
   assert {
-    condition     = output.runner_profiles["claude-code"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "GKE_AUTOPILOT" && output.runner_profiles["merge"].backend == "CLOUD_RUN_JOB"
-    error_message = "the parser misread profiles.py: claude-code (contract request 53) and indexer (contract request 63) must read GKE_AUTOPILOT, and merge must keep CLOUD_RUN_JOB"
+    condition     = output.runner_profiles["claude-code"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "GKE_AUTOPILOT" && output.runner_profiles["merge"].backend == "GKE_AUTOPILOT" && output.runner_profiles["post-verdict"].backend == "CLOUD_RUN_JOB" && output.runner_profiles["claude-code-browser"].image == "agent-runtime-browser" && output.runner_profiles["claude-code-browser"].resource_class == "browser"
+    error_message = "the parser misread profiles.py: claude-code (contract request 53), indexer (63) and merge (66) must read GKE_AUTOPILOT, post-verdict must keep CLOUD_RUN_JOB, and claude-code-browser (67) must read the browser image and class"
   }
 
   assert {

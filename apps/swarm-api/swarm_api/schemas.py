@@ -9,6 +9,7 @@ a field for any of those things in the first place.
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import (
@@ -309,6 +310,25 @@ class DrainRequest(StrictModel):
     #: Undraining is the same call with `drain=false`.
     drain: bool = True
     reason: str | None = Field(default=None, max_length=512)
+
+
+class HistoryPurgeRequest(StrictModel):
+    """`POST /v1/admin/history:purge` (purge.py). A dry run unless `dry_run`
+    is false AND `confirm` is the word `purge`; `states` is checked against
+    `purge.PURGEABLE_STATES`, so nothing live can be asked for."""
+
+    states: list[str] = Field(min_length=1, max_length=3)
+    #: Only what last changed before this instant. Naive means UTC.
+    before: datetime | None = None
+    #: Narrows the selection. Never where the bucket prefix comes from: that
+    #: is the tenant stored on each task (invariant 9).
+    tenant_id: str | None = Field(default=None, max_length=128)
+    #: Workflow or task ids to keep. A step named keeps its whole workflow.
+    exclude_ids: list[str] = Field(default_factory=list, max_length=1000)
+    dry_run: bool = True
+    confirm: str | None = Field(default=None, max_length=32)
+    limit: int | None = None
+    page_token: str | None = Field(default=None, max_length=256)
 
 
 class ProviderEnableRequest(StrictModel):

@@ -29,6 +29,13 @@ read. No token, code or state is printed (see the section's own note).
 `sc setup token --owner <org>` (D5) is the one verb a token goes IN through:
 read from stdin, never an argument, posted once and never printed.
 
+THE FOURTH IS `sc admin purge` (owner request 2026-10-11): the audited purge
+of FAILED, CANCELLED and DEAD_LETTERED history (`POST /v1/admin/history:purge`,
+full admin only). It prints the API's dry run -- every workflow and task it
+would delete, and why the rest were kept -- and deletes nothing unless
+`--delete` is given AND `purge` is typed at a terminal; SWARM_ASSUME_YES is
+ignored. Held out of every grant as the account verbs are.
+
 IT ALSO SAYS WHICH CLUSTER, AND WHO YOU ARE ON IT (2026-09-25). `sc context`,
 `sc login`, `sc logout` and `sc whoami` are the `kubectl config` / `gh auth`
 half: which deployment this machine talks to (config.py) and the developer's
@@ -1381,6 +1388,120 @@ def cmd_account_remove(client: SwarmClient, args, out) -> int:
     out.write(f"removed {label} ({account.get('account_id')}); the broker answered:\n")
     out.write(json.dumps(answer, indent=2, default=str) + "\n")
     return EXIT_OK
+
+
+#: `POST /v1/admin/history:purge` (swarm_api/purge.py) and what it accepts.
+PURGE_PATH = "/v1/admin/history:purge"
+PURGE_STATES = ("FAILED", "CANCELLED", "DEAD_LETTERED")
+PURGE_WORD = "purge"
+#: Pages one invocation follows. The route bounds each page; this bounds the
+#: command, so a history larger than expected stops and says so.
+PURGE_MAX_PAGES = 200
+
+
+def _purge_body(args, *, dry_run: bool, page_token: str | None) -> dict[str, Any]:
+    body: dict[str, Any] = {
+        "states": list(args.states or ["FAILED"]),
+        "exclude_ids": list(args.exclude or []),
+        "dry_run": dry_run,
+        "limit": args.limit,
+    }
+    if args.before:
+        body["before"] = args.before
+    if args.tenant:
+        body["tenant_id"] = args.tenant
+    if page_token:
+        body["page_token"] = page_token
+    if not dry_run:
+        body["confirm"] = PURGE_WORD
+    return body
+
+
+def _purge_pages(client: SwarmClient, args, *, dry_run: bool) -> dict[str, Any]:
+    """Every page of one purge (or its dry run), merged."""
+    merged: dict[str, Any] = {"workflows": [], "tasks": [], "skipped": [], "failed": [],
+                              "complete": False}
+    token: str | None = None
+    for _ in range(PURGE_MAX_PAGES):
+        page = client.request("POST", PURGE_PATH,
+                              payload=_purge_body(args, dry_run=dry_run, page_token=token))
+        if not isinstance(page, dict):
+            raise SwarmError(f"POST {PURGE_PATH} answered with no body; nothing more was sent")
+        for key in ("workflows", "tasks", "skipped", "failed"):
+            merged[key] += list(page.get(key) or [])
+        token = page.get("next_page_token")
+        if not token:
+            merged["complete"] = True
+            break
+    return merged
+
+
+def _purge_lines(result: dict[str, Any], *, deleted: bool) -> list[str]:
+    verb = "deleted" if deleted else "would delete"
+    rows = result["workflows"] + result["tasks"]
+    objects = sum(int(r.get("artifact_objects") or 0) for r in rows)
+    lines = [
+        f"{verb}: {len(result['workflows'])} workflow(s), {len(result['tasks'])} standalone "
+        f"task(s), {sum(len(r.get('task_ids') or ()) for r in rows)} task document(s), "
+        f"{objects} artifact object(s)"
+    ]
+    for kind, key in (("workflow", "workflows"), ("task", "tasks")):
+        for r in result[key]:
+            count = r.get("artifact_objects")
+            lines.append(
+                f"  {kind:<8} {r.get('id')}  {r.get('tenant_id')}  {r.get('state')}  "
+                f"tasks={len(r.get('task_ids') or ())}  objects="
+                f"{'unlisted' if count is None else count}"
+            )
+    if result["skipped"]:
+        lines.append(f"kept: {len(result['skipped'])}")
+        for r in result["skipped"]:
+            lines.append(f"  {r.get('kind'):<8} {r.get('id')}  {r.get('reason')}: {r.get('detail')}")
+    if result["failed"]:
+        lines.append(f"failed (documents kept; run again to retry): {len(result['failed'])}")
+        for r in result["failed"]:
+            lines.append(f"  {r.get('kind'):<8} {r.get('id')}  {r.get('reason')}")
+    if not result["complete"]:
+        lines.append(f"stopped after {PURGE_MAX_PAGES} pages; run it again for the rest")
+    return lines
+
+
+def cmd_admin_purge(client: SwarmClient, args, out) -> int:
+    """The audited purge of failed history; a dry run unless `--delete`.
+
+    THE DRY RUN IS ALWAYS PRINTED FIRST, and with `--delete` the word `purge`
+    must then be TYPED at a terminal. SWARM_ASSUME_YES IS IGNORED (CLAUDE.md:
+    anything destructive takes a typed confirmation), and no terminal to type
+    at means nothing is deleted. The delete re-selects with the same filters,
+    so it prints what it actually deleted, which is the record to read.
+    """
+    plan = _purge_pages(client, args, dry_run=True)
+    if args.json and not args.delete:
+        out.write(json.dumps(plan, indent=2, default=str) + "\n")
+        return EXIT_OK
+    _emit(_purge_lines(plan, deleted=False), out)
+    if not args.delete:
+        out.write(f"dry run: nothing was deleted. Add --delete to delete, after typing {PURGE_WORD!r}\n")
+        return EXIT_OK
+    if not plan["workflows"] and not plan["tasks"]:
+        out.write("nothing to delete\n")
+        return EXIT_OK
+    out.flush()
+    if os.environ.get("SWARM_ASSUME_YES", "").strip():
+        sys.stderr.write("sc: SWARM_ASSUME_YES is ignored here; a purge is typed\n")
+    stdin = sys.stdin
+    if stdin is None or not getattr(stdin, "isatty", lambda: False)():
+        raise SwarmError(f"a purge is confirmed by typing {PURGE_WORD!r} at a terminal, and "
+                         "stdin is not one; nothing was deleted")
+    typed = _ask(f"delete the history above, audited and for good? Type {PURGE_WORD!r} to confirm: ")
+    if typed.strip() != PURGE_WORD:
+        raise SwarmError(f"{PURGE_WORD!r} was not typed; nothing was deleted")
+    done = _purge_pages(client, args, dry_run=False)
+    if args.json:
+        out.write(json.dumps(done, indent=2, default=str) + "\n")
+    else:
+        _emit(_purge_lines(done, deleted=True), out)
+    return EXIT_FAIL if done["failed"] else EXIT_OK
 
 
 def _open_browser(url: str) -> bool:
@@ -3711,6 +3832,25 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _common(aa, root=False)
     aa.set_defaults(func=cmd_account_add)
+
+    # -- platform admin: `sc admin purge` DELETES after a typed word --------
+    adm = sub.add_parser("admin", help="platform-admin actions (full admin only)")
+    adm_sub = adm.add_subparsers(dest="admin_command", required=True)
+    ap = adm_sub.add_parser(
+        "purge",
+        help="delete FAILED/CANCELLED/DEAD_LETTERED history, audited (a dry run unless --delete)",
+    )
+    ap.add_argument("--state", dest="states", action="append", choices=PURGE_STATES,
+                    help="a state to purge (repeat for several; default FAILED)")
+    ap.add_argument("--before", help="only what last changed before this ISO time")
+    ap.add_argument("--tenant", help="only this tenant's history")
+    ap.add_argument("--exclude", action="append", default=[], metavar="ID",
+                    help="a workflow or task id to keep (repeat for several)")
+    ap.add_argument("--limit", type=int, default=50, help="items per API page (max 200)")
+    ap.add_argument("--delete", action="store_true",
+                    help=f"delete, after the dry run is printed and {PURGE_WORD!r} is typed")
+    _common(ap, root=False)
+    ap.set_defaults(func=cmd_admin_purge)
 
     # -- onboarding (#780, OB9): `setup` and `access` WRITE, bar the reads --
     st = sub.add_parser(
