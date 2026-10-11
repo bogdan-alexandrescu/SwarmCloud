@@ -141,6 +141,15 @@ SWITCHES: dict[str, Switch] = {
         why="an observer schedule with file_issues true is refused because swarm-api cannot "
         "create an issue yet. On once no stored observer schedule sets file_issues",
     ),
+    # Lane S10h. Only the repository bound is switched: the spec digest's
+    # admin approval is a document a person decides, never a refusal, and is
+    # enforced from the first firing (schedtypes/custom_prompt.py).
+    "custom_prompt_repository_out_of_scope": Switch(
+        code="custom_prompt_repository_out_of_scope",
+        why="a custom-prompt firing whose spec names a repository outside the schedule's scope "
+        "is refused instead of submitted (docs/schedules.md §3.12, blast radius). On once the "
+        "log shows no stored custom-prompt schedule whose spec names a repository it does not scope",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
