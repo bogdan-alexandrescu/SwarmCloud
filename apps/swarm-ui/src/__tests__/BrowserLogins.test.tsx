@@ -158,23 +158,23 @@ describe('Access › Browser logins', () => {
     const rows = within(list).getAllByRole('listitem')
     expect(rows).toHaveLength(2)
 
-    const first = visible(rows[0])
+    const first = visible(rows[0] ?? null)
     expect(first).toContain('github-qa')
     expect(first).toContain('https://github.com')
     expect(first).toMatch(/expires in 1[01]d/)
     expect(first).toMatch(/used 2h ago/)
-    expect(visible(rows[1])).toMatch(/never used/i)
+    expect(visible(rows[1] ?? null)).toMatch(/never used/i)
 
     expect(document.documentElement.outerHTML).not.toContain(leak)
     expect(document.documentElement.outerHTML).not.toContain('Qx7Qx7')
   })
 
   it('says an expired login is expired rather than counting forward', async () => {
-    api([LOGIN('old', 'https://github.com', { expires_at: iso(-DAY) })])
+    api([LOGIN('old', 'https://github.com', { expires_at: iso(-3 * DAY) })])
     const { BrowserLoginsPane } = await load()
     render(<BrowserLoginsPane tenantId="u-alice" />)
     const list = await screen.findByRole('list', { name: /browser logins/i })
-    expect(visible(list)).toMatch(/expired 1d ago/)
+    expect(visible(list)).toMatch(/expired 3d ago/)
   })
 
   it('says there are none, in words', async () => {
