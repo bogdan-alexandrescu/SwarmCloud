@@ -513,19 +513,39 @@ describe('#330: the list row leads with the label', () => {
     expect(id!.getAttribute('title')).toBe('wf_5e5ad3b6f7da4299a839')
   })
 
-  // Was 'falls back to the id alone when there is no label, or no task was read'.
+  // Was 'falls back to the id alone when there is no label'. Owner report
+  // 2026-10-11: a merge workflow listed as its bare id. A row whose steps were
+  // read and carry neither a label nor a title is "Untitled workflow", the id under it.
   for (const [what, tasks] of [
     ['no unit in the metadata', labelled(null).tasks],
     ['a blank unit', labelled('   ').tasks],
-    ['no task read', null],
   ] as const) {
-    it(`falls back to the id alone: ${what}`, async () => {
+    it(`a read row with no name is "Untitled workflow", the id under it: ${what}`, async () => {
       serve([labelled(null).w], tasks)
       const name = (await listRow('wf_5e5ad3b6f7da4299a839')).querySelector<HTMLElement>('.wfl-name')!
-      expect(name.querySelector('a')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
-      expect(name.querySelector('.id'), 'the id is printed twice').toBeNull()
+      expect(name.querySelector('a')!.textContent).toBe('Untitled workflow')
+      const id = name.querySelector<HTMLElement>('.id')
+      expect(id, 'the untitled row dropped its id').toBeTruthy()
+      expect(id!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
     })
   }
+
+  it('a row that carries only a title leads with the title', async () => {
+    const { w, tasks } = labelled(null)
+    for (const t of tasks.values()) t.metadata = { origin: 'swarm-mcp', title: 'Merge PR 1127' }
+    serve([w], tasks)
+    const name = (await listRow(w.workflow_id)).querySelector<HTMLElement>('.wfl-name')!
+    expect(name.querySelector('a')!.textContent).toBe('Merge PR 1127')
+    expect(name.querySelector('.id')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
+  })
+
+  // An unread row does not know its name: "Untitled" would be a guess.
+  it('falls back to the id alone while no task is read', async () => {
+    serve([labelled(null).w], null)
+    const name = (await listRow('wf_5e5ad3b6f7da4299a839')).querySelector<HTMLElement>('.wfl-name')!
+    expect(name.querySelector('a')!.textContent).toBe('wf_5e5ad3b6f7da4299a839')
+    expect(name.querySelector('.id'), 'the id is printed twice').toBeNull()
+  })
 })
 
 describe('#330: the page head links the pull request the run opened', () => {

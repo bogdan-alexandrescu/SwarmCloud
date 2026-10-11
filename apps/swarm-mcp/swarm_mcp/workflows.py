@@ -473,6 +473,13 @@ def submit(
 #: The one step a `merge_pr` workflow is: swarm-api refuses any other.
 MERGE_PR_STEP = {"step_id": "merge", "runner_profile": "merge"}
 
+#: A `merge_pr` workflow's name when its caller gave none (owner report
+#: 2026-10-11): with no title, Claude Code titled the run and the console
+#: listed it by its bare `wf_` id. No "#" before the number, because GitHub can
+#: read "#N" in some places as a reference. swarm-api stores the same words
+#: (`continuation.MERGE_PR_LABEL`) for a client that sends neither.
+MERGE_PR_TITLE = "Merge PR {number}"
+
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 _NUMBER = re.compile(r"^#?([1-9][0-9]{0,8})$")
 _SHORT = re.compile(r"^([A-Za-z0-9][A-Za-z0-9-]*)/([A-Za-z0-9._-]+)#([1-9][0-9]{0,8})$")
@@ -516,7 +523,8 @@ def submit_merge_pr(
     API checks everything about the pull request -- registered repository,
     open, not a fork, `head_sha` its head now -- and the merge step merges
     only once the required checks are green at that head. Nothing here reads
-    the forge.
+    the forge. With no `title` the run is named "Merge PR <number>"
+    (`MERGE_PR_TITLE`), never left to fall back to its workflow id.
     """
     sha = str(head_sha or "").strip()
     if not _SHA.fullmatch(sha):
@@ -529,7 +537,7 @@ def submit_merge_pr(
         steps=[dict(MERGE_PR_STEP)],
         strategy="direct-pr",
         repository_url=repository_url,
-        title=title,
+        title=title or MERGE_PR_TITLE.format(number=int(number)),
         merge_pr={"number": int(number), "head_sha": sha},
     )
 

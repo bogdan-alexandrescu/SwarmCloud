@@ -162,6 +162,12 @@ SCHEDULE_NOT_ENABLED = "SCHEDULE_NOT_ENABLED"
 TYPE_UNAVAILABLE = "TYPE_UNAVAILABLE"
 RUN_OVER_BUDGET = "RUN_OVER_BUDGET"
 CONSECUTIVE_FAILURES = "CONSECUTIVE_FAILURES"
+#: A real firing that created no work (#1133). Its outcome stays `succeeded`
+#: -- nothing failed -- but the skip says why nothing started: the executor's
+#: own reason (`Firing.explain`), or `executor_created_nothing` when it gave
+#: none. Without it a firing whose every repository read failed looked
+#: exactly like one with nothing due.
+NOTHING_STARTED = "NOTHING_STARTED"
 
 #: The `schedule_audit` action written when an approved firing is held back
 #: because its approval does not release it, once per approval and digest.
@@ -296,6 +302,10 @@ class Executor(Protocol):
     returns the work entries those return. `[]` is an answer: nothing was
     due (a sweep with no candidates), and the firing ends `succeeded`.
 
+    `create` may call `firing.explain(detail)` with the selection it made, in
+    `dry_run`'s shape; the firing records it as `selection`, and when no work
+    was made its `detail["reason"]` is the `NOTHING_STARTED` skip's (#1133).
+
     `dry_run(firing)` returns, as data, what `create` would have made. It
     submits nothing, writes nothing to GitHub and never runs an agent (§2.8).
     """
@@ -336,6 +346,13 @@ class Firing:
     #: Persists a non-task work item on the firing the moment it exists, so a
     #: finisher after a crash adopts it rather than doing it again (§2.2).
     record: Callable[[dict[str, Any]], None] = lambda item: None
+    #: What `create` selected and why, set by `explain` (#1133).
+    explanation: dict[str, Any] | None = None
+
+    def explain(self, detail: Mapping[str, Any]) -> None:
+        """Record the selection `create` made: stored on the firing as
+        `selection`, and the `NOTHING_STARTED` skip's detail when no work was made."""
+        self.explanation = dict(detail)
 
     @property
     def mark(self) -> dict[str, Any]:
@@ -1114,7 +1131,8 @@ class Ticker:
                                      extra={**detail_missing, "refusal": {"code": exc.code}})
             return self._refused(fid, now, report, schedule, exc.code,
                                  {"message": exc.message, **detail_missing})
-        return self._created(fid, now, report, work, schedule, digest=digest, extra=detail_missing)
+        return self._created(fid, now, report, work, schedule, digest=digest, extra=detail_missing,
+                             selection=handle.explanation)
 
     def _scope(self, schedule: Mapping[str, Any]) -> tuple[list[str], list[str]]:
         """(registered now, no longer registered). `all` lists every registration NOW."""
@@ -1236,13 +1254,19 @@ class Ticker:
 
     def _created(self, fid: str, now: datetime, report: TickReport, work: list[dict[str, Any]],
                  schedule: Mapping[str, Any], *, digest: str | None,
-                 extra: Mapping[str, Any] | None = None) -> str:
+                 extra: Mapping[str, Any] | None = None,
+                 selection: Mapping[str, Any] | None = None) -> str:
         patch: dict[str, Any] = {"work": work, "params_digest": digest}
+        if selection is not None:
+            patch["selection"] = dict(selection)
         if extra and extra.get("refusal"):
             # Part of the work was made and then a submission was refused.
             patch["skip"] = {"code": extra["refusal"]["code"], "detail": dict(extra)}
         elif extra and extra.get("skipped_repos"):
             patch["skip"] = {"code": REPOSITORY_NOT_GRANTED, "detail": dict(extra)}
+        elif not work:
+            # Never a silent success (#1133): an empty firing says why.
+            patch["skip"] = {"code": NOTHING_STARTED, "detail": nothing_started(selection)}
         self._move(fid, now, report, CREATED, patch)
         report.fired += 1
         snap = self._firing_ref(fid).get()
@@ -1578,6 +1602,19 @@ class Ticker:
         return snap.to_dict() or {}
 
 
+#: The summary fields of an executor's explanation the `NOTHING_STARTED`
+#: skip repeats; the whole explanation is the firing's `selection`.
+_NOTHING_STARTED_FIELDS = ("reason", "bound", "room", "limits", "passed_over_by_reason",
+                           "failures", "truncated", "start_failures")
+
+
+def nothing_started(selection: Mapping[str, Any] | None) -> dict[str, Any]:
+    """The `NOTHING_STARTED` skip's detail: the executor's reason, or that it gave none."""
+    if not selection or not selection.get("reason"):
+        return {"reason": "executor_created_nothing"}
+    return {k: selection[k] for k in _NOTHING_STARTED_FIELDS if k in selection}
+
+
 def _last_firing(record: Mapping[str, Any]) -> dict[str, Any]:
     """The copy on the schedule for the list screen (§1.1)."""
     return {
@@ -1611,6 +1648,7 @@ __all__ = [
     "fair_pick",
     "firing_id",
     "load_executor",
+    "nothing_started",
     "member_auth",
     "params_digest",
     "plan_slots",
