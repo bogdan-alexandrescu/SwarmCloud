@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { loadCapacity } from './api'
 import {
   CeilingTag,
@@ -777,6 +777,14 @@ export function AddSetting({ idPrefix, offers, onAdd, onOwn }: {
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
   }, [open, buttonId])
+  // OPENED, IT IS BROUGHT INTO VIEW (VQA V137). Drawn in flow under a button
+  // that often sits at the bottom of the scroller, the list opened below the
+  // fold, under the Reads dock, and the click looked like it did nothing.
+  // `nearest` scrolls only as far as the list needs, and not at all when it
+  // is already on screen.
+  useEffect(() => {
+    if (open) document.getElementById(listId)?.scrollIntoView?.({ block: 'nearest' })
+  }, [open, listId])
   return (
     <div className="sbf-addset">
       <button type="button" id={buttonId} className="sbf-addset-btn" aria-expanded={open}
@@ -832,6 +840,23 @@ export function Move({ n, title, aside, dim = false, children }: {
   )
 }
 
+/**
+ * WHERE A SUBMIT FORM DRAWS WHAT ITS CLICK DID: inside the send panel, under
+ * the button (VQA V002/V049, owner decision Q1 on #1038). The task, workflow
+ * and issue forms all draw it here, so a failure, a refusal or a 201 is on
+ * screen at the place the click was made. `at` is the outcome itself: a new
+ * one is brought into view once -- on a phone the panel can sit at a scroll's
+ * end -- and typing into the form afterwards does not scroll anything.
+ */
+export function OutcomeSlot({ at, shown, children }: { at: unknown; shown: boolean; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (shown) ref.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [at, shown])
+  if (!shown) return null
+  return <div ref={ref} className="sbf-outcome">{children}</div>
+}
+
 /** The task form's field-id prefix: the editor and the panel's buttons share it. */
 const TASK_FIELDS = 'task'
 
@@ -883,11 +908,31 @@ function Form({ capacity }: { capacity: Capacity }) {
 
   const built = buildInput(fields)
   const missing = missingRequired(fields, required)
-  const blocked = chosen === '' || !built.ok || missing.length > 0
   // THE REPOSITORY THE CLICK PUSHES TO, from the draft `submit` sends: the
   // trimmed URL, and only while the chosen strategy pushes at all (#115).
   const repo = dispatch.repositoryUrl.trim()
   const pushes = consequenceOf(dispatch.strategy, 1).pushes
+  // A PUSH WITH NOWHERE TO PUSH IS NOT READY (VQA V052). The panel already
+  // said "none — nowhere to push" and the dispatch control that the API would
+  // refuse it (`DispatchOptionError`, `missing: repository_url`), under a
+  // "Ready to send" heading and a live button.
+  const blocked = chosen === '' || !built.ok || missing.length > 0 || (pushes && repo === '')
+  // WHAT THIS CLICK WOULD SEND, as one comparable value. After a 201 the
+  // button is "Submit another" for as long as the form still says exactly
+  // what was sent (VQA V048, owner decision Q1 on #1038): one more click on an
+  // unchanged form was a duplicate task. Any edit makes it a new request.
+  const draftKey = JSON.stringify([chosen, built.ok ? built.input : null, dispatch.strategy, dispatch.carrier, repo])
+  const [sentKey, setSentKey] = useState<string | null>(null)
+  const justSent = outcome.kind === 'created' && sentKey === draftKey
+  // "Submit another" starts a blank form: the task just created is one click
+  // away from its own card until then.
+  const another = () => {
+    setChosen('')
+    setFields([])
+    setDispatch({ strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' })
+    setOutcome({ kind: 'idle' })
+    setSentKey(null)
+  }
   // The send panel's "`prompt` missing" takes the reader to that field.
   const toField = (key: string) => {
     const f = fields.find((x) => x.name.trim() === key)
@@ -917,8 +962,8 @@ function Form({ capacity }: { capacity: Capacity }) {
       return
     }
     setOutcome({ kind: 'sending' })
-    setOutcome(
-      await postTask({
+    const sending = draftKey
+    const result = await postTask({
         runner_profile: chosen,
         input: built.input,
         // Sent ALWAYS, including when they are the defaults. `TaskCreate` has
@@ -931,33 +976,14 @@ function Form({ capacity }: { capacity: Capacity }) {
         // validator, and `""` fails it with a message about URL schemes rather
         // than about the field being empty.
         ...(repo === '' ? {} : { repository_url: repo }),
-      }),
-    )
+      })
+    if (result.kind === 'created') setSentKey(sending)
+    setOutcome(result)
   }
 
   return (
     <form className="sbf" onSubmit={submit}>
       <div className="sbf-build">
-        {outcome.kind === 'created' && <Created task={outcome.task} woke={outcome.woke} />}
-        {/* The submission gate's refusal (#847): why, in the API's words, and the
-            setup step that fixes it. It is the one failure that proves nothing
-            was created, so the warning below is not drawn under it. */}
-        {outcome.kind === 'failed' && workspaceRefusal(outcome.error) !== null && <WorkspaceRefusalBanner error={outcome.error} />}
-        {outcome.kind === 'failed' && workspaceRefusal(outcome.error) === null && (
-          <>
-            <FailedPanel error={outcome.error} onRetry={() => void submit()} />
-            {/* A write is not a read: a failure after the request left the browser
-                does not prove nothing was created. */}
-            {/* NO `?` (B7.4). `ambiguous-write` is "a failure after the request
-                left the browser does not prove nothing was created", and the
-                two sentences here ARE that, with the remedy first. */}
-            <p className="warn-text">
-              <strong>Check Agents before submitting again.</strong> This failed on
-              a write, so the task may exist anyway.
-            </p>
-          </>
-        )}
-
         {/* THIS SCREEN'S ONE `?` (B7.4). It was seven: two of them repeated a
             sentence printed beside the glyph, one repeated `all at once` from
             the line it sat on, one repeated a bold `That is not zero.`, and one
@@ -1018,7 +1044,7 @@ function Form({ capacity }: { capacity: Capacity }) {
               heading said `Ready to send` over a greyed-out button with no
               runner chosen and an empty prompt -- the panel's title and its
               only control disagreeing about the one thing the panel is for. */}
-          <h2>{blocked ? 'Not ready to send' : 'Ready to send'}</h2>
+          <h2>{justSent ? 'Sent' : blocked ? 'Not ready to send' : 'Ready to send'}</h2>
           <ul className="ctl-facts">
             <li className={chosen === '' ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>runner</b>
@@ -1082,20 +1108,53 @@ function Form({ capacity }: { capacity: Capacity }) {
             {pushes && (
               <li className="ctl-fact">
                 <b>repository</b>
-                {repo === '' ? <i className="sbf-bad">none — nowhere to push</i> : <code>{repositorySlug(repo)}</code>}
+                {/* ONE LINE, CUT, WHOLE IN ITS TITLE (VQA V130): an address
+                    `repositorySlug` does not recognise comes back whole, and it
+                    wrapped over eight lines where the issue panel cuts it. */}
+                {repo === '' ? <i className="sbf-bad">none — nowhere to push</i>
+                  : <code className="sbf-cut" title={repo}>{repositorySlug(repo)}</code>}
               </li>
             )}
           </ul>
           {/* The panel's "{runner} requires input.x as a non-empty string"
               alert is gone (TS-15): the field says it, and the fact above is
               the way to the field. */}
-          <Button type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked}>
-            {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
-          </Button>
+          {justSent ? (
+            <Button key="another" type="button" kind="primary" full onClick={another}>Submit another</Button>
+          ) : (
+            <Button key="submit" type="submit" kind="primary" full disabled={outcome.kind === 'sending' || blocked}>
+              {outcome.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit one task' : `Submit as ${submitAs}`}
+            </Button>
+          )}
           <p className="sb-note">Nothing runs until the scheduler admits it into every pool it needs.</p>
           {outcome.kind === 'refused' && outcome.unattributed && (
             <p className="warn-text" role="alert">The API refused this and did not say which field: {outcome.unattributed}</p>
           )}
+          {/* THE OUTCOME IS DRAWN BESIDE THE BUTTON THAT CAUSED IT (VQA V002,
+              owner decision Q1 on #1038), as the issue form draws it. It was
+              at the top of the build column, ~1,400px above the button at
+              400px, so a failed write looked like nothing had happened. */}
+          <OutcomeSlot at={outcome} shown={outcome.kind === 'created' || outcome.kind === 'failed'}>
+            {outcome.kind === 'created' && <Created task={outcome.task} woke={outcome.woke} />}
+            {/* The submission gate's refusal (#847): why, in the API's words, and the
+                setup step that fixes it. It is the one failure that proves nothing
+                was created, so the warning below is not drawn under it. */}
+            {outcome.kind === 'failed' && workspaceRefusal(outcome.error) !== null && <WorkspaceRefusalBanner error={outcome.error} />}
+            {outcome.kind === 'failed' && workspaceRefusal(outcome.error) === null && (
+              <>
+                <FailedPanel error={outcome.error} onRetry={() => void submit()} />
+                {/* A write is not a read: a failure after the request left the browser
+                    does not prove nothing was created. */}
+                {/* NO `?` (B7.4). `ambiguous-write` is "a failure after the request
+                    left the browser does not prove nothing was created", and the
+                    two sentences here ARE that, with the remedy first. */}
+                <p className="warn-text">
+                  <strong>Check Agents before submitting again.</strong> This failed on
+                  a write, so the task may exist anyway.
+                </p>
+              </>
+            )}
+          </OutcomeSlot>
         </div>
       </aside>
     </form>

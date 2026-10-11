@@ -9,9 +9,11 @@ import { Screen, timeAgo, useSubmitAs } from './Shell'
 import {
   InputFields,
   Move,
+  OutcomeSlot,
   buildInput,
   inputFieldId,
   missingRequired,
+  repositorySlug,
   seedFields,
   type InputField,
 } from './Submit'
@@ -414,6 +416,13 @@ export function OnFailureChoice({ value, onChange }: {
   )
 }
 
+/** The plan an untouched form starts from, and the one "Submit another" returns to. */
+const firstSteps = (): StepDraft[] => [{
+  key: 1, id: autoId('', new Set()), profile: '', stage: 0,
+  after: null, input: [], from: {},
+}]
+const firstDispatch = (): DispatchDraft => ({ strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' })
+
 function Form({ sources }: { sources: FormSources }) {
   // A tenant switch made with this form open keeps it, and its button then
   // names the tenant it will submit as (intake-tenants.html 2A).
@@ -430,16 +439,13 @@ function Form({ sources }: { sources: FormSources }) {
   const priorityOk = priorityWrong === null
   // EVERY STEP STARTS WITH NO RUNNER (#118). `planOf` refuses a step whose
   // profile is '', so an untouched form cannot be sent.
-  const [steps, setSteps] = useState<StepDraft[]>(() => [{
-    key: 1, id: autoId('', new Set()), profile: '', stage: 0,
-    after: null, input: [], from: {},
-  }])
-  const [dispatch, setDispatch] = useState<DispatchDraft>({
-    strategy: DEFAULT_STRATEGY,
-    carrier: DEFAULT_CARRIER,
-    repositoryUrl: '',
-  })
+  const [steps, setSteps] = useState<StepDraft[]>(firstSteps)
+  const [dispatch, setDispatch] = useState<DispatchDraft>(firstDispatch)
   const [sub, setSub] = useState<Submission>({ kind: 'idle' })
+  // The step ids of the last body sent, in its order: a 422's `loc` names a
+  // step by its index in that list (`steps.2.input`), not by its id.
+  const [sentIds, setSentIds] = useState<string[]>([])
+  const [sentKey, setSentKey] = useState<string | null>(null)
   // One providers read for the form, handed to every step's picker.
   const keys = useProviderKeys()
   // Read from the payload, never a constant: an unread limit is not a limit of 50,
@@ -480,7 +486,34 @@ function Form({ sources }: { sources: FormSources }) {
   // the steps that stop it -- the same pass `send` makes, so what the panel
   // says and what the click does cannot disagree.
   const plan = planOf(steps, byName)
-  const blocked = plan.problems.length > 0
+  // THE REPOSITORY THE CLICK PUSHES TO (VQA V139), as on the task form: the
+  // trimmed URL, named in the panel whenever the strategy pushes. A push with
+  // nowhere to push is refused by the API at either scale
+  // (`DispatchOptionError`, `missing: repository_url`), so it holds the
+  // button here too rather than reading "Ready to send" over a 422.
+  const repo = dispatch.repositoryUrl.trim()
+  const pushes = consequenceOf(dispatch.strategy, steps.length).pushes
+  const noRepo = pushes && repo === ''
+  const blocked = plan.problems.length > 0 || noRepo
+  // WHAT THIS CLICK WOULD SEND, as one comparable value (VQA V048, owner
+  // decision Q1 on #1038): after a 201 the button is "Submit another" for as
+  // long as the form still says exactly what was sent.
+  const draftKey = JSON.stringify([plan.body, dispatch.strategy, dispatch.carrier, repo, onFailure, priority.trim()])
+  const justSent = sub.kind === 'created' && sentKey === draftKey
+  const another = () => {
+    setSteps(firstSteps())
+    setNextKey(2)
+    setDispatch(firstDispatch())
+    setOnFailure('fail_workflow')
+    setPriority('0')
+    setSub({ kind: 'idle' })
+    setSentKey(null)
+  }
+  // WHAT THE API REFUSED, BY STEP (VQA V051): the step a 422 names is marked
+  // on its own card, not left inside a dump of the response.
+  // A 5xx's detail is read the same way for the outcome, but marks no card:
+  // nothing says the step was the problem.
+  const refusal = sub.kind === 'rejected' || sub.kind === 'uncertain' ? refusalOf(sub.error, sentIds) : null
   // WHAT THE CLICK COMMITS TO (#115), from the steps `send` builds the body
   // from. Each step's weight is its runner's `units`, taken in every pool that
   // step needs; the sum is the weight the whole plan asks admission for. A step
@@ -522,9 +555,10 @@ function Form({ sources }: { sources: FormSources }) {
     // invariant, and a disabled attribute is only one way of keeping it.
     const { problems, body } = planOf(steps, byName)
     if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
-    if (!priorityOk) return
+    if (!priorityOk || noRepo) return
     setSub({ kind: 'sending' })
-    const repo = dispatch.repositoryUrl.trim()
+    setSentIds(body.map((b) => String(b.step_id)))
+    const sending = draftKey
     void postWorkflow({
       steps: body,
       // Workflow-level, not per step: `integrate` produces ONE pull request, so
@@ -534,13 +568,19 @@ function Form({ sources }: { sources: FormSources }) {
       ...(repo === '' ? {} : { repository_url: repo }),
       ...(onFailure === 'fail_workflow' ? {} : { on_step_failure: onFailure }),
       ...(priorityN === 0 ? {} : { priority: priorityN }),
-    }).then(setSub)
+    }).then((result) => {
+      if (result.kind === 'created') setSentKey(sending)
+      setSub(result)
+    })
+  }
+  const toStep = (stepId: string) => {
+    const s = steps.find((x) => x.id.trim() === stepId)
+    if (s !== undefined) document.getElementById(stepNameId(s.key))?.focus()
   }
 
   return (
     <div className="sbf">
       <div className="sbf-build">
-        <Outcome sub={sub} />
 
         {/* THIS SCREEN'S ONE `?` (B7.4), AND IT OPENS WHAT THE STEP LAYS OUT
             (#120). It opened runner naming, a rule about what the form may not
@@ -588,6 +628,7 @@ function Form({ sources }: { sources: FormSources }) {
                   <StepCard key={s.key} step={s} steps={steps} profiles={sources.profiles} keys={keys}
                     required={requiredInputKeys(byName.get(s.profile))}
                     nameProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'name')?.message ?? null}
+                    refused={sub.kind === 'rejected' ? refusal?.byStep[s.id.trim()] ?? null : null}
                     removable={steps.length > 1}
                     onChange={(next) => patch(s.key, next)} onRemove={() => drop(s.key)} />
                 ))}
@@ -657,7 +698,7 @@ function Form({ sources }: { sources: FormSources }) {
         <div className="sbf-send">
           {/* From the live plan, like the button: this said `Ready to send`
               over a plan with three steps reading `Not sent`. */}
-          <h2>{blocked ? 'Not ready to send' : 'Ready to send'}</h2>
+          <h2>{justSent ? 'Sent' : blocked ? 'Not ready to send' : 'Ready to send'}</h2>
           <ul className="ctl-facts">
             <li className="ctl-fact">
               <b>steps</b>
@@ -685,6 +726,13 @@ function Form({ sources }: { sources: FormSources }) {
               {priorityWrong !== null ? <i className="sbf-bad">{priorityWrong}</i>
                 : priorityN === 0 ? '0 (default)' : String(priorityN)}
             </li>
+            {pushes && (
+              <li className="ctl-fact">
+                <b>repository</b>
+                {repo === '' ? <i className="sbf-bad">none — nowhere to push</i>
+                  : <code className="sbf-cut" title={repo}>{repositorySlug(repo)}</code>}
+              </li>
+            )}
           </ul>
           {/* THE COUNT, BESIDE THE BUTTON IT DISABLES, AND A WAY TO EACH STEP.
               The step's own card says what is wrong with it; this says which
@@ -692,29 +740,44 @@ function Form({ sources }: { sources: FormSources }) {
               long scroll above. Each is a button that focuses the step's name,
               not an in-page anchor: a hash is a ROUTE in this app, and
               following one would leave the form. */}
-          {blocked && (
+          {/* EACH NAME CARRIES ITS OWN COMMA (VQA V131): the comma was text
+              before the next button, and a line could break between a button
+              and it, opening the next line on ", claude-code-3". */}
+          {plan.problems.length > 0 && (
             <p className="warn-text" role="status">
               {plan.problems.length === 1 ? '1 step' : `${plan.problems.length} steps`} not ready:{' '}
               {plan.problems.map((p, i) => (
                 <Fragment key={p.key}>
-                  {i > 0 ? ', ' : ''}
-                  <button type="button" className="c-link is-sm" title={p.message} onClick={() => toProblem(p)}>
-                    {p.stepId === '' ? '(unnamed step)' : p.stepId}
-                  </button>
+                  <span className="sbf-gap-i">
+                    <button type="button" className="c-link is-sm" title={p.message} onClick={() => toProblem(p)}>
+                      {p.stepId === '' ? '(unnamed step)' : p.stepId}
+                    </button>
+                    {i < plan.problems.length - 1 ? ',' : ''}
+                  </span>
+                  {i < plan.problems.length - 1 ? ' ' : ''}
                 </Fragment>
               ))}
             </p>
           )}
-          <Button kind="primary" full disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
-            {sub.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit this workflow' : `Submit as ${submitAs}`}
-          </Button>
+          {justSent ? (
+            <Button key="another" kind="primary" full onClick={another}>Submit another</Button>
+          ) : (
+            <Button key="submit" kind="primary" full disabled={sub.kind === 'sending' || blocked || !priorityOk} onClick={send}>
+              {sub.kind === 'sending' ? 'Submitting…' : submitAs === null ? 'Submit this workflow' : `Submit as ${submitAs}`}
+            </Button>
+          )}
+          {/* THE OUTCOME, BESIDE THE BUTTON (VQA V002, owner decision Q1 on
+              #1038), as the task and issue forms draw theirs. */}
+          <OutcomeSlot at={sub} shown={sub.kind !== 'idle' && sub.kind !== 'sending'}>
+            <Outcome sub={sub} refusal={refusal} onStep={toStep} />
+          </OutcomeSlot>
         </div>
       </aside>
     </div>
   )
 }
 
-function StepCard({ step, steps, profiles, keys, required, nameProblem, removable, onChange, onRemove }: {
+function StepCard({ step, steps, profiles, keys, required, nameProblem, refused, removable, onChange, onRemove }: {
   step: StepDraft
   steps: StepDraft[]
   /** The whole catalogue: a disabled runner is drawn, refused, with its reason. */
@@ -728,6 +791,9 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
    *  from the form's live plan. The name is the one problem only the whole
    *  plan can see, so the card is told it rather than working it out. */
   nameProblem: string | null
+  /** What the API said about this step when it refused the last submission
+   *  (a 422 naming it), or null. */
+  refused: string | null
   removable: boolean
   onChange: (next: StepDraft) => void
   onRemove: () => void
@@ -752,7 +818,7 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
   })
 
   return (
-    <div className={`wfb-step${step.profile === '' ? ' is-bad' : ''}`}>
+    <div className={`wfb-step${step.profile === '' || refused !== null ? ' is-bad' : ''}`}>
       <div className="wfb-step-h">
         {/* The id is SHOWN because the API's refusals name it, and editable
             because someone may want a word that means something. It is never
@@ -791,6 +857,7 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, removabl
           name in the send panel; drawn alone here, each is a line of its own. */}
       {nameProblem !== null && <p className="warn-text" role="alert">{asSentence(nameProblem)}</p>}
       {!built.ok && <p className="warn-text" role="alert">{asSentence(built.message)}</p>}
+      {refused !== null && <p className="warn-text" role="alert">The API refused this step: {refused}</p>}
 
       {/* THE TWO ADVANCED CONTROLS, BEHIND THE ANSWER THEY ALREADY HAVE.
           Both used to be open rows saying "— no other named step yet" and "—
@@ -910,7 +977,81 @@ function Accepted({ echo, steps }: { echo: DispatchEcho | null; steps: number })
   )
 }
 
-function Outcome({ sub }: { sub: Submission }) {
+/**
+ * A REFUSAL READ FOR WHAT IT SAYS ABOUT THE PLAN (VQA V051). The screen
+ * printed the 422's `detail` as JSON and marked no step; the person had to
+ * find `"loc": ["body", "steps", 2, "input"]` in a dump and count steps.
+ *
+ * Two writers produce a workflow 422, as on the task form (`attribute` in
+ * Submit.tsx): FastAPI's validator, which main.py wraps as `detail.errors[]`
+ * with a `loc` -- a step is `steps.<index>` into the body sent, so `sentIds`
+ * maps it back to a name -- and the service's own refusals (`DagError`,
+ * `DispatchOptionError`), whose `detail` names steps by id: `step_id`, or a
+ * list such as a cycle's or the colliding parents'. Any detail value that is
+ * one of the sent step ids, or a list holding some, marks those steps with the
+ * API's sentence. What names no step stays a plain `key value` fact, never
+ * guessed onto a step: a message under the wrong card sends someone editing a
+ * step that was never the problem.
+ *
+ * Exported for `submit.outcome.test.tsx`.
+ */
+export function refusalOf(error: ApiError, sentIds: readonly string[]): {
+  byStep: Record<string, string>
+  facts: Array<{ key: string; value: string }>
+} {
+  const byStep: Record<string, string> = {}
+  const facts: Array<{ key: string; value: string }> = []
+  const known = new Set(sentIds)
+  const mark = (id: string, said: string) => {
+    byStep[id] = byStep[id] === undefined ? said : `${byStep[id]}; ${said}`
+  }
+  const detail = typeof error.detail === 'object' && error.detail !== null && !Array.isArray(error.detail)
+    ? (error.detail as Record<string, unknown>) : null
+  if (detail === null) return { byStep, facts }
+  for (const [key, value] of Object.entries(detail)) {
+    if (key === 'errors' && Array.isArray(value)) {
+      for (const e of value) {
+        if (typeof e !== 'object' || e === null) continue
+        const loc = Array.isArray((e as { loc?: unknown }).loc) ? ((e as { loc: unknown[] }).loc).map(String) : []
+        const msg = typeof (e as { msg?: unknown }).msg === 'string' ? (e as { msg: string }).msg : error.message
+        const path = loc[0] === 'body' ? loc.slice(1) : loc
+        const at = path[0] === 'steps' && /^\d+$/.test(path[1] ?? '') ? sentIds[Number(path[1])] : undefined
+        if (at !== undefined) {
+          const field = path.slice(2).join('.')
+          mark(at, field === '' ? msg : `${field}: ${msg}`)
+        } else {
+          facts.push({ key: path.join('.') || 'request', value: msg })
+        }
+      }
+      continue
+    }
+    const named = typeof value === 'string' ? [value]
+      : Array.isArray(value) && value.every((v) => typeof v === 'string') ? (value as string[]) : []
+    const steps = named.filter((v) => known.has(v))
+    if (steps.length > 0) {
+      for (const id of steps) mark(id, error.message)
+      continue
+    }
+    facts.push({ key: key.replace(/_/g, ' '), value: factValue(value) })
+  }
+  return { byStep, facts }
+}
+
+/** One detail value as words: scalars as they are, a list joined, an object as `key value` pairs. */
+function factValue(value: unknown): string {
+  if (value === null || value === undefined) return '—'
+  if (Array.isArray(value)) return value.length === 0 ? 'none' : value.map(factValue).join(', ')
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).map(([k, v]) => `${k.replace(/_/g, ' ')} ${factValue(v)}`).join('; ')
+  }
+  return String(value)
+}
+
+function Outcome({ sub, refusal, onStep }: {
+  sub: Submission
+  refusal: ReturnType<typeof refusalOf> | null
+  onStep: (stepId: string) => void
+}) {
   // `workflow.state` IS NOT SHOWN, here or anywhere. submit_workflow writes it once
   // as QUEUED and nothing in apps/scheduler, apps/reconciler or apps/agent-worker
   // writes that collection again, so a chip would read "queued" forever.
@@ -992,15 +1133,33 @@ function Outcome({ sub }: { sub: Submission }) {
       {/* VERBATIM: the cycle the server named is the only part that says where to
           look, and "invalid DAG" would throw it away. */}
       <p>{error.message}</p>
-      {/* The server's own detail, unedited: `{"cycle": [...]}` from a DagError, the
-          per-field list for a schema failure (whose message is only ever the generic
-          "request body failed validation"). Raw, so no pattern is restated here. */}
-      {error.detail !== undefined && <pre>{JSON.stringify(error.detail, null, 1)}</pre>}
+      {/* THE SERVER'S DETAIL, READ (VQA V051): the steps it names, each a way
+          to that step's card, which is marked with the same sentence; then
+          whatever it said about no step, as facts. It was printed as JSON. */}
+      {refusal !== null && Object.keys(refusal.byStep).length > 0 && (
+        <ul className="sbf-refused">
+          {Object.entries(refusal.byStep).map(([id, said]) => (
+            <li key={id}>
+              <button type="button" className="c-link is-sm mono" onClick={() => onStep(id)}>{id}</button> — {said}
+            </li>
+          ))}
+        </ul>
+      )}
+      {refusal !== null && refusal.facts.length > 0 && (
+        <ul className="ctl-facts">
+          {refusal.facts.map((f, i) => (
+            <li key={`${f.key}-${i}`} className="ctl-fact">
+              <b>{f.key}</b>
+              <span>{f.value}</span>
+            </li>
+          ))}
+        </ul>
+      )}
       {/* ONE SENTENCE EACH, AND BOTH ARE THE INVARIANT RATHER THAN AN
           EXPLANATION OF IT: whether anything was created. */}
       <p>{uncertain
         ? 'The workflow may exist. Open the Workflows board and look before submitting again.'
-        : 'Nothing was created. Correct the steps below and submit again.'}</p>
+        : 'Nothing was created. Correct the plan and submit again.'}</p>
       {error.httpStatus !== null && <p className="checked-at">HTTP {error.httpStatus}{error.code ? ` · ${error.code}` : ''}</p>}
     </div>
   )

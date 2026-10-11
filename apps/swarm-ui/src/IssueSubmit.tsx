@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { Fragment, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { createRun, loadCapacity, loadIssuePreview } from './api'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import type { ApiError } from './fetch'
@@ -364,14 +364,18 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
           <div className="in-choice">
             <input id="in-fix-rounds" className="mono in-rounds" type="number" inputMode="numeric"
               min={MIN_FIX_ROUNDS} max={MAX_FIX_ROUNDS} step={1} value={rounds}
-              aria-invalid={!roundsOk || undefined} onChange={(e) => setRounds(e.target.value)} />
+              aria-invalid={!roundsOk || undefined} aria-describedby={roundsOk ? undefined : 'in-fix-rounds-say'}
+              onChange={(e) => setRounds(e.target.value)} />
             <div className="in-choice-t">
               <label htmlFor="in-fix-rounds"><b>Fix rounds when checks go red</b></label>
               <small>
                 {MIN_FIX_ROUNDS}–{MAX_FIX_ROUNDS}. Once the pull request is open, each red CI reading spends one fix
                 round; past the cap the run fails with the failing checks&rsquo; excerpt.
               </small>
-              {!roundsOk && <small className="sbf-bad" role="alert">Not sent: a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}.</small>}
+              {/* A STATE, NOT A CLICK'S RESULT (VQA V132): "Not sent" is what a
+                  click that was refused says (TS-15), and nothing had been
+                  clicked. The workflow form's priority says it the same way. */}
+              {!roundsOk && <small id="in-fix-rounds-say" className="sbf-bad" role="alert">Must be a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}.</small>}
             </div>
           </div>
         </Move>
@@ -410,7 +414,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             </li>
             <li className={roundsOk ? 'ctl-fact' : 'ctl-fact is-absent'}>
               <b>fix rounds</b>
-              {roundsOk ? `up to ${roundsN}` : <i className="sbf-bad">not sent: a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}</i>}
+              {roundsOk ? `up to ${roundsN}` : <i className="sbf-bad">a whole number from {MIN_FIX_ROUNDS} to {MAX_FIX_ROUNDS}</i>}
             </li>
             <li className={tenant === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>tenant</b>
@@ -471,6 +475,17 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
 }) {
   const { issue } = read
   const [whole, setWhole] = useState(false)
+  // WHETHER THE CUT HIDES ANYTHING (VQA V133), measured off the box: "Show the
+  // whole body · 5 characters" was offered under a body already fully on
+  // screen. Measured once per body while cut; open, it stays offered so it
+  // can close again.
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [hidden, setHidden] = useState(false)
+  useLayoutEffect(() => {
+    const el = bodyRef.current
+    if (el === null || whole) return
+    setHidden(el.scrollHeight > el.clientHeight + 1)
+  }, [issue.body, whole])
   const closed = issue.state === 'closed'
   // AN AGE, LIKE EVERYTHING ELSE IN THE AREA (QA G4-34, 2026-10-07). It
   // printed the local wall clock -- "read 21:29:44", no date and no zone --
@@ -510,14 +525,16 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
               markers ("### What are you trying to do?"). `Markdown` is the
               console's own renderer -- React elements, never HTML, links only
               for http(s) -- so the issue's text cannot inject anything. */}
-          <div className={`in-body${whole ? ' is-whole' : ''}`}>
+          <div ref={bodyRef} className={`in-body${whole ? ' is-whole' : ''}`}>
             <Markdown source={issue.body} />
           </div>
-          <p className="in-row">
-            <Button onClick={() => setWhole((w) => !w)} aria-expanded={whole}>
-              {whole ? 'Show less of the body' : `Show the whole body · ${issue.body.length.toLocaleString()} characters`}
-            </Button>
-          </p>
+          {(hidden || whole) && (
+            <p className="in-row">
+              <Button onClick={() => setWhole((w) => !w)} aria-expanded={whole}>
+                {whole ? 'Show less of the body' : `Show the whole body · ${issue.body.length.toLocaleString()} characters`}
+              </Button>
+            </p>
+          )}
         </>
       )}
       {issue.body_truncated && (
