@@ -131,7 +131,8 @@ def test_the_firing_never_queues_past_its_room(db, ctx) -> None:
     assert [w["repo_id"] for w in work] == [one] and len(tasks(db)) == 1
 
 
-def test_a_head_that_cannot_be_read_refuses_the_firing_when_nothing_was_queued(db, ctx, transport, repo_id) -> None:
+def test_a_head_that_cannot_be_read_refuses_the_firing_when_nothing_was_queued(db, ctx, transport, repo_id, monkeypatch) -> None:
+    monkeypatch.setenv("REFUSAL_INDEX_REFRESH_FAILED", "on")
     transport.heads.clear()
 
     with pytest.raises(repo_index_refresh.IndexRefreshFailed) as caught:

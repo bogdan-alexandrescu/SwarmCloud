@@ -65,7 +65,7 @@ from typing import Any, Iterable, Mapping, Sequence
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .. import approvals
+from .. import approvals, refusals
 from ..errors import ApiError, ValidationFailed
 from ..schemas import TaskCreate
 from ..validation import SCHEDULE_METADATA_KEY
@@ -474,11 +474,13 @@ def _digest_text(firing: Any, params: Any) -> tuple[str, bool]:
 def create(firing: Any) -> list[dict[str, Any]]:
     params = issue_sweep.params_of(firing)
     if params.file_issues:
-        raise ObserverFileIssuesUnavailable(
+        # Report-only until switched on (refusals.py): off, the firing writes
+        # its report and files nothing, which is all file_issues can do now.
+        refusals.refuse(ObserverFileIssuesUnavailable(
             "file_issues is not available: an observer report has no repository to file an epic "
             "in, and swarm-api cannot create an issue yet; set file_issues to false, and file a "
             "proposal from the inbox"
-        )
+        ))
     taken = take_in(firing.ctx, firing.schedule, firing.now)
     text, cut = _digest_text(firing, params)
     if firing.room < 1:

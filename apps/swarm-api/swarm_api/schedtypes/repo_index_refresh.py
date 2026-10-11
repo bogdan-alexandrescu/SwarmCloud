@@ -50,6 +50,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Mapping, Sequence
 
+from .. import refusals
 from ..errors import ApiError, Conflict
 from ..forge import ForgeReadError
 from ..repoindex import IndexPaused, RepoIndex, read_head
@@ -133,10 +134,12 @@ def create(firing: Any) -> list[dict[str, Any]]:
         outcomes[repo_id] = "queued"
         work.append({"kind": "task", "id": run["task_id"], "repo_id": repo_id})
     if not work and outcomes and all(o.startswith("failed") for o in outcomes.values()):
-        raise IndexRefreshFailed(
+        # A new refusal ships report-only (refusals.py): off, the firing is
+        # let through with nothing queued and the log names the refusal.
+        refusals.refuse(IndexRefreshFailed(
             "no repository in scope could be queued for indexing",
             detail={"repositories": outcomes},
-        )
+        ))
     log.info("schedule %s firing %s: index runs %s", firing.schedule["schedule_id"],
              firing.firing["firing_id"], outcomes)
     return work

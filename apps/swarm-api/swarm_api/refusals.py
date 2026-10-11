@@ -129,6 +129,18 @@ SWITCHES: dict[str, Switch] = {
         "auto-approved or auto-merged. On once lane S11's `platform` flag is set on the "
         "platform's own registrations and the inbox (S7) shows held runs",
     ),
+    # Schedule firings refused at create (lanes S6 and the repo index).
+    "index_refresh_failed": Switch(
+        code="index_refresh_failed",
+        why="a repo-index-refresh firing whose every repository failed to queue ends refused "
+        "instead of succeeding empty. On once the per-repository codes in its detail have "
+        "been read in the log and show only deleted or unreadable branches",
+    ),
+    "observer_file_issues_unavailable": Switch(
+        code="observer_file_issues_unavailable",
+        why="an observer schedule with file_issues true is refused because swarm-api cannot "
+        "create an issue yet. On once no stored observer schedule sets file_issues",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

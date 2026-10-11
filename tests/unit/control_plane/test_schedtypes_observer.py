@@ -207,7 +207,8 @@ def test_the_mock_runner_writes_report_md_from_a_fixture_digest(db, ctx, tmp_pat
     assert "=== OBSERVER DIGEST" in report and "PROVIDER_QUOTA_EXHAUSTED" in report
 
 
-def test_file_issues_is_refused_with_its_own_code(db, ctx) -> None:
+def test_file_issues_is_refused_with_its_own_code(db, ctx, monkeypatch) -> None:
+    monkeypatch.setenv("REFUSAL_OBSERVER_FILE_ISSUES_UNAVAILABLE", "on")
     with pytest.raises(observer.ObserverFileIssuesUnavailable) as caught:
         observer.create(firing_for(ctx, watch(db, params={"file_issues": True})))
     assert caught.value.code == "observer_file_issues_unavailable" and caught.value.status_code == 422
