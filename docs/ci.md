@@ -838,7 +838,7 @@ dev-iam job on its own asks again and re-applies the same held plan.
 while `dev-iam` waits. So the next dev release queues behind it, and GitHub
 keeps only the newest pending run in a group. A rejected or abandoned IAM
 release therefore delays routine dev releases until it ends. Reject or cancel
-it, rather than leaving it waiting.
+it, rather than leaving it waiting ([measured](#a-held-dev-iam-plan-cancels-every-release-behind-it)).
 
 **The environment is a repository setting the owner creates.** GitHub
 creates an environment a workflow names if it does not exist, with no
@@ -886,6 +886,46 @@ classification can write. It checks four things:
 It cannot show that `dev-iam` has its reviewer (run the read-back above), nor
 that GitHub and Terraform behave as documented. The first dev release with an
 IAM change after this lands is that proof.
+
+### A held dev-iam plan cancels every release behind it
+
+**Measured 2026-10-11.** Release run 38115700349 (`3f6dbd26`, started 05:43Z)
+stopped at `terraform apply, IAM (dev-iam)`. Its held plan carried a Cloud
+Storage IAM condition written with `matches()`, which those conditions do not
+support, so IAM would have refused it on approval (#1057 replaced it with
+`extract()`). While it waited it held `release-dev`. 20 consecutive releases,
+06:02Z to 08:40Z, ended `cancelled`, and nothing merged in that window reached
+dev. Rejecting the held deployment at 09:0xZ let the next release, 38126514258, run.
+
+**Why every release, not just its own.** `release.yml` sets
+`cancel-in-progress: false`, so a running release is never displaced (two
+applies would contend for the state lock). But GitHub keeps only **one**
+pending run per concurrency group: each newer release cancels the pending one
+before it. A waiting dev-iam job therefore turns every merge behind it into a
+`cancelled` run. A string of `cancelled` dev releases, none of them red, is the
+signature. Find the holder with:
+
+```bash
+gh run list --workflow release.yml --status waiting
+```
+
+**Reject instead of approving when** either holds:
+
+* **main has moved past it.** The held plan was made from an older commit.
+  Approving applies that old plan, or fails as stale, and the release behind it
+  would plan from current main anyway.
+* **its plan would fail.** Approval does not check the plan; IAM checks it at
+  apply. Lint each IAM condition in the held plan's commit first with
+  `iamPolicies:lintPolicy` (the summary's rows name role and member, not the
+  condition), as `terraform/modules/iam/bindings.tf` records: it
+  answered `ConditionCompileCheck`, severity `ERROR`, for the `matches()` form,
+  and `{}` for the `extract()` one.
+
+**Rejecting applies nothing.** The dev-iam job is the only one that applies a
+held plan, and a rejection ends it before it starts, so `deploy` never runs and
+the run ends failed. The pending release then takes the group and replans from
+current main. If that plan still changes IAM, it holds again, now with a plan
+worth reading.
 
 ## The release timeline
 

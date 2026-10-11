@@ -53,6 +53,9 @@ import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
+import { SchedulesScreen, WaitingOnYouCard } from './Schedules'
+import { ApprovalsScreen } from './Approvals'
+import { AdminSchedulesScreen } from './AdminSchedules'
 import { RepositoriesScreen } from './Repositories'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
@@ -75,7 +78,18 @@ import { WorkflowsScreen } from './Workflows'
  * Variables) both name the noun and let the tabs be the views, and this still
  * does the same -- with three of them rather than six:
  *
- *   Overview · Work · Capacity · Admin
+ *   Overview · Work · Automate · Capacity · Admin
+ *
+ * AUTOMATE IS THE ONE SECTION ADDED SINCE THE COLLAPSE, AND IT IS THE OWNER'S
+ * DECISION, NOT A WIDENING (docs/schedules.md §6.1, SD1, 2026-10-08). The
+ * argument below for few sections still stands; what Automate passes is the
+ * membership test that argument sets. It is a different QUESTION from Work's
+ * -- "what runs by itself, and what is waiting on me", against "what is
+ * running" -- and it is two pages, Schedules and Approvals, rather than the
+ * one-pane section navigation.html and repositories.html refused. Folding
+ * Schedules into Work as a tab (P1, the recommendation) was drawn and not
+ * chosen. A schedule is not a run: what it makes is ordinary work, listed in
+ * Work like any other, and Automate lists the thing that makes it.
  *
  * THREE SECTIONS, AND OVERVIEW IS THE LANDING SCREEN RATHER THAN A FOURTH
  * QUESTION. It was six -- Overview, Work, Runtimes, Capacity, History, Admin
@@ -325,6 +339,20 @@ export const SECTIONS: SectionDef[] = [
     ],
   },
   {
+    // docs/schedules.md §6.1 (SD1, owner decision 2026-10-08): the section
+    // that holds what runs by itself. A LITERAL id for the reason given on
+    // Work: test_nav_headings_agree.py reads this array with a regex.
+    // Approvals is its second page, `/approvals` (§6.1), and the question's
+    // last clause is its.
+    id: 'automate',
+    label: 'Automate',
+    question: 'What runs here by itself, on a schedule, and what is waiting on me to approve?',
+    tabs: [
+      { id: 'schedules', label: 'Schedules' },
+      { id: 'approvals', label: 'Approvals' },
+    ],
+  },
+  {
     // BACK TO `capacity`, which this section was called before an earlier
     // pass renamed it to `pools`. That rename is what produced `Pools > Pools`
     // -- it named the parent after its first child -- so this is not churn for
@@ -440,8 +468,10 @@ export const SECTIONS: SectionDef[] = [
     // arrives wanting to know. It asks what each tab answers, in tab order.
     // docs/web-ui/redesign.md §2 carries the same words, and
     // tests/sections.test.ts holds the two together.
+    // docs/schedules.md §5.3 and §6.1 put the cross-tenant schedules view here,
+    // beside Tenants, and the question's last clause is its.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, and who is waiting for a workspace?',
+      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, who is waiting for a workspace, and what is every tenant scheduled to run?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
@@ -452,6 +482,9 @@ export const SECTIONS: SectionDef[] = [
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
       { id: 'people', label: 'People', admin: true },
+      // docs/schedules.md §5.3: every tenant's schedules, the schedule tick's
+      // last hour and the platform's own ticks (§8.4). Admin only.
+      { id: 'schedules', label: 'Schedules', admin: true },
     ],
   },
 ]
@@ -926,6 +959,7 @@ export function fromAddress(full: string): Route {
 
 const ADMIN_SECTION = 'admin'
 const LIMITS_TAB = 'limits'
+const AUTOMATE = 'automate'
 
 /**
  * The query keys a pane's address carries, and no other: the `?pool=` a link
@@ -934,6 +968,10 @@ const LIMITS_TAB = 'limits'
  */
 function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) return ['pool']
+  // One schedule rides on the list's address (`/automate/schedules/<id>`, paths.ts).
+  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule']
+  // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts).
+  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval']
   if (sectionId !== CAPACITY) return []
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
@@ -1300,6 +1338,8 @@ export function spineOf(sectionId: string, tab = ''): SpineSection {
       return null
     case WORK:
       return tab === 'new' || tab === 'new-workflow' || tab === 'new-issue' ? null : 'work'
+    case AUTOMATE:
+      return 'automate'
     case CAPACITY:
       return 'capacity'
     case ADMIN_SECTION:
@@ -1766,7 +1806,7 @@ function SectionBody({
   if (`${sectionId}/${tab}` === 'work/timeline' && page === 'outcomes') return <ActivityScreen view={view} onView={onView} />
   switch (`${sectionId}/${tab}`) {
     case 'overview/now':
-      return <OverviewScreen setup={<SetupCard />} />
+      return <OverviewScreen setup={<SetupCard />} waitingOnYou={<WaitingOnYouCard go={go} />} />
 
     case 'work/running':
       return <AgentsScreen {...agentsProps} />
@@ -1789,6 +1829,11 @@ function SectionBody({
     case 'work/access':
       return <AccessScreen />
 
+    case 'automate/schedules':
+      return <SchedulesScreen view={view} go={go} />
+    case 'automate/approvals':
+      return <ApprovalsScreen view={view} go={go} />
+
     case 'capacity/pools':
       return <CapacityScreen />
     case 'capacity/catalogue':
@@ -1810,6 +1855,8 @@ function SectionBody({
       return <PlatformCountsScreen />
     case 'admin/people':
       return <PeopleScreen />
+    case 'admin/schedules':
+      return <AdminSchedulesScreen />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash
