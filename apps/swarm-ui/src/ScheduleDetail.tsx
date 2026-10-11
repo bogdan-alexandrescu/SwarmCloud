@@ -2,19 +2,33 @@
  * ONE SCHEDULE (docs/schedules.md §6.2, detail variant A): a head of facts,
  * then tabs -- History first, because the run history is the reason to open
  * the page; then Budget, Gate, Settings and Audit, which are long and rarely
- * read. Read-only: every value is `GET /v1/schedules/{id}` as served, and the
- * audit is its own route, read when its tab is opened.
+ * read. Every value is `GET /v1/schedules/{id}` as served, and the audit is
+ * its own route, read when its tab is opened. Two things write: Edit, which
+ * swaps the tabs for the form (ScheduleEdit.tsx), and the SD3 merge switch on
+ * the Gate tab (§4.2). After either, the page reads the schedule again rather
+ * than patching what it drew, so it shows the revision the server holds.
  *
  * A schedule that has never fired shows the `Absent` state, not "0 runs"
  * (§6.2): no firing is a fact about the schedule, and a zero would read as a
  * count of something that ran.
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import { loadSchedule, loadScheduleAudit, type FiringWork, type Schedule, type ScheduleAuditEntry, type ScheduleFiring } from './api'
-import { Tabs } from './components'
-import { errorHeading, type Result } from './fetch'
+import {
+  loadSchedule,
+  loadScheduleAudit,
+  loadScheduleTypes,
+  setMergeMode,
+  type FiringWork,
+  type Schedule,
+  type ScheduleAuditEntry,
+  type ScheduleFiring,
+  type ScheduleTypeRow,
+} from './api'
+import { Button, Dialog, Tabs } from './components'
+import { errorHeading, type ApiError, type Result } from './fetch'
 import { usd } from './measure'
 import { Absent } from './primitives'
+import { EditSchedule } from './ScheduleEdit'
 import { InApp, SCHEDULES_ADDRESS, STATE_WORD, SpendFigure, localTime, untilWords } from './Schedules'
 import { Screen, timeAgo } from './Shell'
 import { useNow } from './useNow'
@@ -126,7 +140,159 @@ function Budget({ s }: { s: Schedule }) {
   )
 }
 
-function Gate({ s }: { s: Schedule }) {
+/** What the merge switch knows of the type's floor: `auto` allowed, never, or not read. */
+type Floor = 'auto' | 'never' | 'unknown' | 'reading'
+
+function useMergeFloor(type: string): Floor {
+  const [floor, setFloor] = useState<Floor>('reading')
+  useEffect(() => {
+    let live = true
+    void loadScheduleTypes().then((r) => {
+      if (!live) return
+      if (r.status !== 'ok' && r.status !== 'stale') return setFloor('unknown')
+      // A type this account may not create is not in its catalogue; the
+      // server still holds the floor, so the switch is offered and it decides.
+      const row: ScheduleTypeRow | undefined = r.data.types.find((t) => t.name === type)
+      setFloor(row === undefined ? 'unknown' : row.floor_gate.merge === 'auto' ? 'auto' : 'never')
+    })
+    return () => {
+      live = false
+    }
+  }, [type])
+  return floor
+}
+
+/** The server's refusal of the switch, in the words of the rule that refused it. */
+function switchRefusal(e: ApiError): string {
+  switch (e.code) {
+    case 'second_person_required':
+      return 'You last changed this schedule’s gate, scope or spec, so another member must make this switch.'
+    case 'platform_admin_required':
+      return 'This schedule reaches a platform repository, where only a platform admin may switch merging to automatic.'
+    case 'merge_auto_not_allowed':
+      return 'This type never merges unattended.'
+    case 'schedule_changed':
+      return 'The schedule was changed since this page read it. Close this and read it again.'
+    default:
+      return `Not switched: ${e.message}`
+  }
+}
+
+/**
+ * THE SD3 MERGE SWITCH (§4.2, owner decision 2026-10-08). `approve` to `auto`
+ * is the one way a schedule merges unattended: never the create or edit form,
+ * always this audited route, and never by the member who last changed the
+ * gate, scope or spec. The console does not decide who may: it asks, and says
+ * which rule refused. A one-person tenant cannot meet the second-person rule,
+ * so the server answers 422 `confirmation_required` and the dialog asks for
+ * the schedule's name typed instead (SD5's exception). Back to `approve` is a
+ * tightening, open to any member, and needs no dialog.
+ */
+export function MergeSwitch({ s, onChanged }: { s: Schedule; onChanged: () => void }) {
+  const floor = useMergeFloor(s.type)
+  const [open, setOpen] = useState(false)
+  const [typed, setTyped] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [refused, setRefused] = useState<ApiError | null>(null)
+  const merge = s.gate.merge
+
+  const send = async (mode: 'approve' | 'auto', confirm?: string) => {
+    setBusy(true)
+    setRefused(null)
+    const r = await setMergeMode(s.schedule_id, { mode, revision: s.revision, ...(confirm === undefined ? {} : { confirm }) })
+    setBusy(false)
+    if (r.status === 'ok') {
+      setOpen(false)
+      onChanged()
+      return
+    }
+    if (r.status !== 'error') return
+    if (r.error.code === 'confirmation_required' && typed === null) setTyped('')
+    setRefused(r.error)
+  }
+
+  if (merge === 'auto') {
+    return (
+      <div className="sc-switch" data-testid="sc-merge-switch" data-mode="auto">
+        <p className="sb-note">
+          Merging is <b>automatic</b>: a green, reviewed pull request merges without a person. The hard stops below still hold it.
+        </p>
+        <Button busy={busy ? 'Switching…' : false} onClick={() => void send('approve')}>
+          Approve each merge again
+        </Button>
+        {refused !== null && <p className="c-hint" role="alert">{switchRefusal(refused)}</p>}
+      </div>
+    )
+  }
+  if (merge !== 'approve') {
+    return (
+      <p className="sb-note" data-testid="sc-merge-switch" data-mode={merge ?? 'unset'}>
+        This schedule does not merge. Edit its gate to approve each merge before it can be switched to automatic.
+      </p>
+    )
+  }
+  if (floor === 'reading') return <p className="sb-note" data-testid="sc-merge-switch">Reading whether this type may merge unattended…</p>
+  if (floor === 'never') {
+    return (
+      <p className="sb-note" data-testid="sc-merge-switch" data-mode="approve">
+        Each merge is approved by a person, and stays so: {s.type} never merges unattended.
+      </p>
+    )
+  }
+  const confirmOk = typed === null || typed.trim() === s.name.trim()
+  return (
+    <div className="sc-switch" data-testid="sc-merge-switch" data-mode="approve">
+      <p className="sb-note">
+        Each merge is approved by a person.
+        {floor === 'unknown' && ' Whether this type may merge unattended was not read; the server decides when you ask.'}
+      </p>
+      <Button onClick={() => { setOpen(true); setRefused(null) }}>Merge automatically…</Button>
+      {open && (
+        <Dialog
+          title="Merge automatically?"
+          onClose={() => setOpen(false)}
+          actions={
+            <>
+              <Button kind="ghost" onClick={() => setOpen(false)}>
+                Keep approving each merge
+              </Button>
+              <Button
+                kind="primary"
+                busy={busy ? 'Switching…' : false}
+                disabledReason={confirmOk ? undefined : 'Type the schedule’s name exactly.'}
+                onClick={() => void send('auto', typed === null ? undefined : typed.trim())}
+              >
+                Switch to automatic merging
+              </Button>
+            </>
+          }
+        >
+          <p>
+            A pull request this schedule makes will merge once it is green and reviewed, without a person approving it. The hard stops
+            still hold: workflow files, IAM, terraform/bootstrap and CODEOWNERS changes wait for the owner whatever this says.
+          </p>
+          <p>
+            The member who last changed this schedule’s gate, scope or spec cannot make this switch; in a platform repository only a
+            platform admin can. The switch is written to the schedule’s audit.
+          </p>
+          {typed !== null && (
+            <label className="c-field">
+              <span className="c-lbl">
+                You are the only person in this tenant, so no second person can make this switch. Type <code>{s.name}</code> to confirm.
+              </span>
+              <input className="c-inp is-mono" value={typed} autoComplete="off" spellCheck={false} onChange={(e) => setTyped(e.target.value)} />
+            </label>
+          )}
+          {refused !== null && !(refused.code === 'confirmation_required' && typed !== null) && (
+            <p className="c-hint" role="alert">{switchRefusal(refused)}</p>
+          )}
+        </Dialog>
+      )}
+    </div>
+  )
+}
+
+function Gate({ s, onChanged }: { s: Schedule; onChanged: () => void }) {
   const g = s.gate
   return (
     <div data-testid="sc-gate">
@@ -145,6 +311,8 @@ function Gate({ s }: { s: Schedule }) {
         <li>A security-class issue is not swept; if one is planned, its plan needs the owner.</li>
         <li>Three failed runs in a row pause the schedule; a spent daily budget skips firings until the next day.</li>
       </ul>
+      <h3 className="sc-h3">Merging</h3>
+      <MergeSwitch s={s} onChanged={onChanged} />
     </div>
   )
 }
@@ -208,11 +376,42 @@ function Audit({ scheduleId }: { scheduleId: string }) {
   )
 }
 
-function DetailBody({ schedule: s, firings, go }: { schedule: Schedule; firings: ScheduleFiring[]; go: (to: string) => void }) {
-  const [tab, setTab] = useState<DetailTab>('history')
+function DetailBody({
+  schedule: s,
+  firings,
+  go,
+  tab,
+  setTab,
+  reread,
+}: {
+  schedule: Schedule
+  firings: ScheduleFiring[]
+  go: (to: string) => void
+  tab: DetailTab
+  setTab: (t: DetailTab) => void
+  reread: () => void
+}) {
+  const [editing, setEditing] = useState(false)
   const now = useNow()
+  if (editing) {
+    return (
+      <EditSchedule
+        schedule={s}
+        onCancel={() => setEditing(false)}
+        onSaved={() => {
+          setEditing(false)
+          reread()
+        }}
+      />
+    )
+  }
   return (
     <>
+      <div className="c-acts sc-acts">
+        <Button size="sm" onClick={() => setEditing(true)}>
+          Edit
+        </Button>
+      </div>
       <dl className="sc-facts sc-head">
         <Fact name="Type">{s.tier === null ? s.type : `${s.type} · ${s.tier}`}</Fact>
         <Fact name="When">
@@ -255,7 +454,7 @@ function DetailBody({ schedule: s, firings, go }: { schedule: Schedule; firings:
             <FiringRows firings={firings} go={go} />
           ))}
         {tab === 'budget' && <Budget s={s} />}
-        {tab === 'gate' && <Gate s={s} />}
+        {tab === 'gate' && <Gate s={s} onChanged={reread} />}
         {tab === 'settings' && <Settings s={s} />}
         {tab === 'audit' && <Audit scheduleId={s.schedule_id} />}
       </div>
@@ -269,11 +468,15 @@ export function ScheduleDetail({ scheduleId, go }: { scheduleId: string; go: (to
   // lands, the id is all this page knows to call it.
   const [name, setName] = useState<string | null>(null)
   const pageTitle = name ?? scheduleId
+  // The tab lives here, above the Screen, so a re-read after a write -- a
+  // new `round`, which remounts the Screen -- lands on the tab it came from.
+  const [tab, setTab] = useState<DetailTab>('history')
+  const [round, setRound] = useState(0)
   return (
     <div className="sc-detail">
       <InApp go={go} to={SCHEDULES_ADDRESS} className="sc-back">‹ All schedules</InApp>
       <Screen
-        key={`schedule:${scheduleId}`}
+        key={`schedule:${scheduleId}:${round}`}
         title={pageTitle}
         load={async () => {
           const r = await loadSchedule(scheduleId)
@@ -282,7 +485,9 @@ export function ScheduleDetail({ scheduleId, go }: { scheduleId: string; go: (to
         }}
         summary={(d) => `${d.schedule.schedule_id} · created by ${d.schedule.created_by}`}
       >
-        {(d) => <DetailBody schedule={d.schedule} firings={d.firings} go={go} />}
+        {(d) => (
+          <DetailBody schedule={d.schedule} firings={d.firings} go={go} tab={tab} setTab={setTab} reread={() => setRound((n) => n + 1)} />
+        )}
       </Screen>
     </div>
   )

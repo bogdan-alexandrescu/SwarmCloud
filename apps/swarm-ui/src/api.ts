@@ -5739,3 +5739,115 @@ export async function loadApprovals(options: { frame?: boolean } = {}): Promise<
   if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
   return read(route('/v1/approvals'), (d) => d.approvals.length === 0, { frame: options.frame === true })
 }
+
+/**
+ * One row of `GET /v1/schedule-types` (§7.1, `scheduletypes.describe`): what
+ * the create form offers. The gates and the parameter schema are the type's,
+ * served, so the form never restates the catalogue.
+ */
+export interface ScheduleTypeRow {
+  name: string
+  description: string
+  params_schema: { properties?: Record<string, ParamSchema>; required?: string[] }
+  default_gate: Schedule['gate']
+  floor_gate: Schedule['gate']
+  min_interval_minutes: number
+  budget_caps: Schedule['budget'] | null
+  scopes: string[]
+  /** The scopes this caller may create the type in; absent from an older API. */
+  creatable_scopes?: string[]
+  gate_notes?: string | null
+  available: boolean
+  disabled_reason: string | null
+}
+
+/** The subset of a JSON-schema property the form draws a field for. */
+export interface ParamSchema {
+  type?: string
+  title?: string
+  description?: string
+  default?: unknown
+  enum?: unknown[]
+  minimum?: number
+  maximum?: number
+}
+
+/** `POST /v1/schedules:preview` (§6.3), from the tick's own parser. */
+export interface SchedulePreview {
+  words: string
+  /** ISO 8601 in the schedule's zone, with its offset. */
+  next: string[]
+  min_gap_minutes: number
+  /** Why the type would refuse this cadence, or null. */
+  refusal: unknown
+}
+
+/** The create body (§7.1). Never an image, a command or a resource spec (invariant 10). */
+export interface ScheduleCreateBody {
+  name: string
+  type: string
+  scope: Schedule['scope']
+  cron: string
+  timezone: string
+  params?: Record<string, unknown>
+  gate?: Schedule['gate']
+  budget?: Schedule['budget']
+  policy?: Schedule['policy']
+  state?: 'enabled' | 'paused'
+  client_request_id?: string
+}
+
+/** The edit body: what changed, and the revision it was read at. `type` is not editable. */
+export type ScheduleEditBody = Partial<Omit<ScheduleCreateBody, 'type' | 'state' | 'client_request_id'>> & { revision: number }
+
+function scheduleNotServed<T>(target: ApiRoute): Result<T> {
+  noteFixtureProbe(target, 0, false)
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no schedule routes.' },
+  }
+}
+
+/** A schedule write: the answer's `schedule`, or the refusal as served. */
+async function scheduleWrite(target: ApiRoute, method: 'POST' | 'PATCH', body: unknown): Promise<Result<{ schedule: Schedule }>> {
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return (await write(target, method, body)) as Result<{ schedule: Schedule }>
+}
+
+/** `GET /v1/schedule-types`: the types this caller may create, with their gates. */
+export async function loadScheduleTypes(): Promise<Result<{ types: ScheduleTypeRow[] }>> {
+  if (USE_FIXTURES) return scheduleNotServed(route('/v1/schedule-types'))
+  return read(route('/v1/schedule-types'), () => false)
+}
+
+/**
+ * `POST /v1/schedules:preview`: the words, the next five and the type's
+ * refusal. A bad expression or zone is a 422 with the parser's reason.
+ */
+export async function previewSchedule(body: { cron: string; timezone: string; type?: string }): Promise<Result<{ preview: SchedulePreview }>> {
+  const target = route('/v1/schedules:preview')
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return (await write(target, 'POST', body)) as Result<{ preview: SchedulePreview }>
+}
+
+/** `POST /v1/schedules`: create. A repeated `client_request_id` returns the first one's schedule. */
+export async function createSchedule(body: ScheduleCreateBody): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules'), 'POST', body)
+}
+
+/** `PATCH /v1/schedules/{id}`: a stale revision is 409 `schedule_changed`; `gate.merge: auto` is 422 `use_merge_switch`. */
+export async function updateSchedule(scheduleId: string, body: ScheduleEditBody): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules/{id}', { id: scheduleId }), 'PATCH', body)
+}
+
+/**
+ * `POST /v1/schedules/{id}:merge-mode`, the SD3 switch (§4.2). The server
+ * holds every rule -- the type's floor, the second person, the platform
+ * admin, the one-person tenant's typed name -- and says which one refused.
+ */
+export async function setMergeMode(
+  scheduleId: string,
+  body: { mode: 'approve' | 'auto'; revision: number; confirm?: string },
+): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules/{id}:merge-mode', { id: scheduleId }), 'POST', body)
+}

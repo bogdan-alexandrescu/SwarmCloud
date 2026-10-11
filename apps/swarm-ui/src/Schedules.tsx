@@ -23,7 +23,9 @@ import { usd } from './measure'
 import { addressToPath } from './paths'
 import { Absent, Mark } from './primitives'
 import { scheduleWords, type RepoRecord } from './RepositoriesData'
+import { buttonClass } from './components'
 import { ScheduleDetail } from './ScheduleDetail'
+import { NewSchedule } from './ScheduleEdit'
 import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
@@ -34,6 +36,12 @@ export const SCHEDULES_ADDRESS = 'automate/schedules'
 export function scheduleAddress(id: string): string {
   return `${SCHEDULES_ADDRESS}?${new URLSearchParams({ schedule: id }).toString()}`
 }
+
+/**
+ * The create form's address: `/automate/schedules/new`. A schedule id is `sch_`
+ * and twelve hex digits (`schedules.new_schedule_id`), so `new` names none.
+ */
+export const NEW_SCHEDULE = 'new'
 
 /** The schedule a Schedules address names (`schedule=<id>`), or null for the list. */
 function scheduleOf(view: string | null): string | null {
@@ -285,6 +293,11 @@ function SchedulesBody({ rows, go }: { rows: Schedule[]; go: (to: string) => voi
   const names = repos.status === 'ok' || repos.status === 'stale' ? new Map(repos.data.map((r) => [r.repo_id, `${r.owner}/${r.repo}`])) : null
   return (
     <div className="sc-list">
+      <div className="c-acts sc-acts">
+        <InApp go={go} to={scheduleAddress(NEW_SCHEDULE)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
+          New schedule
+        </InApp>
+      </div>
       {rows.length === 0 ? (
         <Absent kind="zero" heading="No schedules yet" say="This tenant has no schedules: the list was read and is empty.">
           Recurring work in this tenant, such as an issue sweep, an index refresh or a nightly observer, is listed here. Each firing makes ordinary work: an issue run, a task or a workflow.
@@ -300,6 +313,7 @@ function SchedulesBody({ rows, go }: { rows: Schedule[]; go: (to: string) => voi
 
 export function SchedulesScreen({ view, go }: { view: string | null; go: (to: string) => void }) {
   const scheduleId = scheduleOf(view)
+  if (scheduleId === NEW_SCHEDULE) return <NewSchedule go={go} />
   if (scheduleId !== null) return <ScheduleDetail scheduleId={scheduleId} go={go} />
   return (
     <Screen

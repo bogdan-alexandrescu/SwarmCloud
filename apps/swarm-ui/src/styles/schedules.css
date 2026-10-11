@@ -85,3 +85,13 @@
   .sc-row a { display: inline-flex; align-items: center; min-height: 44px; }
   .sc-waiting-list > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
 }
+
+/* ---- create and edit (§6.2 create A), and the SD3 merge switch ------------- */
+.sc-acts { justify-content: flex-end; margin: 0; }
+.sc-form { display: grid; gap: 8px; min-width: 0; }
+.sc-form fieldset { border: 0; margin: 0; padding: 0; display: grid; gap: 4px; }
+.sc-check { display: flex; align-items: center; gap: 6px; min-height: 32px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sc-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.sc-next { margin: 4px 0 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sc-next .sc-sub { display: inline; }
+.sc-switch { display: grid; gap: 6px; justify-items: start; }
