@@ -582,3 +582,10 @@ def test_the_hand_off_metadata_keys_are_reserved(client, db, key):
 
 def test_human_wait_resumes_is_the_designs_name():
     assert HUMAN_WAIT_RESUMES_METADATA_KEY == "human_wait_resumes"
+
+
+def test_the_scheduler_restates_the_expiry_cause_swarm_api_names():
+    """The scheduler's image does not carry swarm_api, so it restates it."""
+    from scheduler import loop
+
+    assert loop.HUMAN_WAIT_EXPIRED == HUMAN_WAIT_EXPIRED
