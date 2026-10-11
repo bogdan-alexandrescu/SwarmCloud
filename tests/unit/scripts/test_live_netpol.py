@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import functools
 import hashlib
 import importlib.util
 import io
@@ -41,8 +42,6 @@ from typing import Any
 
 import pytest
 import yaml
-
-from scheduler.dispatch import LIVE_POD_LABEL
 
 REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
@@ -64,14 +63,21 @@ def _load(name: str, path: Path) -> Any:
     return module
 
 
-render = _load("swarm_k8s_render_live", KUBERNETES / "render.py")
+@functools.cache
+def _render() -> Any:
+    """kubernetes/render.py, loaded on first use: it imports scheduler and
+    quota_broker, and test_collection_stays_cheap holds collection of this
+    directory to stdlib weight."""
+    return _load("swarm_k8s_render_live", KUBERNETES / "render.py")
+
+
 parity = _load("swarm_k8s_parity_live", KUBERNETES / "network_parity.py")
 
 
 def _run(*argv: str) -> str:
     out = io.StringIO()
     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
-        assert render.main(list(argv)) == 0
+        assert _render().main(list(argv)) == 0
     return out.getvalue()
 
 
@@ -135,6 +141,10 @@ def test_the_policy_selects_the_label_the_dispatcher_sets():
     """`scheduler.dispatch.LIVE_POD_LABEL` is what a live-browser pod carries. A
     policy keyed on any other spelling selects nothing: the pod would have no
     live path, and the hand-off would time out with no error."""
+    # Imported here, not at module top: scheduler.dispatch pulls the service
+    # stack, and test_collection_stays_cheap holds collection to stdlib weight.
+    from scheduler.dispatch import LIVE_POD_LABEL
+
     key, value = LIVE_POD_LABEL
     assert parity.LIVE_POD_SELECTOR == {"matchLabels": {key: value}}
 
@@ -174,24 +184,24 @@ def _tenant_values() -> dict[str, str]:
     import argparse
 
     parser = argparse.ArgumentParser()
-    render.add_tenant_arguments(parser)
-    return render.tenant_values(parser.parse_args(["--tenant", "eng"]))
+    _render().add_tenant_arguments(parser)
+    return _render().tenant_values(parser.parse_args(["--tenant", "eng"]))
 
 
 def test_the_existing_policies_render_byte_identical():
     values = _tenant_values()
     for name, digest in PRE_L6_DIGESTS.items():
-        rendered = render.render_files((name,), values)
+        rendered = _render().render_files((name,), values)
         assert hashlib.sha256(rendered.encode()).hexdigest() == digest, f"{name} no longer renders as it did"
 
 
 def test_the_live_policy_is_purely_appended_to_the_tenant_render():
     values = _tenant_values()
-    assert render.TENANT_FILES[-1] == LIVE_EGRESS_FILE
-    before = render.render_files(render.TENANT_FILES[:-1], values)
+    assert _render().TENANT_FILES[-1] == LIVE_EGRESS_FILE
+    before = _render().render_files(_render().TENANT_FILES[:-1], values)
     assert hashlib.sha256(before.encode()).hexdigest() == PRE_L6_TENANT_RENDER
-    after = render.render_files(render.TENANT_FILES, values)
-    live = render.render_files((LIVE_EGRESS_FILE,), values)
+    after = _render().render_files(_render().TENANT_FILES, values)
+    live = _render().render_files((LIVE_EGRESS_FILE,), values)
     assert after == before.rstrip("\n") + "\n---\n" + live
 
 
@@ -257,7 +267,7 @@ def test_an_offline_swarm_system_render_is_marked_not_for_apply():
 )
 def test_the_renderer_refuses_a_range_that_is_not_one_private_subnet(argv):
     with pytest.raises(SystemExit) as caught, contextlib.redirect_stderr(io.StringIO()):
-        render.main(["swarm-system", *argv])
+        _render().main(["swarm-system", *argv])
     assert caught.value.code not in (0, None)
 
 
