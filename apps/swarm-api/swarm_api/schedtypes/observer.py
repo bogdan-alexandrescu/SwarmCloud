@@ -35,10 +35,35 @@ THE DIGEST HOLDS (§3.4), per `focus`:
     titles     not recorded: an issue run stores its pull request's number
                and URL, not its title
 
-`file_issues: true` (one epic, one comment per finding) is REFUSED with
-`observer_file_issues_unavailable`: the report has no repository to file in,
-and swarm-api has no issue-creating write yet. A proposal stays a click by a
-person in the inbox.
+`file_issues: true` FILES ONE EPIC PER REPORT (owner decision 2026-10-11).
+The report's task has no repository, so the schedule names one:
+`file_issues_repo_id`, required when `file_issues` is true, a registration
+of the schedule's tenant that the schedule's owner can write (a `write`
+grant, or no grant while REPOSITORY_GRANTS_ENFORCED is off -- the rule a
+submission follows, `SubmissionService._resolve_forge`). It is checked at
+create and edit (`check_file_issues`, from routes/schedules.py) and again at
+every firing, before anything is written. Each check is a NEW refusal and so
+ships report-only (refusals.py): switched off, the create goes through and
+the firing writes its report and FILES NOTHING -- an unchecked repository is
+never written to, whatever the switch says.
+
+The epic follows CLAUDE.md "Issues": the epic form's sections in its order,
+label `epic`, NO task item in the body, and ONE COMMENT PER PROPOSAL, each a
+`- [ ]` box. It is written with the tenant's own forge credential
+(`ctx.forge_tokens`, the `-git` secret every forge write uses) through
+`forgewrite.GitHubWriter`; no new credential. Every field the agent wrote is
+masked and neutralised (`issuecomments.neutral`: redaction with the token as
+a literal, no mention, no closing keyword). Filing happens when the next
+firing takes a report's proposals in, with the inbox records, which stay:
+the inbox is where a person sees them either way.
+
+EXACTLY ONCE across retried firings: `observer_epics/{task_id}` records the
+epic's number and each comment's id the moment GitHub answers. A retry
+skips what is recorded; an issue or comment written but not recorded is
+found again by the marker its body begins with (`find_issue`,
+`find_comment`) before anything is written a second time. A GitHub failure
+is logged and leaves the record where it stopped: the report is still
+submitted, and the next firing carries on from there.
 
 PLATFORM VARIANT (owner-only, `scope: {mode: "platform"}`, §3.13). The same
 digest over EVERY tenant's documents. It holds counts, durations, costs,
@@ -59,16 +84,21 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Mapping, Sequence
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from .. import approvals, refusals
-from ..errors import ApiError, ValidationFailed
+from .. import approvals, refusals, scheduletypes
+from ..errors import ApiError, Forbidden, ValidationFailed
+from ..forgewrite import ForgeWriteError, GitHubWriter
+from ..issuecomments import bounded as bounded_body
+from ..issuecomments import neutral
+from ..repositories import Repositories
 from ..schemas import TaskCreate
-from ..validation import SCHEDULE_METADATA_KEY
+from ..validation import SCHEDULE_METADATA_KEY, IssueRef
 from . import issue_sweep
 
 log = logging.getLogger(__name__)
@@ -101,10 +131,27 @@ TASKS = "tasks"
 ATTEMPTS = "attempts"
 RUNS = "issue_runs"
 FIRINGS = "schedule_firings"
+#: One document per report filed as an epic, by the report task's id.
+EPICS = "observer_epics"
+#: CLAUDE.md "Issues": the epic form's label.
+EPIC_LABEL = "epic"
+#: A task id is `new_id(...)`; anything else would be spliced into a marker.
+_TASK_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
+#: Caps per field of an epic, so one proposal cannot spend a whole comment.
+MAX_TITLE_CHARS = 200
+MAX_FIELD_CHARS = 4000
 
 
-class ObserverFileIssuesUnavailable(ValidationFailed):
-    code = "observer_file_issues_unavailable"
+class ObserverFileIssuesRepoRequired(ValidationFailed):
+    code = "observer_file_issues_repo_required"
+
+
+class ObserverFileIssuesRepoNotRegistered(ValidationFailed):
+    code = "observer_file_issues_repo_not_registered"
+
+
+class ObserverFileIssuesRepoNotWritable(Forbidden):
+    code = "observer_file_issues_repo_not_writable"
 
 
 # --------------------------------------------------------------------------
@@ -435,13 +482,19 @@ def read_proposals(ctx: Any, task: Mapping[str, Any]) -> list[Proposal]:
     return parse_proposals(str(row.get("content") or ""))
 
 
-def take_in(ctx: Any, schedule: Mapping[str, Any], now: datetime) -> int:
+def intake(ctx: Any, schedule: Mapping[str, Any], now: datetime) -> list[tuple[dict[str, Any], list[Proposal]]]:
+    """Each earlier report with its proposals, read once for the inbox and the epic."""
+    return [(task, read_proposals(ctx, task)) for task in earlier_reports(ctx, schedule, now)]
+
+
+def take_in(ctx: Any, schedule: Mapping[str, Any], now: datetime,
+            reports: Sequence[tuple[dict[str, Any], list[Proposal]]] | None = None) -> int:
     """Each earlier report's proposals as `proposal` records; returns how many are new."""
     made = 0
     approvers = (schedule.get("gate") or {}).get("approvers") or "members"
-    for task in earlier_reports(ctx, schedule, now):
+    for task, proposals in (intake(ctx, schedule, now) if reports is None else reports):
         mark = (task.get("metadata") or {}).get(SCHEDULE_METADATA_KEY) or {}
-        for position, proposal in enumerate(read_proposals(ctx, task)):
+        for position, proposal in enumerate(proposals):
             key = f"{task['id']}:{position}"
             if ctx.db.collection(approvals.COLLECTION).document(
                     approvals.approval_id(approvals.PROPOSAL, key)).get().exists:
@@ -459,6 +512,228 @@ def take_in(ctx: Any, schedule: Mapping[str, Any], now: datetime) -> int:
 
 
 # --------------------------------------------------------------------------
+# file_issues: the repository the schedule names, and the epic
+# --------------------------------------------------------------------------
+
+
+def owner_can_write(ctx: Any, tenant_id: str, owner: str, repo_id: str) -> bool:
+    """Whether `owner` may write `repo_id`: the rule a submission follows.
+
+    A grant decides when there is one -- `write` writes, `read` does not --
+    and with no grant the tenant credential writes only while
+    REPOSITORY_GRANTS_ENFORCED is off (`SubmissionService._resolve_forge`).
+    """
+    mode = ctx.submissions._grant_mode(tenant_id, owner, repo_id)
+    if mode is not None:
+        return mode == "write"
+    return not getattr(ctx.settings, "repository_grants_enforced", False)
+
+
+def file_issues_target(ctx: Any, tenant_id: str, owner: str,
+                       params: Any) -> tuple[dict[str, Any] | None, ApiError | None]:
+    """`(registration, None)` to file in, `(None, refusal)`, or `(None, None)` with file_issues off."""
+    if not params.file_issues:
+        return None, None
+    repo_id = params.file_issues_repo_id
+    if not repo_id:
+        return None, ObserverFileIssuesRepoRequired(
+            "file_issues needs file_issues_repo_id: an observer report has no repository of its "
+            "own, so the schedule names the registered repository its epic is filed in"
+        )
+    repo = Repositories(ctx.db, now=ctx.now).find(tenant_id, repo_id)
+    if repo is None:
+        # One answer for another tenant's registration and for none (§5.1).
+        return None, ObserverFileIssuesRepoNotRegistered(
+            "file_issues_repo_id is not a repository registered in this tenant",
+            detail={"repo_id": repo_id},
+        )
+    if not owner_can_write(ctx, tenant_id, owner, repo_id):
+        return None, ObserverFileIssuesRepoNotWritable(
+            f"{owner or '(no owner)'} cannot write the repository file_issues_repo_id names, "
+            "so the observer cannot file its epic there as them",
+            detail={"repo_id": repo_id},
+        )
+    return repo, None
+
+
+def check_file_issues(ctx: Any, schedule: Mapping[str, Any]) -> None:
+    """At create and edit (routes/schedules.py): refused, or report-only while switched off."""
+    entry = scheduletypes.get(TYPE)
+    params = entry.params_model.model_validate(dict(schedule.get("params") or {}))
+    _repo, refusal = file_issues_target(ctx, str(schedule["tenant_id"]), str(schedule.get("owner") or ""),
+                                        params)
+    if refusal is not None:
+        refusals.refuse(refusal)
+
+
+def epic_marker(task_id: str) -> str:
+    """The hidden first line of the epic filed for report `task_id`."""
+    if not _TASK_ID.match(task_id):
+        raise ValueError("a task id is letters, digits, '_' and '-'")
+    return f"<!-- swarmcloud-observer-epic:{task_id} -->"
+
+
+def proposal_marker(task_id: str, position: int) -> str:
+    """The hidden first line of the comment for proposal `position` of report `task_id`."""
+    if not _TASK_ID.match(task_id):
+        raise ValueError("a task id is letters, digits, '_' and '-'")
+    return f"<!-- swarmcloud-observer-proposal:{task_id}:{int(position)} -->"
+
+
+def render_epic(schedule: Mapping[str, Any], task: Mapping[str, Any], count: int, *,
+                window_hours: int, literals: Sequence[str] = ()) -> tuple[str, str]:
+    """The epic's title and body: the epic form's sections, in its order, and no task item."""
+    task_id = str(task["id"])
+    wave = (_aware(task.get("completed_at")) or datetime.now(timezone.utc)).date().isoformat()
+    name = neutral(schedule.get("name") or schedule["schedule_id"], 100, literals=literals, one_line=True)
+    title = f"[epic] Wave {wave} observer findings of schedule {name}"[:MAX_TITLE_CHARS]
+    firing_id = ((task.get("metadata") or {}).get(SCHEDULE_METADATA_KEY) or {}).get("firing_id")
+    body = "\n".join([
+        epic_marker(task_id),
+        "### Wave",
+        "",
+        wave,
+        "",
+        "### Where these findings came from",
+        "",
+        f"The SwarmCloud observer schedule **{name}** (`{schedule['schedule_id']}`), report task "
+        f"`{task_id}`" + (f" of firing `{neutral(firing_id, 120, one_line=True)}`" if firing_id else "")
+        + f", over the last {int(window_hours)} hours of work. It made {int(count)} "
+        f"proposal{'s' if count != 1 else ''}: each is one comment below.",
+        "",
+        "The comments are the record; this body is not an index. Tick a box only with evidence "
+        "(CLAUDE.md, \"Issues\").",
+        "",
+        "### Recorded elsewhere, deliberately not duplicated here",
+        "",
+        "Each proposal is also a `proposal` item in the tenant's SwarmCloud inbox.",
+        "",
+    ])
+    return title, bounded_body(body)
+
+
+def render_proposal(task_id: str, position: int, proposal: Proposal, *,
+                    literals: Sequence[str] = ()) -> str:
+    """One proposal as one epic comment: a `- [ ]` box, then what was measured."""
+    def text(value: str, one_line: bool = False) -> str:
+        return neutral(value, MAX_FIELD_CHARS, literals=literals, one_line=one_line)
+
+    lines = [
+        proposal_marker(task_id, position),
+        f"- [ ] **{neutral(proposal.title, MAX_TITLE_CHARS, literals=literals, one_line=True)}** · "
+        f"observer report `{task_id}`, proposal {int(position) + 1} · "
+        + (text(proposal.evidence, one_line=True) or "the report gave no figures"),
+    ]
+    for label, value in (("Finding", proposal.finding), ("Suggestion", proposal.suggestion)):
+        if value:
+            lines += ["", f"**{label}.** {text(value)}"]
+    return bounded_body("\n".join(lines) + "\n")
+
+
+def _epic_ref(db: Any, task_id: str) -> Any:
+    return db.collection(EPICS).document(task_id)
+
+
+def _epic_record(db: Any, tenant_id: str, task_id: str) -> dict[str, Any] | None:
+    snap = _epic_ref(db, task_id).get()
+    if not snap.exists:
+        return None
+    doc = snap.to_dict() or {}
+    # Another tenant's record is not ours to continue, nor to overwrite.
+    return doc if doc.get("tenant_id") == tenant_id else {"foreign": True}
+
+
+def _file_one(ctx: Any, writer: GitHubWriter, token: str, schedule: Mapping[str, Any],
+              repo: Mapping[str, Any], task: Mapping[str, Any], proposals: Sequence[Proposal], *,
+              window_hours: int, now: datetime, record: dict[str, Any] | None) -> dict[str, Any]:
+    tenant_id = str(schedule["tenant_id"])
+    task_id = str(task["id"])
+    ref = IssueRef(owner=str(repo["owner"]), repo=str(repo["repo"]), number=0)
+    literals = (token,)
+    doc = dict(record or {})
+    fresh = False
+    if doc.get("number") is None:
+        found = writer.find_issue(ref, epic_marker(task_id), token)
+        if found is None:
+            title, body = render_epic(schedule, task, len(proposals), window_hours=window_hours,
+                                      literals=literals)
+            found = writer.create_issue(ref, title=title, body=body, labels=(EPIC_LABEL,), token=token)
+            fresh = True
+        doc = {
+            "tenant_id": tenant_id, "schedule_id": schedule["schedule_id"], "task_id": task_id,
+            "repo_id": repo["repo_id"], "repository": ref.repository,
+            "number": found.number, "url": found.url, "proposals": len(proposals),
+            "comments": {}, "complete": False, "filed_at": now, "updated_at": now,
+        }
+        _epic_ref(ctx.db, task_id).set(doc)
+    epic = IssueRef(owner=ref.owner, repo=ref.repo, number=int(doc["number"]))
+    comments = dict(doc.get("comments") or {})
+    for position, proposal in enumerate(proposals):
+        if str(position) in comments:
+            continue
+        # A new epic has no comments to find; an adopted one may hold ours.
+        found_comment = None if fresh else writer.find_comment(epic, proposal_marker(task_id, position), token)
+        if found_comment is None:
+            found_comment = writer.create_comment(
+                epic, render_proposal(task_id, position, proposal, literals=literals), token)
+        comments[str(position)] = found_comment.id
+        doc = {**doc, "comments": comments, "updated_at": now}
+        _epic_ref(ctx.db, task_id).set(doc)
+    doc = {**doc, "complete": True, "updated_at": now}
+    _epic_ref(ctx.db, task_id).set(doc)
+    return doc
+
+
+def file_epics(ctx: Any, schedule: Mapping[str, Any], repo: Mapping[str, Any],
+               reports: Sequence[tuple[dict[str, Any], list[Proposal]]], *, window_hours: int,
+               now: datetime) -> list[dict[str, Any]]:
+    """One epic per report with proposals, in `repo`; returns the records completed now.
+
+    `repo` is what `file_issues_target` answered at this firing. The token is
+    read only when there is something to write, held in this frame, and put
+    nowhere but the Authorization header and the redaction's literals.
+    """
+    tenant_id = str(schedule["tenant_id"])
+    due: list[tuple[dict[str, Any], list[Proposal], dict[str, Any] | None]] = []
+    for task, proposals in reports:
+        task_id = str(task.get("id"))
+        if not proposals or not _TASK_ID.match(task_id):
+            continue
+        record = _epic_record(ctx.db, tenant_id, task_id)
+        if record is not None and (record.get("foreign") or record.get("complete")):
+            continue
+        if record is not None and record.get("repo_id") != repo["repo_id"]:
+            # Filed in the repository the schedule named then; not moved.
+            log.warning("schedule %s report %s: its epic is in %s, not the repository named now; left as is",
+                        schedule["schedule_id"], task_id, record.get("repository"))
+            continue
+        due.append((task, proposals, record))
+    if not due:
+        return []
+    tenant = ctx.store.get_tenant(tenant_id)
+    if tenant is None:
+        log.warning("schedule %s: tenant %s is not registered; no epic filed", schedule["schedule_id"], tenant_id)
+        return []
+    writer: GitHubWriter = ctx.forge_writer
+    filed: list[dict[str, Any]] = []
+    try:
+        token = ctx.forge_tokens.token_for(tenant)
+    except ApiError as exc:
+        log.warning("schedule %s: the tenant's forge credential could not be read (%s); no epic filed",
+                    schedule["schedule_id"], exc.code)
+        return []
+    for task, proposals, record in due:
+        try:
+            filed.append(_file_one(ctx, writer, token, schedule, repo, task, proposals,
+                                   window_hours=window_hours, now=now, record=record))
+        except ForgeWriteError as exc:
+            # The code and its constant sentence only: never GitHub's answer.
+            log.warning("schedule %s report %s: epic not filed (%s): %s",
+                        schedule["schedule_id"], task["id"], exc.code, exc.message)
+    return filed
+
+
+# --------------------------------------------------------------------------
 # The executor seam (`schedulefire.Executor`)
 # --------------------------------------------------------------------------
 
@@ -471,17 +746,29 @@ def _digest_text(firing: Any, params: Any) -> tuple[str, bool]:
     return bounded(digest)
 
 
+def _target(firing: Any, params: Any) -> tuple[dict[str, Any] | None, ApiError | None]:
+    schedule = firing.schedule
+    return file_issues_target(firing.ctx, str(schedule["tenant_id"]), str(schedule.get("owner") or ""), params)
+
+
 def create(firing: Any) -> list[dict[str, Any]]:
     params = issue_sweep.params_of(firing)
-    if params.file_issues:
+    # Checked again at every firing, before anything is written: the
+    # registration or the owner's grant may have gone since the edit.
+    repo, refusal = _target(firing, params)
+    if refusal is not None:
         # Report-only until switched on (refusals.py): off, the firing writes
-        # its report and files nothing, which is all file_issues can do now.
-        refusals.refuse(ObserverFileIssuesUnavailable(
-            "file_issues is not available: an observer report has no repository to file an epic "
-            "in, and swarm-api cannot create an issue yet; set file_issues to false, and file a "
-            "proposal from the inbox"
-        ))
-    taken = take_in(firing.ctx, firing.schedule, firing.now)
+        # its report and files nothing -- `repo` is None.
+        refusals.refuse(refusal)
+    reports = intake(firing.ctx, firing.schedule, firing.now)
+    taken = take_in(firing.ctx, firing.schedule, firing.now, reports)
+    if repo is not None:
+        filed = file_epics(firing.ctx, firing.schedule, repo, reports,
+                           window_hours=params.window_hours, now=firing.now)
+        for doc in filed:
+            log.info("schedule %s firing %s: report %s filed as %s#%s with %d comments",
+                     firing.schedule["schedule_id"], firing.firing["firing_id"], doc["task_id"],
+                     doc["repository"], doc["number"], len(doc["comments"]))
     text, cut = _digest_text(firing, params)
     if firing.room < 1:
         log.info("schedule %s firing %s: no room for the report (proposals taken in: %d)",
@@ -498,8 +785,15 @@ def dry_run(firing: Any) -> dict[str, Any]:
     params = issue_sweep.params_of(firing)
     text, cut = _digest_text(firing, params)
     task = observer_task(firing.schedule, text, str(firing.firing["firing_id"]))
-    pending = sum(len(read_proposals(firing.ctx, t))
-                  for t in earlier_reports(firing.ctx, firing.schedule, firing.now))
+    reports = intake(firing.ctx, firing.schedule, firing.now)
+    pending = sum(len(proposals) for _task, proposals in reports)
+    repo, refusal = _target(firing, params)
+    epics = 0
+    if repo is not None:
+        tenant_id = str(firing.schedule["tenant_id"])
+        for report, proposals in reports:
+            record = _epic_record(firing.ctx.db, tenant_id, str(report.get("id"))) if proposals else None
+            epics += bool(proposals) and not (record and (record.get("foreign") or record.get("complete")))
     return {
         "profile": PROFILE,
         "repositories": [],
@@ -509,4 +803,7 @@ def dry_run(firing: Any) -> dict[str, Any]:
         "sections": sorted(json.loads(text).keys()),
         "proposals_to_read": pending,
         "file_issues": params.file_issues,
+        "file_issues_repository": f"{repo['owner']}/{repo['repo']}" if repo else None,
+        "file_issues_refused": refusal.code if refusal is not None else None,
+        "epics_to_file": epics,
     }

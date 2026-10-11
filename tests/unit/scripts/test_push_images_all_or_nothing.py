@@ -430,3 +430,22 @@ def test_a_move_refused_by_a_dead_session_is_named_as_authentication(tmp_path):
     assert "authentication" in summary, (
         f"the move failed UNAUTHENTICATED and the last line does not say so: {summary!r}"
     )
+
+
+def test_every_promoted_digest_is_marked_promoted_and_a_refused_release_marks_none(tmp_path):
+    """`:dev` forgets a digest the moment the next release moves it, and
+    deploy.sh must still tell an owner-pinned job on an EARLIER release's
+    digest from one on an image no release promoted (owner decision
+    2026-10-11). The mark `<channel>-promoted-<tag>` is that memory: on every
+    digest a promotion moved the channel to, and on nothing else."""
+    mark = f"{CHANNEL}-promoted-{TAG}"
+    root, proc, registry, _ = _run(tmp_path / "clean", _registry())
+    assert proc.returncode == 0, proc.stderr[-3000:]
+    marked = {i: [d for d, tags in registry[i].items() if mark in tags] for i in IMAGES}
+    assert marked == {i: [_new(i)] for i in IMAGES}, marked
+
+    _, proc, registry, _ = _run(tmp_path / "refused", _registry(), FAKE_TRIVY_FAIL="swarm-ui")
+    assert proc.returncode != 0
+    stray = sorted(i for i in IMAGES for tags in registry[i].values() if mark in tags)
+    assert not stray, f"a refused promotion marked {stray} as promoted"
+
