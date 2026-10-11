@@ -402,6 +402,19 @@ describe('an issue run’s Changes tab', () => {
     expect(cell('src/app/one.ts', 'implement').textContent).toBe('+2 −2')
   })
 
+  it('calls a workflow it could not read unread, never a real zero of no steps (V037)', async () => {
+    api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'server_error', httpStatus: 503, code: null, message: 'unavailable' } })
+    const run = issueRun({ state: 'RUNNING', workflow_id: 'wf_one' })
+    const { container } = render(<RunChangesTab run={run as never} at={{ step: null, file: null }} onAt={() => {}} />)
+    await waitFor(() => expect(container.querySelector('.chg-note')).not.toBeNull())
+    expect(container.querySelector('.chg-note')!.textContent).toMatch(/could not be read/)
+    expect(screen.queryByText(/no steps/)).toBeNull()
+    const state = container.querySelector('.chg-state')!
+    expect(state.classList.contains('is-failed')).toBe(true)
+    expect(state.textContent).toMatch(/steps not read/)
+    expect(container.textContent).not.toMatch(/real zero/)
+  })
+
   it('links a step row to the tab filtered to that step', () => {
     const go = vi.fn()
     const row = { key: '0:ui', round: 0, stepId: 'ui', title: null, taskId: 't_ui', task: null, dependsOn: [], merge: null }

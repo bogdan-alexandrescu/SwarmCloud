@@ -2065,7 +2065,20 @@ phases. New files are named without their root.
 * **Moving the image** is a bootstrap apply that changes
   `workspace_apply_image` to the digest the release promoted. It is the step
   that lets a merged change to the guard, the script or the entrypoint reach
-  the identity (§2.4 R1).
+  the identity (§2.4 R1). Until the owner takes it, the release's deploy check
+  (`scripts/lib/deploy.sh`) reports the job as "awaiting owner re-pin", names
+  both digests and this command, and passes -- but only while the job runs a
+  digest some release promoted; any other digest still fails the release.
+  "Some release promoted" means the digest carries a `<channel>-promoted-*`
+  tag, which `scripts/push-images.sh` adds to every digest it promotes. That
+  mark began on 2026-10-11 and nothing backfills it, so a digest promoted
+  before then -- the one the job ran when marks began, among them -- fails as
+  "no release promoted" until it is marked once. The failure prints the
+  command; confirm the promotion in that release's log first, then run
+  `gcloud artifacts docker tags add <repo>/workspace-apply@sha256:<digest>
+  <repo>/workspace-apply:dev-promoted-pre-mark-<digest> --project <project>`.
+  Marking a digest no release promoted is exactly what the check exists to
+  refuse, so the confirmation is not optional.
 * **W11, after the job ships:** delete the `swarm-github` connection, its
   OAuth secret, and Google's Cloud Build App from the repository.
 

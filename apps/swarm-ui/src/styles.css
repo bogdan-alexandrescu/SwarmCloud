@@ -1571,7 +1571,22 @@ body {
    chain is one node wide at any depth and only a FAN is wider than the card.
    Scaling either to fit would turn the step names into texture, which is the
    one thing a node must not become. */
-.wf-canvas-wrap { overflow-x: auto; padding-bottom: var(--ctl-s2); }
+/* AND IT IS BOUNDED BY THE SCREEN, SO ITS SCROLLBAR IS ON IT (V034, #1038).
+   Unbounded, the wrapper was exactly as tall as the canvas, so on a 2,200px
+   graph the one horizontal scrollbar sat 2,200px down, below the fold, and a
+   right column cut by the wrapper's edge had nothing on screen to say there
+   was more. Held to the viewport less the page's head and the graph's own
+   chrome, the wrapper scrolls both ways and its scrollbar is in view whatever
+   the reader is looking at. 360px is the floor so a short window still shows
+   two levels of cards. `scrollPortOf` (Workflows.tsx) finds this box first
+   when it has somewhere to go, so the vertical map steers it rather than the
+   page. */
+.wf-canvas-wrap {
+  overflow-x: auto;
+  overflow-y: auto;
+  max-height: max(360px, calc(100vh - 160px));
+  padding-bottom: var(--ctl-s2);
+}
 /* The rail and the canvas side by side. `align-items: start` so the rail is
    exactly as tall as the graph rather than stretching past its last level. */
 /* `width: max-content` (WF-8). A sticky element sticks only within its
@@ -6751,24 +6766,33 @@ table.pools tbody tr.unmeasured {
    itself does not stretch: it is an inline-block in a block box. */
 .node-stop { position: absolute; left: 15px; right: 12px; bottom: 10px; z-index: 2; }
 .node-stop > * { max-width: 100%; }
-/* The dialog GROWS UPWARD OVER ITS OWN CARD rather than downward into the next
-   stage: `bottom: 0` against a strip whose height is the control's. It gets a
-   surface and a shadow because at that point it is an overlay and has to say
-   so -- this is the one place on this canvas a shadow is still the right
-   answer, and it is on one element at a time rather than on fourteen. */
-.node-stop .stop-confirm {
-  position: absolute; left: 0; right: 0; bottom: 0;
+/* THE DIALOG LEFT THE CARD (V001, #1038). It used to grow upward over its own
+   card from a `bottom: 0` anchor in this strip, and that is exactly the case
+   the paragraph above wrote down in advance: the wrapped dialog needed more
+   room than a 221px strip has, so its title and its facts rose past the
+   canvas's clip and were never seen, its buttons spilled past the card's
+   edges, and focus fell to `<body>`. The answer that paragraph gave -- move it
+   out of the card, keep the button on every tier -- is what `StopRun`'s
+   `overlay` does: the button stays in this strip, and the question opens on
+   the page's scrim (`.c-scrim`, components.css) as a modal of its own.
+
+   A MEASURE AND A CEILING. 62ch is the dialog's own measure, the one it has in
+   the run detail; on a phone the scrim's 16px padding is what bounds it. A
+   dialog taller than the screen scrolls inside itself rather than pushing its
+   buttons off the bottom -- the defect this replaces, turned on its side. It
+   paints `--surface` and the overlay shadow because it is an overlay. */
+.stop-confirm.is-overlay {
   margin-top: 0;
-  /* DECLARED HERE AND NOT LEFT TO `.node-stop > *`. `.stop-confirm` sets
-     `max-width: 62ch` -- a measure, correct in the run detail where the dialog
-     is prose -- and at equal specificity the later rule in this sheet wins,
-     which is that one. An over-constrained absolutely positioned box drops its
-     `right`, so 62ch would have escaped to the right of a 221px strip with the
-     containment apparently in place. Two classes beat one. */
+  width: min(62ch, 100%);
   max-width: 100%;
+  max-height: calc(100vh - 32px);
+  overflow: auto;
+  box-sizing: border-box;
   background: var(--surface);
   box-shadow: var(--ctl-shadow);
 }
+.stop-confirm.is-overlay:focus { outline: none; }
+.stop-confirm.is-overlay:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; }
 
 /* "stop requested" is not a button and must not look like one: the request is
    already in, and something that invited a second press would imply the first
@@ -10662,7 +10686,21 @@ span.sk-ttile { cursor: default; }
 .wfl-table th { text-align: left; font-weight: 600; color: var(--text-dim); padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .wfl-table td { padding: 8px 10px; border-bottom: 1px solid var(--line-soft); vertical-align: top; }
 .wfl-table .num { text-align: right; font-variant-numeric: tabular-nums; }
-.wfl-row.is-failed td { background: var(--s-badb); }
+/* THE HELD STATE CELL KEEPS THE ROW'S TINT (V101, #1038). Below 900px the
+   list's first column is held by the `.is-scroll` rule, which paints the held
+   body cell `--surface` so the cells scrolling under it do not show through --
+   and at three classes and four elements it beat this rule, so a failed row
+   was red everywhere but the one cell that says "failed". `--s-badb` is
+   opaque in both themes, so the held cell paints it instead and still covers
+   what scrolls beneath. */
+.wfl-row.is-failed td,
+.is-scroll > table > tbody > tr.wfl-row.is-failed > td:first-child:not([colspan]) { background: var(--s-badb); }
+/* THE LIST'S HEAD ROW IS FILLED ON `thead`, AS EVERY `.ctl-table` HEAD IS
+   (#178). The held corner below 900px paints `--surface-2` -- it must, or the
+   head labels scrolling under it show through -- and with nothing on this
+   head the corner was the one tinted cell in a white row (V101). The head is
+   the corner's colour now, at every width, and no head cell paints its own. */
+.wfl-table thead { background: var(--surface-2); }
 /* THE NAME CELL IS A TABLE CELL (browser QA N8, 2026-10-04). It was a flex
    column, which takes a <td> out of the table: the browser wrapped it in an
    anonymous cell and its own box was 37px in a 56px row, so its bottom border

@@ -246,6 +246,9 @@ CODECS: tuple[Codec, ...] = (
             # submission that writes them.
             "forge_credential": "worker-only: the secret suffix swarm-api resolved, not served",
             "forge_access": "worker-only: the forge mode swarm-api resolved, not served",
+            # Contract request 70 (LB-C). The live-browser hand-off is attempt
+            # state; lane L10, which writes it, decides its public shape.
+            "human_wait": "attempt state, served by lane L10",
         },
         # The input and metadata are served MASKED (owner decision,
         # 2026-09-26), and these say how many masks each took; so, since the
