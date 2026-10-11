@@ -77,6 +77,11 @@ _RUN_ID = re.compile(r"^[A-Za-z0-9_-]{1,80}$")
 _TRUNCATED = "\n\n… (cut: GitHub's size limit for a comment)\n"
 
 
+#: The GitHub-comment approval's command (docs/schedules.md §4.9). `ghapprove`
+#: parses exactly this; the plan comment and the merge request show it.
+APPROVE_COMMAND = "/swarmcloud approve"
+
+
 def marker(run_id: str, kind: str) -> str:
     """The hidden first line of one of this run's comments."""
     if not _RUN_ID.match(run_id):
@@ -188,11 +193,19 @@ def _console_lines(run: IssueRun, origin: str | None) -> list[str]:
 
 def _approval_line(run: IssueRun, literals: Sequence[str]) -> str:
     if run.state == RunState.PLANNED:
-        return (
+        line = (
             f"**Approval: pending.** Approve, edit or reject it in the console or with "
             f"`sc plan approve|edit|reject {run.id}`. Nothing runs, and no capacity is "
             "held, until it is approved."
         )
+        if run.plan_digest:
+            # docs/schedules.md §4.9 (SD9): the exact command, with the current
+            # digest, that `ghapprove`'s poll reads on this issue's comments.
+            line += (
+                " A member who connected their GitHub account in onboarding may also approve "
+                f"it by commenting `{APPROVE_COMMAND} {run.plan_digest}` on this issue."
+            )
+        return line
     if run.state == RunState.REJECTED:
         reason = (
             f": {neutral(run.rejection_reason, MAX_LINE_CHARS, literals=literals, one_line=True)}"

@@ -139,6 +139,7 @@ _WAITS_FOR = {
     "MANUAL_PAUSE": "operator pause",
     "BUDGET_EXHAUSTED": "budget",
     "CREDENTIAL_MISSING": "credential",
+    "HUMAN_REQUIRED": "a person",
 }
 
 

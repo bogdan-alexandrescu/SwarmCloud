@@ -154,8 +154,13 @@ describe('D11: a reference heading and the list\'s columns fit', () => {
     expect(container.querySelector('.rn-run.is-ref .c-phead > .sub'), 'a sub-line is back in the head').toBeNull()
     const acts = container.querySelector('.rn-run.is-ref .c-phead > .c-acts')!
     expect(acts).not.toBeNull()
+    // V096 (2026-10-11): the actions are the head's second row -- a 100%
+    // basis, never wider than the column -- since the `?` now shares the
+    // heading's row. Never a basis as wide as their text.
     const flex = painted(acts, ['flex', 'flex-basis'], WIDE) ?? ''
-    expect(flex, 'the actions keep a basis as wide as their text').toMatch(/(^|\s)0(px|%)?$/)
+    expect(flex, 'the actions keep a basis as wide as their text').toBe('1 0 100%')
+    expect(painted(acts, 'max-width', WIDE)).toBe('100%')
+    expect(painted(acts, 'min-width', WIDE)).toBe('0')
   })
 
   it('fits the Run id and the Issue reference whole in a 1056px list', async () => {
