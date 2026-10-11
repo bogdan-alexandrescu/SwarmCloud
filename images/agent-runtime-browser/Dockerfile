@@ -81,6 +81,12 @@ RUN apt-get update \
 COPY --chmod=0444 images/agent-runtime-browser/chromium-policy.json /etc/opt/chrome/policies/managed/swarm.json
 COPY --chmod=0444 images/agent-runtime-browser/chromium-policy.json /etc/chromium/policies/managed/swarm.json
 
+# The agent's `swarm-handoff` (docs/design/live-browser.md §4.1; lane L4, part
+# of #1030): it writes a request into the hand-off spool and waits for the
+# worker's answer. Files only, no socket. Root-owned, executable by every uid,
+# writable by none: the agent runs it and cannot change what it does.
+COPY --chmod=0555 images/agent-runtime-browser/swarm-handoff /usr/local/bin/swarm-handoff
+
 USER swarm:swarm
 WORKDIR /workspace
 
