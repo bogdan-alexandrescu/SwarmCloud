@@ -900,6 +900,31 @@ class GitHubIssues:
             return None, False
         return tuple(str(entry["filename"]) for entry in entries), cut
 
+    def _pull_file_patches(
+        self, ref: IssueRef, number: int, token: str, cap: int
+    ) -> tuple[dict[str, str | None] | None, bool]:
+        """`({filename: patch}, cut)`, or `(None, False)` when the read failed.
+
+        The same listing as `_pull_files`; a file the forge sends no `patch`
+        for (too large, binary) maps to None, which the merge gate holds.
+        """
+        what = f"the changed files of {ref.repository}#{number}"
+        try:
+            entries, cut = self._paged(
+                self._repo_url(ref, f"pulls/{number}/files"), token, what,
+                keep=lambda entry: isinstance(entry, dict) and isinstance(entry.get("filename"), str),
+                cap=cap, max_pages=2,
+            )
+        except (IssueNotFound, IssueNoAccess):
+            raise
+        except IssueReadFailed as failed:
+            log.info("open-work read: %s not read (%s)", what, failed.code)
+            return None, False
+        return {
+            str(e["filename"]): (e["patch"] if isinstance(e.get("patch"), str) else None)
+            for e in entries
+        }, cut
+
 
 # --------------------------------------------------------------------------
 # what the preview serves, and what a run stores of the open work
