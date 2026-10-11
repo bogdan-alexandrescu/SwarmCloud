@@ -173,6 +173,19 @@ locals {
       secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
       timeout_seconds = 7200
     }
+    # Contract request 67, accepted by the owner 2026-10-11: claude-code on
+    # agent-runtime-browser, so an agent can render and screenshot pages. The
+    # `browser` resource class because the image's 2 GiB /dev/shm tmpfs is
+    # charged to the memory limit; GKE Autopilot because Cloud Run cannot size
+    # /dev/shm. A GKE profile, so no Cloud Run Job is made for it.
+    "claude-code-browser" = {
+      image           = "agent-runtime-browser"
+      resource_class  = "browser"
+      backend         = "GKE_AUTOPILOT"
+      provider        = "anthropic"
+      secret_env      = { for name in ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"] : name => "anthropic" }
+      timeout_seconds = 7200
+    }
   }
 
   # --- the retired #295 profiles: no Job for any tenant ----------------------
@@ -241,10 +254,13 @@ locals {
   # contract request 63, where no Job of this root exists to carry MODEL: the
   # scheduler's WORKER_MODELS sets it on each pod. Their Cloud Run fallback
   # Jobs (`cloud_run_fallback_profiles`) carry the same model from this map.
+  # claude-code-browser is claude-code on the browser image (contract request
+  # 67), a GKE profile from the start, so WORKER_MODELS is its only path.
   runner_models = {
-    "claude-code"        = "claude-opus-5-5"
-    "claude-code-review" = "claude-opus-5-5"
-    "indexer"            = "claude-opus-5-5"
+    "claude-code"         = "claude-opus-5-5"
+    "claude-code-review"  = "claude-opus-5-5"
+    "indexer"             = "claude-opus-5-5"
+    "claude-code-browser" = "claude-opus-5-5"
   }
 
   backends = ["CLOUD_RUN_JOB", "GKE_AUTOPILOT"]
