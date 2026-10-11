@@ -13,6 +13,7 @@ import {
   type UrRead,
   useUrRead, writeFailure,
 } from './RepositoriesParts'
+import { RepoPermissions } from './PermissionCards'
 import { PageHead } from './Shell'
 import { GraphTab, type GraphOpen } from './RepoGraph'
 import { AlwaysRun, EdgeGroups, PathLookup, Suites } from './RepoTestMap'
@@ -212,6 +213,8 @@ function DetailBody({
           {inFlight !== null ? ' An index run is in flight.' : ' No index run is in flight.'}
         </Banner>
       )}
+      {/* Its own org's GitHub permissions card (#1086): collapsed when all granted, open on a gap. */}
+      <RepoPermissions repoId={r.repo_id} />
       <nav className="c-tabs ur-tabs" aria-label="Repository" ref={strip}>
         {TABS.map((t) => {
           const to = repoAddress(r.repo_id, t.key)
