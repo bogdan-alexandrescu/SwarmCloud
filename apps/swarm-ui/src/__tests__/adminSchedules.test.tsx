@@ -17,6 +17,8 @@
 // The bodies are `routes/schedules.py::_admin_row` and `_tick_health`'s
 // shapes. Placeholders only; nothing is token-shaped.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
@@ -24,6 +26,19 @@ import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { SECTIONS } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
+
+/**
+ * `terraform/modules/scheduler/jobs.tf`'s Cloud Scheduler jobs, in file order:
+ * the resource name, and the job's `name` after `${var.name_prefix}-`, with
+ * `${each.key}` read as `<tenant>`.
+ */
+function jobsTf(): { name: string; job: string }[] {
+  const tf = readFileSync(join(__dirname, '..', '..', '..', '..', 'terraform', 'modules', 'scheduler', 'jobs.tf'), 'utf8')
+  const out: { name: string; job: string }[] = []
+  const re = /^resource "google_cloud_scheduler_job" "([a-z_]+)" \{[\s\S]*?^\s*name\s*=\s*"\$\{var\.name_prefix\}-([^"]+)"/gm
+  for (const m of tf.matchAll(re)) out.push({ name: m[1]!, job: m[2]!.replace('${each.key}', '<tenant>') })
+  return out
+}
 
 const WAIT = { timeout: 4000 }
 const PHONE: CascadeEnv = { width: 390 }
@@ -140,8 +155,19 @@ describe('Admin › Schedules', () => {
     expect(screen.getByText('No tick reported')).toBeTruthy()
     const ticks = screen.getByTestId('as-platform-ticks')
     const names = [...ticks.querySelectorAll<HTMLElement>('tr[data-tick]')].map((r) => r.dataset.tick)
-    // docs/schedules.md §8.4's seven, in a static list.
-    expect(new Set(names)).toEqual(new Set(['workflow_rollup', 'issue_run_advance', 'merge_wake', 'forge_refresh', 'quota_refresh', 'reconciler', 'safety_tick']))
+    // Every Cloud Scheduler job jobs.tf declares, in its order (live QA ADM-6).
+    expect(names).toEqual(jobsTf().map((j) => j.name))
+  })
+
+  it('ADM-6: lists every Cloud Scheduler job in jobs.tf, by resource and job name, and nothing else', async () => {
+    const { PLATFORM_TICKS } = await import('../AdminSchedules')
+    const declared = jobsTf()
+    // A control: the parse found the jobs the live QA counted, so an empty
+    // or broken read cannot pass as agreement.
+    expect(declared.length).toBeGreaterThanOrEqual(12)
+    expect(declared.map((j) => j.name)).toContain('schedule_tick')
+    // MUTATION: drop any entry from PLATFORM_TICKS.
+    expect(PLATFORM_TICKS.map((t) => ({ name: t.name, job: t.job }))).toEqual(declared)
   })
 
   it('pauses one schedule with its reason through the admin route, then reads the list again', async () => {

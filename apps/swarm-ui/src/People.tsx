@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import {
   approveWorkspace,
   denyWorkspace,
@@ -40,7 +40,7 @@ import './styles/onboarding.css'
  *   4. granting and removing admin, with the API's refusal for the owner and
  *      the last admin shown as it came.
  *
- * Under the table, the last 50 admin_audit entries.
+ * Under the table, the last 50 admin_audit entries, a run of one action as one line.
  *
  * A PERSON IS ADDRESSED BY WORKSPACE ID in every URL this screen requests,
  * never by an email or a tenant id, so a URL in a history or a proxy log
@@ -272,18 +272,32 @@ function Retry({ row, reload }: { row: PersonRow; reload: () => void }) {
   )
 }
 
+/** `-12%`, `+50%`: the change a ceiling edit makes, as Pool limits says it. */
+export function percentChange(from: number, to: number): string {
+  if (from === 0) return to === 0 ? '0%' : 'from 0'
+  const p = Math.round(((to - from) / from) * 100)
+  return `${p > 0 ? '+' : p < 0 ? '−' : ''}${Math.abs(p)}%`
+}
+
 function Ceiling({ row, reload }: { row: PersonRow; reload: () => void }) {
   const held = row.workspace.limits?.max_active ?? DEFAULT_CEILING
   const [value, setValue] = useState(String(held))
+  const [open, setOpen] = useState(false)
   const [busy, setBusy] = useState(false)
   const [said, setSaid] = useState<Said | null>(null)
   const n = Number(value)
-  const whole = value.trim() !== '' && Number.isInteger(n)
+  const whole = value.trim() !== '' && Number.isInteger(n) && n >= 1
+  // ONE VALUE, ONE KIND OF EDIT (live QA ADM-3, 2026-10-11): a person's
+  // ceiling is the same act as editing their tenant's pool on Pool limits,
+  // which shows old → new before it writes. So Save asks first, with both
+  // values and the change, and an unchanged value has nothing to save.
+  const changed = whole && n !== held
   const go = async () => {
-    if (busy || !whole) return
+    if (busy || !changed) return
     setBusy(true)
     const r = await setWorkspaceCeiling(row.workspace.workspace_id ?? '', n)
     setBusy(false)
+    setOpen(false)
     setSaid(outcome(r, (d) => `Ceiling ${d.workspace.limits?.max_active ?? n} saved.`))
     reload()
   }
@@ -293,16 +307,62 @@ function Ceiling({ row, reload }: { row: PersonRow; reload: () => void }) {
         <span className="c-lbl">Ceiling</span>
         <input className="c-inp" type="number" min={1} step={1} value={value} onChange={(e) => setValue(e.target.value)} aria-label={`Ceiling for ${row.email}`} />
       </label>
-      <Button size="sm" disabled={busy || !whole} onClick={() => void go()}>
-        {busy ? 'Saving…' : 'Save'}
+      <Button size="sm" disabled={busy || !changed} onClick={() => setOpen(true)}>
+        Save
       </Button>
+      {open && (
+        <Dialog
+          title="Change this ceiling"
+          onClose={() => setOpen(false)}
+          actions={
+            <>
+              <Button onClick={() => setOpen(false)}>Keep {held}</Button>
+              <Button kind="primary" disabled={busy} onClick={() => void go()}>
+                {busy ? 'Saving…' : `Set to ${n}`}
+              </Button>
+            </>
+          }
+        >
+          <p>
+            Change {row.email}&apos;s ceiling from {held} to {n} active agents?
+          </p>
+          <p className="ur-hint" data-testid="pp-ceiling-change">
+            <b>
+              {held} → {n}
+            </b>{' '}
+            · {percentChange(held, n)}
+          </p>
+          <p className="ur-hint">
+            {n < held
+              ? 'A lower ceiling admits less of their work at once; what is already admitted is not stopped.'
+              : 'A higher ceiling admits more of their work at once, inside the pools above it.'}{' '}
+            The API turns the ceiling into the workspace&apos;s quota.
+          </p>
+        </Dialog>
+      )}
       <SaidLine said={said} />
     </span>
   )
 }
 
+/** Account states in which a lent account starts no new agent (the broker's `AccountState`). */
+const NOT_ASSIGNING: ReadonlySet<string> = new Set(['PAUSED', 'DRAINING', 'REAUTH_REQUIRED'])
+
+/**
+ * Whether `account` is lent to this person, as far as the API lets the
+ * console see. The admin view leaves the person's tenant id out, so the
+ * account's `lend_to` cannot be matched against it here; `lent_by` is the
+ * API's list of the owner tenants whose accounts name this person's tenant
+ * in `lend_to`, so an account whose owner is not in it is not lent to them.
+ */
+export function lentToRow(account: LendableAccount, row: PersonRow): boolean {
+  return Array.isArray(row.claude_account.lent_by) && row.claude_account.lent_by.includes(account.owner_tenant)
+}
+
 function Loan({ row, lendable, lendableError, reload }: { row: PersonRow; lendable: LendableAccount[] | null; lendableError: string | null; reload: () => void }) {
   const [account, setAccount] = useState('')
+  // true: asking to lend; false: asking to reclaim; null: not asking.
+  const [asking, setAsking] = useState<boolean | null>(null)
   const [busy, setBusy] = useState(false)
   const [said, setSaid] = useState<Said | null>(null)
   if (lendable === null) {
@@ -323,11 +383,20 @@ function Loan({ row, lendable, lendableError, reload }: { row: PersonRow; lendab
       </p>
     )
   }
+  const chosen = lendable.find((a) => a.account_id === account) ?? null
+  // NEITHER WRITES ON THE FIRST CLICK (live QA ADM-1, 2026-10-11): lending
+  // hands one tenant's Claude account to another person's workspace, and
+  // reclaiming takes it back from under their runs. Each asks first, naming
+  // the account, its owner tenant and the person.
+  // RECLAIM ONLY WHAT IS LENT (ADM-2): an account not lent to this person
+  // has nothing to reclaim, so Reclaim stays off for it.
+  const reclaimable = chosen !== null && lentToRow(chosen, row)
   const go = async (lend: boolean) => {
-    if (busy || account === '') return
+    if (busy || chosen === null) return
     setBusy(true)
-    const r = await setWorkspaceLoan(row.workspace.workspace_id ?? '', account, lend)
+    const r = await setWorkspaceLoan(row.workspace.workspace_id ?? '', chosen.account_id, lend)
     setBusy(false)
+    setAsking(null)
     setSaid(
       outcome(r, (d) =>
         d.changed ? (d.lent ? `Lent ${d.account_id}.` : `Reclaimed ${d.account_id}.`) : d.lent ? `${d.account_id} was already lent.` : `${d.account_id} was not lent.`,
@@ -335,6 +404,8 @@ function Loan({ row, lendable, lendableError, reload }: { row: PersonRow; lendab
     )
     reload()
   }
+  const name = chosen === null ? '' : `${chosen.label ?? chosen.account_id} (${chosen.owner_tenant})`
+  const idle = chosen !== null && chosen.state !== null && NOT_ASSIGNING.has(chosen.state)
   return (
     <span className="pp-loan">
       {row.loan_request?.state === 'requested' && (
@@ -348,18 +419,51 @@ function Loan({ row, lendable, lendableError, reload }: { row: PersonRow; lendab
             <option key={a.account_id} value={a.account_id}>
               {a.label ?? a.account_id} · {a.owner_tenant}
               {a.state !== null ? ` · ${a.state}` : ''}
+              {a.state !== null && NOT_ASSIGNING.has(a.state) ? ' (starts no new agent)' : ''}
+              {lentToRow(a, row) ? ' · lent to them' : ''}
             </option>
           ))}
         </select>
       </label>
-      <Button size="sm" disabled={busy || account === ''} onClick={() => void go(true)}>
+      <Button size="sm" disabled={busy || chosen === null} onClick={() => setAsking(true)}>
         Lend
       </Button>
       {/* Lend and Reclaim are a pair: the same kind, so a disabled pair
           looks alike (visual QA V080: a ghost Reclaim lost its border). */}
-      <Button size="sm" disabled={busy || account === ''} onClick={() => void go(false)}>
+      <Button
+        size="sm"
+        disabled={busy || !reclaimable}
+        title={chosen !== null && !reclaimable ? `${name} is not lent to ${row.email}` : undefined}
+        onClick={() => setAsking(false)}
+      >
         Reclaim
       </Button>
+      {asking !== null && chosen !== null && (
+        <Dialog
+          title={asking ? 'Lend this account' : 'Reclaim this account'}
+          onClose={() => setAsking(null)}
+          actions={
+            <>
+              <Button onClick={() => setAsking(null)}>Cancel</Button>
+              <Button kind="primary" disabled={busy} onClick={() => void go(asking)}>
+                {busy ? (asking ? 'Lending…' : 'Reclaiming…') : asking ? 'Lend' : 'Reclaim'}
+              </Button>
+            </>
+          }
+        >
+          <p>{asking ? `Lend ${name} to ${row.email}?` : `Reclaim ${name} from ${row.email}?`}</p>
+          <p className="ur-hint">
+            {asking
+              ? `Their work may then run on an account ${chosen.owner_tenant} owns.`
+              : `${chosen.owner_tenant} stops lending it to them; their new work is no longer offered it.`}
+          </p>
+          {asking && idle && (
+            <p className="ur-hint" role="note" data-testid="pp-loan-idle">
+              This account is {chosen.state}: it starts no new agent until its owner makes it available again.
+            </p>
+          )}
+        </Dialog>
+      )}
       <SaidLine said={said} />
     </span>
   )
@@ -498,16 +602,30 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   const [email, setEmail] = useState('')
   const [busy, setBusy] = useState(false)
   const [target, setTarget] = useState<string | null>(null)
+  const [granting, setGranting] = useState<string | null>(null)
   const [said, setSaid] = useState<Said | null>(null)
   const typed = email.trim()
+  // A GRANT IS A FORM, CHECKED AND CONFIRMED (live QA ADM-4, 2026-10-11):
+  // `not-an-email` was sent as a grant, Enter did nothing, and a valid
+  // address became a platform admin on one click. The field's own email
+  // validity gates the button and the submit, and the grant asks first, as
+  // Remove does.
+  const fieldRef = useRef<HTMLInputElement>(null)
+  const [valid, setValid] = useState(false)
+  const ask = (e: FormEvent) => {
+    e.preventDefault()
+    if (busy || typed === '' || fieldRef.current?.checkValidity() === false) return
+    setGranting(typed)
+  }
   // An API that predates the list sends no `admins` at all; it is drawn as not
   // read, and the typed Remove stays, so the action is never lost with it.
   const admins = Array.isArray(doc.admins) ? doc.admins : null
   const grant = async () => {
-    if (busy || typed === '') return
+    if (busy || granting === null) return
     setBusy(true)
-    const r = await grantAdmin(typed)
+    const r = await grantAdmin(granting)
     setBusy(false)
+    setGranting(null)
     setSaid(outcome(r, (d) => (d.changed ? `${d.email} is now an admin.` : `${d.email} was already an admin.`)))
     reload()
   }
@@ -534,12 +652,22 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
           <Mark kind="unread" say="The admin roles were not read" /> {doc.admins_error ?? 'the admin roles were not served'}
         </p>
       )}
-      <span className="ob-acts pp-grant">
+      <form className="ob-acts pp-grant" onSubmit={ask} noValidate>
         <label className="c-field">
           <span className="c-lbl">Email</span>
-          <input className="c-inp" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <input
+            ref={fieldRef}
+            className="c-inp"
+            type="email"
+            required
+            value={email}
+            onChange={(e) => {
+              setEmail(e.target.value)
+              setValid(e.target.value.trim() !== '' && e.target.checkValidity())
+            }}
+          />
         </label>
-        <Button size="sm" disabled={busy || typed === ''} onClick={() => void grant()}>
+        <Button size="sm" type="submit" disabled={busy || !valid}>
           Grant admin
         </Button>
         {admins === null && (
@@ -549,7 +677,27 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
             Remove admin
           </Button>
         )}
-      </span>
+      </form>
+      {typed !== '' && !valid && <p className="ur-hint">Grant admin takes one email address.</p>}
+      {granting !== null && (
+        <Dialog
+          title="Grant admin"
+          onClose={() => setGranting(null)}
+          actions={
+            <>
+              <Button onClick={() => setGranting(null)}>Cancel</Button>
+              <Button kind="primary" disabled={busy} onClick={() => void grant()}>
+                {busy ? 'Granting…' : 'Grant admin'}
+              </Button>
+            </>
+          }
+        >
+          <p>Make {granting} a platform admin?</p>
+          <p className="ur-hint">
+            An admin can approve workspaces, change every ceiling and pool limit, lend accounts and grant admin to others.
+          </p>
+        </Dialog>
+      )}
       {target !== null && (
         <Dialog
           title="Remove admin"
@@ -571,7 +719,52 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
   )
 }
 
-function Audit({ entries }: { entries: AdminAuditEntry[] }) {
+/** The audit fields a task-scoped entry carries (`purge.py`'s `history_purged`), beside the typed ones. */
+type AuditEntry = AdminAuditEntry & { target_kind?: string | null; target_id?: string | null }
+
+/** What an entry acted on: a workspace id, an email, or another target's own id. */
+export function auditTarget(e: AuditEntry): string | null {
+  for (const t of [e.target_workspace_id, e.target_email, e.target_id]) {
+    if (typeof t === 'string' && t !== '') return t
+  }
+  return null
+}
+
+function auditTenant(e: AuditEntry): string | null {
+  const t = e.detail?.tenant_id
+  return typeof t === 'string' && t !== '' ? t : null
+}
+
+/** A run of consecutive entries with the same action, admin and tenant. */
+export interface AuditRun {
+  first: AuditEntry
+  last: AuditEntry
+  count: number
+}
+
+/**
+ * RUNS OF ONE ACTION ARE ONE LINE (live QA ADM-5, 2026-10-11): a purge
+ * writes an entry per task, and fifty identical `history_purged` lines hid
+ * every other action. Consecutive entries with the same action, admin and
+ * tenant collapse into one, with how many and over what time.
+ */
+export function auditRuns(entries: readonly AuditEntry[]): AuditRun[] {
+  const out: AuditRun[] = []
+  for (const e of entries) {
+    const prev = out[out.length - 1]
+    if (prev !== undefined && prev.first.action === e.action && prev.first.by === e.by && auditTenant(prev.first) === auditTenant(e)) {
+      prev.last = e
+      prev.count += 1
+    } else out.push({ first: e, last: e, count: 1 })
+  }
+  return out
+}
+
+/** `people.AUDIT_SHOWN`: the API serves at most this many entries. */
+export const AUDIT_SHOWN = 50
+
+function Audit({ entries }: { entries: AuditEntry[] }) {
+  const runs = auditRuns(entries)
   return (
     <Card className="pp-audit" title="Recent admin actions">
       {entries.length === 0 ? (
@@ -579,14 +772,40 @@ function Audit({ entries }: { entries: AdminAuditEntry[] }) {
           <span aria-label="no admin actions recorded (measured)">no admin actions recorded</span>
         </p>
       ) : (
-        <ol className="pp-audit-list" aria-label="Admin audit">
-          {entries.map((e, i) => (
-            <li key={`${e.at ?? ''}:${i}`}>
-              {e.at !== null ? timeAgo(e.at) : <Dash why="The entry carries no time" />} · <b>{e.action}</b>{' '}
-              <code>{e.target_workspace_id ?? e.target_email ?? '?'}</code> by {e.by}
-            </li>
-          ))}
-        </ol>
+        <>
+          <p className="ur-hint" data-testid="pp-audit-shown">
+            {entries.length >= AUDIT_SHOWN
+              ? `The latest ${entries.length} entries; older ones are not shown here.`
+              : `All ${entries.length} recorded ${entries.length === 1 ? 'entry' : 'entries'}.`}
+          </p>
+          <ol className="pp-audit-list" aria-label="Admin audit">
+            {runs.map((r, i) => {
+              const tenant = auditTenant(r.first)
+              const target = auditTarget(r.first)
+              return (
+                <li key={`${r.first.at ?? ''}:${i}`} data-count={r.count}>
+                  {r.first.at !== null ? timeAgo(r.first.at) : <Dash why="The entry carries no time" />}
+                  {r.count > 1 && r.last.at !== null && r.last.at !== r.first.at ? ` to ${timeAgo(r.last.at)}` : ''} ·{' '}
+                  <b>{r.first.action}</b>
+                  {r.count > 1 ? (
+                    <> × {r.count}</>
+                  ) : target !== null ? (
+                    <>
+                      {' '}
+                      <code>{target}</code>
+                    </>
+                  ) : (
+                    <>
+                      {' '}
+                      <Dash why="The entry names no target" />
+                    </>
+                  )}
+                  {tenant !== null && <> · {tenant}</>} by {r.first.by}
+                </li>
+              )
+            })}
+          </ol>
+        </>
       )}
     </Card>
   )
