@@ -333,6 +333,57 @@ each user holds their own `read` or `write` on it. A task acts as its
 connected first. The tenant view for an admin shows every member's connection
 state and grants, never a value.
 
+### 2.6 GitHub permissions health: what each permission is for
+
+**Why the console shows this.** On 2026-10-11 every merge on
+`sagaxyz/ai-studio` failed with `token_lacks_rights`: the `swarmcloud-saga`
+App had been changed to request **Commit statuses: read**, but the org had not
+accepted the update, and nothing in the console said so. GitHub never lets
+SwarmCloud grant itself a permission, and a requested one does nothing until
+an org owner accepts it on GitHub. So the platform's job is to say, before a
+run fails, which permission is missing, where, what it breaks, and to link to
+the exact GitHub page that fixes it (#1086, design 2, "Org cards").
+
+`GET /v1/forge/permissions` (`apps/swarm-api/swarm_api/forgeperms.py`) answers
+for the caller's tenant:
+
+* `required`: what the platform's steps need. It is served from one table,
+  `forgeperms.REQUIRED`, which is the source of truth; the list below explains
+  it, and `tests/unit/control_plane/test_forgeperms.py` fails when the two
+  disagree.
+* `app`: what the App requests (`GET /app`), what it lacks, and its settings
+  link. The link goes to platform admins only, because only the App's owner
+  can change it.
+* `orgs`: one card per installation covering a registered repository. Each
+  card shows what the installation granted, what it lacks, and
+  `pending_update`. That is the 2026-10-11 state: the App requests something
+  the installation has not accepted. The card also carries `review_url`,
+  GitHub's form for accepting it.
+* `repositories`: for each registration, whether the App or the tenant token
+  acts on it, and `push`, `pull_request`, `merge`, `ci`, `issues` and
+  `actions` as true, false or null. An App-backed repository's values come
+  from its installation's grant. A token-backed one is probed with two
+  read-only GETs: the repository's role, and one commit-status read on the
+  default branch. **null means "not measured", never "refused"**: a
+  fine-grained token's `pull_requests: write` cannot be read without writing,
+  so it stays null rather than becoming a guess.
+
+What each permission is for:
+
+| permission | access | what breaks without it |
+|---|---|---|
+| `contents` | write | runs can't push their branch, and merges can't land |
+| `pull_requests` | write | runs can't open or update pull requests, or merge them |
+| `statuses` | read | merge reads `/commits/{sha}/status` to wait for CI; without it every merge fails |
+| `checks` | read | merge and CI fixes can't see check runs |
+| `issues` | write | issue runs and the observer can't read or comment on issues |
+| `actions` | read | ci-flake-hunter and release-health can't read workflow runs |
+
+Every call is a GET. No installation token is minted, because minting is a
+POST. One org failing becomes that card's `error`; the rest of the answer
+still comes back. The answer is cached per tenant for 60 seconds, and
+`?refresh=true` (the console's re-check, and its return-to-tab) reads again.
+
 ---
 
 ## 3. Data model, API, the worker's credential, Terraform
@@ -397,6 +448,7 @@ Every route below is additive: nothing existing changes shape.
 | `DELETE /v1/access/grants/{repo_id}` | revoke the grant |
 | `POST /v1/access/grants/{repo_id}/verify` | {checks?}: run clone, push, pull_request now |
 | `GET /v1/access/members` | admin: every member's connection state and grants |
+| `GET /v1/forge/permissions` | ?refresh=true: required, App, per-org and per-repository permissions (§2.6) |
 
 **Every route above is served (2026-10-09).** Two late additions:
 `POST /v1/access/orgs/{owner}/install-request` records an install request

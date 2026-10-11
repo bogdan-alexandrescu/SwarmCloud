@@ -1658,6 +1658,28 @@ class ForgeApp:
                  caller.tenant_id, user_hash(caller.key), owner.lower(), name, disabled)
         return {name: disabled}
 
+    # -- the App JWT, for read-only App calls (forgeperms, #1086) ------------
+
+    @property
+    def send(self) -> HttpSend:
+        """The transport this App's calls go through: urllib, or a test's fake."""
+        return self._send
+
+    def signed_app_jwt(self) -> str:
+        """An App JWT, the one `check_app_key` signs, for `forgeperms`' GETs of
+        `/app` and its installations. The key is masked while in hand; the
+        caller masks the JWT for as long as it holds it. AppNotConfigured
+        names what is absent, never a value."""
+        app_id = self.config.app_id
+        if not (app_id.isascii() and app_id.isdigit()):
+            raise AppNotConfigured("GITHUB_APP_ID is not set in swarm-api's environment")
+        pem = self._secrets.private_key()
+        with redaction_literal(pem):
+            try:
+                return app_jwt(app_id, pem, self._now())
+            except _KeyUnusable:
+                raise AppNotConfigured("the App's private key is not an RSA PEM") from None
+
     # -- the private key's self-check (admin) ------------------------------
 
     def check_app_key(self) -> dict[str, Any]:
