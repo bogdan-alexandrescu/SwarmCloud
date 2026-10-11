@@ -43,7 +43,8 @@ test('Admin asks what each of its tabs answers, in tab order (AH-23)', () => {
   assert.ok(admin, 'there is no Admin section')
   assert.equal(
     admin.question,
-    'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, and who is waiting for a workspace?',
+    // The last clause is Admin › Schedules (docs/schedules.md §5.3), added 2026-10-11.
+    'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, who is waiting for a workspace, and what is every tenant scheduled to run?',
   )
 })
 

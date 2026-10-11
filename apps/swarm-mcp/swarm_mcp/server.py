@@ -1076,8 +1076,9 @@ TOOLS: list[dict[str, Any]] = [
             "without its content being repeated.\n"
             "\n"
             "The reply also carries `spec_ref`, which swarm_workflow takes in place "
-            "of the spec, and `outline` -- the title, the label and each step's id, "
-            "`depends_on` and `stage` -- which is all a relay needs to copy back. "
+            "of the spec, and `outline` -- the title, the label, the `strategy` and "
+            "`merge`, and each step's id, `depends_on`, `stage`, `runner_profile`, "
+            "`when_step` and `input_from` -- which is all a relay needs to copy back. "
             "Submit with `spec_ref`; never retype `spec`."
         ),
         "inputSchema": {
@@ -3135,23 +3136,44 @@ def _held_spec(ref: str) -> dict[str, Any]:
 
 
 def _outline(spec: dict[str, Any]) -> dict[str, Any]:
-    """What a relay copies back instead of a spec: its title, its label and its DAG."""
+    """What a relay copies back instead of a spec: its title, its label and its DAG.
+
+    Plus what decides the merge steps swarm-api appends to it (2026-10-11):
+    the spec's `strategy` and `merge`, and each step's `runner_profile`, its
+    verdict gate (`when_step`) and its `input_from`. `/sc:swarmcloud`'s
+    run.js (`appendable`) derives from them the `re-review` and `merge` steps
+    the submit reply may name beyond the spec, and refuses any other.
+    """
     steps = []
     for step in spec.get("steps") or []:
         if not isinstance(step, dict):
             continue
         stage = step.get("stage")
+        when = step.get("when")
+        when_step = when.get("step") if isinstance(when, dict) else None
+        input_from = step.get("input_from")
+        profile = step.get("runner_profile")
         steps.append({
             "step_id": step.get("step_id"),
             "depends_on": list(step.get("depends_on") or []),
             "stage": stage.strip() if isinstance(stage, str) and stage.strip() else None,
+            "runner_profile": profile if isinstance(profile, str) and profile else None,
+            "when_step": when_step if isinstance(when_step, str) and when_step else None,
+            "input_from": (
+                {str(k): str(v) for k, v in input_from.items()}
+                if isinstance(input_from, dict) else {}
+            ),
         })
     label = spec.get("label")
     title = spec.get("title")
+    strategy = spec.get("strategy")
+    merge = spec.get("merge")
     return {
         "title": title.strip() if isinstance(title, str) and title.strip() else None,
         "label": label if isinstance(label, str) and label.strip() else None,
         "steps": steps,
+        "strategy": strategy if isinstance(strategy, str) and strategy else None,
+        "merge": merge if isinstance(merge, str) and merge else None,
     }
 
 
