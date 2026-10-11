@@ -103,6 +103,15 @@
 .sbf-runners.is-cards .sbf-runner-room {
   font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
 }
+/* THE POOL HOLDING A RUNNER AT ZERO (VQA V126): `.mono` set it at 14px inside
+   these 12px facts and `.id` would break it mid-id at 1280. Mono at the fact's
+   own size, kept whole -- it moves to the next line as one id, and a holder
+   longer than its card is cut with its full name in the title. */
+.sbf-runner-holder {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  font-family: var(--mono); font-size: inherit; line-height: inherit;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
 .sbf-runners.is-cards .sbf-runner-off { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 
 /* THE RUNNERS A LIST HOLDS BACK (walkthrough D): one quiet disclosure under
