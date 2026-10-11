@@ -199,6 +199,26 @@ MERGE_FIX_METADATA_KEY = "merge_fix"
 MERGE_FIX_ROUNDS_KEY = "merge_fix_rounds"
 MERGE_FIX_ROUNDS_MAX = 5
 
+#: The PR-side CI fixer's record on its task (`swarm_api.cifix`, #1073):
+#: `metadata.ci_fix.pull_request` is the pull request it fixes and `head_sha`
+#: the red head it was submitted for. Restated because the worker image
+#: carries no control plane; tests/unit/worker/test_merge_ci_fixer_head.py
+#: holds them equal to the API's. The record is UNSIGNED: it selects the
+#: candidates (`_ci_fixers`) and decides whether a red reading waits, and is
+#: never evidence of a head -- that is the fixer's signed spec and its own
+#: `result_summary`, as for a `merge_fix` round.
+CI_FIX_METADATA_KEY = "ci_fix"
+CI_FIX_PULL_REQUEST = "pull_request"
+CI_FIX_HEAD = "head_sha"
+#: The API's cap on fix attempts per pull request of a branch
+#: (`swarm_api.cifix.MAX_ATTEMPTS_CEILING`).
+CI_FIX_MAX_ATTEMPTS = 3
+#: How many fixer tasks one merge reads: four times the cap, so a workflow
+#: of more than one step, or tasks the API counted past its own cap, never
+#: crowd out the attempt that pushed the head -- and still a bounded read,
+#: whatever a tenant writes into `ci_fix`.
+CI_FIX_QUERY_LIMIT = CI_FIX_MAX_ATTEMPTS * 4
+
 #: The park codes of a red reading a CI-fix round may still fix: rounds are
 #: left and the tick has not claimed the next one yet, or one is running at
 #: this head. Never `checks_failed` while either holds.
@@ -937,10 +957,27 @@ def _branch_task(doc: Mapping[str, Any], task_id: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _CiFixer:
+    """A CI-fixer task of this pull request that passed `_continuation_of`.
+
+    `pushed` is its own `result_summary` head, None until it pushes;
+    `red_head` the unsigned `ci_fix.head_sha` it was submitted for, read
+    only to decide whether a red reading waits for it.
+    """
+
+    task_id: str
+    pushed: str | None
+    red_head: str | None
+
+
 @dataclass
 class _Run:
     ctx: ActionContext
     summary: dict[str, Any] = field(default_factory=dict)
+    #: This pull request's verified CI-fixer tasks (`_ci_fixers`), newest
+    #: first: read once, before the token, and handed to `_red`.
+    ci_fixers: list[_CiFixer] = field(default_factory=list)
 
     def refuse(self, code: str, message: str) -> ActionOutcome:
         return refusal(self.summary, EndCause.MERGE_REFUSED, code, message)
@@ -1031,8 +1068,13 @@ def run_merge(ctx: ActionContext) -> ActionOutcome:
     summary["pinned"] = pinned
     # The step's own record of its CI-fix rounds, and the heads they pushed:
     # task-store reads that need no credential, so before the token.
+    # The PR-side CI fixer's tasks (#1073) are the same kind of read.
     own = _own_doc(ctx)
+    run.ci_fixers = _ci_fixers(ctx, opener, target.pull_request, number)
     fix_heads = _fix_round_heads(ctx, own, opener, target.pull_request)
+    named = {task_id for task_id, _ in fix_heads}
+    fix_heads += [(f.task_id, f.pushed) for f in run.ci_fixers
+                  if f.pushed is not None and f.task_id not in named]
     return _merge_with_token(
         run, number=number, pinned=pinned,
         branch=f"{ctx.branch_prefix}{_branch_task(opener, target.pull_request)}",
@@ -1164,7 +1206,8 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     """§2.2 8-10 and §5, with the token in hand. Raises the forge's errors.
 
     `pinned` is the head the opening step pushed; `fix_heads` the heads this
-    workflow's CI-fix rounds pushed (`_fix_round_heads`). The head this
+    workflow's CI-fix rounds and the pull request's CI fixer pushed
+    (`_fix_round_heads`, `_ci_fixers`). The head this
     attempt acts at is GitHub's live head, accepted only through `_accept`.
     `own` is the step's own document, for its CI-fix rounds. `slot` is the
     repository's merge slot (`mergeslot`): taken once the checks are green,
@@ -1240,7 +1283,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         return run.refuse("head_moved",
                           f"pull request #{number}'s head is {head}, not {pinned}, "
                           "the head this workflow pushed, nor one of its CI-fix rounds' "
-                          "heads, nor GitHub's own update of either")
+                          "heads, nor the CI fixer's, nor GitHub's own update of either")
     updates, pushed_by = accepted
     summary["head"] = head
     summary["updates"] = updates
@@ -1299,7 +1342,7 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
                 label = f"{check.name} ({check.conclusion or check.status})"
                 (pending if check.status != "completed" else failed).append(label)
     if failed:
-        return _red(run, own, head=head, failed=failed, wait=wait)
+        return _red(run, own, head=head, failed=failed, wait=wait, ci_fixers=run.ci_fixers)
     if pending:
         return wait("checks_pending", f"at {head}: " + ", ".join(sorted(pending)), pending)
 
@@ -1579,7 +1622,8 @@ def _accept(merger: ForgeMerger, *, head: str, pinned: str,
     """(GitHub's base merges on top, the CI-fix round's task or None), or None.
 
     The live head is accepted when it is the pinned head or a head one of
-    this workflow's CI-fix rounds pushed (`fix_heads`, newest first), itself
+    this workflow's CI-fix rounds or the pull request's CI fixer pushed
+    (`fix_heads`, newest first), itself
     or under GitHub's own base merges (`_updates_onto`). Exact matches are
     tried first, so the common case reads nothing more from GitHub.
     """
@@ -1728,18 +1772,44 @@ def _rounds_asked(own: Mapping[str, Any]) -> int:
     return min(value, MERGE_FIX_ROUNDS_MAX)
 
 
+def _continuation_of(ctx: ActionContext, task_id: str, doc: Mapping[str, Any],
+                     root: str) -> bool:
+    """Whether `doc` is a fix this merge may take a head from: the rule
+    swarm-api's `issueci._pushing_task` applies, rechecked here.
+
+    The task is this tenant's, its signed spec verifies, and its SIGNED
+    dispatch block `continues` `root` -- the task whose branch the pull
+    request is on. The spec is verified against the task's OWN signed
+    workflow: a fix is always a workflow of its own (the tick submits a
+    round as one, the CI fixer submits one per attempt), so verifying it
+    against the merge's workflow dropped every one as `workflow_mismatch`
+    (#1073). The signature is still checked; authority is the signed
+    `continues` and the tenant, never the workflow.
+    """
+    if doc.get("tenant_id") != ctx.tenant_id:
+        return False
+    workflow = doc.get("workflow_id")
+    if not isinstance(workflow, str) or not workflow:
+        return False
+    try:
+        ctx.verify_upstream(task_id, doc, of_workflow=workflow)
+    except Exception:  # noqa: BLE001 - unsigned or unverifiable: not a fix's head
+        return False
+    block = _mapping(_mapping(doc.get("metadata")).get("dispatch"))
+    return _task_id(block.get("continues")) == root
+
+
 def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping[str, Any],
                      target: str) -> list[tuple[str, str]]:
     """(task, pushed head) of each CI-fix round of this merge, newest first (lane MS7).
 
     The rounds are named by the tenant-writable `merge_fix` record, so each
-    is held to facts the record cannot forge, the rule swarm-api's
-    `issueci._pushing_task` applies, rechecked here: the round's task is
-    read through the tenant-gated upstream read, is this tenant's, its
-    signed spec verifies, and its SIGNED dispatch block `continues` the same
-    root as the signed target -- the branch the pull request is on. Its
-    pushed head is its own `result_summary`, as the opener's is. A round
-    that fails any of these is not a candidate, and its head is `head_moved`.
+    is held to facts the record cannot forge (`_continuation_of`): read
+    through the tenant-gated upstream read, it is this tenant's, its signed
+    spec verifies against its own workflow, and its SIGNED dispatch block
+    `continues` the same root as the signed target. Its pushed head is its
+    own `result_summary`, as the opener's is. A round that fails any of
+    these is not a candidate, and its head is `head_moved`.
     """
     root = _branch_task(opener, target)
     heads: list[tuple[str, str]] = []
@@ -1749,18 +1819,52 @@ def _fix_round_heads(ctx: ActionContext, own: Mapping[str, Any], opener: Mapping
             continue
         try:
             doc = _mapping(ctx.fetch_upstream(task_id))
-            ctx.verify_upstream(task_id, doc)
-        except Exception:  # noqa: BLE001 - unreadable or unsigned: not a round's head
+        except Exception:  # noqa: BLE001 - unreadable: not a round's head
             continue
-        if doc.get("tenant_id") != ctx.tenant_id:
-            continue
-        block = _mapping(_mapping(doc.get("metadata")).get("dispatch"))
-        if _task_id(block.get("continues")) != root:
+        if not _continuation_of(ctx, task_id, doc, root):
             continue
         pushed = _pushed_head(doc)
         if pushed is not None:
             heads.append((task_id, pushed))
     return heads
+
+
+def _ci_fixers(ctx: ActionContext, opener: Mapping[str, Any], target: str,
+               number: int) -> list[_CiFixer]:
+    """This pull request's CI-fixer tasks, newest first (#1073).
+
+    The PR-side CI fixer (scripts/ci-fix.sh) submits a `continues_task` fix
+    of the branch's root, stamped `metadata.ci_fix.pull_request`, that no
+    `merge_fix` round names. The tenant's tasks are found by the API's own
+    query (`inputs.find_ci_fix_tasks`) and each is held to exactly a
+    round's checks (`_continuation_of`). `ci_fix` only selects them: it is
+    unsigned. A query that cannot be read has no candidates, and the head
+    is `head_moved` as before.
+    """
+    root = _branch_task(opener, target)
+    try:
+        docs = list(ctx.find_ci_fixes(root, number))
+    except Exception:  # noqa: BLE001 - an unreadable query has no candidates
+        return []
+    docs = [d for d in docs if isinstance(d, Mapping)]
+    # Newest first; the query has no order (it would need a composite index).
+    docs.sort(key=lambda d: str(d.get("created_at") or ""), reverse=True)
+    fixers: list[_CiFixer] = []
+    for doc in docs:
+        task_id = _task_id(doc.get("id"))
+        if task_id is None or task_id in (target, root, ctx.task_id):
+            continue
+        if any(f.task_id == task_id for f in fixers):
+            continue
+        record = _mapping(_mapping(doc.get("metadata")).get(CI_FIX_METADATA_KEY))
+        if record.get(CI_FIX_PULL_REQUEST) != number:
+            continue
+        if not _continuation_of(ctx, task_id, doc, root):
+            continue
+        red_head = record.get(CI_FIX_HEAD)
+        fixers.append(_CiFixer(task_id, _pushed_head(doc),
+                               red_head if isinstance(red_head, str) else None))
+    return fixers
 
 
 def _ended(ctx: ActionContext, task_id: str) -> bool:
@@ -1773,7 +1877,7 @@ def _ended(ctx: ActionContext, task_id: str) -> bool:
 
 
 def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
-         wait: Any) -> ActionOutcome:
+         wait: Any, ci_fixers: list[_CiFixer]) -> ActionOutcome:
     """A failing required check at `head`: a CI-fix round's to fix, or `checks_failed`.
 
     docs/merge-step.md "Revised 2026-10-06" §1: with rounds left the tick
@@ -1782,6 +1886,10 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
     or one due that the tick has not claimed yet, parks (`wait`, which
     `MERGE_CI_MAX_SECONDS` bounds). A round that ended at this head without
     moving it, or was never submitted, is spent.
+
+    When no round governs this head, a verified CI-fixer task of this pull
+    request (`ci_fixers`) submitted for this head and not ended parks too
+    (#1073): its push is a head this step accepts. One that ended is spent.
     """
     message = f"at {head}: " + ", ".join(sorted(failed))
     rounds = _fix_rounds(own)
@@ -1800,6 +1908,10 @@ def _red(run: _Run, own: Mapping[str, Any], *, head: str, failed: list[str],
                         [])
         return run.refuse("checks_failed",
                           f"{message}, after CI fix round {number} ({task_id}) ended at this head")
+    for fixer in ci_fixers:
+        if fixer.red_head == head and not _ended(run.ctx, fixer.task_id):
+            return wait(CI_FIX_RUNNING,
+                        f"{message}; the CI fixer's task {fixer.task_id} is running", [])
     asked = _rounds_asked(own)
     if len(rounds) < asked:
         return wait(CI_FIX_PENDING,
