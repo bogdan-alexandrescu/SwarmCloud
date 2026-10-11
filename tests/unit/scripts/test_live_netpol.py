@@ -461,7 +461,7 @@ def test_apply_confirm_applies_and_compares_with_the_live_range(cluster):
 def test_apply_refuses_the_range_from_its_command_line(cluster, flag):
     result = _apply(cluster, flag, "x")
     assert result.returncode != 0
-    assert "read from" in result.stderr
+    assert "it cannot be passed" in result.stderr
     assert not (cluster["dir"] / "applied-dry-run.yaml").exists()
 
 

@@ -4,6 +4,10 @@
 #   kubernetes/apply.sh --tenant eng                 # dry run, prints a diff
 #   kubernetes/apply.sh --tenant eng --confirm       # actually applies
 #   kubernetes/apply.sh --policies --confirm         # cluster-scoped policies
+#   kubernetes/apply.sh --swarm-system --confirm     # swarm-system's ingress: the
+#                         # live relay's TCP 8443, from labelled tenant pods and
+#                         # swarm-api's Direct VPC egress range, read from the
+#                         # service (docs/design/live-browser.md §8.3)
 #   kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
 #                         # ... with the step-spec public keys ConfigMap, from
 #                         # `terraform output -json spec_verify_keys_configmap`
@@ -67,6 +71,16 @@
 # the tenant GSA binds for Workload Identity are read from the GSA's IAM policy
 # and passed as --bound-ksa: the older `swarm-worker` account is rendered only
 # where it is bound (kubernetes/render.py LEGACY_KSA_NAME).
+#
+# --swarm-system follows the same rule for its one cluster value. The relay's
+# ingress admits swarm-api's Direct VPC egress range, and that range is READ:
+# the subnetwork swarm-api's own service names (`gcloud run services describe`,
+# the run.googleapis.com/network-interfaces annotation), then that subnetwork's
+# ipCidrRange. Never typed, never forwarded. --confirm refuses while the
+# swarm-system namespace does not exist (lane L8 creates it with the relay),
+# and afterwards compares the applied policies with the range it read
+# (kubernetes/network_parity.py --live-ingress), exiting non-zero on a
+# difference.
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -109,6 +123,11 @@ NETWORK_FLAGS=(--pod-cidr --service-cidr --cluster-dns-ip --node-local-dns-ip --
 # (an annotation claiming an identity IAM does not grant) it exists to remove.
 IDENTITY_FLAGS=(--bound-ksa)
 
+# SWARM-API'S EGRESS RANGE IS READ, NOT PASSED, for the same reason as the
+# cluster network: it is admitted to the live relay, and a typed value is the
+# one that goes stale when the subnet changes.
+LIVE_FLAGS=(--swarm-api-egress-cidr --swarm-api-egress-source)
+
 # derived_flag_for ARG FLAG... -- print the FLAG that ARG spells, and succeed,
 # when ARG (the part before any `=`) is one of the FLAGs or ANY PREFIX of one.
 #
@@ -138,6 +157,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --tenant|-t)  TENANT="$2"; shift 2 ;;
     --policies)   MODE="policies"; shift ;;
+    --swarm-system) MODE="swarm-system"; shift ;;
     --confirm|-y) CONFIRM=1; shift ;;
     --server-dry-run) SERVER_DRY_RUN=1; shift ;;
     --context)    CONTEXT="$2"; shift 2 ;;
@@ -166,6 +186,11 @@ while [[ $# -gt 0 ]]; do
         die "'${1%%=*}' would reach the renderer as ${NETWORK_FLAG}, which is read from the cluster
        by this script (kubernetes/cluster-network.sh); it cannot be passed, in full or
        abbreviated. To render for another cluster, point --context/--cluster at it."
+      fi
+      if LIVE_FLAG="$(derived_flag_for "$1" "${LIVE_FLAGS[@]}")"; then
+        die "'${1%%=*}' would reach the renderer as ${LIVE_FLAG}, which this script reads from
+       swarm-api's service and its subnetwork (gcloud run services describe; gcloud compute
+       networks subnets describe); it cannot be passed, in full or abbreviated."
       fi
       if IDENTITY_FLAG="$(derived_flag_for "$1" "${IDENTITY_FLAGS[@]}")"; then
         die "'${1%%=*}' would reach the renderer as ${IDENTITY_FLAG}, which this script reads from
@@ -386,6 +411,83 @@ if [[ "${MODE}" == "policies" ]]; then
     --scheduler-uid "${SCHEDULER_UID}" --reconciler-uid "${RECONCILER_UID}" \
     --workspace-deployer-uid "${DEPLOYER_UID}")"
   info "rendering cluster-scoped admission policies and the workspace deployer's RBAC"
+elif [[ "${MODE}" == "swarm-system" ]]; then
+  [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
+  [[ -z "${TENANT}" ]] || die "--swarm-system renders swarm-system's policies, not a tenant's; drop --tenant"
+  [[ -z "${RENDER_ARGS[*]+x}" ]] \
+    || die "--swarm-system takes no render arguments (got: ${RENDER_ARGS[*]}); its one value is read"
+
+  # SWARM-API'S DIRECT VPC EGRESS SUBNET, READ FROM THE SERVICE. To files and
+  # read in THIS shell (CLAUDE.md: a command substitution throws away what the
+  # function assigned). The v1 (Knative) shape is what `gcloud run services
+  # describe` returns -- the annotation holds a JSON list -- and the v2 shape
+  # is read as well, as scripts/lib/deploy.sh does for the image, so a gcloud
+  # that switches surfaces does not turn this into "no subnet".
+  LIVE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-live-netpol.XXXXXX")"
+  if ! gcloud run services describe "${API_SERVICE}" --project "${PROJECT_ID}" --region "${REGION}" \
+      --format=json >"${LIVE_WORK}/service.json" 2>"${LIVE_WORK}/service.err"; then
+    LIVE_ERR="$(redact <"${LIVE_WORK}/service.err")"
+    rm -rf "${LIVE_WORK}"
+    die_if_auth_failure "${LIVE_ERR}"
+    err "could not describe Cloud Run service ${API_SERVICE} in ${PROJECT_ID}/${REGION}:"
+    printf '%s\n' "${LIVE_ERR}" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "swarm-system's ingress admits swarm-api's egress range, read from the service or not at all."
+  fi
+  if ! jq -r '
+      [ ((.spec.template.metadata.annotations["run.googleapis.com/network-interfaces"] // "[]")
+          | fromjson | .[]? | .subnetwork // empty),
+        (.template.vpcAccess.networkInterfaces[]? | .subnetwork // empty) ]
+      | unique | .[]' "${LIVE_WORK}/service.json" >"${LIVE_WORK}/subnets" 2>"${LIVE_WORK}/jq.err"; then
+    rm -rf "${LIVE_WORK}"
+    die "could not read ${API_SERVICE}'s Direct VPC egress from its description; nothing was rendered."
+  fi
+  SUBNET_REFS=()
+  while IFS= read -r ref; do
+    [[ -n "${ref}" ]] && SUBNET_REFS+=("${ref}")
+  done <"${LIVE_WORK}/subnets"
+  if [[ "${#SUBNET_REFS[@]}" -ne 1 ]]; then
+    rm -rf "${LIVE_WORK}"
+    die "${API_SERVICE} names ${#SUBNET_REFS[@]} Direct VPC egress subnetworks, not exactly one; the relay
+       admits one range and this script will not choose. (terraform/modules/cloud_run sets
+       network_interfaces.subnetwork on every service.)"
+  fi
+  # A name or a path (projects/<p>/regions/<r>/subnetworks/<name>); the
+  # region in a path wins over ${REGION}.
+  SUBNET_REF="${SUBNET_REFS[0]}"
+  SUBNET="${SUBNET_REF##*/}"
+  SUBNET_REGION="${REGION}"
+  case "${SUBNET_REF}" in
+    */regions/*/subnetworks/*) SUBNET_REGION="${SUBNET_REF#*/regions/}"; SUBNET_REGION="${SUBNET_REGION%%/*}" ;;
+  esac
+  [[ "${SUBNET}" =~ ^[a-z][a-z0-9-]{0,62}$ ]] || { rm -rf "${LIVE_WORK}"; die "${API_SERVICE}'s subnetwork '${SUBNET_REF}' is not a subnetwork name"; }
+  if ! gcloud compute networks subnets describe "${SUBNET}" --project "${PROJECT_ID}" \
+      --region "${SUBNET_REGION}" --format=json >"${LIVE_WORK}/subnet.json" 2>"${LIVE_WORK}/subnet.err"; then
+    LIVE_ERR="$(redact <"${LIVE_WORK}/subnet.err")"
+    rm -rf "${LIVE_WORK}"
+    die_if_auth_failure "${LIVE_ERR}"
+    die "could not describe subnetwork ${SUBNET} in ${PROJECT_ID}/${SUBNET_REGION}; nothing was rendered."
+  fi
+  SWARM_API_EGRESS_CIDR="$(jq -r '.ipCidrRange // empty' "${LIVE_WORK}/subnet.json")"
+  rm -rf "${LIVE_WORK}"
+  [[ -n "${SWARM_API_EGRESS_CIDR}" ]] || die "subnetwork ${SUBNET} reports no ipCidrRange; nothing was rendered."
+  SWARM_API_EGRESS_SOURCE="run/${PROJECT_ID}/${SUBNET_REGION}/${API_SERVICE}/${SUBNET}"
+  info "swarm-api egress  ${SWARM_API_EGRESS_CIDR}  (${SWARM_API_EGRESS_SOURCE})"
+
+  # The namespace is lane L8's, created with the relay. A NetworkPolicy
+  # applied into a namespace that does not exist fails mid-apply; refuse
+  # first, under --confirm, and say whose it is. A dry run previews anyway.
+  if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" get namespace swarm-system -o name >/dev/null 2>&1; then
+    if [[ "${CONFIRM}" -eq 1 ]]; then
+      die "namespace swarm-system does not exist on ${CLUSTER}; it is created with the live relay
+       (kubernetes/swarm-system/, lane L8). Nothing was applied."
+    fi
+    warn "namespace swarm-system does not exist yet; --confirm will refuse until it does."
+  fi
+
+  MANIFEST="$("${PYTHON}" "${HERE}/render.py" swarm-system \
+    --swarm-api-egress-cidr "${SWARM_API_EGRESS_CIDR}" \
+    --swarm-api-egress-source "${SWARM_API_EGRESS_SOURCE}")"
+  info "rendering swarm-system's ingress policies"
 else
   [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies)"
 
@@ -521,17 +623,18 @@ else
     ${BOUND_KSA_ARGS[@]+"${BOUND_KSA_ARGS[@]}"} \
     "${RENDER_ARGS[@]+"${RENDER_ARGS[@]}"}")"
   info "rendering tenant ${TENANT}"
-
-  # Belt and braces on the property above: a render marked offline carries
-  # documentation addresses, and must never reach a cluster. Matched on the
-  # annotation itself -- the templates' comments are rendered too, and they
-  # name the marker.
-  case "${MANIFEST}" in
-    *"swarm.saga.xyz/network-source: offline-render-not-for-apply"*)
-      die "the render is marked offline-render-not-for-apply -- it carries no real
-       cluster network. Refusing; nothing was applied." ;;
-  esac
 fi
+
+# Belt and braces on the property above: a render marked offline carries
+# documentation addresses, and must never reach a cluster. Matched on the
+# annotation itself -- the templates' comments are rendered too, and they
+# name the marker. Every mode: the tenant egress policy and swarm-system's
+# relay ingress both carry it.
+case "${MANIFEST}" in
+  *"swarm.saga.xyz/network-source: offline-render-not-for-apply"*)
+    die "the render is marked offline-render-not-for-apply -- it carries no real
+       cluster network. Refusing; nothing was applied." ;;
+esac
 
 # --- 3. dry run, then apply --------------------------------------------------
 # Client-side first, always: it needs no cluster and catches a malformed render.
@@ -611,6 +714,10 @@ if [[ "${CONFIRM}" -ne 1 ]]; then
     dim "  --confirm then compares ${TENANT_NAMESPACE}'s egress policy with the live cluster:"
     dim "    scripts/lib/check-cluster-network-parity.sh ${PARITY_ARGS[*]}"
   fi
+  if [[ "${MODE}" == "swarm-system" ]]; then
+    dim "  --confirm then compares swarm-system's policies with ${SWARM_API_EGRESS_CIDR}"
+    dim "    (kubernetes/network_parity.py --live-ingress)"
+  fi
   ok "dry run only. Re-run with --confirm to apply."
   exit 0
 fi
@@ -638,4 +745,25 @@ if [[ "${MODE}" == "tenant" ]]; then
   fi
   dim "  every tenant namespace, not just this one:"
   dim "    scripts/lib/check-cluster-network-parity.sh --require-live --context ${CURRENT} --cluster ${CLUSTER}"
+fi
+if [[ "${MODE}" == "swarm-system" ]]; then
+  # RUN, like the tenant parity check: the policies as the API server now
+  # holds them, against the range read above. An allow without the deny, a
+  # second port or another range is a failure here, not a pass.
+  info "comparing swarm-system's ingress policies with swarm-api's ${SWARM_API_EGRESS_CIDR}"
+  LIVE_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-live-parity.XXXXXX")"
+  if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" get networkpolicies -n swarm-system -o json \
+      >"${LIVE_WORK}/policies.json" 2>"${LIVE_WORK}/policies.err"; then
+    redact <"${LIVE_WORK}/policies.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    rm -rf "${LIVE_WORK}"
+    die "applied, but swarm-system's NetworkPolicies could not be read back; nothing was compared."
+  fi
+  jq -n --arg cidr "${SWARM_API_EGRESS_CIDR}" --arg source "${SWARM_API_EGRESS_SOURCE}" \
+    '{swarm_api_egress_cidr: $cidr, source: $source}' >"${LIVE_WORK}/live.json"
+  if ! "${PYTHON}" "${HERE}/network_parity.py" --live-ingress \
+      --live "${LIVE_WORK}/live.json" --policies "${LIVE_WORK}/policies.json"; then
+    rm -rf "${LIVE_WORK}"
+    die "applied, but swarm-system's ingress does not match what was rendered (above)."
+  fi
+  rm -rf "${LIVE_WORK}"
 fi
