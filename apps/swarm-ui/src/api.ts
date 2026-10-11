@@ -15,6 +15,7 @@ import {
   type GitToken, type IndexDoc, type LanguageRow, type Permissions, type ReadableList, type RepoDetail, type RepoRecord,
   type ResolvedToken, type TestSelection, type TokenScope,
 } from './RepositoriesData'
+import { normForgePermissions, type ForgePerms } from './ForgePermissionsData'
 import {
   normCallGraph, normImpact, normModuleGraph, normSymbolSearch, normSymbolTests,
   type CallGraph, type ImpactPlan, type ModuleGraph, type SymbolSearch, type SymbolTests,
@@ -5418,6 +5419,19 @@ export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> 
 /** `GET /v1/onboarding`: the caller's six steps, derived on this read. */
 export async function loadOnboarding(): Promise<Result<OnboardingDoc>> {
   return readAs(route('/v1/onboarding'), (raw) => raw as OnboardingDoc)
+}
+
+/**
+ * `GET /v1/forge/permissions` (#1086, PERM-1): which GitHub permissions the
+ * App and each enabled org's installation lack, and each registered
+ * repository's status. A read: nothing is granted, accepted or stored.
+ * `refresh` is the console's Re-check, pressed after accepting on GitHub: it
+ * skips the server's one-minute cache and reads GitHub again. Like every
+ * route in this section, the fixture build answers it as not served.
+ */
+export async function loadForgePermissions(options: { refresh?: boolean } = {}): Promise<Result<ForgePerms | null>> {
+  const query = options.refresh === true ? new URLSearchParams({ refresh: 'true' }) : undefined
+  return readAs(route('/v1/forge/permissions', {}, query), normForgePermissions, (d) => d === null)
 }
 
 /** `POST /v1/onboarding/github/authorize`: a single-use, ten-minute authorise URL for this person. */

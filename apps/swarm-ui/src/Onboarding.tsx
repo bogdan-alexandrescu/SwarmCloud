@@ -2,6 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { dismissOnboarding, loadOnboarding } from './api'
 import { Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
 import type { ApiError } from './fetch'
+import { GitHubPermissionsSection } from './ForgePermissions'
 import { ConnectButton, connectionOf, Refusal } from './GitHubConnect'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
 import { addressToPath } from './paths'
@@ -472,6 +473,9 @@ export function OnboardingScreen() {
           )
         }
       </UrRegion>
+      {/* Which GitHub permissions the App and each connected org lack (#1086, PERM-2): below the checklist,
+          read on its own, so a checklist that failed to read still shows them. */}
+      <GitHubPermissionsSection />
     </div>
   )
 }

@@ -6,6 +6,7 @@ import { REGISTER, GT_PAGE, TestsMapped, UrFreshPill, UrNavButton, UrRefresh, Ur
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
+import { RepoPermDot } from './ForgePermissions'
 import { CountNote, PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/repositories.css'
@@ -169,7 +170,17 @@ function RepoCard({ r, go, busy, onIndex }: { r: RepoRecord; go: (to: string) =>
   const head = r.index.head_sha
   const sched = scheduleWords(r.index)
   return (
-    <Card className="ur-card" title={repoName(r)} action={<UrFreshPill f={f} />}>
+    <Card
+      className="ur-card"
+      title={repoName(r)}
+      action={
+        <span className="ur-acts">
+          {/* Its GitHub permissions (#1086, PERM-2): the tooltip names the problem. */}
+          <RepoPermDot repoId={r.repo_id} />
+          <UrFreshPill f={f} />
+        </span>
+      }
+    >
       <div className="ur-cmeta">
         <span>
           Default branch {r.default_branch === null ? <Dash why="The default branch was not served" /> : <b>{r.default_branch}</b>}

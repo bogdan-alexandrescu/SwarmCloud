@@ -14,6 +14,7 @@ import {
   useUrRead, writeFailure,
 } from './RepositoriesParts'
 import { PageHead } from './Shell'
+import { RepoForgeCard } from './ForgePermissions'
 import { GraphTab, type GraphOpen } from './RepoGraph'
 import { AlwaysRun, EdgeGroups, PathLookup, Suites } from './RepoTestMap'
 import { ImpactTab } from './RepoImpact'
@@ -212,6 +213,8 @@ function DetailBody({
           {inFlight !== null ? ' An index run is in flight.' : ' No index run is in flight.'}
         </Banner>
       )}
+      {/* Its own org's GitHub permissions card (#1086, PERM-2), on every tab: collapsed when all is granted. */}
+      <RepoForgeCard repoId={r.repo_id} owner={r.owner} />
       <nav className="c-tabs ur-tabs" aria-label="Repository" ref={strip}>
         {TABS.map((t) => {
           const to = repoAddress(r.repo_id, t.key)

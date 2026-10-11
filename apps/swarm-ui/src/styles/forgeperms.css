@@ -1,0 +1,34 @@
+/* ==========================================================================
+   GITHUB PERMISSIONS (#1086, lane PERM-2; owner decision 2026-10-11,
+   design 2 "Org cards"): Work › Setup › GitHub, the repository list's dots
+   and a repository's own org card.
+
+   Its own sheet rather than styles.css, which another open lane edits
+   (#1088). Built on the Repositories set (`ur-`) and the canonical
+   components; the classes here are layout and the dot only. Every colour is a
+   token, so light and dark come from the theme. `fp-` throughout.
+   ========================================================================== */
+
+.fp-section { display: flex; flex-direction: column; gap: 8px; }
+.fp-section-h { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; }
+.fp-section-h h2 { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.fp-at { margin: 0; }
+.fp-cards { display: flex; flex-direction: column; gap: 8px; }
+.fp-card.is-missing .c-card { border-left: 2px solid var(--s-bad); }
+.fp-card.is-unknown .c-card { border-left: 2px solid var(--s-neu); }
+.fp-body { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+.fp-slug { margin-left: 6px; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.fp-reason.is-missing { color: var(--s-bad); }
+.fp-reason.is-unknown { color: var(--s-neu); }
+.fp-gaps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; align-self: stretch; }
+.fp-gap { display: flex; flex-direction: column; gap: 4px; align-items: flex-start; padding: 6px 8px; border-left: 2px solid var(--s-bad); background: var(--s-badb); border-radius: 0 var(--r-ctl) var(--r-ctl) 0; }
+.fp-held { color: var(--text-dim); }
+.fp-breaks { overflow-wrap: anywhere; }
+.fp-why { margin: 0; }
+
+/* The repository's dot: the mark's shape says the state as well as its hue. */
+.fp-dot { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: var(--r-pill); cursor: help; flex: none; }
+.fp-dot svg { width: 12px; height: 12px; }
+.fp-dot.is-ok { background: var(--s-liveb); color: var(--s-live); }
+.fp-dot.is-missing { background: var(--s-badb); color: var(--s-bad); }
+.fp-dot.is-unknown { background: var(--s-neub); color: var(--s-neu); }
