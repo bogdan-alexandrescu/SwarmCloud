@@ -67,6 +67,20 @@
    opacities. `aria-disabled` as well as `:disabled`, for a link-button. */
 .c-btn:disabled,
 .c-btn[aria-disabled='true'] { opacity: .45; cursor: not-allowed; }
+/* EXCEPT A FILLED BUTTON, WHOSE LABEL SAYS WHAT THE CLICK WOULD DO (V138,
+   #1038). At 45% the white-on-accent label of a disabled "Submit" sank into
+   the panel in both themes: WCAG exempts a disabled control, but this one's
+   label is still the thing being explained by the reason beside it. So a
+   disabled primary (or filled-danger) button is drawn PALE rather than faded
+   -- the pale accent tint (`--sk-acs`, the pressed toggle's ground), solid,
+   with the label in `--text-dim` -- so it is still the pale accent
+   components.html A asks for, still reads as off, and its words clear AA
+   (vqa.l09.test.tsx). After `:hover` so a hover cannot relight it. */
+.c-btn.is-primary:disabled,
+.c-btn.is-primary[aria-disabled='true'] { opacity: 1; background: var(--sk-acs); border-color: var(--sk-acl); color: var(--text-dim); }
+/* The filled danger button the same way, in its own hue's pale tint. */
+.c-btn.is-danger-filled:disabled,
+.c-btn.is-danger-filled[aria-disabled='true'] { opacity: 1; background: var(--s-badb); border-color: color-mix(in srgb, var(--s-bad) 45%, transparent); color: var(--text-dim); }
 .c-btn.is-busy { cursor: progress; }
 /* A TOGGLE (follow, wrap): `aria-pressed`, drawn as the segmented control's
    on state, so pressed reads the same wherever it is. */
@@ -226,7 +240,27 @@
 .c-tfoot { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); flex-wrap: wrap; }
 
 /* ---- tabs, segmented controls, breadcrumbs ----------------------------- */
-.c-tabs { display: flex; flex-wrap: nowrap; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.c-tabs { display: flex; flex-wrap: nowrap; gap: 2px; border-bottom: 1px solid var(--line); overflow-x: auto; scroll-padding-inline: 24px; }
+/* A STRIP THAT SCROLLS SAYS SO (V119, #1038). At 400px the repository's eight
+   tabs ran off the right edge and the last visible one stopped mid-word
+   ("Hot-spo") with nothing to say there was more. Each edge with tabs behind
+   it now carries an inset shade, driven by the strip's OWN scroll position,
+   so it needs no script and no knowledge of the backdrop: the right shade at
+   rest, both mid-way, the left one at the end. A strip that fits has no
+   scroll range, its timeline is inactive and the animation draws nothing.
+   An inset shadow is used rather than a mask because `.ur-tabs[data-fade]`
+   (repositories.css) already masks that strip from script, and a second
+   mask would fight it on specificity; the two now add up. Without
+   scroll-driven animations the strip is as before. `scroll-padding-inline`
+   keeps a tab reached by keyboard clear of the shade. */
+@supports (animation-timeline: scroll()) {
+  .c-tabs { animation: c-tabs-edge linear both; animation-timeline: scroll(self inline); }
+}
+@keyframes c-tabs-edge {
+  0% { box-shadow: inset 0 0 0 0 transparent, inset -24px 0 16px -16px color-mix(in srgb, var(--text) 30%, transparent); }
+  8%, 92% { box-shadow: inset 24px 0 16px -16px color-mix(in srgb, var(--text) 30%, transparent), inset -24px 0 16px -16px color-mix(in srgb, var(--text) 30%, transparent); }
+  100% { box-shadow: inset 24px 0 16px -16px color-mix(in srgb, var(--text) 30%, transparent), inset 0 0 0 0 transparent; }
+}
 .c-tabs > a,
 .c-tabs > button { flex: none; padding: 8px 12px; font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--text-dim); border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; display: flex; gap: 6px; align-items: center; white-space: nowrap; background: none; text-decoration: none; cursor: pointer; }
 .c-tabs > [aria-selected='true'],

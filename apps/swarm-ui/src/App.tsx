@@ -469,6 +469,21 @@ const REFERENCE = 'reference'
 const SUBMIT = SUBMIT_ADDRESS
 
 /**
+ * WHAT THE SUBMIT PAGES ANSWER, behind the title's `?` (V062, owner decision
+ * Q2 on #1038, 2026-10-11). The `?` keeps SECTION-level help everywhere else,
+ * but the chooser and its three forms used to borrow Work's question -- "what
+ * is running, what has already run" -- on a page where nothing has run yet.
+ * Submit is not a section (it has no tabs and no rail entry), so this is the
+ * question alone, in the shape `SectionQuestion` reads.
+ */
+const SUBMIT_HELP: SectionQuestionDef = {
+  id: SUBMIT,
+  label: 'Submit',
+  question:
+    'What can I start — a task, a workflow or a GitHub issue — on which runner, and will it run now or wait for room?',
+}
+
+/**
  * The GitHub App's callback page (`/onboarding/github/callback`, #780 OB3).
  * Not a section and not a tab -- GitHub sends the browser here, nothing in the
  * nav does -- so no nav tab, and no issue-form "Where" entry, follows it.
@@ -707,6 +722,15 @@ export interface Route {
   page?: 'outcomes' | null
   /** A path this console has no page for: drawn as not-found, kept in the bar (NotFound.tsx). */
   missing?: string | null
+}
+
+/** What `SectionQuestion` reads off a section: its name and its question. */
+type SectionQuestionDef = Pick<SectionDef, 'id' | 'label' | 'question'>
+
+/** The Submit chooser or one of its three forms (`work/new*`). */
+function isSubmitPage(at: Pick<Route, 'sectionId' | 'tab'>): boolean {
+  return at.sectionId === SUBMIT
+    || (at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow' || at.tab === 'new-issue'))
 }
 
 function sectionOf(id: string): SectionDef | null {
@@ -1110,9 +1134,10 @@ export function App() {
   const [apiFailuresOnly, setApiFailuresOnly] = useState(false)
 
   const section = sectionOf(at.sectionId)
-  // The `?` by the title asks the section's question; the Submit chooser is
-  // Work's (its forms are Work tabs), so it asks Work's.
-  const helpSection = section ?? (at.sectionId === SUBMIT ? sectionOf(WORK) : null)
+  // The `?` by the title asks the section's question, except on the Submit
+  // chooser and its three forms (V062): their forms are Work tabs, but Work's
+  // question is about what has run, so they ask Submit's own.
+  const helpSection = isSubmitPage(at) ? SUBMIT_HELP : section
   const inspector = at.taskId !== null
   const listAddress = canonical({
     sectionId: WORK,
@@ -1365,8 +1390,8 @@ function Head({
   const tab = section?.tabs.find((t) => t.id === at.tab) ?? null
   // THE SUBMIT PAGES' TRAIL IS SUBMIT (submit.html): the chooser is a page
   // of its own, not API reads (#503), and the two forms lead back to it.
-  const submitForm = at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow' || at.tab === 'new-issue')
-  const head = at.sectionId === SUBMIT || submitForm ? 'Submit'
+  const submitForm = at.sectionId === WORK && isSubmitPage(at)
+  const head = isSubmitPage(at) ? 'Submit'
     : section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   // The open agent by its name once its split has read it (walkthrough G).
@@ -1592,7 +1617,7 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
  * question and nothing to follow. `Help →` goes to the top of the Help page,
  * because the question is about a section and no single topic answers it.
  */
-function SectionQuestion({ section }: { section: SectionDef }) {
+function SectionQuestion({ section }: { section: SectionQuestionDef }) {
   // THE CARD IS MEASURED THROUGH `cardRef`, and before it existed this card
   // was not measured at all. `useEdgeSafePlacement` used to look for the card
   // under the ANCHOR, and this one is portalled to `document.body` below, so
