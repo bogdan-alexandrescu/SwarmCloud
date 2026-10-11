@@ -329,7 +329,14 @@ class TestApiCollector:
         assert history_key in recorded["metrics"]
         assert recorded["metrics"][history_key]["p50"] == 4100
 
-        slow = _Server(delay_ms=400.0, delay_route="/v1/stats")
+        # 800ms, not the 400ms the other cases inject. The normalised figure's
+        # baseline is five sequential readings and its p95 is therefore their
+        # MAXIMUM, so a single runner stall in the recording run sets it. Run
+        # 38140540298 recorded one ~150ms reading: the baseline became 37ms/1k
+        # instead of ~12, and +400ms then measured 2.98x against a 3.0x gate.
+        # At +800ms that same stall still leaves a ~5.6x regression, and an
+        # unstalled baseline gives ~17x -- the injection, not the noise, decides.
+        slow = _Server(delay_ms=800.0, delay_route="/v1/stats")
         env = _env(slow.url, baseline, tmp_path)
         try:
             result = _run(
