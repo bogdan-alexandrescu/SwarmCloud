@@ -237,6 +237,30 @@ export function AgentSplit({
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // ESCAPE CLOSES THE SPLIT WHEREVER FOCUS IS (V152, visual QA #1038). The
+  // panel's own `onKeyDown` only hears keys pressed inside it, and a mouse
+  // click on a row opens the split beside the list WITHOUT moving focus (it
+  // moves in only over an overlay, below), so the key went to the row and
+  // nothing closed. This listener takes the key from anywhere outside the
+  // panel, in the bubble phase: a layer above (`escape.ts`, capture phase), an
+  // open help card, a select, a menu or flyout, a text field and any other
+  // dialog all keep their own Escape, exactly as they do inside the panel.
+  const closeRef = useRef(close)
+  closeRef.current = close
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape' || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return
+      if (document.querySelector('[data-focus-return]') !== null) return
+      const t = e.target instanceof Element ? e.target : null
+      if (t !== null && panel.current?.contains(t)) return
+      if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
+      if (t?.closest('.sk-flyout, .sk-spine, .c-menu-host, [role="dialog"], [role="menu"], details[open]')) return
+      closeRef.current()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   /*
    * FOCUS, ON THE WAY IN AND ON THE WAY OUT (moved with the split; see the
    * history of App.tsx `AgentDrawer`). Focus moves in only when the panel
@@ -459,7 +483,7 @@ export function AgentSplit({
             segmented control with none). A count the task document does not
             carry is a dash with its reason in the title, never a 0. The ids and
             addresses are unchanged: `detail` is still `/agents/<tab>/<id>`. */}
-        <AgTabsEdge>
+        <AgTabsEdge current={selected}>
           <Tabs
             className="ag-split-tabs"
             label="Agent panes"
@@ -555,9 +579,22 @@ function SplitTick({ live, readAt, children }: { live: boolean; readAt: number |
  * ends has more beyond it, `data-more="start end"`, and the sheet fades that
  * edge with a chevron. Measured on scroll and on resize, never guessed.
  */
-function AgTabsEdge({ children }: { children: ReactNode }) {
+function AgTabsEdge({ children, current }: { children: ReactNode; current?: string }) {
   const box = useRef<HTMLDivElement>(null)
   const [more, setMore] = useState('')
+  // THE OPEN TAB IS ALWAYS IN VIEW (V148): on a phone the strip is one row
+  // that scrolls, so a tab chosen by address (`/changes`, `/checkpoints`) can
+  // sit past the edge. The STRIP is scrolled, never the page:
+  // `scrollIntoView` would move every scroller above it as well.
+  useEffect(() => {
+    const strip = box.current?.querySelector<HTMLElement>('.c-tabs')
+    const on = strip?.querySelector<HTMLElement>('[aria-selected="true"], [aria-current="page"]')
+    if (strip === null || strip === undefined || on === null || on === undefined) return
+    const s = strip.getBoundingClientRect()
+    const t = on.getBoundingClientRect()
+    if (t.left < s.left) strip.scrollLeft -= s.left - t.left
+    else if (t.right > s.right) strip.scrollLeft += t.right - s.right
+  }, [current])
   useEffect(() => {
     const strip = box.current?.querySelector<HTMLElement>('.c-tabs')
     if (strip === null || strip === undefined) return
@@ -767,10 +804,16 @@ export function AgHeadMeta({ task }: { task: Task | null }) {
                   key: 'account',
                   className: account.known ? undefined : 'is-absent',
                   title: account.title,
-                  li: (
+                  // AN ID IS MONO, A SENTENCE IS NOT (V149, visual QA #1038):
+                  // `account not read` was bold mono in a sans line, drawn as
+                  // if `not read` were an account's name. Only a real account
+                  // id takes the id face; a status reads as the line's words.
+                  li: account.known ? (
                     <>
                       account <b className="mono">{account.text}</b>
                     </>
+                  ) : (
+                    <>account {account.text}</>
                   ),
                 },
               ]),
