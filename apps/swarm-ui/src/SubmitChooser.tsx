@@ -45,6 +45,13 @@ export { ISSUE_FORM, TASK_FORM, WORKFLOW_FORM }
  */
 const KEYS: Readonly<Record<string, string>> = Object.fromEntries(shortcutsIn('submit').map((s) => [s.key, s.to!]))
 
+/**
+ * EACH CARD'S KEYCAP, FROM THE SAME TABLE (live QA SUB-19): the caps were
+ * typed into the cards, so a cap and the key that works could differ. A form
+ * the table has no key for draws no cap rather than a guessed one.
+ */
+const CAP: Readonly<Record<string, string>> = Object.fromEntries(shortcutsIn('submit').map((s) => [s.to!, s.label]))
+
 /** What sits over the page and owns the keyboard: the same list as N's. */
 const OVER_THE_PAGE = '[role="dialog"], [aria-modal="true"], aside.adm-side'
 
@@ -124,20 +131,20 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
             One agent, one runner. It lands READY or PARKED and costs nothing until the scheduler admits it.
           </p>
           <span className="sb-row">
-            <Button kind="primary" aria-keyshortcuts="T" onClick={() => go(TASK_FORM)}>
+            <Button kind="primary" aria-keyshortcuts={CAP[TASK_FORM]} onClick={() => go(TASK_FORM)}>
               Start a task
             </Button>
-            <kbd className="sb-kbd">T</kbd>
+            {CAP[TASK_FORM] !== undefined && <kbd className="sb-kbd">{CAP[TASK_FORM]}</kbd>}
           </span>
         </div>
         <div className="sb-card sb-choice">
           <h2><WorkflowGlyph />Submit a workflow</h2>
           <p className="sb-note">Steps in stages that hand work to each other, opening one PR or one per step.</p>
           <span className="sb-row">
-            <Button aria-keyshortcuts="W" onClick={() => go(WORKFLOW_FORM)}>
+            <Button aria-keyshortcuts={CAP[WORKFLOW_FORM]} onClick={() => go(WORKFLOW_FORM)}>
               Start a workflow
             </Button>
-            <kbd className="sb-kbd">W</kbd>
+            {CAP[WORKFLOW_FORM] !== undefined && <kbd className="sb-kbd">{CAP[WORKFLOW_FORM]}</kbd>}
           </span>
         </div>
         <div className="sb-card sb-choice">
@@ -146,10 +153,10 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
             Name an issue. A planner reads it and writes a plan; once the plan is approved it runs as a workflow.
           </p>
           <span className="sb-row">
-            <Button aria-keyshortcuts="I" onClick={() => go(ISSUE_FORM)}>
+            <Button aria-keyshortcuts={CAP[ISSUE_FORM]} onClick={() => go(ISSUE_FORM)}>
               Start from an issue
             </Button>
-            <kbd className="sb-kbd">I</kbd>
+            {CAP[ISSUE_FORM] !== undefined && <kbd className="sb-kbd">{CAP[ISSUE_FORM]}</kbd>}
           </span>
         </div>
       </div>
@@ -169,6 +176,19 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
 
 /** How many of your submissions the card lists. */
 export const RECENT_SHOWN = 5
+
+/**
+ * HOW MUCH THE CARD READS TO LIST FIVE (live QA SUB-6). It read the tenant's
+ * newest 200 tasks, 100 workflows and a full page of runs -- about 6 MB and
+ * 7.5 s on the live tenant -- to filter five rows out in the browser. Tasks
+ * are now asked for as YOURS (`submitted_by=me`, applied in the query), full
+ * rows still, because a workflow's name is its steps' `metadata.unit`. The
+ * workflow and run routes take no submitter filter, so they are a smaller
+ * window of the tenant's newest, and the card names that window as before.
+ */
+export const RECENT_TASKS_READ = 30
+export const RECENT_WORKFLOWS_READ = 20
+export const RECENT_RUNS_READ = 20
 
 export interface RecentSubmission {
   kind: 'task' | 'workflow' | 'issue run'
@@ -237,7 +257,12 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
   useEffect(() => {
     let live = true
     setReading(true)
-    void Promise.all([loadMe(), loadTasks(), loadWorkflows(), loadRuns()]).then(([me, tasks, workflows, runs]) => {
+    void Promise.all([
+      loadMe(),
+      loadTasks(RECENT_TASKS_READ, { submittedBy: 'me' }),
+      loadWorkflows(RECENT_WORKFLOWS_READ),
+      loadRuns(null, RECENT_RUNS_READ),
+    ]).then(([me, tasks, workflows, runs]) => {
       if (!live) return
       setReading(false)
       const who = okData(me)
@@ -257,9 +282,11 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
       // newest 0 tasks, 0 workflows, 0 issue runs" under "None of yours yet."
       // said nothing twice. Only a window that held something is named.
       const looked = [
-        t === null || t.length === 0 ? null : `the newest ${t.length} task${t.length === 1 ? '' : 's'}`,
-        w === null || w.length === 0 ? null : `${w.length} workflow${w.length === 1 ? '' : 's'}`,
-        r === null || r.length === 0 ? null : `${r.length} issue run${r.length === 1 ? '' : 's'}`,
+        t === null || t.length === 0 ? null : `your newest ${t.length} task${t.length === 1 ? '' : 's'}`,
+        // Whose window each is, said per window: the tasks are yours, the
+        // workflows and runs the tenant's (live QA SUB-6).
+        w === null || w.length === 0 ? null : `the tenant\u2019s newest ${w.length} workflow${w.length === 1 ? '' : 's'}`,
+        r === null || r.length === 0 ? null : `its newest ${r.length} issue run${r.length === 1 ? '' : 's'}`,
       ].filter((x): x is string => x !== null)
       setRead({ kind: 'read', items: recentSubmissions(who.principal.email, t, w, r), looked, unread })
     })
@@ -315,7 +342,7 @@ function RecentSubmissions({ go, read, reading, onRetry }: {
       </>
     )
   }
-  const scope = read.looked.length === 0 ? null : `Among ${read.looked.join(', ')} this tenant has.`
+  const scope = read.looked.length === 0 ? null : `Among ${read.looked.join(', ')}.`
   return (
     <>
       {read.items.length === 0 ? (

@@ -537,13 +537,49 @@ def _iso(moment: Any) -> Any:
     return moment.isoformat() if isinstance(moment, datetime) else moment
 
 
+def settle_relation(index: Mapping[str, Any]) -> dict[str, Any]:
+    """`index` with `behind_by` and `head_relation` derived from its own shas.
+
+    Both are readings of ONE pair: the compare of `current_sha` against
+    `head_sha`. They are stored when the poll compares that pair, and nothing
+    else rewrites them, so an index run that lands at the head -- or a poll
+    that reads a new head -- leaves the old pair's count and changed-file list
+    behind (live QA RSA-3: an up-to-date index served `behind_by: 2` and a
+    20-file list from a compare a day older than the index). So they are
+    recomputed from the shas on every read and every write: 0 and no relation
+    when the index IS the head, the relation's own count only when the
+    relation is of exactly this pair, and None (not compared) otherwise.
+    """
+    settled = dict(index)
+    if not settled:
+        return settled
+    current, head = settled.get("current_sha"), settled.get("head_sha")
+    relation = settled.get("head_relation")
+    if current and head and current == head:
+        settled["head_relation"] = None
+        settled["behind_by"] = 0
+    elif (
+        isinstance(relation, Mapping) and current and head
+        and relation.get("base") == current and relation.get("head") == head
+    ):
+        settled["behind_by"] = relation.get("ahead_by")
+    else:
+        if "head_relation" in settled:
+            settled["head_relation"] = None
+        settled["behind_by"] = None
+    return settled
+
+
 def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
     """A stored registration as the API serves it. Every field is a name, a
     setting or a reading -- the stored document has no credential to omit."""
     access = dict(data.get("access") or {})
     if "read_at" in access:
         access["read_at"] = _iso(access["read_at"])
-    index = dict(data.get("index") or {})
+    index = settle_relation(data.get("index") or {})
+    relation = index.get("head_relation")
+    if isinstance(relation, Mapping) and "read_at" in relation:
+        index["head_relation"] = {**relation, "read_at": _iso(relation["read_at"])}
     for key in ("last_indexed_at", "head_read_at"):
         if key in index:
             index[key] = _iso(index[key])

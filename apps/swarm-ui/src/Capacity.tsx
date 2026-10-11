@@ -274,6 +274,14 @@ function CeilingTables({
   }, [landed, target])
   return (
     <div className="cap-families">
+      {/* A LINK THAT NAMES NO POOL IS SAID (live QA CAP-12): `?pool=runner:nope`
+          drew the page with no highlight and nothing to say the link missed. */}
+      {target !== null && !landed && (
+        <p className="warn-text cap-missing" role="status">
+          No pool is named <code>{target}</code> in this read.
+        </p>
+      )}
+      <HoldersUncounted holders={holders} />
       {act.length > 0 && (
         <Family
           title={`Needs action · ${act.length}`}
@@ -292,6 +300,28 @@ function CeilingTables({
         )
       })}
     </div>
+  )
+}
+
+/**
+ * WHY NO LINK CARRIES A COUNT, SAID ON THE PAGE (visual QA V094, 2026-10-11).
+ * When the lease read failed, was refused or was cut, every row's Open column
+ * read a bare `holders` and the reason was only in the link's title -- a
+ * hover nobody makes on a phone, and 29 identical links that look like a
+ * count someone forgot to print. The reason is said once, here, above the
+ * families, with the `not counted` mark; each link names this line as its
+ * description, so a screen reader hears it on the link too. One line and not
+ * one per row: the reason is the same for every pool.
+ */
+const HOLDERS_NOTE_ID = 'cap-holders-uncounted'
+
+function HoldersUncounted({ holders }: { holders: HolderCounts }) {
+  if (!('unknown' in holders)) return null
+  return (
+    <p className="cap-holders-note" id={HOLDERS_NOTE_ID}>
+      <span className="ctl-mark is-unread">not counted</span>
+      <span>{holders.unknown}</span>
+    </p>
   )
 }
 
@@ -423,8 +453,10 @@ function PoolTable({
 function HoldersLink({ pool, holders }: { pool: string; holders: HolderCounts }) {
   const href = poolHref('capacity/holders', pool)
   if ('unknown' in holders) {
+    // The reason is on the page once, above the families (`HoldersUncounted`),
+    // and each link is described by it as well as titled with it.
     return (
-      <a className="ctl-link" href={href} title={holders.unknown}>
+      <a className="ctl-link" href={href} title={holders.unknown} aria-describedby={HOLDERS_NOTE_ID}>
         holders
       </a>
     )
@@ -494,17 +526,22 @@ function PoolRow({
       </th>
       <td role="cell" data-label={LEASED} className="is-num">{pool.active}</td>
       <td role="cell" data-label={CEILING} className="is-num">
-        {limit === null || pool.hard_limit === null ? (
-          // No limit set (#374): unknown, so no number -- not even a 0.
-          <i className="ctl-em" title={by.detail}>no limit set</i>
-        ) : (
-          limit
-        )}
-        {limit !== null && pool.hard_limit !== null && limit < pool.hard_limit && (
-          <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
-            /{pool.hard_limit}
-          </span>
-        )}
+        {/* ONE ELEMENT, NOT A TEXT NODE AND A SPAN (visual QA V012): stacked,
+            each child is a grid item, and `6` then `/10` were two of them --
+            the `/10` a row below its figure. */}
+        <span className="cap-ceil">
+          {limit === null || pool.hard_limit === null ? (
+            // No limit set (#374): unknown, so no number -- not even a 0.
+            <i className="ctl-em" title={by.detail}>no limit set</i>
+          ) : (
+            limit
+          )}
+          {limit !== null && pool.hard_limit !== null && limit < pool.hard_limit && (
+            <span className="cap-was" title={`Configured hard limit is ${pool.hard_limit}`}>
+              /{pool.hard_limit}
+            </span>
+          )}
+        </span>
       </td>
       <td role="cell" data-label="Use">
         <span className="cap-use">
@@ -546,9 +583,13 @@ function PoolRow({
         {/* Both name the pool (#125): Holders filtered to it, and its own row
             on Pool limits (#134), where an admin edits it and anyone else
             reads it with Edit locked. */}
-        <HoldersLink pool={pool.name} holders={holders} />
-        {' · '}
-        <a className="ctl-link" href={poolHref('admin/limits', pool.name)}>limit</a>
+        {/* ONE ELEMENT (visual QA V012): the bare ` · ` between the links
+            was an anonymous grid item when stacked, a keyless row of its own. */}
+        <span className="cap-open">
+          <HoldersLink pool={pool.name} holders={holders} />
+          {' · '}
+          <a className="ctl-link" href={poolHref('admin/limits', pool.name)}>limit</a>
+        </span>
       </td>
     </tr>
   )

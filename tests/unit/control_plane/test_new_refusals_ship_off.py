@@ -123,6 +123,22 @@ NOT_SWITCHABLE_CODES = frozenset({
     "WORKSPACE_WRONG_STATE",
     "ACCOUNT_NOT_LENDABLE",
     "ACCOUNT_IS_THEIRS",
+    # The live-browser hand-off (LB-L10, docs/design/live-browser.md §4), as
+    # the workspace codes above: raised only by the three routes that change
+    # introduces (POST /tasks/{id}/handoff, /handoff/resolve, /human-ready),
+    # so no existing caller can be refused by them. Continuing past any of
+    # them is the breach itself: an unsigned or unauthenticated worker
+    # parking a task, a stale generation writing past its fence (invariant
+    # 5), a second wait or a wait past the cap, someone other than the
+    # submitter promoting a parked task, or a task that is not
+    # PARKED(HUMAN_REQUIRED) moved to READY out of its state machine.
+    "handoff_unauthenticated",
+    "handoff_unproven",
+    "handoff_fenced",
+    "handoff_pending",
+    "handoff_limit",
+    "human_ready_not_eligible",
+    "not_waiting_for_a_person",
 })
 
 #: What the guard lets through without a switch.

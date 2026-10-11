@@ -380,3 +380,21 @@ table.adm-limits th.pool-name > .ctl-sub { overflow-wrap: normal; word-break: ke
    `.ctl-sub`'s flush 1, which is sized for one line under a name and set a
    second line on the first. */
 table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg { white-space: nowrap; }
+
+/* THE CEILING CELL AS A STACKED FIELD (visual QA V011, V012; lane VQA-L15,
+   2026-10-11). On a phone the record pins every child of a field to the value
+   column, one under another (styles.css §B6.3), so this cell's three slots --
+   the figure, the `/10` slot and `edit` -- were three rows: `20` indented by
+   its 6ch right-aligned slot, an empty row where `/10` was not drawn, and
+   `/10` far below its figure where it was. Here they are three columns of one
+   row, the figure starting where every other value in the record does. The
+   key track restates styles.css's (`--stack-key` and its fallback): change
+   the two together. */
+@media (max-width: 560px) {
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell {
+    grid-template-columns: minmax(0, var(--stack-key, calc(var(--t-micro) * 10.5))) auto auto minmax(0, 1fr);
+  }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-ceiling { grid-column: 2; width: auto; margin: 0; text-align: left; }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .adm-was { grid-column: 3; width: auto; margin: 0; }
+  .is-stacked > table > tbody > tr > td.adm-ceiling-cell > .limit-edit { grid-column: 4; }
+}

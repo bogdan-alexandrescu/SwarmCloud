@@ -281,3 +281,44 @@ def test_installed_nowhere_but_asked_for_is_app_installed_in_progress(api, githu
     view = api.get("/v1/onboarding", headers=auth_header("alice")).json()
     installed = next(s for s in view["steps"] if s["step"] == "app_installed")
     assert installed["state"] == "done" and installed["code"] is None
+
+
+def test_setup_lists_every_owner_access_lists_as_enabled_read_now(api, github, db, clock):
+    """Live QA RSA-2: Setup's "Enable orgs" named only the owner the token's
+    probe had seen 12 hours earlier, while Access listed both enabled orgs.
+    The step's enabled owners are the caller's org documents, read on each
+    read, and it is checked at that read.
+
+    MUTATION: pass `enabled=None` to `_orgs_step` in `derive` and `late-org`
+    is missing from the step (the probe never listed it), and `checked_at`
+    is the connect time, not this read's."""
+    from datetime import timedelta
+
+    _connect(api, github)
+    _enable(api)
+    # An org the App was installed on after the probe read the person's orgs.
+    github.installs.append(_installation(13, "late-org"))
+    _enable(api, "late-org")
+    clock.at = clock.at + timedelta(hours=2)
+
+    overview = api.get("/v1/access", headers=auth_header("alice")).json()
+    on_access = sorted(o["owner"] for o in overview["orgs"] if o["enabled"])
+    step = _orgs_step(api)
+    assert sorted(step["evidence"]["enabled"]) == on_access == sorted([ORG, "late-org"])
+    listed = {o["owner"]: o for o in step["evidence"]["owners"]}
+    assert listed["late-org"]["enabled"] is True and listed["late-org"]["source"] == "enabled"
+    assert step["state"] == "done"
+    assert step["checked_at"] == clock.at.isoformat()
+    assert step["evidence"]["enabled_read_at"] == clock.at.isoformat()
+
+
+def test_another_members_enabled_owner_is_never_on_this_setup(api, github, db):
+    """Invariant 9: the step reads the caller's own org documents only."""
+    _connect(api, github)
+    _enable(api)
+    _connect(api, github, user="bob")
+    github.installs.append(_installation(13, "bobs-org"))
+    _enable(api, "bobs-org", user="bob")
+    step = _orgs_step(api)
+    assert "bobs-org" not in {o["owner"] for o in step["evidence"]["owners"]}
+    assert step["evidence"]["enabled"] == [ORG]
