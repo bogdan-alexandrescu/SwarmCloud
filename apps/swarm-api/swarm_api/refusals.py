@@ -136,10 +136,23 @@ SWITCHES: dict[str, Switch] = {
         "instead of succeeding empty. On once the per-repository codes in its detail have "
         "been read in the log and show only deleted or unreadable branches",
     ),
-    "observer_file_issues_unavailable": Switch(
-        code="observer_file_issues_unavailable",
-        why="an observer schedule with file_issues true is refused because swarm-api cannot "
-        "create an issue yet. On once no stored observer schedule sets file_issues",
+    "observer_file_issues_repo_required": Switch(
+        code="observer_file_issues_repo_required",
+        why="an observer schedule with file_issues true names no file_issues_repo_id, the "
+        "repository its epic is filed in (owner decision 2026-10-11). Off, it is created and "
+        "files nothing. On once no stored observer schedule sets file_issues without one",
+    ),
+    "observer_file_issues_repo_not_registered": Switch(
+        code="observer_file_issues_repo_not_registered",
+        why="an observer schedule's file_issues_repo_id is not a registration of its tenant. "
+        "Off, it is created and files nothing: an unregistered repository is never written to. "
+        "On with observer_file_issues_repo_required",
+    ),
+    "observer_file_issues_repo_not_writable": Switch(
+        code="observer_file_issues_repo_not_writable",
+        why="the owner of an observer schedule cannot write the repository file_issues_repo_id "
+        "names. Off, it is created and files nothing there. On with "
+        "observer_file_issues_repo_required",
     ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",

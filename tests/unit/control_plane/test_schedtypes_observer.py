@@ -13,7 +13,8 @@ WHAT IS HELD HERE
 * OFFLINE WITH THE MOCK RUNNER, that task's prompt produces `report.md` from
   a fixture digest (§9, S6 acceptance).
 * PROPOSALS of an earlier report land in the inbox once each.
-* `file_issues: true` is refused with its own code, not silently ignored.
+* `file_issues: true` without the repository it files in is refused with its
+  own code, not silently ignored.
 * THE PLATFORM VARIANT reads aggregates across tenants and lists no run ids.
 * A DRY RUN creates nothing.
 """
@@ -207,11 +208,12 @@ def test_the_mock_runner_writes_report_md_from_a_fixture_digest(db, ctx, tmp_pat
     assert "=== OBSERVER DIGEST" in report and "PROVIDER_QUOTA_EXHAUSTED" in report
 
 
-def test_file_issues_is_refused_with_its_own_code(db, ctx, monkeypatch) -> None:
-    monkeypatch.setenv("REFUSAL_OBSERVER_FILE_ISSUES_UNAVAILABLE", "on")
-    with pytest.raises(observer.ObserverFileIssuesUnavailable) as caught:
+def test_file_issues_without_a_repository_is_refused_with_its_own_code(db, ctx, monkeypatch) -> None:
+    """The filing itself is test_schedtypes_observer_issues.py's."""
+    monkeypatch.setenv("REFUSAL_OBSERVER_FILE_ISSUES_REPO_REQUIRED", "on")
+    with pytest.raises(observer.ObserverFileIssuesRepoRequired) as caught:
         observer.create(firing_for(ctx, watch(db, params={"file_issues": True})))
-    assert caught.value.code == "observer_file_issues_unavailable" and caught.value.status_code == 422
+    assert caught.value.code == "observer_file_issues_repo_required" and caught.value.status_code == 422
     assert tasks(db) == []
 
 

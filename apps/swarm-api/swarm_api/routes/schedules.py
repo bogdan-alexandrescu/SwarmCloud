@@ -345,6 +345,18 @@ def _check_grants(ctx: AppContext, doc: Mapping[str, Any], owner: str) -> None:
         )
 
 
+def _check_file_issues(ctx: AppContext, doc: Mapping[str, Any], owner: str) -> None:
+    """§3.4: an observer that files issues names a registered repository its owner can
+    write (owner decision 2026-10-11). The firing checks it again before it writes."""
+    if doc.get("type") != "observer":
+        return
+    # Imported here: schedtypes/__init__.py keeps an executor out of every
+    # import but its own type's.
+    from ..schedtypes import observer
+
+    observer.check_file_issues(ctx, {**doc, "owner": owner})
+
+
 def _words(cron: str | None) -> str | None:
     try:
         return cronexpr.words(cronexpr.parse(cron or ""))
@@ -544,6 +556,7 @@ def create_schedule(
     draft = build([], schedules.SCHEDULES_PER_TENANT)
     _check_approvers(ctx, tenant, draft["gate"])
     _check_grants(ctx, draft, auth.email)
+    _check_file_issues(ctx, draft, auth.email)
 
     tenant_ref = _tenant_ref(ctx, tenant_id)
     key = _request_key(request.client_request_id) if request.client_request_id else None
@@ -624,6 +637,7 @@ def patch_schedule(
         _check_approvers(ctx, tenant, draft["gate"], stored["gate"])
     if draft["scope"] != stored["scope"] or draft["params"] != stored["params"]:
         _check_grants(ctx, draft, str(stored.get("owner") or ""))
+        _check_file_issues(ctx, draft, str(stored.get("owner") or ""))
 
     ref = _schedule_ref(ctx, schedule_id)
     tenant_ref = _tenant_ref(ctx, tenant_id)
@@ -900,6 +914,7 @@ def take_ownership(
     """§1.1: the caller becomes the member firings submit as. Audited."""
     stored = _read(ctx, tenant_id, schedule_id)
     _check_grants(ctx, stored, auth.email)
+    _check_file_issues(ctx, stored, auth.email)
 
     def change(doc: Mapping[str, Any], now: datetime) -> dict[str, Any] | None:
         if doc.get("owner") == auth.email:
