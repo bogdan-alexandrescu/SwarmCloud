@@ -141,6 +141,13 @@ SWITCHES: dict[str, Switch] = {
         why="an observer schedule with file_issues true is refused because swarm-api cannot "
         "create an issue yet. On once no stored observer schedule sets file_issues",
     ),
+    "pr_shepherd_forge_refused": Switch(
+        code="pr_shepherd_forge_refused",
+        why="a pr-shepherd firing that could read no repository in scope, because the "
+        "tenant's forge credential is missing or GitHub refused it, ends refused instead of "
+        "failed with its refusals recorded. On once the refusals in such firings have been "
+        "read and show only credentials that lack pull_requests access",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
