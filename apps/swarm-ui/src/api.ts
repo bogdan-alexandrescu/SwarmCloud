@@ -204,7 +204,10 @@ export async function loadWorkflows(limit: number = 100): Promise<Result<Workflo
   // step-read budget is what actually binds, so a larger page buys rows whose
   // rollup is incomplete rather than more information. A caller that lists a
   // handful (Submit's recent card, live QA SUB-6) asks for fewer.
-  return read<WorkflowPage>(route(`/v1/workflows?limit=${limit}`), (d) => d.workflows.length === 0)
+  // Both are the one registry route, `/v1/workflows`: `route` keys by the
+  // template without its query.
+  if (limit !== 100) return read<WorkflowPage>(route('/v1/workflows', {}, `limit=${limit}`), (d) => d.workflows.length === 0)
+  return read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0)
 }
 
 /**
