@@ -28,8 +28,7 @@ password into, a security design first and a streaming design second:
 
 * **The agent and the worker are the same uid, in the same pod.** The worker
   says so where it reaps escaped processes before a publish
-  (`apps/agent-worker/agent_worker/procman.py` (`The agent and the worker run as the
-  SAME uid`)), and the egress policy says the network namespace is shared too
+  (`apps/agent-worker/agent_worker/procman.py` (`The agent and the worker run as the`)), and the egress policy says the network namespace is shared too
   (`kubernetes/network-policies/allow-egress.yaml` (`WHAT RULE 2 COSTS`)).
   Anything the platform runs beside the agent -- an X server, a VNC server, a
   debugging port -- is reachable by the agent and by any process it escapes
@@ -385,8 +384,7 @@ this one. So it is a new `ParkReason` (contract request LB-A, section 8).
 
 **What the park costs.** The browser is gone: its session, its tabs, its
 history (section 5.5 says why they are not checkpointed). The claude-code
-agent has no conversation resume (`docs/design/child-tasks.md` (`the CLI runners
-have no conversation resume`)), so the next attempt starts the agent again on
+agent has no conversation resume (`docs/design/child-tasks.md` (`the CLI runners have no conversation resume`)), so the next attempt starts the agent again on
 the restored `work/`; the agent must keep its plan there, which
 `claude-code-browser`'s instructions say. And the person waits for a cold start
 -- admission plus a GKE pod start -- before the browser is back. That is the
@@ -409,8 +407,7 @@ FAILED` is not, and adding it is not worth a contract change for a label.
 (`apps/common/swarm_common/admission.py::acquire_lease_in_transaction`). The park's fenced
 transaction refunds one and counts `metadata.human_wait_resumes`, while fewer
 than `max_human_resumes` (default 2) are used -- the shape the child-task await
-uses (`docs/design/child-tasks.md` (`The await does not spend an attempt, up to a
-bound.`)). `human_wait_resumes` joins `RESERVED_METADATA_KEYS`
+uses (`docs/design/child-tasks.md` (`The await does not spend an attempt, up to a bound.`)). `human_wait_resumes` joins `RESERVED_METADATA_KEYS`
 (`apps/swarm-api/swarm_api/validation.py::RESERVED_METADATA_KEYS`).
 
 **Why not fail on timeout.** It is simpler, and it throws away the agent's work
@@ -585,8 +582,7 @@ pointer events", never which keys.
 
 The agent can mint the tenant's ID token and read the container's environment,
 so neither can authorise a worker-only route
-(`docs/design/child-tasks.md` (`### 3.2 What makes "only the worker" true: the
-attempt key`)). The live session and the hand-off routes **reuse that
+(`docs/design/child-tasks.md` (`### 3.2 What makes "only the worker" true: the attempt key`)). The live session and the hand-off routes **reuse that
 attempt key**: the Ed25519 key the worker generates after `make_non_dumpable`
 (`apps/agent-worker/agent_worker/hardening.py::make_non_dumpable`) and registers before the agent
 exists. They sign domain-separated messages (`swarm-live-session/v1`,
