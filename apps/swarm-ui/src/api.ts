@@ -106,13 +106,17 @@ export { TASK_PAGE_LIMIT }
  */
 export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
-  options: { view?: 'summary' } = {},
+  options: { view?: 'summary'; submittedBy?: 'me' } = {},
 ): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
   // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
-  // whatever page size and view the caller asked for.
-  const query = options.view === 'summary' ? `limit=${limit}&view=summary` : `limit=${limit}`
-  return read<TaskPage>(route('/v1/tasks', {}, query), (d) => d.tasks.length === 0)
+  // whatever page size and view the caller asked for. `submitted_by=me` (U5)
+  // narrows the page to the caller IN THE QUERY, so the page is full of
+  // theirs rather than the tenant's newest filtered down (live QA SUB-6).
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (options.view === 'summary') query.set('view', 'summary')
+  if (options.submittedBy === 'me') query.set('submitted_by', 'me')
+  return read<TaskPage>(route('/v1/tasks', {}, query.toString()), (d) => d.tasks.length === 0)
 }
 
 /**
@@ -194,12 +198,13 @@ function emptyBoard(workflows: Workflow[]): WorkflowBoard {
  * complete. A caller that ignores it can report an all-clear over workflows
  * whose state was never established.
  */
-export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
+export async function loadWorkflows(limit: number = 100): Promise<Result<WorkflowPage>> {
   if (USE_FIXTURES) return fixtureWorkflows()
   // 100, matching loadWorkflowBoard: `max_workflow_steps` is 50 and the route's
   // step-read budget is what actually binds, so a larger page buys rows whose
-  // rollup is incomplete rather than more information.
-  return read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0)
+  // rollup is incomplete rather than more information. A caller that lists a
+  // handful (Submit's recent card, live QA SUB-6) asks for fewer.
+  return read<WorkflowPage>(route(`/v1/workflows?limit=${limit}`), (d) => d.workflows.length === 0)
 }
 
 /**
@@ -1107,9 +1112,13 @@ export async function loadIssuePreview(issue: string): Promise<Result<IssuePrevi
 }
 
 /** `GET /v1/runs`: the tenant's runs, newest first. Empty is a measured zero. */
-export async function loadRuns(pageToken: string | null = null): Promise<Result<IssueRunPage>> {
+export async function loadRuns(pageToken: string | null = null, limit: number | null = null): Promise<Result<IssueRunPage>> {
   if (USE_FIXTURES) return fixtureRuns(pageToken)
-  const query = pageToken === null ? undefined : new URLSearchParams({ page_token: pageToken })
+  // `limit` null is the route's own page, as before.
+  const params = new URLSearchParams()
+  if (pageToken !== null) params.set('page_token', pageToken)
+  if (limit !== null) params.set('limit', String(limit))
+  const query = params.toString() === '' ? undefined : params
   return read<IssueRunPage>(route('/v1/runs', {}, query), (d) => d.runs.length === 0 && d.next_page_token === null)
 }
 
