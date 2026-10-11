@@ -6,6 +6,7 @@ import { ConnectButton, connectionOf, Refusal } from './GitHubConnect'
 import { WorkspaceStepDetail, waitingOf } from './OnboardingWorkspace'
 import { addressToPath } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
+import { GitHubPermissions } from './PermissionCards'
 import { PageHead } from './Shell'
 import type { AppInstalledEvidence, OnboardingDoc, OnboardingIssue, OnboardingStep, OnboardingStepName, OnboardingStepState, WorkspaceView } from './types'
 import { timeAgo } from './types'
@@ -472,6 +473,8 @@ export function OnboardingScreen() {
           )
         }
       </UrRegion>
+      {/* Setup › GitHub (#1086, design 2 "Org cards"): what the App and each org grant, below the checklist. */}
+      <GitHubPermissions />
     </div>
   )
 }

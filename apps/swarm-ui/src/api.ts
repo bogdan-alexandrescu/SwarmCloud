@@ -5456,6 +5456,179 @@ export async function dismissOnboarding(dismissed = true): Promise<Result<Onboar
 }
 
 // ---------------------------------------------------------------------------
+// GitHub permissions health (#1086, PERM-2 over PERM-1's read).
+//
+// `GET /v1/forge/permissions` is swarm_api/forgeperms.py. It answers what the
+// platform needs (`required`), what the App requests (`app`), what each org's
+// installation granted (`orgs`) and what each registered repository can do
+// (`repositories`). Every call it makes is a GET and it stores nothing; a fix
+// is always a link to GitHub, which is why the only URLs kept here are
+// github.com pages. `refresh=true` skips the server's 60 s cache.
+//
+// NORMALISE OR DROP, NEVER GUESS. A field of the wrong type is null (not
+// read), never false (refused) or true (granted): a dot or a card that turned
+// green on a malformed answer would hide the one failure this read exists for.
+// ---------------------------------------------------------------------------
+
+/** One unmet requirement: what it is, and in plain words what breaks without it. */
+export interface ForgeGap {
+  /** GitHub's permission name; null on a token's measured refusal, whose grant is not readable. */
+  permission: string | null
+  access: string | null
+  granted: string | null
+  needed_for: string
+  capabilities: string[]
+}
+
+/** A permission the App requests above what an installation accepted. */
+export interface ForgePending {
+  permission: string
+  requested: string
+  granted: string | null
+}
+
+export interface ForgeAppCard {
+  configured: boolean
+  slug: string | null
+  /** Null when `GET /app` was not read; then `error` says why. */
+  missing: ForgeGap[] | null
+  /** Served to platform admins only; null for everyone else. */
+  settings_url: string | null
+  error: string | null
+}
+
+export interface ForgeOrgCard {
+  org: string
+  account_type: string | null
+  installation_id: number
+  missing: ForgeGap[] | null
+  pending: ForgePending[] | null
+  review_url: string | null
+  error: string | null
+}
+
+/** A capability's state: granted, refused (measured), or null (not measured). */
+export type ForgeCapability = boolean | null
+
+/** What reaches a repository: the App's installation, or the tenant's stored git access. */
+export type ForgeReach = 'app' | 'token'
+
+export interface ForgeRepoStatus {
+  repo_id: string
+  repo: string
+  credential: ForgeReach | null
+  installation_id: number | null
+  capabilities: Record<string, ForgeCapability>
+  blocked_by: ForgeGap[]
+  error: string | null
+}
+
+export interface ForgePermissionsDoc {
+  checked_at: string | null
+  required: ForgeGap[]
+  app: ForgeAppCard
+  orgs: ForgeOrgCard[]
+  repositories: ForgeRepoStatus[]
+  cached: boolean
+}
+
+function fpStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function fpObj(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function fpList(v: unknown): Record<string, unknown>[] {
+  return Array.isArray(v) ? v.map(fpObj).filter((o): o is Record<string, unknown> => o !== null) : []
+}
+
+/** A fix link is a github.com page, or nothing: a button to anywhere else is not drawn. */
+function fpGitHubUrl(v: unknown): string | null {
+  const s = fpStr(v)
+  return s !== null && s.startsWith('https://github.com/') ? s : null
+}
+
+function fpGap(o: Record<string, unknown>): ForgeGap | null {
+  const why = fpStr(o.needed_for)
+  if (why === null) return null
+  return {
+    permission: fpStr(o.permission),
+    access: fpStr(o.access),
+    granted: fpStr(o.granted),
+    needed_for: why,
+    capabilities: Array.isArray(o.capabilities) ? o.capabilities.filter((c): c is string => typeof c === 'string') : [],
+  }
+}
+
+function fpGaps(v: unknown): ForgeGap[] | null {
+  if (!Array.isArray(v)) return null
+  return fpList(v).map(fpGap).filter((g): g is ForgeGap => g !== null)
+}
+
+export function normForgePermissions(raw: unknown): ForgePermissionsDoc {
+  const doc = fpObj(raw) ?? {}
+  const app = fpObj(doc.app) ?? {}
+  const orgs: ForgeOrgCard[] = []
+  for (const o of fpList(doc.orgs)) {
+    const org = fpStr(o.org)
+    if (org === null || typeof o.installation_id !== 'number') continue
+    orgs.push({
+      org,
+      account_type: fpStr(o.account_type),
+      installation_id: o.installation_id,
+      missing: fpGaps(o.missing),
+      pending: Array.isArray(o.pending)
+        ? fpList(o.pending).flatMap((p) => {
+            const permission = fpStr(p.permission)
+            const requested = fpStr(p.requested)
+            return permission === null || requested === null ? [] : [{ permission, requested, granted: fpStr(p.granted) }]
+          })
+        : null,
+      review_url: fpGitHubUrl(o.review_url),
+      error: fpStr(o.error),
+    })
+  }
+  const repositories: ForgeRepoStatus[] = []
+  for (const r of fpList(doc.repositories)) {
+    const repoId = fpStr(r.repo_id)
+    const name = fpStr(r.repo)
+    if (repoId === null || name === null) continue
+    const caps: Record<string, ForgeCapability> = {}
+    for (const [k, v] of Object.entries(fpObj(r.capabilities) ?? {})) caps[k] = typeof v === 'boolean' ? v : null
+    repositories.push({
+      repo_id: repoId,
+      repo: name,
+      credential: r.credential === 'app' || r.credential === 'token' ? r.credential : null,
+      installation_id: typeof r.installation_id === 'number' ? r.installation_id : null,
+      capabilities: caps,
+      blocked_by: fpGaps(r.blocked_by) ?? [],
+      error: fpStr(r.error),
+    })
+  }
+  return {
+    checked_at: fpStr(doc.checked_at),
+    required: fpGaps(doc.required) ?? [],
+    app: {
+      configured: app.configured === true,
+      slug: fpStr(app.slug),
+      missing: fpGaps(app.missing),
+      settings_url: fpGitHubUrl(app.settings_url),
+      error: fpStr(app.error),
+    },
+    orgs,
+    repositories,
+    cached: doc.cached === true,
+  }
+}
+
+/** `GET /v1/forge/permissions`: the tenant's GitHub permissions; `refresh` reads GitHub again. */
+export async function loadForgePermissions(refresh = false): Promise<Result<ForgePermissionsDoc>> {
+  return readAs(route('/v1/forge/permissions', {}, refresh ? 'refresh=true' : undefined), normForgePermissions)
+}
+
+// ---------------------------------------------------------------------------
 // Personal workspaces (#847, lane W8; docs/workspaces.md §6.3).
 //
 // The person's routes are swarm_api/routes/workspaces.py and are ALWAYS THE
