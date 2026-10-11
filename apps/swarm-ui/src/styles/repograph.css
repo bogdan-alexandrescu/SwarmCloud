@@ -201,7 +201,8 @@
   .rg-phone { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); }
   .rg-prow { width: 100%; min-height: 44px; }
   .rg-nbrow { min-height: 44px; }
-  .rg-pname { font-family: var(--mono); overflow-wrap: anywhere; }
+  /* RSA-22: space-between centred the name between the dot and the count; it takes the row and starts at the left. */
+  .rg-pname { flex: 1; min-width: 0; text-align: left; font-family: var(--mono); overflow-wrap: anywhere; }
   .rg-phone i { flex: none; }
   .ri-flow { grid-template-columns: minmax(0, 1fr); }
   .ri-input { width: 100%; }
