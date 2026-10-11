@@ -27,7 +27,10 @@
 #
 #   1. every service's newest revision is the one serving;
 #   2. every service's template names exactly the manifest's digest for it;
-#   3. every terraform-managed Cloud Run job names a digest from the manifest;
+#   3. every terraform-managed Cloud Run job names a digest from the manifest --
+#      except that a job the OWNER pins in terraform/bootstrap
+#      (OWNER_PINNED_JOBS, lib/common.sh) still on a digest an EARLIER release
+#      promoted is a warning, "awaiting owner re-pin", and not a failure;
 #   4. the scheduler's WORKER_IMAGE_REFS -- what the dispatcher builds every GKE
 #      Job and every job it creates itself from -- matches the manifest;
 #   5. /readyz, unless --no-health.
@@ -49,7 +52,7 @@ while [[ $# -gt 0 ]]; do
     --verify-only) VERIFY_ONLY=1; shift ;;
     --manifest)    MANIFEST="$2"; shift 2 ;;
     --wait)        WAIT_SECONDS="$2"; shift 2 ;;
-    -h|--help)     sed -n '2,36p' "$0"; exit 0 ;;
+    -h|--help)     sed -n '2,39p' "$0"; exit 0 ;;
     *) die "unknown argument: $1" ;;
   esac
 done
@@ -63,6 +66,10 @@ trap 'rm -rf "${WORK}"' EXIT INT TERM
 # it genuinely confirmed. Kept so the closing line can tell the truth instead
 # of printing "ok deployed" whenever execution merely reaches the end.
 SKIPPED=()
+# What only the owner can do, and is not a failure of this deploy: today, an
+# owner-pinned job lagging the promoted digest (step 3). Reported, counted
+# apart from SKIPPED, and never fails the run.
+OWNER_ACTIONS=()
 
 # cloud_run_describe KIND NAME -> the resource's JSON in ${WORK}/<name>.json,
 # return 1 only when gcloud's own error says it was not found. Any other
@@ -110,6 +117,35 @@ REFS_FILE="${WORK}/image-refs.tfvars.json"
 # The ref the manifest promoted for one image name, or empty.
 manifest_ref() {
   jq -r --arg n "$1" '.image_refs[$n] // empty' "${REFS_FILE}"
+}
+
+# The channel the manifest's release promoted to: whose promotion marks count.
+CHANNEL="$(jq -r --arg e "${ENVIRONMENT}" '.channel // $e' "${MANIFEST}")"
+
+# promoted_earlier IMAGE DIGEST -- did some release promote IMAGE@DIGEST to
+# CHANNEL? It did when the digest carries a promotion mark
+# (promotion_mark_prefix, lib/common.sh), the tag push-images.sh adds to every
+# digest it promotes and never moves. 0 yes, 1 no, 2 the registry could not
+# be read -- which is not "no", and is reported as what it is.
+#
+# Call it bare, never inside `$(...)`: die_if_auth_failure must end the script,
+# not a subshell.
+promoted_earlier() {
+  local image="$1" digest="$2" rc=0
+  gcloud artifacts docker tags list "${image}" --project "${PROJECT_ID}" \
+    --format='value(tag.basename(),image,version.basename())' \
+    >"${WORK}/marks.tsv" 2>"${WORK}/marks.err" || rc=$?
+  if [[ "${rc}" -ne 0 ]]; then
+    die_if_auth_failure "$(cat "${WORK}/marks.err")"
+    redact <"${WORK}/marks.err" | head -n 3 | sed 's/^/     /' >&2
+    return 2
+  fi
+  # Exact comparison, on each field's last path segment: gcloud may spell
+  # the tag and version as full resource names (see lib/image-refs.sh).
+  awk -v p="$(promotion_mark_prefix "${CHANNEL}")" -v i="${image##*/}" -v d="${digest}" '
+      { k = split($1, t, "/"); n = split($2, m, "/"); v = split($3, g, "/") }
+      index(t[k], p) == 1 && m[n] == i && g[v] == d { found = 1 }
+      END { exit found ? 0 : 1 }' "${WORK}/marks.tsv"
 }
 
 # ---------------------------------------------------------------------------
@@ -238,9 +274,33 @@ else
     elif [[ -z "${job_expected}" ]]; then
       err "job ${job_name}: runs ${job_image_name}, which the manifest did not promote"
       SKIPPED+=("job ${job_name}: runs ${job_image_name}, which is not in the manifest")
-    elif [[ "${job_image}" != "${job_expected}" ]]; then
+    elif [[ "${job_image}" == "${job_expected}" ]]; then
+      :
+    elif ! pin_var="$(owner_pinned_job_variable "${job_name}")"; then
       err "job ${job_name}: runs ${job_image}, but the manifest promoted ${job_expected}"
       SKIPPED+=("job ${job_name}: runs ${job_image##*@}, not the promoted ${job_expected##*@}")
+    else
+      # THE OWNER PINS THIS JOB, by design (OWNER_PINNED_JOBS, lib/common.sh):
+      # a release rebuilding its image never moves it, so after one it lags
+      # until the owner re-pins. That lag is a warning. A digest NO release
+      # promoted is not lag but an image nobody released, and still fails --
+      # as does one from another repository, or a registry that cannot say.
+      mark_rc=1
+      if [[ "${job_image%%@*}" == "${job_expected%%@*}" ]]; then
+        mark_rc=0
+        promoted_earlier "${job_image%%@*}" "${job_image##*@}" || mark_rc=$?
+      fi
+      if [[ "${mark_rc}" -eq 0 ]]; then
+        warn "job ${job_name}: awaiting owner re-pin -- runs ${job_image}, which an earlier release promoted; this release promoted ${job_expected}"
+        dim "  the owner re-pins it: set ${pin_var} = \"${job_expected}\", then run: terraform -chdir=terraform/bootstrap plan"
+        OWNER_ACTIONS+=("job ${job_name}: awaiting owner re-pin from ${job_image##*@} to ${job_expected##*@} -- set ${pin_var} = \"${job_expected}\", then run: terraform -chdir=terraform/bootstrap plan")
+      elif [[ "${mark_rc}" -eq 2 ]]; then
+        err "job ${job_name}: runs ${job_image}, not the promoted ${job_expected}, and the registry could not say whether a release promoted it"
+        SKIPPED+=("job ${job_name}: runs ${job_image##*@}; whether any release promoted it is unverified")
+      else
+        err "job ${job_name}: runs ${job_image}, which no release promoted (no :$(promotion_mark_prefix "${CHANNEL}")* tag on it); this release promoted ${job_expected}"
+        SKIPPED+=("job ${job_name}: runs ${job_image##*@}, which no release promoted, not the promoted ${job_expected##*@}")
+      fi
     fi
   done <"${WORK}/jobs.tsv"
   if [[ "${jobs_seen}" -eq 0 ]]; then
@@ -343,6 +403,27 @@ if [[ "${SKIP_HEALTH}" -eq 0 ]]; then
 fi
 
 hr
+# Owner actions first, and whatever else happened: they are not this deploy's
+# failures, so they are never counted among the unresolved issues below.
+if [[ ${#OWNER_ACTIONS[@]} -gt 0 ]]; then
+  if [[ ${#OWNER_ACTIONS[@]} -eq 1 ]]; then
+    owner_line="1 owner action pending"
+  else
+    owner_line="${#OWNER_ACTIONS[@]} owner actions pending"
+  fi
+  warn "${owner_line}:"
+  for action in "${OWNER_ACTIONS[@]}"; do
+    printf '     %s\n' "${action}" >&2
+  done
+  if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+    {
+      printf '### %s\n\n' "${owner_line}"
+      for action in "${OWNER_ACTIONS[@]}"; do
+        printf -- '- %s\n' "${action}"
+      done
+    } >>"${GITHUB_STEP_SUMMARY}" 2>/dev/null || true
+  fi
+fi
 if [[ ${#SKIPPED[@]} -gt 0 ]]; then
   err "deploy of ${TAG} to ${ENVIRONMENT} finished with ${#SKIPPED[@]} unresolved issue(s):"
   for issue in "${SKIPPED[@]}"; do
@@ -350,5 +431,9 @@ if [[ ${#SKIPPED[@]} -gt 0 ]]; then
   done
   die "not everything is confirmed on the promoted digests; see above before trusting this deploy"
 fi
-ok "every service, job and worker image runs the digests promoted as ${TAG}"
+if [[ ${#OWNER_ACTIONS[@]} -gt 0 ]]; then
+  ok "every service, worker image and release-pinned job runs the digests promoted as ${TAG}; ${owner_line}"
+else
+  ok "every service, job and worker image runs the digests promoted as ${TAG}"
+fi
 dim "prove it end to end with: make smoke, and scripts/prove-gke-dispatch.sh for the GKE path"

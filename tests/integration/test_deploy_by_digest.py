@@ -61,6 +61,7 @@ NAMES = {
     "swarm-verify": "6",
     "agent-runtime-base": "a",
     "agent-runtime-browser": "b",
+    "workspace-apply": "7",
 }
 
 
@@ -215,6 +216,9 @@ def healthy_deployment() -> dict:
             job("swarm-job-eng-mock", ref("agent-runtime-base")),
             job("swarm-job-eng-claude-code", ref("agent-runtime-base")),
             job("swarm-verify", ref("swarm-verify")),
+            # terraform/bootstrap's job, labelled like infra's, on the image
+            # the OWNER pinned (OWNER_PINNED_JOBS in scripts/lib/common.sh).
+            job("swarm-workspace-apply", ref("workspace-apply")),
             # The dispatcher's own jobs are not terraform's to pin; the check
             # must not claim them.
             job("swarm-job-u-alice-mock", f"{REPO_PATH}/agent-runtime-base:old", managed_by="swarm-scheduler"),
@@ -596,3 +600,96 @@ def test_a_revision_that_never_became_ready_is_caught(tmp_path):
     code, text = verify(tmp_path, deployment)
     assert code != 0, text
     assert "swarm-api" in text and "not ready" in text, text
+
+
+# ---------------------------------------------------------------------------
+# deploy.sh --verify-only: the job the OWNER pins (owner decision 2026-10-11)
+# ---------------------------------------------------------------------------
+#
+# swarm-workspace-apply runs the image terraform/bootstrap pins by digest, and
+# only the owner's bootstrap apply moves it (docs/workspaces.md §2.4 R1). So
+# after a release that rebuilds workspace-apply the job LAGS, by design, and
+# releases 38108979337, 38109627282 and 38110028000 (2026-10-11) all failed on
+# exactly that. Lag on a digest an earlier release promoted -- one carrying a
+# `dev-promoted-<tag>` mark, which push-images.sh adds and never moves -- is a
+# warning and an owner action. Every other mismatch still fails.
+
+EARLIER = "c"  # the digest an earlier release promoted and the owner pinned
+
+
+def lagging_workspace_apply(deployment: dict, char: str = EARLIER) -> dict:
+    deployment["jobs"] = [j for j in deployment["jobs"] if j["metadata"]["name"] != "swarm-workspace-apply"]
+    deployment["jobs"].append(job("swarm-workspace-apply", ref("workspace-apply", char)))
+    return deployment
+
+
+def promotion_marks(*rows: tuple[str, str, str]) -> list:
+    """Registry tags as the fake lists them: [tag, image, version]."""
+    return [[tag, f"{REPO_PATH}/{name}", digest(char)] for tag, name, char in rows]
+
+
+def test_a_bootstrap_pinned_job_lagging_an_earlier_promotion_warns_and_passes(tmp_path):
+    deployment = lagging_workspace_apply(healthy_deployment())
+    deployment["tags"] = promotion_marks(
+        ("dev-promoted-0123abcd", "workspace-apply", EARLIER),
+        ("dev", "workspace-apply", "7"),
+    )
+    code, text = verify(tmp_path, deployment)
+    assert code == 0, text
+    assert "awaiting owner re-pin" in text, text
+    # Both digests, and the exact command the owner runs.
+    assert digest(EARLIER) in text and digest("7") in text, text
+    assert f'workspace_apply_image = "{ref("workspace-apply")}"' in text, text
+    assert "terraform -chdir=terraform/bootstrap plan" in text, text
+    assert "unresolved issue" not in text, text
+    # Control: the mark was asked for. A check that never looked would pass too.
+    assert "artifacts docker tags list" in gcloud_calls(tmp_path), gcloud_calls(tmp_path)
+
+
+def test_a_bootstrap_pinned_job_on_a_digest_no_release_promoted_fails(tmp_path):
+    deployment = lagging_workspace_apply(healthy_deployment())
+    # Built and tagged, but never promoted to dev: a commit tag and another
+    # channel's mark are not a dev promotion, and a dev mark on a DIFFERENT
+    # digest says nothing about this one.
+    deployment["tags"] = promotion_marks(
+        ("0123abcd", "workspace-apply", EARLIER),
+        ("prod-promoted-0123abcd", "workspace-apply", EARLIER),
+        ("dev-promoted-89abcdef", "workspace-apply", "e"),
+    )
+    code, text = verify(tmp_path, deployment)
+    assert code != 0, text
+    assert "swarm-workspace-apply" in text and "no release promoted" in text, text
+    assert "awaiting owner re-pin" not in text, text
+
+
+def test_a_mismatch_on_a_release_pinned_job_still_fails_whatever_its_marks(tmp_path):
+    deployment = healthy_deployment()
+    deployment["jobs"] = [j for j in deployment["jobs"] if j["metadata"]["name"] != "swarm-verify"]
+    deployment["jobs"].append(job("swarm-verify", ref("swarm-verify", EARLIER)))
+    # Promoted by an earlier release -- which excuses nothing on a job the
+    # release itself pins.
+    deployment["tags"] = promotion_marks(("dev-promoted-0123abcd", "swarm-verify", EARLIER))
+    code, text = verify(tmp_path, deployment)
+    assert code != 0, text
+    assert "swarm-verify" in text and digest(EARLIER) in text, text
+    assert "awaiting owner re-pin" not in text and "owner action" not in text, text
+
+
+def test_the_summary_counts_the_owner_action_apart_from_the_unresolved_issues(tmp_path):
+    deployment = lagging_workspace_apply(healthy_deployment())
+    deployment["tags"] = promotion_marks(("dev-promoted-0123abcd", "workspace-apply", EARLIER))
+    deployment["services"]["swarm-ui"] = service("swarm-ui", ref("swarm-ui", "0"))
+    code, text = verify(tmp_path, deployment)
+    assert code != 0, "the stale swarm-ui must still fail the deploy\n" + text
+    assert "1 owner action pending" in text, text
+    # One unresolved issue, swarm-ui's: the re-pin is not counted among them.
+    assert "finished with 1 unresolved issue(s)" in text, text
+
+
+def test_the_summary_line_of_a_passing_deploy_names_the_pending_owner_action(tmp_path):
+    deployment = lagging_workspace_apply(healthy_deployment())
+    deployment["tags"] = promotion_marks(("dev-promoted-0123abcd", "workspace-apply", EARLIER))
+    code, text = verify(tmp_path, deployment)
+    assert code == 0, text
+    summary = [line for line in text.splitlines() if "runs the digests promoted as" in line]
+    assert summary and summary[-1].rstrip().endswith("1 owner action pending"), text

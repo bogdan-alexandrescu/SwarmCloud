@@ -2065,7 +2065,10 @@ phases. New files are named without their root.
 * **Moving the image** is a bootstrap apply that changes
   `workspace_apply_image` to the digest the release promoted. It is the step
   that lets a merged change to the guard, the script or the entrypoint reach
-  the identity (§2.4 R1).
+  the identity (§2.4 R1). Until the owner takes it, the release's deploy check
+  (`scripts/lib/deploy.sh`) reports the job as "awaiting owner re-pin", names
+  both digests and this command, and passes -- but only while the job runs a
+  digest some release promoted; any other digest still fails the release.
 * **W11, after the job ships:** delete the `swarm-github` connection, its
   OAuth secret, and Google's Cloud Build App from the repository.
 
