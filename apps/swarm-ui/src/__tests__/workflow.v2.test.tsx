@@ -127,10 +127,9 @@ beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(T0)
   api.loadWorkflowBoard.mockResolvedValue({ status: 'ok', data: fixture(), fetchedAt: T0 } satisfies Result<WorkflowBoard>)
   api.loadWorkflowUsage.mockResolvedValue({ status: 'empty', fetchedAt: T0 } satisfies Result<WorkflowUsage>)
-  api.loadWorkflow.mockResolvedValue({
-    status: 'error',
-    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' },
-  })
+  // The page reads its own workflow first (live QA CH-21), as the API serves
+  // it: the row and its step tasks, and a 404 only for an id it does not have.
+  serveOwn(fixture())
   try {
     window.localStorage.clear()
   } catch {
@@ -438,6 +437,19 @@ function serve(workflows: Workflow[], taskById: Map<string, Task> | null = new M
     data: { workflows, taskById, statesDetail: null },
     fetchedAt: T0,
   } satisfies Result<WorkflowBoard>)
+  serveOwn({ workflows, taskById, statesDetail: null })
+}
+
+/** Serve each of the board's workflows as its own read, the page's first (live QA CH-21). */
+function serveOwn(board: WorkflowBoard): void {
+  api.loadWorkflow.mockImplementation(async (id: string) => {
+    const w = board.workflows.find((x) => x.workflow_id === id)
+    if (w === undefined) {
+      return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' } }
+    }
+    const tasks = w.steps.map((st) => (st.task_id ? board.taskById?.get(st.task_id) : undefined)).filter((t) => t !== undefined)
+    return { status: 'ok', data: { workflow: w, tasks }, fetchedAt: T0 }
+  })
 }
 
 /** The list row for `id`, once the list has drawn it. */
