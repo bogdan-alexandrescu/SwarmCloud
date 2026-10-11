@@ -10,7 +10,10 @@ Chromium needs a large /dev/shm and GKE gives direct control over it.
 It also takes claude-code since contract request 53 (2026-10-08), for its start
 latency: about 23 s there against Cloud Run's 128 s median. And indexer since
 contract request 63 (2026-10-10), the canary for #939: a new GKE pod's internet
-path opens in about 1 s, a new Cloud Run instance's in a median 20 s.
+path opens in about 1 s, a new Cloud Run instance's in a median 20 s. And
+generic, codex and merge since contract requests 64-66 (2026-10-10, #939
+option A), for the same reason; Cloud Run keeps mock, and post-verdict and
+claude-code-review, which were designed to run as accounts of their own.
 
 Per-tenant-per-profile Job resources exist because of a Cloud Run constraint,
 not a preference: Cloud Run sets the service account on the JOB resource and it
@@ -79,6 +82,8 @@ import logging
 import math
 import re
 import tempfile
+import threading
+import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -1514,6 +1519,112 @@ def authenticated_identity(credentials: Any) -> str:
     return ""
 
 
+# ---------------------------------------------------------------------------
+# A stored tenant namespace is VERIFIED, not trusted (owner decision 2026-10-11)
+# ---------------------------------------------------------------------------
+#
+# `tenants/u-bogdan` carried `namespace: swarm-u-bogdan`, the spelling used
+# before 2026-09-23, while its real namespace was `swarm-tenant-u-bogdan`.
+# `namespace_for` preferred the stored value unchecked, so every GKE task for
+# that tenant was created in a namespace that does not exist -- and Kubernetes
+# reports that as `jobs.batch is forbidden`, never as a missing namespace
+# (docs/gke-dispatch-403.md). The data was repaired; this is what stops the
+# next bad value from doing the same.
+#
+# THE RULE, identical in `reconciler.backends.GkeBackend.namespace_for` (that
+# image cannot import this one; tests/unit/control_plane/
+# test_reconciler_gke_namespaced.py pins the two together):
+#
+#   * a stored value OUTSIDE the authority prefix (`swarm-tenant-`) is IGNORED:
+#     the derived name is used, and `tenant_namespace_mismatch` is logged at
+#     ERROR. Nothing outside the prefix is ever ours -- terraform's tenancy
+#     module, `kubernetes/render.py`, the reconciler's GC filter and the
+#     repository's kubectl guard all key on it -- so such a value can only be a
+#     stale spelling or a typo, and dispatching into it can only fail;
+#   * a stored value INSIDE the prefix but not the derived name is KEPT and
+#     logged at WARNING. `kubernetes/render.py --namespace` deliberately allows
+#     a rename within the prefix (a `-canary` namespace), and the objects that
+#     make dispatch work were applied there, so overruling it would break it.
+#
+# Logged at most once per tenant per process per hour: the dispatch loop asks
+# on every dispatch, and the alert (terraform/modules/monitoring,
+# `tenant_namespace_mismatch`) needs one entry, not one per task.
+# `scripts/tenant-namespace-audit.sh` finds the same values before anything
+# dispatches into them.
+
+#: The event name the monitoring module's log-based metric counts. Spelled
+#: once per image; the reconciler's copy is `reconciler.backends`'.
+TENANT_NAMESPACE_MISMATCH = "tenant_namespace_mismatch"
+
+#: One entry per tenant per process per this many seconds.
+TENANT_NAMESPACE_MISMATCH_LOG_INTERVAL_S = 3600.0
+
+
+class _OncePerInterval:
+    """Says yes for a key at most once per `interval_s`, process-wide.
+
+    Module-level rather than per dispatcher, so "once per process" holds however
+    many dispatchers a process builds.
+    """
+
+    def __init__(self, interval_s: float) -> None:
+        self._interval_s = interval_s
+        self._last: dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._clock = time.monotonic
+
+    def __call__(self, key: str) -> bool:
+        now = self._clock()
+        with self._lock:
+            last = self._last.get(key)
+            if last is not None and now - last < self._interval_s:
+                return False
+            self._last[key] = now
+            return True
+
+    def clear(self) -> None:
+        with self._lock:
+            self._last.clear()
+
+
+_namespace_mismatch_due = _OncePerInterval(TENANT_NAMESPACE_MISMATCH_LOG_INTERVAL_S)
+
+
+def verified_namespace(tenant_id: str, stored: Any, derived: str, prefix: str) -> str:
+    """`stored` if it is inside `prefix`, else `derived`; logs any disagreement.
+
+    See the block comment above. `prefix` is the authority prefix, the literal
+    part of the namespace template before `{tenant}`.
+    """
+    stored = str(stored) if stored else ""
+    if not stored or stored == derived:
+        return derived
+    trusted = bool(prefix) and stored.startswith(prefix) and len(stored) > len(prefix)
+    if _namespace_mismatch_due(tenant_id):
+        fields = {
+            "event": TENANT_NAMESPACE_MISMATCH,
+            "tenant_id": tenant_id,
+            "stored": stored,
+            "derived": derived,
+            "used": stored if trusted else derived,
+        }
+        if trusted:
+            log.warning(
+                "%s tenant=%s stored=%r derived=%r: kept, it is inside %r",
+                TENANT_NAMESPACE_MISMATCH, tenant_id, stored, derived, prefix,
+                extra=fields,
+            )
+        else:
+            log.error(
+                "%s tenant=%s stored=%r derived=%r: IGNORED, it is outside %r; "
+                "dispatching to the derived namespace. Repair the tenant document "
+                "(scripts/tenant-namespace-audit.sh)",
+                TENANT_NAMESPACE_MISMATCH, tenant_id, stored, derived, prefix,
+                extra=fields,
+            )
+    return stored if trusted else derived
+
+
 @dataclass(frozen=True)
 class GkeTarget:
     endpoint: str
@@ -1627,12 +1738,18 @@ class GkeJobDispatcher:
         return self._batch_api
 
     def namespace_for(self, tenant: Tenant) -> str:
-        if tenant.namespace:
-            return tenant.namespace
+        """The tenant's namespace: derived from the template, a stored one VERIFIED.
+
+        A stored `tenant.namespace` is used only when it is inside the
+        template's prefix (`verified_namespace`); anything else is a stale
+        spelling that dispatch could only fail in, so the derived name wins.
+        """
         template = (
             self._target.namespace_template if self._target else "swarm-tenant-{tenant}"
         )
-        return sanitize_name(template.format(tenant=tenant.tenant_id))
+        derived = sanitize_name(template.format(tenant=tenant.tenant_id))
+        prefix = template.split("{tenant}", 1)[0]
+        return verified_namespace(tenant.tenant_id, tenant.namespace, derived, prefix)
 
     def ksa_for(self, tenant: Tenant) -> str:
         """The Kubernetes service account the pod runs as.

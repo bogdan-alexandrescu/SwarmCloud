@@ -102,6 +102,12 @@ Jobs in `swarm-tenant-eng`. `scripts/register-tenant.sh` carried a third copy
 of the short spelling and wrote it into the tenant document's `namespace`
 field — which `GkeJobDispatcher.namespace_for` *prefers* over its own template,
 so the Firestore record was overriding the one spelling that was correct.
+It happened again on 2026-10-11, to `tenants/u-bogdan` (`swarm-u-bogdan`). Since
+then the stored value is verified, not trusted: the scheduler and the
+reconciler ignore one outside `swarm-tenant-` for the derived name and log
+`tenant_namespace_mismatch` at ERROR, which a log-based metric and alert in
+`terraform/modules/monitoring/tenant_namespace.tf` count, and
+`scripts/tenant-namespace-audit.sh` lists every such document on demand.
 
 **Cause 2 — the RBAC did not exist.** Even with the namespace right, the
 scheduler's Google identity held no Kubernetes RBAC in it. That is what

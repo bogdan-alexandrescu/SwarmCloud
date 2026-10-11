@@ -738,6 +738,13 @@ fi
 #       including test fixtures. A fixture that restates the prefix is the worst
 #       case of all: it agrees with the bug and makes the suite prove it.
 #
+# This is a STATIC scan of the repository and cannot see Firestore: a tenant
+# document that stores a namespace outside the prefix (u-bogdan's, 2026-10-11)
+# is caught at runtime instead, by `verified_namespace` in
+# apps/scheduler/scheduler/dispatch.py and apps/reconciler/reconciler/backends.py
+# (the `tenant_namespace_mismatch` log entry and alert), and on demand by
+# scripts/tenant-namespace-audit.sh.
+#
 # Both halves REFUSE TO SKIP. A scan that finds fewer sites than it did when it
 # was written reports that the restatements moved, rather than passing because
 # it could no longer see them -- the failure mode section 4 already guards.

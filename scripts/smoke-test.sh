@@ -250,7 +250,7 @@ t_pass "baseline captured"
 # EVERY BACKEND, NOT EVERY PROFILE.
 #
 # This suite ran one `mock` task and called the platform proven. `mock`
-# resolves to CLOUD_RUN_JOB, and so do codex and generic -- `browser` was the
+# resolves to CLOUD_RUN_JOB, and so did codex and generic -- `browser` was the
 # ONLY profile whose resolved backend was GKE_AUTOPILOT (claude-code joined it
 # with contract request 53, 2026-10-08), a different API, a different
 # permission and a different authorisation model.
@@ -309,8 +309,11 @@ t_pass "baseline captured"
 # WHICH PROFILE STANDS FOR A BACKEND: the suite's own --profile (default mock)
 # if it resolves there, else a profile with no provider -- one a tenant holding
 # no credential can run, which the swarm-verify tenant is -- else by name. That
-# is deterministic, and it reproduces the rows the enum walk chose: mock for
-# CLOUD_RUN_JOB, browser for GKE_AUTOPILOT.
+# is deterministic. It reproduced the rows the enum walk chose -- mock for
+# CLOUD_RUN_JOB, browser for GKE_AUTOPILOT -- until contract request 64 (owner,
+# 2026-10-10, #939 option A) moved generic to GKE: generic needs no credential,
+# so it stands for GKE_AUTOPILOT now, and its clone also proves GKE's internet
+# path. `--profile browser` still submits the browser row and its fixture check.
 #
 # Output: one `BACKEND PROFILE RESOURCE_CLASS` line per backend, or
 # `BACKEND - -` when no available profile reaches it. A catalogue with no
@@ -464,7 +467,7 @@ while read -r BACKEND BPROFILE BCLASS <&3; do
   fi
   B_RUN_ID="$(test_run_id)"
   # profile_input, not a generic {message, run_id}: the browser runner refuses
-  # an input with neither url nor actions, so this row -- the only GKE one --
+  # an input with neither url nor actions, so this row -- then the only GKE one --
   # failed at the runner even when dispatch worked. See testlib.sh.
   # profile_extra: what the profile's task carries beside its input (the
   # generic fixture's clone; nothing for the others). See testlib.sh.
