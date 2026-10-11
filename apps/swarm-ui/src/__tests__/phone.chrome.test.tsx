@@ -82,7 +82,7 @@ function me(isAdmin: boolean): Me {
       credentials: [],
       service_account: 'swarm-agent-worker-u-phone@example.iam.gserviceaccount.com',
       gcs_prefix: 'tenants/u-phone',
-      namespace: 'swarm-u-phone',
+      namespace: 'swarm-tenant-u-phone',
     },
     principal: { email: 'someone@saga.xyz', groups: [], is_admin: isAdmin },
   } as unknown as Me

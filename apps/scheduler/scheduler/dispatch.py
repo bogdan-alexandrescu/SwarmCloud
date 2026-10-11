@@ -416,6 +416,226 @@ GKE_POD_DNS_CONFIG: dict[str, Any] = {
     "options": [{"name": "ndots", "value": "1"}],
 }
 
+#: THE LIVE BROWSER'S DISPLAY SIDECAR (docs/design/live-browser.md §3.1, §8.2,
+#: §8.3; lane L5, part of #1030).
+#:
+#: A pod of a `live_browser` profile (`claude-code-browser`, contract request
+#: 71) carries a second container, `display`: Xvfb, the platform's headed
+#: Chromium and the live gate, under a uid of its own. Rendered only while
+#: `settings.live_browser_sidecar` is on, the rollout switch, because the gate
+#: it runs is built by lanes L1-L4 (SchedulerSettings.live_browser_sidecar).
+#:
+#: WHY A SECOND UID. It is the only boundary available inside one pod: a
+#: same-uid process can read the other's /proc/<pid>/environ, signal it and
+#: open its sockets. The agent runs in the worker container as WORKER_UID; the
+#: display, its X socket (in the sidecar's own /tmp) and the browser profile
+#: (cookies) are in a container the worker container shares no such volume
+#: with. The images create the uid (images/agent-runtime-browser/Dockerfile,
+#: `swarm-display`); the pod repeats it so the cluster enforces it. Note what
+#: the pod-level `fsGroup` (WORKER_UID) does: it is a supplementary group of
+#: BOTH containers, which is what lets the worker move a download the sidecar
+#: wrote and the sidecar read an upload the worker wrote. It opens nothing
+#: else, because the sidecar's private volumes are not mounted in the worker
+#: container at all -- the mount, not the mode bits, is the boundary there.
+#:
+#: WHY NATIVE (an init container with `restartPolicy: Always`). A Job's pod
+#: completes when its containers exit, so an ordinary second container that
+#: keeps running would hold the attempt open forever. A native sidecar starts
+#: BEFORE the worker -- and, with the startup probe below, is listening on
+#: ctl.sock before the worker's lifecycle begins, so the worker's
+#: first-registration-wins slot (§5.4.2) is taken before the agent exists --
+#: and is stopped after the worker exits.
+DISPLAY_UID = 10002
+
+#: The gate's entrypoint. The worker's container has NO command (the image
+#: ENTRYPOINT is the worker lifecycle); the sidecar names its own, under tini
+#: like the worker, so Xvfb and Chromium are reaped.
+DISPLAY_COMMAND = ("/usr/bin/tini", "--", "python", "-m", "agent_worker.livegate")
+
+#: The label the live egress policy selects (`swarm-allow-live-egress`, §8.3,
+#: lane L6). Only a pod carrying it can reach the relay on TCP 8443; the
+#: dispatcher sets it on live-browser pods and nowhere else.
+LIVE_POD_LABEL = ("swarm-live", "enabled")
+
+#: The three volumes both containers mount, and only these (§3.1). All memory,
+#: so inside the pod's memory limit, and none under WORKSPACE_MOUNT, so none
+#: is checkpointed.
+LIVE_GATE_MOUNT = "/run/swarm-gate"
+LIVE_GATE_CTL = f"{LIVE_GATE_MOUNT}/ctl.sock"
+LIVE_DOWNLOADS_MOUNT = "/run/swarm-browser/downloads"
+LIVE_UPLOADS_MOUNT = "/run/swarm-browser/uploads"
+#: The sidecar's own: the browser profile (wiped at attempt end, §5.5).
+LIVE_PROFILE_MOUNT = "/run/swarm-display/profile"
+#: The gate's CDP proxy, for the agent's Playwright (`connectOverCDP`, §3.2).
+#: Loopback: the pod's containers share a network namespace, nothing else
+#: does, and the tenant ingress policy admits nothing to the pod.
+LIVE_CDP_LISTEN = "127.0.0.1:9222"
+
+
+@dataclass(frozen=True)
+class LiveDisplayShare:
+    """What the `display` sidecar takes out of a resource class.
+
+    THE CLASS DOES NOT CHANGE; IT IS SPLIT (§8.2). The worker keeps the rest,
+    each container has requests == limits (invariant 7), and the two sum to
+    the class, so admission's unit arithmetic and the pod Autopilot bills are
+    what they were. `ephemeral_gib` is the sidecar's container-level disk
+    (its logs; its root is read-only and every volume it mounts is memory);
+    the worker's ephemeral-storage gives up the same amount, so the pod's sum
+    is still `gke_ephemeral_storage_gib(rc)` and every disk volume's
+    sizeLimit still binds before the pod's limit does (GkeDisk).
+    """
+
+    cpu: int
+    memory_gib: int
+    ephemeral_gib: int = 1
+
+
+#: Per class, like GKE_DISK, and refused for a class without a row.
+#:
+#: browser: display 5 vCPU / 10 GiB, worker 3 / 6. The design's proposed
+#:   starting split (§8.2), NOT A MEASUREMENT (§11): Chromium, Xvfb and the
+#:   encoder on one side; claude-code, Node and the worker on the other. The
+#:   sidecar's 10 GiB holds its tmpfs volumes (/dev/shm 2, profile 1,
+#:   downloads 1, /tmp 0.25) and leaves Chromium about 5.75.
+#: standard: display 2 / 4, worker 2 / 4. A workflow step may shrink a task's
+#:   class (swarm_api.validation.validate_resource_class_override), and admission
+#:   charged the smaller class, so the pod must fit it; half each, still with
+#:   the 2 GiB /dev/shm on the sidecar's side.
+#: large: no live profile can reach it (a step only shrinks), but the manifest
+#:   renders any class it is given; browser's sidecar, the rest to the worker.
+LIVE_DISPLAY_SHARE: dict[str, LiveDisplayShare] = {
+    "browser": LiveDisplayShare(cpu=5, memory_gib=10),
+    "standard": LiveDisplayShare(cpu=2, memory_gib=4),
+    "large": LiveDisplayShare(cpu=5, memory_gib=10),
+}
+
+#: The display container's hardening: CONTAINER_SECURITY_CONTEXT's every
+#: field, under DISPLAY_UID and a primary group of its own.
+DISPLAY_SECURITY_CONTEXT: dict[str, Any] = {
+    **CONTAINER_SECURITY_CONTEXT,
+    "runAsUser": DISPLAY_UID,
+    "runAsGroup": DISPLAY_UID,
+}
+
+
+def live_display_share(rc: Any) -> LiveDisplayShare:
+    """The sidecar's part of resource class `rc`, refused loudly when it has no row."""
+    try:
+        share = LIVE_DISPLAY_SHARE[rc.name]
+    except KeyError:
+        raise ValueError(
+            f"resource class {rc.name!r} has no live-browser split in LIVE_DISPLAY_SHARE "
+            "(apps/scheduler/scheduler/dispatch.py); add one that leaves the worker room"
+        ) from None
+    if share.cpu >= rc.cpu or share.memory_gib >= rc.memory_gib:
+        raise ValueError(f"LIVE_DISPLAY_SHARE[{rc.name!r}] leaves the worker nothing")
+    return share
+
+
+def with_live_display(job: dict[str, Any], *, rc: Any) -> dict[str, Any]:
+    """`job`, a rendered GKE worker Job, with the display sidecar added.
+
+    Applied to the finished manifest, so a pod that is not live is not merely
+    "the same by construction" -- it is the same object this function never
+    touched, which test_dispatch_live_sidecar.py holds byte for byte.
+    """
+    job = copy.deepcopy(job)
+    share = live_display_share(rc)
+    disk = gke_disk(rc)
+    template = job["spec"]["template"]
+    spec = template["spec"]
+    (worker,) = [c for c in spec["containers"] if c["name"] == "worker"]
+    image = worker["image"]
+
+    template["metadata"]["labels"][LIVE_POD_LABEL[0]] = LIVE_POD_LABEL[1]
+
+    # The split. Both directions equal on both containers (invariant 7).
+    worker_resources = {
+        "cpu": str(int(rc.cpu) - share.cpu),
+        "memory": f"{rc.memory_gib - share.memory_gib}Gi",
+        "ephemeral-storage": f"{disk.ephemeral_gib - share.ephemeral_gib}Gi",
+    }
+    display_resources = {
+        "cpu": str(share.cpu),
+        "memory": f"{share.memory_gib}Gi",
+        "ephemeral-storage": f"{share.ephemeral_gib}Gi",
+    }
+    worker["resources"] = {"requests": dict(worker_resources), "limits": dict(worker_resources)}
+
+    # /dev/shm moves to where Chromium runs. The agent's own headless
+    # Chromium, if it starts one, is not shown (§3.2) and gets the runtime's
+    # default /dev/shm, which `--disable-dev-shm-usage` copes with.
+    worker["volumeMounts"] = [m for m in worker["volumeMounts"] if m["name"] != "dshm"]
+    worker["volumeMounts"] += [
+        {"name": "live-gate", "mountPath": LIVE_GATE_MOUNT},
+        # Read-write: the worker MOVES a download into work/.
+        {"name": "live-downloads", "mountPath": LIVE_DOWNLOADS_MOUNT},
+        {"name": "live-uploads", "mountPath": LIVE_UPLOADS_MOUNT},
+    ]
+    # Where the worker (lane L4) finds the gate. No DISPLAY: the worker sets
+    # none in the agent's environment either (Workspace.child_env), so a
+    # headed launch in the worker container fails loudly.
+    worker["env"] = worker["env"] + [
+        {"name": "SWARM_GATE_CTL", "value": LIVE_GATE_CTL},
+        {"name": "SWARM_CDP_ENDPOINT", "value": f"http://{LIVE_CDP_LISTEN}"},
+        {"name": "SWARM_BROWSER_DOWNLOADS", "value": LIVE_DOWNLOADS_MOUNT},
+        {"name": "SWARM_BROWSER_UPLOADS", "value": LIVE_UPLOADS_MOUNT},
+    ]
+
+    spec["initContainers"] = [{
+        "name": "display",
+        "image": image,
+        "command": list(DISPLAY_COMMAND),
+        # Native sidecar: started before the worker, stopped after it.
+        "restartPolicy": "Always",
+        # Paths only. No task, tenant, lease or attempt identifier and no
+        # secret: the tunnel ticket arrives over ctl.sock from the worker
+        # (§3.3, §5.4.2), and the gate needs to know nothing else.
+        "env": [
+            # Chromium writes under HOME (crash reports, caches); the root is
+            # read-only, so HOME is the sidecar's own memory /tmp.
+            {"name": "HOME", "value": "/tmp"},
+            {"name": "DISPLAY", "value": ":0"},
+            {"name": "SWARM_GATE_CTL", "value": LIVE_GATE_CTL},
+            {"name": "SWARM_BROWSER_PROFILE_DIR", "value": LIVE_PROFILE_MOUNT},
+            {"name": "SWARM_BROWSER_DOWNLOADS", "value": LIVE_DOWNLOADS_MOUNT},
+            {"name": "SWARM_BROWSER_UPLOADS", "value": LIVE_UPLOADS_MOUNT},
+            {"name": "SWARM_CDP_LISTEN", "value": LIVE_CDP_LISTEN},
+        ],
+        "resources": {"requests": dict(display_resources), "limits": dict(display_resources)},
+        "securityContext": copy.deepcopy(DISPLAY_SECURITY_CONTEXT),
+        # The worker starts only once this passes: the gate is listening, so
+        # the worker's registration is the first one (§5.4.2). A gate that
+        # restarts mid-attempt is probed again, and refuses every registration
+        # whatever the probe says (the restart marker in its /tmp).
+        "startupProbe": {
+            "exec": {"command": ["/usr/bin/test", "-S", LIVE_GATE_CTL]},
+            "periodSeconds": 1,
+            "failureThreshold": 120,
+        },
+        "volumeMounts": [
+            # Its own /tmp: the X socket (/tmp/.X11-unix/X0) and the gate's
+            # restart marker. Not mounted in the worker container.
+            {"name": "display-tmp", "mountPath": "/tmp"},
+            {"name": "browser-profile", "mountPath": LIVE_PROFILE_MOUNT},
+            {"name": "dshm", "mountPath": "/dev/shm"},
+            {"name": "live-gate", "mountPath": LIVE_GATE_MOUNT},
+            {"name": "live-downloads", "mountPath": LIVE_DOWNLOADS_MOUNT},
+            # The worker writes, the sidecar only reads (setInputFiles paths).
+            {"name": "live-uploads", "mountPath": LIVE_UPLOADS_MOUNT, "readOnly": True},
+        ],
+    }]
+
+    spec["volumes"] = spec["volumes"] + [
+        {"name": "display-tmp", "emptyDir": {"medium": "Memory", "sizeLimit": "256Mi"}},
+        {"name": "browser-profile", "emptyDir": {"medium": "Memory", "sizeLimit": "1Gi"}},
+        {"name": "live-gate", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}},
+        {"name": "live-downloads", "emptyDir": {"medium": "Memory", "sizeLimit": "1Gi"}},
+        {"name": "live-uploads", "emptyDir": {"medium": "Memory", "sizeLimit": "512Mi"}},
+    ]
+    return job
+
 #: THE BACKEND'S DEADLINE IS A BACKSTOP, AND IT MUST FIRE AFTER THE LIFECYCLE'S.
 #:
 #: The worker lifecycle enforces the task's timeout itself: at
@@ -1838,7 +2058,7 @@ class GkeJobDispatcher:
         # (test_the_rendered_job_and_the_dispatched_job_are_the_same_job) is
         # what found the difference.
         not_evictable = {"cluster-autoscaler.kubernetes.io/safe-to-evict": "false"}
-        return {
+        job = {
             "apiVersion": "batch/v1",
             "kind": "Job",
             "metadata": {
@@ -1959,6 +2179,13 @@ class GkeJobDispatcher:
                 },
             },
         }
+        # The live browser's display sidecar (docs/design/live-browser.md):
+        # only for a live-browser profile, and only while the rollout switch
+        # is on. Every other pod is returned exactly as built above.
+        if getattr(profile, "live_browser", False) and getattr(
+                self._settings, "live_browser_sidecar", False):
+            return with_live_display(job, rc=rc)
+        return job
 
     @staticmethod
     def _is_forbidden(exc: BaseException) -> bool:
