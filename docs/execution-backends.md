@@ -257,6 +257,84 @@ which the pod security posture refuses. The isolation boundary is the pod, not
 Chromium's inner sandbox, and handing back a capability to gain the latter would
 be a bad trade.
 
+### The live browser's display sidecar
+
+A pod of the one `live_browser` profile, `claude-code-browser` (contract
+request 71), is the only pod with two containers
+([`docs/design/live-browser.md`](design/live-browser.md) §3.1, §8.2, §8.3;
+lane L5 of #1030). The second, `display`, runs Xvfb, the platform's headed
+Chromium and the live gate, which a person in the console watches through and
+takes control with. `GkeJobDispatcher._manifest` builds every pod as above and
+then, for that profile only, hands it to `with_live_display`
+(`apps/scheduler/scheduler/dispatch.py`), so any other profile's pod is the
+object it always was; a unit test holds that byte for byte.
+
+**It is rendered only while `LIVE_BROWSER_SIDECAR=true`** on the scheduler
+(`SchedulerSettings.live_browser_sidecar`, default off). The sidecar runs the
+gate, `python -m agent_worker.livegate`, which lanes L1-L4 build. A native
+sidecar whose entrypoint does not exist yet restarts forever, and every
+`claude-code-browser` task would pay for it. Off, `claude-code-browser` keeps
+the single-container pod and the agent launches its own headless Chromium, as
+before. Turn it on once the dispatched image carries the gate.
+
+What the switch adds, and why each piece is shaped this way:
+
+* **A Kubernetes native sidecar**: an init container with
+  `restartPolicy: Always`. A Job's pod completes when its containers exit, so
+  an ordinary second container that keeps running would hold every attempt
+  open. A native sidecar starts before the worker and stops after it. Its
+  startup probe (`test -S /run/swarm-gate/ctl.sock`) keeps the worker from
+  starting until the gate listens. The worker's first registration on that
+  socket has to come before the agent exists (§5.4.2). GKE's support for
+  native sidecars on `swarm-autopilot` is assumed from current Autopilot
+  versions and has not been measured here (§11).
+* **Its own uid, 10002 (`swarm-display`)**, under the same image and every
+  other field of the worker's hardening (non-root, no privilege escalation,
+  all capabilities dropped, seccomp `RuntimeDefault`, read-only root). Inside
+  one pod, a separate uid is the only boundary available without gVisor. The
+  agent runs as 10001 in the worker container. The X socket (in the
+  sidecar's own memory `/tmp`) and the browser profile (cookies) are on
+  volumes the worker container does not mount. The pod's `fsGroup` (10001) is
+  a supplementary group of both containers. That is how the two exchange
+  files on the shared volumes. It opens nothing else, because a volume that
+  is not mounted cannot be reached whatever its mode bits say.
+* **The class is split, not grown.** Each container has `requests == limits`
+  (invariant 7), and together they sum to the task's class. Admission's
+  units, the pool reservation and the Autopilot bill are therefore what they
+  were. For `browser`, the worker gets 3 vCPU / 6 GiB and the sidecar
+  5 vCPU / 10 GiB. That is the design's starting split, **not a
+  measurement**. A step shrunk to `standard` splits 2/4 and 2/4.
+  Ephemeral storage gives the sidecar 1 GiB (its logs, since every volume it
+  mounts is memory) and the worker the rest, so the pod's sum is still the
+  `GkeDisk` total. The per-class table is `LIVE_DISPLAY_SHARE`, and a class
+  without a row is refused at dispatch.
+* **`/dev/shm` moves to the sidecar**, because that is where Chromium runs.
+  It is the same 2 GiB memory `emptyDir`.
+* **Three shared memory volumes, and only these**: `live-gate`
+  (`/run/swarm-gate`, `ctl.sock`), `live-downloads` (the sidecar writes, the
+  worker moves files into `work/`) and `live-uploads` (the worker writes, the
+  sidecar mounts it read-only). None is under `/workspace`, so none is
+  checkpointed. The sidecar's private volumes are `display-tmp` and
+  `browser-profile`. All live volumes are memory, sized inside the container
+  that fills them.
+* **The label `swarm-live: enabled`** on the pod. The live egress policy
+  (§8.3, lane L6) selects it, so only a live-browser pod can reach the relay
+  on TCP 8443.
+* **Paths in the environment, and nothing else.** The worker gets
+  `SWARM_GATE_CTL`, `SWARM_CDP_ENDPOINT` (`http://127.0.0.1:9222`, the gate's
+  CDP proxy) and the two shared directories, but **no `DISPLAY`**. A headed
+  launch in the worker container therefore fails loudly instead of drawing
+  where nobody sees. The sidecar gets those paths, its profile directory and
+  `HOME=/tmp`. It gets no task, tenant or attempt identifier and no secret,
+  because the tunnel ticket arrives over `ctl.sock` from the worker (§3.3).
+* **The image** (`images/agent-runtime-browser/Dockerfile`) adds Xvfb, the
+  `swarm-display` user and the §5.6 Chromium policy
+  (`images/agent-runtime-browser/chromium-policy.json`). The policy is
+  installed read-only in both `/etc/opt/chrome/policies/managed/` (Google
+  Chrome's directory, the one the design names) and
+  `/etc/chromium/policies/managed/` (Chromium's, which is what Playwright
+  bundles). Chromium silently ignores a policy in the wrong directory.
+
 ---
 
 ## 5. Dispatch and failure

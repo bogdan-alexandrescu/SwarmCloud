@@ -33,6 +33,7 @@ add the label to every pod and the unchanged-profiles test fails.
 from __future__ import annotations
 
 import copy
+import dataclasses
 import json
 import re
 from pathlib import Path
@@ -76,7 +77,7 @@ def _job(tenant: Tenant, profile_name: str = PROFILE, *, live: bool = True,
                                   batch_api=object())
     task = make_task(profile_name)
     if resource_class is not None:
-        task = task.model_copy(update={"resource_class": resource_class})
+        task = dataclasses.replace(task, resource_class=resource_class)
     return dispatcher._manifest(task=task, lease=make_lease(task),
                                 profile=RUNNER_PROFILES[profile_name], tenant=tenant)
 
