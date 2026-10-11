@@ -106,12 +106,19 @@ export { TASK_PAGE_LIMIT }
  */
 export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
-  options: { view?: 'summary' } = {},
+  options: { view?: 'summary'; pageToken?: string } = {},
 ): Promise<Result<TaskPage>> {
-  if (USE_FIXTURES) return fixtureTasks()
+  // A FIXTURE LIST IS ONE PAGE: it never hands out a token, so a page after
+  // it is the end of the list.
+  if (USE_FIXTURES) {
+    return options.pageToken ? { status: 'empty', fetchedAt: Date.now() } : fixtureTasks()
+  }
   // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
-  // whatever page size and view the caller asked for.
-  const query = options.view === 'summary' ? `limit=${limit}&view=summary` : `limit=${limit}`
+  // whatever page size and view the caller asked for. `pageToken` is the
+  // list's "load more" (live QA WA-2): the page after one already read.
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (options.view === 'summary') query.set('view', 'summary')
+  if (options.pageToken) query.set('page_token', options.pageToken)
   return read<TaskPage>(route('/v1/tasks', {}, query), (d) => d.tasks.length === 0)
 }
 
