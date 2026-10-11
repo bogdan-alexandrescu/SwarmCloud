@@ -106,17 +106,19 @@ export { TASK_PAGE_LIMIT }
  */
 export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
-  options: { view?: 'summary'; submittedBy?: 'me' } = {},
+  options: { view?: 'summary'; submittedBy?: 'me'; pageToken?: string | null } = {},
 ): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
   // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
-  // whatever page size and view the caller asked for. `submitted_by=me` (U5)
+  // whatever page size and view the caller asked for, and the page after a
+  // token (the timeline's span read, live QA RT-1). `submitted_by=me` (U5)
   // narrows the page to the caller IN THE QUERY, so the page is full of
   // theirs rather than the tenant's newest filtered down (live QA SUB-6).
-  const query = new URLSearchParams({ limit: String(limit) })
-  if (options.view === 'summary') query.set('view', 'summary')
-  if (options.submittedBy === 'me') query.set('submitted_by', 'me')
-  return read<TaskPage>(route('/v1/tasks', {}, query.toString()), (d) => d.tasks.length === 0)
+  const q = new URLSearchParams({ limit: String(limit) })
+  if (options.view === 'summary') q.set('view', 'summary')
+  if (options.submittedBy === 'me') q.set('submitted_by', 'me')
+  if (options.pageToken) q.set('page_token', options.pageToken)
+  return read<TaskPage>(route('/v1/tasks', {}, q), (d) => d.tasks.length === 0)
 }
 
 /**

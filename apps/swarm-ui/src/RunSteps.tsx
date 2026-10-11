@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { loadWorkflow, loadWorkflowUsage, type StepUsage, type WorkflowRead } from './api'
 import { Dash } from './components/Chip'
 import { PARK_WORD } from './components/StatePill'
@@ -9,6 +9,7 @@ import { usd } from './measure'
 import { timeAgo } from './Shell'
 import { mergeCardOf, type MergeCard } from './stepviews'
 import { TERMINAL_STATES } from './types'
+import { gateVerdictOf, skippedByVerdict } from './wfreview'
 import { MergeStepCard } from './WorkflowViews'
 import { agentPath } from './OverviewRegions'
 import { addressToPath } from './paths'
@@ -72,8 +73,18 @@ export function useRunWorkflows(run: IssueRun): RunWorkflows {
   const key = ids.join(' ')
   const [state, setState] = useState<{ key: string; loads: WfLoad[] } | null>(null)
   const [usage, setUsage] = useState<{ key: string; byTaskId: ReadonlyMap<string, StepUsage> } | null>(null)
+  // THE LAST LOADS, for the settled check below (an effect reads the ref, not a stale closure).
+  const loadsNow = useRef<{ key: string; loads: WfLoad[] } | null>(null)
+  loadsNow.current = state
   useEffect(() => {
     if (ids.length === 0) return
+    // A SETTLED READ IS NOT ASKED AGAIN (live QA RT-7c, 2026-10-11): a
+    // CHECKING run is re-read every 15 s, and each re-read asked again for its
+    // 262 KB workflow and every step's attempt list, for a run unchanged in
+    // 15 hours. Once every workflow the run started was read with every step
+    // ended, none of it can change; a new fix round changes `key`, and is read.
+    const had = loadsNow.current
+    if (had !== null && had.key === key && had.loads.every((l) => l.error === null && workflowReadSettled(l.data))) return
     let live = true
     void Promise.all(ids.map((wf) => loadWorkflow(wf))).then((reads) => {
       if (!live) return
@@ -115,6 +126,19 @@ export function useRunWorkflows(run: IssueRun): RunWorkflows {
   }
 }
 
+/** A workflow read whose workflow and every step task have ended: nothing in it can change. */
+export function workflowReadSettled(read: WorkflowRead | null): boolean {
+  if (read === null) return false
+  if (!['SUCCEEDED', 'FAILED', 'CANCELLED'].includes(read.workflow.state)) return false
+  const tasks = new Map(read.tasks.map((t) => [t.id, t]))
+  return read.workflow.steps.every((st) => {
+    // An ended workflow creates no more tasks: a step with none stays without.
+    if (!st.task_id) return true
+    const t = tasks.get(st.task_id)
+    return t !== undefined && TERMINAL_STATES.has(t.state)
+  })
+}
+
 /** One row of the Steps card: a workflow step, its task when the read has it. */
 export interface StepRow {
   key: string
@@ -144,7 +168,8 @@ export function stepRows(run: IssueRun, read: RunWorkflows): StepRow[] {
         key: `${load.round}:${s.step_id}`,
         round: load.round,
         stepId: s.step_id,
-        title: load.round === 0 ? (titles.get(s.step_id) ?? null) : null,
+        // The compiled name carries IMPLEMENT_PREFIX; the plan's does not (RT-3).
+        title: load.round === 0 ? (titles.get(s.step_id) ?? titles.get(s.step_id.replace(/^impl-/, '')) ?? null) : null,
         taskId,
         task,
         dependsOn: s.depends_on ?? [],
@@ -188,8 +213,40 @@ export function OpenAgent({ taskId, state, go }: { taskId: string; state: TaskSt
   )
 }
 
+/**
+ * WHY A SUCCEEDED STEP DID NOT RUN, or null when it ran (live QA RT-5,
+ * 2026-10-11). The task model has no SKIPPED state, so a step that was not
+ * run ends SUCCEEDED and says so in its result: `result_summary.skipped`
+ * (agent_worker/expected_outputs.py, `reason` "nothing to change") or a
+ * verdict gate's `agent_ran: false` (`skippedByVerdict`). Read as a plain
+ * SUCCEEDED, the "Already on main" run listed its review and fix as
+ * `succeeded · elapsed 415ms`, and a reader concluded a review ran and passed.
+ */
+export function stepSkip(task: Task | null): string | null {
+  if (task === null || task.state !== 'SUCCEEDED') return null
+  const s = task.result_summary
+  if (typeof s === 'object' && s !== null && !Array.isArray(s)) {
+    const sk = (s as Record<string, unknown>)['skipped']
+    if (sk === true) return 'not run'
+    if (typeof sk === 'object' && sk !== null) {
+      const reason = (sk as Record<string, unknown>)['reason']
+      return typeof reason === 'string' && reason.trim() !== '' ? reason.trim() : 'not run'
+    }
+  }
+  if (skippedByVerdict(task)) {
+    const v = gateVerdictOf(task)
+    return v === null ? 'by verdict' : `by verdict ${v}`
+  }
+  return null
+}
+
 /** A step's state mark: its task's state, "state not read", or what a gated step waits on. */
 export function StepMark({ row }: { row: StepRow }) {
+  const skip = stepSkip(row.task)
+  if (skip !== null) {
+    return <NamedMark mark="skipped" hue="neu" dataMark="skipped" word={`skipped · ${skip}`}
+      title="The step's task ended without running an agent: nothing ran, so nothing passed." />
+  }
   if (row.task !== null) return <StateMark state={row.task.state} />
   if (row.taskId !== null) {
     return <NamedMark mark={null} hue="unknown" dataMark="unknown" word="state not read"
@@ -250,7 +307,9 @@ function StepLine({ row, runId, go, now }: { row: StepRow; runId: string; go: (t
         <span className="mono rn-srow-id">{row.stepId}</span>
       </span>
       <span className="rn-srow-m sb-note">
-        {t === null ? null : (
+        {t === null ? null : stepSkip(t) !== null ? (
+          <span>no agent ran</span>
+        ) : (
           <>
             <span>{elapsed(t, now)}</span>
             <span>{attemptText(t)}</span>
@@ -315,6 +374,32 @@ export function StepsCard({ run, read, go, now }: {
 }
 
 /**
+ * THE PREFIX THE COMPILER PUTS ON A PLANNED STEP (`IMPLEMENT_PREFIX`,
+ * swarm_api/issueruns.py `_impl_id`): the plan's `contract` runs as the
+ * workflow's `impl-contract`.
+ */
+export const IMPLEMENT_PREFIX = 'impl-'
+
+/**
+ * THE WORKFLOW STEP A PLAN STEP RAN AS (live QA RT-3, 2026-10-11). The plan
+ * names its steps `contract`, `api-reads-check`, ...; the compiled workflow
+ * names them `impl-contract`, `impl-api-reads-check`, ...; a lookup by the
+ * plan's name missed all six and each said "the workflow read has no such
+ * step" under a Steps card showing them succeeded. The compiled name is
+ * looked up first, the plan's own name second (a workflow compiled before the
+ * prefix, or a single-agent plan). Round 0 only: a fix round's steps are not
+ * the plan's.
+ */
+export function planStepRow(rows: readonly StepRow[], planStepId: string): StepRow | null {
+  const first = rows.filter((r) => r.round === 0)
+  return (
+    first.find((r) => r.stepId === `${IMPLEMENT_PREFIX}${planStepId}`) ??
+    first.find((r) => r.stepId === planStepId) ??
+    null
+  )
+}
+
+/**
  * A PLAN STEP'S LIVE STATE (item 2): once the run is approved, the plan's
  * steps say what their task is doing and link it, instead of "starts at once".
  */
@@ -367,6 +452,12 @@ export function progressEntries(run: IssueRun, rows: StepRow[]): ProgressEntry[]
       if (when === null || at === null) return
       out.push({ t: when, e: { kind: 'step', key: `${r.key}-${word}`, at, state, word, label } })
     }
+    const skip = stepSkip(t)
+    // A skipped step started no agent: one line, "skipped · <why>" (RT-5).
+    if (skip !== null) {
+      add(t.completed_at ?? t.updated_at, t.state, `skipped · ${skip}`)
+      continue
+    }
     add(t.started_at, 'RUNNING', 'started')
     if (TERMINAL_STATES.has(t.state)) add(t.completed_at ?? t.updated_at, t.state, stateWord(t.state))
     else if (t.state === 'PARKED') add(t.updated_at, t.state, 'parked')
@@ -418,7 +509,7 @@ export function previousAt(entries: readonly ProgressEntry[], i: number): string
 export function StepProgress({ e, prev, now }: { e: Extract<ProgressEntry, { kind: 'step' }>; prev: string | null; now: number }) {
   return (
     <li className="rn-hstep">
-      <StateMark state={e.state} bare />
+      {e.word.startsWith('skipped') ? <NamedMark mark="skipped" hue="neu" bare hidden /> : <StateMark state={e.state} bare />}
       <span><span className="mono">{e.label}</span> {e.word} · step</span>
       <ProgressTime at={e.at} prev={prev} now={now} />
     </li>
@@ -432,11 +523,13 @@ export function StepProgress({ e, prev, now }: { e: Extract<ProgressEntry, { kin
  * many steps report, and how many of those figures are the result's. No step
  * reporting is a dash with its reason, never $0.
  */
-export function CostFact({ read }: { read: RunWorkflows }) {
+export function CostFact({ read, ended = false }: { read: RunWorkflows; ended?: boolean }) {
   let body: ReactNode
   let absent = true
   if (read.ids.length === 0) {
-    body = <Dash why="No workflow yet: cost is recorded by the workflow's step tasks, and the workflow is created on approval." />
+    body = <Dash why={ended
+      ? 'No workflow: the run ended before one was created, so no step task recorded a cost.'
+      : "No workflow yet: cost is recorded by the workflow's step tasks, and the workflow is created on approval."} />
   } else if (read.loads === null) {
     body = <Dash why="The workflow is being read for its steps' cost." />
   } else {

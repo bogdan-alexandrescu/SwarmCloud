@@ -29,7 +29,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { TimelineLanesScreen, STRIP_DEADLINE_MS, MARK_GAP_PX, MARK_PX, markLefts } = await import('../TimelineLanes')
+const { TimelineLanesScreen, STRIP_DEADLINE_MS, MARK_GAP_PX, MARK_PX, SPAN_PAGES_READ, markLefts } = await import('../TimelineLanes')
 
 // jsdom has no PointerEvent, and without one a pointer event carries no
 // clientX: a MouseEvent with a pointerId is what a browser hands the axis.
@@ -193,9 +193,13 @@ describe('Lanes: the drawing', () => {
     const partial = screen.getByRole('status', { name: /more attempts/i })
     expect(partial.textContent).toContain('—')
     expect(partial.textContent).toMatch(/page token, not a total/)
+    // The read follows the token on its own up to SPAN_PAGES_READ (live QA
+    // RT-1); past that the button goes on by hand.
+    await waitFor(() => expect(api.loadAttemptsPage).toHaveBeenCalledTimes(SPAN_PAGES_READ))
+    await waitFor(() => expect(within(partial).getByRole('button', { name: /read the next page/i }).hasAttribute('disabled')).toBe(false))
     fireEvent.click(within(partial).getByRole('button', { name: /read the next page/i }))
-    await waitFor(() => expect(api.loadAttemptsPage).toHaveBeenCalledTimes(2))
-    expect(api.loadAttemptsPage.mock.calls[1]![0].pageToken).toBe('next')
+    await waitFor(() => expect(api.loadAttemptsPage).toHaveBeenCalledTimes(SPAN_PAGES_READ + 1))
+    expect(api.loadAttemptsPage.mock.calls[SPAN_PAGES_READ]![0].pageToken).toBe('next')
   })
 })
 
@@ -228,7 +232,7 @@ describe('Lanes: a selected lane', () => {
     const onView = vi.fn()
     render(<TimelineLanesScreen view={null} onView={onView} />)
     await waitFor(() => expect(lane('task_plan')).not.toBeNull())
-    fireEvent.click(within(lane('task_plan')).getByRole('button'))
+    fireEvent.click(lane('task_plan').querySelector('.tl-name')!)
     expect(onView).toHaveBeenCalledWith('lane=task_plan')
   })
 })
@@ -372,16 +376,20 @@ describe('Lanes: the outcome strip', () => {
 })
 
 describe('Lanes: refresh', () => {
-  it('a refresh reads every lane in view again, and draws its marks again', async () => {
+  it('a refresh reads every unfinished lane in view again, keeps an ended lane\'s events, and draws its marks again', async () => {
+    // task_solo is still running; task_plan and task_test have ended, and an
+    // ended task writes no more events (live QA RT-7b).
+    api.loadTasks.mockResolvedValue(ok({ tasks: [task('task_solo', { attempt_count: 2, current_generation: 2, state: 'RUNNING', completed_at: null }), TASKS[1]!, TASKS[2]!] } as TaskPage))
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(lane('task_plan')?.querySelector('[data-mark="cancel_requested"]')).not.toBeNull())
     const asked = (id: string) => api.loadTaskEventsPage.mock.calls.filter((c) => c[0] === id && (c[1] as { order?: string }).order === 'desc' && !(c[1] as { pageToken?: string }).pageToken).length
+    await waitFor(() => expect(asked('task_solo')).toBe(1))
     expect(asked('task_plan')).toBe(1)
-    expect(asked('task_solo')).toBe(1)
     fireEvent.click(screen.getByRole('button', { name: /^refresh/i }))
-    await waitFor(() => expect(asked('task_plan')).toBe(2))
     await waitFor(() => expect(asked('task_solo')).toBe(2))
-    expect(asked('task_test')).toBe(2)
+    await waitFor(() => expect(api.loadAttemptsPage).toHaveBeenCalledTimes(2))
+    expect(asked('task_plan'), 'an ended lane is not asked again').toBe(1)
+    expect(asked('task_test'), 'an ended lane is not asked again').toBe(1)
     await waitFor(() => expect(lane('task_plan').querySelector('[data-mark="cancel_requested"]')).not.toBeNull())
     await waitFor(() => expect(document.querySelector('.tl-strip')?.textContent).toMatch(/1 generation fenced/))
     expect(document.querySelector('.tl-strip')?.textContent).not.toMatch(/events not read/)
