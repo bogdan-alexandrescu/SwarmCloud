@@ -11086,8 +11086,8 @@ browser on another profile. 1-9 unchanged.
 
 ## 72. `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist
 
-**Status:** proposed, filed 2026-10-11 by the stale-name audit lane. A comment
-fix only; no field changes.
+**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR. Filed
+2026-10-11 by the stale-name audit lane. A comment fix only; no field changes.
 
 ### What is true today
 
