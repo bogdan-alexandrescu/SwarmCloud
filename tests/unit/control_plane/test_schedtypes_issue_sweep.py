@@ -33,7 +33,7 @@ from typing import Any
 
 import pytest
 
-from swarm_api import forge, forgewrite, issuesweep, schedulefire, scheduletypes
+from swarm_api import forge, forgewrite, issueruns, issuesweep, schedulefire, scheduletypes
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import AppContext, build_context
@@ -504,3 +504,140 @@ def test_a_dry_run_lists_candidates_and_creates_nothing(db, ctx, repo_id, github
     assert writes.comments == {} and writes.pulls == {}
     # Only reads reached GitHub.
     assert github.calls and all("/issues" in u or "/pulls" in u for u, _ in github.calls)
+
+
+# ---------------------------------------------------------------------------
+# A real firing starts what its dry run would, and says why (#1133)
+# ---------------------------------------------------------------------------
+
+
+def _live_run(db, number: int) -> str:
+    """A live run of `number`, as a person's run holds one: it takes a tenant slot."""
+    at = NOW - timedelta(hours=1)
+    run = issuesweep.IssueRun(
+        id=f"run_live{number}", tenant_id="eng", created_by=ALICE, created_at=at, updated_at=at,
+        state=RunState.PLANNING, issue=issuesweep.IssueRef(owner=OWNER, repo=REPO, number=number),
+        plan_approval="auto", auto_merge=False, fix_rounds=2, planner_task_id=f"t_live{number}",
+    )
+    IssueRuns(db, now=lambda: at).create(run)
+    return run.id
+
+
+def _the_slot_firing(db) -> dict[str, Any]:
+    (firing,) = (f for f in firings(db).values() if f.get("trigger") != "run_now")
+    return firing
+
+
+#: The reported schedule's gate (sch_6ecbe1307511): plan automatic, merge asks.
+REPORTED_GATE = {"run": "auto", "plan": "auto", "merge": "approve"}
+
+
+@pytest.mark.parametrize("gate, params, ready", [
+    (REPORTED_GATE, {}, [42]),
+    ({"run": "auto", "plan": "auto", "merge": "off"}, {}, [42]),
+    ({"run": "auto", "plan": "auto", "merge": "auto"}, {}, [42]),
+    # labels_include and the NOT_READY cooldown: #5 carries the label and its
+    # NOT_READY verdict is past the cooldown; #6 carries no listed label.
+    (REPORTED_GATE, {"labels_include": ["ready"], "cooldown_hours": 1}, [5]),
+], ids=["merge-approve", "merge-off", "merge-auto", "labels-include-cooldown"])
+def test_a_cron_firing_starts_what_its_run_now_dry_run_would_start(
+        db, ctx, repo_id, github, gate, params, ready) -> None:
+    # The merge step is enabled, so `merge: approve`/`auto` start runs at all.
+    assert issueruns.auto_merge_availability()["available"] is True
+    if params:
+        github.issues = [issue(5, minutes_ago=60 * 5, labels=("Ready",)), issue(6), issue(7)]
+        _ended_not_ready(db, 5, hours_ago=2)
+    else:
+        github.issues = [issue(42), issue(7)]
+    _live_run(db, 7)
+    schedule = sweep(db, repo_id, gate=gate, params=params, cron="7,37 * * * *")
+    # The dry run, half an hour before the cron slot, as at 19:37 and 20:07.
+    nxt = NOW + timedelta(minutes=30)
+    schedule.update(next_run_at=nxt.replace(second=0), next_slot=nxt.replace(second=0))
+
+    before = len(issue_runs(db))
+    preview = schedulefire.Ticker(ctx).fire_now(schedule, actor=ALICE, dry_run=True)
+    would = [row["issue"] for row in preview["dry_run"]["would_start"]]
+    assert would == [f"{REPOSITORY}#{n}" for n in ready], preview
+    assert preview["dry_run"]["live_runs"] == 1 and len(issue_runs(db)) == before
+
+    ctx.now = lambda: nxt
+    report = schedulefire.Ticker(ctx).tick()
+
+    assert report.fired == 1, report.to_api()
+    firing = _the_slot_firing(db)
+    assert firing["state"] != "refused" and firing.get("skip") is None, firing
+    assert all(w["kind"] == "issue_run" for w in firing["work"])
+    assert sorted(started(firing["work"], db)) == ready
+    assert firing["params_digest"] == preview["params_digest"]
+    assert firing["selection"]["started"] == would
+
+
+def test_a_firing_that_starts_nothing_records_each_issue_passed_over(db, ctx, repo_id, github) -> None:
+    github.issues = [issue(42), issue(43, labels=("blocked",))]
+    live = _live_run(db, 42)
+    schedule = sweep(db, repo_id, gate=REPORTED_GATE)
+    preview = schedulefire.Ticker(ctx).fire_now(schedule, actor=ALICE, dry_run=True)
+
+    schedulefire.Ticker(ctx).tick()
+
+    firing = _the_slot_firing(db)
+    assert firing["work"] == [] and firing["state"] == "skipped", firing
+    assert firing["outcome"] != "succeeded"
+    assert firing["skip"]["code"] == schedulefire.NOTHING_STARTED
+    passed = firing["selection"]["passed_over"]
+    assert passed == preview["dry_run"]["passed_over"] == [
+        {"issue": f"{REPOSITORY}#42", "reason": f"live_run: {live}"},
+        {"issue": f"{REPOSITORY}#43", "reason": "label: blocked"},
+    ]
+    assert firing["skip"]["detail"]["passed_over"] == passed
+    assert firing["selection"]["started"] == [] and firing["selection"]["would_start"] == []
+
+
+def test_a_firing_with_no_room_says_which_limit(db, ctx, repo_id, github) -> None:
+    github.issues = [issue(42), issue(7)]
+    _live_run(db, 7)
+    sweep(db, repo_id, params={"max_live_runs": 1})
+
+    schedulefire.Ticker(ctx).tick()
+
+    firing = _the_slot_firing(db)
+    assert firing["work"] == [] and firing["skip"]["code"] == schedulefire.NOTHING_STARTED, firing
+    detail = firing["skip"]["detail"]
+    assert detail["limits"]["max_live_runs"] == 0 and detail["room"] == 0
+    assert {"issue": f"{REPOSITORY}#42", "reason": "room: max_live_runs"} in detail["passed_over"]
+    assert detail["live_runs"] == 1
+
+
+@pytest.mark.parametrize("break_the_read, code", [
+    (lambda github: github.status.update({"/widgets/issues": 403}), "no_access"),
+    (lambda github: setattr(github, "pulls", [{"number": n, "title": f"pr {n}", "body": ""}
+                                              for n in range(1, 302)]), "too_many_pull_requests"),
+], ids=["forge-read-error", "too-many-pull-requests"])
+def test_a_repository_not_read_is_recorded_on_the_firing(db, ctx, repo_id, github,
+                                                         break_the_read, code) -> None:
+    break_the_read(github)
+    sweep(db, repo_id)
+
+    schedulefire.Ticker(ctx).tick()
+
+    firing = _the_slot_firing(db)
+    assert firing["work"] == [] and firing["skip"]["code"] == schedulefire.NOTHING_STARTED, firing
+    assert firing["selection"]["failures"] == [{"repository": REPOSITORY, "error": code}]
+    assert firing["skip"]["detail"]["failures"] == firing["selection"]["failures"]
+
+
+def test_a_started_firing_records_what_it_passed_over(db, ctx, repo_id, github) -> None:
+    github.issues = [issue(1, minutes_ago=99), issue(2, minutes_ago=98)]
+    sweep(db, repo_id, params={"max_new_per_firing": 1})
+
+    schedulefire.Ticker(ctx).tick()
+
+    firing = _the_slot_firing(db)
+    assert started(firing["work"], db) == [1]
+    selection = firing["selection"]
+    assert selection["started"] == [f"{REPOSITORY}#1"] and selection["not_started"] == []
+    assert selection["passed_over"] == [{"issue": f"{REPOSITORY}#2", "reason": "room: max_new_per_firing"}]
+    assert selection["passed_over_by_reason"] == {"room": 1}
+    # Refs, counts and reason strings only: nothing GitHub wrote, no token.
+    assert "issue 1" not in repr(selection) and "issue 2" not in repr(selection)

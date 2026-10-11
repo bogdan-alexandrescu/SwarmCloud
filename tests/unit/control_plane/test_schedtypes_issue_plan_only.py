@@ -18,6 +18,7 @@ from swarm_api.schedtypes import issue_plan_only, issue_sweep
 
 from .test_schedtypes_issue_sweep import (  # noqa: F401 -- fixtures
     REPOSITORY,
+    firings,
     ctx,
     firing_for,
     github,
@@ -112,3 +113,22 @@ def test_the_selection_is_sweeps(db, ctx, repo_id, github) -> None:
     assert {row["reason"] for row in preview["passed_over"]} == {"label: security", "author: CONTRIBUTOR"}
     assert preview["runs"]["plan_approval"] == "required"
     assert issue_runs(db) == [] and tasks(db) == []
+
+
+def test_an_empty_plan_only_firing_says_which_limit(db, ctx, repo_id, github) -> None:
+    github.issues = [issue(n, minutes_ago=100 - n) for n in range(1, 3)]
+    schedule = plan_only(db, repo_id, params={"max_pending_plans": 1})
+    (waiting,) = issue_plan_only.create(firing_for(ctx, schedule, fid="sch_000000000001:earlier"))
+
+    schedulefire.Ticker(ctx).tick()
+
+    (firing,) = (f for f in firings(db).values())
+    assert firing["work"] == [] and firing["state"] == "skipped", firing
+    assert firing["skip"]["code"] == schedulefire.NOTHING_STARTED
+    detail = firing["skip"]["detail"]
+    assert detail["limits"]["max_pending_plans"] == 0 and detail["room"] == 0
+    assert detail["passed_over"] == [
+        {"issue": f"{REPOSITORY}#1", "reason": f"live_run: {waiting['id']}"},
+        {"issue": f"{REPOSITORY}#2", "reason": "room: max_pending_plans"},
+    ]
+    assert firing["selection"] == detail and len(issue_runs(db)) == 1
