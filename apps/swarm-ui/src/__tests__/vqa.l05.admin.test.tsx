@@ -13,6 +13,9 @@
 //   V078  a failed admin read drew the same `—` as "nobody changed it"
 //   V026, V075  covered in qa.g5.tenants.test.tsx (the identity's cut)
 //   V079  Tenants' column split, and an underlined dash with no pool behind it
+//   V064  Tenants' half: its admin gate keeps the same head as its loaded
+//         roster (title, no refresh to renew a refusal -- #138); People's
+//         refresh (L6) and the head's reserved actions slot (L14) are not here
 //   V029  a first run blanked the page until the answer came
 //   V084  the two count cards scaled their bars separately
 
@@ -365,6 +368,27 @@ describe('V079: Tenants gives the id and the credentials their room, and links o
     const none = rowOf('u-a-rather-long-tenant-id').querySelector('td[data-label="Enforced"]')!
     expect(none.querySelector('a')).toBeNull()
     expect(none.querySelector('.ctl-em')?.getAttribute('title')).toBe('no tenant:u-a-rather-long-tenant-id pool in /v1/capacity')
+  })
+})
+
+describe('V064 (Tenants half): the admin gate keeps the roster page head', () => {
+  it('draws the gate under the same head, with no refresh offered to renew a refusal', async () => {
+    api.loadTenants.mockResolvedValue({
+      status: 'error',
+      error: { kind: 'admin_required', httpStatus: 403, code: 'forbidden', message: 'Admin group membership is required.' },
+    } satisfies Result<{ tenants: Tenant[] }>)
+    api.loadCapacity.mockResolvedValue(ok(capacity([])))
+    const { container } = render(<TenantsScreen />)
+    const gate = await screen.findByRole('status', undefined, WAIT)
+    expect(gate.classList.contains('admin-gate')).toBe(true)
+    // One head, the same element the loaded roster draws its title in.
+    expect(container.querySelectorAll('.c-phead')).toHaveLength(1)
+    expect(container.querySelector('.c-phead h1')?.textContent).toContain('Tenants')
+    // MUTATION: draw a refresh on the gate: a 403 is not a read to renew
+    // (Shell.tsx `Screen`, #138), so Tenants offers none -- the rule People's
+    // gate (L6) is to be brought to, not the other way round.
+    expect(container.querySelector('.c-phead .c-refresh')).toBeNull()
+    expect(within(gate).queryByRole('button')).toBeNull()
   })
 })
 
