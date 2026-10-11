@@ -23,7 +23,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
+import { loadApprovals, loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, probeSnapshot, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -35,7 +35,10 @@ import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 
-export type SpineSection = 'overview' | 'work' | 'capacity' | 'admin' | 'help' | 'api' | null
+export type SpineSection = 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
+
+/** The spine sections that draw a panel of pages. */
+type PanelSection = 'work' | 'automate' | 'capacity' | 'admin'
 
 /** One page in the panel: its label, its icon, the address `go()` takes, and its children. */
 interface PanelPage {
@@ -59,7 +62,7 @@ const AGENT_LABEL: Readonly<Record<AgentTab, string>> = { live: 'Live', waiting:
  * The panel's pages, per spine section (common.py NAV). The `to` values are
  * router addresses, so they resolve exactly as a click on the old rail did.
  */
-export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPage[]>> = {
+export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   work: [
     {
       key: 'agents',
@@ -79,6 +82,12 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
     // #780 OB8 (onboarding.html): Setup until it is done, then Access.
     { key: 'setup', label: 'Setup', icon: 'setup', to: 'work/setup' },
     { key: 'access', label: 'Access', icon: 'access', to: 'work/access' },
+  ],
+  // docs/schedules.md §6.1 (SD1): the section's two pages. Approvals carries
+  // the inbox count, as the section does on the spine.
+  automate: [
+    { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'automate/schedules' },
+    { key: 'approvals', label: 'Approvals', icon: 'approvals', to: 'automate/approvals' },
   ],
   capacity: [
     {
@@ -112,11 +121,16 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again.
     { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // docs/schedules.md §5.3: every tenant's schedules, beside Tenants.
+    { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'admin/schedules' },
   ],
 }
 
+/** Each panel's heading: its spine section's label. */
+const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
+
 /** Which panel row a route's tab belongs to: a child's tab belongs to its parent. */
-function rowFor(section: 'work' | 'capacity' | 'admin', tab: string): string {
+function rowFor(section: PanelSection, tab: string): string {
   if (section === 'work' && (tab === 'running' || tab === '')) return 'agents'
   if (section === 'capacity' && tab === 'profiles') return 'pools'
   if (section === 'capacity' && tab === 'quota') return 'accounts'
@@ -129,7 +143,7 @@ function rowFor(section: 'work' | 'capacity' | 'admin', tab: string): string {
  * page -- one of its children is. `agentTab` is the Agents list's own tab,
  * which the route's tab (`running`) does not carry.
  */
-export function litPage(section: 'work' | 'capacity' | 'admin', tab: string, agentTab: AgentTab): { row: string; kid: string | null } {
+export function litPage(section: PanelSection, tab: string, agentTab: AgentTab): { row: string; kid: string | null } {
   const row = rowFor(section, tab)
   const page = PANEL_PAGES[section].find((p) => p.key === row)
   if (page?.kids === undefined) return { row, kid: null }
@@ -474,6 +488,22 @@ const SUBMIT_SHORTCUT = shortcut('anywhere', 'n')
 const HELP_SHORTCUT = shortcut('anywhere', '?')
 const loadFrameCapacity = () => loadCapacity({ frame: true })
 const loadFrameStats = () => loadStats({ frame: true })
+const loadFrameApprovals = () => loadApprovals({ frame: true })
+
+/**
+ * THE AUTOMATE BADGE (docs/schedules.md §6.1): how many items wait in the
+ * approvals inbox, plans of issue runs included. Nothing while the read is in
+ * flight or when nothing waits -- a measured zero is no badge, the way a pool
+ * that is not full draws no dot. A FAILED read is a dash with its reason,
+ * never a 0: "nothing waits" and "could not ask" are opposite facts.
+ */
+export function approvalsBadge(r: Result<{ approvals: unknown[] }>): PanelCount | null {
+  if (r.status === 'error') return { n: null, why: `Approvals not read: ${errorHeading(r.error)}` }
+  const d = dataOf(r)
+  if (d === null || d.approvals.length === 0) return null
+  const n = d.approvals.length
+  return { n, alert: true, why: `${n} waiting for approval` }
+}
 
 function dataOf<T>(r: Result<T>): T | null {
   return r.status === 'ok' || r.status === 'stale' ? r.data : null
@@ -548,9 +578,15 @@ const WAITING_STATES = ['QUEUED', 'READY', 'PARKED'] as const
  *                  re-read every 30s with the meter. Live is LEASED through
  *                  RUNNING, so it agrees with how concurrency is counted
  *                  (invariant 3), not with RUNNING alone.
- *   Workflows      NOT SERVED: no route counts a tenant's workflows (the list
- *                  read pages 100 with a rollup budget, far too heavy for the
- *                  frame), so the row carries a dash and says so.
+ *   Workflows,     NO COUNT AT ALL (visual QA V150, 2026-10-11). No route
+ *   Recent         counts a tenant's workflows (the list read pages 100 with
+ *                  a rollup budget, far too heavy for the frame), and Recent
+ *                  is a window of finished agents, not a population. The
+ *                  Workflows row carried a dash whose reason lived only in a
+ *                  tooltip, beside a Recent row that carried nothing: two
+ *                  ways of not counting. A dash is for a count that WAS
+ *                  asked for and could not be read (Live and Waiting, below);
+ *                  a row nobody counts draws no mark, never a 0.
  *   Pools          the amber count of pools full or paused, derived from the
  *                  capacity read the meter already made; nothing when none is.
  *
@@ -591,7 +627,6 @@ export function panelCounts(
     out.live = live === null ? { n: null, why: 'not read: a state is missing from the counts' } : { n: live }
     out.waiting = waiting === null ? { n: null, why: 'not read: a state is missing from the counts' } : { n: waiting }
   }
-  out.workflows = { n: null, why: 'not served: no route counts this tenant’s workflows' }
   const c = dataOf(cap)
   if (c === null) {
     if (cap.status === 'error') out.pools = { n: null, why: `not read: ${errorHeading(cap.error)}` }
@@ -748,6 +783,27 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   counts: <path d="M9 4 7 20M17 4l-2 16M4.5 9h16M3.5 15h16" />,
+  // docs/schedules.md §6.1: a loop for the section, a clock for its Schedules page.
+  automate: (
+    <>
+      <path d="M19.5 12a7.5 7.5 0 0 1-13.2 4.9M4.5 12a7.5 7.5 0 0 1 13.2-4.9" />
+      <path d="M17.7 3.5v3.6h-3.6M6.3 20.5v-3.6h3.6" />
+    </>
+  ),
+  schedules: (
+    <>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 7.5V12l3 2" />
+    </>
+  ),
+  // §6.1: a tray with a tick, for the inbox of things waiting on a person.
+  approvals: (
+    <>
+      <path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20" />
+      <path d="M4 13.5 6.5 5h11l2.5 8.5V19H4z" />
+      <path d="m9.5 9.5 2 2 3.5-3.5" />
+    </>
+  ),
   people: (
     <>
       <circle cx="12" cy="7.5" r="3.5" />
@@ -778,6 +834,7 @@ export function Icon({ name, className = 'sk-ic' }: { name: string; className?: 
 const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: string }[] = [
   { key: 'overview', label: 'Overview', to: 'overview/now' },
   { key: 'work', label: 'Work', to: 'work/running' },
+  { key: 'automate', label: 'Automate', to: 'automate/schedules' },
   { key: 'capacity', label: 'Capacity', to: 'capacity/pools' },
   { key: 'admin', label: 'Admin', to: 'admin/limits' },
 ]
@@ -859,6 +916,9 @@ export function SkyShell({
   // A capped list re-reads the stats with each of its own reads (D27).
   const [stats] = useFrameRead(loadFrameStats, 30_000, `${tenant ?? ''}:${fromList !== null && !fromList.whole ? fromList.at : ''}`)
   const [mine, rereadMine] = useFrameRead(loadFrameTenants, null)
+  // Once a minute: the inbox route syncs the tenant's held firings as it reads.
+  const [inbox] = useFrameRead(loadFrameApprovals, 60_000, tenant ?? '')
+  const waiting = approvalsBadge(inbox)
   const who = dataOf(me)
   const admin = who?.principal.is_admin === true
   const env = classifyEnvironment(
@@ -868,7 +928,8 @@ export function SkyShell({
   )
   const t = envTreatment(env)
   const meter = meterOf(dataOf(cap))
-  const counts = panelCounts(stats, cap, fromList)
+  // The Approvals page carries the inbox count the Automate section does (§6.1).
+  const counts = waiting === null ? panelCounts(stats, cap, fromList) : { ...panelCounts(stats, cap, fromList), approvals: waiting }
   const online = useOnline()
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   const fault = wholeAppFault(me, probes)
@@ -1090,7 +1151,19 @@ export function SkyShell({
             aria-current={on ? 'page' : undefined}
             title={checking ? `${s.label} (checking access)` : locked ? `${s.label} (admins only)` : s.label}
             {...routed(s.to, () => {
-              // Collapsed, a click on a section opens the panel again.
+              // COLLAPSED, A CLICK ON THE SECTION YOU ARE IN OPENS ITS PAGES
+              // (visual QA V083, 2026-10-11). It expanded the panel, so with
+              // no hover -- a touch screen -- the only way between the four
+              // Admin pages was to undo the collapse. The flyout opens at
+              // once and stays until a choice, Escape or a click elsewhere;
+              // `Open the panel` in it, and the spine's own expand, still
+              // undo the collapse. Overview has no pages, so it expands.
+              if (collapsed && on && s.key !== 'overview' && !drawer) {
+                if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
+                setFly(s.key)
+                return
+              }
+              // Collapsed, a click on another section opens the panel again.
               if (collapsed) toggle()
               if (!(collapsed && on)) nav(s.to)
             })}
@@ -1101,6 +1174,11 @@ export function SkyShell({
             <Icon name={s.key} />
             <small>{s.label}</small>
             {s.key === 'capacity' && meter?.warn != null && <i className="sk-dot" title={meter.warn} />}
+            {s.key === 'automate' && waiting !== null && (
+              <i className={waiting.n === null ? 'sk-badge is-unread' : 'sk-badge'} title={waiting.why} aria-label={waiting.why}>
+                {waiting.n === null ? '—' : waiting.n}
+              </i>
+            )}
             {locked && <Icon name="lock" className="sk-ic sk-lkd" />}
           </a>
         )
@@ -1154,10 +1232,11 @@ export function SkyShell({
       <Meter meter={meter} read={cap.status === 'error' || fault !== null ? 'unread' : cap.status === 'loading' ? 'loading' : 'landed'} />
       <div className="sk-pfoot">
         <span className="sk-pfrow">
-          <b>{who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : who.principal.email.split('@')[0]}</b>
+          <b title={who?.principal.email.split('@')[0]}>{who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : who.principal.email.split('@')[0]}</b>
           {admin && <span className="sk-adm">admin</span>}
         </span>
-        {who !== null && <small>{who.principal.email}</small>}
+        {/* One line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
+        {who !== null && <small title={who.principal.email}>{who.principal.email}</small>}
         <ThemeToggle />
       </div>
     </nav>
@@ -1219,6 +1298,23 @@ export function SkyShell({
             hairline tag as the panel's foot, last in the one row, after the
             environment it sits beside. */}
         {admin && <span className="sk-adm">admin</span>}
+        {/* A WAY BACK UP, once the page is more than a screen long and the
+            reader is past the first screen of it (#139). Drawn below 760px
+            only (styles.css): above it the spine never scrolls away.
+
+            IN THE HEADER, NOT OVER THE PAGE (visual QA V009, 2026-10-11). It
+            was a pill floating at the foot of the scrollport, and at 400px
+            it sat on whatever scrolled under it -- a stacked record's value,
+            a refusal's last lines, Overview's pool figures. No room the
+            scroller reserves can stop that mid-page; the header is already
+            on screen whenever `Top` is (compacted to 36px by then), so here
+            it covers nothing and costs no chrome. Last in the row, after the
+            tags; the title gives way first. */}
+        {scroll === 'far' && (
+          <button type="button" className="sk-top" onClick={toTop} aria-label="Back to the top of the page">
+            &#8593; Top
+          </button>
+        )}
       </header>
       {drawer && <div className="sk-scrim" onClick={() => setDrawer(false)} aria-hidden />}
       <div className="sk-side" ref={sideRef}>
@@ -1226,7 +1322,21 @@ export function SkyShell({
         {!collapsed || drawer ? panel : null}
       </div>
       {collapsed && fly !== null && !drawer && (
-        <Flyout section={fly} tab={section === fly ? tab : ''} agentTab={agentTab} nav={nav} onEnter={() => hover(fly)} onLeave={() => hover(null)} flyRef={flyRef} onBlur={onFlyBlur} onKeyDown={onFlyKey} />
+        <Flyout
+          section={fly}
+          tab={section === fly ? tab : ''}
+          agentTab={agentTab}
+          nav={nav}
+          onExpand={() => {
+            setFly(null)
+            toggle()
+          }}
+          onEnter={() => hover(fly)}
+          onLeave={() => hover(null)}
+          flyRef={flyRef}
+          onBlur={onFlyBlur}
+          onKeyDown={onFlyKey}
+        />
       )}
       {picker !== null && who !== null && switchable && (
         <TenantPicker at={picker} current={who.tenant.tenant_id} choices={choices} onChoose={choose} onClose={() => setPicker(null)} />
@@ -1253,14 +1363,6 @@ export function SkyShell({
                   a kept form, which re-reads in place. */}
               <Fragment key={`${keepOnSwitch ? 'kept' : (tenant ?? '')}:${attempt}`}>{children}</Fragment>
             </>
-          )}
-          {/* A WAY BACK UP, once the page is more than a screen long and the
-              reader is past the first screen of it (#139). Drawn below 760px
-              only (styles.css): above it the spine never scrolls away. */}
-          {scroll === 'far' && (
-            <button type="button" className="sk-top" onClick={toTop}>
-              &#8593; Top
-            </button>
           )}
         </div>
         {dock}
@@ -1657,7 +1759,7 @@ function PanelPages({
   // the rows are disabled, and "admins only" said, only once it says not.
   const shut = sec === 'admin' && !admin
   const locked = shut && known
-  const title = sec === 'work' ? 'Work' : sec === 'capacity' ? 'Capacity' : 'Admin'
+  const title = PANEL_TITLE[sec]
   const lit = section === null ? { row: '', kid: null } : litPage(sec, tab, agentTab)
   return (
     <>
@@ -1697,7 +1799,14 @@ function PanelPages({
                 {p.kids.map((k) => {
                   const kidOn = k.key === lit.kid
                   return (
-                    <a key={k.key} className={`sk-kid${kidOn ? ' is-on' : ''}`} aria-current={kidOn ? 'page' : undefined} {...routed(k.to, () => nav(k.to))}>
+                    <a
+                      key={k.key}
+                      className={`sk-kid${kidOn ? ' is-on' : ''}`}
+                      aria-current={kidOn ? 'page' : undefined}
+                      // Why Recent has no number beside Live and Waiting (V150).
+                      title={p.key === 'agents' && k.key === 'recent' ? 'Finished agents, newest first: a window, so it is not counted' : undefined}
+                      {...routed(k.to, () => nav(k.to))}
+                    >
                       <span>{k.label}</span>
                       {k.admin === true && <span className="sk-adm">admin</span>}
                       {p.key === 'agents' && <CountMark c={counts[k.key]} />}
@@ -1808,6 +1917,7 @@ function Flyout({
   tab,
   agentTab,
   nav,
+  onExpand,
   onEnter,
   onLeave,
   flyRef,
@@ -1818,15 +1928,17 @@ function Flyout({
   tab: string
   agentTab: AgentTab
   nav: (to: string) => void
+  /** Undo the collapse: the panel comes back and the flyout goes. */
+  onExpand: () => void
   onEnter: () => void
   onLeave: () => void
   flyRef: RefObject<HTMLDivElement>
   onBlur: (e: ReactFocusEvent) => void
   onKeyDown: (e: ReactKeyboardEvent) => void
 }) {
-  if (section !== 'work' && section !== 'capacity' && section !== 'admin') return null
+  if (section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'admin') return null
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
-  const name = section === 'work' ? 'Work' : section === 'capacity' ? 'Capacity' : 'Admin'
+  const name = PANEL_TITLE[section]
   // A plain labelled group of links, not role="menu": a menu promises arrow
   // keys and roving focus, which this does not have. Tab walks it.
   return (
@@ -1840,7 +1952,12 @@ function Flyout({
           </a>
         )
       })}
-      <em>Click the section to open the panel again</em>
+      {/* A CONTROL, NOT AN INSTRUCTION (V083): "Click the section to open
+          the panel again" stopped being true when a click on the section
+          became the way to open this list without a pointer that hovers. */}
+      <button type="button" className="sk-unfold" onClick={onExpand}>
+        Open the panel
+      </button>
     </div>
   )
 }

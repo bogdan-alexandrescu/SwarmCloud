@@ -45,10 +45,10 @@ describe('the rail names Help (#136)', () => {
 })
 
 describe('Admin pages do not repeat admin (#136)', () => {
-  it('reads Pool limits, Tenants, Platform counts and People with no admin mark', () => {
+  it('reads Pool limits, Tenants, Platform counts, People and Schedules with no admin mark', () => {
     shell('admin', 'limits')
     const pages = [...document.querySelectorAll('.sk-panel .sk-pk')]
-    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['Pool limits', 'Tenants', 'Platform counts', 'People'])
+    expect(pages.map((p) => p.querySelector('.sk-pl')?.textContent)).toEqual(['Pool limits', 'Tenants', 'Platform counts', 'People', 'Schedules'])
     for (const p of pages) {
       expect(p.textContent ?? '').not.toMatch(/admin/i)
       expect(p.querySelector('.sk-adm')).toBeNull()

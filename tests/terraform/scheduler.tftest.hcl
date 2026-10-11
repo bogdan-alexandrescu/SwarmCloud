@@ -372,6 +372,19 @@ run "the_issue_sweep_runs_per_tenant_every_half_hour_off_the_hour_as_the_sweeper
     error_message = "the sweep answers inside 300 s (it stops starting work at 240 s) and is not retried: the next sweep is the retry"
   }
 
+  # Schedules S9 (docs/schedules.md §8.1 step 3, 2026-10-11): the issue-sweep
+  # SCHEDULE replaces this job, so the job is paused on its own -- with
+  # var.paused false, as here -- while every other per-tenant tick still runs.
+  # Paused, not deleted: the job still exists for every tenant (asserted above).
+  assert {
+    condition = alltrue([
+      for t, job in google_cloud_scheduler_job.issue_sweep : job.paused == true
+      ]) && alltrue([
+      for t, job in google_cloud_scheduler_job.issue_run_advance : job.paused == false
+    ])
+    error_message = "SWEEP's job is paused by itself (S9): the issue-sweep schedule replaces it, and pausing it must not pause the other ticks through var.paused"
+  }
+
   assert {
     condition     = strcontains(google_service_account.rollup_sweeper.description, "issue-sweep")
     error_message = "the sweeper account's description names every job that presents it"

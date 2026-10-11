@@ -361,6 +361,15 @@ class SchedulerSettings:
     #: `worker_env` carries identifiers and endpoints, and a task's own `model`
     #: is attribution. Excluded from the hash, like `worker_image_refs`.
     worker_models: dict[str, str] = field(default_factory=dict, hash=False)
+    #: THE LIVE-BROWSER ROLLOUT SWITCH (docs/design/live-browser.md, lane L5,
+    #: part of #1030). On, a GKE pod of a `live_browser` profile
+    #: (`claude-code-browser`) carries the `display` native sidecar, which runs
+    #: the live gate (`python -m agent_worker.livegate`); off, it is the pod it
+    #: always was. OFF BY DEFAULT because the gate is built by lanes L1-L4,
+    #: and a native sidecar whose entrypoint does not exist yet crash-loops in
+    #: every `claude-code-browser` pod. Turn it on (LIVE_BROWSER_SIDECAR=true)
+    #: once the image that the scheduler dispatches carries the gate.
+    live_browser_sidecar: bool = False
     dispatch_topic: str = ""
     #: The step-spec verification settings a worker needs (contract request
     #: 34), passed through VERBATIM onto every Cloud Run Job this scheduler
@@ -419,6 +428,7 @@ class SchedulerSettings:
             ),
             worker_image_refs=parse_worker_image_refs(os.environ.get("WORKER_IMAGE_REFS", "")),
             worker_models=parse_worker_models(os.environ.get("WORKER_MODELS", "")),
+            live_browser_sidecar=_bool("LIVE_BROWSER_SIDECAR", False),
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", ""),
             spec_verify_keys=os.environ.get("SPEC_VERIFY_KEYS", "").strip(),
             spec_signing_key=os.environ.get("SPEC_SIGNING_KEY", "").strip(),
