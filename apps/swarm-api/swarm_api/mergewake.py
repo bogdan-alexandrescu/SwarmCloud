@@ -74,6 +74,23 @@ is only submitted for a pull request whose head branch is the root's own
 a round at another branch. With no round left, red wakes the step, which
 refuses `checks_failed`.
 
+A CONFLICTING PULL REQUEST IS NEVER WAITED ON FOR CHECKS (#1076). GitHub
+runs no checks on a pull request that conflicts with its base, so a park
+that read them would wait out the worker's six hours for nothing (PR 1028:
+`checks_timeout` after 366 min, GitHub saying CONFLICTING and "no checks
+reported"). The tick reads `mergeable`/`mergeable_state` from the same
+pull request read, BEFORE the checks; on a conflict it hands the pull
+request to a conflict fix round exactly as a red reading goes to a CI-fix
+round: claimed in `merge_fix.conflict_rounds` under the same guard, at most
+`MERGE_CONFLICT_ROUNDS_MAX` of them whatever the workflow asked for, as the
+merge task's submitter while still a member, only for a pull request on the
+root's own branch. The round is a one-step claude-code continuation of that
+branch (`conflict_fix_continuation`) that merges the base in and resolves
+the conflicts keeping both sides' intent. Its pushed head is a fix round's
+head to the worker (`agent_worker.merge._fix_round_heads`). With no round
+left -- or none possible -- the tick wakes the step as `conflicting`, and
+the worker fails it fast with `merge_conflict`, naming the pull request.
+
 AN UPDATE GITHUB HAS NOT MADE YET IS NOT A READING EITHER. update-branch is
 asynchronous: a worker that saw no new head after its bounded re-read parks
 at the old head with `BRANCH_UPDATE_PENDING`. That head's checks are green
@@ -129,10 +146,12 @@ from .issueci import (
     excerpt_at,
     pushing_task,
 )
-from .issueruns import failure_text
+from .issueruns import NO_CLOSING_KEYWORD, STEP_PROFILE, failure_text
 from .repositories import parse_repository
+from .schemas import WorkflowCreate
 from .validation import (
     DISPATCH_METADATA_KEY,
+    MERGE_METADATA_KEY,
     MERGE_FIX_ROUNDS_KEY,
     MERGE_FIX_ROUNDS_MAX,
     MERGE_TARGET_FIELD,
@@ -188,6 +207,23 @@ _QUEUE_QUERY = (
 FIX_ROUND_ENDED = "fix_round_ended"
 FIX_ROUND_REFUSED = "fix_round_refused"
 FIX_ROUND_LOST = "fix_round_lost"
+
+#: The wake reason of a pull request that conflicts with its base, with no
+#: conflict fix round left to hand it to (#1076).
+CONFLICTING = "conflicting"
+#: The conflict fix rounds' list in `metadata.merge_fix`, beside the CI-fix
+#: `rounds` and counted apart from them, and its bound: the PR-side CI
+#: fixer's own (`cifix.DEFAULT_MAX_ATTEMPTS`). Held equal to
+#: `agent_worker.merge.CONFLICT_ROUNDS_KEY` / `MERGE_CONFLICT_ROUNDS_MAX` by
+#: tests/unit/worker/test_merge_conflict_round.py.
+CONFLICT_ROUNDS_KEY = "conflict_rounds"
+MERGE_CONFLICT_ROUNDS_MAX = 2
+#: The one step of a conflict fix round's workflow.
+CONFLICT_FIX_STEP = "conflict-fix"
+#: A base branch name the round's prompt may quote in a git command. GitHub's
+#: answer is data: a name outside this is not put in front of an agent, and
+#: the round is recorded refused instead.
+_SAFE_BRANCH = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._/-]{0,199}$")
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 #: The task's own repository, on github.com: https, or the scp-like ssh form.
@@ -310,6 +346,9 @@ def _read(writer: GitHubWriter, ref: IssueRef, head: str, token: str, *,
         return _Reading(None, pull)
     if queued:
         return _Reading(None if in_merge_queue(writer, ref, token) else DEQUEUED, pull)
+    if pull.mergeable is False or pull.mergeable_state.lower() == "dirty":
+        # No check runs on a conflicting pull request: never read them (#1076).
+        return _Reading(CONFLICTING, pull)
     rules = writer.branch_rules(ref, pull.base_ref, token) if pull.base_ref else []
     reading = evaluate(
         required_status_checks(rules),
@@ -379,8 +418,9 @@ def _rounds_asked(metadata: Mapping[str, Any]) -> int:
     return min(value, MERGE_FIX_ROUNDS_MAX)
 
 
-def _rounds(metadata: Mapping[str, Any]) -> list[Mapping[str, Any]]:
-    rounds = _mapping(metadata.get(MERGE_FIX_METADATA_KEY)).get("rounds")
+def _rounds(metadata: Mapping[str, Any], key: str = "rounds") -> list[Mapping[str, Any]]:
+    """One kind of round: the CI-fix `rounds`, or `CONFLICT_ROUNDS_KEY`."""
+    rounds = _mapping(metadata.get(MERGE_FIX_METADATA_KEY)).get(key)
     return [r for r in rounds if isinstance(r, Mapping)] if isinstance(rounds, list) else []
 
 
@@ -433,7 +473,7 @@ def _submitter(ctx: Any, tenant: Any, doc: Mapping[str, Any]) -> AuthContext:
 
 
 def _claim_round(db: Any, tenant_id: str, task_id: str, head: str, *, seen: int,
-                 now: datetime) -> int | None:
+                 now: datetime, key: str = "rounds") -> int | None:
     """Claim round `seen + 1` at `head`; its number, or None when the claim lost.
 
     Guarded on what the tick read: the task is still this tenant's, PARKED on
@@ -457,11 +497,11 @@ def _claim_round(db: Any, tenant_id: str, task_id: str, head: str, *, seen: int,
             return None
         metadata = dict(_mapping(data.get("metadata")))
         wait = dict(_mapping(metadata.get(MERGE_WAIT_METADATA_KEY)))
-        rounds = _rounds(metadata)
+        rounds = _rounds(metadata, key)
         if wait.get("head") != head or wait.get(WAKE_MARKER) or len(rounds) != seen:
             return None
         record = dict(_mapping(metadata.get(MERGE_FIX_METADATA_KEY)))
-        record["rounds"] = [dict(r) for r in rounds] + [
+        record[key] = [dict(r) for r in rounds] + [
             {"round": seen + 1, "head": head, "claimed_at": now}
         ]
         metadata[MERGE_FIX_METADATA_KEY] = record
@@ -474,7 +514,7 @@ def _claim_round(db: Any, tenant_id: str, task_id: str, head: str, *, seen: int,
 
 
 def _record_round(db: Any, tenant_id: str, task_id: str, round_no: int,
-                  patch: dict[str, Any]) -> bool:
+                  patch: dict[str, Any], key: str = "rounds") -> bool:
     """Merge `patch` into round `round_no`'s entry; True only if written."""
     ref = db.collection(TASKS).document(task_id)
     transaction = db.transaction()
@@ -486,13 +526,13 @@ def _record_round(db: Any, tenant_id: str, task_id: str, round_no: int,
         if data is None or data.get("tenant_id") != tenant_id:
             return False
         metadata = dict(_mapping(data.get("metadata")))
-        rounds = [dict(r) for r in _rounds(metadata)]
+        rounds = [dict(r) for r in _rounds(metadata, key)]
         mine = [r for r in rounds if r.get("round") == round_no]
         if not mine:
             return False
         mine[-1].update(patch)
         record = dict(_mapping(metadata.get(MERGE_FIX_METADATA_KEY)))
-        record["rounds"] = rounds
+        record[key] = rounds
         metadata[MERGE_FIX_METADATA_KEY] = record
         txn.update(ref, {"metadata": metadata})
         return True
@@ -501,7 +541,7 @@ def _record_round(db: Any, tenant_id: str, task_id: str, round_no: int,
 
 
 def _round_at_head(ctx: Any, db: Any, tenant_id: str, task_id: str,
-                   entry: Mapping[str, Any], now: datetime) -> str | None:
+                   entry: Mapping[str, Any], now: datetime, key: str = "rounds") -> str | None:
     """A round was claimed at the red head: wait on it, or why to wake the step.
 
     The worker, woken, finds the round's end itself (its task terminal, or
@@ -522,14 +562,14 @@ def _round_at_head(ctx: Any, db: Any, tenant_id: str, task_id: str,
             return None
         _record_round(db, tenant_id, task_id, int(entry.get("round") or 0), {
             "error": "the round was claimed and its submission never recorded",
-        })
+        }, key)
         return FIX_ROUND_LOST
     try:
         task = ctx.store.get_task(tenant_id, fix_task, submitted_by=None)
     except NotFound:
         _record_round(db, tenant_id, task_id, int(entry.get("round") or 0), {
             "error": f"the round's task {fix_task} is not in this tenant",
-        })
+        }, key)
         return FIX_ROUND_LOST
     return FIX_ROUND_ENDED if task.state in TERMINAL_STATES else None
 
@@ -543,46 +583,13 @@ _WAKE = "wake"
 def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRef,
             head: str, read: _Reading, token: str, now: datetime) -> tuple[str, str | None]:
     """A red reading at `head`: (`_FIXING` | `_WAITING` | `_WAKE`, the wake reason)."""
-    tenant_id = tenant.tenant_id
     task_id = str(doc.get("id") or "")
-    metadata = _mapping(doc.get("metadata"))
-    rounds = _rounds(metadata)
-    if rounds and rounds[-1].get("head") == head:
-        reason = _round_at_head(ctx, db, tenant_id, task_id, rounds[-1], now)
-        return (_WAITING, None) if reason is None else (_WAKE, reason)
-    asked = _rounds_asked(metadata)
-    if len(rounds) >= asked:
-        return _WAKE, "red"
-    resolved = _target_and_root(ctx, tenant_id, doc)
-    if resolved is None or read.pull.head_ref != f"{BRANCH_PREFIX}{resolved[1]}":
-        # Not the branch a round would push to: nothing to hand off.
-        return _WAKE, "red"
-    target, _root = resolved
+    asked = _rounds_asked(_mapping(doc.get("metadata")))
 
-    refused = ""
-    owner = None
-    try:
-        owner = _submitter(ctx, tenant, doc)
-    except UpstreamUnavailable:
-        log.warning("merge wake %s tenant=%s: fix round waits: membership unresolved",
-                    task_id, tenant_id)
-        return _WAITING, None
-    except Exception as exc:
-        refused = exc.message if isinstance(exc, ApiError) else type(exc).__name__
-
-    round_no = _claim_round(db, tenant_id, task_id, head, seen=len(rounds), now=now)
-    if round_no is None:
-        # Another tick claimed it, or the task moved: it submits, not this one.
-        return _WAITING, None
-    if owner is None:
-        _record_round(db, tenant_id, task_id, round_no, {"error": failure_text(refused)})
-        log.warning("merge wake %s tenant=%s: fix round %d refused (%s)",
-                    task_id, tenant_id, round_no, refused)
-        return _WAKE, FIX_ROUND_REFUSED
-    try:
+    def build(target: str, round_no: int) -> WorkflowCreate:
         excerpt = excerpt_at(ctx.forge_writer, ref, head, read.checks, token,
                              label=f"merge {task_id}") if read.checks is not None else ""
-        spec = ci_fix_continuation(
+        return ci_fix_continuation(
             continues_task=target,
             repository_url=str(doc.get("repository_url") or ""),
             lead=(
@@ -600,29 +607,189 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
                 "pull_request": ref.number,
             }},
         )
-        submission = ctx.submissions.submit_workflow(owner, spec)
+
+    return _hand_off(ctx, db, tenant, doc, head, read, now, key="rounds", asked=asked,
+                     spent="red", label="CI fix", build=build)
+
+
+def _on_conflict(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRef,
+                 head: str, read: _Reading, now: datetime) -> tuple[str, str | None]:
+    """A conflicting pull request at `head` (#1076): a conflict fix round, or wake it."""
+    task_id = str(doc.get("id") or "")
+
+    def build(target: str, round_no: int) -> WorkflowCreate:
+        return conflict_fix_continuation(
+            continues_task=target,
+            repository_url=str(doc.get("repository_url") or ""),
+            number=ref.number,
+            url=read.pull.url,
+            base=read.pull.base_ref,
+            round_no=round_no,
+            rounds=MERGE_CONFLICT_ROUNDS_MAX,
+            metadata={"merge_conflict_round": {
+                "merge_task": task_id,
+                "round": round_no,
+                "head_sha": head,
+                "pull_request": ref.number,
+            }},
+        )
+
+    return _hand_off(ctx, db, tenant, doc, head, read, now, key=CONFLICT_ROUNDS_KEY,
+                     asked=MERGE_CONFLICT_ROUNDS_MAX, spent=CONFLICTING, label="conflict fix",
+                     build=build)
+
+
+def _hand_off(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], head: str,
+              read: _Reading, now: datetime, *, key: str, asked: int, spent: str, label: str,
+              build: Any) -> tuple[str, str | None]:
+    """Hand the reading at `head` to the next round of kind `key`, or say why not.
+
+    (`_FIXING` | `_WAITING` | `_WAKE`, the wake reason). One rule for a red
+    reading's CI-fix rounds (MS7) and a conflict's fix rounds (#1076): a
+    round at this head is waited on until it ends; with `asked` rounds spent,
+    or a pull request not on the root's own branch, the step is woken with
+    `spent`; otherwise the next round is claimed under the guard and `build`
+    (target task, round number) -> its workflow is submitted as the merge
+    task's submitter. A build or submission that raises is recorded on the
+    round as its `error`, and the step woken to refuse.
+    """
+    tenant_id = tenant.tenant_id
+    task_id = str(doc.get("id") or "")
+    metadata = _mapping(doc.get("metadata"))
+    rounds = _rounds(metadata, key)
+    if rounds and rounds[-1].get("head") == head:
+        reason = _round_at_head(ctx, db, tenant_id, task_id, rounds[-1], now, key)
+        return (_WAITING, None) if reason is None else (_WAKE, reason)
+    if len(rounds) >= asked:
+        return _WAKE, spent
+    resolved = _target_and_root(ctx, tenant_id, doc)
+    if resolved is None or read.pull.head_ref != f"{BRANCH_PREFIX}{resolved[1]}":
+        # Not the branch a round would push to: nothing to hand off.
+        return _WAKE, spent
+    target, _root = resolved
+
+    refused = ""
+    owner = None
+    try:
+        owner = _submitter(ctx, tenant, doc)
+    except UpstreamUnavailable:
+        log.warning("merge wake %s tenant=%s: %s round waits: membership unresolved",
+                    task_id, tenant_id, label)
+        return _WAITING, None
     except Exception as exc:
-        reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
-        _record_round(db, tenant_id, task_id, round_no, {"error": failure_text(reason)})
-        log.warning("merge wake %s tenant=%s: fix round %d refused (%s)",
-                    task_id, tenant_id, round_no, reason)
+        refused = exc.message if isinstance(exc, ApiError) else type(exc).__name__
+
+    round_no = _claim_round(db, tenant_id, task_id, head, seen=len(rounds), now=now, key=key)
+    if round_no is None:
+        # Another tick claimed it, or the task moved: it submits, not this one.
+        return _WAITING, None
+    if owner is None:
+        _record_round(db, tenant_id, task_id, round_no, {"error": failure_text(refused)}, key)
+        log.warning("merge wake %s tenant=%s: %s round %d refused (%s)",
+                    task_id, tenant_id, label, round_no, refused)
+        return _WAKE, FIX_ROUND_REFUSED
+    try:
+        submission = ctx.submissions.submit_workflow(owner, build(target, round_no))
+    except Exception as exc:
+        reason = exc.message if isinstance(exc, ApiError) else (
+            str(exc) if isinstance(exc, ValueError) else type(exc).__name__
+        )
+        _record_round(db, tenant_id, task_id, round_no, {"error": failure_text(reason)}, key)
+        log.warning("merge wake %s tenant=%s: %s round %d refused (%s)",
+                    task_id, tenant_id, label, round_no, reason)
         return _WAKE, FIX_ROUND_REFUSED
     workflow = submission.workflow
     fix_task = next((s.task_id for s in workflow.steps if s.task_id), None)
     _record_round(db, tenant_id, task_id, round_no,
-                  {"workflow_id": workflow.workflow_id, "task_id": fix_task})
-    log.info("merge wake %s tenant=%s: CI fix round %d of %d submitted as %s",
-             task_id, tenant_id, round_no, asked, workflow.workflow_id)
+                  {"workflow_id": workflow.workflow_id, "task_id": fix_task}, key)
+    log.info("merge wake %s tenant=%s: %s round %d of %d submitted as %s",
+             task_id, tenant_id, label, round_no, asked, workflow.workflow_id)
     return _FIXING, None
 
 
+def conflict_fix_continuation(
+    *,
+    continues_task: str,
+    repository_url: str,
+    number: int,
+    url: str,
+    base: str,
+    round_no: int,
+    rounds: int,
+    metadata: Mapping[str, Any],
+) -> WorkflowCreate:
+    """One conflict fix round: a one-step `direct-pr` claude-code workflow continuing
+    `continues_task`, on the pull request's own branch (#1076).
+
+    `issueci.ci_fix_continuation`'s shape -- the same profile, `merge: "off"`,
+    no pr-title.txt or pr-body.md, no closing keyword -- with a prompt that
+    merges the base in rather than fixing checks. A MERGE, never a rebase or
+    a force-push: the merge step accepts the head the round pushed, and a
+    rewritten branch would orphan the heads it already accepted. Raises
+    ValueError for a base name that is not a plain branch name: GitHub's
+    answer is data, and it is quoted in a git command for the agent.
+    """
+    if not _SAFE_BRANCH.fullmatch(base or "") or ".." in base:
+        raise ValueError("the pull request's base branch name is not one a round may quote")
+    prompt = (
+        f"Pull request #{number} ({url}) conflicts with its base branch `{base}`, so GitHub "
+        "will not merge it and runs no CI on it; this workflow's merge step merges it once "
+        f"it is clean and green. This is conflict fix round {round_no} of at most {rounds}.\n\n"
+        "You are on the pull request's own branch. Bring the base into it WITH A MERGE -- "
+        "never a rebase, a reset or a force-push, which would rewrite commits the merge "
+        f"step has already accepted: run `git fetch --no-tags origin {base}` (and "
+        "`git fetch --unshallow origin` first if git reports no merge base), then "
+        f"`git merge --no-ff origin/{base}`. Resolve EVERY conflict keeping both sides' "
+        f"intent: what this branch changes, and what `{base}` changed since the branch "
+        "left it. Never resolve a conflict by dropping one side's change wholesale; where "
+        "both sides changed the same code, write the version that does what each meant. "
+        "Leave no conflict marker anywhere. Then run the tests for what the conflicts "
+        "touched and fix what the merge broke, commit the merge, and change nothing else. "
+        "Do not write pr-title.txt or pr-body.md: the pull request already exists and "
+        f"keeps its text. {NO_CLOSING_KEYWORD}\n"
+    )
+    return WorkflowCreate.model_validate({
+        "strategy": "direct-pr",
+        "continues_task": continues_task,
+        "repository_url": repository_url,
+        "steps": [{
+            "step_id": CONFLICT_FIX_STEP,
+            "runner_profile": STEP_PROFILE,
+            "input": {"prompt": prompt},
+        }],
+        "metadata": {
+            # Never a merge inside a round: the merge step merges it, once
+            # it is clean and its checks are green.
+            MERGE_METADATA_KEY: "off",
+            **metadata,
+        },
+    })
+
+
 def _pushed_by(ctx: Any, tenant_id: str, doc: Mapping[str, Any], head: str) -> str | None:
-    """Which of this merge's fix rounds pushed `head`, by `issueci.pushing_task`'s rule."""
-    workflows = [str(r["workflow_id"]) for r in _rounds(_mapping(doc.get("metadata")))
-                 if isinstance(r.get("workflow_id"), str)]
-    if not workflows or not head:
+    """Which of this merge's fix rounds pushed `head`: a CI-fix round by
+    `issueci.pushing_task`'s rule, else a conflict fix round by its own task."""
+    if not head:
         return None
-    return pushing_task(ctx, tenant_id, head, fix_workflows=workflows, root_task_id=None)
+    metadata = _mapping(doc.get("metadata"))
+    workflows = [str(r["workflow_id"]) for r in _rounds(metadata)
+                 if isinstance(r.get("workflow_id"), str)]
+    if workflows:
+        found = pushing_task(ctx, tenant_id, head, fix_workflows=workflows, root_task_id=None)
+        if found:
+            return found
+    for entry in reversed(_rounds(metadata, CONFLICT_ROUNDS_KEY)):
+        fix_task = entry.get("task_id")
+        if not isinstance(fix_task, str) or not TASK_ID_RE.match(fix_task):
+            continue
+        try:
+            task = ctx.store.get_task(tenant_id, fix_task, submitted_by=None)
+        except NotFound:
+            continue
+        git = _mapping(_mapping(getattr(task, "result_summary", None)).get("git"))
+        if git.get("pushed_head") == head:
+            return fix_task
+    return None
 
 
 def _due(wait: Mapping[str, Any], now: datetime) -> bool:
@@ -698,6 +865,11 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                 reason = read.reason
                 if reason == "red":
                     kind, reason = _on_red(ctx, db, tenant, doc, ref, head, read, token, now)
+                    if kind == _FIXING:
+                        report.fixing += 1
+                        continue
+                elif reason == CONFLICTING:
+                    kind, reason = _on_conflict(ctx, db, tenant, doc, ref, head, read, now)
                     if kind == _FIXING:
                         report.fixing += 1
                         continue

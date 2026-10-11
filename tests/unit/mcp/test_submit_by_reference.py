@@ -108,7 +108,9 @@ def test_a_spec_ref_from_swarm_workflow_spec_submits_the_held_spec(tmp_path, mon
     read = json.loads(server._call(None, "swarm_workflow_spec", {"path": "specs/w.json"}))
     assert read["spec_ref"] and read["spec_digest"] == workflows.spec_digest(spec)
     # What a relay copies back instead of the spec: the outline.
-    assert read["outline"]["steps"][1] == {"step_id": "s01", "depends_on": ["s00"], "stage": None}
+    assert read["outline"]["steps"][1] == {"step_id": "s01", "depends_on": ["s00"], "stage": None,
+                                           "runner_profile": None, "when_step": None,
+                                           "input_from": {}}
     assert read["outline"]["label"] == "big"
 
     recorder = _Recorder()

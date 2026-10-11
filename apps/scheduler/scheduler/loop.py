@@ -75,6 +75,21 @@ CONTROL_PUBLISH_METADATA_KEY = "control_publish"
 CONTROL_PUBLISH_CLAIMED = "claimed"
 CONTROL_PUBLISH_CLAIM_SECONDS = 300
 
+#: The live-browser hand-off (docs/design/live-browser.md §4.3, lane LB-L10).
+#: A PARKED(HUMAN_REQUIRED) task is promoted ONLY by a person, through
+#: swarm-api's `human-ready`; this scheduler never promotes it. Past
+#: `human_park_max_seconds` (24 hours, the owner's Q4) it is dead-lettered with
+#: this cause. Not an `EndCause` member -- the frozen enum has none -- so it is
+#: the `last_error` prefix and the event's `cause`, and `end_cause` is None as
+#: for every dead-lettered park. Restated from `swarm_api.handoff`, which this
+#: image does not carry; tests/unit/control_plane/test_handoff_api.py holds
+#: them equal.
+HUMAN_WAIT_EXPIRED = "human_wait_expired"
+#: The default for `human_park_max_seconds`, read through `getattr` so a
+#: settings field can be added without a change here. 24 hours: a person's
+#: day, and a parked task costs nothing while it waits (invariant 1).
+HUMAN_PARK_MAX_SECONDS = 86_400
+
 
 def held_for_control_publish(metadata: Any) -> bool:
     """`swarm_api.verdictpublish.held_by_scheduler`, restated: `integrate`'s gated integrator."""
@@ -407,6 +422,7 @@ class Scheduler:
         report.promoted_scheduled_retries = self._promote_scheduled_retries(report)
         report.promoted_manual_pauses = self._promote_manual_pauses(report)
         report.promoted_ci_waits = self._promote_ci_waits(report)
+        report.dead_lettered += self._expire_human_waits(report)
         # Guarded: a child sweep that cannot query (its index still building
         # after a release, say) must not stop admission for every tenant.
         try:
@@ -1537,6 +1553,73 @@ class Scheduler:
             ):
                 promoted += 1
         return promoted
+
+    # -- the live-browser hand-off (docs/design/live-browser.md §4.3) --------
+
+    def _expire_human_waits(self, report: DrainReport) -> int:
+        """Dead-letter a PARKED(HUMAN_REQUIRED) task nobody came back for.
+
+        THIS SWEEP NEVER PROMOTES. A hand-off parks when nobody took control
+        within the hold, and only a person -- swarm-api's `human-ready` -- may
+        return it to READY: re-admitting it with nobody there to sign in would
+        cost a cold pod start and park again. So the only thing done here is
+        the end: past `human_park_max_seconds` since the park it is ended
+        DEAD_LETTERED (PARKED -> FAILED is not a legal transition), with
+        `human_wait_expired`. A park on a task that has used its last attempt
+        -- past the worker's `max_human_resumes` a park is not refunded -- is
+        ended at once, as `_end_exhausted_retry` ends a SCHEDULED_RETRY park,
+        because `human-ready` refuses it and nothing else can resume it.
+
+        The park instant is `next_eligible_at`, which the worker's park writes
+        as the moment it parked (as the child await's does), with `updated_at`
+        standing in for a park that carries none. Returns how many it ended past
+        the maximum; the last-attempt ends are counted by `_end_exhausted_retry`.
+        """
+        ended = 0
+        now = self._now()
+        limit = int(getattr(self._settings, "human_park_max_seconds", HUMAN_PARK_MAX_SECONDS))
+        reason = ParkReason.HUMAN_REQUIRED
+        for task in self._parked_window(reason):
+            if self._stop_for_failed_workflow(task, report):
+                continue
+            if task.retries_exhausted():
+                # Counted into `report.dead_lettered` by `_end_exhausted_retry`
+                # itself, so not into this sweep's return.
+                self._end_exhausted_retry(
+                    task,
+                    report,
+                    reason=reason,
+                    text=(
+                        f"waited for a person on its last attempt ({task.attempt_count} of "
+                        f"{task.max_attempts}); retries exhausted"
+                    ),
+                )
+                continue
+            parked_at = task.next_eligible_at or task.updated_at
+            if parked_at + timedelta(seconds=limit) > now:
+                continue
+            text = (
+                f"{HUMAN_WAIT_EXPIRED}: nobody said they were ready to sign in within "
+                f"{limit} seconds of the park"
+            )
+            if task.cancel_requested:
+                self._cancel(
+                    task,
+                    text,
+                    report,
+                    why="cancel_requested",
+                    end_cause=children_mod.cancel_end_cause(task.metadata),
+                )
+                continue
+            outcome = self._store.dead_letter_parked(
+                task, text, detail={"park_reason": reason.value, "cause": HUMAN_WAIT_EXPIRED}
+            )
+            if outcome.applied:
+                ended += 1
+                self._note_ended(task.id)
+            else:
+                self._count_stale(outcome, report)
+        return ended
 
     # -- child tasks (docs/design/child-tasks.md) ---------------------------
 

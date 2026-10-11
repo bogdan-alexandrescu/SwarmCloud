@@ -489,16 +489,16 @@ enable_forge_refresh = true
 # refused. docs/runbooks/onboarding-acceptance.md is the check that it works.
 repository_grants_enforced = true
 
-# Two switched refusals are ON in dev (owner decision 2026-10-11, after PR 1027
-# added them OFF as every new refusal ships). index_refresh_failed: a repo-index
+# One switched refusal is ON in dev (owner decision 2026-10-11, after PR 1027
+# added it OFF as every new refusal ships). index_refresh_failed: a repo-index
 # refresh firing where every repository failed is refused visibly instead of
-# finishing quietly with nothing queued. observer_file_issues_unavailable: an
-# observer schedule set to file_issues, with no way to file them, is refused
-# instead of writing its report and silently filing none. A code that names no
-# switch fails swarm-api's start, so this merges only after PR 1027.
+# finishing quietly with nothing queued. observer_file_issues_unavailable was
+# on here too until PR 1054 removed that switch; the key then crashed
+# swarm-api's start (release 38126514258). A code that names no switch fails
+# that start, and tests/unit/control_plane/test_tfvars_refusal_switches.py
+# now fails CI on one first.
 api_refusals = {
-  index_refresh_failed             = true
-  observer_file_issues_unavailable = true
+  index_refresh_failed = true
 }
 
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap

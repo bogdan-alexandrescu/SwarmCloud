@@ -23,6 +23,7 @@ from .access import AccessService, build_access
 from .deps import AppContext, build_context
 from .errors import ApiError, Conflict, RateLimited, Unauthenticated
 from .forgeapp import ForgeApp, build_forge_app
+from .forgeperms import build_forge_permissions
 from .routes import (
     access,
     accounts,
@@ -32,6 +33,7 @@ from .routes import (
     checkpoints,
     children,
     forgeapp,
+    forgeperms,
     gittokens,
     health,
     issues,
@@ -104,6 +106,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     app.state.access = access_service if access_service is not None else build_access(
         app.state.ctx.db, app.state.forge_app, now=app.state.ctx.now)
 
+    # GitHub permissions health (#1086, PERM-1): read-only, over the App's
+    # JWT and transport above; cached per tenant for a minute.
+    app.state.forge_perms = build_forge_permissions(app.state.forge_app)
+
     app.include_router(health.router)
     app.include_router(tasks.router)
     # What is INSIDE a checkpoint: listing, one file, the whole archive.
@@ -142,6 +148,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The access API (lane OB4): owners, repositories, grants, verify. Acts
     # as the caller through their own connection; no route returns a token.
     app.include_router(access.router)
+    # What GitHub permissions the platform needs, what the App and each org
+    # granted, and what each registered repository can do (#1086, PERM-1).
+    # The caller's own tenant; the App's settings link for admins only.
+    app.include_router(forgeperms.router)
     app.include_router(tenants.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service

@@ -760,7 +760,14 @@ the agent passes it beside the spec; `swarm_workflow` submits NOTHING when the
 spec it received digests differently. The reply must carry the digest back,
 every step of the spec and no other, each step's `depends_on` as the spec has
 it, and a distinct task per step — or no row starts and the run returns
-`SUBMITTED_UNVERIFIED` with the workflow id and what differed. Each `sc:step`
+`SUBMITTED_UNVERIFIED` with the workflow id and what differed. The one
+exception is the steps SwarmCloud itself appends for a merge: `re-review` and
+`merge` for `"merge": "on_merge_verdict"`, `merge` alone for `"on"`, with the
+`depends_on` swarm-api builds them with. A spec that names no `merge` takes the
+repository's registered `merge_policy`, else the platform default, which the
+script cannot see, so it accepts no appended step or exactly one of the shapes
+those could produce. Appended steps get a row each, after the spec's own, so
+the rows count what the console counts. Each `sc:step`
 row passes its `step_id` to `swarm_follow`, which will not follow a task that
 is a different step.
 
@@ -1045,9 +1052,9 @@ from its caller, who was shown it. A plan edited in between is refused with
 `plan_changed`, said plainly, and nothing is retried. `sc plan edit` sends the
 digest of the plan it opened, from `--file` or `$EDITOR`.
 
-**`--auto-merge` is visible but disabled.** It is accepted and passed to the
-API, which refuses it until #295 lands; the refusal is printed as it is, and
-nothing is created.
+**`--auto-merge` merges the run's pull request** with the `merge` step (#295,
+enabled by contract request 47). The API refuses it only while the `merge`
+profile is disabled; that refusal is printed as it is, and nothing is created.
 
 **Live rows.** Once a run is `RUNNING` (or `FIXING`, a CI fix round),
 `swarm_run` answers `attach_with: /sc attach <workflow_id>` and `sc run show`

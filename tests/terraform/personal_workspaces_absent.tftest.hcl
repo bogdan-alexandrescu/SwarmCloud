@@ -12,8 +12,8 @@
 #      release); and every authoritative SECRET binding is on a secret named for
 #      a key of var.tenants, never a person's;
 #   3. a person cannot enter var.tenants: terraform/infra refuses a
-#      `kind = "user"` tenant whose principal is not a service account (u-bogdan
-#      excepted until lane W9 moves it out, §3.3);
+#      `kind = "user"` tenant whose principal is not a service account, with
+#      no exception since lane W9 moved u-bogdan out (§3.3);
 #
 # and the one Terraform layer that touches personal workers at all -- the
 # bootstrap's workspace job -- names no person: its grants are to the deployer,
