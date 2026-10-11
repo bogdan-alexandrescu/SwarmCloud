@@ -630,12 +630,229 @@ def test_the_reconciler_names_a_tenant_namespace_exactly_as_the_dispatcher_does(
                created_at=utcnow(), namespace=f"{NS}smoke-legacy"),
         Tenant(tenant_id="eng", kind="group", principal="eng@saga.xyz",
                created_at=utcnow(), namespace=ENG_NS),
+        # OUTSIDE the prefix: the 2026-10-11 u-bogdan document. Both sides must
+        # ignore it for the same derived name, or the reconciler reads a
+        # namespace the dispatcher no longer writes to.
+        Tenant(tenant_id="u-bogdan", kind="user", principal="bogdan@saga.xyz",
+               created_at=utcnow(), namespace="swarm-u-bogdan"),  # namespace-prefix-exempt: stale, on purpose
+        # The bare prefix names no tenant's namespace at all.
+        Tenant(tenant_id="smoke", kind="group", principal="smoke@saga.xyz",
+               created_at=utcnow(), namespace=NS),
     ]
     for dispatcher in dispatchers:
         for tenant in tenants:
             assert backend.namespace_for(tenant.tenant_id, tenant.namespace) == (
                 dispatcher.namespace_for(tenant)
             ), tenant
+
+
+# ---------------------------------------------------------------------------
+# A stored namespace is verified, not trusted (owner decision 2026-10-11)
+# ---------------------------------------------------------------------------
+#
+# tenants/u-bogdan stored `swarm-u-bogdan`, the pre-2026-09-23 spelling, and
+# both services used it unchecked: GKE Jobs went to a namespace that does not
+# exist (403 `jobs.batch is forbidden`, docs/gke-dispatch-403.md).
+
+
+@pytest.fixture
+def fresh_mismatch_log():
+    """Each test starts with no tenant logged this hour, in both images.
+
+    The dedupe is process-wide by design, so a test that ran earlier in the
+    same worker would otherwise have used up a tenant's entry.
+    """
+    from reconciler import backends as reconciler_backends
+    from scheduler import dispatch as scheduler_dispatch
+
+    # getattr, so a build without the registry fails on the namespace it
+    # returns rather than here, in setup.
+    registries = [getattr(m, "_namespace_mismatch_due", None)
+                  for m in (scheduler_dispatch, reconciler_backends)]
+    for registry in registries:
+        if registry is not None:
+            registry.clear()
+    yield
+    for registry in registries:
+        if registry is not None:
+            registry.clear()
+
+
+def _mismatch_records(caplog) -> list[dict[str, Any]]:
+    """The scheduler's mismatch entries, as Cloud Logging receives them."""
+    from swarm_common.logging_setup import CloudLoggingFormatter
+
+    formatter = CloudLoggingFormatter()
+    return [
+        json.loads(formatter.format(record))
+        for record in caplog.records
+        if record.name == "scheduler.dispatch"
+        and getattr(record, "event", None) == "tenant_namespace_mismatch"
+    ]
+
+
+def _reconciler_mismatches(stream: io.StringIO) -> list[dict[str, Any]]:
+    return [l for l in log_lines(stream) if l.get("event") == "tenant_namespace_mismatch"]
+
+
+def _tenant(tenant_id: str, namespace: str | None) -> Tenant:
+    return Tenant(tenant_id=tenant_id, kind="user", principal=f"{tenant_id}@saga.xyz",
+                  created_at=utcnow(), namespace=namespace)
+
+
+def test_a_stored_namespace_outside_the_prefix_is_ignored_and_logged_at_error_by_the_scheduler(
+    fresh_mismatch_log, caplog
+):
+    caplog.set_level("DEBUG", logger="scheduler.dispatch")
+    dispatcher = GkeJobDispatcher(scheduler_settings(),
+                                  target=GkeTarget("10.0.0.1", "/dev/null"))
+
+    used = dispatcher.namespace_for(_tenant("u-bogdan", "swarm-u-bogdan"))
+
+    assert used == f"{NS}u-bogdan", "the stale spelling must not be dispatched into"
+    [entry] = _mismatch_records(caplog)
+    assert entry["severity"] == "ERROR"
+    assert {k: entry[k] for k in ("event", "tenant_id", "stored", "derived")} == {
+        "event": "tenant_namespace_mismatch",
+        "tenant_id": "u-bogdan",
+        "stored": "swarm-u-bogdan",
+        "derived": f"{NS}u-bogdan",
+    }
+
+
+def test_a_stored_namespace_outside_the_prefix_is_ignored_and_logged_at_error_by_the_reconciler(
+    fresh_mismatch_log
+):
+    stream = io.StringIO()
+    backend = GkeBackend(namespace_prefix=NS, batch_api=RbacBatchApi(),
+                         core_api=RbacCoreApi(), logger=build_logger(stream))
+
+    used = backend.namespace_for("u-bogdan", "swarm-u-bogdan")
+
+    assert used == f"{NS}u-bogdan", "the reconciler must read where the dispatcher writes"
+    [entry] = _reconciler_mismatches(stream)
+    assert entry["severity"] == "ERROR"
+    assert entry["component"] == "reconciler"
+    assert {k: entry[k] for k in ("event", "tenant_id", "stored", "derived")} == {
+        "event": "tenant_namespace_mismatch",
+        "tenant_id": "u-bogdan",
+        "stored": "swarm-u-bogdan",
+        "derived": f"{NS}u-bogdan",
+    }
+
+
+def test_a_stored_namespace_inside_the_prefix_is_kept_and_logged_at_warning_by_both(
+    fresh_mismatch_log, caplog
+):
+    """The `-canary` rename `kubernetes/render.py --namespace` allows.
+
+    The namespace's RBAC and KSA were applied there, so overruling it would
+    break dispatch; it is kept, and said once.
+    """
+    caplog.set_level("DEBUG", logger="scheduler.dispatch")
+    canary = f"{NS}eng-canary"
+    dispatcher = GkeJobDispatcher(scheduler_settings(),
+                                  target=GkeTarget("10.0.0.1", "/dev/null"))
+    stream = io.StringIO()
+    backend = GkeBackend(namespace_prefix=NS, batch_api=RbacBatchApi(),
+                         core_api=RbacCoreApi(), logger=build_logger(stream))
+
+    assert dispatcher.namespace_for(_tenant("eng", canary)) == canary
+    assert backend.namespace_for("eng", canary) == canary
+
+    [scheduler_entry] = _mismatch_records(caplog)
+    [reconciler_entry] = _reconciler_mismatches(stream)
+    for entry in (scheduler_entry, reconciler_entry):
+        assert entry["severity"] == "WARNING", entry
+        assert (entry["tenant_id"], entry["stored"], entry["derived"]) == (
+            "eng", canary, ENG_NS
+        ), entry
+
+
+def test_a_stored_namespace_equal_to_the_derived_one_logs_nothing(fresh_mismatch_log, caplog):
+    caplog.set_level("DEBUG", logger="scheduler.dispatch")
+    dispatcher = GkeJobDispatcher(scheduler_settings(), target=None)
+    stream = io.StringIO()
+    backend = GkeBackend(namespace_prefix=NS, batch_api=RbacBatchApi(),
+                         core_api=RbacCoreApi(), logger=build_logger(stream))
+
+    assert dispatcher.namespace_for(_tenant("eng", ENG_NS)) == ENG_NS
+    assert dispatcher.namespace_for(_tenant("eng", None)) == ENG_NS
+    assert backend.namespace_for("eng", ENG_NS) == ENG_NS
+    assert backend.namespace_for("eng", None) == ENG_NS
+    assert _mismatch_records(caplog) == []
+    assert _reconciler_mismatches(stream) == []
+
+
+def test_a_mismatch_is_logged_once_per_tenant_per_process_per_hour_by_both(
+    fresh_mismatch_log, caplog, monkeypatch
+):
+    """The dispatch loop and every reconciliation pass ask on every call.
+
+    One entry per tenant per hour is what the alert needs; one per task would
+    bury it. Process-wide, so a second dispatcher or backend in the same
+    process (the reconciler builds its backends twice) does not log again.
+    """
+    from reconciler import backends as reconciler_backends
+    from scheduler import dispatch as scheduler_dispatch
+
+    now = [1000.0]
+    for module in (scheduler_dispatch, reconciler_backends):
+        registry = getattr(module, "_namespace_mismatch_due", None)
+        if registry is not None:
+            monkeypatch.setattr(registry, "_clock", lambda: now[0])
+    caplog.set_level("DEBUG", logger="scheduler.dispatch")
+    stream = io.StringIO()
+
+    def ask_everything() -> None:
+        for _ in range(2):
+            dispatcher = GkeJobDispatcher(scheduler_settings(), target=None)
+            backend = GkeBackend(namespace_prefix=NS, batch_api=RbacBatchApi(),
+                                 core_api=RbacCoreApi(), logger=build_logger(stream))
+            for _ in range(3):
+                assert dispatcher.namespace_for(_tenant("u-bogdan", "swarm-u-bogdan")) == (
+                    f"{NS}u-bogdan"
+                )
+                assert backend.namespace_for("u-bogdan", "swarm-u-bogdan") == f"{NS}u-bogdan"
+                dispatcher.namespace_for(_tenant("eng", "swarm-eng"))
+                backend.namespace_for("eng", "swarm-eng")
+
+    def tenants_logged() -> tuple[list[str], list[str]]:
+        return (
+            sorted(e["tenant_id"] for e in _mismatch_records(caplog)),
+            sorted(e["tenant_id"] for e in _reconciler_mismatches(stream)),
+        )
+
+    ask_everything()
+    assert tenants_logged() == (["eng", "u-bogdan"], ["eng", "u-bogdan"])
+
+    now[0] += 3599.0
+    ask_everything()
+    assert tenants_logged() == (["eng", "u-bogdan"], ["eng", "u-bogdan"]), "within the hour"
+
+    now[0] += 2.0
+    ask_everything()
+    assert tenants_logged() == (
+        ["eng", "eng", "u-bogdan", "u-bogdan"],
+        ["eng", "eng", "u-bogdan", "u-bogdan"],
+    ), "an hour later the still-wrong document is said again"
+
+
+def test_the_mismatch_metric_counts_the_event_both_services_log():
+    """The event name, compared with the FILTER of the metric that counts it.
+
+    Parsed, comments removed, as for the reconciler's other alerts above: the
+    file's header quotes the event, so a text search would pass on any filter.
+    """
+    from reconciler import backends as reconciler_backends
+    from scheduler import dispatch as scheduler_dispatch
+
+    event = scheduler_dispatch.TENANT_NAMESPACE_MISMATCH
+    assert reconciler_backends.TENANT_NAMESPACE_MISMATCH == event
+    tf = (REPO / "terraform" / "modules" / "monitoring" / "tenant_namespace.tf").read_text()
+    body = hcl_block(hcl_tokens(tf), "resource", "google_logging_metric",
+                     "tenant_namespace_mismatch")
+    assert f'jsonPayload.event="{event}"' in hcl_literals(hcl_attribute(body, "filter"))
 
 
 #: Tenant ids that exercise EVERY branch of the dispatcher's `sanitize_name`,

@@ -61,6 +61,8 @@ import hashlib
 import os
 import re
 import tempfile
+import threading
+import time
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from enum import Enum
@@ -1204,6 +1206,95 @@ class GkeConnection:
     ca_cert_path: str
 
 
+# ---------------------------------------------------------------------------
+# A stored tenant namespace is VERIFIED, not trusted (owner decision 2026-10-11)
+# ---------------------------------------------------------------------------
+#
+# THE DISPATCHER'S RULE, copied because this image cannot import
+# `scheduler.dispatch` (its block comment over `verified_namespace` says why the
+# rule exists: `tenants/u-bogdan` stored the pre-2026-09-23 spelling
+# `swarm-u-bogdan`, and dispatch went to a namespace that does not exist).
+# A stored value outside the authority prefix is IGNORED for the derived name
+# and logged at ERROR; one inside it but different is KEPT and logged at
+# WARNING. The reconciler must agree, or it reads one namespace while the
+# dispatcher writes another and every task there looks abandoned.
+# tests/unit/control_plane/test_reconciler_gke_namespaced.py pins the two.
+
+#: The event name the monitoring module's log-based metric counts.
+TENANT_NAMESPACE_MISMATCH = "tenant_namespace_mismatch"
+
+#: One entry per tenant per process per this many seconds. A pass asks for
+#: every tenant's namespace several times, every minute.
+TENANT_NAMESPACE_MISMATCH_LOG_INTERVAL_S = 3600.0
+
+
+class _OncePerInterval:
+    """Says yes for a key at most once per `interval_s`, process-wide.
+
+    Module-level rather than per backend: `service.build_backends` runs twice
+    per process, and "once per process" has to hold across both.
+    """
+
+    def __init__(self, interval_s: float) -> None:
+        self._interval_s = interval_s
+        self._last: dict[str, float] = {}
+        self._lock = threading.Lock()
+        self._clock = time.monotonic
+
+    def __call__(self, key: str) -> bool:
+        now = self._clock()
+        with self._lock:
+            last = self._last.get(key)
+            if last is not None and now - last < self._interval_s:
+                return False
+            self._last[key] = now
+            return True
+
+    def clear(self) -> None:
+        with self._lock:
+            self._last.clear()
+
+
+_namespace_mismatch_due = _OncePerInterval(TENANT_NAMESPACE_MISMATCH_LOG_INTERVAL_S)
+
+
+def verified_namespace(
+    tenant_id: str, stored: Any, derived: str, prefix: str, logger: Any | None
+) -> str:
+    """`stored` if it is inside `prefix`, else `derived`; logs any disagreement.
+
+    `logger` is a `reconciler.logs.StructuredLogger`, whose keyword fields land
+    at the top of the JSON line (jsonPayload.event, jsonPayload.tenant_id).
+    """
+    stored = str(stored) if stored else ""
+    if not stored or stored == derived:
+        return derived
+    trusted = bool(prefix) and stored.startswith(prefix) and len(stored) > len(prefix)
+    if logger is not None and _namespace_mismatch_due(tenant_id):
+        fields = {
+            "event": TENANT_NAMESPACE_MISMATCH,
+            "tenant_id": tenant_id,
+            "stored": stored,
+            "derived": derived,
+            "used": stored if trusted else derived,
+        }
+        if trusted:
+            logger.warning(
+                f"{TENANT_NAMESPACE_MISMATCH} tenant={tenant_id} stored={stored!r} "
+                f"derived={derived!r}: kept, it is inside {prefix!r}",
+                **fields,
+            )
+        else:
+            logger.error(
+                f"{TENANT_NAMESPACE_MISMATCH} tenant={tenant_id} stored={stored!r} "
+                f"derived={derived!r}: IGNORED, it is outside {prefix!r}; reading the "
+                "derived namespace. Repair the tenant document "
+                "(scripts/tenant-namespace-audit.sh)",
+                **fields,
+            )
+    return stored if trusted else derived
+
+
 class GkeBackend:
     """GKE Autopilot: browser and oversized profiles.
 
@@ -1335,14 +1426,15 @@ class GkeBackend:
 
         The SAME rule as `scheduler.dispatch.GkeJobDispatcher.namespace_for`,
         in the same order and through the same sanitiser: the `namespace` the
-        tenant document records wins, and only a tenant with none falls back to
-        `sanitize_name(prefix + tenant id)` -- the dispatcher's function, copied
-        above because this image cannot import it, 63-character truncation and
-        hash included. The precedence matters as much as the sanitiser: the
-        dispatcher prefers the recorded value over its own template, so a
-        reconciler that derived the name from the prefix alone would read one
-        namespace while the dispatcher wrote into another, and every task there
-        would look abandoned.
+        tenant document records wins IF it is inside the prefix
+        (`verified_namespace`, owner decision 2026-10-11); a tenant with none, or
+        with one outside the prefix, gets `sanitize_name(prefix + tenant id)` --
+        the dispatcher's function, copied above because this image cannot import
+        it, 63-character truncation and hash included. The precedence matters
+        as much as the sanitiser: the dispatcher prefers a verified recorded
+        value over its own template, so a reconciler that derived the name from
+        the prefix alone would read one namespace while the dispatcher wrote
+        into another, and every task there would look abandoned.
 
         The prefix is not restated here: it is the one this backend was built
         with, `ReconcilerConfig.namespace_prefix`, which
@@ -1352,9 +1444,8 @@ class GkeBackend:
         on the same tenants, long ids included, and pins the two sanitisers to
         each other.
         """
-        if recorded:
-            return str(recorded)
-        return sanitize_name(f"{self._prefix}{tenant_id}")
+        derived = sanitize_name(f"{self._prefix}{tenant_id}")
+        return verified_namespace(tenant_id, recorded, derived, self._prefix, self._log)
 
     def namespace_of(self, execution_name: str | None) -> str | None:
         """The namespace part of a GKE attempt's `execution_name`.
