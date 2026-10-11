@@ -149,6 +149,7 @@ import {
 } from './types'
 import {
   MergeStepCard,
+  MoreRight,
   SourceNote,
   StepInspector,
   StrayMark,
@@ -4962,7 +4963,7 @@ function WorkflowList({
           )}
         </p>
       ) : (
-        <div className="table-wrap is-scroll wfl-scroll">
+        <MoreRight className="table-wrap is-scroll wfl-scroll">
           <table className="wfl-table">
             <ListHead />
             <tbody>
@@ -4980,7 +4981,7 @@ function WorkflowList({
               ))}
             </tbody>
           </table>
-        </div>
+        </MoreRight>
       )}
       <p className="wfl-foot">
         {rows.length} of {board.workflows.length} read · {SORT_LABEL[query.sort]} · 100 per read

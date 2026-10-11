@@ -20,6 +20,17 @@
 
 /* ---- The list, full width, with no sideways scroll at 1440 (#503) ------- */
 
+/* BELOW 900 THE LIST SCROLLS SIDEWAYS, AND SAYS SO (VQA V109). At 400 its
+   columns were cut at the card's edge mid-word with nothing saying more lay
+   to the right (a headless scrollbar paints nothing, and a phone's is
+   transient). The right edge fades while columns are off it -- `MoreRight`,
+   the step table's #109 cue -- and only then, so the last column in view is
+   never dimmed. */
+.wfl-scroll.has-more {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
+  mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
+}
+
 /* AT 900 AND UP THE TABLE IS LAID OUT FIXED AT ITS WRAPPER'S WIDTH, every
    column a share of it. It was 1448px of content in a 1054px wrapper: most of
    Owner, and all of Started and Duration, behind a horizontal scroll, and the
