@@ -34,12 +34,24 @@
 .ur-stale-why { margin: 0 0 var(--ctl-s2); font-size: var(--t-micro); color: var(--s-warn); }
 
 /* ---- screen 2, list B: one card per repository ----------------------------- */
-.ur-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
+/* A row of cards is one height (V118): `start` left each card as tall as its
+   own text, so a row's bottoms were ragged. The actions sit on the bottom edge. */
+.ur-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
 .ur-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
-.ur-cmeta { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); margin: 0; }
-.ur-cmeta > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.ur-cmeta > span + span::before { content: "·"; margin-right: 3px; }
-.ur-cmeta b { color: var(--text); font-weight: 550; }
+.ur-card > .ur-cacts { margin-top: auto; }
+/* A META LINE'S "·" NEVER STARTS A LINE (V117). The dot is drawn in the gap to
+   the left of each item, outside the item's box; the item that starts a
+   wrapped line starts at the line's left edge, so its dot falls left of the
+   container and `overflow-x: clip` cuts it. An item is inline-block, not
+   inline-flex: a flex item's gap pushed a following text run off its <b>
+   ("5c4b3a2 , read 3m ago", V116). An item still moves to the next line
+   whole rather than break; only one wider than the line wraps inside, where
+   `nowrap` used to push it past the clip. The same run as styles.css's
+   `.ctl-foot-run`, with the dot silent to a screen reader. */
+.ur-cmeta, .ur-meta { display: flex; flex-wrap: wrap; gap: 4px var(--ctl-s3); align-items: center; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); margin: 0; overflow-x: clip; overflow-clip-margin: 2px; }
+.ur-cmeta > span, .ur-meta > span { position: relative; display: inline-block; max-width: 100%; }
+.ur-cmeta > span + span::before, .ur-meta > span + span::before { content: '·' / ''; position: absolute; left: calc(var(--ctl-s3) / -2); transform: translateX(-50%); }
+.ur-cmeta b, .ur-meta b { color: var(--text); font-weight: 550; }
 .ur-tm { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 4px 8px; align-items: center; font-size: var(--t-micro); }
 .ur-tm > b { text-align: right; font-family: var(--mono); font-weight: 500; white-space: nowrap; }
 /* What stands behind the modules figure: edges and always-run tests (QA G4-03). */
@@ -85,10 +97,7 @@
 .ur-radio { flex-wrap: wrap; height: auto; min-height: var(--h-ctl); }
 
 /* ---- screen 4, Detail A: one repository's tabs ----------------------------- */
-.ur-meta { display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); margin: 0; }
-.ur-meta > span { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
-.ur-meta > span + span::before { content: "·"; margin-right: 3px; }
-.ur-meta b { color: var(--text); font-weight: 550; }
+/* `.ur-meta` is drawn with `.ur-cmeta` above (V116, V117). */
 .ur-kv { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); overflow: hidden; }
 .ur-tile { padding: 9px 12px; border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 .ur-tile:first-child { border-left: 0; }
@@ -161,12 +170,16 @@
 /* ---- screen 11, Settings A ------------------------------------------------- */
 .ur-locked { margin: 0; }
 .ur-lang-h, .ur-lang { display: grid; grid-template-columns: 110px minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr) 100px; gap: 10px; align-items: center; font-size: var(--t-micro); padding: 7px 0; border-top: 1px solid var(--line); }
-.ur-lang-h { color: var(--text-dim); border-top: 0; padding-top: 0; }
+.ur-lang-h { color: var(--text-dim); border-top: 0; padding-top: 0; white-space: nowrap; }
 .ur-lang small { color: var(--text-dim); font-size: var(--t-micro); }
 .ur-lang code { overflow-wrap: anywhere; }
 .ur-slider { display: flex; align-items: center; gap: 10px; font-size: var(--t-micro); }
 .ur-slider input[type='range'] { width: 200px; accent-color: var(--sk-ac); }
 .ur-policy .ur-radio + .ur-radio { margin-top: 8px; }
+/* A read-only group is drawn at full strength (V046): the shared disabled
+   fade (.45) put the served value at 2-2.8:1, so the one thing the card
+   exists to show was unreadable. The buttons stay disabled; only the fade goes. */
+.ur-radio.is-readonly > button:disabled { opacity: 1; cursor: default; }
 .ur-cap { display: inline-flex; align-items: center; gap: 4px; font-size: var(--t-micro); line-height: var(--lh-micro); padding: 2px 7px; border-radius: var(--r-pill); white-space: nowrap; cursor: help; }
 .ur-cap svg { width: 12px; height: 12px; flex: none; }
 .ur-cap.is-ok { background: var(--s-liveb); color: var(--s-live); }
@@ -230,6 +243,10 @@ table.ur-mx tr.ur-grp td { background: var(--surface-2); font-weight: 600; text-
   .ur-fgrid { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   .ur-lang-h { display: none; }
   .ur-lang { grid-template-columns: minmax(0, 1fr) auto; }
+  /* A module's purpose takes its own full-width line under the path (V120):
+     beside a 180px path column at 400px it was cut to a few words. */
+  .ur-mrow { grid-template-columns: minmax(0, 1fr) 54px; row-gap: 2px; }
+  .ur-mrow > span { grid-column: 1 / -1; grid-row: 2; white-space: normal; overflow: visible; }
   .ur-run { grid-template-columns: 18px 70px minmax(0, 1fr) auto; }
   .ur-run small { display: none; }
   .ur-tmap-row, .ur-always-row, .ur-suite-row { grid-template-columns: minmax(0, 1fr); }
