@@ -164,14 +164,15 @@ describe('#98: one read age per screen', () => {
     // head beside the control.
     render(<FrameAge.Provider value={true}>{screenOf({ status: 'ok', data: { rows: ['a'] }, fetchedAt: Date.now() })}</FrameAge.Provider>)
     await waitFor(() => expect(note()).toBe('1 rows'))
-    expect(refresh(), 'the refresh control went without its age').toMatch(/^⟳ \d+ s$/)
+    expect(refresh(), 'the refresh control went without its age').toMatch(/^⟳ read \d+ s ago$/)
     expect(document.querySelectorAll('.c-phead .c-refresh')).toHaveLength(1)
     expect(document.querySelector('.ctl-head-age'), 'a second age in the head').toBeNull()
-    // Per text node: the body's textContent runs `⟳ 0 s` into `1 rows`.
+    // Per text node: the body's textContent runs `⟳ read 0 s ago` into
+    // `1 rows`. A node that says an age counts once, however it phrases it.
     const ages: string[] = []
     const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
     for (let n = walk.nextNode(); n !== null; n = walk.nextNode()) {
-      ages.push(...((n.textContent ?? '').match(/\b\d+ (s|min|h|d)\b|\bread\b/g) ?? []))
+      if (/\b\d+ (s|min|h|d)\b|\bread\b/.test(n.textContent ?? '')) ages.push(n.textContent ?? '')
     }
     expect(ages, 'the age is said more than once on the screen').toHaveLength(1)
   })
@@ -180,7 +181,7 @@ describe('#98: one read age per screen', () => {
     // MUTATION: drop the age outside the frame, or stop marking an aged read
     // -- a read older than AGED_AFTER_MS is said to be one, in words.
     const first = render(screenOf({ status: 'ok', data: { rows: ['a'] }, fetchedAt: Date.now() }))
-    await waitFor(() => expect(refresh()).toMatch(/^⟳ \d+ s$/))
+    await waitFor(() => expect(refresh()).toMatch(/^⟳ read \d+ s ago$/))
     first.unmount()
 
     render(
@@ -454,9 +455,11 @@ describe('#139: the phone header compacts on scroll, and a long page has a way b
     expect(painted(pick(f, '[data-k="down"] .sk-pbar'), 'position', PHONE), 'the header scrolls away').toBe('sticky')
   })
 
-  it('offers `Top` on the phone only, sticky above the dock, and it goes to the top', async () => {
+  it('offers `Top` on the phone only, in the sticky header, and it goes to the top', async () => {
     // MUTATION: never render it, render it on the desktop, or make it do
-    // nothing.
+    // nothing. It moved out of the page into the header (visual QA V009,
+    // 2026-10-11): a pill floating over the scrollport covered what
+    // scrolled under it at 400px. Its 44px target is its `::after`.
     window.history.replaceState(null, '', '/help')
     render(<App />)
     const scroller = document.querySelector<HTMLElement>('.ctl-scroll')!
@@ -475,11 +478,13 @@ describe('#139: the phone header compacts on scroll, and a long page has a way b
       scroller.scrollTop = 4000
       scroller.dispatchEvent(new Event('scroll'))
     })
-    const top = screen.getByRole('button', { name: /Top/ })
-    expect(painted(top, 'display', PHONE)).toBe('flex')
+    const top = screen.getByRole('button', { name: /top of the page/ })
+    expect(top.closest('.sk-pbar'), '`Top` is drawn over the page, not in the header').not.toBeNull()
+    expect(top.closest('.ctl-scroll')).toBeNull()
+    expect(painted(top, 'display', PHONE)).toBe('inline-flex')
     expect(painted(top, 'display', WIDE)).toBe('none')
-    expect(painted(top, 'position', PHONE)).toBe('sticky')
-    expect(painted(top, 'min-height', PHONE), 'not a touch target').toBe('44px')
+    expect(painted(top, 'flex', PHONE), 'the title should give way, not `Top`').toBe('none')
+    expect(painted(top, 'height', PHONE, 'after'), 'not a touch target').toBe('44px')
 
     await act(async () => {
       fireEvent.click(top)

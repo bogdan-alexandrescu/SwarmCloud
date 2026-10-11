@@ -70,7 +70,7 @@ async function at(path: string): Promise<HTMLElement> {
 // #503 Shell: the panel's page rows have icons and counts
 // ---------------------------------------------------------------------------
 
-describe('#503: the panel draws an icon per page and a count beside Live, Waiting and Workflows', () => {
+describe('#503: the panel draws an icon per page and a count beside Live and Waiting', () => {
   it('draws an icon on every page row', async () => {
     // MUTATION: drop `<Icon name={p.icon} />` from PanelPages.
     const c = await at('/agents/live')
@@ -91,13 +91,18 @@ describe('#503: the panel draws an icon per page and a count beside Live, Waitin
     expect([counts.live?.n, counts.waiting?.n]).toEqual([5, 2])
   })
 
-  it('draws the Workflows count as a dash with its reason: no route serves it', async () => {
-    // MUTATION: draw 0, or nothing, for a figure nobody measured.
+  it('draws no mark beside a row nobody counts: Workflows and Recent alike', async () => {
+    // Visual QA V150 (2026-10-11): Workflows carried a dash whose reason was
+    // only in a tooltip, beside a Recent that carried nothing -- two ways of
+    // not counting. A dash is for a count that was asked for and could not
+    // be read. MUTATION: draw a 0, or put the Workflows dash back.
     const c = await at('/agents/live')
     const wf = [...c.querySelectorAll('.sk-panel .sk-pk')].find((r) => r.textContent?.includes('Workflows'))!
-    const cnt = wf.querySelector('.sk-cnt')!
-    expect(cnt.textContent).toBe('—')
-    expect(cnt.getAttribute('title')).toMatch(/^not served/)
+    expect(wf.querySelector('.sk-cnt'), 'a mark beside Workflows').toBeNull()
+    const recent = [...c.querySelectorAll('.sk-panel .sk-kid')].find((k) => k.querySelector('span')?.textContent === 'Recent')!
+    expect(recent.querySelector('.sk-cnt'), 'a mark beside Recent').toBeNull()
+    expect(recent.getAttribute('title')).toMatch(/not counted/)
+    expect(panelCounts({ status: 'loading', since: 0 }, { status: 'loading', since: 0 }).workflows).toBeUndefined()
   })
 
   it('never draws a failed read as 0', () => {
