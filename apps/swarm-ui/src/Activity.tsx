@@ -1561,14 +1561,21 @@ export function TenantsScreen() {
                         </td>
                         <td role="cell" data-label="Enforced" className="n">
                           {/* To the tenant pool's own row on Pool limits, which
-                              is where this ceiling is changed (#134). */}
-                          <a
-                            className="ctl-link"
-                            href={`#admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`}
-                            title={`effective limit of tenant:${t.tenant_id} · configured ${t.max_active} · ${t.capacity_units}u`}
-                          >
+                              is where this ceiling is changed (#134). NOT A
+                              LINK WHERE THE READ HAS NO SUCH POOL (VQA V079):
+                              there is no row to go to, and an underlined dash
+                              read as a figure to follow. */}
+                          {typeof pools === 'object' && pools[`tenant:${t.tenant_id}`] === undefined ? (
                             <Enforced tenant={t} pools={pools} />
-                          </a>
+                          ) : (
+                            <a
+                              className="ctl-link"
+                              href={`#admin/limits?pool=${encodeURIComponent(`tenant:${t.tenant_id}`)}`}
+                              title={`effective limit of tenant:${t.tenant_id} · configured ${t.max_active} · ${t.capacity_units}u`}
+                            >
+                              <Enforced tenant={t} pools={pools} />
+                            </a>
+                          )}
                         </td>
                         <td role="cell" data-label="Configured" className="n">
                           {/* Max active, then capacity units: the two values
