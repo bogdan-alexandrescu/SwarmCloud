@@ -47,6 +47,40 @@ RUN pip install --no-cache-dir "playwright==${PLAYWRIGHT_VERSION}" \
  && rm -rf /var/lib/apt/lists/* \
  && chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"
 
+# THE LIVE BROWSER'S DISPLAY SIDECAR (docs/design/live-browser.md §3.1, §5.6;
+# lane L5, part of #1030). A `claude-code-browser` pod runs this same image
+# twice: once as the worker (uid 10001, the ENTRYPOINT below) and once as the
+# `display` native sidecar, which the dispatcher starts with its own command
+# (`python -m agent_worker.livegate`) under uid 10002. It needs:
+#
+#   * Xvfb -- the virtual display Chromium draws on. The sidecar starts it with
+#     `-nolisten tcp`, so its only socket is in the sidecar's own /tmp.
+#   * the `swarm-display` user, uid/gid 10002, DISPLAY_UID in
+#     apps/scheduler/scheduler/dispatch.py. The pod spec names the number so
+#     the cluster enforces it; the image names it so the process has a passwd
+#     entry (Chromium and Xvfb both look themselves up). No home and no login
+#     shell: HOME is the sidecar's memory /tmp.
+#   * the enterprise policy of §5.6, read by Chromium at start. Installed in
+#     BOTH managed-policy directories: /etc/opt/chrome/ is Google Chrome's,
+#     the one the design names, and /etc/chromium/ is Chromium's -- which is
+#     what Playwright's bundled build is. A policy in the wrong one of the two
+#     is silently ignored, so it goes in both. Root-owned and read-only to
+#     every uid: a person in control, or the agent, must not edit it.
+#     Two entries of the design's list are written in Chromium's URL-filter
+#     syntax: `*.svc.cluster.local` is `svc.cluster.local` (a bare host
+#     already covers its subdomains; a leading `*.` is not a valid filter),
+#     and `cluster.local` is added for the rest of the cluster's names.
+#     `chrome://newtab` is allowed back by URLAllowlist, which wins over the
+#     blocklist.
+RUN apt-get update \
+ && apt-get install --no-install-recommends -y xvfb \
+ && rm -rf /var/lib/apt/lists/* \
+ && /usr/sbin/groupadd --gid 10002 swarm-display \
+ && /usr/sbin/useradd --uid 10002 --gid 10002 --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin swarm-display \
+ && install -d -m 0755 /etc/opt/chrome/policies/managed/ /etc/chromium/policies/managed/
+COPY --chmod=0444 images/agent-runtime-browser/chromium-policy.json /etc/opt/chrome/policies/managed/swarm.json
+COPY --chmod=0444 images/agent-runtime-browser/chromium-policy.json /etc/chromium/policies/managed/swarm.json
+
 USER swarm:swarm
 WORKDIR /workspace
 
@@ -64,5 +98,12 @@ with sync_playwright() as p:
     browser.close()
 print("chromium launches headless as a non-root user")
 PY
+
+# And that the display sidecar's pieces are where the dispatcher expects them:
+# the uid it runs the sidecar as, Xvfb, and a policy Chromium can parse.
+RUN test "$(id -u swarm-display)" = 10002 \
+ && test -x /usr/bin/Xvfb \
+ && python -c 'import json, sys; [json.load(open(p)) for p in sys.argv[1:]]' \
+      /etc/opt/chrome/policies/managed/swarm.json /etc/chromium/policies/managed/swarm.json
 
 ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "agent_worker"]
