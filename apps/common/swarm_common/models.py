@@ -377,6 +377,17 @@ class Task:
     #: Written by swarm-api only, in the same write, and signed with it. None is
     #: "write", today's behaviour, for backward compatibility.
     forge_access: str | None = None
+    #: The live-browser hand-off this task's agent is waiting on, while its pod
+    #: HOLDS (docs/design/live-browser.md section 4.3): `reason`, `expect`,
+    #: `requested_at`, `deadline`, `controller` (None, or the person in control).
+    #: None when nothing is waiting. The task stays RUNNING and keeps its lease
+    #: while this is set, so it is counted as any RUNNING task is (invariants
+    #: 1 and 3) and no reader of the state had to change. WRITTEN BY swarm-api
+    #: ONLY, from a worker route signed with the attempt key; never accepted
+    #: from a caller, and not in the spec signature: it is attempt state, not
+    #: the task's spec. Contract request 70 (LB-C, the owner's Q2: the field,
+    #: not a new state), accepted by the owner 2026-10-11 (#1030).
+    human_wait: dict[str, Any] | None = None
 
     def __post_init__(self) -> None:
         # Only the two fields of request 54: a document decoded before them is

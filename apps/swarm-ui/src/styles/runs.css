@@ -99,12 +99,20 @@
 .rn-history .rn-hstep { color: var(--text-dim); padding-left: 12px; }
 
 /* FOLDED TO ONE LINE (item 5): the heading and a short line are the
-   disclosure; a 32px target, the chevron the browser's own. */
+   disclosure; a 32px target. THE CHEVRON IS DRAWN HERE (visual QA V038,
+   2026-10-11): `display: flex` takes the summary out of `display: list-item`
+   and with it the browser's marker, so the Overlaps fold showed only its
+   heading, with nothing saying it opens. The same fix as `.sbf-runners-more`
+   (submit.css): no native marker, a `::before` that turns when open. */
 .rn-fold { min-width: 0; }
 .rn-fold > summary {
   display: flex; flex-wrap: wrap; align-items: center; gap: 0 10px; min-height: 32px;
-  cursor: pointer; list-style: revert;
+  cursor: pointer; list-style: none;
 }
+.rn-fold > summary::-webkit-details-marker { display: none; }
+.rn-fold > summary::marker { content: ''; }
+.rn-fold > summary::before { content: '\25B8'; flex: none; color: var(--text-dim); }
+.rn-fold[open] > summary::before { content: '\25BE'; }
 .rn-fold > summary > h3 { display: inline; }
 .rn-fold > summary:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: var(--ctl-radius-sm); }
 .rn-fold-b { display: grid; gap: 8px; min-width: 0; margin-top: 8px; }
