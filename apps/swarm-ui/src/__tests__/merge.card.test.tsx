@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowRead, WorkflowUsage } from '../api'
 import type { IssueRun, Task, TaskState, Workflow, WorkflowStep } from '../types'
+import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -415,10 +416,7 @@ describe('the workflow page', () => {
       data: { workflows: [w], taskById: new Map([['t_impl', opener()], ['t_merge', merged()]]), statesDetail: null },
       fetchedAt: T0,
     } satisfies Result<WorkflowBoard>)
-    api.loadWorkflow.mockResolvedValue({
-      status: 'error',
-      error: { kind: 'not_found', httpStatus: 404, code: null, message: 'no such workflow' },
-    })
+    api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
     render(<Routed initial="wf=wf_pr" />)
     const node = await waitFor(() => {
       const n = document.querySelector<HTMLElement>('button.node[data-step="merge"]')

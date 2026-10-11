@@ -697,6 +697,15 @@ token (invariant 9); a tenant with no `-git` secret is 409. A
 continuation-scoped account is refused before any read: `merge_pr` is new
 work, which that scope may not submit.
 
+**Its name (owner report 2026-10-11).** A `merge_pr` workflow whose caller
+gave no `title` or `label` was nameless: Claude Code titled its run, and the
+console listed it, by the bare `wf_` id. The bridge now sends
+`title: "Merge PR <number>"` when none is given (`workflows.MERGE_PR_TITLE`),
+and swarm-api stores `metadata.unit: "Merge PR <number>"` for any client that
+sends neither (`continuation.with_merge_pr_label`), so it is never nameless
+whoever submits it. No `#` before the number: GitHub can read `#N` in some
+places as a reference to that issue.
+
 **Not built:** the console's Submit forms do not offer `merge_pr` (another
 lane was editing them); the API and the bridge are the way in until then.
 
