@@ -111,10 +111,13 @@ def test_every_metadata_key_the_worker_reads_is_signed():
     # submission by design, so they are named here and nowhere else. So is a
     # merge step's CI wait (lane MS2), written by its own park and the wake
     # tick: reserved from callers, and read only to count refunds and carry
-    # `first_parked_at` from park to park.
+    # `first_parked_at` from park to park. And the live-browser hand-off's
+    # park-refund counter (lane LB-L4), read by the HUMAN_REQUIRED park exactly
+    # as the await park reads `child_await_resumes`.
     unsigned = worker_metadata_keys() - set(SIGNED_METADATA_KEYS) - {
         "child_await_resumes",
         "child_cascade",
+        "human_wait_resumes",
         "merge_wait",
     }
     assert not unsigned, (

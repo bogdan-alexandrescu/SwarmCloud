@@ -49,6 +49,17 @@ DRY RUN (§2.8). The same read and selection; it starts nothing and writes
 nothing, to Firestore or to GitHub, and returns each issue that would start
 and each passed over, with the reason.
 
+A REAL FIRING RECORDS THE SAME ANSWER (#1133). `create` once returned only
+the runs it made and dropped the selection: a firing whose repositories could
+not be read, whose issues were all passed over, or whose room was 0 ended
+`succeeded` with `work: []` and nothing saying which -- while its dry run
+listed an issue to start. Now `create` and `dry_run` share `select` and
+`describe`; `create` hands the description, with what it started and what
+was refused, to `firing.explain`, the firing stores it as `selection`, and a
+firing that started nothing carries `skip: NOTHING_STARTED` with
+`describe`'s `reason`: `no_room` (and the `bound`), `repositories_not_read`,
+`no_eligible_issue`, `no_open_issue` or `no_repository`.
+
 INVARIANTS. A firing creates issue runs, whose planners are ordinary QUEUED
 tasks admitted like any other (1-3); a waiting run is a document. Every read
 is the schedule's tenant's own (9). No caller-supplied image, command or
@@ -129,6 +140,9 @@ class Selection:
     #: How many runs this firing may still start, and what bounds it.
     room: int
     limits: dict[str, int] = field(default_factory=dict)
+    #: What a real firing started and which starts were refused, by `start`.
+    started: list[dict[str, str]] = field(default_factory=list)
+    start_failures: list[dict[str, str]] = field(default_factory=list)
 
 
 #: (the tenant's live runs, this firing's adopted runs) -> named upper bounds
@@ -226,15 +240,18 @@ def start(firing: Any, selection: Selection, options: RunOptions) -> list[dict[s
             if exc.status_code >= 500:
                 raise
             first_failure = first_failure or exc
+            selection.start_failures.append({"issue": candidate.ref.short, "error": exc.code})
             log.warning("schedule %s firing %s: %s not started (%s)", schedule_id,
                         firing.firing["firing_id"], candidate.ref.short, exc.code)
             continue
         except Exception as exc:  # noqa: BLE001 -- one issue's failure is its own, as in SWEEP
             first_failure = first_failure or exc
+            selection.start_failures.append({"issue": candidate.ref.short, "error": type(exc).__name__})
             log.warning("schedule %s firing %s: %s not started (%s)", schedule_id,
                         firing.firing["firing_id"], candidate.ref.short, type(exc).__name__)
             continue
         work.append(firing.recorded(_entry(run)))
+        selection.started.append({"issue": candidate.ref.short, "run_id": run.id})
         started += 1
     if started == 0 and not work and first_failure is not None:
         raise first_failure
@@ -256,7 +273,7 @@ def describe(selection: Selection, options: RunOptions) -> dict[str, Any]:
         passed.append({"issue": candidate.ref.short, "reason": f"room: {bound}"})
     if held_back:
         by_reason["room"] = by_reason.get("room", 0) + len(held_back)
-    return {
+    out: dict[str, Any] = {
         "would_start": [
             {"issue": c.ref.short,
              "updated_at": c.issue.updated_at.isoformat() if c.issue.updated_at else None}
@@ -272,7 +289,37 @@ def describe(selection: Selection, options: RunOptions) -> dict[str, Any]:
         "failures": list(report.failures),
         "truncated": report.truncated,
         "runs": options.as_dict(),
+        "bound": bound if selection.limits else None,
     }
+    if not chosen and not selection.adopted:
+        out["reason"] = nothing_reason(selection)
+    return out
+
+
+def nothing_reason(selection: Selection) -> str:
+    """Why a selection chose nothing: the `NOTHING_STARTED` skip's `reason` (#1133)."""
+    report = selection.report
+    if selection.candidates:
+        return "no_room"
+    if report.repositories == 0:
+        return "no_repository"
+    if report.skipped_by_reason:
+        return "no_eligible_issue"
+    if report.failures:
+        return "repositories_not_read"
+    return "no_open_issue"
+
+
+def fire(firing: Any, selection: Selection, options: RunOptions) -> list[dict[str, Any]]:
+    """`create`'s body for this type and `issue-plan-only`: start, then give the
+    firing the same description a dry run returns, with what was started."""
+    work = start(firing, selection, options)
+    firing.explain({
+        **describe(selection, options),
+        "started": list(selection.started),
+        "start_failures": list(selection.start_failures),
+    })
+    return work
 
 
 # --------------------------------------------------------------------------
@@ -283,7 +330,7 @@ def describe(selection: Selection, options: RunOptions) -> dict[str, Any]:
 def create(firing: Any) -> list[dict[str, Any]]:
     params = params_of(firing)
     selection = select(firing, params, limits=_limits(firing, params), max_live_runs=params.max_live_runs)
-    return start(firing, selection, run_options(firing.schedule, params.fix_rounds))
+    return fire(firing, selection, run_options(firing.schedule, params.fix_rounds))
 
 
 def dry_run(firing: Any) -> dict[str, Any]:
