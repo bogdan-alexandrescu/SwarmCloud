@@ -42,11 +42,14 @@ export interface LabelSpot {
   weight: number
 }
 
-/** Where a label went: below its node (the default), above it, or hidden until hover. */
+/** Where a label went: below its node (the default), above it, beside it, or hidden until hover. */
 export interface LabelPlace {
-  side: 'below' | 'above' | 'hidden'
+  side: 'below' | 'above' | 'right' | 'left' | 'hidden'
+  /** The text's anchor point; with `anchor`, how it hangs off that point. */
+  x: number
   /** The text's baseline. */
   y: number
+  anchor: 'middle' | 'start' | 'end'
 }
 
 /** A label's box, in the canvas's units: the 12px micro type at its average glyph width. */
@@ -54,35 +57,97 @@ const LABEL_CHAR_W = 6.2
 const LABEL_ASCENT = 11
 const LABEL_DESCENT = 3
 
+/** An edge as drawn: a straight segment between two node centres. */
+export interface LabelSegment {
+  x1: number
+  y1: number
+  x2: number
+  y2: number
+}
+
+/** A rectangle a label may not print over, in the canvas's units. */
+export type Box = { x0: number; x1: number; y0: number; y1: number }
+
+/** Where RepoGraph.tsx prints a cluster's heading (`.rg-clabel`, at x + 10, y + 16): a box no node label may cover. */
+export function clusterLabelBox(b: { cluster: string; x: number; y: number }): Box {
+  const y = b.y + 16
+  return { x0: b.x + 10, x1: b.x + 10 + b.cluster.length * LABEL_CHAR_W, y0: y - LABEL_ASCENT, y1: y + LABEL_DESCENT }
+}
+
+/** Whether a disc crosses a box: the box's nearest point to the centre is inside the disc. */
+function discHitsBox(d: { x: number; y: number; r: number }, b: Box): boolean {
+  const nx = Math.max(b.x0, Math.min(d.x, b.x1))
+  const ny = Math.max(b.y0, Math.min(d.y, b.y1))
+  return (d.x - nx) ** 2 + (d.y - ny) ** 2 < d.r * d.r
+}
+
+/** Whether a segment crosses a box (Liang-Barsky clipping). */
+function segmentHitsBox(s: LabelSegment, b: Box): boolean {
+  const dx = s.x2 - s.x1
+  const dy = s.y2 - s.y1
+  let t0 = 0
+  let t1 = 1
+  const clip = (p: number, q: number): boolean => {
+    if (p === 0) return q >= 0
+    const t = q / p
+    if (p < 0) {
+      if (t > t1) return false
+      if (t > t0) t0 = t
+    } else {
+      if (t < t0) return false
+      if (t < t1) t1 = t
+    }
+    return true
+  }
+  return clip(-dx, s.x1 - b.x0) && clip(dx, b.x1 - s.x1) && clip(-dy, s.y1 - b.y0) && clip(dy, b.y1 - s.y1) && t0 < t1
+}
+
 /**
- * THE LABEL COLLISION PASS (QA G4-11). At 1440 the package labels of a tight
- * cluster (`apps/agent-worker (2)`, `apps/quota-broker (1)`) printed over
- * each other. Labels are placed busiest first, each below its node; one whose
- * box would cross a placed box goes above its node instead, and one that
- * fits in neither place is hidden until its node is hovered, focused or
- * picked -- the node itself and its accessible name are always drawn.
+ * THE LABEL COLLISION PASS (QA G4-11, then V045). At 1440 the package labels
+ * of a tight cluster (`apps/agent-worker (2)`, `apps/quota-broker (1)`)
+ * printed over each other; after that was fixed, labels still printed over
+ * the NEIGHBOURING discs and through the edges (visual QA V045), because only
+ * label boxes were obstacles, and over the cluster headings. Labels are
+ * placed busiest first. A place is usable when its box crosses no placed
+ * label, no cluster heading and no other node's disc; of
+ * the usable places, below its node is preferred, then above, then right of
+ * it and left of it, and a place an edge runs through is taken only when
+ * every usable place has one (the text's halo in repograph.css keeps it
+ * legible then). A label with no usable
+ * place is hidden until its node is hovered, focused or picked -- the node
+ * itself and its accessible name are always drawn.
  */
-export function placeLabels(spots: readonly LabelSpot[]): Map<string, LabelPlace> {
+export function placeLabels(spots: readonly LabelSpot[], segments: readonly LabelSegment[] = [], reserved: readonly Box[] = []): Map<string, LabelPlace> {
   const order = [...spots].sort((a, b) => b.weight - a.weight || a.id.localeCompare(b.id))
-  const boxes: { x0: number; x1: number; y0: number; y1: number }[] = []
+  const boxes: Box[] = [...reserved]
   const out = new Map<string, LabelPlace>()
   for (const s of order) {
-    const half = (s.text.length * LABEL_CHAR_W) / 2
+    const w = s.text.length * LABEL_CHAR_W
     const below = s.y + s.r + 13
     const above = s.y - s.r - 5
-    const boxAt = (y: number) => ({ x0: s.x - half, x1: s.x + half, y0: y - LABEL_ASCENT, y1: y + LABEL_DESCENT })
-    const free = (b: { x0: number; x1: number; y0: number; y1: number }) =>
-      boxes.every((o) => b.x1 <= o.x0 || o.x1 <= b.x0 || b.y1 <= o.y0 || o.y1 <= b.y0)
-    let placed: LabelPlace = { side: 'hidden', y: below }
-    for (const [side, y] of [['below', below], ['above', above]] as const) {
-      const b = boxAt(y)
-      if (free(b)) {
-        boxes.push(b)
-        placed = { side, y }
-        break
-      }
+    // Beside the node, the text is centred on it: its box's middle sits on the node's.
+    const level = s.y + (LABEL_ASCENT - LABEL_DESCENT) / 2
+    const places: LabelPlace[] = [
+      { side: 'below', x: s.x, y: below, anchor: 'middle' },
+      { side: 'above', x: s.x, y: above, anchor: 'middle' },
+      { side: 'right', x: s.x + s.r + 4, y: level, anchor: 'start' },
+      { side: 'left', x: s.x - s.r - 4, y: level, anchor: 'end' },
+    ]
+    const boxOf = (p: LabelPlace): Box => {
+      const x0 = p.anchor === 'middle' ? p.x - w / 2 : p.anchor === 'start' ? p.x : p.x - w
+      return { x0, x1: x0 + w, y0: p.y - LABEL_ASCENT, y1: p.y + LABEL_DESCENT }
     }
-    out.set(s.id, placed)
+    const free = (b: Box) =>
+      boxes.every((o) => b.x1 <= o.x0 || o.x1 <= b.x0 || b.y1 <= o.y0 || o.y1 <= b.y0) && spots.every((d) => d === s || !discHitsBox(d, b))
+    const clear = (b: Box) => segments.every((e) => !segmentHitsBox(e, b))
+    const usable = places.map((p) => ({ p, box: boxOf(p) })).filter((c) => free(c.box))
+    const pick = usable.find((c) => clear(c.box)) ?? usable[0]
+    if (pick === undefined) {
+      out.set(s.id, { side: 'hidden', x: s.x, y: below, anchor: 'middle' })
+      continue
+    }
+    boxes.push(pick.box)
+    out.set(s.id, pick.p)
   }
   return out
 }
@@ -424,6 +489,12 @@ export function layoutPlan(view: GraphView, width = 640, height = 440): LayoutPl
       const p = layout.pos.get(n.id)
       return p === undefined ? [] : [{ id: n.id, x: p.x, y: p.y, r: p.r, text: displayLabel(n), weight: deg.get(n.id) ?? 0 }]
     }),
+    view.edges.flatMap((e) => {
+      const a = layout.pos.get(e.from)
+      const b = layout.pos.get(e.to)
+      return a === undefined || b === undefined ? [] : [{ x1: a.x, y1: a.y, x2: b.x, y2: b.y }]
+    }),
+    layout.boxes.map(clusterLabelBox),
   )
   return { ...layout, labels }
 }

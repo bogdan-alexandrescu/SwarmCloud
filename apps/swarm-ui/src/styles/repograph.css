@@ -31,6 +31,11 @@
 .rg-wait .c-btn { pointer-events: auto; }
 .rg-net.rg-wait { position: static; justify-content: center; inset: auto; }
 .rg-netfail { margin: 0; padding: 8px 12px; font-size: var(--t-meta); color: var(--text-dim); }
+/* vis-network's hover title (V113): its own stylesheet draws a cream
+   verdana box with a black ink in both themes. Drawn as the console's
+   tooltip instead (components.css `.c-tip`), the inverted --ctl-tip pair.
+   Position and visibility stay vis-network's: it sets them inline. */
+.rg-netwrap .vis-tooltip { padding: 7px 10px; border: 0; border-radius: var(--r-ctl); background: var(--ctl-tip); color: var(--ctl-tip-ink); font-family: var(--font); font-size: var(--t-micro); line-height: var(--lh-micro); box-shadow: var(--sk-sh); }
 .rg-netlist { display: flex; flex-direction: column; margin: 0; padding: 0 12px 8px; list-style: none; }
 .rg-netlist button { display: flex; width: 100%; justify-content: space-between; gap: 8px; min-height: 32px; padding: 4px 6px; border: 0; border-bottom: 1px solid var(--line-soft); background: none; color: var(--text); font: inherit; font-size: var(--t-meta); text-align: left; cursor: pointer; }
 .rg-netlist button span { font-family: var(--mono); overflow-wrap: anywhere; }
@@ -42,6 +47,10 @@
 .rg-netlist.is-quiet:not(:focus-within) { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; padding: 0; }
 .rg-svg { display: block; width: 100%; height: auto; max-height: 470px; touch-action: none; cursor: grab; }
 .rg-svg text { font-size: var(--t-micro); fill: var(--text-dim); font-family: var(--font); }
+/* A halo in the cluster box's colour (V045; most nodes sit in one, and the
+   discs are ringed in it too): an edge that runs under a label is cut where
+   the text sits instead of striking through it. */
+.rg-node text { paint-order: stroke; stroke: var(--surface); stroke-width: 3px; stroke-linejoin: round; }
 .rg-cluster { fill: var(--surface); stroke: var(--line); stroke-width: 1; }
 .rg-clabel { fill: var(--text-dim); }
 /* stroke-opacity, not opacity: `opacity` gives each of an unclustered view's
