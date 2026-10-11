@@ -189,8 +189,8 @@ while [[ $# -gt 0 ]]; do
       fi
       if LIVE_FLAG="$(derived_flag_for "$1" "${LIVE_FLAGS[@]}")"; then
         die "'${1%%=*}' would reach the renderer as ${LIVE_FLAG}, which this script reads from
-       swarm-api's service and its subnetwork (gcloud run services describe; gcloud compute
-       networks subnets describe); it cannot be passed, in full or abbreviated."
+       swarm-api's Cloud Run service and the subnetwork it names; it cannot be passed, in
+       full or abbreviated."
       fi
       if IDENTITY_FLAG="$(derived_flag_for "$1" "${IDENTITY_FLAGS[@]}")"; then
         die "'${1%%=*}' would reach the renderer as ${IDENTITY_FLAG}, which this script reads from
