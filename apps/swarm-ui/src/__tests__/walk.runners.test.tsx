@@ -90,14 +90,14 @@ describe('D: one rule for every runner list', () => {
     const li = [...document.querySelectorAll('details.sbf-runners-more li')]
     expect(li).toHaveLength(3)
     const why = li[0]!.querySelector('.sbf-runner-why')!
-    expect(why.textContent).toBe('Not enabled yet')
+    expect(why.textContent).toBe('Not enabled yet: the merge chain is off')
     expect(li[0]!.getAttribute('title')).toMatch(/merge chain/)
     // And where most are usable, the disabled one stays a card, with the short reason.
     document.body.innerHTML = ''
     render(<RunnerPicker group="g" label="runner" profiles={catalogue(p, ['d'], ['a', 'b', 'c', 'd'])} chosen="a" keys={KEYS} onPick={() => {}} />)
     expect(document.querySelector('details.sbf-runners-more')).toBeNull()
     expect(document.querySelectorAll('[role="radiogroup"] input[type="radio"]')).toHaveLength(4)
-    expect(document.querySelector('.sbf-runner-off')?.textContent).toBe('Not enabled yet')
+    expect(document.querySelector('.sbf-runner-off')?.textContent).toBe('Not enabled yet: the merge chain is off')
   })
 
   it('puts the workflow step select’s held runners in their own group', async () => {
