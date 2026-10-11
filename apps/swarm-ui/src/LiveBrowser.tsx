@@ -7,10 +7,8 @@ import {
   openLiveSocket,
   renewLiveControl,
   returnLiveControl,
-  setLiveDevice,
-  setLiveOpenToMembers,
+  openLiveToMembers,
   takeLiveControl,
-  type LiveDevice,
   type LiveOrigin,
   type LiveSession,
 } from './api'
@@ -463,9 +461,9 @@ function HandoffBanner({ wait }: { wait: NonNullable<LiveSession['human_wait']> 
 }
 
 /**
- * THE DEVICE BAR (§6.1, Q13): the preset, rotate and touch, which only the
- * person in control may change -- the agent switches through the gate. A
- * viewer's switcher shows the current device and is disabled, with why.
+ * THE DEVICE BAR (§6.1, Q13): the preset, rotate and touch. Q13 lets the
+ * person in control change them, but swarm-api serves no device route yet, so
+ * every switcher shows the current device and is disabled, with why.
  */
 function LiveToolbar({
   taskId,
@@ -483,30 +481,25 @@ function LiveToolbar({
   reload: () => void
 }) {
   const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
   const device = session.device
   const names = session.presets.some((p) => p.name === device.preset)
     ? session.presets.map((p) => p.name)
     : [device.preset, ...session.presets.map((p) => p.name)]
-  const why = mine ? undefined : 'Only the person in control can change the device.'
-  const send = (next: LiveDevice) => {
-    if (!mine) return
-    setBusy(true)
-    void setLiveDevice(taskId, next).then((r) => {
-      setBusy(false)
-      setError(r.status === 'error' ? r.error.message : null)
-      reload()
-    })
-  }
+  // SHOWN, NOT SWITCHED. swarm-api serves no device route (§6.1 needs the
+  // gate's device lane, L3b, which has not landed), so a switcher that sent a
+  // change would send it to a path nothing answers. The bar draws the device
+  // the session reports, for everyone, and changes nothing.
+  const why = mine
+    ? 'Switching the device is not served yet: swarm-api has no device route.'
+    : 'Only the person in control can change the device.'
   return (
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
       <label className="live-device">
         <span>Device</span>
         <select
           value={device.preset}
-          disabled={!mine || busy}
+          disabled
           title={why}
-          onChange={(e) => send({ ...device, preset: e.target.value })}
         >
           {names.map((n) => (
             <option key={n} value={n}>
@@ -515,21 +508,10 @@ function LiveToolbar({
           ))}
         </select>
       </label>
-      <Button
-        size="sm"
-        disabled={!mine || busy}
-        title={why}
-        onClick={() => send({ ...device, orientation: device.orientation === 'portrait' ? 'landscape' : 'portrait' })}
-      >
+      <Button size="sm" disabled title={why}>
         Rotate ({device.orientation})
       </Button>
-      <Button
-        size="sm"
-        aria-pressed={device.touch}
-        disabled={!mine || busy}
-        title={why ?? 'Work the page by touch: your taps and swipes become touch events in the agent’s browser.'}
-        onClick={() => send({ ...device, touch: !device.touch })}
-      >
+      <Button size="sm" aria-pressed={device.touch} disabled title={why}>
         Touch {device.touch ? 'on' : 'off'}
       </Button>
       <Button size="sm" aria-pressed={logs} onClick={onLogs}>
@@ -540,8 +522,10 @@ function LiveToolbar({
           <input
             type="checkbox"
             checked={session.open_to_members}
+            disabled={session.open_to_members}
             onChange={(e) => {
-              void setLiveOpenToMembers(taskId, e.target.checked).then((r) => {
+              if (!e.target.checked) return
+              void openLiveToMembers(taskId).then((r) => {
                 setError(r.status === 'error' ? r.error.message : null)
                 reload()
               })

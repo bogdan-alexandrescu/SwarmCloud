@@ -43,8 +43,7 @@ const api = vi.hoisted(() => ({
   takeLiveControl: vi.fn(),
   returnLiveControl: vi.fn(),
   renewLiveControl: vi.fn(),
-  setLiveDevice: vi.fn(),
-  setLiveOpenToMembers: vi.fn(),
+  openLiveToMembers: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -248,8 +247,7 @@ beforeEach(() => {
   api.takeLiveControl.mockResolvedValue(ok(null))
   api.returnLiveControl.mockResolvedValue(ok(null))
   api.renewLiveControl.mockResolvedValue(ok(null))
-  api.setLiveDevice.mockResolvedValue(ok(null))
-  api.setLiveOpenToMembers.mockResolvedValue(ok(null))
+  api.openLiveToMembers.mockResolvedValue(ok(null))
 })
 
 afterEach(() => {
@@ -356,16 +354,37 @@ describe('a viewer’s device switcher is disabled', () => {
     expect(select.disabled).toBe(true)
     expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(true)
-    fireEvent.change(select, { target: { value: 'desktop' } })
-    expect(api.setLiveDevice).not.toHaveBeenCalled()
   })
 
-  it('lets the person in control switch, by preset name only', () => {
+  // swarm-api serves no device route (the gate's device lane, L3b, has not
+  // landed), so the person in control is shown the device and cannot send a
+  // change to a path nothing answers -- test_runtimes_screen.py's seam test
+  // refuses a client call to an unserved /v1 path.
+  it('shows the person in control the device too, disabled, while no device route is served', () => {
     pane(mine())
     const select = screen.getByRole('combobox') as HTMLSelectElement
-    expect(select.disabled).toBe(false)
-    fireEvent.change(select, { target: { value: 'desktop' } })
-    expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'desktop', orientation: 'portrait', touch: false })
+    expect(select.value).toBe('iphone-15')
+    expect(select.disabled).toBe(true)
+    expect(select.title).toMatch(/no device route/i)
+    expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('the submitter opens control to members through the served route', () => {
+  it('posts open-to-members when the box is ticked, and offers no uncheck once open', () => {
+    pane(mine())
+    const box = screen.getByRole('checkbox', { name: /let any member take control/i }) as HTMLInputElement
+    expect(box.disabled).toBe(false)
+    fireEvent.click(box)
+    expect(api.openLiveToMembers).toHaveBeenCalledWith(ID)
+  })
+
+  it('disables the box once control is open to members', () => {
+    pane(mine({ open_to_members: true }))
+    const box = screen.getByRole('checkbox', { name: /let any member take control/i }) as HTMLInputElement
+    expect(box.checked).toBe(true)
+    expect(box.disabled).toBe(true)
   })
 })
 
@@ -488,9 +507,4 @@ describe('touch events are sent only in control with touch on', () => {
     expect(await touchesFrom(viewer({ device: { preset: 'iphone-15', orientation: 'portrait', touch: true } }))).toBe(0)
   })
 
-  it('turns touch on only from the person in control, through the device route', () => {
-    pane(mine())
-    fireEvent.click(screen.getByRole('button', { name: /touch off/i }))
-    expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'iphone-15', orientation: 'portrait', touch: true })
-  })
 })

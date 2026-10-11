@@ -6553,33 +6553,25 @@ export async function returnLiveControl(taskId: string): Promise<Result<unknown>
 }
 
 /**
- * `POST /v1/tasks/{task_id}/live/control:renew`: the controller's console
+ * `POST /v1/tasks/{task_id}/live/control/renew`: the controller's console
  * renews while it is open. Control ends when `renew_by` passes, 60 seconds
  * after the last renewal (§4.2), so a closed tab cannot hold it.
  */
 export async function renewLiveControl(taskId: string): Promise<Result<unknown>> {
-  const target = route('/v1/tasks/{id}/live/control:renew', { id: taskId })
+  const target = route('/v1/tasks/{id}/live/control/renew', { id: taskId })
   if (USE_FIXTURES) return liveNotServed(target)
   return write(target, 'POST')
 }
 
-/** `PUT /v1/tasks/{task_id}/live/open`: the submitter opens control to every member, or closes it (§5.1, audited). */
-export async function setLiveOpenToMembers(taskId: string, open: boolean): Promise<Result<unknown>> {
-  const target = route('/v1/tasks/{id}/live/open', { id: taskId })
-  if (USE_FIXTURES) return liveNotServed(target)
-  return write(target, 'PUT', { open })
-}
-
 /**
- * `PUT /v1/tasks/{task_id}/live/device`: a preset BY NAME, an orientation and
- * touch (§6.1). Never dimensions: the gate holds the list and refuses a name
- * outside it. Only the person in control may switch (Q13); the server refuses
- * anyone else, and the console disables the switcher for them.
+ * `POST /v1/tasks/{task_id}/live/open-to-members`: the submitter opens control
+ * to every member (§5.1, audited). One way only: swarm-api serves no route that
+ * closes it again, so the console offers no uncheck.
  */
-export async function setLiveDevice(taskId: string, device: LiveDevice): Promise<Result<unknown>> {
-  const target = route('/v1/tasks/{id}/live/device', { id: taskId })
+export async function openLiveToMembers(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
   if (USE_FIXTURES) return liveNotServed(target)
-  return write(target, 'PUT', device)
+  return write(target, 'POST')
 }
 
 function liveNotServed<T>(target: ApiRoute): Result<T> {
