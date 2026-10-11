@@ -434,7 +434,12 @@ def _tolerant_value(text: str, start: int, stop: int) -> Any:
     """The container at `text[start:stop]` built from `_Scanner` tokens.
 
     `_structure` has already paired its brackets; a stray or missing comma is
-    what `json.loads` refused, and it is skipped here.
+    what `json.loads` refused, and it is skipped here. So is a missing KEY:
+    `_structure` lets a member with no key of its own pass in an object
+    (`{1}`, `{"a": 1, 2}`, `{"a": "x" "y"}`). Filed under `None`, the scan
+    read `None` as a string and the page answered 500; filed under the last
+    key, it erased that key's value, and a BEGIN with it. Each is filed under
+    a stand-in key of its own (`_keyless`), which no rule reads as anything.
     """
     scanner = _Scanner(text, start)
     stack: list[Any] = []
@@ -458,12 +463,26 @@ def _tolerant_value(text: str, start: int, stop: int) -> Any:
         if not stack:
             root = value
         elif isinstance(stack[-1], dict):
-            stack[-1][key[-1]] = value
+            stack[-1][_keyless(stack[-1]) if key[-1] is None else key[-1]] = value
+            key[-1] = None
         else:
             stack[-1].append(value)
         if kind in "{[":
             stack.append(value)
             key.append(None)
+
+
+def _keyless(members: dict[str, Any]) -> str:
+    """A key for an object member written with none, unused in `members`.
+
+    A NUL then a number: never base64, an RFC 1421 header, a marker or a
+    credential's name, so the no-END run steps over it as over any key that
+    is not body-shaped, and nothing is masked or counted for it.
+    """
+    at = len(members)
+    while f"\x00{at}" in members:
+        at += 1
+    return f"\x00{at}"
 
 
 def _strings_in(node: Any) -> Iterable[str]:

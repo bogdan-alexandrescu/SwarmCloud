@@ -682,57 +682,62 @@ variable "image_puller_permissions" {
 variable "enable_workspace_deployer" {
   description = <<-EOT
     Create swarm-workspace-deployer, its roles and grants, the
-    swarm-workspace-apply topic and Cloud Build trigger, and the restricted log
-    bucket its builds write to (workspace_deployer.tf). Off until the owner's
-    one-time steps are done (docs/workspaces.md §10): this repository connected
-    to Cloud Build (workspace_apply_repository), the workspace-apply image
-    built and promoted (workspace_apply_builder_image), and the GitHub user
-    slots on (enable_forge_user_slots), whose swarmForgeSlotCreator the
-    identity is granted.
+    swarm-workspace-apply topic and Cloud Run job, the job's dispatch
+    (swarm-workspace-dispatch, the workflow and the Eventarc trigger:
+    workspace_dispatch.tf), Cloud Run's DATA_WRITE audit config, and the
+    restricted log bucket the job writes to (workspace_deployer.tf). Off until
+    the owner's one-time steps are done (docs/workspaces.md §10): the
+    workspace-apply image built and promoted (workspace_apply_image), the
+    Workflows and Eventarc APIs enabled by a release of terraform/infra, and
+    the GitHub user slots on (enable_forge_user_slots), whose
+    swarmForgeSlotCreator the identity is granted.
   EOT
   type        = bool
   default     = false
 }
 
-variable "workspace_apply_repository" {
+variable "workspace_apply_image" {
   description = <<-EOT
-    The second-generation Cloud Build repository the trigger builds,
-    `projects/<project>/locations/<region>/connections/<connection>/repositories/<repository>`:
-    this repository, connected read-only by the owner (docs/workspaces.md §10,
-    "Connect this repository to Cloud Build"). The trigger is created in the
-    same region, because a second-generation connection is regional.
+    The image the swarm-workspace-apply Cloud Run job runs, BY DIGEST:
+    `<region>-docker.pkg.dev/<project>/<repository>/workspace-apply@sha256:<64 hex>`,
+    read from the release's promotion manifest
+    (build/deployed-images-<env>.json); images/workspace-apply, whose command
+    the job fixes as `python3 -I /opt/swarm/entry.py`. A digest and not a tag,
+    so what runs as swarm-workspace-deployer changes only when the owner
+    applies this root with a new value -- a push to main that rebuilds the
+    image does not reach the identity by itself (docs/workspaces.md §2.4 R1).
+    Renamed from workspace_apply_builder_image by W4b, when the Cloud Build
+    trigger that ran it as a builder became this job.
   EOT
   type        = string
   default     = ""
 
   validation {
-    condition     = var.workspace_apply_repository == "" || can(regex("^projects/[^/]+/locations/[a-z0-9-]+/connections/[^/]+/repositories/[^/]+$", var.workspace_apply_repository))
-    error_message = "workspace_apply_repository must be a second-generation repository's full name, projects/<p>/locations/<region>/connections/<c>/repositories/<r>."
+    condition     = var.workspace_apply_image == "" || can(regex("^[a-z0-9-]+-docker\\.pkg\\.dev/[^/@:]+/[^/@:]+/workspace-apply@sha256:[0-9a-f]{64}$", var.workspace_apply_image))
+    error_message = "workspace_apply_image must be the workspace-apply image in Artifact Registry, by digest with no tag: <region>-docker.pkg.dev/<project>/<repository>/workspace-apply@sha256:<64 hex>."
   }
 }
 
-variable "workspace_apply_builder_image" {
+variable "workspace_apply_subnetwork" {
   description = <<-EOT
-    The workspace-apply image the job's three steps run in, BY DIGEST:
-    `<region>-docker.pkg.dev/<project>/<repository>/workspace-apply@sha256:<64 hex>`,
-    read from the release's promotion manifest
-    (build/deployed-images-<env>.json). A digest and not a tag, so what runs
-    as swarm-workspace-deployer changes only when the owner applies this root
-    with a new value -- a push to main that rebuilds the image does not reach
-    the identity by itself (docs/workspaces.md §2.4 R1).
+    The subnet the swarm-workspace-apply job's Direct VPC egress joins, as
+    `projects/<project>/regions/<region>/subnetworks/<name>`. Empty means the
+    swarm subnet as terraform/modules/network names it,
+    `<name_prefix>-subnet-<region>`, which is what the worker jobs use. Set it
+    only if that module's naming changes: this root cannot read infra's state.
   EOT
   type        = string
   default     = ""
 
   validation {
-    condition     = var.workspace_apply_builder_image == "" || can(regex("^[a-z0-9-]+-docker\\.pkg\\.dev/[^/@:]+/[^/@:]+/workspace-apply@sha256:[0-9a-f]{64}$", var.workspace_apply_builder_image))
-    error_message = "workspace_apply_builder_image must be the workspace-apply image in Artifact Registry, by digest with no tag: <region>-docker.pkg.dev/<project>/<repository>/workspace-apply@sha256:<64 hex>."
+    condition     = var.workspace_apply_subnetwork == "" || can(regex("^projects/[a-z][-a-z0-9]{4,28}[a-z0-9]/regions/[a-z0-9-]+/subnetworks/[a-z]([-a-z0-9]{0,61}[a-z0-9])?$", var.workspace_apply_subnetwork))
+    error_message = "workspace_apply_subnetwork must be a subnet's full name, projects/<project>/regions/<region>/subnetworks/<name>, or empty for the swarm subnet."
   }
 }
 
 variable "workspace_log_readers" {
   description = <<-EOT
-    Who may read the workspace job's build logs, which name a person's tenant
+    Who may read the workspace job's logs, which name a person's tenant
     id and email (docs/workspaces.md §2.6): the platform's admins, as `user:`
     or `group:` members. Each gets roles/logging.viewAccessor conditioned on
     the restricted bucket's _AllLogs view and nothing else. The project's
@@ -743,12 +748,12 @@ variable "workspace_log_readers" {
 
   validation {
     condition     = alltrue([for m in var.workspace_log_readers : can(regex("^(user|group):[^@\\s]+@[^@\\s]+$", m))])
-    error_message = "workspace_log_readers are people or groups (user:<email>, group:<email>). A service account reading a person's build log is a decision for this file, not a tfvars entry, and domain: or allUsers would hand the log to everyone the restriction exists to keep out."
+    error_message = "workspace_log_readers are people or groups (user:<email>, group:<email>). A service account reading a person's job log is a decision for this file, not a tfvars entry, and domain: or allUsers would hand the log to everyone the restriction exists to keep out."
   }
 }
 
 variable "workspace_log_retention_days" {
-  description = "How long the restricted bucket keeps the workspace job's build logs. 30 matches _Default's retention in this project, so routing the log away from _Default neither shortens nor lengthens how long a person's id is kept."
+  description = "How long the restricted bucket keeps the workspace job's logs. 30 matches _Default's retention in this project, so routing the log away from _Default neither shortens nor lengthens how long a person's id is kept."
   type        = number
   default     = 30
 
@@ -764,14 +769,15 @@ variable "workspace_deployer_roles" {
     workspace_deployer.tf is made under (a custom role by its id). The
     default is exactly docs/workspaces.md §2.3's table on the WD9 FALLBACK --
     W0 (2026-10-08) found IAM supports no principal set naming only the
-    swarm-agent-worker-u-* accounts -- plus swarmImagePuller on the builder
-    image's repository, without which the build cannot pull its own steps'
-    image.
+    swarm-agent-worker-u-* accounts. swarmImagePuller is gone (W4b): Cloud Run
+    pulls a job's image as its service agent, not as the job's account.
+    roles/logging.logWriter stays until W0b reads, on the job's first
+    execution, that its own output needs no grant (§2.3).
 
     A role may be taken off this list, which removes its grant. A role may be
     ADDED only by adding it to the reviewed list in the validation below in
     the same change: that is the review (#334's rule now reads "the release
-    deployer never holds project-wide account admin; one guarded Cloud Build
+    deployer never holds project-wide account admin; one guarded Cloud Run
     job does", and this validation is how that stays one job's list).
   EOT
   type        = list(string)
@@ -787,8 +793,6 @@ variable "workspace_deployer_roles" {
     "swarmWorkspaceFirestore",
     "roles/container.clusterViewer",
     "roles/logging.logWriter",
-    # Not in §2.3: the pull of the job's own builder image.
-    "swarmImagePuller",
   ]
 
   validation {
@@ -803,7 +807,6 @@ variable "workspace_deployer_roles" {
       "swarmWorkspaceFirestore",
       "roles/container.clusterViewer",
       "roles/logging.logWriter",
-      "swarmImagePuller",
     ], r)])
     error_message = "workspace_deployer_roles names a role nobody reviewed for swarm-workspace-deployer. Its roles are docs/workspaces.md §2.3's list and nothing else; adding one means adding it to this validation's list too, in a change the owner reviews."
   }

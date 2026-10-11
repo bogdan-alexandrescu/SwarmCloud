@@ -5,6 +5,14 @@
 #   scripts/egress-ready-report.sh [--since 7d] [--min-n 30]
 #                                  [--backend cloud-run|gke|unknown]
 #                                  [--max-tasks 2000] [--json]
+#   scripts/egress-ready-report.sh --clone-bundles [--since 7d] [--min-n 30]
+#                                  [--max-tasks 2000] [--json]
+#
+# --clone-bundles reads the same `clone_timed` marks for #940 instead: n, p50
+# and p90 of `clone.total_seconds` per `clone.source` (bundle, bundle+delta,
+# forge), whether the forge fallback after a bundle miss landed, and a verdict
+# against #940's bar, bundle p50 under 5 s with n >= --min-n
+# (docs/clone-bundles.md §8). The fetching below is the same.
 #
 # WHAT IT READS. Every attempt that clones writes an `egress_ready` startup
 # mark (agent_worker.lifecycle._mark_egress_ready: detail.egress is
@@ -24,8 +32,9 @@
 # This script only fetches.
 #
 # EXIT. 0 PASS (or NOT_JUDGED when --backend leaves Cloud Run out), 1 FAIL --
-# `insufficient n` included, 2 when no egress_ready mark was read or a request
-# failed. Reading nothing is never reported as a pass (CLAUDE.md, rule zero).
+# `insufficient n` included, 2 when no egress_ready mark (with --clone-bundles,
+# no clone_timed mark) was read or a request failed. Reading nothing is never
+# reported as a pass (CLAUDE.md, rule zero).
 #
 # The credential is lib/common.sh's api_credential(), as scripts/api.sh uses
 # it: it reaches curl on stdin, never argv. SWARM_API_TENANT picks the tenant.
@@ -38,19 +47,25 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
 SINCE="7d"
 MAX_TASKS=2000
+SUBCOMMAND="report"
+BACKEND_GIVEN=0
 REPORT_ARGS=()
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --since)     SINCE="${2:?--since needs a duration, e.g. 7d}"; shift 2 ;;
     --min-n)     REPORT_ARGS+=(--min-n "${2:?--min-n needs a number}"); shift 2 ;;
-    --backend)   REPORT_ARGS+=(--backend "${2:?--backend needs a name}"); shift 2 ;;
+    --backend)   REPORT_ARGS+=(--backend "${2:?--backend needs a name}"); BACKEND_GIVEN=1; shift 2 ;;
     --max-tasks) MAX_TASKS="${2:?--max-tasks needs a number}"; shift 2 ;;
     --json)      REPORT_ARGS+=(--json); shift ;;
-    -h|--help)   sed -n '2,32p' "$0"; exit 0 ;;
+    --clone-bundles) SUBCOMMAND="bundle-report"; shift ;;
+    -h|--help)   sed -n '2,42p' "$0"; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
 [[ "${MAX_TASKS}" =~ ^[0-9]+$ ]] || die "--max-tasks must be a number"
+# #940's bar is over every bundled step, whatever it ran on.
+[[ "${SUBCOMMAND}" == "report" || "${BACKEND_GIVEN}" -eq 0 ]] \
+  || die "--backend does not apply to --clone-bundles"
 
 require_cmd gcloud curl
 
@@ -139,6 +154,6 @@ info "${visited} task(s) visited, ${with_marks} with a startup mark"
 # --- the numbers -------------------------------------------------------------
 hr
 status=0
-"${PY[@]}" "${HELPER}" report --since "${SINCE}" ${REPORT_ARGS[@]+"${REPORT_ARGS[@]}"} \
+"${PY[@]}" "${HELPER}" "${SUBCOMMAND}" --since "${SINCE}" ${REPORT_ARGS[@]+"${REPORT_ARGS[@]}"} \
   <"${STREAM}" 2>&1 | redact || status=$?
 exit "${status}"

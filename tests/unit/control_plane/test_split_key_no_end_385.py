@@ -412,8 +412,22 @@ def test_the_issue_repro_is_masked_through_both_routes(client, db, objects):
 
 @pytest.mark.parametrize(
     "window",
-    ['{"secret": [1, 2, ], "k": 1}\n{"a":1}\n', '{"token": [1 2], "k": 1}\n'],
-    ids=["trailing-comma", "missing-comma"],
+    [
+        '{"secret": [1, 2, ], "k": 1}\n{"a":1}\n',
+        '{"token": [1 2], "k": 1}\n',
+        '{"token": {1}, "k": 1}\n',
+        '{"token": {,,1}, "k": 1}\n',
+        '{"token": {"a": 1, 2}, "k": 1}\n',
+        '[{"token": {1}}]\n{"a":1}\n',
+    ],
+    ids=[
+        "trailing-comma",
+        "missing-comma",
+        "member-with-no-key",
+        "keyless-after-stray-commas",
+        "keyless-after-a-member",
+        "keyless-in-a-list",
+    ],
 )
 def test_a_fragment_masks_a_malformed_value_under_a_credential_name(window):
     """A fragment page is scanned tolerantly, so a value masked whole need not
@@ -437,4 +451,23 @@ def test_a_begin_in_a_malformed_masked_value_still_opens_the_run():
     assert window != json.dumps(document) + "\n"
     got = json_masking.redact_json_window(window, fragment=True)
     assert BODY0 not in got.text, got.text
+    assert '"kept"' in got.text, got.text
+
+
+@pytest.mark.parametrize(
+    "inner",
+    ["{\"a\": %s, 2}", "{\"a\": %s, {}}", "{\"a\": %s \"\"}"],
+    ids=["keyless-number-after-it", "keyless-object-after-it", "blank-value-after-it"],
+)
+def test_a_begin_beside_a_keyless_member_still_opens_the_run(inner):
+    """A member written with no key is filed under a stand-in key of its own
+    (`json_masking._keyless`), so it neither crashes the scan (`None` read as
+    a string: a 500) nor erases the value before it -- the BEGIN that opens
+    the run, so the body after it was served (the #385 leftover)."""
+    from swarm_api import json_masking
+
+    window = '{"secret": ' + inner % json.dumps(PEM_BEGIN) + ', "k": "' + BODY0 + '", "after": "kept"}\n'
+    got = json_masking.redact_json_window(window, fragment=True)
+    assert BODY0 not in got.text, got.text
+    assert PEM_BEGIN not in got.text, got.text
     assert '"kept"' in got.text, got.text

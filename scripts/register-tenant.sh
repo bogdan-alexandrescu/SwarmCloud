@@ -1103,6 +1103,33 @@ ws_doc_check() {
   jq -e "$@" "${FS_JQ} doc | ${expression}" "${file}" >/dev/null 2>&1
 }
 
+# ws_doc_off FILE PROGRAM [jq --arg ...]: the names of the fields A9 finds not
+# as specified, comma-separated; "document" when there is no document; nothing
+# when all agree. PROGRAM yields an array of names, and may use `$mig` (the
+# record is migrated) and `whole` (a limit as the record states it: on a
+# migrated record also an integral double or a string of digits, see ws_a9).
+# An unreadable answer counts as "document", never as agreement.
+ws_doc_off() {
+  local file="$1" expression="$2"
+  shift 2
+  [[ -s "${file}" ]] || { printf 'document'; return 0; }
+  jq -r --argjson mig "${WS_MIGRATED}" "$@" "${FS_JQ}
+    def whole: if type == \"number\" then .
+      elif \$mig and type == \"string\" and test(\"^[0-9]+$\") then tonumber else null end;
+    if .fields then (doc | ${expression} | join(\", \")) else \"document\" end" "${file}" 2>/dev/null \
+    || printf 'document'
+}
+
+# The fields' NAMES only, never their values (§4.2): the log names what to
+# look at, and the record's failure.object stays the document's type.
+ws_off_err() {
+  if [[ "$2" == "document" ]]; then
+    err "verify: the ${1} document is missing"
+  else
+    err "verify: the ${1} document's fields ${2} are not as the record specifies$([[ "${WS_MIGRATED}" == "true" ]] && printf ' (migrated record)')"
+  fi
+}
+
 ws_a8() {
   local pool_limit fields mask exists
   pool_limit=$(( WS_MAX_ACTIVE < WS_CAPACITY_UNITS ? WS_MAX_ACTIVE : WS_CAPACITY_UNITS ))
@@ -1253,20 +1280,38 @@ ws_a9() {
     fi
     n=$((n + 1))
   done <"${WS_WORK}/objects.tsv"
-  # Both documents, with the record's limits.
+  # Both documents, with the record's limits. Both must EXIST and the limits
+  # must AGREE on every record. On a MIGRATED one the document is Terraform's
+  # (terraform/modules/firestore/bootstrap.tf, written once and then under
+  # ignore_changes), so two things it may legitimately do differently are
+  # accepted there (W9, §3.3): a limit stored as an integral double or a
+  # string of digits, which the Tenant and SlotPool models read as the same
+  # whole number; and no `namespace`, which a document written before the
+  # module named that field never gained -- the dispatcher derives the same
+  # name when it is absent (GkeJobDispatcher.namespace_for). A namespace that
+  # is present must still be the tenant's, and `service_account` is required
+  # everywhere: dispatch refuses a tenant without one. A record the job made
+  # keeps the strict check, since A8 wrote every field as checked here.
   ws_call "${WS_WORK}/tenant.json" fs_get "tenants/${WS_TENANT}" || { ws_show_err; ws_object "tenant document"; return 1; }
+  local off
   # shellcheck disable=SC2016  # jq programs; their $names are jq's
-  ws_doc_check "${WS_WORK}/tenant.json" \
-      '((.principal // "") | ascii_downcase) == $p and .service_account == $sa and .namespace == $ns
-       and .max_active == $max and .capacity_units == $units' \
+  off="$(ws_doc_off "${WS_WORK}/tenant.json" \
+      '[(if ((.principal // "") | tostring | ascii_downcase | if $mig then gsub("^\\s+|\\s+$"; "") else . end) == $p
+         then empty else "principal" end),
+        (if .service_account == $sa
+            or ($mig and ((.service_account // "") | tostring | ascii_downcase) == ($sa | ascii_downcase))
+         then empty else "service_account" end),
+        (if .namespace == $ns or ($mig and (.namespace // "") == "") then empty else "namespace" end),
+        (if (.max_active | whole) == $max then empty else "max_active" end),
+        (if (.capacity_units | whole) == $units then empty else "capacity_units" end)]' \
       --arg p "${WS_PRINCIPAL}" --arg sa "${WS_WORKER_EMAIL}" --arg ns "${WS_NAMESPACE}" \
-      --argjson max "${WS_MAX_ACTIVE}" --argjson units "${WS_CAPACITY_UNITS}" \
-    || { ws_object "tenant document"; return 1; }
+      --argjson max "${WS_MAX_ACTIVE}" --argjson units "${WS_CAPACITY_UNITS}")"
+  [[ -z "${off}" ]] || { ws_off_err "tenant" "${off}"; ws_object "tenant document"; return 1; }
   ws_call "${WS_WORK}/pool.json" fs_get "pools/tenant:${WS_TENANT}" || { ws_show_err; ws_object "pool document"; return 1; }
   # shellcheck disable=SC2016
-  ws_doc_check "${WS_WORK}/pool.json" '.hard_limit == $l' \
-      --argjson l "$(( WS_MAX_ACTIVE < WS_CAPACITY_UNITS ? WS_MAX_ACTIVE : WS_CAPACITY_UNITS ))" \
-    || { ws_object "pool document"; return 1; }
+  off="$(ws_doc_off "${WS_WORK}/pool.json" '[if (.hard_limit | whole) == $l then empty else "hard_limit" end]' \
+      --argjson l "$(( WS_MAX_ACTIVE < WS_CAPACITY_UNITS ? WS_MAX_ACTIVE : WS_CAPACITY_UNITS ))")"
+  [[ -z "${off}" ]] || { ws_off_err "pool" "${off}"; ws_object "pool document"; return 1; }
   n=$((n + 2))
   printf '%s' "${n}" >"${WS_WORK}/verified"
   ok "verified: ${n} of ${n} objects"

@@ -16,8 +16,10 @@
 #      excepted until lane W9 moves it out, §3.3);
 #
 # and the one Terraform layer that touches personal workers at all -- the
-# bootstrap's workspace job -- names no person: its grants are to the deployer
-# and to swarm-api, over prefixes.
+# bootstrap's workspace job -- names no person: its grants are to the deployer,
+# to swarm-api over prefixes, and to swarm-workspace-dispatch, which runs the
+# job. (Its google_project_iam_audit_config owns Cloud Run's audit config and
+# no binding, so no personal worker's membership rides on it.)
 #
 # The fixture ids are personal-shaped on purpose: `u-fixture-person` is what
 # identity.tenant_id_for_user mints for a person, `w-000000` is a workspace id.
@@ -149,14 +151,27 @@ run "the_workspace_job_s_terraform_names_no_person" {
   }
 
   variables {
-    enable_workspace_deployer     = true
-    enable_forge_user_slots       = true
-    workspace_apply_repository    = "projects/saga-agents-staging/locations/us-central1/connections/github/repositories/SwarmCloud"
-    workspace_apply_builder_image = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    enable_workspace_deployer = true
+    enable_forge_user_slots   = true
+    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
   }
 
   override_data {
     target = data.google_iam_policy.workspace_deployer_nobody
+    values = {
+      policy_data = "{}"
+    }
+  }
+
+  override_data {
+    target = data.google_iam_policy.workspace_dispatch_nobody
+    values = {
+      policy_data = "{}"
+    }
+  }
+
+  override_data {
+    target = data.google_iam_policy.workspace_apply_job
     values = {
       policy_data = "{}"
     }
@@ -171,9 +186,27 @@ run "the_workspace_job_s_terraform_names_no_person" {
     error_message = "the workspace job's grants must name no personal worker, tenant or workspace: they are to swarm-workspace-deployer and swarm-api, over the swarm-tenant-u- prefix"
   }
 
+  # The job is declared with a command and NO arguments: the workspace id and
+  # the mode arrive with each execution, from the workflow, which reads them
+  # from the message. Terraform holds no workspace.
   assert {
-    condition     = google_pubsub_topic.workspace_apply[0].name == "swarm-workspace-apply" && google_cloudbuild_trigger.workspace_apply[0].substitutions["_WORKSPACE_ID"] == "$(body.message.data.workspace_id)"
-    error_message = "which workspace to make reaches the job only in the message, at run time; Terraform holds no workspace"
+    condition = alltrue([
+      google_pubsub_topic.workspace_apply[0].name == "swarm-workspace-apply",
+      try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].args), 0) == 0,
+      try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].env), 0) == 0,
+      strcontains(google_workflows_workflow.workspace_apply[0].source_contents, "map.get(message, \"workspace_id\")"),
+      length(regexall("w-[0-9a-f]{6}", google_workflows_workflow.workspace_apply[0].source_contents)) == 0,
+    ])
+    error_message = "which workspace to make reaches the job only in the message, at run time: the job carries no argument or environment, and the workflow reads the id from the message and names none"
+  }
+
+  assert {
+    condition = alltrue([
+      for b in data.google_iam_policy.workspace_apply_job.binding : alltrue([
+        for m in b.members : length(regexall("swarm-agent-worker-u-|u-fixture-person|w-[0-9a-f]{6}", m)) == 0
+      ])
+    ]) && length(regexall("swarm-agent-worker-u-|u-fixture-person", google_project_iam_member.workspace_dispatch_invoker[0].member)) == 0
+    error_message = "the job's runner and the workflow invoker are swarm-workspace-dispatch, never a person's worker"
   }
 }
 

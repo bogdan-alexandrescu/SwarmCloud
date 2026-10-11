@@ -13,8 +13,11 @@ wave (#453).
 
 It also holds what the document must not lose: the SYN-backoff reading stays
 labelled an inference, the fields to read to confirm the estimated saving are
-named, and (b) and (c) stay recorded as open and not started rather than
-quietly dropped.
+named, (b) stays recorded as open and not started rather than quietly
+dropped, and (c) -- built for #940 by PR #983 -- is recorded as built but not
+yet measured, pointing at docs/clone-bundles.md, until #940's acceptance
+number is taken. Before that PR this test held (c) at "not started", so the
+document had to keep saying a built feature was not started.
 """
 
 from __future__ import annotations
@@ -159,11 +162,25 @@ def test_the_saving_is_recorded_as_not_yet_confirmed():
         assert f"`{field}`" in confirm, f"the confirmation section does not name `{field}`"
 
 
-@pytest.mark.parametrize("item", ["(b)", "(c)"])
-def test_b_and_c_are_recorded_open_and_not_started(item: str):
-    section = _section(_text(), item)
-    assert "**Status: not started.**" in section, f"{item} is not marked not started"
-    assert "open" in section.lower(), f"{item} is not marked open"
+def test_b_is_recorded_open_and_not_started():
+    section = _section(_text(), "(b)")
+    assert "**Status: not started.**" in section, "(b) is not marked not started"
+    assert "open" in section.lower(), "(b) is not marked open"
+
+
+def test_c_is_recorded_built_and_not_yet_measured():
+    """(c) shipped as clone bundles (#940); its acceptance number needs a release.
+
+    "Not yet measured" stays until the measurement is posted on #940, and the
+    section points at the document that owns the design and the measurement."""
+    section = _section(_text(), "(c)")
+    assert "**Status: built, not yet measured.**" in section, "(c) is not marked built, not yet measured"
+    assert "#940" in section, "(c) does not name #940"
+    assert "](../clone-bundles.md" in section, "(c) does not link docs/clone-bundles.md"
+    assert (DOC.parent.parent / "clone-bundles.md").is_file()
+    assert "not started" not in section, "(c) is built; it still says not started"
+    intro = _text().split("\n---\n", 1)[0]
+    assert "Neither (b) nor (c) is started" not in intro, "the summary still says (c) is not started"
 
 
 def test_it_links_the_earlier_direct_vpc_egress_incident():
