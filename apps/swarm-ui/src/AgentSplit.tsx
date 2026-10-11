@@ -10,10 +10,12 @@ import {
 } from 'react'
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
-import { AgentDetailScreen, DRAWER_POLL_MS, Mark, SplitClock } from './AgentDetail'
+import { AgentDetailScreen, DRAWER_POLL_MS, Mark, SplitClock, timesRun } from './AgentDetail'
 import { AgentLogs, LogLastLine } from './AgentLogs'
 import { agentName, backLabel, rememberAgentName, workflowHref } from './agentlist'
-import { loadTask } from './api'
+import { loadAttempts, loadTask } from './api'
+import type { Result } from './fetch'
+import { addressToPath } from './paths'
 import type { TaskPane } from './App'
 import { ArtifactsScreen } from './Artifacts'
 import { AttemptTimelineScreen } from './AttemptTimeline'
@@ -196,6 +198,26 @@ export function AgentSplit({
   }, [live, task === null])
   const reload = useCallback(() => setReads((n) => n + 1), [])
   const childCount = useChildCount(task, `${reads}`)
+  // HOW MANY TIMES IT RAN (live QA WA-3): the attempt documents, read again
+  // only when the task says something about its attempts changed -- its
+  // generation, its counter or its state -- not on every header poll.
+  const runsRead = useRead<{ attempts: unknown[] }>(
+    () => readAttempts(taskId),
+    taskId,
+    task === null ? 'none' : `${task.current_generation}:${task.attempt_count}:${task.state}`,
+    null,
+  )
+  const runs =
+    task === null
+      ? null
+      : timesRun(
+          task,
+          runsRead.state.status === 'ok' || runsRead.state.status === 'stale'
+            ? runsRead.state.data.attempts
+            : runsRead.state.status === 'empty'
+              ? []
+              : null,
+        )
   const headReadAt = head.state.status === 'ok' || head.state.status === 'stale' ? head.state.fetchedAt : null
 
   useEffect(() => {
@@ -268,6 +290,22 @@ export function AgentSplit({
    * row of the agent it showed, found again by id because the list draws a
    * different row node while an agent is open.
    */
+  // MODAL WHERE IT COVERS THE LIST (live QA WA-17): below 1100px the split is
+  // an overlay that traps Tab, and it said `role=dialog` without
+  // `aria-modal`, so a screen reader still offered the list behind it.
+  // Beside the list it is a column, not modal, and says nothing.
+  useEffect(() => {
+    const el = panel.current
+    if (el === null) return
+    const mark = () => {
+      if (isOverlay(el)) el.setAttribute('aria-modal', 'true')
+      else el.removeAttribute('aria-modal')
+    }
+    mark()
+    globalThis.addEventListener?.('resize', mark)
+    return () => globalThis.removeEventListener?.('resize', mark)
+  }, [])
+
   useEffect(() => {
     const el = panel.current
     const { el: came, rowId } = born.current ?? { el: null, rowId: null }
@@ -356,7 +394,7 @@ export function AgentSplit({
     {
       id: 'attempts',
       label: 'Attempts',
-      count: task?.attempt_count ?? null,
+      count: runs,
       say: task === null ? 'The task has not been read yet.' : null,
       to: `${base}/attempts`,
     },
@@ -436,11 +474,23 @@ export function AgentSplit({
         aria-valuetext={SNAP_TEXT[snap]}
         onKeyDown={(e) => {
           const i = SNAPS.indexOf(snap)
-          const step = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0
-          if (step === 0) return
+          // HOME AND END ARE THE ENDS (live QA WA-16): the separator says
+          // `aria-valuemin=0` and `aria-valuemax=2`, and the window-splitter
+          // pattern moves it to those on Home and End; they did nothing.
+          const to =
+            e.key === 'Home'
+              ? 0
+              : e.key === 'End'
+                ? SNAPS.length - 1
+                : e.key === 'ArrowRight'
+                  ? i + 1
+                  : e.key === 'ArrowLeft'
+                    ? i - 1
+                    : null
+          if (to === null) return
           e.preventDefault()
           holdPageScroll(panel.current)
-          setListSnap(SNAPS[Math.max(0, Math.min(SNAPS.length - 1, i + step))]!)
+          setListSnap(SNAPS[Math.max(0, Math.min(SNAPS.length - 1, to))]!)
         }}
         onPointerDown={(e) => {
           dragging.current = true
@@ -474,6 +524,7 @@ export function AgentSplit({
         <AgHead
           taskId={taskId}
           task={task}
+          runs={runs}
           read={head.state.status}
           reload={reload}
           onClose={close}
@@ -608,10 +659,18 @@ function AgTabsEdge({ children, current }: { children: ReactNode; current?: stri
     globalThis.addEventListener?.('resize', measure)
     const seen = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
     seen?.observe(strip)
+    // THE TABS GROW AFTER THE STRIP IS MEASURED (live QA WA-17, 1000x800):
+    // the counts land a read later, the labels widen and the strip's own box
+    // does not change size, so the ResizeObserver never fired and the
+    // overlay's strip was cut at `Checkpo` with no `›`. A change to what the
+    // strip holds measures it again.
+    const grew = typeof MutationObserver === 'undefined' ? null : new MutationObserver(measure)
+    grew?.observe(strip, { childList: true, subtree: true, characterData: true })
     return () => {
       strip.removeEventListener('scroll', measure)
       globalThis.removeEventListener?.('resize', measure)
       seen?.disconnect()
+      grew?.disconnect()
     }
   }, [])
   return (
@@ -619,6 +678,23 @@ function AgTabsEdge({ children, current }: { children: ReactNode; current?: stri
       {children}
     </div>
   )
+}
+
+/**
+ * The attempt documents for the header's count. A read that throws or answers
+ * nothing is a failed read, never a count of zero: `timesRun` then falls back
+ * to the task's own counter.
+ */
+async function readAttempts(taskId: string): Promise<Result<{ attempts: unknown[] }>> {
+  const failed: Result<{ attempts: unknown[] }> = {
+    status: 'error',
+    error: { kind: 'unreachable', httpStatus: null, code: null, message: 'The attempt read did not answer.' },
+  }
+  try {
+    return (await loadAttempts(taskId)) ?? failed
+  } catch {
+    return failed
+  }
 }
 
 /** The Artifacts tab's count: the manifest's files once a summary is written, else unknown. */
@@ -649,12 +725,15 @@ const COPY_SAID_MS = 4000
 function AgHead({
   taskId,
   task,
+  runs,
   read,
   reload,
   onClose,
 }: {
   taskId: string
   task: Task | null
+  /** How many times it ran (`timesRun`); null before the task is read. */
+  runs: number | null
   read: string
   reload: () => void
   onClose: () => void
@@ -669,17 +748,24 @@ function AgHead({
     const id = setTimeout(() => setCopied(null), COPY_SAID_MS)
     return () => clearTimeout(id)
   }, [copied])
+  // THE PRESS ALWAYS ANSWERS (live QA WA-14): Copy link changed nothing on
+  // screen and announced nothing. The button's own label says `Copied` (or
+  // `Copy failed`) for a few seconds, and an always-mounted live region says
+  // the sentence -- a region mounted with its text is not announced. A
+  // clipboard that throws, or answers without a promise, is a failure too.
   const copy = () => {
     const href = typeof window === 'undefined' ? '' : window.location.href
     const clip = typeof navigator === 'undefined' ? undefined : navigator.clipboard
-    if (clip === undefined) {
+    if (clip === undefined || typeof clip.writeText !== 'function') {
       setCopied('no')
       return
     }
-    clip.writeText(href).then(
-      () => setCopied('yes'),
-      () => setCopied('no'),
-    )
+    Promise.resolve()
+      .then(() => clip.writeText(href))
+      .then(
+        () => setCopied('yes'),
+        () => setCopied('no'),
+      )
   }
   const name = task === null ? taskId : agentName(task)
   // The breadcrumb has the id and no task: it names the agent with this.
@@ -700,14 +786,14 @@ function AgHead({
         <h2 className="ag-head-title" title={name}>
           {name}
         </h2>
-        {task !== null && <AgHeadline task={task} now={now} />}
+        {task !== null && <AgHeadline task={task} runs={runs ?? task.attempt_count} now={now} />}
         <span className="ag-head-actions">
-          <Button onClick={copy}>Copy link</Button>
-          {copied !== null && (
-            <span role="status" className="ag-head-copied">
-              {copied === 'yes' ? 'copied' : 'could not copy'}
-            </span>
-          )}
+          <Button onClick={copy}>
+            {copied === 'yes' ? 'Copied' : copied === 'no' ? 'Copy failed' : 'Copy link'}
+          </Button>
+          <span role="status" aria-live="polite" className="ag-head-copied">
+            {copied === 'yes' ? 'copied' : copied === 'no' ? 'could not copy' : ''}
+          </span>
           {task !== null && (
             <span className="ag-head-stop">
               <StopRun task={task} what="this agent" reload={reload} />
@@ -731,13 +817,13 @@ function AgHead({
  * the Agents list's own figure, so the row and the header never disagree; the
  * attempt is the task's own counter, which the header's read carries.
  */
-function AgHeadline({ task, now }: { task: Task; now: number }) {
+function AgHeadline({ task, runs, now }: { task: Task; runs: number; now: number }) {
   const el = elapsed(task, now)
   const ended = clockTime(task.completed_at, now)
   return (
     <span className="ag-head-hl">
       <b>{el.text}</b> ·{' '}
-      {task.attempt_count > 0 ? `attempt ${task.attempt_count} of ${task.max_attempts}` : 'no attempt yet'}
+      {runs > 0 ? `attempt ${runs} of ${task.max_attempts}` : 'no attempt yet'}
       {ended !== null && (
         <span title={`ended ${ended.title}`}> · ended {ended.text}</span>
       )}
@@ -790,7 +876,7 @@ export function AgHeadMeta({ task }: { task: Task | null }) {
                   li: (
                     <>
                       workflow{' '}
-                      <a className="ctl-link mono" href={workflowHref(task.workflow_id)}>
+                      <a className="ctl-link mono" href={addressToPath(workflowHref(task.workflow_id).replace(/^#/, ''))}>
                         {task.workflow_id} ›
                       </a>
                     </>
