@@ -204,6 +204,22 @@ def _human_wait(value: Any) -> dict[str, Any] | None:
     return dict(value) if isinstance(value, dict) else None
 
 
+#: What of `Task.human_wait` a caller is served (docs/design/live-browser.md
+#: §4.1, contract request 70): the five fields the design names, for the
+#: console's hand-off banner (lane LB-L12). The document also carries the
+#: worker's `request_id`, `attempt_id` and `generation`, which only the worker
+#: routes compare; they are left out so the public shape is the design's, not
+#: whatever the writer happens to store.
+HUMAN_WAIT_PUBLIC_KEYS = ("reason", "expect", "requested_at", "deadline", "controller")
+
+
+def human_wait_to_api(value: Any) -> dict[str, Any] | None:
+    """The served hand-off, or None while nobody is being waited for."""
+    if not isinstance(value, dict):
+        return None
+    return {key: value.get(key) for key in HUMAN_WAIT_PUBLIC_KEYS}
+
+
 def _forge_credential(value: Any) -> str | None:
     """A stored forge credential, or None for an old document and for a value
     of the wrong shape. A tenant's agent can write its task documents, and one
@@ -452,6 +468,13 @@ def task_to_api(
         "result_summary": result_summary,
         "result_summary_redaction_count": result_summary_count,
         "latest_checkpoint": task.latest_checkpoint,
+        # Contract request 70 (LB-C): the live-browser hand-off a RUNNING task
+        # is holding for, so the console can raise its banner (§4.1, §6).
+        # In the summary view too: the list and the Overview read that view,
+        # and they are where "needs you" is drawn. Null when nobody is waited
+        # for, including on a PARKED(HUMAN_REQUIRED) task, whose wait the
+        # park cleared.
+        "human_wait": human_wait_to_api(task.human_wait),
         # Contract request 23 (#217), ACCEPTED 2026-09-25. Written by every
         # terminal writer beside `completed_at` and read here first by the
         # outcome ledger (`swarm_api.outcomes`); this serialiser never sent it,

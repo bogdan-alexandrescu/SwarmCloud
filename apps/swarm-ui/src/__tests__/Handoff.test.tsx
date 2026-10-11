@@ -162,7 +162,7 @@ describe('the hand-off banner', () => {
   it('draws nothing for a task nobody is needed for', () => {
     const { container } = render(<HandoffBanner task={task('task_plain0000000000000001', 'RUNNING')} now={NOW} />)
     expect(container.textContent).toBe('')
-    expect(handoffOf(task('task_plain0000000000000001', 'RUNNING'), NOW)).toBeNull()
+    expect(handoffOf(task('task_plain0000000000000001', 'RUNNING'))).toBeNull()
   })
 
   it('on a parked hand-off reads the reason from its request event and offers "I\'m ready to sign in"', async () => {
@@ -180,18 +180,18 @@ describe('the hand-off banner', () => {
   it('"I\'m ready to sign in" POSTs human-ready for that task and reports the task back', async () => {
     eventsWithRequest()
     const t = parked('task_parked0000000000001')
-    const fetchMock = vi.fn(async () => okJson({ task: { ...t, state: 'READY', park_reason: null } }))
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okJson({ task: { ...t, state: 'READY', park_reason: null } }))
     vi.stubGlobal('fetch', fetchMock)
     const onReady = vi.fn()
     render(<HandoffBanner task={t} now={NOW} onReady={onReady} />)
     fireEvent.click(screen.getByRole('button', { name: /I'm ready to sign in/ }))
     await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1))
-    const writes = fetchMock.mock.calls.filter(([, init]) => (init as RequestInit | undefined)?.method === 'POST')
+    const writes = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')
     expect(writes).toHaveLength(1)
-    const [url, init] = writes[0] as unknown as [string, RequestInit]
+    const [url, init] = writes[0]!
     expect(url).toBe('/v1/tasks/task_parked0000000000001/human-ready')
     // The route takes no body: a person's readiness, nothing a caller shapes.
-    expect(init.body).toBeUndefined()
+    expect(init?.body).toBeUndefined()
     expect(screen.getByRole('status').textContent).toMatch(/starting your browser/i)
   })
 
@@ -240,7 +240,7 @@ describe("the Overview's hand-off cards", () => {
   it("a parked card's \"I'm ready to sign in\" calls human-ready and opens the agent", async () => {
     eventsWithRequest()
     const t = parked('task_parked0000000000001')
-    const fetchMock = vi.fn(async () => okJson({ task: { ...t, state: 'READY' } }))
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okJson({ task: { ...t, state: 'READY' } }))
     vi.stubGlobal('fetch', fetchMock)
     const onOpen = vi.fn()
     render(<HandoffCards tasks={[t]} now={NOW} onOpen={onOpen} />)
@@ -299,7 +299,7 @@ describe('recordings', () => {
   it("list only the caller's tenant's segments of this task, under live/ with the recording suffix", async () => {
     const t = task('task_browser0000000000001', 'RUNNING', { runner_profile: BROWSER })
     const mine = (a: string, seq: string) => `tenants/u-ada/tasks/${t.id}/attempts/${a}/live/rec-${seq}.live.webm`
-    const fetchMock = vi.fn(async () =>
+    const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) =>
       okJson({
         recordings: [
           { attempt_id: 'att_1', name: 'rec-00001.live.webm', key: mine('att_1', '00001'), bytes: 2048, created_at: iso(NOW - 600_000) },
