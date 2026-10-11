@@ -172,7 +172,17 @@ export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
     const at = ageOf(r)
     return at === null ? m : m === null ? at : Math.max(m, at)
   }, null)
-  const tenant = dataOf(tasks)?.tenant_id ?? null
+  // THE TENANT FROM WHICHEVER READ CARRIED IT (visual QA V142, 2026-10-11):
+  // the note said `tenant —` off the task read alone while Headroom's foot,
+  // two cards down, named the tenant off the pool read. The task read's id
+  // first, then the account read's, then the capacity read's own id or its
+  // tenant-scoped pool names; the dash is left for a page where none did.
+  const tenant =
+    dataOf(tasks)?.tenant_id ||
+    dataOf(accounts)?.tenant_id ||
+    dataOf(capacity)?.tenant_id ||
+    tenantOfPools(dataOf(capacity)) ||
+    null
   const page = dataOf(tasks)?.tasks ?? null
   const waiting = page === null ? null : waitGroups(page)
   const failures = page === null ? null : failuresOf(page, Date.now())
@@ -217,7 +227,7 @@ export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
           <span className="ov-reading">tenant reading…</span>
         ) : tenant === null ? (
           <>
-            tenant <i className="ctl-em" title="The task read carried no tenant id.">&mdash;</i>
+            tenant <i className="ctl-em" title="No read carried a tenant id: not the task list, the account pool or the capacity read.">&mdash;</i>
           </>
         ) : (
           `tenant ${tenant}`
@@ -784,7 +794,10 @@ function NeedsALook({ checks }: { checks: Check[] }) {
             <span className={blind.every((c) => c.admin) ? 'ov-info' : 'ov-warn'}> · {blind.length} blind</span>
           )}
         </span>
-        {blind.length > 0 && reading.length === 0 && (
+        {/* ONE PARTIAL MARK (visual QA V141, 2026-10-11): with no problem to
+            draw, the absence below already carries the partial mark and the
+            same sentence, so a second pill on the head line only repeated it. */}
+        {blind.length > 0 && reading.length === 0 && problems.length > 0 && (
           <Mark
             kind="partial"
             say={`${blind.length} of ${checks.length} checks could not run, so this row is over the ${ran} that did: ${blindSay}`}
@@ -845,6 +858,10 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
   // one line, cut with an ellipsis and whole in its title; the detail is the
   // third. The whole headline stays the card's accessible name.
   const { title, ids } = splitHeadline(p.headline)
+  // A DASH NEVER STARTS A LINE (visual QA V140, 2026-10-11): the space before
+  // ` — ` is a no-break space, so the dash ends the clause it follows and a
+  // clamped line cannot open on a lone "—…".
+  const detail = keepDash(p.detail)
   return (
     <a className={`ov-att is-${p.severity}`} href={toPath(p.href)} aria-label={`${p.headline}. ${p.detail}`}>
       {p.severity === 'bad' ? <BadMark /> : <WarnMark />}
@@ -852,11 +869,11 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
         <b title={p.headline}>{title}</b>
         {ids !== null && (
           <small className="ov-att-ids" title={ids}>
-            {ids}
+            {keepDash(ids)}
           </small>
         )}
         <small className={ids === null ? undefined : 'is-one'} title={p.detail}>
-          {p.detail}
+          {detail}
         </small>
       </span>
       <span className="ov-att-go">{p.linkLabel ?? 'Open'} &rarr;</span>
@@ -877,6 +894,11 @@ export function CheckCard({ problem: p }: { problem: Problem }) {
  */
 export function toPath(href: string): string {
   return href.startsWith('#') ? addressToPath(href.slice(1)) : href
+}
+
+/** ` — ` with a no-break space before the dash, so the dash cannot open a line. */
+export function keepDash(text: string): string {
+  return text.replace(/ — /g, '\u00a0— ')
 }
 
 export function splitHeadline(headline: string): { title: string; ids: string | null } {
@@ -947,6 +969,14 @@ function HeadroomBody({ capacity, accounts }: { capacity: Result<Capacity>; acco
   )
 }
 
+/** The calling tenant, read off the tenant-scoped pool names; null when none is. */
+export function tenantOfPools(cap: Capacity | null): string | null {
+  if (cap === null) return null
+  return (
+    cap.pools.map((p) => /(?:^|:)tenant:([^:]+)/.exec(p.name)?.[1]).find((t): t is string => Boolean(t)) ?? null
+  )
+}
+
 function CapacityStacks({ state }: { state: Result<Capacity> }) {
   const now = usePageClock()
   if (state.status === 'loading') return <Reading rows={3} />
@@ -977,9 +1007,7 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
   const profiles = Object.entries(cap.runner_profiles).sort(([a], [b]) => a.localeCompare(b))
   // `/v1/capacity` carries no tenant id of its own, so whose view this is is
   // read off the tenant-scoped pool names rather than assumed.
-  const tenant = cap.pools
-    .map((p) => /(?:^|:)tenant:([^:]+)/.exec(p.name)?.[1])
-    .find((t): t is string => Boolean(t))
+  const tenant = tenantOfPools(cap) ?? undefined
 
   return (
     <>
@@ -1014,11 +1042,27 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
  */
 function PoolsBody({ state }: { state: Result<Capacity> }) {
   if (state.status === 'loading') return <Reading rows={2} />
-  if (state.status !== 'ok') {
+  // THE SAME ABSENCE AS EVERY OTHER CARD'S (visual QA V141/V142, 2026-10-11):
+  // this card said its failure and its zero as a line of em text while
+  // Headroom, reading the same pools, drew the mark and heading. One read,
+  // one picture.
+  if (state.status === 'error') {
+    const b = blindness(state.error)
     return (
-      <p className="ctl-em" title={state.status === 'error' ? `${blindness(state.error).why}` : undefined}>
-        {state.status === 'empty' ? 'No pools exist: the read succeeded and returned nothing.' : '— not read; see Headroom'}
-      </p>
+      <CardAbsent
+        kind={b.admin ? 'admin' : 'failed'}
+        heading="Pool state unread"
+        say={`${b.why} No figure here is a claim about room.`}
+      />
+    )
+  }
+  if (state.status === 'empty') {
+    return (
+      <CardAbsent
+        kind="zero"
+        heading="No pools exist"
+        say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+      />
     )
   }
   return (
@@ -1123,7 +1167,11 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
       : known && ratio >= 0.8
         ? 'is-warn'
         : undefined
-  const say = `${poolLabel(p.name)}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${paused ? ', paused' : ''}`
+  // FULL IS SAID ON THE FIGURE (visual QA V057, owner decision Q3,
+  // 2026-10-11): the phone hides the track, which was the only place a full
+  // pool showed, so `5/5` takes the bad tone itself.
+  const full = limit !== null && limit > 0 && p.active >= limit
+  const say = `${poolLabel(p.name)}: ${p.active} of ${limit === null ? 'no limit set' : `${limit}`} units in use${full ? ', full' : ''}${paused ? ', paused' : ''}`
   return (
     <div className="ov-pl" title={say}>
       <span className="ov-idc" title={p.name}>
@@ -1135,7 +1183,7 @@ export function PoolRow({ pool: p }: { pool: Pool }) {
         zeroTitle={`Measured: 0 of ${limit} in use on ${p.name}.`}
         meter={known ? { label: say, now: p.active, max: limit } : { label: say, now: p.active, max: 0 }}
       />
-      <b>
+      <b className={full ? 'is-full' : undefined}>
         {p.active}/{limit === null ? <span className="ctl-em" title="No limit set: not a ceiling of 0.">&mdash;</span> : limit}
       </b>
     </div>
@@ -1200,9 +1248,12 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
           has reset since it was read is kept out of `best` -- a projection is
           not headroom -- and it is usually the one with the most room, so the
           line says which ones it left out rather than reading as if they had none. */}
+      {/* NO TYPED `·` (visual QA V145, 2026-10-11): the line is a wrapping
+          flex row whose gap separates its items, and the dot this clause
+          opened with was left alone at the start of a line when it wrapped. */}
       {pool.projected.length > 0 && (
         <span className="ov-acc-proj" title="Their last figure describes a window that has since reset or gone stale, so it is not counted as room. Accounts shows them with ~.">
-          · {pool.projected.length} projected ({pool.projected.join(', ')}) not counted
+          {pool.projected.length} projected ({pool.projected.join(', ')}) not counted
         </span>
       )}
       {signIn > 0 && <WarnMark label={`${signIn} needs sign-in`} />}
