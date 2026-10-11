@@ -17,13 +17,24 @@
  * screen lists the thing that makes it, and links each firing to its work.
  */
 import { useEffect, useState, type MouseEvent, type ReactNode } from 'react'
-import { loadApprovals, loadRepositories, loadSchedules, type ApprovalItem, type Schedule } from './api'
-import { errorHeading, type Result } from './fetch'
+import {
+  deleteSchedule,
+  loadApprovals,
+  loadRepositories,
+  loadSchedules,
+  pauseSchedule,
+  resumeSchedule,
+  runSchedule,
+  type ApprovalItem,
+  type Schedule,
+  type ScheduleFiring,
+} from './api'
+import { errorHeading, type ApiError, type Result } from './fetch'
 import { usd } from './measure'
 import { addressToPath } from './paths'
 import { Absent, Mark } from './primitives'
 import { scheduleWords, type RepoRecord } from './RepositoriesData'
-import { buttonClass } from './components'
+import { Button, Dialog, buttonClass } from './components'
 import { ScheduleDetail } from './ScheduleDetail'
 import { NewSchedule } from './ScheduleEdit'
 import { Screen, timeAgo } from './Shell'
@@ -144,11 +155,260 @@ function stateLine(s: Schedule): string | null {
   return why === null ? `Paused${by}` : `Paused${by}: ${why}`
 }
 
-function ScheduleList({ rows, names, go }: { rows: Schedule[]; names: ReadonlyMap<string, string> | null; go: (to: string) => void }) {
+// ---------------------------------------------------------------------------
+// The actions (owner decisions 2026-10-11): Run now, Dry run, Pause, Resume
+// and Delete, through the §7.1 routes as they are.
+// ---------------------------------------------------------------------------
+
+/** What an action said, kept above the page's read so a re-read does not drop it. */
+export interface ActNotice {
+  tone: 'ok' | 'bad'
+  text: string
+}
+
+/**
+ * WHETHER A RUN MADE NOW SPENDS CAPACITY. Only then does Run now ask first
+ * (owner decision 2026-10-11: an action confirms only when it spends
+ * capacity). A dry run runs no agent (§2.8); a schedule whose policy is dry
+ * makes only dry firings; and under a `run: approve` gate the firing waits
+ * for a person, holding nothing (invariant 1). Every other run creates work
+ * at once, which admission leases like any other.
+ */
+export function runSpends(s: Schedule, dryRun: boolean): boolean {
+  return !dryRun && s.policy.dry_run !== true && s.gate.run !== 'approve'
+}
+
+/** What a `:run` answer's firing came to, in words; nothing is assumed past the firing as written. */
+export function firedWords(f: ScheduleFiring, dryRun: boolean): string {
+  if (f.skip !== null) {
+    if (f.skip.code === 'DRY_RUN') return `${dryRun ? 'Dry run' : 'Run'} recorded: nothing was created. What it would create is in History.`
+    return `Not run: the firing was skipped, ${f.skip.code}.`
+  }
+  if (f.state === 'awaiting_approval') return 'Fired: the firing waits for approval in Approvals, holding no capacity.'
+  if (f.state === 'queued') return 'Fired: the firing is queued behind the live one (the overlap policy).'
+  if (f.work.length > 0) return `Fired: the firing created ${pluralise(f.work.length, 'work item')}.`
+  return `Fired: the firing is ${f.state.replace(/_/g, ' ')}.`
+}
+
+/** The server's refusal of an action, in the words of the rule that refused it. */
+export function actRefusal(e: ApiError): string {
+  switch (e.code) {
+    case 'schedule_disabled':
+      return 'An admin disabled this schedule, so it neither runs nor resumes until an admin enables it.'
+    case 'schedules_disabled':
+      return 'Schedules are switched off platform-wide, so nothing runs now.'
+    case 'admin_required':
+      return 'An admin disabled this schedule; only an admin may enable it again.'
+    case 'confirmation_required':
+      return 'The name typed is not the schedule’s name, so nothing was deleted.'
+    default:
+      return `${errorHeading(e)}: ${e.message}`
+  }
+}
+
+/** The budget the confirmation names, from the schedule as served; a figure not set is left out. */
+function runCost(s: Schedule): string {
+  const parts: string[] = []
+  if (s.budget.per_run_usd !== undefined) parts.push(`each run is reserved at ${usd(s.budget.per_run_usd)} until it reports its cost`)
+  if (s.budget.max_concurrent !== undefined) parts.push(`at most ${pluralise(s.budget.max_concurrent, 'live run')}`)
+  if (s.budget.per_day_usd !== undefined) parts.push(`against ${usd(s.budget.per_day_usd)} a day`)
+  return parts.length === 0 ? '' : ` Its budget holds: ${parts.join(', ')}.`
+}
+
+type ActKind = 'run' | 'dry' | 'pause' | 'resume' | 'delete'
+
+/**
+ * A SCHEDULE'S ACTIONS. On a row: Run now, and Resume when it is paused or
+ * auto-paused. On its page: Run now, Dry run, Pause, Resume and Delete. Only
+ * Run now asks first, and only when `runSpends`; Delete always asks for the
+ * schedule's name typed, which the route checks again (`confirm`). Each
+ * answer is said, and the page reads the schedule again rather than patching
+ * what it drew. A disabled schedule is an admin's to enable: Run now says so
+ * and Resume is not offered (`:resume` is 403 `admin_required` for it).
+ */
+export function ScheduleActions({
+  s,
+  where,
+  onDone,
+  onDeleted,
+}: {
+  s: Schedule
+  where: 'row' | 'head'
+  onDone: (notice: ActNotice) => void
+  onDeleted?: (notice: ActNotice) => void
+}) {
+  const [busy, setBusy] = useState<ActKind | null>(null)
+  const [asking, setAsking] = useState<'run' | 'delete' | null>(null)
+  const [typed, setTyped] = useState('')
+  const [refused, setRefused] = useState<string | null>(null)
+  const size = where === 'row' ? 'sm' : 'md'
+  const disabled = s.state === 'disabled' ? 'An admin disabled this schedule.' : undefined
+
+  const act = async (kind: ActKind) => {
+    setBusy(kind)
+    setRefused(null)
+    if (kind === 'run' || kind === 'dry') {
+      const r = await runSchedule(s.schedule_id, { dry_run: kind === 'dry' })
+      setBusy(null)
+      setAsking(null)
+      if (r.status === 'ok') return onDone({ tone: 'ok', text: `${s.name}: ${firedWords(r.data.firing, kind === 'dry')}` })
+      if (r.status === 'error') return onDone({ tone: 'bad', text: `${s.name}: ${actRefusal(r.error)}` })
+      return
+    }
+    if (kind === 'delete') {
+      const r = await deleteSchedule(s.schedule_id, typed.trim())
+      setBusy(null)
+      if (r.status === 'ok') {
+        setAsking(null)
+        return onDeleted?.({ tone: 'ok', text: `Deleted ${s.name}. Its history and audit are kept; work it already made is not cancelled.` })
+      }
+      if (r.status === 'error') setRefused(actRefusal(r.error))
+      return
+    }
+    const r = kind === 'pause' ? await pauseSchedule(s.schedule_id) : await resumeSchedule(s.schedule_id)
+    setBusy(null)
+    if (r.status === 'ok') {
+      const said =
+        kind === 'pause'
+          ? 'Paused: no new firings. Work it already made carries on.'
+          : r.data.schedule.next_run_at === null
+            ? 'Resumed.'
+            : `Resumed: next run ${untilWords(r.data.schedule.next_run_at, Date.now())}.`
+      return onDone({ tone: 'ok', text: `${s.name}: ${said}` })
+    }
+    if (r.status === 'error') onDone({ tone: 'bad', text: `${s.name}: ${actRefusal(r.error)}` })
+  }
+
+  const runNow = () => (runSpends(s, false) ? setAsking('run') : void act('run'))
+  const resumable = s.state === 'paused' || s.state === 'auto_paused'
+  return (
+    <div className={where === 'row' ? 'sc-row-acts' : 'c-acts sc-head-acts'} data-testid={`sc-acts-${where}`}>
+      <Button size={size} kind={where === 'head' ? 'primary' : 'secondary'} busy={busy === 'run' ? 'Running…' : false} disabledReason={disabled} onClick={runNow}>
+        Run now
+      </Button>
+      {where === 'head' && (
+        <Button size={size} busy={busy === 'dry' ? 'Running dry…' : false} disabledReason={disabled} onClick={() => void act('dry')}>
+          Dry run
+        </Button>
+      )}
+      {where === 'head' && s.state === 'enabled' && (
+        <Button size={size} busy={busy === 'pause' ? 'Pausing…' : false} onClick={() => void act('pause')}>
+          Pause
+        </Button>
+      )}
+      {resumable && (
+        <Button size={size} busy={busy === 'resume' ? 'Resuming…' : false} onClick={() => void act('resume')}>
+          Resume
+        </Button>
+      )}
+      {where === 'head' && (
+        <Button size={size} kind="danger" onClick={() => { setTyped(''); setRefused(null); setAsking('delete') }}>
+          Delete…
+        </Button>
+      )}
+      {asking === 'run' && (
+        <Dialog
+          title={`Run ${s.name} now?`}
+          onClose={() => setAsking(null)}
+          actions={
+            <>
+              <Button kind="ghost" onClick={() => setAsking(null)}>
+                Not now
+              </Button>
+              <Button kind="primary" busy={busy === 'run' ? 'Running…' : false} onClick={() => void act('run')}>
+                Run now
+              </Button>
+            </>
+          }
+        >
+          <p>
+            This fires the schedule once, now, outside its timetable. Its firing creates work at once, which takes capacity like any other run.
+            {runCost(s)}
+          </p>
+          <p>A dry run creates nothing and runs no agent.</p>
+        </Dialog>
+      )}
+      {asking === 'delete' && (
+        <Dialog
+          title={`Delete ${s.name}?`}
+          onClose={() => setAsking(null)}
+          actions={
+            <>
+              <Button kind="ghost" onClick={() => setAsking(null)}>
+                Keep it
+              </Button>
+              <Button
+                kind="danger-filled"
+                busy={busy === 'delete' ? 'Deleting…' : false}
+                disabledReason={typed.trim() === s.name.trim() ? undefined : 'Type the schedule’s name exactly.'}
+                onClick={() => void act('delete')}
+              >
+                Delete schedule
+              </Button>
+            </>
+          }
+        >
+          <p>
+            The schedule stops firing for good and cannot be brought back. Its history and audit are kept, and work it already made is ordinary
+            work that is not cancelled.
+          </p>
+          <label className="c-field">
+            <span className="c-lbl">
+              Type <code>{s.name}</code> to confirm.
+            </span>
+            <input className="c-inp is-mono" value={typed} autoComplete="off" spellCheck={false} onChange={(e) => setTyped(e.target.value)} />
+          </label>
+          {refused !== null && <p className="c-hint" role="alert">{refused}</p>}
+        </Dialog>
+      )}
+    </div>
+  )
+}
+
+/** What the last action said: a status, or an alert when it was refused. */
+export function Said({ notice }: { notice: ActNotice | null }) {
+  if (notice === null) return null
+  return (
+    <p className={`sc-said is-${notice.tone}`} role={notice.tone === 'bad' ? 'alert' : 'status'} data-testid="sc-said">
+      {notice.text}
+    </p>
+  )
+}
+
+/** The second line of a row on a phone: type · repository · when, then last · next · spend · waiting. */
+function PhoneLine({ s, names, now }: { s: Schedule; names: ReadonlyMap<string, string> | null; now: number }) {
+  const last =
+    s.last_firing === null
+      ? 'never fired'
+      : `last ${s.last_firing.outcome ?? 'in progress'}${
+          (s.last_firing.ended_at ?? s.last_firing.slot) === null ? '' : ` ${timeAgo(s.last_firing.ended_at ?? s.last_firing.slot ?? '', now)}`
+        }`
+  const next = s.next_run_at === null ? `no next run (${STATE_WORD[s.state]})` : `next ${untilWords(s.next_run_at, now)}`
+  const waiting = s.pending_approvals > 0 ? `${s.pending_approvals} waiting` : 'none waiting'
+  const head = [s.type, scopeWords(s, names), s.words ?? s.cron, last, next].join(' · ')
+  return (
+    <span className="sc-line2" title={`${head} · ${usd(s.spend_today.reported_usd)} today · ${waiting}`}>
+      {head} · <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" /> ·{' '}
+      {waiting}
+    </span>
+  )
+}
+
+function ScheduleList({
+  rows,
+  names,
+  go,
+  onDone,
+}: {
+  rows: Schedule[]
+  names: ReadonlyMap<string, string> | null
+  go: (to: string) => void
+  onDone: (notice: ActNotice) => void
+}) {
   const now = useNow()
   return (
     <div className="sc-table-wrap">
-      <table className="sc-table">
+      <table className="sc-table is-schedules">
         <thead>
           <tr>
             <th scope="col" data-col="name">Name · type</th>
@@ -159,6 +419,9 @@ function ScheduleList({ rows, names, go }: { rows: Schedule[]; names: ReadonlyMa
             <th scope="col" data-col="spend">Spend today</th>
             <th scope="col" data-col="approvals">Approvals</th>
             <th scope="col" data-col="state">State</th>
+            <th scope="col" data-col="acts">
+              <span className="sc-vh">Actions</span>
+            </th>
           </tr>
         </thead>
         <tbody>
@@ -166,20 +429,21 @@ function ScheduleList({ rows, names, go }: { rows: Schedule[]; names: ReadonlyMa
             const line = stateLine(s)
             return (
               <tr key={s.schedule_id} className="sc-row" data-schedule={s.schedule_id}>
-                <td data-label="Name · type">
+                <td data-label="Name · type" className="sc-c-name">
                   <InApp go={go} to={scheduleAddress(s.schedule_id)} className="sc-cut sc-name">{s.name}</InApp>
-                  <span className="sc-sub">{s.tier === null ? s.type : `${s.type} · ${s.tier}`}</span>
+                  <span className="sc-sub sc-type">{s.tier === null ? s.type : `${s.type} · ${s.tier}`}</span>
+                  <PhoneLine s={s} names={names} now={now} />
                 </td>
-                <td data-label="Repository"><span className="sc-cut" title={scopeWords(s, names)}>{scopeWords(s, names)}</span></td>
-                <td data-label="When"><WhenCell s={s} /></td>
-                <td data-label="Next run">
+                <td data-label="Repository" className="sc-c-more"><span className="sc-cut" title={scopeWords(s, names)}>{scopeWords(s, names)}</span></td>
+                <td data-label="When" className="sc-c-more"><WhenCell s={s} /></td>
+                <td data-label="Next run" className="sc-c-more">
                   {s.next_run_at === null ? (
                     <i className="ctl-em" title={NO_NEXT_RUN[s.state]}>&mdash; {NO_NEXT_RUN[s.state]}</i>
                   ) : (
                     <span title={localTime(s.next_run_at)}>{untilWords(s.next_run_at, now)}</span>
                   )}
                 </td>
-                <td data-label="Last run">
+                <td data-label="Last run" className="sc-c-more">
                   {s.last_firing === null ? (
                     <i className="ctl-em">never fired</i>
                   ) : (
@@ -193,13 +457,16 @@ function ScheduleList({ rows, names, go }: { rows: Schedule[]; names: ReadonlyMa
                     </>
                   )}
                 </td>
-                <td data-label="Spend today">
+                <td data-label="Spend today" className="sc-c-more">
                   <SpendFigure usdReported={s.spend_today.reported_usd} unreported={s.spend_today.unreported_attempts} what="today's runs" />
                 </td>
-                <td data-label="Approvals">{s.pending_approvals > 0 ? `${s.pending_approvals} waiting` : 'none'}</td>
-                <td data-label="State">
+                <td data-label="Approvals" className="sc-c-more">{s.pending_approvals > 0 ? `${s.pending_approvals} waiting` : 'none'}</td>
+                <td data-label="State" className="sc-c-state">
                   <span className={`sc-state is-${s.state}`}>{STATE_WORD[s.state]}</span>
-                  {line !== null && <span className="sc-sub sc-cut" title={line}>{line}</span>}
+                  {line !== null && <span className="sc-sub sc-cut sc-why" title={line}>{line}</span>}
+                </td>
+                <td data-label="Actions" className="sc-c-acts">
+                  <ScheduleActions s={s} where="row" onDone={onDone} />
                 </td>
               </tr>
             )
@@ -279,7 +546,17 @@ function BuiltInRows({ repos, go }: { repos: Result<RepoRecord[]>; go: (to: stri
   )
 }
 
-function SchedulesBody({ rows, go }: { rows: Schedule[]; go: (to: string) => void }) {
+function SchedulesBody({
+  rows,
+  go,
+  notice,
+  onDone,
+}: {
+  rows: Schedule[]
+  go: (to: string) => void
+  notice: ActNotice | null
+  onDone: (notice: ActNotice) => void
+}) {
   const [repos, setRepos] = useState<Result<RepoRecord[]>>({ status: 'loading', since: Date.now() })
   useEffect(() => {
     let live = true
@@ -298,12 +575,13 @@ function SchedulesBody({ rows, go }: { rows: Schedule[]; go: (to: string) => voi
           New schedule
         </InApp>
       </div>
+      <Said notice={notice} />
       {rows.length === 0 ? (
         <Absent kind="zero" heading="No schedules yet" say="This tenant has no schedules: the list was read and is empty.">
           Recurring work in this tenant, such as an issue sweep, an index refresh or a nightly observer, is listed here. Each firing makes ordinary work: an issue run, a task or a workflow.
         </Absent>
       ) : (
-        <ScheduleList rows={rows} names={names} go={go} />
+        <ScheduleList rows={rows} names={names} go={go} onDone={onDone} />
       )}
       <h2 className="sc-h2">Built-in recurring work</h2>
       <BuiltInRows repos={repos} go={go} />
@@ -315,13 +593,26 @@ export function SchedulesScreen({ view, go }: { view: string | null; go: (to: st
   const scheduleId = scheduleOf(view)
   if (scheduleId === NEW_SCHEDULE) return <NewSchedule go={go} />
   if (scheduleId !== null) return <ScheduleDetail scheduleId={scheduleId} go={go} />
+  return <ScheduleListScreen go={go} />
+}
+
+function ScheduleListScreen({ go }: { go: (to: string) => void }) {
+  // Above the Screen, as on one schedule's page: an action bumps `round`,
+  // which remounts the Screen to read the list again, and what it said stays.
+  const [round, setRound] = useState(0)
+  const [notice, setNotice] = useState<ActNotice | null>(null)
+  const onDone = (n: ActNotice) => {
+    setNotice(n)
+    setRound((r) => r + 1)
+  }
   return (
     <Screen
+      key={`schedules:${round}`}
       title="Schedules"
       load={loadSchedules}
       summary={(d) => `${pluralise(d.schedules.length, 'schedule')} · tenant ${d.tenant_id}`}
     >
-      {(d) => <SchedulesBody rows={d.schedules} go={go} />}
+      {(d) => <SchedulesBody rows={d.schedules} go={go} notice={notice} onDone={onDone} />}
     </Screen>
   )
 }

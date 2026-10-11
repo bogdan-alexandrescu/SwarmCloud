@@ -31,9 +31,15 @@ ENTRIES = {
 }
 
 #: Entries the owner has since accepted, and the pull request applied: their
-#: status and index row say so instead of "proposed". 60 and 61, 2026-10-11.
-APPLIED = {60, 61}
+#: status and index row say so instead of "proposed". All four, 2026-10-11.
+APPLIED = {58, 59, 60, 61}
 _APPLIED_STATUS = "ACCEPTED by the owner 2026-10-11, applied in this PR"
+#: 58 and 59's index rows were written in the "and APPLIED by the pull request
+#: that adds this line" form; 60 and 61's repeat the entry's status.
+_APPLIED_ROW = {
+    58: "ACCEPTED by the owner 2026-10-11 and APPLIED ",
+    59: "ACCEPTED by the owner 2026-10-11 and APPLIED ",
+}
 
 SECTIONS = (
     "### What is true today",
@@ -71,9 +77,10 @@ def test_each_finding_is_an_entry_in_the_house_shape(number: int):
 
 
 @pytest.mark.parametrize("number", sorted(ENTRIES))
-def test_each_entry_has_an_open_index_row(number: int):
+def test_each_entry_has_its_index_row(number: int):
     if number in APPLIED:
-        pattern = rf"^\| {number} \| .+ \| {re.escape(_APPLIED_STATUS)}[^|]* \|$"
+        row_status = _APPLIED_ROW.get(number, _APPLIED_STATUS)
+        pattern = rf"^\| {number} \| .+ \| {re.escape(row_status)}[^|]* \|$"
     else:
         pattern = rf"^\| {number} \| .+ \| proposed \|$"
     assert re.search(pattern, _text(), flags=re.M), (
