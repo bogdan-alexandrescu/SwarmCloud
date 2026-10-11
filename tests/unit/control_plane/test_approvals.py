@@ -310,7 +310,7 @@ def _scheduled_plan(client, db, objects, gate) -> dict:
     seed_tenant(db, "eng")
     seed_schedule(db, gate=gate)
     run = _planned(client, db, objects)
-    db.docs[f"issue_runs/{run['id']}"]["schedule"] = {"schedule_id": "sch_000000000001"}
+    db.docs[f"issue_runs/{run['id']}"].setdefault("metadata", {})["schedule"] = {"schedule_id": "sch_000000000001"}
     return run
 
 
@@ -335,7 +335,7 @@ def test_a_report_only_hold_does_not_waive_the_schedules_named_approvers_in_the_
     seed_schedule(db, gate={"run": "approve", "approvers": ["dave@saga.xyz"]})
     run = _planned(client, db, objects, _bootstrap_plan())
     stored = db.docs[f"issue_runs/{run['id']}"]
-    stored["schedule"] = {"schedule_id": "sch_000000000001"}
+    stored.setdefault("metadata", {})["schedule"] = {"schedule_id": "sch_000000000001"}
     assert stored["approval_hold"] is not None
     refused = _decide(client, f"run:{run['id']}", "approve", digest=run["plan_digest"])
     assert refused.status_code == 403 and refused.json()["code"] == "approver_not_allowed"
@@ -349,7 +349,7 @@ def test_a_hold_adds_to_an_owner_only_schedule_it_never_replaces_it(client, db, 
     seed_schedule(db, gate={"run": "approve", "approvers": "owner_only"})
     run = _planned(client, db, objects, _bootstrap_plan())
     stored = db.docs[f"issue_runs/{run['id']}"]
-    stored["schedule"] = {"schedule_id": "sch_000000000001"}
+    stored.setdefault("metadata", {})["schedule"] = {"schedule_id": "sch_000000000001"}
     stored["plan_edited_by"] = OWNER
     assert stored["approval_hold"]["approvers"] == "second_member"
 
