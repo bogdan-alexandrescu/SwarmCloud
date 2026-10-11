@@ -37,6 +37,7 @@ import os
 import secrets
 import sqlite3
 import tarfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -218,7 +219,7 @@ def test_ordinary_files_do_not_have_the_shape(tmp_path):
 
 
 def test_the_checkpoint_leaves_both_out_and_records_browser_state_refused(
-    store, tmp_path, log_stream
+    store, tmp_path, log_stream, monkeypatch
 ):
     ws = workspace_mod.create(tmp_path / "ws", "att_1")
     state_value, db_value = _cookie_value(), _cookie_value()
@@ -227,6 +228,12 @@ def test_the_checkpoint_leaves_both_out_and_records_browser_state_refused(
     cookies_db(ws.work / "profile" / "Default" / "Cookies", db_value)
     (ws.work / "notes.md").write_text("signed in; see the report\n")
     (ws.work / "recipe.json").write_text(json.dumps({"cookies": "chocolate chip"}))
+    # Settled, as `test_checkpoint_incremental._settled` does it: a file written
+    # inside the racy window is taken again next time, whatever it holds.
+    from agent_worker import checkpoint as checkpoint_mod
+
+    monkeypatch.setattr(checkpoint_mod, "RACY_WINDOW_NS", 50_000_000)
+    time.sleep(0.1)
 
     manager = _manager(store, _logger(log_stream))
     record = manager.create(ws)
