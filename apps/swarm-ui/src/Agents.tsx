@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type Dispatch, type SetStateAction } from 'react'
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
@@ -10,7 +10,7 @@ import { createPortal } from 'react-dom'
 import { Em, Mark, type ChipTone } from './AgentDetail'
 import { TaskIdLine } from './TaskIdLine'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
-import { TASK_PAGE_LIMIT, loadTasks, type ResourceClasses } from './api'
+import { TASK_PAGE_LIMIT, loadTask, loadTasks, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import type { Result } from './fetch'
 import { HelpCard, phoneWidth } from './HelpCard'
@@ -171,6 +171,47 @@ export { PHONE_PAGE_LIMIT }
 interface AgentsPage extends TaskPage {
   /** The `limit` the read asked for: `PHONE_PAGE_LIMIT` at phone width. */
   asked: number
+  /** Further pages were read into it with "load more" (`MorePages`). */
+  extended?: boolean
+}
+
+/**
+ * THE PAGES READ PAST THE FIRST, BY "LOAD MORE" (live QA WA-2, 2026-10-11).
+ * The list said `200 loaded · more beyond` and never followed the
+ * `next_page_token` it was handed, so a task older than the newest 200 could
+ * not be reached from this screen at all.
+ *
+ * `tasks` STARTS WITH THE FIRST PAGE AS IT WAS when "load more" was pressed,
+ * then each page after it. The first page goes on being re-read every few
+ * seconds and the token does not move with it: rows that newer tasks push off
+ * the re-read first page are older than every row on it, and they would fall
+ * into a gap between it and the next page if the snapshot did not keep them.
+ * Rows past the first page are not re-read; they are, overwhelmingly, finished
+ * agents, whose rows no longer change.
+ */
+interface MorePages {
+  tasks: Task[]
+  /** The token for the page after the last one read; null when none is left. */
+  token: string | null
+}
+
+/** The re-read first page, with every further page read into it after its own rows. */
+export function withMorePages(page: AgentsPage, more: MorePages | null): AgentsPage {
+  if (more === null) return page
+  const fresh = new Set(page.tasks.map((t) => t.id))
+  return {
+    ...page,
+    tasks: [...page.tasks, ...more.tasks.filter((t) => !fresh.has(t.id))],
+    next_page_token: more.token,
+    extended: true,
+  }
+}
+
+/** One more page after `token`, appended to what is already held. */
+function appendPage(held: readonly Task[], got: TaskPage | null, token: string | null): MorePages {
+  const seen = new Set(held.map((t) => t.id))
+  const rows = got === null ? [] : got.tasks.filter((t) => !seen.has(t.id))
+  return { tasks: [...held, ...rows], token }
 }
 
 async function loadAgentsPage(): Promise<Result<AgentsPage>> {
@@ -249,6 +290,29 @@ export function AgentsScreen({
   // RECENT'S SEARCH (#99). Held here beside `profile`, not in the address: a
   // query is a reader's scratch.
   const [query, setQuery] = useState('')
+  // "LOAD MORE" (WA-2): the pages read past the first, kept across the first
+  // page's re-reads, and the state of the read in flight.
+  const [more, setMore] = useState<MorePages | null>(null)
+  const [moreRead, setMoreRead] = useState<MoreRead>({ kind: 'idle' })
+  const busy = useRef(false)
+  const loadMore = async (page: AgentsPage) => {
+    const token = more !== null ? more.token : (page.next_page_token ?? null)
+    if (token === null || busy.current) return
+    busy.current = true
+    setMoreRead({ kind: 'reading' })
+    const got = await loadTasks(page.asked, { view: 'summary', pageToken: token })
+    busy.current = false
+    if (got.status === 'ok' || got.status === 'stale') {
+      setMore((m) => appendPage(m === null ? page.tasks : m.tasks, got.data, got.data.next_page_token ?? null))
+      setMoreRead({ kind: 'idle' })
+    } else if (got.status === 'empty') {
+      // An empty page after a token is the end of the list, and an answer.
+      setMore((m) => appendPage(m === null ? page.tasks : m.tasks, null, null))
+      setMoreRead({ kind: 'idle' })
+    } else if (got.status === 'error') {
+      setMoreRead({ kind: 'failed', why: got.error.message })
+    }
+  }
 
   return (
     <Screen
@@ -261,7 +325,8 @@ export function AgentsScreen({
       // can change; this screen owns the cadence, which is a function of the
       // rows it holds.
       pollMs={pollInterval}
-      summary={(d) => {
+      summary={(first) => {
+        const d = withMorePages(first, more)
         const live = d.tasks.filter((t) => tabOf(t) === 'live').length
         return (
           <>
@@ -278,7 +343,9 @@ export function AgentsScreen({
         <AgentsBody
           onOpen={onOpen}
           openTaskId={taskId}
-          page={d}
+          page={withMorePages(d, more)}
+          onMore={() => void loadMore(withMorePages(d, more))}
+          moreRead={moreRead}
           // WHEN THE ROWS ON SCREEN WERE READ, and the cadence in force, as
           // `Screen` read them -- not recorded a second time here. A stale
           // screen hands over the last GOOD read's time, which is the one the
@@ -311,10 +378,15 @@ export function AgentsScreen({
  */
 export { rowClock }
 
+/** The "load more" read: none in flight, one in flight, or the last one failed. */
+type MoreRead = { kind: 'idle' } | { kind: 'reading' } | { kind: 'failed'; why: string }
+
 function AgentsBody({
   onOpen,
   openTaskId,
   page,
+  onMore,
+  moreRead,
   readAt,
   interval,
   tab,
@@ -334,6 +406,9 @@ function AgentsBody({
   onOpen: (taskId: string) => void
   openTaskId: string | null
   page: AgentsPage
+  /** Read the page after the last one held (WA-2). */
+  onMore: () => void
+  moreRead: MoreRead
   readAt: number | null
   /** The cadence the rows are re-read at: how far past `readAt` they are good for. */
   interval: number
@@ -395,7 +470,8 @@ function AgentsBody({
   // read `/v1/stats` on its own 30s clock and lagged the tabs. A page with
   // fewer rows than it asked for and no next page is every row there is;
   // a capped page is not, and the panel says so by keeping its own read.
-  const whole = page.tasks.length < page.asked && (page.next_page_token ?? null) === null
+  // A list extended by "load more" to its last page holds every row too.
+  const whole = (page.next_page_token ?? null) === null && (page.tasks.length < page.asked || page.extended === true)
   useEffect(() => {
     publishListCounts({ live: counts.live, waiting: counts.waiting, at: readAt ?? Date.now(), whole })
   }, [counts.live, counts.waiting, readAt, whole])
@@ -453,21 +529,24 @@ function AgentsBody({
             if (byFailed !== 0) return byFailed
           }
           if (startedSort !== null) return compareStarted(a, b, startedSort === 'asc')
-          return a.updated_at < b.updated_at ? 1 : -1
+          return listOrder(a, b, shown)
         }),
     [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort],
   )
 
-  // The segment's counts, from the loaded Recent rows, like the tab badges.
+  // The segment's counts, from the loaded Recent rows, like the tab badges --
+  // UNDER THE PROFILE FILTER (live QA WA-9): with `indexer` chosen and 15 rows
+  // on screen the segment read `all 181+`, the count of every profile's rows.
+  // A count beside a filter counts what that filter lets through.
   const stateCounts = useMemo(() => {
-    const recent = page.tasks.filter((t) => tabOf(t) === 'recent')
+    const recent = page.tasks.filter((t) => tabOf(t) === 'recent' && (profile === '' || t.runner_profile === profile))
     return {
       all: recent.length,
       failed: recent.filter((t) => t.state === RECENT_STATE_OF.failed).length,
       cancelled: recent.filter((t) => t.state === RECENT_STATE_OF.cancelled).length,
       succeeded: recent.filter((t) => t.state === RECENT_STATE_OF.succeeded).length,
     }
-  }, [page.tasks])
+  }, [page.tasks, profile])
 
   // EVERY REPORT CARRIES THE TOGGLES (G2-22): a tab click that wrote only
   // `{ tab, state }` would clear `group=wf` from the address, and the
@@ -502,6 +581,33 @@ function AgentsBody({
     report({})
     onOpen(taskId)
   }
+  // A ROW FOUND UNDER ANOTHER TAB, or by its id beyond the page (WA-1),
+  // opens under the tab its state puts it in, as every row does.
+  const openElsewhere = (t: Task) => {
+    const where = tabOf(t)
+    setTab(where)
+    // On Recent with no state filter, so a cancelled agent opened from a
+    // `failed` view is not hidden by the filter it came through.
+    setRecentState(null)
+    report({ tab: where, state: null })
+    onOpen(t.id)
+  }
+  const idQuery = WHOLE_TASK_ID.test(needle) ? needle : null
+
+  // THE OPEN AGENT'S ROW IS SCROLLED INTO VIEW, ONCE, when it is first drawn
+  // (live QA WA-15). A deep link marked the row `aria-current` and left it at
+  // y=2030, below the fold. Once per agent: a reader who then scrolls the
+  // list away from it is not pulled back on the next re-read.
+  const scrolledTo = useRef<string | null>(null)
+  useEffect(() => {
+    if (openTaskId === null || scrolledTo.current === openTaskId) return
+    const row = [...document.querySelectorAll<HTMLElement>('.row.is-compact[data-task-id]')].find(
+      (r) => r.getAttribute('data-task-id') === openTaskId,
+    )
+    if (row === undefined) return
+    scrolledTo.current = openTaskId
+    if (typeof row.scrollIntoView === 'function') row.scrollIntoView({ block: 'nearest' })
+  }, [openTaskId, rows])
 
   // THE SCOPE OF EVERY FIGURE ABOVE, IN ONE QUALIFIER.
   //
@@ -675,7 +781,34 @@ function AgentsBody({
         </button>
       </div>
 
-      {rows.length === 0 ? (
+      {rows.length === 0 && idQuery !== null ? (
+        // A WHOLE TASK ID IS LOOKED UP, NOT SEARCHED FOR (live QA WA-1).
+        <IdLookup
+          key={idQuery}
+          id={idQuery}
+          loaded={page.tasks.find((t) => t.id === idQuery) ?? null}
+          shown={shown}
+          rowsRead={page.tasks.length}
+          now={now}
+          vouched={vouched}
+          classes={classes}
+          onOpen={openElsewhere}
+        />
+      ) : rows.length === 0 && bounded && (needle !== '' || stateFilter !== null) ? (
+        // A SEARCH OR A STATE OVER A CAPPED PAGE FOUND NOTHING IN THE PAGE,
+        // AND THAT IS ALL IT FOUND (live QA WA-1). It said `real zero`, a
+        // measured absence, about rows it never read.
+        <div className="ctl-empty">
+          <h3>
+            <Mark
+              kind="partial"
+              say={`No ${stateFilter !== null ? `${RECENT_STATE_OF[stateFilter]} ` : ''}agent among the ${page.tasks.length} loaded rows of ${shown}${needle !== '' ? ` matches “${query.trim()}”` : ''}. More rows exist beyond them, so this is not an answer for the platform: load more, or paste a whole task id to look it up.`}
+            />{' '}
+            {stateFilter !== null ? `nothing ${stateFilter} in the ${page.tasks.length} loaded` : `nothing in the ${page.tasks.length} loaded`}
+            {needle !== '' && ` matching “${query.trim()}”`}
+          </h3>
+        </div>
+      ) : rows.length === 0 ? (
         // A REAL ZERO, DRAWN AS ONE. The mark is the fact -- two words, always
         // rendered, legible with every card shut -- and the sentence that used
         // to stand here is its accessible name. Which states cost nothing is
@@ -718,8 +851,145 @@ function AgentsBody({
       ) : (
         <FlatRows rows={rows} now={now} vouched={vouched} onOpen={openRow} openTaskId={openTaskId} classes={classes} />
       )}
+
+      {/* LOAD MORE (live QA WA-2): the list stopped at its first page and
+          said `more beyond` with nothing to reach it by. The next page is
+          read into the same list, so every count, filter and search above
+          runs over it as well. */}
+      {bounded && (
+        <div className="ag-more">
+          <button type="button" className="ag-more-btn" disabled={moreRead.kind === 'reading'} onClick={onMore}>
+            {moreRead.kind === 'reading' ? 'Loading…' : `Load ${page.asked} more`}
+          </button>
+          <span className="ag-more-note">{page.tasks.length} loaded · more beyond</span>
+          {moreRead.kind === 'failed' && (
+            <span className="ag-more-note is-bad" role="alert">
+              <Mark kind="unread" say={`The next page could not be read: ${moreRead.why}`} /> {moreRead.why}
+            </span>
+          )}
+        </div>
+      )}
     </>
   )
+}
+
+/** A whole task id, as the list's search box takes it: `task_` and twenty hex digits. */
+export const WHOLE_TASK_ID = /^task_[0-9a-f]{20}$/
+
+/**
+ * A WHOLE TASK ID THAT IS NOT IN THE TAB (live QA WA-1, 2026-10-11).
+ *
+ * Pasting an id is the main reason to use the search box, and the search ran
+ * over the loaded page only: `task_7898edecb15543d98553`, the 201st newest,
+ * read `real zero · nothing in recent matching "task_…"` -- a measured
+ * absence, for a task that existed. Now a whole id that the tab's rows do not
+ * hold is looked for in two places, in order:
+ *
+ *   1. the loaded page's other tabs -- a pasted id on Live of an agent that
+ *      has finished is in Recent, and the row says so;
+ *   2. the server, `GET /v1/tasks/{id}`, which answers for the whole tenant.
+ *      A 404 there IS a measured absence, and only then is it drawn as one.
+ */
+function IdLookup({
+  id,
+  loaded,
+  shown,
+  rowsRead,
+  now,
+  vouched,
+  classes,
+  onOpen,
+}: {
+  id: string
+  /** The row, when the loaded page holds it under another tab. */
+  loaded: Task | null
+  shown: Tab
+  rowsRead: number
+  now: number
+  vouched: number
+  classes: ResourceClasses | null
+  /** Opens a task under the tab its state puts it in. */
+  onOpen: (task: Task) => void
+}) {
+  const [got, setGot] = useState<Result<Task> | null>(null)
+  useEffect(() => {
+    if (loaded !== null) return
+    let gone = false
+    void loadTask(id).then((r) => {
+      if (!gone) setGot(r)
+    })
+    return () => {
+      gone = true
+    }
+  }, [id, loaded])
+  const found = loaded ?? (got !== null && (got.status === 'ok' || got.status === 'stale') ? got.data : null)
+  if (found !== null) {
+    const where = tabOf(found)
+    return (
+      <div className="ag-idfound" data-found={loaded !== null ? 'page' : 'server'}>
+        <p className="ag-idfound-say">
+          {loaded !== null
+            ? `In ${where}, not ${shown}: this agent is ${found.state.toLowerCase()}.`
+            : `Found by its id. It is not among the ${rowsRead} loaded rows; it is in ${where}.`}
+        </p>
+        <div className="rows">
+          <TaskRow task={found} now={now} vouched={vouched} onOpen={() => onOpen(found)} classes={classes} />
+        </div>
+      </div>
+    )
+  }
+  if (got === null || got.status === 'loading') {
+    return (
+      <div className="ctl-empty">
+        <h3>
+          <Mark kind="pending" say={`Looking up ${id} by its id: it is not among the ${rowsRead} loaded rows.`} /> looking up {id}
+        </h3>
+      </div>
+    )
+  }
+  if (got.status === 'error' && got.error.httpStatus === 404) {
+    return (
+      <div className="ctl-empty">
+        <h3>
+          <Mark
+            kind="zero"
+            say={`The server has no task ${id} in this tenant (HTTP 404). This is an answer for the whole tenant, not only for the loaded rows; it could be another tenant's task.`}
+          />{' '}
+          no task {id} in this tenant
+        </h3>
+      </div>
+    )
+  }
+  return (
+    <div className="ctl-empty">
+      <h3>
+        <Mark
+          kind="unread"
+          say={`${id} is not among the ${rowsRead} loaded rows, and looking it up by its id failed${got.status === 'error' ? `: ${got.error.message}` : ''}. This is a failed read, not an absence.`}
+        />{' '}
+        could not look up {id}
+      </h3>
+    </div>
+  )
+}
+
+/**
+ * THE LIST'S OWN ORDER, with the Started sort off (live QA WA-4, 2026-10-11).
+ *
+ * It was `updated_at`, newest first, on every tab, and a live task's
+ * `updated_at` moves with each checkpoint and status write: over three 5s
+ * re-reads one Live row jumped from 8th to 1st, under the pointer and the
+ * keyboard focus. Live and Waiting are now in submission order, newest first
+ * (`created_at`, which never changes), so a re-read moves no row that is
+ * still there. Recent keeps the newest change first: a finished task's
+ * `updated_at` is when it finished, and it does not move again. Ties go to
+ * the id, so equal times cannot swap places between reads either.
+ */
+export function listOrder(a: Task, b: Task, tab: Tab): number {
+  const ka = tab === 'recent' ? a.updated_at : a.created_at
+  const kb = tab === 'recent' ? b.updated_at : b.created_at
+  if (ka !== kb) return ka < kb ? 1 : -1
+  return a.id < b.id ? -1 : a.id > b.id ? 1 : 0
 }
 
 /**

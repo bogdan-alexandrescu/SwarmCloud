@@ -108,7 +108,11 @@ export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
   options: { view?: 'summary'; submittedBy?: 'me'; pageToken?: string | null } = {},
 ): Promise<Result<TaskPage>> {
-  if (USE_FIXTURES) return fixtureTasks()
+  // A FIXTURE LIST IS ONE PAGE: it never hands out a token, so a page after
+  // it is the end of the list.
+  if (USE_FIXTURES) {
+    return options.pageToken ? { status: 'empty', fetchedAt: Date.now() } : fixtureTasks()
+  }
   // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
   // whatever page size and view the caller asked for, and the page after a
   // token (the timeline's span read, live QA RT-1). `submitted_by=me` (U5)
