@@ -392,12 +392,55 @@ def _spend_today(doc: Mapping[str, Any], now: datetime) -> dict[str, Any]:
     }
 
 
-def schedule_to_api(doc: Mapping[str, Any], now: datetime, *, pending: int = 0) -> dict[str, Any]:
+def _budget_use(doc: Mapping[str, Any], now: datetime, live: list[Mapping[str, Any]]) -> dict[str, Any] | None:
+    """Today's burn as the tick's budget gate counts it (§4.3), for the console's bar.
+
+    Four parts of `per_day_usd`: what was reported; each attempt that never
+    reported a cost, counted at `per_run_usd` (an unknown cost is the cap,
+    never zero); each live work item, reserved at `per_run_usd`; and what is
+    left. `live` is the schedule's `created` firings, and every work item they
+    made counts -- `Ticker._finish` sums exactly that, so this is the
+    reservation the next firing's gate would see, short of whatever the tick's
+    next advance ends. None when the budget lacks a figure to count against.
+    """
+    budget = doc.get("budget") or {}
+    if budget.get("per_run_usd") is None or budget.get("per_day_usd") is None:
+        return None
+    spend = _spend_today(doc, now)
+    live_items = sum(len(f.get("work") or []) for f in live)
+    unreported = int(spend["unreported_attempts"])
+    unreported_usd = schedules.reserved_usd(budget, live_items=0, unreported_attempts=unreported)
+    live_usd = schedules.reserved_usd(budget, live_items=live_items, unreported_attempts=0)
+    cents = round(float(budget["per_day_usd"]) * 100) - round(spend["reported_usd"] * 100) \
+        - round(unreported_usd * 100) - round(live_usd * 100)
+    return {
+        "day": spend["day"],
+        "per_day_usd": float(budget["per_day_usd"]),
+        "per_run_usd": float(budget["per_run_usd"]),
+        "reported_usd": spend["reported_usd"],
+        "unreported_attempts": unreported,
+        "unreported_usd": unreported_usd,
+        "live_firings": len(live),
+        "live_items": live_items,
+        "live_usd": live_usd,
+        # Never negative: a day can end above `per_day_usd` (§4.3), and then
+        # nothing is free; the console draws the parts past the day's figure.
+        "free_usd": max(0, cents) / 100,
+    }
+
+
+def schedule_to_api(doc: Mapping[str, Any], now: datetime, *, pending: int = 0,
+                    live: list[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+    """The stored fields and what is computed on read. `live` (the schedule's
+    `created` firings) is read only by the one-schedule route, which then
+    serves `budget_use`; the list does not scan each schedule's firings."""
     out = _json(dict(doc))
     out["words"] = _words(doc.get("cron"))
     out["tier"] = _tier(doc)
     out["spend_today"] = _spend_today(doc, now)
     out["pending_approvals"] = pending
+    if live is not None:
+        out["budget_use"] = _budget_use(doc, now, live)
     return out
 
 
@@ -599,8 +642,12 @@ def get_schedule(
     doc = _read(ctx, tenant_id, schedule_id)
     firings = _history(ctx, tenant_id, schedule_id, HISTORY)
     pending = sum(1 for f in firings if f.get("state") == schedulefire.AWAITING_APPROVAL)
+    # Every `created` firing, not only those among the newest 50: a live one
+    # older than the history still holds its reservation.
+    live = [f for f in schedulefire.Ticker(ctx)._of_schedule(schedule_id, [schedulefire.CREATED])
+            if f.get("tenant_id") == tenant_id]
     return {
-        "schedule": schedule_to_api(doc, _now(ctx), pending=pending),
+        "schedule": schedule_to_api(doc, _now(ctx), pending=pending, live=live),
         "firings": [firing_to_api(f) for f in firings],
     }
 

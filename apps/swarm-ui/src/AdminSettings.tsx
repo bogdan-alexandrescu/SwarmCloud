@@ -6,7 +6,7 @@ import { Refusal } from './GitHubConnect'
 import { ACCESS } from './Onboarding'
 import { addressToPath } from './paths'
 import { HelpCard } from './HelpCard'
-import { comparePools, poolViewer, tableMode, usePhoneTables } from './capacityPoll'
+import { POOLS_POLL_MS, capacityPoll, comparePools, poolViewer, tableMode, usePhoneTables } from './capacityPoll'
 import { Screen, timeAgo } from './Shell'
 import {
   FAMILY_TITLE,
@@ -134,6 +134,13 @@ export function AdminSettingsScreen() {
         // ("Admin") instead of naming the thing on the screen.
         title="Pool limits"
         load={loadLimits}
+        // READ ON CAPACITY'S CADENCE (live QA ADM-7, 2026-10-11): read once,
+        // In use went stale -- global 14 here while the sidebar's live read
+        // said 10 -- and the open editor's impact reasoned from the stale 14.
+        // A re-read hands down a new object, which wins over a save's
+        // read-back as the newer one; the open editor and what is typed in it
+        // are held above the rows (AH-7), so a re-read loses neither.
+        pollMs={capacityPoll(POOLS_POLL_MS)}
         // A count, not a promise. "changes take effect immediately" was a
         // rationale in the one slot on this screen a reader cannot skip.
         summary={(d) =>
@@ -906,6 +913,14 @@ function PoolEditor({
             onChange={(e) => setFilter(e.target.value)}
           />
         </div>
+      )}
+      {target !== null && target !== '' && !landed && (
+        // A LINK TO NO POOL SAYS SO (live QA ADM-9, 2026-10-11): an unknown
+        // `?pool=` drew the full table with nothing marked and no word, so a
+        // mistyped or stale link read as a page that had lost its row.
+        <p className="ctl-panel-note adm-no-target" role="status">
+          No pool named <code>{target}</code>; every pool is listed below.
+        </p>
       )}
       {families.length === 0 && <p className="ctl-panel-note">no pool matches</p>}
       {/* THE TABLE STAYS STILL WHILE EDITING (L2). The editor is a panel
