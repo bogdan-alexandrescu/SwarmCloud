@@ -108,6 +108,7 @@ function RepositoryList({
         state={state}
         route="GET /v1/repositories"
         what="The tenant's registered repositories"
+        plural
         onRetry={reload}
         empty={
           <EmptyState
