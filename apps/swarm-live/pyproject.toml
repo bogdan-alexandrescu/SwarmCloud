@@ -15,7 +15,10 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "websockets>=13",
-    "google-cloud-firestore>=2.16",
+    # swarm-live-key, read by its version reference (SWARM_LIVE_KEY_SECRET).
+    # No Firestore client: the relay trusts the ticket and reads nothing else
+    # (docs/design/live-browser.md §3.3, owner decision (a), 2026-10-11).
+    "google-cloud-secret-manager>=2.20",
     "google-cloud-storage>=2.18",
 ]
 

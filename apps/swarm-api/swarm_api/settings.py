@@ -433,6 +433,59 @@ class ApiSettings:
     #: id dedupe with the child already made.
     child_proof_skew_seconds: int = 120
 
+    # --- the live browser (docs/design/live-browser.md, lane LB-L9) ---------
+    #: `swarm-live-key`, the HMAC key that signs a live ticket (§3.3). Held by
+    #: swarm-api and swarm-live only, from Secret Manager; created by
+    #: scripts/create-secrets.sh, never a Terraform secret version. EMPTY MEANS
+    #: NO LIVE PATH: every live route answers 503 `live_unavailable` and no
+    #: session is opened. Excluded from the repr, as `child_key` is.
+    live_key: str = field(default="", repr=False)
+    #: The previous version, accepted when VERIFYING beside the current one
+    #: during a rotation; never used to mint. Empty outside one.
+    live_key_previous: str = field(default="", repr=False)
+    #: The relay's base address, `ws://<internal LB address>:8080` (§3.3 step
+    #: 3; owner decision (b): plain ws inside the VPC, port 8080). swarm-api
+    #: dials `<this>/v1/view` for a viewer's socket and posts
+    #: `http://<same>/internal/close` when a session ends. From SWARM_LIVE_URL,
+    #: which terraform/infra/locals.tf sets from live.tf's reserved address.
+    #: Empty means no relay, and a socket closes with "live view unavailable".
+    live_relay_url: str = ""
+    #: A tunnel ticket's life (§3.3 step 1): long enough for the worker to hand
+    #: it to the gate and the gate to dial, short enough that a copy is useless.
+    live_tunnel_ticket_seconds: int = 60
+    #: A viewer ticket's life (§5.2 step 3): the console uses it at once.
+    live_viewer_ticket_seconds: int = 30
+    #: How long a controller's console has to renew before control lapses
+    #: (§4.2): a closed tab stops renewing, and its control ends within this.
+    live_control_renew_seconds: int = 60
+    #: How long a controller may send no input before control ends (§4.2), and
+    #: how far each input moves the hold's deadline (§4.3). 300 is the design's
+    #: default: long enough to find a password, short enough that a person who
+    #: walked away does not hold an 8-vCPU pod.
+    control_idle_seconds: int = 300
+    #: How often an open socket re-asks whether its person is still a member
+    #: of the task's tenant (§5.2). With the group cache's 120 s this ends a
+    #: removed person's view, and their control, within about 7 minutes.
+    live_membership_recheck_seconds: float = 300.0
+    #: How often an open socket reads its session: whether it closed, and
+    #: whether its person took or lost control (which the relay is told). One
+    #: read per socket per tick; 2 s is the delay a person sees on Take control.
+    live_session_poll_seconds: float = 2.0
+    #: How often a controller's input counts are written to the session, which
+    #: also moves the hold's deadline (§4.3). Throttled: one write per flush,
+    #: never one per key.
+    live_input_flush_seconds: float = 15.0
+    #: §5.10: viewer tickets per person per minute, and take-control attempts
+    #: per person per task per minute. In-process, as the API's limiter is.
+    live_viewer_tickets_per_minute: int = 30
+    live_takes_per_minute: int = 6
+    #: §4.3, Q3 (owner: 10 minutes): how long a pod holds for a person before it
+    #: parks. Read by `swarm_api.handoff`, which carried it as a constant until
+    #: this setting existed.
+    human_hold_seconds: int = 600
+    #: §5.10: hand-off requests per attempt, read by `swarm_api.handoff`.
+    max_handoffs_per_attempt: int = 3
+
     # --- stopping a cancelled task's execution (#627) ----------------------
     #: Whether the cancel routes ask for the execution to be stopped
     #: (`swarm_api.executioncancel`). On by default in a deployment
@@ -608,4 +661,19 @@ class ApiSettings:
             child_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip(),
             max_children_per_task=_int("MAX_CHILDREN_PER_TASK", 16),
             child_proof_skew_seconds=_int("CHILD_PROOF_SKEW_SECONDS", 120),
+            live_key=os.environ.get("SWARM_LIVE_KEY", "").strip(),
+            live_key_previous=os.environ.get("SWARM_LIVE_KEY_PREVIOUS", "").strip(),
+            live_relay_url=os.environ.get("SWARM_LIVE_URL", "").strip(),
+            live_tunnel_ticket_seconds=_int("LIVE_TUNNEL_TICKET_SECONDS", 60),
+            live_viewer_ticket_seconds=_int("LIVE_VIEWER_TICKET_SECONDS", 30),
+            live_control_renew_seconds=_int("LIVE_CONTROL_RENEW_SECONDS", 60),
+            control_idle_seconds=_int("CONTROL_IDLE_SECONDS", 300),
+            live_membership_recheck_seconds=float(
+                _int("LIVE_MEMBERSHIP_RECHECK_SECONDS", 300)),
+            live_session_poll_seconds=float(_int("LIVE_SESSION_POLL_SECONDS", 2)),
+            live_input_flush_seconds=float(_int("LIVE_INPUT_FLUSH_SECONDS", 15)),
+            live_viewer_tickets_per_minute=_int("LIVE_VIEWER_TICKETS_PER_MINUTE", 30),
+            live_takes_per_minute=_int("LIVE_TAKES_PER_MINUTE", 6),
+            human_hold_seconds=_int("HUMAN_HOLD_SECONDS", 600),
+            max_handoffs_per_attempt=_int("MAX_HANDOFFS_PER_ATTEMPT", 3),
         )

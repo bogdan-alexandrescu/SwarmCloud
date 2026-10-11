@@ -1,35 +1,46 @@
-"""swarm-live: the live-browser relay's HTTP surface (LB-L7).
+"""swarm-live: the live-browser relay's HTTP surface (LB-L7, wired by LB-L8d).
 
 docs/design/live-browser.md §3.3. A single-replica StatefulSet in
 `swarm-system` on the GKE cluster -- one process, so a session's two ends always
-meet in it -- listening on TCP 8443 with TLS (the NetworkPolicy of §8.3 admits
-only tenant pods labelled `swarm-live: "enabled"` and swarm-api's subnet).
+meet in it -- listening on PLAIN WS on port 8080 inside the VPC (owner decision
+(b), 2026-10-11). Browsers never reach it: they open wss to swarm-api, behind
+IAP and HTTPS, and swarm-api proxies the socket here over the internal load
+balancer. The NetworkPolicy of §8.3 admits only swarm-api's egress range and
+tenant pods labelled `swarm-live: "enabled"`. There is no certificate anywhere
+on this hop, by decision: the encrypted legs are the browser's to swarm-api and
+Google's own VPC transport.
 
-Two websocket routes, and a health check:
+Three websocket and HTTP routes, and a health check:
 
-* `/v1/tunnel` -- the gate dials out to here (§3.3 step 2). First message: the
-  tunnel ticket, as text. Then the framed tunnel protocol of rendezvous.py.
-* `/v1/view`   -- swarm-api proxies one console viewer to here (§3.3 step 3).
-  First message: the viewer ticket swarm-api minted, as text. Then the viewer's
-  RFB bytes as binary, and swarm-api's control messages as text.
-* `/healthz`   -- counts only.
+* `/v1/tunnel`        -- the gate dials out to here (§3.3 step 2). First
+  message: the tunnel ticket, as text. Then the framed tunnel protocol of
+  rendezvous.py.
+* `/v1/view`          -- swarm-api proxies one console viewer to here (§3.3
+  step 3). First message: the viewer ticket swarm-api minted, as text. Then the
+  viewer's RFB bytes as binary, and swarm-api's control messages as text.
+* `POST /internal/close` -- swarm-api closed a session, or saw its generation
+  go stale: the body is `{"session_id", "cause", "exp", "nonce"}` and the
+  `X-Swarm-Live-Signature` header its MAC under swarm-live-key. 204 when done;
+  every refusal is the same 403.
+* `/healthz`          -- counts only.
 
 NOTHING SECRET IN A URL (§5.2): tickets travel as each socket's first message,
 and the routes take no path or query parameter at all. A socket that sends no
 ticket within `FIRST_MESSAGE_SECONDS` is closed.
 
+NO FIRESTORE (owner decision (a)). The relay trusts the ticket and nothing
+else; it holds no Firestore client and no Firestore grant.
+
 Configuration, read once at start (never at import, so tests import freely):
 
-* `SWARM_LIVE_KEY_FILE` -- path of the mounted `swarm-live-key` secret, whose
-  value `scripts/create-secrets.sh` creates. A file, not an environment
-  variable: a key in the environment is in every `/proc/<pid>/environ` read
-  and every crash dump of it.
-* `PROJECT_ID`, `FIRESTORE_DATABASE`, `ARTIFACT_BUCKET` -- through
-  `swarm_common.config.Settings`, as every service reads them.
+* `SWARM_LIVE_KEY_SECRET` -- the Secret Manager VERSION reference of
+  `swarm-live-key` (`projects/<p>/secrets/swarm-live-key/versions/<v>`), read
+  with the pod's own Workload Identity (decision (c), terraform/infra/live.tf).
+  A reference, not the key: a key in the environment is in every
+  `/proc/<pid>/environ` read and every crash dump of it.
+* `SWARM_ARTIFACT_BUCKET` (or `ARTIFACT_BUCKET`) and `GOOGLE_CLOUD_PROJECT`
+  (or `PROJECT_ID`) -- where the recorder writes (§7), as the manifest sets them.
 * `SWARM_LIVE_RECORD` -- `true` (default): record every session (Q11, yes).
-* `SWARM_LIVE_TLS_CERT`, `SWARM_LIVE_TLS_KEY` -- the serving certificate.
-  `main()` refuses to start without them: TLS on every hop is what §4.2 and
-  §5.11 rely on for keys in flight.
 """
 
 from __future__ import annotations
@@ -38,16 +49,18 @@ import asyncio
 import contextlib
 import logging
 import os
-from pathlib import Path
-from typing import Any, AsyncIterator
+import re
+from typing import Any, AsyncIterator, Callable, Mapping
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, Response, WebSocket
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from .recorder import FfmpegVp8Encoder, GcsSegmentWriter, Recorder
 from .rendezvous import (
     CLOSE_REFUSED,
-    FirestoreSessionStore,
+    CLOSE_SIGNATURE_HEADER,
+    MAX_CLOSE_BODY,
+    MIN_KEY_BYTES,
     Refused,
     Rendezvous,
     SessionRecord,
@@ -55,15 +68,12 @@ from .rendezvous import (
 
 log = logging.getLogger(__name__)
 
-PORT = 8443
-#: A socket gets this long to present its ticket. The tunnel ticket lives 60 s
-#: and the viewer's 30 s, so a socket that has not sent one by then holds a
-#: ticket that is about to be useless anyway.
+#: Fixed for both integration lanes (owner decision (b)): the Service, the
+#: NetworkPolicy, the probes and swarm-api's SWARM_LIVE_URL all name 8080.
+PORT = 8080
+#: A socket gets this long to present its ticket. A ticket lives 60 s at most,
+#: so a socket that has not sent one by then holds one about to be useless.
 FIRST_MESSAGE_SECONDS = 10
-#: How often every open session's document is re-read (§8.5 invariant 5: a
-#: stale generation's session is closed). swarm-api moves the document when the
-#: lease's generation moves; this bounds how long the relay keeps splicing after.
-SWEEP_SECONDS = 15
 #: A full raw 1440x900 RGBX update is ~5.2 MB; allow headroom, refuse more.
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
 
@@ -107,7 +117,7 @@ async def _messages(ws: WebSocket) -> AsyncIterator[tuple[bytes | None, str | No
         yield data, text
 
 
-def create_app(rendezvous: Rendezvous | None = None, *, sweep_seconds: float = SWEEP_SECONDS) -> FastAPI:
+def create_app(rendezvous: Rendezvous | None = None) -> FastAPI:
     """The relay app. Tests pass a `Rendezvous` built over doubles; uvicorn
     calls this with no argument (`--factory`) and the real one is built from
     the environment."""
@@ -117,13 +127,9 @@ def create_app(rendezvous: Rendezvous | None = None, *, sweep_seconds: float = S
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if state["rz"] is None:
             state["rz"] = build_rendezvous()
-        sweeper = asyncio.create_task(_sweep(state["rz"], sweep_seconds)) if sweep_seconds > 0 else None
         try:
             yield
         finally:
-            if sweeper is not None:
-                sweeper.cancel()
-                await asyncio.gather(sweeper, return_exceptions=True)
             await state["rz"].shutdown()
 
     app = FastAPI(title="swarm-live", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -137,6 +143,19 @@ def create_app(rendezvous: Rendezvous | None = None, *, sweep_seconds: float = S
     async def healthz() -> dict[str, Any]:
         r = rz()
         return {"ok": True, "tunnels": r.tunnel_count(), "viewers": r.viewer_count()}
+
+    @app.post("/internal/close")
+    async def internal_close(request: Request) -> Response:
+        """swarm-api: drop every connection of one session (decision (a))."""
+        body = await request.body()
+        if len(body) > MAX_CLOSE_BODY:
+            return Response(status_code=403)
+        try:
+            await rz().close_request(body, request.headers.get(CLOSE_SIGNATURE_HEADER))
+        except Refused as exc:
+            log.info("live relay: close refused: %s", exc.reason)
+            return Response(status_code=403)
+        return Response(status_code=204)
 
     @app.websocket("/v1/tunnel")
     async def tunnel(ws: WebSocket) -> None:
@@ -187,48 +206,55 @@ def create_app(rendezvous: Rendezvous | None = None, *, sweep_seconds: float = S
     return app
 
 
-async def _sweep(rendezvous: Rendezvous, every: float) -> None:
-    while True:
-        await asyncio.sleep(every)
-        try:
-            await rendezvous.sweep()
-        except Exception as exc:  # noqa: BLE001 - the sweeper must outlive one bad pass
-            log.warning("live relay: sweep failed: %s", type(exc).__name__)
-
-
 def _truthy(value: str | None, default: bool) -> bool:
     if value is None or value == "":
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def read_key(path: str | None) -> bytes:
-    if not path:
-        raise RuntimeError("SWARM_LIVE_KEY_FILE is not set; the relay verifies nothing without swarm-live-key")
-    key = Path(path).read_bytes().strip()
-    if len(key) < 32:
-        raise RuntimeError("swarm-live-key is shorter than 32 bytes")
+#: A Secret Manager secret VERSION reference, the only shape SWARM_LIVE_KEY_SECRET takes.
+_VERSION_REF = re.compile(r"projects/[^/]+/secrets/[^/]+/versions/[^/]+")
+
+
+def _access_secret(name: str) -> bytes:
+    from google.cloud import secretmanager
+
+    return secretmanager.SecretManagerServiceClient().access_secret_version(name=name).payload.data
+
+
+def read_key(ref: str | None, access: Callable[[str], bytes] | None = None) -> bytes:
+    """swarm-live-key's value, from Secret Manager by its version reference."""
+    if not ref:
+        raise RuntimeError("SWARM_LIVE_KEY_SECRET is not set; the relay verifies nothing without swarm-live-key")
+    if not _VERSION_REF.fullmatch(ref):
+        raise RuntimeError("SWARM_LIVE_KEY_SECRET is not a secret version reference "
+                           "(projects/<p>/secrets/<s>/versions/<v>)")
+    key = (access or _access_secret)(ref).strip()
+    if len(key) < MIN_KEY_BYTES:
+        raise RuntimeError(f"swarm-live-key is shorter than {MIN_KEY_BYTES} bytes")
     return key
 
 
-def build_rendezvous() -> Rendezvous:
-    from google.cloud import firestore, storage
-    from swarm_common.config import Settings
-
-    settings = Settings.from_env()
-    key = read_key(os.environ.get("SWARM_LIVE_KEY_FILE"))
-    store = FirestoreSessionStore(
-        firestore.Client(project=settings.project_id, database=settings.firestore_database))
+def build_rendezvous(env: Mapping[str, str] | None = None,
+                     access: Callable[[str], bytes] | None = None) -> Rendezvous:
+    env = os.environ if env is None else env
+    key = read_key(env.get("SWARM_LIVE_KEY_SECRET"), access)
     factory = None
-    if _truthy(os.environ.get("SWARM_LIVE_RECORD"), True):
-        writer = GcsSegmentWriter(storage.Client(project=settings.project_id).bucket(settings.artifact_bucket))
+    if _truthy(env.get("SWARM_LIVE_RECORD"), True):
+        from google.cloud import storage
+
+        project = env.get("GOOGLE_CLOUD_PROJECT") or env.get("PROJECT_ID") or None
+        bucket = env.get("SWARM_ARTIFACT_BUCKET") or env.get("ARTIFACT_BUCKET")
+        if not bucket:
+            raise RuntimeError("SWARM_ARTIFACT_BUCKET is not set and recording is on (SWARM_LIVE_RECORD)")
+        writer = GcsSegmentWriter(storage.Client(project=project).bucket(bucket))
         encoder = FfmpegVp8Encoder()
 
         def factory(session: SessionRecord, send: Any) -> Recorder:
             return Recorder(tenant_id=session.tenant_id, task_id=session.task_id,
                             attempt_id=session.attempt_id, send=send, writer=writer, encoder=encoder)
 
-    return Rendezvous(key, store, recorder_factory=factory)
+    return Rendezvous(key, recorder_factory=factory)
 
 
 def main() -> None:
@@ -236,13 +262,10 @@ def main() -> None:
     from swarm_common.logging_setup import configure_logging
 
     configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
-    cert, key = os.environ.get("SWARM_LIVE_TLS_CERT"), os.environ.get("SWARM_LIVE_TLS_KEY")
-    if not cert or not key:
-        raise SystemExit("swarm-live: SWARM_LIVE_TLS_CERT and SWARM_LIVE_TLS_KEY are required; "
-                         "keys travel through this relay and every hop is TLS (§4.2)")
+    # Plain ws, no ssl_* arguments: decision (b). The relay is reached only
+    # through the internal load balancer, by swarm-api and the tenant gates.
     uvicorn.run("swarm_live.main:create_app", factory=True, host="0.0.0.0", port=PORT,
-                ssl_certfile=cert, ssl_keyfile=key, ws_max_size=MAX_MESSAGE_BYTES,
-                log_config=None, access_log=False)
+                ws_max_size=MAX_MESSAGE_BYTES, log_config=None, access_log=False)
 
 
 if __name__ == "__main__":

@@ -558,8 +558,38 @@ locals {
     "REFUSAL_${trim(replace(upper(code), "/[^A-Z0-9]+/", "_"), "_")}" => on ? "on" : "off"
   }
 
+  # The live relay, as swarm-api reaches it (docs/design/live-browser.md §3.3,
+  # owner decision (b), 2026-10-11): plain ws to the internal load balancer's
+  # reserved address (live.tf) on port 8080, inside the VPC, with no
+  # certificate anywhere. 8080 is fixed for the relay's Service, its
+  # NetworkPolicy and this address alike. Empty while the relay is off, which
+  # swarm-api reads as "no live view" (every socket closes 4503).
+  live_relay_port = 8080
+  live_relay_url  = local.live_relay_enabled ? "ws://${google_compute_address.live_relay[0].address}:${local.live_relay_port}" : ""
+
+  # swarm-live-key as swarm-api reads it: SWARM_LIVE_KEY, by Secret Manager
+  # REFERENCE through modules/cloud_run `secret_env`, never the value -- a
+  # value here would be in the plan, the state and the revision spec. Only
+  # once enable_live_browser is applied: by then create-secrets.sh --live-key
+  # has added the version (live.tf's order), and a revision referencing a
+  # secret with no version would not start.
+  live_key_secret_env = local.live_relay_enabled ? {
+    SWARM_LIVE_KEY = {
+      secret  = google_secret_manager_secret.live_key.secret_id
+      version = "latest"
+    }
+  } : {}
+
+  # Every secret swarm-api reads by reference, merged once: the child key
+  # (child_tasks.tf) and the live key.
+  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env)
+
   service_env = {
     "swarm-api" = merge(local.common_env, local.api_refusal_env, {
+      # Where swarm-api proxies a viewer's socket and posts a session's close
+      # (swarm_api.settings `live_relay_url`). An address, never a secret.
+      SWARM_LIVE_URL = local.live_relay_url
+
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()

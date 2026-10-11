@@ -308,8 +308,9 @@ module "cloud_run" {
       env         = local.service_env["swarm-api"]
       # SWARM_CHILD_KEY (and, during a rotation, SWARM_CHILD_KEY_PREVIOUS) by
       # Secret Manager reference, only once enable_child_tasks is on
-      # (child_tasks.tf).
-      secret_env = local.child_key_secret_env
+      # (child_tasks.tf); SWARM_LIVE_KEY the same way, only once
+      # enable_live_browser is on (locals.tf, live.tf).
+      secret_env = local.api_secret_env
       # The audience a worker mints its ID token for when it calls the child
       # routes (SWARM_API_AUDIENCE): a constant, because the worker cannot be
       # told this service's URL-shaped API_AUDIENCE without a cycle. Accepted
