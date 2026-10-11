@@ -2210,7 +2210,7 @@ describe('the 2026-09-25 visual QA, as rules the cascade has to pick', () => {
       '<div class="table-wrap is-stacked"><table class="pools"><tbody><tr>' +
         '<td data-label="Scope"><span class="scope tenant">this tenant</span></td>' +
         '<td data-label="Status"><span class="tag full">none registered</span></td>' +
-        '<td data-label="Identity" class="mono">swarm-u-bogdan@saga-agents-staging.iam.gserviceaccount.com</td>' +
+        '<td data-label="Identity" class="mono">swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com</td>' +
         '</tr></tbody></table></div>',
     )
     // MUTATION: take `.tag` or `.scope` out of the justify-self list.

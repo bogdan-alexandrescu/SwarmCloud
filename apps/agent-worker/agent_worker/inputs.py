@@ -396,6 +396,45 @@ def fetch_upstream_task(
     return document
 
 
+def find_ci_fix_tasks(
+    db: Any,
+    *,
+    tenant_id: str,
+    pull_request: int,
+    root_task_id: str,
+    limit: int,
+    call_options: dict[str, Any] | None = None,
+) -> list[tuple[str, dict[str, Any]]]:
+    """This tenant's PR-side CI-fix tasks for one pull request of one branch (#1073).
+
+    swarm-api's own count of them (`cifix._attempts_made`): three equality
+    filters -- the tenant, `metadata.ci_fix.pull_request` and
+    `metadata.dispatch.continues` -- which Firestore serves by merging its
+    built-in single-field indexes, so no composite index is needed. The
+    tenant is asked again of every document, as `fetch_upstream_task` asks
+    it: a document of another tenant is never handed to the merge.
+
+    What comes back are CLAIMS: `merge._ci_fixer_heads` holds each to its
+    signed spec before its pushed head counts for anything.
+    """
+    from google.cloud.firestore_v1.base_query import FieldFilter  # lazy: grpc
+
+    query = (
+        db.collection("tasks")
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("metadata.ci_fix.pull_request", "==", pull_request))
+        .where(filter=FieldFilter("metadata.dispatch.continues", "==", root_task_id))
+        .limit(limit)
+    )
+    found: list[tuple[str, dict[str, Any]]] = []
+    for snapshot in query.stream(**dict(call_options or {})):
+        document = snapshot.to_dict() or {}
+        if document.get("tenant_id") != tenant_id:
+            continue
+        found.append((snapshot.id, document))
+    return found
+
+
 def artifact_reference(
     task_document: dict[str, Any],
     *,

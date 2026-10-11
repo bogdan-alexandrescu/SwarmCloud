@@ -1929,6 +1929,16 @@ class Worker:
                 )
                 if action is WorkerAction.MERGE else None
             ),
+            # The PR-side CI fixer's tasks for the merged pull request (#1073):
+            # this tenant's only, each held to its signed spec by the merge.
+            find_ci_fix_tasks=(
+                (lambda number, root: inputs_mod.find_ci_fix_tasks(
+                    self.db, tenant_id=self.cfg.tenant_id, pull_request=number,
+                    root_task_id=root, limit=merge_mod.CI_FIXER_TASKS_READ,
+                    call_options=self.control.call_options(),
+                ))
+                if action is WorkerAction.MERGE else None
+            ),
         )
         self.phases.enter("worker_action")
         self.log.info("worker action: no runner is started", action=action.value)

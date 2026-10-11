@@ -253,6 +253,12 @@ class PullSnapshot:
     #: When GitHub says it merged (ISO 8601, UTC), "" while it has not: the
     #: run page prints it beside "merged" (#503).
     merged_at: str = ""
+    #: GitHub's `mergeable` -- True, False, or None while it has not computed
+    #: it -- and `mergeable_state` (`dirty` on a conflict). The merge step's
+    #: wake tick reads them first: GitHub runs no checks on a pull request
+    #: that conflicts with its base (#1076).
+    mergeable: bool | None = None
+    mergeable_state: str = ""
 
 
 def _int(value: Any) -> int | None:
@@ -311,6 +317,9 @@ def _pull(ref: IssueRef, data: Any, what: str) -> PullSnapshot:
         head_repo=_full_name(head),
         base_repo=_full_name(base),
         merged_at=merged_at if isinstance(merged_at, str) else "",
+        mergeable=data.get("mergeable") if isinstance(data.get("mergeable"), bool) else None,
+        mergeable_state=(data.get("mergeable_state")
+                         if isinstance(data.get("mergeable_state"), str) else ""),
     )
 
 
