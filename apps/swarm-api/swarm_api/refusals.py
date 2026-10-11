@@ -168,6 +168,13 @@ SWITCHES: dict[str, Switch] = {
         "failed with its refusals recorded. On once the refusals in such firings have been "
         "read and show only credentials that lack pull_requests access",
     ),
+    "ci_flake_unreadable": Switch(
+        code="ci_flake_unreadable",
+        why="a ci-flake-hunter firing whose every repository's CI could not be read ends "
+        "refused instead of failed (lane S10c). On once the per-repository codes in its "
+        "detail have been read in the log and show only credentials lacking checks: read, "
+        "contents: read or issues: write",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
