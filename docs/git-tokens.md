@@ -66,6 +66,18 @@ accepts `git-u-<hex>`. Readers are as §2 says under U1 (D7): the tenant's
 worker account and swarm-api. The resolver hands a task only its submitter's
 slot.
 
+**Superseded by the owner's decision of 2026-10-11 (#1041): secrets are
+user-scoped, not tenant-scoped.** Under U1 an agent in Bob's task can mint
+its worker's token and read Alice's slot by name, so only the worker's code
+keeps the two apart. The replacement is
+[design/user-scoped-secrets.md](design/user-scoped-secrets.md), status
+PROPOSED until its steps land. swarm-api releases a user slot only to the
+current attempt of a task that slot's owner submitted. That attempt proves
+itself with the attempt key that child tasks already register, and its spec
+signature must verify. Then the worker's own read, `forge_slot_reader`, is
+removed, so swarm-api is the slot's only reader. Until that lands, the
+paragraph above is what runs.
+
 **Which token a task uses, as built.** Submission resolves it
 (`apps/swarm-api/swarm_api/service.py::SubmissionService._resolve_forge`) and
 signs it into the task. The worker reads that slot at runtime and nothing
@@ -220,6 +232,16 @@ protection `-git` has, and no stronger. Three options, for the owner:
   the only accessor of `-git-u-<hex>`, used by a credential step the way
   `swarm-<tenant>-merge` is used for `-git-merge`). Strongest; one more
   identity per user and a step that runs no agent.
+
+The owner picked U1 on 2026-10-07 (D7). **On 2026-10-11 the owner superseded
+it: secrets are user-scoped (#1041).** None of U1-U3 is the answer. U1 is
+what the decision rules out. U2 fails "a task Alice submits in `eng` pushes as
+Alice". U3, and per-person worker identities generally, multiply identities
+per person per tenant and still need a per-attempt switch at dispatch. The
+proposed design is a fourth option, a broker in swarm-api that releases a slot
+only to its submitter's current attempt, after which the worker loses its
+read. It is written, with that comparison, in
+[design/user-scoped-secrets.md](design/user-scoped-secrets.md) (PROPOSED).
 
 **Creating the secret.** Today every tenant secret is declared by Terraform
 (`terraform/modules/secret_manager/`) from the tenancy module's provider list,

@@ -289,6 +289,26 @@ level; a re-run that finds the binding adds nothing. It never extends to
 accessors (`docs/merge-step.md` §1.3), and swarm-api never needs to sign as an
 App. Without this grant the preview answers `no_access` for every tenant.
 
+**A person's forge slot, `swarm-tenant-<tenant>-git-u-<hex>`, is the other
+exception, and its readers are changing.** Today, under owner decision D7
+([git-tokens.md](git-tokens.md#built-for-780-per-person-slots-the-migration-policy-retiring-the-tenant-token)),
+it has two readers: swarm-api, and the tenant's worker account, through one
+prefix-conditioned binding per tenant (`forge_slot_reader` in
+`terraform/bootstrap/forge_user_slots.tf`). Every member of a group tenant runs
+agents as that one account, so isolation between tenants holds, but
+isolation between the people inside one tenant does not. The owner decided on
+2026-10-11 that secrets are user-scoped (#1041), and the proposed design is
+[design/user-scoped-secrets.md](design/user-scoped-secrets.md). Status:
+PROPOSED until its steps land. Under it:
+
+* swarm-api becomes the slot's **only** reader;
+* the worker obtains the slot from swarm-api's broker
+  (`POST /v1/attempts/forge-credential`), signed with its attempt key, and
+  only for the current attempt of a task whose signed `submitted_by` owns
+  the slot;
+* the tenant token, repository tokens, the App keys and every provider key
+  stay team credentials, read as described above.
+
 #### What the forge credential must be allowed
 
 `swarm-tenant-<tenant>-git` is no longer only the token an agent pushes with.
