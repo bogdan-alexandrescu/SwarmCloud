@@ -320,7 +320,13 @@ test('a real zero says so in words, not only in a border colour', () => {
   // the zero real; which words carry it is the redesign's to choose.
   assert.ok(/no attempt yet/i.test(markup), 'the surface no longer says no attempt has been made')
   assert.ok(/nothing has been admitted/i.test(markup), 'the surface no longer says nothing was admitted')
-  assert.ok(markup.includes('real zero'), 'nothing on the surface says this zero is real')
+  // The zero mark reads `none` (owner, 2026-10-11): "real zero" was the
+  // design term, and no user is shown it. The mark is still the word.
+  assert.ok(
+    /<i class="ctl-mark is-zero"[^>]*>none<\/i>/.test(markup),
+    'nothing on the surface says this zero is real',
+  )
+  assert.ok(!/real zero/i.test(markup), 'the surface shows the design term "real zero"')
   // The state it was measured in is a fact about THIS task and stays -- IN THE
   // HEADING, spelled as the chip beside it reads (AG-28). This asserted only
   // that `PARKED` was somewhere in the markup, which the state chip satisfies

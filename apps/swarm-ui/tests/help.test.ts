@@ -424,9 +424,12 @@ test('absent-vs-zero teaches the encoding the screens actually draw', () => {
   const t = HELP['absent-vs-zero']
   assert.ok(!t.short.includes('dashed tile'), 'the card still says the dashed tile is the encoding')
   const all = [t.short, ...t.long].join(' ')
-  for (const mark of ['not measured', 'not read', 'real zero', '—', '~']) {
+  // The real-zero mark reads `none` (owner, 2026-10-11), and the topic names
+  // it by that word; "real zero" is the design term, never shown to a user.
+  for (const mark of ['not measured', 'not read', '“none”', '—', '~']) {
     assert.ok(all.includes(mark), `the topic never names the ${mark} encoding`)
   }
+  assert.ok(!/real zero/i.test(all), 'the topic shows the design term "real zero"')
   assert.ok(!/in the warning colour, because/.test(all), 'colour is still taught as the distinction')
   assert.ok(t.long.some((p) => /second channel/.test(p)), 'the dashed rule is not described as secondary')
   assert.ok(t.long.some((p) => /Timeline/.test(p)), 'the Timeline tiles are not covered')
