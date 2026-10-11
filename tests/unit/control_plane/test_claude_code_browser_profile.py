@@ -89,9 +89,12 @@ def test_the_profile_is_claude_code_on_the_browser_image():
         f.name for f in dataclasses.fields(profile)
         if getattr(profile, f.name) != getattr(claude, f.name)
     )
-    assert differ == ["image", "name", "resource_class"], (
-        f"the owner's decision was claude-code with its name, image and class changed; {differ} differ"
+    # `live_browser` is contract request 71 (LB-D, #1030): the one live profile.
+    assert differ == ["image", "live_browser", "name", "resource_class"], (
+        f"the owner's decision was claude-code with its name, image and class changed, "
+        f"and live_browser set (request 71); {differ} differ"
     )
+    assert profile.live_browser is True
     assert profile.image == "agent-runtime-browser"
     assert profile.image == RUNNER_PROFILES["browser"].image
     assert profile.resource_class == "browser"

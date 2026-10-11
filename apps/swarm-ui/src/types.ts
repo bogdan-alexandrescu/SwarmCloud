@@ -2456,15 +2456,17 @@ export const END_CAUSES: readonly EndCause[] = [
  * parent whose agent awaits the child tasks it submitted
  * (docs/design/child-tasks.md). CI_PENDING is contract request 49: a merge
  * step waiting for its pull request's checks (docs/merge-step.md, 2026-10-06).
+ * HUMAN_REQUIRED is contract request 68: a live-browser hand-off whose hold
+ * expired with nobody in control (docs/design/live-browser.md section 4.3).
  */
 export type ParkReason =
   | 'PROVIDER_QUOTA_EXHAUSTED' | 'PROVIDER_COOLDOWN' | 'PROVIDER_OUTAGE'
   | 'SCHEDULED_RETRY' | 'DEPENDENCY_INCOMPLETE' | 'MANUAL_PAUSE'
   | 'BUDGET_EXHAUSTED' | 'CREDENTIAL_MISSING' | 'CHILDREN_INCOMPLETE'
-  | 'CI_PENDING'
+  | 'CI_PENDING' | 'HUMAN_REQUIRED'
 
 /**
- * The same ten as a value, so a test can compare the list against
+ * The same eleven as a value, so a test can compare the list against
  * `swarm_common.states.ParkReason` and the three sets below can be checked for
  * covering it. A union type erases at build time and can be checked against
  * nothing.
@@ -2486,6 +2488,7 @@ export const PARK_REASONS = [
   'CREDENTIAL_MISSING',
   'CHILDREN_INCOMPLETE',
   'CI_PENDING',
+  'HUMAN_REQUIRED',
 ] as const
 
 /**
@@ -2511,6 +2514,10 @@ export const PARK_NEEDS_A_PERSON: ReadonlySet<string> = new Set<ParkReason>([
   'CREDENTIAL_MISSING',
   'BUDGET_EXHAUSTED',
   'MANUAL_PAUSE',
+  // A live-browser hand-off nobody answered within the hold (contract request
+  // 68). Only a person promotes it, from the console, when they are ready to
+  // sign in; no sweep or timer does, and past a day it is dead-lettered.
+  'HUMAN_REQUIRED',
 ])
 
 /**
@@ -2556,7 +2563,7 @@ export const PARK_WAITS_ON_A_STEP: ReadonlySet<string> = new Set<ParkReason>([
 
 /**
  * Copy for every reason that is ever actually written -- the seven from
- * admission plus the ten ParkReasons.
+ * admission plus the eleven ParkReasons.
  *
  * `BlockedReason.BUDGET_LIMIT`, `QUOTA_EXHAUSTED`, `COOLDOWN`, `DEPENDENCY`
  * and `SCHEDULED_RETRY` are members of the enum that nothing ever writes as a
@@ -2585,6 +2592,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   CI_PENDING: 'Waiting for the pull request checks to finish. Holds no capacity.',
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
+  HUMAN_REQUIRED: 'The agent asked a person to sign in and nobody came in time. Holds no capacity until someone is ready.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 

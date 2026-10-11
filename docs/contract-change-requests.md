@@ -76,6 +76,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 65 | `profiles.py`: codex runs on GKE_AUTOPILOT (#939 option A) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured |
 | 66 | `profiles.py`: merge runs on GKE_AUTOPILOT (#939 option A); post-verdict and claude-code-review stay on CLOUD_RUN_JOB | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured; conflicts with proposed request 60's item 2 (see 60's amendment) |
 | 67 | `profiles.py`: a `claude-code-browser` runner profile, claude-code on agent-runtime-browser | ACCEPTED by the owner 2026-10-11 and APPLIED by the pull request that adds this line |
+| 68 | `states.py`: `ParkReason.HUMAN_REQUIRED`, a live-browser hand-off parked when nobody came within the hold (LB-A) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 69 | `states.py`: the four `human_*` hand-off `EventType` members (LB-B) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 70 | `models.py`: `Task.human_wait`, the hand-off a holding task waits on, as a field and not a new state (LB-C) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 71 | `profiles.py`: `RunnerProfile.live_browser`, True only on `claude-code-browser`, valid only on a GKE_AUTOPILOT profile (LB-D) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -10861,3 +10865,216 @@ class, on-demand only, checkpointing as claude-code's. **9**: the tenant's own
 namespace, KSA and secret, as claude-code's. **10**: a caller names
 `claude-code-browser`; the image, class and backend are the catalogue's, and a
 task that sends an image is refused as every task is.
+
+---
+
+## 68. `states.py`: `ParkReason.HUMAN_REQUIRED`, a live-browser hand-off parked when nobody came within the hold (LB-A)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030, the answers to Q1-Q13,
+every recommendation taken), and APPLIED by the pull request that adds this
+entry (lane LB-L0).
+
+### Why
+
+docs/design/live-browser.md section 4.3. A browser agent that needs a person
+to sign in holds its pod for a bounded time (`human_hold_seconds`, 10 minutes,
+Q3). If nobody takes control within it, invariant 4 forbids sleeping on: the
+worker checkpoints, wipes the browser, parks, releases its lease and exits,
+exactly as the quota path does. The park needs a reason, and no existing one
+fits: the scheduler promotes every existing reason by its own rule (a window
+resets, a dependency ends), and nothing but a person should promote this one.
+`MANUAL_PAUSE`, the obvious candidate, is promoted by
+`Scheduler._promote_manual_pauses` once the pool it names is resumed, so a
+hand-off parked under it would be re-admitted with nobody there to sign in.
+
+### The change
+
+```python
+class ParkReason(str, Enum):
+    ...
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+```
+
+Promoted ONLY by swarm-api's `human-ready` route (lane L10); no sweep and no
+timer promotes it. Past `human_park_max_seconds` (24 hours, Q4) a sweep
+dead-letters it with `end_cause: human_wait_expired`. `RUNNING -> PARKED`,
+`PARKED -> READY` and `PARKED -> DEAD_LETTERED` are already legal transitions,
+so `_ALLOWED` does not change.
+
+The non-frozen follow-ups, in the same pull request, because the contract-parity
+script and the unit tests hold every restatement of `ParkReason` to the enum:
+`apps/swarm-ui/src/types.ts` (the union, `PARK_REASONS`, the
+`PARK_NEEDS_A_PERSON` group, `REASON_COPY`),
+`apps/swarm-ui/src/components/StatePill.tsx` (`PARK_WORD`), and the MCP
+progress sentences (`swarm_mcp.progress._PARKED_BECAUSE`,
+`swarm_mcp.compact._WAITS_FOR`).
+
+### Rollback
+
+Delete the member and its restatements. A task document parked under it
+would then decode to an unknown reason, so roll back only when none is
+parked.
+
+### What it would break
+
+Nothing that exists: a new member. A reader with an exhaustive table of park
+reasons is held to the enum by the parity script or a test, and gets its row
+in this change.
+
+### Invariants
+
+**1**: a `PARKED(HUMAN_REQUIRED)` task holds no lease and creates no demand;
+`PARKED` is in `PENDING_STATES` and the capacity sets are unchanged. **4**:
+this is the reason the park exists. 2, 3 and 5-10 unchanged.
+
+---
+
+## 69. `states.py`: the four `human_*` hand-off `EventType` members (LB-B)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030), and APPLIED by the pull
+request that adds this entry (lane LB-L0).
+
+### Why
+
+docs/design/live-browser.md sections 4.1 and 4.2: the hand-off has four
+moments a reader of the event timeline must be able to tell apart -- the agent
+asked, a person took control, control ended, the wait is over -- and the task
+stays `RUNNING` throughout (Q2), so the state history cannot show them.
+
+### The change
+
+```python
+class EventType(str, Enum):
+    ...
+    HUMAN_HANDOFF_REQUESTED = "human_handoff_requested"
+    HUMAN_CONTROL_TAKEN = "human_control_taken"
+    HUMAN_CONTROL_RETURNED = "human_control_returned"
+    HUMAN_HANDOFF_RESOLVED = "human_handoff_resolved"
+```
+
+Written by swarm-api (lanes L9 and L10). Control ending without a Return press
+(renewal lapsed, idle, preempted, membership lapsed, cancelled, hold expired)
+is `human_control_returned` with its cause in `detail`, not a fifth type.
+
+### Rollback
+
+Delete the four members. Events already stored with these values would then
+be read as unknown types by any reader that decodes strictly.
+
+### What it would break
+
+Nothing: new members, written by code that does not exist yet.
+
+### Invariants
+
+None touched: an event is a record, and creates no demand and holds nothing.
+
+---
+
+## 70. `models.py`: `Task.human_wait`, the hand-off a holding task waits on, as a field and not a new state (LB-C)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030; Q2 answered "the
+field"), and APPLIED by the pull request that adds this entry (lane LB-L0).
+The alternative the design offered, a `TaskState.WAITING_FOR_HUMAN` in
+`CONCURRENCY_STATES`, was NOT taken and is not applied.
+
+### Why
+
+docs/design/live-browser.md section 4.3, "Why a field and not a new task
+state". While the pod holds, the console and `sc status` need the reason, the
+expected site, the deadline and who is in control. A new state would have had
+to join `CONCURRENCY_STATES` and gain transitions, and every reader that asks
+"is this attempt running?" -- the reconciler's heartbeat and stale-generation
+checks, the worker's fence checks, release, the UI's state lists, this
+repository's parity script -- would have had to learn it; one that was missed
+would reclaim a holding task or oversubscribe its pool. The field carries the
+same information and changes no reader that does not want it.
+
+### The change
+
+```python
+@dataclass
+class Task:
+    ...
+    human_wait: dict[str, Any] | None = None
+```
+
+Keys: `reason` (at most 200 characters, redacted before it is stored),
+`expect` (a host `url_refusal` accepts, or None), `requested_at`, `deadline`,
+`controller` (None, or `{email, since, renew_by}`). None when nothing is
+waiting, and on every document written before it, which therefore decodes
+exactly as it did. WRITTEN BY swarm-api ONLY, from a worker route signed with
+the attempt key; never accepted from a caller. Not in the spec signature: it
+is attempt state, not the task's spec, and changes during the attempt. The
+shape is not validated in `__post_init__`, so a document a later writer
+extends is never refused on decode; swarm-api, its only writer, validates it.
+
+The codecs (`swarm_api.codec`, `scheduler.codec`) are not changed here: lane
+L10, which writes the field, reads and serves it.
+
+### Rollback
+
+Delete the field. Nothing reads it until lane L10 lands.
+
+### What it would break
+
+Nothing: an optional field with a None default.
+
+### Invariants
+
+**1, 3**: a holding task is `RUNNING`, holds its lease and is counted from
+`LEASED` like any other attempt; no state was added, so no capacity set
+changed. 2 and 4-10 unchanged (4 is kept by the bounded hold and request 68).
+
+---
+
+## 71. `profiles.py`: `RunnerProfile.live_browser`, True only on `claude-code-browser`, valid only on a GKE_AUTOPILOT profile (LB-D)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030), and APPLIED by the pull
+request that adds this entry (lane LB-L0).
+
+### Why
+
+docs/design/live-browser.md sections 3 and 8.1. Whether a task's pod runs the
+display sidecar, and whether swarm-api will open a live session for it, has to
+be a property of the catalogue: a caller names a profile and nothing else
+(invariant 10), and lane L5's dispatcher and lane L9's API both need one place
+to read it.
+
+### The change
+
+```python
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+    live_browser: bool = False
+
+    def __post_init__(self) -> None:
+        ...
+        if self.live_browser and self.backend is not Backend.GKE_AUTOPILOT:
+            raise ValueError(...)
+```
+
+and `live_browser=True` on `claude-code-browser`, the only profile that sets
+it. The check is on the profile's STATED backend, so `AUTO` is refused too:
+`resolve_backend` sends the `browser` class (8 vCPU, 16 GiB) to Cloud Run
+Jobs, where the sidecar and its second uid do not exist, and a profile whose
+hand-off cannot work must not resolve there silently. For the same reason
+`claude-code-browser` must stay out of the Cloud Run fallback list
+(`cloud_run_fallback_profiles`, `terraform/infra/locals.tf`).
+
+### Rollback
+
+Delete the field, the check and the one `live_browser=True`. Nothing reads it
+until lanes L5 and L9 land.
+
+### What it would break
+
+Nothing: a defaulted field. `claude-code-browser` now differs from
+`claude-code` in four fields, not three (request 67).
+
+### Invariants
+
+**10**: a caller still names a profile; whether it is live is the catalogue's,
+and there is no input, field or parameter by which a caller asks for a live
+browser on another profile. 1-9 unchanged.
