@@ -845,17 +845,17 @@ DECLARATIONS = (
     # scanned. Two literals in one expression look like they must be edited
     # together, right up until one of them is not.
     (r"or\s+\"(swarm-tenant-[a-z0-9-]*)\"", "python empty-string fallback"),
-    # A prefix REBUILT from Terraform's name_prefix rather than written out:
+    # A prefix REBUILT from the Terraform name_prefix rather than written out:
     # terraform/modules/monitoring/metrics.tf extracts the tenant from
     # `resource.labels.namespace_name` with "^${var.name_prefix}-tenant-(.+)$".
     # The captured template has `${var.name_prefix}` resolved below against
-    # terraform/infra's default, the value it is applied with. A drift here
-    # would not fail anything loudly: the GKE spec-refusal metric's tenant_id
+    # the terraform/infra default, the value it is applied with. A drift here
+    # would not fail anything loudly: the GKE spec-refusal metric tenant_id
     # label would read empty for every tenant (2026-10-11 stale-name audit).
     (r"\^(\$\{var\.name_prefix\}-[a-z0-9-]*-)\(", "terraform namespace regex"),
 )
 
-# `${var.name_prefix}` in a captured template is terraform/infra's default.
+# `${var.name_prefix}` in a captured template is the terraform/infra default.
 INFRA_VARS = (root / "terraform" / "infra" / "variables.tf").read_text()
 NAME_PREFIX = re.search(
     r"variable\s+\"name_prefix\"\s*\{[^}]*?default\s*=\s*\"([^\"]*)\"", INFRA_VARS, re.S)
