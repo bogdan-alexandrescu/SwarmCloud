@@ -141,6 +141,13 @@ SWITCHES: dict[str, Switch] = {
         why="an observer schedule with file_issues true is refused because swarm-api cannot "
         "create an issue yet. On once no stored observer schedule sets file_issues",
     ),
+    "ci_flake_unreadable": Switch(
+        code="ci_flake_unreadable",
+        why="a ci-flake-hunter firing whose every repository's CI could not be read ends "
+        "refused instead of failed (lane S10c). On once the per-repository codes in its "
+        "detail have been read in the log and show only credentials lacking checks: read, "
+        "contents: read or issues: write",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
