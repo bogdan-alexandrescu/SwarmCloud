@@ -1059,6 +1059,54 @@ stops at a plan waiting for approval.
 granted them: `tests/unit/mcp/test_plugin_commands.py` holds them out of every
 grant, and `tests/unit/mcp/test_issue_runs.py` holds the digest rule.
 
+## Schedules and the approval inbox
+
+A schedule is a typed recurring job on your tenant's repositories: an issue
+sweep every weekday morning, a nightly index refresh, a weekly observer
+report. The platform's tick fires it on its cron as its owner, its gate says
+what waits for a person, and everything that waits -- a firing, an issue
+run's plan, a merge, a hold -- lands in one inbox. Why it works this way --
+one tick rather than a job per schedule, exactly once per slot, the gates and
+their floors, the hard stops no mode lifts, and what a budget can and cannot
+promise -- is in [docs/schedules.md](../docs/schedules.md).
+
+| Surface | Read | Write | Decide |
+|---|---|---|---|
+| `/sc` | `/sc schedules`, `/sc schedules show <name>`, `/sc approvals` | -- (not granted; use the tools) | -- (not granted; use the tools) |
+| MCP | `swarm_schedule_types`, `swarm_schedules`, `swarm_approvals` | `swarm_schedule_create`, `swarm_schedule_update`, `swarm_schedule_pause`, `swarm_schedule_resume`, `swarm_schedule_run_now` | `swarm_schedule_approve`, `swarm_schedule_reject` |
+| terminal | `uv run sc schedules`, `uv run sc schedules show <name>`, `uv run sc schedules preview "0 9 * * 1-5" --tz Europe/London`, `uv run sc approvals` | `uv run sc schedules new issue-sweep --repo o/r --cron "0 9 * * 1-5" [--param k=v] [--dry-run]`, `uv run sc schedules pause\|resume\|run <name>` | `uv run sc approvals approve <id>`, `uv run sc approvals reject <id> --reason ...` |
+
+**A schedule names a type, never a backend.** `type` is one of the
+catalogue's twelve (`swarm_schedule_types` says which this deployment can run
+now). No image, command, runner profile, resources or credential is accepted
+-- at the top level or inside `params` -- and one offered is refused by the
+bridge before anything is sent. `--param k=v` reads a JSON value (`5`, `true`)
+as JSON and anything else as text. `--repo` names a repository registered in
+your tenant; one that is not is refused with nothing sent.
+
+**An approval sends the digest it showed.** Each inbox item carries the
+digest of what was shown: a firing's parameters, a plan, a merge's head and
+review verdict. `sc approvals approve` prints the item and its digest and asks
+for `approve` typed back (`SWARM_ASSUME_YES` is ignored), and
+`swarm_schedule_approve` takes the digest from its caller. An item that
+changed in between is refused (`approval_changed`, `merge_changed`,
+`plan_changed`), said plainly, and nothing is retried. An issue run's plan is
+in the inbox as `run:<run_id>`, and approving it there is the same call as
+`swarm_plan_approve`.
+
+**`merge: auto` is not an edit.** `swarm_schedule_update` refuses
+`gate.merge: auto` (`use_merge_switch`): it is set only through the audited
+merge switch on the schedule's gate card in the console.
+
+**There is no session loop.** The operator's session cron is no longer needed:
+a session reads `sc approvals` when the person asks, or when `sc schedules`
+shows a schedule with approvals pending.
+
+The write and decide verbs are granted to no skill or command:
+`tests/unit/mcp/test_schedules_tools.py` holds them out of every read-only
+grant, holds `swarm_schedule_create` to refusing `image`, and holds the digest
+rule.
+
 ## Setting up: GitHub as yourself, and the repositories SwarmCloud may use
 
 SwarmCloud acts **as you** at GitHub, through its GitHub App (#780,
