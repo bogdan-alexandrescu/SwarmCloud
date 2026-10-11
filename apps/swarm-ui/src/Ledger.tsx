@@ -240,7 +240,7 @@ function NotRead({ cov, what }: { cov: SpanCoverage; what: string }) {
 /** The empty state of a card whose list is empty: a real zero over the whole span, a partial one otherwise. */
 function Nothing({ cov, heading, what }: { cov: SpanCoverage; heading: string; what: string }) {
   if (cov.complete) {
-    return <Absent kind="zero" heading={`${heading} in this span`} say={`${what[0].toUpperCase()}${what.slice(1)} in this span.`} />
+    return <Absent kind="zero" heading={`${heading} in this span`} say={`${what.charAt(0).toUpperCase()}${what.slice(1)} in this span.`} />
   }
   return (
     <Absent
