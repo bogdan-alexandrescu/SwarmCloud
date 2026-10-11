@@ -93,7 +93,7 @@ describe('Register repository pages through everything the token can read (OB0)'
     expect(names()).toEqual(['example-org/example-api', 'example-org/example-web', 'example-org/example-docs', 'other-org/other-cli'])
     const reads = calls.filter((c) => c.method === 'GET' && c.url.startsWith(BASE)).map((c) => c.url)
     expect(reads).toEqual([BASE, `${BASE}?page=2`, `${BASE}?page=3`])
-    expect(screen.getByRole('searchbox').getAttribute('placeholder')).toBe('Filter the 4 repositories swarm-tenant-eng-git can read')
+    expect(screen.getByRole('searchbox').getAttribute('placeholder')).toBe('Filter the 4 readable repositories')
     expect(document.querySelector('.ur-capped')).toBeNull()
   })
 
@@ -178,6 +178,10 @@ describe('Register repository pages through everything the token can read (OB0)'
     expect(picks().some((p) => p.getAttribute('aria-checked') === 'true')).toBe(false)
     fireEvent.click(next)
 
+    await waitFor(() => screen.getByRole('button', { name: 'Next: review' }), WAIT)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Next: review' }))
+
     await waitFor(() => screen.getByRole('button', { name: 'Register sso-org/private-app' }), WAIT)
     fireEvent.click(screen.getByRole('button', { name: 'Register sso-org/private-app' }))
     await waitFor(() => expect(document.body.textContent).toContain(refusal), WAIT)
@@ -211,9 +215,7 @@ describe('Register repository pages through everything the token can read (OB0)'
     await mount()
     await waitFor(() => expect(picks()).toHaveLength(4), WAIT)
     const notes = picks().map((p) => visible(p.querySelector('small')))
-    expect(notes[0]).toMatch(/^private · /)
-    expect(notes[1]).toMatch(/^internal · /)
-    expect(notes[2]).toMatch(/^public · archived · /)
-    expect(notes[3]).toMatch(/^visibility not read · /)
+    // No pushed_at is served, so each note is the visibility alone (RSA-11).
+    expect(notes).toEqual(['private', 'internal', 'public · archived', 'visibility not read'])
   })
 })
