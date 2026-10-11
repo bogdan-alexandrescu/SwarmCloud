@@ -3702,14 +3702,28 @@ tr.is-target { outline: 2px solid var(--info); outline-offset: -2px; }
 }
 
 .acct-buttons { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 0; }
-.acct-action button, .acct-buttons button {
+/* THE PANEL'S OWN BUTTONS, NOT EVERY BUTTON INSIDE IT (visual QA V004/V014,
+   2026-10-11). This was `.acct-action button`, a descendant match, so it also
+   restyled every component drawn inside a panel: the Holding now | History
+   segmented control became two separately bordered buttons (it out-ranks
+   `.c-seg > button`), and TaskRef's copy icon became a 42px bordered button
+   that crushed the holder's task link to "ta…". The panel's controls are its
+   direct children, the save beside an inline field, the paging control under
+   a holders table, and anything in an `.acct-buttons` row -- named, so a
+   component dropped into a panel keeps its own look. The canonical Button
+   (`.c-btn`, Remove's danger button) is excluded by name: at (0,2,1) this
+   would out-rank its variant. */
+.acct-action > button, .acct-action > .limit-edit > button:not(.c-btn), .acct-holders > button, .acct-buttons button {
   padding: 5px 12px; border: 1px solid var(--ctl-bd); border-radius: 6px;
   background: var(--surface); color: var(--text-dim);
   font: 500 var(--t-body)/var(--lh-body) var(--font); cursor: pointer;
 }
-.acct-action button:not(:disabled):hover,
+.acct-action > button:not(:disabled):hover,
+.acct-action > .limit-edit > button:not(.c-btn):not(:disabled):hover,
+.acct-holders > button:not(:disabled):hover,
 .acct-buttons button:not(:disabled):hover { color: var(--text); border-color: var(--info); }
-.acct-action button:disabled, .acct-buttons button:disabled { opacity: .4; cursor: not-allowed; }
+.acct-action > button:disabled, .acct-action > .limit-edit > button:not(.c-btn):disabled,
+.acct-holders > button:disabled, .acct-buttons button:disabled { opacity: .4; cursor: not-allowed; }
 
 /* Inputs and textareas are scoped to this screen rather than styled globally:
    other screens' forms belong to other tracks and a global rule would restyle
