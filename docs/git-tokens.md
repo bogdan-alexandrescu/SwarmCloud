@@ -96,10 +96,11 @@ Bob's refusal is
 `tests/unit/control_plane/test_forge_credential_broker.py::test_bobs_attempt_is_refused_alices_slot_and_reads_no_secret`,
 and the IAM half is `tests/terraform/forge_app.tftest.hcl`, run
 `no_tenant_worker_holds_secret_accessor_on_a_user_slot`. The IAM removal
-reaches a project by the owner's bootstrap apply, made only after a release
-carrying the worker's broker client is deployed
-([runbooks/github-app.md](runbooks/github-app.md), step 2); until that apply,
-the worker simply no longer uses the read it still holds.
+reaches a project by the owner's bootstrap apply, made only once the broker
+is on in that environment (`enable_child_tasks`, after the nonce measurement
+the guarantee rests on; design §5,
+[runbooks/github-app.md](runbooks/github-app.md), step 2). Until the broker is
+on, the worker reads a person's slot with the read it still holds.
 
 **Which token a task uses, as built.** Submission resolves it
 (`apps/swarm-api/swarm_api/service.py::SubmissionService._resolve_forge`) and

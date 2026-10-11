@@ -546,14 +546,24 @@ does).
    labelled `managed-by=swarm-api` and `swarm-tenant=<tenant>`; teardown
    (`docs/runbooks/tenant-offboarding.md`) gains a step that deletes them by
    label, since no Terraform plan will.
-4. **The tenant's worker account reads its own users' slots**:
-   `secretAccessor` at the project, conditioned on
+4. **The tenant's worker account does not read its users' slots.** It once
+   did: `secretAccessor` at the project, conditioned on
    `resource.name.startsWith("projects/<number>/secrets/swarm-tenant-<t>-git-u-")
-   && !resource.name.endsWith("-refresh")` (the full resource name, not the
-   bare secret name), one conditional
-   binding per tenant, from the tenancy module. This replaces the per-secret
-   authoritative binding for these slots only, and the review should weigh
-   exactly that.
+   && !resource.name.endsWith("-refresh")`, one conditional binding per
+   tenant (`forge_slot_reader`, decision D7/U1). Every member of a group
+   tenant runs agents as the same worker account, so that binding let Bob's
+   agent read Alice's slot. The owner's 2026-10-11 decision that secrets are
+   user-scoped (#1041) removed it from `terraform/bootstrap/forge_user_slots.tf`:
+   the worker obtains a person's slot only from swarm-api's broker,
+   `POST /v1/attempts/forge-credential`, which releases it only to the
+   current attempt of a task that person submitted
+   ([design/user-scoped-secrets.md](design/user-scoped-secrets.md)). swarm-api
+   (item 5) is the only reader. The destroy is applied by the owner's
+   bootstrap apply, and only in the order design §5 and
+   [runbooks/github-app.md](runbooks/github-app.md) step 2 give: after the
+   broker is on in that environment, not merely released. A personal
+   tenant's worker (`u-<user>`) still reads its own slots, through the
+   workspace job's binding: that account is one person's.
 5. **The refresher** (swarm-api in phase 2, decision D2) gets
    `secretAccessor` and `secretVersionAdder` on the tenant's user-slot prefix:
    the `-refresh` twins and the base slots alike. **Revised 2026-10-08 (owner

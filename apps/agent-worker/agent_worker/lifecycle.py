@@ -6890,7 +6890,9 @@ class Worker:
         attempt, next to an agent that may be able to read it there.
 
         A PERSON'S SLOT comes from swarm-api's broker, never Secret Manager
-        (#1041, `forgebroker`), asked for `read`: every push and pull request
+        (#1041, `forgebroker`) -- except in a deployment with no broker, where
+        the worker's own account reads it while IAM still allows
+        (`ForgeBroker.deployed`) -- asked for `read`: every push and pull request
         first asks `_forge_write_refusal`, which re-reads the grant for a
         write, before it calls this. A refusal is None here -- no token, and
         never the tenant's in its place, so a private repository fails with

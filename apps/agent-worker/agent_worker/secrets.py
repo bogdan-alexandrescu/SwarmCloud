@@ -260,6 +260,14 @@ def resolve_git_token(
     somebody it was not resolved to. The tenant token and a repository token
     are team credentials, read directly as before.
 
+    WHERE THE DEPLOYMENT HAS NO BROKER (`broker.deployed` is False: the
+    scheduler handed no SWARM_API_URL because `enable_child_tasks` is off),
+    the slot is read with this worker's own account, as before #1041. That
+    adds nothing an agent could not already do while `forge_slot_reader`
+    stands, and once the bootstrap apply removes it the read is refused by
+    IAM and raised as a `SecretError` naming the secret -- still never the
+    tenant token. docs/design/user-scoped-secrets.md §5 is the rollout order.
+
     None is not an error for the tenant token: a public repository clones
     without a credential, and a private one fails with git's own message, which
     is the right diagnosis. A user or repository slot is not listed in
@@ -280,7 +288,13 @@ def resolve_git_token(
                 "this worker has no forge broker, and a person's slot is never read "
                 "from Secret Manager",
             )
-        return broker.fetch(tenant, provider, write=write)
+        if broker.deployed:
+            return broker.fetch(tenant, provider, write=write)
+        if client is None:
+            raise SecretError(
+                f"secret {tenant.secret_name(provider)} could not be read (no client)")
+        logger.warning("this deployment has no forge broker; a person's slot is read "
+                       "with the worker's own account", secret=tenant.secret_name(provider))
     if client is None:
         return None
     if provider == GIT_PROVIDER and GIT_PROVIDER not in tenant.credentials:

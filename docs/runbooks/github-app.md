@@ -99,13 +99,34 @@ only from swarm-api's broker, `POST /v1/attempts/forge-credential`
 ([design/user-scoped-secrets.md](../design/user-scoped-secrets.md)). On a
 project where it was applied, the plan shows it **destroyed** for each tenant.
 
-**Apply that destroy only after a release carrying the worker's broker client
-(`apps/agent-worker/agent_worker/forgebroker.py`) and the scheduler's nonce
-for user-slot attempts is deployed** -- read the running worker image's
-commit off the release before applying. Applied first, a worker that still
-reads the slot directly is `PERMISSION_DENIED`, and every task that resolved
-to a person's slot fails closed until that release lands. Rolling the worker
-back after the apply has the same effect; re-adding the binding is the undo.
+**Apply that destroy only once the broker is ON in that environment -- a
+release is not enough.** The broker needs the attempt key, and the attempt
+key exists only where child tasks are on. Before this apply, check each of
+these for the environment, and stop at the first that fails:
+
+1. **The nonce measurement has been made** (design §5, "The precondition
+   this rests on"; [child-tasks.md §9](../design/child-tasks.md#9-phase-2)
+   item 2, deferred to #476): a tenant service account cannot read a Cloud
+   Run execution's overrides or a GKE pod spec in its namespace. Not made
+   means the broker is not a guarantee and is not switched on: keep the
+   binding, and stop here.
+2. **`swarm-child-key` has a version** (`scripts/create-secrets.sh --child-key`).
+3. **`enable_child_tasks = true` and `swarm_api_url`** are set in
+   `terraform/environments/<env>/<env>.tfvars` and applied by a release
+   (`terraform/infra/child_tasks.tf` gives the order; neither is set in any
+   environment as of 2026-10-11).
+4. **That release carries the worker's broker client**
+   (`apps/agent-worker/agent_worker/forgebroker.py`) and the scheduler's
+   nonce for user-slot attempts -- read the running worker image's commit
+   off the release.
+
+Without the broker, the worker reads a person's slot with its own account,
+as before #1041, so a release alone changes nothing for Alice's task.
+Destroy the binding before the broker is on, and that read is
+`PERMISSION_DENIED`: every task that resolved to a person's slot fails
+closed until the broker is on. Turning `enable_child_tasks` off or rolling
+the worker back after the apply has the same effect; re-adding the binding
+is the undo.
 
 These are bootstrap's, not the release's, on purpose: a project-level
 `secretAccessor` grant made by CI would have to be on the deployer's

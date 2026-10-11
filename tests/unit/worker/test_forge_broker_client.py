@@ -18,7 +18,10 @@ half, pinned here:
   * a superseded attempt is fenced, and a refused write is `ForgeWriteRefused`;
   * the token is registered for redaction before it is returned, and is in
     no environment, no log line and no event;
-  * the 401 re-read asks the broker again.
+  * the 401 re-read asks the broker again;
+  * a deployment with no broker at all (child tasks off, no SWARM_API_URL)
+    reads the slot with the worker's own account while IAM allows it, and
+    fails closed, without the tenant token, once IAM does not.
 
 Every fake token is built at runtime, never written as one literal.
 
@@ -307,6 +310,59 @@ def test_an_attempt_without_a_key_fails_closed_before_asking(db, worker_factory,
     with pytest.raises(secrets_mod.SecretError):
         worker._read_action_git_token()
     assert client.accessed == []
+
+
+def test_a_deployment_without_the_broker_reads_the_slot_with_its_own_account(
+        db, worker_factory, log_stream):
+    """Child tasks off (no SWARM_API_URL): the release must not stop Alice's push.
+
+    The scheduler hands no nonce and no API address where the deployment has
+    no `swarm-child-key`, so there is no broker to ask. The worker reads the
+    slot with its own account, as before #1041, while `forge_slot_reader`
+    still grants it (docs/design/user-scoped-secrets.md §5, the rollout order).
+    """
+    seed_attempt(db)
+    db.doc(f"tenants/{TENANT}")["credentials"] = ["git"]
+    client = FakeSecretClient({slot_secret(): user_token("s"),
+                               f"swarm-tenant-{TENANT}-git": tenant_token()})
+    worker, _, _ = worker_factory(secret_client=client, child_nonce=None, swarm_api_url=None)
+    worker._task = {"repository_url": GITHUB_URL, "forge_credential": slot(),
+                    "submitted_by": PERSON.lower(), "forge_access": "write"}
+    worker._forge_signed = True
+    worker._repo_url = GITHUB_URL
+    assert worker.forge_broker.deployed is False
+
+    assert worker._git_token() == user_token("s")
+    assert client.accessed == [slot_secret()], "the person's slot, and only it, was read"
+    assert user_token("s") not in log_stream.getvalue()
+
+
+def test_without_the_broker_a_removed_read_fails_closed_without_the_tenant_token(
+        db, worker_factory):
+    """After the bootstrap apply removes forge_slot_reader, a deployment still
+    without the broker gets PERMISSION_DENIED: a named failure, never the team token."""
+    seed_attempt(db)
+    db.doc(f"tenants/{TENANT}")["credentials"] = ["git"]
+
+    class DeniedForSlots(FakeSecretClient):
+        def access(self, secret_name: str, version: str = "latest") -> str:
+            self.accessed.append(secret_name)
+            if "-git-u-" in secret_name:
+                raise PermissionError("403 PERMISSION_DENIED")
+            return self.values.get(secret_name, "")
+
+    client = DeniedForSlots({f"swarm-tenant-{TENANT}-git": tenant_token()})
+    worker, _, _ = worker_factory(secret_client=client, child_nonce=None, swarm_api_url=None)
+    worker._task = {"repository_url": GITHUB_URL, "forge_credential": slot(),
+                    "submitted_by": PERSON.lower(), "forge_access": "write"}
+    worker._forge_signed = True
+    worker._repo_url = GITHUB_URL
+
+    assert worker._git_token() is None
+    worker._forge_write_refusal = lambda: None  # type: ignore[method-assign]
+    with pytest.raises(secrets_mod.SecretError):
+        worker._read_action_git_token()
+    assert client.accessed == [slot_secret(), slot_secret()], client.accessed
 
 
 def test_a_superseded_attempt_is_fenced(db, worker_factory):

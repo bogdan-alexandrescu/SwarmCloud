@@ -322,9 +322,14 @@ tenant did not. The owner decided on 2026-10-11 that secrets are user-scoped
   stay team credentials, read as described above.
 
 The IAM removal reaches a project by the owner's bootstrap apply, made only
-after a release carrying the worker's broker client is deployed; applied
-earlier, every user-slot task fails closed until that release lands
-([runbooks/github-app.md](runbooks/github-app.md), step 2).
+once the broker is ON in that environment: `enable_child_tasks`,
+`swarm-child-key` and `swarm_api_url` set, after the nonce measurement of
+[design/child-tasks.md §9](design/child-tasks.md#9-phase-2) item 2 (deferred
+to #476) on which the guarantee rests. A deployment without the broker reads
+a person's slot with the worker's own account, as before; applied before the
+broker is on, that read is refused and every user-slot task fails closed
+([design/user-scoped-secrets.md §5](design/user-scoped-secrets.md#5-iam-the-worker-loses-its-read-of-user-slots);
+[runbooks/github-app.md](runbooks/github-app.md), step 2).
 
 #### What the forge credential must be allowed
 

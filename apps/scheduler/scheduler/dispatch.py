@@ -709,6 +709,14 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     # without it a child running on its submitter's slot could never prove
     # itself and the broker would refuse it its own credential.
     #
+    # NO KEY, NO BROKER. Where this deployment has no child key (child tasks
+    # off, terraform/infra/child_tasks.tf), a user-slot attempt gets neither
+    # the nonce nor SWARM_API_URL, and its worker reads the slot with its own
+    # account while `forge_slot_reader` still allows it
+    # (`agent_worker.forgebroker.ForgeBroker.deployed`). Removing that binding
+    # therefore waits on the key being here (docs/design/user-scoped-secrets.md
+    # §5, the rollout order).
+    #
     # A CHILD STILL GETS NO CHILD PATH. SWARM_CHILD_PATH=false tells its worker
     # to register the key and offer its agent nothing to submit children with.
     # That flag is a courtesy, not the guard: swarm-api refuses depth itself

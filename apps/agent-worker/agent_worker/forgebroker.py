@@ -17,13 +17,21 @@ It POSTs `/v1/attempts/forge-credential` with:
     (`children.ChildPath.sign_request`). The private key never leaves this
     process's heap.
 
-FAILS CLOSED. No registered key (no nonce, a refused registration, a
+FAILS CLOSED WHERE THE BROKER IS DEPLOYED. No registered key (no nonce, a refused registration, a
 tombstone), a refusal, or no answer is a `ForgeCredentialRefused` naming the
 secret and the code -- never a fallback to the tenant token, which would run
 the task as somebody it was not resolved to. Two refusals keep the meaning
 they already have here: `attempt_superseded` is the fence (invariant 5,
 `FencedError`), and a removed or read-only grant asked for a write is
 `ForgeWriteRefused`.
+
+A DEPLOYMENT WITHOUT THE BROKER (no SWARM_API_URL, `ForgeBroker.deployed`)
+is not refused here: the worker reads the slot with its own account, as it
+did before #1041, so a release does not stop every user-slot task where
+child tasks are off. That read is IAM's to allow, and once the bootstrap
+apply removes `forge_slot_reader` it is PERMISSION_DENIED -- a named
+`SecretError`, never the tenant token. docs/design/user-scoped-secrets.md §5
+orders that removal after the broker is on.
 
 NEVER A VALUE. The token is registered with the logger's redaction before it
 is returned, and nothing here logs, raises or stores it: a log line carries
@@ -78,6 +86,20 @@ class ForgeBroker:
         self.cfg = cfg
         self._children = children
         self.log = logger
+
+    @property
+    def deployed(self) -> bool:
+        """Whether this deployment has the broker at all.
+
+        The scheduler hands a worker SWARM_API_URL only where the deployment
+        has `swarm-child-key` and `swarm_api_url` (`enable_child_tasks`,
+        terraform/infra/child_tasks.tf; `scheduler.dispatch.worker_env`).
+        Where it has not, there is nothing to ask, and `secrets.resolve_git_token`
+        reads the slot with the worker's own account instead -- which works
+        only while `forge_slot_reader` stands (docs/design/user-scoped-secrets.md
+        §5, "The rollout order").
+        """
+        return self._children.api is not None
 
     def fetch(self, tenant: Tenant, suffix: str, *, write: bool) -> str:
         """The latest version of the task's `git-u-` slot, released to this attempt.

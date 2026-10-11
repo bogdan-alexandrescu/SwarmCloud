@@ -42,11 +42,14 @@
 # resource in this root grants a tenant worker secretAccessor at all.
 #
 # ROLLOUT ORDER. Removing the binding is the owner's bootstrap apply, and it
-# goes AFTER a release carrying the worker's broker client
-# (apps/agent-worker/agent_worker/forgebroker.py) and the scheduler's nonce
-# for user-slot attempts is deployed. Applied first, a worker still reading
-# the slot directly is PERMISSION_DENIED and every user-slot task fails closed
-# until that release lands. Destroying the binding needs no `removed` block:
+# goes AFTER the broker is ON in that environment -- not merely released:
+# enable_child_tasks, swarm-child-key and swarm_api_url set
+# (terraform/infra/child_tasks.tf), which waits on the nonce measurement of
+# docs/design/child-tasks.md §9 item 2. A deployment without the broker reads
+# the slot with the worker's own account (forgebroker.ForgeBroker.deployed);
+# applied before the broker is on, that read is PERMISSION_DENIED and every
+# user-slot task fails closed until it is (docs/design/user-scoped-secrets.md
+# §5). Destroying the binding needs no `removed` block:
 # it is this root's own grant to this platform's account, and touches nothing
 # of the other team's.
 #

@@ -5,8 +5,12 @@ built the same day: the broker route, the scheduler's nonce, the worker's
 client and the IAM removal are all in the repository. §9 names the file and
 the test that holds each guarantee. One thing is the operator's, not the
 code's: the IAM removal reaches a project only through the owner's bootstrap
-apply, and that apply goes **after** a release carrying the worker's client
-is deployed (§5, "The rollout order").
+apply, and that apply goes **after** the broker is on in that environment --
+not merely released (§5, "The rollout order"). The broker is on only where
+`enable_child_tasks` is, which is nowhere yet: it waits on a measurement that
+has not been made, that no other container of a tenant can read an
+attempt's registration nonce (§5, "The precondition this rests on"). Until
+then the guarantee below is built, not in force.
 
 **The owner's decision, 2026-10-11: secrets are user-scoped, not
 tenant-scoped.** A person's credential is used only on the tasks that person
@@ -291,9 +295,13 @@ Firestore, a response header or an error message.
 
 * **It reads a `git-u-` slot only through the broker**, signed with the key
   its `ChildPath` holds in memory. The key is never serialised. It never
-  calls Secret Manager for a `git-u-` name. `git` and `git-r-` stay direct
+  calls Secret Manager for a `git-u-` name -- in a deployment that has the
+  broker. A deployment without it (no `SWARM_API_URL`: child tasks off)
+  reads the slot with the worker's own account while IAM still allows, so
+  the release does not stop every user-slot task (§5, "The rollout
+  order"). `git` and `git-r-` stay direct
   reads (`apps/agent-worker/agent_worker/secrets.py::resolve_git_token`).
-* **It fails closed.** A user-slot task fails with a named error
+* **Where the broker is deployed, it fails closed.** A user-slot task fails with a named error
   (`CredentialMissing` or `SecretError` in
   `apps/agent-worker/agent_worker/secrets.py`) in these cases:
   * no key could be registered (no nonce, registration refused, or the
@@ -348,20 +356,86 @@ A personal tenant's worker (`u-<user>`) still reads its own slots, through
 the binding the workspace job makes (docs/workspaces.md, A6). That account is
 the person's alone, so the read reaches nobody else's credential.
 
-**This is what makes the guarantee IAM's.** An agent in Bob's task that
+**This is what makes the guarantee IAM's, once the binding is gone and
+the broker is on** (the rollout order below). An agent in Bob's task that
 mints its worker's token and calls Secret Manager for Alice's slot gets
 `PERMISSION_DENIED`. The same agent calling the broker cannot sign: its
 worker's private key is in a heap it cannot read, and Alice's task's key is in
 another container. Signing Bob's own tuple gets it Bob's task's checks, which
-end at step 5, 7 or 8.
+end at step 5, 7 or 8. All of that holds only on the precondition below.
 
-**The rollout order.** The IAM removal is applied by the operator's
-bootstrap apply only after a release that carries the worker's broker client
-(`apps/agent-worker/agent_worker/forgebroker.py`) and the scheduler's nonce is
-deployed. Otherwise every user-slot task fails closed (§3.3) until that
-release is deployed. Rolling back the worker after the removal has the same
-effect. Re-applying the binding is the undo. The operator's step is in
-[runbooks/github-app.md](../runbooks/github-app.md), step 2.
+**The precondition this rests on: no other container reads the nonce.**
+The attempt key is only as good as its registration, and the registration
+is only as good as the one-use nonce the scheduler puts in Alice's
+execution's environment (`SWARM_CHILD_NONCE`, §3.1). Alice's own agent
+reading it later is harmless: it is spent before that agent exists. But if
+an agent in **another** container of the tenant -- Bob's -- can read Alice's
+execution overrides (Cloud Run `run.executions.get`) or her pod spec (GKE,
+`get pods` in the tenant namespace), it can race Alice's worker in the
+window between dispatch and her lifecycle step 2: register a key of its own
+for Alice's tuple first, sign Alice's tuple with it, and pass every check of
+§3.2, because every check is about **the task**, and the task is Alice's.
+Alice's worker then gets `409 child_key_taken` and fails closed, too late.
+That would hand Bob Alice's slot, which is exactly what this design exists
+to prevent.
+
+This is [child-tasks.md §9](child-tasks.md#9-phase-2) item 2's measurement,
+and it has **not been made**: it is deferred to #476. It is why
+`enable_child_tasks` is off in every environment
+(`terraform/infra/child_tasks.tf`: neither `dev.tfvars` nor `prod.tfvars`
+sets it). So until that measurement shows a tenant service account can read
+neither, the broker is not a guarantee, and it is not switched on. Nothing
+in this design weakens that gate; it adds a second reason to keep it:
+
+* the measurement is a precondition of `enable_child_tasks` (child-tasks
+  §9 item 2) **and** of the broker, which needs the same key;
+* the broker is a precondition of removing `forge_slot_reader` in an
+  environment (the rollout order below);
+* so in an environment where the measurement has not been made, the
+  worker account keeps today's read (U1), and today's exposure -- Bob's
+  agent can read Alice's slot with its worker's token -- is stated, not
+  hidden. The broker narrows nothing there until it is on.
+
+If the measurement finds the read possible, the nonce cannot travel in the
+execution's environment, the broker ships off, and the choice in §2 goes
+back to the owner with the measurement (the same stop child-tasks §9 item 2
+prescribes), rather than shipping the race.
+
+**The rollout order.** Three things, each a precondition of the next, per
+environment:
+
+1. **The release.** It is safe to deploy anywhere, broker or not. A
+   deployment without the broker -- no `swarm-child-key` version, so the
+   scheduler mints no nonce and hands no `SWARM_API_URL` (`worker_env`) --
+   has nothing to ask, and its worker reads a person's slot with its own
+   account, as before #1041 (`apps/agent-worker/agent_worker/secrets.py::resolve_git_token`,
+   `forgebroker.ForgeBroker.deployed`;
+   `tests/unit/worker/test_forge_broker_client.py::test_a_deployment_without_the_broker_reads_the_slot_with_its_own_account`).
+   That read is IAM's to allow, so it adds nothing an agent could not
+   already do, and Alice's task in dev (`repository_grants_enforced = true`)
+   keeps pushing as Alice. Where the broker **is** deployed, the worker
+   asks it and nothing else, and fails closed (§3.3).
+2. **The broker on.** In that environment, in child_tasks.tf's order: the
+   §9 item 2 measurement above; `make apply` with `enable_child_tasks`
+   false (the secret and its accessor bindings); `scripts/create-secrets.sh
+   --child-key` (the first version -- a revision referencing a secret with
+   no version fails to start); then `enable_child_tasks = true` and
+   `swarm_api_url` from `terraform output swarm_api_url` in
+   `terraform/environments/<env>/<env>.tfvars`, applied. Every user-slot
+   attempt then gets a nonce and an API address, and its worker uses the
+   broker.
+3. **The IAM removal.** Only now does the operator's bootstrap apply destroy
+   `forge_slot_reader` for that environment's tenants. Applied before step 2,
+   a worker with no broker reads its slot directly, gets
+   `PERMISSION_DENIED`, and every task that resolved to a person's slot
+   fails closed -- a named `SecretError`, never the tenant token
+   (`::test_without_the_broker_a_removed_read_fails_closed_without_the_tenant_token`)
+   -- until step 2 is done. Turning the broker off, or rolling the worker
+   back, after the removal has the same effect; re-adding the binding is the
+   undo.
+
+The operator's step is in [runbooks/github-app.md](../runbooks/github-app.md),
+step 2.
 
 **What it does not stop, stated plainly.** An agent can obtain its own
 submitter's token, which is no more than today:
@@ -375,7 +449,8 @@ submitter's token, which is no more than today:
   its **own** task.
 
 Nothing in this design lets one person's agent obtain another person's
-credential.
+credential, once the broker is on and the binding is gone -- and the broker
+is switched on only after the precondition above is measured.
 
 ## 6. Provider keys: team or personal
 
@@ -454,9 +529,13 @@ The tests that hold each guarantee:
 | the token is in no log line, no header and no environment | `tests/unit/control_plane/test_forge_credential_broker.py::test_the_token_is_in_no_log_and_no_header`, `tests/unit/worker/test_forge_broker_client.py::test_the_token_is_in_no_env_and_no_log` |
 | every user-slot attempt gets a nonce, a child one with no child path | `tests/unit/scheduler/test_dispatch_forge_nonce.py::test_a_child_with_a_user_slot_gets_a_nonce_and_no_child_path` |
 | the worker never reads a user slot from Secret Manager, and fails closed without the tenant token | `tests/unit/worker/test_forge_broker_client.py::test_a_user_slot_is_never_read_from_secret_manager`, `::test_a_refused_attempt_fails_closed_without_the_tenant_token`, `::test_an_attempt_without_a_key_fails_closed_before_asking` |
+| a deployment without the broker reads the slot with the worker's own account, and fails closed without the tenant token once IAM refuses | `tests/unit/worker/test_forge_broker_client.py::test_a_deployment_without_the_broker_reads_the_slot_with_its_own_account`, `::test_without_the_broker_a_removed_read_fails_closed_without_the_tenant_token` |
 | no tenant worker holds `secretAccessor` on a `-git-u-` name | `tests/terraform/forge_app.tftest.hcl`, run `no_tenant_worker_holds_secret_accessor_on_a_user_slot` |
 
-What the tests do not prove: that IAM answers `PERMISSION_DENIED` live once
+What the tests do not prove: that no other container of a tenant can read
+an attempt's `SWARM_CHILD_NONCE` (§5, "The precondition this rests on";
+child-tasks §9 item 2, deferred to #476), on which the whole guarantee
+rests; and that IAM answers `PERMISSION_DENIED` live once
 the binding is destroyed. That is the Policy Troubleshooter check in
 [runbooks/github-app.md](../runbooks/github-app.md), step 8, after the
 owner's bootstrap apply.

@@ -40,6 +40,13 @@
 # registration. Deferred to #476 with the other security items; the switch is
 # off by default so that measurement comes first.
 #
+# THE FORGE BROKER (#1041) needs the same key: a person's `git-u-` slot is
+# released by swarm-api only to an attempt that registered one. So this switch
+# also gates removing the tenant workers' read of user slots
+# (`forge_slot_reader`, terraform/bootstrap/forge_user_slots.tf), and the
+# measurement above is the broker's precondition too
+# (docs/design/user-scoped-secrets.md §5).
+#
 # Off, nothing about a deployment changes: no service reads the secret, the
 # scheduler mints no nonce (no SWARM_CHILD_KEY), every worker runs without a
 # child path, and both child routes answer 503 child_submit_unavailable.
