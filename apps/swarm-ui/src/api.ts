@@ -29,7 +29,7 @@ import type {
   Workflow, WorkflowPage,
   Account, AccountStateName, AccountsPage, RefreshResponse,
   AccountAuthorization, AccountExchangeResponse,
-  IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, RunCreateBody, RunPlan,
+  IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, IssueRunSummaryPage, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
   OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
   AdminGrantAnswer, AdminRemoveAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
@@ -1147,15 +1147,26 @@ export async function loadIssuePreview(issue: string): Promise<Result<IssuePrevi
   return read<IssuePreviewRead>(route('/v1/issues/preview', {}, new URLSearchParams({ issue })), () => false)
 }
 
-/** `GET /v1/runs`: the tenant's runs, newest first. Empty is a measured zero. */
-export async function loadRuns(pageToken: string | null = null, limit: number | null = null): Promise<Result<IssueRunPage>> {
+/**
+ * `GET /v1/runs?view=summary`: the tenant's runs, newest first. Empty is a
+ * measured zero.
+ *
+ * THE SUMMARY VIEW (RT-7, 2026-10-11): the full rows were 1.5 MB for 50 runs,
+ * almost all of it plans, open work and per-check lists the list never draws.
+ * Both callers -- the Runs list and Submit's recent list -- read only the
+ * row's id, issue, title, state, approval, workflow and creator. A run's own
+ * page reads `loadRun`, which is always the full row.
+ */
+export async function loadRuns(
+  pageToken: string | null = null,
+  limit: number | null = null,
+): Promise<Result<IssueRunSummaryPage>> {
   if (USE_FIXTURES) return fixtureRuns(pageToken)
+  const query = new URLSearchParams({ view: 'summary' })
+  if (pageToken !== null) query.set('page_token', pageToken)
   // `limit` null is the route's own page, as before.
-  const params = new URLSearchParams()
-  if (pageToken !== null) params.set('page_token', pageToken)
-  if (limit !== null) params.set('limit', String(limit))
-  const query = params.toString() === '' ? undefined : params
-  return read<IssueRunPage>(route('/v1/runs', {}, query), (d) => d.runs.length === 0 && d.next_page_token === null)
+  if (limit !== null) query.set('limit', String(limit))
+  return read<IssueRunSummaryPage>(route('/v1/runs', {}, query), (d) => d.runs.length === 0 && d.next_page_token === null)
 }
 
 /** `GET /v1/runs/{run_id}`. The read advances the run (routes/runs.py). */

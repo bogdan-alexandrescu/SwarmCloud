@@ -461,6 +461,23 @@ with `pull_request.read_error` set. CI is read at most every 30 s per run, and a
 head with nothing required and nothing reported for 10 minutes is read as a
 repository with no CI (`DONE`, `checks: none`).
 
+**A failed read is served, not just stored (RT-4, 2026-10-11).**
+`run_e525710be66e4d4fbb29` sat `CHECKING` for 15 hours with `checks: null`, and
+the run page said "not read yet": `read_error` was written on every visit but
+`IssueRun.to_api()` never served it. It now serves `pull_request.read_error` and
+`pull_request.checked_at`, and the page says "not read" with the reason. A read
+that *worked* is also kept when the move after it raises (the merge gate's
+reads, the merge, a round's submission). Before, that exception discarded the
+reading and left `checked_at` unmoved, and the list route only logged it. Now
+the reading is stored, `read_error` says the move failed, and the next visit
+tries again.
+
+**The list has a summary view (RT-7, 2026-10-11).** `GET /v1/runs` was 1.5 MB
+for 50 rows, nearly all of it plans, open work, history and per-check lists the
+list never draws. `GET /v1/runs?view=summary` (`issueruns.run_summary`) leaves
+those keys out, absent rather than null, as `GET /v1/tasks?view=summary` does.
+The console's list reads it. `GET /v1/runs/{id}` is always the full row.
+
 **`green_sha`** is the head sha at which every required check was green. It is
 set only on `DONE`, and it is what any future merge must pin to (below).
 

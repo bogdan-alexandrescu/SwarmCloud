@@ -4943,6 +4943,13 @@ export interface RunPullRequest {
   check_list_truncated?: boolean | null
   /** The first failing check's link, else the first pending one's, else the first; null when GitHub gave none. */
   ci_url?: string | null
+  /** RT-4: when the CI loop last read (ISO, UTC), whether or not the read worked; null before the first. */
+  checked_at?: string | null
+  /**
+   * RT-4: why the last CI read -- or the move after a read that worked --
+   * failed, masked and bounded by the server; null once a read lands.
+   */
+  read_error?: string | null
 }
 
 /** `pull_request.check_counts`: neutral, skipped and cancelled runs count as skipped. */
@@ -4965,6 +4972,30 @@ export interface IssueRunPage {
   runs: IssueRun[]
   next_page_token: string | null
   tenant_id: string
+}
+
+/**
+ * One row of `GET /v1/runs?view=summary` (RT-7, `issueruns.run_summary`):
+ * the run WITHOUT its plan, history, open work, index context, verification,
+ * failure excerpt and unmet requirements -- the keys absent -- with
+ * `issue_read` cut to its title, state, url and read time and `pull_request`
+ * without `check_list`. A full `IssueRun` is one too, so anything typed on
+ * this reads either.
+ */
+export type IssueRunSummary = Omit<
+  IssueRun,
+  'plan' | 'history' | 'open_work' | 'failure_excerpt' | 'requirements_unmet' | 'issue_read' | 'pull_request'
+> & {
+  issue_read?: Pick<IssueReadDoc, 'title' | 'state' | 'url' | 'read_at'> | null
+  pull_request?: Omit<RunPullRequest, 'check_list'> | null
+}
+
+/** `GET /v1/runs?view=summary`: the page the Runs list and Submit's recent list read. */
+export interface IssueRunSummaryPage {
+  runs: IssueRunSummary[]
+  next_page_token: string | null
+  tenant_id: string
+  view?: 'summary'
 }
 
 /** `GET /v1/runs/{id}` and every plan action's answer. */

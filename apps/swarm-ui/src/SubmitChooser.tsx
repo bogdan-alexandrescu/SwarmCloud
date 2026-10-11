@@ -221,7 +221,7 @@ export function recentSubmissions(
   email: string,
   tasks: readonly Task[] | null,
   workflows: readonly import('./types').Workflow[] | null,
-  runs: readonly import('./types').IssueRun[] | null,
+  runs: readonly import('./types').IssueRunSummary[] | null,
 ): RecentSubmission[] {
   const mine = (who: string | null | undefined) => typeof who === 'string' && who.toLowerCase() === email.toLowerCase()
   const byId = new Map((tasks ?? []).map((t) => [t.id, t]))

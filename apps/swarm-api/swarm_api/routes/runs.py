@@ -52,7 +52,15 @@ from swarm_common.states import TaskState
 
 from ..auth import AuthContext
 from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_scope
-from ..errors import ApiError, Conflict, Forbidden, Gone, NotFound, UpstreamUnavailable
+from ..errors import (
+    ApiError,
+    Conflict,
+    Forbidden,
+    Gone,
+    NotFound,
+    UpstreamUnavailable,
+    ValidationFailed,
+)
 from .. import issueci
 from ..forge import ForgeReadError, preview, read_open_work
 from .. import approvals
@@ -77,6 +85,7 @@ from ..issueruns import (
     planner_task,
     auto_merge_default,
     refuse_auto_merge,
+    run_summary,
     territory_overlap,
     widen_hold,
     workflow_paths,
@@ -777,13 +786,35 @@ def start_run(
     return sync_issue(ctx, run)
 
 
+#: `GET /v1/runs?view=` (RT-7). `full`, or no `view` at all, is the row every
+#: other route serves; `summary` drops what the list never shows
+#: (`issueruns.run_summary`), as `GET /v1/tasks?view=summary` does (#168).
+RUN_VIEWS: tuple[str, ...] = ("full", "summary")
+
+
 @router.get("")
 def list_runs(
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
+    view: str | None = Query(default=None, description="`full` (default) or `summary`"),
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
+    """One page of the tenant's runs, newest first, each live one advanced.
+
+    `view=summary` (RT-7) serves each row without the plan, the open work,
+    the history, the index context, the verification tables, the failure
+    excerpt and the unmet requirements -- the keys absent, not null -- with
+    `issue_read` cut to its title, state, url and read time and
+    `pull_request` without its per-check list, and says `"view": "summary"`.
+    No `view`, or `view=full`, is the response this route has always served;
+    `GET /v1/runs/{id}` is always the full row.
+    """
+    if view is not None and view not in RUN_VIEWS:
+        raise ValidationFailed(
+            f"unknown view {view!r}", detail={"known_views": list(RUN_VIEWS)},
+        )
+    summary = view == "summary"
     rows, next_token = _runs(ctx).list(
         tenant_id, limit=paged_limit(ctx, limit), page_token=page_token
     )
@@ -796,8 +827,11 @@ def list_runs(
                 # One run's read failing must not hide the page; the row is
                 # served as stored, and its own GET reports the failure.
                 log.warning("issue run %s not advanced in the list (%s)", run.id, exc.code)
-        served.append(run.to_api())
-    return {"runs": served, "next_page_token": next_token, "tenant_id": tenant_id}
+        served.append(run_summary(run.to_api()) if summary else run.to_api())
+    payload = {"runs": served, "next_page_token": next_token, "tenant_id": tenant_id}
+    if summary:
+        payload["view"] = "summary"
+    return payload
 
 
 @router.get("/{run_id}")
