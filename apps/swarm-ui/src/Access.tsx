@@ -79,6 +79,90 @@ import './styles/onboarding.css'
 type View = 'mine' | 'members'
 
 /**
+ * WHOSE ACCESS IS IN THE ADDRESS (live QA RSA-28, 2026-10-11). Mine / Members
+ * was component state, so a reload or a shared link returned to Mine. It is
+ * `?view=members` now; Mine is the bare path.
+ */
+function viewFromUrl(): View {
+  if (typeof window === 'undefined') return 'mine'
+  return new URLSearchParams(window.location.search).get('view') === 'members' ? 'members' : 'mine'
+}
+
+function writeViewToUrl(v: View): void {
+  const url = new URL(window.location.href)
+  if (v === 'members') url.searchParams.set('view', 'members')
+  else url.searchParams.delete('view')
+  window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
+}
+
+/**
+ * ASK FIRST, AND MEAN IT (live QA RSA-1 and RSA-27, 2026-10-11). Every action
+ * here that takes access away -- Disconnect, removing an org, removing a grant,
+ * a grant moved down from Write or to Not chosen -- and the push test, which
+ * writes, waits for a yes in this banner. Removing a grant took one click: a
+ * misclick on a write grant's row dropped it, and the repository's tasks were
+ * refused at submission from then on.
+ *
+ * The banner takes focus to its SAFE button when it opens (focus stayed on
+ * <body>, so a keyboard user did not know it was there), and Esc is Keep: the
+ * same as the safe button, never the action.
+ */
+function AskFirst({
+  title,
+  children,
+  act,
+  actKind = 'danger-filled',
+  keep,
+  busy = false,
+  onAct,
+  onKeep,
+}: {
+  title: string
+  children: ReactNode
+  act: string
+  actKind?: 'danger-filled' | 'primary'
+  keep: string
+  busy?: boolean
+  onAct: () => void
+  onKeep: () => void
+}) {
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    box.current?.querySelector<HTMLButtonElement>('button[data-safe]')?.focus()
+  }, [])
+  return (
+    <div
+      ref={box}
+      className="ac-ask"
+      data-asking={title}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && !busy) {
+          e.stopPropagation()
+          onKeep()
+        }
+      }}
+    >
+      <Banner
+        tone="warn"
+        title={title}
+        actions={
+          <>
+            <Button kind={actKind} size="sm" busy={busy} onClick={onAct}>
+              {act}
+            </Button>
+            <Button size="sm" data-safe="" onClick={onKeep} disabled={busy}>
+              {keep}
+            </Button>
+          </>
+        }
+      >
+        {children}
+      </Banner>
+    </div>
+  )
+}
+
+/**
  * WHEN THE TOKEN EXPIRES, FORWARD. This read `timeAgo(access_expires_at)`,
  * and `timeAgo` measures the past: an instant eight hours AHEAD is a negative
  * age, clamped to zero, so a fresh token read "expires just now" (QA of
@@ -318,25 +402,19 @@ function Connection({ connection, onChange }: { connection: GitHubConnection | n
             </p>
           )}
           {confirming ? (
-            <Banner
-              tone="warn"
+            <AskFirst
               title={connection.forge_login !== null ? `Disconnect @${connection.forge_login}?` : 'Disconnect GitHub?'}
-              actions={
-                <>
-                  <Button kind="danger-filled" size="sm" busy={busy} onClick={() => void disconnect()}>
-                    Disconnect
-                  </Button>
-                  <Button size="sm" onClick={() => setConfirming(false)} disabled={busy}>
-                    Keep connected
-                  </Button>
-                </>
-              }
+              act="Disconnect"
+              keep="Keep connected"
+              busy={busy}
+              onAct={() => void disconnect()}
+              onKeep={() => setConfirming(false)}
             >
               <p className="ur-small">
                 SwarmCloud revokes its authorisation at GitHub, disables the token it stored for you and forgets every
                 org and repository you granted. Tasks you submit afterwards wait until you connect again.
               </p>
-            </Banner>
+            </AskFirst>
           ) : (
             <div className="ur-gh-acts">
               {!active && <ConnectButton label="Reconnect" />}
@@ -476,25 +554,19 @@ function Owners({
               <div className="ac-owner-acts">
                 {o.enabled ? (
                   removing === key ? (
-                    <Banner
-                      tone="warn"
+                    <AskFirst
                       title={`Remove ${o.owner}?`}
-                      actions={
-                        <>
-                          <Button kind="danger-filled" size="sm" busy={busy === o.owner} onClick={() => void disable(o.owner)}>
-                            Remove
-                          </Button>
-                          <Button size="sm" onClick={() => setRemoving(null)}>
-                            Keep
-                          </Button>
-                        </>
-                      }
+                      act="Remove"
+                      keep="Keep"
+                      busy={busy === o.owner}
+                      onAct={() => void disable(o.owner)}
+                      onKeep={() => setRemoving(null)}
                     >
                       <p className="ur-small">
                         Deletes your {granted} grant{granted === 1 ? '' : 's'} under {o.owner} at once; tasks naming its
                         repositories are refused from then on.
                       </p>
-                    </Banner>
+                    </AskFirst>
                   ) : (
                     <Button size="sm" kind="ghost" onClick={() => setRemoving(key)}>
                       Remove
@@ -592,7 +664,65 @@ function writeRefusedWhy(r: AccessRepository): string | undefined {
   return undefined
 }
 
-export function RepoChooser({ owner, onChange }: { owner: string; onChange: () => void }) {
+/** Rank of a choice by what it lets SwarmCloud do: a move down the rank takes access away. */
+const CHOICE_RANK: Record<Choice, number> = { none: 0, read: 1, write: 2 }
+
+/** Whether moving from `from` to `to` takes access away, and so asks first (RSA-1). */
+export function takesAccessAway(from: Choice, to: Choice): boolean {
+  return CHOICE_RANK[to] < CHOICE_RANK[from]
+}
+
+/** The ask-first banner for a move down: Remove, or Write to Read. */
+function LossAsk({ repository, from, to, busy, onAct, onKeep }: { repository: string; from: Choice; to: Choice; busy: boolean; onAct: () => void; onKeep: () => void }) {
+  const removing = to === 'none'
+  return (
+    <AskFirst
+      title={removing ? `Remove ${repository}?` : `Make ${repository} read only?`}
+      act={removing ? 'Remove access' : 'Change to Read'}
+      keep={`Keep ${from === 'write' ? 'Write' : 'Read'}`}
+      busy={busy}
+      onAct={onAct}
+      onKeep={onKeep}
+    >
+      <p className="ur-small">
+        {removing
+          ? `SwarmCloud deletes your ${from} grant on ${repository} now, and a task naming it is refused at submission until you choose it again.`
+          : `SwarmCloud stops pushing to ${repository} and opening pull requests there as you; a task that needs to write to it is refused at submission.`}
+      </p>
+    </AskFirst>
+  )
+}
+
+/**
+ * A grant drawn as a chooser row, for Chosen when the grant is not on the page
+ * GitHub answered. The grant does not carry visibility, branch or
+ * registration, so those read as not known rather than as a value.
+ */
+function grantAsRow(g: AccessGrant): AccessRepository {
+  return {
+    repository: g.repository,
+    owner: g.owner,
+    repo: g.repository.split('/')[1] ?? g.repository,
+    repo_id: g.repo_id,
+    visibility: null,
+    archived: g.archived === true,
+    default_branch: null,
+    can_push: g.can_push,
+    registered: false,
+    granted: true,
+    mode: g.mode,
+  }
+}
+
+/**
+ * CHOSEN IS EVERY GRANT UNDER THE OWNER, NOT THE CHOSEN ROWS OF ONE PAGE (live
+ * QA RSA-29, 2026-10-11). It filtered the page GitHub answered, so with 101
+ * repositories a grant on page 2 was invisible under Chosen while the footer
+ * still read "Page 1 of 2". The overview already carries every grant, so
+ * Chosen lists those -- each with the page's richer row when it is there --
+ * and drops the pager, which pages GitHub's list, not the grants.
+ */
+export function RepoChooser({ owner, chosen = [], onChange }: { owner: string; chosen?: AccessGrant[]; onChange: () => void }) {
   const [page, setPage] = useState(1)
   const [typed, setTyped] = useState('')
   const [query, setQuery] = useState('')
@@ -600,10 +730,13 @@ export function RepoChooser({ owner, onChange }: { owner: string; onChange: () =
   const [nonce, setNonce] = useState(0)
   const [busy, setBusy] = useState<string | null>(null)
   const [refused, setRefused] = useState<{ repo: string; error: ApiError } | null>(null)
+  /** A move that takes access away, waiting for a yes. Nothing is written before it. */
+  const [asking, setAsking] = useState<{ repo: string; from: Choice; to: Choice } | null>(null)
   const [settling, setSettling] = useState(false)
   const read = useUrRead(() => onceMoreOnConflict(() => loadAccessRepositories(owner, page, query), setSettling), `${owner}|${page}|${query}|${nonce}`)
 
   async function choose(r: AccessRepository, c: Choice) {
+    setAsking(null)
     setBusy(r.repo_id)
     setRefused(null)
     const res = c === 'none' ? await revokeAccessGrant(r.repo_id) : await putAccessGrant(r.repo_id, r.repository, c)
@@ -664,12 +797,20 @@ export function RepoChooser({ owner, onChange }: { owner: string; onChange: () =
         reading={settling ? STILL_SETTING_UP : ASKING_GITHUB}
       >
         {(p) => {
-          const shown = p.repositories.filter((r) => only === 'all' || r.granted)
+          const onPage = new Map(p.repositories.map((r) => [r.repo_id, r]))
+          const needle = p.q?.toLowerCase() ?? null
+          const shown =
+            only === 'all'
+              ? p.repositories
+              : [...chosen]
+                  .filter((g) => needle === null || g.repository.toLowerCase().includes(needle))
+                  .sort((a, b) => a.repository.localeCompare(b.repository))
+                  .map((g) => onPage.get(g.repo_id) ?? grantAsRow(g))
           const pages = p.total_count !== null ? Math.max(1, Math.ceil(p.total_count / p.per_page)) : null
           return (
             <>
               {shown.length === 0 ? (
-                <EmptyState kind="empty" heading={p.q !== null ? `Nothing in ${owner} matches “${p.q}”` : only === 'chosen' ? 'None chosen on this page' : 'No repositories on this page'}>
+                <EmptyState kind="empty" heading={p.q !== null ? `Nothing in ${owner} matches “${p.q}”` : only === 'chosen' ? `Nothing chosen under ${owner}` : 'No repositories on this page'}>
                   {p.q !== null ? 'The search is a part of the name, matched by SwarmCloud.' : 'The installation may cover selected repositories only; add more at GitHub.'}
                 </EmptyState>
               ) : (
@@ -682,7 +823,7 @@ export function RepoChooser({ owner, onChange }: { owner: string; onChange: () =
                         <div className="ac-row-name">
                           <b>{r.repository}</b>
                           <small className="ur-mu">
-                            {r.visibility ?? 'visibility unknown'}
+                            {r.visibility ?? (onPage.has(r.repo_id) ? 'visibility unknown' : 'chosen')}
                             {r.default_branch !== null && ` · default branch ${r.default_branch}`}
                             {r.archived && ' · archived'}
                             {r.registered && ' · registered'}
@@ -694,7 +835,9 @@ export function RepoChooser({ owner, onChange }: { owner: string; onChange: () =
                           value={choice}
                           disabled={busy === r.repo_id}
                           onChange={(c) => {
-                            if (c !== choice) void choose(r, c)
+                            if (c === choice) return
+                            if (takesAccessAway(choice, c)) setAsking({ repo: r.repo_id, from: choice, to: c })
+                            else void choose(r, c)
                           }}
                           options={[
                             { key: 'none', label: 'Not chosen' },
@@ -702,6 +845,18 @@ export function RepoChooser({ owner, onChange }: { owner: string; onChange: () =
                             { key: 'write', label: 'Write', disabled: why !== undefined && choice !== 'write', title: why },
                           ]}
                         />
+                        {asking !== null && asking.repo === r.repo_id && (
+                          <div className="ac-row-err">
+                            <LossAsk
+                              repository={r.repository}
+                              from={asking.from}
+                              to={asking.to}
+                              busy={busy === r.repo_id}
+                              onAct={() => void choose(r, asking.to)}
+                              onKeep={() => setAsking(null)}
+                            />
+                          </div>
+                        )}
                         {refused !== null && refused.repo === r.repo_id && (
                           <div className="ac-row-err">
                             <AccessRefusal error={refused.error} title={`${r.repository} was not changed`} />
@@ -712,6 +867,14 @@ export function RepoChooser({ owner, onChange }: { owner: string; onChange: () =
                   })}
                 </ul>
               )}
+              {only === 'chosen' ? (
+                <div className="ac-pager">
+                  <span className="ur-mu">
+                    {shown.length} chosen under {owner}
+                    {p.q !== null ? ` · matching “${p.q}”` : ''}
+                  </span>
+                </div>
+              ) : (
               <div className="ac-pager">
                 <span className="ur-mu">
                   Page {p.page}
@@ -727,6 +890,7 @@ export function RepoChooser({ owner, onChange }: { owner: string; onChange: () =
                   </Button>
                 </span>
               </div>
+              )}
               {p.capped && (
                 <p className="ur-hint">
                   SwarmCloud reads at most {p.max_pages * p.per_page} of {owner}'s repositories per list. Past that,
@@ -870,6 +1034,8 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
   /** Each push test's own answer, newest first over the overview's: the person just ran it. */
   const [pushed, setPushed] = useState<Record<string, AccessCheck>>({})
   const [refused, setRefused] = useState<{ repo: string; error: ApiError } | null>(null)
+  /** A Remove or a move down from Write, waiting for a yes (RSA-1). Nothing is written before it. */
+  const [asking, setAsking] = useState<{ repo: string; to: Choice } | null>(null)
   const [all, setAll] = useState(false)
   const [filter, setFilter] = useState('')
   const sorted = [...grants]
@@ -916,6 +1082,7 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
   }
 
   async function change(g: AccessGrant, mode: AccessMode | 'remove') {
+    setAsking(null)
     setBusy(g.repo_id)
     setRefused(null)
     const res = mode === 'remove' ? await revokeAccessGrant(g.repo_id) : await putAccessGrant(g.repo_id, g.repository, mode)
@@ -993,7 +1160,9 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
                     value={g.mode}
                     disabled={busy === g.repo_id}
                     onChange={(m) => {
-                      if (m !== g.mode) void change(g, m)
+                      if (m === g.mode) return
+                      if (takesAccessAway(g.mode, m)) setAsking({ repo: g.repo_id, to: m })
+                      else void change(g, m)
                     }}
                     options={[
                       { key: 'read', label: 'Read' },
@@ -1024,32 +1193,38 @@ function Grants({ grants, onChange }: { grants: AccessGrant[]; onChange: () => v
                         Push test
                       </Button>
                     )}
-                    <Button size="sm" kind="ghost" disabled={busy === g.repo_id} onClick={() => void change(g, 'remove')}>
+                    <Button size="sm" kind="ghost" disabled={busy === g.repo_id} onClick={() => setAsking({ repo: g.repo_id, to: 'none' })}>
                       Remove
                     </Button>
                   </span>
+                  {asking !== null && asking.repo === g.repo_id && (
+                    <div className="ac-fails">
+                      <LossAsk
+                        repository={g.repository}
+                        from={g.mode}
+                        to={asking.to}
+                        busy={busy === g.repo_id}
+                        onAct={() => void change(g, asking.to === 'none' ? 'remove' : asking.to)}
+                        onKeep={() => setAsking(null)}
+                      />
+                    </div>
+                  )}
                   {confirming === g.repo_id && (
                     <div className="ac-fails">
-                      <Banner
-                        tone="warn"
+                      <AskFirst
                         title={`Write a test branch to ${g.repository}?`}
-                        actions={
-                          <>
-                            <Button kind="primary" size="sm" onClick={() => void pushTest(g)}>
-                              Run push test
-                            </Button>
-                            <Button size="sm" onClick={() => setConfirming(null)}>
-                              Cancel
-                            </Button>
-                          </>
-                        }
+                        act="Run push test"
+                        actKind="primary"
+                        keep="Cancel"
+                        onAct={() => void pushTest(g)}
+                        onKeep={() => setConfirming(null)}
                       >
                         <p className="ur-small">
                           SwarmCloud creates one branch, <code>swarmcloud/onboarding-check-&lt;nonce&gt;</code>, at the
                           head of {g.repository}'s default branch, as you, and deletes it straight away. It is the only
                           check that writes to GitHub.
                         </p>
-                      </Banner>
+                      </AskFirst>
                     </div>
                   )}
                   {pushCheck?.leftover === true && typeof pushCheck.branch === 'string' && (
@@ -1226,7 +1401,12 @@ function Choose({ overview, reloadOverview }: { overview: AccessOverview; reload
                 onChange={reloadAll}
               />
               {selected !== null ? (
-                <RepoChooser key={selected} owner={selected} onChange={reloadOverview} />
+                <RepoChooser
+                  key={selected}
+                  owner={selected}
+                  chosen={overview.grants.filter((g) => g.owner.toLowerCase() === selected.toLowerCase())}
+                  onChange={reloadOverview}
+                />
               ) : o.owners.some((x) => x.install_state === 'installed') ? (
                 <EmptyState kind="empty" heading="No owner enabled yet">
                   Enable an owner on the left: SwarmCloud lists its repositories once the App is installed there.
@@ -1338,7 +1518,11 @@ function Members() {
 /** Work › Access. */
 export function AccessScreen() {
   const overview = useUrRead(loadAccess, 'access')
-  const [view, setView] = useState<View>('mine')
+  const [view, setViewState] = useState<View>(viewFromUrl)
+  function setView(v: View) {
+    setViewState(v)
+    writeViewToUrl(v)
+  }
   const tenant = dataOf(overview.state)?.tenant_id ?? null
   return (
     <div className="ur-page ac-page">
@@ -1363,7 +1547,7 @@ export function AccessScreen() {
         The orgs and repositories SwarmCloud may reach as you{tenant !== null ? ` in tenant ${tenant}` : ''}, each Read or
         Write, and whether it can.
       </p>
-      <AccessPolicy />
+      {view === 'mine' && <AccessPolicy />}
       {view === 'members' ? (
         <Members />
       ) : (
