@@ -14,6 +14,11 @@
 //   * a one-person tenant's own hold asks for the words the server names, and
 //     the retry sends them as `confirm`;
 //   * Reject needs a reason and sends it;
+//   * a merge draws the mockup's checklist, a mark per check -- CI green at
+//     the head, the verdict, each requirement (an unmet one a ✗ row of its
+//     own), the hard-stop gate -- and Approve names the head it approves and
+//     stays enabled whatever the checks say: the server holds every rule
+//     (owner decisions 2026-10-11);
 //   * at 390px the chosen item opens in place under its row (variant A), and
 //     a row is a 44px target.
 //
@@ -236,6 +241,133 @@ describe('one item', () => {
     fireEvent.click(within(detail).getByRole('button', { name: 'Reject' }))
     await waitFor(() => expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:reject')).toHaveLength(1), WAIT)
     expect(sent(calls, 'POST', '/v1/approvals/run%3Arun_8f2a:reject')[0]!.body).toEqual({ reason: 'the plan touches the wrong module' })
+  })
+})
+
+// A head built at runtime: a 40-character hex literal is not something this
+// file needs to carry.
+const HEAD = '4c1e9a0' + 'd'.repeat(33)
+const OLD = '9b0e771' + 'e'.repeat(33)
+
+function mergeRoutes(merge: Json, extra: Handler = () => null, digest: unknown = { head_sha: HEAD, verdict: 'MERGE' }): Handler {
+  const approval = item('apr_merge1', { kind: 'merge', summary: 'example-org/example-api#207 is green', digest })
+  return routes((m, url, body) => {
+    const hit = extra(m, url, body)
+    if (hit !== null) return hit
+    if (m === 'GET' && url === '/v1/approvals/apr_merge1') return { status: 200, body: { approval, merge: { pull_request: { number: 144, url: 'https://github.com/example-org/example-api/pull/144' }, ...merge } } }
+    return null
+  })
+}
+
+const checks = (detail: HTMLElement) =>
+  [...detail.querySelectorAll<HTMLElement>('.ap-checks > li')].map((li) => ({
+    key: li.dataset.check,
+    mark: li.dataset.mark,
+    said: li.querySelector('.ap-mark')?.getAttribute('aria-label'),
+    glyph: li.querySelector('.ap-mark')?.textContent,
+    text: visible(li),
+  }))
+
+describe('a merge', () => {
+  it('draws a ✓ row per check that holds, and names the head on Approve', async () => {
+    const { calls } = await mount(
+      'approval=apr_merge1',
+      mergeRoutes(
+        { green_sha: HEAD, requirements_met: true, requirements_unmet: [], files_checked_head: HEAD, approval_hold: null },
+        (m, url) => (m === 'POST' && url === '/v1/approvals/apr_merge1:approve' ? { status: 200, body: { approval: { approval_id: 'apr_merge1', state: 'approved' } } } : null),
+      ),
+    )
+    const detail = await loaded()
+    await waitFor(() => expect(detail.querySelectorAll('.ap-checks > li').length).toBeGreaterThan(0), WAIT)
+    // MUTATION: drop a row, or draw a met check without its mark.
+    expect(checks(detail).map((c) => [c.key, c.mark, c.glyph])).toEqual([
+      ['ci', 'met', '✓'],
+      ['review', 'met', '✓'],
+      ['requirements', 'met', '✓'],
+      ['gate', 'met', '✓'],
+    ])
+    expect(checks(detail)[0]!.text).toContain('Required checks green at the head')
+    expect(checks(detail)[0]!.text).toContain('4c1e9a0')
+    expect(checks(detail)[3]!.text).toContain('No protected path changed')
+    // MUTATION: a plain "Approve", and the reader cannot see which head they approve.
+    const approve = within(detail).getByRole('button', { name: 'Approve merge at 4c1e9a0' })
+    fireEvent.click(approve)
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/approvals/apr_merge1:approve')).toHaveLength(1), WAIT)
+    expect(sent(calls, 'POST', '/v1/approvals/apr_merge1:approve')[0]!.body).toEqual({ digest: { head_sha: HEAD, verdict: 'MERGE' } })
+  })
+
+  it('draws each unmet requirement, a red CI and a matched hard stop as ✗ rows, and leaves Approve enabled', async () => {
+    const { calls } = await mount(
+      'approval=apr_merge1',
+      mergeRoutes(
+        {
+          green_sha: null,
+          requirements_met: false,
+          requirements_unmet: ['review MERGE', 'Closes #207 in the body'],
+          files_checked_head: HEAD,
+          approval_hold: { code: 'NEEDS_SECOND_MEMBER', approvers: 'second_member', reasons: ['iam'], matched: ['terraform/iam.tf'] },
+        },
+        (m, url) => (m === 'POST' && url === '/v1/approvals/apr_merge1:approve' ? { status: 409, body: { code: 'merge_changed', message: 'run run_8f2a’s pull request is no longer at 4c1e9a0' } } : null),
+      ),
+    )
+    const detail = await loaded()
+    await waitFor(() => expect(detail.querySelectorAll('.ap-checks > li').length).toBeGreaterThan(0), WAIT)
+    // MUTATION: join the unmet requirements into one line of plain text.
+    expect(checks(detail).map((c) => [c.key, c.mark, c.glyph])).toEqual([
+      ['ci', 'unmet', '✗'],
+      ['review', 'met', '✓'],
+      ['requirement-0', 'unmet', '✗'],
+      ['requirement-1', 'unmet', '✗'],
+      ['gate', 'unmet', '✗'],
+    ])
+    expect(checks(detail)[2]!.text).toContain('Requirement unmet: review MERGE')
+    expect(checks(detail)[3]!.text).toContain('Requirement unmet: Closes #207 in the body')
+    expect(checks(detail)[4]!.text).toContain('held for a second member')
+    expect(checks(detail)[4]!.text).toContain('terraform/iam.tf')
+    expect(visible(detail)).not.toContain('unmet: review MERGE, Closes')
+    // MUTATION: disable Approve on an unmet check. The owner chose to keep it
+    // enabled (2026-10-11): the server holds every rule, and says its refusal.
+    const approve = within(detail).getByRole('button', { name: 'Approve merge at 4c1e9a0' }) as HTMLButtonElement
+    expect(approve.disabled).toBe(false)
+    expect(approve.getAttribute('aria-disabled')).not.toBe('true')
+    fireEvent.click(approve)
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/approvals/apr_merge1:approve')).toHaveLength(1), WAIT)
+    await within(detail).findByRole('alert', undefined, WAIT)
+  })
+
+  it('says a check it has not read as not read, not as met, and an older green head as unmet', async () => {
+    await mount('approval=apr_merge1', mergeRoutes({ green_sha: OLD, requirements_unmet: [], files_checked_head: null }, () => null, `${HEAD}:MERGE`))
+    const detail = await loaded()
+    await waitFor(() => expect(detail.querySelectorAll('.ap-checks > li').length).toBeGreaterThan(0), WAIT)
+    // MUTATION: read a missing `requirements_met` or `files_checked_head` as met.
+    expect(checks(detail).map((c) => [c.key, c.mark, c.glyph])).toEqual([
+      ['ci', 'unmet', '✗'],
+      ['review', 'met', '✓'],
+      ['requirements', 'unread', '–'],
+      ['gate', 'unread', '–'],
+    ])
+    // The mark is said to a screen reader too, not only drawn.
+    expect(checks(detail).map((c) => c.said)).toEqual(['unmet', 'met', 'not read', 'not read'])
+    expect(checks(detail)[0]!.text).toContain('9b0e771')
+    // The digest sent as `<head_sha>:<verdict>` still names its head.
+    expect(within(detail).getByRole('button', { name: 'Approve merge at 4c1e9a0' })).toBeTruthy()
+  })
+
+  it('paints a met mark in the ok ink and an unmet one in the bad ink', async () => {
+    await mount('approval=apr_merge1', mergeRoutes({ green_sha: HEAD, requirements_met: false, requirements_unmet: ['review MERGE'], files_checked_head: HEAD }))
+    const detail = await loaded()
+    await waitFor(() => expect(detail.querySelectorAll('.ap-checks > li').length).toBeGreaterThan(0), WAIT)
+    const mark = (key: string) => detail.querySelector<HTMLElement>(`li[data-check="${key}"] > .ap-mark`)!
+    // MUTATION: leave the marks the text colour, and ✗ reads as plain text again.
+    expect(painted(mark('ci'), 'color', { width: 1440 })).toContain('--ok-ink')
+    expect(painted(mark('requirement-0'), 'color', { width: 1440 })).toContain('--bad-ink')
+  })
+
+  it('leaves a plan’s button as plain Approve', async () => {
+    await mount('approval=run%3Arun_8f2a', routes(() => null))
+    const detail = await loaded()
+    await waitFor(() => expect(within(detail).getByRole('button', { name: 'Approve' })).toBeTruthy(), WAIT)
+    expect(within(detail).queryByRole('button', { name: /Approve merge/ })).toBeNull()
   })
 })
 

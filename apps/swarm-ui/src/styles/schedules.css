@@ -87,6 +87,20 @@
 .ap-text { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
 .ap-files { margin: 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
 .ap-decide { display: grid; gap: 6px; }
+/* A merge's checklist (inbox B): one row per check, its mark a glyph AND a
+   hue, so a greyscale reader still tells ✓ from ✗. An unmet row is said in
+   the text colour, never dimmed: it is the row the approver must read. */
+.ap-checks { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; min-width: 0; }
+.ap-check {
+  display: grid; grid-template-columns: 18px minmax(0, 1fr); gap: 0 8px; align-items: baseline;
+  padding: 4px 0; font-size: var(--t-meta); line-height: var(--lh-meta); min-width: 0;
+}
+.ap-check > .sc-sub { grid-column: 2; overflow-wrap: anywhere; }
+.ap-check-l { overflow-wrap: anywhere; }
+.ap-mark { font-weight: 700; text-align: center; }
+.ap-check.is-met > .ap-mark { color: var(--ok-ink); }
+.ap-check.is-unmet > .ap-mark { color: var(--bad-ink); }
+.ap-check.is-unread > .ap-mark { color: var(--text-faint); }
 
 /* ---- Admin › Schedules (§5.3) ---------------------------------------------- */
 .sc-table.is-admin th[data-col='tenant'] { width: 96px; }
