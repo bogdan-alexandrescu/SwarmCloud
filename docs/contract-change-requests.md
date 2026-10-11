@@ -10904,8 +10904,8 @@ so `_ALLOWED` does not change.
 The non-frozen follow-ups, in the same pull request, because the contract-parity
 script and the unit tests hold every restatement of `ParkReason` to the enum:
 `apps/swarm-ui/src/types.ts` (the union, `PARK_REASONS`, the
-`PARK_NEEDS_A_PERSON` group, `REASON_COPY`),
-`apps/swarm-ui/src/components/StatePill.tsx` (`PARK_WORD`), and the MCP
+`PARK_NEEDS_A_PERSON` group, `REASON_COPY`), the pill words `PARK_WORD` in
+`apps/swarm-ui/src/components/StatePill.tsx`, and the MCP
 progress sentences (`swarm_mcp.progress._PARKED_BECAUSE`,
 `swarm_mcp.compact._WAITS_FOR`).
 
