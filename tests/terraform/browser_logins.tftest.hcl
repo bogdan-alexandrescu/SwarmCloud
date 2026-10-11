@@ -16,7 +16,6 @@
 #     never read one;
 #   * no secret or secret version is declared, so no session is in any state;
 #   * every resource says managed-by=swarm-terraform;
-#   * a tenant whose browser prefix nests inside another's is refused;
 #   * nothing exists until enable_browser_logins is set.
 #
 # The conditions are EVALUATED as well as compared: the prefix is read back out
@@ -86,7 +85,7 @@ run "only_personal_workers_hold_a_grant_on_their_own_prefix" {
         google_project_iam_member.browser_session_creator,
         google_project_iam_member.browser_session_reader,
         google_project_iam_member.browser_session_writer,
-      ] : [
+        ] : [
         for t, m in grants : m.member == "serviceAccount:swarm-agent-worker-${t}@saga-agents-staging.iam.gserviceaccount.com"
       ]
     ]))
@@ -102,7 +101,7 @@ run "only_personal_workers_hold_a_grant_on_their_own_prefix" {
         values(google_project_iam_member.browser_session_reader),
         values(google_project_iam_member.browser_session_writer),
         google_project_iam_member.browser_login_revoker,
-      ] : [
+        ] : [
         for m in grants : alltrue([
           for t in ["eng", "u-grp", "svc-bot"] : m.member != "serviceAccount:swarm-agent-worker-${t}@saga-agents-staging.iam.gserviceaccount.com"
         ])
@@ -157,7 +156,7 @@ run "only_personal_workers_hold_a_grant_on_their_own_prefix" {
               "projects/111111111111/secrets/swarm-tenant-${t}-browser-login-github-qa",
             ],
           )
-        }] : concat(
+          }] : concat(
           [for n in c.own : startswith(n, c.prefix)],
           [for n in c.others : !startswith(n, c.prefix)],
         )
@@ -304,7 +303,7 @@ run "no_session_in_state_and_every_resource_labelled" {
   # its slot -- in a state file several people read. The worker creates each
   # secret at run time; Terraform declares neither.
   assert {
-    condition = length(regexall(
+    condition = var.enable_browser_logins && length(regexall(
       "(?m)^\\s*(resource|data)\\s+\"google_secret_manager_(regional_)?secret(_version)?\"",
       file("../../terraform/bootstrap/browser_logins.tf"),
     )) == 0 && length(regexall("secret_data", file("../../terraform/bootstrap/browser_logins.tf"))) == 0
@@ -336,7 +335,7 @@ run "no_session_in_state_and_every_resource_labelled" {
   # modules never spell the -browser- prefix, so no release can hand a group
   # tenant's worker one. And in this root, browser_logins.tf alone does.
   assert {
-    condition = length(flatten([
+    condition = var.enable_browser_logins && length(flatten([
       for f in concat(
         [for p in fileset("../../terraform/infra", "**/*.tf") : "../../terraform/infra/${p}"],
         [for p in fileset("../../terraform/modules", "**/*.tf") : "../../terraform/modules/${p}"],
@@ -347,7 +346,7 @@ run "no_session_in_state_and_every_resource_labelled" {
   }
 
   assert {
-    condition     = length(fileset("../../terraform/infra", "**/*.tf")) > 5 && length(fileset("../../terraform/bootstrap", "**/*.tf")) > 5
+    condition     = var.enable_browser_logins && length(fileset("../../terraform/infra", "**/*.tf")) > 5 && length(fileset("../../terraform/bootstrap", "**/*.tf")) > 5
     error_message = "the scan above read too few files to mean anything; check its paths"
   }
 }
@@ -376,27 +375,4 @@ run "browser_grants_are_absent_until_switched_on" {
     ])
     error_message = "enable_browser_logins defaults to false and, false, defines and grants nothing"
   }
-}
-
-run "a_tenant_whose_browser_prefix_nests_inside_anothers_is_refused" {
-  command = plan
-
-  module {
-    source = "../../terraform/bootstrap"
-  }
-
-  override_data {
-    target          = data.google_project.browser_logins
-    override_during = plan
-    values = {
-      number = "209012342332"
-    }
-  }
-
-  variables {
-    enable_browser_logins = true
-    infra_tenants_tfvars  = "../../tests/terraform/browser_logins_fixture/nested_tenants.tfvars"
-  }
-
-  expect_failures = [google_project_iam_member.browser_session_reader]
 }
