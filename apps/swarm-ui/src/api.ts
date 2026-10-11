@@ -153,11 +153,20 @@ export interface WorkflowBoard {
   nextPageToken?: string | null
 }
 
+/**
+ * EVERY LIST READ OF WORKFLOWS ASKS FOR THE SUMMARY VIEW (live QA CH-21,
+ * 2026-10-11): each step without its masked `input`, which no list, board or
+ * count in this console draws. A step's input is read on its workflow
+ * (`loadWorkflow`) or its task. An API older than the view ignores the
+ * parameter and serves the full rows, which carry the same fields and more.
+ */
+export const WORKFLOW_LIST_VIEW = 'view=summary'
+
 export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   if (USE_FIXTURES) return fixtureWorkflowBoard()
 
   const [wf, tasks] = await Promise.all([
-    read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
+    read<WorkflowPage>(route('/v1/workflows?limit=100', {}, WORKFLOW_LIST_VIEW), (d) => d.workflows.length === 0),
     read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0),
   ])
 
@@ -207,7 +216,7 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
 export async function loadOlderWorkflows(token: string): Promise<Result<WorkflowPage>> {
   if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { workflows: [], next_page_token: null } }
   return read<WorkflowPage>(
-    route('/v1/workflows', {}, new URLSearchParams({ limit: '100', page_token: token })),
+    route('/v1/workflows', {}, new URLSearchParams({ limit: '100', page_token: token, view: 'summary' })),
     (d) => d.workflows.length === 0,
   )
 }
@@ -239,8 +248,8 @@ export async function loadWorkflows(limit: number = 100): Promise<Result<Workflo
   // handful (Submit's recent card, live QA SUB-6) asks for fewer.
   // Both are the one registry route, `/v1/workflows`: `route` keys by the
   // template without its query.
-  if (limit !== 100) return read<WorkflowPage>(route('/v1/workflows', {}, `limit=${limit}`), (d) => d.workflows.length === 0)
-  return read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0)
+  if (limit !== 100) return read<WorkflowPage>(route('/v1/workflows', {}, `limit=${limit}&${WORKFLOW_LIST_VIEW}`), (d) => d.workflows.length === 0)
+  return read<WorkflowPage>(route('/v1/workflows?limit=100', {}, WORKFLOW_LIST_VIEW), (d) => d.workflows.length === 0)
 }
 
 /**
@@ -1127,6 +1136,70 @@ export interface WorkflowRead {
 export async function loadWorkflow(workflowId: string): Promise<Result<WorkflowRead>> {
   if (USE_FIXTURES) return fixtureWorkflowRead(workflowId)
   return read<WorkflowRead>(route('/v1/workflows/{id}', { id: workflowId }), () => false)
+}
+
+/**
+ * HOW MANY WORKFLOWS ONE `GET /v1/workflows?ids=` NAMES: the route's own cap,
+ * `MAX_WORKFLOW_IDS` (routes/workflows.py). A caller with more asks in chunks.
+ */
+export const WORKFLOW_IDS_PER_READ = 50
+
+/** `GET /v1/workflows?ids=`: the named workflows, their step tasks, and the ids not served. */
+interface WorkflowsByIdPage extends WorkflowPage {
+  tasks?: Task[]
+  missing?: string[]
+}
+
+/**
+ * The answer to one by-id read. `batched` is false when the API ignored `ids`
+ * -- one older than the parameter answers with its newest page instead, with
+ * no `missing` -- and then `reads` is empty and nothing may be concluded
+ * about the ids from it: the caller reads them one by one.
+ */
+export interface WorkflowReads {
+  batched: boolean
+  reads: Map<string, WorkflowRead>
+  missing: string[]
+}
+
+/**
+ * MANY WORKFLOWS IN ONE READ (live QA CH-6, 2026-10-11): the Timeline asked
+ * for each workflow its lanes name with its own `GET /v1/workflows/{id}` -- 52
+ * of them on one load. `GET /v1/workflows?ids=` serves up to
+ * `WORKFLOW_IDS_PER_READ` of them, each with the step tasks the derivation
+ * read, in the summary view (no step input: nothing that batches draws one).
+ * Each workflow's `tasks` are its steps' tasks, as far as they were read.
+ */
+export async function loadWorkflowsById(ids: readonly string[]): Promise<Result<WorkflowReads>> {
+  if (USE_FIXTURES) {
+    const reads = new Map<string, WorkflowRead>()
+    for (const id of ids) {
+      const r = await fixtureWorkflowRead(id)
+      if (r.status === 'ok') reads.set(id, r.data)
+    }
+    return { status: 'ok', fetchedAt: Date.now(), data: { batched: true, reads, missing: ids.filter((i) => !reads.has(i)) } }
+  }
+  const query = new URLSearchParams()
+  for (const id of ids) query.append('ids', id)
+  query.set('view', 'summary')
+  const r = await read<WorkflowsByIdPage>(route('/v1/workflows', {}, query), () => false)
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<WorkflowReads>
+  const page = r.data
+  const batched = Array.isArray(page.missing) && Array.isArray(page.tasks)
+  const reads = new Map<string, WorkflowRead>()
+  if (batched) {
+    const taskById = new Map((page.tasks ?? []).map((t) => [t.id, t]))
+    for (const w of page.workflows) {
+      const tasks = w.steps
+        .map((st) => (st.task_id ? taskById.get(st.task_id) : undefined))
+        .filter((t): t is Task => t !== undefined)
+      reads.set(w.workflow_id, { workflow: w, tasks })
+    }
+  }
+  const data: WorkflowReads = { batched, reads, missing: batched ? (page.missing ?? []) : [] }
+  return r.status === 'ok'
+    ? { status: 'ok', data, fetchedAt: r.fetchedAt, serverAt: r.serverAt }
+    : { status: 'stale', data, fetchedAt: r.fetchedAt, error: r.error }
 }
 
 // ---------------------------------------------------------------------------

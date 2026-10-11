@@ -26,6 +26,7 @@ import type { Result } from '../fetch'
 import type { WorkflowBoard, WorkflowRead, WorkflowUsage } from '../api'
 import type { AttemptRow, Task, TaskState, Workflow, WorkflowPage, WorkflowStep } from '../types'
 import { cascade } from './cssgate'
+import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
@@ -173,7 +174,8 @@ beforeEach(() => {
   api.loadWorkflowUsage.mockResolvedValue({ status: 'empty', fetchedAt: T0 } satisfies Result<WorkflowUsage>)
   api.loadAttempts.mockResolvedValue({ status: 'empty', fetchedAt: T0 })
   api.loadTaskEventsPage.mockResolvedValue({ status: 'empty', fetchedAt: T0 })
-  api.loadWorkflow.mockResolvedValue(notFound)
+  // The page reads its own workflow first (live QA CH-21), as the API serves it.
+  api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
   api.loadOlderWorkflows.mockReset()
   try {
     window.localStorage.clear()

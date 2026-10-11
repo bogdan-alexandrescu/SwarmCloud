@@ -42,6 +42,9 @@ describe('the events read', () => {
 
     const api = await import('../api')
     await api.loadAgentRun('tsk_live')
+    // The second load would take the first one's just-settled answer
+    // (fetch.ts REUSED_ROUTES, live QA CH-20) and send nothing to check.
+    ;(await import('../fetch')).forgetProbes()
     await api.loadAgentDetail('tsk_live')
 
     const eventReads = calls.filter((c) => c.includes('/events'))
@@ -80,6 +83,7 @@ describe('the attempts read', () => {
 
     const api = await import('../api')
     await api.loadAgentRun('tsk_live')
+    ;(await import('../fetch')).forgetProbes()
     await api.loadAttempts('tsk_live')
 
     const attemptReads = calls.filter((c) => c.includes('/attempts'))
