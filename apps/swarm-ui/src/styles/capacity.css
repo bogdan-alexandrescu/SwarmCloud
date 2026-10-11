@@ -35,11 +35,16 @@
    `provider:mock-provider:tenant:eng` was cut beside a 190px Use cell whose
    bar alone was 147px. Use loses bar, never figure (below), and Set by is a
    dot on most rows now (G5-19), so they give Pool the room. */
-.cap-c-pool { width: 30%; }
+/* SET BY HOLDS ITS WORDS (visual QA V089, 2026-10-11). At 9% it was ~75px of
+   text at 1440 with the nav open, and `AIMD back-off` and `provider quota` --
+   the two terms the column exists to make stand out -- wrapped to two lines
+   and made their rows taller than every other. Pool gives up two points; at
+   28% it still holds `provider:mock-provider:tenant:eng` whole. */
+.cap-c-pool { width: 28%; }
 .cap-c-num { width: 11%; }
 .cap-c-use { width: 14%; }
 .cap-c-state { width: 13%; }
-.cap-c-by { width: 9%; }
+.cap-c-by { width: 11%; }
 .cap-c-links { width: 12%; }
 /* A head is one line: "Leased (units)" fits its eleventh at 1440 with the nav
    open, and at a narrower desktop it ellipsizes (its title says it whole)
@@ -99,17 +104,43 @@
 .cap-mx { display: flex; flex-direction: column; gap: 8px; margin-bottom: var(--ctl-s3); }
 .cap-mx td.is-num b { display: block; font: 650 var(--t-body)/var(--lh-body) var(--font); font-variant-numeric: tabular-nums; }
 .cap-mx td.is-num small { display: block; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
-.cap-mx td.is-binding { outline: 2px solid var(--s-warn); outline-offset: -4px; border-radius: 6px; background: var(--s-warnb); }
+/* THE OUTLINE IS ON THE FIGURES' BOX, NOT THE CELL (visual QA V090,
+   2026-10-11). On the cell it was as wide as its column -- `Resource classes`
+   outlined a wider box than `Global` -- and 4px from the next row's outline.
+   `.cap-mx-v` is one minimum width in every column, right-aligned where a
+   figure is, and the cell's padding is what now separates two rows' boxes. */
+.cap-mx td > .cap-mx-v {
+  display: inline-flex; flex-direction: column; align-items: flex-end;
+  min-width: 5ch; padding: 2px 8px; border-radius: 6px;
+  vertical-align: middle;
+}
+.cap-mx td.is-binding > .cap-mx-v { outline: 2px solid var(--s-warn); outline-offset: -2px; background: var(--s-warnb); }
 .cap-mx td.cap-mx-na { color: var(--text-faint); }
 .cap-mx b.cap-mx-zero { color: var(--s-warn); }
 .cap-mx-toggle { display: inline-flex; gap: 6px; align-items: center; background: none; border: 0; padding: 0; color: var(--text); font: inherit; cursor: pointer; text-align: left; }
+/* ONE LONG NAME DOES NOT WIDEN THE MATRIX (visual QA V031, 2026-10-11). The
+   first column is no-wrap and sized by its widest name, so one long profile
+   name pushed Can start and Runs out first off-screen at 1440. The toggle is
+   held to 30ch -- every name the catalogue serves today fits -- and a longer
+   one ellipsizes, whole in the button's title. */
+.cap-mx-toggle { max-width: 30ch; }
+.cap-mx-toggle > .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cap-mx-toggle:focus-visible { outline: 2px solid var(--info); outline-offset: 2px; border-radius: 2px; }
-.cap-mx tr.is-open > td, .cap-mx tr.is-open > th[scope="row"] { background: var(--surface-2); }
-.cap-mx tr.cap-mx-exp > td { background: var(--surface-2); font-size: var(--t-meta); white-space: normal; }
+/* THE OPEN ROW IS ONE TINTED BLOCK (visual QA V093, 2026-10-11). The tint
+   was on the CELLS, which on a phone are blocks inside a padded record, so the
+   row and its detail were two tinted blocks with the records' 12px of
+   untinted padding between them. It is on the rows now -- one fill at every
+   width -- and the phone block below closes the seam between the two. */
+.cap-mx tr.is-open, .cap-mx tr.cap-mx-exp { background: var(--surface-2); }
+.cap-mx tr.cap-mx-exp > td { font-size: var(--t-meta); white-space: normal; }
 /* Runs out first (#124): each binding pool on a line, its Fits under it in
    the cell-figure grey; the opened row's per-pool table marks the binding
    rows with the matrix's own amber edge. */
 .cap-mx-first { white-space: normal; }
+/* AND IT MAY WRAP (visual QA V031): `.ctl-table td`'s nowrap (0,1,1) out-ranked
+   the rule above, so this column -- the answer -- could never give back any
+   width, and the matrix overflowed 1440 by itself. */
+.cap-mx td.cap-mx-first { white-space: normal; }
 .cap-mx-bind { display: block; font-size: var(--t-meta); color: var(--text); }
 .cap-mx-bind small { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .cap-mx-fits { margin-bottom: 8px; }
@@ -119,7 +150,11 @@
 /* Runtimes: the cards lead (capacity.html frame 5), each listing the pools it
    must clear as linked pill chips; Backends follows, Sizing is last. */
 .rt-cards { margin-bottom: var(--ctl-s5); }
-.rt-pools { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+/* `flex-start`, NOT THE DEFAULT STRETCH (visual QA V030, 2026-10-11): with
+   the capacity read failed, the `not read` mark under the eyebrow stretched
+   to the card's width -- a full-width dashed bar that read as an empty input.
+   A mark is as wide as its words. */
+.rt-pools { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 10px; }
 .rt-pool-chips { display: flex; flex-wrap: wrap; gap: 4px; }
 /* SIZING FITS ITS CARD (#503): "Resolves from" lists every runtime that
    resolves to a class, and a nowrap list ran past the card's right edge. It
@@ -129,8 +164,10 @@
    off-screen in the scrolling table, and wrapping every runtime name into its
    narrow cell made a row about 200px tall with its visible cells floating in
    blank space. The table scrolls, so the list can be as long as it is. */
+/* ONLY WHILE IT SCROLLS (visual QA V032): below 561px the table is a record
+   per class, where one unbroken line would run off the card instead. */
 @media (max-width: 699px) {
-  .rt-sizing td[data-label="Resolves from"] { white-space: nowrap; overflow-wrap: normal; }
+  .rt-sizing .is-scroll td[data-label="Resolves from"] { white-space: nowrap; overflow-wrap: normal; }
 }
 /* A POOL NOBODY CREATED (QA G5-04): the chip's outline is dashed, so a pool
    the profile names but Pools does not list reads as absent, not as a link to
@@ -538,4 +575,70 @@
    card. */
 @media (max-width: 560px) {
   .quota-table.is-stacked > table { width: auto; min-width: 0; }
+}
+
+/* ---------------------------------------------------------------------------
+   VISUAL QA, LANE VQA-L15 (2026-10-11, part of #1038): the capacity boards.
+   --------------------------------------------------------------------------- */
+
+/* V094: WHY NO HOLDERS LINK CARRIES A COUNT, ONCE, ABOVE THE FAMILIES. The
+   mark and the reason on one line; the reason wraps under itself. */
+.cap-holders-note {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 10px;
+  margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim);
+}
+.cap-holders-note > .ctl-mark { flex: none; }
+
+/* V033: a field with no pool to name says why, muted. */
+.cap-mx-none { color: var(--text-dim); font-size: var(--t-meta); }
+
+/* V087: THE DISABLED RUNTIME'S REASON IS A PARAGRAPH OF THE CARD, spaced from
+   the facts under it as `Sets it apart` is from the facts above it. `.muted`
+   sets `margin: 0` in styles.css, which loads after this sheet, so the
+   element and both classes are named. */
+p.muted.rt-reason { margin: 0 0 var(--ctl-s3); }
+
+/* V088: AN IMAGE OR A CREDENTIAL TAKES THE WHOLE ROW of the facts grid. The
+   `.rt-fact-wide` rule in styles.css says `flex-basis: 100%`, which a grid
+   item ignores, so the image sat in one ~220px track and a digest wrapped to
+   nine lines. And a card is as tall as what is in it: the catalogue grid's
+   default `stretch` grew a short card to its neighbour's digest. */
+.ctl-facts.is-rows > .rt-fact-wide { grid-column: 1 / -1; }
+.rt-cards > .ctl-cards { align-items: start; }
+
+/* V032: Sizing's keys are the longest any stacked record draws (`Workspace (of
+   memory)`, 21 characters), so its record says so rather than every record
+   on every screen giving its values the room (styles.css §B6.3). 22.5
+   advances of the 12px key face. */
+.rt-sizing > .ctl-table.is-stacked { --stack-key: calc(var(--t-micro) * 13.5); }
+
+/* V091: THE COLUMN HEADS STAY IN VIEW DOWN A LONG POOLS FAMILY OR MATRIX.
+   A head cannot stick inside `.ctl-table`'s `overflow-x: auto` -- the wrapper
+   is then its scroll container on both axes and never scrolls vertically
+   (WF-21, styles.css). So above 900px, where a family table is fixed-layout
+   at 100% and never overflows, its wrapper CLIPS instead (`clip` makes no
+   scroll container), and the head sticks to the page's scroller. The matrix
+   can be wider than its column (one column per family), so it keeps its
+   sideways scroll and becomes its own vertical scroller below the page head,
+   with the head stuck to its top. The ROW GROUP sticks, never a `th`: thead's
+   one fill (WF-21) moves with it, and the head is one layer, not one per cell.
+   z-index 1 is under the inspector's band (shell.test.tsx). */
+@media (min-width: 900px) {
+  .cap-families .ctl-table.is-scroll { overflow: clip; }
+  .cap-mx > .ctl-table.is-scroll { max-height: calc(100vh - 180px); overflow: auto; }
+  .cap-families .ctl-table.is-scroll > table > thead,
+  .cap-mx > .ctl-table.is-scroll > table > thead {
+    position: sticky; top: 0; z-index: 1;
+  }
+}
+
+/* V086, V093: THE PHONE RECORDS. */
+@media (max-width: 560px) {
+  /* The Use track is hidden at this width (styles.css, the phone block) and
+     its grid kept the empty track's 8px gap, so the percentage ended 8px short
+     of every other value. A block, so the figure starts where they do. */
+  .cap-pools.is-stacked .cap-use { display: block; }
+  /* The open record and its detail are one block: the detail takes no top
+     padding of its own, and its cell no gap above the Fits table. */
+  .cap-mx .is-stacked > table > tbody > tr.cap-mx-exp { padding-top: 0; }
 }

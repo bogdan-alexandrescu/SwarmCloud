@@ -3517,6 +3517,13 @@ tests in 166-181 s, under the cap): the slowest was
 `test_ui_changes_gate.py::test_the_shared_reading_of_the_list_agrees_with_the_step`
 at 80 s, then `test_release_acceptance_job.py::test_the_acceptance_scripts_are_shellcheck_clean`
 at 41 s and four `test_build_images_incremental.py` tests at 22-25 s each.
+That first one no longer exists as one test (2026-10-11): it looped over a
+sample under each APP_PATHS pattern and a near miss of each, building a
+scratch repository and running the `changes` step for every sample serially,
+so `-n auto` could not spread it. It is now parametrised over those samples,
+one case each, which xdist spreads across workers; the property and the
+sample set are unchanged, and a separate test fails if the sample list is
+empty or is not two per pattern (an empty parametrisation would only skip).
 
 **What it does not do.** It does not replace the area run (a test that imports
 a changed module without naming its file is not selected), it does not run

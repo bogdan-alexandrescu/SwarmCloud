@@ -863,6 +863,19 @@ MERGE_WAIT_METADATA_KEY = "merge_wait"
 #: no worker acts on it, only swarm-api reads it.
 SCHEDULE_METADATA_KEY = "schedule"
 
+#: The live-browser hand-off (docs/design/live-browser.md §4.3, lane LB-L10):
+#: the parks refunded so far, written by the worker's HUMAN_REQUIRED park, as
+#: `child_await_resumes` is by the await's; the mark that a person pressed
+#: "I'm ready to sign in" (`human-ready`), which tells the next attempt's worker
+#: to open the hand-off at once; and the hand-offs one attempt has asked for,
+#: the cap swarm-api enforces from the task document. A caller who set the first
+#: would buy a free attempt; the second, a hand-off nobody asked for; the third,
+#: a cap of its choosing. `swarm_api.handoff` imports these; the worker restates
+#: the first two (lane L4).
+HUMAN_WAIT_RESUMES_METADATA_KEY = "human_wait_resumes"
+HUMAN_READY_METADATA_KEY = "human_ready"
+HUMAN_HANDOFFS_METADATA_KEY = "human_handoffs"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -879,6 +892,9 @@ RESERVED_METADATA_KEYS = (
     MERGE_WAIT_METADATA_KEY,
     DISK_EVICTIONS_METADATA_KEY,
     SCHEDULE_METADATA_KEY,
+    HUMAN_WAIT_RESUMES_METADATA_KEY,
+    HUMAN_READY_METADATA_KEY,
+    HUMAN_HANDOFFS_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -1546,6 +1562,21 @@ _RESERVED_BECAUSE = {
         f"metadata.{DISK_EVICTIONS_METADATA_KEY} is reserved: it is set only by "
         "the reconciler, to count attempts lost to the pod passing its own disk "
         "limit (#893). Drop the key from metadata."
+    ),
+    HUMAN_WAIT_RESUMES_METADATA_KEY: (
+        f"metadata.{HUMAN_WAIT_RESUMES_METADATA_KEY} is reserved: it is set only by "
+        "the worker, to count the live-browser hand-off parks whose attempt was "
+        "refunded. Drop the key from metadata."
+    ),
+    HUMAN_READY_METADATA_KEY: (
+        f"metadata.{HUMAN_READY_METADATA_KEY} is reserved: it is set only by "
+        "POST /v1/tasks/{task_id}/human-ready, when a person says they are ready to "
+        "sign in. Drop the key from metadata."
+    ),
+    HUMAN_HANDOFFS_METADATA_KEY: (
+        f"metadata.{HUMAN_HANDOFFS_METADATA_KEY} is reserved: it counts the "
+        "live-browser hand-offs an attempt asked for, written only by the worker's "
+        "hand-off route. Drop the key from metadata."
     ),
 }
 
