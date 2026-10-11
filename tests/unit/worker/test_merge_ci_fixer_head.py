@@ -320,3 +320,59 @@ def test_the_worker_restates_the_apis_ci_fix_keys():
     assert {"pull_request", "head_sha"} <= cifix.CALLER_FIELDS
     assert merge.CI_FIX_PULL_REQUEST == "pull_request"
     assert merge.CI_FIX_HEAD == "head_sha"
+
+
+class _Snap:
+    def __init__(self, task_id: str, doc: dict[str, Any]) -> None:
+        self.id = task_id
+        self._doc = doc
+
+    def to_dict(self) -> dict[str, Any]:
+        return dict(self._doc)
+
+
+class _Query:
+    """Records the filters, the limit and the call options; answers `rows`
+    whatever they are, so the function's own tenant re-check is proven."""
+
+    def __init__(self, rows: list[_Snap]) -> None:
+        self.rows = rows
+        self.filters: list[tuple[str, str, Any]] = []
+        self.limited: int | None = None
+        self.options: dict[str, Any] = {}
+        self.collections: list[str] = []
+
+    def collection(self, name: str) -> "_Query":
+        self.collections.append(name)
+        return self
+
+    def where(self, *, filter: Any) -> "_Query":
+        self.filters.append((filter.field_path, filter.op_string, filter.value))
+        return self
+
+    def limit(self, count: int) -> "_Query":
+        self.limited = count
+        return self
+
+    def stream(self, **options: Any):
+        self.options = options
+        return iter(self.rows)
+
+
+def test_the_fixer_query_is_the_apis_with_the_tenant_rechecked():
+    from agent_worker import inputs
+
+    db = _Query([_Snap(FIXER, {"tenant_id": TENANT, "workflow_id": "wf_cifix"}),
+                 _Snap("task_theirs", {"tenant_id": "research"})])
+
+    found = inputs.find_ci_fix_tasks(db, tenant_id=TENANT, root_task_id=OPENER,
+                                     pull_request=NUMBER, limit=merge.CI_FIX_QUERY_LIMIT,
+                                     call_options={"timeout": 5})
+
+    assert db.collections == ["tasks"]
+    assert db.filters == [("tenant_id", "==", TENANT),
+                          ("metadata.ci_fix.pull_request", "==", NUMBER),
+                          ("metadata.dispatch.continues", "==", OPENER)]
+    assert db.limited == merge.CI_FIX_QUERY_LIMIT
+    assert db.options == {"timeout": 5}
+    assert found == [{"tenant_id": TENANT, "workflow_id": "wf_cifix", "id": FIXER}]
