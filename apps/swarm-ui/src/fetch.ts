@@ -227,7 +227,15 @@ export function errorReassurance(e: ApiError): string {
     // store.py:369-379 deliberately returns the same 404 whether the task does
     // not exist or belongs to another tenant, so the copy must not promise
     // which one it was.
-    return 'This task does not exist, or it belongs to another tenant. The API returns the same answer for both.'
+    //
+    // AND IT MUST NOT SAY "TASK" (visual QA V007, 2026-10-11). The same panel
+    // draws a 404 on an account, a run and an issue preview, and "This task
+    // does not exist" under an account's history named a thing nobody asked
+    // for. The server's message above this line says WHAT was not found;
+    // this says only what a 404 can and cannot tell. A 404 is an answer, not
+    // a failed read, so reading again gets the same one (`FailedPanel` offers
+    // no Try again for it).
+    return 'It does not exist, or it belongs to another tenant: the API gives the same answer for both. Reading it again gets the same answer.'
   }
   if (e.kind === 'unreachable') {
     return 'The request never reached the platform, so this says nothing about what is running.'

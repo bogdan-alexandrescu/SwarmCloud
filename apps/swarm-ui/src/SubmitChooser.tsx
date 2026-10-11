@@ -158,7 +158,7 @@ export function SubmitChooser({ go }: { go: (to: string) => void }) {
           <h2 className="sb-card-h" id="submit-recent-h">Start from a recent one</h2>
           <HelpCard topic="recent-submissions" />
         </div>
-        <RecentSubmissions go={go} read={recent.read} />
+        <RecentSubmissions go={go} read={recent.read} reading={recent.reading} onRetry={recent.reload} />
       </section>
       <p className="sb-note sb-foot">
         The spine&rsquo;s Submit button opens this page; <kbd className="sb-kbd">N</kbd> from anywhere does too.
@@ -181,7 +181,7 @@ export interface RecentSubmission {
 
 type RecentRead =
   | { kind: 'reading' }
-  | { kind: 'who-unread'; why: string }
+  | { kind: 'who-unread'; why: string; unread: string[] }
   | { kind: 'read'; items: RecentSubmission[]; looked: string[]; unread: string[] }
 
 function okData<T>(r: Result<T>): T | null {
@@ -241,9 +241,11 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
       if (!live) return
       setReading(false)
       const who = okData(me)
+      const unread = [unreadWhy('Tasks', tasks), unreadWhy('Workflows', workflows), unreadWhy('Issue runs', runs)]
+        .filter((x): x is string => x !== null)
       if (who === null) {
         setReadAt(null)
-        setRead({ kind: 'who-unread', why: me.status === 'error' ? me.error.message : 'the read returned nothing' })
+        setRead({ kind: 'who-unread', why: me.status === 'error' ? me.error.message : 'the read returned nothing', unread })
         return
       }
       const ats = [me, tasks, workflows, runs].flatMap((r) => (r.status === 'ok' || r.status === 'stale' || r.status === 'empty' ? [r.fetchedAt] : []))
@@ -251,13 +253,14 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
       const t = tasks.status === 'empty' ? [] : (okData(tasks)?.tasks ?? null)
       const w = workflows.status === 'empty' ? [] : (okData(workflows)?.workflows ?? null)
       const r = runs.status === 'empty' ? [] : (okData(runs)?.runs ?? null)
+      // A WINDOW THAT HELD NOTHING IS NOT A WINDOW (VQA V135): "Among the
+      // newest 0 tasks, 0 workflows, 0 issue runs" under "None of yours yet."
+      // said nothing twice. Only a window that held something is named.
       const looked = [
-        t === null ? null : `the newest ${t.length} task${t.length === 1 ? '' : 's'}`,
-        w === null ? null : `${w.length} workflow${w.length === 1 ? '' : 's'}`,
-        r === null ? null : `${r.length} issue run${r.length === 1 ? '' : 's'}`,
+        t === null || t.length === 0 ? null : `the newest ${t.length} task${t.length === 1 ? '' : 's'}`,
+        w === null || w.length === 0 ? null : `${w.length} workflow${w.length === 1 ? '' : 's'}`,
+        r === null || r.length === 0 ? null : `${r.length} issue run${r.length === 1 ? '' : 's'}`,
       ].filter((x): x is string => x !== null)
-      const unread = [unreadWhy('Tasks', tasks), unreadWhy('Workflows', workflows), unreadWhy('Issue runs', runs)]
-        .filter((x): x is string => x !== null)
       setRead({ kind: 'read', items: recentSubmissions(who.principal.email, t, w, r), looked, unread })
     })
     return () => {
@@ -268,7 +271,30 @@ function useRecentRead(): { read: RecentRead; readAt: number | null; reading: bo
   return { read, readAt, reading, reload }
 }
 
-function RecentSubmissions({ go, read }: { go: (to: string) => void; read: RecentRead }) {
+/**
+ * THE READS THAT FAILED, EACH ON ITS OWN LINE, AND ONE "Try again" (VQA V136):
+ * the card said only "who you are is unknown" while the task read beside it
+ * had failed too, and offered nothing to do about either.
+ */
+function UnreadLines({ unread, reading, onRetry }: { unread: readonly string[]; reading: boolean; onRetry: () => void }) {
+  return (
+    <>
+      {unread.map((u) => (
+        <p key={u} className="sb-note sb-recent-scope"><Dash why={u} /> {u}</p>
+      ))}
+      <p className="sb-row sb-recent-scope">
+        <Button size="sm" className="sb-recent-retry" busy={reading ? 'Reading…' : false} onClick={onRetry}>Try again</Button>
+      </p>
+    </>
+  )
+}
+
+function RecentSubmissions({ go, read, reading, onRetry }: {
+  go: (to: string) => void
+  read: RecentRead
+  reading: boolean
+  onRetry: () => void
+}) {
   if (read.kind === 'reading') {
     return (
       <p className="sb-empty" aria-busy="true">
@@ -280,10 +306,13 @@ function RecentSubmissions({ go, read }: { go: (to: string) => void; read: Recen
   if (read.kind === 'who-unread') {
     // WHO YOU ARE IS UNREAD: nothing can be called yours, so nothing is listed.
     return (
-      <p className="sb-empty">
-        <Dash why={`Who you are could not be read (${read.why}), so your submissions cannot be told from anyone else's.`} />
-        <span>Not read: who you are is unknown here.</span>
-      </p>
+      <>
+        <p className="sb-empty">
+          <Dash why={`Who you are could not be read (${read.why}), so your submissions cannot be told from anyone else's.`} />
+          <span>Not read: who you are is unknown here ({read.why}), so nothing can be called yours.</span>
+        </p>
+        <UnreadLines unread={read.unread} reading={reading} onRetry={onRetry} />
+      </>
     )
   }
   const scope = read.looked.length === 0 ? null : `Among ${read.looked.join(', ')} this tenant has.`
@@ -292,7 +321,11 @@ function RecentSubmissions({ go, read }: { go: (to: string) => void; read: Recen
       {read.items.length === 0 ? (
         <p className="sb-empty">
           <NamedMark mark="queued" hue="neu" />
-          <span>{read.unread.length === 0 ? 'None of yours yet.' : 'None of yours in what was read.'}</span>
+          <span>
+            {read.unread.length > 0
+              ? 'None of yours in what was read.'
+              : read.looked.length === 0 ? 'Nothing has been submitted here yet.' : 'None of yours yet.'}
+          </span>
         </p>
       ) : (
         <ul className="sb-recent-list">
@@ -310,9 +343,7 @@ function RecentSubmissions({ go, read }: { go: (to: string) => void; read: Recen
         </ul>
       )}
       {scope !== null && <p className="sb-note sb-recent-scope">{scope}</p>}
-      {read.unread.map((u) => (
-        <p key={u} className="sb-note sb-recent-scope"><Dash why={u} /> {u}</p>
-      ))}
+      {read.unread.length > 0 && <UnreadLines unread={read.unread} reading={reading} onRetry={onRetry} />}
     </>
   )
 }

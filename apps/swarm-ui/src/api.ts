@@ -2241,8 +2241,11 @@ async function fixtureMe(options: { frame?: boolean } = {}): Promise<Result<Me>>
         tenant_id: 'u-bogdan', kind: 'user', principal: 'bogdan@saga.xyz',
         display_name: 'Bogdan', created_at: new Date(Date.now() - 86_400_000 * 9).toISOString(),
         max_active: 2, capacity_units: 40, monthly_budget_usd: null, enabled: true,
-        credentials: ['anthropic'], service_account: 'swarm-agent-u-bogdan@saga-agents-staging.iam.gserviceaccount.com',
-        gcs_prefix: 'gs://swarm-artifacts-dev/u-bogdan', namespace: 'swarm-u-bogdan',
+        credentials: [
+          'anthropic',
+        ],
+        service_account: 'swarm-agent-worker-u-bogdan@saga-agents-staging.iam.gserviceaccount.com',
+        gcs_prefix: 'gs://swarm-artifacts-dev/u-bogdan', namespace: 'swarm-tenant-u-bogdan',
       },
       principal: {
         email: 'bogdan@saga.xyz', domain: 'saga.xyz',

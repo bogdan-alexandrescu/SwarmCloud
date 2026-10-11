@@ -82,7 +82,7 @@ function me(isAdmin: boolean): Me {
       credentials: [],
       service_account: 'swarm-agent-worker-u-phone@example.iam.gserviceaccount.com',
       gcs_prefix: 'tenants/u-phone',
-      namespace: 'swarm-u-phone',
+      namespace: 'swarm-tenant-u-phone',
     },
     principal: { email: 'someone@saga.xyz', groups: [], is_admin: isAdmin },
   } as unknown as Me
@@ -276,15 +276,19 @@ describe('#139 at 390: the header row never widens the page', () => {
 
 describe('#139 at 390: a long page has a way back to the top', () => {
   it('offers `Top` past a screen of a long page, and it goes there', async () => {
-    // MUTATION: never render `.sk-top`, hide it at 390, or make it do nothing.
+    // MUTATION: never render `.sk-top`, hide it at 390, make it do nothing,
+    // or float it over the page again (visual QA V009: at 400px it covered
+    // figures and text that scrolled under it; it rides in the header now).
     const c = await at('/help')
     const scroller = c.querySelector<HTMLElement>('.ctl-scroll')!
     expect(c.querySelector('.sk-top')).toBeNull()
     await scrollTo(scroller, 6000)
     const top = c.querySelector<HTMLElement>('.sk-top')
     expect(top, 'a long page has no `Top`').not.toBeNull()
-    expect(painted(top!, 'display', PHONE)).toBe('flex')
-    expect(painted(top!, 'position', PHONE)).toBe('sticky')
+    expect(top!.parentElement?.classList.contains('sk-pbar'), '`Top` is not in the phone header').toBe(true)
+    expect(scroller.contains(top!), '`Top` floats over the page').toBe(false)
+    expect(painted(top!, 'display', PHONE)).toBe('inline-flex')
+    expect(painted(top!, 'position', PHONE), 'positioned only to anchor its hit area').toBe('relative')
     expect(painted(top!, 'display', WIDE)).toBe('none')
     await act(async () => {
       fireEvent.click(top!)

@@ -78,7 +78,7 @@ const ME: Me = {
     credentials: ['anthropic'],
     service_account: null,
     gcs_prefix: 'tenants/u-bogdan',
-    namespace: 'swarm-u-bogdan',
+    namespace: 'swarm-tenant-u-bogdan',
   },
   principal: { email: 'someone@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: false },
   environment: 'dev',
@@ -153,7 +153,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     expect(dockLine()).toMatch(/newest/)
 
     await release(json({ tenants: [] }))
-    await waitFor(() => expect(refreshSays()).toMatch(/^⟳ \d+ s$/))
+    await waitFor(() => expect(refreshSays()).toMatch(/^⟳ read \d+ s ago$/))
     expect(document.querySelector('.ctl-head-age')).toBeNull()
   })
 
@@ -169,7 +169,7 @@ describe("CH-2: the head's read age is the screen's own", () => {
     expect(dockLine()).toMatch(/newest/)
 
     await release(json({ repositories: [] }))
-    await waitFor(() => expect(refreshSays()).toMatch(/^⟳ \d+ s$/))
+    await waitFor(() => expect(refreshSays()).toMatch(/^⟳ read \d+ s ago$/))
     expect(document.querySelector('.ctl-head-age')).toBeNull()
   })
 
