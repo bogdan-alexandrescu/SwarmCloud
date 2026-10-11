@@ -6,7 +6,10 @@
 // accessible name. A screen reader heard "real zero" with nothing to say what
 // was read or what came back empty. `Mark` publishes `say` as the mark's name.
 //
-// BREAK IT: put back `<span className="ctl-mark is-zero">real zero</span>` in
+// The mark's word is `none` since 2026-10-11 (owner): "real zero" stays the
+// design term and is never shown.
+//
+// BREAK IT: put back `<span className="ctl-mark is-zero">none</span>` in
 // either screen -- `getAllByRole('img', { name })` finds nothing and the
 // every-zero-has-a-role sweep names the bare span.
 
@@ -106,9 +109,9 @@ function emptyAccounts(): AccountsBoard {
   } as AccountsBoard
 }
 
-/** Every `real zero` drawn is an image with a non-empty name; return them. */
+/** Every real-zero mark drawn (it reads `none`) is an image with a non-empty name; return them. */
 function realZeros(scope: HTMLElement): HTMLElement[] {
-  const marks = within(scope).getAllByRole('img', { name: /\S/ }).filter((m) => m.textContent === 'real zero')
+  const marks = within(scope).getAllByRole('img', { name: /\S/ }).filter((m) => m.textContent === 'none')
   for (const m of marks) expect(m.getAttribute('aria-label')?.trim().length ?? 0).toBeGreaterThan(20)
   return marks
 }
@@ -136,6 +139,7 @@ describe('the Accounts empty pool draws its real zero with Mark', () => {
     const [mark] = realZeros(panel)
     expect(mark, 'the empty pool has no named real-zero mark').toBeTruthy()
     expect(mark!.getAttribute('aria-label')).toMatch(/no accounts/i)
+    expect(mark!.getAttribute('aria-label')).not.toMatch(/real zero/i)
     expectEveryZeroNamed()
   })
 })
