@@ -1148,8 +1148,11 @@ class Ticker:
                 return self._created(fid, now, report, made, schedule, digest=digest,
                                      extra={**detail_missing, "refusal": {"code": exc.code}},
                                      selection=handle.selection)
+            # #1133: the executor's selection survives its refusal: when every
+            # start was refused, its per-issue codes are what explain it.
             return self._refused(fid, now, report, schedule, exc.code,
-                                 {"message": exc.message, **detail_missing})
+                                 {"message": exc.message, **detail_missing},
+                                 extra=None if handle.selection is None else {"selection": handle.selection})
         if not work:
             # #1133: a firing that started nothing says why, and is never a
             # success. Skipped, not failed: it does not count toward §4.4's
@@ -1279,8 +1282,9 @@ class Ticker:
         return state
 
     def _refused(self, fid: str, now: datetime, report: TickReport, schedule: Mapping[str, Any],
-                 code: str, detail: Mapping[str, Any]) -> str:
-        return self._end(fid, now, report, state=REFUSED, code=code, detail=detail, schedule=schedule)
+                 code: str, detail: Mapping[str, Any], extra: Mapping[str, Any] | None = None) -> str:
+        return self._end(fid, now, report, state=REFUSED, code=code, detail=detail, schedule=schedule,
+                         extra=extra)
 
     def _created(self, fid: str, now: datetime, report: TickReport, work: list[dict[str, Any]],
                  schedule: Mapping[str, Any], *, digest: str | None,

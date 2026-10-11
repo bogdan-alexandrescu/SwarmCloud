@@ -32,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import pytest
+from fastapi.testclient import TestClient
 
 from swarm_api import forge, forgewrite, issueruns, issuesweep, schedulefire, scheduletypes
 from swarm_api.auth import StaticTokenVerifier
@@ -40,13 +41,14 @@ from swarm_api.deps import AppContext, build_context
 from swarm_api.errors import Forbidden
 from swarm_api.groups import StaticGroups
 from swarm_api.issueruns import IssueRuns, RunState
+from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
 from swarm_api.repositories import repo_id_for
 from swarm_api.schedtypes import issue_sweep
 from swarm_api.waker import NullWaker
 
 from . import forge_fakes
-from .conftest import api_settings, seed_tenant
+from .conftest import api_settings, auth_header, seed_tenant
 
 OWNER, REPO = "saga-xyz", "widgets"
 REPOSITORY = f"{OWNER}/{REPO}"
@@ -480,6 +482,33 @@ def test_a_firing_whose_every_start_is_refused_is_refused_with_the_code(db, ctx,
     with pytest.raises(Refused):
         issue_sweep.create(firing_for(ctx, sweep(db, repo_id)))
     assert issue_runs(db) == []
+
+
+def test_a_refused_firing_keeps_the_selection_that_explains_it(db, ctx, repo_id, github, monkeypatch) -> None:
+    """#1133: when every start is refused, the per-issue codes are the reason, so the
+    refused firing stores the executor's selection and the API serves it."""
+    class Refused(Forbidden):
+        code = "WORKSPACE_NOT_READY"
+
+    def refuse(*args: Any, **kwargs: Any) -> Any:
+        raise Refused("the workspace is not ready")
+
+    monkeypatch.setattr(issue_sweep, "start_run", refuse)
+    github.issues = [issue(42)]
+    sweep(db, repo_id)
+
+    schedulefire.Ticker(ctx).tick()
+
+    firing = _the_slot_firing(db)
+    assert firing["state"] == "refused" and firing["skip"]["code"] == "WORKSPACE_NOT_READY", firing
+    not_started = [{"issue": f"{REPOSITORY}#42", "code": "WORKSPACE_NOT_READY"}]
+    assert firing["selection"]["not_started"] == not_started
+    assert firing["selection"]["started"] == []
+    client = TestClient(create_app(ctx), raise_server_exceptions=False)
+    response = client.get(f"/v1/schedules/{SCHEDULE_ID}", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    (served,) = (f for f in response.json()["firings"] if f["firing_id"] == firing["firing_id"])
+    assert served["selection"]["not_started"] == not_started
 
 
 # ---------------------------------------------------------------------------
