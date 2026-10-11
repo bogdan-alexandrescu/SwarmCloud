@@ -16,8 +16,10 @@ spec missing both.
 
 REFUSED BEFORE ANYTHING IS SIGNED. Every task of the submission is
 canonicalised first; a value with no canonical form (an integer past
-2^53 - 1, a non-finite number, a lone surrogate) is 422 `invalid_input` and
-KMS is never called.
+2^53 - 1, a non-finite number, a lone surrogate, a `timeout_seconds` or
+`max_attempts` that is not an integer -- contract request 58 -- or lists and
+maps nested deeper than `specsign.MAX_DEPTH` -- request 59) is 422
+`invalid_input` and KMS is never called.
 
 FAILS CLOSED. A KMS error, a digest KMS did not verify, a signature whose
 CRC32C does not match, or an answer naming another version is 503 and nothing
@@ -177,8 +179,9 @@ def sign_task_specs(tasks: Sequence[Task], signer: SpecSigner | None) -> None:
         except specsign.SpecNotCanonical as exc:
             raise NonCanonicalInput(
                 "a value in this task has no canonical form and cannot be signed: an integer "
-                "outside +/-(2**53 - 1), a number that is not finite, or a string holding a "
-                "lone surrogate",
+                "outside +/-(2**53 - 1), a number that is not finite, a string holding a "
+                "lone surrogate, a timeout_seconds or max_attempts that is not an integer, "
+                f"or lists and maps nested deeper than {specsign.MAX_DEPTH} levels",
                 detail={"where": str(exc).split(" ", 1)[0], "task_step": task.step_id},
             ) from None
         digests.append(specsign.spec_digest(canonical))
