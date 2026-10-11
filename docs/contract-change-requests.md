@@ -11009,8 +11009,10 @@ is attempt state, not the task's spec, and changes during the attempt. The
 shape is not validated in `__post_init__`, so a document a later writer
 extends is never refused on decode; swarm-api, its only writer, validates it.
 
-The codecs (`swarm_api.codec`, `scheduler.codec`) are not changed here: lane
-L10, which writes the field, reads and serves it.
+Both codecs (`swarm_api.codec`, `scheduler.codec`) decode it here -- a dict,
+or None for anything else -- so a decode-and-rewrite never clears a live
+hand-off. `task_to_api` does not serve it: lane L10, which writes the field,
+decides its public shape.
 
 ### Rollback
 
