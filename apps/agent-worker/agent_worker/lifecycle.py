@@ -2381,7 +2381,7 @@ class Worker:
         # because it talks to the forge (`_run_worker_action`).
         action = cfg.profile.worker_action
         if action is not None:
-            _recheck_runner_input(cfg.runner_profile, task.get("input"))
+            _read_input_as_checked(task, cfg.runner_profile)
             self._task = task
             self.phases.enter("stage_inputs")
             staged_inputs = self._stage_declared_inputs(task)
@@ -2409,7 +2409,12 @@ class Worker:
         # snapshot never reaches `_recheck_runner_input`. The owner's
         # decision on #353/#345 ordering: verify the signature first, then
         # re-check the input, both on the one verified document.
-        _recheck_runner_input(cfg.runner_profile, task.get("input"))
+        #
+        # And from here on the worker reads the input AS CHECKED (contract
+        # request 58): an `integer` input stored as `7.0` -- which JCS gives
+        # the same bytes as the `7` that was signed -- is read as `7`, so the
+        # issue the title names is the issue the signer signed.
+        _read_input_as_checked(task, cfg.runner_profile)
         # Kept because the publish gate, several steps later, needs the
         # caller's dispatch strategy and re-fetching it there would be a
         # second read of a document that cannot have changed. It is the
@@ -13580,7 +13585,21 @@ def replay_agent_commits(
     return kept
 
 
-def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
+def _read_input_as_checked(task: dict[str, Any], runner_profile: str) -> None:
+    """Replace `task["input"]` with what `_recheck_runner_input` returns.
+
+    Contract request 58. The replacement has the SAME canonical bytes as the
+    stored input -- `check_inputs` only turns an integral float into an int,
+    which JCS writes identically -- so the verified document still verifies;
+    what changes is the type every later reader sees. A recheck that returns
+    None (no stored input, or a test that bypasses it) leaves it as stored.
+    """
+    checked = _recheck_runner_input(runner_profile, task.get("input"))
+    if checked is not None:
+        task["input"] = checked
+
+
+def _recheck_runner_input(runner_profile: str, stored: Any) -> dict[str, Any] | None:
     """Refuse a stored `input` its profile's declaration refuses. Every profile.
 
     The same rule swarm-api and the plugin's bridge apply at submission,
@@ -13599,6 +13618,10 @@ def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
 
     The message names the key and the bound, never the value: a refused URL
     may carry `user:password@`, and this text is stored as the task's error.
+
+    Returns the input AS CHECKED -- the stored map with every declared key
+    replaced by `check_inputs`' normalised value, the prompt kept -- or None
+    when nothing is stored (contract request 58).
     """
     profile = RUNNER_PROFILES[runner_profile]
     raw = stored if stored is not None else {}
@@ -13609,7 +13632,9 @@ def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
             "request 32)"
         )
     try:
-        check_inputs(profile, {key: value for key, value in raw.items() if key != "prompt"})
+        checked = check_inputs(
+            profile, {key: value for key, value in raw.items() if key != "prompt"}
+        )
     except InputRefused as refused:
         bound = f"; expected {refused.expected}" if refused.expected else ""
         raise ConfigError(
@@ -13617,6 +13642,9 @@ def _recheck_runner_input(runner_profile: str, stored: Any) -> None:
             f"{_refused_key_names(refused.keys)}{bound} (checked again by the worker, "
             "contract request 32)"
         ) from None
+    if stored is None:
+        return None
+    return {**raw, **checked}
 
 
 #: The most refused key names `_recheck_runner_input`'s message lists, and the

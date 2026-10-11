@@ -30,8 +30,10 @@ ENTRIES = {
     61: ("5895194106", "apps/common/swarm_common/profiles.py", "url_refusal"),
 }
 
+#: The entries the owner has since accepted, and applied (2026-10-11).
+ACCEPTED = {58, 59}
+
 SECTIONS = (
-    "**Status:** proposed",
     "### What is true today",
     "### Why",
     "### The requested change",
@@ -57,6 +59,12 @@ def _entry(text: str, number: int) -> str:
 @pytest.mark.parametrize("number", sorted(ENTRIES))
 def test_each_finding_is_an_entry_in_the_house_shape(number: int):
     body = _entry(_text(), number)
+    status = (
+        "**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR"
+        if number in ACCEPTED
+        else "**Status:** proposed"
+    )
+    assert status in body, f"request {number} has no {status!r}"
     for part in SECTIONS:
         assert part in body, f"request {number} has no {part!r}"
     comment, path, symbol = ENTRIES[number]
@@ -66,9 +74,10 @@ def test_each_finding_is_an_entry_in_the_house_shape(number: int):
 
 
 @pytest.mark.parametrize("number", sorted(ENTRIES))
-def test_each_entry_has_an_open_index_row(number: int):
-    assert re.search(rf"^\| {number} \| .+ \| proposed \|$", _text(), flags=re.M), (
-        f"request {number} has no index row with status proposed"
+def test_each_entry_has_its_index_row(number: int):
+    status = "ACCEPTED by the owner 2026-10-11 and APPLIED .+" if number in ACCEPTED else "proposed"
+    assert re.search(rf"^\| {number} \| .+ \| {status} \|$", _text(), flags=re.M), (
+        f"request {number} has no index row with status {status}"
     )
 
 

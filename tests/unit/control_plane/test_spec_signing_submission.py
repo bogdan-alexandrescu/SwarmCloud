@@ -236,6 +236,52 @@ def test_every_non_canonical_value_is_refused_before_any_sign_call(value):
     assert good.spec_signature is None
 
 
+@pytest.mark.parametrize("key", ["timeout_seconds", "max_attempts"])
+def test_an_integer_field_that_is_a_float_is_refused_before_any_sign_call(key):
+    """Contract request 58: no signer writes one, and if one reached the
+    signer it is 422 naming the field, not a signature a rewrite could keep."""
+    signer = LocalSpecSigner()
+    good, bad = _task(), _task()
+    bad.id = "task_2"
+    setattr(bad, key, float(getattr(bad, key)))
+    with pytest.raises(ValidationFailed) as exc:
+        sign_task_specs([good, bad], signer)
+    assert exc.value.code == "invalid_input"
+    assert "timeout_seconds or max_attempts that is not an integer" in str(exc.value)
+    assert exc.value.detail["where"] == key, exc.value.detail
+    assert signer.signed == []
+
+
+def test_a_spec_nested_past_the_bound_is_refused_before_any_sign_call():
+    """Contract request 59: past `specsign.MAX_DEPTH` is 422, not bytes. 40 and
+    not 2,000: `Task.to_firestore` (dataclasses.asdict) recurses itself before
+    the signer is reached, and swarm-api's `validate_storable` refuses such an
+    input first; the 2,000-deep case is held at the contract
+    (tests/unit/common/test_specsign_covers.py)."""
+    deep: Any = 0
+    for _ in range(40):
+        deep = [deep]
+    signer = LocalSpecSigner()
+    with pytest.raises(ValidationFailed) as exc:
+        sign_task_specs([_task(planted=deep)], signer)
+    assert exc.value.code == "invalid_input"
+    assert "nested deeper than 32 levels" in str(exc.value)
+    assert signer.signed == []
+
+
+def test_a_float_sent_for_an_integer_field_is_stored_and_signed_as_an_integer(
+    signed_client, db, signer
+):
+    """What request 58 leaves working: the request schema reads 3600.0 as 3600,
+    so a caller who sends one gets a signed task, not a 422."""
+    body = {"runner_profile": "mock", "input": {"prompt": "hello"}, "timeout_seconds": 600.0}
+    response = signed_client.post("/v1/tasks", headers=auth_header("alice"), json=body)
+    assert response.status_code == 201, response.text
+    (task_id, doc), = _tasks(db).items()
+    assert doc["timeout_seconds"] == 600 and type(doc["timeout_seconds"]) is int
+    assert signer.verifies(doc, task_id)
+
+
 def test_an_unconfigured_signer_leaves_tasks_unsigned_only_outside_hardened():
     """No signer is local development only; `build_context` refuses a hardened
     environment without SPEC_SIGNING_KEY_VERSION (see its own test below)."""
