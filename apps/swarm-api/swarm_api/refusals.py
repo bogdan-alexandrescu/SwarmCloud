@@ -183,6 +183,25 @@ SWITCHES: dict[str, Switch] = {
         "Read (docs/schedules.md §0.1 check 1). On once the App holds it, or the scan "
         "writes its packages to its check run",
     ),
+    # Lane S10f (docs/schedules.md §3.10): a docs-drift `fix: true` firing
+    # whose token the last probe read without push or pull-request rights.
+    # Off, the fix tasks are submitted and the worker fails them
+    # forge_read_only, as it does for any task.
+    "docs_drift_cannot_push": Switch(
+        code="docs_drift_cannot_push",
+        why="a docs-drift firing with fix true is refused when the last token probe read push "
+        "or open_pull_requests missing for a repository in scope. On once the token probes "
+        "(git_token_checks) have run for the repositories docs-drift schedules name",
+    ),
+    # Lane S10h. Only the repository bound is switched: the spec digest's
+    # admin approval is a document a person decides, never a refusal, and is
+    # enforced from the first firing (schedtypes/custom_prompt.py).
+    "custom_prompt_repository_out_of_scope": Switch(
+        code="custom_prompt_repository_out_of_scope",
+        why="a custom-prompt firing whose spec names a repository outside the schedule's scope "
+        "is refused instead of submitted (docs/schedules.md §3.12, blast radius). On once the "
+        "log shows no stored custom-prompt schedule whose spec names a repository it does not scope",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
