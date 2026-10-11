@@ -888,11 +888,6 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # each due connection's refresh token and writes the new pair to that
         # user's own slots; it submits nothing and moves no task.
         ("POST", "/v1/admin/forge/refresh"),
-        # The browser carry sweep (docs/design/live-browser.md §5.5.1, lane
-        # LB-L9b): destroys the session carry of each terminal workflow of a
-        # personal tenant. It reads no secret and moves no task; the 24-hour
-        # TTL is the backstop when it does not run.
-        ("POST", "/v1/admin/browser-logins/carry-sweep"),
         # The personal-workspace dispatch sweep (docs/workspaces.md §2.2, lane
         # W7 of #847): publishes again the workspace id of an `approved`
         # record whose build never claimed it. It decides nothing: only a

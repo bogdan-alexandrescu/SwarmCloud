@@ -28,6 +28,7 @@ from swarm_common.models import ProviderState, SlotPool, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from ..attempt_totals import totals_for, with_totals
+from ..browser_logins import CarryReaper
 from ..auth import AuthContext
 from ..cifix import postback_tenant as postback_ci_fixes
 from ..codec import (
@@ -63,6 +64,7 @@ from ..validation import known_providers
 from ..issuesweep import SweepConfig, SweepSubmitterNotMember, sweep_tenant
 from ..issuesweep import get_config as get_sweep_config
 from ..issuesweep import set_config as set_sweep_config
+from .browser_logins import browser_vault
 from .runs import advance_tenant_runs, start_run
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
@@ -1196,6 +1198,7 @@ def task_finished_push(
     envelope: dict[str, Any] = Body(default_factory=dict),
     auth: AuthContext = Depends(admin_auth),
     ctx: AppContext = Depends(get_context),
+    vault: Any = Depends(browser_vault),
 ) -> dict:
     """A `task_finished` wake, pushed by the scheduler wake topic's second subscription (#748).
 
@@ -1217,6 +1220,12 @@ def task_finished_push(
     if fields.get("reason") != TASK_FINISHED or not task_id:
         return {"handled": False, "reason": fields.get("reason")}
     report = on_task_finished(ctx, task_id, tenant_id=fields.get("tenant_id"))
+    # A personal workflow that this step ended loses its browser session
+    # carry now (docs/design/live-browser.md §5.5.1, lane LB-L9b). Never
+    # raises; the carry sweep and the 24-hour TTL are behind it.
+    CarryReaper(db=ctx.db, vault=vault, now=ctx.now).on_task_finished(
+        task_id, store=ctx.store, rollups=ctx.rollups
+    )
     ctx.metrics.admin_actions.labels(action="task_finished_push").inc()
     return {"handled": True, "report": report.to_api()}
 

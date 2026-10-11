@@ -691,6 +691,11 @@ class CarryReaper:
     """§5.5.1: "swarm-api deletes the secret when the workflow reaches a
     terminal state. The TTL is the backstop."
 
+    Two callers. `on_task_finished`, on the `task_finished` push that already
+    arrives as every step ends, is the one that makes it "at" the terminal
+    state. `sweep` (POST /v1/admin/browser-logins/carry-sweep, an admin's) is
+    the backfill for a push that was lost, over the stored state.
+
     Only personal tenants are read: a group tenant never carries, so its
     workflows are never named to Secret Manager at all. A workflow is reaped
     once; its marker in `browser_carry_reaped` is what a later sweep skips. A
@@ -701,6 +706,56 @@ class CarryReaper:
         self._db = db
         self._vault = vault
         self._now = now
+
+    def _reap(self, tenant_id: str, workflow_id: str, state: Any) -> int | None:
+        """Destroy one workflow's carry and mark it. None when it was already
+        reaped; raises when Secret Manager did not answer (no marker)."""
+        marker = self._db.collection(CARRY_REAPED).document(workflow_id)
+        if marker.get().exists:
+            return None
+        destroyed = self._vault.destroy(carry_secret_id(tenant_id, workflow_id))
+        marker.set({
+            "workflow_id": workflow_id,
+            "tenant_id": tenant_id,
+            "state": state,
+            "reaped_at": self._now(),
+            "versions_destroyed": destroyed,
+        })
+        return destroyed
+
+    def on_task_finished(self, task_id: str, *, store: Any, rollups: Any) -> bool:
+        """The moment a workflow ends: called on the `task_finished` push
+        (routes/admin.py), which arrives as each step's task finishes. True
+        when this call deleted the carry.
+
+        The workflow's state is DERIVED from its steps (`rollup.effective_state`),
+        not read from the stored cache, which can lag them; the derivation is
+        written back as every read does. Never raises: a push is a doorbell,
+        and the sweep and the TTL are behind it."""
+        try:
+            snap = self._db.collection(TASKS).document(task_id).get()
+            task = (snap.to_dict() or {}) if snap.exists else {}
+            tenant_id, workflow_id = task.get("tenant_id"), task.get("workflow_id")
+            if not tenant_id or not workflow_id or task.get("state") not in _TERMINAL:
+                return False
+            if not is_personal(self._tenant(tenant_id)):
+                return False
+            from .rollup import effective_state
+
+            workflow = store.get_workflow(tenant_id, workflow_id, submitted_by=None)
+            results, _ = rollups.for_workflows(tenant_id, [workflow])
+            state = effective_state(results[0].rollup) if results else None
+            if state not in _TERMINAL:
+                return False
+            return bool(self._reap(tenant_id, workflow_id, state) is not None)
+        except Exception:
+            log.warning("browser carry for task %s was not reaped on its finish; the sweep "
+                        "and the TTL remain", task_id, exc_info=False)
+            return False
+
+    def _tenant(self, tenant_id: str) -> dict[str, Any] | None:
+        snap = self._db.collection(TENANTS).document(tenant_id).get()
+        return (snap.to_dict() or None) if snap.exists else None
 
     def sweep(self, *, limit: int = 500) -> CarryReport:
         report = CarryReport()
@@ -726,23 +781,15 @@ class CarryReaper:
                 if workflow.get("tenant_id") != tenant_id or workflow.get("state") not in _TERMINAL:
                     continue
                 report.workflows += 1
-                marker = self._db.collection(CARRY_REAPED).document(workflow_id)
-                if marker.get().exists:
-                    continue
                 try:
-                    destroyed = self._vault.destroy(carry_secret_id(tenant_id, workflow_id))
+                    destroyed = self._reap(tenant_id, workflow_id, workflow.get("state"))
                 except Exception:
                     log.warning("browser carry for workflow %s could not be destroyed",
                                 workflow_id, exc_info=False)
                     report.failed.append(workflow_id)
                     continue
-                marker.set({
-                    "workflow_id": workflow_id,
-                    "tenant_id": tenant_id,
-                    "state": workflow.get("state"),
-                    "reaped_at": self._now(),
-                    "versions_destroyed": destroyed,
-                })
+                if destroyed is None:
+                    continue
                 report.reaped += 1
                 report.versions_destroyed += destroyed
         return report

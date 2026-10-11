@@ -612,6 +612,46 @@ def test_the_carry_secret_is_deleted_when_the_workflow_ends(live, db, vault) -> 
     assert carry_secret_id(CAROL_TENANT, "wf_done") not in vault.calls
 
 
+def _finished(live, task_id: str, tenant_id: str):
+    envelope = {"message": {"attributes": {"reason": "task_finished", "task_id": task_id,
+                                           "tenant_id": tenant_id}}}
+    return live.post("/v1/admin/tasks/finished", headers=auth_header("root"), json=envelope)
+
+
+def test_the_carry_is_deleted_on_the_push_that_ends_the_workflow(live, db, vault) -> None:
+    now = datetime.now(timezone.utc)
+    seed_workflow(db, "wf_two", CAROL_TENANT, "RUNNING")
+    db.docs["workflows/wf_two"]["steps"] = [
+        {"step_id": "a", "runner_profile": "claude-code-browser", "input": {},
+         "depends_on": [], "task_id": "task_a"},
+        {"step_id": "b", "runner_profile": "claude-code-browser", "input": {},
+         "depends_on": ["a"], "task_id": "task_b"},
+    ]
+    for task_id, state in (("task_a", "SUCCEEDED"), ("task_b", "RUNNING")):
+        doc = seed_task(db, task_id=task_id, tenant_id=CAROL_TENANT, state=state,
+                        workflow_id="wf_two", runner_profile="claude-code-browser")
+        doc.update({"step_id": task_id[-1], "submitted_by": CAROL, "completed_at": now})
+    secret = carry_secret_id(CAROL_TENANT, "wf_two")
+    vault.put(secret, "ENABLED")
+
+    # The first step ends: the workflow is still running, its carry is kept.
+    assert _finished(live, "task_a", CAROL_TENANT).status_code == 200
+    assert secret in vault.secrets
+
+    db.docs["tasks/task_b"]["state"] = "SUCCEEDED"
+    assert _finished(live, "task_b", CAROL_TENANT).status_code == 200
+    assert secret not in vault.secrets
+    assert f"{CARRY_REAPED}/wf_two" in db.docs
+
+
+def test_a_push_for_a_group_tenants_workflow_names_no_carry(live, db, vault) -> None:
+    seed_workflow(db, "wf_eng_done", "eng", "SUCCEEDED")
+    seed_task(db, task_id="task_eng_done", tenant_id="eng", state="SUCCEEDED",
+              workflow_id="wf_eng_done")
+    assert _finished(live, "task_eng_done", "eng").status_code == 200
+    assert vault.calls == []
+
+
 def test_the_carry_sweep_is_not_a_members_route(live, db) -> None:
     assert live.post("/v1/admin/browser-logins/carry-sweep",
                      headers=auth_header("carol")).status_code == 403

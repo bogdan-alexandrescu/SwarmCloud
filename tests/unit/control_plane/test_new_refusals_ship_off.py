@@ -139,6 +139,25 @@ NOT_SWITCHABLE_CODES = frozenset({
     "handoff_limit",
     "human_ready_not_eligible",
     "not_waiting_for_a_person",
+    # Named browser logins (LB-L9b, docs/design/live-browser.md §5.5.1), as the
+    # hand-off codes above: raised by the routes that change introduces
+    # (/v1/browser-logins, POST /tasks/{id}/browser-login and its worker-only
+    # /pending and /report). Continuing past any of them is the breach itself:
+    # a session saved in a group tenant whose workers share one identity, an
+    # unsigned or stale worker reading or marking a login, or an expired,
+    # unknown or never-stored login handed to an agent.
+    # `browser_login_personal_only` is also raised on POST /v1/tasks and
+    # /v1/workflows, which exist; it is not a switch there either, because no
+    # caller can be newly refused by it: `browser_login` is not declared by any
+    # runner profile (contract request in LB-L9b's PR), so the same submission
+    # is already refused as `invalid_input`. Off, it would say that instead.
+    "browser_login_personal_only",
+    "browser_login_not_live",
+    "browser_login_unknown",
+    "browser_login_expired",
+    "browser_login_unauthenticated",
+    "browser_login_unproven",
+    "browser_login_fenced",
 })
 
 #: What the guard lets through without a switch.
