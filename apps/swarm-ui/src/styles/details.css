@@ -128,14 +128,17 @@
 .dt-sc { display: flex; flex-direction: column; gap: 3px; min-width: 0; padding: 9px 12px 10px; border-left: 1px solid var(--line); }
 .dt-sc:first-child { border-left: 0; }
 .dt-sc-l { display: flex; align-items: center; gap: 6px; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
+/* A FIGURE IS NEVER CUT (V058): it was one line with an ellipsis, so in a
+   narrow cell `26.7 MiB 13%` read `26.7 Mi…` -- the number itself lost. The
+   figure and its unit each hold together, and the unit drops under the
+   figure when the cell is too narrow for both. */
 .dt-sc-v {
   font: 650 var(--t-title)/var(--lh-title) var(--font);
   font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
-.dt-sc-v > small { margin-inline-start: 2px; color: var(--text-dim); font-size: var(--t-micro); font-weight: 500; }
+.dt-sc-v > small { display: inline-block; margin-inline-start: 2px; color: var(--text-dim); font-size: var(--t-micro); font-weight: 500; white-space: nowrap; }
 /* NOT DUE, NOT READ OR NOT RECORDED: small and muted, never full size. */
 .dt-sc.is-reading > .dt-sc-v,
 .dt-sc.is-absent > .dt-sc-v,
@@ -174,6 +177,20 @@
 @container ag-pane (min-width: 480px) and (max-width: 639px) {
   @media (min-height: 700px) {
     .dt > .dt-strip { position: sticky; top: 0; z-index: 2; }
+  }
+  /* FIVE FIGURES IN ~115px EACH, AND NO TALLER THAN THEY NEED (V058, visual
+     QA #1038). In a 600px pane `Peak memory` was cut to `26.7 Mi…`, Cost's
+     sub-line wrapped to eight lines and the stuck strip held ~220px of the
+     pane. The cells pad tighter, a figure's unit drops under it rather than
+     being cut (`.dt-sc-v` below), and each sub-line is two lines at most --
+     whole in its title (`DtStatCell`) and on the Resources card. */
+  .dt-sc { padding: 8px 8px 9px; }
+  .dt-sc-s {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    overflow: hidden;
   }
 }
 /* THE TOTAL NEVER WRAPS (G2-14, QA 2026-10-07): a fixed 64px column broke

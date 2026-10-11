@@ -131,12 +131,18 @@ describe('G5-12: an identity is cut in the middle, never through the tenant’s 
     expect(head?.textContent).toBe('swarm-agent-worker-')
     expect(key?.textContent).toBe('u-bogdan@')
     expect(tail?.textContent).toBe(DOMAIN)
-    // MUTATION: let the key shrink, or cut the whole value at its end again.
-    expect(won(key!, ['flex', 'flex-shrink'], WIDE)).toBe('none')
+    // MUTATION: let the key shrink with the others, or cut the whole value at
+    // its end again. The key gives way LAST (VQA V026): a thousandth of the
+    // others' shrink weight, so it shrinks only once they are at their floor,
+    // and then with an ellipsis rather than a hard clip mid-letter.
+    expect(won(key!, ['flex', 'flex-shrink'], WIDE)).toBe('0 0.001 auto')
+    expect(won(key!, 'text-overflow', WIDE)).toBe('ellipsis')
+    expect(won(key!, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
     for (const part of [head!, tail!]) {
       expect(won(part, 'text-overflow', WIDE)).toBe('ellipsis')
       expect(won(part, ['overflow', 'overflow-x'], WIDE)).toBe('hidden')
-      expect(won(part, 'min-width', WIDE)).toBe('0')
+      // NEVER A SLIVER (VQA V075): room for a letter and its ellipsis.
+      expect(won(part, 'min-width', WIDE)).toBe('2ch')
     }
     expect(won(ident, 'display', WIDE)).toBe('flex')
     // The phone table scrolls, so the identity shows whole there (CH-13).

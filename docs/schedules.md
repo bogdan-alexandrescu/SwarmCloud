@@ -898,11 +898,31 @@ every tenant's data within one approval's reach.
   | `window_hours` | 24 | 1-168 |
   | `focus` | all | a subset of `cost`, `latency`, `ci`, `idle_fixes`, `titles`, `parks`, `refusals` |
   | `file_issues` | `false` | — |
+  | `file_issues_repo_id` | none | a `repo_id` registered in the schedule's tenant; required when `file_issues` is true |
 
 * **Default gate.** Auto. Each proposal lands in the inbox as a **proposal**
   (§4.5). Turning one into a GitHub issue is a click by a person, unless
   `file_issues` is true, in which case they are filed as one epic per the
   CLAUDE.md "Issues" rules: one comment per finding.
+* **Where the epic is filed (owner decision 2026-10-11).** The report's task
+  has no repository, so the schedule names one: `file_issues_repo_id`. It must
+  be a registration of the schedule's own tenant (another tenant's id gets the
+  same answer as an unregistered one, §5.1) that the schedule's owner can
+  write: a `write` grant, or no grant while `REPOSITORY_GRANTS_ENFORCED` is off
+  -- the rule a submission follows. It is checked at create, at edit, at
+  take-ownership and again at every firing before anything is written. The
+  three codes (`observer_file_issues_repo_required`, `..._not_registered`,
+  `..._not_writable`) are new refusals and ship report-only
+  (`swarm_api/refusals.py`): switched off, the schedule is saved, and its
+  firings write the report and **file nothing** in a repository that failed
+  its check. The epic is filed when the next firing takes the report's
+  proposals in, with the tenant's own forge credential
+  (`swarm-tenant-<tenant>-git`, `issues: write`) through
+  `forgewrite.GitHubWriter.create_issue` and `create_comment`: the epic form's
+  sections and label, no task item in the body, one `- [ ]` comment per
+  proposal. `observer_epics/{task_id}` records the issue and each comment as
+  GitHub answers, and a marker opening each body finds a write whose record
+  was lost, so a retried firing files nothing twice.
 * **Produces.** `report.md` (an artifact, shown on the firing), proposals, and
   optionally an epic.
 * **Blast radius.** None on code. It reads the tenant's own records.
@@ -1187,7 +1207,7 @@ admin, not by a gate set to `auto`.
 
 | stop | detected | what happens |
 |---|---|---|
-| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), whatever the schedule's approvers. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists |
+| **IAM, Terraform bootstrap, `terraform/**/iam*.tf`, any `google_*_iam_*` change** | at plan (the plan's `files`, and a scan of step prompts for the paths) **and** at merge (the pull request's changed files, read through the forge API before the merge continuation is submitted, `issueci._merge`'s point) | **Held** (§4.5, "The hold lives on the issue run"), and the approver must satisfy BOTH the hold's rule and the schedule's approvers (`owner_only` or a named list): a hold only ever makes approval stricter and never replaces them. In a `platform: true` repository the hold is `NEEDS_OWNER` with `approvers: owner_only`. In any other repository it is `NEEDS_SECOND_MEMBER` with `approvers: second_member` (§4.6, SD11). The plan's files are advisory, which is why the merge check exists |
 | **The frozen contract**, `apps/common/swarm_common/**`, in a repository whose registration marks it `platform: true` | the same two points | `NEEDS_OWNER` with `approvers: owner_only`, and the inbox item links [contract-change-requests.md](contract-change-requests.md). `platform: true` exists only in a platform repository, so this hold never reaches another tenant |
 | **`.github/workflows/**`** | at plan | **Refused, not held.** The credential cannot push those files (§0), so the step would fail after spending. When the planner's plan names such a file, the plan is not stored: the run moves `PLANNING` → `FAILED`, a transition `RUN_TRANSITIONS` already has, with `error` carrying the code `WORKFLOWS_PATH` and the matched files. No workflow is submitted, no re-plan is attempted, and no state is added. The issue gets a comment saying the change must be made by a person or split out of the issue, and the sweep's cooldown (§3.1) applies to it as to `NOT_READY`. A person's plan edit (`PLANNED` → `PLANNED`) that adds such a path is refused with the existing 422 `invalid_plan`, naming the path |
 | **A security-class issue**: label `security`, or the form's severity S0 | at selection and at plan | Excluded from `issue-sweep` by default. If a member removes `security` from `labels_exclude`, or a run is created on such an issue by any path, its plan is **always** held and its merge is never `auto` (owner decision 2026-10-08). The hold is `NEEDS_OWNER`, `approvers: owner_only`, in a `platform: true` repository, and `NEEDS_SECOND_MEMBER` elsewhere (SD11) |

@@ -5,7 +5,7 @@
  *          while Accounts listed two accounts whose window had reset (`~1%`,
  *          `~0%`). `accountHeadroom` keeps a projected account out of `best`
  *          -- a projection is not headroom -- but the line said nothing about
- *          them. It now names them: "· 2 projected (a, b) not counted".
+ *          them. It now names them: "2 projected (a, b) not counted" (no typed `·`: V145).
  *   G1-08  At 390 a Running row was a dot and a step name, and two
  *          "implement" rows could not be told apart; the runtime was in the
  *          monospace face. The row now carries a second line -- state,
@@ -109,12 +109,12 @@ afterEach(cleanup)
 
 describe('G5-05: the account line names the projected accounts it did not count', () => {
   // MUTATION: drop `projected` from `accountHeadroom`'s answer, or the clause from `AccountLine`.
-  it('appends "· 2 projected (devops-team, saga-personal) not counted" to the best-account line', async () => {
+  it('appends "2 projected (devops-team, saga-personal) not counted" to the best-account line', async () => {
     const el = await mount({ accounts: ok(accountsPage(POOL_ACCOUNTS)) })
     const line = el.querySelector('.ov-acc')!
     expect(line, 'no account line').not.toBeNull()
     expect(text(line)).toMatch(/best team at 22% of its five-hour window/)
-    expect(text(line)).toContain('· 2 projected (devops-team, saga-personal) not counted')
+    expect(text(line)).toContain('2 projected (devops-team, saga-personal) not counted')
     expect(text(line)).toMatch(/^2 of 4 usable/)
   })
 
@@ -135,7 +135,7 @@ describe('G5-05: the account line names the projected accounts it did not count'
     const el = await mount({ accounts: ok(accountsPage(POOL_ACCOUNTS.slice(2))) })
     const line = text(el.querySelector('.ov-acc'))
     expect(line).toMatch(/no current reading/)
-    expect(line).toContain('· 2 projected (devops-team, saga-personal) not counted')
+    expect(line).toContain('2 projected (devops-team, saga-personal) not counted')
   })
 })
 
