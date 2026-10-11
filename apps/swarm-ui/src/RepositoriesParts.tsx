@@ -6,13 +6,13 @@
  * in parallel, and a later pass can swap each of these for its own by name.
  */
 import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from 'react'
-import { Button, ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
+import { Banner, Button, ButtonLink, Dash, EmptyState, LoadingState, routedClick, type ButtonKind, type ButtonSize } from './components'
 import { MarkGlyph } from './marks'
 import { AGED_AFTER_MS, FailedPanel, RefreshControl, useClaimPageAge } from './Shell'
 import type { ApiError, Result } from './fetch'
 import { addressToPath } from './paths'
 import { AGE_TICK_MS, useNow } from './useNow'
-import { CAPABILITIES, coverageDetail, coverageRatio, coverageWords, notServed, pct, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
+import { CAPABILITIES, coverageDetail, coverageRatio, coverageWords, notServed, pct, shortSha, thousands, type CapCell, type CapRow, type Freshness, type RepoRecord } from './RepositoriesData'
 
 /**
  * One read, re-run on `reload()` and whenever `key` changes. A late answer for an old key is dropped.
@@ -376,10 +376,10 @@ export function testsMappedWhy(r: RepoRecord): string {
  * `index.coverage` serves (QA G4-03, repo-index.md §6.2). Never a percentage
  * of source files: the index does not count those.
  */
-export function TestsMapped({ r }: { r: RepoRecord }) {
+export function TestsMapped({ r, cut = false }: { r: RepoRecord; cut?: boolean }) {
   const c = r.index.coverage
   const words = coverageWords(c)
-  const detail = coverageDetail(c)
+  const detail = cutDetail(c, cut)
   const why = testsMappedWhy(r)
   return (
     <div className="ur-tm">
@@ -437,4 +437,86 @@ export function scrollToShow(strip: { scrollLeft: number; clientWidth: number },
   if (item.left < strip.scrollLeft) return Math.max(0, item.left - FADE_PX)
   if (item.left + item.width > strip.scrollLeft + strip.clientWidth) return item.left + item.width - strip.clientWidth + FADE_PX
   return null
+}
+
+/**
+ * THE EDGE COUNT, SAID AS CUT WHEN THE INDEX CUT ITS TEST MAP (live QA
+ * RSA-4, 2026-10-11). The indexer keeps at most its ceiling of edges and
+ * names `test_map` in the document's `truncated`; "1,000 edges" then reads as
+ * a complete count when 1,000 is only where the list stopped. `cut` comes from
+ * the index document, so a page that has not read it says what was served.
+ */
+export function edgesWords(edges: number, cut: boolean): string {
+  return cut ? `${thousands(edges)}+ edges (cut)` : `${thousands(edges)} edge${edges === 1 ? '' : 's'}`
+}
+
+/** `coverageDetail`, with the edges said as cut when the test map was (RSA-4). */
+export function cutDetail(c: RepoRecord['index']['coverage'], cut: boolean): string | null {
+  if (!cut || c === null || c.test_map_edges === null) return coverageDetail(c)
+  const always = c.always_tests === null ? [] : [`${thousands(c.always_tests)} always-run`]
+  return [edgesWords(c.test_map_edges, true), ...always].join(' · ')
+}
+
+/**
+ * INDEXING SPENDS CAPACITY, SO IT IS CONFIRMED FIRST (live QA RSA-15,
+ * 2026-10-11). Index now and the full run each queue a task through the API
+ * on one click; the task holds capacity from the moment it is LEASED until it
+ * ends (invariants 1 and 3), so a misclick was a run nobody meant. This is the
+ * same inline confirmation the Access page uses for a push test, with the safe
+ * choice focused and Esc taking it, so a keyboard reader lands on Cancel.
+ */
+export function UrConfirmIndex({
+  name,
+  kind,
+  base,
+  busy,
+  onConfirm,
+  onCancel,
+}: {
+  name: string
+  kind: 'full' | 'incremental'
+  /** The index an incremental run starts from; null when there is none. */
+  base: string | null
+  busy: boolean
+  onConfirm: () => void
+  onCancel: () => void
+}) {
+  const box = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    box.current?.querySelector<HTMLButtonElement>('button[data-safe]')?.focus()
+  }, [])
+  return (
+    <div
+      className="ur-confirm"
+      ref={box}
+      data-confirm={kind}
+      onKeyDown={(e) => {
+        if (e.key !== 'Escape' || busy) return
+        e.stopPropagation()
+        onCancel()
+      }}
+    >
+      <Banner
+        tone="warn"
+        title={`Queue ${kind === 'full' ? 'a full' : 'an incremental'} index run for ${name}?`}
+        actions={
+          <>
+            <Button kind="primary" size="sm" busy={busy} onClick={onConfirm}>
+              Queue {kind} run
+            </Button>
+            <Button size="sm" data-safe="" disabled={busy} onClick={onCancel}>
+              Cancel
+            </Button>
+          </>
+        }
+      >
+        <p className="ur-small">
+          {kind === 'full'
+            ? 'A full run re-reads every file and re-resolves every call site with the language servers.'
+            : `An incremental run re-reads only what changed since the index at ${base === null ? 'its last commit' : shortSha(base)}.`}{' '}
+          It is a task like any other: it holds capacity from the moment it is leased until it finishes.
+        </p>
+      </Banner>
+    </div>
+  )
 }

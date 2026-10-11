@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { loadRepositories, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
 import { HEAD_UNREAD, freshness, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
-import { REGISTER, GT_PAGE, TestsMapped, UrFreshPill, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
+import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
@@ -32,7 +32,8 @@ import './styles/repositories.css'
  *
  * INDEXING IS ORDINARY CAPACITY-ACCOUNTED WORK (repo-index.md §3.2): Index now
  * queues a task through the API like any other, which holds capacity only
- * once it is LEASED (invariants 1 and 3). This page reserves nothing itself.
+ * once it is LEASED (invariants 1 and 3). This page reserves nothing itself,
+ * and queues nothing until the run is confirmed (`UrConfirmIndex`, RSA-15).
  *
  * Classes are `ur-` so a later pass can swap them for lane U0's components.
  */
@@ -74,6 +75,8 @@ function RepositoryList({
   const perms = useRepoStatuses()
   const [failed, setFailed] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  // The card whose Index now is waiting for its confirmation (RSA-15): one at a time.
+  const [confirm, setConfirm] = useState<string | null>(null)
   const count = state.status === 'ok' || state.status === 'stale' ? state.data.length : state.status === 'empty' ? 0 : null
 
   async function indexNow(r: RepoRecord) {
@@ -81,6 +84,7 @@ function RepositoryList({
     setFailed(null)
     const res = await runRepositoryIndex(r.repo_id, r.index.current_sha === null ? 'full' : 'incremental')
     setBusy(null)
+    setConfirm(null)
     if (res.status === 'error') {
       setFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
       return
@@ -132,7 +136,17 @@ function RepositoryList({
         {(repos) => (
           <div className="ur-cards">
             {repos.map((r) => (
-              <RepoCard key={r.repo_id} r={r} go={go} busy={busy === r.repo_id} onIndex={() => void indexNow(r)} perm={perms.get(r.repo_id)} />
+              <RepoCard
+                key={r.repo_id}
+                r={r}
+                go={go}
+                busy={busy === r.repo_id}
+                confirming={confirm === r.repo_id}
+                onAsk={() => setConfirm(r.repo_id)}
+                onCancel={() => setConfirm(null)}
+                onIndex={() => void indexNow(r)}
+                perm={perms.get(r.repo_id)}
+              />
             ))}
           </div>
         )}
@@ -168,7 +182,26 @@ function lastIndexed(r: RepoRecord): ReactNode {
   )
 }
 
-function RepoCard({ r, go, busy, onIndex, perm }: { r: RepoRecord; go: (to: string) => void; busy: boolean; onIndex: () => void; perm?: ForgeRepoStatus }) {
+function RepoCard({
+  r,
+  go,
+  busy,
+  confirming,
+  onAsk,
+  onCancel,
+  onIndex,
+  perm,
+}: {
+  r: RepoRecord
+  go: (to: string) => void
+  busy: boolean
+  /** Index now was pressed and waits for its confirmation (RSA-15). */
+  confirming: boolean
+  onAsk: () => void
+  onCancel: () => void
+  onIndex: () => void
+  perm?: ForgeRepoStatus
+}) {
   const f = freshness(r.index)
   const head = r.index.head_sha
   const sched = scheduleWords(r.index)
@@ -210,11 +243,21 @@ function RepoCard({ r, go, busy, onIndex, perm }: { r: RepoRecord; go: (to: stri
         {r.index.in_flight_task_id !== null ? (
           <NamedMark mark="running" hue="live" word="indexing now" title={r.index.in_flight_task_id} />
         ) : (
-          <Button size="sm" busy={busy} onClick={onIndex}>
+          <Button size="sm" busy={busy} disabled={confirming} onClick={onAsk}>
             Index now
           </Button>
         )}
       </div>
+      {confirming && r.index.in_flight_task_id === null && (
+        <UrConfirmIndex
+          name={repoName(r)}
+          kind={r.index.current_sha === null ? 'full' : 'incremental'}
+          base={r.index.current_sha}
+          busy={busy}
+          onConfirm={onIndex}
+          onCancel={onCancel}
+        />
+      )}
     </Card>
   )
 }
