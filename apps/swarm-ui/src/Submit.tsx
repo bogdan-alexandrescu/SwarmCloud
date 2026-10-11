@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { loadCapacity } from './api'
+import { loadCapacity, loadStats } from './api'
 import {
   CeilingTag,
   blockerVerdict,
@@ -9,7 +9,7 @@ import {
   verdictCopy,
   verdictNeedsAPerson,
 } from './Blockers'
-import { DispatchChoice, DispatchFacts, type DispatchDraft } from './Dispatch'
+import { DispatchChoice, DispatchFacts, REPOSITORY_SCHEMES, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError } from './fetch'
 import { HELP } from './help'
@@ -402,14 +402,17 @@ export function buildInput(fields: InputField[]): BuiltInput {
     const name = f.name.trim()
     if (name === '') continue
     if (Object.prototype.hasOwnProperty.call(input, name)) {
-      return { ok: false, message: `${name} is set twice and an object has one value per key` }
+      // THE KEY NEVER OPENS THE MESSAGE (live QA SUB-15): `asSentence`
+      // capitalises a fragment's first letter, and a key is case-sensitive,
+      // so "Prompt is set to abc" named a setting this form does not have.
+      return { ok: false, message: `the setting ${name} is set twice and an object has one value per key` }
     }
     if (f.kind === 'flag') { input[name] = f.flag; continue }
     if (f.kind === 'number') {
       const raw = f.text.trim()
       if (raw === '') continue
       const n = Number(raw)
-      if (!Number.isFinite(n)) return { ok: false, message: `${name} is set to ${raw}, which is not a number` }
+      if (!Number.isFinite(n)) return { ok: false, message: `the setting ${name} is set to ${raw}, which is not a number` }
       input[name] = n
       continue
     }
@@ -443,6 +446,73 @@ export function buildInput(fields: InputField[]): BuiltInput {
     input[name] = text
   }
   return { ok: true, input }
+}
+
+/**
+ * WHAT AN INPUT COSTS AS THE API MEASURES IT (live QA SUB-4): Firestore's own
+ * rule, restated from `validation.firestore_size` -- a string its UTF-8 bytes
+ * plus 1, a number 8, a boolean or null 1, a list the sum of its values, an
+ * object the sum of each key (sized as a string) and its value. The API
+ * refuses an input over `max_input_bytes` with a 422 after the POST; this is
+ * what lets the form say so before it, with the limit in the words. The
+ * server's figure stays the one that decides: the form blocks only on a limit
+ * the API served (`/v1/stats` `limits.max_input_bytes`), never on a constant.
+ */
+export function inputBytes(value: unknown): number {
+  const utf8 = new TextEncoder()
+  let total = 0
+  const stack: unknown[] = [value]
+  while (stack.length > 0) {
+    const v = stack.pop()
+    if (v === null || v === undefined || typeof v === 'boolean') total += 1
+    else if (typeof v === 'number') total += 8
+    else if (typeof v === 'string') total += utf8.encode(v).length + 1
+    else if (Array.isArray(v)) stack.push(...v)
+    else if (typeof v === 'object') {
+      for (const [k, item] of Object.entries(v as Record<string, unknown>)) {
+        total += utf8.encode(k).length + 1
+        stack.push(item)
+      }
+    } else total += utf8.encode(String(v)).length + 1
+  }
+  return total
+}
+
+/** A byte count as a reader says it: `256 KiB`, `300.5 KiB`, `812 bytes`. */
+export function byteWords(n: number): string {
+  if (n < 1024) return `${n} byte${n === 1 ? '' : 's'}`
+  const kib = n / 1024
+  return `${Number.isInteger(kib) ? kib : kib.toFixed(1)} KiB`
+}
+
+/**
+ * Why an input will not be taken for its size, or null when it fits -- and
+ * null when the limit was not read, since an unread limit is not a limit.
+ */
+export function inputSizeProblem(input: Record<string, unknown>, limit: number | null): string | null {
+  if (limit === null) return null
+  const bytes = inputBytes(input)
+  return bytes > limit ? `the input is ${byteWords(bytes)}, over the API's ${byteWords(limit)} limit` : null
+}
+
+/**
+ * `limits.max_input_bytes` off `/v1/stats`, read once for the form; null until
+ * it answers and when it does not.
+ */
+export function useInputLimit(): number | null {
+  const [limit, setLimit] = useState<number | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadStats().then((r) => {
+      if (!live) return
+      const raw = r.status === 'ok' || r.status === 'stale' ? r.data.limits?.max_input_bytes : undefined
+      setLimit(typeof raw === 'number' && raw > 0 ? raw : null)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return limit
 }
 
 /**
@@ -687,7 +757,7 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
         const gap = f.required && missing.has(key) && left.has(f.key)
         const missId = `${id}-missing`
         return (
-          <div className={f.required ? 'sbf-field is-required' : 'sbf-field'} key={f.key}>
+          <div className={f.required ? 'sbf-field is-required' : 'sbf-field has-remove'} key={f.key}>
             <div className="sbf-key">
               {f.own ? (
                 <label className="sbf-name">
@@ -714,15 +784,21 @@ export function InputFields({ profile, fields, required, onChange, idPrefix }: {
                   <option value="list">list of text</option>
                 </select>
               )}
-              {!f.required && (
-                <button type="button" className="c-link is-sm" onClick={() => onChange(fields.filter((_, j) => j !== i))}>
-                  remove
-                </button>
-              )}
             </div>
             <ValueEditor f={f} id={id} choices={choicesFor(key)} invalid={gap}
               describedBy={gap ? missId : undefined} onBlur={() => leave(f.key)}
               onChange={(next) => set(i, next)} />
+            {/* AFTER ITS FIELD, AND NAMING IT (live QA SUB-17): it came before
+                the value in Tab order, so a screen reader heard "remove" and
+                then "prompt", and every row's button was called "remove". It
+                is still drawn on the name's line (`.sbf-remove`, submit.css);
+                only the order a keyboard meets it in has moved. */}
+            {!f.required && (
+              <button type="button" className="c-link is-sm sbf-remove" aria-label={`remove ${key || 'this setting'}`}
+                onClick={() => onChange(fields.filter((_, j) => j !== i))}>
+                remove
+              </button>
+            )}
             {gap && (
               <p id={missId} className="sbf-miss"
                 aria-label={`${profile} will not start without ${key}. A run sent without it is dispatched, given a credential, and then fails, so this form will not send it.`}>
@@ -918,7 +994,17 @@ function Form({ capacity }: { capacity: Capacity }) {
   // said "none — nowhere to push" and the dispatch control that the API would
   // refuse it (`DispatchOptionError`, `missing: repository_url`), under a
   // "Ready to send" heading and a live button.
-  const blocked = chosen === '' || !built.ok || missing.length > 0 || (pushes && repo === '')
+  // AND A REPOSITORY THE API WILL REFUSE IS NOT READY EITHER (live QA SUB-3):
+  // the field said "it will refuse this one" under "Ready to send" and a live
+  // button. `repositorySchemeRefused` is the field's own test, held to the
+  // API's tuple by `dispatch.test.ts`, so the field, the heading and the
+  // button read one answer. Blank is the line above's case, not this one's.
+  const badRepo = repositorySchemeRefused(repo)
+  // AN INPUT OVER THE SERVED LIMIT IS NOT READY (live QA SUB-4): a 300,000-
+  // character prompt read "Ready to send" and found out from the 422.
+  const inputLimit = useInputLimit()
+  const tooBig = built.ok ? inputSizeProblem(built.input, inputLimit) : null
+  const blocked = chosen === '' || !built.ok || missing.length > 0 || (pushes && repo === '') || badRepo || tooBig !== null
   // WHAT THIS CLICK WOULD SEND, as one comparable value. After a 201 the
   // button is "Submit another" for as long as the form still says exactly
   // what was sent (VQA V048, owner decision Q1 on #1038): one more click on an
@@ -926,6 +1012,7 @@ function Form({ capacity }: { capacity: Capacity }) {
   const draftKey = JSON.stringify([chosen, built.ok ? built.input : null, dispatch.strategy, dispatch.carrier, repo])
   const [sentKey, setSentKey] = useState<string | null>(null)
   const justSent = outcome.kind === 'created' && sentKey === draftKey
+  const inFlight = useRef(false)
   // "Submit another" starts a blank form: the task just created is one click
   // away from its own card until then.
   const another = () => {
@@ -934,7 +1021,17 @@ function Form({ capacity }: { capacity: Capacity }) {
     setDispatch({ strategy: DEFAULT_STRATEGY, carrier: DEFAULT_CARRIER, repositoryUrl: '' })
     setOutcome({ kind: 'idle' })
     setSentKey(null)
+    setRestarted((n) => n + 1)
   }
+  // AND THE KEYBOARD STARTS AGAIN AT THE TOP (live QA SUB-16): the button
+  // that had focus is unmounted by the reset, and focus fell to `<body>`.
+  // After the render, so the runner list it lands on is the blank form's.
+  const formRef = useRef<HTMLFormElement>(null)
+  const [restarted, setRestarted] = useState(0)
+  useEffect(() => {
+    if (restarted === 0) return
+    formRef.current?.querySelector<HTMLElement>('input[name="runner-profile"]:not(:disabled)')?.focus()
+  }, [restarted])
   // The send panel's "`prompt` missing" takes the reader to that field.
   const toField = (key: string) => {
     const f = fields.find((x) => x.name.trim() === key)
@@ -943,6 +1040,13 @@ function Form({ capacity }: { capacity: Capacity }) {
 
   async function submit(e?: FormEvent) {
     e?.preventDefault()
+    // ONE POST PER CLICK, WHATEVER SUBMITS THE FORM (live QA SUB-1). After a
+    // 201 the button is "Submit another" (`type="button"`), and the form is
+    // left with one text input -- the repository URL -- so Enter there was
+    // still an implicit submission, and it posted the same task again. The
+    // guard is here, not on the button: a request in flight, or the one that
+    // was just created and is still what the form says, is never sent twice.
+    if (inFlight.current || outcome.kind === 'sending' || justSent) return
     // The button is disabled with no runner; this holds the same rule for any
     // other way a form can be submitted, so nothing is posted without a name.
     if (chosen === '') {
@@ -963,7 +1067,20 @@ function Form({ capacity }: { capacity: Capacity }) {
         `Not sent — ${chosen} will not start without ${missing.join(', ')}.` } })
       return
     }
+    // The button is off for both; this keeps them for Enter as well.
+    if (badRepo) {
+      setOutcome({ kind: 'refused', unattributed: null, fields: { repository_url:
+        `Not sent — the API accepts only a URL starting with ${REPOSITORY_SCHEMES.join(', ')}.` } })
+      return
+    }
+    if (tooBig !== null) {
+      setOutcome({ kind: 'refused', unattributed: null, fields: { input: `Not sent — ${tooBig}.` } })
+      return
+    }
     setOutcome({ kind: 'sending' })
+    // A REF, NOT THE STATE ABOVE: two Enters inside one render both read
+    // `outcome` as it was before the first, so only this sees the second.
+    inFlight.current = true
     const sending = draftKey
     const result = await postTask({
         runner_profile: chosen,
@@ -979,12 +1096,13 @@ function Form({ capacity }: { capacity: Capacity }) {
         // than about the field being empty.
         ...(repo === '' ? {} : { repository_url: repo }),
       })
+    inFlight.current = false
     if (result.kind === 'created') setSentKey(sending)
     setOutcome(result)
   }
 
   return (
-    <form className="sbf" onSubmit={submit}>
+    <form ref={formRef} className="sbf" onSubmit={submit}>
       <div className="sbf-build">
         {/* THIS SCREEN'S ONE `?` (B7.4). It was seven: two of them repeated a
             sentence printed beside the glyph, one repeated `all at once` from
@@ -1065,6 +1183,7 @@ function Form({ capacity }: { capacity: Capacity }) {
                   a button to its field, the workflow panel's per-step pattern. */}
               {chosen === '' ? <i className="ctl-em">&mdash;</i>
                 : !built.ok ? <i className="sbf-bad">{built.message}</i>
+                  : tooBig !== null ? <i className="sbf-bad">{tooBig}</i>
                   : missing.length > 0 ? (
                     <span className="sbf-gaps">
                       {missing.map((k) => (
@@ -1114,7 +1233,14 @@ function Form({ capacity }: { capacity: Capacity }) {
                     `repositorySlug` does not recognise comes back whole, and it
                     wrapped over eight lines where the issue panel cuts it. */}
                 {repo === '' ? <i className="sbf-bad">none — nowhere to push</i>
+                  : badRepo ? <i className="sbf-bad sbf-cut" title={repo}>not a URL the API accepts</i>
                   : <code className="sbf-cut" title={repo}>{repositorySlug(repo)}</code>}
+              </li>
+            )}
+            {!pushes && badRepo && (
+              <li className="ctl-fact">
+                <b>repository</b>
+                <i className="sbf-bad sbf-cut" title={repo}>not a URL the API accepts</i>
               </li>
             )}
           </ul>
@@ -1303,12 +1429,14 @@ function Created({ task, woke }: { task: Task; woke: boolean }) {
         it.
         {task.park_reason ? <> It is parked: <code>{String(task.park_reason)}</code>.</> : null}</p>
       {/* The id verbatim: not truncated, not transformed. This is what gets pasted. */}
-      <p className="mono">{task.id}</p>
+      <p className="mono sbf-id">{task.id}</p>
       {/* READ BACK OFF THE 201, not off the form. The form says what was asked
           for; `task.dispatch` is what was stored, and a caller who is about to
           wait for a pull request should be told from the second one. */}
       <DispatchFacts task={task} />
-      <p className="checked-at">
+      {/* A SENTENCE, SET AS ONE (live QA SUB-7): it was a `checked-at` line,
+          which is the micro MONOSPACE of a read's age, not prose. */}
+      <p className="sbf-woke">
         {woke ? 'The scheduler was woken by this submission.'
           : 'The scheduler was not woken; it will pick this up on its next pass.'}{' '}
         {/* The EXPLICIT drawer form. `#work/<id>` also resolves -- it is

@@ -103,7 +103,8 @@
 .ur-tile:first-child { border-left: 0; }
 .ur-fig { font: 650 var(--t-title)/var(--lh-title) var(--font); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ur-fig small { font-size: var(--t-micro); font-weight: 500; color: var(--text-dim); }
-.ur-tile .ur-sub { font-size: var(--t-micro); }
+/* overflow-wrap: an entry point's path is one long word, and on a phone tile it ran off the clipped edge (RSA-23). */
+.ur-tile .ur-sub { font-size: var(--t-micro); overflow-wrap: anywhere; }
 .ur-sub.is-warn { color: var(--s-warn); }
 .ur-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
 .ur-stack { display: flex; flex-direction: column; gap: 12px; min-width: 0; }

@@ -10,8 +10,10 @@
  *                                left is a dash: the route returns a token,
  *                                never a total.
  *   GET /v1/tasks                names, profiles, states and workflows for the
- *                                lanes; a task not on that page is read on its
- *                                own (`loadTask`), up to MISSING_TASK_READS.
+ *                                lanes, paged back across the span
+ *                                (`taskReadCovers`); a task the pages did not
+ *                                reach is read on its own (`loadTask`), up to
+ *                                MISSING_TASK_READS.
  *   GET /v1/workflows/{id}       each workflow drawn: its state, and the steps
  *                                that never had an attempt (drawn, no bar).
  *   GET /v1/tasks/{id}/events    ONE PAGE PER LANE IN VIEW, newest first
@@ -36,6 +38,7 @@ import {
   loadTaskEventsPage,
   loadTasks,
   loadWorkflow,
+  TASK_PAGE_LIMIT,
   type WorkflowRead,
 } from './api'
 import { agentName } from './agentlist'
@@ -72,9 +75,11 @@ import { CountNote, PageHead, RefreshControl, useClaimPageAge, useIdleStop, useP
 import type { AttemptRow, Task, TaskEvent, TaskState } from './types'
 import { formatDuration, TERMINAL_STATES } from './types'
 import { useInView } from './useInView'
+import { useEscapeLayer } from './escape'
 import { VALUE_LABEL_GAP_PX } from './charts/parts'
 import { SKIPPED_WORD } from './dag'
 import { gateVerdictOf, skippedByVerdict } from './wfreview'
+import { workflowLabel } from './stepviews'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/timeline.css'
 
@@ -84,6 +89,55 @@ import './styles/timeline.css'
  * than the page sending a read per lane before it draws anything.
  */
 export const MISSING_TASK_READS = 40
+
+/**
+ * HOW MANY ATTEMPT PAGES ONE READ FOLLOWS ON ITS OWN (live QA RT-1,
+ * 2026-10-11): ten pages of ATTEMPT_PAGE_LIMIT (200) is 2,000 attempts, which
+ * on the busiest tenant measured (about 40 an hour) is two days of a span. A
+ * wider span stops here rather than sending a read per 200 attempts for 90
+ * days on every minute's re-read; the head then names the reach drawn, not the
+ * span, and "Read the next page" goes on by hand.
+ */
+export const SPAN_PAGES_READ = 10
+
+/**
+ * HOW MANY TASK PAGES THE SPAN'S TASK READ FOLLOWS (live QA RT-1, review of
+ * 2026-10-11). One page of the 200 newest tasks covered about five hours, so
+ * on a 7d to 90d span every lane older than that drew as an anonymous bar --
+ * no name, state, profile or workflow -- and any filter dropped it. The task
+ * read now pages back, in the summary view, until it reaches the span's
+ * start. A tenant also creates tasks that never run, so it is allowed twice
+ * the attempts read's pages to cover the same reach; past that a lane is read
+ * on its own, up to MISSING_TASK_READS.
+ */
+export const TASK_PAGES_READ = 2 * SPAN_PAGES_READ
+
+/**
+ * Whether the task read has gone far enough back to stop after this page.
+ *
+ * Newest first, so it has when the page's oldest task was created before the
+ * span's start. On a re-read of the same span (`prior`, the tasks already
+ * read), a task that has ended cannot change, so the read stops once it has
+ * passed the oldest task still able to: the minute's re-read is then one
+ * page, not the whole span again. An empty page is the end of the list.
+ */
+export function taskReadCovers(page: readonly Task[], since: number, prior: ReadonlyMap<string, Task> | null): boolean {
+  let oldest = Infinity
+  for (const t of page) {
+    const c = Date.parse(t.created_at)
+    if (Number.isFinite(c) && c < oldest) oldest = c
+  }
+  if (!Number.isFinite(oldest)) return true
+  if (oldest < since) return true
+  if (prior === null) return false
+  let oldestLive = Infinity
+  for (const t of prior.values()) {
+    if (TERMINAL_STATES.has(t.state)) continue
+    const c = Date.parse(t.created_at)
+    if (Number.isFinite(c) && c < oldestLive) oldestLive = c
+  }
+  return oldest <= oldestLive
+}
 
 /** Past this many days the bars are slivers, and the page suggests Outcomes. */
 const SUGGEST_OUTCOMES_DAYS = 7
@@ -277,6 +331,16 @@ export function laneSummary(blocks: readonly LaneBlock[], by: LaneGroup): string
   return lanesWord
 }
 
+/**
+ * The window moved by half its width, earlier (-1) or later (+1), keeping its
+ * width; a later move stops at `now`.
+ */
+export function panWindow(win: { since: number; until: number }, dir: -1 | 1, now: number): { since: number; until: number } {
+  const width = win.until - win.since
+  const until = Math.min(win.until + (dir * width) / 2, now)
+  return { since: Math.max(0, until - width), until }
+}
+
 function rangeWords(since: number, until: number): string {
   const wide = until - since > 36 * 3_600_000 || DAY.format(since) !== DAY.format(until)
   return `${clock(since, wide)}–${clock(until, wide)}`
@@ -456,28 +520,58 @@ export function TimelineLanesScreen({
   const [att, setAtt] = useState<AttemptsRead>({ key: readKey, status: 'loading' })
   /** The last drawing, kept dimmed while a new span is read. */
   const [drawn, setDrawn] = useState<Extract<AttemptsRead, { status: 'done' }> | null>(null)
+  /** The span of the last drawing whose page chain finished. */
+  const drawnSpan = useRef<string | null>(null)
   useEffect(() => {
     let live = true
     setAtt({ key: readKey, status: 'loading' })
-    loadAttemptsPage({ since: sinceIso, until: untilIso }).then((r) => {
-      if (!live) return
-      if (r.status === 'loading') return
-      if (r.status === 'error') {
-        setAtt({ key: readKey, status: 'error', error: r.error, at: Date.now() })
-        return
-      }
-      const done = {
-        key: readKey,
-        status: 'done' as const,
-        rows: r.status === 'empty' ? [] : r.data.attempts,
-        next: r.status === 'empty' ? null : r.data.next_page_token,
-        pages: 1,
-        fetchedAt: r.fetchedAt,
-        more: 'idle' as const,
-      }
-      setAtt(done)
-      setDrawn(done)
-    })
+    // A RE-READ OF THE SAME SPAN KEEPS THE LAST DRAWING UNTIL ITS CHAIN ENDS
+    // (review of RT-1): drawing each page as it landed shrank a wide span to
+    // its newest few hours and regrew it over up to ten reads, every minute,
+    // and an older lane open in the inspector vanished meanwhile.
+    const holding = drawnSpan.current === spanKey
+    // THE LANES COVER THE SPAN PICKED (live QA RT-1, 2026-10-11): one page of
+    // 200 attempts, newest first, covered about the last five hours, so 7d to
+    // 90d all drew the same lanes in the right-hand sliver of their axis. The
+    // read now follows the page token until the span is read or
+    // SPAN_PAGES_READ pages are in; past that the head says how far back the
+    // drawing reaches, and "Read the next page" goes further.
+    const follow = (rows: AttemptRow[], pageToken: string | null, pages: number): void => {
+      loadAttemptsPage({ since: sinceIso, until: untilIso, pageToken }).then((r) => {
+        if (!live) return
+        if (r.status === 'loading') return
+        if (r.status === 'error') {
+          if (pages === 0) setAtt({ key: readKey, status: 'error', error: r.error, at: Date.now() })
+          else {
+            // What was read is drawn, with the failure on "Read the next page".
+            const partial = { key: readKey, status: 'done' as const, rows, next: pageToken, pages, fetchedAt: Date.now(), more: r.error }
+            drawnSpan.current = spanKey
+            setAtt(partial)
+            setDrawn(partial)
+          }
+          return
+        }
+        const all = r.status === 'empty' ? rows : [...rows, ...r.data.attempts]
+        const next = r.status === 'empty' ? null : r.data.next_page_token
+        const goOn = next !== null && pages + 1 < SPAN_PAGES_READ
+        const done = {
+          key: readKey,
+          status: 'done' as const,
+          rows: all,
+          next,
+          pages: pages + 1,
+          fetchedAt: r.fetchedAt,
+          more: goOn ? ('reading' as const) : ('idle' as const),
+        }
+        if (!goOn) drawnSpan.current = spanKey
+        if (!(holding && goOn)) {
+          setAtt(done)
+          setDrawn(done)
+        }
+        if (goOn) follow(all, next, pages + 1)
+      })
+    }
+    follow([], null, 0)
     return () => {
       live = false
     }
@@ -504,20 +598,62 @@ export function TimelineLanesScreen({
   const shown = att.status === 'done' ? att : drawn
   const rereading = att.status === 'loading' && drawn !== null
   const rows = useMemo(() => shown?.rows ?? [], [shown])
+  /**
+   * How far back the drawing reaches when the read stopped short of the span:
+   * the oldest attempt read, or null when the whole span is read.
+   */
+  const reach = useMemo(() => drawnReach(shown), [shown])
 
   // ---- the tasks behind the lanes ----------------------------------------
   const [taskPage, setTaskPage] = useState<Map<string, Task> | 'error' | null>(null)
+  /** The task read has stopped paging: what it did not reach is read one by one. */
+  const [tasksDone, setTasksDone] = useState(false)
+  /** The last finished task read, and the span it was for. */
+  const taskPrior = useRef<{ spanKey: string; tasks: Map<string, Task> } | null>(null)
   useEffect(() => {
     let live = true
-    setTaskPage(null)
-    loadTasks().then((r) => {
-      if (!live) return
-      setTaskPage(isData(r) ? new Map(r.data.tasks.map((t) => [t.id, t])) : r.status === 'empty' ? new Map() : 'error')
-    })
+    const since = win.since
+    const prior = taskPrior.current !== null && taskPrior.current.spanKey === spanKey ? taskPrior.current.tasks : null
+    if (prior === null) setTaskPage(null)
+    setTasksDone(false)
+    const finish = (m: Map<string, Task>) => {
+      taskPrior.current = { spanKey, tasks: m }
+      setTaskPage(m)
+      setTasksDone(true)
+    }
+    // The summary view (live QA RT-7b): names, profiles, states and workflows are
+    // all a lane reads from it; the full rows were 2.7 MB a minute. A step's
+    // full row, with its verdict, comes from its workflow read. THE READ PAGES
+    // BACK ACROSS THE SPAN (RT-1): see TASK_PAGES_READ and taskReadCovers.
+    const follow = (m: Map<string, Task>, pageToken: string | null, pages: number): void => {
+      loadTasks(TASK_PAGE_LIMIT, { view: 'summary', pageToken }).then((r) => {
+        if (!live) return
+        if (r.status === 'loading') return
+        if (r.status === 'error') {
+          if (pages === 0 && prior === null) {
+            setTaskPage('error')
+            setTasksDone(true)
+          } else finish(m)
+          return
+        }
+        const page = isData(r) ? r.data.tasks : []
+        const merged = new Map(m)
+        for (const t of page) merged.set(t.id, t)
+        const next = isData(r) ? (r.data.next_page_token ?? null) : null
+        if (next === null || pages + 1 >= TASK_PAGES_READ || taskReadCovers(page, since, prior)) {
+          finish(merged)
+          return
+        }
+        if (prior === null) setTaskPage(merged)
+        follow(merged, next, pages + 1)
+      })
+    }
+    follow(prior === null ? new Map() : new Map(prior), null, 0)
     return () => {
       live = false
     }
-  }, [nonce])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nonce, spanKey])
 
   const [single, setSingle] = useState<Map<string, Task | string>>(new Map())
   const asked = useRef(new Set<string>())
@@ -532,8 +668,16 @@ export function TimelineLanesScreen({
   const wfGen = useRef(nonce)
   useEffect(() => {
     wfGen.current = nonce
-    askedWf.current = new Set()
-    setWorkflows(new Map())
+    // A SETTLED WORKFLOW IS READ ONCE (live QA RT-7b, 2026-10-11): the
+    // minute's re-read asked again for all 42 workflow documents, up to
+    // 181 KB each, though a workflow whose every step has ended cannot change.
+    // Those keep their read; the rest are asked again.
+    setWorkflows((m) => {
+      const kept = new Map<string, WorkflowState>()
+      for (const [id, w] of m) if (workflowSettled(w)) kept.set(id, w)
+      askedWf.current = new Set(kept.keys())
+      return kept
+    })
   }, [nonce])
   const wfQueue = useRef(readQueue(WORKFLOW_READS_AT_ONCE))
   const askWorkflow = useCallback((wf: string) => {
@@ -575,11 +719,13 @@ export function TimelineLanesScreen({
     return m
   }, [taskPage, single, workflows])
 
+  const tasksNow = useRef(tasks)
+  tasksNow.current = tasks
   const laneIds = useMemo(() => Array.from(new Set(rows.map((a) => a.task_id))), [rows])
 
-  // Tasks not on the task page, one by one, up to the cap.
+  // Tasks the task read did not reach, one by one, up to the cap.
   useEffect(() => {
-    if (taskPage === null) return
+    if (taskPage === null || !tasksDone) return
     const missing = laneIds.filter((id) => !tasks.has(id) && !asked.current.has(id))
     const room = MISSING_TASK_READS - asked.current.size
     for (const id of missing.slice(0, Math.max(0, room))) {
@@ -588,7 +734,7 @@ export function TimelineLanesScreen({
         setSingle((m) => new Map(m).set(id, isData(r) ? r.data : r.status === 'error' ? `${r.error.httpStatus ?? 'no answer'}` : 'not read'))
       })
     }
-  }, [taskPage, laneIds, tasks])
+  }, [taskPage, tasksDone, laneIds, tasks])
 
   // Each workflow the lanes name, once.
   useEffect(() => {
@@ -610,10 +756,20 @@ export function TimelineLanesScreen({
   const nonceNow = useRef(nonce)
   nonceNow.current = nonce
   const askedEv = useRef({ gen: nonce, ids: new Set<string>() })
+  // AN ENDED LANE'S EVENTS ARE READ ONCE (live QA RT-7b): the minute's
+  // re-read asked again for every lane's events page, though a task that has
+  // ended writes no more events. Those pages are kept across a refresh.
+  const eventsNow = useRef(events)
+  eventsNow.current = events
   const startRead = () => {
     if (askedEv.current.gen === nonceNow.current) return
-    askedEv.current = { gen: nonceNow.current, ids: new Set() }
-    setEvents(new Map())
+    const kept = new Map<string, EventsRead>()
+    for (const [id, e] of eventsNow.current) {
+      const t = tasksNow.current.get(id)
+      if (e.status === 'ok' && t !== undefined && TERMINAL_STATES.has(t.state)) kept.set(id, e)
+    }
+    askedEv.current = { gen: nonceNow.current, ids: new Set(kept.keys()) }
+    setEvents(kept)
   }
   useEffect(startRead, [nonce])
   const ensureEvents = useCallback((id: string) => {
@@ -746,11 +902,42 @@ export function TimelineLanesScreen({
 
   const profiles = useMemo(() => uniqSorted(allLanes.map((l) => l.task?.runner_profile ?? null)), [allLanes])
   const workflowIds = useMemo(() => uniqSorted(allLanes.map((l) => l.task?.workflow_id ?? null)), [allLanes])
+  /**
+   * THE NAMES THE WORKFLOWS LIST SHOWS (live QA RT-25, 2026-10-11): the
+   * Workflow filter and the group heads were bare `wf_…` ids beside a list
+   * that calls them PERM-2 and S9. A workflow's label is its step tasks'
+   * `metadata.unit` (`workflowLabel`), from the workflow read.
+   */
+  const wfNames = useMemo(() => {
+    const m = new Map<string, string>()
+    for (const [id, w] of workflows) {
+      if (w.status !== 'ok') continue
+      const label = workflowLabel(w.read.workflow, new Map(w.read.tasks.map((t) => [t.id, t])))
+      if (label !== null) m.set(id, label)
+    }
+    return m
+  }, [workflows])
 
+  /**
+   * A NEW WINDOW, WITH THE WAY BACK TO THE SPAN IT STARTED FROM (live QA
+   * RT-22b, 2026-10-11): each `+` and `−` made the window it left the way
+   * back, so the address carried the last zoom, encoded once more, and the
+   * chip went back one click instead of to the span. The first zoom's way
+   * back is kept until a span is picked.
+   */
+  const toWindow = (since: number, until: number) => {
+    const z = zoomedTo(view, since, until)
+    setView(view.back !== null && view.since !== null ? { ...z, back: view.back } : z)
+  }
   const zoomBy = (factor: number) => {
     const at = Date.now()
     const z = zoomWindow(win, factor, at, view.since === null || win.until >= at - 60_000)
-    setView(zoomedTo(view, z.since, z.until))
+    toWindow(z.since, z.until)
+  }
+  /** Half a window earlier (-1) or later (+1), never past now (RT-22c: there was no pan). */
+  const panBy = (dir: -1 | 1) => {
+    const p = panWindow(win, dir, Date.now())
+    toWindow(p.since, p.until)
   }
 
   return (
@@ -776,7 +963,8 @@ export function TimelineLanesScreen({
       <TimelinePages at="lanes" otherTitle={bothRanges(strip, win.since, win.until) ?? undefined} />
 
       <CountNote>
-        {rangeWords(win.since, win.until)} · {shown === null ? 'reading…' : `${allLanes.length} ${allLanes.length === 1 ? 'lane' : 'lanes'}`}
+        {reach === null ? rangeWords(win.since, win.until) : `newest ${shown?.rows.length ?? 0} attempts, ${rangeWords(reach, win.until)} of ${rangeWords(win.since, win.until)}`} ·{' '}
+        {shown === null ? 'reading…' : `${lanes.length === allLanes.length ? '' : `${lanes.length} of `}${allLanes.length} ${allLanes.length === 1 ? 'lane' : 'lanes'}`}
       </CountNote>
 
       {madeOnOutcomes(query) && (
@@ -794,11 +982,17 @@ export function TimelineLanesScreen({
           onChange={(s) => setView({ ...view, span: s, since: null, until: null, back: null })}
         />
         <span className="tl-zoom">
+          <Button size="sm" aria-label="Earlier" title="Half a window earlier" onClick={() => panBy(-1)}>
+            ‹
+          </Button>
           <Button size="sm" aria-label="Zoom out" onClick={() => zoomBy(2)}>
             −
           </Button>
           <Button size="sm" aria-label="Zoom in" onClick={() => zoomBy(0.5)}>
             +
+          </Button>
+          <Button size="sm" aria-label="Later" title="Half a window later, up to now" disabled={win.until >= anchor - 60_000} onClick={() => panBy(1)}>
+            ›
           </Button>
         </span>
         <TlPicker
@@ -815,7 +1009,7 @@ export function TimelineLanesScreen({
             <option value="">any</option>
             {[...workflowIds, ...(view.wf !== null && !workflowIds.includes(view.wf) ? [view.wf] : [])].map((w) => (
               <option key={w} value={w}>
-                {w}
+                {wfNames.has(w) ? `${wfNames.get(w)!} · ${w}` : w}
               </option>
             ))}
           </select>
@@ -848,7 +1042,7 @@ export function TimelineLanesScreen({
         </p>
       )}
 
-      <OutcomeStrip strip={strip} lanes={allLanes} view={view} since={win.since} until={win.until} />
+      <OutcomeStrip strip={strip} lanes={allLanes} view={view} since={win.since} until={win.until} reach={reach} />
 
       {days > SUGGEST_OUTCOMES_DAYS && (
         <p className="tl-note tl-suggest">
@@ -901,13 +1095,14 @@ export function TimelineLanesScreen({
               until={win.until}
               nowAt={anchor}
               summary={laneSummary(blocks, view.by)}
-              onZoom={(a, b) => setView(zoomedTo(view, a, b))}
+              onZoom={toWindow}
               onTrackPx={setTrackPx}
             />
             {blocks.map((b) => (
               <Fragment key={b.key}>
                 <GroupHead
                   block={b}
+                  name={b.kind === 'workflow' ? (wfNames.get(b.key) ?? null) : null}
                   workflow={b.kind === 'workflow' ? (workflows.get(b.key) ?? null) : null}
                   onRetry={() => retryWorkflow(b.key)}
                 />
@@ -980,6 +1175,30 @@ export function TimelineLanesScreen({
   )
 }
 
+/**
+ * THE REACH OF A SHORT READ (live QA RT-1): the oldest attempt's creation
+ * time when a next page remains, else null. The head prints this in place of
+ * the span, so "the lanes cover Jul 13–Oct 11" is never said of a read that
+ * reaches back five hours.
+ */
+export function drawnReach(read: { rows: readonly AttemptRow[]; next: string | null } | null): number | null {
+  if (read === null || read.next === null || read.rows.length === 0) return null
+  let oldest = Infinity
+  for (const a of read.rows) {
+    const t = Date.parse(a.created_at)
+    if (Number.isFinite(t) && t < oldest) oldest = t
+  }
+  return Number.isFinite(oldest) ? oldest : null
+}
+
+/** A workflow read whose workflow and every step have ended: nothing in it can change. */
+export function workflowSettled(w: WorkflowState): boolean {
+  if (w.status !== 'ok') return false
+  if (!WORKFLOW_ENDED.has(w.read.workflow.state)) return false
+  return w.read.tasks.every((t) => TERMINAL_STATES.has(t.state))
+}
+const WORKFLOW_ENDED = new Set(['SUCCEEDED', 'FAILED', 'CANCELLED'])
+
 function uniqSorted(xs: ReadonlyArray<string | null>): string[] {
   return Array.from(new Set(xs.filter((x): x is string => x !== null))).sort()
 }
@@ -1017,6 +1236,17 @@ function TlPicker({
   // The element's own `open` is the state: the browser toggles it from the
   // summary, and these two only ever close it.
   const box = useRef<HTMLDetailsElement | null>(null)
+  // ESCAPE FROM ANYWHERE WHILE IT IS OPEN (live QA RT-23): the keydown below
+  // fires only with focus inside, and a pointer that opened it leaves focus
+  // on the page in some browsers, so Escape did nothing.
+  const [isOpen, setIsOpen] = useState(false)
+  useEscapeLayer(isOpen, () => {
+    const el = box.current
+    if (el === null) return
+    el.open = false
+    setIsOpen(false)
+    el.querySelector('summary')?.focus()
+  })
   useEffect(() => {
     const away = (e: PointerEvent) => {
       const el = box.current
@@ -1029,6 +1259,7 @@ function TlPicker({
     <details
       ref={box}
       className={selected.length > 0 ? 'tl-flt tl-pick is-on' : 'tl-flt tl-pick'}
+      onToggle={(e) => setIsOpen(e.currentTarget.open)}
       onKeyDown={(e) => {
         const el = box.current
         if (e.key !== 'Escape' || el === null || !el.open) return
@@ -1041,7 +1272,10 @@ function TlPicker({
       <summary>
         {label} <i>{summary}</i>
       </summary>
-      <div className="tl-pop" role="group" aria-label={label}>
+      {/* EVERY OPTION IN VIEW (live QA RT-23): at 320px the State list ended
+          after `failed`, with `cancelled` and `dead-lettered` scrolled out of
+          a panel that gave no sign it scrolls. */}
+      <div className="tl-pop" role="group" aria-label={label} style={{ maxHeight: 'min(70vh, 480px)' }}>
         {options.length === 0 && <span className="tl-q">none in the rows read</span>}
         {options.map((o) => (
           <label key={o}>
@@ -1186,11 +1420,22 @@ function Axis({
   )
 }
 
-function GroupHead({ block, workflow, onRetry }: { block: LaneBlock; workflow: WorkflowState | null; onRetry: () => void }) {
+function GroupHead({
+  block,
+  workflow,
+  onRetry,
+  name = null,
+}: {
+  block: LaneBlock
+  workflow: WorkflowState | null
+  onRetry: () => void
+  /** The workflow's label, when its steps carry one (RT-25); the id is then its title. */
+  name?: string | null
+}) {
   let title: string
   let note: ReactNode
   if (block.kind === 'workflow') {
-    title = block.key
+    title = name ?? block.key
     // A FAILED WORKFLOW READ IS SAID IN WORDS, with the route in the title
     // only (QA G3-07): the subtitle printed the raw route and status, which
     // the label's width cut to `steps — (/v1/workflows/wf_55…`.
@@ -1227,7 +1472,7 @@ function GroupHead({ block, workflow, onRetry }: { block: LaneBlock; workflow: W
         <b>
           {state !== null && state in STATE_MARK && <StateMark state={state as TaskState} bare />}
           {block.kind === 'workflow' && workflow?.status === 'ok' ? (
-            <a href={`/workflows/${encodeURIComponent(block.key)}`}>{title}</a>
+            <a href={`/workflows/${encodeURIComponent(block.key)}`} title={block.key}>{title}</a>
           ) : (
             title
           )}
@@ -1248,13 +1493,16 @@ function laneNote(lane: Lane, events: EventsRead | null, single: Task | string |
         : single === null
           ? taskPageFailed
             ? 'the task list read failed'
-            : `not on the task page, and over the ${MISSING_TASK_READS}-read cap or still reading`
+            : `older than the task read reached, and over the ${MISSING_TASK_READS}-read cap or still reading`
           : 'not read'
     return `profile —, task not read (${why})`
   }
   // THE ID IS THE LABEL'S TOOLTIP, not the note's first word (walkthrough G).
   const parts = [t.runner_profile]
   if (lane.neverRan) parts.push(TERMINAL_STATES.has(t.state) ? 'never ran · no attempt' : 'never ran yet · no attempt')
+  // THE TASK'S COUNT BESIDE THE SPAN'S (live QA RT-24): `2 attempts` sat over
+  // an inspector saying `current generation 4`; two were in the span read.
+  else if (t.attempt_count > lane.attempts.length) parts.push(`${lane.attempts.length} of ${t.attempt_count} attempts in this span`)
   else if (lane.attempts.length > 1) parts.push(`${lane.attempts.length} attempts`)
   if (!lane.neverRan && events?.status === 'error') {
     parts.push(`fence and cancel marks: — this lane's events read failed (${events.httpStatus ?? 'no answer'})`)
@@ -1332,20 +1580,21 @@ function LaneRow({
             {name}
           </button>
           {t !== null && <StateMark state={t.state} bare />}
-          {skipped ? (
-            <span className="tl-dur is-skip" title={`${SKIPPED_WORD}: its agent was not run, and its attempt only published the reviewed work`}>
+          {!skipped && held !== null && (
+            <span className="tl-dur" title="Time its attempts held capacity">
               {' · '}
-              {`not run (verdict ${(t !== null ? gateVerdictOf(t) : null) ?? '—'})`}
+              {formatDuration(held)}
             </span>
-          ) : (
-            held !== null && (
-              <span className="tl-dur" title="Time its attempts held capacity">
-                {' · '}
-                {formatDuration(held)}
-              </span>
-            )
           )}
         </b>
+        {/* THE VERDICT NOTE HAS ITS OWN LINE (live QA RT-9, 2026-10-11): beside
+            the name it took the name's room, and `fix` and `re-review` were
+            cut to `f.` and `r.` with the label column half empty. */}
+        {skipped && (
+          <small className="tl-dur is-skip" title={`${SKIPPED_WORD}: its agent was not run, and its attempt only published the reviewed work`}>
+            {`not run (verdict ${(t !== null ? gateVerdictOf(t) : null) ?? '—'})`}
+          </small>
+        )}
         <small>{laneNote(lane, events, single, taskPageFailed)}</small>
         {events?.status === 'error' && !lane.neverRan && (
           <button type="button" className="c-link tl-retry" onClick={() => onRetry(lane.taskId)}>
@@ -1357,6 +1606,9 @@ function LaneRow({
         {segs.map((s, i) => (
           <Seg key={i} s={s} since={since} until={until} wide={wide} multi={lane.attempts.length > 1} />
         ))}
+        {/* A MARK IS REACHABLE (live QA RT-24, 2026-10-11): `title`-only spans
+            took no focus and did nothing on a click. Each is a control now,
+            named by its words, that opens the lane's inspector. */}
         {marks.map((m, i) => (
           <span
             key={`m${i}`}
@@ -1364,6 +1616,15 @@ function LaneRow({
             data-mark={m.kind}
             style={{ left: `${lefts[i]!}%` }}
             title={`${MARK_WORD[m.kind]} ${clock(m.at, wide)}`}
+            role="button"
+            tabIndex={0}
+            aria-label={`${name}: ${MARK_WORD[m.kind]} ${clock(m.at, wide)}`}
+            onClick={onSelect}
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' && e.key !== ' ') return
+              e.preventDefault()
+              onSelect()
+            }}
           >
             <MarkIcon mark={MARK_OF[m.kind]} />
             {m.kind === 'cancel_requested' && <span className="tl-tag">{`cancel asked ${clock(m.at, wide)}`}</span>}
@@ -1421,7 +1682,22 @@ export function bothRanges(strip: StripRead, since: number, until: number): stri
   return `Outcomes reads ${ledgerRange(strip.data)}${aligned === null ? '' : ` (${aligned})`}; these lanes read ${rangeWords(since, until)}`
 }
 
-function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; lanes: readonly Lane[]; view: LanesView; since: number; until: number }) {
+function OutcomeStrip({
+  strip,
+  lanes,
+  view,
+  since,
+  until,
+  reach = null,
+}: {
+  strip: StripRead
+  lanes: readonly Lane[]
+  view: LanesView
+  since: number
+  until: number
+  /** The oldest attempt drawn when the read stopped short of the span (RT-1). */
+  reach?: number | null
+}) {
   const fenced = lanes.reduce((n, l) => n + l.segs.filter((s) => s.kind === 'cut').length, 0)
   const drawn = lanes.filter((l) => !l.neverRan)
   const unread = drawn.filter((l) => !l.eventsRead).length
@@ -1508,7 +1784,8 @@ function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; 
           <>
             Decided counts cover <span className="tl-strip-range">{ledgerRange(strip.data)}</span>
             {aligned !== null && `, ${aligned} as on Outcomes`}; the lanes cover{' '}
-            <span className="tl-lanes-range">{rangeWords(since, until)}</span>. Parks and fences count only the lanes drawn.{' '}
+            <span className="tl-lanes-range">{rangeWords(reach ?? since, until)}</span>
+            {reach !== null && ', the newest attempts of the span, with a next page unread'}. Parks and fences count only the lanes drawn.{' '}
           </>
         ) : (
           <>Decided counts cover {rangeWords(since, until)}; parks and fences count only the lanes drawn. </>
@@ -1539,6 +1816,8 @@ function LaneDetail({
   useEffect(() => {
     if (!lane.neverRan) onRead()
   }, [lane.taskId, lane.neverRan, onRead])
+  // ESCAPE CLOSES IT (live QA RT-23, 2026-10-11): only its × did.
+  useEscapeLayer(true, onClose)
   const t = lane.task
   const name = t !== null ? agentName(t) : lane.taskId
   const href = `/agents/recent/${encodeURIComponent(lane.taskId)}/attempts`

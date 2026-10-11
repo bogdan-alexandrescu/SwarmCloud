@@ -90,7 +90,9 @@ function holders(): HoldersBoard {
       truncated: false,
       active_beyond_window: 0,
     } as unknown as LeasePage,
-    pools: [pool('global', 2), pool('resource:standard', 2)],
+    // `resource:browser` exists and nobody holds it: the filter's real zero.
+    // A pool the capacity read does not list is not a zero (live QA CAP-5).
+    pools: [pool('global', 2), pool('resource:standard', 2), pool('resource:browser', 0)],
     poolsDetail: null,
   }
 }

@@ -6,6 +6,7 @@
     kubernetes/render.py job --tenant eng --profile browser \
         --task task_9f3a --attempt att_7b21 --lease lease_c4 --generation 3
     kubernetes/render.py identity --tenant eng   # namespace, GSA, KSA
+    kubernetes/render.py swarm-system            # the live relay's ingress
 
 Every manifest here is a template with `__TOKEN__` placeholders rather than a
 Helm chart or a kustomization, for one reason: the file on disk has to be
@@ -284,6 +285,15 @@ _VALUE_PATTERNS: dict[str, re.Pattern[str]] = {
         r"^(offline-render-not-for-apply|operator-supplied"
         r"|gke/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z0-9-]{1,63}/[a-z0-9-]{1,63})$"
     ),
+    # swarm-api's Direct VPC egress range, admitted to the live relay in
+    # swarm-system; `swarm_system_values` parses it and holds it to one private
+    # subnet. The source names where apply.sh read it:
+    # run/<project>/<region>/<service>/<subnetwork>.
+    "SWARM_API_EGRESS_CIDR": re.compile(r"^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$"),
+    "SWARM_API_EGRESS_SOURCE": re.compile(
+        r"^(offline-render-not-for-apply|operator-supplied"
+        r"|run/[a-z][a-z0-9-]{4,28}[a-z0-9]/[a-z]+-[a-z]+[0-9]/[a-z][a-z0-9-]{0,62}/[a-z][a-z0-9-]{0,62})$"
+    ),
     "QUOTA_PODS": re.compile(r"^[0-9]{1,6}$"),
     "QUOTA_JOBS": re.compile(r"^[0-9]{1,6}$"),
     "QUOTA_CPU": re.compile(r"^[0-9]{1,6}m?$"),
@@ -361,6 +371,10 @@ TENANT_FILES = (
     "rbac/dispatcher-rbac.yaml",
     "network-policies/default-deny.yaml",
     "network-policies/allow-egress.yaml",
+    # The live browser's path to its relay (docs/design/live-browser.md §8.3).
+    # LAST, so every document before it renders exactly as it did before the
+    # live browser existed (test_live_netpol.py holds the digests).
+    "network-policies/allow-live-egress.yaml",
 )
 
 #: The older worker identity -- LEGACY_KSA_NAME's ServiceAccount and the
@@ -411,6 +425,18 @@ POLICY_FILES = (
     "policies/workspace-provisioner-scope.yaml",
     "rbac/provisioner-rbac.yaml",
 )
+
+#: `swarm-system`'s NetworkPolicies, which `kubernetes/apply.sh --swarm-system`
+#: applies: a default deny for ingress, and TCP 8443 to the live relay from
+#: labelled tenant pods and from swarm-api's Direct VPC egress range
+#: (docs/design/live-browser.md §8.3). The namespace and the relay are lane
+#: L8's (`kubernetes/swarm-system/`); these two only decide who reaches them.
+SWARM_SYSTEM_FILES = ("network-policies/swarm-system-live.yaml",)
+
+#: What an offline `swarm-system` render admits when it is told no range:
+#: RFC 5737 TEST-NET-3, never a plausible subnet, and marked with
+#: OFFLINE_NETWORK_SOURCE so `kubernetes/apply.sh` refuses to apply it.
+OFFLINE_SWARM_API_EGRESS_CIDR = "203.0.113.128/25"
 
 #: The keyless identity the `swarm-workspace-apply` Cloud Build job runs as
 #: (docs/workspaces.md §2.3). Its account id is fixed by the bootstrap layer.
@@ -595,6 +621,62 @@ def network_values(args: argparse.Namespace) -> dict[str, str]:
             "the first entry of its -localip, not the second."
         )
     return {**given, "NETWORK_SOURCE": source or "operator-supplied"}
+
+
+#: The only space swarm-api's Direct VPC egress range may come from: a GCP
+#: subnet's primary range is RFC 1918 here (terraform's `subnet_cidr`,
+#: 10.40.0.0/20 in dev, 10.60.0.0/20 in prod). Anything wider or public would
+#: admit the internet's addresses to the relay the moment any path carried
+#: them, which is not a value to accept on the strength of a flag.
+_PRIVATE_SPACE = tuple(
+    ipaddress.IPv4Network(n) for n in ("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+)
+
+
+def swarm_system_values(args: argparse.Namespace) -> dict[str, str]:
+    """swarm-api's egress range for `swarm-system-live.yaml`: given, or offline.
+
+    Given, it must be one canonical private subnet and arrive with the source
+    apply.sh read it from. None given renders OFFLINE_SWARM_API_EGRESS_CIDR,
+    marked not-for-apply -- the same contract as the tenant network.
+    """
+    cidr = str(getattr(args, "swarm_api_egress_cidr", "") or "")
+    source = str(getattr(args, "swarm_api_egress_source", "") or "")
+    if not cidr:
+        if source:
+            raise RenderError(
+                f"render: --swarm-api-egress-source {source!r} names where the range came "
+                "from, but no --swarm-api-egress-cidr was passed with it."
+            )
+        return check_values(
+            {
+                "SWARM_API_EGRESS_CIDR": OFFLINE_SWARM_API_EGRESS_CIDR,
+                "SWARM_API_EGRESS_SOURCE": OFFLINE_NETWORK_SOURCE,
+            }
+        )
+    if source == OFFLINE_NETWORK_SOURCE:
+        raise RenderError(
+            f"render: --swarm-api-egress-source {OFFLINE_NETWORK_SOURCE} marks a render with NO "
+            "range; this one was given one. Name where it came from."
+        )
+    # Shape first: check_values refuses a newline or anything else that is not
+    # a CIDR before it is parsed or echoed into an error.
+    check_values({"SWARM_API_EGRESS_CIDR": cidr})
+    try:
+        network = ipaddress.IPv4Network(cidr, strict=True)
+    except ValueError as exc:
+        raise RenderError(
+            f"render: --swarm-api-egress-cidr {cidr!r} is not one canonical IPv4 subnet: {exc}"
+        ) from exc
+    if not any(network.subnet_of(space) for space in _PRIVATE_SPACE):
+        raise RenderError(
+            f"render: --swarm-api-egress-cidr {network} is not inside RFC 1918 space. It is "
+            "admitted to the live relay on 8443; swarm-api's Direct VPC egress subnet is "
+            "private, and a public or wider range is not that subnet."
+        )
+    return check_values(
+        {"SWARM_API_EGRESS_CIDR": str(network), "SWARM_API_EGRESS_SOURCE": source or "operator-supplied"}
+    )
 
 
 def tenant_values(args: argparse.Namespace) -> dict[str, str]:
@@ -1174,6 +1256,31 @@ def main(argv: list[str] | None = None) -> int:
     )
     add_tenant_arguments(identity)
 
+    # swarm-system's ingress (docs/design/live-browser.md §8.3). Its one input
+    # is READ by kubernetes/apply.sh --swarm-system from swarm-api's service
+    # and subnet, and refused on that script's command line, like the tenant
+    # network.
+    system = sub.add_parser(
+        "swarm-system",
+        help="swarm-system's default-deny ingress and the live relay's TCP 8443",
+        allow_abbrev=False,
+    )
+    system.add_argument(
+        "--swarm-api-egress-cidr",
+        default="",
+        help=(
+            "swarm-api's Direct VPC egress subnet range: the ipCidrRange of the "
+            "subnetwork in the run.googleapis.com/network-interfaces annotation of "
+            "`gcloud run services describe swarm-api`. Omitted, renders a "
+            "documentation range marked not-for-apply."
+        ),
+    )
+    system.add_argument(
+        "--swarm-api-egress-source",
+        default="",
+        help="where the range came from: run/<project>/<region>/<service>/<subnetwork> from apply.sh",
+    )
+
     job = sub.add_parser("job", help="one worker Job", allow_abbrev=False)
     add_tenant_arguments(job)
     job.add_argument("--profile", required=True, choices=sorted(RUNNER_PROFILES))
@@ -1258,6 +1365,16 @@ def main(argv: list[str] | None = None) -> int:
         sys.stdout.write(f"{values['NAMESPACE']} {values['GSA_EMAIL']} {values['KSA_NAME']}\n")
     elif args.command == "policies":
         sys.stdout.write(render_files(POLICY_FILES, policy_values(args)))
+    elif args.command == "swarm-system":
+        values = swarm_system_values(args)
+        if values["SWARM_API_EGRESS_SOURCE"] == OFFLINE_NETWORK_SOURCE:
+            print(
+                "render: WARNING: no swarm-api egress range was given, so the relay's ingress "
+                f"admits a documentation range and is marked {OFFLINE_NETWORK_SOURCE}. Fine for "
+                "lint; wrong for a cluster. kubernetes/apply.sh --swarm-system reads the real one.",
+                file=sys.stderr,
+            )
+        sys.stdout.write(render_files(SWARM_SYSTEM_FILES, values))
     elif args.command == "job":
         sys.stdout.write(render_job(args))
     return 0
