@@ -61,9 +61,10 @@ export interface ApiError {
    * refused" without each caller saying which: a refused 422 drew "This is a
    * failure to read the platform", a `not read` mark, and a Try again that
    * resubmitted the same invalid input. A caller that posts with its own
-   * `fetch` (Submit.tsx) sets it beside `classifyFailure`.
+   * `fetch` (Submit.tsx) sets it beside `classifyFailure`. PATCH is the
+   * schedule edit route `write()` also accepts (docs/schedules.md §7.1).
    */
-  method?: 'POST' | 'PUT' | 'DELETE'
+  method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE'
 }
 
 /** Whether a failure is a write's: see `ApiError.method`. */

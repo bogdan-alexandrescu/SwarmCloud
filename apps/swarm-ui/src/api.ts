@@ -5746,7 +5746,22 @@ export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ au
  */
 export async function loadApprovals(options: { frame?: boolean } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
   if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
-  return read(route('/v1/approvals'), (d) => d.approvals.length === 0, { frame: options.frame === true })
+  // The frame reads this on every page. A 200 without an `approvals` list is
+  // not a measured empty inbox, and passing it on as one would draw "nothing
+  // waiting" over an answer nobody read; it is a failure, as an unreadable
+  // body is.
+  const r = await read<{ approvals: ApprovalItem[] }>(
+    route('/v1/approvals'),
+    (d) => Array.isArray(d.approvals) && d.approvals.length === 0,
+    { frame: options.frame === true },
+  )
+  if (r.status === 'ok' && !Array.isArray(r.data.approvals)) {
+    return {
+      status: 'error',
+      error: { kind: 'server_error', httpStatus: 200, code: null, message: 'The approvals answer carried no list of approvals.' },
+    }
+  }
+  return r
 }
 
 /**
