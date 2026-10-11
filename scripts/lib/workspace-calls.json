@@ -48,7 +48,9 @@
       "summary": "Nothing by default: a call no shape below matches stops the run. So does any argument naming a resource on the shared deny-list (scripts/lib/common.sh SHARED_DENY_LIST), whatever the call.",
       "known_unused": [
         {"tool": "gcloud", "command": ["identity", "groups", "describe"], "why": "register-tenant.sh checks a GROUP exists (§1); --workspace registers a person and skips it (docs/workspaces.md §4.1)"},
-        {"tool": "gcloud", "command": ["secrets", "update"], "why": "printed as advice to an operator when a provider secret is unlabelled; --workspace grants no provider secret (§8)"}
+        {"tool": "gcloud", "command": ["secrets", "update"], "why": "printed as advice to an operator when a provider secret is unlabelled; --workspace grants no provider secret (§8)"},
+        {"tool": "gcloud", "command": ["run", "services", "describe"], "why": "kubernetes/apply.sh --swarm-system reads swarm-api's Direct VPC egress subnet for the live relay's ingress (docs/design/live-browser.md §8.3); --workspace runs apply.sh --tenant only"},
+        {"tool": "gcloud", "command": ["compute", "networks", "subnets", "describe"], "why": "kubernetes/apply.sh --swarm-system reads that subnet's range for the live relay's ingress (docs/design/live-browser.md §8.3); --workspace runs apply.sh --tenant only"}
       ],
       "shapes": []
     },
