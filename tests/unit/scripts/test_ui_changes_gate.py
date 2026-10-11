@@ -261,17 +261,34 @@ def test_the_list_carries_every_pattern_the_old_filter_did():
     }
 
 
-def test_the_shared_reading_of_the_list_agrees_with_the_step(tmp_path):
-    """application_paths.reaches() is what other tests ask; it must say what
-    the step says, for a sample under each pattern and a near miss of each."""
+def _shared_reading_samples() -> list[str]:
+    """A sample under each pattern in APP_PATHS and a near miss of each."""
     samples = []
     for pattern in app_paths():
         if pattern.endswith("/**"):
             samples += [pattern[:-2] + "a/b.txt", pattern[:-3] + "x/b.txt"]
         else:
             samples += [pattern, pattern + ".orig"]
-    for i, sample in enumerate(samples):
-        sub = tmp_path / str(i)
-        sub.mkdir()
-        outputs = _pull_request(sub, sample)
-        assert (outputs["app"] == "true") == reaches(sample), (sample, outputs)
+    return samples
+
+
+# One case per sample rather than one loop over all of them (box 102 of #888):
+# the loop ran the step ~60 times serially in one test, about 80 s, the
+# slowest test in scripts/changed-guards.sh's selection. As cases, xdist
+# spreads them across workers. Built at collection time from the same list.
+SHARED_READING_SAMPLES = _shared_reading_samples()
+
+
+def test_the_shared_reading_samples_cover_every_pattern():
+    """An empty parametrisation is a skip, not a failure, so the sample set is
+    held here. MUTATION: make _shared_reading_samples() return []."""
+    assert SHARED_READING_SAMPLES
+    assert len(SHARED_READING_SAMPLES) == 2 * len(app_paths())
+
+
+@pytest.mark.parametrize("sample", SHARED_READING_SAMPLES, ids=SHARED_READING_SAMPLES)
+def test_the_shared_reading_of_the_list_agrees_with_the_step(tmp_path, sample):
+    """application_paths.reaches() is what other tests ask; it must say what
+    the step says, for a sample under each pattern and a near miss of each."""
+    outputs = _pull_request(tmp_path, sample)
+    assert (outputs["app"] == "true") == reaches(sample), (sample, outputs)
