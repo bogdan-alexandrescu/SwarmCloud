@@ -589,7 +589,8 @@ describe('the expanded canvas', () => {
     const open = inspector!.querySelector<HTMLAnchorElement>('a.wf-inspect-run')
     expect(open, 'the inspector carries no link to the run').toBeTruthy()
     expect(open!.textContent).toBe('Open agent →')
-    expect(open!.getAttribute('href')).toBe('#work/task/task_scan_a')
+    // A running task opens over Live; a finished one over Recent (WF-21).
+    expect(open!.getAttribute('href')).toBe('/agents/live/task_scan_a')
     // Let the attempt read the inspector started settle inside the test.
     await waitFor(() =>
       expect(inspector!.querySelector('[data-scrub="attempt"]')!.textContent).not.toContain('reading'),

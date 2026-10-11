@@ -62,7 +62,9 @@ test('a workflow quiet past the threshold with nothing in flight is reported', (
   assert.equal(check.status, 'found')
   assert.equal(check.problems.length, 1)
   const p = check.problems[0]
-  assert.match(p.headline, /1 workflow has not advanced in 12 minutes/)
+  // THE AGE, NOT THE THRESHOLD (live QA OV-9, 2026-10-11): twenty minutes
+  // quiet, past a twelve-minute threshold, says twenty.
+  assert.match(p.headline, /1 workflow has not advanced for 20 minutes/)
   assert.equal(p.n, 1)
   // `#work/workflows`, NOT `#agents/workflows`.
   //
@@ -85,7 +87,10 @@ test('a workflow quiet past the threshold with nothing in flight is reported', (
   // already enforced globally: `nav.links.test.tsx` reads every internal href in
   // the app and fails on any that uses a retired id or names a pane that does
   // not exist. One exact value here, one general rule there.
-  assert.equal(p.href, '#work/workflows')
+  //
+  // ONE STALLED WORKFLOW OPENS THAT WORKFLOW (live QA OV-9): the unfiltered
+  // list left the reader to find it. Several open the list (next test).
+  assert.equal(p.href, '#work/workflows?wf=wf_5e5ad3b6f7da4299a839')
   // The workflow is NAMED. "A workflow is stalled" without saying which one
   // sends the reader to a list to find it.
   assert.match(p.detail, /wf_5e5ad3b6f7da4299a839/)
@@ -578,3 +583,147 @@ test('OV-10: every parked item opens the waiting agents, and says so', () => {
     assert.equal(p.linkLabel, 'waiting agents', p.headline)
   }
 })
+
+// --------------------------------------------------------------------------
+// LIVE QA, OVERVIEW (2026-10-11): OV-2, OV-3, OV-8, OV-9
+// --------------------------------------------------------------------------
+
+/** A row as the checks read it, created and ended at the given ages. */
+function ended(id, state, { createdMinAgo, endedMinAgo, lastError = null }) {
+  return {
+    ...task({ id, state, lastError }),
+    created_at: agoIso(createdMinAgo * 60),
+    updated_at: agoIso(endedMinAgo * 60),
+    completed_at: agoIso(endedMinAgo * 60),
+  }
+}
+
+/**
+ * The live phone: 50 newest-created rows, none FAILED, with more behind
+ * them, and 11 tasks that failed in the last 24h -- created earlier.
+ */
+function phonePage({ withFailedRead = true } = {}) {
+  const rows = Array.from({ length: 50 }, (_, i) => ended(`ok_${i}`, 'SUCCEEDED', { createdMinAgo: 10 + i, endedMinAgo: 5 + i }))
+  const failed = Array.from({ length: 11 }, (_, i) =>
+    ended(`bad_${i}`, 'FAILED', { createdMinAgo: 300 + i, endedMinAgo: 20 + i, lastError: `error ${i}` }),
+  )
+  return {
+    tasks: rows,
+    next_page_token: 'more',
+    tenant_id: 'u-test',
+    ...(withFailedRead ? { byState: [{ state: 'FAILED', tasks: failed, complete: true }] } : {}),
+  }
+}
+
+/**
+ * OV-2: the phone dropped the failed-tasks check ("8/8 · 2 found something"
+ * against 3 on the desktop) because none of its 50 newest was FAILED.
+ *
+ * MUTATION: count the page alone (drop the `byState` branch).
+ */
+test('OV-2: a phone page with no failure on it still finds the 11 the FAILED read holds', () => {
+  const checks = deriveChecks(inputs({ tasks: ok(phonePage()), stats: loading_() }), NOW)
+  const check = checkNamed(checks, 'Failures')
+  assert.equal(check.status, 'found')
+  const [p] = check.problems
+  assert.equal(p.n, 11)
+  assert.match(p.headline, /^11 failed tasks in the last 24 hours/)
+  // Every FAILED task was read, so the figure is not a lower bound.
+  assert.doesNotMatch(p.headline, /≥/)
+})
+
+/** A FAILED read with more behind it is a lower bound, and says from when. */
+test('OV-2: a FAILED read with more behind it is ≥N, and says how far back it reaches', () => {
+  const page = phonePage()
+  page.byState[0].complete = false
+  const [p] = checkNamed(deriveChecks(inputs({ tasks: ok(page) }), NOW), 'Failures').problems
+  assert.match(p.headline, /^≥11 failed tasks in the last 24 hours/)
+  assert.match(p.headline, /FAILED tasks created since \d\d:\d\d UTC read/)
+})
+
+/**
+ * OV-2, the fallback: the FAILED read did not land. A partial page with no
+ * failure on it is clear only when the state counts say no task ever FAILED.
+ *
+ * MUTATION: return `clear` for an empty partial page whatever stats say.
+ */
+test('OV-2: without the FAILED read, a partial page is blind while stats count failures', () => {
+  const stats = (FAILED) => ok({ tenant_id: 'u-test', tasks_by_state: { FAILED }, dispatch_paused: false, limits: {}, generated_at: agoIso(0) })
+  const blind = checkNamed(deriveChecks(inputs({ tasks: ok(phonePage({ withFailedRead: false })), stats: stats(83) }), NOW), 'Failures')
+  assert.equal(blind.status, 'blind')
+  assert.match(blind.why, /83 FAILED/)
+  // The control: an exact zero clears it.
+  const clear = checkNamed(deriveChecks(inputs({ tasks: ok(phonePage({ withFailedRead: false })), stats: stats(0) }), NOW), 'Failures')
+  assert.equal(clear.status, 'clear')
+})
+
+/**
+ * OV-3: "newest 15m ago" was the newest END, and "Newest:" the first FAILED
+ * row in creation order -- another failure's error.
+ *
+ * MUTATION: take `failed[0]` without sorting by `completed_at`.
+ */
+test('OV-3: the Newest error is the failure that ended last, not the one created last', () => {
+  const rows = [
+    // Created last, ended earlier.
+    ended('created_last', 'FAILED', { createdMinAgo: 30, endedMinAgo: 26, lastError: 'merge_conflict: pull request #1084' }),
+    // Created earlier, ended last.
+    ended('ended_last', 'FAILED', { createdMinAgo: 90, endedMinAgo: 15, lastError: 'checks_failed on LB-L6' }),
+  ]
+  const [p] = checkNamed(deriveChecks(inputs({ tasks: ok(taskPage(rows)) }), NOW), 'Failures').problems
+  assert.match(p.headline, /newest 15m ago/)
+  assert.match(p.detail, /Newest: checks_failed on LB-L6$/)
+})
+
+/**
+ * OV-8: `reasonCopy` ends in a full stop and the caller adds ". ", so the
+ * parked item read "Holds no capacity.. The first becomes eligible".
+ *
+ * MUTATION: drop the trailing-stop strip in `whyEach`.
+ */
+test('OV-8: a parked item never prints a double full stop', () => {
+  const clock = [...PARK_CLEARS_ITSELF][0]
+  const person = [...PARK_NEEDS_A_PERSON][0]
+  const checks = deriveChecks(
+    inputs({
+      tasks: ok(
+        taskPage([
+          task({ id: 'p1', state: 'PARKED', parkReason: clock, nextEligibleAt: agoIso(-300) }),
+          task({ id: 'p2', state: 'PARKED', parkReason: person }),
+        ]),
+      ),
+    }),
+    NOW,
+  )
+  const parked = checkNamed(checks, 'Parked work').problems
+  assert.equal(parked.length, 2)
+  for (const p of parked) assert.doesNotMatch(p.detail, /\.\./, p.detail)
+})
+
+/**
+ * OV-9: two stalled workflows -- the headline gives the longest quiet, the
+ * detail names both, and the link is the list (one workflow opens itself,
+ * above).
+ */
+test('OV-9: several stalled workflows are all named, with the longest quiet', () => {
+  const checks = deriveChecks(
+    inputs({
+      workflows: ok(
+        workflowPage([
+          workflow({ id: 'wf_older', counts: { PARKED: 2 }, quietSeconds: 30 * 60 }),
+          workflow({ id: 'wf_newer', counts: { PARKED: 1 }, quietSeconds: 15 * 60 }),
+        ]),
+      ),
+    }),
+    NOW,
+  )
+  const [p] = checkNamed(checks, 'Workflows').problems
+  assert.match(p.headline, /^2 workflows have not advanced for 12 minutes or more, the longest 30 minutes/)
+  assert.match(p.detail, /wf_older/)
+  assert.match(p.detail, /wf_newer/)
+  assert.equal(p.href, '#work/workflows')
+})
+
+function loading_() {
+  return { status: 'loading', since: NOW }
+}

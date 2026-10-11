@@ -7,6 +7,8 @@ import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure
 import type { MarkHue, MarkName } from './marks'
 import { NamedMark, Segmented } from './components'
 import { Id } from './Shell'
+import { agentPath } from './OverviewRegions'
+import { addressToPath } from './paths'
 import {
   DEFAULT_SORT,
   VIEW_LABEL,
@@ -533,7 +535,15 @@ function CellView({
   pending?: boolean
   from?: 'result' | null
 }) {
-  if (pending) return <span className="node-reading" role="img" aria-label="reading" />
+  // A WORD, NOT ONLY A PULSE (live QA WF-24, 2026-10-11): the pulse bar on
+  // the table's ground read as an empty cell beside a total already drawn.
+  if (pending) {
+    return (
+      <span className="wf-cell is-reading" title="The step's attempt read has not landed yet.">
+        reading…
+      </span>
+    )
+  }
   const figure = (
     <span className={cell.kind === 'absent' ? 'wf-cell is-absent' : 'wf-cell'} title={cell.note || undefined}>
       {cell.text}
@@ -1343,7 +1353,19 @@ export function StepInspector({
             Agents drawer. A step with no task has nothing to open, so it gets
             no link rather than a dead one. */}
         {taskId !== null && (
-          <a className="ctl-link wf-inspect-run" href={`#work/task/${encodeURIComponent(taskId)}`}>
+          // THE AGENT'S OWN PATH, UNDER THE LIST THAT HOLDS IT (live QA WF-21,
+          // 2026-10-11): the legacy `#work/task/<id>` resolved every state to
+          // `/agents/live/<id>`, a succeeded step's included. By the rule Run
+          // steps' Open agent uses (`agentPath`, QA G2-17); a task the read
+          // did not carry keeps the Live address, having no state to route by.
+          <a
+            className="ctl-link wf-inspect-run"
+            href={
+              taskState === null
+                ? addressToPath(`work/task/${encodeURIComponent(taskId)}`)
+                : agentPath({ id: taskId, state: taskState })
+            }
+          >
             Open agent →
           </a>
         )}
@@ -1388,9 +1410,28 @@ export function StepInspector({
         ) : (
           <>
             <ScrubButton label="Previous attempt" glyph="◀" onPress={prevAttempt} />
-            <span className="wf-scrub-pos">
-              attempt {at + 1} of {ready.length}
-            </span>
+            {/* ONE COUNT, NAMED FOR WHAT IT COUNTS (live QA WF-6, 2026-10-11).
+                The stepper walks the step's attempt DOCUMENTS; the table's
+                Attempts is `attempt_count`, which a merge step's CI park
+                refunds (agent_worker control.py). A merge that parked for CI
+                four times read `attempt 5 of 5` here and `1 of 10` in the
+                table, on one screen. Where the two differ the stepper says
+                `run`, and the counted figure beside it is the table's. */}
+            {row.sort.attempts !== null && row.sort.attempts !== ready.length ? (
+              <span
+                className="wf-scrub-pos"
+                title={
+                  `Run ${at + 1} of the ${ready.length} attempt records this step has. ` +
+                  `${row.attempts.text} count against its attempts, as the table says: a wait for CI is refunded and not counted.`
+                }
+              >
+                run {at + 1} of {ready.length} · {row.attempts.text} counted
+              </span>
+            ) : (
+              <span className="wf-scrub-pos">
+                attempt {at + 1} of {ready.length}
+              </span>
+            )}
             <ScrubButton label="Next attempt" glyph="▶" onPress={nextAttempt} />
             <FactList
               facts={attemptFacts(
@@ -1587,10 +1628,19 @@ export function MergeStepCard({ card, now }: { card: MergeCard; now: number }) {
           {line}
         </p>
       ))}
+      {/* THE CI CLOCK'S START, NOT THE FIRST PARK (live QA WF-5, 2026-10-11).
+          `first_parked_at` is carried from park to park only while the step
+          waits on CI; a wait for the merge slot clears it (agent_worker
+          control.py, the CI park), so the next CI wait starts it afresh. A
+          step that first parked at 10:35 read "first parked for CI 17m ago"
+          off a clock restarted at 11:08. The words say what the field is. */}
       {card.firstParkedAt !== null && (
         <p className="wf-card-foot" data-fact="first-parked">
-          first parked for CI{' '}
-          <time dateTime={card.firstParkedAt} title={card.firstParkedAt}>
+          current CI wait began{' '}
+          <time
+            dateTime={card.firstParkedAt}
+            title={`${card.firstParkedAt}. The CI clock restarts after a wait for the merge slot, so an earlier park can predate it; the step's events list every park.`}
+          >
             {timeAgo(card.firstParkedAt, now)}
           </time>
         </p>

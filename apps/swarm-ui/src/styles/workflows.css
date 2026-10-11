@@ -100,6 +100,65 @@
   .wfl .wfl-name > .wfl-mix { display: block; overflow: hidden; white-space: nowrap; }
 }
 .wfl .wfl-owner { overflow: hidden; text-overflow: ellipsis; }
+
+/* AT 640 AND BELOW, A CARD PER ROW (live QA WF-8, 2026-10-11). The phone drew
+   the 1086px desktop table in a sideways scroller: the held State column took
+   about 40% of 400px, ids broke mid-string, and Steps done, Cost, Owner,
+   Submitted and Duration were all off the right edge. Each row is now a card
+   -- the name across the top, then state and duration, steps done and cost,
+   owner and submitted -- with every cell's column named before its value.
+   Shape and Runners stay off: the runner mix is the name's second line, and
+   Steps done says what the shape would. The selectors are a class deeper than
+   the shared `.is-scroll` held-first-column rule (styles.css), which they
+   undo. */
+@media (max-width: 640px) {
+  .wfl > .table-wrap.wfl-scroll { overflow-x: visible; -webkit-mask-image: none; mask-image: none; }
+  .wfl > .wfl-scroll > .wfl-table,
+  .wfl > .wfl-scroll > .wfl-table > tbody { display: block; width: 100%; }
+  .wfl > .wfl-scroll > .wfl-table > thead { display: none; }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, auto);
+    grid-template-areas: "name name" "state duration" "done cost" "owner submitted";
+    gap: var(--ctl-s1) var(--ctl-s3);
+    padding: var(--ctl-s3) var(--ctl-s3);
+    border-bottom: 1px solid var(--line-soft);
+  }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td {
+    display: block;
+    position: static;
+    width: auto;
+    min-width: 0;
+    max-width: none;
+    padding: 0;
+    border: 0;
+    background: none;
+  }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="workflow"] { grid-area: name; }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="state"] { grid-area: state; }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="duration"] { grid-area: duration; text-align: right; }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="done"] { grid-area: done; }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="cost"] { grid-area: cost; text-align: right; }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="owner"] { grid-area: owner; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="submitted"] { grid-area: submitted; text-align: right; }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="shape"],
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="runners"] { display: none; }
+  /* The column's name, as the hidden head would have said it. */
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="duration"]::before,
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="cost"]::before,
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="owner"]::before,
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="submitted"]::before {
+    content: attr(data-col) " ";
+    color: var(--text-dim);
+    font-size: var(--t-micro);
+  }
+  .wfl > .wfl-scroll > .wfl-table > tbody > tr.wfl-row > td[data-col="workflow"] > .id { overflow-wrap: normal; word-break: keep-all; }
+  .wfl .wfl-name > .wfl-mix { display: block; overflow: hidden; white-space: nowrap; }
+  /* The cells say what the one-line phone summary carried. */
+  .wfl .wfl-name > .wfl-phone { display: none; }
+  .wfl .wfl-done { display: flex; gap: var(--ctl-s2); align-items: center; }
+  .wfl .wfl-done > .c-bar { flex: 1 1 auto; min-width: 24px; }
+}
 .wfl-shape { white-space: nowrap; }
 /* "partial": some step depends on part of the level above (§6), which the
    text shape cannot say. A fact chip (the canonical `Chip`), not a state. */
@@ -783,3 +842,7 @@
 @media (max-width: 560px) {
   .wf-card.is-page .wf-vmap { display: none; }
 }
+
+/* A Steps-table figure still being read (WF-24): said in the absent ink, so
+   it is never taken for a value. */
+.wf-table .wf-cell.is-reading { color: var(--text-dim); font-style: italic; }

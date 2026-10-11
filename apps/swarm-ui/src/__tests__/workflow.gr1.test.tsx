@@ -165,7 +165,7 @@ describe('GR1: the critical path on the canvas', () => {
     expect(caption!.querySelector('.ctl-mark')).toBeNull()
     const chain = caption!.querySelector('.wf-critical-chain')!.textContent!.split(' → ')
     expect(chain).toEqual(['plan', 'spec-ui', 'impl-ui-2', 'test-ui-2', 'review-ui', 'docs-ui', 'integrate', 'e2e-1', 'canary', 'release'])
-    expect(caption!.querySelector('.wf-critical-h')!.textContent).toBe('critical path · 38m 0s')
+    expect(caption!.querySelector('.wf-critical-h')!.textContent).toBe('critical path · 38m 0s run time')
     // Every named step is one the workflow has, with a task that finished.
     for (const id of chain) {
       const st = workflow.steps.find((x) => x.step_id === id)!

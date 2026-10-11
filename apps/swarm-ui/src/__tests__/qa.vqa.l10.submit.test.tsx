@@ -114,7 +114,7 @@ describe('V135 and V136: Start from a recent one', () => {
     const { container } = render(<SubmitChooser go={() => {}} />)
     const recent = container.querySelector<HTMLElement>('.sb-recent')!
     await waitFor(() => expect(visible(recent.querySelector('.sb-empty'))).toBe('None of yours yet.'))
-    expect(visible(recent.querySelector('.sb-recent-scope'))).toBe('Among 1 workflow this tenant has.')
+    expect(visible(recent.querySelector('.sb-recent-scope'))).toBe('Among the tenant’s newest 1 workflow.')
   })
 
   it('lists every failed read under an unread who-you-are, and offers Try again', async () => {

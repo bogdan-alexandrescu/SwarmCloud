@@ -251,6 +251,10 @@ resource "google_cloud_scheduler_job" "issue_run_advance" {
 
 # --- The issue sweeper (owner decisions 2026-10-08) ---------------------------
 #
+# PAUSED SINCE 2026-10-11: superseded by the `issue-sweep` schedule (see the
+# `paused` line below and docs/schedules.md §8.1). What follows describes the
+# job as it ran until then, and as it would run again if un-paused.
+#
 # POST /v1/admin/issues/sweep (apps/swarm-api/swarm_api/routes/admin.py,
 # swarm_api.issuesweep.sweep_tenant) lists one tenant's registered
 # repositories' open issues with that tenant's token and starts an issue run
@@ -289,7 +293,18 @@ resource "google_cloud_scheduler_job" "issue_sweep" {
   description = "managed-by=swarm-terraform; issue_sweep: starts issue runs for tenant ${each.key}'s ready-looking open issues, up to its live-run cap (docs/issue-runs.md Sweeper)"
   schedule    = var.issue_sweep_schedule
   time_zone   = var.time_zone
-  paused      = var.paused
+
+  # PAUSED 2026-10-11 (Schedules S9, docs/schedules.md §8.1 step 3; owner
+  # decision 2026-10-11): the tenant's `issue-sweep` SCHEDULE replaces this job,
+  # so two triggers of one sweep never run side by side. A literal, not
+  # var.paused: that variable pauses every job in this module, and only this
+  # one is being retired. Paused, NOT deleted: the job, its route in
+  # auth.ROLLUP_SWEEPER_ROUTES, SWEEP_ENABLED and the tenant's `issue_sweep`
+  # settings stay until the owner has watched the schedule fire for 7 days
+  # without an auto-pause, and a second S9 change then deletes them together.
+  # To fall back to SWEEP in the meantime, set this to var.paused again and
+  # pause the schedule (`sc schedules pause`).
+  paused = true
 
   # The route stops starting work at 240 s (issuesweep.SWEEP_BUDGET_SECONDS)
   # and reports what it did not reach, so it answers inside this deadline.
