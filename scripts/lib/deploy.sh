@@ -132,9 +132,11 @@ CHANNEL="$(jq -r --arg e "${ENVIRONMENT}" '.channel // $e' "${MANIFEST}")"
 # not a subshell.
 promoted_earlier() {
   local image="$1" digest="$2" rc=0
+  # </dev/null: this runs inside the loop that reads jobs.tsv on stdin, and a
+  # gcloud that prompted would swallow the remaining job rows.
   gcloud artifacts docker tags list "${image}" --project "${PROJECT_ID}" \
     --format='value(tag.basename(),image,version.basename())' \
-    >"${WORK}/marks.tsv" 2>"${WORK}/marks.err" || rc=$?
+    </dev/null >"${WORK}/marks.tsv" 2>"${WORK}/marks.err" || rc=$?
   if [[ "${rc}" -ne 0 ]]; then
     die_if_auth_failure "$(cat "${WORK}/marks.err")"
     redact <"${WORK}/marks.err" | head -n 3 | sed 's/^/     /' >&2
@@ -299,6 +301,14 @@ else
         SKIPPED+=("job ${job_name}: runs ${job_image##*@}; whether any release promoted it is unverified")
       else
         err "job ${job_name}: runs ${job_image}, which no release promoted (no :$(promotion_mark_prefix "${CHANNEL}")* tag on it); this release promoted ${job_expected}"
+        # Marks began with push-images.sh's step 3b, and nothing backfills
+        # them: a digest promoted before then (the one pinned when marks
+        # began, among them) reads as never promoted until it is marked once.
+        backfill_tag="$(promotion_mark_prefix "${CHANNEL}")pre-mark-${job_image##*@sha256:}"
+        backfill_tag="${backfill_tag:0:128}"
+        dim "  if a release promoted it before promotion marks existed, confirm that in the release's log, then record it once:"
+        dim "    gcloud artifacts docker tags add ${job_image} ${job_image%%@*}:${backfill_tag} --project ${PROJECT_ID}"
+        dim "  otherwise the owner re-pins it: set ${pin_var} = \"${job_expected}\", then run: terraform -chdir=terraform/bootstrap plan"
         SKIPPED+=("job ${job_name}: runs ${job_image##*@}, which no release promoted, not the promoted ${job_expected##*@}")
       fi
     fi

@@ -662,6 +662,24 @@ def test_a_bootstrap_pinned_job_on_a_digest_no_release_promoted_fails(tmp_path):
     assert "awaiting owner re-pin" not in text, text
 
 
+def test_the_no_release_promoted_failure_names_the_one_time_backfill(tmp_path):
+    # A digest promoted before push-images.sh began marking promotions -- the
+    # one the job ran on 2026-10-11 -- carries no mark, so it fails until
+    # marked once. The failure must say how, or the next release stays red.
+    deployment = lagging_workspace_apply(healthy_deployment())
+    deployment["tags"] = promotion_marks(("dev", "workspace-apply", "7"))
+    code, text = verify(tmp_path, deployment)
+    assert code != 0, text
+    sha = digest(EARLIER).removeprefix("sha256:")
+    backfill = (
+        f"gcloud artifacts docker tags add {ref('workspace-apply', EARLIER)} "
+        f"{REPO_PATH}/workspace-apply:dev-promoted-pre-mark-{sha}"
+    )
+    assert backfill in text, text
+    assert f'workspace_apply_image = "{ref("workspace-apply")}"' in text, text
+    assert "awaiting owner re-pin" not in text, text
+
+
 def test_a_mismatch_on_a_release_pinned_job_still_fails_whatever_its_marks(tmp_path):
     deployment = healthy_deployment()
     deployment["jobs"] = [j for j in deployment["jobs"] if j["metadata"]["name"] != "swarm-verify"]
