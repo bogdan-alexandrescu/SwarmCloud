@@ -973,7 +973,7 @@ describe('U5: scrubbing', () => {
     pick(c, 'plan')
     const i = inspector(c)
     // The link to the full run is on the inspector; selecting did not navigate.
-    expect(i.querySelector('a[href="#work/task/t_plan"]')).toBeTruthy()
+    expect(i.querySelector('a[href="/agents/recent/t_plan"]'), 'a finished step opens over Recent (WF-21)').toBeTruthy()
     // Newest attempt first, because that is the one a reader asked about.
     await within(i).findByText('attempt 3 of 3')
     expect(fact(i, 'gen')).toBe('3')
@@ -1032,7 +1032,7 @@ describe('U5: scrubbing', () => {
     // The selection MOVED: it is now wf_old's `plan`, inspected on wf_old's page.
     const second = await waitFor(() => inspector(cardOf('wf_old')))
     expect(within(second).getByText('workflow 2 of 2')).toBeTruthy()
-    expect(second.querySelector('a[href="#work/task/t_plan_old"]')).toBeTruthy()
+    expect(second.querySelector('a[href="/agents/recent/t_plan_old"]')).toBeTruthy()
     expect(parseWorkflowQuery(address).tab, 'the scrub left the view the reader was in').toBe('table')
     const older = within(second).getByRole('button', { name: 'Same step, older workflow' })
     expect(older.getAttribute('aria-disabled')).toBe('true')
@@ -1180,7 +1180,7 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     pick(container as HTMLElement, 'work')
     const i = inspector(container as HTMLElement)
     const run = i.querySelector('a.wf-inspect-run')!
-    expect(run.getAttribute('href')).toBe('#work/task/t_run')
+    expect(run.getAttribute('href')).toBe('/agents/live/t_run')
     expect(run.classList.contains('ctl-link'), 'the run link is unclassed and falls back to UA blue').toBe(true)
     // Let the attempt read the inspector started settle inside the test.
     const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
@@ -1644,7 +1644,7 @@ describe('the owner’s decisions: where a figure came from (WF-5)', () => {
     // floor rather than a total.
     const total = table.querySelector<HTMLElement>('.wf-spend')!
     expect(total.firstChild?.textContent, 'the row’s total counts a figure no step shows').toBe('$0.20')
-    expect(total.querySelector('.wf-spend-cov')?.textContent).toBe('1/2')
+    expect(total.querySelector('.wf-spend-cov')?.textContent).toBe('1 of 2 reported')
 
     // And the node agrees with the table.
     const node = nodeNamed(viewCard(steps, [done, retrying], 'graph', usage), 'again')

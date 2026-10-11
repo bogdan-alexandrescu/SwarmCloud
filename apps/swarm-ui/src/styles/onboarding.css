@@ -206,3 +206,8 @@
 .pp-grant { justify-content: flex-start; align-items: flex-end; margin-top: var(--ctl-s3); }
 .pp-grant > .c-field { flex: 0 1 18rem; }
 .pp-audit-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); }
+
+/* The summary chip names the optional steps, so it is longer than a phone's
+   card head: it wraps instead of being cut at "Request your wo…" (RSA-26). */
+.ob-card .c-card-h > .ur-acts { min-width: 0; max-width: 100%; flex-wrap: wrap; }
+.c-chip.ob-count { white-space: normal; overflow-wrap: anywhere; line-height: var(--lh-meta); max-width: 100%; }

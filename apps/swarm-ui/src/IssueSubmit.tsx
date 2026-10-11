@@ -157,7 +157,12 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   const [closedOk, setClosedOk] = useState(false)
   const [approval, setApproval] = useState<'required' | 'auto'>('required')
   const [rounds, setRounds] = useState(String(DEFAULT_FIX_ROUNDS))
-  const [merge, setMerge] = useState(false)
+  // NULL UNTIL SOMEBODY TOUCHES THE SWITCH, and then their choice (live QA
+  // SUB-2). The switch started `false` whatever the API said, so a repository
+  // whose preview served `auto_merge.default: true` -- SwarmCloud's -- was
+  // submitted with `auto_merge: false` under "Off (default)". Untouched, the
+  // switch is the served default for the issue on screen; a new read resets it.
+  const [merge, setMerge] = useState<boolean | null>(null)
   const [sending, setSending] = useState<Sending>({ kind: 'idle' })
   const keys = useProviderKeys()
 
@@ -185,7 +190,11 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
   // Offered only on the API's word, for the issue on screen; off otherwise.
   const mergeServed = read?.auto_merge ?? null
   const mergeOffered = mergeServed?.available === true
-  const mergeOn = mergeOffered && merge
+  // `default` is served beside `available` (`issueruns.auto_merge_availability`)
+  // and is already false whenever it is not available. Read as a boolean, so a
+  // server older than the field reads as off, which is what it did.
+  const mergeDefault = mergeOffered && (mergeServed as { default?: unknown } | null)?.default === true
+  const mergeOn = mergeOffered && (merge ?? mergeDefault)
 
   const parses = parseIssueRef(typed) !== null
 
@@ -194,6 +203,7 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
     if (ref === '' || parseIssueRef(ref) === null) return
     setPreview({ kind: 'reading', ref })
     setClosedOk(false)
+    setMerge(null)
     const r = await loadIssuePreview(ref)
     // A reference changed while its read was in flight: the answer is not the
     // one on screen any more, so it is dropped.
@@ -213,9 +223,13 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
     setSending({ kind: 'idle' })
   }
 
+  // A REF, NOT `sending`: two activations inside one render both read the
+  // state as it was before the first (live QA SUB-1, the task form's defect).
+  const inFlight = useRef(false)
+
   async function submit(e?: FormEvent) {
     e?.preventDefault()
-    if (blocked || read === null) return
+    if (inFlight.current || blocked || read === null) return
     const body: RunCreateBody = {
       // THE REFERENCE AS THE PREVIEW SERVED IT, so what is planned is what was shown.
       issue: read.issue.ref,
@@ -225,7 +239,9 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
       fix_rounds: roundsN,
     }
     setSending({ kind: 'sending' })
+    inFlight.current = true
     const r = await createRun(body)
+    inFlight.current = false
     if (r.status === 'ok' || r.status === 'stale') {
       const id = (r.data as { run?: { id?: unknown } } | null)?.run?.id
       if (typeof id === 'string' && id !== '') {
@@ -286,7 +302,8 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             </div>
           )}
           {preview.kind === 'read' && (
-            <IssuePreviewCard read={preview.data} at={preview.at} closedOk={closedOk} onPlanAnyway={() => setClosedOk(true)} />
+            <IssuePreviewCard read={preview.data} at={preview.at} closedOk={closedOk} onPlanAnyway={() => setClosedOk(true)}
+              onTakeBack={() => setClosedOk(false)} />
           )}
           {preview.kind === 'refused' && (
             <Refusal error={preview.error} typed={preview.ref} tenant={tenant}
@@ -344,9 +361,10 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
               <b>Merge the pull request when it is ready</b>
               {mergeOffered ? (
                 <small>
+                  {/* "(default)" FOLLOWS THE SERVED DEFAULT, not the word "off". */}
                   {mergeOn
-                    ? 'On: once every required check is green, the merge step merges the pull request at the sha it proved.'
-                    : 'Off (default): a person merges the run’s pull request.'}
+                    ? `On${mergeDefault ? ' (default)' : ''}: once every required check is green, the merge step merges the pull request at the sha it proved.`
+                    : `Off${mergeDefault ? '' : ' (default)'}: a person merges the run’s pull request.`}
                 </small>
               ) : (
                 /* What the submitter sees and can do (walkthrough E); why it is
@@ -365,7 +383,12 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
             <input id="in-fix-rounds" className="mono in-rounds" type="number" inputMode="numeric"
               min={MIN_FIX_ROUNDS} max={MAX_FIX_ROUNDS} step={1} value={rounds}
               aria-invalid={!roundsOk || undefined} aria-describedby={roundsOk ? undefined : 'in-fix-rounds-say'}
-              onChange={(e) => setRounds(e.target.value)} />
+              onChange={(e) => setRounds(e.target.value)}
+              // ENTER HERE CONFIRMS THE NUMBER, IT DOES NOT PLAN THE ISSUE (live
+              // QA SUB-13). As an implicit submission it posted /v1/runs and
+              // started a planner with no click; the reference field's Enter
+              // reads, and the plan is started by its button only.
+              onKeyDown={(e) => { if (e.key === 'Enter') e.preventDefault() }} />
             <div className="in-choice-t">
               <label htmlFor="in-fix-rounds"><b>Fix rounds when checks go red</b></label>
               <small>
@@ -387,8 +410,12 @@ function IssueForm({ capacity, go }: { capacity: Capacity; go: (to: string) => v
           <ul className="ctl-facts">
             <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>issue</b>
+              {/* THE NUMBER FIRST (live QA SUB-9): the cut fell on the repository
+                  and took the number with it -- "bogdan-alexandrescu/SwarmClou…" --
+                  and the number is the one part that tells two issues apart. The
+                  repository is the next row; the whole reference is the title. */}
               {read === null ? <i className="ctl-em">&mdash; read one first</i>
-                : <span><code className="in-ref-code" title={read.issue.ref}>{read.issue.ref}</code> · {read.issue.state}{closed && !closedOk && <i className="sbf-bad"> · not confirmed</i>}</span>}
+                : <span><code className="in-ref-code" title={read.issue.ref}>#{read.issue.number}</code> · {read.issue.state}{closed && !closedOk && <i className="sbf-bad"> · not confirmed</i>}</span>}
             </li>
             <li className={read === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>repository</b>
@@ -470,8 +497,10 @@ export function readAtText(at: number, now: number): { text: string; title: stri
 }
 
 /** What was read, as served: title, state, comments, labels, the body, the link. */
-export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
+export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway, onTakeBack }: {
   read: IssuePreviewRead; at: number; closedOk: boolean; onPlanAnyway: () => void
+  /** Withdraws "Plan it anyway" (live QA SUB-12); absent, nothing is offered. */
+  onTakeBack?: () => void
 }) {
   const { issue } = read
   const [whole, setWhole] = useState(false)
@@ -551,8 +580,13 @@ export function IssuePreviewCard({ read, at, closedOk, onPlanAnyway }: {
           <span>
             <b>This issue is closed.</b> Planning it would reopen work someone marked done.
           </span>
+          {/* AND IT CAN BE TAKEN BACK (live QA SUB-12): "planning it anyway"
+              had no way back but reading the issue again. */}
           {closedOk ? (
-            <span className="sb-note">planning it anyway</span>
+            <>
+              <span className="sb-note">planning it anyway</span>
+              {onTakeBack && <Button onClick={onTakeBack}>Undo</Button>}
+            </>
           ) : (
             <Button onClick={onPlanAnyway}>Plan it anyway</Button>
           )}

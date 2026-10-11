@@ -9,7 +9,7 @@
 //     "current": a head never read, a coverage with no index, an interval the
 //     API did not serve;
 //   * an index run in flight replaces Index now with "indexing now";
-//   * Index now POSTs index:run for that repository and re-reads;
+//   * Index now, once confirmed, POSTs index:run for that repository and re-reads;
 //   * no registrations is an empty state with the way to register;
 //   * GET /v1/repositories answering 404 with no code (the route is not
 //     there yet) is "not served yet", naming the route -- not a failure, and
@@ -126,11 +126,14 @@ describe('the Repositories list is cards, one per repository (pick B)', () => {
     await mount()
     await waitFor(() => expect(cards()).toHaveLength(3), WAIT)
     fireEvent.click(within(cards()[0]!).getByRole('button', { name: 'Index now' }))
+    // Nothing is queued until the run is confirmed (RSA-15; repositories.liveqa.test.tsx).
+    fireEvent.click(within(cards()[0]!).getByRole('button', { name: 'Queue incremental run' }))
     await waitFor(() => expect(reads).toBe(2), WAIT)
     const post = calls.find((c) => c.method === 'POST')!
     expect(post.body).toEqual({ kind: 'incremental' })
     // A repository with no index yet gets a full run.
     fireEvent.click(within(cards()[2]!).getByRole('button', { name: 'Index now' }))
+    fireEvent.click(within(cards()[2]!).getByRole('button', { name: 'Queue full run' }))
     await waitFor(() => expect(calls.filter((c) => c.method === 'POST')).toHaveLength(2), WAIT)
     expect(calls.filter((c) => c.method === 'POST')[1]!.url).toBe('/v1/repositories/repo_2222222222222222/index:run')
     expect(calls.filter((c) => c.method === 'POST')[1]!.body).toEqual({ kind: 'full' })
