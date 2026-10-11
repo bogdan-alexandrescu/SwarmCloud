@@ -58,8 +58,17 @@
 /* O1's check card: a short title, two lines of regular text, a link (visual
    QA Q5, 2026-10-02). The title was the whole headline -- ids and all --
    wrapping in bold; it is one line now, and the ids are the second. */
-.ov-att-t b { font: 600 var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ov-att-t small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+/* THE TITLE KEEPS ITS NOUN (visual QA V143, 2026-10-11): cut to one line, a
+   phone read "2 failed tasks among the 26 most rec…" -- the count with no
+   thing counted. It wraps to two lines now and is cut only past them, whole
+   in its title. */
+.ov-att-t b { font: 600 var(--t-meta)/var(--lh-meta) var(--font); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+/* A SUB-LINE ENDS IN AN ELLIPSIS, NEVER A HARD CUT (visual QA V140,
+   2026-10-11). A clamp draws its `…` only at a line break, and an id with no
+   break in it ran past the card's edge and was sliced there instead, which
+   also left a line holding only "—…". `anywhere` lets the id break, so the
+   clamp always ends on its ellipsis. */
+.ov-att-t small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
 .ov-att-t small.ov-att-ids,
 .ov-att-t small.is-one { -webkit-line-clamp: 1; }
 .ov-att-t small.ov-att-ids { display: block; white-space: nowrap; text-overflow: ellipsis; }
@@ -118,8 +127,13 @@
 
 /* A card per components.html A: the card radius, 12px/14px padding. */
 .ov-card { padding: 12px 14px; border-radius: var(--radius); min-width: 0; }
-/* The head wraps (D2): at 390 a long note pushed "All recent →" off the card. */
-.ov-card .ctl-card-head { display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap; }
+/* The head wraps (D2): at 390 a long note pushed "All recent →" off the card.
+   ONE PADDING, THE CARD'S (visual QA V056, 2026-10-11): `.ctl-card-head`
+   pads itself by `--ctl-pad-chrome` for a card whose body pads itself, but
+   this card pads its own box (12px/14px above), so every title sat 16px in
+   from the rows under it. The head gives up its sides and top here; the
+   bottom keeps its step to the content. */
+.ov-card .ctl-card-head { display: flex; align-items: baseline; gap: 4px 10px; flex-wrap: wrap; padding: 0 0 var(--ctl-s2); }
 .ov-card .ctl-card-title { flex: none; }
 .ov-card .ctl-card-note { font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
 .ov-card .ov-link { margin-left: auto; color: var(--sk-ac); font-size: var(--t-micro); white-space: nowrap; text-decoration: none; }
@@ -133,6 +147,13 @@
 /* A ROW HEAD IS NOT A COLUMN HEAD (D2, D19): it wraps, and it draws the same
    separator as the cells beside it, so a row's rule is one colour end to end. */
 .ov-tbl tbody th { font: inherit; color: inherit; white-space: normal; border-bottom: 1px solid var(--line-soft); padding: 4px 12px 4px 0; vertical-align: middle; }
+/* A LONG ID BREAKS INSIDE ITS CELL (visual QA V053, 2026-10-11): an
+   auto-layout column is as wide as its longest unbreakable run, so one
+   workflow id under a Running now row widened the Agent column until the
+   table overran its card by 35px and "Cost so far" was cut to "Cost s".
+   `anywhere`, unlike `break-word`, lowers the cell's min-content width, so
+   the column gives way and the numeric columns stay whole. */
+.ov-tbl tbody th, .ov-tbl .ov-sub { overflow-wrap: anywhere; }
 .ov-tbl tbody tr:last-child th { border-bottom: 0; }
 /* Recent failures (D2): fixed columns, so the age and Open always sit in the
    card; the error is two lines at most, and whole in its title. */
@@ -185,8 +206,14 @@
 .ov-wr { display: grid; grid-template-columns: 88px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 7px 0; border-bottom: 1px solid var(--line); }
 .ov-wr:last-child { border-bottom: 0; }
 .ov-wt { display: flex; flex-direction: column; min-width: 0; }
-.ov-wt b { font-weight: 600; overflow-wrap: anywhere; }
-.ov-wt small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); }
+/* WORDS BREAK BETWEEN WORDS, IDS WHERE THEY MUST (visual QA V055,
+   2026-10-11): `anywhere` on the reason broke it mid-word, while the detail
+   line under it -- which carries whole workflow ids -- had no break at all
+   and ran through the card's border. The reason wraps at spaces and breaks
+   a word only when the word alone is wider than the column; the detail may
+   break an id anywhere. */
+.ov-wt b { font-weight: 600; overflow-wrap: break-word; }
+.ov-wt small { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
 .ov-wn { font: 600 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
 
 /* ---- Headroom: profile tiles, pool rows, the account line, one column ---- */
@@ -216,6 +243,14 @@
 .ov-pl { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 8px; align-items: center; }
 .ov-pl .ctl-util-track { height: 6px; grid-column: 1 / -1; grid-row: 2; }
 .ov-pl b { font-size: var(--t-micro); text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+/* A FULL POOL'S FIGURE CARRIES THE VERDICT (visual QA V057, owner decision
+   Q3 2026-10-11). The phone block hides every utilisation track at 560px and
+   below, and the track's tone was the only place "this pool is full" was
+   drawn, so a phone read `5/5` as plainly as `0/5`. The track stays hidden;
+   the figure takes the over-ceiling vocabulary instead -- the bad ink, with
+   the weight above as the greyscale channel -- at every width, so the two
+   widths agree. */
+.ov-pl b.is-full { color: var(--bad); }
 .ov-acc { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: var(--t-micro); }
 .ov-acc .sk-st-w { font-size: var(--t-micro); }
 .ov-acc-proj { color: var(--text-dim); }
@@ -227,6 +262,9 @@
    card title it sits under. */
 .ctl-empty.ov-empty { border: 0; background: none; padding: 0; display: flex; align-items: center; gap: var(--ctl-s2); flex-wrap: wrap; }
 .ctl-empty.ov-empty > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+/* THE MARK STANDS OFF ITS HEADING (visual QA V141, 2026-10-11): a bordered
+   pill and one space read as flush against the word after it. */
+.ctl-empty.ov-empty > h3 > .ctl-mark { margin-right: var(--ctl-s1); }
 /* The page-level one (an expired session) keeps its box: no card is around it. */
 .ov-page-empty { display: flex; align-items: flex-start; gap: var(--ctl-s3); flex-wrap: wrap; }
 .ov-page-empty > h3 { margin: 0; flex: 1 1 auto; }
@@ -247,8 +285,17 @@
      2026-10-04): with the h1 stepped aside the head held only the `?`, and
      the row wrapped it onto a line of its own. The row does not wrap; the
      actions wrap inside their own half when they must. */
-  .ov-page > .c-phead { flex-wrap: nowrap; align-items: flex-start; }
+  .ov-page > .c-phead { flex-wrap: nowrap; align-items: flex-start; grid-column: 2; grid-row: 1; }
   .ov-page > .c-phead > .c-acts { flex: 1 1 0; min-width: 0; }
+  /* THE REFRESH SHARES ITS LINE WITH THE COUNT NOTE (visual QA V143,
+     2026-10-11). With the h1 and the `?` stepped aside, the head held only
+     the refresh, right-aligned in a ~50px band of its own above the tenant
+     line. The page is a two-column grid on a phone: the note on the left of
+     the first row, the head's actions on its right, every other region
+     across both columns in source order. */
+  .ov-page { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; }
+  .ov-page > * { grid-column: 1 / -1; min-width: 0; }
+  .ov-page > .c-count-note { grid-column: 1; grid-row: 1; margin: 0; }
 }
 @media (max-width: 560px) {
   /* RECENT FAILURES BEFORE HEADROOM AND THE POOLS (QA G1-07, 2026-10-07):
@@ -256,9 +303,13 @@
   .ov-cols .ov-failures { order: 4; }
   .ov-cols .ov-headroom { order: 5; }
   .ov-cols > .ov-pools { order: 6; }
-  /* ROOM FOR THE STICKY `↑ Top` (G1-07): 44px tall plus its 12px offset, so
-     at the foot of the page it never sits over the last rows' figures. */
-  .ov-page { padding-bottom: 56px; }
+  /* NO ROOM OF ITS OWN FOR `↑ Top` (visual QA V009, 2026-10-11). G1-07 added
+     56px here, but the pill is an in-flow sticky child of the scroller AFTER
+     this page (Spine.tsx), so at the foot it already sits under the last
+     card; the 56px only stacked a second blank band on top of the pill's
+     own (measured at 400x800: ~115px of blank under Pools). Room while the
+     pill floats mid-page is the scroller's to reserve, once, for every page
+     (lane L14), not each page's. */
   .ov-atts { grid-template-columns: minmax(0, 1fr); gap: 6px; }
   /* Three across, the figure only: the per-state breakdown is the desktop's. */
   .ov-life { gap: 6px; border: 0; background: none; overflow: visible; }
