@@ -1045,9 +1045,9 @@ from its caller, who was shown it. A plan edited in between is refused with
 `plan_changed`, said plainly, and nothing is retried. `sc plan edit` sends the
 digest of the plan it opened, from `--file` or `$EDITOR`.
 
-**`--auto-merge` is visible but disabled.** It is accepted and passed to the
-API, which refuses it until #295 lands; the refusal is printed as it is, and
-nothing is created.
+**`--auto-merge` merges the run's pull request** with the `merge` step (#295,
+enabled by contract request 47). The API refuses it only while the `merge`
+profile is disabled; that refusal is printed as it is, and nothing is created.
 
 **Live rows.** Once a run is `RUNNING` (or `FIXING`, a CI fix round),
 `swarm_run` answers `attach_with: /sc attach <workflow_id>` and `sc run show`
