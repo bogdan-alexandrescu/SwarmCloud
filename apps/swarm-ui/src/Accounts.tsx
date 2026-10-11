@@ -16,7 +16,7 @@ import type { TopicId } from './help'
 import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Mark } from './primitives'
-import { Button, Chip, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
+import { Button, Chip, Dialog, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
 import './styles/capacity.css'
 import { FailedPanel, Screen, timeAgo } from './Shell'
 import { TaskRef } from './TaskRef'
@@ -377,6 +377,18 @@ function Body({
   return (
     <>
       <Broken accounts={accounts} scope={board.page.tenant_id} onOpen={choose} />
+      {/* A LINK TO AN ACCOUNT THIS READ DOES NOT HAVE IS SAID (live QA
+          CAP-12): `?account=eng:nope` used to show another account under that
+          address with nothing to say the link missed. Above the split, so a
+          phone -- which shows the list, not the pane -- reads it too. */}
+      {linked !== null && !accounts.some((a) => a.account_id === linked) && (
+        <p className="warn-text acct-missing" role="status">
+          No account <code>{linked}</code> is in this read.{' '}
+          <button type="button" className="ctl-link" onClick={() => choose(null)}>
+            Clear the link
+          </button>
+        </p>
+      )}
       <Pool
         board={board}
         accounts={accounts}
@@ -589,6 +601,17 @@ function Pool({
   const now = Date.now()
   const shown = shownAccount(accounts, ui.chosen, board.page.tenant_id)
   const phone = usePhoneTables()
+  // BACK RETURNS FOCUS TO THE ROW IT LEFT (live QA CAP-11): on a phone
+  // `‹ Accounts` hides the pane and focus fell to <body>. The row is drawn
+  // only after the render the click causes, so it is focused from an effect.
+  const backTo = useRef<string | null>(null)
+  useEffect(() => {
+    const id = backTo.current
+    if (id === null) return
+    backTo.current = null
+    const row = [...document.querySelectorAll<HTMLButtonElement>('.acct-open')].find((b) => b.dataset.account === id)
+    row?.focus()
+  })
 
   if (shown === null) {
     return (
@@ -698,7 +721,7 @@ function Pool({
           {/* THE TILDE'S LEGEND ONLY WHERE A TILDE IS (#127). */}
           &middot;{' '}
           <span className="acct-clause">
-            {anyProjected(accounts, now) ? '~ is projected, not measured' : 'no projected figures'}
+            {anyProjected(accounts, now) ? '~ is an old reading, not current' : 'no projected figures'}
           </span>
           {/* THE OTHER OF THIS SCREEN'S TWO `?` (B7.4), and the reason it is one
               of the two is the STALE MARK. This console draws three different
@@ -714,13 +737,26 @@ function Pool({
           #413's Holding now | History switch -- so nothing it said or guarded
           changed by moving. */}
       <div className="acct-pane">
-        <button type="button" className="acct-back" onClick={() => choose(null)}>
+        <button
+          type="button"
+          className="acct-back"
+          onClick={() => {
+            backTo.current = a.account_id
+            choose(null)
+          }}
+        >
           <span aria-hidden="true">‹</span> Accounts
         </button>
         {adding && addForm}
-        <section key={a.account_id} className="acct-pane-detail" aria-label={`Account ${a.label}`}>
-          <Detail account={a} board={board} now={now} readAt={board.readAt} ui={ui} patch={patch} reload={reload} />
-        </section>
+        {/* ONE THING AT A TIME (live QA CAP-11): an add form nobody has
+            started stacked above the chosen account's detail, so the pane held
+            two. Cancel brings the account back. A sign-in under way keeps both,
+            so the pool can still be read while the provider's page is open. */}
+        {!(adding && (ui.signin.kind === 'idle' || ui.signin.kind === 'start_failed')) && (
+          <section key={a.account_id} className="acct-pane-detail" aria-label={`Account ${a.label}`}>
+            <Detail account={a} board={board} now={now} readAt={board.readAt} ui={ui} patch={patch} reload={reload} />
+          </section>
+        )}
       </div>
     </div>
   )
@@ -761,7 +797,13 @@ function AcctItem({
   const cls = ['acct-li', chosen ? 'is-chosen' : '', unusable ? 'is-unusable' : ''].filter(Boolean).join(' ')
   return (
     <li className={cls}>
-      <button type="button" className="acct-open" aria-current={chosen ? 'true' : undefined} onClick={onChoose}>
+      <button
+        type="button"
+        className="acct-open"
+        data-account={account.account_id}
+        aria-current={chosen ? 'true' : undefined}
+        onClick={onChoose}
+      >
         <b className="acct-li-name">{account.label}</b>
         {/* THE WINDOW IS NAMED AT THE FIGURE (QA G5-23): `69% 5h`. The
             list's % is always the five-hour window, and the only place that
@@ -824,7 +866,7 @@ function readingTitle(r: AccountReading, window: string): string {
     case 'absent':
       return `The last reading carried no ${window} window. Unmeasured is not zero.`
     case 'reset':
-      return `Passed its reset ${timeAgo(r.resetsAt)}; this describes the window before it. Marked ~.`
+      return `Passed its reset ${timeAgo(r.resetsAt)}; the figure is what the window before it had used.`
     case 'stale':
       return `Last read ${timeAgo(r.observedAt)}, past the age a reading is trusted for. Marked ~.`
     case 'live':
@@ -861,6 +903,18 @@ function WindowFig({
       <em className="acct-window acct-unmeasured" data-label={label} title={title}>
         <span className="acct-pct ctl-em">&mdash;</span>
         {named}
+      </em>
+    )
+  }
+  // A WINDOW THAT HAS ALREADY REFILLED HAS NO CURRENT FIGURE (live QA
+  // CAP-3). `~92%` read as "about 92% used now" for a window that reset hours
+  // ago; the 92% is what it WAS, so it is said as that, after the word reset.
+  if (reading.kind === 'reset') {
+    return (
+      <em className="acct-window acct-reset" data-label={label} title={title}>
+        <span className="acct-pct">reset</span>
+        {named}
+        <small className="acct-was"> was {Math.round(reading.pct)}%</small>
       </em>
     )
   }
@@ -919,6 +973,18 @@ function WindowTile({
         <small>{label}</small>
         <b className="acct-pct ctl-em">&mdash;</b>
         <i className="acct-why">not measured</i>
+      </div>
+    )
+  }
+  // Reset: the window refilled, so there is no current proportion to draw --
+  // a bar at the old figure would be a measurement of a window that no longer
+  // exists (live QA CAP-3).
+  if (reading.kind === 'reset') {
+    return (
+      <div className="acct-tile acct-window acct-reset" data-label={label} title={title}>
+        <small>{label}</small>
+        <b className="acct-pct">reset</b>
+        <i className="acct-why">was {Math.round(reading.pct)}% before it refilled</i>
       </div>
     )
   }
@@ -1095,16 +1161,19 @@ function windowWord(key: string): string {
 }
 
 /**
- * Whether any `~` is on screen: a projected 5h or 7d reading, or a Clears
- * figure `clearsOf` marks -- a binding window already reset, past its instant,
- * or chosen from a projected reading. The legend follows it (#127).
+ * Whether any `~` is on screen: a stale 5h or 7d reading, or a Clears figure
+ * `clearsOf` marks -- a binding window past its instant, or chosen from a stale
+ * reading. A window already reset draws `reset`, not a `~` (live QA CAP-3).
+ * The legend follows it (#127).
  */
 function anyProjected(accounts: Account[], now: number): boolean {
   return accounts.some((a) => {
-    if (isProjected(readingOf(a, FIVE_HOUR)) || isProjected(readingOf(a, SEVEN_DAY))) return true
+    // A reset window draws `reset`, not a `~`, so only a stale one counts.
+    if (readingOf(a, FIVE_HOUR).kind === 'stale' || readingOf(a, SEVEN_DAY).kind === 'stale') return true
     const binding = bindingWindow(a)
     if (binding === null) return false
-    if (binding.window.reset) return true
+    // `cleared` carries no `~` (clearsOf), so a reset binding window is not one.
+    if (binding.window.reset) return false
     const at = new Date(binding.window.resets_at).getTime()
     if (Number.isFinite(at) && at <= now) return true
     return isProjected(readingOf(a, binding.key))
@@ -1625,14 +1694,17 @@ function clockOf(iso: string): string {
 }
 
 /**
- * WHEN AN ACCOUNT WAS LAST GIVEN OUT, as a clock (G5-16): `22:30` within the
- * last day, and the date before it beyond that -- a bare `22:30` from three
- * days ago reads as tonight's. An unreadable instant is the em dash.
+ * WHEN AN ACCOUNT WAS LAST GIVEN OUT, as a clock (G5-16): `22:30` TODAY, and
+ * the date before it on any other day -- a bare `22:30` from three days ago
+ * reads as tonight's. An unreadable instant is the em dash.
+ *
+ * TODAY, NOT "WITHIN 24 HOURS" (live QA CAP-13): `20:00 · 9h ago` was
+ * yesterday evening, and read at 05:30 it looked like a time later today.
  */
-function givenAt(iso: string, now: number): string {
+export function givenAt(iso: string, now: number): string {
   const t = Date.parse(iso)
   if (!Number.isFinite(t)) return '—'
-  if (now - t < 86_400_000) return clockOf(iso)
+  if (new Date(t).toDateString() === new Date(now).toDateString()) return clockOf(iso)
   const day = new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' })
   return `${day} ${clockOf(iso)}`
 }
@@ -1986,7 +2058,9 @@ function AllWindows({ account, now }: { account: Account; now: number }) {
               {/* No column head over this figure, so the word goes on it (OV-1). */}
               {r.kind === 'never' || r.kind === 'absent'
                 ? '—'
-                : `${isProjected(r) ? '~' : ''}${Math.round(r.pct)}% used`}
+                : r.kind === 'reset'
+                  ? `reset, was ${Math.round(r.pct)}%`
+                  : `${isProjected(r) ? '~' : ''}${Math.round(r.pct)}% used`}
             </span>
             <ExtraClears name={k.replace(/_/g, '-')} w={w} now={now} />
           </div>
@@ -2374,6 +2448,7 @@ function Lending({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [saved, setSaved] = useState(false)
+  const [confirming, setConfirming] = useState(false)
 
   const parsed = splitTenants(draft)
   const owner = account.owner_tenant
@@ -2382,6 +2457,13 @@ function Lending({
   const includesOwner = parsed.includes(owner)
   const willSave = parsed.filter((t) => t !== owner)
   const dirty = willSave.join(' ') !== [...account.lend_to].join(' ')
+  // CHECKED AGAINST THE TENANTS THIS PAGE ALREADY READ (live QA CAP-2). Free
+  // text used to go straight to the PUT, so `no-such-tenant, BAD ID!` armed the
+  // button. An id the account is already lent to is kept even if the list no
+  // longer has it, so a deleted tenant can still be taken OFF the list.
+  const unknown = unknownTenants(willSave, board.tenants, account.lend_to)
+  const added = willSave.filter((t) => !account.lend_to.includes(t))
+  const removed = account.lend_to.filter((t) => !willSave.includes(t))
 
   const save = async () => {
     setBusy(true)
@@ -2391,10 +2473,14 @@ function Lending({
     setBusy(false)
     if (res.status === 'ok') {
       setSaved(true)
+      setConfirming(false)
       reload()
     } else if (res.status === 'error' || res.status === 'stale') {
       setError(res.error)
     }
+  }
+  const closeConfirm = () => {
+    if (!busy) setConfirming(false)
   }
 
   return (
@@ -2434,8 +2520,15 @@ function Lending({
             setSaved(false)
           }}
         />
-        <button type="button" onClick={() => void save()} disabled={!dirty || busy}>
-          {busy ? 'saving…' : 'save lending'}
+        <button
+          type="button"
+          onClick={() => {
+            setError(null)
+            setConfirming(true)
+          }}
+          disabled={!dirty || busy || unknown.length > 0}
+        >
+          save lending
         </button>
         {/* The second `.tag` on this screen, collapsed into the same primitive
             for the same reason as the state chip above. */}
@@ -2447,6 +2540,67 @@ function Lending({
         <p className="muted small">
           <code>{owner}</code> owns this account, so it is not sent as a loan.
         </p>
+      )}
+      {unknown.length > 0 && (
+        <p className="warn-text" role="alert">
+          {board.tenants === null ? 'Not a tenant id: ' : 'No tenant named '}
+          {unknown.map((t, i) => (
+            <span key={t}>
+              {i > 0 && ', '}
+              <code>{t}</code>
+            </span>
+          ))}
+          . Nothing was sent.
+        </p>
+      )}
+      {confirming && (
+        <Dialog
+          title={
+            willSave.length === 0
+              ? `Stop lending ${account.label}?`
+              : `Lend ${account.label} to ${willSave.join(', ')}?`
+          }
+          onClose={closeConfirm}
+          actions={
+            <>
+              <Button kind="ghost" onClick={closeConfirm}>
+                Keep the list as it is
+              </Button>
+              <Button kind="primary" busy={busy ? 'saving…' : false} onClick={() => void save()}>
+                save lending
+              </Button>
+            </>
+          }
+        >
+          <ul className="ctl-facts">
+            <li className="ctl-fact">
+              <b>account</b>
+              <Id>{account.account_id}</Id>
+            </li>
+            {added.length > 0 && (
+              <li className="ctl-fact">
+                <b>lent to</b>
+                <span className="mono">{added.join(', ')}</span>
+              </li>
+            )}
+            {removed.length > 0 && (
+              <li className="ctl-fact">
+                <b>no longer lent to</b>
+                <span className="mono">{removed.join(', ')}</span>
+              </li>
+            )}
+          </ul>
+          {added.length > 0 && (
+            <p className="muted small">
+              Agents in {added.join(', ')} will be able to run on this account&rsquo;s credential.
+            </p>
+          )}
+          {error && (
+            <p className="c-hint" role="alert">
+              {errorHeading(error)} &mdash; {error.message} The lending list was not changed.
+            </p>
+          )}
+        </Dialog>
       )}
       {/* THE CONTROL IS ABSENT AND SAYS WHY. A picker that is simply not
             drawn is indistinguishable from one that failed to render. */}
@@ -2464,14 +2618,25 @@ function Lending({
           ))}
         </datalist>
       )}
-      {error && (
-        <p className="warn-text">
-          {errorHeading(error)} &mdash; {error.message} The lending list was not
-          changed.
-        </p>
-      )}
     </div>
   )
+}
+
+/** The shape a tenant id can take; anything else is not one. */
+const TENANT_ID = /^[a-z0-9-]{1,63}$/
+
+/**
+ * The lend-to ids that name no tenant. Against the tenant list when it was
+ * read; when it was not, against the id's shape alone -- the platform still
+ * checks the rest. Ids already on the account are never refused here.
+ */
+export function unknownTenants(
+  ids: readonly string[],
+  tenants: readonly { tenant_id: string }[] | null,
+  already: readonly string[],
+): string[] {
+  const known = tenants === null ? null : new Set(tenants.map((t) => t.tenant_id))
+  return ids.filter((t) => !already.includes(t) && (known === null ? !TENANT_ID.test(t) : !known.has(t)))
 }
 
 function splitTenants(raw: string): string[] {
@@ -2505,19 +2670,37 @@ function moveLabel(to: AccountStateName): string {
  * the broker reaches from a failed exchange, not a state to declare by hand.
  */
 function StateControls({ account, reload }: { account: Account; reload: () => void }) {
+  // CONFIRM BEFORE WRITING (live QA CAP-1). A state button used to PUT on its
+  // first click: one stray click on `move to draining` took an account that
+  // was serving seven agents out of rotation for the whole tenant. A button
+  // now only OPENS the confirm, which names the account and how many agents
+  // hold it; the write happens from the dialog's verb.
+  const [asking, setAsking] = useState<AccountStateName | null>(null)
   const [reason, setReason] = useState('')
-  const [busy, setBusy] = useState<AccountStateName | null>(null)
+  const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [done, setDone] = useState<AccountStateName | null>(null)
 
+  const close = () => {
+    if (busy) return
+    setAsking(null)
+    setReason('')
+    setError(null)
+  }
+
   const move = async (to: AccountStateName) => {
-    setBusy(to)
+    // Taking an account OUT of rotation needs a reason: it is what the next
+    // person reads on the account to know whether it is safe to put it back.
+    // Putting it back needs none.
+    if (stateNeedsReason(to) && reason.trim() === '') return
+    setBusy(true)
     setError(null)
     setDone(null)
     const res = await setAccountState(account.account_id, to, reason.trim())
-    setBusy(null)
+    setBusy(false)
     if (res.status === 'ok') {
       setDone(to)
+      setAsking(null)
       setReason('')
       reload()
     } else if (res.status === 'error' || res.status === 'stale') {
@@ -2530,26 +2713,15 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
     { to: 'PAUSED', why: 'no new agents; the ones on it keep running' },
     { to: 'DRAINING', why: 'no new agents, and the ones on it are moved off' },
   ]
+  const asked = targets.find((t) => t.to === asking) ?? null
+  const needsReason = asking !== null && stateNeedsReason(asking)
+  const agents = `${account.assigned} agent${account.assigned === 1 ? '' : 's'}`
 
   return (
     <div className="acct-action">
       <h4>
         State
       </h4>
-      <span className="t-label">
-        reason
-      </span>
-      <span className="limit-edit">
-        <input
-          type="text"
-          className="acct-wide"
-          value={reason}
-          disabled={busy !== null}
-          placeholder="why, e.g. held back for Monday's release run"
-          aria-label={`Reason for changing the state of ${account.account_id}`}
-          onChange={(e) => setReason(e.target.value)}
-        />
-      </span>
       {/* LOWERCASE, AS THE STATE CHIP BESIDE THEM IS (CP-23). The chip
           lowercases the enum the API sends; these printed it raw, so the row
           read `available` in its state column and `move to AVAILABLE` on the
@@ -2562,21 +2734,88 @@ function StateControls({ account, reload }: { account: Account; reload: () => vo
             key={t.to}
             type="button"
             title={t.why}
-            disabled={busy !== null || account.state === t.to}
-            onClick={() => void move(t.to)}
+            disabled={account.state === t.to}
+            onClick={() => {
+              setDone(null)
+              setError(null)
+              setAsking(t.to)
+            }}
           >
-            {busy === t.to ? 'saving…' : moveLabel(t.to)}
+            {moveLabel(t.to)}
           </button>
         ))}
       </div>
       {done && <p className="muted small">Moved to {done.toLowerCase()}.</p>}
-      {error && (
-        <p className="warn-text">
-          {errorHeading(error)} &mdash; {error.message} The state was not changed.
-        </p>
+      {asked !== null && (
+        <Dialog
+          title={`Move ${account.label} to ${asked.to.toLowerCase()}?`}
+          onClose={close}
+          actions={
+            <>
+              <Button kind="ghost" onClick={close}>
+                Leave it {account.state.toLowerCase()}
+              </Button>
+              <Button
+                kind={asked.to === 'AVAILABLE' ? 'primary' : 'danger'}
+                disabled={needsReason && reason.trim() === ''}
+                busy={busy ? 'saving…' : false}
+                onClick={() => void move(asked.to)}
+              >
+                {moveLabel(asked.to)}
+              </Button>
+            </>
+          }
+        >
+          <ul className="ctl-facts">
+            <li className="ctl-fact">
+              <b>account</b>
+              <Id>{account.account_id}</Id>
+            </li>
+            <li className="ctl-fact">
+              <b>agents on it</b>
+              <span>{account.assigned}</span>
+            </li>
+            <li className="ctl-fact">
+              <b>after</b>
+              <span>{asked.why}</span>
+            </li>
+          </ul>
+          {asked.to !== 'AVAILABLE' && account.assigned > 0 && (
+            <p className="warn-text">
+              {asked.to === 'DRAINING'
+                ? `${agents} on it now will be moved off.`
+                : `${agents} on it now keep running; no new ones start on it.`}{' '}
+              Every agent in {account.owner_tenant}
+              {account.lend_to.length > 0 ? ` and the tenants it is lent to` : ''} loses it for new work.
+            </p>
+          )}
+          <label className="c-field">
+            <span className="c-lbl">{needsReason ? 'Reason (required)' : 'Reason'}</span>
+            <input
+              type="text"
+              className="c-inp"
+              value={reason}
+              disabled={busy}
+              placeholder="why, e.g. held back for Monday's release run"
+              aria-label={`Reason for changing the state of ${account.account_id}`}
+              aria-required={needsReason}
+              onChange={(e) => setReason(e.target.value)}
+            />
+          </label>
+          {error && (
+            <p className="c-hint" role="alert">
+              {errorHeading(error)} &mdash; {error.message} The state was not changed.
+            </p>
+          )}
+        </Dialog>
       )}
     </div>
   )
+}
+
+/** Taking an account out of rotation is the move that has to say why. */
+export function stateNeedsReason(to: AccountStateName): boolean {
+  return to === 'PAUSED' || to === 'DRAINING'
 }
 
 // ---------------------------------------------------------------------------
@@ -3552,6 +3791,24 @@ function AddAccount({
   const [lend, setLend] = useState('')
   const state = ui.signin
   const set = (next: SignIn) => patch((p) => ({ ...p, signin: next }))
+  // OPENED BY A CLICK, IT TAKES FOCUS AND CAN BE CLOSED (live QA CAP-11). It
+  // opened with focus left on <body>, had no Cancel and ignored Esc. Only a
+  // form somebody opened folds: on an empty pool it is drawn with no click,
+  // as the one fix, and there is nothing to go back to.
+  const labelRef = useRef<HTMLInputElement | null>(null)
+  const closable = ui.adding && accounts.length > 0 && (state.kind === 'idle' || state.kind === 'start_failed')
+  useEffect(() => {
+    if (ui.adding && state.kind === 'idle') labelRef.current?.focus()
+    // Only on opening: a re-render while typing must not move the caret.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ui.adding])
+  const cancel = () => {
+    patch((p) => ({ ...p, adding: false, signin: p.signin.kind === 'start_failed' ? { kind: 'idle' } : p.signin }))
+    setLabel('')
+    setLend('')
+    // Back to the control that opened it.
+    if (typeof document !== 'undefined') document.querySelector<HTMLButtonElement>('.acct-add')?.focus()
+  }
 
   // NOT CONFIGURED MEANS REFUSE, never accept-anything. Without a named tenant
   // this form could still submit safely -- the API files the account under the
@@ -3630,7 +3887,15 @@ function AddAccount({
   }
 
   return (
-    <section className="section panel">
+    <section
+      className="section panel acct-add-panel"
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && closable) {
+          e.stopPropagation()
+          cancel()
+        }
+      }}
+    >
       <h2>Add an account</h2>
       {/* B4.4: "This is a sign-in, not a paste" is the single most important
           thing about this form and it is now the SUBMIT BUTTON's label --
@@ -3736,6 +4001,7 @@ function AddAccount({
           </label>
           <input
             id="acct-label"
+            ref={labelRef}
             className="mono acct-wide"
             value={label}
             spellCheck={false}
@@ -3799,6 +4065,11 @@ function AddAccount({
             <button type="submit" disabled={state.kind === 'starting' || trimmed === ''}>
               {state.kind === 'starting' ? 'asking for a sign-in link…' : 'Start the sign-in'}
             </button>
+            {closable && (
+              <button type="button" className="acct-add-cancel" onClick={cancel}>
+                Cancel
+              </button>
+            )}
           </p>
           {/* A REFUSED LABEL IS SAID AT THE FORM, NOT IN A FAILURE PANEL
               (visual QA V010, 2026-10-11). A 422 is the platform answering

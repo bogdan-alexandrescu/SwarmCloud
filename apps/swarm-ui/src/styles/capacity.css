@@ -428,6 +428,12 @@
 .acct-tile > b { font: 600 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
 .acct-tile > i { font-style: normal; font-size: var(--t-micro); color: var(--text-dim); }
 .acct-tile.acct-projected > b, .acct-tile.acct-unmeasured > b { color: var(--text-faint); }
+/* A WINDOW ALREADY RESET (live QA CAP-3) reads `reset`, faint, with what it
+   WAS beside it and no track: the old figure is not a current proportion. */
+.acct-tile.acct-reset > b { color: var(--text-faint); }
+.acct-was { font-size: var(--t-micro); color: var(--text-faint); }
+.acct-li.is-chosen .acct-reset .acct-pct,
+.acct-li.is-chosen .acct-was { color: var(--text-dim-on-selected); }
 
 /* THE EMPTY POOL IS THE SAME CARD (visual QA V072): the zero in the list half,
    inset like a row, the add form in the pane. */
@@ -523,10 +529,11 @@
 .acct-hist-bar > i { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 3px; background: var(--sk-ac); }
 
 /* A CREDENTIAL NAME IS ONE TOKEN (browser QA D22, 2026-10-04): `.rt-cred`'s
-   `overflow-wrap: anywhere` broke "CLAUDE_CODE_OAUTH_T / OKEN". Each name is
-   an inline box that never breaks inside itself -- the line breaks between
-   names -- and a name wider than the card is cut, whole in its title. */
-.rt-cred code { display: inline-block; max-width: 100%; vertical-align: bottom; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal; }
+   `overflow-wrap: anywhere` broke "CLAUDE_CODE_OAUTH_T / OKEN", so a name
+   never breaks inside a word. LIVE QA CAP-14 (2026-10-11): cut at 1440 too -- `CLAUDE_CODE_OAUTH_…` on a
+   card with room. The name now wraps, but only at the `<wbr>` Runtimes.tsx
+   puts after each underscore: never inside a word, and whole on screen. */
+.rt-cred code { display: inline; vertical-align: baseline; white-space: normal; overflow-wrap: normal; word-break: normal; }
 .cap-setby-cfg { color: var(--text-faint); }
 
 /* ---------------------------------------------------------------------------

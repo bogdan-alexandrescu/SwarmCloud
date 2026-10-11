@@ -68,7 +68,10 @@ export function bindingOf(profile: RunnerProfile): string[] {
  * else the one with the least room -- the one that matters to this row.
  */
 export function matrixRow(profile: RunnerProfile, byName: ReadonlyMap<string, Pool>): MatrixCell[] {
-  const binding = new Set(bindingOf(profile))
+  // A DISABLED PROFILE HAS NOTHING THAT RUNS OUT FIRST (live QA CAP-10): it
+  // cannot start at all, its Runs out first says `none · disabled`, and an
+  // outlined cell beside that contradicted it and the legend.
+  const binding = new Set(profile.available === false ? [] : bindingOf(profile))
   const unread = new Set(profile.admission?.unread ?? [])
   return POOL_FAMILY_ORDER.map((family) => {
     const names = profile.pools.filter((p) => poolKind(p) === family)
@@ -182,7 +185,7 @@ export function ProfileMatrix({ capacity }: { capacity: Capacity }) {
               const head = headroomFor(profile)
               const off = profile.available === false
               const isOpen = open === name
-              const binds = bindingOf(profile)
+              const binds = off ? [] : bindingOf(profile)
               const among = [...profile.pools, ...binds]
               return (
                 <Fragment key={name}>

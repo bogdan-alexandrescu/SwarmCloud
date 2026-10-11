@@ -274,6 +274,13 @@ function CeilingTables({
   }, [landed, target])
   return (
     <div className="cap-families">
+      {/* A LINK THAT NAMES NO POOL IS SAID (live QA CAP-12): `?pool=runner:nope`
+          drew the page with no highlight and nothing to say the link missed. */}
+      {target !== null && !landed && (
+        <p className="warn-text cap-missing" role="status">
+          No pool is named <code>{target}</code> in this read.
+        </p>
+      )}
       <HoldersUncounted holders={holders} />
       {act.length > 0 && (
         <Family

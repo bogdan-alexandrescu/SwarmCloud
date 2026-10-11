@@ -79,9 +79,13 @@ describe('D22: a credential name never breaks mid-token', () => {
     expect(codes.map((c) => c.textContent)).toEqual(rt.secrets)
     for (const c of codes) {
       expect(c.getAttribute('title')).toBe(c.textContent)
-      expect(painted(c, 'white-space', WIDE)).toBe('nowrap')
-      expect(painted(c, 'text-overflow', WIDE)).toBe('ellipsis')
+      // Never mid-word: the only break opportunities are the <wbr>s, and each
+      // follows an underscore (live QA CAP-14: whole on screen, not cut).
       expect(painted(c, 'overflow-wrap', WIDE) ?? 'normal').toBe('normal')
+      expect(painted(c, 'word-break', WIDE) ?? 'normal').toBe('normal')
+      expect(painted(c, 'text-overflow', WIDE) ?? 'clip', 'the name is cut again').not.toBe('ellipsis')
+      for (const w of c.querySelectorAll('wbr')) expect(w.previousSibling?.textContent?.endsWith('_')).toBe(true)
+      expect(c.querySelectorAll('wbr').length).toBe((c.textContent!.match(/_/g) ?? []).length)
     }
   })
 })

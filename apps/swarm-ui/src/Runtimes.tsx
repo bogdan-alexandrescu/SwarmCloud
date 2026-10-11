@@ -1,8 +1,8 @@
-import { useId } from 'react'
+import { Fragment, useId, type ReactNode } from 'react'
 import { loadRuntimeTopology, type ResourceClasses, type RuntimeTopology } from './api'
 import { isPaused } from './fetch'
 import type { TopicId } from './help'
-import { POOLS_POLL_MS, capacityPoll, tableMode, usePhoneTables } from './capacityPoll'
+import { POOLS_POLL_MS, capacityPoll, poolHref, tableMode, usePhoneTables } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Id, Screen } from './Shell'
 import './styles/capacity.css'
@@ -515,8 +515,10 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
   const sole = (of: (x: Runtime) => string | null): boolean =>
     all.filter((x) => of(x) === of(r)).length === 1
 
-  if (sole((x) => x.resolved_backend)) facts.push({ key: 'runs on', value: 'sole' })
-  if (sole((x) => x.image)) facts.push({ key: 'image', value: 'sole' })
+  // SPELLED OUT, NOT `sole` (live QA CAP-14): `cred sole` read as a riddle.
+  // The key is the row above it; the value says what is true of it alone.
+  if (sole((x) => x.resolved_backend)) facts.push({ key: 'runs on', value: 'the only runtime on this backend' })
+  if (sole((x) => x.image)) facts.push({ key: 'image', value: 'the only runtime with this image' })
 
   // THE CREDENTIAL AS ONE FACT: which provider, and which secrets under which
   // rule -- the whole of what the `cred` row says. A runtime that needs none is
@@ -524,7 +526,7 @@ function distinguishing(r: Runtime, all: Runtime[]): Distinction[] {
   // none, "none spent" describes both and distinguishes neither.
   const credential = (x: Runtime): string =>
     x.provider === null ? '' : `${x.provider}|${x.secrets_any_of ? 'any' : 'all'}|${[...x.secrets].sort().join(',')}`
-  if (sole(credential)) facts.push({ key: 'cred', value: 'sole' })
+  if (sole(credential)) facts.push({ key: 'cred', value: 'the only runtime that needs this credential' })
 
   const timeouts = all.map((x) => x.timeout_seconds)
   if (soleExtreme(r.timeout_seconds, timeouts, 'max')) {
@@ -730,7 +732,10 @@ function RuntimeCard({
                       {p}
                     </Chip>
                   ) : (
-                    <Chip key={p} href="#capacity/pools" title={p}>
+                    /* ITS OWN ROW, NOT THE TOP OF A 30-ROW PAGE (live QA
+                       CAP-7): Pools highlights `?pool=`, as Quota's "Feeds
+                       pool" links already use it. */
+                    <Chip key={p} href={poolHref('capacity/pools', p)} title={p}>
                       {p}
                     </Chip>
                   ),
@@ -786,6 +791,21 @@ function RuntimeCard({
  * every card, and it is `#help/credential-names-not-values` -- linked from the
  * column and from the footer.
  */
+/** A secret name with a break opportunity after each `_`, and nowhere else. */
+function breakAtUnderscores(name: string): ReactNode {
+  const parts = name.split('_')
+  return parts.map((part, i) => (
+    <Fragment key={i}>
+      {part}
+      {i < parts.length - 1 && (
+        <>
+          _<wbr />
+        </>
+      )}
+    </Fragment>
+  ))
+}
+
 export function Credential({ runtime }: { runtime: Runtime }) {
   if (runtime.provider === null) {
     return (
@@ -832,8 +852,11 @@ export function Credential({ runtime }: { runtime: Runtime }) {
       {runtime.secrets.map((s, i) => (
         <span key={s}>
           {i > 0 && ', '}
-          {/* One token, never broken mid-name (QA D22); cut with its title. */}
-          <code title={s}>{s}</code>
+          {/* Never broken mid-word (QA D22), but WHOLE at 1440 (live QA
+              CAP-14): it was cut to `CLAUDE_CODE_OAUTH_…` on a card with room,
+              and the name is the one fact this row exists to show. It may
+              break only after an underscore, between the name's own words. */}
+          <code title={s}>{breakAtUnderscores(s)}</code>
         </span>
       ))}
     </span>
