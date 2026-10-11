@@ -1123,7 +1123,15 @@ files do not overlap, and L3 waits for L1 because it encodes L1's frames.
 
 ## 10. Questions for the owner
 
-Written to `questions.json` with a recommendation each:
+**Answered 2026-10-11, recorded on #1030.** The owner took every
+recommendation below: Q1 the submitter, with a per-task "open to the tenant"
+toggle; Q2 the field; Q3 10 minutes; Q4 24 hours; Q5 no; Q6 yes, the submitter
+only; Q7 sign in again; Q8 console only in phase 1; Q9 R2; Q10 on; Q11 yes, at
+1 fps; Q12 accept; Q13 the agent and the person in control. The owner also
+approved the mockup of §6 as drawn.
+
+The questions as they were asked, each written to `questions.json` with its
+recommendation:
 
 1. **Q1** Who may take control: the submitter (with a per-task "open to the
    tenant" toggle), or any tenant member. *Recommended: the submitter.*
