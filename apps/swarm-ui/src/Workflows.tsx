@@ -2598,6 +2598,40 @@ function MiniMarks({ layout, taskById }: { layout: DagLayout; taskById: Readonly
 }
 
 /**
+ * THE BOX THAT SCROLLS THE CANVAS UP AND DOWN (owner, 2026-10-11, on
+ * `wf_0c305fd932ef4239816f`). GR1's map read `window.scrollY` and called
+ * `window.scrollTo` -- but the console's window never scrolls: the frame's
+ * `.ctl-scroll` does (styles.css), so the map's viewport sat on the top of the
+ * graph whatever the reader scrolled to, and a click or a drag on it moved
+ * nothing. The nearest ancestor that scrolls vertically is the port; `null`
+ * means none does and the window is it (a page mounted outside the frame).
+ * Found by computed style, not by class name, so the next frame layout cannot
+ * strand the map the same way.
+ *
+ * "SCROLLS" MEANS IT HAS SOMEWHERE TO GO, not only that its style allows it:
+ * `.wf-canvas-wrap` is `overflow-x: auto`, which computes `overflow-y` to
+ * `auto` too, and it is the canvas's own wrapper -- exactly as tall as the
+ * canvas, so scrolling it moves nothing.
+ */
+export function scrollPortOf(el: Element): HTMLElement | null {
+  for (let p = el.parentElement; p !== null; p = p.parentElement) {
+    if (p === document.body || p === document.documentElement) return null
+    const y = getComputedStyle(p).overflowY
+    if ((y === 'auto' || y === 'scroll' || y === 'overlay') && p.scrollHeight > p.clientHeight) return p
+  }
+  return null
+}
+
+/** The port's visible band in client coordinates: its box, or the window's. */
+function portBox(scroller: HTMLElement | null): { top: number; h: number } {
+  if (scroller === null) return { top: 0, h: window.innerHeight }
+  const r = scroller.getBoundingClientRect()
+  // An unlaid-out scroller (jsdom) answers 0; fall back to the window's height
+  // so the map is still drawn by the height test, as it was before.
+  return { top: r.top, h: scroller.clientHeight > 0 ? scroller.clientHeight : window.innerHeight }
+}
+
+/**
  * WHERE YOU ARE DOWN A CANVAS TALLER THAN THE SCREEN (GR1; graph-rendering.md
  * §3.2, pain point 2). The horizontal map above states the wrapper's scroll and
  * nothing else; a 48-step run with both bands open is 4,740px tall, about five
@@ -2622,28 +2656,68 @@ function VerticalMinimap({
   taskById: ReadonlyMap<string, Task> | null
   canvasRef: { readonly current: HTMLDivElement | null }
 }) {
-  // `h === 0` means the canvas has not been laid out -- first paint, and every
-  // test, because jsdom answers 0 for every box.
-  const [view, setView] = useState<{ top: number; h: number; screen: number }>({ top: 0, h: 0, screen: 0 })
+  // `measured === false` means the canvas has not been laid out -- first
+  // paint, and every test, because jsdom answers 0 for every box. Measured
+  // with `h === 0` is a canvas scrolled wholly off the port.
+  const [view, setView] = useState<{ top: number; h: number; screen: number; measured: boolean }>({
+    top: 0,
+    h: 0,
+    screen: 0,
+    measured: false,
+  })
   const sync = useCallback(() => {
     const el = canvasRef.current
     if (el === null) return
     const box = el.getBoundingClientRect()
-    const screen = window.innerHeight
-    const top = Math.max(0, -box.top)
-    const h = box.height > 0 ? Math.max(0, Math.min(layout.height, screen - box.top) - top) : 0
+    const measured = box.height > 0
+    // THE PORT, NOT THE WINDOW (owner, 2026-10-11): see `scrollPortOf`.
+    const port = portBox(scrollPortOf(el))
+    const screen = port.h
+    const top = Math.max(0, port.top - box.top)
+    const h = measured ? Math.max(0, Math.min(layout.height, port.top + port.h - box.top) - top) : 0
     // Compared before it is set, as `syncView` is: this runs on every scroll.
-    setView((v) => (v.top === top && v.h === h && v.screen === screen ? v : { top, h, screen }))
+    setView((v) =>
+      v.top === top && v.h === h && v.screen === screen && v.measured === measured ? v : { top, h, screen, measured },
+    )
   }, [canvasRef, layout.height])
   useEffect(() => {
     sync()
+    const el = canvasRef.current
+    const scroller = el === null ? null : scrollPortOf(el)
+    // The scroller AND the window: the window's scroll is a no-op listener
+    // where the frame scrolls, and the only one where nothing inside does.
+    scroller?.addEventListener('scroll', sync, { passive: true })
     window.addEventListener('scroll', sync, { passive: true })
     window.addEventListener('resize', sync)
     return () => {
+      scroller?.removeEventListener('scroll', sync)
       window.removeEventListener('scroll', sync)
       window.removeEventListener('resize', sync)
     }
-  }, [sync])
+  }, [sync, canvasRef])
+
+  // CLICK OR DRAG: the pointer's height on the strip is a height on the
+  // canvas, and the port is scrolled to centre it -- as the horizontal map
+  // centres its jump. Captured, so a drag that leaves the 44px strip keeps
+  // steering until the button is released.
+  const dragging = useRef(false)
+  const steer = useCallback(
+    (strip: DOMRect, clientY: number) => {
+      const el = canvasRef.current
+      if (el === null) return
+      const canvas = el.getBoundingClientRect()
+      // Unlaid-out boxes answer 0; dividing by one would scroll to NaN.
+      if (strip.height <= 0 || canvas.height <= 0) return
+      const fraction = Math.min(1, Math.max(0, (clientY - strip.top) / strip.height))
+      const scroller = scrollPortOf(el)
+      const port = portBox(scroller)
+      const by = canvas.top + fraction * layout.height - (port.top + port.h / 2)
+      if (scroller === null) window.scrollTo({ top: Math.max(0, window.scrollY + by) })
+      else scroller.scrollTop = Math.max(0, scroller.scrollTop + by)
+      sync()
+    },
+    [canvasRef, layout.height, sync],
+  )
 
   const screen = view.screen > 0 ? view.screen : CANVAS_HEIGHT
   if (layout.height <= screen) return null
@@ -2651,20 +2725,30 @@ function VerticalMinimap({
   const label =
     view.h > 0
       ? `Map of the canvas, top to bottom. It is ${tall} pixels tall; ${Math.round(view.h)} of them are on screen, starting ${Math.round(view.top)} pixels from the top. The page scrolls, and tabbing to a step brings it into view.`
-      : `Map of the canvas, top to bottom. It is ${tall} pixels tall, taller than the ${Math.round(screen)} pixel screen. How much of it is on screen has not been measured. The page scrolls, and tabbing to a step brings it into view.`
+      : view.measured
+        ? `Map of the canvas, top to bottom. It is ${tall} pixels tall and none of it is on screen. The page scrolls, and tabbing to a step brings it into view.`
+        : `Map of the canvas, top to bottom. It is ${tall} pixels tall, taller than the ${Math.round(screen)} pixel screen. How much of it is on screen has not been measured. The page scrolls, and tabbing to a step brings it into view.`
   return (
     <div
       className="wf-vmap"
       role="img"
       aria-label={label}
       onPointerDown={(e) => {
-        const strip = e.currentTarget.getBoundingClientRect()
-        const canvas = canvasRef.current?.getBoundingClientRect()
-        // Unlaid-out boxes answer 0; dividing by one would scroll to NaN.
-        if (strip.height <= 0 || canvas === undefined || canvas.height <= 0) return
-        const y = ((e.clientY - strip.top) / strip.height) * layout.height
-        // Centred on the point, as the horizontal map centres its jump.
-        window.scrollTo({ top: Math.max(0, window.scrollY + canvas.top + y - window.innerHeight / 2) })
+        if (e.button !== 0) return
+        // No text selection or native drag starting under a steering pointer.
+        e.preventDefault()
+        dragging.current = true
+        e.currentTarget.setPointerCapture?.(e.pointerId)
+        steer(e.currentTarget.getBoundingClientRect(), e.clientY)
+      }}
+      onPointerMove={(e) => {
+        if (dragging.current) steer(e.currentTarget.getBoundingClientRect(), e.clientY)
+      }}
+      onPointerUp={() => {
+        dragging.current = false
+      }}
+      onPointerCancel={() => {
+        dragging.current = false
       }}
     >
       <svg viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none" aria-hidden focusable="false">
