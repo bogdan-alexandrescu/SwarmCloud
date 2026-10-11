@@ -4720,12 +4720,16 @@ a.ctl-metric:focus-visible .ctl-metric-label,
   content: '';
   align-self: stretch;
   flex: none;
-  width: 6px;
+  width: 5px;
   background: var(--ctl-hatch);
-  /* The mark's 6px corner less its 1px border, so the band follows the inside
-     of the curve instead of poking through it. */
-  border-top-left-radius: 5px;
-  border-bottom-left-radius: 5px;
+  /* INSET FROM THE BORDER, NOT FLUSH AGAINST IT (V108, #1038). Flush, the
+     band was 6px wide and 5px round on both left corners -- almost all curve
+     -- so the hatch's dark stripes ran into the mark's rounded border and the
+     corner read as a rendering glitch rather than a swatch. A 2px gap of the
+     mark's own fill on three sides makes it a small, square-ish hatched tab
+     inside the mark, which is what it is meant to be. */
+  margin: 2px 0 2px 2px;
+  border-radius: var(--track-radius);
 }
 /* THE READ FAILED, which is not the same as there being nothing. Dashed, and
    warning-toned: something is wrong and it is ours, not the platform's. */
