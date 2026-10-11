@@ -305,6 +305,8 @@ describe('ceiling and loans', () => {
     expect(field.value).toBe('8')
     fireEvent.change(field, { target: { value: '12' } })
     fireEvent.click(within(row).getByRole('button', { name: 'Save' }))
+    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Set to 12' }))
     await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
     expect(writesOf(calls)[0]).toEqual({ method: 'PUT', url: '/v1/admin/workspaces/w-91c0de/limits', body: { max_active: 12 } })
     await waitFor(() => expect(visible(row)).toContain('Ceiling 12 saved.'), WAIT)
@@ -320,9 +322,141 @@ describe('ceiling and loans', () => {
     expect(lend.disabled, 'Lend is live with no account chosen').toBe(true)
     fireEvent.change(within(row).getByLabelText('Account to lend to bob@example.com'), { target: { value: 'acct-eng-1' } })
     fireEvent.click(lend)
+    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Lend' }))
     await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
     expect(writesOf(calls)[0]).toEqual({ method: 'PUT', url: '/v1/admin/people/w-91c0de/loan', body: { account_id: 'acct-eng-1', lend: true } })
     await waitFor(() => expect(visible(row)).toContain('Lent acct-eng-1.'), WAIT)
+  })
+})
+
+// LIVE QA, ADMIN (2026-10-11): ADM-1 to ADM-5. Every write on this screen
+// that hands out an account, takes one back, moves a ceiling or makes an
+// admin asks first; nothing is sent on the first click.
+describe('live QA admin: nothing writes on the first click', () => {
+  const choose = (row: HTMLElement, id: string) =>
+    fireEvent.change(within(row).getByLabelText('Account to lend to bob@example.com'), { target: { value: id } })
+
+  it('ADM-1: Lend asks first, naming the account, its owner tenant and the person, and Cancel sends nothing', async () => {
+    const { calls } = await mount(people(ROWS))
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    const row = rowOf('bob@example.com')
+    choose(row, 'acct-eng-1')
+    fireEvent.click(within(row).getByRole('button', { name: 'Lend' }))
+    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    // MUTATION: call setWorkspaceLoan from the Lend button's onClick.
+    expect(writesOf(calls)).toHaveLength(0)
+    expect(visible(dialog)).toContain('Lend eng shared (eng) to bob@example.com?')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    expect(writesOf(calls)).toHaveLength(0)
+  })
+
+  it('ADM-2: Reclaim is off for an account not lent to this person, and on, behind a confirm, for one that is', async () => {
+    const lentRow = person('bob@example.com', ws('ready', 'w-91c0de'), {
+      claude_account: { source: 'lent', own: 0, lent: 1, lent_by: ['eng'], provider_key: false },
+    })
+    const other = { account_id: 'acct-ops-1', owner_tenant: 'ops', label: 'ops shared', state: 'AVAILABLE', lend_to: [] }
+    const { calls } = await mount(people([lentRow], { lendable_accounts: [ACCOUNT, other] }), {
+      'PUT /v1/admin/people/w-91c0de/loan': () => ({ status: 200, body: { workspace_id: 'w-91c0de', account_id: 'acct-eng-1', owner_tenant: 'eng', lent: false, changed: true } }),
+    })
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    const row = rowOf('bob@example.com')
+    const reclaim = () => within(row).getByRole('button', { name: 'Reclaim' }) as HTMLButtonElement
+    choose(row, 'acct-ops-1')
+    // MUTATION: enable Reclaim whenever an account is chosen.
+    expect(reclaim().disabled, 'Reclaim is live for an account ops never lent them').toBe(true)
+    choose(row, 'acct-eng-1')
+    expect(reclaim().disabled).toBe(false)
+    fireEvent.click(reclaim())
+    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    expect(writesOf(calls)).toHaveLength(0)
+    expect(visible(dialog)).toContain('Reclaim eng shared (eng) from bob@example.com?')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Reclaim' }))
+    await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
+    expect(writesOf(calls)[0]!.body).toEqual({ account_id: 'acct-eng-1', lend: false })
+  })
+
+  it('ADM-2: a paused account is marked in the list and the lend confirm says it starts no new agent', async () => {
+    const paused = { ...ACCOUNT, account_id: 'acct-eng-2', label: 'eng paused', state: 'PAUSED' }
+    await mount(people(ROWS, { lendable_accounts: [ACCOUNT, paused] }))
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    const row = rowOf('bob@example.com')
+    const option = within(row).getByRole('option', { name: /eng paused/ })
+    expect(option.textContent).toContain('starts no new agent')
+    choose(row, 'acct-eng-2')
+    fireEvent.click(within(row).getByRole('button', { name: 'Lend' }))
+    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    expect(within(dialog).getByTestId('pp-loan-idle').textContent).toContain('PAUSED')
+  })
+
+  it('ADM-3: a ceiling Save asks first with old → new and the change, and an unchanged value has nothing to save', async () => {
+    const { calls } = await mount(people(ROWS))
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    const row = rowOf('bob@example.com')
+    const save = within(row).getByRole('button', { name: 'Save' }) as HTMLButtonElement
+    expect(save.disabled, 'Save is live with the value it already holds').toBe(true)
+    fireEvent.change(within(row).getByLabelText('Ceiling for bob@example.com'), { target: { value: '6' } })
+    fireEvent.click(save)
+    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    // MUTATION: call setWorkspaceCeiling from Save's onClick.
+    expect(writesOf(calls)).toHaveLength(0)
+    expect(within(dialog).getByTestId('pp-ceiling-change').textContent).toBe('8 → 6 · −25%')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Keep 8' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    expect(writesOf(calls)).toHaveLength(0)
+  })
+
+  it('ADM-4: Grant admin refuses a non-email, submits on Enter, and asks before it grants', async () => {
+    const { calls } = await mount(people(ROWS), {
+      'PUT /v1/admin/admins/new%40example.com': () => ({ status: 200, body: { email: 'new@example.com', role: 'admin', changed: true } }),
+    })
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    const card = document.querySelector<HTMLElement>('.pp-admins')!
+    const field = within(card).getByLabelText('Email') as HTMLInputElement
+    const grant = within(card).getByRole('button', { name: 'Grant admin' }) as HTMLButtonElement
+    fireEvent.change(field, { target: { value: 'not-an-email' } })
+    // MUTATION: gate the button on a non-blank value only.
+    expect(grant.disabled, 'Grant admin is live for not-an-email').toBe(true)
+    fireEvent.submit(field.form!)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    fireEvent.change(field, { target: { value: 'new@example.com' } })
+    expect(grant.disabled).toBe(false)
+    expect(field.form, 'the field is in a form, so Enter submits it').not.toBeNull()
+    fireEvent.submit(field.form!)
+    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    expect(writesOf(calls)).toHaveLength(0)
+    expect(visible(dialog)).toContain('Make new@example.com a platform admin?')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Grant admin' }))
+    await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
+    expect(writesOf(calls)[0]!.url).toBe('/v1/admin/admins/new%40example.com')
+  })
+
+  it('ADM-5: a task-scoped entry names its target and tenant, a run of one action is one line, and the cap is said', async () => {
+    const purged = (i: number) => ({
+      action: 'history_purged',
+      target_kind: 'task',
+      target_id: `task_${String(i).padStart(4, '0')}`,
+      by: 'bob@example.com',
+      at: new Date(Date.now() - i * 1000).toISOString(),
+      detail: { tenant_id: 'smoke', state: 'SUCCEEDED', event_count: 3 },
+    })
+    const audit = [purged(0), purged(1), ...Array.from({ length: 48 }, (_, i) => purged(i + 2))]
+    await mount(people(ROWS, { audit }))
+    await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
+    const lines = [...document.querySelectorAll<HTMLElement>('.pp-audit-list li')]
+    // MUTATION: draw one line per entry.
+    expect(lines).toHaveLength(1)
+    expect(visible(lines[0]!)).toContain('history_purged × 50 · smoke by bob@example.com')
+    expect(screen.getByTestId('pp-audit-shown').textContent).toContain('latest 50')
+  })
+
+  it('ADM-5: a single task-scoped entry shows its target_id, never a bare ?', async () => {
+    await mount(people(ROWS, { audit: [{ action: 'history_purged', target_kind: 'task', target_id: 'task_0001', by: 'bob@example.com', at: now(), detail: { tenant_id: 'smoke' } }] }))
+    await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
+    const line = visible(document.querySelector('.pp-audit-list'))
+    expect(line).toContain('history_purged task_0001 · smoke by bob@example.com')
+    expect(line).not.toContain('?')
   })
 })
 

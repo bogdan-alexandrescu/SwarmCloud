@@ -37,6 +37,13 @@ import './styles/schedules.css'
  * Terraform (`terraform/modules/scheduler/jobs.tf`). A static list, so an
  * admin sees every recurring thing in one place; what each does is its Cloud
  * Scheduler job's own description. Nothing here is read from GCP.
+ *
+ * EVERY JOB, IN jobs.tf's ORDER (live QA ADM-6, 2026-10-11): the list said
+ * "every recurring thing" and held 7 of the 12, schedule_tick among the
+ * missing though its own report heads this page. `name` is the job's
+ * resource name in jobs.tf and `job` its name after the prefix, `<tenant>`
+ * for a per-tenant job; `adminSchedules.test.tsx` reads jobs.tf and fails
+ * when the two disagree.
  */
 export const PLATFORM_TICKS: readonly { name: string; job: string; does: string }[] = [
   { name: 'safety_tick', job: 'scheduler-tick', does: 'A one-minute safety tick for the scheduler’s drain loop.' },
@@ -44,8 +51,13 @@ export const PLATFORM_TICKS: readonly { name: string; job: string; does: string 
   { name: 'quota_refresh', job: 'quota-refresh', does: 'Recomputes provider quota state and adaptive pool targets.' },
   { name: 'workflow_rollup', job: 'workflow-rollup-<tenant>', does: 'Converges the stored state of each tenant’s workflows nobody reads.' },
   { name: 'issue_run_advance', job: 'issue-run-advance-<tenant>', does: 'Advances each tenant’s issue runs nobody is reading.' },
+  { name: 'issue_sweep', job: 'issue-sweep-<tenant>', does: 'Starts issue runs for each tenant’s ready-looking open issues, up to its live-run cap.' },
+  { name: 'stranded_pr_sweep', job: 'stranded-pr-sweep-<tenant>', does: 'Finds each tenant’s SwarmCloud pull requests nothing is going to merge, and logs them.' },
+  { name: 'repo_index_poll', job: 'repo-index-poll-<tenant>', does: 'Reads each tenant’s registered repositories’ heads and queues their index runs.' },
   { name: 'merge_wake', job: 'merge-wake-<tenant>', does: 'Every minute, marks each tenant’s CI-waiting merge steps whose checks have settled.' },
   { name: 'forge_refresh', job: 'forge-refresh', does: 'Refreshes GitHub user access tokens before they expire.' },
+  { name: 'schedule_tick', job: 'schedule-tick', does: 'Fires every tenant’s due schedules, one firing per slot (the tick reported above).' },
+  { name: 'workspace_sweep', job: 'workspace-sweep', does: 'Re-dispatches approved personal workspaces nobody built, and logs each one still waiting.' },
 ]
 
 type Action = 'pause' | 'disable' | 'enable'
