@@ -9,11 +9,16 @@
 # condition is dropped, if a clause is added or loosened, or if it admits a
 # verdict, a repository index, a marker or a bucket-root object.
 #
-# The condition is evaluated here, not only compared. Its two clauses are read
-# back out of the planned expression -- which also refuses any other shape, an
-# `||` included -- and applied to object names the way IAM applies them:
-# startsWith literally, and matches() as an RE2 search, which Terraform's
-# regex() also is.
+# The condition is evaluated here, not only compared. Cloud Storage IAM
+# conditions have no matches() (Google refused it with a 400, release run
+# 38114832799), so the condition is a startsWith plus extract() comparisons.
+# Its templates are read back out of the planned expression -- a regex that
+# also refuses any other shape, an `||` outside the one group included, and
+# any revert to matches() -- and applied to object names the way IAM applies
+# them. extract("pre{x}suf") is emulated per Google's attribute reference:
+# the text between the FIRST occurrence of pre and the first suf after it,
+# "" when either is missing; the placeholder may span "/". Terraform's split()
+# on the literal prefix and suffix does exactly that.
 
 mock_provider "google" {
   source = "./mocks/google"
@@ -132,75 +137,126 @@ run "swarm_api_holds_it_on_the_artifact_bucket_only" {
 
   # The exact string, so any edit is a deliberate one this file has to follow.
   assert {
-    condition     = google_storage_bucket_iam_member.api_history_purge_deleter.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/\") && resource.name.matches(\"^projects/_/buckets/[^/]+/objects/tenants/[^/]+/(tasks|checkpoints)/\")"
-    error_message = "the purge's delete condition changed; it must admit tenants/<t>/tasks/ and tenants/<t>/checkpoints/ of the artifact bucket and nothing else"
+    condition     = google_storage_bucket_iam_member.api_history_purge_deleter.condition[0].expression == "resource.name.startsWith(\"projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/\") && resource.name.extract(\"/objects/tenants/{t}/\") != \"\" && (resource.name.extract(\"/objects/tenants/{t}/\") == resource.name.extract(\"/objects/tenants/{t}/tasks/\") || resource.name.extract(\"/objects/tenants/{t}/\") == resource.name.extract(\"/objects/tenants/{t}/checkpoints/\"))"
+    error_message = "the purge's delete condition changed; it must admit tenants/<t>/tasks/ and tenants/<t>/checkpoints/ of the artifact bucket and nothing else, and use no matches() (Cloud Storage IAM conditions refuse it)"
   }
 
+  # EVALUATED: every name below is run through the planned expression. The
+  # outer map says what each name must come out as; a condition that is
+  # dropped, widened, narrowed or reverted to matches() (which makes the
+  # regex() below error) turns the run red.
+  #
   # ADMITTED: a run's artifacts, logs and checkpoints, under any tenant --
   # personal tenants created at runtime included -- and the owner-named
   # tenants/<t>/checkpoints/.
-  assert {
-    condition = alltrue([
-      for path in [
-        "tenants/acme/tasks/task_1/result.json",
-        "tenants/acme/tasks/task_1/attempts/att_1/checkpoints/ckpt-00001/archive.tar.gz",
-        "tenants/acme/tasks/task_1/attempts/att_1/logs/stdout.log",
-        "tenants/u-someone/tasks/task_2/result.json",
-        "tenants/acme/checkpoints/ckpt-00001/manifest.json",
-      ] :
-      startswith(
-        "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}",
-        regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.matches\\(\"([^\"]+)\"\\)$", google_storage_bucket_iam_member.api_history_purge_deleter.condition[0].expression)[0],
-      ) &&
-      can(regex(
-        regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.matches\\(\"([^\"]+)\"\\)$", google_storage_bucket_iam_member.api_history_purge_deleter.condition[0].expression)[1],
-        "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}",
-      ))
-    ])
-    error_message = "the condition must admit every object under tenants/<t>/tasks/ and tenants/<t>/checkpoints/, or the purge is refused and audited as history_purge_failed"
-  }
-
   # REFUSED: every other prefix of the bucket, a near-miss of each admitted
-  # one, and the same paths in any other bucket.
+  # one, a repository path that itself holds a tasks/ directory, a tasks/
+  # nested deeper than one tenant segment, and the same paths in any other
+  # bucket.
   assert {
-    condition = alltrue([
-      for name in concat(
-        [
+    condition = [
+      for c in [{
+        admitted = [
           for path in [
-            "tenants/acme/verdicts/wf_1/task_9/verdict.json",
-            "tenants/acme/repos/repo_1/index/0123abc/repo_graph_shards.json",
-            "tenants/acme/repo-index/v1/graph.json",
-            "tenants/acme/markers/done",
-            "tenants/acme/result.json",
-            "tenants/acme/tasks",
-            "tenants/acme/tasksx/task_1/result.json",
-            "tenants/acme/checkpoints-old/ckpt-00001/manifest.json",
-            "tenants/acme/sub/tasks/task_1/result.json",
-            "tenants//tasks/task_1/result.json",
-            "tasks/task_1/result.json",
-            "checkpoints/ckpt-00001/manifest.json",
-            "markers/done",
-            "repo-index/v1/graph.json",
-            "releases/main/manifest.json",
+            "tenants/acme/tasks/task_1/result.json",
+            "tenants/acme/tasks/task_1/attempts/att_1/checkpoints/ckpt-00001/archive.tar.gz",
+            "tenants/acme/tasks/task_1/attempts/att_1/logs/stdout.log",
+            "tenants/u-someone/tasks/task_2/result.json",
+            "tenants/acme/checkpoints/ckpt-00001/manifest.json",
           ] : "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}"
-        ],
+        ]
+        refused = concat(
+          [
+            for path in [
+              "tenants/acme/verdicts/wf_1/task_9/verdict.json",
+              "tenants/acme/repos/repo_1/index/0123abc/repo_graph_shards.json",
+              "tenants/acme/repos/repo_1/tasks/x",
+              "tenants/acme/repos/tasks/x",
+              "tenants/acme/verdicts/tasks/x",
+              "tenants/a/b/tasks/x",
+              "tenants/a/b/checkpoints/x",
+              "tenants/acme/repo-index/v1/graph.json",
+              "tenants/acme/markers/done",
+              "tenants/acme/result.json",
+              "tenants/acme/tasks",
+              "tenants/acme/tasksx/task_1/result.json",
+              "tenants/acme/checkpoints-old/ckpt-00001/manifest.json",
+              "tenants/acme/sub/tasks/task_1/result.json",
+              "tenants//tasks/task_1/result.json",
+              "tenants//checkpoints/x",
+              "tenants/tasks/x",
+              "tenants/acme",
+              "tasks/task_1/result.json",
+              "checkpoints/ckpt-00001/manifest.json",
+              "markers/done",
+              "repo-index/v1/graph.json",
+              "releases/main/manifest.json",
+            ] : "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}"
+          ],
+          [
+            "projects/_/buckets/other-bucket/objects/tenants/acme/tasks/task_1/result.json",
+            "projects/_/buckets/swarm-artifacts-saga-agents-staging-x/objects/tenants/acme/tasks/task_1/result.json",
+            "projects/_/buckets/swarm-artifacts-saga-agents-staging",
+          ],
+        )
+        }] : [
+        for x in [regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.extract\\(\"([^\"]+)\"\\) != \"\" && \\(resource\\.name\\.extract\\(\"([^\"]+)\"\\) == resource\\.name\\.extract\\(\"([^\"]+)\"\\) \\|\\| resource\\.name\\.extract\\(\"([^\"]+)\"\\) == resource\\.name\\.extract\\(\"([^\"]+)\"\\)\\)$", google_storage_bucket_iam_member.api_history_purge_deleter.condition[0].expression)] : {
+          for name in concat(c.admitted, c.refused) : name => (
+            startswith(name, x[0]) && [
+              # e = [S, T, C], each template emulated as documented.
+              for e in [[
+                for tpl in [x[1], x[3], x[5]] : [
+                  for pre in [split("{t}", tpl)[0]] : [
+                    for suf in [split("{t}", tpl)[1]] : [
+                      for rest in [length(split(pre, name)) < 2 ? "" : join(pre, slice(split(pre, name), 1, length(split(pre, name))))] :
+                      length(split(suf, rest)) < 2 ? "" : split(suf, rest)[0]
+                    ][0]
+                  ][0]
+                ][0]
+              ]] : e[0] != "" && (e[0] == e[1] || e[0] == e[2])
+            ][0]
+          )
+        }
+      ][0]
+      ][0] == { for name in concat(
+        [for path in [
+          "tenants/acme/tasks/task_1/result.json",
+          "tenants/acme/tasks/task_1/attempts/att_1/checkpoints/ckpt-00001/archive.tar.gz",
+          "tenants/acme/tasks/task_1/attempts/att_1/logs/stdout.log",
+          "tenants/u-someone/tasks/task_2/result.json",
+          "tenants/acme/checkpoints/ckpt-00001/manifest.json",
+        ] : "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}"],
+        [for path in [
+          "tenants/acme/verdicts/wf_1/task_9/verdict.json",
+          "tenants/acme/repos/repo_1/index/0123abc/repo_graph_shards.json",
+          "tenants/acme/repos/repo_1/tasks/x",
+          "tenants/acme/repos/tasks/x",
+          "tenants/acme/verdicts/tasks/x",
+          "tenants/a/b/tasks/x",
+          "tenants/a/b/checkpoints/x",
+          "tenants/acme/repo-index/v1/graph.json",
+          "tenants/acme/markers/done",
+          "tenants/acme/result.json",
+          "tenants/acme/tasks",
+          "tenants/acme/tasksx/task_1/result.json",
+          "tenants/acme/checkpoints-old/ckpt-00001/manifest.json",
+          "tenants/acme/sub/tasks/task_1/result.json",
+          "tenants//tasks/task_1/result.json",
+          "tenants//checkpoints/x",
+          "tenants/tasks/x",
+          "tenants/acme",
+          "tasks/task_1/result.json",
+          "checkpoints/ckpt-00001/manifest.json",
+          "markers/done",
+          "repo-index/v1/graph.json",
+          "releases/main/manifest.json",
+        ] : "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/${path}"],
         [
           "projects/_/buckets/other-bucket/objects/tenants/acme/tasks/task_1/result.json",
           "projects/_/buckets/swarm-artifacts-saga-agents-staging-x/objects/tenants/acme/tasks/task_1/result.json",
           "projects/_/buckets/swarm-artifacts-saga-agents-staging",
         ],
-      ) :
-      !(
-        startswith(
-          name,
-          regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.matches\\(\"([^\"]+)\"\\)$", google_storage_bucket_iam_member.api_history_purge_deleter.condition[0].expression)[0],
-        ) &&
-        can(regex(
-          regex("^resource\\.name\\.startsWith\\(\"([^\"]+)\"\\) && resource\\.name\\.matches\\(\"([^\"]+)\"\\)$", google_storage_bucket_iam_member.api_history_purge_deleter.condition[0].expression)[1],
-          name,
-        ))
-      )
-    ])
-    error_message = "the purge's delete condition admits an object outside tenants/<t>/tasks/ and tenants/<t>/checkpoints/ of the artifact bucket: a verdict, a repository index, a marker, a bucket-root object or another bucket's"
+    ) : name => startswith(name, "projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/") && can(regex("^projects/_/buckets/swarm-artifacts-saga-agents-staging/objects/tenants/[^/]+/(tasks|checkpoints)/", name)) }
+    error_message = "the purge's delete condition, evaluated with extract() as documented, must admit exactly tenants/<t>/tasks/ and tenants/<t>/checkpoints/ (one tenant segment) of the artifact bucket and refuse verdicts, repository paths (even ones holding /tasks/), nested tasks/, markers, bucket-root and other-bucket objects"
   }
 }
