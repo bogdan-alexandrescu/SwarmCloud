@@ -203,6 +203,10 @@ describe('one render per state', () => {
     expect(c.querySelector(`[title="${HEAD}"]`), 'the whole head is the short one\'s title').not.toBeNull()
     const since = c.querySelector<HTMLElement>('[data-fact="first-parked"]')!
     expect(since.textContent).toContain('25m ago')
+    // WF-5 (live QA 2026-10-11): `first_parked_at` restarts after a merge-slot
+    // wait, so it is not claimed as the step's FIRST park; it is the current CI wait's start.
+    expect(since.textContent).not.toMatch(/first parked/)
+    expect(since.textContent).toMatch(/^current CI wait began/)
     expect(since.querySelector('time')!.getAttribute('dateTime')).toBe(iso(-1500))
   })
 

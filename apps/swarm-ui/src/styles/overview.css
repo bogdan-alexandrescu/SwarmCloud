@@ -333,6 +333,11 @@
   .ov-fails td.is-num { grid-row: 2; grid-column: 2; text-align: left; }
   .ov-fails td.is-num:last-child { grid-column: 3; text-align: right; }
   .ov-prun { display: block; }
+  /* A DISABLED REASON WHOLE ON A PHONE (live QA OV-13, 2026-10-11): past two
+     lines the reason was only in the tile's `title`, which a touch screen
+     cannot open. Whole, the sentence costs the tile a line or two of
+     height and hides nothing. */
+  .ov-hp.is-off small { display: block; -webkit-line-clamp: unset; overflow: visible; }
   .ov-link, .ov-open { position: relative; }
   .ov-link::after, .ov-open::after {
     content: '';

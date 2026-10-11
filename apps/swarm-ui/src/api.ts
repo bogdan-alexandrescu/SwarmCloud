@@ -135,13 +135,19 @@ export interface WorkflowBoard {
   taskById: Map<string, Task> | null
   /** Why states are missing, for the banner. null when the join succeeded. */
   statesDetail: string | null
+  /**
+   * The list read's `next_page_token`: older workflows exist past these 100
+   * (live QA WF-2). Absent or null when the read holds the whole history, or
+   * when it is not a list read at all.
+   */
+  nextPageToken?: string | null
 }
 
 export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   if (USE_FIXTURES) return fixtureWorkflowBoard()
 
   const [wf, tasks] = await Promise.all([
-    read<{ workflows: Workflow[] }>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
+    read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
     read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0),
   ])
 
@@ -161,7 +167,12 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
       status: 'ok',
       fetchedAt: wf.fetchedAt,
       serverAt: wf.serverAt,
-      data: { workflows: wf.data.workflows, taskById: null, statesDetail: tasks.error.message },
+      data: {
+        workflows: wf.data.workflows,
+        taskById: null,
+        statesDetail: tasks.error.message,
+        nextPageToken: wf.data.next_page_token ?? null,
+      },
     }
   }
 
@@ -171,8 +182,24 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
     status: 'ok',
     fetchedAt: wf.fetchedAt,
     serverAt: wf.serverAt,
-    data: { workflows: wf.data.workflows, taskById, statesDetail: null },
+    data: { workflows: wf.data.workflows, taskById, statesDetail: null, nextPageToken: wf.data.next_page_token ?? null },
   }
+}
+
+/**
+ * THE NEXT 100 WORKFLOWS, OLDER THAN A LIST READ (live QA WF-2, 2026-10-11).
+ * The list read only its newest 100 and offered no way past them, while its
+ * counts and its "oldest first" read as the tenant's whole history:
+ * `Failed 15` against 52 failed workflows. `token` is the previous read's
+ * `next_page_token`. No task join: the list reads each older row's steps by
+ * id as it scrolls in (`useRowReads`), as it already does for the first 100.
+ */
+export async function loadOlderWorkflows(token: string): Promise<Result<WorkflowPage>> {
+  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { workflows: [], next_page_token: null } }
+  return read<WorkflowPage>(
+    route('/v1/workflows', {}, new URLSearchParams({ limit: '100', page_token: token })),
+    (d) => d.workflows.length === 0,
+  )
 }
 
 function emptyBoard(workflows: Workflow[]): WorkflowBoard {
@@ -2049,7 +2076,13 @@ export async function loadProviders(): Promise<Result<ProvidersPage>> {
 }
 
 /** One page of tasks in one state. Server-side filter, backed by a real index. */
-export async function loadTasksInState(state: TaskState): Promise<Result<TaskPage>> {
+export async function loadTasksInState(
+  state: TaskState,
+  // THE OVERVIEW'S STATE READS (live QA OV-1/OV-4, 2026-10-11) ask for the
+  // summary rows, as its page read does (#168); everyone else keeps the full
+  // 200-row page this always served.
+  options: { limit?: number; view?: 'summary' } = {},
+): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) {
     const page = await fixtureTasks()
     if (page.status !== 'ok') return page
@@ -2059,7 +2092,11 @@ export async function loadTasksInState(state: TaskState): Promise<Result<TaskPag
       : { status: 'ok', fetchedAt: Date.now(), data: { ...page.data, tasks } }
   }
   return read<TaskPage>(
-    route('/v1/tasks', {}, new URLSearchParams({ state, limit: '200' })),
+    route(
+      '/v1/tasks',
+      {},
+      new URLSearchParams({ state, limit: String(options.limit ?? 200), ...(options.view === 'summary' ? { view: 'summary' } : {}) }),
+    ),
     (d) => d.tasks.length === 0,
   )
 }
