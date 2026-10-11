@@ -375,7 +375,7 @@ neither as well as what they have.
 | `WorkflowGraph` | **Collapse a stage.** Exists for wide stages. Extend it to any stage whose steps all succeeded, so a finished prefix folds to one band. | `stageCensus`. |
 | `WorkflowGraph` | **Live state overlay.** Exists (1 Hz). Add a ring on the stage band that holds the most recently changed step. | Task `updated_at`. |
 | `WorkflowViews.tsx` timeline | **Plan vs actual.** Draw each step's declared stage beside the moment it actually started, so a step held back by capacity (invariant 1: `QUEUED` and `PARKED` cost nothing) reads as waiting, not as late work. | `started_at`, `stepDuration` kinds. A step with no `started_at` is drawn as not started, never at zero. |
-| `WorkflowGraph` | **Vertical minimap**, for runs over one screen tall (pain point 2). | Layout only. **Shipped in GR1** (`VerticalMinimap`). |
+| `WorkflowGraph` | **Vertical minimap**, for runs over one screen tall (pain point 2). | Layout only. **Shipped in GR1** (`VerticalMinimap`). It follows and steers the canvas's scroll port, the frame's `.ctl-scroll`, found by `scrollPortOf` -- never `window`, which does not scroll in this console; GR1 read the window, and its map sat on the top of the graph and moved nothing (owner, 2026-10-11, `workflow.graph-pan.test.tsx`). |
 | `SubmitWorkflow.tsx` | **DAG preview while composing**, through the same `layoutOf` at the names tier, with no state marks: a draft step has no task, and drawing one as "queued" would be a fake state. | The draft's `depends_on`. |
 
 ### 5.2 Repository and knowledge graph
