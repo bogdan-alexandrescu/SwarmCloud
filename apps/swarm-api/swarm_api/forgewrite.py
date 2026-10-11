@@ -46,6 +46,11 @@ the check run's own output is still the excerpt.
 Since #646 it also CLOSES an issue (`close_issue`, `issues: write`): an
 issue run whose build found every planned requirement already met on main.
 
+Since the observer files its proposals (docs/schedules.md §3.4) it also
+OPENS an issue (`create_issue`, `issues: write`) and finds one it opened by
+the marker its body begins with (`find_issue`): one epic per observer report,
+in the repository the schedule names, with the same tenant credential.
+
 Since #748 it also OPENS a pull request from a branch that is already pushed
 (`create_branch`, `open_pull`, `contents: write` and `pull_requests: write`):
 a MERGE verdict's integrator, published by swarm-api without a worker
@@ -220,6 +225,14 @@ class CommentRef:
 
 
 @dataclass(frozen=True)
+class IssueCreated:
+    """One issue as GitHub answered it: its number and its page."""
+
+    number: int
+    url: str
+
+
+@dataclass(frozen=True)
 class PullSnapshot:
     number: int
     url: str
@@ -264,6 +277,14 @@ def _comment(data: Any, what: str) -> CommentRef:
         url=url if isinstance(url, str) else "",
         login=login if isinstance(login, str) else None,
     )
+
+
+def _issue(ref: IssueRef, data: Any, what: str) -> IssueCreated:
+    if not isinstance(data, dict) or _int(data.get("number")) is None:
+        raise ForgeWriteError(f"GitHub's answer for {what} is not an issue")
+    number = int(data["number"])
+    url = data.get("html_url")
+    return IssueCreated(number=number, url=url if isinstance(url, str) else f"{ref.repository_url}/issues/{number}")
 
 
 def _pull(ref: IssueRef, data: Any, what: str) -> PullSnapshot:
@@ -442,6 +463,50 @@ class GitHubWriter:
             f"closing {ref.short}", needs=ISSUES_WRITE,
             payload={"state": "closed", "state_reason": "completed"},
         )
+
+    def create_issue(
+        self, ref: IssueRef, *, title: str, body: str, labels: tuple[str, ...] = (), token: str
+    ) -> IssueCreated:
+        """Open an issue in `ref`'s repository (`ref.number` is not read).
+
+        GitHub drops a label silently when the credential cannot set labels;
+        the issue is still opened, and `find_issue` does not filter on one.
+        """
+        what = f"a new issue in {ref.repository}"
+        data = self._call(
+            "POST", self._url(ref, "issues"), token, what, needs=ISSUES_WRITE,
+            payload={"title": title, "body": body, "labels": list(labels)}, ok=(201,),
+        )
+        return _issue(ref, data, what)
+
+    def find_issue(self, ref: IssueRef, marker: str, token: str) -> IssueCreated | None:
+        """The OLDEST issue in `ref`'s repository whose body BEGINS with `marker`.
+
+        How a retry finds the issue it opened when the number it stored was
+        lost (an open that succeeded and a Firestore write that did not):
+        `find_comment`'s rule, for an issue. Newest first, at most
+        `MAX_COMMENT_PAGES` pages: ours was opened moments before the write
+        that lost it. Pull requests, which GitHub lists here too, are skipped.
+        """
+        what = f"the issues of {ref.repository}"
+        url = self._url(ref, "issues")
+        found: IssueCreated | None = None
+        for page in range(1, MAX_COMMENT_PAGES + 1):
+            entries = self._call(
+                "GET", f"{url}?state=all&sort=created&direction=desc&per_page={PAGE_SIZE}&page={page}",
+                token, what, needs=ISSUES_WRITE,
+            )
+            if not isinstance(entries, list):
+                raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+            for entry in entries:
+                if not isinstance(entry, dict) or "pull_request" in entry:
+                    continue
+                body = entry.get("body")
+                if isinstance(body, str) and body.startswith(marker):
+                    found = _issue(ref, entry, what)  # newest first: the last match is the oldest
+            if len(entries) < PAGE_SIZE:
+                break
+        return found
 
     # -- pull requests ----------------------------------------------------------
 

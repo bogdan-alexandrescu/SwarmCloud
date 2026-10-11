@@ -548,9 +548,15 @@ const WAITING_STATES = ['QUEUED', 'READY', 'PARKED'] as const
  *                  re-read every 30s with the meter. Live is LEASED through
  *                  RUNNING, so it agrees with how concurrency is counted
  *                  (invariant 3), not with RUNNING alone.
- *   Workflows      NOT SERVED: no route counts a tenant's workflows (the list
- *                  read pages 100 with a rollup budget, far too heavy for the
- *                  frame), so the row carries a dash and says so.
+ *   Workflows,     NO COUNT AT ALL (visual QA V150, 2026-10-11). No route
+ *   Recent         counts a tenant's workflows (the list read pages 100 with
+ *                  a rollup budget, far too heavy for the frame), and Recent
+ *                  is a window of finished agents, not a population. The
+ *                  Workflows row carried a dash whose reason lived only in a
+ *                  tooltip, beside a Recent row that carried nothing: two
+ *                  ways of not counting. A dash is for a count that WAS
+ *                  asked for and could not be read (Live and Waiting, below);
+ *                  a row nobody counts draws no mark, never a 0.
  *   Pools          the amber count of pools full or paused, derived from the
  *                  capacity read the meter already made; nothing when none is.
  *
@@ -591,7 +597,6 @@ export function panelCounts(
     out.live = live === null ? { n: null, why: 'not read: a state is missing from the counts' } : { n: live }
     out.waiting = waiting === null ? { n: null, why: 'not read: a state is missing from the counts' } : { n: waiting }
   }
-  out.workflows = { n: null, why: 'not served: no route counts this tenant’s workflows' }
   const c = dataOf(cap)
   if (c === null) {
     if (cap.status === 'error') out.pools = { n: null, why: `not read: ${errorHeading(cap.error)}` }
@@ -1090,7 +1095,19 @@ export function SkyShell({
             aria-current={on ? 'page' : undefined}
             title={checking ? `${s.label} (checking access)` : locked ? `${s.label} (admins only)` : s.label}
             {...routed(s.to, () => {
-              // Collapsed, a click on a section opens the panel again.
+              // COLLAPSED, A CLICK ON THE SECTION YOU ARE IN OPENS ITS PAGES
+              // (visual QA V083, 2026-10-11). It expanded the panel, so with
+              // no hover -- a touch screen -- the only way between the four
+              // Admin pages was to undo the collapse. The flyout opens at
+              // once and stays until a choice, Escape or a click elsewhere;
+              // `Open the panel` in it, and the spine's own expand, still
+              // undo the collapse. Overview has no pages, so it expands.
+              if (collapsed && on && s.key !== 'overview' && !drawer) {
+                if (flyTimer.current !== undefined) clearTimeout(flyTimer.current)
+                setFly(s.key)
+                return
+              }
+              // Collapsed, a click on another section opens the panel again.
               if (collapsed) toggle()
               if (!(collapsed && on)) nav(s.to)
             })}
@@ -1154,10 +1171,11 @@ export function SkyShell({
       <Meter meter={meter} read={cap.status === 'error' || fault !== null ? 'unread' : cap.status === 'loading' ? 'loading' : 'landed'} />
       <div className="sk-pfoot">
         <span className="sk-pfrow">
-          <b>{who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : who.principal.email.split('@')[0]}</b>
+          <b title={who?.principal.email.split('@')[0]}>{who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : who.principal.email.split('@')[0]}</b>
           {admin && <span className="sk-adm">admin</span>}
         </span>
-        {who !== null && <small>{who.principal.email}</small>}
+        {/* One line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
+        {who !== null && <small title={who.principal.email}>{who.principal.email}</small>}
         <ThemeToggle />
       </div>
     </nav>
@@ -1219,6 +1237,23 @@ export function SkyShell({
             hairline tag as the panel's foot, last in the one row, after the
             environment it sits beside. */}
         {admin && <span className="sk-adm">admin</span>}
+        {/* A WAY BACK UP, once the page is more than a screen long and the
+            reader is past the first screen of it (#139). Drawn below 760px
+            only (styles.css): above it the spine never scrolls away.
+
+            IN THE HEADER, NOT OVER THE PAGE (visual QA V009, 2026-10-11). It
+            was a pill floating at the foot of the scrollport, and at 400px
+            it sat on whatever scrolled under it -- a stacked record's value,
+            a refusal's last lines, Overview's pool figures. No room the
+            scroller reserves can stop that mid-page; the header is already
+            on screen whenever `Top` is (compacted to 36px by then), so here
+            it covers nothing and costs no chrome. Last in the row, after the
+            tags; the title gives way first. */}
+        {scroll === 'far' && (
+          <button type="button" className="sk-top" onClick={toTop} aria-label="Back to the top of the page">
+            &#8593; Top
+          </button>
+        )}
       </header>
       {drawer && <div className="sk-scrim" onClick={() => setDrawer(false)} aria-hidden />}
       <div className="sk-side" ref={sideRef}>
@@ -1226,7 +1261,21 @@ export function SkyShell({
         {!collapsed || drawer ? panel : null}
       </div>
       {collapsed && fly !== null && !drawer && (
-        <Flyout section={fly} tab={section === fly ? tab : ''} agentTab={agentTab} nav={nav} onEnter={() => hover(fly)} onLeave={() => hover(null)} flyRef={flyRef} onBlur={onFlyBlur} onKeyDown={onFlyKey} />
+        <Flyout
+          section={fly}
+          tab={section === fly ? tab : ''}
+          agentTab={agentTab}
+          nav={nav}
+          onExpand={() => {
+            setFly(null)
+            toggle()
+          }}
+          onEnter={() => hover(fly)}
+          onLeave={() => hover(null)}
+          flyRef={flyRef}
+          onBlur={onFlyBlur}
+          onKeyDown={onFlyKey}
+        />
       )}
       {picker !== null && who !== null && switchable && (
         <TenantPicker at={picker} current={who.tenant.tenant_id} choices={choices} onChoose={choose} onClose={() => setPicker(null)} />
@@ -1253,14 +1302,6 @@ export function SkyShell({
                   a kept form, which re-reads in place. */}
               <Fragment key={`${keepOnSwitch ? 'kept' : (tenant ?? '')}:${attempt}`}>{children}</Fragment>
             </>
-          )}
-          {/* A WAY BACK UP, once the page is more than a screen long and the
-              reader is past the first screen of it (#139). Drawn below 760px
-              only (styles.css): above it the spine never scrolls away. */}
-          {scroll === 'far' && (
-            <button type="button" className="sk-top" onClick={toTop}>
-              &#8593; Top
-            </button>
           )}
         </div>
         {dock}
@@ -1697,7 +1738,14 @@ function PanelPages({
                 {p.kids.map((k) => {
                   const kidOn = k.key === lit.kid
                   return (
-                    <a key={k.key} className={`sk-kid${kidOn ? ' is-on' : ''}`} aria-current={kidOn ? 'page' : undefined} {...routed(k.to, () => nav(k.to))}>
+                    <a
+                      key={k.key}
+                      className={`sk-kid${kidOn ? ' is-on' : ''}`}
+                      aria-current={kidOn ? 'page' : undefined}
+                      // Why Recent has no number beside Live and Waiting (V150).
+                      title={p.key === 'agents' && k.key === 'recent' ? 'Finished agents, newest first: a window, so it is not counted' : undefined}
+                      {...routed(k.to, () => nav(k.to))}
+                    >
                       <span>{k.label}</span>
                       {k.admin === true && <span className="sk-adm">admin</span>}
                       {p.key === 'agents' && <CountMark c={counts[k.key]} />}
@@ -1808,6 +1856,7 @@ function Flyout({
   tab,
   agentTab,
   nav,
+  onExpand,
   onEnter,
   onLeave,
   flyRef,
@@ -1818,6 +1867,8 @@ function Flyout({
   tab: string
   agentTab: AgentTab
   nav: (to: string) => void
+  /** Undo the collapse: the panel comes back and the flyout goes. */
+  onExpand: () => void
   onEnter: () => void
   onLeave: () => void
   flyRef: RefObject<HTMLDivElement>
@@ -1840,7 +1891,12 @@ function Flyout({
           </a>
         )
       })}
-      <em>Click the section to open the panel again</em>
+      {/* A CONTROL, NOT AN INSTRUCTION (V083): "Click the section to open
+          the panel again" stopped being true when a click on the section
+          became the way to open this list without a pointer that hovers. */}
+      <button type="button" className="sk-unfold" onClick={onExpand}>
+        Open the panel
+      </button>
     </div>
   )
 }

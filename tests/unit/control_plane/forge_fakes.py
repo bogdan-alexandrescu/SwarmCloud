@@ -58,7 +58,7 @@ class GitHub:
         *,
         issues: list[dict[str, Any]] | None = None,
         pulls: list[dict[str, Any]] | None = None,
-        files: dict[int, list[str]] | None = None,
+        files: dict[int, list[Any]] | None = None,
         status: dict[str, int] | None = None,
         raises: Exception | None = None,
     ) -> None:
@@ -90,7 +90,11 @@ class GitHub:
             data = self.pulls
         elif path.endswith("/files"):
             number = int(path.rstrip("/").split("/")[-2])
-            data = [{"filename": name} for name in self.files.get(number, [])]
+            # An entry is a name, or `(name, patch)` for a file the forge sends a patch for.
+            data = [
+                {"filename": e} if isinstance(e, str) else {"filename": e[0], "patch": e[1]}
+                for e in self.files.get(number, [])
+            ]
         else:
             return 404, b"{}"
         chunk = data[(page - 1) * per_page: page * per_page]
@@ -159,6 +163,24 @@ class GitHubWrites:
         parts = parsed.path.strip("/").split("/")  # repos/o/r/...
         rest = parts[3:]
         payload = json.loads(body.decode()) if body else {}
+        if rest == ["issues"]:
+            # Opening an issue (the observer's epic) and listing them, newest first.
+            repository = "/".join(parts[1:3])
+            if method == "POST":
+                self._next += 1
+                self.issues[self._next] = {
+                    "number": self._next, "state": "open", "repository": repository,
+                    "title": payload["title"], "body": payload["body"],
+                    "labels": [{"name": name} for name in payload.get("labels", [])],
+                    "html_url": f"https://github.com/{repository}/issues/{self._next}",
+                }
+                return 201, json.dumps(self.issues[self._next]).encode()
+            query = parse_qs(parsed.query)
+            page = int(query.get("page", ["1"])[0])
+            per_page = int(query.get("per_page", ["30"])[0])
+            listed = sorted((i for i in self.issues.values() if i.get("repository") == repository),
+                            key=lambda i: -i["number"])
+            return 200, json.dumps(listed[(page - 1) * per_page: page * per_page]).encode()
         if rest[:1] == ["issues"] and len(rest) == 3 and rest[2] == "comments":
             number = int(rest[1])
             if method == "POST":

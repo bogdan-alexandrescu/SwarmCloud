@@ -54,6 +54,34 @@ export interface ApiError {
   detail?: unknown
   /** From `Retry-After` on a 429. Honour it rather than retrying into the wall. */
   retryAfterSeconds?: number
+  /**
+   * The method of a WRITE that failed; absent on a read (visual QA V010,
+   * 2026-10-11). `write()` sets it on every error it returns, so the failure
+   * panel can tell "the platform could not be read" from "this change was
+   * refused" without each caller saying which: a refused 422 drew "This is a
+   * failure to read the platform", a `not read` mark, and a Try again that
+   * resubmitted the same invalid input. A caller that posts with its own
+   * `fetch` (Submit.tsx) sets it beside `classifyFailure`.
+   */
+  method?: 'POST' | 'PUT' | 'DELETE'
+}
+
+/** Whether a failure is a write's: see `ApiError.method`. */
+export function isWriteFailure(e: ApiError): boolean {
+  return e.method !== undefined
+}
+
+/**
+ * Whether the platform ANSWERED a write with a refusal, so nothing was
+ * changed and resending the same input gets the same answer. A 5xx, a 429 or
+ * a request that never arrived is not one: the change may or may not have
+ * been made.
+ */
+export function writeRefused(e: ApiError): boolean {
+  return (
+    isWriteFailure(e) &&
+    (e.kind === 'invalid' || e.kind === 'conflict' || e.kind === 'not_found' || e.kind === 'forbidden')
+  )
 }
 
 /**
@@ -182,11 +210,31 @@ export function errorHeading(e: ApiError): string {
  * whole bug, one layer up.
  */
 export function errorReassurance(e: ApiError): string {
+  // A WRITE IS NOT A READ (visual QA V010). The read sentence below, under a
+  // refused change, told the person their platform could not be read when it
+  // had just answered them. What a write needs is whether the change happened.
+  if (isWriteFailure(e)) {
+    if (writeRefused(e)) {
+      return 'The platform refused this change, so nothing was changed. Sending the same input again gets the same answer.'
+    }
+    if (e.kind === 'unreachable') {
+      return 'The request may never have reached the platform. Read the page again to see whether the change was made before sending it again.'
+    }
+    return 'The platform did not confirm this change. Read the page again to see whether it was made before sending it again.'
+  }
   if (e.kind === 'not_found') {
     // store.py:369-379 deliberately returns the same 404 whether the task does
     // not exist or belongs to another tenant, so the copy must not promise
     // which one it was.
-    return 'This task does not exist, or it belongs to another tenant. The API returns the same answer for both.'
+    //
+    // AND IT MUST NOT SAY "TASK" (visual QA V007, 2026-10-11). The same panel
+    // draws a 404 on an account, a run and an issue preview, and "This task
+    // does not exist" under an account's history named a thing nobody asked
+    // for. The server's message above this line says WHAT was not found;
+    // this says only what a 404 can and cannot tell. A 404 is an answer, not
+    // a failed read, so reading again gets the same one (`FailedPanel` offers
+    // no Try again for it).
+    return 'It does not exist, or it belongs to another tenant: the API gives the same answer for both. Reading it again gets the same answer.'
   }
   if (e.kind === 'unreachable') {
     return 'The request never reached the platform, so this says nothing about what is running.'
@@ -941,6 +989,7 @@ export async function write(
         httpStatus: null,
         code: null,
         message: err instanceof Error ? err.message : 'The request did not complete.',
+        method,
       },
     }
   }
@@ -957,6 +1006,7 @@ export async function write(
         code: null,
         message:
           'The API answered with a page instead of data, which is how an expired sign-in arrives. Your change was NOT saved. Reload to sign in again.',
+        method,
       },
     }
   }
@@ -977,7 +1027,7 @@ export async function write(
       }
     }
     const ra = Number(res.headers.get('retry-after'))
-    const error = classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+    const error: ApiError = { ...classifyFailure(res.status, env, Number.isFinite(ra) && ra > 0 ? ra : undefined), method }
     note(res.status, error.kind, false)
     // Dropped, but a WRITE is not retried: the person chose that tenant for
     // this change, and quietly filing it under the default instead is the one

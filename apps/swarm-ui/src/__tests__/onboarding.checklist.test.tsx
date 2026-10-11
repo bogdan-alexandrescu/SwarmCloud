@@ -20,6 +20,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { painted } from './marks'
 
 type Step = { step: string; state: string; code?: string | null; copy?: string | null; evidence?: Record<string, unknown>; issues?: unknown[] }
 
@@ -299,5 +300,29 @@ describe('the Setup card on Overview (Entry A)', () => {
     render(<OnboardingScreen />)
     await screen.findByRole('list', { name: 'Setup steps' })
     expect(steps().map((li) => li.dataset.state)).toEqual(['done', 'todo', 'todo', 'todo', 'todo', 'todo', 'todo'])
+  })
+})
+
+// VISUAL QA V041 (lane VQA-L06, #1038): the bar was a fixed six columns, so a
+// seven-step checklist wrapped its seventh segment onto a second row and a
+// five-step one left a gap.
+describe('the step bar has one column per step (visual QA V041)', () => {
+  it('draws seven segments on seven columns, and five on five', async () => {
+    // MUTATION: drop StepBar's inline column count; the sheet's auto columns
+    // alone do not say the count, and `repeat(6, …)` back in the sheet wraps.
+    const { StepBar } = await load()
+    for (const d of [FRESH, doc(FRESH.steps.slice(0, 5))]) {
+      const { container, unmount } = render(<StepBar doc={d as unknown as Parameters<typeof StepBar>[0]['doc']} />)
+      const bar = container.querySelector<HTMLElement>('.ob-bar')!
+      expect(bar.children).toHaveLength(d.steps.length)
+      expect(bar.style.gridTemplateColumns).toBe(`repeat(${d.steps.length}, minmax(0, 1fr))`)
+      unmount()
+    }
+    const probe = document.createElement('div')
+    probe.className = 'ob-bar'
+    document.body.appendChild(probe)
+    expect(painted(probe, 'grid-template-columns', { width: 1440 }) ?? 'none', 'the sheet fixes a column count').not.toMatch(/repeat\(\d/)
+    expect(painted(probe, 'grid-auto-flow', { width: 400 })).toBe('column')
+    probe.remove()
   })
 })

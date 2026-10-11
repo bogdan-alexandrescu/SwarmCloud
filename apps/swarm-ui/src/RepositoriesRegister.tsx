@@ -93,6 +93,7 @@ export function RegisterRepository({ go }: { go: (to: string) => void }) {
             state={readable.state}
             route="GET /v1/repositories/readable"
             what="The repositories the tenant's git token can read"
+            plural
             // Until the API declares `readable` (it is not in repo-index.md §6.1),
             // `GET /v1/repositories/{repo_id}` matches it and answers its own
             // not_found for a repository called "readable": the route is absent.

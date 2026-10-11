@@ -97,8 +97,8 @@ function tabOf(t: Task): Tab {
  * costliest fact on the page -- so this changes only the landing that was
  * guaranteed to be empty.
  *
- * `'live'` when every tab is empty, which the screen does not reach: an empty
- * page renders the Screen's own empty state before this body mounts.
+ * `'live'` when every tab is empty: an empty read is a page of no rows
+ * (`loadAgentsPage`, V151), so the body mounts and lands on Live's own zero.
  */
 function landingTab(counts: Readonly<Record<Tab, number>>): Tab {
   return TABS.find((t) => counts[t.id] > 0)?.id ?? 'live'
@@ -179,6 +179,15 @@ async function loadAgentsPage(): Promise<Result<AgentsPage>> {
   // or `result_summary` -- the inspector reads its own task, full, through
   // `loadTask` -- and the trap in `drawer.reread.test.tsx` holds that.
   const read = await loadTasks(asked, { view: 'summary' })
+  // AN EMPTY READ IS A PAGE OF NO ROWS, NOT A DIFFERENT SCREEN (V151, visual
+  // QA #1038). Handed to `Screen` as `empty`, it replaced the whole body with
+  // one panel: the tab strip, the search and the filters went with it, so the
+  // screen a tenant with no agents saw was laid out unlike the one it would
+  // see a minute later. The body draws each tab's own real zero, mark and
+  // all, under the same chrome it always has.
+  if (read.status === 'empty') {
+    return { status: 'ok', data: { tasks: [], next_page_token: null, asked }, fetchedAt: read.fetchedAt, serverAt: read.serverAt }
+  }
   return read.status === 'ok' || read.status === 'stale'
     ? { ...read, data: { ...read.data, asked } }
     : read
@@ -261,26 +270,9 @@ export function AgentsScreen({
           </>
         )
       }}
-      empty={{
-        // ONE `real zero`, AND IT IS THE PRIMITIVE'S. This heading read
-        // `No agents · real zero` beside the mark `Absent` already draws in
-        // the heading (#145), so the empty state said it twice -- and only
-        // the mark has a sentence behind it. `emptystate.onemark.test.tsx`.
-        heading: 'No agents',
-        // ONE SENTENCE, WHICH IS WHAT §6.9 ALLOWS AN EMPTY STATE. The second
-        // sentence -- "nothing has been submitted under this tenant, or
-        // everything has aged out of the page" -- was two guesses about a
-        // cause this screen cannot see, and the link is where a reader finds
-        // out which states a page holds.
-        // NO `?` HERE (B7.4). The heading beside this sentence already reads
-        // `real zero · No agents`, which is the whole of what `tenant-scope`
-        // was guarding against -- a reader taking an empty list for a failed
-        // read. Whose agents these are is the crumb and the provenance line
-        // above, and the topic is one click away in the rail's Help section.
-        // This screen keeps exactly one glyph, on the empty TAB below, where
-        // the claim being made is about capacity rather than about the read.
-        body: <>The read succeeded and returned nothing.</>,
-      }}
+      // NO `empty` PANEL (V151): `loadAgentsPage` never answers `empty`, so
+      // a tenant with no agents keeps the tabs, search and filters, and each
+      // tab draws its own real zero below them.
     >
       {(d, reading) => (
         <AgentsBody
@@ -578,7 +570,12 @@ function AgentsBody({
             open agent, where there is a detail to give the room to. */}
         {openTaskId !== null && <AgCollapse />}
 
-        <label className="ag-find">
+        {/* THE SCOPE RIDES WITH THE SEARCH (V147, visual QA #1038). It was the
+            toolbar's last, `is-end` item, and whenever the toolbar wrapped
+            `26 loaded` was stranded on a line of its own. It qualifies what
+            the search searches, so it sits at the search box's end, on the
+            one line that always takes the slack. */}
+        <div className="ag-find">
           <input
             type="search"
             value={query}
@@ -586,11 +583,18 @@ function AgentsBody({
             aria-label="Find by name or task id"
             onChange={(e) => setQuery(e.target.value)}
           />
-        </label>
+          <span className="ag-scope" aria-label={scopeSay}>
+            {phonePage
+              ? `showing the ${page.tasks.length} most recent`
+              : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
+          </span>
+        </div>
 
         <label className="ag-filter">
           <span className="ag-filter-k">profile:</span>
-          <select value={profile} onChange={(e) => setProfile(e.target.value)}>
+          {/* CAPPED, NOT SIZED TO ITS LONGEST OPTION (V061): the whole value is
+              its title. */}
+          <select value={profile} title={profile === '' ? 'all' : profile} onChange={(e) => setProfile(e.target.value)}>
             <option value="">all</option>
             {profiles.map((p) => (
               <option key={p} value={p}>
@@ -669,12 +673,6 @@ function AgentsBody({
         >
           Started{sort.started === 'desc' ? ' ↓' : sort.started === 'asc' ? ' ↑' : ''}
         </button>
-
-        <span className="is-end ag-scope" aria-label={scopeSay}>
-          {phonePage
-            ? `showing the ${page.tasks.length} most recent`
-            : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
-        </span>
       </div>
 
       {rows.length === 0 ? (
@@ -860,6 +858,15 @@ function matchesQuery(t: Task, needle: string): boolean {
 
 /** A row's why line and whether it asks a person to act -- `TaskRow`'s own reading. */
 type RowReason = { text: string; warn: boolean }
+
+/**
+ * A ROW WHOSE MARK IS DRAWN IN --bad (marks.tsx `STATE_MARK` hue `bad`):
+ * FAILED and DEAD_LETTERED. Its reason takes the same red (V146), so the
+ * mark, the leading rule and the sentence say one thing.
+ */
+export function failedRow(task: Pick<Task, 'state'>): boolean {
+  return task.state === 'FAILED' || task.state === 'DEAD_LETTERED'
+}
 
 function rowReason(task: Task, classes: ResourceClasses | null, now: number): RowReason {
   // A SILENT WORKER FIRST (#179, AG-14's fourth kind): `whyAgent` writes
@@ -1155,7 +1162,9 @@ function AgCollapse() {
       title={folded ? 'Open the list again ([)' : 'Fold the list to a strip ([)'}
       onClick={toggleListSnap}
     >
-      {folded ? '»' : '«'} <kbd>[</kbd>
+      {/* THE GLYPH ALONE (V147): the boxed `[` key hint beside it read as
+          `« [`, half a bracket pair. The key is in the title and the name. */}
+      {folded ? '»' : '«'}
     </button>
   )
 }
@@ -1325,7 +1334,15 @@ function CompactRow({
           </>
         )}
       </span>
-      {why.text && !whyHidden && <span className={`why${why.warn ? ' is-warn' : ''}`}>{why.text}</span>}
+      {/* THE REASON IS CLAMPED AND WHOLE IN ITS TITLE (V061): a failed row
+          printed its whole multi-line error. ON A FAILED ROW IT IS RED, as the
+          mark and the rule beside it are (V146): it was --warn amber, a third
+          colour for one fact. */}
+      {why.text && !whyHidden && (
+        <span className={`why${why.warn ? ' is-warn' : ''}${failedRow(task) ? ' is-bad' : ''}`} title={why.text}>
+          {why.text}
+        </span>
+      )}
       {/* A HIDDEN REASON SAYS THAT IT IS ONE (G2-24, dev QA 2026-10-07): the
           row looked as if it had none. Muted, on the reason's own line; the
           sentence is its title for a pointer, and a screen reader already

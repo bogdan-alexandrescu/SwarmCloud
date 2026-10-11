@@ -381,14 +381,19 @@ export function RunnerSelect({ id, label, profiles, chosen, onPick }: {
   )
 }
 
-/** The chosen step runner's size, room and key, under its select. */
+/** The chosen step runner's size, room and key, under its select.
+ *
+ *  EACH SEPARATOR ENDS ITS ITEM (VQA V127), the issue preview's rule (N20):
+ *  the dot is held to the word before it by a no-break space, so a wrapped
+ *  line can end on one but never start with one. The size is one unbroken
+ *  run (`.wfb-cost .sb-runner-size`, submit.css): its own dots wrapped too. */
 export function StepRunnerFacts({ profile, keys }: { profile: RunnerProfile; keys: ProviderKeys }) {
   return (
     <p className="wfb-cost">
       <span className="sb-runner-size">{sizeOf(profile)}</span>
-      {' · '}
+      {'\u00a0· '}
       <span className="sbf-runner-room"><CanStartFact profile={profile} /></span>
-      {' · '}
+      {'\u00a0· '}
       <span className="sbf-runner-key"><KeyFact provider={profile.provider} keys={keys} /></span>
     </p>
   )

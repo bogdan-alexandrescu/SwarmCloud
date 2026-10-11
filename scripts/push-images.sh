@@ -7,7 +7,8 @@
 #
 #   * resolve every image to an immutable sha256 digest;
 #   * optionally scan it before it is allowed near a channel tag;
-#   * attach the channel tag (dev/prod) to that exact digest;
+#   * attach the channel tag (dev/prod) to that exact digest, and the
+#     promotion mark <channel>-promoted-<tag>, which never moves;
 #   * write build/deployed-images-<env>.json, which deploy.sh consumes.
 #
 # ALL OR NOTHING, and exactly where that stops being true.
@@ -83,7 +84,7 @@ while [[ $# -gt 0 ]]; do
     --no-scan)   SCAN=0; NO_SCAN_FLAG=1; shift ;;
     --scan-only) SCAN_ONLY=1; shift ;;
     --manifest)  FROM_MANIFEST="$2"; shift 2 ;;
-    -h|--help)   sed -n '2,55p' "$0"; exit 0 ;;
+    -h|--help)   sed -n '2,57p' "$0"; exit 0 ;;
     -*)          die "unknown flag: $1" ;;
     *)           TARGETS+=("$1"); shift ;;
   esac
@@ -467,6 +468,44 @@ for ((i = 0; i < ${#R_NAME[@]}; i++)); do
   MOVED+=("${i}")
   ok "${image}:${CHANNEL} -> ${R_DIGEST[$i]}"
 done
+
+# ---------------------------------------------------------------------------
+# 3b. Mark every promoted digest as promoted, for good.
+# ---------------------------------------------------------------------------
+# `:${CHANNEL}` moves on with the next release and forgets this digest. The
+# mark (promotion_mark_prefix, lib/common.sh) never moves, and it is how
+# deploy.sh tells an owner-pinned job still on an EARLIER release's digest --
+# awaiting the owner's re-pin -- from one on an image no release promoted.
+#
+# Only after every channel tag moved: a promotion that was undone promoted
+# nothing, and must mark nothing. A mark that fails does not undo the
+# promotion -- it happened, and the manifest below must say so. What it costs
+# is that a later lag on that digest fails the deploy as unreleased, which is
+# the safe direction; the command that adds it by hand is printed.
+MARK="$(promotion_mark_prefix "${CHANNEL}")${TAG}"
+MARK_MISSING=()
+if [[ ! "${MARK}" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]]; then
+  warn "${MARK} is not a valid image tag, so no digest of ${TAG} is marked as promoted"
+  MARK_MISSING=("${R_NAME[@]}")
+else
+  for ((i = 0; i < ${#R_NAME[@]}; i++)); do
+    image="${R_IMAGE[$i]}"
+    if gcloud artifacts docker tags add "${image}@${R_DIGEST[$i]}" "${image}:${MARK}" \
+         --project "${PROJECT_ID}" >/dev/null 2>"${LOOKUP_ERR}"; then
+      continue
+    fi
+    # Never die here, not even on a dead session: every channel tag has
+    # moved, and dying would leave :${CHANNEL} promoted with no manifest.
+    warn "${R_NAME[$i]}: promoted, but could not be marked ${MARK}; add it by hand:"
+    lookup_error | redact | sed -n '1,2s/^/     /p' >&2
+    printf '     gcloud artifacts docker tags add %s@%s %s:%s --project %s\n' \
+      "${image}" "${R_DIGEST[$i]}" "${image}" "${MARK}" "${PROJECT_ID}" >&2
+    MARK_MISSING+=("${R_NAME[$i]}")
+  done
+fi
+if [[ "${#MARK_MISSING[@]}" -eq 0 ]]; then
+  ok "every promoted digest marked :${MARK}"
+fi
 
 # ---------------------------------------------------------------------------
 # 4. The manifest, written only now that every tag has moved, and renamed into

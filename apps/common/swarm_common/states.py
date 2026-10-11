@@ -149,6 +149,14 @@ class ParkReason(str, Enum):
     #: Contract request 49 (docs/merge-step.md, 2026-10-06, request (A)),
     #: applied 2026-10-06.
     CI_PENDING = "CI_PENDING"
+    #: A live-browser hand-off whose hold expired with nobody in control: the
+    #: worker checkpointed, released its lease and exited (invariant 4).
+    #: Promoted ONLY by a person, through swarm-api's `human-ready`; no sweep
+    #: and no timer promotes it, which is why MANUAL_PAUSE (which the scheduler
+    #: promotes) could not be reused. Past its maximum it is dead-lettered.
+    #: Contract request 68 (LB-A, docs/design/live-browser.md section 4.3),
+    #: accepted by the owner 2026-10-11 (#1030).
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
 
 
 class BlockedReason(str, Enum):
@@ -216,3 +224,16 @@ class EventType(str, Enum):
     CANCELLED = "cancelled"
     DEAD_LETTERED = "dead_lettered"
     GENERATION_FENCED = "generation_fenced"
+    #: The live-browser hand-off events (docs/design/live-browser.md section 4).
+    #: The task stays RUNNING throughout; `Task.human_wait` carries the wait.
+    #: Contract request 69 (LB-B), accepted by the owner 2026-10-11 (#1030).
+    #:
+    #: The agent asked for a person; the worker paused its CDP and swarm-api
+    #: set `human_wait`.
+    HUMAN_HANDOFF_REQUESTED = "human_handoff_requested"
+    #: A person took control of the browser.
+    HUMAN_CONTROL_TAKEN = "human_control_taken"
+    #: Control ended, by the Return press or by any of the audited causes.
+    HUMAN_CONTROL_RETURNED = "human_control_returned"
+    #: The wait is over and `human_wait` is cleared; the agent carries on.
+    HUMAN_HANDOFF_RESOLVED = "human_handoff_resolved"
