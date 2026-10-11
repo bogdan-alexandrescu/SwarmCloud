@@ -56,9 +56,11 @@ read from its REPLY:
 * `path` — the reply's `path`
 * `spec_ref` — the reply's `spec_ref`, character for character
 * `spec_digest` — the reply's `spec_digest`
-* `outline` — the reply's `outline`: its `title` and `label` (each null when
-  the reply's is null), and for each of its `steps` the `step_id`,
-  `depends_on` and `stage`, copied character for character
+* `outline` — the reply's `outline`: its `title`, `label`, `strategy` and
+  `merge` (each null when the reply's is null or absent), and for each of its
+  `steps` the `step_id`, `depends_on`, `stage`, `runner_profile`, `when_step`
+  (each null when the reply's is null or absent) and `input_from` (an empty
+  object when absent), copied character for character
 * `error` — null
 
 The reply also carries the whole `spec`. Never copy the spec: the bridge
