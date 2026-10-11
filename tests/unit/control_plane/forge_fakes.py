@@ -58,7 +58,7 @@ class GitHub:
         *,
         issues: list[dict[str, Any]] | None = None,
         pulls: list[dict[str, Any]] | None = None,
-        files: dict[int, list[str]] | None = None,
+        files: dict[int, list[Any]] | None = None,
         status: dict[str, int] | None = None,
         raises: Exception | None = None,
     ) -> None:
@@ -90,7 +90,11 @@ class GitHub:
             data = self.pulls
         elif path.endswith("/files"):
             number = int(path.rstrip("/").split("/")[-2])
-            data = [{"filename": name} for name in self.files.get(number, [])]
+            # An entry is a name, or `(name, patch)` for a file the forge sends a patch for.
+            data = [
+                {"filename": e} if isinstance(e, str) else {"filename": e[0], "patch": e[1]}
+                for e in self.files.get(number, [])
+            ]
         else:
             return 404, b"{}"
         chunk = data[(page - 1) * per_page: page * per_page]
