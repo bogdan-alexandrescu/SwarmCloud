@@ -489,3 +489,74 @@ Stuck in `PLANNING` or `CHECKING`, and `writeback_error`, are in
 [troubleshooting](troubleshooting.md#an-issue-run-is-stuck-in-planning-or-checking).
 The swarm-api log lines are `issue run <id> tenant=<t> not advanced by the tick
 (<code>)` and `issue run <id> tenant=<t>: CI not read (<code>)`.
+
+---
+
+## 13. Schedules: the S9 migration (SWEEP paused, deletion pending)
+
+**State from 2026-10-11 (Schedules lane S9, [schedules.md §8.1-§8.2](schedules.md#8-migration)).**
+Recurring tenant work is a schedule, not a Cloud Scheduler job per purpose. Three
+things hold at once until the owner's second step:
+
+| what | state | why |
+|---|---|---|
+| `issue-sweep` schedule in `eng`, plus a weekly `repo-index-refresh` | **live** once an operator posts them (below) | they replace lane SWEEP's job and the operator's session cron |
+| `google_cloud_scheduler_job.issue_sweep` (`swarm-issue-sweep-<t>`) | **paused** (`paused = true` in `terraform/modules/scheduler/jobs.tf`, by itself, not through `var.paused`) | two triggers of one sweep must not run side by side (§8.1 step 3) |
+| the job, `POST /v1/admin/issues/sweep` in `auth.ROLLUP_SWEEPER_ROUTES`, `SWEEP_ENABLED`, the tenant's `issue_sweep` settings, and session cron `bdb47d30` | **kept, deletion pending** | owner decision 2026-10-11: they are deleted in a second change, after the owner has watched the schedules fire (§8.1 step 4: 7 days with no auto-pause) |
+
+The bodies are checked in as [`schedules-migration.json`](schedules-migration.json);
+`tests/unit/control_plane/test_schedules_migration_seed.py` builds each through
+the create route's own `schedules.build_schedule`, so a body the API would refuse
+fails CI first. A schedule is data, not infrastructure, so the release does not
+create it: an operator posts it, **as the member who will own it** (§2.7: the
+schedule fires as its owner). For `eng` that is the member SWEEP submitted as:
+
+```bash
+./scripts/api.sh GET "/admin/tenants/eng/issue-sweep" | jq -r .submit_as
+```
+
+Signed in as that member, in tenant `eng`:
+
+```bash
+SEED=docs/schedules-migration.json
+mkdir -p build
+posted=0
+while read -r i; do
+  jq ".schedules[$i].body" "$SEED" > "build/schedule-$i.json"
+  ./scripts/api.sh POST "/schedules" "@build/schedule-$i.json" | jq '.schedule | {schedule_id, name, state}'
+  posted=$((posted + 1))
+done < <(jq '.schedules | keys[]' "$SEED")
+echo "posted $posted of $(jq '.schedules | length' "$SEED")"
+```
+
+Each body carries a `client_request_id`, so posting it again returns the first
+schedule rather than a second one. Check the count: a loop that printed nothing
+has not posted anything.
+
+**The sweep is created paused, and its first firing is dry** (§8.1 step 2, §2.8):
+
+```bash
+SCH=sch_...   # the issue-sweep schedule's id, from the post above
+./scripts/api.sh POST "/schedules/$SCH:run" '{"dry_run": true}' | jq .firing
+./scripts/api.sh GET "/schedules/$SCH" | jq '.firings[0].dry_run'
+```
+
+Compare the candidate list with SWEEP's last real sweep: its `issue sweep
+tenant=eng` log line, or the issue runs with `created_by: issue-sweep`. Then
+`./scripts/api.sh POST "/schedules/$SCH:resume"`. It fires at `:07` and `:37`,
+SWEEP's own cadence. Until it is resumed, nothing in the platform sweeps, and
+session cron `bdb47d30` is the only sweep, which is why §8.2 deletes that cron
+only after a real firing.
+
+**What differs from SWEEP, on purpose.** The schedule's merge gate is
+`approve`, so each swept pull request waits in Automate › Approvals instead of
+merging unattended. Unattended merge is SD3's audited switch (`POST
+/v1/schedules/{id}:merge-mode`, a second member), never a create. It starts at
+most `max_new_per_firing` (3) new runs a firing, under the same cap of 8 live
+runs. It skips `needs-owner`, `wontfix` and `question` as well as SWEEP's `epic`,
+`blocked` and `security`. A tenant's `issue_sweep.exclude_issues` has no
+schedule parameter: label the issue and add the label to `labels_exclude`.
+
+**Falling back to SWEEP** while both exist: pause the schedule
+(`sc schedules pause <name>`), set the job's `paused` back to `var.paused`, and
+release. Nothing else was removed, so nothing else needs restoring.
