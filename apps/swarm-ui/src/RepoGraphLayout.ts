@@ -56,6 +56,8 @@ export interface LabelPlace {
 const LABEL_CHAR_W = 6.2
 const LABEL_ASCENT = 11
 const LABEL_DESCENT = 3
+/** The clear room kept between a label and the canvas edge. */
+const LABEL_PAD = 2
 
 /** An edge as drawn: a straight segment between two node centres. */
 export interface LabelSegment {
@@ -116,8 +118,22 @@ function segmentHitsBox(s: LabelSegment, b: Box): boolean {
  * legible then). A label with no usable
  * place is hidden until its node is hovered, focused or picked -- the node
  * itself and its accessible name are always drawn.
+ *
+ * INSIDE THE CANVAS, AND A SECOND ROW BEFORE HIDING (live QA RSA-18,
+ * 2026-10-11). A label centred under a node near the left edge printed past
+ * the viewBox and was cut to "ceptance/fixtures (2)" and "onents (40)"; and a
+ * node whose four places were all taken was left unlabelled beside a labelled
+ * neighbour. Given `bounds`, a label centred above or below its node is slid
+ * along its line until its box is inside the canvas, and a label beside its
+ * node that would leave it is not a place at all. Two places one line further
+ * out, below then above, are tried before a label is hidden.
  */
-export function placeLabels(spots: readonly LabelSpot[], segments: readonly LabelSegment[] = [], reserved: readonly Box[] = []): Map<string, LabelPlace> {
+export function placeLabels(
+  spots: readonly LabelSpot[],
+  segments: readonly LabelSegment[] = [],
+  reserved: readonly Box[] = [],
+  bounds: { width: number; height: number } | null = null,
+): Map<string, LabelPlace> {
   const order = [...spots].sort((a, b) => b.weight - a.weight || a.id.localeCompare(b.id))
   const boxes: Box[] = [...reserved]
   const out = new Map<string, LabelPlace>()
@@ -127,20 +143,26 @@ export function placeLabels(spots: readonly LabelSpot[], segments: readonly Labe
     const above = s.y - s.r - 5
     // Beside the node, the text is centred on it: its box's middle sits on the node's.
     const level = s.y + (LABEL_ASCENT - LABEL_DESCENT) / 2
+    const row = LABEL_ASCENT + LABEL_DESCENT
+    // A centred label slides along its line to stay inside the canvas; it cannot slide past both edges.
+    const slid = bounds === null ? s.x : Math.min(Math.max(s.x, LABEL_PAD + w / 2), Math.max(LABEL_PAD + w / 2, bounds.width - LABEL_PAD - w / 2))
     const places: LabelPlace[] = [
-      { side: 'below', x: s.x, y: below, anchor: 'middle' },
-      { side: 'above', x: s.x, y: above, anchor: 'middle' },
+      { side: 'below', x: slid, y: below, anchor: 'middle' },
+      { side: 'above', x: slid, y: above, anchor: 'middle' },
       { side: 'right', x: s.x + s.r + 4, y: level, anchor: 'start' },
       { side: 'left', x: s.x - s.r - 4, y: level, anchor: 'end' },
+      { side: 'below', x: slid, y: below + row, anchor: 'middle' },
+      { side: 'above', x: slid, y: above - row, anchor: 'middle' },
     ]
     const boxOf = (p: LabelPlace): Box => {
       const x0 = p.anchor === 'middle' ? p.x - w / 2 : p.anchor === 'start' ? p.x : p.x - w
       return { x0, x1: x0 + w, y0: p.y - LABEL_ASCENT, y1: p.y + LABEL_DESCENT }
     }
+    const inside = (b: Box) => bounds === null || (b.x0 >= 0 && b.x1 <= bounds.width && b.y0 >= 0 && b.y1 <= bounds.height)
     const free = (b: Box) =>
       boxes.every((o) => b.x1 <= o.x0 || o.x1 <= b.x0 || b.y1 <= o.y0 || o.y1 <= b.y0) && spots.every((d) => d === s || !discHitsBox(d, b))
     const clear = (b: Box) => segments.every((e) => !segmentHitsBox(e, b))
-    const usable = places.map((p) => ({ p, box: boxOf(p) })).filter((c) => free(c.box))
+    const usable = places.map((p) => ({ p, box: boxOf(p) })).filter((c) => inside(c.box) && free(c.box))
     const pick = usable.find((c) => clear(c.box)) ?? usable[0]
     if (pick === undefined) {
       out.set(s.id, { side: 'hidden', x: s.x, y: below, anchor: 'middle' })
@@ -495,6 +517,7 @@ export function layoutPlan(view: GraphView, width = 640, height = 440): LayoutPl
       return a === undefined || b === undefined ? [] : [{ x1: a.x, y1: a.y, x2: b.x, y2: b.y }]
     }),
     layout.boxes.map(clusterLabelBox),
+    { width, height },
   )
   return { ...layout, labels }
 }

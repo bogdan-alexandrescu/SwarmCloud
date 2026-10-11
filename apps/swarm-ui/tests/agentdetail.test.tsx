@@ -620,9 +620,10 @@ test('an unstarted waiting task keeps its wait, because its whole age is one', (
 
 test('the error banner names the scheduler for a cascade cancel, not the agent', () => {
   // BREAK IT: fall back to `agent, at finish` for any text the prefixes do
-  // not recognise -- the old rule. No agent existed to write this.
+  // not recognise -- the old rule. No agent existed to write this. A cancel
+  // is not an error, so its text is a reason (live QA WA-6, 2026-10-11).
   const markup = plain(surface(cascade()))
-  assert.ok(markup.includes('Error written by <b>scheduler · cancel</b>'), 'the cascade cancel is not attributed to the scheduler')
+  assert.ok(markup.includes('Reason written by <b>scheduler · cancel</b>'), 'the cascade cancel is not attributed to the scheduler')
   assert.ok(!markup.includes('agent, at finish'), 'a task that never ran blames its agent')
 })
 

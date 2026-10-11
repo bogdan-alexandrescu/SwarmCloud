@@ -2363,6 +2363,14 @@ class IssueRun:
                         self.pull_request.get("check_list_truncated")
                     ),
                     "ci_url": _opt_str(self.pull_request.get("ci_url")),
+                    # RT-4 (2026-10-11): when the CI loop last read, and why
+                    # that read -- or the move after it -- failed. Stored
+                    # through `failure_text`, so masked and bounded already.
+                    # Without them a run whose every read failed served only
+                    # `checks: null`, which the page can only call "not read
+                    # yet", for as long as the failure lasted.
+                    "checked_at": _iso(self.pull_request.get("checked_at")),
+                    "read_error": _opt_str(self.pull_request.get("read_error")),
                 }
             ),
             # The CI loop: the rounds spent and their workflows, the sha CI
@@ -2423,6 +2431,46 @@ class IssueRun:
             ),
             "schedule": None if self.schedule is None else dict(self.schedule),
         }
+
+
+#: `GET /v1/runs?view=summary` (RT-7, 2026-10-11): the keys a summary row
+#: leaves out -- absent, not null, as `GET /v1/tasks?view=summary` does (#168).
+#: Measured on the live list: 50 rows were 1.5 MB, nearly all of it these --
+#: the plan's steps and the files each names, the open work read at planning
+#: (every open issue and pull request), the history, the index context, the
+#: build's verification tables and the red checks' excerpt. The list draws
+#: none of them; a run's own page reads `GET /v1/runs/{id}`, always full.
+RUN_SUMMARY_DROPPED: tuple[str, ...] = (
+    "plan", "history", "open_work", "index_context", "verification",
+    "failure_excerpt", "requirements_unmet",
+)
+
+#: What a summary row keeps of `issue_read`: the list shows the title and
+#: searches it. The body (up to `MAX_PREVIEW_BODY_CHARS`) and the labels stay
+#: on the full row.
+ISSUE_READ_SUMMARY_KEYS: tuple[str, ...] = ("title", "state", "url", "read_at")
+
+#: What a summary row leaves out of `pull_request`: each check, up to
+#: `issueci.MAX_CHECK_LIST` of them. The counts and the reading stay.
+PULL_REQUEST_SUMMARY_DROPPED: tuple[str, ...] = ("check_list",)
+
+
+def run_summary(row: Mapping[str, Any]) -> dict[str, Any]:
+    """`IssueRun.to_api()`'s row as `view=summary` serves it (RT-7).
+
+    Only ever narrows a row already built by `to_api`, so nothing it keeps
+    is shaped, masked or bounded any differently from the full row.
+    """
+    out = {key: value for key, value in row.items() if key not in RUN_SUMMARY_DROPPED}
+    issue_read = out.get("issue_read")
+    if isinstance(issue_read, Mapping):
+        out["issue_read"] = {key: issue_read.get(key) for key in ISSUE_READ_SUMMARY_KEYS}
+    pull = out.get("pull_request")
+    if isinstance(pull, Mapping):
+        out["pull_request"] = {
+            key: value for key, value in pull.items() if key not in PULL_REQUEST_SUMMARY_DROPPED
+        }
+    return out
 
 
 def _schedule_mark(metadata: Any) -> dict[str, Any] | None:

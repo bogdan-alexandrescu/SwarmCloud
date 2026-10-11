@@ -128,7 +128,116 @@ function Fact({ name, children }: { name: string; children: ReactNode }) {
   )
 }
 
-/** What the item is decided on: a plan's files, a merge's head and requirements. */
+/**
+ * The head a merge approval is for: the digest's `head_sha` (§4.5 -- sent as
+ * the object, or as `<head_sha>:<verdict>`), else the green head. It is what
+ * Approve names, because a push after the request makes the approval stale.
+ */
+function mergeDigest(d: ApprovalDetail): { head: string | null; verdict: string | null } {
+  const raw = d.approval.digest
+  if (raw !== null && typeof raw === 'object') {
+    const o = raw as { head_sha?: unknown; verdict?: unknown }
+    return {
+      head: typeof o.head_sha === 'string' && o.head_sha !== '' ? o.head_sha : (d.merge?.green_sha ?? null),
+      verdict: typeof o.verdict === 'string' && o.verdict !== '' ? o.verdict : null,
+    }
+  }
+  if (typeof raw === 'string' && raw.includes(':')) {
+    const [head, verdict] = raw.split(':', 2)
+    return { head: head || (d.merge?.green_sha ?? null), verdict: verdict || null }
+  }
+  return { head: d.merge?.green_sha ?? null, verdict: null }
+}
+
+const short = (sha: string) => sha.slice(0, 7)
+
+/** The run's hold as the merge read serves it (`routes/approvals.py`: `merge.approval_hold`). */
+type MergeHold = { code?: string; approvers?: string; matched?: string[]; reasons?: string[] } | null | undefined
+
+const HOLD_WORDS: Readonly<Record<string, string>> = {
+  NEEDS_SECOND_MEMBER: 'held for a second member',
+  NEEDS_OWNER: 'held for the platform owner',
+}
+
+/** One row of the merge checklist: met, unmet, or not read -- never left to plain text. */
+type Check = { key: string; mark: 'met' | 'unmet' | 'unread'; label: ReactNode; sub?: ReactNode }
+
+const MARK = {
+  met: { glyph: '✓', word: 'met' },
+  unmet: { glyph: '✗', word: 'unmet' },
+  unread: { glyph: '–', word: 'not read' },
+} as const
+
+/**
+ * What a merge is decided on, as the mockup's inbox B draws it: one row per
+ * check with its mark -- CI green at the head, the review's verdict, each
+ * requirement, and the hard-stop gate on the pull request's changed files.
+ * An unmet one is a ✗ row of its own. Approve stays enabled whatever they
+ * say (owner decision 2026-10-11): the server holds every rule and refuses
+ * what it must, in place.
+ */
+function mergeChecks(d: ApprovalDetail): Check[] {
+  const m = d.merge ?? {}
+  const { head, verdict } = mergeDigest(d)
+  const out: Check[] = []
+  const green = m.green_sha ?? null
+  if (green === null) {
+    out.push({ key: 'ci', mark: 'unmet', label: 'Required checks are not green yet', sub: 'No green CI reading at this head.' })
+  } else if (head !== null && green !== head) {
+    out.push({ key: 'ci', mark: 'unmet', label: 'Required checks green at an older head', sub: <>green at <span className="mono">{short(green)}</span>, the head is <span className="mono">{short(head)}</span></> })
+  } else {
+    out.push({ key: 'ci', mark: 'met', label: 'Required checks green at the head', sub: <>green at <span className="mono">{short(green)}</span></> })
+  }
+  if (verdict !== null) {
+    out.push({ key: 'review', mark: verdict === 'MERGE' ? 'met' : 'unmet', label: <>Review verdict <b>{verdict}</b></> })
+  }
+  const unmet = m.requirements_unmet ?? []
+  if (unmet.length > 0) {
+    for (const [i, req] of unmet.entries()) out.push({ key: `requirement-${i}`, mark: 'unmet', label: <>Requirement unmet: {req}</> })
+  } else if (m.requirements_met === true) {
+    out.push({ key: 'requirements', mark: 'met', label: 'Every requirement met' })
+  } else if (m.requirements_met === false) {
+    out.push({ key: 'requirements', mark: 'unmet', label: 'Requirements not met' })
+  } else {
+    out.push({ key: 'requirements', mark: 'unread', label: 'Requirements not read yet' })
+  }
+  const hold = (m as { approval_hold?: MergeHold }).approval_hold
+  const checked = m.files_checked_head ?? null
+  if (hold !== null && hold !== undefined) {
+    const matched = [...(hold.reasons ?? []), ...(hold.matched ?? [])]
+    out.push({
+      key: 'gate',
+      mark: 'unmet',
+      label: <>A hard stop matched: {HOLD_WORDS[hold.code ?? ''] ?? 'held'}</>,
+      sub: matched.length > 0 ? matched.join(', ') : undefined,
+    })
+  } else if (checked === null) {
+    out.push({ key: 'gate', mark: 'unread', label: 'Protected paths not checked yet', sub: 'They are checked on the pull request’s files before any merge.' })
+  } else if (head !== null && checked !== head) {
+    out.push({ key: 'gate', mark: 'unread', label: 'Protected paths checked at an older head', sub: <>checked at <span className="mono">{short(checked)}</span></> })
+  } else {
+    out.push({ key: 'gate', mark: 'met', label: 'No protected path changed', sub: <>checked at <span className="mono">{short(checked)}</span></> })
+  }
+  return out
+}
+
+function MergeChecks({ d }: { d: ApprovalDetail }) {
+  return (
+    <ul className="ap-checks" aria-label="What the merge is checked on">
+      {mergeChecks(d).map((c) => (
+        <li key={c.key} className={`ap-check is-${c.mark}`} data-check={c.key} data-mark={c.mark}>
+          <span className="ap-mark" role="img" aria-label={MARK[c.mark].word}>
+            {MARK[c.mark].glyph}
+          </span>
+          <span className="ap-check-l">{c.label}</span>
+          {c.sub !== undefined && <span className="sc-sub">{c.sub}</span>}
+        </li>
+      ))}
+    </ul>
+  )
+}
+
+/** What the item is decided on: a plan's files, a merge's head and its checklist. */
 function Evidence({ d }: { d: ApprovalDetail }) {
   const a = d.approval
   const plan = d.run?.plan ?? null
@@ -170,15 +279,8 @@ function Evidence({ d }: { d: ApprovalDetail }) {
                 <i className="ctl-em">&mdash; not served</i>
               )}
             </Fact>
-            <Fact name="Green at">{d.merge.green_sha ? <span className="mono">{d.merge.green_sha.slice(0, 12)}</span> : <i className="ctl-em">&mdash; not green yet</i>}</Fact>
-            <Fact name="Requirements">
-              {d.merge.requirements_met === true
-                ? 'met'
-                : (d.merge.requirements_unmet ?? []).length > 0
-                  ? `unmet: ${(d.merge.requirements_unmet ?? []).join(', ')}`
-                  : <i className="ctl-em">&mdash; not read</i>}
-            </Fact>
           </dl>
+          <MergeChecks d={d} />
         </>
       )}
     </>
@@ -224,6 +326,9 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
     )
   }
   const confirmOk = confirm === null || confirm.typed.trim() === confirm.expected
+  // A merge names its head on the button: that head is what is approved.
+  const head = a.kind === 'merge' ? mergeDigest(d).head : null
+  const approveWord = a.kind !== 'merge' ? 'Approve' : head === null ? 'Approve merge' : `Approve merge at ${short(head)}`
   return (
     <div className="ap-decide">
       <p className="sb-note">{APPROVE_DOES[a.kind] ?? 'Approving lets this go ahead.'}</p>
@@ -260,7 +365,7 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
           <>
             <Button onClick={() => { setRejecting(true); setRefused(null) }}>Reject…</Button>
             <Button kind="primary" busy={busy === 'approve' ? 'Approving…' : false} disabledReason={confirmOk ? undefined : 'Type the words shown exactly.'} onClick={() => void approve()}>
-              Approve
+              {approveWord}
             </Button>
           </>
         )}

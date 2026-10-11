@@ -1456,7 +1456,8 @@ describe('a figure lists the tasks behind it (#116)', () => {
     const c = await rowsCard(root)
     const listed = [...c.querySelectorAll('tbody tr')]
     expect(listed).toHaveLength(21)
-    expect(listed[0]!.querySelector('a')!.getAttribute('href')).toBe(`#work/task/${encodeURIComponent(rows[0]!.id)}`)
+    // A path, never the legacy `#work/task/` hash (live QA RT-30).
+    expect(listed[0]!.querySelector('a')!.getAttribute('href')).toBe(`/agents/recent/${encodeURIComponent(rows[0]!.id)}`)
     expect(c.querySelector('.ctl-card-title')!.textContent).toMatch(/^21 failed · /)
     // The read asked for exactly that figure, under the page's own filters.
     const q = rowReads().at(-1)!

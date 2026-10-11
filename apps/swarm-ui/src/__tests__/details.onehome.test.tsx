@@ -318,7 +318,9 @@ describe('#101: Details carries the compact timeline and a link to the full one'
     expect(section.textContent).toContain('+3m 09s')
     const when = section.querySelector('.dt-ev time')!
     expect(when.getAttribute('title')).toContain('2026-09-22 10:04:09')
-    const link = section.querySelector<HTMLAnchorElement>('a[href="#work/task/tsk_charts/attempts"]')
+    // The agent's own path, under the list a finished agent is in (live QA
+    // WA-21): it was the legacy `#work/task/<id>/attempts` hash.
+    const link = section.querySelector<HTMLAnchorElement>('a[href="/agents/recent/tsk_charts/attempts"]')
     expect(link?.textContent).toBe('Attempts tab ›')
   })
 })

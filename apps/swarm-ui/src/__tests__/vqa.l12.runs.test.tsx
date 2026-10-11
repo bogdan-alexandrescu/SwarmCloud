@@ -100,7 +100,8 @@ async function mountRun() {
 }
 
 async function mountList(page: { runs: unknown[]; next_page_token: string | null }) {
-  serve({ '/v1/runs': { ...page, tenant_id: 'eng' } })
+  // RT-7: the list reads the summary view.
+  serve({ '/v1/runs?view=summary': { ...page, tenant_id: 'eng' } })
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { RunsScreen } = await import('../Runs')

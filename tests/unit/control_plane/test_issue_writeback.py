@@ -479,9 +479,10 @@ def test_sync_pull_request_records_the_pr_and_writes_the_keyword(client, db, obj
         "number": 57, "url": "https://github.com/saga-xyz/widgets/pull/57",
         "head_sha": "c" * 40, "checks": None,
         # The sync read the pull request, so `merged` is that read's; what only
-        # the CI loop records (#503) is null before it reads, never 0.
+        # the CI loop records (#503) is null before it reads, never 0, and so
+        # is when it last read and why that read failed (RT-4).
         "merged": False, "merged_at": None, "check_counts": None, "check_list": None,
-        "check_list_truncated": None, "ci_url": None,
+        "check_list_truncated": None, "ci_url": None, "checked_at": None, "read_error": None,
     }
     assert "part of #42" in writes.pulls[57]["body"] and "Closes #42" not in writes.pulls[57]["body"]
     assert "#57" in _bodies(writes, "status", run["id"])[0]["body"]

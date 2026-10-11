@@ -27,6 +27,7 @@ import { backendWord, eventWord, parkWord, stateWord } from './words'
 import { num, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard, HelpNote } from './HelpCard'
+import { addressToPath } from './paths'
 import { LivenessBadge, livenessOf } from './Liveness'
 import { tokenCount } from './measure'
 import { Absent, Mark, UtilRow, type MarkKind } from './primitives'
@@ -560,9 +561,30 @@ function DtMore({ href, onClick, children }: { href: string; onClick: (() => voi
   )
 }
 
-/** The address of one of this agent's tabs. */
+/**
+ * The address of one of this agent's tabs: its PATH, under the list its state
+ * puts it in (live QA WA-21). It was `#work/task/<id>/<tab>`, which a click
+ * reached through the legacy hash redirect while hover, Copy link and a
+ * middle click all showed a URL that is not the page's.
+ */
 function tabHref(task: Task, tab: 'attempts' | 'artifacts' | 'changes'): string {
-  return `#work/task/${encodeURIComponent(task.id)}/${tab}`
+  const list = CONCURRENCY_STATES.has(task.state) ? 'live' : TERMINAL_STATES.has(task.state) ? 'recent' : 'waiting'
+  return addressToPath(`work/task/${encodeURIComponent(task.id)}/${tab}`, list)
+}
+
+/**
+ * HOW MANY TIMES THIS TASK RAN, for every place that says so (live QA WA-3).
+ *
+ * A failed merge read `attempt 1 of 10` in the header, `after 1 of 10
+ * attempts` in the failure card, `2 of 10 · task counts 1` on the Attempt
+ * card and `Attempts 1` on the tab -- while the Attempts tab listed two. The
+ * task's `attempt_count` is what is CHARGED against `max_attempts`, and a
+ * park for CI re-runs the task without charging it; the attempt documents
+ * are the runs. So where the text means "how many times it ran", the answer
+ * is the documents, and the task's own counter only when they were not read.
+ */
+export function timesRun(task: Pick<Task, 'attempt_count'>, attempts: readonly unknown[] | null): number {
+  return attempts === null ? task.attempt_count : Math.max(attempts.length, task.attempt_count)
 }
 
 /** The oldest-first copy of a run's attempts, and the newest of them. */
@@ -807,10 +829,19 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
         ? 'Cancelled'
         : 'Failed'
   const text = task.last_error
+  // A CANCEL ON REQUEST IS NOT AN ERROR, AND NOBODY'S AGENT WROTE IT (live QA
+  // WA-6, 2026-10-11). A task stopped from the console read `Cancelled: it
+  // was cancelled on request · cancel_requested · Error written by agent, at
+  // finish`, the reason in the red error box. The worker does write that
+  // text, at finish -- but what it records is a person's request, so the card
+  // says who asked, from the request's own event, and draws the recorded text
+  // as a note rather than an error.
+  const requested = task.state === 'CANCELLED' && (task.cancel_requested || cause === 'cancel_requested')
+  const asker = requested ? cancelRequester(run) : null
   return (
     // A CANCEL IS NOT A FAILURE: it leads the same way, on the neutral rule,
     // so an operator's own Stop does not read as the platform's fault.
-    <section className={`dt-card dt-now ${task.state === 'CANCELLED' ? 'is-neu' : 'is-bad'}`} data-lead="failed">
+    <section className={`dt-card dt-now ${task.state === 'CANCELLED' ? 'is-neu' : 'is-bad'}`} data-lead={requested ? 'cancelled' : 'failed'}>
       <DtCardHead title={heading}>
         <DtMore href={tabHref(task, 'attempts')} onClick={links?.attempts}>
           Attempts
@@ -827,7 +858,9 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
         )}
         {anythingRan(task, run.attempts) ? (
           <span className="dt-nf">
-            after {task.attempt_count} of {task.max_attempts} attempts
+            {timesRun(task, run.attempts) === task.attempt_count
+              ? `after ${task.attempt_count} of ${task.max_attempts} attempts`
+              : `after ${timesRun(task, run.attempts)} attempts · ${task.attempt_count} of ${task.max_attempts} counted against the cap`}
           </span>
         ) : (
           // NOTHING RAN, SO NOTHING WAS DUE (AG-8): a cascade cancel, a
@@ -842,12 +875,27 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
           </span>
         )}
       </p>
-      {text ? (
+      {requested ? (
+        <>
+          <span className="dt-who" data-who="requester">
+            {asker !== null ? (
+              <>
+                Stop requested by <b>{asker}</b>
+              </>
+            ) : (
+              <>
+                Stop requested · <span className="is-absent">who asked is not on the events read</span>
+              </>
+            )}
+          </span>
+          {text ? <p className="dt-cancel-note">{text}</p> : null}
+        </>
+      ) : text ? (
         <>
           <span className="dt-who">
-            Error written by <b>{errorWriter(run)}</b>
+            {task.state === 'CANCELLED' ? 'Reason written by' : 'Error written by'} <b>{errorWriter(run)}</b>
           </span>
-          <pre className="err full dt-err">{text}</pre>
+          <pre className={`err full dt-err${task.state === 'CANCELLED' ? ' is-neu' : ''}`}>{text}</pre>
         </>
       ) : (
         <p className="dt-nf is-absent">No error text was written on the task.</p>
@@ -855,6 +903,23 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
       {lastLine}
     </section>
   )
+}
+
+/**
+ * WHO ASKED FOR A CANCEL: the `requested_by` the API writes on the request's
+ * own event (`Store.request_cancel`: a `cancel_requested` event, or a
+ * `cancelled` one when the request itself ended the task). Null when no such
+ * event is on the page -- the event read failed or paged it out -- which is
+ * "not read", never "nobody".
+ */
+export function cancelRequester(run: Pick<AgentRun, 'events'>): string | null {
+  for (const e of run.events ?? []) {
+    const kind = eventKind(e)
+    if (kind !== 'cancel_requested' && kind !== 'cancelled') continue
+    const by = e.detail?.['requested_by']
+    if (typeof by === 'string' && by.trim() !== '') return by
+  }
+  return null
 }
 
 // ---------------------------------------------------------------------------
@@ -899,7 +964,15 @@ function DtStatCell({ c }: { c: DtCell }) {
       </span>
       <span className="dt-sc-v">
         {c.value}
-        {c.unit !== undefined && <small> {c.unit}</small>}
+        {/* THE SPACE IS OUTSIDE THE UNIT (live QA WA-12): `<small> of 10</small>`
+            is an inline-block, whose leading space is dropped, and the card
+            read `2of 10`. */}
+        {c.unit !== undefined && (
+          <>
+            {' '}
+            <small>{c.unit}</small>
+          </>
+        )}
       </span>
       {c.bar !== undefined && <DtBar pct={c.bar} warn={c.tone === 'alert'} />}
       {c.sub !== undefined && c.sub !== '' && (
@@ -1012,15 +1085,20 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
     unit: `of ${task.max_attempts}`,
     // THE TWO NUMBERS ARE THE FACT when they disagree: what the task counts
     // against the documents that came back.
+    // MORE DOCUMENTS THAN THE COUNTER IS NOT A HOLE (WA-3): a park for CI
+    // re-runs the task without charging an attempt, so it says what was
+    // charged. FEWER is one, and keeps its `unread` tone below.
     sub:
-      attempts.length !== task.attempt_count
+      attempts.length > task.attempt_count
+        ? `${task.attempt_count} counted against the cap`
+        : attempts.length !== task.attempt_count
         ? `task counts ${task.attempt_count}`
         : attempts.length === 0
           ? 'none admitted yet'
           : retries === 0
             ? 'no retries'
             : `${retries} ${retries === 1 ? 'retry' : 'retries'}`,
-    tone: attempts.length === task.attempt_count ? undefined : 'unread',
+    tone: attempts.length >= task.attempt_count ? undefined : 'unread',
   })
 
   // MEMORY, against the class's limit when the catalogue answered.

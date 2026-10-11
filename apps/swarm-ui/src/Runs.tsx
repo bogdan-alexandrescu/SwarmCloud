@@ -9,16 +9,17 @@ import { FailedPanel, Screen, timeAgo } from './Shell'
 import { workflowPullRequest, type MergeCard, type WorkflowPullRequest } from './stepviews'
 import { pluralise } from './types'
 import {
-  CostFact, PlanStepLive, previousAt, ProgressTime, progressEntries, redReading, shortSha, StepProgress, stepRows, StepsCard, useRunWorkflows,
-  type RunWorkflows, type StepRow,
+  CostFact, PlanStepLive, planStepRow, previousAt, ProgressTime, progressEntries, redReading, shortSha, StepProgress, stepRows, StepsCard, useRunWorkflows,
+  type ProgressEntry, type RunWorkflows, type StepRow,
 } from './RunSteps'
-import type { IssueRun, IssueRunPage, IssueRunState, OpenWork, PlanOverlap, PlanStepDoc, RunCheckCounts, RunPlan } from './types'
+import type { IssueRun, IssueRunState, IssueRunSummary, IssueRunSummaryPage, OpenWork, PlanOverlap, PlanStepDoc, RunCheckCounts, RunPlan } from './types'
 import { useNow } from './useNow'
 import { proseWords, stateWord } from './words'
 import { RunContextCard, SelectedTestsGate, useRunIndex, type RunIndexRead } from './RunIndex'
 import { addressToPath } from './paths'
 import { Absent } from './primitives'
 import { RunChangesTab, changesAtOf, withChangesAt } from './WorkflowChanges'
+import { Markdown } from './ArtifactViewer'
 import './styles/intake.css'
 import './styles/runs.css'
 
@@ -149,7 +150,7 @@ const RUN_MARK: Readonly<Record<IssueRunState, { mark: MarkName; hue: MarkHue }>
 export const SWEEP_CREATOR = 'issue-sweep'
 
 /** Who a run is by, as the list and the run page say it. */
-export function runCreatorWord(run: IssueRun): string | null {
+export function runCreatorWord(run: IssueRunSummary): string | null {
   if (run.created_by === SWEEP_CREATOR) {
     return run.on_behalf_of ? `issue sweep, as ${run.on_behalf_of}` : 'issue sweep'
   }
@@ -157,7 +158,7 @@ export function runCreatorWord(run: IssueRun): string | null {
 }
 
 /** A NOT_READY run's reason, or why an auto approval waits; null otherwise. */
-export function runWhyLine(run: IssueRun): string | null {
+export function runWhyLine(run: IssueRunSummary): string | null {
   if (run.state === 'NOT_READY') {
     const reason = run.not_ready?.reason?.trim()
     return reason ? `Not ready: ${reason}` : 'Not ready: the planner gave no reason.'
@@ -342,11 +343,22 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
                 {tab === 'changes' ? (
                   <>
                     <RunHeading run={d.run} onHeading={onHeading} />
-                    <RunChangesTab
+                    {d.run.workflow_id === null ? (
+                      // THE RUN'S OWN WORDS FOR NO WORKFLOW (live QA RT-15): the
+                      // shared empty state printed its legend word, `real zero
+                      // no workflow yet`, and "yet" of a run that has ended.
+                      <section className="chg-tab chg-run rn-nochanges" aria-label="Changes in this run">
+                        <p className="sb-note">
+                          {d.run.terminal
+                            ? `No changes: the run ended (${stateWord(d.run.state)}) before a workflow was created, so no step ran.`
+                            : "No changes yet: the run's workflow is created when its plan is approved, and until then no step has run."}
+                        </p>
+                      </section>
+                    ) : <RunChangesTab
                       run={d.run}
                       at={changesAtOf(view)}
                       onAt={(at) => go(`${runAddress(runId)}&${withChangesAt('tab=changes', at)}`)}
-                    />
+                    />}
                   </>
                 ) : (
                   <RunPage run={d.run} reread={reread} go={go} onHeading={onHeading} />
@@ -363,13 +375,18 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
     <Screen
       title="Runs"
       load={() => loadRuns()}
-      summary={(d) => `${d.runs.length} shown, newest first${d.next_page_token === null ? '' : ' · older runs exist'}`}
+      // THE COUNT IS THE LIST'S (live QA RT-11, 2026-10-11): the head said
+      // "50 shown · older runs exist" from the first page after "Show older
+      // runs" had read the last 3. The list says how many it holds, under its
+      // chips, and whether more exist; the head says only the order.
+      summary={() => 'newest first'}
+      pollMs={RUNS_LIST_POLL_MS}
       empty={{
         heading: 'No runs yet',
         body: 'This tenant has not planned an issue. Submit › From a GitHub issue starts one.',
       }}
     >
-      {(d) => <RunList first={d} go={go} />}
+      {(d) => <RunList first={d} go={go} view={view} />}
     </Screen>
   )
 }
@@ -378,15 +395,29 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
 // the list
 // ---------------------------------------------------------------------------
 
-/** The Runs list's state chips (QA G2-18). */
-const RUN_FILTERS = ['all', 'active', 'done', 'failed'] as const
-type RunFilter = (typeof RUN_FILTERS)[number]
+/**
+ * HOW OFTEN THE LIST RE-READS ITS FIRST PAGE (live QA RT-11, 2026-10-11): it
+ * never refreshed by itself ("read 3 min ago") while a run page polled every
+ * 15 s. A list is read for which runs exist and where each stands; a minute
+ * is the Timeline's cadence for the same kind of reading.
+ */
+export const RUNS_LIST_POLL_MS = 60_000
 
-const RUN_FILTER_TEST: Readonly<Record<RunFilter, (r: IssueRun) => boolean>> = {
+/**
+ * The Runs list's state chips (QA G2-18). `not ready` and `rejected` (live QA
+ * RT-10): 11 of 50 runs were reachable only under `all`, and a not-ready run
+ * is the one that waits on an owner's decision.
+ */
+export const RUN_FILTERS = ['all', 'active', 'done', 'failed', 'not ready', 'rejected'] as const
+export type RunFilter = (typeof RUN_FILTERS)[number]
+
+const RUN_FILTER_TEST: Readonly<Record<RunFilter, (r: IssueRunSummary) => boolean>> = {
   all: () => true,
   active: (r) => !r.terminal,
   done: (r) => r.state === 'DONE',
   failed: (r) => r.state === 'FAILED',
+  'not ready': (r) => r.state === 'NOT_READY',
+  rejected: (r) => r.state === 'REJECTED',
 }
 
 const RUN_FILTER_TITLE: Readonly<Record<RunFilter, string>> = {
@@ -394,24 +425,66 @@ const RUN_FILTER_TITLE: Readonly<Record<RunFilter, string>> = {
   active: 'Not finished: planning, waiting for approval, running, or in CI',
   done: 'Ended DONE',
   failed: 'Ended FAILED. A rejected or cancelled run is under all.',
+  'not ready': 'The planner found the issue not ready, and said what it needs decided',
+  rejected: 'Its plan was rejected',
 }
 
-/** Whether a run matches the search: its issue ref, its issue's title or its id, any case. */
-function runMatches(r: IssueRun, text: string): boolean {
+/**
+ * Whether a run matches the search: its issue ref, its issue's title, its id
+ * or its workflows' ids, any case. The workflow id (live QA RT-12): a row
+ * shows it, and searching for it found nothing.
+ */
+export function runMatches(r: IssueRunSummary, text: string): boolean {
   const q = text.trim().toLowerCase()
   if (q === '') return true
-  return [r.issue.ref, r.issue_read?.title ?? '', r.id].some((v) => v.toLowerCase().includes(q))
+  return [r.issue.ref, r.issue_read?.title ?? '', r.id, r.workflow_id ?? '', ...(r.ci_fix_workflows ?? [])]
+    .some((v) => typeof v === 'string' && v.toLowerCase().includes(q))
 }
 
-function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void }) {
+/**
+ * THE LIST'S FILTER AND SEARCH, AS ITS ADDRESS (live QA RT-6, 2026-10-11):
+ * choose `failed`, type `merge`, open a run, press Back, and the list was
+ * `all` with an empty search. `?state=` (a chip, `all` omitted) and `?q=`
+ * (the search) are read on mount and written in place, so Back and a reload
+ * restore them, as the Workflows list's `?state=` does.
+ */
+export function runListQuery(view: string | null): { which: RunFilter; text: string } {
+  const p = new URLSearchParams(view ?? '')
+  const state = (p.get('state') ?? '').replace(/[-_]/g, ' ').toLowerCase()
+  const which = (RUN_FILTERS as readonly string[]).includes(state) ? (state as RunFilter) : 'all'
+  return { which, text: p.get('q') ?? '' }
+}
+
+export function runListQueryString(which: RunFilter, text: string): string {
+  const p = new URLSearchParams()
+  if (which !== 'all') p.set('state', which.replace(/ /g, '-'))
+  if (text.trim() !== '') p.set('q', text)
+  return p.toString()
+}
+
+function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (to: string) => void; view?: string | null }) {
   const now = useNow()
-  const [which, setWhich] = useState<RunFilter>('all')
-  const [text, setText] = useState('')
-  const [older, setOlder] = useState<{ runs: IssueRun[]; next: string | null; error: ApiError | null; reading: boolean }>(
+  const [which, setWhich] = useState<RunFilter>(() => runListQuery(view).which)
+  const [text, setText] = useState(() => runListQuery(view).text)
+  // Written in place, never pushed: a chip or a keystroke is not a page.
+  useEffect(() => {
+    if (window.location.pathname !== '/runs') return
+    const q = runListQueryString(which, text)
+    const want = `/runs${q === '' ? '' : `?${q}`}`
+    if (window.location.pathname + window.location.search !== want) window.history.replaceState(window.history.state, '', want)
+  }, [which, text])
+  const [older, setOlder] = useState<{ runs: IssueRunSummary[]; next: string | null; error: ApiError | null; reading: boolean }>(
     { runs: [], next: first.next_page_token, error: null, reading: false },
   )
-  // A poll or refresh replaced the first page: what was appended belonged to the old one.
-  useEffect(() => setOlder({ runs: [], next: first.next_page_token, error: null, reading: false }), [first])
+  // A poll or refresh replaced the first page. With nothing appended, the
+  // new page's token is the way on; with older runs shown, they stay (the
+  // minute's poll must not take back what "Show older runs" read, RT-11),
+  // less any the new first page now holds.
+  useEffect(() => setOlder((o) => {
+    if (o.runs.length === 0) return { runs: [], next: first.next_page_token, error: null, reading: false }
+    const onFirst = new Set(first.runs.map((r) => r.id))
+    return { ...o, runs: o.runs.filter((r) => !onFirst.has(r.id)) }
+  }), [first])
 
   async function more() {
     if (older.next === null) return
@@ -475,6 +548,9 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
               <span className="sb-note">Filters the {pluralise(rows.length, 'run')} read; older runs are not searched until shown.</span>
             )}
           </div>
+          <p className="sb-note rn-count" role="status">
+            {filtering ? `${shown.length} of ` : ''}{pluralise(rows.length, 'run')} read · {older.next === null ? 'no older runs' : 'older runs exist'}
+          </p>
           {shown.length === 0 && (
             <p className="sb-note rn-none">No run of the {rows.length} read matches{text.trim() === '' ? '' : ` “${text.trim()}”`}{which === 'all' ? '' : ` in ${which}`}.</p>
           )}
@@ -507,10 +583,10 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
                       {r.issue_read?.title ? (
                         <>
                           <span className="rn-cut rn-issue-t" title={r.issue_read.title}>{r.issue_read.title}</span>
-                          <span className="mono rn-cut rn-issue-ref" title={r.issue.ref}>{r.issue.ref}</span>
+                          <span className="mono rn-cut rn-issue-ref" title={r.issue.ref}><IssueRefLink run={r} /></span>
                         </>
                       ) : (
-                        <span className="mono rn-cut" title={r.issue.ref}>{r.issue.ref}</span>
+                        <span className="mono rn-cut" title={r.issue.ref}><IssueRefLink run={r} /></span>
                       )}
                     </td>
                     <td data-label="State">
@@ -521,7 +597,7 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
                     </td>
                     <td data-label="Plan approval">{r.plan_approval}</td>
                     {r.workflow_id === null ? (
-                      <td data-label="Workflow"><i className="ctl-em">none yet</i></td>
+                      <td data-label="Workflow"><i className="ctl-em">{noWorkflowWord(r)}</i></td>
                     ) : (
                       <td data-label="Workflow">
                         <span className="mono rn-cut" title={r.workflow_id}>
@@ -549,6 +625,23 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
       )}
     </div>
   )
+}
+
+/**
+ * A RUN WITH NO WORKFLOW, IN WORDS THAT FIT ITS STATE (live QA RT-16): a run
+ * that ended in planning, not ready or rejected said `none yet`, which
+ * promises a workflow that will never come.
+ */
+export function noWorkflowWord(run: IssueRunSummary): string {
+  return run.terminal ? 'none · the run ended before a workflow' : 'none yet'
+}
+
+/** The issue's reference, linked to the issue on the forge (live QA RT-12: it was plain text). */
+function IssueRefLink({ run }: { run: IssueRunSummary }) {
+  const url = run.issue.url
+  return typeof url === 'string' && /^https:\/\//.test(url)
+    ? <a href={url} target="_blank" rel="noreferrer">{run.issue.ref}</a>
+    : <>{run.issue.ref}</>
 }
 
 // ---------------------------------------------------------------------------
@@ -922,7 +1015,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
             {progress.map((h, i) => h.kind === 'step' ? <StepProgress key={h.key} e={h} prev={previousAt(progress, i)} now={now} /> : (
               <li key={h.key}>
                 <RunStateMark state={h.to} />
-                <span>{h.from === null ? 'created' : `from ${stateWord(h.from)}`} · by {h.by || '—'}</span>
+                <span>{h.from === null ? 'created' : h.from === 'PLANNED' && h.to === 'PLANNED' ? `plan edited · revision ${planRevisionAt(progress, i)}` : `from ${stateWord(h.from)}`} · by {h.by || '—'}</span>
                 <ProgressTime at={h.at} prev={previousAt(progress, i)} now={now} />
               </li>
             ))}
@@ -952,7 +1045,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
             <li className={run.workflow_id === null ? 'ctl-fact is-absent' : 'ctl-fact'}>
               <b>Workflow</b>
               {run.workflow_id === null
-                ? <i className="ctl-em" title="None yet: the workflow is created when the plan is approved.">none yet · created on approval</i>
+                ? <i className="ctl-em" title={run.terminal ? 'None: the run ended before its plan was approved, so no workflow was created.' : 'None yet: the workflow is created when the plan is approved.'}>{run.terminal ? noWorkflowWord(run) : 'none yet · created on approval'}</i>
                 : <InApp go={go} cut to={`work/workflows?${new URLSearchParams({ wf: run.workflow_id }).toString()}`}
                   href={`/workflows/${encodeURIComponent(run.workflow_id)}`}>{run.workflow_id}</InApp>}
             </li>
@@ -969,7 +1062,7 @@ function RunPage({ run: served, reread, go, onHeading }: {
             <li className="ctl-fact"><b>by</b>{runCreatorWord(run) !== null
               ? <span className="rn-id" title={runCreatorWord(run) ?? ''}>{runCreatorWord(run)}</span>
               : <i className="ctl-em">&mdash; not recorded</i>}</li>
-            <CostFact read={read} />
+            <CostFact read={read} ended={run.terminal} />
           </ul>
         </section>
       </aside>
@@ -1157,7 +1250,7 @@ function PlanStep({ step, n, live }: { step: PlanStepDoc; n: number; live: PlanL
       </span>
       {live !== null && (
         <PlanStepLive read={live.read} go={live.go}
-          row={live.rows.find((r) => r.round === 0 && r.stepId === step.step_id) ?? null} />
+          row={planStepRow(live.rows, step.step_id)} />
       )}
       {files !== null && <StepList label="Touches" items={files} />}
       {tests !== null && <StepList label="Tests" items={tests} />}
@@ -1264,7 +1357,10 @@ function IssueReadCard({ run, now }: { run: IssueRun; now: number }) {
       {read !== null && read.body !== '' && (
         <details className="rn-read-body">
           <summary>Show the body</summary>
-          <p className="rn-prompt">{read.body}</p>
+          {/* RENDERED, NOT RAW (live QA RT-18): the body read as `## Description`
+              and `**…**`. The artifact viewer's renderer builds React elements,
+              never HTML, from bytes nobody on this tenant wrote. */}
+          <div className="rn-issue-md"><Markdown source={read.body} /></div>
         </details>
       )}
     </section>
@@ -1521,6 +1617,21 @@ function plannedSteps(plan: RunPlan): string {
   return `${pluralise(plan.steps.length, 'planned step')} + review + fix`
 }
 
+/**
+ * THE REVISION A PLAN EDIT MADE (live QA RT-17, 2026-10-11): an edit is the
+ * run's PLANNED -> PLANNED transition, and it read `Planned · from planned`.
+ * The plan starts at revision 1, and each edit before this one, and this one,
+ * adds one.
+ */
+export function planRevisionAt(entries: readonly ProgressEntry[], i: number): number {
+  let n = 1
+  for (let k = 0; k <= i && k < entries.length; k++) {
+    const e = entries[k]!
+    if (e.kind === 'run' && e.from === 'PLANNED' && e.to === 'PLANNED') n += 1
+  }
+  return n
+}
+
 /** Whether the plan has been approved: it is no longer the page's question. */
 function planApproved(run: IssueRun): boolean {
   return run.approved_by !== null || run.workflow_id !== null
@@ -1639,6 +1750,59 @@ function PullRequestFact({ run, wfPr: read }: { run: IssueRun; wfPr: WfPrRead })
   )
 }
 
+/**
+ * HOW LONG A CHECKING RUN MAY GO WITH NO CI READ BEFORE THE CARD SAYS SO
+ * (live QA RT-4, 2026-10-11): a run sat in CHECKING for 15 hours with
+ * `checks: null` and the card said `not read yet`, with no age and no
+ * warning. The CI loop reads a pull request within minutes of it opening; 30
+ * minutes without one is a loop that is not reading it, not one that is late.
+ */
+export const CI_UNREAD_WARN_MS = 30 * 60_000
+
+/** When the run last entered CHECKING, from its history; null when it never did or recorded no time. */
+export function checkingSince(run: IssueRun): number | null {
+  for (let i = run.history.length - 1; i >= 0; i--) {
+    const h = run.history[i]!
+    if (h.to === 'CHECKING') {
+      const t = h.at === null ? NaN : Date.parse(h.at)
+      return Number.isFinite(t) ? t : null
+    }
+  }
+  return null
+}
+
+/**
+ * THE CHECKS FACT WITH NO READING. A finished run's is final (live QA RT-8:
+ * "not read yet" on a DONE run with no pull request read as a read still to
+ * come); a CHECKING run past CI_UNREAD_WARN_MS warns, with the time it began.
+ */
+function ChecksUnread({ run, now }: { run: IssueRun; now: number }) {
+  const pr = run.pull_request ?? null
+  if (run.terminal) return <i className="ctl-em">{pr === null ? 'none · no pull request' : 'never read'}</i>
+  const since = run.state === 'CHECKING' ? checkingSince(run) : null
+  if (since !== null && now - since > CI_UNREAD_WARN_MS) {
+    const at = new Date(since).toISOString()
+    return (
+      <span className="rn-ci-unread" role="status" data-warn=""
+        title="The CI loop has recorded no reading of this pull request's checks. It reads them within minutes of the run checking; this long without one, it is not reading them.">
+        <WarnMark /> no CI read · the run began checking <time dateTime={at}>{timeAgo(at, now)}</time>
+      </span>
+    )
+  }
+  return <i className="ctl-em">not read yet</i>
+}
+
+/**
+ * A LOG TAIL WITHOUT ITS TERMINAL COLOURS (live QA RT-14, 2026-10-11): the
+ * excerpt is a CI log's tail, and it showed `[36;1mfailed=… [0m`. SGR
+ * sequences -- ESC `[` digits and `;` then `m` -- are dropped, with or
+ * without the ESC (the server's redaction can leave the bracket alone).
+ */
+export function stripSgr(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\u001b?\[\d{1,3}(?:;\d{1,3})*m|\u001b\[m/g, '')
+}
+
 /** Whether the run has reached the pull request and its CI, so the CI card has something to say. */
 function hasCi(run: IssueRun): boolean {
   return (run.pull_request ?? null) !== null || run.state === 'CHECKING' || run.state === 'FIXING'
@@ -1655,6 +1819,7 @@ function hasCi(run: IssueRun): boolean {
 function CiCard({ run, go, wfPr: read, index, merge }: {
   run: IssueRun; go: (to: string) => void; wfPr: WfPrRead; index: RunIndexRead; merge: MergeCard | null
 }) {
+  const now = useNow()
   if (!hasCi(run)) {
     // A FINISHED RUN DRAWS THE CARD ANYWAY (browser QA N15): no card at all
     // read as "nothing to say", on a run whose workflow opened a PR. The CI
@@ -1709,7 +1874,11 @@ function CiCard({ run, go, wfPr: read, index, merge }: {
   // back to what the excerpt and the merge step name.
   const served = pr?.check_counts ?? null
   const checkList = pr?.check_list ?? null
-  const ciUrl = checkLink(pr?.ci_url)
+  const readError = pr?.read_error?.trim() ? pr.read_error.trim() : null
+  // THE FAILING CHECK'S LINK FIRST (live QA RT-14): `ci_url` led to the
+  // first job (`secret scan`), not to the `ci-gate` that failed. A failed
+  // check in the served list wins; `ci_url` is the fallback.
+  const ciUrl = checkLink(checkList?.find((c) => c.state === 'failed' && checkLink(c.url) !== null)?.url ?? pr?.ci_url)
   const counts: string[] = []
   if (redAtHead && pr?.checks === 'red') counts.push(`failed ${red!.names.length}`)
   if (waiting !== null) counts.push(`pending ${waiting.pending.length}`)
@@ -1727,9 +1896,24 @@ function CiCard({ run, go, wfPr: read, index, merge }: {
         <li className="ctl-fact">
           <b>checks</b>
           {pr?.checks
-            ? <span>{pr.checks}{head ? <> at <code title={head}>{shortSha(head)}</code><CopyText text={head} /></> : null}</span>
-            : <i className="ctl-em">not read yet</i>}
+            ? <span>{run.terminal ? 'last read before the run ended: ' : ''}{pr.checks}{head ? <> at <code title={head}>{shortSha(head)}</code><CopyText text={head} /></> : null}</span>
+            : readError !== null
+            ? <i className="ctl-em" data-ci-read="failed">not read</i>
+            : <ChecksUnread run={run} now={now} />}
         </li>
+        {/* WHY THERE IS NO READING (RT-4, 2026-10-11): a run whose every CI
+            read failed -- a 403 on commit statuses -- said "not read yet" for
+            15 hours. The server's `read_error` is the reason, masked and
+            bounded there; `checked_at` is when it was last tried. */}
+        {readError !== null && (
+          <li className="ctl-fact rn-ci-error" role="status">
+            <b>last read</b>
+            <span>
+              <WarnMark /> {readError}
+              {pr?.checked_at ? <> · <span title={pr.checked_at}>{timeAgo(pr.checked_at)}</span></> : null}
+            </span>
+          </li>
+        )}
         {/* ONE REASON, NOT FOUR DASHES (QA G2-06, 2026-10-07): "passed — ·
             pending — · failed — · skipped —" beside "checks green" read as a
             result every count disowned. The one count the run can carry is
@@ -1821,7 +2005,7 @@ function CiCard({ run, go, wfPr: read, index, merge }: {
           {/* SHORT, LIKE CHECKS (item 6): the whole sha is its title and its copy. */}
           {run.green_sha
             ? <span><code title={run.green_sha}>{shortSha(run.green_sha)}</code><CopyText text={run.green_sha} /></span>
-            : <i className="ctl-em">not green yet</i>}
+            : <i className="ctl-em">{!run.terminal ? 'not green yet' : pr === null ? 'none · no pull request' : 'never green'}</i>}
         </li>
         {pr !== null && <MergeFact run={run} known={known} />}
         <IssueFact run={run} known={known} url={issueUrl} />
@@ -1841,7 +2025,7 @@ function CiCard({ run, go, wfPr: read, index, merge }: {
       )}
       {run.failure_excerpt && (
         <div className="rn-excerpt">
-          <CodeBlock title="Failing checks" lang="redacted by the API" text={run.failure_excerpt} />
+          <CodeBlock title="Failing checks" lang="redacted by the API" text={stripSgr(run.failure_excerpt)} />
         </div>
       )}
     </Card>

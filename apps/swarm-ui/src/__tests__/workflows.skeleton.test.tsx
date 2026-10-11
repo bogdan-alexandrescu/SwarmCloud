@@ -151,7 +151,9 @@ describe('#113: one workflow’s page draws its head and tabs while it reads', (
     expect(order).toEqual(['wfp-head', 'c-tabs', 'wfp-skel-body'])
     const head = page!.querySelector<HTMLElement>('.wfp-head')!
     const actions = within(head).getAllByRole('button')
-    expect(actions.map((b) => b.textContent)).toEqual(['Copy link', 'Cancel workflow'])
+    // No Cancel workflow before the state is read (WF-18a): it may have ended, or not exist.
+    expect(actions.map((b) => b.textContent)).toEqual(['Copy link'])
+    expect(head.querySelector('.wfp-skel-act')).not.toBeNull()
     expect(actions.every((b) => (b as HTMLButtonElement).disabled)).toBe(true)
     // The chips are bars, not words: a skeleton answers nothing.
     const chips = head.querySelector('.wfp-chips')!

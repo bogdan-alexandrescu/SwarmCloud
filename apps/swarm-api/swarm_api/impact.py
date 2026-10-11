@@ -1252,16 +1252,48 @@ def symbol_tests(graph: Graph, document: Mapping[str, Any] | None,
     return {"symbol": _symbol_row(centre), "tests": rows}
 
 
+#: tree-sitter's per-file parse outcomes, as the extractor counts them.
+PARSE_COUNTERS = ("parsed", "timed_out", "failed", "too_large", "over_budget")
+#: What a server status means when the row gives no reason of its own.
+SERVER_STATUS_REASONS = {
+    "timed_out": ("the language server ran past its budget, so this language's edges are "
+                  "tree-sitter's only; the per-file parse counts are a different measurement"),
+    "failing": ("the language server did not start or stopped, so this language's edges are "
+                "tree-sitter's only"),
+}
+
+
 def languages_table(graph: Graph | None, document: Mapping[str, Any] | None
                     ) -> list[dict[str, Any]]:
     """Per language: grammar, server, status and fallback. The graph's table when
-    there is one (the extractor's measurement), else the index document's."""
+    there is one (the extractor's measurement), else the index document's.
+
+    Two different measurements share the word "timed out" here (live QA
+    RSA-6: `status: timed_out` beside `timed_out: 0` read as a contradiction).
+    `status` is the LANGUAGE SERVER's -- `timed_out` is the LSP pass running
+    past its budget, after which the language is tree-sitter only -- and the
+    counters are tree-sitter's per-file parse. So each row says which is
+    which: `status_of` names the server pass, `parse` carries the per-file
+    counts under their own key (the flat counters stay for existing readers),
+    and a server status with no reason gets one.
+    """
     rows = (graph.manifest.get("languages") if graph is not None else None) \
         or (document or {}).get("languages") or []
     keep = ("language", "files", "grammar", "server", "status", "reason", "fallback",
-            "parsed", "timed_out", "failed", "too_large", "over_budget")
-    return sorted(({k: row.get(k) for k in keep if k in row} for row in rows
-                   if isinstance(row, dict)), key=lambda r: str(r.get("language")))
+            *PARSE_COUNTERS)
+    out = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        served = {k: row.get(k) for k in keep if k in row}
+        served["status_of"] = "language_server"
+        counts = {k: row[k] for k in PARSE_COUNTERS if k in row}
+        if counts:
+            served["parse"] = counts
+        if served.get("status") in SERVER_STATUS_REASONS and not served.get("reason"):
+            served["reason"] = SERVER_STATUS_REASONS[served["status"]]
+        out.append(served)
+    return sorted(out, key=lambda r: str(r.get("language")))
 
 
 # --------------------------------------------------------------------------

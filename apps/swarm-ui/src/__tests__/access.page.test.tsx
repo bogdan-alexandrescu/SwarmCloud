@@ -164,7 +164,11 @@ const grantRow = (repository: string) => document.querySelector(`li.ac-grant[dat
 const owner = (name: string) => document.querySelector(`li.ac-owner[data-owner="${name}"]`) as HTMLElement
 const radio = (el: HTMLElement, name: string) => within(el).getByRole('radio', { name }) as HTMLButtonElement
 
-afterEach(() => vi.unstubAllEnvs())
+afterEach(() => {
+  vi.unstubAllEnvs()
+  // Members is in the address now (RSA-28): one case's click must not open the next case on it.
+  window.history.replaceState(null, '', window.location.pathname)
+})
 
 describe('the page states what SwarmCloud may do as you', () => {
   it('says Read is enforced by SwarmCloud, there is no workflows write, and verifying only reads', async () => {
@@ -274,6 +278,8 @@ describe('repositories (chooser A, right)', () => {
       ]),
     )
     fireEvent.click(radio(row('example-org/example-docs'), 'Not chosen'))
+    // Not chosen takes access away, so it asks first (live QA RSA-1).
+    fireEvent.click(within(row('example-org/example-docs')).getByRole('button', { name: 'Remove access' }))
     await waitFor(() => expect(calls.filter((c) => c.method === 'DELETE').map((c) => c.url)).toEqual([`/v1/access/grants/${ID(1)}`]))
   })
 
@@ -381,6 +387,8 @@ describe('the grants, verified (Verify A)', () => {
     await mount()
     await screen.findByRole('list', { name: 'Your granted repositories, failures first' })
     fireEvent.click(radio(grantRow('octo-dev/example-api'), 'Read'))
+    // Write to Read takes access away, so it asks first (live QA RSA-1).
+    fireEvent.click(within(grantRow('octo-dev/example-api')).getByRole('button', { name: 'Change to Read' }))
     await waitFor(() => expect(calls.filter((c) => c.method === 'PUT')).toEqual([expect.objectContaining({ body: { repository: 'octo-dev/example-api', mode: 'read' } })]))
   })
 })
