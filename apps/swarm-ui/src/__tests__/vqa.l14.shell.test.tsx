@@ -15,7 +15,8 @@
 //   V064  The page head is a control tall in every state, actions or none.
 //   V074  The theme switch is one Tab stop, moved by the arrow keys.
 //   V083  Collapsed, a click on the section you are in opens its pages.
-//   V092  On a phone the refresh's 44px target is not clipped or counted as content.
+//   V092  A screen read once says `read 0 s ago`, not a bare `0 s`; on a phone the
+//         refresh's 44px target is not clipped or counted as content.
 //   V129  Send-panel values end at the right edge; mono is the meta size.
 //   V134  A merge option's description is lighter than its title on every card.
 //   V149  The phone header's tenant is sans.
@@ -259,6 +260,21 @@ describe('V064: the page head is a control tall in every state', () => {
   it('holds the title row at the control height, wide and on a phone', () => {
     const head = build('div.c-phead', hosts)
     for (const env of [WIDE, PHONE]) expect(painted(head, 'min-height', env)).toBe('var(--h-ctl)')
+  })
+})
+
+describe('V092: a screen read once says its age is a read age', () => {
+  it('reads `read 0 s ago`, not a bare `0 s`, when the screen passes no pollMs', async () => {
+    // MUTATION: let `RefreshControl` say the bare age when it has no cadence.
+    render(
+      <Screen<{ n: number }> title="Runtimes" load={async () => ({ status: 'ok', data: { n: 1 }, fetchedAt: Date.now() })}>
+        {() => <p>rows</p>}
+      </Screen>,
+    )
+    await screen.findByText('rows')
+    const refresh = document.querySelector<HTMLButtonElement>('.c-phead .c-acts .c-refresh')!
+    expect(refresh.textContent).toMatch(/^⟳ read \d+ s ago$/)
+    expect(refresh.getAttribute('title')).toMatch(/^read \d+ s ago$/)
   })
 })
 

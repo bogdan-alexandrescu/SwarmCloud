@@ -386,7 +386,7 @@ export function staleFoot(at: number | null, now: number, failed = false): strin
 /**
  * THE HEAD'S REFRESH, A QUIET CONTROL CARRYING ITS OWN TICKING AGE (#138,
  * #98, #117; owner rulings 2026-10-07). The screen's one age is on the button
- * that renews it: `⟳ 12 s` on a screen read once per visit, and
+ * that renews it: `⟳ read 12 s ago` on a screen read once per visit, and
  * `⟳ every 30 s · read 4 s ago` on one that polls, so a reader sees both that
  * the age will move and how soon. A stale or aged read says `not refreshed`
  * first. A poll the idle stop halted is `Paused · resume`, and pressing it
@@ -458,7 +458,9 @@ export function RefreshControl({
         ? `every ${spacedAge(cadence.wait)}, backing off`
         : `every ${spacedAge(cadence.base)}`
   const lead = [stale ? 'not refreshed' : null, every].filter((p): p is string => p !== null)
-  const said = lead.length === 0 ? age : `${lead.join(' · ')} · read ${age} ago`
+  // A screen read once still says what the age is (V092): a bare `⟳ 0 s` beside
+  // siblings that say `every 30 s · read 0 s ago` reads as a counter, not an age.
+  const said = lead.length === 0 ? `read ${age} ago` : `${lead.join(' · ')} · read ${age} ago`
   return (
     <button
       type="button"

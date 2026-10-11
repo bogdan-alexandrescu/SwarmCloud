@@ -164,14 +164,15 @@ describe('#98: one read age per screen', () => {
     // head beside the control.
     render(<FrameAge.Provider value={true}>{screenOf({ status: 'ok', data: { rows: ['a'] }, fetchedAt: Date.now() })}</FrameAge.Provider>)
     await waitFor(() => expect(note()).toBe('1 rows'))
-    expect(refresh(), 'the refresh control went without its age').toMatch(/^⟳ \d+ s$/)
+    expect(refresh(), 'the refresh control went without its age').toMatch(/^⟳ read \d+ s ago$/)
     expect(document.querySelectorAll('.c-phead .c-refresh')).toHaveLength(1)
     expect(document.querySelector('.ctl-head-age'), 'a second age in the head').toBeNull()
-    // Per text node: the body's textContent runs `⟳ 0 s` into `1 rows`.
+    // Per text node: the body's textContent runs `⟳ read 0 s ago` into
+    // `1 rows`. A node that says an age counts once, however it phrases it.
     const ages: string[] = []
     const walk = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
     for (let n = walk.nextNode(); n !== null; n = walk.nextNode()) {
-      ages.push(...((n.textContent ?? '').match(/\b\d+ (s|min|h|d)\b|\bread\b/g) ?? []))
+      if (/\b\d+ (s|min|h|d)\b|\bread\b/.test(n.textContent ?? '')) ages.push(n.textContent ?? '')
     }
     expect(ages, 'the age is said more than once on the screen').toHaveLength(1)
   })
@@ -180,7 +181,7 @@ describe('#98: one read age per screen', () => {
     // MUTATION: drop the age outside the frame, or stop marking an aged read
     // -- a read older than AGED_AFTER_MS is said to be one, in words.
     const first = render(screenOf({ status: 'ok', data: { rows: ['a'] }, fetchedAt: Date.now() }))
-    await waitFor(() => expect(refresh()).toMatch(/^⟳ \d+ s$/))
+    await waitFor(() => expect(refresh()).toMatch(/^⟳ read \d+ s ago$/))
     first.unmount()
 
     render(
