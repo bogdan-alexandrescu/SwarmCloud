@@ -169,6 +169,9 @@ _PARKED_BECAUSE = {
     "MANUAL_PAUSE": "dispatch is paused by an operator",
     "BUDGET_EXHAUSTED": "the tenant's budget is exhausted",
     "CREDENTIAL_MISSING": "the tenant has no credential for this profile's provider",
+    # Contract request 68 (docs/design/live-browser.md): a hand-off nobody
+    # answered within the hold. Only a person promotes it.
+    "HUMAN_REQUIRED": "its agent asked a person to sign in; it resumes when someone is ready",
 }
 
 

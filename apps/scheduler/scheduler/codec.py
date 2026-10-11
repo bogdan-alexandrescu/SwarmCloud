@@ -91,11 +91,18 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # spec check refuses the task before any credential is read.
         forge_credential=_shaped(data.get("forge_credential"), FORGE_CREDENTIAL.fullmatch),
         forge_access=_shaped(data.get("forge_access"), FORGE_ACCESS.__contains__),
+        # Contract request 70 (LB-C): read back so a decode-and-rewrite never
+        # clears a live hand-off. Anything but a dict is no wait.
+        human_wait=_human_wait(data.get("human_wait")),
     )
 
 
 def _shaped(value: Any, ok: Any) -> str | None:
     return value if isinstance(value, str) and ok(value) else None
+
+
+def _human_wait(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) else None
 
 
 def pool_from_dict(name: str, data: dict[str, Any]) -> SlotPool:

@@ -813,6 +813,16 @@ class RunnerProfile:
     #: "restore on attempt 1, skip only on retries". Checkpointing itself
     #: stays on (invariant 8); only the restore is skipped.
     never_restore_checkpoint: bool = False
+    #: True when this profile's pod runs the live browser: a platform-launched
+    #: Chromium in a display sidecar that a member of the task's tenant can
+    #: watch and, to sign in, take control of (docs/design/live-browser.md).
+    #: A catalogue property, never a caller's: a caller names a profile, and
+    #: cannot ask for a live browser on another one (invariant 10). Valid only
+    #: on a profile whose backend is GKE_AUTOPILOT, stated, not AUTO: the
+    #: sidecar and its second uid exist only in the GKE manifest, and AUTO
+    #: resolves the `browser` class to Cloud Run. Contract request 71 (LB-D),
+    #: accepted by the owner 2026-10-11 (#1030).
+    live_browser: bool = False
 
     def __post_init__(self) -> None:
         if self.worker_action is not None and self.runner_argv:
@@ -854,6 +864,12 @@ class RunnerProfile:
             )
         if self.resource_class not in RESOURCE_CLASSES:
             raise ValueError(f"runner {self.name}: unknown resource class {self.resource_class}")
+        if self.live_browser and self.backend is not Backend.GKE_AUTOPILOT:
+            raise ValueError(
+                f"runner {self.name}: live_browser needs the GKE_AUTOPILOT backend, "
+                f"not {self.backend.value}; the display sidecar exists only in the "
+                "GKE manifest (contract request 71)"
+            )
         if self.spot is not SpotStrategy.ON_DEMAND_ONLY:
             raise ValueError(
                 f"runner {self.name}: Spot is disabled platform-wide; Spot Pods cannot "
@@ -1407,6 +1423,8 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets_any_of=True,
         timeout_seconds=7200,
         inputs=_CLI_AGENT_INPUTS,
+        # Contract request 71 (LB-D): the one live-browser profile.
+        live_browser=True,
     ),
 }
 
