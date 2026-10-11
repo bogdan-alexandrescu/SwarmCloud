@@ -1076,8 +1076,15 @@ def workflow_to_api(
     *,
     step_tasks: Mapping[str, Task] | None = None,
     console_url: str | None = None,
+    summary: bool = False,
 ) -> dict[str, Any]:
     """Public JSON shape for a workflow.
+
+    `summary` (`GET /v1/workflows?view=summary`, live QA CH-21) serves each
+    step without `input`, `input_redaction_count` and `input_masked_by` -- the
+    keys absent, not null, as `GET /v1/tasks?view=summary` drops its rows' --
+    and the step input's masking is never run. A list draws no step's input;
+    `GET /v1/workflows/{id}` and the step's own task still serve it.
 
     `links.console` is the workflow's console page and each step's
     `links.console` its agent's, both from `console_url`
@@ -1123,7 +1130,9 @@ def workflow_to_api(
         "on_step_failure": workflow.on_step_failure,
         "cancel_requested": workflow.cancel_requested,
         "steps": [
-            _step_to_api(s, _step_masking(workflow, s, step_tasks or {}), console_url)
+            _step_to_api(
+                s, _step_masking(workflow, s, step_tasks or {}), console_url, summary=summary
+            )
             for s in workflow.steps
         ],
         "links": {"console": workflow_console_url(console_url, workflow.workflow_id)},
@@ -1150,6 +1159,8 @@ def _step_to_api(
     step: WorkflowStep,
     masking: tuple[TaskMasking, str] | None,
     console_url: str | None = None,
+    *,
+    summary: bool = False,
 ) -> dict[str, Any]:
     """One workflow step. Its `input` is served MASKED, with its count.
 
@@ -1180,6 +1191,8 @@ def _step_to_api(
         "task_id": step.task_id,
         "links": {"console": agent_console_url(console_url, step.task_id)},
     }
+    if summary:
+        return base
     if masking is None:
         return {**base, "input": None, "input_redaction_count": None, "input_masked_by": "not_read"}
     _, whose = masking
