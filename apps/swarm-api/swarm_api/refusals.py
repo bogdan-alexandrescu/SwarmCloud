@@ -141,6 +141,13 @@ SWITCHES: dict[str, Switch] = {
         why="an observer schedule with file_issues true is refused because swarm-api cannot "
         "create an issue yet. On once no stored observer schedule sets file_issues",
     ),
+    "epic_triage_unreadable": Switch(
+        code="epic_triage_unreadable",
+        why="an epic-triage firing whose every repository failed to list its epics with "
+        "the tenant's forge credential, and that applied and took in nothing, ends refused "
+        "instead of succeeding empty. On once the per-repository codes in the log show only "
+        "credentials that really lack issues: read",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
