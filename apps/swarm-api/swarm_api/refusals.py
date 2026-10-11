@@ -129,7 +129,7 @@ SWITCHES: dict[str, Switch] = {
         "auto-approved or auto-merged. On once lane S11's `platform` flag is set on the "
         "platform's own registrations and the inbox (S7) shows held runs",
     ),
-    # Schedule firings refused at create (lanes S6 and the repo index).
+    # Schedule firings refused at create (lanes S6, S10d and the repo index).
     "index_refresh_failed": Switch(
         code="index_refresh_failed",
         why="a repo-index-refresh firing whose every repository failed to queue ends refused "
@@ -167,6 +167,31 @@ SWITCHES: dict[str, Switch] = {
         "tenant's forge credential is missing or GitHub refused it, ends refused instead of "
         "failed with its refusals recorded. On once the refusals in such firings have been "
         "read and show only credentials that lack pull_requests access",
+    ),
+    "ci_flake_unreadable": Switch(
+        code="ci_flake_unreadable",
+        why="a ci-flake-hunter firing whose every repository's CI could not be read ends "
+        "refused instead of failed (lane S10c). On once the per-repository codes in its "
+        "detail have been read in the log and show only credentials lacking checks: read, "
+        "contents: read or issues: write",
+    ),
+    "cve_scan_unreadable": Switch(
+        code="cve_scan_unreadable",
+        why="a dependency-cve-refresh firing that submitted nothing because no repository's "
+        "image scan could be read for packages ends refused instead of succeeding empty. "
+        "The scan's table is only in its job log, which needs the GitHub App's Actions: "
+        "Read (docs/schedules.md §0.1 check 1). On once the App holds it, or the scan "
+        "writes its packages to its check run",
+    ),
+    # Lane S10f (docs/schedules.md §3.10): a docs-drift `fix: true` firing
+    # whose token the last probe read without push or pull-request rights.
+    # Off, the fix tasks are submitted and the worker fails them
+    # forge_read_only, as it does for any task.
+    "docs_drift_cannot_push": Switch(
+        code="docs_drift_cannot_push",
+        why="a docs-drift firing with fix true is refused when the last token probe read push "
+        "or open_pull_requests missing for a repository in scope. On once the token probes "
+        "(git_token_checks) have run for the repositories docs-drift schedules name",
     ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
