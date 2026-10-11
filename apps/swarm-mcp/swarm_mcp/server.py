@@ -1348,6 +1348,193 @@ TOOLS: list[dict[str, Any]] = [
             "required": ["run_id", "reason"],
         },
     },
+    # -- schedules and approvals (docs/schedules.md §7.2, lane S8) -----------
+    #
+    # The calls `sc schedules` / `sc approvals` make, through `schedules`. A
+    # schedule names a TYPE, never a backend (invariant 10); an approval sends
+    # the digest of what the developer was SHOWN, as `swarm_plan_approve` does.
+    {
+        "name": "swarm_schedule_types",
+        "description": (
+            "The schedule-type catalogue (docs/schedules.md §3), as your tenant sees "
+            "it: each type's name, description, params_schema, default and floor "
+            "gate, minimum interval, budget caps, the scopes you may create it in, "
+            "and `available` with `disabled_reason`. Read it before "
+            "swarm_schedule_create: it is the authority on which types this "
+            "deployment can run. Read-only."
+        ),
+        "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "swarm_schedules",
+        "description": (
+            "Your tenant's schedules, each with its state, cron in words, "
+            "next_run_at, last_firing, spend today (with `coverage: partial` when "
+            "an attempt's cost was never reported -- the figure is then a floor) "
+            "and pending approval count. With `id` (a schedule id or its name), "
+            "that one schedule with its last 50 firings, each with its work, cost "
+            "and dry-run output. Read-only. Another tenant's schedule answers as "
+            "missing."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string", "description": "A schedule id (sch_...) or name."}},
+        },
+    },
+    {
+        "name": "swarm_schedule_create",
+        "description": (
+            "Create a recurring schedule on your tenant's repositories. `type` is "
+            "one of the catalogue's twelve: `issue-sweep`, `issue-plan-only`, "
+            "`repo-index-refresh`, `observer`, `epic-triage`, `pr-shepherd`, "
+            "`ci-flake-hunter`, `dependency-cve-refresh`, `release-health`, "
+            "`docs-drift`, `cost-report`, `custom-prompt` -- which of them this "
+            "deployment can run now is swarm_schedule_types' `available`, and a "
+            "type that is not is refused with the available ones named. The type "
+            "chooses the work: NO IMAGE OR COMMAND IS ACCEPTED, nor a runner "
+            "profile, resources or a credential, at the top level or inside "
+            "`params`, and offering one sends nothing. `params` are the type's own "
+            "(its params_schema). `repos` are owner/repo names registered in your "
+            "tenant (scope `repos`, the default). The gate, budget and policy "
+            "default to the type's; `dry_run: true` makes every firing list what "
+            "it would do and create nothing. `gate.merge: auto` is refused here: "
+            "it is set only through the audited merge switch. WRITES: the "
+            "schedule fires on its cron as you -- say so before calling it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Unique in your tenant, at most 80 characters."},
+                "type": {"type": "string", "description": "A catalogue type's name."},
+                "cron": {"type": "string", "description": "Five fields, e.g. `0 9 * * 1-5`."},
+                "timezone": {"type": "string", "default": "UTC", "description": "An IANA zone."},
+                "scope": {"type": "string", "enum": ["repos", "all", "platform"], "default": "repos"},
+                "repos": {"type": "array", "items": {"type": "string"}, "description": "owner/repo names."},
+                "params": {"type": "object"},
+                "gate": {"type": "object"},
+                "budget": {"type": "object"},
+                "policy": {"type": "object"},
+                "dry_run": {"type": "boolean", "default": False},
+                "state": {"type": "string", "enum": ["enabled", "paused"], "default": "enabled"},
+            },
+            "required": ["name", "type", "cron"],
+        },
+    },
+    {
+        "name": "swarm_schedule_update",
+        "description": (
+            "Edit a schedule, carrying the `revision` you read (from "
+            "swarm_schedules): only the fields given change. A schedule edited "
+            "since is refused (`schedule_changed`) and nothing changes. A gate "
+            "below the type's default needs an admin; `gate.merge: auto` is "
+            "refused (`use_merge_switch`). `type` is not editable. No image or "
+            "command is accepted."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "description": "A schedule id (sch_...) or name."},
+                "revision": {"type": "integer", "minimum": 1},
+                "name": {"type": "string"},
+                "cron": {"type": "string"},
+                "timezone": {"type": "string"},
+                "scope": {"type": "string", "enum": ["repos", "all", "platform"]},
+                "repos": {"type": "array", "items": {"type": "string"}},
+                "params": {"type": "object"},
+                "gate": {"type": "object"},
+                "budget": {"type": "object"},
+                "policy": {"type": "object"},
+            },
+            "required": ["id", "revision"],
+        },
+    },
+    {
+        "name": "swarm_schedule_pause",
+        "description": (
+            "Pause a schedule: it makes no firing until resumed. Work it already "
+            "made runs on. `reason` is recorded in its audit."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "reason": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "swarm_schedule_resume",
+        "description": "Resume a paused schedule from its next slot; missed slots are not replayed.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "swarm_schedule_run_now",
+        "description": (
+            "Fire a schedule now (a `run_now` firing), under its gate's `run` "
+            "point, its overlap rule and its budget, as the schedule's owner. "
+            "With `dry_run: true` the firing lists what it would do and creates "
+            "nothing. Without it, it may SUBMIT WORK -- say so before calling it. "
+            "Answers the firing; a gate that holds it answers it "
+            "`awaiting_approval`, and it is then in swarm_approvals."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"id": {"type": "string"}, "dry_run": {"type": "boolean", "default": False}},
+            "required": ["id"],
+        },
+    },
+    {
+        "name": "swarm_approvals",
+        "description": (
+            "Your tenant's approval inbox: firings waiting to run, issue-run plans "
+            "(id `run:<run_id>`), merges, proposals, holds and specs, each with "
+            "its `digest` -- the evidence an approval must send back. `kind` "
+            "filters. Read-only; nothing waiting holds capacity."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "enum": ["run", "plan", "merge", "proposal", "spec", "hold"]},
+            },
+        },
+    },
+    {
+        "name": "swarm_schedule_approve",
+        "description": (
+            "Approve an inbox item. `digest` MUST be the digest of the item the "
+            "developer was SHOWN (from swarm_approvals) and agreed to -- a string, "
+            "or a merge's {head_sha, verdict} -- never read and approve in one go. "
+            "An item that changed since is refused (`approval_changed`, "
+            "`merge_changed`, `plan_changed`) and nothing is done. For an "
+            "issue-run plan (`run:<run_id>`) this is the same call as "
+            "swarm_plan_approve. `confirm` is a one-person tenant's typed "
+            "confirmation of its own hold."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "approval_id": {"type": "string"},
+                "digest": {"type": ["string", "object"], "description": "The digest of the item shown."},
+                "confirm": {"type": "string"},
+            },
+            "required": ["approval_id", "digest"],
+        },
+    },
+    {
+        "name": "swarm_schedule_reject",
+        "description": (
+            "Reject an inbox item with a reason: a firing creates nothing, a plan "
+            "ends REJECTED, a merge does not happen. Anyone in the tenant may "
+            "reject."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {"approval_id": {"type": "string"}, "reason": {"type": "string"}},
+            "required": ["approval_id", "reason"],
+        },
+    },
     # -- onboarding (#780, OB9) ---------------------------------------------
     #
     # The calls `sc setup` and `sc access` make, for /sc:setup. None takes or
@@ -3061,6 +3248,80 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     return json.dumps(runs.summary(client, run), indent=2, default=str)
 
 
+_SCHEDULE_TOOLS = frozenset(
+    {"swarm_schedule_types", "swarm_schedules", "swarm_schedule_create", "swarm_schedule_update",
+     "swarm_schedule_pause", "swarm_schedule_resume", "swarm_schedule_run_now", "swarm_approvals",
+     "swarm_schedule_approve", "swarm_schedule_reject"}
+)
+
+#: The edit fields `swarm_schedule_update` passes through as given.
+_SCHEDULE_EDIT_FIELDS = ("name", "cron", "timezone", "params", "gate", "budget", "policy")
+
+
+def _schedule_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
+    """The schedule and approval tools (docs/schedules.md §7.2).
+
+    Refusals are `SwarmError`s worded by `schedules.refusal` and answered
+    through `_tool_error_text`. Nothing here reads the digest it approves
+    with: `swarm_schedule_approve` takes it from the caller, who was shown it.
+    """
+    from . import schedules
+
+    def dumps(value: Any) -> str:
+        return json.dumps(value, indent=2, default=str)
+
+    if name == "swarm_schedule_types":
+        return dumps(schedules.types(client))
+    if name == "swarm_approvals":
+        listing = schedules.inbox(client, args.get("kind") or None)
+        step = schedules.next_step(listing)
+        return dumps({**listing, "next": step} if step else listing)
+    if name == "swarm_schedule_approve":
+        return dumps(schedules.approve(client, _text_arg(args, "approval_id", name),
+                                       digest=args.get("digest"), confirm=args.get("confirm") or None))
+    if name == "swarm_schedule_reject":
+        return dumps(schedules.reject(client, _text_arg(args, "approval_id", name),
+                                      reason=_text_arg(args, "reason", name)))
+    if name == "swarm_schedule_create":
+        body: dict[str, Any] = {
+            "name": _text_arg(args, "name", name),
+            "type": _text_arg(args, "type", name),
+            "cron": _text_arg(args, "cron", name),
+            "timezone": args.get("timezone") or "UTC",
+            "state": args.get("state") or "enabled",
+        }
+        for key in ("params", "gate", "budget", "policy"):
+            if args.get(key) is not None:
+                if not isinstance(args[key], dict):
+                    raise SwarmError(f"{name} takes `{key}` as an object. Nothing was sent")
+                body[key] = args[key]
+        if _flag(args, "dry_run"):
+            body["policy"] = {**(body.get("policy") or {}), "dry_run": True}
+        # Refused before `repos` is resolved, so a refusal reads nothing either.
+        schedules.refuse_backend_fields(body, name)
+        body["scope"] = schedules.scope(client, args.get("scope"), args.get("repos"))
+        return dumps(schedules.create(client, body))
+    if name == "swarm_schedules" and not args.get("id"):
+        return dumps(schedules.listing(client))
+    sid = schedules.resolve(client, args.get("id"))
+    if name == "swarm_schedules":
+        return dumps(schedules.schedule(client, sid))
+    if name == "swarm_schedule_update":
+        revision = args.get("revision")
+        if isinstance(revision, bool) or not isinstance(revision, int):
+            raise SwarmError(f"{name} needs the `revision` it read, as an integer. Nothing was sent")
+        edit: dict[str, Any] = {"revision": revision}
+        edit.update({k: args[k] for k in _SCHEDULE_EDIT_FIELDS if args.get(k) is not None})
+        if args.get("scope") is not None or args.get("repos") is not None:
+            edit["scope"] = schedules.scope(client, args.get("scope"), args.get("repos"))
+        return dumps(schedules.update(client, sid, edit))
+    if name == "swarm_schedule_pause":
+        return dumps(schedules.pause(client, sid, args.get("reason") or None))
+    if name == "swarm_schedule_resume":
+        return dumps(schedules.resume(client, sid))
+    return dumps(schedules.run_now(client, sid, dry_run=_flag(args, "dry_run")))
+
+
 _SETUP_TOOLS = frozenset(
     {"swarm_setup_status", "swarm_setup_workspace", "swarm_setup_connect", "swarm_setup_orgs",
      "swarm_setup_repos", "swarm_setup_grant", "swarm_setup_revoke", "swarm_setup_verify",
@@ -3855,6 +4116,9 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
 
     if name in _RUN_TOOLS:
         return _run_tool(client, name, args)
+
+    if name in _SCHEDULE_TOOLS:
+        return _schedule_tool(client, name, args)
 
     if name in _SETUP_TOOLS:
         return _setup_tool(client, name, args)

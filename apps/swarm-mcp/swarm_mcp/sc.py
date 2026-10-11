@@ -3615,6 +3615,163 @@ def cmd_plan_reject(client: SwarmClient, args, out) -> int:
     return EXIT_OK
 
 
+# --------------------------------------------------------------------------
+# Schedules and approvals (docs/schedules.md §7.3, lane S8)
+# --------------------------------------------------------------------------
+#
+# `sc schedules`, `show` and `preview` read; `new`, `pause`, `resume` and `run`
+# write, and so do `sc approvals approve|reject`. An approval sends the digest
+# of the item this command PRINTED, after `approve` is typed back, exactly as
+# `sc plan approve` does -- or `--digest`, for an item already shown.
+
+
+def _json_out(value: Any, out) -> int:
+    out.write(json.dumps(value, indent=2, default=str) + "\n")
+    return EXIT_OK
+
+
+def cmd_schedules(client: SwarmClient, args, out) -> int:
+    from . import schedules
+
+    data = schedules.listing(client)
+    if args.json:
+        return _json_out(data, out)
+    _emit(schedules.schedules_lines(data, _run_style(args, out)), out)
+    return EXIT_OK
+
+
+def cmd_schedules_show(client: SwarmClient, args, out) -> int:
+    from . import schedules
+
+    data = schedules.schedule(client, schedules.resolve(client, args.schedule))
+    if args.json:
+        return _json_out(data, out)
+    _emit(schedules.schedule_lines(data, _run_style(args, out)), out)
+    return EXIT_OK
+
+
+def cmd_schedules_new(client: SwarmClient, args, out) -> int:
+    from . import schedules
+
+    body: dict[str, Any] = {
+        "name": args.name or f"{args.type} {', '.join(args.repo)}"[:80],
+        "type": args.type,
+        "cron": args.cron,
+        "timezone": args.tz or "UTC",
+    }
+    params = schedules.parse_params(args.param)
+    if params:
+        body["params"] = params
+    if args.dry_run:
+        body["policy"] = {"dry_run": True}
+    schedules.refuse_backend_fields(body, "sc schedules new")
+    body["scope"] = schedules.scope(client, "repos", args.repo)
+    data = schedules.create(client, body)
+    if args.json:
+        return _json_out(data, out)
+    style = _run_style(args, out)
+    verb = "created" if data.get("created", True) else "already created by this request"
+    lines = [f"schedule {verb}" + (": dry run, every firing creates nothing" if args.dry_run else "")]
+    _emit(lines + schedules.schedule_lines({"schedule": data.get("schedule"), "firings": []}, style), out)
+    return EXIT_OK
+
+
+def _schedule_verb(client: SwarmClient, args, out, call) -> int:
+    from . import schedules
+
+    data = call(schedules, schedules.resolve(client, args.schedule))
+    if args.json:
+        return _json_out(data, out)
+    style = _run_style(args, out)
+    if isinstance(data.get("firing"), dict):
+        _emit([render.section("firing", "", style), schedules.firing_line(data["firing"], style)], out)
+    else:
+        _emit(schedules.schedule_lines({"schedule": data.get("schedule"), "firings": []}, style), out)
+    return EXIT_OK
+
+
+def cmd_schedules_pause(client: SwarmClient, args, out) -> int:
+    return _schedule_verb(client, args, out, lambda s, sid: s.pause(client, sid, args.reason))
+
+
+def cmd_schedules_resume(client: SwarmClient, args, out) -> int:
+    if args.reason:
+        # §7.3 spells `pause|resume ... [--reason]`; the resume route records
+        # none, so the reason is said to be dropped rather than silently lost.
+        sys.stderr.write("sc: the API records a reason on pause only; resuming without it\n")
+    return _schedule_verb(client, args, out, lambda s, sid: s.resume(client, sid))
+
+
+def cmd_schedules_run(client: SwarmClient, args, out) -> int:
+    return _schedule_verb(client, args, out, lambda s, sid: s.run_now(client, sid, dry_run=args.dry_run))
+
+
+def cmd_schedules_preview(client: SwarmClient, args, out) -> int:
+    from . import schedules
+
+    data = schedules.preview(client, args.cron, args.tz)
+    if args.json:
+        return _json_out(data, out)
+    _emit(schedules.preview_lines(data, _run_style(args, out)), out)
+    return EXIT_OK
+
+
+def cmd_approvals(client: SwarmClient, args, out) -> int:
+    from . import schedules
+
+    data = schedules.inbox(client, args.kind)
+    if args.json:
+        return _json_out(data, out)
+    _emit(schedules.inbox_lines(data, _run_style(args, out)), out)
+    return EXIT_OK
+
+
+def _shown_approval_digest(client: SwarmClient, args, out, verb: str) -> Any:
+    """The digest of the item this command PRINTS, after `verb` is typed back.
+
+    With `--digest`, that digest, unprinted. SWARM_ASSUME_YES is ignored: a
+    decision is typed, and no terminal to type at means nothing is sent.
+    """
+    from . import schedules
+
+    if args.digest:
+        return args.digest
+    item = schedules.approval(client, args.approval_id).get("approval") or {}
+    if item.get("state") != "pending":
+        raise SwarmError(f"approval {args.approval_id} is {item.get('state')}; only a pending "
+                         f"item can be {verb}d. Nothing was sent")
+    _emit(schedules.approval_lines(item, _run_style(args, out), how=False), out)
+    out.flush()
+    if os.environ.get("SWARM_ASSUME_YES", "").strip():
+        sys.stderr.write(f"sc: SWARM_ASSUME_YES is ignored here; an approval is {verb}d by typing\n")
+    shown = schedules._digest_text(item.get("digest"))
+    typed = _ask(f"{verb} {args.approval_id} (digest {shown})? Type {verb!r} to confirm: ")
+    if typed.strip() != verb:
+        raise SwarmError(f"{verb!r} was not typed; nothing was sent")
+    return item.get("digest")
+
+
+def cmd_approvals_approve(client: SwarmClient, args, out) -> int:
+    from . import schedules
+
+    digest = _shown_approval_digest(client, args, out, "approve")
+    data = schedules.approve(client, args.approval_id, digest=digest, confirm=args.confirm)
+    if args.json:
+        return _json_out(data, out)
+    _emit(schedules.approval_lines(data.get("approval") or {}, _run_style(args, out), how=False), out)
+    return EXIT_OK
+
+
+def cmd_approvals_reject(client: SwarmClient, args, out) -> int:
+    from . import schedules
+
+    data = schedules.reject(client, args.approval_id, reason=args.reason)
+    if args.json:
+        return _json_out(data, out)
+    _emit(schedules.approval_lines(data.get("approval") or {}, _run_style(args, out), how=False), out)
+    return EXIT_OK
+
+
 def _edit_in_editor(plan: dict[str, Any]) -> str:
     """The plan, as the developer left it in $VISUAL or $EDITOR."""
     import shlex
@@ -4004,6 +4161,67 @@ def build_parser() -> argparse.ArgumentParser:
     pr.add_argument("--digest", help="the plan_digest you were shown; skips the prompt")
     _common(pr, root=False)
     pr.set_defaults(func=cmd_plan_reject)
+
+    # -- schedules (docs/schedules.md §7.3): the list, `show` and `preview`
+    # read; `new`, `pause`, `resume`, `run` and the approval verbs WRITE
+    sh = sub.add_parser("schedules", help="your tenant's schedules, like the console's table")
+    _common(sh, root=False)
+    sh.set_defaults(func=cmd_schedules)
+    sh_sub = sh.add_subparsers(dest="schedules_command")
+    shs = sh_sub.add_parser("show", help="one schedule and its last 10 firings")
+    shs.add_argument("schedule", metavar="name|id")
+    _common(shs, root=False)
+    shs.set_defaults(func=cmd_schedules_show)
+    shn = sh_sub.add_parser("new", help="create a schedule: new <type> --repo owner/repo --cron \"...\"")
+    shn.add_argument("type", help="a type from the catalogue (no image or command is accepted)")
+    shn.add_argument("--repo", action="append", required=True, metavar="owner/repo",
+                     help="a repository registered in your tenant; repeat for several")
+    shn.add_argument("--cron", required=True, help='five fields, e.g. "0 9 * * 1-5"')
+    shn.add_argument("--tz", default=None, help="an IANA zone (default UTC)")
+    shn.add_argument("--param", action="append", default=None, metavar="k=v",
+                     help="one of the type's params; a JSON value (5, true) is read as JSON")
+    shn.add_argument("--name", default=None, help="default: '<type> <repos>'")
+    shn.add_argument("--dry-run", action="store_true",
+                     help="every firing lists what it would do and creates nothing")
+    _common(shn, root=False)
+    shn.set_defaults(func=cmd_schedules_new)
+    for verb, handler, text in (
+        ("pause", cmd_schedules_pause, "pause a schedule: no firing until resumed"),
+        ("resume", cmd_schedules_resume, "resume a paused schedule from its next slot"),
+    ):
+        shv = sh_sub.add_parser(verb, help=text)
+        shv.add_argument("schedule", metavar="name|id")
+        shv.add_argument("--reason", default=None, help="recorded in the schedule's audit (pause)")
+        _common(shv, root=False)
+        shv.set_defaults(func=handler)
+    shr = sh_sub.add_parser("run", help="fire a schedule now, under its gate's run point")
+    shr.add_argument("schedule", metavar="name|id")
+    shr.add_argument("--dry-run", action="store_true", help="list what it would do; create nothing")
+    _common(shr, root=False)
+    shr.set_defaults(func=cmd_schedules_run)
+    shp = sh_sub.add_parser("preview", help="a cron in words and its next slots")
+    shp.add_argument("cron")
+    shp.add_argument("--tz", default=None, help="an IANA zone (default UTC)")
+    _common(shp, root=False)
+    shp.set_defaults(func=cmd_schedules_preview)
+
+    ap_ = sub.add_parser("approvals", help="the approval inbox; then approve|reject <id>")
+    ap_.add_argument("--kind", default=None, choices=("run", "plan", "merge", "proposal", "spec", "hold"))
+    _common(ap_, root=False)
+    ap_.set_defaults(func=cmd_approvals)
+    ap_sub = ap_.add_subparsers(dest="approvals_command")
+    apa = ap_sub.add_parser("approve", help="approve the item printed (type `approve`), or --digest")
+    apa.add_argument("approval_id")
+    apa.add_argument("--digest", help="the digest you were shown; skips the prompt")
+    apa.add_argument("--confirm", default=None,
+                     help="a one-person tenant's typed confirmation of its own hold")
+    _common(apa, root=False)
+    apa.set_defaults(func=cmd_approvals_approve)
+    apr = ap_sub.add_parser("reject", help="reject an item, with a reason")
+    apr.add_argument("approval_id")
+    apr.add_argument("--reason", required=True, help="recorded on the item")
+    _common(apr, root=False)
+    apr.set_defaults(func=cmd_approvals_reject)
 
     cx = sub.add_parser(
         "context", help="the deployments this machine knows: add, use, list, remove"
