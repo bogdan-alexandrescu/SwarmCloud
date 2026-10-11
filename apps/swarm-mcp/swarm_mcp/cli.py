@@ -1323,10 +1323,13 @@ def cmd_profiles(_client, args) -> int:
         # platform's `/v1/runtimes` instead).
         print(json.dumps({"catalogue_source": catalogue.bridge_copy_source(), "profiles": entries}, indent=2))
         return EXIT_OK
+    # As wide as the longest name, so `claude-code-browser` (contract request
+    # 67) does not push its own row's columns out of line.
+    width = max([12, *(len(entry["name"]) for entry in entries)])
     for entry in entries:
         mark = "ok  " if entry["available"] else "--  "
         print(
-            f"  {mark} {entry['name']:<12} {entry['backend']:<15} "
+            f"  {mark} {entry['name']:<{width}} {entry['backend']:<15} "
             f"{entry['resource_class']:<9} {entry['cpu']:g} cpu / "
             f"{entry['memory_gib']} GiB  timeout {entry['timeout_seconds']}s"
         )

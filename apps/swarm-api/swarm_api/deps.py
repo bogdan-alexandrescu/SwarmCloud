@@ -44,6 +44,7 @@ from .inspect import InspectionService
 from .metrics import ApiMetrics
 from .objects import ObjectReader, build_object_reader
 from .outcomes import Outcomes
+from .purge import ArtifactPurger, build_artifact_purger
 from .ratelimit import TokenBucketLimiter
 from .rollup import WorkflowRollups
 from .service import SubmissionService
@@ -98,6 +99,10 @@ class AppContext:
     #: Asks the reconciler to stop a cancelled task's execution (#627). Builds
     #: no client until a cancel needs it; tests inject a recorder.
     executions: ExecutionCanceller = NoExecutionCanceller()
+    #: The artifact bucket's DELETE side, held by `POST /v1/admin/history:purge`
+    #: and nothing else (purge.py); `inspection` keeps the read-only reader.
+    #: None when no bucket is configured. Builds no client until used.
+    artifact_purger: ArtifactPurger | None = None
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:
@@ -152,6 +157,9 @@ def build_context(
     forge: GitHubIssues | None = None,
     forge_writer: GitHubWriter | None = None,
     executions: ExecutionCanceller | None = None,
+    # The purge's bucket deleter (purge.py). `_MISSING` means "from the
+    # settings", as for `objects`; tests inject an in-memory one.
+    artifact_purger: ArtifactPurger | None | object = _MISSING,
 ) -> AppContext:
     settings = settings or ApiSettings.from_env()
     db = db if db is not None else build_firestore(settings)
@@ -235,6 +243,13 @@ def build_context(
         forge=forge or GitHubIssues(),
         forge_writer=forge_writer,
         executions=executions or _execution_canceller(settings),
+        artifact_purger=(
+            build_artifact_purger(
+                bucket=settings.core.artifact_bucket, project_id=settings.project_id
+            )
+            if artifact_purger is _MISSING
+            else artifact_purger  # type: ignore[arg-type]
+        ),
         now=now,
     )
 

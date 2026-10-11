@@ -586,6 +586,17 @@ index runs on it; it declares what `claude-code` does:
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
 <!-- /runner-inputs:indexer -->
 
+`claude-code-browser` is `claude-code` on `agent-runtime-browser`, Playwright
+and Chromium beside the agent, so it can render and screenshot pages: visual
+QA, reproducing a UI bug (contract request 67). It costs a `browser` resource
+class and runs on GKE Autopilot; it declares what `claude-code` does:
+
+<!-- runner-inputs:claude-code-browser generated from RUNNER_PROFILES["claude-code-browser"].inputs; tests/unit/mcp/test_runner_input_prose.py fails when it differs -->
+| input | kind and bounds | what the claude-code-browser runner does with it |
+|---|---|---|
+| `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+<!-- /runner-inputs:claude-code-browser -->
+
 `--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
 on a step, points a `claude-code` step at an issue of its repository. The
 issue's text is data for the agent: the worker scrubs it of every secret the

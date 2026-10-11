@@ -1385,6 +1385,29 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         timeout_seconds=7200,
         inputs=_CLI_AGENT_INPUTS,
     ),
+    # CONTRACT REQUEST 67, accepted by the owner 2026-10-11: claude-code on
+    # agent-runtime-browser (Playwright + Chromium), so an agent can render
+    # and screenshot pages -- visual QA, reproducing a UI bug -- which
+    # `browser`, a scripted runner that needs input.url or actions, cannot,
+    # and which claude-code cannot either: agent-runtime-base has no Chromium.
+    # claude-code in every field but its name, its image and, because of the
+    # image, its resource class: `browser`'s 16 GiB, because the 2 GiB /dev/shm
+    # tmpfs Chromium needs is charged to the memory limit. GKE Autopilot as
+    # claude-code is, and as the browser image must be: Cloud Run cannot size
+    # /dev/shm. A caller picks it by name and sends no image (invariant 10).
+    # Rolling back is deleting this entry and its mirrors.
+    "claude-code-browser": RunnerProfile(
+        name="claude-code-browser",
+        image="agent-runtime-browser",
+        resource_class="browser",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_INPUTS,
+    ),
 }
 
 
