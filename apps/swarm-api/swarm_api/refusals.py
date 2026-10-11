@@ -129,7 +129,7 @@ SWITCHES: dict[str, Switch] = {
         "auto-approved or auto-merged. On once lane S11's `platform` flag is set on the "
         "platform's own registrations and the inbox (S7) shows held runs",
     ),
-    # Schedule firings refused at create (lanes S6 and the repo index).
+    # Schedule firings refused at create (lanes S6, S10d and the repo index).
     "index_refresh_failed": Switch(
         code="index_refresh_failed",
         why="a repo-index-refresh firing whose every repository failed to queue ends refused "
@@ -140,6 +140,14 @@ SWITCHES: dict[str, Switch] = {
         code="observer_file_issues_unavailable",
         why="an observer schedule with file_issues true is refused because swarm-api cannot "
         "create an issue yet. On once no stored observer schedule sets file_issues",
+    ),
+    "cve_scan_unreadable": Switch(
+        code="cve_scan_unreadable",
+        why="a dependency-cve-refresh firing that submitted nothing because no repository's "
+        "image scan could be read for packages ends refused instead of succeeding empty. "
+        "The scan's table is only in its job log, which needs the GitHub App's Actions: "
+        "Read (docs/schedules.md §0.1 check 1). On once the App holds it, or the scan "
+        "writes its packages to its check run",
     ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
