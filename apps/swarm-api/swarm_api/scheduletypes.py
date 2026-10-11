@@ -181,6 +181,14 @@ class ObserverParams(Params):
         default_factory=lambda: list(OBSERVER_FOCUS), min_length=1
     )
     file_issues: StrictBool = False
+    #: The repository the report's epic is filed in (owner decision
+    #: 2026-10-11: the schedule names it, because the report's task has no
+    #: repository). Required when `file_issues` is true, and then one of the
+    #: tenant's registrations the owner can write -- checked at create, at
+    #: edit and again at fire time by `schedtypes/observer.py`, not here: a
+    #: model refusal would also refuse a stored schedule at fire time, where
+    #: the answer is to file nothing, not to fail the report.
+    file_issues_repo_id: str | None = Field(default=None, pattern=r"^repo_[0-9a-f]{16}$")
 
     @field_validator("focus")
     @classmethod

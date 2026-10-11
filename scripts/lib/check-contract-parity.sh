@@ -234,7 +234,7 @@ fi
 # 5. The frozen catalogue and the task lifecycle, restated in TypeScript.
 # --------------------------------------------------------------------------
 # `apps/swarm-ui/src/types.ts` hand-copies the unit weights, the twelve task
-# states, the nine park reasons, the six provider states, the end causes and
+# states, the park reasons, the six provider states, the end causes and
 # the pool families, and the child-task fields and cancel class (requests 14,
 # 40, 41, item 9).
 # It has to: the browser cannot import Python, and the alternative to a bundled
@@ -1895,6 +1895,39 @@ else:
             emit("OK", "tenants.*.service_accounts shape",
                  "%d terraform validation(s) accept exactly the shape "
                  "identity.SERVICE_ACCOUNT_EMAIL matches" % len(sa_patterns))
+
+# -- 15. no live-browser profile in the Cloud Run fallback (request 71) ----
+# `RunnerProfile.live_browser` is valid only on a GKE_AUTOPILOT profile, and
+# the frozen dataclass refuses anything else. The Cloud Run fallback list in
+# terraform/infra/locals.tf is the one place that can still put such a profile
+# on Cloud Run: a fallback would silently run a profile whose display sidecar
+# does not exist there, so its hand-off could never work
+# (docs/design/live-browser.md section 8.1). Read from the frozen catalogue, so
+# a second live profile is covered the day it is added.
+live_profiles = sorted(
+    name for name, p in frozen_profiles.RUNNER_PROFILES.items()
+    if getattr(p, "live_browser", False)
+)
+fallback = re.search(r"^\s*cloud_run_fallback_profiles\s*=\s*\[([^\]]*)\]",
+                     TEXT["terraform/infra/locals.tf"], re.M)
+if not live_profiles:
+    emit("MISSING", "live_browser profiles",
+         "no profile in the frozen catalogue sets live_browser, so there is "
+         "nothing for the fallback list to be checked against")
+elif fallback is None:
+    emit("MISSING", "cloud_run_fallback_profiles",
+         "terraform/infra/locals.tf no longer declares cloud_run_fallback_profiles "
+         "as a list literal; point this check at where it moved")
+else:
+    listed = re.findall(r"\"([^\"]+)\"", fallback.group(1))
+    leaked = sorted(set(live_profiles) & set(listed))
+    if leaked:
+        emit("DRIFT", "cloud_run_fallback_profiles",
+             "lists live-browser profile(s) %s, which only run on GKE_AUTOPILOT"
+             % " ".join(leaked))
+    else:
+        emit("OK", "cloud_run_fallback_profiles",
+             "names none of the live-browser profiles %s" % " ".join(live_profiles))
 
 print("\n".join(REPORT))
 PY

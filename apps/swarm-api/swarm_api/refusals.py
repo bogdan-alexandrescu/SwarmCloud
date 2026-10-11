@@ -129,17 +129,59 @@ SWITCHES: dict[str, Switch] = {
         "auto-approved or auto-merged. On once lane S11's `platform` flag is set on the "
         "platform's own registrations and the inbox (S7) shows held runs",
     ),
-    # Schedule firings refused at create (lanes S6 and the repo index).
+    # Schedule firings refused at create (lanes S6, S10d and the repo index).
     "index_refresh_failed": Switch(
         code="index_refresh_failed",
         why="a repo-index-refresh firing whose every repository failed to queue ends refused "
         "instead of succeeding empty. On once the per-repository codes in its detail have "
         "been read in the log and show only deleted or unreadable branches",
     ),
-    "observer_file_issues_unavailable": Switch(
-        code="observer_file_issues_unavailable",
-        why="an observer schedule with file_issues true is refused because swarm-api cannot "
-        "create an issue yet. On once no stored observer schedule sets file_issues",
+    "observer_file_issues_repo_required": Switch(
+        code="observer_file_issues_repo_required",
+        why="an observer schedule with file_issues true names no file_issues_repo_id, the "
+        "repository its epic is filed in (owner decision 2026-10-11). Off, it is created and "
+        "files nothing. On once no stored observer schedule sets file_issues without one",
+    ),
+    "observer_file_issues_repo_not_registered": Switch(
+        code="observer_file_issues_repo_not_registered",
+        why="an observer schedule's file_issues_repo_id is not a registration of its tenant. "
+        "Off, it is created and files nothing: an unregistered repository is never written to. "
+        "On with observer_file_issues_repo_required",
+    ),
+    "observer_file_issues_repo_not_writable": Switch(
+        code="observer_file_issues_repo_not_writable",
+        why="the owner of an observer schedule cannot write the repository file_issues_repo_id "
+        "names. Off, it is created and files nothing there. On with "
+        "observer_file_issues_repo_required",
+    ),
+    "epic_triage_unreadable": Switch(
+        code="epic_triage_unreadable",
+        why="an epic-triage firing whose every repository failed to list its epics with "
+        "the tenant's forge credential, and that applied and took in nothing, ends refused "
+        "instead of succeeding empty. On once the per-repository codes in the log show only "
+        "credentials that really lack issues: read",
+    ),
+    "pr_shepherd_forge_refused": Switch(
+        code="pr_shepherd_forge_refused",
+        why="a pr-shepherd firing that could read no repository in scope, because the "
+        "tenant's forge credential is missing or GitHub refused it, ends refused instead of "
+        "failed with its refusals recorded. On once the refusals in such firings have been "
+        "read and show only credentials that lack pull_requests access",
+    ),
+    "ci_flake_unreadable": Switch(
+        code="ci_flake_unreadable",
+        why="a ci-flake-hunter firing whose every repository's CI could not be read ends "
+        "refused instead of failed (lane S10c). On once the per-repository codes in its "
+        "detail have been read in the log and show only credentials lacking checks: read, "
+        "contents: read or issues: write",
+    ),
+    "cve_scan_unreadable": Switch(
+        code="cve_scan_unreadable",
+        why="a dependency-cve-refresh firing that submitted nothing because no repository's "
+        "image scan could be read for packages ends refused instead of succeeding empty. "
+        "The scan's table is only in its job log, which needs the GitHub App's Actions: "
+        "Read (docs/schedules.md §0.1 check 1). On once the App holds it, or the scan "
+        "writes its packages to its check run",
     ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
