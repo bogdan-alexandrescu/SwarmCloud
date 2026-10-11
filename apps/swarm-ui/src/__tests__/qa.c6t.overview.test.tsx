@@ -205,13 +205,16 @@ describe('G1-13: a disabled tile shows its whole reason, two lines before it cut
     host.innerHTML = '<div class="ov-headroom"><div class="ov-hps"><div class="ov-hp is-off"><span class="ov-idc">x</span><b class="ov-hp-off">disabled</b><small>r</small></div></div></div>'
     document.body.appendChild(host)
     const small = host.querySelector('.ov-hp.is-off small')!
-    for (const env of [WIDE, PHONE]) {
-      expect(painted(small, 'white-space', env)).not.toBe('nowrap')
-      expect(painted(small, '-webkit-line-clamp', env)).toBe('2')
-      expect(painted(small, 'display', env)).toBe('-webkit-box')
-      expect(painted(small, '-webkit-box-orient', env)).toBe('vertical')
-      expect(painted(small, 'overflow', env)).toBe('hidden')
-    }
+    for (const env of [WIDE, PHONE]) expect(painted(small, 'white-space', env)).not.toBe('nowrap')
+    expect(painted(small, '-webkit-line-clamp', WIDE)).toBe('2')
+    expect(painted(small, 'display', WIDE)).toBe('-webkit-box')
+    expect(painted(small, '-webkit-box-orient', WIDE)).toBe('vertical')
+    expect(painted(small, 'overflow', WIDE)).toBe('hidden')
+    // WHOLE ON A PHONE (live QA OV-13, 2026-10-11): the cut text was only in
+    // a `title`, which a touch screen cannot open.
+    // MUTATION: drop the phone block's unclamp in overview.css.
+    expect(painted(small, '-webkit-line-clamp', PHONE)).not.toBe('2')
+    expect(painted(small, 'overflow', PHONE)).toBe('visible')
     // An available tile's one-line foot is unchanged.
     host.querySelector('.ov-hp')!.classList.remove('is-off')
     expect(painted(host.querySelector('.ov-hp small')!, 'white-space', WIDE)).toBe('nowrap')
