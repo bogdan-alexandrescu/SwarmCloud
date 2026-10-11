@@ -51,7 +51,12 @@ from . import gitidentity
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import stamp as stamp_ci_fix
-from .continuation import NamedPull, resolve_continuation, resolve_merge_pr
+from .continuation import (
+    NamedPull,
+    resolve_continuation,
+    resolve_merge_pr,
+    with_merge_pr_label,
+)
 from .access import MODES, grant_id_for, org_id_for, via_token
 from .errors import Forbidden, NotFound, ValidationFailed
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
@@ -631,6 +636,10 @@ class SubmissionService:
             # supplies the repository they require. A continuation-scoped
             # caller was refused above: `merge_pr` carries no continues_task.
             named_pull = self._named_pull(tenant, spec) if spec.merge_pr else None
+            # A merge workflow its caller left nameless is stored as "Merge PR
+            # <number>" (owner report 2026-10-11), before any step task copies
+            # the workflow's metadata.
+            spec = with_merge_pr_label(spec)
             # Before the dispatch options, because a continuation supplies the
             # repository they require (#263, see continuation.py).
             # A continuation-scoped account continues a `direct-pr` task or an
