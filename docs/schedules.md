@@ -430,8 +430,9 @@ document already there is the duplicate that never happens twice.
 | `state` | §1.4 |
 | `params_digest` | sha256 of the resolved `{type, scope (resolved repo list), params, gate, budget}` the firing ran with. A run approval approves this digest (§4.5) |
 | `work` | `[{kind: issue_run \| task \| workflow \| api_action, id, repo_id}]`, what it created. A sweep creates several |
-| `skip` | `{code, detail}` when nothing was created: `OVERLAP`, `BUDGET_EXHAUSTED`, `MISSED_SLOT`, `OWNER_NOT_MEMBER`, `REPOSITORY_NOT_GRANTED`, `WORKSPACE_NOT_READY`, `NO_CLAUDE_ACCOUNT`, `SCHEDULES_DISABLED` or `DRY_RUN` |
+| `skip` | `{code, detail}` when nothing was created: `OVERLAP`, `BUDGET_EXHAUSTED`, `MISSED_SLOT`, `OWNER_NOT_MEMBER`, `REPOSITORY_NOT_GRANTED`, `WORKSPACE_NOT_READY`, `NO_CLAUDE_ACCOUNT`, `SCHEDULES_DISABLED`, `DRY_RUN` or `NOTHING_STARTED`. A firing that ran and created nothing ends `succeeded` but is never silent: `NOTHING_STARTED` carries the executor's `reason` (an issue sweep's `no_room` with its `bound`, `repositories_not_read`, `no_eligible_issue`, `no_open_issue`, `no_repository`), or `executor_created_nothing` when it gave none. Before #1133 such a firing had `work: []` and no skip, indistinguishable from one whose every read had failed |
 | `dry_run` | what a dry run would have created, as data (§2.8) |
+| `selection` | on a real firing whose executor explains itself (`issue-sweep`, `issue-plan-only`): the dry run's answer for the selection it actually made, plus `started` and `start_failures`, so a firing can be compared with its dry run after the fact |
 | `approval_id` | set while a run approval is pending |
 | `outcome` | `succeeded`, `failed`, `cancelled`, `refused`, `skipped`, `expired`, `rejected` or `partial`, derived from its work (§2.9) |
 | `cost` | `{reported_usd, unreported_attempts}`, summed over the work's attempts (§4.3) |
