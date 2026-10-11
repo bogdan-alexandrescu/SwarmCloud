@@ -111,6 +111,7 @@ from .validation import (
     IssueRef,
     is_merge_step,
     merge_repository,
+    workflow_label,
 )
 
 #: The shape `swarm_common.models.new_id("task")` mints. Checked here rather
@@ -305,6 +306,27 @@ class NamedPull:
     head_sha: str
     #: The default branch the tenant registered, when it registered one.
     base: str | None = None
+
+
+#: The name a `merge_pr` workflow is stored under when its caller gave none
+#: (owner report 2026-10-11): without it Claude Code titled the run, and the
+#: console listed it, by its bare `wf_` id. No "#" before the number, because
+#: GitHub can read "#N" in some places as a reference to that issue.
+MERGE_PR_LABEL = "Merge PR {number}"
+
+
+def with_merge_pr_label(spec: WorkflowCreate) -> WorkflowCreate:
+    """`spec` with `metadata.unit` = "Merge PR <number>" when it is a `merge_pr`
+    workflow whose metadata holds no label or title, else `spec` unchanged.
+
+    So a merge workflow submitted from any client -- the plugin, the stranded-PR
+    redrive, a bare `curl` -- is never nameless. A caller's own `unit` or `title`
+    is kept as given: this only fills the gap.
+    """
+    if spec.merge_pr is None or workflow_label(spec.metadata) is not None:
+        return spec
+    metadata = {**spec.metadata, "unit": MERGE_PR_LABEL.format(number=spec.merge_pr.number)}
+    return spec.model_copy(update={"metadata": metadata})
 
 
 def _check_merge_pr_shape(spec: WorkflowCreate) -> None:

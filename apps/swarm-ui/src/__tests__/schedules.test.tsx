@@ -26,6 +26,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { Routed } from './screenroute'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { SECTIONS, fromAddress, canonical, spineOf } from '../App'
@@ -105,7 +106,7 @@ async function mountList(routes: Routes) {
   vi.resetModules()
   const { SchedulesScreen } = await import('../Schedules')
   const go = vi.fn()
-  const utils = render(<SchedulesScreen view={null} go={go} />)
+  const utils = render(<Routed Screen={SchedulesScreen} section="automate/schedules" start={null} spy={go} />)
   await screen.findByRole('heading', { name: 'Schedules', level: 1 }, WAIT)
   return { ...utils, calls, go }
 }
@@ -116,7 +117,7 @@ async function mountDetail(routes: Routes) {
   vi.resetModules()
   const { SchedulesScreen } = await import('../Schedules')
   const go = vi.fn()
-  const utils = render(<SchedulesScreen view="schedule=sch_a" go={go} />)
+  const utils = render(<Routed Screen={SchedulesScreen} section="automate/schedules" start="schedule=sch_a" spy={go} />)
   return { ...utils, calls, go }
 }
 
@@ -346,7 +347,7 @@ async function mountActing(view: string | null, routes: Routes, handler: Handler
   vi.resetModules()
   const { SchedulesScreen } = await import('../Schedules')
   const go = vi.fn()
-  const utils = render(<SchedulesScreen view={view} go={go} />)
+  const utils = render(<Routed Screen={SchedulesScreen} section="automate/schedules" start={view} spy={go} />)
   return { ...utils, calls, go }
 }
 
@@ -770,5 +771,78 @@ describe('Waiting on you', () => {
     expect(links.map((a) => a.getAttribute('href'))).toEqual(['/runs/run_1', '/runs/run_2', '/automate/schedules/sch_a'])
     fireEvent.click(links[2]!)
     expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
+  })
+})
+
+// LIVE QA, AUTOMATE (2026-10-11): the list and one schedule's page.
+describe('live QA: automate, the list and the page', () => {
+  const refresh = () => fireEvent.click(document.querySelector<HTMLButtonElement>('button.c-refresh')!)
+
+  it('labels a dry-run schedule as one in the list and in the head (AUT-3)', async () => {
+    const dry = schedule('sch_a', { name: 'Dry sweep', state: 'paused', next_run_at: null, policy: { dry_run: true } })
+    const list = await mountList({ '/v1/schedules': { status: 200, body: { schedules: [dry, schedule('sch_b')], tenant_id: 'eng' } }, '/v1/repositories': { status: 200, body: { repositories: [REPO] } } })
+    await waitFor(() => expect(document.querySelector('tr[data-schedule="sch_a"]')).not.toBeNull(), WAIT)
+    // MUTATION: drop `DryRunChip` from the State cell and the row says only "paused".
+    expect(visible(document.querySelector('tr[data-schedule="sch_a"] td[data-label="State"]'))).toContain('dry run')
+    expect(document.querySelector('tr[data-schedule="sch_b"] [data-testid="sc-dry"]')).toBeNull()
+    list.unmount()
+    await mountDetail({ '/v1/schedules/sch_a': { status: 200, body: { schedule: dry, firings: [] } } })
+    await screen.findByRole('heading', { name: 'Dry sweep', level: 1 }, WAIT)
+    const state = [...document.querySelectorAll('.sc-head dt')].find((dt) => dt.textContent === 'State')!.nextElementSibling!
+    expect(visible(state)).toContain('paused')
+    expect(visible(state)).toContain('dry run')
+  })
+
+  it('keeps the tab and the editor in the address (AUT-11)', async () => {
+    expect(addressToPath('automate/schedules?schedule=sch_a&tab=gate')).toBe('/automate/schedules/sch_a?tab=gate')
+    expect(pathToAddress('/automate/schedules/sch_a', '?tab=gate')?.address).toBe('automate/schedules?schedule=sch_a&tab=gate')
+    expect(addressToPath('automate/schedules?schedule=sch_a&edit=1')).toBe('/automate/schedules/sch_a/edit')
+    expect(pathToAddress('/automate/schedules/sch_a/edit')?.address).toBe('automate/schedules?schedule=sch_a&edit=1')
+    // MUTATION: leave `tab` out of keptKeys and a reload drops it.
+    expect(canonical(fromAddress('automate/schedules?schedule=sch_a&tab=gate'))).toBe('automate/schedules?schedule=sch_a&tab=gate')
+    const { go } = await mountActing('schedule=sch_a&tab=gate', { '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a'), firings: [] } } }, () => null)
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    // Opened on Gate: the tab the address names, not History.
+    await screen.findByTestId('sc-gate', undefined, WAIT)
+    fireEvent.click(screen.getByRole('tab', { name: /Budget/ }))
+    expect(go).toHaveBeenLastCalledWith('automate/schedules?schedule=sch_a&tab=budget')
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(go).toHaveBeenLastCalledWith('automate/schedules?schedule=sch_a&tab=budget&edit=1')
+  })
+
+  it('says a schedule deleted while its page was open was deleted, not "showing older data" (AUT-9)', async () => {
+    let gone = false
+    await mountActing('schedule=sch_a', {}, (m, url) =>
+      m === 'GET' && url.split('?')[0] === '/v1/schedules/sch_a'
+        ? gone
+          ? { status: 404, body: { code: 'not_found', message: 'schedule sch_a not found' } }
+          : { status: 200, body: { schedule: schedule('sch_a'), firings: [] } }
+        : null,
+    )
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    gone = true
+    refresh()
+    // MUTATION: drop `setGone` and the stale record stays, Edit enabled.
+    await screen.findByText('This schedule was deleted', undefined, WAIT)
+    expect(screen.queryByRole('button', { name: 'Edit' })).toBeNull()
+    expect(screen.getByRole('link', { name: 'Back to all schedules' }).getAttribute('href')).toBe('/automate/schedules')
+  })
+
+  it('still says Not found for a schedule that was never read (AUT-9 control)', async () => {
+    await mountDetail({ '/v1/schedules/sch_a': { status: 404, body: { code: 'not_found', message: 'no such schedule' } } })
+    await waitFor(() => expect(document.body.textContent).toMatch(/not.found/i), WAIT)
+    expect(screen.queryByText('This schedule was deleted')).toBeNull()
+  })
+
+  it('re-reads the built-in rows with the list on ⟳ (AUT-19)', async () => {
+    const { calls } = await mountList({
+      '/v1/schedules': { status: 200, body: { schedules: [], tenant_id: 'eng' } },
+      '/v1/repositories': { status: 200, body: { repositories: [REPO] } },
+    })
+    await waitFor(() => expect(document.querySelector('tr[data-builtin="repo_a"]')).not.toBeNull(), WAIT)
+    const before = reads(calls, '/v1/repositories')
+    refresh()
+    // MUTATION: read the repositories in the body's own effect again and ⟳ never asks for them.
+    await waitFor(() => expect(reads(calls, '/v1/repositories')).toBe(before + 1), WAIT)
   })
 })

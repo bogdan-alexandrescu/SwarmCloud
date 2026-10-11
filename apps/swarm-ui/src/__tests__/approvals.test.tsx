@@ -30,7 +30,7 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { serve, visible } from './repofixture'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
-import { SECTIONS } from '../App'
+import { SECTIONS, canonical, fromAddress } from '../App'
 import { addressToPath, pathToAddress } from '../paths'
 import { PANEL_PAGES } from '../Spine'
 
@@ -382,5 +382,71 @@ describe('the inbox on a phone', () => {
     const pick = document.querySelector<HTMLElement>('.ap-pick')!
     expect(painted(pick, 'min-height', PHONE)).toBe('44px')
     expect(painted(document.querySelector<HTMLElement>('.ap-detail .sc-facts')!, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+  })
+})
+
+// LIVE QA, AUTOMATE (2026-10-11): a link to one item, and the kind filter.
+describe('live QA: automate, approvals', () => {
+  it('reads an item the inbox does not hold and says it was not found, beside the empty inbox (AUT-6)', async () => {
+    const { calls } = await mount('approval=nope-123', routes(() => null, []))
+    // MUTATION: let the Screen's empty state stand in for the body and the item is never asked for.
+    await waitFor(() => expect(sent(calls, 'GET', '/v1/approvals/nope-123')).toHaveLength(1), WAIT)
+    await screen.findByText(/No approval nope-123 in this tenant/, undefined, WAIT)
+    expect(screen.getByText('Nothing waiting')).toBeTruthy()
+  })
+
+  it('shows what became of a linked item someone else decided, or that expired (AUT-6)', async () => {
+    const decided = (state: string, over: Json = {}) => ({
+      status: 200,
+      body: { approval: item('apr_old', { kind: 'merge', state, decided_by: 'teammate@example.com', decided_at: hoursFromNow(-1), ...over }) },
+    })
+    for (const [state, words] of [
+      ['rejected', /Rejected by teammate@example.com .*: not now\. Nothing is left to decide\./],
+      ['expired', /Expired .*: nobody decided it in time/],
+      ['approved', /Approved by teammate@example.com/],
+    ] as const) {
+      const view = await mount(
+        'approval=apr_old',
+        routes((m, url) => (m === 'GET' && url === '/v1/approvals/apr_old' ? decided(state, state === 'rejected' ? { reason: 'not now' } : {}) : null), []),
+      )
+      const said = await screen.findByTestId('ap-decided', undefined, WAIT)
+      expect(said.getAttribute('data-state')).toBe(state)
+      expect(visible(said)).toMatch(words)
+      expect(screen.queryByRole('button', { name: /Approve/ })).toBeNull()
+      expect(within(screen.getByTestId('ap-linked')).getByTestId('ap-state').textContent).toBe(state)
+      view.unmount()
+    }
+  })
+
+  it('opens a listed item in the inbox, not twice (AUT-6 control)', async () => {
+    await mount('approval=run%3Arun_8f2a', routes(() => null))
+    await screen.findByTestId('ap-detail', undefined, WAIT)
+    expect(screen.queryByTestId('ap-linked')).toBeNull()
+  })
+
+  it('filters by kind through the route, and keeps the kind in the address (AUT-15)', async () => {
+    expect(addressToPath('automate/approvals?kind=merge')).toBe('/approvals?kind=merge')
+    expect(pathToAddress('/approvals', '?kind=merge')?.address).toBe('automate/approvals?kind=merge')
+    expect(addressToPath('automate/approvals?approval=apr_1&kind=merge')).toBe('/approvals/apr_1?kind=merge')
+    expect(pathToAddress('/approvals/apr_1', '?kind=merge')?.address).toBe('automate/approvals?approval=apr_1&kind=merge')
+    // MUTATION: leave `kind` out of keptKeys and the filter is dropped from the URL.
+    expect(canonical(fromAddress('automate/approvals?kind=merge'))).toBe('automate/approvals?kind=merge')
+    const { calls, go } = await mount('kind=merge', routes(() => null))
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals?kind=merge')).toBe(true), WAIT)
+    const group = screen.getByRole('group', { name: 'Kind' })
+    expect(within(group).getByRole('button', { name: 'Merge' }).getAttribute('aria-pressed')).toBe('true')
+    fireEvent.click(within(group).getByRole('button', { name: 'Plan' }))
+    expect(go).toHaveBeenLastCalledWith('automate/approvals?kind=plan')
+    fireEvent.click(within(group).getByRole('button', { name: 'Every kind' }))
+    expect(go).toHaveBeenLastCalledWith('automate/approvals')
+    // An item opened from a filtered list keeps the filter.
+    await waitFor(() => expect(document.querySelectorAll('li[data-approval]').length).toBeGreaterThan(0), WAIT)
+    expect(document.querySelector('li[data-approval="apr_merge1"] a')!.getAttribute('href')).toBe('/approvals/apr_merge1?kind=merge')
+  })
+
+  it('asks for the whole inbox when no kind is named', async () => {
+    const { calls } = await mount('', routes(() => null))
+    await waitFor(() => expect(calls.some((c) => c.url === '/v1/approvals')).toBe(true), WAIT)
+    expect(calls.some((c) => c.url.startsWith('/v1/approvals?kind'))).toBe(false)
   })
 })
