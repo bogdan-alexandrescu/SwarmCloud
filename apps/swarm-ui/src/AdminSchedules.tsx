@@ -9,24 +9,28 @@
  * each audited as `admin:<email>` by the server. Not edit another tenant's
  * parameters, gate, scope or spec, and not approve its approvals: those are
  * the tenant's decisions, and an admin's console session is not that
- * tenant's identity (§5.3). So the row carries no link into the tenant's own
- * schedule page, and `GET /v1/admin/schedules` serves none of those fields.
+ * tenant's identity (§5.3); `GET /v1/admin/schedules` serves none of those
+ * fields. A row's name links to the schedule's own page only when its tenant
+ * is the one this console is working in (AUT-18), because that page reads
+ * `GET /v1/schedules/{id}` as the working tenant: any other tenant's row says
+ * to switch tenant first, rather than linking to a page that would 404.
  *
  * A pause never cancels a tenant's live runs from here: that is the tenant's
  * `:pause` with `cancel_live`, or an admin's ordinary cancel of the work.
  */
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   adminPauseTenantSchedules,
   adminScheduleAction,
   loadAdminSchedules,
+  loadMe,
   type AdminScheduleRow,
   type ScheduleTickHealth,
 } from './api'
 import { Button, Dialog, TypedConfirm } from './components'
 import { type ApiError } from './fetch'
 import { Absent } from './primitives'
-import { STATE_WORD, SpendFigure, localTime, untilWords } from './Schedules'
+import { InApp, STATE_WORD, SpendFigure, localTime, scheduleAddress, untilWords } from './Schedules'
 import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
@@ -191,7 +195,23 @@ function PauseTenant({ tenants, onDone }: { tenants: string[]; onDone: () => voi
   )
 }
 
-function Rows({ rows, onChanged }: { rows: AdminScheduleRow[]; onChanged: () => void }) {
+/** The tenant this console works in (`GET /v1/tenants/me`), or null until it is read. */
+function useWorkingTenant(): string | null {
+  const [tenant, setTenant] = useState<string | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadMe({ frame: true }).then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale')) setTenant(r.data.tenant.tenant_id)
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return tenant
+}
+
+function Rows({ rows, onChanged, go }: { rows: AdminScheduleRow[]; onChanged: () => void; go: (to: string) => void }) {
+  const working = useWorkingTenant()
   const now = useNow()
   const [acting, setActing] = useState<{ row: AdminScheduleRow; action: Action } | null>(null)
   return (
@@ -215,7 +235,16 @@ function Rows({ rows, onChanged }: { rows: AdminScheduleRow[]; onChanged: () => 
             <tr key={s.schedule_id} className="sc-row" data-schedule={s.schedule_id}>
               <td data-label="Tenant"><span className="mono">{s.tenant_id}</span></td>
               <td data-label="Name · type">
-                <span className="sc-cut sc-name" title={s.schedule_id}>{s.name}</span>
+                {s.tenant_id === working ? (
+                  <InApp go={go} to={scheduleAddress(s.schedule_id)} className="sc-cut sc-name">{s.name}</InApp>
+                ) : (
+                  <span
+                    className="sc-cut sc-name"
+                    title={`${s.schedule_id} · switch the console to tenant ${s.tenant_id} to open this schedule's page`}
+                  >
+                    {s.name}
+                  </span>
+                )}
                 <span className="sc-sub">{s.tier === null ? s.type : `${s.type} · ${s.tier}`}</span>
               </td>
               <td data-label="When">
@@ -307,9 +336,11 @@ function PlatformTicks() {
 function AdminSchedulesBody({
   first,
   onChanged,
+  go,
 }: {
   first: { schedules: AdminScheduleRow[]; next_page_token: string | null; tick: ScheduleTickHealth }
   onChanged: () => void
+  go: (to: string) => void
 }) {
   const [more, setMore] = useState<AdminScheduleRow[]>([])
   const [token, setToken] = useState<string | null>(first.next_page_token)
@@ -339,7 +370,7 @@ function AdminSchedulesBody({
         </Absent>
       ) : (
         <>
-          <Rows rows={rows} onChanged={onChanged} />
+          <Rows rows={rows} onChanged={onChanged} go={go} />
           {token !== null && (
             <div className="c-acts sc-acts">
               <Button size="sm" busy={reading ? 'Reading…' : false} onClick={() => void readMore()}>
@@ -358,7 +389,7 @@ function AdminSchedulesBody({
   )
 }
 
-export function AdminSchedulesScreen() {
+export function AdminSchedulesScreen({ go }: { go: (to: string) => void }) {
   const [round, setRound] = useState(0)
   return (
     <Screen
@@ -367,7 +398,7 @@ export function AdminSchedulesScreen() {
       load={() => loadAdminSchedules()}
       summary={(d) => `${pluralise(d.schedules.length, 'schedule')}${d.next_page_token === null ? '' : ' on the first page'} · every tenant`}
     >
-      {(d) => <AdminSchedulesBody first={d} onChanged={() => setRound((n) => n + 1)} />}
+      {(d) => <AdminSchedulesBody first={d} onChanged={() => setRound((n) => n + 1)} go={go} />}
     </Screen>
   )
 }

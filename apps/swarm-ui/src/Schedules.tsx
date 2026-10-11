@@ -35,17 +35,25 @@ import { addressToPath } from './paths'
 import { Absent, Mark } from './primitives'
 import { scheduleWords, type RepoRecord } from './RepositoriesData'
 import { Button, Dialog, buttonClass } from './components'
-import { ScheduleDetail } from './ScheduleDetail'
+import { ScheduleDetail, detailTabOf } from './ScheduleDetail'
 import { NewSchedule } from './ScheduleEdit'
 import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
 import './styles/schedules.css'
 
-/** The list's address, and one schedule's (`/automate/schedules/<id>`, paths.ts). */
+/**
+ * The list's address, and one schedule's (`/automate/schedules/<id>`,
+ * paths.ts). A tab other than History rides as `tab=`
+ * (`/automate/schedules/<id>?tab=gate`) and the editor as `edit=1`
+ * (`/automate/schedules/<id>/edit`), so a reload or a link lands there (AUT-11).
+ */
 export const SCHEDULES_ADDRESS = 'automate/schedules'
-export function scheduleAddress(id: string): string {
-  return `${SCHEDULES_ADDRESS}?${new URLSearchParams({ schedule: id }).toString()}`
+export function scheduleAddress(id: string, at: { tab?: string; edit?: boolean } = {}): string {
+  const q = new URLSearchParams({ schedule: id })
+  if (at.tab !== undefined && at.tab !== 'history') q.set('tab', at.tab)
+  if (at.edit === true) q.set('edit', '1')
+  return `${SCHEDULES_ADDRESS}?${q.toString()}`
 }
 
 /**
@@ -59,6 +67,16 @@ function scheduleOf(view: string | null): string | null {
   if (view === null || view === '') return null
   const id = new URLSearchParams(view).get('schedule')
   return id === null || id === '' ? null : id
+}
+
+/** A dry-run schedule is not a real one, and says so wherever its state is drawn (AUT-3). */
+export function DryRunChip({ s }: { s: Pick<Schedule, 'policy'> }) {
+  if (s.policy.dry_run !== true) return null
+  return (
+    <span className="sc-dry" data-testid="sc-dry" title="Each firing records what it would do and creates nothing. Turn dry run off under Edit.">
+      dry run
+    </span>
+  )
 }
 
 /** A link inside the app: an href for a new tab, `go` for a plain click. */
@@ -463,6 +481,7 @@ function ScheduleList({
                 <td data-label="Approvals" className="sc-c-more">{s.pending_approvals > 0 ? `${s.pending_approvals} waiting` : 'none'}</td>
                 <td data-label="State" className="sc-c-state">
                   <span className={`sc-state is-${s.state}`}>{STATE_WORD[s.state]}</span>
+                  <DryRunChip s={s} />
                   {line !== null && <span className="sc-sub sc-cut sc-why" title={line}>{line}</span>}
                 </td>
                 <td data-label="Actions" className="sc-c-acts">
@@ -548,25 +567,18 @@ function BuiltInRows({ repos, go }: { repos: Result<RepoRecord[]>; go: (to: stri
 
 function SchedulesBody({
   rows,
+  repos,
   go,
   notice,
   onDone,
 }: {
   rows: Schedule[]
+  /** Read with the list, so ⟳ re-reads the built-in rows too (AUT-19). */
+  repos: Result<RepoRecord[]>
   go: (to: string) => void
   notice: ActNotice | null
   onDone: (notice: ActNotice) => void
 }) {
-  const [repos, setRepos] = useState<Result<RepoRecord[]>>({ status: 'loading', since: Date.now() })
-  useEffect(() => {
-    let live = true
-    void loadRepositories().then((r) => {
-      if (live) setRepos(r)
-    })
-    return () => {
-      live = false
-    }
-  }, [])
   const names = repos.status === 'ok' || repos.status === 'stale' ? new Map(repos.data.map((r) => [r.repo_id, `${r.owner}/${r.repo}`])) : null
   return (
     <div className="sc-list">
@@ -589,10 +601,25 @@ function SchedulesBody({
   )
 }
 
+/**
+ * The list and the repositories in one read, so the Screen's ⟳ refreshes
+ * the built-in index rows as well as the schedules (AUT-19). The list's own
+ * answer is the screen's: a failed repositories read is the built-in rows'
+ * failure, drawn there, and never the page's.
+ */
+async function loadListAndRepos(): Promise<Result<{ schedules: Schedule[]; tenant_id: string; repos: Result<RepoRecord[]> }>> {
+  const [list, repos] = await Promise.all([loadSchedules(), loadRepositories()])
+  if (list.status !== 'ok' && list.status !== 'stale') return list
+  return { ...list, data: { ...list.data, repos } }
+}
+
 export function SchedulesScreen({ view, go }: { view: string | null; go: (to: string) => void }) {
   const scheduleId = scheduleOf(view)
   if (scheduleId === NEW_SCHEDULE) return <NewSchedule go={go} />
-  if (scheduleId !== null) return <ScheduleDetail scheduleId={scheduleId} go={go} />
+  if (scheduleId !== null) {
+    const q = new URLSearchParams(view ?? '')
+    return <ScheduleDetail scheduleId={scheduleId} go={go} tab={detailTabOf(q.get('tab'))} editing={q.get('edit') === '1'} />
+  }
   return <ScheduleListScreen go={go} />
 }
 
@@ -609,10 +636,10 @@ function ScheduleListScreen({ go }: { go: (to: string) => void }) {
     <Screen
       key={`schedules:${round}`}
       title="Schedules"
-      load={loadSchedules}
+      load={loadListAndRepos}
       summary={(d) => `${pluralise(d.schedules.length, 'schedule')} · tenant ${d.tenant_id}`}
     >
-      {(d) => <SchedulesBody rows={d.schedules} go={go} notice={notice} onDone={onDone} />}
+      {(d) => <SchedulesBody rows={d.schedules} repos={d.repos} go={go} notice={notice} onDone={onDone} />}
     </Screen>
   )
 }
