@@ -111,8 +111,9 @@ describe('an empty state carries exactly one `real zero`', () => {
       expect(marks[0]!.classList.contains('is-zero')).toBe(true)
       expect(marks[0]!.getAttribute('aria-label') ?? '', `${c.name}'s mark has no sentence`).not.toBe('')
 
-      const said = (el.textContent ?? '').match(/real zero/gi) ?? []
-      expect(said.length, `${c.name} says "real zero" ${said.length} times`).toBe(1)
+      // The mark reads `none` (owner, 2026-10-11); "real zero" is never shown.
+      expect(marks[0]!.textContent).toBe('none')
+      expect(el.textContent ?? '', `${c.name} shows the design term "real zero"`).not.toMatch(/real zero/i)
     })
   }
 })

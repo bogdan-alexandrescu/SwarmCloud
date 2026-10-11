@@ -361,7 +361,7 @@ export function TaskListAbsent({ tasks }: { tasks: Result<TaskPage> }) {
       className="ov-empty"
       kind="zero"
       heading="No task exists"
-      say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+      say="The read succeeded and returned nothing."
     />
   )
 }
@@ -373,7 +373,7 @@ function NoneAmong({ heading, n }: { heading: string; n: number }) {
       className="ov-empty"
       kind="zero"
       heading={heading}
-      say={`The task read succeeded and none of the ${n} newest tasks is one of these. A real zero over the page read, not a failure to read.`}
+      say={`The task read succeeded and none of the ${n} newest tasks is one of these.`}
     />
   )
 }

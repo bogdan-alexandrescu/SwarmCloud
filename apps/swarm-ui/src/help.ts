@@ -254,7 +254,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
       'A digit is a measurement, and a measured zero is a digit too. A dash, or the hatched mark “not measured”, means nothing ever recorded the figure. The dashed mark “not read” means the read failed and the platform may still hold it. A tilde marks a real reading too old to trust.',
     long: [
       'Every number on these screens is one of four things: measured, never measured, not read, or measured too long ago. They are different facts, and each is drawn with a mark of its own.',
-      'A measured figure is a digit — including a measured zero, which is a real result: on a bar it is a tick at the origin, and where a whole panel is empty it is the solid mark “real zero”.',
+      'A measured figure is a digit — including a measured zero, which is a real result: on a bar it is a tick at the origin, and where a whole panel is empty it is the solid mark “none”.',
       'A figure nothing ever recorded is a dimmed dash (—), or the hatched mark “not measured”. It is never drawn as a zero, because a zero is a claim about a measurement nobody has.',
       'A figure a failed read left behind is the dashed mark “not read”, and no number appears beside it: the platform may well hold the figure, and the read that should have brought it did not.',
       'A tilde (~) in front of a figure means the reading is real but older than it can be trusted to describe now.',
@@ -286,7 +286,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     group: 'an-attempt',
     title: 'When an attempt document exists',
     short:
-      'An attempt document is written when capacity is reserved, not when a task is submitted. A task waiting for capacity has none, and that is a real zero rather than a gap in the record.',
+      'An attempt document is written when capacity is reserved, not when a task is submitted. A task waiting for capacity has none yet, and that is expected, not a gap in the record.',
     long: [
       'The unit of the agent screen is the attempt, not the task. Each attempt carries its own runtime, its own requested-against-used figures, its own tokens and cost, its own checkpoints and its own error.',
       'The document is created at dispatch, and the task’s own attempt counter is incremented inside the same admission transaction. So the counter and the documents should agree, and when they do not the difference is the interesting part: a task that counts attempts whose query returned fewer documents has a hole in its record, and that is true of a running task as much as a finished one.',
@@ -801,7 +801,7 @@ const SPECS: Record<TopicId, TopicSpec> = {
     long: [
       'The platform prefers waiting to failing wherever the obstacle is temporary, and an account that has not been added yet is exactly that.',
       'The cost of that choice is that nothing goes red. Work accumulates in a waiting state, consumes no capacity, and produces no error anyone is paged for.',
-      'So the screens say it where it would otherwise be invisible: an empty account pool is reported as a real zero with its consequence attached, not as an empty table.',
+      'So the screens say it where it would otherwise be invisible: an empty account pool is reported as empty, with its consequence attached, not as a bare empty table.',
     ],
   },
 

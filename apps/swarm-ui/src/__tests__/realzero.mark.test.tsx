@@ -9,8 +9,8 @@
 // The mark's word is `none` since 2026-10-11 (owner): "real zero" stays the
 // design term and is never shown.
 //
-// BREAK IT: put back `<span className="ctl-mark is-zero">none</span>` in
-// either screen -- `getAllByRole('img', { name })` finds nothing and the
+// BREAK IT: draw the zero as a bare `.ctl-mark is-zero` span with no role or
+// name in either screen -- `getAllByRole('img', { name })` finds nothing and the
 // every-zero-has-a-role sweep names the bare span.
 
 import { render, screen, within } from '@testing-library/react'

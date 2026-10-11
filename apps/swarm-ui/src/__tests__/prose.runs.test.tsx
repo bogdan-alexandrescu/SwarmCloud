@@ -384,14 +384,14 @@ describe('Agents, with every help card closed', () => {
     // The `live` tab holds nothing, and its emptiness is a MEASURED zero.
     // WHAT MOVED: "No agent is holding a pool slot right now -- a real zero
     // from a successful read" was a sentence in the middle of the screen. The
-    // fact is now `.ctl-mark.is-zero`, whose word is `real zero` and whose
+    // fact is now `.ctl-mark.is-zero`, whose word is `none` and whose
     // accessible name is the sentence; the explanation of which states cost
     // nothing lives in help topic `capacity`, linked from the empty state.
     const empty = document.querySelector('.ctl-empty')
     expect(empty).not.toBeNull()
     const mark = empty!.querySelector('.ctl-mark.is-zero')
     expect(mark, 'a real zero is not marked as one').not.toBeNull()
-    expect(mark!.textContent).toMatch(/real zero/i)
+    expect(mark!.textContent).toBe('none')
     // THE ROUTE TO THE WORDS. `.ctl-q` is a button while the card is shut and
     // becomes an anchor to `#help/capacity` when it opens, which is exactly
     // the property that makes this assertion mean something: the topic is

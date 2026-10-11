@@ -121,10 +121,12 @@ def findings(root: Path) -> list[str]:
     for path in sorted(root.rglob("*")):
         if path.suffix not in SUFFIXES or "__tests__" in path.relative_to(root).parts:
             continue
-        shown = strip_comments(path.read_text(encoding="utf-8"), css=path.suffix == ".css")
+        source = path.read_text(encoding="utf-8")
+        shown = strip_comments(source, css=path.suffix == ".css")
+        lines = source.splitlines()
         for m in PHRASE.finditer(shown):
             line = shown.count("\n", 0, m.start()) + 1
-            text = path.read_text(encoding="utf-8").splitlines()[line - 1].strip()
+            text = lines[line - 1].strip()
             found.append(f"{path.relative_to(root)}:{line}: {text}")
     return found
 
