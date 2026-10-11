@@ -40,6 +40,12 @@ scope NOW (`firing.repo_ids`):
      `POST /v1/runs` takes, carrying `metadata.schedule` and recorded on the
      firing the moment it exists.
 
+  4. REPORT what it selected (`firing.report`), on every path: the dry
+     run's `describe` -- passed over and why, room, limits, failures,
+     truncation -- plus the issues `started` and each start refused with its
+     code. A firing that starts nothing ends `skipped / NOTHING_STARTED`
+     with this as its detail, never a bare success (#1133).
+
 A refusal of one issue's start is that issue's; a firing where every start was
 refused and none was made ends `refused` with the first refusal's code (§2.7,
 three in a row auto-pause the schedule). A 5xx propagates: the firing stays
@@ -200,7 +206,24 @@ def _entry(run: IssueRun) -> dict[str, Any]:
 
 
 def start(firing: Any, selection: Selection, options: RunOptions) -> list[dict[str, Any]]:
-    """Record the adopted runs, then start up to `selection.room` new ones."""
+    """Record the adopted runs, then start up to `selection.room` new ones.
+
+    Whatever happens -- nothing to start, the auto-merge refusal, every start
+    refused, a 5xx -- the firing reports its selection first (#1133): the
+    dry run's own `describe`, plus the issues actually `started` and each
+    start refused with its code. Refs, counts and codes only, never a token or
+    an issue's text, since the API serves it.
+    """
+    started: list[str] = []
+    not_started: list[dict[str, str]] = []
+    try:
+        return _start(firing, selection, options, started, not_started)
+    finally:
+        firing.report({**describe(selection, options), "started": started, "not_started": not_started})
+
+
+def _start(firing: Any, selection: Selection, options: RunOptions,
+           started: list[str], not_started: list[dict[str, str]]) -> list[dict[str, Any]]:
     ctx = firing.ctx
     schedule_id = str(firing.schedule["schedule_id"])
     work = [firing.recorded(_entry(run)) for run in selection.adopted]
@@ -212,7 +235,6 @@ def start(firing: Any, selection: Selection, options: RunOptions) -> list[dict[s
         # merge, as SWEEP does. The firing is refused with the code.
         refuse_auto_merge(True)
     first_failure: Exception | None = None
-    started = 0
     for candidate in chosen:
         try:
             run = start_run(
@@ -226,26 +248,32 @@ def start(firing: Any, selection: Selection, options: RunOptions) -> list[dict[s
             if exc.status_code >= 500:
                 raise
             first_failure = first_failure or exc
+            not_started.append({"issue": candidate.ref.short, "code": exc.code})
             log.warning("schedule %s firing %s: %s not started (%s)", schedule_id,
                         firing.firing["firing_id"], candidate.ref.short, exc.code)
             continue
         except Exception as exc:  # noqa: BLE001 -- one issue's failure is its own, as in SWEEP
             first_failure = first_failure or exc
+            not_started.append({"issue": candidate.ref.short, "code": type(exc).__name__})
             log.warning("schedule %s firing %s: %s not started (%s)", schedule_id,
                         firing.firing["firing_id"], candidate.ref.short, type(exc).__name__)
             continue
         work.append(firing.recorded(_entry(run)))
-        started += 1
-    if started == 0 and not work and first_failure is not None:
+        started.append(candidate.ref.short)
+    if not started and not work and first_failure is not None:
         raise first_failure
     log.info("schedule %s firing %s: started=%d adopted=%d candidates=%d skipped=%s",
-             schedule_id, firing.firing["firing_id"], started, len(selection.adopted),
+             schedule_id, firing.firing["firing_id"], len(started), len(selection.adopted),
              len(selection.candidates), selection.report.skipped_by_reason)
     return work
 
 
 def describe(selection: Selection, options: RunOptions) -> dict[str, Any]:
-    """§2.8: what a firing would start, and why each other issue is passed over."""
+    """§2.8: what a firing would start, and why each other issue is passed over.
+
+    The one source of this wording: a dry run returns it, and a real firing
+    reports it as its `selection` (`start`), so both explain themselves alike.
+    """
     report = selection.report
     chosen = selection.candidates[: selection.room]
     held_back = selection.candidates[selection.room:]

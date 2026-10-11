@@ -15,7 +15,8 @@ that skips an issue with a live run.
 
 The room is the least of `max_new_per_firing`, `max_pending_plans` less this
 schedule's waiting runs, and `max_concurrent` less this schedule's live work.
-Adoption, refusals and the dry run are `issue_sweep`'s.
+Adoption, refusals, the dry run and the selection a firing reports
+(`issue_sweep.start`, #1133) are `issue_sweep`'s.
 
 THE MERGE, ONCE A PLAN IS APPROVED, follows the gate's `merge` point, which
 for this type is never below `approve` (§3 table): the pull request waits in
