@@ -6160,6 +6160,11 @@ class Worker:
                 not_uploaded.append({"name": name, "bytes": size, "reason": standalone_mod.UNREADABLE})
                 continue
             try:
+                if self._browser_state_refused(staging, relative, label=name):
+                    not_uploaded.append(
+                        {"name": name, "bytes": size, "reason": manifest_mod.BROWSER_STATE_REFUSED}
+                    )
+                    continue
                 if self.log.has_secrets:
                     entry = self._redact_file(staging, label=name, withheld=True)
                     if entry is not None:
@@ -9433,6 +9438,8 @@ class Worker:
             self.log.warning("artifact upload failed", artifact=shown, error=str(exc))
             return _Upload(skipped=standalone_mod.UNREADABLE)
         try:
+            if self._browser_state_refused(staging, relative, label=label):
+                return _Upload(skipped=manifest_mod.BROWSER_STATE_REFUSED)
             entry = None
             if self.log.has_secrets:
                 _rewritten, entry = self._redact_outcome(staging, label=label, report=False)
@@ -9452,6 +9459,29 @@ class Worker:
         if entry is not None and report:
             self._report_unredacted(entry)
         return _Upload(bytes=size, unredacted=entry)
+
+    def _browser_state_refused(self, staging: Path, relative: str, *, label: str) -> bool:
+        """True, and `browser_state_refused` recorded, when the copy about to
+        be uploaded is shaped like a browser session (LB-L4b).
+
+        docs/design/live-browser.md section 5.5: an agent can write a
+        Playwright storage state or copy a Chromium `Cookies` database into
+        its workspace or `$SWARM_ARTIFACTS_DIR`, and the output upload would
+        publish the signed-in session. Judged on the worker's own copy, the
+        bytes that would leave, under the file's own name
+        (`artifact_manifest.browser_state_kind`). Before redaction, so a
+        refused file is never rewritten or scanned either.
+        """
+        kind = manifest_mod.browser_state_of(staging, name=relative.rsplit("/", 1)[-1])
+        if kind is None:
+            return False
+        self.log.warning(
+            "a file shaped like a browser session was refused; it was not uploaded",
+            event=manifest_mod.BROWSER_STATE_REFUSED,
+            path=standalone_mod.shown(self._scrub(label)),
+            kind=kind,
+        )
+        return True
 
     def _walk_artifacts(self, root: Path) -> tuple[dict[str, int], list[str]]:
         """Every regular file under the artifacts folder, and the folders not walked.

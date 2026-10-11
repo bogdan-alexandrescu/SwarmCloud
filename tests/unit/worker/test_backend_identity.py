@@ -671,7 +671,7 @@ def build_gke_reconciler(db: FakeFirestore, cfg: ReconcilerConfig, backend: Any)
 def idle_namespace(tenant: str) -> JobResourceView:
     old = utcnow() - timedelta(days=30)
     return JobResourceView(
-        name=f"swarm-{tenant}",
+        name=f"swarm-tenant-{tenant}",
         tenant_id=tenant,
         runner_profile=None,
         created_at=old,
@@ -701,8 +701,8 @@ def test_a_deregistered_tenants_empty_namespace_is_collected(db):
         "GKE_AUTOPILOT", executions=[], resources=[idle_namespace("finance")], journal=db.writes
     )
     report = build_gke_reconciler(db, gke_config(), backend).run_once()
-    assert backend.deleted == ["swarm-finance"]
-    assert any(o.deleted == "swarm-finance" for o in report.outcomes)
+    assert backend.deleted == ["swarm-tenant-finance"]
+    assert any(o.deleted == "swarm-tenant-finance" for o in report.outcomes)
 
 
 def test_cloud_run_job_resources_are_collected_even_for_a_registered_tenant(db):
