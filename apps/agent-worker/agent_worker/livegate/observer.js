@@ -62,8 +62,8 @@
   // flips them is the only announcement there is.
   const WINDOW_TRIGGERS = [
     "scroll", "resize", "input", "change", "load", "pageshow",
-    "transitionrun", "transitionend", "animationstart", "animationiteration",
-    "animationend", "focusin", "focusout", "toggle",
+    "transitionrun", "transitionend", "transitioncancel", "animationstart",
+    "animationiteration", "animationend", "animationcancel", "focusin", "focusout", "toggle",
     "pointerover", "pointerout", "pointerdown", "pointerup", "pointercancel",
     "keydown", "keyup",
   ];
@@ -275,8 +275,18 @@
     return parts.join(",");
   }
 
+  // A transition or animation moves text for its whole run with nothing
+  // announced after the first event, and a transform fires no ResizeObserver.
+  // While any is running, announce layout every frame so the gate never
+  // trusts a report older than the frame (fail closed, design 5.3.2).
+  function animating() {
+    if (typeof document.getAnimations !== "function") return false;
+    return document.getAnimations().some((a) => a.playState === "running");
+  }
+
   function watch() {
-    if (!scheduled && signature() !== trackedSignature) layout();
+    if (animating()) layout();
+    else if (!scheduled && signature() !== trackedSignature) layout();
     requestAnimationFrame(watch);
   }
 

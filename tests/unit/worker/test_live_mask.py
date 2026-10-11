@@ -634,3 +634,24 @@ def test_the_observer_hears_css_only_changes_from_pointer_and_keyboard():
     assert {"pointerover", "pointerout", "pointerdown", "pointerup", "keydown", "keyup"} <= triggers
     assert {"scroll", "resize", "input", "change", "load", "pageshow", "transitionend",
             "animationend", "focusin", "focusout"} <= triggers
+
+
+def test_the_observer_hears_cancelled_transitions_and_animations():
+    # A cancelled run fires neither transitionend nor animationend, and the
+    # text snaps back to where it was.
+    triggers = _js_string_list(observer_source(), "WINDOW_TRIGGERS")
+    assert {"transitioncancel", "animationcancel"} <= triggers
+
+
+def test_the_observer_announces_layout_every_frame_while_animations_run():
+    # A transition or animation moves text for its whole run; the run's start
+    # event is announced once. A transform fires no ResizeObserver, so the
+    # per-frame watch must announce while anything is running.
+    source = observer_source()
+    assert "document.getAnimations()" in source
+    assert 'a.playState === "running"' in source
+    assert 'typeof document.getAnimations !== "function"' in source
+    start = source.index("function watch()")
+    body = source[start:source.index("\n  }\n", start)]
+    assert "if (animating()) layout();" in body
+    assert "requestAnimationFrame(watch)" in body
