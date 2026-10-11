@@ -2049,7 +2049,13 @@ export async function loadProviders(): Promise<Result<ProvidersPage>> {
 }
 
 /** One page of tasks in one state. Server-side filter, backed by a real index. */
-export async function loadTasksInState(state: TaskState): Promise<Result<TaskPage>> {
+export async function loadTasksInState(
+  state: TaskState,
+  // THE OVERVIEW'S STATE READS (live QA OV-1/OV-4, 2026-10-11) ask for the
+  // summary rows, as its page read does (#168); everyone else keeps the full
+  // 200-row page this always served.
+  options: { limit?: number; view?: 'summary' } = {},
+): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) {
     const page = await fixtureTasks()
     if (page.status !== 'ok') return page
@@ -2059,7 +2065,11 @@ export async function loadTasksInState(state: TaskState): Promise<Result<TaskPag
       : { status: 'ok', fetchedAt: Date.now(), data: { ...page.data, tasks } }
   }
   return read<TaskPage>(
-    route('/v1/tasks', {}, new URLSearchParams({ state, limit: '200' })),
+    route(
+      '/v1/tasks',
+      {},
+      new URLSearchParams({ state, limit: String(options.limit ?? 200), ...(options.view === 'summary' ? { view: 'summary' } : {}) }),
+    ),
     (d) => d.tasks.length === 0,
   )
 }

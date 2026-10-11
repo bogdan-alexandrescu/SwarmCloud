@@ -107,7 +107,8 @@ describe('G1-02: Finished today says when it is only the page it read', () => {
   it('keeps the foot naming the page at 390', () => {
     const { container } = render(<LifecycleBand stats={ok(STATS)} tasks={taskPage(FINISHED, true)} />)
     const foot = container.querySelectorAll('#ov-band .ov-lc')[2]!.querySelector('.ov-lc-foot')!
-    expect(text(foot)).toBe('of the 3 newest read')
+    // AND HOW FAR BACK IT REACHES (live QA OV-6, 2026-10-11).
+    expect(text(foot)).toMatch(/^of the 3 newest read · created since \d\d:\d\d UTC$/)
     expect(painted(foot, 'display', PHONE)).not.toBe('none')
     expect(painted(foot, 'display', WIDE)).not.toBe('none')
   })
@@ -228,7 +229,8 @@ describe('G1-09: a row leads with its task title, then its step', () => {
     const b = task({ id: 'tsk_g9_b', state: 'FAILED', step_id: 'implement', workflow_id: 'wf_g9b', completed_at: ago(3), metadata: null })
     const c = task({ id: 'tsk_g9_c', state: 'CANCELLED', step_id: 'fix', workflow_id: 'wf_g9c', completed_at: ago(4), metadata: null })
     const el = await mount([a, b, c], { tsk_g9_a: full(a, { unit: 'c5h' }), tsk_g9_b: full(b, { title: '   ' }) })
-    expect([...el.querySelectorAll('#ov-failures .ov-name')].map(text)).toEqual(['c5h · review', 'implement', 'fix'])
+    // AN UNTITLED STEP NAMES ITS WORKFLOW (live QA OV-16, 2026-10-11).
+    expect([...el.querySelectorAll('#ov-failures .ov-name')].map(text)).toEqual(['c5h · review', 'implement · wf_g9b', 'fix · wf_g9c'])
   })
 
   // MUTATION: put `text-decoration: none` back on `.ov-name`.
