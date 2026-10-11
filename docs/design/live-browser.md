@@ -785,8 +785,9 @@ tenant that names `input.browser_login` is refused at submission with
   local storage of the signed-in origins. It does this before the `wipe` of
   §5.5, on its own pipe session.
 * The worker stores the jar as one Secret Manager secret,
-  `swarm-tenant-u-<user>-browser-wf-<workflow>`, with a 24-hour TTL. Only that
-  tenant's worker identity can read it.
+  `swarm-tenant-u-<user>-browser-wf-<workflow>`, with a 24-hour TTL. swarm-api
+  creates that secret and grants it (see "Who creates the secret" below). Only
+  that tenant's worker identity can read it.
 * The next browser step of the same workflow imports it before the agent's
   first CDP connection.
 * swarm-api deletes the secret when the workflow reaches a terminal state. The
@@ -796,7 +797,8 @@ tenant that names `input.browser_login` is refused at submission with
 * After the person returns control on a task in their own workspace, the
   Browser tab offers "Save as login", with a name (for example `github-qa`) and
   an expiry (default 14 days, at most 30).
-* The worker stores the jar as `swarm-tenant-u-<user>-browser-login-<name>`.
+* The worker stores the jar as `swarm-tenant-u-<user>-browser-login-<name>`,
+  in a secret swarm-api creates with the login's expiry.
   swarm-api keeps its metadata (site, saved at, expires, last used) in its own
   collection `browser_logins`, keyed by tenant. That collection belongs to
   swarm-api, as `live_sessions` does, not to the frozen models.
@@ -814,12 +816,66 @@ person's judgement, including a personal one. The save dialog states that every
 agent the person runs in their workspace can act as that account on that site
 until the login expires or is revoked.
 
+**Who creates the secret, and who is granted on it (owner decision
+2026-10-11, lane L8c).** swarm-api provisions each browser-session secret and
+grants it per secret. Before the worker writes a session it asks swarm-api for
+the slot: `POST /v1/tasks/<task>/browser-session/slot` with the secret's id,
+signed with the attempt key and carrying the attempt's fencing generation, as
+the other worker routes are. swarm-api:
+
+* refuses any tenant that is not personal (`kind = "user"` and an id starting
+  `u-`, whose principal derives to that id);
+* refuses any name outside that tenant's own
+  `swarm-tenant-<tenant>-browser-wf-<this task's workflow>` or
+  `-browser-login-<name>`, before it calls Secret Manager;
+* refuses a stale generation, and creates nothing;
+* creates the secret (a carry with the 24-hour TTL, a login with its record's
+  expiry, labelled `managed-by=swarm-api` and the tenant);
+* sets that one secret's IAM policy to exactly `secretAccessor` and
+  `secretVersionAdder`, each to `swarm-agent-worker-<tenant>` alone.
+
+A secret that already exists is re-granted only if its `swarm-tenant` label is
+the caller's. The worker then only adds a version. **No worker holds a
+project-level grant for a `-browser-` secret, and no worker holds
+`secrets.create`.** swarm-api holds `swarmBrowserSessionProvisioner`
+(`terraform/bootstrap/browser_logins.tf`).
+
+Why not the alternatives:
+
+* **Terraform cannot name a person.** A person's workspace is made by the
+  workspace job, outside Terraform ([workspaces.md](../workspaces.md) §3.2).
+  L8b's per-worker project grants therefore reached only the `kind = "user"`
+  tenants the release's tfvars names, and none of the people who use the
+  feature.
+* **A project-level create cannot be narrowed by name.** Secret Manager
+  checks `secrets.create` against the project, and the project carries no
+  secret name. L8b's unconditioned worker create let every personal worker
+  create an empty secret anywhere in the shared project.
+* **A `hasOnly()`-bounded project IAM grant on the workspace job would bound
+  roles, not members.** Granting each person's worker at project level would
+  need project `setIamPolicy`. `hasOnly()` limits WHICH roles the job may
+  grant, never TO WHOM or under what condition.
+
+What the provisioner's IAM condition can and cannot narrow. The condition is
+`resource.type == "cloudresourcemanager.googleapis.com/Project" ||` the
+revoker's own name test (`swarm-tenant-u-` and a non-empty tenant before the
+first `-browser-`, by `extract()`). `secrets.get`, `secrets.getIamPolicy` and
+`secrets.setIamPolicy` are checked against the secret, so the name test narrows
+them to personal `-browser-` secrets. `secrets.create` is checked against the
+project, where the name test can never hold. Without the project arm, create
+would always be refused. With it, create is not narrowed: swarm-api can create
+an empty secret with any name. That residual is swarm-api's, where every
+worker used to hold it. swarm-api's own name check before the call is what
+keeps create inside the browser names. Not verified live: that IAM evaluates
+create with that resource type.
+
 **What protects it, and what does not.**
-* IAM. The worker's grant on `swarm-tenant-u-<user>-browser-*` is held by
-  `swarm-agent-worker-u-<user>` alone (lane L8b), and no group tenant's
-  identity holds any `-browser-` grant. Platform admins with project-level
-  Secret Manager roles can still read these secrets. That is the same residual
-  as every other secret in the project.
+* IAM. The only grant on a `swarm-tenant-u-<user>-browser-*` secret that
+  reaches a worker is set on that secret, to `swarm-agent-worker-u-<user>`
+  alone (lane L8c). No worker identity holds any project-level `-browser-`
+  grant. Platform admins with project-level Secret Manager roles can still
+  read these secrets. That is the same residual as every other secret in the
+  project.
 * The agent's CDP cannot read or plant cookies. The method policy of §5.4.4
   refuses:
   - `Network.getCookies`, `Network.getAllCookies` and `Storage.getCookies`;
@@ -1202,7 +1258,8 @@ first, red, then the fix (CLAUDE.md, "Red first").
 | 3 | **L12 UI-HANDOFF** | `apps/swarm-ui/src/Overview.tsx`, `apps/swarm-ui/src/Agents.tsx` (the banner row, the Live filter), `apps/swarm-ui/src/Recordings.tsx`, `apps/swarm-ui/test/Handoff.test.tsx` | L10, L11 | the tab banner and Overview card show reason, expected site and time left; "I'm ready to sign in" calls `human-ready`; the Live filter lists only running browser agents, needs-you first; recordings list only the caller's tenant's |
 | 3 | **L12b UI-GRAPH** | `apps/swarm-ui/src/WorkflowViews.tsx`, `apps/swarm-ui/src/LiveThumb.tsx`, `apps/swarm-ui/test/LiveThumb.test.tsx` | L11b | a running browser node expands a card with a thumbnail at ≤1 fps; Open Browser tab and ⤢ Theater navigate to the same session; no thumbnail stream for a finished step |
 | 1 | **L4c SESSION-CARRY** | `apps/agent-worker/agent_worker/livegate/session.py`, `apps/agent-worker/agent_worker/browser_login.py`, `apps/agent-worker/agent_worker/livegate/cdppolicy.py`, `tests/unit/worker/test_browser_session.py` | L2, L4 | in a personal tenant a workflow step's jar is exported on the gate's pipe and written to `swarm-tenant-u-<user>-browser-wf-<wf>`, then imported by the next step before the agent connects; in a group tenant nothing is written and no carry happens; a step outside a workflow carries nothing; `input.browser_login` loads the named login, and an unknown or expired name fails before the agent runs; the agent's cookie-reading and cookie-writing CDP methods are refused; no cookie value in any log, event, checkpoint or output (fake jar built at runtime) |
-| 2 | **L8b VAULT-IAM** | `terraform/infra/browser_logins.tf`, `tests/terraform/browser_logins.tftest.hcl` | L8 | only a personal tenant's worker holds a grant, on its own `swarm-tenant-u-<user>-browser-` prefix; no group tenant's worker holds any `-browser-` grant; swarm-api may destroy those secrets; no secret version in Terraform; `managed-by=swarm-terraform` on every resource |
+| 2 | **L8b VAULT-IAM** | `terraform/bootstrap/browser_logins.tf` (built in bootstrap, not infra: see its header), `tests/terraform/browser_logins.tftest.hcl` | L8 | as built: only a personal tenant's worker holds a grant, on its own `swarm-tenant-u-<user>-browser-` prefix; no group tenant's worker holds any `-browser-` grant; swarm-api may destroy those secrets; no secret version in Terraform; `managed-by=swarm-terraform` on every resource. **Superseded by L8c** (owner decision 2026-10-11): the worker's project-level reader, writer and unconditioned creator are removed, because Terraform cannot name a person whose workspace the job made, and a project-level create cannot be narrowed by name |
+| 2 | **L8c SECRET-PROVISION** | `terraform/bootstrap/browser_logins.tf`, `terraform/modules/custom_role_ids/main.tf`, `tests/terraform/browser_logins.tftest.hcl`, `apps/swarm-api/swarm_api/browser_slots.py`, `apps/swarm-api/swarm_api/routes/browser_slots.py`, `apps/agent-worker/agent_worker/browser_login.py`, `tests/unit/control_plane/test_browser_slots.py`, `tests/unit/worker/test_browser_session.py` | L8b, L4c, L9b | a non-personal tenant is refused a slot; a name outside the caller's prefix is refused before Secret Manager is called; a stale generation is refused; a granted slot binds exactly one member on exactly one secret; no worker in Terraform holds any Secret Manager project grant for `-browser-`; swarm-api's provisioner role carries the condition; the worker asks for the slot before every write and never creates a secret |
 | 2 | **L9b LOGIN-VAULT** | `apps/swarm-api/swarm_api/browser_logins.py`, `apps/swarm-api/swarm_api/routes/browser_logins.py`, `apps/scheduler/scheduler/reconcile.py`, `tests/unit/control_plane/test_browser_logins.py` | L9 | only the workspace's own person can list or revoke its logins; anyone else gets 404; a group-tenant task naming `browser_login` is refused with `browser_login_personal_only`; a value is never returned; save takes a name and an expiry of at most 30 days; revoke destroys every version; a workflow's carry secret is deleted at its terminal state; the audit records names only |
 | 3 | **L12c UI-LOGINS** | `apps/swarm-ui/src/BrowserLogins.tsx`, `apps/swarm-ui/src/Access.tsx`, `apps/swarm-ui/src/LiveBrowser.tsx`, `apps/swarm-ui/test/BrowserLogins.test.tsx` | L9b, L12 | after Return control on a personal-workspace task the tab offers "Save as login" with the account warning, and never on a group-tenant task; Access › Browser logins lists name, site, expiry and last use, never a value; Revoke asks for a typed confirmation |
 | 4 | **L13 ACCEPT** | `.github/workflows/accept.yml`, `tests/acceptance/test_live_browser.py`, `tests/acceptance/fixtures/login.html`, `docs/acceptance.md` | all | on dev: a `claude-code-browser` task asks for help on a fixture sign-in page; a scripted viewer takes control and types a password generated at run time; the recording's frames have the field's pixels painted; the transcript, logs, checkpoint and outputs do not contain the password; control returns and the task succeeds; a member of another tenant is refused |

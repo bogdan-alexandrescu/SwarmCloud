@@ -30,6 +30,8 @@ from .routes import (
     admin,
     approvals,
     attempts,
+    browser_logins,
+    browser_slots,
     checkpoints,
     children,
     forgeapp,
@@ -181,6 +183,14 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.
     app.include_router(children.router)
+    # Named browser logins and the workflow carry (docs/design/live-browser.md
+    # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
+    # routes that authenticate as the child routes do.
+    app.include_router(browser_logins.router)
+    # The browser-session slot (lane LB-L8c): swarm-api creates each personal
+    # tenant's -browser- secret and grants its worker on that secret alone;
+    # worker-only, authenticated as the routes above.
+    app.include_router(browser_slots.router)
 
     @app.middleware("http")
     async def observe(request: Request, call_next):
