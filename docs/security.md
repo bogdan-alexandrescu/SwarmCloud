@@ -381,7 +381,16 @@ Agents have no reason to talk to Kubernetes and are given no way to.
   terraform's own jobs are never rewritten by the dispatcher.
   `scripts/lib/deploy.sh --verify-only` checks, after every release, that every
   service, every terraform-managed job and the scheduler's map name the promoted
-  digests. The checkov image-reference checks (CKV_K8S_14/15/43) are still
+  digests. One exception, and only a narrow one (owner decision 2026-10-11): a
+  job the owner pins in `terraform/bootstrap` (`OWNER_PINNED_JOBS` in
+  `scripts/lib/common.sh`; today `swarm-workspace-apply`) is not moved by a
+  merge, by design, so after a release that rebuilds its image it lags. On a
+  digest an earlier release promoted -- one carrying the
+  `<channel>-promoted-<tag>` mark `scripts/push-images.sh` adds and never moves
+  -- that lag is a warning, "awaiting owner re-pin", with the command, and the
+  summary says "1 owner action pending". On a digest no release promoted it
+  still fails: that is an image nobody released running as a privileged
+  account. The checkov image-reference checks (CKV_K8S_14/15/43) are still
   skipped over the rendered manifests, because those are templates rendered with
   a placeholder image; the reference that actually dispatches is the
   dispatcher's, and it is a digest.

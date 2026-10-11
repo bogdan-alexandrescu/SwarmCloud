@@ -569,11 +569,21 @@ export function nodeHeightAt(tier: ZoomTier): number {
 export function nodeWidthAt(tier: ZoomTier, steps: readonly WorkflowStep[]): number {
   const nameW = Math.max(0, ...steps.map((s) => monoW(s.step_id.length, T_BODY)))
   const profileW = Math.max(0, ...steps.map((s) => monoW(s.runner_profile.length, T_MICRO)))
+  // THE WIDEST DEPENDENCY UNIT, so a `(file)` is never broken inside its name
+  // (V102, #1038). At the names tier's 138px a fan-in's `(allornothing.md),`
+  // was wider than the line and wrapped inside itself -- `(cold-` / `start.md),`.
+  // A unit is as unbounded as a step id, so it is measured like one; but only up
+  // to the full tier's text column, past which it wraps in its own box as WF-19
+  // allows, rather than widening every card on the canvas for one long path.
+  const depW = Math.min(
+    NODE_W - NODE_CHROME_W,
+    Math.max(0, ...steps.flatMap((s) => depUnits(s).map((u) => monoW(u.text.length, T_MICRO)))),
+  )
   if (tier === 'names') {
-    return Math.ceil(NODE_CHROME_W + Math.max(nameW, STATE_ROW_W))
+    return Math.ceil(NODE_CHROME_W + Math.max(nameW, STATE_ROW_W, depW))
   }
   if (tier === 'details') {
-    return Math.ceil(NODE_CHROME_W + Math.max(nameW, STATE_ROW_W, DUR_ROW_W, profileW))
+    return Math.ceil(NODE_CHROME_W + Math.max(nameW, STATE_ROW_W, DUR_ROW_W, profileW, depW))
   }
   // The full tier, where the `opens the PR` tag is drawn and the state and the
   // duration share one line. `NODE_W` is that arithmetic over the constants;
@@ -582,7 +592,7 @@ export function nodeWidthAt(tier: ZoomTier, steps: readonly WorkflowStep[]): num
     NODE_W,
     Math.ceil(
       NODE_CHROME_W +
-        Math.max(nameW + PR_TAG_W, STATE_AND_DUR_ROW_W, profileW, FIGURES_ROW_W, SRC_ROW_W),
+        Math.max(nameW + PR_TAG_W, STATE_AND_DUR_ROW_W, profileW, FIGURES_ROW_W, SRC_ROW_W, depW),
     ),
   )
 }
