@@ -290,7 +290,8 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     await loaded()
     await waitFor(() => expect(document.querySelector('.ur-tokrow')).not.toBeNull(), WAIT)
     const titles = Array.from(document.querySelectorAll('.ur-detail .c-card h2')).map((h) => visible(h))
-    expect(titles).toEqual(['Schedule and change trigger', 'Languages detected', 'Graph', 'Selection policy', 'Resolved token'])
+    // Languages detected takes the full row under the two columns (V121).
+    expect(titles).toEqual(['Schedule and change trigger', 'Graph', 'Selection policy', 'Resolved token', 'Languages detected'])
   })
 
   it('languages: a route not served and an index carrying no languages say "not served yet", with no rows', async () => {
@@ -353,9 +354,10 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     await mount('settings')
     await loaded()
     await waitFor(() => expect(document.querySelectorAll('[data-notserved]')).toHaveLength(2), WAIT)
+    // Document order: the languages card is under the two columns (V121).
     expect(Array.from(document.querySelectorAll('[data-notserved]')).map((e) => e.getAttribute('data-notserved'))).toEqual([
-      'GET /v1/repositories/{repo_id}/languages',
       'GET /v1/git-tokens',
+      'GET /v1/repositories/{repo_id}/languages',
     ])
     expect(calls.some((c) => c.url.includes('/token?'))).toBe(false)
     expect(document.querySelector('.ur-policy')).not.toBeNull()

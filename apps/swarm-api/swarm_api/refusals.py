@@ -109,6 +109,38 @@ SWITCHES: dict[str, Switch] = {
         why="a firing whose work recorded more than per_run_usd ends failed and pauses its "
         "schedule (§4.3). On once attempts report cost_usd for the schedule's profiles",
     ),
+    # The §4.4 holds on an issue run (docs/schedules.md §4.5, lane S5): an
+    # approval, auto-approval or merge of a run whose plan or pull request
+    # touches IAM or Terraform bootstrap, the frozen contract in a
+    # `platform: true` repository, or a registration's `hard_stop_paths`,
+    # by someone the hold does not admit. Off, the hold is still recorded and
+    # shown in the inbox, and the log names what it would have refused.
+    # NOT switched, by the owner's SD3 decision: the security-class hold,
+    # which `routes.runs` raises directly, and the `.github/workflows/`
+    # refusal, which fails the run at plan (`issueruns.WORKFLOWS_PATH`) --
+    # each records what the platform already cannot do or the owner already
+    # decided, so a report-only phase would only let through work that
+    # cannot succeed.
+    "hold_approver_required": Switch(
+        code="hold_approver_required",
+        why="an issue run held by an IAM, bootstrap, frozen-contract or protected-path stop "
+        "(docs/schedules.md §4.4) is approved only by the hold's approvers -- PLATFORM_OWNER "
+        "in a platform: true repository, a second member elsewhere -- and never "
+        "auto-approved or auto-merged. On once lane S11's `platform` flag is set on the "
+        "platform's own registrations and the inbox (S7) shows held runs",
+    ),
+    # Schedule firings refused at create (lanes S6 and the repo index).
+    "index_refresh_failed": Switch(
+        code="index_refresh_failed",
+        why="a repo-index-refresh firing whose every repository failed to queue ends refused "
+        "instead of succeeding empty. On once the per-repository codes in its detail have "
+        "been read in the log and show only deleted or unreadable branches",
+    ),
+    "observer_file_issues_unavailable": Switch(
+        code="observer_file_issues_unavailable",
+        why="an observer schedule with file_issues true is refused because swarm-api cannot "
+        "create an issue yet. On once no stored observer schedule sets file_issues",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

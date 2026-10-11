@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   approveWorkspace,
   denyWorkspace,
@@ -197,6 +197,18 @@ function Deny({ row, reload }: { row: PersonRow; reload: () => void }) {
   const [busy, setBusy] = useState(false)
   const [said, setSaid] = useState<Said | null>(null)
   const blank = reason.trim() === ''
+  // FOCUS FOLLOWS THE FORM (visual QA V028): opening Deny puts the caret in
+  // the reason, and Cancel (or a sent denial) hands focus back to Deny, so a
+  // keyboard user is never dropped on the page's body. Not on first mount.
+  const denyId = useId()
+  const reasonRef = useRef<HTMLTextAreaElement>(null)
+  const wasOpen = useRef(open)
+  useEffect(() => {
+    if (wasOpen.current === open) return
+    wasOpen.current = open
+    if (open) reasonRef.current?.focus()
+    else document.getElementById(denyId)?.focus()
+  }, [open])
   const go = async () => {
     // A reason is required and shown to the person (§1.3): a blank one is not sent.
     if (busy || blank) return
@@ -213,7 +225,7 @@ function Deny({ row, reload }: { row: PersonRow; reload: () => void }) {
   if (!open) {
     return (
       <>
-        <Button size="sm" onClick={() => setOpen(true)}>
+        <Button size="sm" id={denyId} onClick={() => setOpen(true)}>
           Deny
         </Button>
         <SaidLine said={said} />
@@ -224,7 +236,7 @@ function Deny({ row, reload }: { row: PersonRow; reload: () => void }) {
     <span className="pp-deny">
       <label className="c-field">
         <span className="c-lbl">Reason, shown to {row.email}</span>
-        <textarea className="c-inp" value={reason} maxLength={500} rows={2} onChange={(e) => setReason(e.target.value)} />
+        <textarea ref={reasonRef} className="c-inp" value={reason} maxLength={500} rows={2} onChange={(e) => setReason(e.target.value)} />
       </label>
       <span className="ob-acts">
         <Button size="sm" onClick={() => setOpen(false)}>
@@ -343,7 +355,9 @@ function Loan({ row, lendable, lendableError, reload }: { row: PersonRow; lendab
       <Button size="sm" disabled={busy || account === ''} onClick={() => void go(true)}>
         Lend
       </Button>
-      <Button size="sm" kind="ghost" disabled={busy || account === ''} onClick={() => void go(false)}>
+      {/* Lend and Reclaim are a pair: the same kind, so a disabled pair
+          looks alike (visual QA V080: a ghost Reclaim lost its border). */}
+      <Button size="sm" disabled={busy || account === ''} onClick={() => void go(false)}>
         Reclaim
       </Button>
       <SaidLine said={said} />
@@ -390,13 +404,13 @@ function Row({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; reload: () 
   return (
     <tr role="row" data-email={row.email} data-workspace-state={w.state}>
       <th role="rowheader" scope="row">
-        {row.email}
+        <span className="pp-who">{row.email}</span>
       </th>
       <td role="cell" data-label="Teams">
         {row.teams.length > 0 ? row.teams.join(', ') : <Dash why="Resolves to no team" />}
       </td>
       <td role="cell" data-label="GitHub">
-        {row.github}
+        <span className="pp-who">{row.github}</span>
       </td>
       <td role="cell" data-label="Workspace">
         <WorkspaceCell row={row} />
@@ -411,9 +425,10 @@ function Row({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; reload: () 
         {row.last_active !== null ? timeAgo(row.last_active) : <Dash why="Not seen active" />}
       </td>
       <td role="cell" data-label="Actions" className="pp-acts-cell">
-        {/* THE ACTIONS STACK IN THEIR CELL (2026-10-09, live at 1456): one
-            group per line, every control as wide as the cell and no wider,
-            so Deny and the Account select stay inside the card. */}
+        {/* THE ACTIONS FLOW IN THEIR CELL (visual QA V080, after 2026-10-09's
+            stack made every row 160-200px tall): the groups sit side by side
+            and wrap only when the cell is too narrow, no control wider than
+            the cell, so Deny and the Account select stay inside the card. */}
         <div className="pp-acts">
           {/* A held record predates self-service setup (§3.3): its job would
               fail IDENTITY_NOT_OURS (WORKSPACE_MIGRATING once that refusal is
@@ -469,7 +484,7 @@ function AdminList({ admins, onRemove }: { admins: AdminHolder[]; onRemove: (ema
           {/* The owner is not removable here: the API refuses it
               (OWNER_FROM_CONFIG), so no control offers it. */}
           {a.role !== 'owner' && (
-            <Button size="sm" kind="ghost" onClick={() => onRemove(a.email)} title={`Remove admin from ${a.email}`}>
+            <Button size="sm" onClick={() => onRemove(a.email)} title={`Remove admin from ${a.email}`}>
               Remove admin
             </Button>
           )}
@@ -528,7 +543,9 @@ function Admins({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
           Grant admin
         </Button>
         {admins === null && (
-          <Button size="sm" kind="ghost" disabled={busy || typed === ''} onClick={() => setTarget(typed)}>
+          // Bordered like Grant admin beside it (visual QA V082): two actions
+          // on one email are one pair, not an action and a stray word.
+          <Button size="sm" disabled={busy || typed === ''} onClick={() => setTarget(typed)}>
             Remove admin
           </Button>
         )}
@@ -596,7 +613,8 @@ function PeopleBody({ doc, reload }: { doc: PeopleDoc; reload: () => void }) {
       <BuildingOff doc={doc} />
       <Card
         className="pp-people"
-        title="People"
+        // Not "People" again under the page's own "People" (visual QA V082).
+        title="Everyone who has signed in"
         action={
           <Chip>
             {doc.count} {doc.count === 1 ? 'person' : 'people'} ·{' '}

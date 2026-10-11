@@ -17,7 +17,7 @@ import { PageHead } from './Shell'
 import { GraphTab, type GraphOpen } from './RepoGraph'
 import { AlwaysRun, EdgeGroups, PathLookup, Suites } from './RepoTestMap'
 import { ImpactTab } from './RepoImpact'
-import { formatDuration, timeAgo, TERMINAL_STATES } from './types'
+import { formatDuration, pluralise, timeAgo, TERMINAL_STATES } from './types'
 
 /**
  * ONE REPOSITORY, pick A (repositories.html screen 4): tabs Overview, Graph
@@ -376,7 +376,7 @@ function Overview({ d, index, go }: { d: RepoDetail; index: IndexRead; go: (to: 
                 label="Tests mapped"
                 value={coverageWords(r.index.coverage)}
                 why={testsMappedWhy(r)}
-                sub={doc.unmapped.length > 0 ? `${doc.unmapped.length} source paths with no test edge` : (coverageDetail(r.index.coverage) ?? 'edges, not executed coverage')}
+                sub={doc.unmapped.length > 0 ? `${pluralise(doc.unmapped.length, 'source path')} with no test edge` : (coverageDetail(r.index.coverage) ?? 'edges, not executed coverage')}
                 warn={doc.unmapped.length > 0}
               />
               <Tile
@@ -717,37 +717,6 @@ function SettingsTab({ r, index, go, stops }: { r: RepoRecord; index: IndexRead;
           <Card title="Schedule and change trigger">
             <ScheduleLines r={r} />
           </Card>
-          <Card title="Languages detected">
-            {langs.fromDoc && <p className="ur-hint ur-lang-src">Read from the index document: the languages route is not served by this API.</p>}
-            <UrRegion
-              state={langs.state}
-              route="GET /v1/repositories/{repo_id}/languages"
-              what="The languages table"
-              onRetry={langs.fromDoc ? index.reload : langRoute.reload}
-              empty={<p className="ur-none">The index detected no languages.</p>}
-            >
-              {(rows) => (
-                <div className="ur-rows">
-                  <div className="ur-lang-h" aria-hidden>
-                    <span>language</span>
-                    <span>grammar</span>
-                    <span>language server</span>
-                    <span>last index</span>
-                    <span>status</span>
-                  </div>
-                  {rows.map((l) => (
-                    <div className="ur-lang" key={l.language}>
-                      <b>{l.language}</b>
-                      <span>{l.grammar === null ? <Dash why="No tree-sitter grammar is bundled for this language" /> : <code>{l.grammar}</code>}</span>
-                      <span>{l.server === null ? <Dash why="No language server is supported for this language" /> : <code>{l.server}</code>}</span>
-                      <small>{langNote(l)}</small>
-                      <ToneMark tone={LANG_TONE[l.status ?? ''] ?? 'unknown'}>{l.status === null ? 'not read' : l.status.replace(/_/g, ' ')}</ToneMark>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </UrRegion>
-          </Card>
           {/* Drawn only where the registration serves the fields: an API older than lane S11 has no card to show. */}
           {stops !== null && <HardStopsCard stops={stops} />}
         </div>
@@ -819,6 +788,39 @@ function SettingsTab({ r, index, go, stops }: { r: RepoRecord; index: IndexRead;
           </Card>
         </div>
       </div>
+      {/* The full row, not half of it (V121): five columns in a half-width card
+          broke grammar names at their hyphens and wrapped the head. */}
+      <Card title="Languages detected" className="ur-langs">
+        {langs.fromDoc && <p className="ur-hint ur-lang-src">Read from the index document: the languages route is not served by this API.</p>}
+        <UrRegion
+          state={langs.state}
+          route="GET /v1/repositories/{repo_id}/languages"
+          what="The languages table"
+          onRetry={langs.fromDoc ? index.reload : langRoute.reload}
+          empty={<p className="ur-none">The index detected no languages.</p>}
+        >
+          {(rows) => (
+            <div className="ur-rows">
+              <div className="ur-lang-h" aria-hidden>
+                <span>language</span>
+                <span>grammar</span>
+                <span>language server</span>
+                <span>last index</span>
+                <span>status</span>
+              </div>
+              {rows.map((l) => (
+                <div className="ur-lang" key={l.language}>
+                  <b>{l.language}</b>
+                  <span>{l.grammar === null ? <Dash why="No tree-sitter grammar is bundled for this language" /> : <code>{l.grammar}</code>}</span>
+                  <span>{l.server === null ? <Dash why="No language server is supported for this language" /> : <code>{l.server}</code>}</span>
+                  <small>{langNote(l)}</small>
+                  <ToneMark tone={LANG_TONE[l.status ?? ''] ?? 'unknown'}>{l.status === null ? 'not read' : l.status.replace(/_/g, ' ')}</ToneMark>
+                </div>
+              ))}
+            </div>
+          )}
+        </UrRegion>
+      </Card>
     </>
   )
 }
