@@ -6,8 +6,8 @@
 //     capacity once leased, so it is queued only from its confirmation; Cancel
 //     and Esc queue nothing, and the safe choice holds the focus;
 //   * RSA-4: an index whose document cut its test map at the ceiling never
-//     reports the edge count as a total -- the tab badge and the figures say
-//     it was cut -- and an uncut one says its count plainly;
+//     reports the edge count as a total -- the list card, the tab badge and
+//     the figures say it was cut -- and an uncut one says its count plainly;
 //   * RSA-6: a language whose server pass timed out or failed is said on
 //     the repository's page outside Settings, naming the language; an index
 //     whose every pass finished says nothing.
@@ -123,6 +123,30 @@ describe('RSA-4: a test map cut at its ceiling is never reported as a complete c
     await mountDetail('test-map')
     await waitFor(() => expect(document.querySelector('.ur-tmap .ur-tm')).not.toBeNull(), WAIT)
     expect(visible(document.querySelector('.ur-tmap .ur-tm'))).toContain('1,000+ edges (cut)')
+  })
+
+  const card = () =>
+    waitFor(() => {
+      const c = document.querySelector<HTMLElement>('.ur-cards > .ur-card .ur-tm')
+      expect(c).not.toBeNull()
+      return c!
+    }, WAIT)
+
+  it('cut: the list card says the edges stop at the ceiling, never "1,000 edges"', async () => {
+    routes({ truncated: ['hot_spots', 'test_map'] })
+    await mount(null)
+    const tm = await card()
+    await waitFor(() => expect(visible(tm)).toContain('1,000+ edges (cut)'), WAIT)
+    expect(visible(tm)).not.toMatch(/1,000 edges/)
+  })
+
+  it('not cut: the list card says its count plainly, after reading the document', async () => {
+    const calls = routes({ truncated: ['hot_spots'], edges: 3150 })
+    await mount(null)
+    const tm = await card()
+    await waitFor(() => expect(calls.some((c) => c.method === 'GET' && c.url.startsWith(`/v1/repositories/${ID}/index`))).toBe(true), WAIT)
+    expect(visible(tm)).toContain('3,150 edges')
+    expect(visible(tm)).not.toContain('cut')
   })
 
   it('not cut: the count is said as it is, with no "+"', async () => {

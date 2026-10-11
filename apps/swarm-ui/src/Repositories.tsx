@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { loadRepositories, runRepositoryIndex } from './api'
+import { loadRepositories, loadRepositoryIndex, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
 import { HEAD_UNREAD, freshness, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
 import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
@@ -182,6 +182,27 @@ function lastIndexed(r: RepoRecord): ReactNode {
   )
 }
 
+/**
+ * WHETHER THIS CARD'S TEST MAP WAS CUT AT ITS CEILING (live QA RSA-4,
+ * 2026-10-11). The list record serves `index.coverage.test_map_edges` but not
+ * the document's `truncated`, so SwarmCloud's card read "1,000 edges" as a
+ * complete count when 1,000 is where the indexer stopped. Each card with an
+ * index and an edge count reads its own document for `truncated`; the key
+ * carries `current_sha`, so a new index is read again and an unchanged one is
+ * not. Until the document answers (or if it never does) the card says the
+ * served count, exactly as the detail page does before its own read lands.
+ */
+function useTestMapCut(r: RepoRecord): boolean {
+  const sha = r.index.current_sha
+  const wanted = sha !== null && r.index.coverage !== null && r.index.coverage.test_map_edges !== null
+  const read = useUrRead(
+    () => (wanted ? loadRepositoryIndex(r.repo_id) : Promise.resolve({ status: 'empty' as const, fetchedAt: Date.now() })),
+    wanted ? `cut:${r.repo_id}:${sha}` : `cut:${r.repo_id}:none`,
+  )
+  const doc = read.state.status === 'ok' || read.state.status === 'stale' ? read.state.data : null
+  return doc?.truncated.includes('test_map') === true
+}
+
 function RepoCard({
   r,
   go,
@@ -205,6 +226,7 @@ function RepoCard({
   const f = freshness(r.index)
   const head = r.index.head_sha
   const sched = scheduleWords(r.index)
+  const cut = useTestMapCut(r)
   return (
     <Card
       className="ur-card"
@@ -231,7 +253,7 @@ function RepoCard({
           )}
         </span>
       </div>
-      <TestsMapped r={r} />
+      <TestsMapped r={r} cut={cut} />
       <div className="ur-cmeta">
         {lastIndexed(r)}
         <span>Schedule {sched === null ? <Dash why="The schedule was not served" /> : <b>{sched}</b>}</span>
