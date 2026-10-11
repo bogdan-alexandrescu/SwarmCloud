@@ -54,6 +54,7 @@ from .cifix import stamp as stamp_ci_fix
 from .continuation import NamedPull, resolve_continuation, resolve_merge_pr
 from .access import MODES, grant_id_for, org_id_for, via_token
 from .errors import Forbidden, NotFound, ValidationFailed
+from .browser_logins import refuse_unless_personal
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .forge import GIT_PROVIDER
 from .forgeapp import GRANTS, ORGS, Caller
@@ -434,6 +435,9 @@ class SubmissionService:
         # NaN and +/-Infinity, before the declaration, so the refusal names the
         # path rather than a bound a NaN compares false against (#294).
         reject_non_finite(spec.input, step_id=step_id)
+        # A session is kept only in a personal workspace (live-browser §5.5.1):
+        # a group tenant naming one is told that rule, ahead of the catalogue.
+        refuse_unless_personal(tenant, spec.input, step_id=step_id)
         # After the size, so an oversized input is refused for its size. What
         # it may carry is the catalogue's declaration (contract request 25).
         validate_runner_input(
@@ -711,6 +715,7 @@ class SubmissionService:
                 profile = validate_runner_profile(step.runner_profile)
                 validate_input_size(step.input, self._settings.core.max_input_bytes)
                 reject_non_finite(step.input, step_id=step.step_id)
+                refuse_unless_personal(tenant, step.input, step_id=step.step_id)
                 validate_runner_input(
                     profile, step.input, step_id=step.step_id,
                     repository_url=spec.repository_url,
