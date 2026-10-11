@@ -593,6 +593,92 @@ def test_a_forged_round_budget_is_capped(db, wake_client, github):
 
 
 # --------------------------------------------------------------------------
+# 6b. the PR-side CI fixer (#1073)
+# --------------------------------------------------------------------------
+#
+# ci-fix.yml submits its own one-step `continues_task` workflow for a red pull
+# request, stamped `metadata.ci_fix` by swarm_api/cifix.py. It is not one of
+# the merge's `merge_fix` rounds, yet it pushes to the same branch: the tick
+# names it when its head is the one the pull request moved to, and a red
+# reading at the head it was submitted for waits on it instead of waking the
+# step to `checks_failed`.
+
+FIXER = "task_" + "c" * 20
+
+
+def ci_fixer(db, *, tenant_id: str = "eng", task_id: str = FIXER, state: str = "RUNNING",
+             head_sha: str = HEAD, pushed_head: str | None = None) -> dict:
+    """A CI-fixer task of ROOT's branch for pull request NUMBER, as cifix stamps it."""
+    task = seed_task(db, task_id=task_id, tenant_id=tenant_id, state=state,
+                     runner_profile="claude-code", workflow_id="wf_" + task_id[-12:])
+    task["metadata"] = {
+        "dispatch": {"strategy": "direct-pr", "continues": ROOT},
+        "ci_fix": {"pull_request": NUMBER, "run_id": 7, "head_sha": head_sha,
+                   "attempt": 1, "max_attempts": 2, "postback": "pending"},
+    }
+    if pushed_head is not None:
+        task["result_summary"] = {"git": {"pushed_head": pushed_head}}
+    return task
+
+
+def test_the_head_the_ci_fixer_pushed_wakes_the_step_naming_the_fixer(db, wake_client, github):
+    fixable_merge(db, github, rounds=0)
+    ci_fixer(db, state="SUCCEEDED", pushed_head=MOVED)
+    github.pulls[NUMBER]["head"]["sha"] = MOVED
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "head_moved"
+    assert _wait(db)["head_pushed_by"] == FIXER
+
+
+def test_another_tenants_ci_fixer_is_never_named(db, wake_client, github):
+    fixable_merge(db, github, rounds=0)
+    ci_fixer(db, tenant_id="research", state="SUCCEEDED", pushed_head=MOVED)
+    github.pulls[NUMBER]["head"]["sha"] = MOVED
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "head_moved"
+    assert "head_pushed_by" not in _wait(db)
+
+
+def test_red_with_the_ci_fixer_running_at_the_head_waits(db, wake_client, github):
+    fixable_merge(db, github, rounds=0)
+    ci_fixer(db, state="RUNNING", head_sha=HEAD)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 0 and body["report"]["waiting"] == 1, body
+    assert mergewake.WAKE_MARKER not in _wait(db)
+    assert "wake_reason" not in _wait(db)
+    assert _wait(db)["checked_at"] == NOW
+    assert _fix_workflows(db) == []
+
+
+def test_red_after_the_ci_fixer_ended_wakes_the_step(db, wake_client, github):
+    fixable_merge(db, github, rounds=0)
+    ci_fixer(db, state="SUCCEEDED", head_sha=HEAD)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "red"
+
+
+def test_a_ci_fixer_at_another_head_does_not_hold_the_wake(db, wake_client, github):
+    fixable_merge(db, github, rounds=0)
+    ci_fixer(db, state="RUNNING", head_sha=MOVED)
+
+    body = _tick(wake_client).json()
+
+    assert body["report"]["woken"] == 1, body
+    assert _wait(db)["wake_reason"] == "red"
+
+
+# --------------------------------------------------------------------------
 # 7. update-branch is asynchronous (MS3 review finding, 2026-10-06)
 # --------------------------------------------------------------------------
 
