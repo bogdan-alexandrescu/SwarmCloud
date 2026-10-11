@@ -397,8 +397,13 @@ def test_a_picked_step_carries_a_link_to_its_run_and_the_node_itself_navigates_n
     # one commit. What must hold is that the link goes to THE DRAWER ROUTE of
     # whatever the section is currently called.
     inspector = _decl(views, "export function StepInspector(")
-    assert (
-        "href={`#%s/task/${encodeURIComponent(taskId)}`}" % _work_id() in inspector
+    # LIVE QA WF-21 (2026-10-11): the link is the agent's PATH, under the list
+    # that holds it (`agentPath`, the rule Run steps' Open agent uses), not the
+    # legacy `#work/task/<id>` hash that resolved every state to Live. A task
+    # whose state the read did not carry keeps the address, through the path
+    # table.
+    assert "agentPath({ id: taskId, state: taskState })" in inspector and (
+        "addressToPath(`%s/task/${encodeURIComponent(taskId)}`)" % _work_id() in inspector
     ), "the inspector carries no href, so there is no click that reaches the agent run"
     assert "<a\n" in inspector or "<a " in inspector, "the inspector renders no anchor"
     assert "Open agent →" in inspector, "the inspector's link is not the 'Open agent →' the picked mock-ups draw (workflows.html V2, wide-workflows.html A)"
@@ -428,9 +433,16 @@ def test_the_hash_the_node_builds_is_one_the_router_resolves():
     views = _src("WorkflowViews.tsx")
     app = _src("App.tsx")
 
-    hashes = re.findall(r"href=\{`#([^`$]*)\$\{", views)
-    assert hashes, "the inspector builds no hash; this test would check nothing"
-    assert hashes[0] == f"{_work_id()}/task/", f"unexpected run-link hash prefix {hashes[0]!r}"
+    # LIVE QA WF-21: the inspector hands the address to the path table
+    # (`addressToPath`, directly or through `agentPath`) instead of putting it
+    # in a hash, so the seam is the address it hands over.
+    hashes = re.findall(r"addressToPath\(`([^`$]*)\$\{", views)
+    assert hashes, "the inspector builds no address; this test would check nothing"
+    assert hashes[0] == f"{_work_id()}/task/", f"unexpected run-link address prefix {hashes[0]!r}"
+    agent_path = _decl(_src("OverviewRegions.tsx"), "export function agentPath(")
+    assert "addressToPath(`%s/task/" % _work_id() in agent_path, (
+        "agentPath no longer builds the task address, so a finished step's link has no route"
+    )
 
     router = _decl(app, "function fromAddress(")
     # `head === WORK`, through the CONSTANT. App.tsx declares the id as a

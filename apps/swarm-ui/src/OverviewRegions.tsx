@@ -16,7 +16,10 @@
  *                              page with more behind it is a lower bound,
  *                              `≥N` with the partial mark.
  *   Waiting, and why           the task page's waiting rows, grouped.
- *   Recent failures            the task page's last 24 hours.
+ *   Recent failures            the last 24 hours of the page AND of the
+ *                              FAILED, DEAD_LETTERED and CANCELLED state
+ *                              reads (`stateView`), which a page with more
+ *                              behind it takes beside it (live QA OV-1).
  *
  * An unread count is an em dash with its reason as the title -- never a 0.
  */
@@ -32,6 +35,7 @@ import { StateMark } from './marks'
 import { addressToPath } from './paths'
 import { staleFoot } from './Shell'
 import { usePageClock } from './useNow'
+import { ENDED_BADLY, WHOLE, hhmmUtc, stateView, type Coverage, type OverviewTaskPage } from './overviewReads'
 import { CONCURRENCY_STATES, TERMINAL_STATES, clockTime, reasonCopy, timeAgo, whyAgent, type Stats, type Task, type TaskPage, type TaskState } from './types'
 
 /**
@@ -124,6 +128,7 @@ function rows(tasks: Result<TaskPage>): Task[] | null {
   return tasks.status === 'ok' || tasks.status === 'stale' ? tasks.data.tasks : null
 }
 
+
 /** Since 00:00 UTC today. O1 names the day in UTC, so the cut is UTC too. */
 function isTodayUtc(iso: string | null, now: Date): boolean {
   if (iso === null) return false
@@ -132,6 +137,8 @@ function isTodayUtc(iso: string | null, now: Date): boolean {
     d.getUTCFullYear() === now.getUTCFullYear() && d.getUTCMonth() === now.getUTCMonth() && d.getUTCDate() === now.getUTCDate()
   )
 }
+
+const TERMINAL_BAND: readonly TaskState[] = ['SUCCEEDED', 'FAILED', 'DEAD_LETTERED', 'CANCELLED']
 
 /** The three cells, each with the states under it in lifecycle order. */
 const BAND: readonly { k: string; small: string; states: readonly TaskState[]; source: 'stats' | 'page' }[] = [
@@ -146,9 +153,14 @@ const BAND: readonly { k: string; small: string; states: readonly TaskState[]; s
  * the brand's, so PARKED's violet bars and the four teal states here are the
  * same shapes the Agents list draws.
  */
-export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: Result<TaskPage> }) {
+export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: Result<OverviewTaskPage> }) {
   const st = stats.status === 'ok' || stats.status === 'stale' ? stats.data : null
   const page = rows(tasks)
+  // THE FINISHED ROWS FROM EVERY READ THAT CARRIES THEM (live QA OV-6): the
+  // failed, dead-lettered and cancelled come from their state reads too when
+  // the page has more behind it, so only SUCCEEDED -- which no state read
+  // covers, at 3,600 rows all-time -- is limited to the page.
+  const finished = tasks.status === 'ok' || tasks.status === 'stale' ? stateView(tasks.data, TERMINAL_BAND) : null
   const now = new Date()
   // The head's instant (#98), so `counted from 6 min ago` and `⟳ 6 min` agree.
   const at = usePageClock()
@@ -165,17 +177,21 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
           }
           return {
             s,
-            v: page === null ? null : page.filter((t) => t.state === s && isTodayUtc(t.completed_at, now)).length,
+            v: finished === null ? null : finished.rows.filter((t) => t.state === s && isTodayUtc(t.completed_at, now)).length,
           }
         })
         const landed = c.source === 'stats' ? st !== null : page !== null
         const total = landed && parts.every((p) => p.v !== null) ? parts.reduce((n, p) => n + (p.v ?? 0), 0) : null
-        // A LOWER BOUND WHEN THE PAGE IS NOT THE WHOLE LIST (QA G1-02,
+        // A LOWER BOUND WHEN THE READS ARE NOT EVERY TASK (QA G1-02,
         // 2026-10-07). A task created before the page's window can finish
         // today, and it is not on the page, so the count off a page with a
         // next page is "at least", never the day's figure. `/v1/stats` has no
         // `finished_at` window to ask instead.
-        const partial = c.source === 'page' && (tasks.status === 'ok' || tasks.status === 'stale') && (tasks.data.next_page_token ?? null) !== null
+        const partial = c.source === 'page' && finished !== null && c.states.some((s) => !finished.whole(s))
+        // HOW FAR BACK, SAID (live QA OV-6): `≥35` on a phone beside `≥184`
+        // on the desktop was a factor of five nobody could account for. The
+        // read reaches back to the oldest task it holds; the foot says when.
+        const since = partial && finished?.since ? ` · created since ${hhmmUtc(finished.since)}` : ''
         const why =
           read.status === 'loading'
             ? 'still reading'
@@ -198,7 +214,7 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
                   : c.source === 'stats'
                     ? 'Counted by /v1/stats, one count per state, for the whole tenant.'
                     : partial
-                      ? `At least ${total}: counted off the ${page?.length ?? 0} newest tasks this page read, and older tasks that finished today are not on it.`
+                      ? `At least ${total}: counted off the ${page?.length ?? 0} newest tasks this page read${since === '' ? '' : `, which reach back to tasks created at ${hhmmUtc(finished?.since ?? '')}`}, and older tasks that finished today are not on it.`
                       : `Counted off the ${page?.length ?? 0} newest tasks this page read, which is every task.`
               }
             >
@@ -240,7 +256,11 @@ export function LifecycleBand({ stats, tasks }: { stats: Result<Stats>; tasks: R
               )}
             {/* AT EVERY WIDTH (QA G1-02): a phone reads 50 and a desktop 200,
                 so the two figures differ, and this is what says why. */}
-            {c.source === 'page' && page !== null && <span className="ov-lc-foot is-page">of the {page.length} newest read</span>}
+            {c.source === 'page' && page !== null && (
+              <span className="ov-lc-foot is-page">
+                of the {page.length} newest read{since}
+              </span>
+            )}
           </div>
         )
       })}
@@ -255,12 +275,6 @@ export interface WaitGroup {
   title: string
   detail: string
   n: number
-}
-
-/** HH:MM UTC, for a park's next eligible instant. */
-function clock(iso: string): string {
-  const d = new Date(iso)
-  return Number.isFinite(d.getTime()) ? `${d.toISOString().slice(11, 16)} UTC` : iso
 }
 
 /**
@@ -299,7 +313,12 @@ export function waitGroups(all: readonly Task[]): WaitGroup[] {
   }
   return [...groups.values()]
     .map(({ eligible, workflows, ...g }) => {
-      const wfs = [...workflows.entries()].sort((a, b) => b[1] - a[1]).map(([w, n]) => `${w} ${n}`)
+      const ranked = [...workflows.entries()].sort((a, b) => b[1] - a[1])
+      const wfs = ranked.slice(0, 3).map(([w, n]) => `${w} ${n}`)
+      // EVERY CONTRIBUTOR ACCOUNTED FOR (live QA OV-10, 2026-10-11): a row
+      // counting 7 named three workflows of 2 each and dropped the seventh --
+      // a fourth workflow, or a task in none. What the names leave is said.
+      const rest = g.n - ranked.slice(0, 3).reduce((n, [, k]) => n + k, 0)
       const why =
         g.state === 'PARKED'
           ? 'Checkpointed and released. Holds nothing.'
@@ -307,8 +326,9 @@ export function waitGroups(all: readonly Task[]): WaitGroup[] {
             ? 'Eligible now. Admitted when every pool it needs has room.'
             : 'Not yet eligible. Holds nothing.'
       const clauses = [
-        ...(g.state === 'PARKED' && eligible !== null ? [`next eligible ${clock(eligible)}`] : []),
-        ...wfs.slice(0, 3),
+        ...(g.state === 'PARKED' && eligible !== null ? [`next eligible ${hhmmUtc(eligible)}`] : []),
+        ...wfs,
+        ...(rest > 0 && wfs.length > 0 ? [`+${rest} more`] : []),
         why,
       ]
       return { ...g, detail: clauses.join(' · ') }
@@ -385,6 +405,10 @@ export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
+// The state reads and their coverage live in `overviewReads.ts`, which the
+// pure check layer imports too; re-exported for the screen and its tests.
+export { ENDED_BADLY, WHOLE, hhmmUtc, stateView, type Coverage, type OverviewTaskPage, type StateRead, type StateView } from './overviewReads'
+
 /**
  * The failed, dead-lettered and cancelled rows of the last 24 hours, newest
  * first. THE WINDOW AND THE ORDER READ `completed_at` ONLY (browser QA N4,
@@ -392,14 +416,25 @@ const DAY_MS = 24 * 60 * 60 * 1000
  * days ago with no recorded end was listed and counted as "last 24h". A
  * terminal task with no recorded end is listed after the dated rows and
  * counted on its own in the note -- it is not known to be inside the window.
+ *
+ * "LAST 24H" ONLY WHEN THE READ COVERS IT (live QA OV-7, 2026-10-11). The
+ * desktop said `last 24h · 11 failed` off a 200-row read that reached back
+ * five hours. The rows are read newest-CREATED first, so a state `cover` says
+ * is not whole is a lower bound: its figure is `≥N`, `partial` is true, and
+ * the note says from when the read reaches -- never a measured count over a
+ * window nobody read.
  */
-export function failuresOf(all: readonly Task[], now: number): { rows: Task[]; note: string } {
+export function failuresOf(
+  all: readonly Task[],
+  now: number,
+  cover: Coverage = WHOLE,
+): { rows: Task[]; note: string; partial: boolean } {
   const ended = (t: Task): number | null => {
     if (t.completed_at === null) return null
     const ms = new Date(t.completed_at).getTime()
     return Number.isFinite(ms) ? ms : null
   }
-  const terminal = all.filter((t) => t.state === 'FAILED' || t.state === 'DEAD_LETTERED' || t.state === 'CANCELLED')
+  const terminal = all.filter((t) => ENDED_BADLY.includes(t.state))
   const dated = terminal
     .filter((t) => {
       const ms = ended(t)
@@ -407,15 +442,17 @@ export function failuresOf(all: readonly Task[], now: number): { rows: Task[]; n
     })
     .sort((a, b) => (ended(b) ?? 0) - (ended(a) ?? 0))
   const undated = terminal.filter((t) => ended(t) === null)
-  const n = (s: TaskState) => dated.filter((t) => t.state === s).length
+  const partial = ENDED_BADLY.some((s) => !cover.whole(s))
+  const n = (s: TaskState) => `${cover.whole(s) ? '' : '≥'}${dated.filter((t) => t.state === s).length}`
   const note = [
     'last 24h',
     `${n('FAILED')} failed`,
     `${n('DEAD_LETTERED')} dead-lettered`,
-    ...(n('CANCELLED') > 0 ? [`${n('CANCELLED')} cancelled`] : []),
+    ...(dated.some((t) => t.state === 'CANCELLED') || !cover.whole('CANCELLED') ? [`${n('CANCELLED')} cancelled`] : []),
     ...(undated.length > 0 ? [`${undated.length} with no recorded end`] : []),
+    ...(partial ? [cover.since === null ? 'partial: not every task was read' : `partial: tasks created since ${hhmmUtc(cover.since)} read`] : []),
   ].join(' · ')
-  return { rows: [...dated, ...undated], note }
+  return { rows: [...dated, ...undated], note, partial }
 }
 
 /**
@@ -442,13 +479,31 @@ function EndedAgo({ task: t, now }: { task: Task; now: number }) {
 }
 
 /** "Recent failures": mark, agent and why, age, Open (O1). */
-export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
+export function RecentFailures({ tasks }: { tasks: Result<OverviewTaskPage> }) {
   const all = rows(tasks)
   const now = Date.now()
-  const failed = all === null ? [] : failuresOf(all, now).rows
+  const view = tasks.status === 'ok' || tasks.status === 'stale' ? stateView(tasks.data, ENDED_BADLY) : null
+  const found = view === null ? null : failuresOf(view.rows, now, view)
+  const failed = found === null ? [] : found.rows
   const titleOf = useRowTitles(failed.slice(0, FAILURE_ROWS))
   if (all === null) return <TaskListAbsent tasks={tasks} />
-  if (failed.length === 0) return <NoneAmong heading={`None among the ${all.length} newest`} n={all.length} />
+  // NOT A REAL ZERO OVER A READ THAT DID NOT REACH (live QA OV-1): the phone
+  // drew `real zero` over its 50 newest while 11 tasks had failed. When the
+  // reads behind this card are not every failed, dead-lettered and cancelled
+  // task, an empty list is "none among what was read", marked partial.
+  if (failed.length === 0) {
+    if (found?.partial) {
+      return (
+        <Absent
+          className="ov-empty"
+          kind="partial"
+          heading={`None among the ${all.length} newest read`}
+          say={`No failed, dead-lettered or cancelled task among the rows read, but the reads did not reach every such task${view?.since ? ` (only tasks created since ${hhmmUtc(view.since)})` : ''}. Not a zero: unknown beyond what was read.`}
+        />
+      )
+    }
+    return <NoneAmong heading={`None among the ${all.length} newest`} n={all.length} />
+  }
   const shown = failed.slice(0, FAILURE_ROWS)
   return (
     <>
@@ -464,6 +519,11 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
     )}
     </>
   )
+}
+
+/** `wf_ccdd1422ab` -> `wf_ccdd14…`, as Running now's phone rows shorten it. */
+function shortWf(id: string): string {
+  return id.length <= 10 ? id : `${id.slice(0, 9)}…`
 }
 
 /** Rows the Recent failures card draws before its "N more". */
@@ -486,6 +546,11 @@ function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: 
         {failed.map((t) => {
           const href = agentPath(t)
           const why = whyAgent(t) || (t.state === 'DEAD_LETTERED' ? 'Retry budget spent.' : '')
+          // AN UNTITLED STEP SAYS WHOSE IT IS (live QA OV-16, 2026-10-11):
+          // five of eleven rows read "merge" and nothing else. With no title
+          // read, the row names its workflow by its short id.
+          const title = titleOf(t)
+          const label = title === null && t.workflow_id !== null ? `${rowLabel(t, null)} · ${shortWf(t.workflow_id)}` : rowLabel(t, title)
           return (
             <tr key={t.id}>
               {/* THE MARK ALONE (browser QA N3, 2026-10-04): the 68px badge
@@ -495,8 +560,8 @@ function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: 
                 <StateMark state={t.state} bare />
               </td>
               <th scope="row">
-                <a className="ov-name" href={href} title={`${rowLabel(t, titleOf(t))} · ${t.id}`}>
-                  {rowLabel(t, titleOf(t))}
+                <a className="ov-name" href={href} title={`${label} · ${t.id}`}>
+                  {label}
                 </a>
                 {why !== '' && (
                   <span className="ov-sub ov-why" title={why}>
@@ -508,7 +573,9 @@ function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: 
                 <EndedAgo task={t} now={now} />
               </td>
               <td className="is-num">
-                <a className="ov-open" href={href}>
+                {/* ONE TAB STOP PER ROW (live QA OV-16): the name above is
+                    the same link, so this one is for the pointer only. */}
+                <a className="ov-open" href={href} tabIndex={-1} aria-hidden="true">
                   Open
                 </a>
               </td>

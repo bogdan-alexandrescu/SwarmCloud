@@ -43,8 +43,11 @@ import {
   type Cell,
 } from './measure'
 import {
+  PARK_REASONS,
   TERMINAL_STATES,
+  clockTime,
   dispatchOf,
+  reasonCopy,
   stepState,
   whyAgent,
   whyNeedsAction,
@@ -1315,6 +1318,14 @@ export function attemptFacts(
   if (a.error !== null && a.error !== '') {
     const lines = a.error.split('\n')
     const first = lines[0] ?? ''
+    // A PARK IS NOT AN ERROR (live QA WF-20): an attempt that ended by
+    // parking -- a merge waiting on CI writes `CI_PENDING` -- read
+    // `error CI_PENDING` in the error slot on a normal wait.
+    const code = a.error.trim()
+    if ((PARK_REASONS as readonly string[]).includes(code)) {
+      facts.push({ key: 'parked', cell: measuredCell(code, reasonCopy(code)) })
+      return facts
+    }
     facts.push({
       key: 'error',
       cell: measuredCell(lines.length > 1 ? `${first} (+${lines.length - 1} lines)` : first, a.error),
@@ -1543,6 +1554,19 @@ export function stepWhy(
     default: {
       const warn = whyNeedsAction(task, units)
       if (failedParent !== null) return why(`blocked: ${failedParent} failed`, warn)
+      // A CI WAIT IS WOKEN BY THE CHECKS (live QA WF-20, 2026-10-11). The
+      // node said "Eligible again at 04:37:11 (in 11m)" beside a merge card
+      // saying "Woken when the checks settle". `next_eligible_at` is the
+      // scheduler's FALLBACK for a CI park (agent_worker control.py: woken
+      // then even if the tick never marks it), so it is said as the latest
+      // time, after what actually wakes it.
+      if (task.state === 'PARKED' && task.park_reason === 'CI_PENDING') {
+        const latest = clockTime(task.next_eligible_at)
+        return why(
+          `${reasonCopy('CI_PENDING')} Woken when the checks settle${latest === null ? '' : `, at the latest at ${latest.text}`}.`,
+          warn,
+        )
+      }
       const agent = whyAgent(task, units)
       if (agent !== '') return why(agent, warn)
       const blocked = whyNotRunning(task)
@@ -1702,7 +1726,10 @@ export interface MergeCard {
   readonly state: MergeCardState
   /** The pull request: a link only when a worker-written result yields one. */
   readonly pullRequest: { readonly number: number; readonly href: string | null } | null
-  /** `metadata.merge_wait.first_parked_at`: when the step first parked for CI. */
+  /**
+   * `metadata.merge_wait.first_parked_at`: when the CURRENT wait for CI began.
+   * Not the step's first park: a merge-slot wait clears it (WF-5).
+   */
   readonly firstParkedAt: string | null
 }
 
