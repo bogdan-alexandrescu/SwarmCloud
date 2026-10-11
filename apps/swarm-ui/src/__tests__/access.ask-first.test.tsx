@@ -129,7 +129,7 @@ async function mount() {
   return render(<AccessScreen />)
 }
 
-const writes = (calls: { method: string }[]) => calls.filter((c) => c.method !== 'GET')
+const writes = <C extends { method: string }>(calls: C[]) => calls.filter((c) => c.method !== 'GET')
 const row = (repository: string) => document.querySelector(`li.ac-row[data-repo="${repository}"]`) as HTMLElement
 const grantRow = (repository: string) => document.querySelector(`li.ac-grant[data-repo="${repository}"]`) as HTMLElement
 const radio = (el: HTMLElement, name: string) => within(el).getByRole('radio', { name }) as HTMLButtonElement
@@ -161,7 +161,7 @@ describe('a grant is never removed or narrowed on one click (RSA-1)', () => {
 
     fireEvent.click(within(g()).getByRole('button', { name: 'Remove' }))
     fireEvent.click(within(g()).getByRole('button', { name: 'Remove access' }))
-    await waitFor(() => expect(writes(calls).map((c) => `${c.method} ${(c as { url: string }).url}`)).toEqual([`DELETE /v1/access/grants/${ID(2)}`]))
+    await waitFor(() => expect(writes(calls).map((c) => `${c.method} ${c.url}`)).toEqual([`DELETE /v1/access/grants/${ID(2)}`]))
   })
 
   it('a grant moved from Write to Read writes nothing until Change to Read', async () => {
