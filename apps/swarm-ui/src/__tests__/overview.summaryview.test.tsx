@@ -179,19 +179,19 @@ describe("#168: the Overview's task poll asks for view=summary", () => {
    *
    * MUTATION: drop `{ view: 'summary' }` from `loadListPage`.
    */
-  it('asks the Overview phone read for the 50-row summary page', async () => {
+  it('asks the Overview phone read for the 200-row summary page (live QA CH-4)', async () => {
     media(true)
     api.loadTasks.mockClear()
     await mount()
     const calls = api.loadTasks.mock.calls
     expect(calls.length, 'the Overview made no task read').toBeGreaterThan(0)
-    expect(calls.filter((c) => c[0] !== 50 || (c[1] as { view?: string } | undefined)?.view !== 'summary')).toEqual([])
+    expect(calls.filter((c) => c[0] !== 200 || (c[1] as { view?: string } | undefined)?.view !== 'summary')).toEqual([])
   })
 
   /**
-   * The control: the wide screen asks for the 200-row page -- the limit
-   * still differs by width, so a test that passed whatever was asked could
-   * not pass both of these -- and asks for it in the summary view too.
+   * The control: the wide screen asks for the same 200-row page -- since
+   * live QA CH-4 the limit no longer differs by width -- and asks for it in
+   * the summary view too.
    *
    * MUTATION: ask for the summary only on a phone.
    */
