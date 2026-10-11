@@ -168,7 +168,7 @@ export const OVERVIEW_JUMPS: readonly { id: string; label: string }[] = [
   { id: 'ov-running', label: 'Running now' },
   { id: 'ov-waiting', label: 'Waiting, and why' },
   { id: 'ov-failures', label: 'Recent failures' },
-  { id: 'ov-spend', label: 'Cost so far' },
+  { id: 'ov-spend', label: 'Recent token cost' },
   { id: 'ov-headroom', label: 'Headroom' },
   { id: 'ov-pools', label: 'Pools' },
 ]
@@ -1037,6 +1037,8 @@ export function SkyShell({
     })
   }, [])
 
+  const closeDrawer = useCallback(() => setDrawer(false), [])
+
   // A navigation closes the phone drawer, any flyout and the tenant list.
   const nav = useCallback(
     (to: string) => {
@@ -1213,6 +1215,7 @@ export function SkyShell({
       apiFailuresOnly={apiFailuresOnly}
       onApiFilter={onApiFilter}
       missing={missing}
+      onJump={closeDrawer}
     />
   )
 
@@ -1686,6 +1689,7 @@ function PanelPages({
   apiFailuresOnly,
   onApiFilter,
   missing,
+  onJump,
 }: {
   section: SpineSection
   tab: string
@@ -1698,6 +1702,8 @@ function PanelPages({
   apiFailuresOnly: boolean
   onApiFilter?: (failuresOnly: boolean) => void
   missing: boolean
+  /** Called before an Overview jump: closes the phone drawer. */
+  onJump?: () => void
 }) {
   // A 404 lit as Overview has none of Overview's cards to jump to.
   if (section === 'overview' && missing) return null
@@ -1713,6 +1719,11 @@ function PanelPages({
             onClick={(e) => {
               if (!routedClick(e)) return
               e.preventDefault()
+              // THE PHONE DRAWER CLOSES ON A JUMP (live QA OV-5, 2026-10-11):
+              // the page scrolled behind it and the drawer still covered the
+              // card, so the tap looked like it did nothing. A navigation
+              // closes it (`nav`); a jump is one too.
+              onJump?.()
               jumpTo(j.id)
             }}
           >

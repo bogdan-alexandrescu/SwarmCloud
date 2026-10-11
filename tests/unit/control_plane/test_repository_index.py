@@ -623,6 +623,27 @@ def test_get_index_compares_a_moved_head_once(client, db, objects, repo_id, gith
     assert [u for u, _ in github.calls if "/compare/" in u] == compares
 
 
+def test_an_index_that_lands_at_the_head_stores_no_older_pairs_compare(
+    client, db, objects, repo_id
+):
+    """Live QA RSA-3: an index at the head kept `behind_by: 2` and the 20-file
+    `head_relation` of an older pair. Promotion settles both from the shas.
+
+    MUTATION: drop `settle_relation` from the promotion and the stored
+    `behind_by` stays 2."""
+    started = _index_now(client, repo_id)
+    assert started.status_code == 202, started.text
+    stored = _registration(db, repo_id)["index"]
+    stored["head_relation"] = {"base": TWO, "head": ONE, "status": "ahead", "ahead_by": 2,
+                               "files": ["src/api/x.py"]}
+    stored["behind_by"] = 2
+    finish_index_task(db, objects, started.json()["run"]["task_id"], fixture_index(ONE))
+    _get_index(client, repo_id)
+    stored = _registration(db, repo_id)["index"]
+    assert stored["current_sha"] == stored["head_sha"] == ONE
+    assert stored["behind_by"] == 0 and stored["head_relation"] is None
+
+
 def test_the_tenant_token_reads_the_head_and_is_never_stored_or_served(
     client, db, objects, repo_id, github, secrets_reader
 ):

@@ -37,7 +37,7 @@ describe('G1-14: On this page', () => {
     expect(ids).toContain('ov-spend')
     expect(ids).toContain('ov-pools')
     expect(OVERVIEW_JUMPS.map((j) => j.id)).toEqual(ids)
-    expect(OVERVIEW_JUMPS.find((j) => j.id === 'ov-spend')!.label).toBe('Cost so far')
+    expect(OVERVIEW_JUMPS.find((j) => j.id === 'ov-spend')!.label).toBe('Recent token cost')
     expect(OVERVIEW_JUMPS.find((j) => j.id === 'ov-pools')!.label).toBe('Pools')
   })
 
@@ -84,12 +84,29 @@ describe('G1-14: On this page', () => {
     expect(window.location.hash).toBe('#ov-pools')
   })
 
+  /**
+   * OV-5 (live QA, 2026-10-11): on a phone the page scrolled behind the
+   * drawer and the drawer stayed over it, so the jump looked like nothing.
+   *
+   * MUTATION: drop the `onJump` call in `PanelPages`.
+   */
+  it('closes the phone drawer when a jump is tapped', () => {
+    shell()
+    document.getElementById('ov-failures')!.scrollIntoView = vi.fn()
+    const app = document.querySelector('.sk-app')!
+    fireEvent.click(document.querySelector('button[aria-label="Open the menu"]')!)
+    expect(app.classList.contains('has-drawer'), 'the control: the drawer opened').toBe(true)
+    fireEvent.click(link('Recent failures'))
+    expect(app.classList.contains('has-drawer'), 'the drawer stayed over the page').toBe(false)
+    expect(window.location.hash).toBe('#ov-failures')
+  })
+
   it('animates in a tab that can be seen', () => {
     shell()
     const scroll = vi.fn()
     document.getElementById('ov-spend')!.scrollIntoView = scroll
     vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
-    fireEvent.click(link('Cost so far'))
+    fireEvent.click(link('Recent token cost'))
     expect(scroll).toHaveBeenCalledWith({ block: 'start', behavior: 'smooth' })
   })
 })

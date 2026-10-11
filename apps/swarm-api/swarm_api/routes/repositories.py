@@ -167,6 +167,15 @@ def _platform_admin(fields: set[str], auth: AuthContext, field: str = "platform"
     return auth.email
 
 
+def _served(ctx: AppContext, record: dict) -> dict:
+    """A registration as served: `to_api`, with a coverage block that says
+    which of its counts are capped (RSA-4, `RepoIndex.served_coverage`)."""
+    body = to_api(record)
+    if isinstance((record.get("index") or {}).get("coverage"), dict):
+        body["index"]["coverage"] = _index(ctx).served_coverage(record)
+    return body
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_repository(
     body: RepositoryCreate,
@@ -211,7 +220,7 @@ def list_repositories(
         tenant_id, limit=paged_limit(ctx, limit), page_token=page_token
     )
     return {
-        "repositories": [to_api(row) for row in rows],
+        "repositories": [_served(ctx, row) for row in rows],
         "next_page_token": next_token,
         "tenant_id": tenant_id,
     }
@@ -250,7 +259,8 @@ def get_repository(
     tenant_id: str = Depends(tenant_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    return {"repository": to_api(_store(ctx).get(tenant_id, repo_id)), "tenant_id": tenant_id}
+    record = _store(ctx).get(tenant_id, repo_id)
+    return {"repository": _served(ctx, record), "tenant_id": tenant_id}
 
 
 @router.patch("/{repo_id}")
