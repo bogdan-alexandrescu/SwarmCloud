@@ -73,8 +73,11 @@ def test_the_catalogue_is_what_the_amendment_describes():
     # canary (claude-code-gke, removed by the same change). indexer: contract
     # request 63 (owner, 2026-10-10), the canary for #939. generic, codex and
     # merge: contract requests 64, 65 and 66 (owner, 2026-10-10, #939 option A).
+    # claude-code-browser: contract request 67 (owner, 2026-10-11), on the
+    # browser image, which runs only on GKE.
     assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {
         "browser",
+        "claude-code-browser",
         "claude-code",
         "indexer",
         "generic",

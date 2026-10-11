@@ -7,6 +7,8 @@ container that will never exist.
 
 Cloud Run Jobs is the primary backend. GKE Autopilot takes browser work, because
 Chromium needs a large /dev/shm and GKE gives direct control over it.
+That is `browser`, and `claude-code-browser` since contract request 67
+(2026-10-11).
 It also takes claude-code since contract request 53 (2026-10-08), for its start
 latency: about 23 s there against Cloud Run's 128 s median. And indexer since
 contract request 63 (2026-10-10), the canary for #939: a new GKE pod's internet
@@ -398,8 +400,8 @@ CONTAINER_SECURITY_CONTEXT: dict[str, Any] = {
 #: as `kube-dns.kube-system.svc.cluster.local` -- goes to exactly the resolver
 #: it went to before, and only the search-path trial is gone.
 #:
-#: Every GKE profile, deliberately: browser is the only one today, and any
-#: future GKE profile runs tenant code in the same cluster, so it gets the same
+#: Every GKE profile, deliberately: browser was the first, and every GKE
+#: profile runs tenant code in the same cluster, so it gets the same
 #: resolver (test_gke_browser_pod_dns.py parametrises over all of them).
 #: GKE pods only: Cloud Run has no cluster search path. Mirrored field for
 #: field in kubernetes/worker-templates/worker-job-browser.yaml, and held there
@@ -1817,6 +1819,14 @@ class GkeJobDispatcher:
                             # Chromium's shared memory. The 64 MiB default is
                             # what makes headless Chrome crash under load, and
                             # is the reason browser work is on GKE at all.
+                            # Every pod gets it, so `claude-code-browser`
+                            # (contract request 67) has it too; its `browser`
+                            # class (16 GiB) is what pays for it, since this
+                            # tmpfs is charged to the memory limit. Chromium's
+                            # own sandbox stays off on both profiles
+                            # (CONTAINER_SECURITY_CONTEXT): the claude-code
+                            # runner tells its agent to launch with
+                            # chromium_sandbox=False.
                             {"name": "dshm", "emptyDir": {
                                 "medium": "Memory", "sizeLimit": "2Gi"}},
                             {"name": "tmp", "emptyDir": {"sizeLimit": f"{disk.tmp_gib}Gi"}},
