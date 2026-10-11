@@ -39,6 +39,7 @@ from .routes import (
     health,
     issues,
     leases,
+    live,
     onboarding,
     outcomes,
     people,
@@ -186,6 +187,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
     # routes that authenticate as the child routes do.
     app.include_router(browser_logins.router)
+    # The live browser (docs/design/live-browser.md, lane LB-L9): the worker's
+    # tunnel ticket, a member's view and control, and the socket proxied to
+    # swarm-live. Tenant-scoped through the same authenticator as every route.
+    app.include_router(live.router)
 
     @app.middleware("http")
     async def observe(request: Request, call_next):

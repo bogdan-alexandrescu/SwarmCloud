@@ -10416,6 +10416,16 @@ button.diff-row.is-file:focus-visible { outline: 2px solid var(--sk-ac); outline
 /* The content column: the page's scroller over the dock (see `.ctl-frame`). */
 .sk-main { flex: 1; min-width: 0; min-height: 0; display: grid; grid-template-rows: minmax(0, 1fr) auto; }
 .sk-main > .ctl-scroll > .app { max-width: none; padding-top: 16px; }
+/* THE SCROLLER AND A PAGE'S HEADING TAKE FOCUS WITHOUT A RING (live QA CH-5,
+   CH-15): the shell moves focus there on a page change so the keyboard
+   scrolls the page and a screen reader reads its name. Neither is a control,
+   and a ring round the whole page on every click would say one was pressed. */
+.ctl-scroll:focus, .ctl-scroll h1[tabindex='-1']:focus, .ctl-scroll [id][tabindex='-1']:focus { outline: none; }
+/* THE SKIP LINK (CH-15): first in the tab order, off-screen until focused,
+   then over the top-left corner in the spine's colours (one value in both
+   themes, as the spine is). */
+.sk-skip { position: absolute; left: 8px; top: -60px; z-index: 60; padding: 10px 14px; border-radius: 6px; background: #0b3a7a; color: #fff; font: 600 var(--t-meta)/var(--lh-meta) var(--font); text-decoration: none; }
+.sk-skip:focus { top: 8px; outline: 2px solid #7cc8f8; outline-offset: 2px; }
 
 /* --- the spine: 84px, the same deep blue in both themes ------------------ */
 .sk-spine { width: 84px; flex: none; background: linear-gradient(180deg, var(--sk-spine-top), var(--sk-spine-foot)); color: var(--sk-spine-ink); display: flex; flex-direction: column; align-items: center; padding: 16px 0 12px; gap: 4px; overflow-y: auto; }
@@ -10550,6 +10560,8 @@ span.sk-ttile { cursor: default; }
 /* The phone header's chip, which opens the bottom sheet. */
 .sk-tchip { display: inline-flex; gap: 4px; align-items: center; font: 500 var(--t-micro)/var(--lh-micro) var(--font); padding: 4px 8px; border-radius: var(--r-pill); border: 1px solid rgba(124, 200, 248, .45); color: #eef4fa; background: #1a4a83; cursor: pointer; max-width: 40vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-tchip .sk-ic { width: 12px; height: 12px; }
+/* The drawer's close (CH-12): drawn only while the drawer is open. */
+.sk-dclose { margin-left: 4px; width: 32px; height: 32px; justify-content: center; align-items: center; font: 400 var(--t-title)/var(--lh-flush) var(--font); }
 .sk-tpop.is-sheet { left: 0; right: 0; bottom: 0; top: auto; width: auto; border-radius: 16px 16px 0 0; padding: 8px 12px 16px; gap: 4px; z-index: 47; }
 .sk-tpop.is-sheet .sk-to { min-height: 44px; grid-template-columns: 28px 1fr auto; padding: 10px 8px; }
 .sk-tpop.is-sheet .sk-tg { width: 28px; height: 28px; font-size: var(--t-meta); line-height: var(--lh-flush); display: flex; align-items: center; justify-content: center; }
@@ -10675,6 +10687,15 @@ span.sk-ttile { cursor: default; }
      one value in both themes). `flex: none`, so the title gives way
      and the tag never wraps onto a line of its own (CH-20). */
   .sk-pbar .sk-adm { flex: none; white-space: nowrap; color: #bcd6ee; border-color: rgba(238, 244, 250, .3); }
+  /* A 44PX TARGET UNDER EVERY CONTROL IN THE BAR (live QA CH-19): the menu
+     was 26x26 and the tenant chip 27px high. The header (36px once compact)
+     cannot hold 44px boxes, so each takes a centred `::after` hit area, as
+     `Top` does; the chip's ellipsis moved to its name (`.sk-tcn`) so nothing clips it. */
+  .sk-pbar > .sk-ibtn, .sk-pbar > .sk-tchip { position: relative; }
+  .sk-pbar > .sk-ibtn::after, .sk-pbar > .sk-tchip::after { content: ''; position: absolute; left: 50%; top: 50%; width: max(100%, 44px); height: 44px; transform: translate(-50%, -50%); }
+  .sk-pbar > .sk-tchip { overflow: visible; }
+  .sk-tchip > .sk-tcn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sk-app.has-drawer .sk-dclose { width: 44px; height: 44px; }
   .sk-side { display: none; }
   .sk-app.has-drawer .sk-side { display: flex; position: fixed; left: 0; top: 0; bottom: 0; height: auto; width: min(320px, 88vw); z-index: 26; box-shadow: var(--sk-sh); }
   .sk-app.has-drawer .sk-spine { width: 66px; }

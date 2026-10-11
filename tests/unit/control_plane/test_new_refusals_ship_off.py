@@ -158,6 +158,24 @@ NOT_SWITCHABLE_CODES = frozenset({
     "browser_login_unauthenticated",
     "browser_login_unproven",
     "browser_login_fenced",
+    # The live browser (LB-L9, docs/design/live-browser.md §3.3, §4.2, §5.1),
+    # as the hand-off codes above: raised only by the routes that change
+    # introduces (POST /attempts/{id}/live-session and /tasks/{id}/live/...),
+    # so no existing caller can be refused by them. Continuing past any of
+    # them is the breach itself: an unsigned or unauthenticated worker given
+    # a tunnel ticket, a stale generation streaming past its fence (invariant
+    # 5), a live path on a profile or backend that has none (§8.1), a ticket
+    # for a closed session, a member controlling without the submitter's
+    # leave, a second controller at once, or a non-controller ending
+    # someone's control.
+    "live_unauthenticated",
+    "live_unproven",
+    "live_fenced",
+    "live_not_available",
+    "live_session_closed",
+    "control_not_eligible",
+    "control_held",
+    "not_controller",
 })
 
 #: What the guard lets through without a switch.
