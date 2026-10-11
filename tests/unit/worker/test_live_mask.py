@@ -583,3 +583,54 @@ def test_a_frame_navigation_from_cdp_resets_the_frame():
     assert state.apply(Frame.blank(SCREEN_W, SCREEN_H, WHITE)) is Outcome.MASKED
     asyncio.run(mask.on_event("Page.frameNavigated", {"frame": {"id": TOP, "url": "https://b.test/"}}))
     assert state.apply(Frame.blank(SCREEN_W, SCREEN_H, WHITE)) is Outcome.UNAVAILABLE
+
+
+# --- the observer's layout triggers (design §5.3.2) ---------------------------
+#
+# The gate trusts a report only until the observer announces a layout change,
+# so a change the observer never announces leaves a stale report marked fresh:
+# a secret painted out at its old position, or not reported at all, until the
+# heartbeat. There is no browser here, so these hold the trigger list in the
+# source: removing a trigger fails a test instead of silently opening a gap.
+
+
+def _js_string_list(source: str, name: str) -> set[str]:
+    import re
+
+    match = re.search(r"const %s = \[(.*?)\];" % re.escape(name), source, re.S)
+    assert match, f"observer.js no longer declares {name}"
+    return set(re.findall(r'"([^"]+)"', match.group(1)))
+
+
+def test_the_observer_hears_loads_that_never_reach_window():
+    # An <img> or <iframe> finishing loading after the page did: the spec's
+    # Document "get the parent" is null for `load`, so a capture listener on
+    # `window` never sees it, and the image reflows the text below it.
+    source = observer_source()
+    assert {"load", "error"} <= _js_string_list(source, "DOCUMENT_TRIGGERS")
+    assert "document.addEventListener(type, layout, capture)" in source
+    # A load inside a shadow root does not leave the root either.
+    assert "root.addEventListener(type, layout, capture)" in source
+
+
+def test_the_observer_watches_sizes_with_a_resize_observer():
+    source = observer_source()
+    assert "new ResizeObserver(" in source
+    assert "resizes.observe(" in source
+
+
+def test_the_observer_watches_mutations_inside_open_shadow_roots():
+    # A MutationObserver on `document` is not told about mutations inside a
+    # shadow root, though measure() reports the text inside it.
+    source = observer_source()
+    assert "mutations.observe(root, MUTATIONS)" in source
+    assert "watchRoot(el.shadowRoot)" in source
+
+
+def test_the_observer_hears_css_only_changes_from_pointer_and_keyboard():
+    # :hover, :active and :focus-visible reveal or move content with no
+    # mutation; the event that causes them is the only announcement.
+    triggers = _js_string_list(observer_source(), "WINDOW_TRIGGERS")
+    assert {"pointerover", "pointerout", "pointerdown", "pointerup", "keydown", "keyup"} <= triggers
+    assert {"scroll", "resize", "input", "change", "load", "pageshow", "transitionend",
+            "animationend", "focusin", "focusout"} <= triggers

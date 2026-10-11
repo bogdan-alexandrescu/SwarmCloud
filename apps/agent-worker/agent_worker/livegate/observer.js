@@ -9,10 +9,14 @@
 // Two messages, both JSON through the binding:
 //
 //   {"v":1,"k":"layout","doc":D,"e":N}
-//       sent the moment something may have moved or changed (a mutation, a
-//       scroll, a resize, typing, a load). It is sent from the event or
-//       mutation callback, before the next paint, so the gate hears that its
-//       last report is stale before the pixels change.
+//       sent the moment something may have moved or changed (a mutation, in
+//       the document or an open shadow root; a scroll; a resize, of the
+//       viewport or of any element the last report measured; typing; a
+//       pointer or key event that can flip :hover, :active or :focus; a
+//       load, including an <img> or <iframe> whose `load` never reaches
+//       `window`). It is sent from the event, observer or mutation callback,
+//       before the next paint, so the gate hears that its last report is
+//       stale before the pixels change.
 //   {"v":1,"k":"report","doc":D,"e":N,"vp":[...],"f":[...],"t":[...],"o":[...],"tr":B}
 //       measured in the next animation frame (after layout, before paint),
 //       carrying the epoch N it was measured at. Also sent once a second
@@ -47,6 +51,31 @@
     "", "text", "search", "url", "email", "tel", "number",
   ]);
   const INLINE_DISPLAYS = new Set(["inline", "contents", "ruby", "ruby-text"]);
+  // Elements whose size can change with no mutation: a load, a decode, a
+  // video's metadata. Their resize is announced through `resizes`.
+  const REPLACED = new Set([
+    "img", "picture", "video", "audio", "canvas", "svg", "iframe", "frame",
+    "embed", "object", "input", "textarea", "select",
+  ]);
+  // Listened for on `window`, capturing. :hover, :active and :focus-visible
+  // reveal or move content with no mutation; the pointer or key event that
+  // flips them is the only announcement there is.
+  const WINDOW_TRIGGERS = [
+    "scroll", "resize", "input", "change", "load", "pageshow",
+    "transitionrun", "transitionend", "animationstart", "animationiteration",
+    "animationend", "focusin", "focusout", "toggle",
+    "pointerover", "pointerout", "pointerdown", "pointerup", "pointercancel",
+    "keydown", "keyup",
+  ];
+  // Listened for on `document` and on every open shadow root, capturing. The
+  // HTML spec's "get the parent" of a Document is null for `load`, so an
+  // <img> or <iframe> that finishes loading after the page did never reaches
+  // a listener on `window`; and a non-composed event inside a shadow root
+  // never leaves it.
+  const DOCUMENT_TRIGGERS = ["load", "error"];
+  const MUTATIONS = {
+    subtree: true, childList: true, attributes: true, characterData: true,
+  };
 
   const doc = (globalThis.crypto && crypto.randomUUID)
     ? crypto.randomUUID()
@@ -125,6 +154,7 @@
         if (!INLINE_DISPLAYS.has(display) || !el.parentElement) {
           const id = ++blockIds;
           blocks.set(el, id);
+          sized.push(el);
           return id;
         }
         el = el.parentElement;
@@ -132,6 +162,12 @@
       return 0;
     }
 
+    // Every element whose box this report depends on. Its size changing
+    // (an image loading above a paragraph, a :hover reveal growing a block)
+    // moves what this report measured, so the ResizeObserver announces it.
+    const sized = [];
+    if (document.documentElement) sized.push(document.documentElement);
+    if (document.body) sized.push(document.body);
     const fields = [];
     const texts = [];
     const owners = [];
@@ -167,8 +203,12 @@
           continue;
         }
         const el = node;
-        if (el.shadowRoot) roots.push(el.shadowRoot); // open roots only (§5.3.4)
+        if (el.shadowRoot) { // open roots only (§5.3.4)
+          watchRoot(el.shadowRoot);
+          roots.push(el.shadowRoot);
+        }
         const tag = el.localName;
+        if (REPLACED.has(tag)) sized.push(el);
         if (tag === "input") {
           const r = el.getBoundingClientRect();
           if (sensitive(el)) {
@@ -207,6 +247,7 @@
 
     tracked = nextTracked;
     trackedSignature = signature();
+    watchSizes(sized);
     const vv = globalThis.visualViewport;
     post({
       k: "report",
@@ -239,14 +280,49 @@
     requestAnimationFrame(watch);
   }
 
-  new MutationObserver(layout).observe(document, {
-    subtree: true, childList: true, attributes: true, characterData: true,
-  });
   const capture = { capture: true, passive: true };
-  for (const type of ["scroll", "resize", "input", "change", "load", "pageshow",
-                      "transitionend", "animationend", "focusin", "focusout"]) {
-    addEventListener(type, layout, capture);
+  // A MutationObserver on `document` is not told about mutations inside a
+  // shadow root, so each open root measure() walks gets its own observation.
+  const mutations = new MutationObserver(layout);
+  const watchedRoots = new WeakSet();
+  function watchRoot(root) {
+    if (watchedRoots.has(root)) return;
+    watchedRoots.add(root);
+    mutations.observe(root, MUTATIONS);
+    for (const type of DOCUMENT_TRIGGERS) root.addEventListener(type, layout, capture);
   }
+
+  // The size each element had when the last report measured it. A
+  // ResizeObserver also delivers one notification per newly observed
+  // element; comparing against the measured size keeps that one from
+  // announcing a change that did not happen, without missing one that did.
+  let measuredSizes = new WeakMap();
+  function sizeOf(el) {
+    const r = el.getBoundingClientRect();
+    return r.width + "x" + r.height;
+  }
+  const resizes = new ResizeObserver((entries) => {
+    for (const entry of entries) {
+      if (measuredSizes.get(entry.target) !== sizeOf(entry.target)) {
+        layout();
+        return;
+      }
+    }
+  });
+  function watchSizes(elements) {
+    // Re-observed from scratch each report, so an element no longer on the
+    // page is not held.
+    resizes.disconnect();
+    measuredSizes = new WeakMap();
+    for (const el of elements) {
+      measuredSizes.set(el, sizeOf(el));
+      resizes.observe(el);
+    }
+  }
+
+  mutations.observe(document, MUTATIONS);
+  for (const type of WINDOW_TRIGGERS) addEventListener(type, layout, capture);
+  for (const type of DOCUMENT_TRIGGERS) document.addEventListener(type, layout, capture);
   if (globalThis.visualViewport) {
     visualViewport.addEventListener("resize", layout, { passive: true });
     visualViewport.addEventListener("scroll", layout, { passive: true });
