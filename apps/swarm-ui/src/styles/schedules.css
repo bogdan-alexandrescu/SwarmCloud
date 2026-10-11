@@ -159,7 +159,7 @@
 .sc-tpl-name { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
 .sc-tpl-facts { display: grid; gap: 4px; margin: 0; }
 .sc-tpl-facts > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
-.sc-tpl-facts dt { font-size: var(--t-micro); line-height: var(--lh-meta); color: var(--text-dim); }
+.sc-tpl-facts dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .sc-tpl-facts dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
 @media (max-width: 1023px) {
   .sc-edit-cols { grid-template-columns: minmax(0, 1fr); }
