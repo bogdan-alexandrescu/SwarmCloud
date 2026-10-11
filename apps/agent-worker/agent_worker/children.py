@@ -76,6 +76,9 @@ PROOF_HEADER = "X-Swarm-Attempt-Proof"
 TIMESTAMP_HEADER = "X-Swarm-Attempt-Timestamp"
 #: The tombstone's refusal (§5 F12).
 WORKER_UNPROTECTED = "worker_unprotected"
+#: Why a registered attempt offers no child path: the scheduler said
+#: SWARM_CHILD_PATH=false, which it does for a child on a person's slot (#1041).
+CHILD_PATH_OFF = "child_path_off"
 #: The guide the agent reads, written into the spool as README.md by `prepare`
 #: and named by the one prompt line the CLI runners add (`prompt_line`). The
 #: prompt is the one instruction channel every CLI runner shares, so it says
@@ -389,8 +392,44 @@ class ChildPath:
             self._note(note, "child_key_tombstone", WORKER_UNPROTECTED)
             return
         self._key = key
+        if not getattr(self.cfg, "child_path", True):
+            # Registered, so the forge broker can tell this attempt from any
+            # other (docs/design/user-scoped-secrets.md §3.2), but no spool and
+            # no variable: the scheduler marked this attempt a child.
+            self.unavailable = CHILD_PATH_OFF
+            self.log.info("attempt key registered; no child path for a child task")
+            return
         self.unavailable = None
         self.log.info("child path registered for this attempt")
+
+    # -- the key's one other use: the forge broker's proof (#1041) ---------
+
+    @property
+    def api(self) -> ChildApi | None:
+        """The worker-only routes' client, which the forge broker reuses."""
+        return self._api
+
+    @property
+    def can_sign(self) -> bool:
+        """Whether this attempt registered a key, whatever its child path."""
+        return self._key is not None
+
+    def sign_request(self, method: str, path: str, body: bytes) -> dict[str, str]:
+        """The proof headers for one request to a worker-only route.
+
+        The signature is made here and only the headers leave: the key stays
+        in this process's heap (`AttemptKey`), never serialised. Raises
+        `LookupError` naming why when no key was registered -- no nonce, a
+        refused registration, or a tombstone -- so a caller that needs a
+        proof fails closed instead of asking unproven.
+        """
+        if self._key is None:
+            raise LookupError(self.unavailable or "not_registered")
+        return self._key.headers(method, path, body, now=self._wall())
+
+    def retrying(self, fn: Callable[[], Any]) -> Any:
+        """`fn` under the registration's retry bound (`child_submit_retry_seconds`)."""
+        return self._with_retry(fn)
 
     def _note(self, note: Callable[[dict[str, Any]], Any], what: str, why: str) -> None:
         self.log.warning("no child path for this attempt", child_path=what, reason=why)
