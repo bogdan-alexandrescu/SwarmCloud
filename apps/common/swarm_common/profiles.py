@@ -208,12 +208,18 @@ _URL_REFUSED_V4_NETWORKS = (
 #: reproducing a tunnelling scheme instead of refusing it -- the subset of
 #: what Chromium accepts that `url_refusal`'s docstring states. Site-local,
 #: Teredo, `3fff::/20` and `5f00::/16` were added by contract request 57
-#: (#349), after the #345 security review found each accepted.
+#: (#349), after the #345 security review found each accepted. Benchmarking
+#: `2001:2::/48` and the deprecated ORCHID `2001:10::/28`, the two parts of
+#: `2001::/23` the IANA registry calls not globally reachable besides Teredo,
+#: were added by contract request 61; the block's global assignments
+#: (`2001:1::1`, AMT, AS112, ORCHIDv2, Drone Remote ID) stay accepted.
 _URL_REFUSED_V6_NETWORKS = (
     ipaddress.ip_network("::1/128"),  # loopback
     ipaddress.ip_network("::/128"),  # unspecified
     ipaddress.ip_network("100::/64"),  # discard-only, RFC 6666
     ipaddress.ip_network("2001::/32"),  # Teredo, RFC 4380 (refused, not unwrapped)
+    ipaddress.ip_network("2001:2::/48"),  # benchmarking, RFC 5180 (request 61)
+    ipaddress.ip_network("2001:10::/28"),  # ORCHID, RFC 4843, deprecated by RFC 7343 (request 61)
     ipaddress.ip_network("2001:db8::/32"),  # documentation
     ipaddress.ip_network("3fff::/20"),  # documentation, RFC 9637
     ipaddress.ip_network("5f00::/16"),  # SRv6 SIDs, RFC 9602; not globally routable
@@ -377,6 +383,10 @@ def url_refusal(value: str) -> str:
     reaches the empty-label check and is refused as `a..b` is. The same
     request makes `RunnerInput.check` never repeat a value containing '@',
     which is what keeps "never served by the API" true of a refused URL too.
+
+    ADDED BY CONTRACT REQUEST 61 (#346 box 42): benchmarking `2001:2::/48`
+    (RFC 5180) and the deprecated ORCHID `2001:10::/28` (RFC 4843), the rest
+    of `2001::/23` that is not globally reachable.
     """
     if len(value) > _URL_MAX_CHARS:
         return f"it is longer than {_URL_MAX_CHARS} characters"
@@ -835,6 +845,32 @@ class RunnerProfile:
                 f"runner {self.name}: an empty runner_argv starts nothing; only a "
                 "worker_action profile may have one (contract request 33)"
             )
+        if self.worker_action is not None:
+            # Contract request 60 (#453): a worker action reads its credential
+            # itself, at action time, and the lifecycle dispatches on the enum
+            # by identity. Item 2 is scoped to POST_VERDICT, the one action
+            # that runs as its own Cloud Run Job's service account: merge runs
+            # as the tenant's worker account on either backend (requests 47
+            # and 66), so refusing GKE for every action would refuse `merge`.
+            if not isinstance(self.worker_action, WorkerAction):
+                raise ValueError(
+                    f"runner {self.name}: worker_action must be a WorkerAction, not a "
+                    f"{type(self.worker_action).__name__} (contract request 60)"
+                )
+            if self.secrets:
+                raise ValueError(
+                    f"runner {self.name}: a worker_action profile mounts no secret; the "
+                    "worker reads its credential at action time (contract request 60)"
+                )
+            if (
+                self.worker_action is WorkerAction.POST_VERDICT
+                and self.backend is not Backend.CLOUD_RUN_JOB
+            ):
+                raise ValueError(
+                    f"runner {self.name}: a post_verdict profile runs as its own Cloud "
+                    "Run Job's service account, so its backend is CLOUD_RUN_JOB, not "
+                    f"{self.backend.value} (contract request 60)"
+                )
         for key, declared in self.inputs.items():
             if not isinstance(declared, RunnerInput):
                 raise ValueError(f"runner {self.name}: input {key!r} is not a RunnerInput")
