@@ -183,6 +183,16 @@ SWITCHES: dict[str, Switch] = {
         "Read (docs/schedules.md §0.1 check 1). On once the App holds it, or the scan "
         "writes its packages to its check run",
     ),
+    # Lane S10f (docs/schedules.md §3.10): a docs-drift `fix: true` firing
+    # whose token the last probe read without push or pull-request rights.
+    # Off, the fix tasks are submitted and the worker fails them
+    # forge_read_only, as it does for any task.
+    "docs_drift_cannot_push": Switch(
+        code="docs_drift_cannot_push",
+        why="a docs-drift firing with fix true is refused when the last token probe read push "
+        "or open_pull_requests missing for a repository in scope. On once the token probes "
+        "(git_token_checks) have run for the repositories docs-drift schedules name",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
