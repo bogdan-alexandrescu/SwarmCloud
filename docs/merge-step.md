@@ -239,8 +239,8 @@ matches:
 |---|---|
 | merged at the pinned head (another merger won) | close the issues (below); SUCCEEDED, `merged_by_this_task: false` |
 | merged at another head, or closed | MERGE_REFUSED `merged_at_other_head` / `pull_request_closed` |
-| the head moved, and the step did not move it, or a CI-fix round of this workflow did not move it (below) | MERGE_REFUSED `head_moved` |
-| a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
+| the head moved, and the step did not move it, or a CI-fix round of this workflow did not move it (below) -- a head the PR-side CI fixer pushed for THIS pull request counts as a CI-fix round's head (§6 MS7, #1073) | MERGE_REFUSED `head_moved` |
+| a required check **failed** | **if the workflow has CI-fix rounds left** (§6 MS7), the tick hands the red reading to the **CI-fix loop** first, so this row only runs once the rounds are spent or there were none. **If a CI-fixer task of this pull request, submitted for this very head, has not ended**, the step parks `ci_fix_running` and waits for its push (§6 MS7, #1073). Otherwise MERGE_REFUSED `checks_failed`, naming every failing check and its conclusion |
 | still pending, and `first_parked_at` is older than `MERGE_CI_MAX_SECONDS` (proposed 6 h) | MERGE_REFUSED `checks_timeout`, naming the checks still pending |
 | still pending, or mergeability unknown | park `CI_PENDING` again |
 | **behind** the base: GitHub's `mergeable_state` is `behind` (the base requires an up-to-date branch) | **update the branch** (below), then park `CI_PENDING` at the new head |
@@ -808,6 +808,68 @@ fix round's head by the continuation rule.
   `head_moved`;
 * `tests/unit/control_plane/test_issue_run_auto_merge.py` is unchanged and
   green.
+
+**The PR-side CI fixer's head is a CI-fix round's head (#1073, 2026-10-11).**
+Workflow `wf_ca1fa9e2701642db890e` merged PR 1071. CI went red, `ci-fix.yml`
+submitted its own fixer (`task_b87630a30d7b43428d8f`), and the fixer pushed
+its merge of main plus the fix as `ed1b9056`. The merge step refused that
+head `head_moved`. It accepted only the opener's pinned head, the heads its
+own `merge_fix` rounds pushed, and GitHub's base merge on either. The CI
+fixer is a one-step `continues_task` workflow stamped `metadata.ci_fix`
+(`swarm_api.cifix`), and no `merge_fix` record ever names it. The platform's
+own rescue stranded the merge, and only an operator resubmitting
+`merge_pr` at the new head could finish it.
+
+Now the worker also finds this pull request's CI-fixer tasks
+(`agent_worker.merge._ci_fixers`). It uses the API's own bounded query,
+`cifix._attempts_made`'s: `tenant_id`, `metadata.ci_fix.pull_request` and
+`metadata.dispatch.continues` == the root. Each task found is held to
+exactly what a `merge_fix` round is held to (`_continuation_of`):
+
+* it is in the merge's tenant;
+* its signed spec verifies;
+* its SIGNED dispatch `continues` is the root whose branch the pull request
+  is on;
+* its pushed head is read from its own `result_summary`.
+
+A head that passes joins `fix_heads`. That head, and GitHub's update-branch
+base merge on top of it, is accepted (`_accept`), the step waits for green
+checks there as for any other accepted head, and the result names the
+fixer in `head_pushed_by`. Any head no platform task pushed is still
+`head_moved`.
+
+**Why `metadata.ci_fix` is not evidence.** It is unsigned and
+tenant-written. It selects the candidates and decides whether a red reading
+waits, and nothing else. A forged record can name no head: the head always
+comes from a task whose signature and signed `continues` check out. The
+worst it can do is make the step wait at a red head, and
+`MERGE_CI_MAX_SECONDS` bounds that wait as it bounds every other. The red
+rule is this: when no `merge_fix` round governs the head, a verified fixer
+submitted for this head (`ci_fix.head_sha`) that has not ended parks the
+step `ci_fix_running` instead of refusing `checks_failed`. One that ended
+there is spent. The tick does the same (`swarm_api.mergewake._ci_fixers`,
+`_ci_fixer_running`, `_pushed_by`). With no round left, it waits on such a
+fixer instead of waking the step red, and a `head_moved` wake names the
+fixer in `head_pushed_by`. Nothing in the tick accepts a head; the worker
+re-reads everything.
+
+**The latent defect fixed alongside it.** `_fix_round_heads` verified each
+round's spec without `of_workflow`. The production verifier
+(`specverify.upstream_verifier`) then required the round's signed
+`workflow_id` to equal the MERGE's workflow. A round is always a workflow of
+its own (the tick submits each round as one), so in production every
+round's head was dropped as `workflow_mismatch` and refused `head_moved`.
+Only the test fake (`tests/unit/worker/merge_world.py`) ignored the
+workflow, which is why the round tests passed. A fix, round or CI fixer, is
+now verified against its OWN signed `workflow_id`. The signature is still
+checked; the authority is the signed `continues` and the tenant, never the
+workflow. The fake now honours the workflow, so this cannot hide again.
+
+**Not covered.** A red reading the merge step takes BEFORE `ci-fix.yml` has
+submitted its fixer finds no fixer to wait on. It is still `checks_failed`,
+and the fixer's later push then needs an operator's `merge_pr`. Whether the
+step should wait for a fixer that has not been submitted yet is the owner's
+question, raised with #1073.
 
 ### 7. Epic #352, re-triaged against this plan
 

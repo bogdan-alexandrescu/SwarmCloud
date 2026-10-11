@@ -1799,6 +1799,19 @@ fixer by hand and push the fix-up from a laptop.
    (mentions and closing keywords broken) before it is posted
    ([`swarm_api/cifix.py`](../apps/swarm-api/swarm_api/cifix.py)).
 
+**A self-merging workflow's merge step takes the fixer's push (#1073).** A
+workflow that merges its own pull request has a merge step parked while CI
+runs. It used to refuse the fixer's push `head_moved`, because no
+`merge_fix` round of its own had pushed it (PR 1071, 2026-10-11). Now the
+step accepts a head this pull request's fixer pushed, once the fixer's
+signed spec, tenant and signed `continues` check out
+(`agent_worker.merge._ci_fixers`). While a fixer submitted for the red
+head is still running, the step and the wake tick wait for it
+(`swarm_api.mergewake._ci_fixer_running`) rather than refusing
+`checks_failed`. The rule, and why the unsigned `metadata.ci_fix` only
+selects and never vouches, is in
+[merge-step.md](merge-step.md#ms7----the-ci-fix-hand-off-for-workflows-that-are-not-issue-runs).
+
 ### The post-back, and the cap the API holds
 
 The script comments when it SUBMITS; it ends before the step does, and
