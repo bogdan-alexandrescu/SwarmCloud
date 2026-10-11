@@ -222,7 +222,9 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
     <tr role="row" className={admitsNothing ? 'is-bad' : tone === 'wait' ? 'is-warn' : undefined}>
       {/* No text-transform here. Tenant ids are opaque and a displayed id that
           differs from the real one is unusable. */}
-      <th role="rowheader" scope="row" className="mono">{q.tenant_id}</th>
+      <th role="rowheader" scope="row" className="mono quota-tenant" title={q.tenant_id} aria-label={q.tenant_id}>
+        <MiddleCut text={q.tenant_id} tail={tenantTail(q.tenant_id)} />
+      </th>
       <td role="cell" data-label="State">
         <QuotaStateMark state={q.state} />
         {age.stale && (
@@ -253,8 +255,8 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
           pool in the same response (`feeds_pool`), so the ceiling is the one
           admission enforces, of the same age as the cap. */}
       <td role="cell" data-label={FEEDS_POOL} className="quota-feeds">
-        <a className="ctl-link mono" href={poolHref('capacity/pools', pool)} title={pool}>
-          {pool}
+        <a className="ctl-link mono" href={poolHref('capacity/pools', pool)} title={pool} aria-label={pool}>
+          <MiddleCut text={pool} tail={poolTail(pool)} />
         </a>
         <PoolCeiling q={q} />
       </td>
@@ -294,6 +296,40 @@ function Row({ q, now }: { q: QuotaState; now: number }) {
       </td>
     </tr>
   )
+}
+
+/**
+ * AN ID CUT IN THE MIDDLE, NEVER AT ITS END (visual QA V005, V020;
+ * 2026-10-11). The Feeds pool link was end-truncated, so
+ * `provider:anthropic:tenant:…` hid the tenant -- the one part that differs
+ * row to row -- and a long tenant id in the row head printed over State. The
+ * console cuts ids in the middle elsewhere (TaskRef's `task_…` and the last
+ * eight); here the head shrinks first and the tail is kept, as two boxes of
+ * one line: the head gives way and the tail does not, so only a tail wider
+ * than the whole column is cut itself. The whole id is the cell's title, and
+ * the text is unchanged for a copy. The two boxes are flex items, which an
+ * accessible-name walk joins with a space (`u-bogdan- research`), so the
+ * element that holds a cut id names itself with the whole id (`aria-label`).
+ */
+function MiddleCut({ text, tail }: { text: string; tail: number }) {
+  const cut = Math.max(0, text.length - tail)
+  return (
+    <span className="quota-cut">
+      <span className="quota-cut-head">{text.slice(0, cut)}</span>
+      <span className="quota-cut-tail">{text.slice(cut)}</span>
+    </span>
+  )
+}
+
+/** The pool's tail is its `tenant:<id>` -- what differs between rows. */
+function poolTail(pool: string): number {
+  const at = pool.lastIndexOf('tenant:')
+  return at === -1 ? Math.min(pool.length, 12) : pool.length - at
+}
+
+/** A tenant id keeps its last eight, as a task reference does. */
+function tenantTail(id: string): number {
+  return Math.min(id.length, 8)
 }
 
 /**

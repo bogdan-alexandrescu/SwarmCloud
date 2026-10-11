@@ -27,6 +27,7 @@ from .routes import (
     access,
     accounts,
     admin,
+    approvals,
     attempts,
     checkpoints,
     children,
@@ -161,6 +162,11 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # tenant-scoped like issue runs, and the admin list and actions (§5.3).
     # A caller names a type from the catalogue, never an image or command.
     app.include_router(schedules.router)
+    # Approvals and the SD3 merge switch (docs/schedules.md §4.5, §7.1, lane
+    # S5): the inbox of the caller's own tenant -- its records beside its
+    # projected PLANNED runs -- each decision one transaction, and the one
+    # audited route to `merge: auto` that PATCH refuses.
+    app.include_router(approvals.router)
     # Child tasks (docs/design/child-tasks.md): worker-only routes, which
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.

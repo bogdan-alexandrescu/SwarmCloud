@@ -143,6 +143,18 @@
 /* Holders: the table first, its All / per-tenant filter in its head; the
    drift callout above it when a counter disagrees; drift per pool below. */
 .hold-tenants { margin-left: 8px; }
+/* THE TENANT FILTER SCROLLS ITSELF, NOT THE PAGE (visual QA V006,
+   2026-10-11). One segment per tenant made a 1011px control that, at 400px,
+   pushed the whole page sideways; later tenants were reachable only by
+   panning the page. The control is held to its row and scrolls inside it --
+   the cut-off segment at the edge says there is more. `.c-seg` clips with
+   `overflow: hidden` and never shrinks (`flex: none`), so both are undone
+   here, for this control only. */
+.ctl-toolbar > .hold-tenants {
+  flex: 0 1 auto; min-width: 0; max-width: calc(100% - 8px);
+  overflow-x: auto; overflow-y: hidden; scrollbar-width: none;
+}
+.ctl-toolbar > .hold-tenants > button { flex: none; }
 .hold-callout {
   display: flex;
   gap: 10px;
@@ -157,6 +169,10 @@
 }
 .hold-callout p { margin: 0; }
 .hold-drift { margin-top: var(--ctl-s5); }
+/* Counters unread (V019): the dash, the mark and the sentence on one line. */
+.hold-unread { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.hold-unread > .ctl-figure { flex: none; }
+.hold-unread > p { flex: 1 1 16rem; margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
 .hold-drift tr.is-warn td[data-label="Delta"] { color: var(--text); font-weight: 600; }
 .hold-delta { display: inline-flex; align-items: center; gap: 6px; }
 /* Holders narrowed to the pool a Pools link named (#125), with the way back. */
@@ -186,6 +202,23 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
+/* CUT IN THE MIDDLE (visual QA V005, V020; QuotaDetail.tsx `MiddleCut`): the
+   head of an id shrinks first and the tail -- the pool's `tenant:<id>`, a
+   tenant's last eight -- is kept, the `.cap-sub` pattern. The tenant row
+   head clips inside its 11% column instead of printing over State. */
+.quota-cut { display: flex; min-width: 0; max-width: 100%; overflow: hidden; white-space: nowrap; }
+/* The head's box ends where its ellipsis does (`text-align: end`): cut at a
+   glyph boundary it is up to one character wider than what it prints, and
+   that slack read as a space between head and tail. The tail does not shrink
+   at all until it alone is wider than the column (`max-width`). */
+.quota-cut > .quota-cut-head { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: pre; text-align: end; }
+.quota-cut > .quota-cut-tail { flex: none; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: pre; }
+.quota-table tbody th.quota-tenant { overflow: hidden; }
+/* "TIME NOT RECORDED" WRAPS IN ITS COLUMN (visual QA V013): one line, it was
+   27px wider than Last 429's 9% and printed over Reported. The mark keeps its
+   words and its outline and takes two lines; the cell clips as a backstop. */
+.quota-table td[data-label='Last 429'] { white-space: normal; overflow: hidden; }
+.quota-table td[data-label='Last 429'] > .ctl-mark { white-space: normal; }
 /* The fed pool's ceiling, under its name (G5-02). The ` · ` is for text and
    screen readers; the line break already separates the two on screen. */
 .quota-ceiling { display: block; font-size: var(--t-meta); color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -250,6 +283,11 @@
   padding: 10px 12px; border-bottom: 1px solid var(--line);
 }
 .acct-list-head > h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); }
+/* ONE LINE AT 400PX (visual QA V073): "Subscription accounts" wrapped onto two
+   lines beside its count and Add account. The title holds its line and the
+   count -- which the summary above already says -- gives way first. */
+.acct-list-head > h2 { flex: 1 1 auto; min-width: 0; white-space: nowrap; }
+.acct-list-head > h2 > .ctl-card-note { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .acct-add {
   display: inline-flex; align-items: center; gap: 6px; flex: none;
   height: 32px; padding: 0 12px; border: 1px solid var(--sk-ac); border-radius: 6px;
@@ -305,9 +343,15 @@
 .acct-li.is-chosen .acct-projected,
 .acct-li.is-chosen .acct-unmeasured,
 .acct-li.is-chosen .acct-projected .acct-pct,
-.acct-li.is-chosen .acct-unmeasured .acct-pct { color: var(--text-dim-on-selected); }
+.acct-li.is-chosen .acct-unmeasured .acct-pct,
+.acct-li.is-chosen .acct-pct-win { color: var(--text-dim-on-selected); }
 .acct-split > .acct-list > .ctl-facts { padding: 8px 12px 0; }
-.acct-split > .acct-list > .acct-foot { margin: auto 0 0; padding: 8px 12px; font-size: var(--t-micro); }
+/* THE FOOT FOLLOWS THE ROWS (visual QA V068, 2026-10-11). It was pushed to
+   the bottom (`margin-top: auto`) of a list column stretched to the pane's
+   height, ~900px under the last row beside a long account. The column still
+   stretches -- its right rule is the divider -- but the foot sits under the
+   list it qualifies. */
+.acct-split > .acct-list > .acct-foot { margin: 0; padding: 8px 12px; font-size: var(--t-micro); }
 
 /* An account state that is not one the console knows: faint, no mark. */
 .acct-state.is-unknown { color: var(--text-faint); }
@@ -316,7 +360,10 @@
 .acct-pane { display: flex; flex-direction: column; gap: 12px; min-width: 0; padding: 14px 16px; }
 .acct-split .acct-pane-detail .acct-detail { border-left: 0; background: none; padding: 0; }
 .acct-back {
-  display: none; align-self: flex-start;
+  display: none; align-self: flex-start; align-items: baseline;
+  /* "‹ Accounts", not "‹Accounts" (visual QA V071): in a flex box the space
+     between the chevron and the word collapses, so the gap is the space. */
+  gap: 4px;
   padding: 0; border: 0; background: none; cursor: pointer;
   font: var(--t-meta)/var(--lh-meta) var(--font); color: var(--sk-ac);
 }
@@ -326,6 +373,14 @@
 .acct-dhead-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .acct-dhead h3 { margin: 0; font-size: var(--t-title); line-height: var(--lh-title); font-weight: 600; overflow-wrap: anywhere; }
 .acct-idt { margin: 0; font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+/* AN ID IS ONE WORD (visual QA V070; Accounts.tsx `Id`). A hyphen is a break
+   opportunity, so `u-bogdan` broke to `u-` / `bogdan` in the subtitle, in
+   Lending's serves list and in Holding now's tenant list. The line breaks
+   between ids; one wider than its line is cut, whole in its title. */
+.acct-id {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; overflow-wrap: normal;
+}
 
 .acct-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; }
 .acct-tile {
@@ -336,6 +391,36 @@
 .acct-tile > b { font: 600 var(--t-lead)/var(--lh-lead) var(--font); font-variant-numeric: tabular-nums; }
 .acct-tile > i { font-style: normal; font-size: var(--t-micro); color: var(--text-dim); }
 .acct-tile.acct-projected > b, .acct-tile.acct-unmeasured > b { color: var(--text-faint); }
+
+/* THE EMPTY POOL IS THE SAME CARD (visual QA V072): the zero in the list half,
+   inset like a row, the add form in the pane. */
+.acct-split.is-empty > .acct-list > .acct-empty { margin: 12px; }
+
+/* A FAILURE OR AN ANSWER INSIDE THE CARD SPEAKS AT THE CARD'S SIZE (visual QA
+   V008, owner decision Q4 2026-10-11). `.state p` is `--t-lead` (16px) for a
+   full-page error; nested in an account's pane, beside 12-14px facts, it
+   outgrew what it was about. Here the body is the 13px scale, and Try again
+   sits 12px under the panel's last line rather than ~4px. The full-page
+   states keep `--t-lead`; the shared rule is lane L14's. */
+.acct-split .state p { font-size: var(--t-meta); line-height: var(--lh-meta); }
+.acct-split .state > .c-btn { margin-top: 12px; }
+
+/* THE ADD FORM IN GROUPS (visual QA V069, 2026-10-11). Label, field and the
+   field's rule are one group 4px apart; groups are 12px apart. The rule under
+   a field sat 4px above the NEXT field's label, so it read as that field's. */
+.acct-add-form { display: grid; gap: 4px; justify-items: start; }
+.acct-add-form > * { max-width: 620px; }
+.acct-add-form > p { margin: 0; }
+.acct-add-form > p.muted.small { margin-top: 0; }
+.acct-add-form > .t-label:not(:first-child),
+.acct-add-form > .acct-buttons,
+.acct-add-form > .warn-text,
+.acct-add-form > .state { margin-top: 12px; }
+/* A STEP STARTS A NEW BLOCK (V069): "2 · Sign in to Claude" hugged the
+   paragraph of step 1, and inside a re-auth the steps sat 8px under its
+   prose. */
+.section > .acct-action { margin-top: 16px; }
+.acct-action > .acct-action { margin-top: 8px; }
 
 /* The phone: the list is the page; a chosen account is a page (frame 10). An
    add form that is open shows under the list, so the list keeps its button. */
@@ -371,7 +456,7 @@
   .acct-hist th[data-col='held'] { width: 64px; }
   .acct-hist th[data-col='ended'] { width: 80px; }
   .acct-hist th[data-col='when'],
-  .acct-hist td:last-child { display: none; }
+  .acct-hist td.acct-hist-when { display: none; }
 }
 .acct-hist th { text-align: left; font: 500 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); white-space: nowrap; }
 .acct-hist td { height: 32px; padding: 4px 10px 4px 0; border-bottom: 1px solid var(--line-soft); vertical-align: middle; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -381,10 +466,22 @@
    as inline text in a 196px cell the task link ran 2-3px over "attempt 1".
    The link and the tenant shrink and are cut, each with its own ellipsis;
    "attempt N" and a mark keep their width. The cell's title is the whole. */
-.acct-hist-whoin { display: flex; align-items: baseline; gap: 4px; min-width: 0; max-width: 100%; overflow: hidden; }
+/* AND IT WRAPS BEFORE IT CLIPS (visual QA V004, 2026-10-11). On one line in
+   History's ~196px Holder cell, or a phone's Agent cell, the tenant was cut to
+   "u-b…", the link to "ta…" and `unverified` was clipped by the cell edge. The
+   pieces now take a second line when the first is full; a piece alone on its
+   line still shrinks and is cut with its ellipsis, whole in the cell title. */
+.acct-hist-whoin {
+  display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 4px;
+  min-width: 0; max-width: 100%; overflow: hidden; padding: 2px 0;
+}
 .acct-hist-whoin > * { flex: none; white-space: nowrap; }
 .acct-hist-whoin > a,
 .acct-hist-whoin > .mono { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* A mark keeps its words but may wrap between them: on a phone History's
+   Holder cell is ~98px and `task not recorded` is 112px. It never shrinks
+   below its longest word, so `unverified` stays whole. */
+.acct-hist-whoin > .ctl-mark { flex: 0 1 auto; white-space: normal; }
 .acct-hist-bar { position: relative; display: block; min-width: 96px; height: 6px; border-radius: 3px; background: var(--line); overflow: hidden; }
 .acct-hist-bar > i { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 3px; background: var(--sk-ac); }
 
@@ -421,7 +518,11 @@
 /* Holders' second line is a lease and says so: `lease …a1b2c3d4`. */
 .lease-ref { display: block; }
 /* In an Accounts holder row the reference is the part that gives way. */
-.acct-hist-whoin > .task-ref { flex: 0 1 auto; min-width: 0; overflow: hidden; }
+/* THE REFERENCE NEVER VANISHES (visual QA V004, 2026-10-11): beside a tenant
+   and `unverified` the link was cut to "ta…" or to nothing. The tenant gives
+   way first, and the reference keeps room for `task_…` and some of its tail. */
+.acct-hist-whoin > .task-ref { flex: 0 1 auto; min-width: 9ch; overflow: hidden; }
+.acct-hist-whoin > .mono { flex-shrink: 4; }
 
 /* G5-23: the account list's figure names its window: `69% 5h`. */
 .acct-pct-win { color: var(--text-faint); }
