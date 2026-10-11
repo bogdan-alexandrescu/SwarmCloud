@@ -32,6 +32,7 @@ import type { WorkflowRead } from '../api'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import TIMELINE_CSS from '../styles/timeline.css?raw'
+import { byIdVia } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadAttemptsPage: vi.fn(),
@@ -39,6 +40,7 @@ const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
   loadTask: vi.fn(),
   loadWorkflow: vi.fn(),
+  loadWorkflowsById: vi.fn(),
   loadOutcomes: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
@@ -88,6 +90,7 @@ function workflowRead(wf: string): WorkflowRead {
 }
 
 beforeEach(() => {
+  api.loadWorkflowsById.mockImplementation(byIdVia(api.loadWorkflow))
   api.loadAttemptsPage.mockResolvedValue(
     ok({
       tenant_id: 'eng',

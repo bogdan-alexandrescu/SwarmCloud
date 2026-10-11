@@ -526,11 +526,12 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
     // The boxes the issue names, in the order they stack: the header, the
     // drawer (out of the flow until opened), the page head, the count, the
     // tabs strip and the list's own toolbar. A box added above the first row
-    // fails here before it can slip into the sum unnoticed.
-    expect(above).toEqual(['.sk-pbar', '.sk-side', '.c-phead', '.c-count-note', '.ag-list-tabs', '.ctl-toolbar'])
+    // fails here before it can slip into the sum unnoticed. The skip link
+    // (CH-15) is absolute, off-screen until focused, and counted as 0px.
+    expect(above).toEqual(['.sk-skip', '.sk-pbar', '.sk-side', '.c-phead', '.c-count-note', '.ag-list-tabs', '.ctl-toolbar'])
     // The row's margin, 7 ancestors' top edges (.rows, its list, .work, .app,
-    // .ctl-scroll, .sk-main, .sk-app) and the 6 boxes above.
-    expect(blocks.length, 'the walk did not visit every block above the row').toBe(14)
+    // .ctl-scroll, .sk-main, .sk-app) and the 7 boxes above, the skip link's 0px among them.
+    expect(blocks.length, 'the walk did not visit every block above the row').toBe(15)
     for (const b of blocks) expect(Number.isFinite(b.px) && b.px >= 0, `${b.what} came to ${b.px}`).toBe(true)
     // The ones that carry the budget must have come to something.
     for (const what of ['header.sk-pbar', 'div.c-phead', 'div.ag-list-tabs']) {
