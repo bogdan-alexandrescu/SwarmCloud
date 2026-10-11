@@ -214,10 +214,21 @@
    it '54' of '#454' (D11); alone on its row the reference fits. */
 .rn-run .c-phead { flex-wrap: wrap; }
 .rn-run .c-phead > div.head { display: contents; }
-.rn-run .c-phead > div.head > h1 { flex: 1 0 100%; }
-/* THE ACTIONS TAKE WHAT THE ROW LEAVES (browser QA D11): a zero basis, cut
-   with their title, and never wider than the column. */
-.rn-run .c-phead > .c-acts { flex: 1 1 0; min-width: 0; max-width: 100%; }
+/* THE `?` SHARES THE TITLE'S ROW (visual QA V096, 2026-10-11): with the
+   title at a 100% basis the `?` opened the second row, alone at its left
+   with the actions pushed to the right. The title now takes what the `?`
+   leaves on the first row, and the actions have the second to themselves. */
+.rn-run .c-phead > div.head > h1 { flex: 1 1 0; min-width: 0; }
+.rn-run .c-phead > div.head > :not(h1) { flex: none; }
+/* THE ACTIONS ARE THE SECOND ROW (browser QA D11, V096): cut with their
+   title, and never wider than the column. */
+.rn-run .c-phead > .c-acts { flex: 1 0 100%; min-width: 0; max-width: 100%; }
+/* A REFERENCE ON A PHONE KEEPS ITS OWN ROW (D11): beside the `?` it lost
+   '54' of '#454', so there the `?` goes back beside the actions. */
+@media (max-width: 560px) {
+  .rn-run.is-ref .c-phead > div.head > h1 { flex: 1 0 100%; }
+  .rn-run.is-ref .c-phead > .c-acts { flex: 1 1 0; }
+}
 /* The chip is a button that opens it whole on a tap (owner QA F): drawn as
    the chip's own text until it is open. */
 .rn-meta {
@@ -246,6 +257,9 @@
 .rn-more { margin: 0; }
 
 /* ---- one run --------------------------------------------------------------- */
+/* THE TABS' GAP (visual QA V095, 2026-10-11): the run page's first line sat
+   on the tab strip's rule, 0px under it, where the workflow page leaves 12. */
+.rn-tabs { margin-bottom: var(--ctl-s3); }
 .rn-page {
   display: grid; gap: 28px; align-items: start;
   grid-template-columns: minmax(0, 1fr);
@@ -397,15 +411,31 @@
   .in-ref, .in-rounds, .in-seg-o, .rn-search, .rn-row > td { min-height: 44px; }
   .in-choice { flex-direction: column; gap: 6px; }
   .rn-table thead { display: none; }
-  .rn-table, .rn-table tbody, .rn-row, .rn-row > td { display: block; width: 100%; }
-  .rn-row { padding: 6px 0; border-bottom: 1px solid var(--line); }
-  .rn-row > td { height: auto; min-height: 0; padding: 2px 0; border-bottom: 0; white-space: normal; }
+  .rn-table, .rn-row > td { display: block; width: 100%; }
+  /* ONE COMPACT CARD PER RUN (visual QA V112, 2026-10-11): seven labelled
+     pairs stacked made each run ~300px -- 44 runs ran to ~13,000px -- split
+     by a hairline. Now a bordered card with a gap between cards: the run id
+     and its state on the first row, the issue under them, and the four facts
+     in one row of label-over-value columns. */
+  .rn-table tbody { display: grid; gap: 8px; }
+  .rn-row {
+    display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px 8px;
+    padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+  }
+  .rn-row > td { height: auto; min-height: 0; padding: 0; border-bottom: 0; white-space: normal; min-width: 0; }
+  .rn-row > td[data-label='Run'] { grid-column: 1 / 3; grid-row: 1; align-self: center; }
+  .rn-row > td[data-label='State'] { grid-column: 3 / 5; grid-row: 1; justify-self: end; text-align: right; }
+  .rn-row > td[data-label='Issue'] { grid-column: 1 / -1; grid-row: 2; }
+  .rn-row > td[data-label='Plan approval'], .rn-row > td[data-label='Workflow'],
+  .rn-row > td[data-label='Created'], .rn-row > td[data-label='By'] { grid-row: 3; font-size: var(--t-micro); line-height: var(--lh-micro); }
   /* THE LABEL ON ITS OWN LINE, NO SEPARATOR (QA G2-19, 2026-10-07): a cell
      whose value is a block (Issue, Workflow, By) put the label alone on a
-     line ending in a dangling " · ". Every label is now a micro line above
-     its value, the same in every cell. */
+     line ending in a dangling " · ". Every label is a micro line above its
+     value. The id, the state and the issue carry none (V112): what they are
+     is plain from where they sit, and three labels were three lines. */
   .rn-row > td::before {
     content: attr(data-label); display: block;
     color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
   }
+  .rn-row > td[data-label='Run']::before, .rn-row > td[data-label='State']::before, .rn-row > td[data-label='Issue']::before { content: none; display: none; }
 }
