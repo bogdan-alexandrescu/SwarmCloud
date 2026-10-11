@@ -113,6 +113,23 @@ def test_a_fix_rounds_head_under_githubs_own_base_merge_is_accepted(tmp_path):
     assert outcome.summary["updates"] == 1
 
 
+def test_a_round_of_its_own_workflow_whose_signature_verifies_is_accepted(tmp_path):
+    """#1073's latent defect: a round is always its OWN workflow (the tick
+    submits it as one), and the merge verified it against the MERGE's, so in
+    production every round's head was dropped as `workflow_mismatch`. The
+    fake verifier now checks the workflow as the real one does."""
+    world = MergeWorld(tmp_path)
+    _round(world)
+    _fix_task(world)
+    assert world.docs[FIX_TASK]["workflow_id"] != merge_world.WORKFLOW
+    _at(world, FIXED)
+
+    outcome = merge.run_merge(world.context())
+
+    assert outcome.state is TaskState.SUCCEEDED, outcome.message
+    assert outcome.summary["head_pushed_by"] == FIX_TASK
+
+
 def _no_round(world: MergeWorld) -> None:
     world.docs[TASK]["metadata"] = {"merge_fix_rounds": 2}
 
