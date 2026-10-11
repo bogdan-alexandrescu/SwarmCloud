@@ -5987,6 +5987,28 @@ export interface Schedule {
   tier: string | null
   spend_today: ScheduleSpendToday
   pending_approvals: number
+  /** Served by `GET /v1/schedules/{id}` only (`_budget_use`); the list never carries it. */
+  budget_use?: ScheduleBudgetUse | null
+}
+
+/**
+ * Today's burn as the tick's budget gate counts it (§4.3), from
+ * `routes/schedules.py::_budget_use`: every figure is the server's, so the
+ * Budget tab's bar draws and computes none. `unreported_usd` is each attempt
+ * that never reported a cost at `per_run_usd`; `live_usd` each live work item
+ * at `per_run_usd`; `free_usd` what is left of `per_day_usd`, never below 0.
+ */
+export interface ScheduleBudgetUse {
+  day: string
+  per_day_usd: number
+  per_run_usd: number
+  reported_usd: number
+  unreported_attempts: number
+  unreported_usd: number
+  live_firings: number
+  live_items: number
+  live_usd: number
+  free_usd: number
 }
 
 /** One thing a firing created (§1.2). */
@@ -6295,6 +6317,34 @@ export async function createSchedule(body: ScheduleCreateBody): Promise<Result<{
 /** `PATCH /v1/schedules/{id}`: a stale revision is 409 `schedule_changed`; `gate.merge: auto` is 422 `use_merge_switch`. */
 export async function updateSchedule(scheduleId: string, body: ScheduleEditBody): Promise<Result<{ schedule: Schedule }>> {
   return scheduleWrite(route('/v1/schedules/{id}', { id: scheduleId }), 'PATCH', body)
+}
+
+/** `POST /v1/schedules/{id}:pause` (§2.11): no new firings; live work continues. */
+export async function pauseSchedule(scheduleId: string, body: { reason?: string } = {}): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules/{id}:pause', { id: scheduleId }), 'POST', body)
+}
+
+/** `POST /v1/schedules/{id}:resume` (§1.3): from paused or auto-paused; a disabled one is an admin's (403 `admin_required`). */
+export async function resumeSchedule(scheduleId: string): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules/{id}:resume', { id: scheduleId }), 'POST', {})
+}
+
+/**
+ * `POST /v1/schedules/{id}:run` (§7.1): a `run_now` firing under the gate's
+ * `run` point, the overlap and the budget. `dry_run` computes what it would
+ * create and runs no agent (§2.8). The answer is the firing as written.
+ */
+export async function runSchedule(scheduleId: string, body: { dry_run: boolean }): Promise<Result<{ firing: ScheduleFiring }>> {
+  const target = route('/v1/schedules/{id}:run', { id: scheduleId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return (await write(target, 'POST', body)) as Result<{ firing: ScheduleFiring }>
+}
+
+/** `DELETE /v1/schedules/{id}?confirm=<name>` (§7.1): the name typed; firings and audit stay. */
+export async function deleteSchedule(scheduleId: string, confirm: string): Promise<Result<{ deleted: string }>> {
+  const target = route('/v1/schedules/{id}', { id: scheduleId }, new URLSearchParams({ confirm }))
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return (await write(target, 'DELETE')) as Result<{ deleted: string }>
 }
 
 /**

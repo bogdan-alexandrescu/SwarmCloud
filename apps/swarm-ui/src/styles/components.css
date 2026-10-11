@@ -397,7 +397,13 @@
    wins: below 561px a segment is 44px tall, its type unchanged. It is what the
    local `.ctl-seg` carried before every segmented control became this one. */
 @media (max-width: 560px) {
-  .c-seg { height: auto; }
+  /* A SEGMENTED CONTROL WRAPS RATHER THAN WIDEN THE PAGE (live QA CH-2,
+     2026-10-11). Unwrapped, Runs' six states with their counts were 439px at
+     a 400px phone and the whole page scrolled sideways. Never wider than its
+     container; a segment that does not fit starts a second row, and each
+     row's top hairline is drawn by its segments, the first row's hidden
+     under the control's own border (`overflow: hidden`). */
+  .c-seg { height: auto; flex-wrap: wrap; max-width: 100%; }
   .c-seg > button,
-  .c-seg > a { min-height: 44px; }
+  .c-seg > a { min-height: 44px; flex: 1 0 auto; border-top: 1px solid var(--line); margin-top: -1px; }
 }

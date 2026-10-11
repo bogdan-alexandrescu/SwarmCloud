@@ -66,10 +66,10 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 55 | `profiles.py`: a temporary `claude-code-gke` profile, the canary for request 53 | REMOVED 2026-10-08 (the switch replaced it); accepted and applied 2026-10-07 |
 | 56 | `profiles.py`: the `mock` profile cannot write its artifact before a simulated park, so #166's carry cannot be proven live | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
 | 57 | `profiles.py`: `url_refusal` accepts site-local, Teredo and other reserved IPv6 ranges, two internal names and a trailing double dot, and a refused URL's 422 can echo its userinfo (#349) | APPLIED 2026-10-08 (accepted by the owner 2026-10-08) |
-| 58 | `specsign.py`: `3600` and `3600.0` have the same canonical bytes, so a rewrite of an integer field to a float keeps the signature valid (#346 box 53) | proposed |
-| 59 | `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55) | proposed |
-| 60 | `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87) | proposed |
-| 61 | `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57 | proposed |
+| 58 | `specsign.py`: `3600` and `3600.0` have the same canonical bytes, so a rewrite of an integer field to a float keeps the signature valid (#346 box 53) | ACCEPTED by the owner 2026-10-11 and APPLIED by the pull request that adds this line (proposed 2026-10-09) |
+| 59 | `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55) | ACCEPTED by the owner 2026-10-11 and APPLIED by the pull request that adds this line (proposed 2026-10-09) |
+| 60 | `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87) | ACCEPTED by the owner 2026-10-11, applied in this PR (item 2 scoped to `post-verdict`, per its amendment, so `merge` on GKE still imports) |
+| 61 | `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57 | ACCEPTED by the owner 2026-10-11, applied in this PR |
 | 62 | `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI | proposed |
 | 63 | `profiles.py`: indexer runs on GKE_AUTOPILOT (canary for #939) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line |
 | 64 | `profiles.py`: generic runs on GKE_AUTOPILOT (#939 option A) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured |
@@ -9968,12 +9968,15 @@ The four gaps stay, each behind its other control, and the docstring's
 
 ## 58. `specsign.py`: `3600` and `3600.0` have the same canonical bytes, so a rewrite of an integer field to a float keeps the signature valid (#346 box 53)
 
-**Status:** proposed, filed 2026-10-09 for
+**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR -- the
+diff below, and the non-frozen half (the worker reads its input as
+`check_inputs` returns it; swarm-api's 422 names the reason). Already-signed
+specs keep verifying: no value with a canonical form changes its bytes, and
+no signer writes a float in either field (swarm-api's schemas declare both
+`int`). Was: proposed, filed 2026-10-09 for
 [#346 box 53](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5901303466)
 (the #353 security review), by the owner's decision of 2026-10-09 that the
-2026-10-09 epic triage's frozen-contract findings get requests, not edits. A
-request, not a change: nothing under `apps/common/swarm_common/` is edited by
-it, and the owner accepts or refuses it.
+2026-10-09 epic triage's frozen-contract findings get requests, not edits.
 
 ### What is true today
 
@@ -10110,11 +10113,11 @@ reader of those fields has to keep doing so, and nothing tells it to.
 
 ## 59. `specsign.py`: a spec nested past Python's recursion limit raises `RecursionError` instead of `SpecNotCanonical` (#346 box 55)
 
-**Status:** proposed, filed 2026-10-09 for
+**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR -- the
+diff below, and swarm-api's 422 message names the depth. Was: proposed, filed
+2026-10-09 for
 [#346 box 55](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5901303857)
-(the #353 security review), by the owner's decision of 2026-10-09. A
-request, not a change: nothing under `apps/common/swarm_common/` is edited by
-it.
+(the #353 security review), by the owner's decision of 2026-10-09.
 
 ### What is true today
 
@@ -10221,11 +10224,16 @@ that met one would answer 500 rather than 422.
 
 ## 60. `profiles.py`: a worker-action profile with `secrets`, a GKE backend or a plain-string `worker_action` passes `__post_init__` (#453 box 87)
 
-**Status:** proposed, filed 2026-10-09 for
+**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR. Item 2
+is applied as its amendment below allows: scoped to `WorkerAction.POST_VERDICT`,
+the one action that runs as its own Cloud Run Job's service account, so
+`merge` on `GKE_AUTOPILOT` (request 66) still constructs. Items 1 and 3 are
+applied as written, for every worker action.
+
+Filed 2026-10-09 as a proposal for
 [#453 box 87](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/453#issuecomment-5944064436)
 (the #462 review probe: "tighten before any worker-action profile is
-enabled"), by the owner's decision of 2026-10-09. A request, not a change:
-nothing under `apps/common/swarm_common/` is edited by it.
+enabled"), by the owner's decision of 2026-10-09.
 
 ### What is true today
 
@@ -10347,11 +10355,12 @@ worker identity would construct, dispatch and run.
 
 ## 61. `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57
 
-**Status:** proposed, filed 2026-10-09 for
+**Status:** ACCEPTED by the owner 2026-10-11, applied in this PR.
+
+Filed 2026-10-09 as a proposal for
 [#346 box 42](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/346#issuecomment-5895194106)
 (the #345 security review, tracked in #349), by the owner's decision of
-2026-10-09. A request, not a change: nothing under
-`apps/common/swarm_common/` is edited by it.
+2026-10-09.
 
 ### What is true today
 

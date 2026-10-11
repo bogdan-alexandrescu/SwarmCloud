@@ -1,9 +1,10 @@
 /**
  * CREATE AND EDIT A SCHEDULE (docs/schedules.md §6.2, create variant A: one
- * page from a type template). Every field starts at the type's default, so
- * most schedules are a type, a repository and a time; the cron's words and
- * its next five firings sit under the field, so the whole decision is on one
- * page.
+ * page from a type template, owner-picked 2026-10-11). Every field starts at
+ * the type's default, so most schedules are a type, a repository and a time.
+ * A new schedule picks its type from template tiles; the cron's words, its
+ * next five firings and the template card sit in a side column beside the
+ * fields, so the whole decision is on one page (ScheduleTemplates.tsx).
  *
  * THE BROWSER PARSES NO CRON. The words, the next five and the type's
  * minimum-interval refusal all come from `POST /v1/schedules:preview`, which
@@ -42,6 +43,7 @@ import { errorHeading, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
 import type { RepoRecord } from './RepositoriesData'
 import { InApp, SCHEDULES_ADDRESS, scheduleAddress } from './Schedules'
+import { budgetDefaultWords, StartChoice, TemplateCard, TemplateTiles, TenantRoom, type Start } from './ScheduleTemplates'
 import { Screen } from './Shell'
 
 /** §6.3's presets. The raw field takes anything the tick's parser accepts. */
@@ -78,11 +80,12 @@ interface Draft {
   cron: string
   timezone: string
   gate: Gate
-  /** Text as typed; blank is "the type's default", never 0. */
+  /** Text as typed; blank is the type's default (its `budget_caps`), never 0. */
   budget: { per_run_usd: string; per_day_usd: string; max_concurrent: string }
   policy: Schedule['policy']
   params: Record<string, unknown>
-  startPaused: boolean
+  /** A create's Start choice. "Dry run first" is enabled with `policy.dry_run`. */
+  start: Start
 }
 
 /**
@@ -126,6 +129,12 @@ function budgetText(v: number | undefined): string {
   return v === undefined ? '' : String(v)
 }
 
+/** The type's default in the empty field, so a blank field shows what it means. */
+function placeholderOf(t: ScheduleTypeRow | null, key: keyof Schedule['budget']): string | undefined {
+  const v = t?.budget_caps?.[key]
+  return v === undefined || v === null ? undefined : String(v)
+}
+
 function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoRecord[]): Draft {
   if (s !== null) {
     return {
@@ -139,7 +148,7 @@ function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoReco
       budget: { per_run_usd: budgetText(s.budget.per_run_usd), per_day_usd: budgetText(s.budget.per_day_usd), max_concurrent: budgetText(s.budget.max_concurrent) },
       policy: { ...s.policy },
       params: { ...s.params },
-      startPaused: false,
+      start: 'enabled',
     }
   }
   const scopes = t === null ? [] : scopesOf(t)
@@ -154,7 +163,7 @@ function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoReco
     budget: { per_run_usd: '', per_day_usd: '', max_concurrent: '' },
     policy: {},
     params: schemaDefaults(t),
-    startPaused: false,
+    start: 'enabled',
   }
 }
 
@@ -364,7 +373,7 @@ export function createBody(d: Draft, t: ScheduleTypeRow, requestId: string): Sch
     scope: d.scopeMode === 'repos' ? { mode: 'repos', repo_ids: d.repoIds } : { mode: d.scopeMode },
     cron: d.cron.trim(),
     timezone: d.timezone.trim(),
-    state: d.startPaused ? 'paused' : 'enabled',
+    state: d.start === 'paused' ? 'paused' : 'enabled',
     client_request_id: requestId,
   }
   const gate = changed(d.gate, t.default_gate)
@@ -373,7 +382,9 @@ export function createBody(d: Draft, t: ScheduleTypeRow, requestId: string): Sch
   if (Object.keys(params).length > 0) body.params = params
   const budget = budgetOf(d)
   if (Object.keys(budget).length > 0) body.budget = budget
-  const policy = changed(d.policy, {})
+  // The Start choice owns dry run on a create: the form draws no second
+  // control for it there, so the two can never disagree.
+  const policy = changed({ ...d.policy, dry_run: d.start === 'dry_run' ? true : undefined }, {})
   if (Object.keys(policy).length > 0) body.policy = policy
   return body
 }
@@ -465,205 +476,199 @@ function ScheduleForm({
         if (why === undefined && !busy) void submit()
       }}
     >
-      <div className="sc-facts">
-        {schedule === null ? (
-          <Field label="Type" hint={t === null ? undefined : t.description}>
-            <select className="c-inp" value={d.type} onChange={(e) => pickType(e.target.value)}>
-              {types.map((x) => (
-                <option key={x.name} value={x.name} disabled={!x.available}>
-                  {x.available ? x.name : `${x.name} (not available: ${x.disabled_reason ?? 'no reason served'})`}
-                </option>
-              ))}
-            </select>
-          </Field>
-        ) : (
-          <Field label="Type" hint="A different type is a different schedule.">
-            <input className="c-inp" value={schedule.type} readOnly />
-          </Field>
-        )}
-        <Field label="Name">
-          <input className="c-inp" value={d.name} maxLength={80} onChange={(e) => set({ name: e.target.value })} />
-        </Field>
-        <Choice<Scope>
-          label="Scope"
-          value={d.scopeMode}
-          options={scopes.map((m) => ({ value: m as Scope, label: SCOPE_WORD[m as Scope] }))}
-          onChange={(v) => set({ scopeMode: v ?? 'repos' })}
-        />
-      </div>
-
-      {d.scopeMode === 'repos' && (
-        <fieldset className="c-field">
-          <legend className="c-lbl">Repositories</legend>
-          {repos.status === 'loading' && <p className="c-hint">Reading the registered repositories…</p>}
-          {repos.status === 'error' && <p className="c-hint" role="alert">Repositories not read: {errorHeading(repos.error)}</p>}
-          {(repos.status === 'empty' || ((repos.status === 'ok' || repos.status === 'stale') && repoList.length === 0)) && (
-            <p className="c-hint">No repository is registered. Register one under Work › Repositories first.</p>
-          )}
-          {repoList.map((r) => (
-            <label key={r.repo_id} className="sc-check">
-              <input
-                type="checkbox"
-                checked={d.repoIds.includes(r.repo_id)}
-                onChange={(e) => set({ repoIds: e.target.checked ? [...d.repoIds, r.repo_id] : d.repoIds.filter((x) => x !== r.repo_id) })}
-              />{' '}
-              {r.owner}/{r.repo}
-            </label>
-          ))}
-        </fieldset>
-      )}
-
-      <h3 className="sc-h3">When</h3>
-      <div className="sc-presets" role="group" aria-label="Presets">
-        {CRON_PRESETS.map((p) => (
-          <Button key={p.cron} size="sm" kind={d.cron.trim() === p.cron ? 'primary' : 'secondary'} aria-pressed={d.cron.trim() === p.cron} onClick={() => set({ cron: p.cron })}>
-            {p.label}
-          </Button>
-        ))}
-      </div>
-      <div className="sc-facts">
-        <Field label="Cron expression" hint="Minute, hour, day of month, month, day of week.">
-          <input className="c-inp is-mono" value={d.cron} spellCheck={false} onChange={(e) => set({ cron: e.target.value })} />
-        </Field>
-        <Field label="Timezone" hint="An IANA zone, such as Europe/London.">
-          <input className="c-inp is-mono" value={d.timezone} spellCheck={false} onChange={(e) => set({ timezone: e.target.value })} />
-        </Field>
-      </div>
-      <CronPreview cron={d.cron} timezone={d.timezone} type={d.type} />
-
-      <h3 className="sc-h3">Gate</h3>
-      <div className="sc-facts">
-        <Choice label="Run" value={d.gate.run as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, run: v } })}
-          hint={t?.default_gate.run === undefined ? undefined : `type default: ${t.default_gate.run}`} />
-        <Choice label="Plan" value={d.gate.plan as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, plan: v } })}
-          hint={t?.default_gate.plan === undefined ? undefined : `type default: ${t.default_gate.plan}`} />
-        {d.gate.merge === 'auto' ? (
-          <Field label="Merge" hint="Automatic, set by the merge switch on the Gate tab; it is changed back there.">
-            <input className="c-inp" value="auto" readOnly />
-          </Field>
-        ) : (
-          <Choice<'off' | 'approve'>
-            label="Merge"
-            value={d.gate.merge as 'off' | 'approve' | undefined}
-            options={[
-              { value: 'off', label: 'off' },
-              { value: 'approve', label: 'approve' },
-            ]}
-            onChange={(v) => set({ gate: { ...d.gate, merge: v } })}
-            hint="Automatic merging is only ever the audited switch on the Gate tab, never this form."
-          />
-        )}
-        {typeof d.gate.approvers === 'string' || d.gate.approvers === undefined ? (
-          <Choice<'members' | 'owner_only'>
-            label="Approvers"
-            value={d.gate.approvers as 'members' | 'owner_only' | undefined}
-            options={[
-              { value: 'members', label: 'any member' },
-              { value: 'owner_only', label: 'the owner only' },
-            ]}
-            onChange={(v) => set({ gate: { ...d.gate, approvers: v } })}
-          />
-        ) : (
-          <Field label="Approvers" hint="A named list, set through the API; unchanged here.">
-            <input className="c-inp" value={(d.gate.approvers as unknown as string[]).join(', ')} readOnly />
-          </Field>
-        )}
-        <Field label="Approval expires after (hours)">
-          <input
-            className="c-inp"
-            type="number"
-            min={1}
-            value={d.gate.approval_ttl_hours ?? ''}
-            onChange={(e) => set({ gate: { ...d.gate, approval_ttl_hours: e.target.value === '' ? undefined : Math.trunc(Number(e.target.value)) } })}
-          />
-        </Field>
-      </div>
-      <p className="c-hint">A gate below the type's default needs a platform admin; the hard stops hold whatever the gate.</p>
-
-      <h3 className="sc-h3">Budget</h3>
-      <div className="sc-facts">
-        <Field label="Per run (USD)" hint="Blank: the type's default.">
-          <input className="c-inp" type="number" min={0} step="0.01" value={d.budget.per_run_usd} onChange={(e) => set({ budget: { ...d.budget, per_run_usd: e.target.value } })} />
-        </Field>
-        <Field label="Per day (USD)" hint="Blank: the type's default.">
-          <input className="c-inp" type="number" min={0} step="0.01" value={d.budget.per_day_usd} onChange={(e) => set({ budget: { ...d.budget, per_day_usd: e.target.value } })} />
-        </Field>
-        <Field label="Live runs at most" hint="Blank: the type's default.">
-          <input className="c-inp" type="number" min={1} value={d.budget.max_concurrent} onChange={(e) => set({ budget: { ...d.budget, max_concurrent: e.target.value } })} />
-        </Field>
-      </div>
-
-      {params.length > 0 && (
-        <>
-          <h3 className="sc-h3">Parameters</h3>
+      {schedule === null && <TemplateTiles types={types} value={d.type} onPick={pickType} />}
+      <div className="sc-edit-cols">
+        <div className="sc-edit-main">
           <div className="sc-facts">
-            {params.map(([k, p]) => {
-              const follows = restated(d.type, k)
-              return follows !== undefined ? (
-                <Field key={k} label={p.title ?? k} hint="Follows the gate above; it is changed there, never here.">
-                  <input className="c-inp" value={follows(d.gate)} readOnly data-testid={`sc-param-${k}`} />
-                </Field>
-              ) : editable(p) ? (
-                <ParamField key={k} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
-              ) : (
-                <Field key={k} label={p.title ?? k} hint="Set through the API; unchanged here.">
-                  <input className="c-inp is-mono" value={d.params[k] === undefined ? '' : JSON.stringify(d.params[k])} readOnly />
-                </Field>
-              )
-            })}
+            {schedule !== null && (
+              <Field label="Type" hint="A different type is a different schedule.">
+                <input className="c-inp" value={schedule.type} readOnly />
+              </Field>
+            )}
+            <Field label="Name">
+              <input className="c-inp" value={d.name} maxLength={80} onChange={(e) => set({ name: e.target.value })} />
+            </Field>
+            <Choice<Scope>
+              label="Scope"
+              value={d.scopeMode}
+              options={scopes.map((m) => ({ value: m as Scope, label: SCOPE_WORD[m as Scope] }))}
+              onChange={(v) => set({ scopeMode: v ?? 'repos' })}
+            />
           </div>
-        </>
-      )}
 
-      <h3 className="sc-h3">Policy</h3>
-      <div className="sc-facts">
-        <Choice<'skip' | 'queue_one'>
-          label="If the last firing is still running"
-          value={d.policy.overlap as 'skip' | 'queue_one' | undefined}
-          options={[
-            { value: '', label: "the type's default" },
-            { value: 'skip', label: 'skip this one' },
-            { value: 'queue_one', label: 'queue one' },
-          ]}
-          onChange={(v) => set({ policy: { ...d.policy, overlap: v } })}
-        />
-        <Choice<'skip' | 'run_once'>
-          label="After an outage"
-          value={d.policy.catch_up as 'skip' | 'run_once' | undefined}
-          options={[
-            { value: '', label: "the type's default" },
-            { value: 'skip', label: 'skip what was missed' },
-            { value: 'run_once', label: 'run once' },
-          ]}
-          onChange={(v) => set({ policy: { ...d.policy, catch_up: v } })}
-        />
-        <label className="c-field">
-          <span>
-            <input type="checkbox" checked={d.policy.dry_run === true} onChange={(e) => set({ policy: { ...d.policy, dry_run: e.target.checked } })} /> Dry run
-          </span>
-          <span className="c-hint">Fires and records what it would do, and creates nothing.</span>
-        </label>
-        {schedule === null && (
-          <label className="c-field">
-            <span>
-              <input type="checkbox" checked={d.startPaused} onChange={(e) => set({ startPaused: e.target.checked })} /> Start paused
-            </span>
-          </label>
-        )}
-      </div>
+          {d.scopeMode === 'repos' && (
+            <fieldset className="c-field">
+              <legend className="c-lbl">Repositories</legend>
+              {repos.status === 'loading' && <p className="c-hint">Reading the registered repositories…</p>}
+              {repos.status === 'error' && <p className="c-hint" role="alert">Repositories not read: {errorHeading(repos.error)}</p>}
+              {(repos.status === 'empty' || ((repos.status === 'ok' || repos.status === 'stale') && repoList.length === 0)) && (
+                <p className="c-hint">No repository is registered. Register one under Work › Repositories first.</p>
+              )}
+              {repoList.map((r) => (
+                <label key={r.repo_id} className="sc-check">
+                  <input
+                    type="checkbox"
+                    checked={d.repoIds.includes(r.repo_id)}
+                    onChange={(e) => set({ repoIds: e.target.checked ? [...d.repoIds, r.repo_id] : d.repoIds.filter((x) => x !== r.repo_id) })}
+                  />{' '}
+                  {r.owner}/{r.repo}
+                </label>
+              ))}
+            </fieldset>
+          )}
 
-      {refused !== null && (
-        <p className="c-hint" role="alert" data-code={refused.code ?? ''}>
-          {refused.code === 'schedule_changed'
-            ? 'Someone changed this schedule since you opened it. Close the editor to read it again, then edit.'
-            : `Not saved: ${refused.message}`}
-        </p>
-      )}
-      <div className="c-acts">
-        {cancel}
-        <Button kind="primary" type="submit" busy={busy ? 'Saving…' : false} disabledReason={why}>
-          {schedule === null ? 'Create schedule' : 'Save changes'}
-        </Button>
+          <h3 className="sc-h3">When</h3>
+          <div className="sc-presets" role="group" aria-label="Presets">
+            {CRON_PRESETS.map((p) => (
+              <Button key={p.cron} size="sm" kind={d.cron.trim() === p.cron ? 'primary' : 'secondary'} aria-pressed={d.cron.trim() === p.cron} onClick={() => set({ cron: p.cron })}>
+                {p.label}
+              </Button>
+            ))}
+          </div>
+          <div className="sc-facts">
+            <Field label="Cron expression" hint="Minute, hour, day of month, month, day of week.">
+              <input className="c-inp is-mono" value={d.cron} spellCheck={false} onChange={(e) => set({ cron: e.target.value })} />
+            </Field>
+            <Field label="Timezone" hint="An IANA zone, such as Europe/London.">
+              <input className="c-inp is-mono" value={d.timezone} spellCheck={false} onChange={(e) => set({ timezone: e.target.value })} />
+            </Field>
+          </div>
+
+          <h3 className="sc-h3">Gate</h3>
+          <div className="sc-facts">
+            <Choice label="Run" value={d.gate.run as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, run: v } })}
+              hint={t?.default_gate.run === undefined ? undefined : `type default: ${t.default_gate.run}`} />
+            <Choice label="Plan" value={d.gate.plan as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, plan: v } })}
+              hint={t?.default_gate.plan === undefined ? undefined : `type default: ${t.default_gate.plan}`} />
+            {d.gate.merge === 'auto' ? (
+              <Field label="Merge" hint="Automatic, set by the merge switch on the Gate tab; it is changed back there.">
+                <input className="c-inp" value="auto" readOnly />
+              </Field>
+            ) : (
+              <Choice<'off' | 'approve'>
+                label="Merge"
+                value={d.gate.merge as 'off' | 'approve' | undefined}
+                options={[
+                  { value: 'off', label: 'off' },
+                  { value: 'approve', label: 'approve' },
+                ]}
+                onChange={(v) => set({ gate: { ...d.gate, merge: v } })}
+                hint="Automatic merging is only ever the audited switch on the Gate tab, never this form."
+              />
+            )}
+            {typeof d.gate.approvers === 'string' || d.gate.approvers === undefined ? (
+              <Choice<'members' | 'owner_only'>
+                label="Approvers"
+                value={d.gate.approvers as 'members' | 'owner_only' | undefined}
+                options={[
+                  { value: 'members', label: 'any member' },
+                  { value: 'owner_only', label: 'the owner only' },
+                ]}
+                onChange={(v) => set({ gate: { ...d.gate, approvers: v } })}
+              />
+            ) : (
+              <Field label="Approvers" hint="A named list, set through the API; unchanged here.">
+                <input className="c-inp" value={(d.gate.approvers as unknown as string[]).join(', ')} readOnly />
+              </Field>
+            )}
+            <Field label="Approval expires after (hours)">
+              <input
+                className="c-inp"
+                type="number"
+                min={1}
+                value={d.gate.approval_ttl_hours ?? ''}
+                onChange={(e) => set({ gate: { ...d.gate, approval_ttl_hours: e.target.value === '' ? undefined : Math.trunc(Number(e.target.value)) } })}
+              />
+            </Field>
+          </div>
+          <p className="c-hint">A gate below the type's default needs a platform admin; the hard stops hold whatever the gate.</p>
+
+          <h3 className="sc-h3">Budget</h3>
+          <div className="sc-facts">
+            <Field label="Per run (USD)" hint={budgetDefaultWords(t, 'per_run_usd')}>
+              <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_run_usd')} value={d.budget.per_run_usd} onChange={(e) => set({ budget: { ...d.budget, per_run_usd: e.target.value } })} />
+            </Field>
+            <Field label="Per day (USD)" hint={budgetDefaultWords(t, 'per_day_usd')}>
+              <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_day_usd')} value={d.budget.per_day_usd} onChange={(e) => set({ budget: { ...d.budget, per_day_usd: e.target.value } })} />
+            </Field>
+            <Field label="Live runs at most" hint={budgetDefaultWords(t, 'max_concurrent')}>
+              <input className="c-inp" type="number" min={1} placeholder={placeholderOf(t, 'max_concurrent')} value={d.budget.max_concurrent} onChange={(e) => set({ budget: { ...d.budget, max_concurrent: e.target.value } })} />
+            </Field>
+          </div>
+
+          {params.length > 0 && (
+            <>
+              <h3 className="sc-h3">Parameters</h3>
+              <div className="sc-facts">
+                {params.map(([k, p]) => {
+                  const follows = restated(d.type, k)
+                  return follows !== undefined ? (
+                    <Field key={k} label={p.title ?? k} hint="Follows the gate above; it is changed there, never here.">
+                      <input className="c-inp" value={follows(d.gate)} readOnly data-testid={`sc-param-${k}`} />
+                    </Field>
+                  ) : editable(p) ? (
+                    <ParamField key={k} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
+                  ) : (
+                    <Field key={k} label={p.title ?? k} hint="Set through the API; unchanged here.">
+                      <input className="c-inp is-mono" value={d.params[k] === undefined ? '' : JSON.stringify(d.params[k])} readOnly />
+                    </Field>
+                  )
+                })}
+              </div>
+            </>
+          )}
+
+          <h3 className="sc-h3">Policy</h3>
+          <div className="sc-facts">
+            <Choice<'skip' | 'queue_one'>
+              label="If the last firing is still running"
+              value={d.policy.overlap as 'skip' | 'queue_one' | undefined}
+              options={[
+                { value: '', label: "the type's default" },
+                { value: 'skip', label: 'skip this one' },
+                { value: 'queue_one', label: 'queue one' },
+              ]}
+              onChange={(v) => set({ policy: { ...d.policy, overlap: v } })}
+            />
+            <Choice<'skip' | 'run_once'>
+              label="After an outage"
+              value={d.policy.catch_up as 'skip' | 'run_once' | undefined}
+              options={[
+                { value: '', label: "the type's default" },
+                { value: 'skip', label: 'skip what was missed' },
+                { value: 'run_once', label: 'run once' },
+              ]}
+              onChange={(v) => set({ policy: { ...d.policy, catch_up: v } })}
+            />
+            {schedule !== null && (
+              <label className="c-field">
+                <span>
+                  <input type="checkbox" checked={d.policy.dry_run === true} onChange={(e) => set({ policy: { ...d.policy, dry_run: e.target.checked } })} /> Dry run
+                </span>
+                <span className="c-hint">Fires and records what it would do, and creates nothing.</span>
+              </label>
+            )}
+          </div>
+          {schedule === null && <StartChoice value={d.start} onChange={(v) => set({ start: v })} />}
+
+          {refused !== null && (
+            <p className="c-hint" role="alert" data-code={refused.code ?? ''}>
+              {refused.code === 'schedule_changed'
+                ? 'Someone changed this schedule since you opened it. Close the editor to read it again, then edit.'
+                : `Not saved: ${refused.message}`}
+            </p>
+          )}
+          <div className="c-acts">
+            {cancel}
+            <Button kind="primary" type="submit" busy={busy ? 'Saving…' : false} disabledReason={why}>
+              {schedule === null ? 'Create schedule' : 'Save changes'}
+            </Button>
+          </div>
+        </div>
+        <aside className="sc-edit-side" aria-label="When it fires, and the template">
+          <CronPreview cron={d.cron} timezone={d.timezone} type={d.type} />
+          <TemplateCard type={t} tier={schedule?.tier} />
+        </aside>
       </div>
     </form>
   )
@@ -692,17 +697,20 @@ function NewScheduleBody({ types, go }: { types: ScheduleTypeRow[]; go: (to: str
   // preselected), so it is drawn once that read has answered.
   if (repos.status === 'loading') return <p className="sb-note">Reading the registered repositories…</p>
   return (
-    <ScheduleForm
-      types={types}
-      repos={repos}
-      schedule={null}
-      onSaved={(s) => go(s === null ? SCHEDULES_ADDRESS : scheduleAddress(s.schedule_id))}
-      cancel={
-        <InApp go={go} to={SCHEDULES_ADDRESS} className="c-btn is-ghost">
-          Cancel
-        </InApp>
-      }
-    />
+    <>
+      <TenantRoom />
+      <ScheduleForm
+        types={types}
+        repos={repos}
+        schedule={null}
+        onSaved={(s) => go(s === null ? SCHEDULES_ADDRESS : scheduleAddress(s.schedule_id))}
+        cancel={
+          <InApp go={go} to={SCHEDULES_ADDRESS} className="c-btn is-ghost">
+            Cancel
+          </InApp>
+        }
+      />
+    </>
   )
 }
 

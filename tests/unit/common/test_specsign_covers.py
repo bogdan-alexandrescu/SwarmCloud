@@ -8,14 +8,23 @@ list restated here -- and holds each one inside the signature. It also holds
 the signed keys to swarm-api's reserved ones: every key the platform writes
 into `metadata` is signed, except the reconciler's `startup_refunds`, which
 changes after submission by design.
+
+It also holds two properties of WHAT the bytes can be (contract requests 58
+and 59, accepted 2026-10-11): an integer field rewritten to a float has no
+canonical form, so the rewrite cannot keep the signature; and a spec nested
+past `specsign.MAX_DEPTH` is `SpecNotCanonical`, never `RecursionError`.
 """
 
 from __future__ import annotations
 
 import ast
 from pathlib import Path
+from typing import Any
 
-from swarm_common.specsign import SIGNED_METADATA_KEYS
+import pytest
+
+from swarm_common import specsign
+from swarm_common.specsign import SIGNED_METADATA_KEYS, SpecNotCanonical, canonical_step_spec, jcs
 
 import agent_worker
 from agent_worker import expected_outputs, inputs
@@ -169,3 +178,121 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         DISK_EVICTIONS_METADATA_KEY,
         SCHEDULE_METADATA_KEY,
     } == UNSIGNED_PLATFORM_KEYS
+
+
+# ---------------------------------------------------------------------------
+# Contract request 58: an integer field is an integer, at every format
+# ---------------------------------------------------------------------------
+
+_DOC: dict[str, Any] = {
+    "tenant_id": "eng",
+    "runner_profile": "claude-code",
+    "resource_class": "standard",
+    "timeout_seconds": 3600,
+    "max_attempts": 3,
+    "input": {"prompt": "review the change", "issue": 7},
+    "metadata": {},
+}
+
+#: One document per format, each the oldest format that covers what it sets.
+_DOCS_BY_FORMAT: dict[int, dict[str, Any]] = {
+    1: _DOC,
+    2: {**_DOC, "parent_task_id": "task_parent", "parent_attempt_id": "att_parent"},
+    3: {**_DOC, "forge_credential": "git-u-" + "0" * 16, "forge_access": "read"},
+}
+
+
+def test_each_document_is_signed_at_its_format():
+    """The control: each document below is one a signer signs at that format."""
+    for spec_format, doc in _DOCS_BY_FORMAT.items():
+        assert specsign.signing_format(doc) == spec_format
+
+
+@pytest.mark.parametrize("spec_format", sorted(_DOCS_BY_FORMAT))
+@pytest.mark.parametrize(
+    "key,rewritten", [("timeout_seconds", 3600.0), ("max_attempts", 3.0)], ids=["timeout", "attempts"]
+)
+def test_an_integer_field_rewritten_to_a_float_breaks_the_signature(spec_format, key, rewritten):
+    """JCS writes 3600 and 3600.0 as the same bytes; Firestore stores them as
+    different types. A rewrite of one to the other must not keep the
+    signature, so the float has no canonical form at all."""
+    doc = _DOCS_BY_FORMAT[spec_format]
+    canonical_step_spec(doc, task_id="task_1", spec_format=spec_format)  # the int verifies
+    assert jcs(rewritten) == jcs(int(rewritten)), "the premise: JCS cannot tell them apart"
+    with pytest.raises(SpecNotCanonical, match=f"^{key} is a float, not an integer$"):
+        canonical_step_spec({**doc, key: rewritten}, task_id="task_1", spec_format=spec_format)
+
+
+@pytest.mark.parametrize("spec_format", sorted(_DOCS_BY_FORMAT))
+@pytest.mark.parametrize("key", ["timeout_seconds", "max_attempts"])
+@pytest.mark.parametrize("value", [True, "3600", 3600.5], ids=["bool", "string", "fraction"])
+def test_an_integer_field_that_is_no_integer_is_refused(spec_format, key, value):
+    """A bool is an int to Python and is still refused; so is anything else."""
+    doc = {**_DOCS_BY_FORMAT[spec_format], key: value}
+    with pytest.raises(SpecNotCanonical):
+        canonical_step_spec(doc, task_id="task_1", spec_format=spec_format)
+
+
+@pytest.mark.parametrize("spec_format", sorted(_DOCS_BY_FORMAT))
+def test_an_absent_integer_field_still_has_its_bytes(spec_format):
+    """None (or absent) is what a document from before either field had."""
+    doc = {k: v for k, v in _DOCS_BY_FORMAT[spec_format].items() if k != "max_attempts"}
+    absent = canonical_step_spec(doc, task_id="task_1", spec_format=spec_format)
+    assert absent == canonical_step_spec(
+        {**doc, "max_attempts": None}, task_id="task_1", spec_format=spec_format
+    )
+    assert b'"max_attempts":null' in absent
+
+
+# ---------------------------------------------------------------------------
+# Contract request 59: depth is bounded, and the bound is a refusal
+# ---------------------------------------------------------------------------
+
+
+def _lists(levels: int) -> Any:
+    value: Any = 0
+    for _ in range(levels):
+        value = [value]
+    return value
+
+
+def _maps(levels: int) -> Any:
+    value: Any = 0
+    for _ in range(levels):
+        value = {"a": value}
+    return value
+
+
+@pytest.mark.parametrize("nest", [_lists, _maps], ids=["lists", "maps"])
+def test_a_spec_2000_deep_is_not_canonical_not_a_recursion_error(nest):
+    """Past Python's recursion limit: the one exception both callers catch."""
+    with pytest.raises(SpecNotCanonical, match="nested deeper than 32 levels"):
+        jcs(nest(2000))
+    with pytest.raises(SpecNotCanonical):
+        canonical_step_spec({**_DOC, "input": {"prompt": "x", "deep": nest(2000)}}, task_id="t")
+
+
+def test_a_map_or_list_that_contains_itself_is_not_canonical():
+    cyclic_map: dict[str, Any] = {}
+    cyclic_map["self"] = cyclic_map
+    cyclic_list: list[Any] = []
+    cyclic_list.append(cyclic_list)
+    for value in (cyclic_map, cyclic_list):
+        with pytest.raises(SpecNotCanonical):
+            jcs(value)
+
+
+@pytest.mark.parametrize("nest", [_lists, _maps], ids=["lists", "maps"])
+def test_32_levels_of_containers_encode_and_33_do_not(nest):
+    assert specsign.MAX_DEPTH == 32
+    assert jcs(nest(32)).count(b"0") == 1
+    with pytest.raises(SpecNotCanonical):
+        jcs(nest(33))
+
+
+def test_a_stored_document_20_deep_still_has_its_bytes():
+    """Firestore's own limit is 20 levels: the document is one, so its input
+    holds 19 more. Nothing Firestore can store is refused by the bound."""
+    doc = {**_DOC, "input": _maps(19)}
+    canonical = canonical_step_spec(doc, task_id="task_1")
+    assert canonical.count(b'{"a":') == 19
