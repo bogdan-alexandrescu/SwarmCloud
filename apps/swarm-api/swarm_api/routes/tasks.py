@@ -19,14 +19,21 @@ from __future__ import annotations
 
 from typing import Literal
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, Query, Request, Response, status
 from fastapi.responses import StreamingResponse
+from starlette.concurrency import run_in_threadpool
 
 from swarm_common.states import TaskState
 
 from ..agent_output import AgentOutputService
 from ..attempt_totals import totals_for, with_totals
-from ..children import PARENT_CANCELLED, cascade_children
+from ..children import (
+    PARENT_CANCELLED,
+    PROOF_HEADER,
+    TIMESTAMP_HEADER,
+    ChildService,
+    cascade_children,
+)
 from ..auth import AuthContext
 from ..codec import attempt_to_api, task_to_api
 from ..deps import (
@@ -38,6 +45,8 @@ from ..deps import (
     tenant_scope,
 )
 from ..errors import Forbidden, ValidationFailed
+from ..handoff import HandoffService
+from .children import child_service
 from ..heartbeats import heartbeats_for_page
 from ..schemas import TaskBatchCreate, TaskCreate
 from ..task_accounts import accounts_for, accounts_for_attempts
@@ -357,6 +366,101 @@ def cancel_task(
         # Whether this call asked the backend to stop the task's execution.
         "execution_cancel_requested": target is not None,
     }
+
+
+# --------------------------------------------------------------------------
+# The live-browser hand-off (docs/design/live-browser.md §4, lane LB-L10)
+# --------------------------------------------------------------------------
+
+
+def handoff_service(
+    ctx: AppContext = Depends(get_context), children: ChildService = Depends(child_service)
+) -> HandoffService:
+    return HandoffService(
+        settings=ctx.settings, db=ctx.db, store=ctx.store, children=children, now=ctx.now
+    )
+
+
+@router.post("/{task_id}/handoff", status_code=status.HTTP_201_CREATED)
+async def request_handoff(
+    task_id: str,
+    request: Request,
+    response: Response,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    serverless_authorization: str | None = Header(
+        default=None, alias="X-Serverless-Authorization"
+    ),
+    proof: str | None = Header(default=None, alias=PROOF_HEADER),
+    timestamp: str | None = Header(default=None, alias=TIMESTAMP_HEADER),
+    service: HandoffService = Depends(handoff_service),
+) -> dict:
+    """WORKER ONLY (§4.1 step 3): no `current_auth`, no `tenant_scope`. The
+    tenant is the worker's ID token checked against the body's, and the worker
+    is the attempt key's signature over the RAW body; `swarm_api.handoff`
+    holds every check."""
+    raw = await request.body()
+    wait, created = await run_in_threadpool(
+        lambda: service.request(
+            serverless_authorization or authorization,
+            task_id,
+            raw,
+            path=request.url.path,
+            proof=proof,
+            timestamp=timestamp,
+        )
+    )
+    if not created:
+        response.status_code = status.HTTP_200_OK
+    return {"human_wait": wait, "created": created}
+
+
+@router.post("/{task_id}/handoff/resolve")
+async def resolve_handoff(
+    task_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    serverless_authorization: str | None = Header(
+        default=None, alias="X-Serverless-Authorization"
+    ),
+    proof: str | None = Header(default=None, alias=PROOF_HEADER),
+    timestamp: str | None = Header(default=None, alias=TIMESTAMP_HEADER),
+    service: HandoffService = Depends(handoff_service),
+) -> dict:
+    """WORKER ONLY, as `request_handoff`: the wait ended (expired, cancelled,
+    live path lost, or returned)."""
+    raw = await request.body()
+    resolved = await run_in_threadpool(
+        lambda: service.resolve(
+            serverless_authorization or authorization,
+            task_id,
+            raw,
+            path=request.url.path,
+            proof=proof,
+            timestamp=timestamp,
+        )
+    )
+    return {"resolved": resolved}
+
+
+@router.post("/{task_id}/human-ready")
+def human_ready(
+    task_id: str,
+    background: BackgroundTasks,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    service: HandoffService = Depends(handoff_service),
+) -> dict:
+    """§4.3: "I'm ready to sign in". The ONLY promotion of a
+    PARKED(HUMAN_REQUIRED) task; it writes READY and nothing else, so the
+    re-admission is an ordinary all-or-nothing one (invariants 1 and 2)."""
+    task = service.human_ready(tenant_id, task_id, email=auth.email, submitted_by=submitted_by)
+    # Admission sooner than the safety tick: a person is waiting.
+    background.add_task(
+        ring, ctx.waker, ctx.metrics, "human_ready", tenant_id=task.tenant_id, task_id=task.id,
+    )
+    return {"task": task_to_api(task, console_url=ctx.settings.console_url)}
 
 
 @router.get("/{task_id}/events")
