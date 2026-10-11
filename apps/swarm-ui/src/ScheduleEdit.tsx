@@ -85,6 +85,32 @@ interface Draft {
   startPaused: boolean
 }
 
+/**
+ * PARAMETERS THAT RESTATE THE GATE ARE NOT FIELDS. issue-sweep's `merge` and
+ * `plan_approval` repeat the gate for the runs a firing creates, and the
+ * server keeps them equal to it (`schedules._sweep_follows_gate`): a value
+ * that differs is refused, and `merge: auto` here would be the one option the
+ * form says it never offers. They are drawn read-only, as the gate makes them,
+ * and never sent.
+ */
+const GATE_RESTATED: Readonly<Record<string, Readonly<Record<string, (g: Gate) => string>>>> = {
+  'issue-sweep': {
+    plan_approval: (g) => (g.plan === 'approve' ? 'required' : g.plan === 'auto' ? 'auto' : ''),
+    merge: (g) => g.merge ?? '',
+  },
+}
+
+function restated(type: string, key: string): ((g: Gate) => string) | undefined {
+  return GATE_RESTATED[type]?.[key]
+}
+
+/** `params` without the keys the gate restates for `type`. */
+function ownParams(type: string, params: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [k, v] of Object.entries(params)) if (restated(type, k) === undefined) out[k] = v
+  return out
+}
+
 /** The parameters the form draws a field for: a scalar or an enum. Others are shown, not edited. */
 function editable(p: ParamSchema): boolean {
   return Array.isArray(p.enum) || p.type === 'string' || p.type === 'integer' || p.type === 'number' || p.type === 'boolean'
@@ -343,7 +369,7 @@ export function createBody(d: Draft, t: ScheduleTypeRow, requestId: string): Sch
   }
   const gate = changed(d.gate, t.default_gate)
   if (Object.keys(gate).length > 0) body.gate = gate
-  const params = changed(d.params, schemaDefaults(t))
+  const params = changed(ownParams(d.type, d.params), ownParams(d.type, schemaDefaults(t)))
   if (Object.keys(params).length > 0) body.params = params
   const budget = budgetOf(d)
   if (Object.keys(budget).length > 0) body.budget = budget
@@ -362,7 +388,7 @@ export function editBody(d: Draft, s: Schedule): ScheduleEditBody {
   if (d.timezone.trim() !== s.timezone) body.timezone = d.timezone.trim()
   const gate = changed(d.gate, s.gate)
   if (Object.keys(gate).length > 0) body.gate = gate
-  const params = changed(d.params, s.params)
+  const params = changed(ownParams(s.type, d.params), ownParams(s.type, s.params))
   if (Object.keys(params).length > 0) body.params = params
   const budget = changed(budgetOf(d), s.budget)
   if (Object.keys(budget).length > 0) body.budget = budget
@@ -571,15 +597,20 @@ function ScheduleForm({
         <>
           <h3 className="sc-h3">Parameters</h3>
           <div className="sc-facts">
-            {params.map(([k, p]) =>
-              editable(p) ? (
+            {params.map(([k, p]) => {
+              const follows = restated(d.type, k)
+              return follows !== undefined ? (
+                <Field key={k} label={p.title ?? k} hint="Follows the gate above; it is changed there, never here.">
+                  <input className="c-inp" value={follows(d.gate)} readOnly data-testid={`sc-param-${k}`} />
+                </Field>
+              ) : editable(p) ? (
                 <ParamField key={k} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
               ) : (
                 <Field key={k} label={p.title ?? k} hint="Set through the API; unchanged here.">
                   <input className="c-inp is-mono" value={d.params[k] === undefined ? '' : JSON.stringify(d.params[k])} readOnly />
                 </Field>
-              ),
-            )}
+              )
+            })}
           </div>
         </>
       )}

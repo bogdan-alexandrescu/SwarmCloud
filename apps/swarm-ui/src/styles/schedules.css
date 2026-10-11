@@ -72,6 +72,28 @@
 .sc-waiting-list a { color: var(--sk-ac); }
 .sc-kind { font-weight: 600; }
 
+/* ---- Automate › Approvals (§6.2 inbox: B split on a desktop, A on a phone) -- */
+.ap-inbox.is-split { display: grid; grid-template-columns: minmax(240px, 2fr) minmax(0, 3fr); gap: 16px; align-items: start; min-width: 0; }
+.ap-list { margin: 0; padding: 0; list-style: none; display: grid; gap: 2px; min-width: 0; }
+.ap-item { border-bottom: 1px solid var(--line); min-width: 0; }
+.ap-item.is-on > .ap-pick { background: var(--surface-2); }
+.ap-pick {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: baseline;
+  padding: 6px 4px; min-height: 32px; color: inherit; text-decoration: none;
+  font-size: var(--t-meta); line-height: var(--lh-meta);
+}
+.ap-pane, .ap-detail { min-width: 0; display: grid; gap: 8px; align-content: start; }
+.ap-hold { border-left: 3px solid var(--s-warn); padding: 4px 8px; font-size: var(--t-meta); line-height: var(--lh-meta); display: grid; gap: 2px; }
+.ap-text { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.ap-files { margin: 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.ap-decide { display: grid; gap: 6px; }
+
+/* ---- Admin › Schedules (§5.3) ---------------------------------------------- */
+.sc-table.is-admin th[data-col='tenant'] { width: 96px; }
+.sc-table.is-admin th[data-col='actions'] { width: 168px; }
+.as-acts { display: flex; flex-wrap: wrap; gap: 4px; }
+.as-tenant { display: flex; flex-wrap: wrap; align-items: end; gap: 8px; margin-top: 8px; }
+
 /* ---- a phone (§6.2's 390px frames): a record per row, every cell named ------ */
 @media (max-width: 560px) {
   .sc-table thead { display: none; }
@@ -84,6 +106,14 @@
   }
   .sc-row a { display: inline-flex; align-items: center; min-height: 44px; }
   .sc-waiting-list > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  /* The detail's facts and the form's fields: one column, said rather than
+     left to auto-fill, so a 180px minimum never puts two side by side. */
+  .sc-facts { grid-template-columns: minmax(0, 1fr); }
+  /* The inbox's chosen item opens under it (variant A), its tap target 44px. */
+  .ap-pick { min-height: 44px; grid-template-columns: auto minmax(0, 1fr); }
+  .ap-pick > .sc-sub { grid-column: 2; }
+  .ap-item > .ap-detail { padding: 4px 0 12px; }
+  .as-acts .c-btn { min-height: 44px; }
 }
 
 /* ---- create and edit (§6.2 create A), and the SD3 merge switch ------------- */

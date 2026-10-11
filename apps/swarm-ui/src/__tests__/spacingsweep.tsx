@@ -359,10 +359,10 @@ export const SPACING_GROUPS: readonly SpacingGroup[] = [
   { name: 'submit', routes: ['work/new', 'work/new-workflow', 'work/new-issue'], floor: 140 },
   // Automate › Schedules (docs/schedules.md §6.1) rides with Work's setup pages:
   // one route, and a slice is a file of its own (the slice test).
-  { name: 'setup', routes: ['work/repositories', 'work/setup', 'work/access', 'automate/schedules'], floor: 90 },
+  { name: 'setup', routes: ['work/repositories', 'work/setup', 'work/access', 'automate/schedules', 'automate/approvals'], floor: 90 },
   { name: 'capacity', routes: ['capacity/pools', 'capacity/catalogue', 'capacity/profiles'], floor: 140 },
   { name: 'accounts', routes: ['capacity/holders', 'capacity/accounts', 'capacity/quota'], floor: 160 },
-  { name: 'admin', routes: ['admin/limits', 'admin/tenants', 'admin/counts', 'admin/people'], floor: 120 },
+  { name: 'admin', routes: ['admin/limits', 'admin/tenants', 'admin/counts', 'admin/people', 'admin/schedules'], floor: 120 },
 ]
 
 /** The old single sweep's floor, which the slices' floors must add up to. */

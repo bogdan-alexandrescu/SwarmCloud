@@ -2,7 +2,7 @@
 // one schedule's page, the section's badge and Overview's "Waiting on you".
 //
 // WHAT EACH CASE HOLDS (§9's S7 acceptance, for the screens this lane draws):
-//   * `automate` is a literal section between Work and Capacity, its one tab
+//   * `automate` is a literal section between Work and Capacity, its first tab
 //     routes to the list, and `/automate/schedules/<id>` to one schedule;
 //   * the list draws the columns the owner listed; a spend some attempt never
 //     reported carries `Mark kind="partial"` and the count unreported, never
@@ -11,7 +11,11 @@
 //     built-in row linking to its Settings;
 //   * a schedule that never fired shows `Absent`, not "0 runs"; its history
 //     links each firing's work; the audit tab reads the audit route;
-//   * at 390px a row is a record, the header hidden;
+//   * at 390px a row is a record, the header hidden, on the list and on one
+//     schedule's firings, and the schedule's facts are one column;
+//   * the Gate tab words §4.4's hard stops as the doc does: workflow files
+//     refused, the rest held for a second member (the owner in a platform
+//     repository), the failure count the schedule's own;
 //   * the spine's Automate badge counts the inbox, draws nothing for a
 //     measured zero, and a dash -- never 0 -- for a failed read;
 //   * the Overview card appears only when something waits.
@@ -138,15 +142,18 @@ afterEach(() => {
 })
 
 describe('the Automate section', () => {
-  it('is a literal section between Work and Capacity, with Schedules as its tab', () => {
+  it('is a literal section between Work and Capacity, with Schedules and Approvals as its tabs', () => {
     const ids = SECTIONS.map((s) => s.id)
     expect(ids.indexOf('automate')).toBe(ids.indexOf('work') + 1)
     expect(ids.indexOf('capacity')).toBe(ids.indexOf('automate') + 1)
     const automate = SECTIONS.find((s) => s.id === 'automate')!
     expect(automate.label).toBe('Automate')
     expect(automate.question.trim().endsWith('?')).toBe(true)
-    expect(automate.tabs).toEqual([{ id: 'schedules', label: 'Schedules' }])
-    expect(PANEL_PAGES.automate.map((p) => p.to)).toEqual(['automate/schedules'])
+    expect(automate.tabs).toEqual([
+      { id: 'schedules', label: 'Schedules' },
+      { id: 'approvals', label: 'Approvals' },
+    ])
+    expect(PANEL_PAGES.automate.map((p) => p.to)).toEqual(['automate/schedules', 'automate/approvals'])
   })
 
   it('routes the list and one schedule, both ways', () => {
@@ -340,10 +347,39 @@ describe('one schedule', () => {
     expect(facts).toContain('Merge: approve')
     expect(facts).toContain('Expiry: 72 h')
     expect(visible(gate)).toContain('.github/workflows/')
+    // §4.4: outside a platform repository the holds are a second member's, not the owner's.
+    // MUTATION: say "held for the owner" for every repository and this fails.
+    const stops = visible(gate.querySelector('.sc-stops'))
+    expect(stops).toMatch(/refused, not held/)
+    expect(stops).toMatch(/held at plan and at merge for a second member to approve; in a platform repository, for the owner/)
+    expect(stops).toMatch(/protected paths/)
+    expect(stops).toMatch(/frozen contract is held for the owner/)
+    expect(stops).toMatch(/\b3 failed runs in a row pause/)
     fireEvent.click(screen.getByRole('tab', { name: /Budget/ }))
     const budget = await screen.findByTestId('sc-budget', undefined, WAIT)
     expect(visible(budget)).toContain('$15.00')
     expect(visible(budget)).toContain('$120.00')
+  })
+})
+
+describe('one schedule on a phone', () => {
+  it('draws each firing as a record, every cell named, and its facts in one column', async () => {
+    // MUTATION: drop the 560px block from schedules.css.
+    media(true)
+    await mountDetail({
+      '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a'), firings: [firing('sch_a:1')] } },
+    })
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    const table = document.querySelector<HTMLElement>('.sc-table.is-firings')!
+    expect(painted(table.querySelector<HTMLElement>('thead')!, 'display', PHONE)).toBe('none')
+    const row = document.querySelector<HTMLElement>('tr[data-firing="sch_a:1"]')!
+    expect(painted(row, 'display', PHONE)).toBe('block')
+    for (const td of row.querySelectorAll<HTMLElement>('td')) {
+      expect(td.getAttribute('data-label'), 'a cell with no name').toBeTruthy()
+      expect(painted(td, 'display', PHONE)).toBe('block')
+    }
+    const facts = document.querySelector<HTMLElement>('.sc-facts.sc-head')!
+    expect(painted(facts, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
   })
 })
 

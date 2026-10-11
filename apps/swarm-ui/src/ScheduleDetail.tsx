@@ -269,7 +269,9 @@ export function MergeSwitch({ s, onChanged }: { s: Schedule; onChanged: () => vo
         >
           <p>
             A pull request this schedule makes will merge once it is green and reviewed, without a person approving it. The hard stops
-            still hold: workflow files, IAM, terraform/bootstrap and CODEOWNERS changes wait for the owner whatever this says.
+            still hold whatever this says: a plan naming workflow files is refused; IAM, terraform/bootstrap, CODEOWNERS and the
+            repository’s protected paths are held for a second member to approve (for the owner, in a platform repository); and in a
+            platform repository the frozen contract is held for the owner.
           </p>
           <p>
             The member who last changed this schedule’s gate, scope or spec cannot make this switch; in a platform repository only a
@@ -292,8 +294,15 @@ export function MergeSwitch({ s, onChanged }: { s: Schedule; onChanged: () => vo
   )
 }
 
+/** §4.4: the schedule's own `max_consecutive_failures`, clamped to 1-10, or 3, as `schedulefire.failures_to_pause` reads it. */
+function failuresToPause(s: Schedule): number {
+  const n = Number(s.policy.max_consecutive_failures ?? 3)
+  return Number.isFinite(n) ? Math.min(10, Math.max(1, Math.trunc(n))) : 3
+}
+
 function Gate({ s, onChanged }: { s: Schedule; onChanged: () => void }) {
   const g = s.gate
+  const failures = failuresToPause(s)
   return (
     <div data-testid="sc-gate">
       <dl className="sc-facts">
@@ -306,10 +315,17 @@ function Gate({ s, onChanged }: { s: Schedule; onChanged: () => void }) {
       </dl>
       <h3 className="sc-h3">Hard stops, whatever the gate</h3>
       <ul className="sc-stops">
-        <li>A plan naming .github/workflows/ is refused: the credential cannot push it.</li>
-        <li>IAM, terraform/bootstrap and CODEOWNERS changes are held for the owner, at plan and at merge.</li>
-        <li>A security-class issue is not swept; if one is planned, its plan needs the owner.</li>
-        <li>Three failed runs in a row pause the schedule; a spent daily budget skips firings until the next day.</li>
+        <li>A plan naming .github/workflows/ is refused, not held: the credential cannot push it.</li>
+        <li>
+          IAM, terraform/bootstrap, CODEOWNERS and the repository’s own protected paths are held at plan and at merge for a second
+          member to approve; in a platform repository, for the owner.
+        </li>
+        <li>In a platform repository, a change to the frozen contract is held for the owner.</li>
+        <li>A security-class issue is not swept; if one is planned, its plan is held the same way and it never merges automatically.</li>
+        <li>
+          {failures === 1 ? 'A failed run pauses' : `${failures} failed runs in a row pause`} the schedule; a spent daily budget skips
+          firings until the next day.
+        </li>
       </ul>
       <h3 className="sc-h3">Merging</h3>
       <MergeSwitch s={s} onChanged={onChanged} />

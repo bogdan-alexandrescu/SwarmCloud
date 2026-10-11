@@ -54,6 +54,8 @@ import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
 import { SchedulesScreen, WaitingOnYouCard } from './Schedules'
+import { ApprovalsScreen } from './Approvals'
+import { AdminSchedulesScreen } from './AdminSchedules'
 import { RepositoriesScreen } from './Repositories'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
@@ -340,12 +342,15 @@ export const SECTIONS: SectionDef[] = [
     // docs/schedules.md §6.1 (SD1, owner decision 2026-10-08): the section
     // that holds what runs by itself. A LITERAL id for the reason given on
     // Work: test_nav_headings_agree.py reads this array with a regex.
-    // Approvals, its second page, is a tab once its screen exists -- a tab
-    // with no SectionBody case is the 'No such pane' panel the nav test fails.
+    // Approvals is its second page, `/approvals` (§6.1), and the question's
+    // last clause is its.
     id: 'automate',
     label: 'Automate',
     question: 'What runs here by itself, on a schedule, and what is waiting on me to approve?',
-    tabs: [{ id: 'schedules', label: 'Schedules' }],
+    tabs: [
+      { id: 'schedules', label: 'Schedules' },
+      { id: 'approvals', label: 'Approvals' },
+    ],
   },
   {
     // BACK TO `capacity`, which this section was called before an earlier
@@ -463,8 +468,10 @@ export const SECTIONS: SectionDef[] = [
     // arrives wanting to know. It asks what each tab answers, in tab order.
     // docs/web-ui/redesign.md §2 carries the same words, and
     // tests/sections.test.ts holds the two together.
+    // docs/schedules.md §5.3 and §6.1 put the cross-tenant schedules view here,
+    // beside Tenants, and the question's last clause is its.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, and who is waiting for a workspace?',
+      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, who is waiting for a workspace, and what is every tenant scheduled to run?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
@@ -475,6 +482,9 @@ export const SECTIONS: SectionDef[] = [
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
       { id: 'people', label: 'People', admin: true },
+      // docs/schedules.md §5.3: every tenant's schedules, the schedule tick's
+      // last hour and the platform's own ticks (§8.4). Admin only.
+      { id: 'schedules', label: 'Schedules', admin: true },
     ],
   },
 ]
@@ -936,6 +946,8 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) return ['pool']
   // One schedule rides on the list's address (`/automate/schedules/<id>`, paths.ts).
   if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule']
+  // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts).
+  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval']
   if (sectionId !== CAPACITY) return []
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
@@ -1794,6 +1806,8 @@ function SectionBody({
 
     case 'automate/schedules':
       return <SchedulesScreen view={view} go={go} />
+    case 'automate/approvals':
+      return <ApprovalsScreen view={view} go={go} />
 
     case 'capacity/pools':
       return <CapacityScreen />
@@ -1816,6 +1830,8 @@ function SectionBody({
       return <PlatformCountsScreen />
     case 'admin/people':
       return <PeopleScreen />
+    case 'admin/schedules':
+      return <AdminSchedulesScreen />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash

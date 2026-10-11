@@ -5645,7 +5645,7 @@ export interface Schedule {
   params: Record<string, unknown>
   gate: { plan?: string; run?: string; merge?: string; approvers?: string; approval_ttl_hours?: number }
   budget: { per_run_usd?: number; per_day_usd?: number; max_concurrent?: number }
-  policy: { overlap?: string; catch_up?: string; jitter?: boolean; dry_run?: boolean }
+  policy: { overlap?: string; catch_up?: string; jitter?: boolean; dry_run?: boolean; max_consecutive_failures?: number }
   state: 'enabled' | 'paused' | 'auto_paused' | 'disabled'
   pause: { by?: string; at?: string; reason?: string | null; code?: string | null } | null
   owner: string
@@ -5738,6 +5738,124 @@ export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ au
 export async function loadApprovals(options: { frame?: boolean } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
   if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
   return read(route('/v1/approvals'), (d) => d.approvals.length === 0, { frame: options.frame === true })
+}
+
+/**
+ * `GET /v1/approvals/{id}`: one item, with what it is decided on -- the run
+ * for a projected plan, and for a merge the head it was checked at and what
+ * its requirements say. `digest` is what an approve sends back: the server
+ * refuses one that no longer matches (409 `merge_changed`, `plan_changed`).
+ */
+export interface ApprovalDetail {
+  approval: ApprovalItem & {
+    digest?: unknown
+    approvers?: unknown
+    hold?: { code?: string; approvers?: string; matched?: string[]; reasons?: string[] } | null
+    decided_by?: string | null
+    decided_at?: string | null
+    reason?: string | null
+  }
+  run?: { id?: string; state?: string; plan?: { summary?: string; steps?: unknown[]; files?: string[] } | null } & Record<string, unknown>
+  merge?: {
+    green_sha?: string | null
+    pull_request?: { number?: number; url?: string } | null
+    requirements_met?: boolean | null
+    requirements_unmet?: string[]
+    files_checked_head?: string | null
+  }
+}
+
+export async function loadApproval(itemId: string): Promise<Result<ApprovalDetail>> {
+  const target = route('/v1/approvals/{id}', { id: itemId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return read(target, () => false)
+}
+
+/**
+ * `POST /v1/approvals/{id}:approve` with the digest the person was shown.
+ * A one-person tenant's own hold answers 403 `hold_approver_required` with
+ * `detail.confirm`, the words to type; the retry sends them as `confirm`.
+ */
+export async function approveApproval(itemId: string, body: { digest: unknown; confirm?: string }): Promise<Result<unknown>> {
+  const target = route('/v1/approvals/{id}:approve', { id: itemId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', body)
+}
+
+/** `POST /v1/approvals/{id}:reject`: any member may, and a reason is required (§4.5). */
+export async function rejectApproval(itemId: string, body: { reason: string }): Promise<Result<unknown>> {
+  const target = route('/v1/approvals/{id}:reject', { id: itemId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', body)
+}
+
+/**
+ * One row of `GET /v1/admin/schedules` (§5.3, `_admin_row`): what an admin
+ * sees of another tenant's schedule. Not its parameters, gate or spec --
+ * those are the tenant's decisions.
+ */
+export interface AdminScheduleRow {
+  schedule_id: string
+  tenant_id: string
+  name: string
+  type: string
+  tier: string | null
+  cron: string
+  timezone: string
+  words: string | null
+  next_run_at: string | null
+  last_outcome: string | null
+  last_firing_at: string | null
+  spend_today: ScheduleSpendToday
+  pending_approvals: number
+  state: Schedule['state']
+  pause: Schedule['pause']
+  owner: string
+}
+
+/** The schedule tick's last hour (§2.10), as the admin list serves it. */
+export interface ScheduleTickHealth {
+  window_minutes: number
+  ticks: number
+  disabled: number
+  errors: number
+  truncated: number
+  fired: number
+  max_lateness_seconds: number | null
+  last: Record<string, unknown> | null
+}
+
+export async function loadAdminSchedules(
+  pageToken: string | null = null,
+): Promise<Result<{ schedules: AdminScheduleRow[]; next_page_token: string | null; tick: ScheduleTickHealth }>> {
+  const target = route('/v1/admin/schedules', {}, pageToken === null ? undefined : new URLSearchParams({ page_token: pageToken }))
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  // Never `empty`: the screen draws its own Absent beside the tick's health.
+  return read(target, () => false)
+}
+
+/** `POST /v1/admin/schedules/{id}:pause|disable|enable` (§5.3), audited as `admin:<email>`. */
+export async function adminScheduleAction(
+  scheduleId: string,
+  action: 'pause' | 'disable' | 'enable',
+  reason?: string,
+): Promise<Result<{ schedule: AdminScheduleRow }>> {
+  const target =
+    action === 'pause'
+      ? route('/v1/admin/schedules/{id}:pause', { id: scheduleId })
+      : action === 'disable'
+        ? route('/v1/admin/schedules/{id}:disable', { id: scheduleId })
+        : route('/v1/admin/schedules/{id}:enable', { id: scheduleId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  const body = action === 'enable' || reason === undefined || reason.trim() === '' ? undefined : { reason: reason.trim() }
+  return (await write(target, 'POST', body)) as Result<{ schedule: AdminScheduleRow }>
+}
+
+/** `POST /v1/admin/tenants/{tenant}/schedules:pause`, typed with the tenant id (§2.11). */
+export async function adminPauseTenantSchedules(tenantId: string, confirm: string, reason?: string): Promise<Result<unknown>> {
+  const target = route('/v1/admin/tenants/{tenant}/schedules:pause', { tenant: tenantId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', { confirm, ...(reason === undefined || reason.trim() === '' ? {} : { reason: reason.trim() }) })
 }
 
 /**

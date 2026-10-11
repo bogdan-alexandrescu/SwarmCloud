@@ -57,6 +57,9 @@ export const FIXED: Readonly<Record<string, string>> = {
   // docs/schedules.md §6.1 (SD1): Automate › Schedules. One schedule is
   // `/automate/schedules/<id>`, below.
   'automate/schedules': '/automate/schedules',
+  // §6.1: "Approvals is a page of its own at `/approvals`". One item is
+  // `/approvals/<id>`, below.
+  'automate/approvals': '/approvals',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',
   'capacity/profiles': '/capacity/pools/profiles',
@@ -69,6 +72,8 @@ export const FIXED: Readonly<Record<string, string>> = {
   'admin/counts': '/admin/counts',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
   'admin/people': '/admin/people',
+  // docs/schedules.md §5.3, §6.1: every tenant's schedules, beside Tenants.
+  'admin/schedules': '/admin/schedules',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }
@@ -229,6 +234,11 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     const id = new URLSearchParams(query).get('schedule')
     if (id !== null && id !== '') return `/automate/schedules/${encodeURIComponent(id)}`
   }
+  // One inbox item rides on the page's query as `approval=<id>`: `/approvals/<id>`.
+  if (bare === 'automate/approvals' && query !== '') {
+    const id = new URLSearchParams(query).get('approval')
+    if (id !== null && id !== '') return `/approvals/${encodeURIComponent(id)}`
+  }
   // Work › Repositories (repositories.html): the page rides on the tab's query.
   if (bare === 'work/repositories' && query !== '') {
     const q = new URLSearchParams(query)
@@ -338,6 +348,10 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
 
   if (seg[0] === 'automate' && seg[1] === 'schedules' && seg.length === 3 && seg[2] !== '') {
     return plain(`automate/schedules?${new URLSearchParams({ schedule: decodeURIComponent(seg[2]!) }).toString()}`)
+  }
+
+  if (seg[0] === 'approvals' && seg.length === 2 && seg[1] !== '') {
+    return plain(`automate/approvals?${new URLSearchParams({ approval: decodeURIComponent(seg[1]!) }).toString()}`)
   }
 
   if (seg[0] === 'repositories' && seg.length >= 2) {

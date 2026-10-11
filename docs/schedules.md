@@ -1535,6 +1535,15 @@ builds `Approvals.tsx`, not before. `docs/web-ui/redesign.md` §2 also carries
 each section's question verbatim (`apps/swarm-ui/tests/sections.test.ts`), so
 Automate's row was added there.
 
+**Built by S7, 2026-10-11, in its review round.** Approvals joined `SECTIONS`
+as Automate's second tab with `Approvals.tsx`, at `/approvals` (one item is
+`/approvals/<id>`), so the forms now offer "Automate › Schedules" and
+"Automate › Approvals"; the page carries the inbox count the section does.
+Admin › Schedules (`AdminSchedules.tsx`, `/admin/schedules`) joined Admin as
+its fifth tab, with the schedule tick's last hour and §8.4's "Platform ticks".
+That widened Admin's question by one clause ("and what is every tenant
+scheduled to run?"), changed in `SECTIONS` and in redesign.md §2 together.
+
 ### 6.2 Screens
 
 Each screen is drawn in 2-3 variants in the mock-ups, with a recommendation.

@@ -83,9 +83,12 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     { key: 'setup', label: 'Setup', icon: 'setup', to: 'work/setup' },
     { key: 'access', label: 'Access', icon: 'access', to: 'work/access' },
   ],
-  // docs/schedules.md §6.1 (SD1): Schedules now; Approvals joins it as the
-  // section's second page when its screen does.
-  automate: [{ key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'automate/schedules' }],
+  // docs/schedules.md §6.1 (SD1): the section's two pages. Approvals carries
+  // the inbox count, as the section does on the spine.
+  automate: [
+    { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'automate/schedules' },
+    { key: 'approvals', label: 'Approvals', icon: 'approvals', to: 'automate/approvals' },
+  ],
   capacity: [
     {
       key: 'pools',
@@ -118,6 +121,8 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again.
     { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // docs/schedules.md §5.3: every tenant's schedules, beside Tenants.
+    { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'admin/schedules' },
   ],
 }
 
@@ -786,6 +791,14 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
       <path d="M12 7.5V12l3 2" />
     </>
   ),
+  // §6.1: a tray with a tick, for the inbox of things waiting on a person.
+  approvals: (
+    <>
+      <path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20" />
+      <path d="M4 13.5 6.5 5h11l2.5 8.5V19H4z" />
+      <path d="m9.5 9.5 2 2 3.5-3.5" />
+    </>
+  ),
   people: (
     <>
       <circle cx="12" cy="7.5" r="3.5" />
@@ -910,7 +923,8 @@ export function SkyShell({
   )
   const t = envTreatment(env)
   const meter = meterOf(dataOf(cap))
-  const counts = panelCounts(stats, cap, fromList)
+  // The Approvals page carries the inbox count the Automate section does (§6.1).
+  const counts = waiting === null ? panelCounts(stats, cap, fromList) : { ...panelCounts(stats, cap, fromList), approvals: waiting }
   const online = useOnline()
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   const fault = wholeAppFault(me, probes)
