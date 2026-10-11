@@ -396,6 +396,45 @@ def fetch_upstream_task(
     return document
 
 
+def find_ci_fix_tasks(
+    db: Any,
+    *,
+    tenant_id: str,
+    root_task_id: str,
+    pull_request: int,
+    limit: int,
+    call_options: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """The tenant's CI-fixer tasks for `pull_request` of `root_task_id`'s branch (#1073).
+
+    The query swarm-api counts attempts with (`swarm_api.cifix._attempts_made`):
+    the same three equality filters -- `tenant_id`, `metadata.ci_fix.pull_request`
+    and the signed `metadata.dispatch.continues` -- served by single-field
+    indexes, as the API's is, so it needs no composite index. Bounded by
+    `limit`. Every document's `tenant_id` is re-checked, as
+    `fetch_upstream_task` does, and each is returned with its `id`.
+
+    These are CANDIDATES. `ci_fix` is unsigned, so the merge verifies each
+    one's signed spec before it believes anything in it (`merge._ci_fixers`).
+    """
+    from google.cloud.firestore_v1.base_query import FieldFilter  # lazy: grpc
+
+    query = (
+        db.collection("tasks")
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter("metadata.ci_fix.pull_request", "==", pull_request))
+        .where(filter=FieldFilter("metadata.dispatch.continues", "==", root_task_id))
+        .limit(limit)
+    )
+    found: list[dict[str, Any]] = []
+    for snapshot in query.stream(**dict(call_options or {})):
+        document = snapshot.to_dict() or {}
+        if document.get("tenant_id") != tenant_id:
+            continue
+        found.append({**document, "id": snapshot.id})
+    return found
+
+
 def artifact_reference(
     task_document: dict[str, Any],
     *,

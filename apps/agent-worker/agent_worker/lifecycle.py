@@ -1888,6 +1888,16 @@ class Worker:
                 call_options=self.control.call_options(),
             ),
             verify_upstream=specverify.upstream_verifier(self.cfg, workflow_id),
+            # The PR-side CI fixer's tasks (#1073): candidates only, which the
+            # merge verifies one by one before taking a head from any.
+            find_ci_fixes=lambda root, pull_request: inputs_mod.find_ci_fix_tasks(
+                self.db,
+                tenant_id=self.cfg.tenant_id,
+                root_task_id=root,
+                pull_request=pull_request,
+                limit=merge_mod.CI_FIX_QUERY_LIMIT,
+                call_options=self.control.call_options(),
+            ),
             read_app_key=self._read_action_app_key,
             environ=self.action_environ,
             recheck=self._action_recheck,

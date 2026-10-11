@@ -122,6 +122,10 @@ class MergeWorld:
         self.target: dict[str, Any] = {"pull_request": OPENER, "review": REVIEW,
                                        "verdict_file": VERDICT_FILE}
         self.slept: list[float] = []
+        #: The token reads made before each CI-fixer query (#1073), and what
+        #: the query raises when it cannot be read.
+        self.fixer_queries: list[int] = []
+        self.fixer_query_error: Exception | None = None
         self.github = FakeGitHub()
         self.repository: dict[str, Any] = {"default_branch": "main",
                                            "permissions": {"push": True}}
@@ -266,9 +270,30 @@ class MergeWorld:
         def fetch(task_id: str) -> dict[str, Any]:
             return self.docs[task_id]
 
-        def verify(task_id: str, _doc: Any) -> None:
+        def verify(task_id: str, doc: Any, *, of_workflow: str | None = None) -> None:
+            # As `specverify.upstream_verifier`: the signature, then the
+            # upstream's signed `workflow_id` against this workflow, or the
+            # one the caller names. A fake that ignored the workflow hid
+            # #1073's dropped CI-fix rounds.
             if task_id in self.unverified:
                 raise UpstreamSpecUnverified(task_id, self.unverified[task_id])
+            if doc.get("workflow_id") != (of_workflow or WORKFLOW):
+                raise UpstreamSpecUnverified(task_id, "workflow_mismatch")
+
+        def find_ci_fixes(root: str, pull_request: int) -> list[dict[str, Any]]:
+            # `inputs.find_ci_fix_tasks`' three equality filters, over every
+            # document this world holds, so a test can plant one that misses.
+            self.fixer_queries.append(self.token_reads)
+            if self.fixer_query_error is not None:
+                raise self.fixer_query_error
+            found = []
+            for task_id, doc in self.docs.items():
+                metadata = doc.get("metadata") or {}
+                if (doc.get("tenant_id") == TENANT
+                        and (metadata.get("ci_fix") or {}).get("pull_request") == pull_request
+                        and (metadata.get("dispatch") or {}).get("continues") == root):
+                    found.append({**doc, "id": task_id})
+            return found
 
         def read_token() -> str:
             self.token_reads += 1
@@ -289,5 +314,5 @@ class MergeWorld:
             transport=self.github, sleep=self.slept.append,
             register_secret=self.log.register_secret,
             read_git_token=read_token, repository_url=self.repository_url,
-            merge_slots=self.slots,
+            merge_slots=self.slots, find_ci_fixes=find_ci_fixes,
         )

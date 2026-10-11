@@ -178,6 +178,12 @@ class ActionContext:
     #: #295): one merge step per base at a time. None for any other action;
     #: a merge given none refuses `merge_slot_unavailable`.
     merge_slots: Any = None
+    #: `(root task, pull request number) -> task documents`: the tenant's
+    #: tasks the PR-side CI fixer submitted for that pull request of that
+    #: root's branch (`inputs.find_ci_fix_tasks`, #1073), each with its `id`.
+    #: Only `merge` reads it, as candidates it then verifies itself; empty for
+    #: every other action.
+    find_ci_fixes: Callable[[str, int], list[dict[str, Any]]] = lambda _root, _pr: []
 
 
 def _outcome(
