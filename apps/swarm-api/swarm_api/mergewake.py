@@ -74,6 +74,22 @@ is only submitted for a pull request whose head branch is the root's own
 a round at another branch. With no round left, red wakes the step, which
 refuses `checks_failed`.
 
+THE PR-SIDE CI FIXER PUSHES TO THE SAME BRANCH (#1073). ci-fix.yml submits
+its own one-step `continues_task` workflow for a red pull request
+(`cifix.stamp`, `metadata.ci_fix.pull_request` = the pull request,
+`metadata.dispatch.continues` = the root whose branch it is on). It is not
+one of the merge's rounds, so `merge_fix` never names it. The tick finds it
+with `cifix._attempts_made`'s own bounded query, under this tenant only, and
+only for a pull request whose head branch is the root's (`_ci_fixers`). A
+head it pushed (`result_summary.git.pushed_head`) wakes `head_moved` naming
+it in `head_pushed_by`; a red reading with no round left or asked, at the
+head a fixer not yet terminal was submitted for (`ci_fix.head_sha`), waits
+for it instead of waking the step to `checks_failed`. Nothing here accepts
+a head: the worker re-reads everything and accepts a fixer's head only from
+its signed spec (`agent_worker.merge`). `metadata.ci_fix` is tenant-written,
+so a forged record can only make the park wait, and the worker's
+`MERGE_CI_MAX_SECONDS` bounds that wait.
+
 AN UPDATE GITHUB HAS NOT MADE YET IS NOT A READING EITHER. update-branch is
 asynchronous: a worker that saw no new head after its bounded re-read parks
 at the old head with `BRANCH_UPDATE_PENDING`. That head's checks are green
@@ -116,7 +132,7 @@ from swarm_common.states import TERMINAL_STATES
 
 from . import gitidentity
 from .auth import AuthContext
-from .cifix import BRANCH_PREFIX
+from .cifix import BRANCH_PREFIX, CI_FIX_METADATA_FIELD, MAX_ATTEMPTS_CEILING
 from .continuation import TASK_ID_RE
 from .errors import ApiError, Forbidden, NotFound, UpstreamUnavailable
 from .forgechecks import GREEN, RED, CiReading, evaluate, required_status_checks
@@ -552,6 +568,9 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
         return (_WAITING, None) if reason is None else (_WAKE, reason)
     asked = _rounds_asked(metadata)
     if len(rounds) >= asked:
+        # The PR-side CI fixer may still be fixing this very head (#1073).
+        if _ci_fixer_running(ctx, tenant_id, doc, ref, read.pull, head):
+            return _WAITING, None
         return _WAKE, "red"
     resolved = _target_and_root(ctx, tenant_id, doc)
     if resolved is None or read.pull.head_ref != f"{BRANCH_PREFIX}{resolved[1]}":
@@ -616,13 +635,64 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
     return _FIXING, None
 
 
-def _pushed_by(ctx: Any, tenant_id: str, doc: Mapping[str, Any], head: str) -> str | None:
-    """Which of this merge's fix rounds pushed `head`, by `issueci.pushing_task`'s rule."""
+def _ci_fixers(db: Any, tenant_id: str, root: str, pull_request: int) -> list[Mapping[str, Any]]:
+    """The tenant's PR-side CI-fixer tasks for this pull request of `root`'s branch.
+
+    `cifix._attempts_made`'s query: three equality filters, bounded past the
+    most attempts cifix ever submits, and tenant_id asked again of every
+    document so another tenant's task is never read here (invariant 9).
+    """
+    query = (
+        db.collection(TASKS)
+        .where(filter=FieldFilter("tenant_id", "==", tenant_id))
+        .where(filter=FieldFilter(f"metadata.{CI_FIX_METADATA_FIELD}.pull_request", "==", pull_request))
+        .where(filter=FieldFilter(f"metadata.{DISPATCH_METADATA_KEY}.continues", "==", root))
+        .limit(MAX_ATTEMPTS_CEILING + 1)
+    )
+    docs = [snap.to_dict() or {} for snap in query.stream()]
+    return [d for d in docs
+            if d.get("tenant_id") == tenant_id and TASK_ID_RE.match(str(d.get("id") or ""))]
+
+
+def _branch_fixers(ctx: Any, tenant_id: str, doc: Mapping[str, Any], ref: IssueRef,
+                   pull: PullSnapshot) -> list[Mapping[str, Any]]:
+    """`_ci_fixers` of the root the merge targets, only while the pull request
+    is on that root's branch: never a fixer of another branch."""
+    resolved = _target_and_root(ctx, tenant_id, doc)
+    if resolved is None or pull.head_ref != f"{BRANCH_PREFIX}{resolved[1]}":
+        return []
+    return _ci_fixers(ctx.store.db, tenant_id, resolved[1], ref.number)
+
+
+def _ci_fixer_running(ctx: Any, tenant_id: str, doc: Mapping[str, Any], ref: IssueRef,
+                      pull: PullSnapshot, head: str) -> bool:
+    """Whether a CI fixer for this pull request, submitted for `head`, has not ended."""
+    terminal = {s.value for s in TERMINAL_STATES}
+    return any(
+        _mapping(_mapping(fixer.get("metadata")).get(CI_FIX_METADATA_FIELD)).get("head_sha") == head
+        and fixer.get("state") not in terminal
+        for fixer in _branch_fixers(ctx, tenant_id, doc, ref, pull)
+    )
+
+
+def _pushed_by(ctx: Any, tenant_id: str, doc: Mapping[str, Any], ref: IssueRef,
+               pull: PullSnapshot) -> str | None:
+    """Which of this merge's fix rounds pushed the pull request's new head, by
+    `issueci.pushing_task`'s rule; else which of its CI fixers did (#1073)."""
+    head = pull.head_sha
+    if not head:
+        return None
     workflows = [str(r["workflow_id"]) for r in _rounds(_mapping(doc.get("metadata")))
                  if isinstance(r.get("workflow_id"), str)]
-    if not workflows or not head:
-        return None
-    return pushing_task(ctx, tenant_id, head, fix_workflows=workflows, root_task_id=None)
+    if workflows:
+        pushed_by = pushing_task(ctx, tenant_id, head, fix_workflows=workflows, root_task_id=None)
+        if pushed_by:
+            return pushed_by
+    for fixer in _branch_fixers(ctx, tenant_id, doc, ref, pull):
+        git = _mapping(_mapping(fixer.get("result_summary")).get("git"))
+        if git.get("pushed_head") == head:
+            return str(fixer["id"])
+    return None
 
 
 def _due(wait: Mapping[str, Any], now: datetime) -> bool:
@@ -702,7 +772,7 @@ def wake_tenant(ctx: Any, tenant_id: str, *, limit: int) -> WakeReport:
                         report.fixing += 1
                         continue
                 elif reason == "head_moved":
-                    pushed_by = _pushed_by(ctx, tenant_id, doc, read.pull.head_sha)
+                    pushed_by = _pushed_by(ctx, tenant_id, doc, ref, read.pull)
                     if pushed_by:
                         patch["head_pushed_by"] = pushed_by
             except Exception as exc:
