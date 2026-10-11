@@ -229,13 +229,13 @@ Every pod carries:
   HOME emptyDirs together and evicts the pod (no checkpoint, no park) when
   their total passes it. On Cloud Run only the workspace is a capped tmpfs, and
   `/tmp` (where the worker builds checkpoint archives of up to 2 GiB) and HOME
-  are outside that cap. So since contract request 53 a `standard` pod on GKE
-  gets 10 GiB: 4 for the workspace, the same as on Cloud Run, plus 2 for `/tmp`
-  and 4 for HOME. 10 GiB is also the most Autopilot accepts for a
-  general-purpose pod. `browser` gets 8 GiB, its `disk_gib`, split 5 workspace +
-  1 `/tmp` + 2 HOME (owner, 2026-10-07): its volumes were 8 + 2 + 4 = 14 GiB
-  under that 8 GiB limit, so the pod could be evicted before any one volume was
-  full. The per-class layout is `GkeDisk` in `scheduler/dispatch.py`, and a unit
+  are outside that cap. So a `standard` pod on GKE gets 10 GiB, split 5 for
+  the workspace + 4 for `/tmp` + 1 for HOME (#893; it was 4 + 2 + 4 under
+  contract request 53). 10 GiB is also the most Autopilot accepts for a
+  general-purpose pod. `browser` gets 8 GiB, its `disk_gib`, split 4 workspace +
+  2 `/tmp` + 2 HOME (owner, 2026-10-07; `/tmp` must hold a 2 GiB checkpoint
+  archive): its volumes were 8 + 2 + 4 = 14 GiB under that 8 GiB limit, so the
+  pod could be evicted before any one volume was full. The per-class layout is `GkeDisk` in `scheduler/dispatch.py`, and a unit
   test holds every class to sum(sizeLimits) <= ephemeral-storage <= 10 GiB;
 * `restartPolicy: Never` and `backoffLimit: 0` — the control plane owns retries;
 * the tenant's Kubernetes service account, workload-identity-bound to the
