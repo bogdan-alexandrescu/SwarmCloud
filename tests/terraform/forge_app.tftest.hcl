@@ -309,6 +309,70 @@ run "user_slot_grants_are_scoped_per_tenant_and_split_read_from_write" {
   }
 }
 
+# Owner decision 2026-10-11 (#1041): secrets are user-scoped. Every member of a
+# group tenant runs agents as the same worker account, and an agent can mint
+# that account's token, so a worker grant on `-git-u-` would hand Bob's agent
+# Alice's slot by name. The worker obtains a user slot only through swarm-api's
+# broker (docs/design/user-scoped-secrets.md); IAM, not the resolver, keeps it
+# from reading one directly.
+#
+# Two halves. The plan: every secretAccessor binding this root makes on a
+# user-slot condition is swarm-api's. The source: no IAM resource anywhere in
+# terraform/bootstrap grants secretAccessor to a tenant worker account, so a
+# binding added under a new address is caught too, not only the one removed.
+run "no_tenant_worker_holds_secret_accessor_on_a_user_slot" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  override_data {
+    target          = data.google_project.forge_user_slots
+    override_during = plan
+    values = {
+      number = "209012342332"
+    }
+  }
+
+  variables {
+    enable_forge_user_slots = true
+    infra_tenants_tfvars    = "../../tests/terraform/tenants_tfvars_fixture/fixture.tfvars"
+  }
+
+  assert {
+    condition = alltrue([
+      for m in concat(values(google_project_iam_member.forge_refresh_reader), values(google_project_iam_member.forge_personal_slots)) :
+      m.member == "serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"
+      if m.role == "roles/secretmanager.secretAccessor" && strcontains(m.condition[0].expression, "-git-u-")
+    ]) && length(google_project_iam_member.forge_refresh_reader) > 0
+    error_message = "a secretAccessor binding on a -git-u- user slot names someone other than swarm-api; the broker is the only way a worker obtains a person's slot (#1041)"
+  }
+
+  assert {
+    condition = length(flatten([
+      for f in fileset("../../terraform/bootstrap", "*.tf") : [
+        for b in regexall("(?s)resource \"google_[a-z_]+_iam_(?:member|binding)\" \"([^\"]+)\" \\{(.*?)\\n\\}", file("../../terraform/bootstrap/${f}")) :
+        "${f}: ${b[0]}"
+        if strcontains(b[1], "secretmanager.secretAccessor") && (strcontains(b[1], "worker_ids") || strcontains(b[1], "swarm-agent-worker"))
+      ]
+    ])) == 0 && length(google_project_iam_member.forge_refresh_reader) > 0
+    error_message = "terraform/bootstrap grants a tenant worker account secretAccessor; its one such grant was the worker's read of every member's -git-u- slot, removed by the owner's 2026-10-11 decision (#1041)"
+  }
+
+  # The control: the source check finds swarm-api's own reader, so a regex
+  # that matched nothing would fail here rather than pass above.
+  assert {
+    condition = contains(flatten([
+      for f in fileset("../../terraform/bootstrap", "*.tf") : [
+        for b in regexall("(?s)resource \"google_[a-z_]+_iam_(?:member|binding)\" \"([^\"]+)\" \\{(.*?)\\n\\}", file("../../terraform/bootstrap/${f}")) :
+        b[0] if strcontains(b[1], "secretmanager.secretAccessor")
+      ]
+    ]), "forge_refresh_reader") && length(google_project_iam_member.forge_refresh_reader) > 0
+    error_message = "the source check no longer finds forge_refresh_reader, swarm-api's secretAccessor grant, so it proves nothing about the worker"
+  }
+}
+
 run "user_slot_grants_are_absent_until_switched_on" {
   command = plan
 
