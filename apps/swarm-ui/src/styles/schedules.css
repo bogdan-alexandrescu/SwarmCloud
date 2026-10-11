@@ -159,7 +159,7 @@
   .sc-table.is-schedules .sc-row > td.sc-c-more { display: none; }
   .sc-table.is-schedules .sc-row > td.sc-c-state { grid-area: state; width: auto; }
   .sc-table.is-schedules .sc-row > td.sc-c-acts { grid-area: acts; width: auto; }
-  .sc-table.is-schedules .sc-c-name > .sc-name { grid-area: name; display: block; min-height: 44px; line-height: 44px; }
+  .sc-table.is-schedules .sc-c-name > .sc-name { grid-area: name; display: block; min-height: 44px; padding: 12px 0; }
   .sc-table.is-schedules .sc-c-name > .sc-type { display: none; }
   .sc-table.is-schedules .sc-c-state > .sc-why { display: none; }
   .sc-table.is-schedules .sc-c-name > .sc-line2 {
