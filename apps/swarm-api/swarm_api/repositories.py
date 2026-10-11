@@ -583,6 +583,9 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
     for key in ("last_indexed_at", "head_read_at"):
         if key in index:
             index[key] = _iso(index[key])
+    last_poll = index.get("last_poll")
+    if isinstance(last_poll, Mapping) and "at" in last_poll:
+        index["last_poll"] = {**last_poll, "at": _iso(last_poll["at"])}
     return {
         "repo_id": data.get("repo_id"),
         "tenant_id": data.get("tenant_id"),

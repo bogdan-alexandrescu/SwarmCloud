@@ -635,9 +635,24 @@ unchanged branch `304 Not Modified`, which does not count against the
 token's rate limit, so polling forty repositories every five minutes costs
 almost nothing. The route stores `head_sha` and `head_read_at` on every
 registration it read — the head is what staleness is measured against
-(§5) — and queues an index run where the head moved, the minimum change
-interval has passed and no run is in flight. The interval trigger is checked
-in the same pass: `last_indexed_at + interval_hours` passed means queue one.
+(§5) — and queues an index run where the head is not the **built** index
+(`current_sha`), the minimum change interval has passed since the newest run
+was queued, and no run is in flight. The interval trigger is checked in the
+same pass: `last_indexed_at + interval_hours` passed means queue one.
+
+The comparison is against the built index, never against the ETag or the
+newest run's commit (live QA AUT-7, 2026-10-11). The ETag only decides how
+the head is *read*: a 304 stands for the head last read, and that head is
+then decided on like any other. A run that was given a head and failed, was
+refused at promotion or went missing built nothing, so that head is queued
+again once the minimum change interval allows — not a whole `interval_hours`
+later, which is how an index sat 20 commits behind for seven hours while
+every poll read the head and queued nothing. Each tick stores its decision on
+the registration as `index.last_poll` (`at`, `head_sha`, `outcome` —
+`queued`, `pending`, `held` or `failed` — and `reason`: the trigger, or
+`current`, `throttled`, `in_flight`, `paused`, `on_change_off`, `no_head`, or
+the failure's code), and the poll's answer counts the held ones by reason in
+`report.held`, so "why is the index behind?" is answered by the document.
 
 **A webhook (phase 3, optional).** A GitHub `push` webhook would cut the
 detection delay from five minutes to seconds. It is not first because it is
