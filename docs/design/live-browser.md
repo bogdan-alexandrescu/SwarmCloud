@@ -65,6 +65,8 @@ Section 5.7 is about that.
 | **LB-2** | Frames are visible **only to members of the task's tenant**, checked on every connection (invariant 9). | §5.1, §5.2 |
 | **LB-3** | Password and secret fields are **masked before anything leaves the pod**. | §5.3 |
 | **LB-4** | Frames and recordings are kept **7 days**, under the tenant's GCS prefix. | §7 |
+| **LB-5** | The console presentation is **a Browser tab on the agent page, with theater mode available from it** (owner's choice, 2026-10-11, from five in-console alternatives; recorded on #1030). This replaces the earlier phased plan of separate split, picture-in-picture and wall views. | §6 |
+| **LB-6** | The browser can run **as a mobile device, not only desktop**, and a person in control works it **by touch**. Presets: Desktop 1440×900, iPhone 15 393×852, Pixel 8 412×915, iPhone SE 375×667, iPad (gen 7) 810×1080, with rotate. | §6.1 |
 
 The brief also described a shape: "a VNC server bound to localhost only" and
 "Chromium launched by the agent's Playwright on that display", with "swarm-api
@@ -872,17 +874,92 @@ the page there (section 5.4.3).
 
 ## 6. The console
 
-* **Live browser panel** on the agent's view (§3.4): the canvas, the origin
-  strip, the controller, the buttons. View is read-only until Take control.
-* **A banner** on Overview's "Needs a look" (`apps/swarm-ui/src/Overview.tsx`) and a
-  badge on the agent's row when `human_wait` is set, with the reason, the
-  expected site and the time left before the hold ends. On a parked hand-off:
-  "I'm ready to sign in", which calls `human-ready` and opens the panel.
+The owner chose this presentation (LB-5) from five in-console alternatives. The
+mockup of the chosen design is the owner's private artifact "Browser Tab and
+Theater", linked from #1030. In summary:
+
+* **A Browser tab on the agent's view** (`AgentSplit.tsx`, the underline tabs
+  Details, Logs, Changes and so on). It sits before Logs, and it is the tab a
+  running browser agent opens on, as Logs is today. It holds the noVNC canvas
+  (§3.4), the origin strip and the controller. Its toolbar holds the device
+  switcher (§6.1), rotate, touch, a **logs toggle** that splits the tab into
+  logs beside the canvas, and **⤢ Theater**. Take control sits in the agent
+  header beside Stop. The view is read-only until Take control.
+* **Theater mode**, opened from ⤢ (or the key `T`), from a graph card, or from
+  the hand-off banner. It shows the same session full screen:
+  - a left column that switches between Timeline (the agent's actions) and Logs;
+  - the canvas in the middle;
+  - a right column with the device picker and the other live agents, with
+    prev and next;
+  - a bottom bar with replay over the session's recording (§7) and Take control.
+
+  Esc returns to the tab at the same scroll. Theater is a view, not a second
+  session: it reuses the tab's tunnel and ticket. On a phone, ⤢ goes native
+  full screen, landscape preferred.
+* **The hand-off** when `human_wait` is set:
+  - a yellow banner across the Browser tab, with the reason, the expected site,
+    the time left, Take control, and Open in theater;
+  - a dot on Agents in the rail and a yellow row in the agent list;
+  - the banner on Overview's "Needs a look" (`apps/swarm-ui/src/Overview.tsx`).
+
+  On a parked hand-off the banner reads "I'm ready to sign in", which calls
+  `human-ready` and opens the tab. In the theater, the left column becomes the
+  hand-off checklist.
+* **The workflow graph** (`WorkflowViews.tsx`). A running browser step's node
+  expands an inline card with a low-rate (about 1 fps) live thumbnail. The card
+  carries Open Browser tab and ⤢ Theater. In the theater, prev and next step
+  through that workflow's live steps.
+* **All live browsers**: a **Live** filter on the Agents list, with a device
+  thumbnail per row and needs-you first. "Theater all" opens the theater with
+  prev and next across them. There is no new nav tab.
+* **On the person's own phone**, the console's existing two-page phone layout
+  carries the same Browser tab. Take control works by touch, and the device
+  switcher sits under the tab's ⋯ menu.
 * **Recordings** (§7) on the attempt's view, as a player over the masked
-  segments, for tenant members.
-* No new nav tab: the panel lives inside the existing agent view, so the issue
-  forms' "Where" list (`tests/unit/scripts/test_issue_forms.py`, reading
-  `SECTIONS` in `apps/swarm-ui/src/App.tsx`) does not change.
+  segments, for tenant members. Theater replay reads the same segments.
+* No new nav tab: everything lives inside existing views. So the issue forms'
+  "Where" list (`tests/unit/scripts/test_issue_forms.py`, reading `SECTIONS` in
+  `apps/swarm-ui/src/App.tsx`) does not change.
+
+### 6.1 Mobile devices (LB-6)
+
+The browser can be a phone or a tablet, for visual QA as a mobile browser and
+for sign-ins that only work on mobile.
+
+* **The gate applies the device, not the agent.** The gate owns Chromium's pipe
+  (§3.2), so it sets the device on the gate-owned context with
+  `Emulation.setDeviceMetricsOverride` (width, height, device scale factor,
+  `mobile`), `Emulation.setUserAgentOverride` (the preset's user agent and
+  client hints) and `Emulation.setTouchEmulationEnabled`. It also resizes the
+  virtual display to the preset's frame, so the frames carry no letterbox. The
+  agent's own CDP calls to these methods go through the method policy (§5.4.4).
+  An agent picks a preset through the gate (`swarm-handoff device <preset>`),
+  never by sending metrics of its own.
+* **The presets** are a fixed, named list in the gate:
+  - `desktop` 1440×900
+  - `iphone-15` 393×852 @3
+  - `pixel-8` 412×915 @2.625
+  - `iphone-se` 375×667 @2
+  - `ipad-7` 810×1080 @2
+
+  Each has a portrait and a landscape orientation. A name outside the list is
+  refused. A caller never sends dimensions, which keeps invariant 10's spirit:
+  a choice by name, never a parameter.
+* **Touch from the console.** When the preset is mobile and the person in
+  control has touch on:
+  - the gate turns the controller's pointer events into
+    `Input.dispatchTouchEvent`: press, move and release become touchStart,
+    touchMove and touchEnd;
+  - a two-finger gesture on a phone becomes a pinch;
+  - a wheel becomes a touch scroll.
+
+  The RFB key rules (§5.6) are unchanged. In view mode, no input is sent at all.
+* **Masking (§5.3) is device-independent.** It reads element boxes from the
+  page in CSS pixels and scales them by the device scale factor. A test runs
+  every preset (lane L3b).
+* **Who switches the device** is question Q13. The recommendation is the agent,
+  plus the person in control. A viewer's switcher shows the current device and
+  is disabled.
 
 ---
 
@@ -1032,8 +1109,11 @@ first, red, then the fix (CLAUDE.md, "Red first").
 | 2 | **L8 INFRA** | `terraform/infra/live.tf`, `terraform/modules/storage/main.tf`, `kubernetes/swarm-system/swarm-live.yaml`, `scripts/create-secrets.sh`, `tests/terraform/live.tftest.hcl` | L7 | `terraform test`: the 7-day suffix rule exists, the relay's grant is create-only and conditioned on `/live/`, every resource carries `managed-by=swarm-terraform`, no secret version |
 | 2 | **L9 API-LIVE** | `apps/swarm-api/swarm_api/live.py`, `apps/swarm-api/swarm_api/routes/live.py`, `apps/swarm-api/swarm_api/settings.py`, `tests/unit/control_plane/test_live_api.py` | L7 | another tenant's member gets 404; a non-submitter can view, cannot take until opened; one controller at a time, preemption by the submitter only; the audit entry is in the control change's transaction; membership re-checked; no ticket in a URL |
 | 2 | **L10 API-HANDOFF** | `apps/swarm-api/swarm_api/handoff.py`, `apps/swarm-api/swarm_api/routes/tasks.py`, `apps/swarm-api/swarm_api/validation.py`, `apps/scheduler/scheduler/loop.py`, `tests/unit/control_plane/test_handoff_api.py` | L0 | worker route refuses an unsigned or stale-generation call; `human-ready` moves `PARKED(HUMAN_REQUIRED) -> READY` for an eligible caller only; no sweep promotes it; past the maximum it is dead-lettered with `human_wait_expired`; `human_wait_resumes` is reserved |
-| 3 | **L11 UI-LIVE** | `apps/swarm-ui/src/LiveBrowser.tsx`, `apps/swarm-ui/src/AgentDetail.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/package.json`, `apps/swarm-ui/test/LiveBrowser.test.tsx` | L9 | vitest: the ticket goes in the first message, never the URL; no Take control for a non-eligible viewer; a mismatched origin turns the strip red and asks twice; keys captured only with canvas focus |
-| 3 | **L12 UI-HANDOFF** | `apps/swarm-ui/src/Overview.tsx`, `apps/swarm-ui/src/Agents.tsx`, `apps/swarm-ui/src/Recordings.tsx`, `apps/swarm-ui/test/Handoff.test.tsx` | L10, L11 | the banner shows reason, expected site and time left; "I'm ready to sign in" calls `human-ready`; recordings list only the caller's tenant's |
+| 1 | **L3b GATE-DEVICE** | `livegate/device.py`, `livegate/touch.py`, `livegate/presets.py`, `tests/unit/worker/test_live_device.py` | L2, L3 | each preset sets metrics, user agent and touch on the gate-owned context and resizes the display; an unknown preset name is refused; the agent's own `Emulation.*` calls are refused by the method policy; in control with touch on, a press/move/release arrives as touchStart/Move/End; in view mode no input is sent; the mask covers a password field on every preset at its device scale factor |
+| 3 | **L11 UI-LIVE** | `apps/swarm-ui/src/LiveBrowser.tsx` (the Browser tab, device bar, logs toggle), `apps/swarm-ui/src/AgentSplit.tsx`, `apps/swarm-ui/src/api.ts`, `apps/swarm-ui/package.json`, `apps/swarm-ui/test/LiveBrowser.test.tsx` | L9, L3b | vitest: the Browser tab is first for a running browser agent; the ticket goes in the first message, never the URL; no Take control for a non-eligible viewer; a viewer's device switcher is disabled; a mismatched origin turns the strip red and asks twice; keys captured only with canvas focus; touch events sent only in control with touch on |
+| 3 | **L11b UI-THEATER** | `apps/swarm-ui/src/Theater.tsx`, `apps/swarm-ui/src/TheaterTimeline.tsx`, `apps/swarm-ui/src/styles/theater.css`, `apps/swarm-ui/test/Theater.test.tsx` | L11 | vitest: ⤢ and `T` open it on the same session (no second ticket); Esc returns to the tab; Timeline/Logs switch; prev/next walk the live agents in order; replay reads only the caller's tenant's segments |
+| 3 | **L12 UI-HANDOFF** | `apps/swarm-ui/src/Overview.tsx`, `apps/swarm-ui/src/Agents.tsx` (the banner row, the Live filter), `apps/swarm-ui/src/Recordings.tsx`, `apps/swarm-ui/test/Handoff.test.tsx` | L10, L11 | the tab banner and Overview card show reason, expected site and time left; "I'm ready to sign in" calls `human-ready`; the Live filter lists only running browser agents, needs-you first; recordings list only the caller's tenant's |
+| 3 | **L12b UI-GRAPH** | `apps/swarm-ui/src/WorkflowViews.tsx`, `apps/swarm-ui/src/LiveThumb.tsx`, `apps/swarm-ui/test/LiveThumb.test.tsx` | L11b | a running browser node expands a card with a thumbnail at ≤1 fps; Open Browser tab and ⤢ Theater navigate to the same session; no thumbnail stream for a finished step |
 | 4 | **L13 ACCEPT** | `.github/workflows/accept.yml`, `tests/acceptance/test_live_browser.py`, `tests/acceptance/fixtures/login.html`, `docs/acceptance.md` | all | on dev: a `claude-code-browser` task asks for help on a fixture sign-in page; a scripted viewer takes control and types a password generated at run time; the recording's frames have the field's pixels painted; the transcript, logs, checkpoint and outputs do not contain the password; control returns and the task succeeds; a member of another tenant is refused |
 
 L1-L3 share `livegate/`, a new directory; they are three lanes because their
@@ -1065,6 +1145,9 @@ Written to `questions.json` with a recommendation each:
     reached through a CDP proxy, with no VNC server listening even on
     localhost -- instead of the brief's agent-launched Chromium and localhost
     VNC (§3.1, §3.2). *Recommended: accept.*
+13. **Q13** Who may switch the device (§6.1): the agent only; the agent and the
+    person in control; or any viewer. *Recommended: the agent and the person in
+    control.*
 
 ---
 
