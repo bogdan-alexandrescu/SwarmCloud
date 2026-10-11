@@ -1434,7 +1434,19 @@ export function RunChangesTab({ run, at, onAt }: { run: IssueRun; at?: ChangesAt
           {l.data === null ? ', so its steps are not drawn' : ', so its columns are the last read'}.
         </p>
       ))}
-      <ChangesMatrix cols={cols} at={here} onAt={go} pullRequest={pr} />
+      {/* NOT A ZERO WHEN NOTHING WAS READ (visual QA V037, 2026-10-11): a
+          workflow that could not be read leaves no column, and the matrix's
+          own "no steps" chip then called that a real zero under the note
+          saying the read failed. No column and a failed read is unread. */}
+      {cols.length === 0 && failed.length > 0 ? (
+        <State
+          mark="unread"
+          heading="steps not read"
+          say="The run's workflow could not be read, so its steps and what they changed are not known. This is not a zero."
+        />
+      ) : (
+        <ChangesMatrix cols={cols} at={here} onAt={go} pullRequest={pr} />
+      )}
     </section>
   )
 }
