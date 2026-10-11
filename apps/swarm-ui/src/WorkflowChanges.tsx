@@ -211,7 +211,7 @@ export function AgentChanges({
   if (src.kind === 'zero') {
     return (
       <div className="chg-tab">
-        <State mark="zero" heading="no changes · nothing differed from the clone" say="Nothing differed from the clone, so there is no patch. This is a real zero rather than a patch that failed to upload." />
+        <State mark="zero" heading="no changes · nothing differed from the clone" say="Nothing differed from the clone, so there is no patch." />
       </div>
     )
   }
@@ -333,7 +333,7 @@ export function PatchChanges({
     )
   }
   if (data.content === '') {
-    return <State mark="zero" heading="empty patch" say="The patch was written and holds nothing: a real zero, not a failed read." />
+    return <State mark="zero" heading="empty patch" say="The patch was written and is empty." />
   }
 
   const whole = data.offset === 0 && data.next_offset === null && !data.truncated

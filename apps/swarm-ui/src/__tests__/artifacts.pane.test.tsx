@@ -527,7 +527,7 @@ describe('Outputs: the answer first, then every file', () => {
     const out = await sectionReady('Outputs', /uploaded when the attempt ends/)
     expect(out.querySelectorAll('.ctl-mark.is-pending').length, 'a not-yet is not drawn as pending').toBeGreaterThanOrEqual(2)
     expect(out.textContent).toMatch(/not yet/)
-    expect(out.textContent, 'a list that is not written yet is drawn as empty').not.toMatch(/none uploaded/)
+    expect(out.textContent, 'a list that is not written yet is drawn as empty').not.toMatch(/(none|nothing) uploaded/)
     expect(out.querySelector('.ctl-mark.is-zero'), 'a pending list wears the real-zero mark').toBeNull()
     expect(api.count(`/v1/tasks/${REF}/artifacts`), 'the listing was asked for with no summary to list').toBe(0)
   })
