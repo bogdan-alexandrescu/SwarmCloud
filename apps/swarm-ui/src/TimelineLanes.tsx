@@ -14,9 +14,11 @@
  *                                (`taskReadCovers`); a task the pages did not
  *                                reach is read on its own (`loadTask`), up to
  *                                MISSING_TASK_READS.
- *   GET /v1/workflows/{id}       each workflow drawn: its state, and the steps
- *                                that never had an attempt (drawn, no bar).
- *   GET /v1/tasks/{id}/events    ONE PAGE PER LANE IN VIEW, newest first
+ *   GET /v1/workflows?ids=       each workflow drawn, 50 to a read (CH-6): its
+ *                                state, and the steps that never had an attempt
+ *                                (drawn, no bar). `GET /v1/workflows/{id}` each
+ *                                only where the API does not take `ids`.
+ *   GET /v1/tasks/{id}/events    ONE PAGE PER LANE ON SCREEN, newest first
  *                                (`order=desc`, redesign-v2 S1's UI half): the
  *                                park, fence and cancel marks. The open lane's
  *                                list follows the page token for older events.
@@ -38,6 +40,8 @@ import {
   loadTaskEventsPage,
   loadTasks,
   loadWorkflow,
+  loadWorkflowsById,
+  WORKFLOW_IDS_PER_READ,
   TASK_PAGE_LIMIT,
   type WorkflowRead,
 } from './api'
@@ -680,9 +684,8 @@ export function TimelineLanesScreen({
     })
   }, [nonce])
   const wfQueue = useRef(readQueue(WORKFLOW_READS_AT_ONCE))
-  const askWorkflow = useCallback((wf: string) => {
-    askedWf.current.add(wf)
-    const gen = wfGen.current
+  /** One workflow, read on its own: the path an API without `?ids=` is read by. */
+  const askOne = useCallback((wf: string, gen: number) => {
     void wfQueue.current(() => withBackoff(() => loadWorkflow(wf), WORKFLOW_429_WAITS_MS)).then((r) => {
       if (wfGen.current !== gen) return
       const route = `/v1/workflows/${wf}`
@@ -698,6 +701,60 @@ export function TimelineLanesScreen({
       )
     })
   }, [])
+  // THE WORKFLOWS THE LANES NAME, IN ONE READ PER 50 (live QA CH-6,
+  // 2026-10-11): one `GET /v1/workflows/{id}` per workflow was 52 reads on one
+  // load. The asks of one render are gathered and sent as
+  // `GET /v1/workflows?ids=` in chunks of WORKFLOW_IDS_PER_READ, through the
+  // same queue and the same 429 waits; an API that ignores `ids` has each
+  // read on its own, as before.
+  const wfPending = useRef<{ gen: number; ids: string[] } | null>(null)
+  const flushWorkflows = useCallback(() => {
+    const pending = wfPending.current
+    wfPending.current = null
+    if (pending === null) return
+    const { gen, ids } = pending
+    for (let at = 0; at < ids.length; at += WORKFLOW_IDS_PER_READ) {
+      const chunk = ids.slice(at, at + WORKFLOW_IDS_PER_READ)
+      void wfQueue.current(() => withBackoff(() => loadWorkflowsById(chunk), WORKFLOW_429_WAITS_MS)).then((r) => {
+        if (wfGen.current !== gen) return
+        if (isData(r) && !r.data.batched) {
+          for (const wf of chunk) askOne(wf, gen)
+          return
+        }
+        setWorkflows((m) => {
+          const n = new Map(m)
+          for (const wf of chunk) {
+            const route = `/v1/workflows?ids=${wf}`
+            const one = isData(r) ? r.data.reads.get(wf) : undefined
+            n.set(
+              wf,
+              one !== undefined
+                ? { status: 'ok', read: one }
+                : isData(r)
+                  ? { status: 'error', why: 'not found in this tenant', route, limited: false }
+                  : r.status === 'error'
+                    ? { status: 'error', why: failureWords(r.error), route, limited: r.error.httpStatus === 429 }
+                    : { status: 'error', why: 'not read', route, limited: false },
+            )
+          }
+          return n
+        })
+      })
+    }
+  }, [askOne])
+  const askWorkflow = useCallback(
+    (wf: string) => {
+      askedWf.current.add(wf)
+      const gen = wfGen.current
+      if (wfPending.current !== null && wfPending.current.gen === gen) {
+        wfPending.current.ids.push(wf)
+        return
+      }
+      wfPending.current = { gen, ids: [wf] }
+      queueMicrotask(flushWorkflows)
+    },
+    [flushWorkflows],
+  )
   const retryWorkflow = useCallback(
     (wf: string) => {
       setWorkflows((m) => {
@@ -1522,6 +1579,16 @@ function heldFor(lane: Lane): number | null {
   return bars.reduce((sum, s) => sum + Math.max(0, s.to - s.from), 0)
 }
 
+/**
+ * A LANE READS ITS EVENTS ONLY ONCE IT IS ON SCREEN (live QA CH-6,
+ * 2026-10-11): the page made 25 events reads on load at 1440. The cards'
+ * `CARD_ROOT_MARGIN` reads 200px ahead, which is right for a card a reader
+ * scrolls to and wrong for a lane: a lane is a ~30px row, so 200px either
+ * side is a dozen lanes nobody is looking at. The selected lane reads its own
+ * events wherever it is (`onRead`).
+ */
+export const LANE_ROOT_MARGIN = '0px'
+
 function LaneRow({
   lane,
   since,
@@ -1550,7 +1617,7 @@ function LaneRow({
   readNonce: number
   onRetry: (id: string) => void
 }) {
-  const [ref, inView] = useInView<HTMLDivElement>()
+  const [ref, inView] = useInView<HTMLDivElement>(LANE_ROOT_MARGIN)
   useEffect(() => {
     if (inView && !lane.neverRan) onSeen(lane.taskId)
   }, [inView, lane.neverRan, lane.taskId, onSeen, readNonce])
