@@ -349,19 +349,22 @@ kubectl describe job -n swarm-tenant-eng <job-name>
 
 * **Applying to every tenant.** There is no bulk target; run step 2 per tenant.
 * **Tenants provisioned before 2026-09-24.** Their tenant document may carry
-  `namespace: swarm-<id>`, the old spelling, which the dispatcher *prefers*
-  over its own template. There is no per-tenant read route — `/v1/tenants/me`
-  answers only for the caller — so check them all at once, which needs admin:
+  `namespace: swarm-<id>`, the old spelling. Until 2026-10-11 the dispatcher
+  *preferred* that over its own template unchecked, which is how u-bogdan's
+  tasks went to a namespace that did not exist. Since then the scheduler and
+  the reconciler ignore a stored value outside `swarm-tenant-`, use the derived
+  name, and log `tenant_namespace_mismatch` at ERROR (the
+  `tenant-namespace-mismatch` alert); a value inside the prefix but different
+  is kept and logged at WARNING. The document is still wrong, so find them all
+  at once (admin only; read-only):
 
   ```bash
-  scripts/api.sh GET /admin/tenants \
-    | jq '.tenants[]
-          | select(.namespace and (.namespace | startswith("swarm-tenant-") | not))
-          | {tenant_id, namespace}'
+  scripts/tenant-namespace-audit.sh          # exit 1 on any mismatch
   ```
 
-  Anything printed is carrying the short form. Re-run
-  `scripts/register-tenant.sh` for that tenant and it writes the derived value.
+  `IGNORED` is the short form; `KEPT` is an in-prefix rename, which is fine
+  only if that namespace is deliberate. Re-run `scripts/register-tenant.sh`
+  for the tenant and it writes the derived value.
   The old namespace, if it was ever created, is empty. The reconciler does
   **not** collect it: a Namespace is cluster-scoped and the reconciler holds no
   ClusterRole (see `GkeBackend.list_job_resources`), so it stays until it is

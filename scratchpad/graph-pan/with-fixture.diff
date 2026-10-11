@@ -1,0 +1,215 @@
+diff --git a/apps/swarm-ui/src/Workflows.tsx b/apps/swarm-ui/src/Workflows.tsx
+index 991feeb..55ed0f9 100644
+--- a/apps/swarm-ui/src/Workflows.tsx
++++ b/apps/swarm-ui/src/Workflows.tsx
+@@ -2597,6 +2597,40 @@ function MiniMarks({ layout, taskById }: { layout: DagLayout; taskById: Readonly
+   )
+ }
+ 
++/**
++ * THE BOX THAT SCROLLS THE CANVAS UP AND DOWN (owner, 2026-10-11, on
++ * `wf_0c305fd932ef4239816f`). GR1's map read `window.scrollY` and called
++ * `window.scrollTo` -- but the console's window never scrolls: the frame's
++ * `.ctl-scroll` does (styles.css), so the map's viewport sat on the top of the
++ * graph whatever the reader scrolled to, and a click or a drag on it moved
++ * nothing. The nearest ancestor that scrolls vertically is the port; `null`
++ * means none does and the window is it (a page mounted outside the frame).
++ * Found by computed style, not by class name, so the next frame layout cannot
++ * strand the map the same way.
++ *
++ * "SCROLLS" MEANS IT HAS SOMEWHERE TO GO, not only that its style allows it:
++ * `.wf-canvas-wrap` is `overflow-x: auto`, which computes `overflow-y` to
++ * `auto` too, and it is the canvas's own wrapper -- exactly as tall as the
++ * canvas, so scrolling it moves nothing.
++ */
++export function scrollPortOf(el: Element): HTMLElement | null {
++  for (let p = el.parentElement; p !== null; p = p.parentElement) {
++    if (p === document.body || p === document.documentElement) return null
++    const y = getComputedStyle(p).overflowY
++    if ((y === 'auto' || y === 'scroll' || y === 'overlay') && p.scrollHeight > p.clientHeight) return p
++  }
++  return null
++}
++
++/** The port's visible band in client coordinates: its box, or the window's. */
++function portBox(scroller: HTMLElement | null): { top: number; h: number } {
++  if (scroller === null) return { top: 0, h: window.innerHeight }
++  const r = scroller.getBoundingClientRect()
++  // An unlaid-out scroller (jsdom) answers 0; fall back to the window's height
++  // so the map is still drawn by the height test, as it was before.
++  return { top: r.top, h: scroller.clientHeight > 0 ? scroller.clientHeight : window.innerHeight }
++}
++
+ /**
+  * WHERE YOU ARE DOWN A CANVAS TALLER THAN THE SCREEN (GR1; graph-rendering.md
+  * §3.2, pain point 2). The horizontal map above states the wrapper's scroll and
+@@ -2622,28 +2656,68 @@ function VerticalMinimap({
+   taskById: ReadonlyMap<string, Task> | null
+   canvasRef: { readonly current: HTMLDivElement | null }
+ }) {
+-  // `h === 0` means the canvas has not been laid out -- first paint, and every
+-  // test, because jsdom answers 0 for every box.
+-  const [view, setView] = useState<{ top: number; h: number; screen: number }>({ top: 0, h: 0, screen: 0 })
++  // `measured === false` means the canvas has not been laid out -- first
++  // paint, and every test, because jsdom answers 0 for every box. Measured
++  // with `h === 0` is a canvas scrolled wholly off the port.
++  const [view, setView] = useState<{ top: number; h: number; screen: number; measured: boolean }>({
++    top: 0,
++    h: 0,
++    screen: 0,
++    measured: false,
++  })
+   const sync = useCallback(() => {
+     const el = canvasRef.current
+     if (el === null) return
+     const box = el.getBoundingClientRect()
+-    const screen = window.innerHeight
+-    const top = Math.max(0, -box.top)
+-    const h = box.height > 0 ? Math.max(0, Math.min(layout.height, screen - box.top) - top) : 0
++    const measured = box.height > 0
++    // THE PORT, NOT THE WINDOW (owner, 2026-10-11): see `scrollPortOf`.
++    const port = portBox(scrollPortOf(el))
++    const screen = port.h
++    const top = Math.max(0, port.top - box.top)
++    const h = measured ? Math.max(0, Math.min(layout.height, port.top + port.h - box.top) - top) : 0
+     // Compared before it is set, as `syncView` is: this runs on every scroll.
+-    setView((v) => (v.top === top && v.h === h && v.screen === screen ? v : { top, h, screen }))
++    setView((v) =>
++      v.top === top && v.h === h && v.screen === screen && v.measured === measured ? v : { top, h, screen, measured },
++    )
+   }, [canvasRef, layout.height])
+   useEffect(() => {
+     sync()
++    const el = canvasRef.current
++    const scroller = el === null ? null : scrollPortOf(el)
++    // The scroller AND the window: the window's scroll is a no-op listener
++    // where the frame scrolls, and the only one where nothing inside does.
++    scroller?.addEventListener('scroll', sync, { passive: true })
+     window.addEventListener('scroll', sync, { passive: true })
+     window.addEventListener('resize', sync)
+     return () => {
++      scroller?.removeEventListener('scroll', sync)
+       window.removeEventListener('scroll', sync)
+       window.removeEventListener('resize', sync)
+     }
+-  }, [sync])
++  }, [sync, canvasRef])
++
++  // CLICK OR DRAG: the pointer's height on the strip is a height on the
++  // canvas, and the port is scrolled to centre it -- as the horizontal map
++  // centres its jump. Captured, so a drag that leaves the 44px strip keeps
++  // steering until the button is released.
++  const dragging = useRef(false)
++  const steer = useCallback(
++    (strip: DOMRect, clientY: number) => {
++      const el = canvasRef.current
++      if (el === null) return
++      const canvas = el.getBoundingClientRect()
++      // Unlaid-out boxes answer 0; dividing by one would scroll to NaN.
++      if (strip.height <= 0 || canvas.height <= 0) return
++      const fraction = Math.min(1, Math.max(0, (clientY - strip.top) / strip.height))
++      const scroller = scrollPortOf(el)
++      const port = portBox(scroller)
++      const by = canvas.top + fraction * layout.height - (port.top + port.h / 2)
++      if (scroller === null) window.scrollTo({ top: Math.max(0, window.scrollY + by) })
++      else scroller.scrollTop = Math.max(0, scroller.scrollTop + by)
++      sync()
++    },
++    [canvasRef, layout.height, sync],
++  )
+ 
+   const screen = view.screen > 0 ? view.screen : CANVAS_HEIGHT
+   if (layout.height <= screen) return null
+@@ -2651,20 +2725,30 @@ function VerticalMinimap({
+   const label =
+     view.h > 0
+       ? `Map of the canvas, top to bottom. It is ${tall} pixels tall; ${Math.round(view.h)} of them are on screen, starting ${Math.round(view.top)} pixels from the top. The page scrolls, and tabbing to a step brings it into view.`
+-      : `Map of the canvas, top to bottom. It is ${tall} pixels tall, taller than the ${Math.round(screen)} pixel screen. How much of it is on screen has not been measured. The page scrolls, and tabbing to a step brings it into view.`
++      : view.measured
++        ? `Map of the canvas, top to bottom. It is ${tall} pixels tall and none of it is on screen. The page scrolls, and tabbing to a step brings it into view.`
++        : `Map of the canvas, top to bottom. It is ${tall} pixels tall, taller than the ${Math.round(screen)} pixel screen. How much of it is on screen has not been measured. The page scrolls, and tabbing to a step brings it into view.`
+   return (
+     <div
+       className="wf-vmap"
+       role="img"
+       aria-label={label}
+       onPointerDown={(e) => {
+-        const strip = e.currentTarget.getBoundingClientRect()
+-        const canvas = canvasRef.current?.getBoundingClientRect()
+-        // Unlaid-out boxes answer 0; dividing by one would scroll to NaN.
+-        if (strip.height <= 0 || canvas === undefined || canvas.height <= 0) return
+-        const y = ((e.clientY - strip.top) / strip.height) * layout.height
+-        // Centred on the point, as the horizontal map centres its jump.
+-        window.scrollTo({ top: Math.max(0, window.scrollY + canvas.top + y - window.innerHeight / 2) })
++        if (e.button !== 0) return
++        // No text selection or native drag starting under a steering pointer.
++        e.preventDefault()
++        dragging.current = true
++        e.currentTarget.setPointerCapture?.(e.pointerId)
++        steer(e.currentTarget.getBoundingClientRect(), e.clientY)
++      }}
++      onPointerMove={(e) => {
++        if (dragging.current) steer(e.currentTarget.getBoundingClientRect(), e.clientY)
++      }}
++      onPointerUp={() => {
++        dragging.current = false
++      }}
++      onPointerCancel={() => {
++        dragging.current = false
+       }}
+     >
+       <svg viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none" aria-hidden focusable="false">
+diff --git a/apps/swarm-ui/src/api.ts b/apps/swarm-ui/src/api.ts
+index 46de0b2..208086d 100644
+--- a/apps/swarm-ui/src/api.ts
++++ b/apps/swarm-ui/src/api.ts
+@@ -3633,6 +3633,21 @@ function fixtureWorkflowRows(): Workflow[] {
+   })
+ 
+   return [
++    {
++      workflow_id: 'wf_0c305fd932ef4239816f', tenant_id: 'u-bogdan', state: 'QUEUED',
++      created_at: new Date(Date.now() - 30 * 60_000).toISOString(), updated_at: new Date().toISOString(),
++      submitted_by: 'bogdan@saga.xyz', priority: 0, on_step_failure: 'FAIL_WORKFLOW', cancel_requested: false,
++      steps: [
++        step('impl-contract', [], null),
++        step('impl-api-reads-check', ['impl-contract'], null),
++        step('impl-web-lib', ['impl-contract'], null),
++        step('impl-web-editor', ['impl-api-reads-check', 'impl-web-lib'], null),
++        step('impl-web-jobs-publish-knowledge', ['impl-web-lib'], null),
++        step('impl-web-runwarnings-preview', ['impl-web-editor', 'impl-contract'], null),
++        step('review', ['impl-contract', 'impl-api-reads-check', 'impl-web-lib', 'impl-web-editor', 'impl-web-jobs-publish-knowledge', 'impl-web-runwarnings-preview'], null),
++        step('fix', ['review'], null),
++      ],
++    } as Workflow,
+     {
+       workflow_id: 'wf_audit_01',
+       tenant_id: 'u-bogdan',
+diff --git a/apps/swarm-ui/src/styles/workflows.css b/apps/swarm-ui/src/styles/workflows.css
+index bc728bc..52b82e5 100644
+--- a/apps/swarm-ui/src/styles/workflows.css
++++ b/apps/swarm-ui/src/styles/workflows.css
+@@ -700,6 +700,10 @@
+   background: var(--wf-body-bg);
+   overflow: hidden;
+   cursor: pointer;
++  /* A finger dragged on the strip steers the canvas (the component's pointer
++     handlers) rather than scrolling the page under it; everywhere else the
++     page scrolls natively. */
++  touch-action: none;
+ }
+ .wf-vmap svg { display: block; width: 100%; height: 100%; }
+ @media (max-width: 560px) {
+diff --git a/docs/design/graph-rendering.md b/docs/design/graph-rendering.md
+index f872845..d7e9d60 100644
+--- a/docs/design/graph-rendering.md
++++ b/docs/design/graph-rendering.md
+@@ -375,7 +375,7 @@ neither as well as what they have.
+ | `WorkflowGraph` | **Collapse a stage.** Exists for wide stages. Extend it to any stage whose steps all succeeded, so a finished prefix folds to one band. | `stageCensus`. |
+ | `WorkflowGraph` | **Live state overlay.** Exists (1 Hz). Add a ring on the stage band that holds the most recently changed step. | Task `updated_at`. |
+ | `WorkflowViews.tsx` timeline | **Plan vs actual.** Draw each step's declared stage beside the moment it actually started, so a step held back by capacity (invariant 1: `QUEUED` and `PARKED` cost nothing) reads as waiting, not as late work. | `started_at`, `stepDuration` kinds. A step with no `started_at` is drawn as not started, never at zero. |
+-| `WorkflowGraph` | **Vertical minimap**, for runs over one screen tall (pain point 2). | Layout only. **Shipped in GR1** (`VerticalMinimap`). |
++| `WorkflowGraph` | **Vertical minimap**, for runs over one screen tall (pain point 2). | Layout only. **Shipped in GR1** (`VerticalMinimap`). It follows and steers the canvas's scroll port, the frame's `.ctl-scroll`, found by `scrollPortOf` -- never `window`, which does not scroll in this console; GR1 read the window, and its map sat on the top of the graph and moved nothing (owner, 2026-10-11, `workflow.graph-pan.test.tsx`). |
+ | `SubmitWorkflow.tsx` | **DAG preview while composing**, through the same `layoutOf` at the names tier, with no state marks: a draft step has no task, and drawing one as "queued" would be a fake state. | The draft's `depends_on`. |
+ 
+ ### 5.2 Repository and knowledge graph

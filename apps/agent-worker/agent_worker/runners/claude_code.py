@@ -15,7 +15,8 @@ URLs registered for redaction, since one can embed a password); and, when set,
 the dispatcher's git identity, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
 `GIT_COMMITTER_NAME` and `GIT_COMMITTER_EMAIL` (#764, `agent_worker.gitidentity`),
 which the worker sets from the task so an agent's `git commit` names that
-person. Nothing else crosses. The credential is the tenant's secret, or a pool
+person; and `PLAYWRIGHT_BROWSERS_PATH` when the image sets it (the browser
+image only, below). Nothing else crosses. The credential is the tenant's secret, or a pool
 account's OAuth token when the attempt holds an account, and it is passed in
 exactly one variable: `ANTHROPIC_API_KEY` (metered API access) or
 `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token from
@@ -80,6 +81,20 @@ same expected-outputs check and the same publish credential scan
 the session for up to two repair turns, naming each missing file's path or
 each flagged `path:line rule` -- never the matched text (`repair_checks`).
 
+WHY A BROWSER NOTE ON agent-runtime-browser (contract request 67, owner
+2026-10-11). `claude-code-browser` runs this runner on the browser image, so
+an agent can render and screenshot pages. The image installs Chromium under
+`PLAYWRIGHT_BROWSERS_PATH` (the image's ENV), which the lifecycle hands this
+runner; the CLI's environment is built from scratch, so without passing it on
+the agent's Playwright looks under `$HOME/.cache/ms-playwright` -- HOME is
+`work/` -- and finds no browser. And Chromium's own sandbox cannot start in
+the pod (no user namespaces, every capability dropped: the pod is the
+isolation, images/agent-runtime-browser/Dockerfile), so an agent that asks for
+it fails to launch. When the variable is set, both are handled here: it is
+passed on, and one paragraph is added to the prompt saying how to launch.
+Keyed on the image's variable, not the profile's name, so it holds on any
+profile that runs the browser image and never on agent-runtime-base.
+
 WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
 that read stdin with nothing attached sat until the Bash timeout killed it:
 the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
@@ -119,6 +134,21 @@ _BACKGROUND_TOOLS = "Bash|Task|Agent"
 #: runs, and it is the file the tests run.
 STDIN_HOOK_NAME = "stdin_hook.py"
 STDIN_HOOK = Path(__file__).resolve().parent / STDIN_HOOK_NAME
+
+#: Where agent-runtime-browser installed Chromium (its Dockerfile's ENV). Set
+#: only in that image; the lifecycle passes it to this runner by name.
+BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
+
+#: What an agent on the browser image is told, once, after its prompt. The
+#: launch flags are the ones the image's own build check launches with.
+BROWSER_NOTE = (
+    "A headless Chromium is installed for Playwright in this environment "
+    "(Python: `from playwright.sync_api import sync_playwright`). Launch it "
+    "with `p.chromium.launch(headless=True, chromium_sandbox=False, "
+    "args=[\"--no-zygote\"])`: Chromium's own sandbox cannot start in this "
+    "container, which is itself the sandbox. Save screenshots and other "
+    "captures under $SWARM_ARTIFACTS_DIR so they are uploaded."
+)
 
 #: The PreToolUse hook. Standard library only, run by this runner's own
 #: interpreter. Exit 2 is the CLI's "block this tool call", and what it writes
@@ -278,7 +308,15 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     # leave background commands switched on by replacing the flag set.
     settings = write_headless_settings(Path(ctx.work_dir) / SETTINGS_DIR_NAME)
     extra += ["--settings", str(settings)]
-    return run_cli_agent(ctx, SPEC, extra_args=extra, extra_env={NO_BACKGROUND_ENV: "1"})
+    env = {NO_BACKGROUND_ENV: "1"}
+    browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
+    prompt = ctx.payload.get("prompt")
+    if browsers:
+        env[BROWSERS_PATH_ENV] = browsers
+        # A new dict on the same context: `run_runner` holds this object.
+        if isinstance(prompt, str) and prompt.strip():
+            ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{BROWSER_NOTE}"}
+    return run_cli_agent(ctx, SPEC, extra_args=extra, extra_env=env)
 
 
 def main() -> int:

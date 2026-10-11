@@ -72,7 +72,15 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 61 | `profiles.py`: `url_refusal` still accepts the benchmarking and deprecated ORCHID ranges of `2001::/23`, the remainder of #346 box 42 after request 57 | proposed |
 | 62 | `states.py`: a merge step waiting for its repository's merge slot parks as `CI_PENDING`, a reason that says it waits for CI | proposed |
 | 63 | `profiles.py`: indexer runs on GKE_AUTOPILOT (canary for #939) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line |
-| 64 | `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist | proposed |
+| 64 | `profiles.py`: generic runs on GKE_AUTOPILOT (#939 option A) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured |
+| 65 | `profiles.py`: codex runs on GKE_AUTOPILOT (#939 option A) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured |
+| 66 | `profiles.py`: merge runs on GKE_AUTOPILOT (#939 option A); post-verdict and claude-code-review stay on CLOUD_RUN_JOB | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured; conflicts with proposed request 60's item 2 (see 60's amendment) |
+| 67 | `profiles.py`: a `claude-code-browser` runner profile, claude-code on agent-runtime-browser | ACCEPTED by the owner 2026-10-11 and APPLIED by the pull request that adds this line |
+| 68 | `states.py`: `ParkReason.HUMAN_REQUIRED`, a live-browser hand-off parked when nobody came within the hold (LB-A) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 69 | `states.py`: the four `human_*` hand-off `EventType` members (LB-B) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 70 | `models.py`: `Task.human_wait`, the hand-off a holding task waits on, as a field and not a new state (LB-C) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 71 | `profiles.py`: `RunnerProfile.live_browser`, True only on `claude-code-browser`, valid only on a GKE_AUTOPILOT profile (LB-D) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 72 | `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist | proposed |
 
 ---
 
@@ -10310,6 +10318,18 @@ Nothing in today's catalogue: both worker-action profiles already satisfy
 all three. A future worker-action profile that wants a mounted secret or a
 GKE backend has to come back here, which is the point.
 
+**Amendment 2026-10-10 (contract request 66):** that is no longer true of
+item 2. Request 66 (accepted by the owner, option A of #939) moves `merge` to
+`GKE_AUTOPILOT`, so the `backend is not Backend.CLOUD_RUN_JOB` check written
+above would refuse the catalogue at import. Item 2's premise -- "a worker
+action's whole isolation is its own Cloud Run Job's service account" -- is
+contract requests 33 and 35's, and request 47 (owner, 2026-10-04) retired it
+for `merge`: merge runs as the tenant's worker account on either backend, the
+identity the GKE pod's KSA is bound to. If request 60 is accepted, item 2
+has to name the profiles that DO run as an account of their own
+(`post-verdict` today) instead of every worker action, or be dropped. Items 1
+and 3 are unaffected. The decision is the owner's.
+
 ### If it is declined
 
 The three stay one catalogue edit from live, held only by review: a
@@ -10575,7 +10595,496 @@ ephemeral-storage limit rather than by memory. Index runs share the
 - **Invariant 10.** Unchanged: a caller still names `indexer` and cannot choose
   where it runs.
 
-## 64. `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist
+---
+
+## 64. `profiles.py`: generic runs on GKE_AUTOPILOT (#939 option A)
+
+**Status:** ACCEPTED by the owner 2026-10-10, option A of #939
+(`docs/incidents/2026-10-09-egress-open-delay.md`, PR 986), and APPLIED by the
+pull request that adds this entry. That pull request is HELD: the owner merges
+it after measuring request 63's indexer canary (PR 991, deployed 2026-10-10).
+Requests 64, 65 and 66 are the follow-up list request 63 recorded.
+
+### The measurement
+
+Request 63's: a new Cloud Run instance's internet path opens a median
+**20.2 s** after start (n=19), against GKE Autopilot's **1.17 s** (n=148),
+through the same Cloud NAT (`egress_ready_seconds`, #721 (a); PR 986). A
+generic task that names a repository clones it first, and `npm-ci` and
+`uv-sync` fetch from package registries, so the wait sits inside it.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, `_GENERIC_PROFILE` (the `"generic"`
+entry is built from it):
+
+```diff
+ _GENERIC_PROFILE = RunnerProfile(
+     name="generic",
+     image="agent-runtime-base",
+     resource_class="standard",
+-    backend=Backend.CLOUD_RUN_JOB,
++    backend=Backend.GKE_AUTOPILOT,
+```
+
+Nothing else in the frozen package changes for it. The GKE path needs nothing
+new: the dispatcher renders the default worker Job for any profile, with
+`agent-runtime-base` from `WORKER_IMAGE_REFS`; generic starts no model, so no
+MODEL. The runner child's HOME and TMPDIR are inside the workspace
+(`Workspace.child_env`), so npm's and uv's caches land on the `standard`
+class's 5 GiB disk workspace (`GKE_DISK`), as claude-code's do.
+
+The non-frozen follow-ups, in the same change: `terraform/infra/locals.tf`
+mirrors the backend and adds `generic` to `cloud_run_fallback_profiles`, so
+every tenant's `swarm-job-<tenant>-generic` Cloud Run Job stays, idle, as the
+rollback; `tests/terraform/catalogue.tftest.hcl` holds both;
+`tests/unit/control_plane/test_internet_profiles_on_gke.py` pins the backend;
+and the docs that named generic's backend name the new one.
+
+**The smoke suite's GKE row changes with it.** `scripts/smoke-test.sh` covers
+each backend with one profile, preferring one that needs no credential, so
+GKE_AUTOPILOT's row becomes `generic` (its fixture clones this public
+repository and runs `pytest`) instead of `browser`. That row now also proves
+the GKE internet path; it no longer submits a browser task or its page-load
+fixture check. `tests/unit/scripts/test_smoke_covers_every_backend.py`
+follows.
+
+### Rollback
+
+Set `_GENERIC_PROFILE`'s backend back to `Backend.CLOUD_RUN_JOB` and release.
+While `generic` is in `cloud_run_fallback_profiles` its Cloud Run Jobs still
+exist, so no Terraform apply is needed.
+
+### What it would break
+
+What request 63 recorded for indexer: Autopilot nodes can end a pod by
+auto-repair or pressure eviction, which extended run time does not suppress,
+and periodic checkpointing makes that cost minutes. A full workspace evicts
+the pod instead of failing a write with ENOSPC. Generic tasks share the
+`GKE_AUTOPILOT` backend ceiling (dev 100) with claude-code, browser and
+indexer.
+
+### Invariants
+
+- **Invariant 1.** Unchanged: a GKE pod is created only for a leased task.
+- **Invariant 2.** Unchanged: admission reserves the `GKE_AUTOPILOT` backend
+  pool instead of `CLOUD_RUN_JOB`, in the same single transaction.
+- **Invariants 3, 4, 5, 8.** Unchanged: the same worker ENTRYPOINT, the
+  generation in the pod's env and Job name, `backoffLimit: 0`.
+- **Invariant 6.** Preserved: no Spot; `safe-to-evict: "false"` on Job and pod.
+- **Invariant 7.** Preserved: the GKE manifest sets requests == limits.
+- **Invariant 9.** Unchanged: the tenant's namespace and KSA bound to its own
+  GSA, its own secrets and GCS prefix.
+- **Invariant 10.** Unchanged: a caller still names `generic` and cannot
+  choose where it runs.
+
+---
+
+## 65. `profiles.py`: codex runs on GKE_AUTOPILOT (#939 option A)
+
+**Status:** ACCEPTED by the owner 2026-10-10, option A of #939, and APPLIED
+by the pull request that adds this entry, held with request 64 until the
+indexer canary is measured.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, the `"codex"` entry:
+
+```diff
+     "codex": RunnerProfile(
+         name="codex",
+         image="agent-runtime-base",
+         resource_class="standard",
+-        backend=Backend.CLOUD_RUN_JOB,
++        backend=Backend.GKE_AUTOPILOT,
+```
+
+codex clones from GitHub and calls the OpenAI API, so request 64's
+measurement is its reason too. It is disabled (`available=False`, 2026-09-23),
+so nothing dispatches to it either way today; moving it now means re-enabling
+it is still one word, not one word and a backend switch. On GKE no secret is
+projected: the worker reads `swarm-tenant-<tenant>-openai` from Secret Manager
+itself (`agent_worker/secrets.py`) under the pod's KSA, as it reads
+claude-code's key. No MODEL: codex's CLI takes no Anthropic model name.
+
+The non-frozen follow-ups are request 64's: `locals.tf` mirrors the backend
+and adds `codex` to `cloud_run_fallback_profiles` (each tenant that registers
+`openai` keeps its `swarm-job-<tenant>-codex`), the catalogue test holds both,
+and the docs follow.
+
+### Rollback
+
+`codex`'s backend back to `Backend.CLOUD_RUN_JOB` and a release; its Jobs
+exist while it is in `cloud_run_fallback_profiles`.
+
+### What it would break
+
+Request 64's, should it be re-enabled.
+
+### Invariants
+
+As request 64: 1-8 unchanged or preserved by the same GKE manifest; 9 the
+tenant's own namespace, KSA and secret; 10 a caller still names `codex`.
+
+---
+
+## 66. `profiles.py`: merge runs on GKE_AUTOPILOT (#939 option A); post-verdict and claude-code-review stay on CLOUD_RUN_JOB
+
+**Status:** ACCEPTED by the owner 2026-10-10, option A of #939, and APPLIED
+by the pull request that adds this entry, held with request 64 until the
+indexer canary is measured. **It conflicts with proposed request 60's item 2**
+(see the amendment recorded there): the owner decides which gives way.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, the `"merge"` entry:
+
+```diff
+     "merge": RunnerProfile(
+         name="merge",
+         image="agent-runtime-base",
+         resource_class="standard",
+-        backend=Backend.CLOUD_RUN_JOB,
++        backend=Backend.GKE_AUTOPILOT,
+```
+
+A merge reads GitHub's checks and then merges, so every MERGE verdict paid a
+Cloud Run start and request 64's internet-path wait (#748). The incident's
+option A left `merge` out because request 60 would refuse a GKE worker action;
+that rule's reason is a worker action's own service account, and merge has
+had none since contract request 47 (owner, 2026-10-04): it runs as the
+tenant's worker account and reads the tenant's `-git` secret at merge time
+through `resolve_git_token`. On GKE the pod's KSA is bound to that same
+account, so it reads the same secret. The merge action reads no Job-rendered
+environment (`agent_worker/merge.py` takes its target from the task's
+`repository_url`), mounts no secret (`secrets=()`), and starts no runner.
+
+The non-frozen follow-ups are request 64's: `locals.tf` mirrors the backend
+and adds `merge` to `cloud_run_fallback_profiles` (each tenant that registers
+`git` keeps its `swarm-job-<tenant>-merge`, as
+`tests/terraform/merge_step_iam.tftest.hcl` already holds), the catalogue
+test holds the backend, and the docs follow.
+
+### What does not move, and why
+
+| profile | stays on `CLOUD_RUN_JOB` because |
+|---|---|
+| `post-verdict` | It was designed to run as its own Job's service account, `swarm-<tenant>-post-verdict` (request 35), and its action reads `FORGE_HOST`/`FORGE_OWNER`/`FORGE_REPO` and the review App's ids from the environment Terraform renders onto that Job (`agent_worker.forge.forge_target_from_env`). A GKE pod runs as the tenant's one worker KSA and carries neither. Disabled (`available=False`), no Job. |
+| `claude-code-review` | It was designed to run as its own account, `swarm-<tenant>-review` (request 36), which a GKE pod cannot be. Retired (`available=False`), no Job; request 50 decides whether it leaves the catalogue. |
+| `mock` | It reaches no internet. |
+
+Neither of the first two runs anywhere today, so nothing waits on them.
+
+### Rollback
+
+`merge`'s backend back to `Backend.CLOUD_RUN_JOB` and a release; its Jobs
+exist while it is in `cloud_run_fallback_profiles`.
+
+### What it would break
+
+Request 64's node-side costs, for a step bounded at 600 s. And request 60 as
+written: accepting it unchanged after this would make `__post_init__` refuse
+`merge`, so the catalogue would not import.
+
+### Invariants
+
+As request 64: 1-8 unchanged or preserved by the same GKE manifest. **9**
+unchanged: merge already ran as the tenant's worker account, now through its
+namespace's KSA; the `-git` token is still never mounted, written or logged.
+**10**: a caller still names `merge` and cannot choose where it runs.
+
+---
+
+## 67. `profiles.py`: a `claude-code-browser` runner profile, claude-code on agent-runtime-browser
+
+**Status:** ACCEPTED by the owner 2026-10-11, and APPLIED by the pull request
+that adds this entry.
+
+### Why
+
+An agent could not render or screenshot a page. `browser` is a scripted
+runner: it opens `input.url` or plays `input.actions` and needs one of them,
+so it cannot look at a page it has just built or follow a bug report's steps
+on its own judgement. `claude-code` can, but its image, agent-runtime-base,
+carries no Chromium. agent-runtime-browser (agent-runtime-base plus Playwright
+and Chromium, `images/agent-runtime-browser/Dockerfile`) is already built,
+scanned and promoted by every release. Visual QA and reproducing a UI bug
+need the agent and the browser in one pod.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, a new entry in `RUNNER_PROFILES`:
+
+```python
+"claude-code-browser": RunnerProfile(
+    name="claude-code-browser",
+    image="agent-runtime-browser",
+    resource_class="browser",
+    backend=Backend.GKE_AUTOPILOT,
+    runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+    provider="anthropic",
+    secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+    secrets_any_of=True,
+    timeout_seconds=7200,
+    inputs=_CLI_AGENT_INPUTS,
+),
+```
+
+It is `claude-code` in every field but three: its name; its image; and its
+resource class, `browser` (8 vCPU, 16 GiB, 2 units), because the image needs
+it: the GKE pod mounts a 2 GiB memory-medium tmpfs at `/dev/shm` for Chromium
+and that tmpfs counts against the memory limit before a tab is open. Its
+backend is GKE Autopilot, as claude-code's is and as the browser image's must
+be: Cloud Run cannot size `/dev/shm`. Its runner is claude-code's, so it
+takes the same prompt handling, the same `issue` input (request 28), the same
+credential choice and the same model (`local.runner_models`).
+
+The non-frozen follow-ups, in the same pull request: the Terraform mirror
+(`runner_profiles`, `runner_models`); the worker's `cli_agent_spec` and the
+API's `AGENT_STREAM_FILES`, so its streams are claude-code's; the claude-code
+runner passes `PLAYWRIGHT_BROWSERS_PATH` to the CLI when the image sets it,
+and tells the agent Chromium launches only with its sandbox off (no user
+namespaces, every capability dropped -- the pod is the isolation); the UI's
+and the plugin's profile lists; the parity script; the runner-profiles doc.
+
+### Rollback
+
+Delete the entry and its mirrors (the follow-ups above) and release. No Cloud
+Run Job exists for it (a GKE profile gets none), so nothing in Terraform is
+destroyed but the pool document Terraform made for it.
+
+### What it would break
+
+Nothing that exists: a new name. It costs a `browser` resource class, twice a
+`standard` step's units, so a tenant's browser pool ceiling is shared with the
+scripted `browser` profile.
+
+### Invariants
+
+1-8 unchanged: the same GKE manifest, requests == limits from the `browser`
+class, on-demand only, checkpointing as claude-code's. **9**: the tenant's own
+namespace, KSA and secret, as claude-code's. **10**: a caller names
+`claude-code-browser`; the image, class and backend are the catalogue's, and a
+task that sends an image is refused as every task is.
+
+---
+
+## 68. `states.py`: `ParkReason.HUMAN_REQUIRED`, a live-browser hand-off parked when nobody came within the hold (LB-A)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030, the answers to Q1-Q13,
+every recommendation taken), and APPLIED by the pull request that adds this
+entry (lane LB-L0).
+
+### Why
+
+docs/design/live-browser.md section 4.3. A browser agent that needs a person
+to sign in holds its pod for a bounded time (`human_hold_seconds`, 10 minutes,
+Q3). If nobody takes control within it, invariant 4 forbids sleeping on: the
+worker checkpoints, wipes the browser, parks, releases its lease and exits,
+exactly as the quota path does. The park needs a reason, and no existing one
+fits: the scheduler promotes every existing reason by its own rule (a window
+resets, a dependency ends), and nothing but a person should promote this one.
+`MANUAL_PAUSE`, the obvious candidate, is promoted by
+`Scheduler._promote_manual_pauses` once the pool it names is resumed, so a
+hand-off parked under it would be re-admitted with nobody there to sign in.
+
+### The change
+
+```python
+class ParkReason(str, Enum):
+    ...
+    HUMAN_REQUIRED = "HUMAN_REQUIRED"
+```
+
+Promoted ONLY by swarm-api's `human-ready` route (lane L10); no sweep and no
+timer promotes it. Past `human_park_max_seconds` (24 hours, Q4) a sweep
+dead-letters it with `end_cause: human_wait_expired`. `RUNNING -> PARKED`,
+`PARKED -> READY` and `PARKED -> DEAD_LETTERED` are already legal transitions,
+so `_ALLOWED` does not change.
+
+The non-frozen follow-ups, in the same pull request, because the contract-parity
+script and the unit tests hold every restatement of `ParkReason` to the enum:
+`apps/swarm-ui/src/types.ts` (the union, `PARK_REASONS`, the
+`PARK_NEEDS_A_PERSON` group, `REASON_COPY`), the pill words `PARK_WORD` in
+`apps/swarm-ui/src/components/StatePill.tsx`, and the MCP
+progress sentences (`swarm_mcp.progress._PARKED_BECAUSE`,
+`swarm_mcp.compact._WAITS_FOR`).
+
+### Rollback
+
+Delete the member and its restatements. A task document parked under it
+would then decode to an unknown reason, so roll back only when none is
+parked.
+
+### What it would break
+
+Nothing that exists: a new member. A reader with an exhaustive table of park
+reasons is held to the enum by the parity script or a test, and gets its row
+in this change.
+
+### Invariants
+
+**1**: a `PARKED(HUMAN_REQUIRED)` task holds no lease and creates no demand;
+`PARKED` is in `PENDING_STATES` and the capacity sets are unchanged. **4**:
+this is the reason the park exists. 2, 3 and 5-10 unchanged.
+
+---
+
+## 69. `states.py`: the four `human_*` hand-off `EventType` members (LB-B)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030), and APPLIED by the pull
+request that adds this entry (lane LB-L0).
+
+### Why
+
+docs/design/live-browser.md sections 4.1 and 4.2: the hand-off has four
+moments a reader of the event timeline must be able to tell apart -- the agent
+asked, a person took control, control ended, the wait is over -- and the task
+stays `RUNNING` throughout (Q2), so the state history cannot show them.
+
+### The change
+
+```python
+class EventType(str, Enum):
+    ...
+    HUMAN_HANDOFF_REQUESTED = "human_handoff_requested"
+    HUMAN_CONTROL_TAKEN = "human_control_taken"
+    HUMAN_CONTROL_RETURNED = "human_control_returned"
+    HUMAN_HANDOFF_RESOLVED = "human_handoff_resolved"
+```
+
+Written by swarm-api (lanes L9 and L10). Control ending without a Return press
+(renewal lapsed, idle, preempted, membership lapsed, cancelled, hold expired)
+is `human_control_returned` with its cause in `detail`, not a fifth type.
+
+### Rollback
+
+Delete the four members. Events already stored with these values would then
+be read as unknown types by any reader that decodes strictly.
+
+### What it would break
+
+Nothing: new members, written by code that does not exist yet.
+
+### Invariants
+
+None touched: an event is a record, and creates no demand and holds nothing.
+
+---
+
+## 70. `models.py`: `Task.human_wait`, the hand-off a holding task waits on, as a field and not a new state (LB-C)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030; Q2 answered "the
+field"), and APPLIED by the pull request that adds this entry (lane LB-L0).
+The alternative the design offered, a `TaskState.WAITING_FOR_HUMAN` in
+`CONCURRENCY_STATES`, was NOT taken and is not applied.
+
+### Why
+
+docs/design/live-browser.md section 4.3, "Why a field and not a new task
+state". While the pod holds, the console and `sc status` need the reason, the
+expected site, the deadline and who is in control. A new state would have had
+to join `CONCURRENCY_STATES` and gain transitions, and every reader that asks
+"is this attempt running?" -- the reconciler's heartbeat and stale-generation
+checks, the worker's fence checks, release, the UI's state lists, this
+repository's parity script -- would have had to learn it; one that was missed
+would reclaim a holding task or oversubscribe its pool. The field carries the
+same information and changes no reader that does not want it.
+
+### The change
+
+```python
+@dataclass
+class Task:
+    ...
+    human_wait: dict[str, Any] | None = None
+```
+
+Keys: `reason` (at most 200 characters, redacted before it is stored),
+`expect` (a host `url_refusal` accepts, or None), `requested_at`, `deadline`,
+`controller` (None, or `{email, since, renew_by}`). None when nothing is
+waiting, and on every document written before it, which therefore decodes
+exactly as it did. WRITTEN BY swarm-api ONLY, from a worker route signed with
+the attempt key; never accepted from a caller. Not in the spec signature: it
+is attempt state, not the task's spec, and changes during the attempt. The
+shape is not validated in `__post_init__`, so a document a later writer
+extends is never refused on decode; swarm-api, its only writer, validates it.
+
+Both codecs (`swarm_api.codec`, `scheduler.codec`) decode it here -- a dict,
+or None for anything else -- so a decode-and-rewrite never clears a live
+hand-off. `task_to_api` does not serve it: lane L10, which writes the field,
+decides its public shape.
+
+### Rollback
+
+Delete the field. Nothing reads it until lane L10 lands.
+
+### What it would break
+
+Nothing: an optional field with a None default.
+
+### Invariants
+
+**1, 3**: a holding task is `RUNNING`, holds its lease and is counted from
+`LEASED` like any other attempt; no state was added, so no capacity set
+changed. 2 and 4-10 unchanged (4 is kept by the bounded hold and request 68).
+
+---
+
+## 71. `profiles.py`: `RunnerProfile.live_browser`, True only on `claude-code-browser`, valid only on a GKE_AUTOPILOT profile (LB-D)
+
+**Status:** ACCEPTED by the owner 2026-10-11 (#1030), and APPLIED by the pull
+request that adds this entry (lane LB-L0).
+
+### Why
+
+docs/design/live-browser.md sections 3 and 8.1. Whether a task's pod runs the
+display sidecar, and whether swarm-api will open a live session for it, has to
+be a property of the catalogue: a caller names a profile and nothing else
+(invariant 10), and lane L5's dispatcher and lane L9's API both need one place
+to read it.
+
+### The change
+
+```python
+@dataclass(frozen=True)
+class RunnerProfile:
+    ...
+    live_browser: bool = False
+
+    def __post_init__(self) -> None:
+        ...
+        if self.live_browser and self.backend is not Backend.GKE_AUTOPILOT:
+            raise ValueError(...)
+```
+
+and `live_browser=True` on `claude-code-browser`, the only profile that sets
+it. The check is on the profile's STATED backend, so `AUTO` is refused too:
+`resolve_backend` sends the `browser` class (8 vCPU, 16 GiB) to Cloud Run
+Jobs, where the sidecar and its second uid do not exist, and a profile whose
+hand-off cannot work must not resolve there silently. For the same reason
+`claude-code-browser` must stay out of the Cloud Run fallback list
+(`cloud_run_fallback_profiles`, `terraform/infra/locals.tf`).
+
+### Rollback
+
+Delete the field, the check and the one `live_browser=True`. Nothing reads it
+until lanes L5 and L9 land.
+
+### What it would break
+
+Nothing: a defaulted field. `claude-code-browser` now differs from
+`claude-code` in four fields, not three (request 67).
+
+### Invariants
+
+**10**: a caller still names a profile; whether it is live is the catalogue's,
+and there is no input, field or parameter by which a caller asks for a live
+browser on another profile. 1-9 unchanged.
+
+---
+
+## 72. `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist
 
 **Status:** proposed, filed 2026-10-11 by the stale-name audit lane. A comment
 fix only; no field changes.

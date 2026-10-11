@@ -813,6 +813,16 @@ class RunnerProfile:
     #: "restore on attempt 1, skip only on retries". Checkpointing itself
     #: stays on (invariant 8); only the restore is skipped.
     never_restore_checkpoint: bool = False
+    #: True when this profile's pod runs the live browser: a platform-launched
+    #: Chromium in a display sidecar that a member of the task's tenant can
+    #: watch and, to sign in, take control of (docs/design/live-browser.md).
+    #: A catalogue property, never a caller's: a caller names a profile, and
+    #: cannot ask for a live browser on another one (invariant 10). Valid only
+    #: on a profile whose backend is GKE_AUTOPILOT, stated, not AUTO: the
+    #: sidecar and its second uid exist only in the GKE manifest, and AUTO
+    #: resolves the `browser` class to Cloud Run. Contract request 71 (LB-D),
+    #: accepted by the owner 2026-10-11 (#1030).
+    live_browser: bool = False
 
     def __post_init__(self) -> None:
         if self.worker_action is not None and self.runner_argv:
@@ -854,6 +864,12 @@ class RunnerProfile:
             )
         if self.resource_class not in RESOURCE_CLASSES:
             raise ValueError(f"runner {self.name}: unknown resource class {self.resource_class}")
+        if self.live_browser and self.backend is not Backend.GKE_AUTOPILOT:
+            raise ValueError(
+                f"runner {self.name}: live_browser needs the GKE_AUTOPILOT backend, "
+                f"not {self.backend.value}; the display sidecar exists only in the "
+                "GKE manifest (contract request 71)"
+            )
         if self.spot is not SpotStrategy.ON_DEMAND_ONLY:
             raise ValueError(
                 f"runner {self.name}: Spot is disabled platform-wide; Spot Pods cannot "
@@ -1087,7 +1103,14 @@ _GENERIC_PROFILE = RunnerProfile(
     name="generic",
     image="agent-runtime-base",
     resource_class="standard",
-    backend=Backend.CLOUD_RUN_JOB,
+    # GKE Autopilot since contract request 64 (owner, 2026-10-10, option A of
+    # #939, after request 63's indexer canary): a generic task clones first,
+    # and a new Cloud Run instance's internet path opens a median 20.2 s after
+    # start (n=19) against GKE's 1.17 s (n=148) through the same NAT. Its
+    # tenants' Cloud Run Jobs are kept as the rollback
+    # (terraform/infra/locals.tf `cloud_run_fallback_profiles`): rolling back
+    # is this one line, back to CLOUD_RUN_JOB.
+    backend=Backend.GKE_AUTOPILOT,
     runner_argv=("python", "-m", "agent_worker.runners.generic"),
     provider=None,
 )
@@ -1222,7 +1245,11 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         name="codex",
         image="agent-runtime-base",
         resource_class="standard",
-        backend=Backend.CLOUD_RUN_JOB,
+        # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A
+        # of #939), for the internet path generic's request 64 records. Its
+        # tenants' Cloud Run Jobs are kept as the rollback
+        # (`cloud_run_fallback_profiles`): rolling back is this one line.
+        backend=Backend.GKE_AUTOPILOT,
         runner_argv=("python", "-m", "agent_worker.runners.codex"),
         provider="openai",
         secrets=("OPENAI_API_KEY",),
@@ -1281,7 +1308,14 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         name="merge",
         image="agent-runtime-base",
         resource_class="standard",
-        backend=Backend.CLOUD_RUN_JOB,
+        # GKE Autopilot since contract request 66 (owner, 2026-10-10, option A
+        # of #939): the merge reads GitHub, and a new Cloud Run instance's
+        # internet path opens a median 20.2 s after start. It runs as the
+        # tenant's worker account on either backend (contract request 47), so
+        # the GKE pod's KSA, bound to that account, reads the same `-git`
+        # secret. Its tenants' Cloud Run Jobs are kept as the rollback
+        # (`cloud_run_fallback_profiles`): rolling back is this one line.
+        backend=Backend.GKE_AUTOPILOT,
         runner_argv=(),
         worker_action=WorkerAction.MERGE,
         # The credential is never mounted: the worker reads the tenant's `-git`
@@ -1298,6 +1332,10 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         name="post-verdict",
         image="agent-runtime-base",
         resource_class="standard",
+        # NOT moved by #939's option A (contract request 66): it was designed
+        # to run as its own Job's service account with FORGE_HOST/OWNER/REPO
+        # rendered onto that Job (`forge.forge_target_from_env`), and a GKE
+        # pod has neither -- it runs as the tenant's one worker KSA.
         backend=Backend.CLOUD_RUN_JOB,
         runner_argv=(),
         worker_action=WorkerAction.POST_VERDICT,
@@ -1321,7 +1359,9 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
     # account, `swarm-<tenant>-review` -- and never_restore_checkpoint, and,
     # since contract request 53 moved claude-code to GKE Autopilot, its
     # backend: this profile is retired (no Job for any tenant,
-    # `profiles_without_a_job`), so request 53 did not move it.
+    # `profiles_without_a_job`), so request 53 did not move it, and neither
+    # did #939's option A (contract request 66): it was designed to run as its
+    # own account, `swarm-<tenant>-review`, which a GKE pod cannot be.
     "claude-code-review": RunnerProfile(
         name="claude-code-review",
         image="agent-runtime-base",
@@ -1360,6 +1400,31 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets_any_of=True,
         timeout_seconds=7200,
         inputs=_CLI_AGENT_INPUTS,
+    ),
+    # CONTRACT REQUEST 67, accepted by the owner 2026-10-11: claude-code on
+    # agent-runtime-browser (Playwright + Chromium), so an agent can render
+    # and screenshot pages -- visual QA, reproducing a UI bug -- which
+    # `browser`, a scripted runner that needs input.url or actions, cannot,
+    # and which claude-code cannot either: agent-runtime-base has no Chromium.
+    # claude-code in every field but its name, its image and, because of the
+    # image, its resource class: `browser`'s 16 GiB, because the 2 GiB /dev/shm
+    # tmpfs Chromium needs is charged to the memory limit. GKE Autopilot as
+    # claude-code is, and as the browser image must be: Cloud Run cannot size
+    # /dev/shm. A caller picks it by name and sends no image (invariant 10).
+    # Rolling back is deleting this entry and its mirrors.
+    "claude-code-browser": RunnerProfile(
+        name="claude-code-browser",
+        image="agent-runtime-browser",
+        resource_class="browser",
+        backend=Backend.GKE_AUTOPILOT,
+        runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+        provider="anthropic",
+        secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+        secrets_any_of=True,
+        timeout_seconds=7200,
+        inputs=_CLI_AGENT_INPUTS,
+        # Contract request 71 (LB-D): the one live-browser profile.
+        live_browser=True,
     ),
 }
 

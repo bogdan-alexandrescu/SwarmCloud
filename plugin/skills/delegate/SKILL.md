@@ -265,8 +265,12 @@ code, but not one the worker reads as a rate limit, a refused credential or a
 cancellation; `swarm_profiles` names those, with every key's bounds, so do
 not quote a bound from memory. `browser` takes a `url` and `actions`, and
 `generic` a required `command` from its runner's catalogue; `swarm_profiles`
-lists every key and each action shape. `claude-code` and `codex` declare one
-input, `issue`: the number of a GitHub issue in the repository the step
+lists every key and each action shape. For an agent that has to SEE a page --
+visual QA, a screenshot of what a change rendered, a UI bug reproduced from its
+report -- name `claude-code-browser`: `claude-code` with Chromium beside it,
+at the cost of a `browser` class; `browser` itself only replays a scripted
+`url` or `actions`. `claude-code`, `claude-code-browser` and `codex` declare
+one input, `issue`: the number of a GitHub issue in the repository the step
 clones. The worker fetches that issue's title, body and comments read-only
 into `issue.md` in the workspace and names it in the prompt, so point a step
 at the issue rather than restating it in the prompt. It needs a repository

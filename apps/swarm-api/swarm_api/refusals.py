@@ -109,6 +109,99 @@ SWITCHES: dict[str, Switch] = {
         why="a firing whose work recorded more than per_run_usd ends failed and pauses its "
         "schedule (§4.3). On once attempts report cost_usd for the schedule's profiles",
     ),
+    # The §4.4 holds on an issue run (docs/schedules.md §4.5, lane S5): an
+    # approval, auto-approval or merge of a run whose plan or pull request
+    # touches IAM or Terraform bootstrap, the frozen contract in a
+    # `platform: true` repository, or a registration's `hard_stop_paths`,
+    # by someone the hold does not admit. Off, the hold is still recorded and
+    # shown in the inbox, and the log names what it would have refused.
+    # NOT switched, by the owner's SD3 decision: the security-class hold,
+    # which `routes.runs` raises directly, and the `.github/workflows/`
+    # refusal, which fails the run at plan (`issueruns.WORKFLOWS_PATH`) --
+    # each records what the platform already cannot do or the owner already
+    # decided, so a report-only phase would only let through work that
+    # cannot succeed.
+    "hold_approver_required": Switch(
+        code="hold_approver_required",
+        why="an issue run held by an IAM, bootstrap, frozen-contract or protected-path stop "
+        "(docs/schedules.md §4.4) is approved only by the hold's approvers -- PLATFORM_OWNER "
+        "in a platform: true repository, a second member elsewhere -- and never "
+        "auto-approved or auto-merged. On once lane S11's `platform` flag is set on the "
+        "platform's own registrations and the inbox (S7) shows held runs",
+    ),
+    # Schedule firings refused at create (lanes S6, S10d and the repo index).
+    "index_refresh_failed": Switch(
+        code="index_refresh_failed",
+        why="a repo-index-refresh firing whose every repository failed to queue ends refused "
+        "instead of succeeding empty. On once the per-repository codes in its detail have "
+        "been read in the log and show only deleted or unreadable branches",
+    ),
+    "observer_file_issues_repo_required": Switch(
+        code="observer_file_issues_repo_required",
+        why="an observer schedule with file_issues true names no file_issues_repo_id, the "
+        "repository its epic is filed in (owner decision 2026-10-11). Off, it is created and "
+        "files nothing. On once no stored observer schedule sets file_issues without one",
+    ),
+    "observer_file_issues_repo_not_registered": Switch(
+        code="observer_file_issues_repo_not_registered",
+        why="an observer schedule's file_issues_repo_id is not a registration of its tenant. "
+        "Off, it is created and files nothing: an unregistered repository is never written to. "
+        "On with observer_file_issues_repo_required",
+    ),
+    "observer_file_issues_repo_not_writable": Switch(
+        code="observer_file_issues_repo_not_writable",
+        why="the owner of an observer schedule cannot write the repository file_issues_repo_id "
+        "names. Off, it is created and files nothing there. On with "
+        "observer_file_issues_repo_required",
+    ),
+    "epic_triage_unreadable": Switch(
+        code="epic_triage_unreadable",
+        why="an epic-triage firing whose every repository failed to list its epics with "
+        "the tenant's forge credential, and that applied and took in nothing, ends refused "
+        "instead of succeeding empty. On once the per-repository codes in the log show only "
+        "credentials that really lack issues: read",
+    ),
+    "pr_shepherd_forge_refused": Switch(
+        code="pr_shepherd_forge_refused",
+        why="a pr-shepherd firing that could read no repository in scope, because the "
+        "tenant's forge credential is missing or GitHub refused it, ends refused instead of "
+        "failed with its refusals recorded. On once the refusals in such firings have been "
+        "read and show only credentials that lack pull_requests access",
+    ),
+    "ci_flake_unreadable": Switch(
+        code="ci_flake_unreadable",
+        why="a ci-flake-hunter firing whose every repository's CI could not be read ends "
+        "refused instead of failed (lane S10c). On once the per-repository codes in its "
+        "detail have been read in the log and show only credentials lacking checks: read, "
+        "contents: read or issues: write",
+    ),
+    "cve_scan_unreadable": Switch(
+        code="cve_scan_unreadable",
+        why="a dependency-cve-refresh firing that submitted nothing because no repository's "
+        "image scan could be read for packages ends refused instead of succeeding empty. "
+        "The scan's table is only in its job log, which needs the GitHub App's Actions: "
+        "Read (docs/schedules.md §0.1 check 1). On once the App holds it, or the scan "
+        "writes its packages to its check run",
+    ),
+    # Lane S10f (docs/schedules.md §3.10): a docs-drift `fix: true` firing
+    # whose token the last probe read without push or pull-request rights.
+    # Off, the fix tasks are submitted and the worker fails them
+    # forge_read_only, as it does for any task.
+    "docs_drift_cannot_push": Switch(
+        code="docs_drift_cannot_push",
+        why="a docs-drift firing with fix true is refused when the last token probe read push "
+        "or open_pull_requests missing for a repository in scope. On once the token probes "
+        "(git_token_checks) have run for the repositories docs-drift schedules name",
+    ),
+    # Lane S10h. Only the repository bound is switched: the spec digest's
+    # admin approval is a document a person decides, never a refusal, and is
+    # enforced from the first firing (schedtypes/custom_prompt.py).
+    "custom_prompt_repository_out_of_scope": Switch(
+        code="custom_prompt_repository_out_of_scope",
+        why="a custom-prompt firing whose spec names a repository outside the schedule's scope "
+        "is refused instead of submitted (docs/schedules.md §3.12, blast radius). On once the "
+        "log shows no stored custom-prompt schedule whose spec names a repository it does not scope",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

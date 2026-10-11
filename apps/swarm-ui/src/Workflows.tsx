@@ -149,6 +149,7 @@ import {
 } from './types'
 import {
   MergeStepCard,
+  MoreRight,
   SourceNote,
   StepInspector,
   StrayMark,
@@ -412,9 +413,18 @@ export function WorkflowsScreen({
       // head, so the first row lands where the skeleton's first row was.
       skeleton={<WorkflowListSkeleton query={query} />}
       summary={(d) => listSummary(d.workflows)}
+      // THE EMPTY LIST SAYS WHERE A WORKFLOW COMES FROM (V110, #1038). It was
+      // one line about where tasks go, and nothing about how to start the
+      // thing this screen lists; the link is the Submit › workflow form.
       empty={{
         heading: 'No workflows',
-        body: 'Individually submitted tasks appear under Agents.',
+        body: (
+          <>
+            A workflow is a set of steps submitted together, run in the order their dependencies give, and this read found
+            none. Individually submitted tasks appear under Agents.
+          </>
+        ),
+        link: { href: '#work/new-workflow', label: 'Submit a workflow' },
       }}
     >
       {(d) => <WorkflowList board={d} query={query} choose={choose} />}
@@ -1144,7 +1154,12 @@ export function WorkflowCard({
   const strays = straysOf(workflow, taskById)
   const unreadable = unreadableOf(workflow, taskById)
   const sectionRef = useRef<HTMLElement | null>(null)
-  const narrow = useNarrow()
+  const viewportNarrow = useNarrow()
+  // THE SPLIT'S OWN WIDTH, NOT ONLY THE VIEWPORT'S (V099, V100; #1038). See
+  // `DOCK_MIN_PX`: at 1440 the page's column is ~1,020px, so docking by the
+  // viewport alone gave the Table ~600px of step cards and the Timeline ~420px
+  // beside a 405px panel. Unmeasured (0, jsdom) is the desktop's answer.
+  const [splitRef, splitWidth] = useBoxWidth()
 
   // THE LOCAL FALLBACKS, used only when the caller holds no store. The board
   // always passes both, so on the real screen these are never read.
@@ -1155,6 +1170,7 @@ export function WorkflowCard({
   // workflow's page, drawn there in place of the board (WorkflowChanges.tsx),
   // so a card that is somehow asked for it draws its graph.
   const view = asked === 'changes' ? 'graph' : asked
+  const narrow = viewportNarrow || (splitWidth > 0 && splitWidth < (view === 'table' ? DOCK_MIN_PX.table : DOCK_MIN_PX.timeline))
   const chooseView = (v: WorkflowView) => (onView !== undefined ? onView(workflow.workflow_id, v) : setLocalView(v))
   const picked = onPick !== undefined ? (pickedProp ?? null) : localPick
   // WHETHER A READER HAS PICKED A STEP ON THIS CARD (QA G3-28): the page's
@@ -1303,7 +1319,7 @@ export function WorkflowCard({
             picked row or track. The split is drawn whether or not a step is
             picked, so picking one never remounts the table and its sort. */}
         {view === 'graph' ? null : (
-          <div className={`wf-split is-rows${picked !== null && !narrow ? ' has-panel' : ''}`}>
+          <div ref={splitRef} className={`wf-split is-rows${picked !== null && !narrow ? ' has-panel' : ''}`}>
             <div className="wf-split-main">
               <WorkflowSteps
                 workflow={workflow}
@@ -1352,6 +1368,36 @@ function atNarrowWidth(): boolean {
 
 function useNarrow(): boolean {
   return useSyncExternalStore(subscribeNarrow, atNarrowWidth, () => false)
+}
+
+/**
+ * HOW WIDE THE TABLE'S OR THE TIMELINE'S SPLIT MUST BE FOR THE INSPECTOR TO
+ * DOCK BESIDE IT (V099, V100; #1038). `DOCK_QUERY` asks the viewport, but on a
+ * workflow's page the split is the viewport less the rail, the nav and the
+ * card's padding -- ~1,020px at 1440 -- and the docked panel's 300-400px
+ * column then took what the view needed: the step table fell below its 980px
+ * container query (`wf-steps`, styles/workflows.css) into stacked cards, and
+ * the Timeline's tracks were ~420px. Below these widths the inspector opens
+ * under the picked row or track instead, exactly as it does below 1100px.
+ *
+ *   table:    980 (the table's row layout) + 12 (gap) + 400 (panel) = 1,392
+ *   timeline: 700 (tracks a run's minutes read across) + 12 + 400 = 1,112
+ */
+export const DOCK_MIN_PX = { table: 1392, timeline: 1112 } as const
+
+/** A box's content width, kept current; 0 until measured (and always in jsdom). */
+function useBoxWidth(): [(el: HTMLElement | null) => void, number] {
+  const [el, setEl] = useState<HTMLElement | null>(null)
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    const measure = () => setWidth(el.clientWidth)
+    measure()
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [el])
+  return [setEl, width]
 }
 
 /**
@@ -1621,13 +1667,6 @@ function money(v: number): string {
   return usd(v)
 }
 
-/** A task id cut to its kind and its last five characters: `task_…18680`. */
-export function integratorShort(id: string): string {
-  const m = /^([A-Za-z]+_)(.*)$/.exec(id)
-  const prefix = m === null ? '' : m[1]!
-  const rest = m === null ? id : m[2]!
-  return rest.length <= 6 ? id : `${prefix}…${rest.slice(-5)}`
-}
 
 /**
  * HOW MANY PULL REQUESTS THIS WORKFLOW IS GOING TO PRODUCE.
@@ -1751,12 +1790,18 @@ function WorkflowDispatch({
           <li className="ctl-fact">
             <b>integrator</b>
             <a
-              className="ctl-link wf-integrator"
+              className="ctl-link wf-integrator id"
               href={`#work/task/${encodeURIComponent(integratorTaskId)}`}
               title={integratorTaskId}
               aria-label={`Open the integrator task ${integratorTaskId}`}
             >
-              {integratorShort(integratorTaskId)}
+              {/* THE WHOLE ID (V102, #1038). It was cut to `task_…18680` in a row
+                  with hundreds of pixels free; a task id is the thing a reader
+                  copies, and a cut one cannot be pasted. `.wf-integrator`
+                  (styles/workflows.css) ellipses it only where the row is
+                  narrower than the id; the whole id is the title. `.id`: it is
+                  drawn as the identifier it is, in mono. */}
+              {integratorTaskId}
             </a>
           </li>
         )}
@@ -2598,6 +2643,41 @@ function MiniMarks({ layout, taskById }: { layout: DagLayout; taskById: Readonly
 }
 
 /**
+ * THE BOX THAT SCROLLS THE CANVAS UP AND DOWN (owner, 2026-10-11, on
+ * `wf_0c305fd932ef4239816f`). GR1's map read `window.scrollY` and called
+ * `window.scrollTo` -- but the console's window never scrolls: the frame's
+ * `.ctl-scroll` does (styles.css), so the map's viewport sat on the top of the
+ * graph whatever the reader scrolled to, and a click or a drag on it moved
+ * nothing. The nearest ancestor that scrolls vertically is the port; `null`
+ * means none does and the window is it (a page mounted outside the frame).
+ * Found by computed style, not by class name, so the next frame layout cannot
+ * strand the map the same way.
+ *
+ * "SCROLLS" MEANS IT HAS SOMEWHERE TO GO, not only that its style allows it:
+ * `.wf-canvas-wrap` is `overflow: auto` and held to the screen's height (V034),
+ * so a canvas taller than that scrolls inside the wrapper and the wrapper is
+ * the port; a canvas that fits leaves it with nowhere to go, and the search
+ * walks on to the frame.
+ */
+export function scrollPortOf(el: Element): HTMLElement | null {
+  for (let p = el.parentElement; p !== null; p = p.parentElement) {
+    if (p === document.body || p === document.documentElement) return null
+    const y = getComputedStyle(p).overflowY
+    if ((y === 'auto' || y === 'scroll' || y === 'overlay') && p.scrollHeight > p.clientHeight) return p
+  }
+  return null
+}
+
+/** The port's visible band in client coordinates: its box, or the window's. */
+function portBox(scroller: HTMLElement | null): { top: number; h: number } {
+  if (scroller === null) return { top: 0, h: window.innerHeight }
+  const r = scroller.getBoundingClientRect()
+  // An unlaid-out scroller (jsdom) answers 0; fall back to the window's height
+  // so the map is still drawn by the height test, as it was before.
+  return { top: r.top, h: scroller.clientHeight > 0 ? scroller.clientHeight : window.innerHeight }
+}
+
+/**
  * WHERE YOU ARE DOWN A CANVAS TALLER THAN THE SCREEN (GR1; graph-rendering.md
  * §3.2, pain point 2). The horizontal map above states the wrapper's scroll and
  * nothing else; a 48-step run with both bands open is 4,740px tall, about five
@@ -2622,28 +2702,68 @@ function VerticalMinimap({
   taskById: ReadonlyMap<string, Task> | null
   canvasRef: { readonly current: HTMLDivElement | null }
 }) {
-  // `h === 0` means the canvas has not been laid out -- first paint, and every
-  // test, because jsdom answers 0 for every box.
-  const [view, setView] = useState<{ top: number; h: number; screen: number }>({ top: 0, h: 0, screen: 0 })
+  // `measured === false` means the canvas has not been laid out -- first
+  // paint, and every test, because jsdom answers 0 for every box. Measured
+  // with `h === 0` is a canvas scrolled wholly off the port.
+  const [view, setView] = useState<{ top: number; h: number; screen: number; measured: boolean }>({
+    top: 0,
+    h: 0,
+    screen: 0,
+    measured: false,
+  })
   const sync = useCallback(() => {
     const el = canvasRef.current
     if (el === null) return
     const box = el.getBoundingClientRect()
-    const screen = window.innerHeight
-    const top = Math.max(0, -box.top)
-    const h = box.height > 0 ? Math.max(0, Math.min(layout.height, screen - box.top) - top) : 0
+    const measured = box.height > 0
+    // THE PORT, NOT THE WINDOW (owner, 2026-10-11): see `scrollPortOf`.
+    const port = portBox(scrollPortOf(el))
+    const screen = port.h
+    const top = Math.max(0, port.top - box.top)
+    const h = measured ? Math.max(0, Math.min(layout.height, port.top + port.h - box.top) - top) : 0
     // Compared before it is set, as `syncView` is: this runs on every scroll.
-    setView((v) => (v.top === top && v.h === h && v.screen === screen ? v : { top, h, screen }))
+    setView((v) =>
+      v.top === top && v.h === h && v.screen === screen && v.measured === measured ? v : { top, h, screen, measured },
+    )
   }, [canvasRef, layout.height])
   useEffect(() => {
     sync()
+    const el = canvasRef.current
+    const scroller = el === null ? null : scrollPortOf(el)
+    // The scroller AND the window: the window's scroll is a no-op listener
+    // where the frame scrolls, and the only one where nothing inside does.
+    scroller?.addEventListener('scroll', sync, { passive: true })
     window.addEventListener('scroll', sync, { passive: true })
     window.addEventListener('resize', sync)
     return () => {
+      scroller?.removeEventListener('scroll', sync)
       window.removeEventListener('scroll', sync)
       window.removeEventListener('resize', sync)
     }
-  }, [sync])
+  }, [sync, canvasRef])
+
+  // CLICK OR DRAG: the pointer's height on the strip is a height on the
+  // canvas, and the port is scrolled to centre it -- as the horizontal map
+  // centres its jump. Captured, so a drag that leaves the 44px strip keeps
+  // steering until the button is released.
+  const dragging = useRef(false)
+  const steer = useCallback(
+    (strip: DOMRect, clientY: number) => {
+      const el = canvasRef.current
+      if (el === null) return
+      const canvas = el.getBoundingClientRect()
+      // Unlaid-out boxes answer 0; dividing by one would scroll to NaN.
+      if (strip.height <= 0 || canvas.height <= 0) return
+      const fraction = Math.min(1, Math.max(0, (clientY - strip.top) / strip.height))
+      const scroller = scrollPortOf(el)
+      const port = portBox(scroller)
+      const by = canvas.top + fraction * layout.height - (port.top + port.h / 2)
+      if (scroller === null) window.scrollTo({ top: Math.max(0, window.scrollY + by) })
+      else scroller.scrollTop = Math.max(0, scroller.scrollTop + by)
+      sync()
+    },
+    [canvasRef, layout.height, sync],
+  )
 
   const screen = view.screen > 0 ? view.screen : CANVAS_HEIGHT
   if (layout.height <= screen) return null
@@ -2651,20 +2771,30 @@ function VerticalMinimap({
   const label =
     view.h > 0
       ? `Map of the canvas, top to bottom. It is ${tall} pixels tall; ${Math.round(view.h)} of them are on screen, starting ${Math.round(view.top)} pixels from the top. The page scrolls, and tabbing to a step brings it into view.`
-      : `Map of the canvas, top to bottom. It is ${tall} pixels tall, taller than the ${Math.round(screen)} pixel screen. How much of it is on screen has not been measured. The page scrolls, and tabbing to a step brings it into view.`
+      : view.measured
+        ? `Map of the canvas, top to bottom. It is ${tall} pixels tall and none of it is on screen. The page scrolls, and tabbing to a step brings it into view.`
+        : `Map of the canvas, top to bottom. It is ${tall} pixels tall, taller than the ${Math.round(screen)} pixel screen. How much of it is on screen has not been measured. The page scrolls, and tabbing to a step brings it into view.`
   return (
     <div
       className="wf-vmap"
       role="img"
       aria-label={label}
       onPointerDown={(e) => {
-        const strip = e.currentTarget.getBoundingClientRect()
-        const canvas = canvasRef.current?.getBoundingClientRect()
-        // Unlaid-out boxes answer 0; dividing by one would scroll to NaN.
-        if (strip.height <= 0 || canvas === undefined || canvas.height <= 0) return
-        const y = ((e.clientY - strip.top) / strip.height) * layout.height
-        // Centred on the point, as the horizontal map centres its jump.
-        window.scrollTo({ top: Math.max(0, window.scrollY + canvas.top + y - window.innerHeight / 2) })
+        if (e.button !== 0) return
+        // No text selection or native drag starting under a steering pointer.
+        e.preventDefault()
+        dragging.current = true
+        e.currentTarget.setPointerCapture?.(e.pointerId)
+        steer(e.currentTarget.getBoundingClientRect(), e.clientY)
+      }}
+      onPointerMove={(e) => {
+        if (dragging.current) steer(e.currentTarget.getBoundingClientRect(), e.clientY)
+      }}
+      onPointerUp={() => {
+        dragging.current = false
+      }}
+      onPointerCancel={() => {
+        dragging.current = false
       }}
     >
       <svg viewBox={`0 0 ${layout.width} ${layout.height}`} preserveAspectRatio="none" aria-hidden focusable="false">
@@ -4057,6 +4187,7 @@ function StepNode({
             step={step}
             reload={reload}
             variant="inline"
+            overlay
           />
         </div>
       )}
@@ -4878,7 +5009,7 @@ function WorkflowList({
           )}
         </p>
       ) : (
-        <div className="table-wrap is-scroll wfl-scroll">
+        <MoreRight className="table-wrap is-scroll wfl-scroll">
           <table className="wfl-table">
             <ListHead />
             <tbody>
@@ -4896,7 +5027,7 @@ function WorkflowList({
               ))}
             </tbody>
           </table>
-        </div>
+        </MoreRight>
       )}
       <p className="wfl-foot">
         {rows.length} of {board.workflows.length} read · {SORT_LABEL[query.sort]} · 100 per read
@@ -5268,6 +5399,18 @@ const PAGE_SKELETON_LINES: readonly number[] = [42, 88, 76, 64, 82, 58]
  */
 function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: WorkflowQuery; choose: (q: WorkflowQuery) => void }) {
   return (
+    <>
+    {/* THE COUNT NOTE'S LINE (V103, #1038). The loaded page opens with the
+        census note `Screen` draws over the first card (`pageSummary`), and the
+        skeleton drew nothing there: the tabs jumped down by that line and its
+        margin, 25px at 1440, the moment the read landed. The same
+        `.c-count-note`, holding a bar instead of the census, keeps the line.
+        A phone column wraps the census onto a second line, so the second bar
+        is drawn there only (styles/workflows.css). */}
+    <p className="c-count-note wfp-skel-sum" aria-hidden="true">
+      <span className="wfl-skel" style={{ width: '24em' }} />
+      <span className="wfl-skel wfp-skel-sum-2" style={{ width: '14em' }} />
+    </p>
     <div className="wfp is-loading" aria-busy="true">
       <div className="wfp-head">
         <div className="wfp-chips" aria-hidden="true">
@@ -5291,6 +5434,7 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
         ))}
       </div>
     </div>
+    </>
   )
 }
 

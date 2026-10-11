@@ -1203,13 +1203,14 @@ describe('the QA pass: the table, the inspector and the board chrome', () => {
     await waitFor(() => expect(scrub.textContent).not.toContain('reading'))
   })
 
-  it('DIFF2b: counts a step nobody counted as a dash, never 0', async () => {
+  it('DIFF2b: prints no count for a step nobody counted -- no dash, never 0 (V111)', async () => {
     const running = task('t_run', 'RUNNING', { created_at: iso(-600), started_at: iso(-300) })
     const { container } = oneStepCard(running, [])
     pick(container as HTMLElement, 'work')
     const i = inspector(container as HTMLElement)
     const link = i.querySelector<HTMLAnchorElement>('a.wf-inspect-changes')!
-    expect(link.textContent).toBe('Changes · — ›')
+    expect(link.textContent).toBe('Changes ›')
+    expect(link.textContent).not.toMatch(/[—\d]/)
     expect(link.getAttribute('title')).toMatch(/written nothing yet/)
     const scrub = i.querySelector<HTMLElement>('[data-scrub="attempt"]')!
     await waitFor(() => expect(scrub.textContent).not.toContain('reading'))

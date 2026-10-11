@@ -688,8 +688,11 @@ class ControlStore:
         None where the document records no namespace. The value is carried
         rather than re-derived because the dispatcher reads it first
         (`GkeJobDispatcher.namespace_for` prefers `tenant.namespace` over its own
-        template), so it is where that tenant's Jobs actually are.
-        `GkeBackend.namespace_for` applies the same precedence to this pair.
+        template when it is inside `swarm-tenant-`), so it is where that
+        tenant's Jobs actually are. It is carried UNCHECKED: this is the raw
+        document value, and `GkeBackend.namespace_for` applies the same
+        precedence and the same verification to this pair -- a value outside
+        the prefix is ignored there and logged as `tenant_namespace_mismatch`.
 
         This is how the reconciler learns which namespaces to read without a
         cluster-scope list: it asks the control plane which tenants exist rather

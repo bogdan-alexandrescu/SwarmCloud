@@ -236,7 +236,9 @@ run "no_job_for_a_retired_profile_and_merge_runs_as_the_worker" {
   }
 
   # The control: eng's other anthropic Jobs exist, so the check above is not
-  # passing on an empty matrix.
+  # passing on an empty matrix. Both profiles run on GKE Autopilot (contract
+  # requests 53 and 66), so these are their rollback Jobs, kept by
+  # `cloud_run_fallback_profiles`.
   assert {
     condition     = contains(keys(local.jobs), "swarm-job-eng-claude-code") && contains(keys(local.jobs), "swarm-job-eng-merge")
     error_message = "eng holds anthropic and git, so it has a claude-code and a merge Job"

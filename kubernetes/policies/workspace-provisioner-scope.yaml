@@ -7,8 +7,10 @@
 # new namespace can create it in `swarm-system` or `kube-system`. These
 # policies are what narrow it, for requests by that identity and nobody else:
 #
-#   swarm-workspace-deployer-scope        every kind. The write is a CREATE or
-#                                         an UPDATE (never a DELETE), of a
+#   swarm-workspace-deployer-scope        every kind the deployer may write,
+#                                         listed (Autopilot refuses "*"). The
+#                                         write is a CREATE or an UPDATE
+#                                         (never a DELETE), of a
 #                                         Namespace named swarm-tenant-u-*, or
 #                                         of an object inside one -- and only
 #                                         of a kind and name the tenant render
@@ -37,8 +39,8 @@
 # matched here are exactly the subjects provisioner-rbac.yaml binds. They are
 # written as JSON-shaped CEL literals so that test can read them.
 #
-# WHY THE SCOPE POLICY MATCHES EVERY KIND, against the one-kind-per-policy rule
-# pod-security.yaml states. That rule exists because CEL is type-checked
+# WHY THE SCOPE POLICY MATCHES EVERY KIND THE DEPLOYER WRITES, against the
+# one-kind-per-policy rule pod-security.yaml states. That rule exists because CEL is type-checked
 # against the schema of what it matches; the scope policy reads `request`
 # alone and never `object`, so there is no schema to disagree about. The three
 # policies that read `object` match one kind each.
@@ -60,11 +62,27 @@ metadata:
 spec:
   failurePolicy: Fail
   matchConstraints:
+    # Every resource provisioner-rbac.yaml grants the deployer a write on, by
+    # name. Not ("*", "*"): GKE Autopilot's own admission webhook refuses any
+    # admission rule matching every group and resource (measured 2026-10-11,
+    # `apply.sh --policies` server dry run). RBAC already bounds what the
+    # deployer can write to these, so listing them matches what "*" matched;
+    # test_the_scope_policy_matches_every_resource_the_rbac_lets_it_write holds
+    # this list to the grants. DELETE is matched so the validation below can
+    # refuse it.
     resourceRules:
-      - apiGroups: ["*"]
+      - apiGroups: [""]
         apiVersions: ["*"]
-        operations: ["*"]
-        resources: ["*", "*/*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["namespaces", "serviceaccounts", "resourcequotas", "limitranges"]
+      - apiGroups: ["networking.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["networkpolicies"]
+      - apiGroups: ["rbac.authorization.k8s.io"]
+        apiVersions: ["*"]
+        operations: ["CREATE", "UPDATE", "DELETE"]
+        resources: ["roles", "rolebindings"]
   # The deployer, by email and by numeric uniqueId -- the same two subjects
   # provisioner-rbac.yaml binds. A spelling bound there and missing here would
   # be RBAC without this policy.

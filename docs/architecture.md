@@ -267,7 +267,11 @@ mandatory periodic checkpointing makes them cost minutes, not the run, and
 does not make them free ([execution-backends.md](execution-backends.md) §4).
 `indexer` followed on 2026-10-10 (contract request 63), the canary for #939,
 for its internet path rather than its start: a new Cloud Run instance's opens a
-median 20.2 s after start, a GKE pod's 1.17 s.
+median 20.2 s after start, a GKE pod's 1.17 s. `generic`, `codex` and `merge`
+followed it (contract requests 64-66, #939 option A, owner 2026-10-10) for the
+same reason, leaving Cloud Run with `mock`, which reaches no internet, and the
+disabled `post-verdict` and `claude-code-review`, each designed to run as an
+account of its own that a GKE pod cannot be.
 
 ### Spot is disabled platform-wide
 

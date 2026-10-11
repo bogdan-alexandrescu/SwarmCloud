@@ -42,11 +42,13 @@ from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
 from ..mergewake import wake_tenant
+from ..purge import HistoryPurge, parse_query
 from ..verdictpublish import on_task_finished
 from ..waker import TASK_FINISHED
 from ..repoindex import RepoIndex
 from ..schemas import (
     DrainRequest,
+    HistoryPurgeRequest,
     LimitRequest,
     PauseRequest,
     PlatformSettingsRequest,
@@ -705,6 +707,33 @@ def list_failures(
         ],
         "next_page_token": page.next_page_token,
     }
+
+
+@router.post("/history:purge")
+def purge_history(
+    body: HistoryPurgeRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Delete FAILED, CANCELLED or DEAD_LETTERED workflows and tasks, audited.
+
+    Owner request 2026-10-11. Full admin only: the route is not in
+    `POOL_ADMIN_ROUTES`, so the pool-admin capability and a tenant member are
+    both refused by `admin_auth`. A DRY RUN unless the body says
+    `dry_run: false` and `confirm: "purge"`; the dry run lists exactly what
+    the delete would take and changes nothing. What is deleted, what is never
+    deleted, the audit written before each delete and the tenant-derived
+    bucket prefix are all in `swarm_api.purge`.
+    """
+    query = parse_query(
+        states=body.states, before=body.before, tenant_id=body.tenant_id,
+        exclude_ids=body.exclude_ids, dry_run=body.dry_run, confirm=body.confirm,
+        limit=body.limit, page_token=body.page_token,
+    )
+    result = HistoryPurge(ctx.db, ctx.artifact_purger, now=ctx.now).run(query, by=auth.email)
+    ctx.metrics.admin_actions.labels(
+        action="history_purge_dry_run" if query.dry_run else "history_purge").inc()
+    return result
 
 
 @router.get("/quota")

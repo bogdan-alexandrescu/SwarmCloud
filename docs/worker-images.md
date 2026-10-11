@@ -6,8 +6,8 @@ scanned (trivy, HIGH and CRITICAL) before promotion and weekly after it.
 
 | image | built from | carries | runs |
 |---|---|---|---|
-| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`) | every profile but `browser` and `indexer`: `mock`, `generic`, `claude-code`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
-| `agent-runtime-browser` | `agent-runtime-base` by digest | Playwright and Chromium | `browser` (GKE Autopilot) |
+| `agent-runtime-base` | `python:3.11-slim-bookworm` by digest | the worker, Node, the agent CLIs (Claude Code, codex), the agent toolbox (gh, gcloud, kubectl, terraform, checkov, trivy, shellcheck, make, the docker CLI; tofu only with `INSTALL_TOFU=1`, tflint only with `INSTALL_TFLINT=1`) | every profile but `browser`, `claude-code-browser` and `indexer`: `mock`, `generic`, `claude-code`, `codex`, `merge`, `post-verdict`, `claude-code-review` |
+| `agent-runtime-browser` | `agent-runtime-base` by digest | Playwright and Chromium | `browser` and `claude-code-browser` (contract request 67, accepted by the owner 2026-10-11), both on GKE Autopilot |
 | `agent-runtime-indexer` | `agent-runtime-base` by digest | the repository index's toolchain: the tree-sitter extractor `swarm-repo-index`, the shard writer `swarm-repo-graph`, the Go toolchain, gopls (compiled from module source, #661), pyright and typescript-language-server | `indexer` (contract request 48, accepted by the owner 2026-10-05) |
 
 The two derived images are built only after the base has finished in the same
@@ -166,17 +166,21 @@ fails when a profile's backend moves and this table does not.
 |---|---|---|
 | `claude-code` | `GKE_AUTOPILOT` | none used: since contract request 53 (applied 2026-10-08); each tenant's old Job is kept idle until 2026-10-15 as the rollback |
 | `browser` | `GKE_AUTOPILOT` | none: Chromium needs the `/dev/shm` GKE gives it |
+| `claude-code-browser` | `GKE_AUTOPILOT` | none: it runs the browser image, for the same `/dev/shm` (contract request 67) |
 | `mock` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
-| `generic` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
+| `generic` | `GKE_AUTOPILOT` | none used: since contract request 64 (2026-10-10, #939 option A); each tenant's old Job (one per tenant, no provider) is kept idle as the rollback |
 | `indexer` | `GKE_AUTOPILOT` | none used: since contract request 63 (2026-10-10, the canary for #939); each tenant's old Job (one per tenant that registers `anthropic`) is kept idle as the rollback |
-| `merge` | `CLOUD_RUN_JOB` | one per tenant that registers `git` (contract request 47); every MERGE verdict pays a Cloud Run start (#748) |
-| `codex` | `CLOUD_RUN_JOB` | one per tenant that registers `openai`; the profile is disabled (`available=False`) |
+| `merge` | `GKE_AUTOPILOT` | none used: since contract request 66 (2026-10-10, #939 option A); each tenant's old Job (one per tenant that registers `git`, contract request 47) is kept idle as the rollback. Until then every MERGE verdict paid a Cloud Run start (#748) |
+| `codex` | `GKE_AUTOPILOT` | none used: since contract request 65 (2026-10-10, #939 option A); each tenant's old Job (one per tenant that registers `openai`) is kept idle as the rollback; the profile is disabled (`available=False`) |
 | `post-verdict` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); disabled |
 | `claude-code-review` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); retired |
 
-So `mock`, `generic`, `merge` and `codex` are the profiles still started on
-Cloud Run. `scripts/warm-jobs.sh` warms every per-tenant worker Job it lists:
-theirs, and the idle claude-code and indexer Jobs until they are removed.
+So `mock` is the one enabled profile still started on Cloud Run: it reaches no
+internet, so #939's option A left it there, and `post-verdict` and
+`claude-code-review` stay because each was designed to run as an account of its
+own, which a GKE pod cannot be (contract request 66). `scripts/warm-jobs.sh`
+warms every per-tenant worker Job it lists: mock's, and the idle rollback Jobs
+of claude-code, indexer, generic, codex and merge until they are removed.
 
 ## The `indexer` profile (contract request 48)
 

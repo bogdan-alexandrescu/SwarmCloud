@@ -82,7 +82,10 @@ def test_merge_is_the_profile_contract_requests_33_and_47_name():
     p = RUNNER_PROFILES["merge"]
     assert p.image == "agent-runtime-base"
     assert p.resource_class == "standard"
-    assert p.backend is Backend.CLOUD_RUN_JOB
+    # GKE Autopilot since contract request 66 (owner, 2026-10-10, #939 option
+    # A): merge runs as the tenant's worker account on either backend
+    # (request 47), the identity the GKE pod's KSA is bound to.
+    assert p.backend is Backend.GKE_AUTOPILOT
     assert p.runner_argv == ()
     assert p.worker_action is profiles.WorkerAction.MERGE
     # Contract request 47 (owner, 2026-10-04): the tenant's existing `-git`

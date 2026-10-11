@@ -2,7 +2,8 @@
 # eight terraform/bootstrap/platform_roles.tf defines, swarmForgeSlotCreator
 # and swarmForgeSlotVersionManager (terraform/bootstrap/forge_user_slots.tf,
 # #780), and the five swarmWorkspace* roles of swarm-workspace-deployer
-# (terraform/bootstrap/workspace_deployer.tf, #847).
+# (terraform/bootstrap/workspace_deployer.tf, #847), and swarmHistoryPurgeDeleter
+# (terraform/bootstrap/history_purge.tf, the audited history purge).
 #
 # terraform/bootstrap DEFINES these roles, and the owner applies it.
 # terraform/infra and its modules GRANT them, and CI applies that. The two roots
@@ -61,5 +62,9 @@ locals {
     workspace_bucket_iam     = "swarmWorkspaceBucketIam${local.role_suffix}"
     workspace_secret_binder  = "swarmWorkspaceSecretBinder${local.role_suffix}"
     workspace_firestore      = "swarmWorkspaceFirestore${local.role_suffix}"
+    # Defined by terraform/bootstrap/history_purge.tf; granted by
+    # terraform/modules/iam to swarm-api on the artifact bucket, conditioned to
+    # tenants/<t>/tasks/ and tenants/<t>/checkpoints/ (owner decision 2026-10-11).
+    history_purge_deleter = "swarmHistoryPurgeDeleter${local.role_suffix}"
   }
 }

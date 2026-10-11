@@ -825,7 +825,7 @@ never bound without being scoped.
 |---|---|---|
 | ClusterRole `swarm-workspace-deployer` + ClusterRoleBinding | `namespaces`: `get`, `create`, `patch`. `serviceaccounts`, `resourcequotas`, `limitranges`, `networking.k8s.io/networkpolicies`, `rbac.authorization.k8s.io/roles`, `rolebindings`: `get`, `create`, `patch`. `roles`: `escalate`, and `bind` with `resourceNames: [swarm-worker, swarm-dispatcher, swarm-reaper]`. **No `delete`, no `list`, and nothing on `Secret`, `Pod`, `Job` or `ConfigMap`**: exactly the verbs a `--workspace` run's kubectl calls need (the apply's get-then-create-or-patch, `escalate`/`bind` for the tenant Roles, reads by name), held there by a test over a run's calls. The job renders without `--spec-verify-keys`, so a personal namespace holds no `swarm-spec-verify-keys` ConfigMap | RBAC cannot restrict `create` by name, so a ClusterRole that creates namespaces creates *any* namespace |
 | Role `swarm-workspace-deployer-dns` in `kube-system` | `get` on `services` `kube-dns` and `daemonsets` `node-local-dns` (`resourceNames`) | the two reads `kubernetes/cluster-network.sh` makes |
-| **ValidatingAdmissionPolicy `swarm-workspace-deployer-scope`** + binding, and three per-kind companions (`-namespaces`, `-roles`, `-rolebindings`) | for any request by this user (`matchConditions` on the caller; no namespace selector, which the deployer could escape by writing an unlabelled namespace): only `CREATE` and `UPDATE`, no subresource; a `Namespace` must be named `swarm-tenant-u-*` and carry `app.kubernetes.io/part-of=swarm`, its own `swarm-tenant` label and PSA `restricted`; a namespaced object must be in a `swarm-tenant-u-*` namespace and be a kind and name the tenant render produces. A `Role` must be one of the three names, with the rules `kubernetes/render.py` renders. A `RoleBinding` may only reference those Roles, binding `swarm-dispatcher` only to the scheduler, `swarm-reaper` only to the reconciler and `swarm-worker` only to ServiceAccounts in its namespace. `tests/unit/worker/test_workspace_provisioner_scope.py` holds every literal to the render, and the matched users to the bound subjects | this turns "any namespace" into "`swarm-tenant-u-*` only". `kubernetes/policies/pod-security.yaml` is the precedent |
+| **ValidatingAdmissionPolicy `swarm-workspace-deployer-scope`** + binding, and three per-kind companions (`-namespaces`, `-roles`, `-rolebindings`) | for any request by this user (`matchConditions` on the caller; no namespace selector, which the deployer could escape by writing an unlabelled namespace; the scope policy matches the resources `provisioner-rbac.yaml` grants a write on, listed by name because GKE Autopilot's admission webhook refuses a `("*", "*")` rule, and a test holds the list to the grants): only `CREATE` and `UPDATE`, no subresource; a `Namespace` must be named `swarm-tenant-u-*` and carry `app.kubernetes.io/part-of=swarm`, its own `swarm-tenant` label and PSA `restricted`; a namespaced object must be in a `swarm-tenant-u-*` namespace and be a kind and name the tenant render produces. A `Role` must be one of the three names, with the rules `kubernetes/render.py` renders. A `RoleBinding` may only reference those Roles, binding `swarm-dispatcher` only to the scheduler, `swarm-reaper` only to the reconciler and `swarm-worker` only to ServiceAccounts in its namespace. `tests/unit/worker/test_workspace_provisioner_scope.py` holds every literal to the render, and the matched users to the bound subjects | this turns "any namespace" into "`swarm-tenant-u-*` only". `kubernetes/policies/pod-security.yaml` is the precedent |
 
 **What it can never touch on the shared deny-list** (`scripts/lib/common.sh`,
 `SHARED_DENY_LIST`): it holds no `compute.*`; its only `container.*` grant is
@@ -2065,7 +2065,20 @@ phases. New files are named without their root.
 * **Moving the image** is a bootstrap apply that changes
   `workspace_apply_image` to the digest the release promoted. It is the step
   that lets a merged change to the guard, the script or the entrypoint reach
-  the identity (§2.4 R1).
+  the identity (§2.4 R1). Until the owner takes it, the release's deploy check
+  (`scripts/lib/deploy.sh`) reports the job as "awaiting owner re-pin", names
+  both digests and this command, and passes -- but only while the job runs a
+  digest some release promoted; any other digest still fails the release.
+  "Some release promoted" means the digest carries a `<channel>-promoted-*`
+  tag, which `scripts/push-images.sh` adds to every digest it promotes. That
+  mark began on 2026-10-11 and nothing backfills it, so a digest promoted
+  before then -- the one the job ran when marks began, among them -- fails as
+  "no release promoted" until it is marked once. The failure prints the
+  command; confirm the promotion in that release's log first, then run
+  `gcloud artifacts docker tags add <repo>/workspace-apply@sha256:<digest>
+  <repo>/workspace-apply:dev-promoted-pre-mark-<digest> --project <project>`.
+  Marking a digest no release promoted is exactly what the check exists to
+  refuse, so the confirmation is not optional.
 * **W11, after the job ships:** delete the `swarm-github` connection, its
   OAuth secret, and Google's Cloud Build App from the repository.
 

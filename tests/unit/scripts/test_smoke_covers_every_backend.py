@@ -139,13 +139,20 @@ def test_the_matrix_is_read_from_the_deployed_api():
     )
 
 
-def test_gke_autopilot_is_covered_by_browser_and_cloud_run_by_mock():
-    """The row that was missing for two days, and the row the verify tenant can run."""
+def test_gke_autopilot_is_covered_by_generic_and_cloud_run_by_mock():
+    """The row that was missing for two days, and the row the verify tenant can run.
+
+    GKE's row was `browser` until contract request 64 (owner, 2026-10-10, #939
+    option A) moved `generic` there: the matrix prefers a profile that needs
+    no credential, so `generic` -- whose fixture clones this public repository
+    and runs pytest -- now stands for GKE, and proves its internet path too.
+    """
     rows = {backend: (profile, rc) for backend, profile, rc in _matrix(_served())}
-    assert rows.get("GKE_AUTOPILOT", (None,))[0] == "browser", (
+    assert rows.get("GKE_AUTOPILOT", (None,))[0] == "generic", (
         f"GKE_AUTOPILOT is covered by {rows.get('GKE_AUTOPILOT')!r}; the smoke suite "
-        "would not submit a browser task, which is the only kind that failed"
+        "should submit the credential-free generic task there"
     )
+    assert RUNNER_PROFILES["generic"].provider is None
     assert rows.get("CLOUD_RUN_JOB", (None,))[0] == "mock", (
         f"CLOUD_RUN_JOB is covered by {rows.get('CLOUD_RUN_JOB')!r}. It must be mock: "
         "the verify tenant holds no provider credential, so a claude-code row fails at "
@@ -165,8 +172,9 @@ def test_every_backend_a_profile_resolves_to_gets_a_row():
     assert "AUTO" not in {backend for backend, _, _ in rows}
 
     # THE MUTATION THIS CATCHES: a program that keeps only the backends it found
-    # an AVAILABLE profile for. Disable every GKE profile -- browser, and
-    # claude-code since contract request 53 -- and GKE_AUTOPILOT must still be
+    # an AVAILABLE profile for. Disable every GKE profile -- browser,
+    # claude-code since contract request 53, and the profiles requests 63-66
+    # moved -- and GKE_AUTOPILOT must still be
     # listed -- with `-` -- rather than simply stop being mentioned.
     disabled = copy.deepcopy(served)
     for entry in disabled["runtimes"].values():
@@ -197,20 +205,23 @@ def test_the_matrix_resolves_auto_rather_than_reading_the_raw_field():
     """
     served = copy.deepcopy(_served())
     served["runtimes"]["browser"]["backend"] = Backend.AUTO.value
-    rows = {backend: profile for backend, profile, _ in _matrix(served)}
+    rows = {backend: profile for backend, profile, _ in _matrix(served, prefer="browser")}
     assert "AUTO" not in rows
     assert rows["GKE_AUTOPILOT"] == "browser"
 
 
 def test_the_suites_own_profile_is_preferred_then_a_provider_less_one():
     served = _served()
-    rows = {backend: profile for backend, profile, _ in _matrix(served, prefer="generic")}
-    assert rows["CLOUD_RUN_JOB"] == "generic"
+    # `smoke-test.sh --profile browser`: the preference wins over generic,
+    # which needs no credential and would otherwise stand for GKE.
+    rows = {backend: profile for backend, profile, _ in _matrix(served, prefer="browser")}
+    assert rows["GKE_AUTOPILOT"] == "browser"
     # With no preference that resolves there, a profile needing no credential
     # wins over one that does, whatever the names.
     rows = {backend: profile for backend, profile, _ in _matrix(served, prefer="nothing")}
-    chosen = RUNNER_PROFILES[rows["CLOUD_RUN_JOB"]]
-    assert chosen.provider is None and chosen.available, rows
+    for backend in ("CLOUD_RUN_JOB", "GKE_AUTOPILOT"):
+        chosen = RUNNER_PROFILES[rows[backend]]
+        assert chosen.provider is None and chosen.available, rows
 
 
 @pytest.mark.parametrize(

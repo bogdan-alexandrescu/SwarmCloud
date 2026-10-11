@@ -225,7 +225,7 @@ describe('the workflow form is G1', () => {
     const select = within(step).getByRole('combobox', { name: 'step-1 runner' }) as HTMLSelectElement
     expect(select.value).toBe('')
     const names = [...select.options].map((o) => o.value)
-    expect(names).toEqual(['', 'browser', 'claude-code', 'codex', 'generic', 'mock'])
+    expect(names).toEqual(['', 'browser', 'claude-code', 'claude-code-browser', 'codex', 'generic', 'mock'])
     const codex = [...select.options].find((o) => o.value === 'codex')!
     expect(codex.disabled).toBe(true)
     // The card's own words, not a lowercased copy (QA G4-30).

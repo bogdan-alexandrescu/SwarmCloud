@@ -489,6 +489,18 @@ enable_forge_refresh = true
 # refused. docs/runbooks/onboarding-acceptance.md is the check that it works.
 repository_grants_enforced = true
 
+# Two switched refusals are ON in dev (owner decision 2026-10-11, after PR 1027
+# added them OFF as every new refusal ships). index_refresh_failed: a repo-index
+# refresh firing where every repository failed is refused visibly instead of
+# finishing quietly with nothing queued. observer_file_issues_unavailable: an
+# observer schedule set to file_issues, with no way to file them, is refused
+# instead of writing its report and silently filing none. A code that names no
+# switch fails swarm-api's start, so this merges only after PR 1027.
+api_refusals = {
+  index_refresh_failed             = true
+  observer_file_issues_unavailable = true
+}
+
 # WHO MAY PASS IAP is no longer set here. It moved to terraform/bootstrap
 # (frontend_iap_members) on 2026-09-24, because managing it from this root made
 # CI's deployer need IAP admin rights that could not be scoped to our backends.
@@ -606,13 +618,11 @@ deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceac
 enable_issue_sweep = true
 
 # Personal-workspace publishing (swarm-api WORKSPACE_APPLY_PUBLISH, #847).
-# OFF until the swarm-workspace-apply topic exists with what it starts --
-# Eventarc -> Workflows -> the Cloud Run job swarm-workspace-apply (WD2,
-# re-decided 2026-10-10) -- which is the owner's one-time bootstrap apply with
-# enable_workspace_deployer = true (docs/workspaces.md §10). Flip this to true
-# in the SAME release as that apply, not before: publishing to a topic that
-# does not exist records publish_failed on every sweep, and not after: while it
-# is off every approved request waits. Off is not silent -- the
-# swarm-workspace-sweep job logs each waiting record as workspace_stuck
-# (reason publishing_off) and the workspace-stuck alert pages on it.
-workspace_apply_publish = false
+# ON in dev from 2026-10-11 (owner): the swarm-workspace-apply topic exists, and
+# an approval now reaches the Cloud Run job swarm-workspace-apply through
+# Eventarc and Workflows (WD2 re-decided 2026-10-10; W4b bootstrap applied
+# 2026-10-11, 33 resources; W5 cluster policies applied the same day). While it
+# was off every approved request waited, logged as workspace_stuck
+# (publishing_off). If the job path breaks, turning this off again stops new
+# dispatches; the sweep and the stuck alert keep reporting waiting records.
+workspace_apply_publish = true

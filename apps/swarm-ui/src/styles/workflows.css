@@ -20,6 +20,17 @@
 
 /* ---- The list, full width, with no sideways scroll at 1440 (#503) ------- */
 
+/* BELOW 900 THE LIST SCROLLS SIDEWAYS, AND SAYS SO (VQA V109). At 400 its
+   columns were cut at the card's edge mid-word with nothing saying more lay
+   to the right (a headless scrollbar paints nothing, and a phone's is
+   transient). The right edge fades while columns are off it -- `MoreRight`,
+   the step table's #109 cue -- and only then, so the last column in view is
+   never dimmed. */
+.wfl-scroll.has-more {
+  -webkit-mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
+  mask-image: linear-gradient(to left, transparent 0, #000 var(--ctl-s5));
+}
+
 /* AT 900 AND UP THE TABLE IS LAID OUT FIXED AT ITS WRAPPER'S WIDTH, every
    column a share of it. It was 1448px of content in a 1054px wrapper: most of
    Owner, and all of Started and Duration, behind a horizontal scroll, and the
@@ -140,8 +151,19 @@
    the tabs (#503). */
 .wfp .wf-card.is-page {
   border: 1px solid var(--line); border-radius: var(--radius);
-  padding: var(--ctl-s3) var(--ctl-pad-chrome);
+  padding: 0;
   background: var(--surface);
+}
+/* ONE FRAME, NOT TWO (V097, #1038). `.wf-body` (styles.css) is drawn to hang
+   under a list row's `.wf-bar`, so it has three edges and no top one; on the
+   page there is no bar, and it drew a second box inside this card with its
+   top edge missing. Here the body is the card's whole inside: no border of its
+   own, the card's corners (`--radius`), and the card's padding. It keeps its fill, because
+   the sticky level rail and the edge halo paint `--wf-body-bg` and have to
+   match what is behind them. */
+.wfp .wf-card.is-page > .wf-body {
+  border: 0; border-radius: var(--radius);
+  padding: var(--ctl-s3) var(--ctl-pad-chrome);
 }
 
 /* THE BODY CARD WHILE THE PAGE READS (#113): the loaded card's frame, so the
@@ -151,6 +173,42 @@
   border: 1px solid var(--line); border-radius: var(--radius);
   padding: var(--ctl-s3) var(--ctl-pad-chrome);
   background: var(--surface);
+}
+
+/* THE COUNT NOTE'S PLACEHOLDER IS ITS OWN FORMATTING CONTEXT (V103), so the
+   bar's half-leading margins stay inside the line instead of collapsing
+   through the `<p>`: collapsed, the line was 12px where the loaded note's is
+   17.4, and the tabs still moved by the difference. */
+.wfp-skel-sum { display: flow-root; }
+/* At a phone's column the loaded census is two lines (~90 characters at 12px
+   in ~350px), so the placeholder is too; wider, it is one. */
+.wfp-skel-sum > .wfp-skel-sum-2 { display: none; margin-top: calc(var(--lh-micro) * 1em - 1em); }
+@media (max-width: 560px) {
+  .wfp-skel-sum > .wfp-skel-sum-2 { display: block; }
+  /* AND THE PAGE HEAD IS TWO LINES IN BOTH STATES. A workflow's title is a
+     22-character id, so at a phone the loaded head's `every 10 s · read 0 s
+     ago` wraps under it, while the reading head's shorter `⟳ reading…` fitted
+     beside it: one line, then two, and the tabs dropped ~30px when the read
+     landed. The head's actions take their own row here whatever they say.
+     Scoped by the back link this page alone draws before its head. */
+  .wfp-back + .c-phead > .c-acts { flex: 1 0 100%; }
+}
+
+/* THE INSPECTOR HEAD'S FIRST LINE IS THE WORKFLOW AND THE CLOSE BUTTON (V100).
+   `.wf-inspect-wf` takes the whole line in styles.css so the step's line
+   starts under it; here it takes what the × leaves, so the × ends that line
+   at the panel's corner instead of wrapping on its own after the links. */
+/* The basis is the line less the ×'s 28px and the head's gap, so the
+   workflow and the × share the line and nothing else fits beside them. */
+.wf-inspect-head > .wf-inspect-wf { flex: 1 1 calc(100% - 28px - var(--ctl-s2)); }
+.wf-inspect-head > .wf-inspect-close { flex: none; align-self: flex-start; }
+
+/* THE INTEGRATOR'S WHOLE ID, CUT ONLY WHERE THE ROW IS NARROWER THAN IT
+   (V102). The text is the whole id now; this is what keeps a phone's row from
+   being pushed wider by it. */
+.wf-dispatch .wf-integrator {
+  display: inline-block; max-width: 100%; vertical-align: bottom;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 /* THE PICKED STEP'S CARD UNDER THE GRAPH (workflows.html B). Beside it, the
@@ -236,6 +294,10 @@
      why. Tokens gave the 12px it did not need (its absences are `none`,
      `none yet`, `not reported` now; `no attempt yet` is never a cost or token
      cell), and Why keeps 62px at the minimum, on two lines. */
+  /* 96px IS THE STEP COLUMN'S FLOOR. Above it the column grows to its
+     longest name, out of Why's slack (V098, #1038): `stepColumnWidth` in
+     WorkflowViews.tsx sets that on the cell, capped so Why keeps the 60-odd
+     px it has at the 980px minimum. */
   .wf-card .ctl-table.wf-table th[data-col="step"] { width: 96px; min-width: 96px; }
   .wf-card .ctl-table.wf-table.no-why th[data-col="step"] { width: auto; }
   .wf-card .ctl-table.wf-table th[data-col="state"] { width: 136px; }
@@ -278,13 +340,25 @@
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td { display: block; padding: 0; border: 0; overflow: visible; position: static; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="step"] { flex: 1 1 60%; width: auto; min-width: 0; max-width: none; overflow: hidden; background: none; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="state"] { flex: none; }
-  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"] { flex: 1 1 100%; white-space: normal; }
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"] { flex: 1 1 100%; min-width: 0; white-space: normal; }
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-label]::before { content: attr(data-label) ' '; color: var(--text-dim); font: var(--t-micro)/var(--lh-micro) var(--font); }
   /* A row with no why draws no Why block (QA G3-32): the cell is empty and
      carries no label, and an empty block still cost a gap. */
   .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"]:empty { display: none; }
   .wf-card .ctl-table.wf-table.is-scroll tr.wf-xrow,
   .wf-card .ctl-table.wf-table.is-scroll tr.wf-inline-row { display: block; height: auto; }
+  /* A STACKED CARD IS NOT A SCROLLER, SO NOTHING IN IT MAY BE WIDER THAN IT
+     AND IT DRAWS NO RIGHT-EDGE FADE (V035, #1038). The why line kept the
+     one-line `nowrap` the wide table gives it, so one long reason ("Waiting on
+     an earlier step ... Eligible again 2026-10-11T05:29:51Z") made its block
+     493px in a 316px card. That overflow is what `useMoreRight` measures, so
+     the scroll table's fade came on and dimmed the right edge of every card --
+     exactly where the state word sits: "succeede", "parke". The line wraps
+     here, its cell may shrink below its text (`min-width: 0`, on the
+     cell's rule above), and the fade, which says "more
+     columns to the right", is off: stacked, there are none. */
+  .wf-card .ctl-table.wf-table.is-scroll tr[data-step] > td[data-col="why"] > .wf-why { white-space: normal; overflow-wrap: anywhere; }
+  .wf-card .ctl-table.wf-table.is-scroll.has-more { -webkit-mask-image: none; mask-image: none; }
 }
 /* The why line fits the cell it is in, whatever that cell's width. */
 .wf-table .wf-why { display: block; max-width: 100%; }
@@ -700,6 +774,10 @@
   background: var(--wf-body-bg);
   overflow: hidden;
   cursor: pointer;
+  /* A finger dragged on the strip steers the canvas (the component's pointer
+     handlers) rather than scrolling the page under it; everywhere else the
+     page scrolls natively. */
+  touch-action: none;
 }
 .wf-vmap svg { display: block; width: 100%; height: 100%; }
 @media (max-width: 560px) {
