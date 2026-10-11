@@ -24,11 +24,12 @@ GitNexus measured against the indexer, are in
 [design/knowledge-graph.md](design/knowledge-graph.md). That design amends
 request (A) of §6.3 rather than adding a request.
 
-**Related 2026-10-09 (#940):** a step whose commit is already known clones it
-from a one-commit bundle under `tenants/<tenant>/bundles/<repo_id>/`, keyed by
-the same `repo_id` as this index, instead of contacting GitHub. The index job
-neither reads nor writes those bundles, because its clone is deeper than one
-commit. See [clone-bundles.md](clone-bundles.md).
+**Related 2026-10-09 to 2026-10-11 (#940):** a step whose commit was already
+known cloned it from a one-commit bundle under
+`tenants/<tenant>/bundles/<repo_id>/`, keyed by the same `repo_id` as this
+index. The bundles were retired on 2026-10-11, once plain forge clones
+measured faster, and every clone is the forge's again. The index job never
+read or wrote them. See [clone-bundles.md](clone-bundles.md).
 
 What the design settles, in one line each, with the section that carries the
 detail:

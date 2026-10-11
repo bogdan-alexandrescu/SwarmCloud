@@ -307,6 +307,10 @@ def test_the_worker_writes_the_timings_once_per_attempt_even_after_a_retry(
     assert clone["tries"] == 2
     assert clone["seconds"] >= 0 and clone["total_seconds"] > 0
     assert clone["pinned"] is False
+    # Every clone is the forge's: #940's clone bundles were retired on
+    # 2026-10-11 (docs/clone-bundles.md), and the mark no longer carries one.
+    assert clone["source"] == "forge"
+    assert "bundle" not in clone
 
     everything = json.dumps(db.events("task_1"), default=str)
     assert auth not in everything

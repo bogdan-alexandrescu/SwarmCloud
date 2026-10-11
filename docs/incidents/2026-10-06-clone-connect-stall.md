@@ -18,8 +18,8 @@ after the container has started and the control plane has answered.
 **What was decided.** The owner chose to build (a), an egress probe, on
 2026-10-06, and it is in main. (b), why the path stays closed, is an open
 question to Track C and is not started. (c), cloning from a per-SHA bundle in
-GCS, was split into #940 on 2026-10-09 and is built (§6); its acceptance number
-is not yet measured.
+GCS, was split into #940 on 2026-10-09, built, measured, and retired on
+2026-10-11 because plain forge clones had become faster (§6).
 
 Everything below was measured on 2026-10-06 in dev by the chunk-2 observer,
 from `clone_timed` worker events and Cloud NAT logs, unless a section says
@@ -237,14 +237,17 @@ instance to line up against.
 
 ## 6. (c) Clone from a per-SHA git bundle over Private Google Access
 
-**Status: built, not yet measured.** Split into #940 on 2026-10-09 and built
-by PR #983. The design, the key layout, the isolation and the expiry are in
-[clone-bundles.md](../clone-bundles.md). #940 stays open until its acceptance
-number is taken after release
-([clone-bundles.md §8](../clone-bundles.md#8-measuring-it-940s-acceptance-after-release)):
-the p50 of `clone_timed`'s `total_seconds` under 5 s over at least 30 steps
-whose `source` is `bundle`. Until then the saving below is this incident's
-estimate, not a measurement.
+**Status: retired 2026-10-11.** Split into #940 on 2026-10-09 and built by PR
+#983. Measured on 2026-10-11 at 10:20Z over 7 days of `clone_timed` marks:
+plain `forge` clones p50 **3.19 s** (n=293), `bundle+delta` p50 **4.69 s**
+(n=124), pure `bundle` n=1. Since #939 moved the runner profiles to GKE
+Autopilot, a fresh pod's egress no longer stalls, and that stall was the only
+thing a bundle saved. A bundle cost an upload and storage for a clone that was
+slower than the forge's, so the owner retired the path that day and every
+clone is the forge's again (`clone_timed`'s `source` is always `forge`). Why,
+with the numbers, and what was removed:
+[clone-bundles.md](../clone-bundles.md). The saving estimated below was never
+realised; it is kept as the reasoning that led to the experiment.
 
 What was proposed here: keep a git bundle per commit SHA in the tenant's
 GCS prefix, fetch it over Private Google Access (which §1 shows is not affected), then fetch only the
