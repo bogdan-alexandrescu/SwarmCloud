@@ -67,7 +67,10 @@ function atPhone(): void {
 }
 
 function ok<T>(data: T): Result<T> {
-  return { status: 'ok', data, fetchedAt: Date.now(), serverAt: '2026-10-11T10:00:00Z' }
+  // The refresh age is measured from `serverAt`, so it is stamped now: a fixed
+  // instant made V092's `read N s ago` true only within a minute of it.
+  const now = Date.now()
+  return { status: 'ok', data, fetchedAt: now, serverAt: new Date(now).toISOString() }
 }
 
 function pool(name: string, active: number, limit: number, over: Partial<Pool> = {}): Pool {
