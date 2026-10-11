@@ -1,18 +1,24 @@
-# swarm-workspace-deployer, its one trigger, its logs and its alerts
-# (terraform/bootstrap/workspace_deployer.tf, terraform/modules/monitoring/
-# workspace_alerts.tf; docs/workspaces.md §2.1-2.6, lane W4 of #847).
+# swarm-workspace-deployer, the one Cloud Run job that runs as it, who may
+# start that job, Cloud Run's DATA_WRITE audit log, the job's logs and its
+# alerts (terraform/bootstrap/workspace_deployer.tf, terraform/modules/
+# monitoring/workspace_alerts.tf; docs/workspaces.md §2.1-2.6, lanes W4 and W4b
+# of #847). The dispatch path is tests/terraform/workspace_dispatch.tftest.hcl.
 #
 # What these runs hold, as properties rather than spellings:
 #
-#   * nothing exists until the owner switches it on;
+#   * nothing exists until the owner switches it on, and no Cloud Build trigger
+#     exists at all;
 #   * the identity has no key resource and an EMPTY account-level policy, so
 #     nobody may act as it or mint its token there;
-#   * the trigger runs as that identity, is fed by the topic, builds
-#     refs/heads/main only and reads its build file from refs/heads/main, has no
-#     push, pull-request or webhook event that could build another ref, passes
-#     the message's two fields and the pinned image and nothing else, and
-#     filters malformed messages out;
-#   * its roles are exactly §2.3's list (on the WD9 fallback) plus the image
+#   * the job runs as that identity, runs the pinned image by digest with the
+#     fixed command `python3 -I /opt/swarm/entry.py` and no argument or
+#     environment of its own, one task, no retries, 1800 seconds, egress
+#     ALL_TRAFFIC into the swarm subnet with the worker tag;
+#   * the job's IAM policy is authoritative and names swarm-workspace-dispatch
+#     alone, with the run-with-overrides role and nothing else;
+#   * Cloud Run's audit config is DATA_WRITE, and only DATA_WRITE: no
+#     DATA_READ, no exempted member;
+#   * its roles are exactly §2.3's list (on the WD9 fallback), with no image
 #     pull; every grant is to the deployer; the five §2.3 leaves unconditioned
 #     are the only unconditioned ones; projectIamAdmin's hasOnly() admits the
 #     personal worker's three project roles and nothing else; the secret,
@@ -20,24 +26,27 @@
 #     the swarm cluster; no custom role carries delete, disable, key, token,
 #     signing or actAs power;
 #   * swarm-api is the topic's only publisher;
-#   * the job's build log is routed, by the trigger's id, to a restricted
-#     bucket and excluded from _Default by the same filter, and its readers are
-#     granted that bucket's view and nothing wider;
-#   * the three alerts watch the very account and trigger the bootstrap makes;
-#   * and the refusals: an unreviewed role, a mutable image, a missing
-#     repository, the slot creator without the slots, a log reader who is not a
-#     person or a group.
+#   * the job's own log is routed, by the job's name, to a restricted bucket
+#     and excluded from _Default by the same filter, its audit entries left in
+#     _Default, and its readers are granted that bucket's view and nothing wider;
+#   * the four alerts watch the very accounts and job the bootstrap makes, and
+#     the jobs.run alert reads the Data Access log the audit config turns on;
+#   * and the refusals: an unreviewed role (the old image pull included), a
+#     mutable image, an image from another project, no image at all, a
+#     malformed subnet, the slot creator without the slots, a log reader who
+#     is not a person or a group.
 #
 # A mock provider proves the configuration says what was meant. It does not
-# prove what Cloud Build, Cloud Logging or IAM do with it live; the "NOT
-# VERIFIED LIVE" lists in both files say what the first workspace settles.
+# prove what Cloud Run, Cloud Logging or IAM do with it live; the "NOT VERIFIED
+# LIVE" lists in both files say what the first workspace settles.
 #
 # ORDER: the runs that only assert come first, the expect_failures runs last,
 # because a run that ERRORS skips every run after it in this file.
 
 mock_provider "google" {
-  # The identity's empty policy is rendered by this data source; left to the
-  # mock it is a random string the policy resource cannot parse.
+  # The identities' empty policies and the job's policy are rendered by this
+  # data source; left to the mock it is a random string the policy resources
+  # cannot parse.
   mock_data "google_iam_policy" {
     defaults = {
       policy_data = "{}"
@@ -50,7 +59,7 @@ variables {
   frontend_iap_members = ["domain:example.com"]
 
   # Built from the parts so no line holds a 64-hex literal on its own.
-  builder_digest = "sha256:${join("", [for i in range(8) : "0123abcd"])}"
+  image_digest = "sha256:${join("", [for i in range(8) : "0123abcd"])}"
 }
 
 run "nothing_exists_until_the_owner_switches_it_on" {
@@ -63,13 +72,18 @@ run "nothing_exists_until_the_owner_switches_it_on" {
   assert {
     condition = alltrue([
       length(google_service_account.workspace_deployer) == 0,
-      length(google_cloudbuild_trigger.workspace_apply) == 0,
+      length(google_cloud_run_v2_job.workspace_apply) == 0,
+      length(google_cloud_run_v2_job_iam_policy.workspace_apply) == 0,
+      length(google_project_iam_audit_config.run_data_write) == 0,
       length(google_pubsub_topic.workspace_apply) == 0,
       length(google_project_iam_member.workspace_deployer) == 0,
       length(google_project_iam_custom_role.workspace) == 0,
       length(google_logging_project_sink.workspace_apply) == 0,
       length(google_logging_project_exclusion.workspace_apply) == 0,
       length(google_project_iam_member.forge_personal_slots) == 0,
+      length(google_service_account.workspace_dispatch) == 0,
+      length(google_workflows_workflow.workspace_apply) == 0,
+      length(google_eventarc_trigger.workspace_apply) == 0,
     ])
     error_message = "with enable_workspace_deployer at its default (false) the bootstrap must create no part of the workspace job: the owner's one-time steps come first (docs/workspaces.md §10)"
   }
@@ -79,7 +93,7 @@ run "nothing_exists_until_the_owner_switches_it_on" {
     error_message = "the workspace_deployer output is null while the job is off"
   }
 
-  # The default role list IS §2.3's table on the WD9 fallback, plus the pull.
+  # The default role list IS §2.3's table on the WD9 fallback; no image pull.
   assert {
     condition = toset(var.workspace_deployer_roles) == toset([
       "swarmWorkspaceAccountAdmin",
@@ -92,13 +106,12 @@ run "nothing_exists_until_the_owner_switches_it_on" {
       "swarmWorkspaceFirestore",
       "roles/container.clusterViewer",
       "roles/logging.logWriter",
-      "swarmImagePuller",
     ])
-    error_message = "workspace_deployer_roles' default must be exactly docs/workspaces.md §2.3's list on the WD9 fallback, plus swarmImagePuller"
+    error_message = "workspace_deployer_roles' default must be exactly docs/workspaces.md §2.3's list on the WD9 fallback, without swarmImagePuller: Cloud Run pulls a job's image as its service agent"
   }
 }
 
-run "the_identity_is_usable_only_by_its_trigger_on_main" {
+run "the_identity_is_usable_only_by_its_job" {
   command = plan
 
   module {
@@ -106,11 +119,10 @@ run "the_identity_is_usable_only_by_its_trigger_on_main" {
   }
 
   variables {
-    enable_workspace_deployer     = true
-    enable_forge_user_slots       = true
-    workspace_apply_repository    = "projects/saga-agents-staging/locations/us-central1/connections/github/repositories/SwarmCloud"
-    workspace_apply_builder_image = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.builder_digest}"
-    workspace_log_readers         = ["group:swarm-admins@saga.xyz"]
+    enable_workspace_deployer = true
+    enable_forge_user_slots   = true
+    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_log_readers     = ["group:swarm-admins@saga.xyz"]
   }
 
   override_resource {
@@ -123,19 +135,19 @@ run "the_identity_is_usable_only_by_its_trigger_on_main" {
     }
   }
 
-  override_resource {
-    target          = google_pubsub_topic.workspace_apply
-    override_during = plan
+  # Distinct strings, so an assertion that a policy resource renders a given
+  # data source fails if the resource is pointed at another one.
+  override_data {
+    target = data.google_iam_policy.workspace_deployer_nobody
     values = {
-      id = "projects/saga-agents-staging/topics/swarm-workspace-apply"
+      policy_data = "{\"deployer\":\"nobody\"}"
     }
   }
 
-  override_resource {
-    target          = google_cloudbuild_trigger.workspace_apply
-    override_during = plan
+  override_data {
+    target = data.google_iam_policy.workspace_apply_job
     values = {
-      trigger_id = "0f0f0f0f-1111-2222-3333-444444444444"
+      policy_data = "{\"job\":\"dispatcher-only\"}"
     }
   }
 
@@ -155,73 +167,108 @@ run "the_identity_is_usable_only_by_its_trigger_on_main" {
 
   assert {
     condition     = google_service_account.workspace_deployer[0].account_id == "swarm-workspace-deployer"
-    error_message = "the identity is swarm-workspace-deployer, the name the build file, the guard and the alerts all expect"
+    error_message = "the identity is swarm-workspace-deployer, the name the guard and the alerts all expect"
   }
 
   # Its account-level policy is written, authoritatively, with no binding: no
   # actAs, no token creator, no workloadIdentityUser for anyone.
   assert {
-    condition     = length(data.google_iam_policy.workspace_deployer_nobody.binding) == 0 && google_service_account_iam_policy.workspace_deployer[0].policy_data == data.google_iam_policy.workspace_deployer_nobody.policy_data
-    error_message = "swarm-workspace-deployer's own IAM policy must be written authoritatively EMPTY: any member there could act as the identity outside its trigger (docs/workspaces.md §2.4, safeguard 1)"
+    condition     = length(data.google_iam_policy.workspace_deployer_nobody.binding) == 0 && google_service_account_iam_policy.workspace_deployer[0].policy_data == "{\"deployer\":\"nobody\"}"
+    error_message = "swarm-workspace-deployer's own IAM policy must be written authoritatively EMPTY: any member there could act as the identity outside its job (docs/workspaces.md §2.4, safeguard 1)"
   }
 
-  assert {
-    condition     = google_cloudbuild_trigger.workspace_apply[0].service_account == google_service_account.workspace_deployer[0].id
-    error_message = "the trigger must run as swarm-workspace-deployer"
-  }
-
-  assert {
-    condition     = google_cloudbuild_trigger.workspace_apply[0].name == "swarm-workspace-apply" && google_cloudbuild_trigger.workspace_apply[0].pubsub_config[0].topic == google_pubsub_topic.workspace_apply[0].id
-    error_message = "the trigger is swarm-workspace-apply, fed by the swarm-workspace-apply topic"
-  }
-
-  # MAIN, twice: what is built and the file that says how.
   assert {
     condition = alltrue([
-      google_cloudbuild_trigger.workspace_apply[0].source_to_build[0].ref == "refs/heads/main",
-      google_cloudbuild_trigger.workspace_apply[0].git_file_source[0].revision == "refs/heads/main",
-      google_cloudbuild_trigger.workspace_apply[0].git_file_source[0].path == "scripts/cloudbuild/workspace-apply.yaml",
-      google_cloudbuild_trigger.workspace_apply[0].source_to_build[0].repository == var.workspace_apply_repository,
-      google_cloudbuild_trigger.workspace_apply[0].git_file_source[0].repository == var.workspace_apply_repository,
+      google_cloud_run_v2_job.workspace_apply[0].name == "swarm-workspace-apply",
+      google_cloud_run_v2_job.workspace_apply[0].location == "us-central1",
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].service_account == "swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
+      google_cloud_run_v2_job.workspace_apply[0].labels["managed-by"] == "swarm-terraform",
+      google_cloud_run_v2_job.workspace_apply[0].template[0].labels["managed-by"] == "swarm-terraform",
     ])
-    error_message = "the trigger must build refs/heads/main of this repository and read scripts/cloudbuild/workspace-apply.yaml from refs/heads/main: any other ref runs unreviewed code with project-wide account-IAM power"
+    error_message = "the job is swarm-workspace-apply, in the platform's region, running as swarm-workspace-deployer, carrying managed-by=swarm-terraform"
   }
 
-  # No event of its own that could build another ref.
+  # What it runs: the pinned image, the scrub first, nothing of its own that a
+  # caller's override would merge with.
   assert {
     condition = alltrue([
-      length(google_cloudbuild_trigger.workspace_apply[0].github) == 0,
-      length(google_cloudbuild_trigger.workspace_apply[0].repository_event_config) == 0,
-      length(google_cloudbuild_trigger.workspace_apply[0].trigger_template) == 0,
-      length(google_cloudbuild_trigger.workspace_apply[0].webhook_config) == 0,
-      length(google_cloudbuild_trigger.workspace_apply[0].build) == 0,
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].image == var.workspace_apply_image,
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].command == tolist(["python3", "-I", "/opt/swarm/entry.py"]),
+      try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].args), 0) == 0,
+      try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers[0].env), 0) == 0,
+      length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].containers) == 1,
+      try(length(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].volumes), 0) == 0,
     ])
-    error_message = "the trigger may have no push, pull-request, template or webhook event and no inline build: it is a Pub/Sub trigger that runs main's build file, nothing else"
+    error_message = "the job runs one container: the pinned image by digest, with the command `python3 -I /opt/swarm/entry.py` (the scrub, §2.2 step 0), and no argument, environment or volume of its own"
   }
 
   assert {
-    condition     = toset(keys(google_cloudbuild_trigger.workspace_apply[0].substitutions)) == toset(["_WORKSPACE_ID", "_MODE", "_BUILDER_IMAGE"]) && google_cloudbuild_trigger.workspace_apply[0].substitutions["_BUILDER_IMAGE"] == var.workspace_apply_builder_image
-    error_message = "the build gets the message's workspace_id and mode and the bootstrap's pinned image, and nothing else (docs/workspaces.md §2.1)"
+    condition = alltrue([
+      google_cloud_run_v2_job.workspace_apply[0].template[0].task_count == 1,
+      google_cloud_run_v2_job.workspace_apply[0].template[0].parallelism == 1,
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].max_retries == 0,
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].timeout == "1800s",
+    ])
+    error_message = "one task, no parallelism, no retries (a retry is an admin's action, §1.3), 1800 seconds"
   }
 
   assert {
-    condition     = strcontains(google_cloudbuild_trigger.workspace_apply[0].filter, "_WORKSPACE_ID.matches('^w-[0-9a-f]{6}$')") && strcontains(google_cloudbuild_trigger.workspace_apply[0].filter, "_MODE.matches('^(create|limits)$')")
-    error_message = "the trigger's filter must refuse a message whose workspace id or mode has any other shape, before a build exists"
+    condition = alltrue([
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].vpc_access[0].egress == "ALL_TRAFFIC",
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].vpc_access[0].network_interfaces[0].subnetwork == "projects/saga-agents-staging/regions/us-central1/subnetworks/swarm-subnet-us-central1",
+      google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].vpc_access[0].network_interfaces[0].network == "projects/saga-agents-staging/global/networks/swarm-vpc",
+      contains(google_cloud_run_v2_job.workspace_apply[0].template[0].template[0].vpc_access[0].network_interfaces[0].tags, "swarm-worker"),
+    ])
+    error_message = "the job's egress is ALL_TRAFFIC into the swarm subnet, tagged swarm-worker so modules/network's worker-ingress deny covers it (§2.1)"
+  }
+
+  # WHO MAY START IT: one binding, the run-with-overrides role, the dispatcher.
+  assert {
+    condition = alltrue([
+      length(data.google_iam_policy.workspace_apply_job.binding) == 1,
+      toset([for b in data.google_iam_policy.workspace_apply_job.binding : b.role]) == toset(["roles/run.jobsExecutorWithOverrides"]),
+      toset(flatten([for b in data.google_iam_policy.workspace_apply_job.binding : tolist(b.members)])) == toset(["serviceAccount:swarm-workspace-dispatch@saga-agents-staging.iam.gserviceaccount.com"]),
+      google_cloud_run_v2_job_iam_policy.workspace_apply[0].policy_data == "{\"job\":\"dispatcher-only\"}",
+      google_cloud_run_v2_job_iam_policy.workspace_apply[0].name == "swarm-workspace-apply",
+      google_cloud_run_v2_job_iam_policy.workspace_apply[0].location == "us-central1",
+    ])
+    error_message = "the job's IAM policy must be written authoritatively with ONE member, swarm-workspace-dispatch, holding roles/run.jobsExecutorWithOverrides: any other member could start the job without the alert's caller check being the only line (docs/workspaces.md §2.3)"
+  }
+
+  # Cloud Run's audit config: DATA_WRITE, so a jobs.run is recorded, and
+  # nothing else.
+  assert {
+    condition = alltrue([
+      google_project_iam_audit_config.run_data_write[0].service == "run.googleapis.com",
+      google_project_iam_audit_config.run_data_write[0].project == "saga-agents-staging",
+      [for c in google_project_iam_audit_config.run_data_write[0].audit_log_config : c.log_type] == ["DATA_WRITE"],
+      alltrue([for c in google_project_iam_audit_config.run_data_write[0].audit_log_config : try(length(c.exempted_members), 0) == 0]),
+    ])
+    error_message = "Cloud Run's audit config must enable DATA_WRITE, exactly once, exempting nobody: a jobs.run is a DATA_WRITE entry, and without it the foreign_run alert reads nothing (W0b (2))"
   }
 
   assert {
-    condition     = google_cloudbuild_trigger.workspace_apply[0].location == "us-central1"
-    error_message = "the trigger lives in the region of its second-generation repository connection"
+    condition     = !contains([for c in google_project_iam_audit_config.run_data_write[0].audit_log_config : c.log_type], "DATA_READ") && !contains([for c in google_project_iam_audit_config.run_data_write[0].audit_log_config : c.log_type], "ADMIN_READ")
+    error_message = "no DATA_READ (or ADMIN_READ) for Cloud Run: it would log every get and list in the shared project, the other team's included, for nothing this platform reads"
   }
 
   assert {
     condition     = google_pubsub_topic_iam_binding.workspace_apply_publisher[0].role == "roles/pubsub.publisher" && google_pubsub_topic_iam_binding.workspace_apply_publisher[0].members == toset(["serviceAccount:swarm-api@saga-agents-staging.iam.gserviceaccount.com"])
-    error_message = "swarm-api must be the topic's only publisher (docs/workspaces.md §2.1), through an authoritative binding for the role"
+    error_message = "swarm-api must be the topic's only publisher (docs/workspaces.md §2.1, option (ii)), through an authoritative binding for the role"
   }
 
   assert {
     condition     = google_pubsub_topic.workspace_apply[0].labels["managed-by"] == "swarm-terraform"
     error_message = "the topic carries managed-by=swarm-terraform"
+  }
+
+  assert {
+    condition = alltrue([
+      output.workspace_deployer.job == "swarm-workspace-apply",
+      output.workspace_deployer.image == var.workspace_apply_image,
+      output.workspace_deployer.dispatcher == "swarm-workspace-dispatch@saga-agents-staging.iam.gserviceaccount.com",
+    ])
+    error_message = "the workspace_deployer output names the job, the pinned image and the dispatcher the owner reads a plan against"
   }
 }
 
@@ -233,10 +280,9 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
   }
 
   variables {
-    enable_workspace_deployer     = true
-    enable_forge_user_slots       = true
-    workspace_apply_repository    = "projects/saga-agents-staging/locations/us-central1/connections/github/repositories/SwarmCloud"
-    workspace_apply_builder_image = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.builder_digest}"
+    enable_workspace_deployer = true
+    enable_forge_user_slots   = true
+    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   override_data {
@@ -273,7 +319,6 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
       [
         google_storage_bucket_iam_member.workspace_deployer_bucket_iam[0].member == "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
         google_storage_bucket_iam_member.workspace_deployer_marker[0].member == "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
-        google_artifact_registry_repository_iam_member.workspace_deployer_pull[0].member == "serviceAccount:swarm-workspace-deployer@saga-agents-staging.iam.gserviceaccount.com",
       ],
     ))
     error_message = "every grant in workspace_deployer.tf is to swarm-workspace-deployer and to nobody else"
@@ -322,15 +367,6 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
   }
 
   assert {
-    condition = alltrue([
-      google_artifact_registry_repository_iam_member.workspace_deployer_pull[0].repository == "swarm-images",
-      google_artifact_registry_repository_iam_member.workspace_deployer_pull[0].location == "us-central1",
-      google_artifact_registry_repository_iam_member.workspace_deployer_pull[0].role == "projects/saga-agents-staging/roles/swarmImagePuller",
-    ])
-    error_message = "the pull grant is swarmImagePuller on the repository the builder image is in, and nowhere else"
-  }
-
-  assert {
     condition = toset(google_project_iam_custom_role.workspace["workspace_account_admin"].permissions) == toset([
       "iam.serviceAccounts.create",
       "iam.serviceAccounts.get",
@@ -372,7 +408,7 @@ run "its_roles_are_section_2_3_and_each_grant_is_bounded" {
   }
 }
 
-run "its_build_logs_go_to_a_restricted_bucket_and_not_to_default" {
+run "its_logs_go_to_a_restricted_bucket_and_not_to_default" {
   command = plan
 
   module {
@@ -380,19 +416,10 @@ run "its_build_logs_go_to_a_restricted_bucket_and_not_to_default" {
   }
 
   variables {
-    enable_workspace_deployer     = true
-    enable_forge_user_slots       = true
-    workspace_apply_repository    = "projects/saga-agents-staging/locations/us-central1/connections/github/repositories/SwarmCloud"
-    workspace_apply_builder_image = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.builder_digest}"
-    workspace_log_readers         = ["group:swarm-admins@saga.xyz", "user:owner@saga.xyz"]
-  }
-
-  override_resource {
-    target          = google_cloudbuild_trigger.workspace_apply
-    override_during = plan
-    values = {
-      trigger_id = "0f0f0f0f-1111-2222-3333-444444444444"
-    }
+    enable_workspace_deployer = true
+    enable_forge_user_slots   = true
+    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
+    workspace_log_readers     = ["group:swarm-admins@saga.xyz", "user:owner@saga.xyz"]
   }
 
   assert {
@@ -406,8 +433,8 @@ run "its_build_logs_go_to_a_restricted_bucket_and_not_to_default" {
   }
 
   assert {
-    condition     = google_logging_project_sink.workspace_apply[0].filter == "resource.type=\"build\" AND resource.labels.build_trigger_id=\"0f0f0f0f-1111-2222-3333-444444444444\""
-    error_message = "the sink selects this trigger's builds by the trigger's id, and nothing else: a wider filter would hide other logs from _Default"
+    condition     = google_logging_project_sink.workspace_apply[0].filter == "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"swarm-workspace-apply\" AND NOT logName:\"cloudaudit.googleapis.com\""
+    error_message = "the sink selects the swarm-workspace-apply job's own entries by its resource type and job name, and not its audit entries: a wider filter would hide other logs from _Default, and routing the jobs.run audit entry away would hide who started an execution (§2.6 item 4)"
   }
 
   assert {
@@ -441,30 +468,62 @@ run "the_alerts_watch_the_names_the_bootstrap_creates" {
   }
 
   assert {
-    condition     = toset(keys(google_monitoring_alert_policy.workspace)) == toset(["outside_personal_workers", "foreign_build", "trigger_changed"])
-    error_message = "the three alerts of docs/workspaces.md §2.4"
+    condition     = toset(keys(google_monitoring_alert_policy.workspace)) == toset(["outside_personal_workers", "foreign_runtime", "job_changed", "foreign_run"])
+    error_message = "the four alerts of docs/workspaces.md §2.4: outside personal workers, a foreign runtime as the deployer, a change to the job or its dispatch, and a jobs.run by another caller"
   }
 
-  # Each reads the Admin Activity audit log, which no sink or exclusion drops.
+  # Three read the Admin Activity audit log, which no sink or exclusion drops;
+  # the jobs.run alert reads the Data Access log the audit config enables.
   assert {
     condition = alltrue([
-      for k, p in google_monitoring_alert_policy.workspace :
-      startswith(p.conditions[0].condition_matched_log[0].filter, "logName=\"projects/saga-agents-staging/logs/cloudaudit.googleapis.com%2Factivity\" AND ")
+      for k in ["outside_personal_workers", "foreign_runtime", "job_changed"] :
+      startswith(google_monitoring_alert_policy.workspace[k].conditions[0].condition_matched_log[0].filter, "logName=\"projects/saga-agents-staging/logs/cloudaudit.googleapis.com%2Factivity\" AND ")
     ])
-    error_message = "every workspace alert matches the project's Admin Activity audit log"
+    error_message = "the deployer, runtime and change alerts match the project's Admin Activity audit log"
+  }
+
+  assert {
+    condition     = startswith(google_monitoring_alert_policy.workspace["foreign_run"].conditions[0].condition_matched_log[0].filter, "logName=\"projects/saga-agents-staging/logs/cloudaudit.googleapis.com%2Fdata_access\" AND ")
+    error_message = "a jobs.run is a DATA_WRITE (Data Access) entry, not Admin Activity (W0b (2)): the foreign_run alert must read the data_access log"
   }
 
   # The names the bootstrap creates, read from the earlier run's output, so a
   # rename on either side fails here.
   assert {
     condition = alltrue([
-      strcontains(google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter, "protoPayload.authenticationInfo.principalEmail=\"${run.the_identity_is_usable_only_by_its_trigger_on_main.workspace_deployer.service_account}\""),
-      strcontains(google_monitoring_alert_policy.workspace["foreign_build"].conditions[0].condition_matched_log[0].filter, run.the_identity_is_usable_only_by_its_trigger_on_main.workspace_deployer.service_account),
-      strcontains(google_monitoring_alert_policy.workspace["foreign_build"].conditions[0].condition_matched_log[0].filter, "NOT protoPayload.request.trigger.name=\"${run.the_identity_is_usable_only_by_its_trigger_on_main.workspace_deployer.trigger}\""),
-      strcontains(google_monitoring_alert_policy.workspace["trigger_changed"].conditions[0].condition_matched_log[0].filter, "resource.labels.topic_id=\"${run.the_identity_is_usable_only_by_its_trigger_on_main.workspace_deployer.trigger}\""),
-      strcontains(google_monitoring_alert_policy.workspace["trigger_changed"].conditions[0].condition_matched_log[0].filter, "resource.labels.email_id=\"${run.the_identity_is_usable_only_by_its_trigger_on_main.workspace_deployer.service_account}\""),
+      strcontains(google_monitoring_alert_policy.workspace["outside_personal_workers"].conditions[0].condition_matched_log[0].filter, "protoPayload.authenticationInfo.principalEmail=\"${run.the_identity_is_usable_only_by_its_job.workspace_deployer.service_account}\""),
+      strcontains(google_monitoring_alert_policy.workspace["foreign_runtime"].conditions[0].condition_matched_log[0].filter, "\"${run.the_identity_is_usable_only_by_its_job.workspace_deployer.service_account}\""),
+      strcontains(google_monitoring_alert_policy.workspace["foreign_runtime"].conditions[0].condition_matched_log[0].filter, "NOT protoPayload.resourceName=~\"/jobs/${run.the_identity_is_usable_only_by_its_job.workspace_deployer.job}$\""),
+      strcontains(google_monitoring_alert_policy.workspace["job_changed"].conditions[0].condition_matched_log[0].filter, "protoPayload.serviceName=\"run.googleapis.com\" AND protoPayload.resourceName=~\"/jobs/${run.the_identity_is_usable_only_by_its_job.workspace_deployer.job}$\""),
+      strcontains(google_monitoring_alert_policy.workspace["job_changed"].conditions[0].condition_matched_log[0].filter, "resource.labels.email_id=\"${run.the_identity_is_usable_only_by_its_job.workspace_deployer.service_account}\""),
+      strcontains(google_monitoring_alert_policy.workspace["job_changed"].conditions[0].condition_matched_log[0].filter, "resource.labels.email_id=\"${run.the_identity_is_usable_only_by_its_job.workspace_deployer.dispatcher}\""),
+      strcontains(google_monitoring_alert_policy.workspace["job_changed"].conditions[0].condition_matched_log[0].filter, "resource.labels.topic_id=\"${run.the_identity_is_usable_only_by_its_job.workspace_deployer.job}\""),
+      strcontains(google_monitoring_alert_policy.workspace["job_changed"].conditions[0].condition_matched_log[0].filter, "protoPayload.resourceName=~\"/workflows/${run.the_identity_is_usable_only_by_its_job.workspace_deployer.workflow}$\""),
+      strcontains(google_monitoring_alert_policy.workspace["job_changed"].conditions[0].condition_matched_log[0].filter, "protoPayload.resourceName=~\"/triggers/${run.the_identity_is_usable_only_by_its_job.workspace_deployer.workflow}$\""),
     ])
-    error_message = "the alerts must name the account and the trigger terraform/bootstrap/workspace_deployer.tf creates; an alert on a name nothing uses never fires"
+    error_message = "the alerts must name the accounts, the job, the workflow and the Eventarc trigger terraform/bootstrap creates; an alert on a name nothing uses never fires"
+  }
+
+  # The jobs.run alert: any RunJob of this job whose caller is not the
+  # dispatcher. Read against the bootstrap's own output.
+  assert {
+    condition = alltrue([
+      strcontains(google_monitoring_alert_policy.workspace["foreign_run"].conditions[0].condition_matched_log[0].filter, "protoPayload.serviceName=\"run.googleapis.com\""),
+      strcontains(google_monitoring_alert_policy.workspace["foreign_run"].conditions[0].condition_matched_log[0].filter, "protoPayload.methodName=~\"[.]RunJob$\""),
+      strcontains(google_monitoring_alert_policy.workspace["foreign_run"].conditions[0].condition_matched_log[0].filter, "protoPayload.resourceName=~\"/jobs/${run.the_identity_is_usable_only_by_its_job.workspace_deployer.job}$\""),
+      strcontains(google_monitoring_alert_policy.workspace["foreign_run"].conditions[0].condition_matched_log[0].filter, "NOT protoPayload.authenticationInfo.principalEmail=\"${run.the_identity_is_usable_only_by_its_job.workspace_deployer.dispatcher}\""),
+    ])
+    error_message = "the foreign_run alert fires on a RunJob of swarm-workspace-apply by any caller but swarm-workspace-dispatch (docs/workspaces.md §2.4)"
+  }
+
+  # Turning DATA_WRITE off would blind foreign_run, so job_changed watches the
+  # audit config; and the invoker grant, which cannot be narrowed.
+  assert {
+    condition = alltrue([
+      strcontains(google_monitoring_alert_policy.workspace["job_changed"].conditions[0].condition_matched_log[0].filter, "protoPayload.serviceData.policyDelta.auditConfigDeltas.service=\"run.googleapis.com\""),
+      strcontains(google_monitoring_alert_policy.workspace["job_changed"].conditions[0].condition_matched_log[0].filter, "protoPayload.serviceData.policyDelta.bindingDeltas.role=\"roles/workflows.invoker\""),
+    ])
+    error_message = "job_changed must page on a change to Cloud Run's audit config and to any roles/workflows.invoker grant"
   }
 
   # Members and accounts are judged against the personal-worker pattern, which
@@ -505,7 +564,8 @@ run "an_unreviewed_role_is_refused" {
   expect_failures = [var.workspace_deployer_roles]
 }
 
-run "a_builder_image_by_tag_is_refused" {
+# The build's image pull left with the build: putting it back is a review.
+run "the_old_image_pull_is_refused" {
   command = plan
 
   module {
@@ -513,10 +573,38 @@ run "a_builder_image_by_tag_is_refused" {
   }
 
   variables {
-    workspace_apply_builder_image = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply:dev"
+    workspace_deployer_roles = ["swarmWorkspaceAccountAdmin", "swarmImagePuller"]
   }
 
-  expect_failures = [var.workspace_apply_builder_image]
+  expect_failures = [var.workspace_deployer_roles]
+}
+
+run "an_image_by_tag_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    workspace_apply_image = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply:dev"
+  }
+
+  expect_failures = [var.workspace_apply_image]
+}
+
+run "a_malformed_subnet_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    workspace_apply_subnetwork = "agents-staging-vpc"
+  }
+
+  expect_failures = [var.workspace_apply_subnetwork]
 }
 
 run "a_log_reader_that_is_not_a_person_or_a_group_is_refused" {
@@ -533,7 +621,7 @@ run "a_log_reader_that_is_not_a_person_or_a_group_is_refused" {
   expect_failures = [var.workspace_log_readers]
 }
 
-run "switching_it_on_before_the_repository_is_connected_is_refused" {
+run "switching_it_on_without_an_image_is_refused" {
   command = plan
 
   module {
@@ -541,12 +629,27 @@ run "switching_it_on_before_the_repository_is_connected_is_refused" {
   }
 
   variables {
-    enable_workspace_deployer     = true
-    enable_forge_user_slots       = true
-    workspace_apply_builder_image = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.builder_digest}"
+    enable_workspace_deployer = true
+    enable_forge_user_slots   = true
   }
 
-  expect_failures = [google_cloudbuild_trigger.workspace_apply]
+  expect_failures = [google_cloud_run_v2_job.workspace_apply]
+}
+
+run "an_image_from_another_project_is_refused" {
+  command = plan
+
+  module {
+    source = "../../terraform/bootstrap"
+  }
+
+  variables {
+    enable_workspace_deployer = true
+    enable_forge_user_slots   = true
+    workspace_apply_image     = "us-central1-docker.pkg.dev/someone-else/swarm-images/workspace-apply@${var.image_digest}"
+  }
+
+  expect_failures = [google_cloud_run_v2_job.workspace_apply]
 }
 
 run "the_slot_creator_without_the_slots_is_refused" {
@@ -557,10 +660,9 @@ run "the_slot_creator_without_the_slots_is_refused" {
   }
 
   variables {
-    enable_workspace_deployer     = true
-    enable_forge_user_slots       = false
-    workspace_apply_repository    = "projects/saga-agents-staging/locations/us-central1/connections/github/repositories/SwarmCloud"
-    workspace_apply_builder_image = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.builder_digest}"
+    enable_workspace_deployer = true
+    enable_forge_user_slots   = false
+    workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@${var.image_digest}"
   }
 
   expect_failures = [google_project_iam_member.workspace_deployer]

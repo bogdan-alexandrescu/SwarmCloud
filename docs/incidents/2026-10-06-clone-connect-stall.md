@@ -17,8 +17,9 @@ after the container has started and the control plane has answered.
 
 **What was decided.** The owner chose to build (a), an egress probe, on
 2026-10-06, and it is in main. (b), why the path stays closed, is an open
-question to Track C. (c), cloning from a per-SHA bundle in GCS, is a later
-option. Neither (b) nor (c) is started.
+question to Track C and is not started. (c), cloning from a per-SHA bundle in
+GCS, was split into #940 on 2026-10-09 and is built (§6); its acceptance number
+is not yet measured.
 
 Everything below was measured on 2026-10-06 in dev by the chunk-2 observer,
 from `clone_timed` worker events and Cloud NAT logs, unless a section says
@@ -234,13 +235,19 @@ logging beyond errors for a stalled instance), not more worker events. The
 probe's `egress_ready_seconds` gives that investigation the opening time per
 instance to line up against.
 
-## 6. (c) A later option: clone from a per-SHA git bundle over Private Google Access
+## 6. (c) Clone from a per-SHA git bundle over Private Google Access
 
-**Status: not started.** An open option, recorded so it is not lost; nothing
-of it is built.
+**Status: built, not yet measured.** Split into #940 on 2026-10-09 and built
+by PR #983. The design, the key layout, the isolation and the expiry are in
+[clone-bundles.md](../clone-bundles.md). #940 stays open until its acceptance
+number is taken after release
+([clone-bundles.md §8](../clone-bundles.md#8-measuring-it-940s-acceptance-after-release)):
+the p50 of `clone_timed`'s `total_seconds` under 5 s over at least 30 steps
+whose `source` is `bundle`. Until then the saving below is this incident's
+estimate, not a measurement.
 
-Keep a git bundle per commit SHA in the tenant's GCS prefix, fetch it over
-Private Google Access (which §1 shows is not affected), then fetch only the
+What was proposed here: keep a git bundle per commit SHA in the tenant's
+GCS prefix, fetch it over Private Google Access (which §1 shows is not affected), then fetch only the
 delta from GitHub. That takes GitHub off the start path for the bulk of the
 clone, and would save about 36 s median per step: the whole connect stall,
 not only the overshoot (a) removes.

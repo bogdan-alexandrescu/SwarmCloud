@@ -30,6 +30,11 @@ module "project_services" {
     "compute.googleapis.com",
     "container.googleapis.com",
     "containerscanning.googleapis.com",
+    # The personal-workspace job's dispatch, option (ii) of
+    # docs/workspaces.md §2.1 (#847, W4b): an Eventarc trigger on the
+    # swarm-workspace-apply topic starts a workflow that runs the job. Enabled
+    # here, by the release, before the owner's bootstrap apply creates them.
+    "eventarc.googleapis.com",
     "firestore.googleapis.com",
     "iam.googleapis.com",
     # The front door. IAP is the outer gate in front of swarm-api; see
@@ -43,6 +48,7 @@ module "project_services" {
     "secretmanager.googleapis.com",
     "serviceusage.googleapis.com",
     "storage.googleapis.com",
+    "workflows.googleapis.com",
   ]
 }
 

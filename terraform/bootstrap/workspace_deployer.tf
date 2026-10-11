@@ -1,17 +1,25 @@
 # ---------------------------------------------------------------------------
 # swarm-workspace-deployer: the identity that makes a person's workspace, the
-# one Cloud Build trigger that may use it, and where its logs go
-# (docs/workspaces.md §2.1-2.6, lane W4 of #847)
+# one Cloud Run job that may use it, who may start that job, and where its logs
+# go (docs/workspaces.md §2.1-2.6; lane W4 of #847, rebuilt by W4b)
 # ---------------------------------------------------------------------------
 #
 # WHAT THIS IS FOR. An admin's approval publishes {"workspace_id", "mode"} to
-# the topic swarm-workspace-apply; the Cloud Build trigger of the same name
-# builds main and runs scripts/cloudbuild/workspace-apply.yaml as
-# swarm-workspace-deployer; the build runs `scripts/register-tenant.sh
-# --workspace <w-id>` under the call guard (scripts/lib/workspace-guard.sh),
-# which makes that one person's worker account, its bindings, its bucket
-# prefix grants, its forge slot and its namespace (owner decisions WD2 and WD3,
-# 2026-10-08).
+# the topic swarm-workspace-apply. Under option (ii) of §2.1 (owner,
+# 2026-10-10) an Eventarc trigger hands the message to the workflow of the same
+# name (workspace_dispatch.tf), which checks both values and starts ONE
+# execution of the Cloud Run job swarm-workspace-apply with them as its two
+# arguments, as swarm-workspace-dispatch. The job runs the pinned
+# images/workspace-apply image as swarm-workspace-deployer: its fixed command,
+# `python3 -I /opt/swarm/entry.py`, scrubs every override (§2.2 step 0) and
+# runs `scripts/register-tenant.sh --workspace <w-id>` under the call guard
+# (scripts/lib/workspace-guard.sh), which makes that one person's worker
+# account, its bindings, its bucket prefix grants, its forge slot and its
+# namespace (owner decisions WD2, re-decided 2026-10-10, and WD3).
+#
+# The Cloud Build trigger this file used to make is gone with WD2's
+# re-decision. The repository connection in cloudbuild_connection.tf stays
+# until the job has shipped (lane W11), and nothing here reads it.
 #
 # THE ACCEPTED RISK (§2.4, owner, 2026-10-08). A worker account's own IAM
 # policy can only be written by an identity holding
@@ -20,23 +28,28 @@
 # #334). So swarmWorkspaceAccountAdmin below is PROJECT-WIDE, and could set IAM
 # on the other team's accounts if misused. What bounds it:
 #
-#   1. Nothing but the trigger can use the identity. It has no key (nothing
-#      here makes one) and no WIF binding, and its own IAM policy is written
+#   1. Nothing but the job runs as the identity. It has no key (nothing here
+#      makes one) and no WIF binding, and its own IAM policy is written
 #      AUTHORITATIVELY EMPTY below -- no actAs, no token creator, no
-#      workloadIdentityUser, for anyone, at the account level. Using it from a
-#      build needs actAs on it, which the owner's bootstrap apply exercises to
-#      create the trigger; W0 lists who else holds actAs at the project level.
-#   2. The trigger builds refs/heads/main only, and reads its build file from
-#      refs/heads/main. .github/CODEOWNERS names the owner on the build file,
-#      the guard and the script, so what this identity does is what the owner
-#      approved into main.
-#   3. The builder image is pinned BY DIGEST here (workspace_apply_builder_image),
-#      so a rebuilt image reaches the identity only through this root's apply.
-#   4. Three alerts (terraform/modules/monitoring/workspace_alerts.tf): a change
+#      workloadIdentityUser, for anyone, at the account level. Making anything
+#      run as it, or changing what the job runs, needs actAs on it: Cloud Run
+#      checks actAs on every job create and update (W0b (1), documentation
+#      half; the operator's live refusal is still pending, §0).
+#   2. The job runs only the image pinned BY DIGEST here (workspace_apply_image),
+#      with a command no caller can override, so a merge to main reaches the
+#      identity only through this root's apply. .github/CODEOWNERS names the
+#      owner on what that image carries.
+#   3. Starting the job is NOT gated by actAs, and Cloud Run grants cannot be
+#      conditioned, so starting it is not the boundary: what a start can choose
+#      is (two arguments, each re-validated, every overridable variable
+#      discarded, and A1 refusing a record no admin approved). The job's own
+#      policy names the dispatcher only, and Cloud Run's DATA_WRITE audit log,
+#      enabled below, is what lets an alert see any other caller.
+#   4. Five alerts (terraform/modules/monitoring/workspace_alerts.tf): a change
 #      by this identity to an account not named swarm-agent-worker-u-*, or a
-#      grant to such a member anywhere; a build as this identity that did not
-#      come from this trigger; and any change to the trigger, the topic's IAM
-#      or this identity's own IAM.
+#      grant to such a member anywhere; anything else made to run as this
+#      identity; any change to the job, its IAM, the dispatch path or the
+#      identities; and a jobs.run of the job by any caller but the dispatcher.
 #
 # WD9 TOOK THE FALLBACK. W0 (2026-10-08) found that an IAM allow policy accepts
 # no principal set naming only the swarm-agent-worker-u-* accounts -- the sets
@@ -48,21 +61,22 @@
 #
 # WHY HERE AND NOT IN terraform/infra. Every grant TO a deployer comes from the
 # root the owner applies, never the root CI applies to itself; and creating a
-# trigger that runs as an account needs actAs on that account, which CI must
-# never hold on this one.
+# job that runs as an account needs actAs on that account, which CI must never
+# hold on this one.
 #
 # NOT VERIFIED LIVE -- each is settled by the first approved workspace, and each
-# fails closed (a failed build, or an alert that pages), never open:
+# fails closed (a failed execution, or an alert that pages), never open:
 #
-#   * that a Pub/Sub trigger maps `$(body.message.data.<field>)` of a JSON
-#     message to a substitution and evaluates `filter` over it, as Google's
-#     Pub/Sub-trigger page shows for Artifact Registry's messages. If it does
-#     not, step 1 of the build file refuses the empty values and nothing runs;
-#   * that a build's log entries carry resource.labels.build_trigger_id, which
-#     the sink and the exclusion select on. If they do not, the log stays in
-#     _Default (the §2.6 residual) and the restricted bucket stays empty;
-#   * that Cloud Build pulls a step's image with the BUILD's identity, which is
-#     why swarmImagePuller is granted on the image's repository;
+#   * that Cloud Run pulls the job's image as the project's Cloud Run service
+#     agent, so the identity needs no pull grant (§2.3; W0b (4)-(6) read it on
+#     the first execution). If it does not, the execution fails to start;
+#   * that the job's own stdout reaches Cloud Logging without
+#     roles/logging.logWriter on the identity. Until W0b says so, the grant
+#     stays (workspace_deployer_roles);
+#   * that the job's log entries carry resource.labels.job_name, which the sink
+#     and the exclusion select on (a documented label of cloud_run_job, unlike
+#     the build's trigger id). If they do not, the log stays in _Default (the
+#     §2.6 residual) and the restricted bucket stays empty;
 #   * that IAM evaluates every condition below in the form written. The
 #     secret, bucket-object and cluster forms are the ones forge_user_slots.tf,
 #     modules/tenancy and modules/iam already use; hasOnly() is
@@ -71,28 +85,34 @@
 locals {
   workspace_deployer_on = var.enable_workspace_deployer ? 1 : 0
 
-  # One name for the topic, the trigger, the log bucket, the sink and the
-  # exclusion: what an operator searches for finds all five. The build file
-  # checks $TRIGGER_NAME against this literal.
+  # One name for the topic, the job, the workflow, the Eventarc trigger, the
+  # log bucket, the sink and the exclusion: what an operator searches for finds
+  # all of them. The alerts (modules/monitoring) spell the same literal.
   workspace_apply_name = "swarm-workspace-apply"
 
   workspace_deployer_account_id = "swarm-workspace-deployer"
   workspace_deployer_email      = "${local.workspace_deployer_account_id}@${var.project_id}.iam.gserviceaccount.com"
   workspace_deployer_member     = "serviceAccount:${local.workspace_deployer_email}"
 
-  # What the trigger builds: main, and the build file on main. Literals, and
-  # held by tests/terraform/workspace_deployer.tftest.hcl: a variable here
-  # would be one tfvars edit from building an unreviewed branch as this
-  # identity.
-  workspace_apply_ref        = "refs/heads/main"
-  workspace_apply_build_file = "scripts/cloudbuild/workspace-apply.yaml"
+  # The job's command: isolated-mode Python running the scrub (§2.2 step 0),
+  # which the image puts root-owned under /opt/swarm (images/workspace-apply,
+  # W6b). A literal held by tests/terraform/workspace_deployer.tftest.hcl: the
+  # command is the one part of an execution no caller can override, so it is
+  # what makes the scrub run first.
+  workspace_apply_command = ["python3", "-I", "/opt/swarm/entry.py"]
 
-  # The second-generation connection is regional; the trigger lives beside it.
-  workspace_apply_location = var.workspace_apply_repository == "" ? var.region : split("/", var.workspace_apply_repository)[3]
+  # The swarm subnet and the network it is in, as terraform/modules/network
+  # names them (this root cannot read infra's state). The worker tag is that
+  # module's worker_network_tag default, which modules/network's
+  # deny_worker_ingress targets, so nothing in the VPC can open a connection to
+  # an execution; the job's own tag names it in a flow log or a firewall rule.
+  workspace_apply_network    = "projects/${var.project_id}/global/networks/${var.name_prefix}-vpc"
+  workspace_apply_subnetwork = var.workspace_apply_subnetwork != "" ? var.workspace_apply_subnetwork : "projects/${var.project_id}/regions/${var.region}/subnetworks/${var.name_prefix}-subnet-${var.region}"
+  workspace_apply_tags       = ["swarm-worker", local.workspace_apply_name]
 
-  # The builder image's repository, read from its own reference, so the pull
-  # grant is on exactly the repository the trigger names.
-  workspace_builder_parts = regex("^(?P<location>[a-z0-9-]+)-docker\\.pkg\\.dev/(?P<project>[^/]+)/(?P<repository>[^/]+)/", var.workspace_apply_builder_image == "" ? "${var.region}-docker.pkg.dev/${var.project_id}/swarm-images/" : var.workspace_apply_builder_image)
+  # The image's repository, read from its own reference: the precondition on
+  # the job holds it to this project.
+  workspace_image_parts = regex("^(?P<location>[a-z0-9-]+)-docker\\.pkg\\.dev/(?P<project>[^/]+)/(?P<repository>[^/]+)/", var.workspace_apply_image == "" ? "${var.region}-docker.pkg.dev/${var.project_id}/swarm-images/" : var.workspace_apply_image)
 
   # Shared names the job's grants are made on, spelled as the rest of the
   # platform spells them: the artifact bucket as terraform/modules/storage
@@ -141,7 +161,15 @@ locals {
   workspace_log_bucket      = "projects/${var.project_id}/locations/global/buckets/${local.workspace_apply_name}"
   workspace_log_view        = "${local.workspace_log_bucket}/views/_AllLogs"
   workspace_log_destination = "logging.googleapis.com/${local.workspace_log_bucket}"
-  workspace_log_filter      = var.enable_workspace_deployer ? "resource.type=\"build\" AND resource.labels.build_trigger_id=\"${google_cloudbuild_trigger.workspace_apply[0].trigger_id}\"" : ""
+  #
+  # The job's own entries, by its resource type and documented job_name label,
+  # a literal known before the job exists. Its AUDIT entries are kept out of
+  # the filter: Admin Activity goes to _Required whatever any sink says, and
+  # the DATA_WRITE entry of a jobs.run (the caller and the workspace id) stays
+  # in _Default, where §2.6 item 4 says it is and where the foreign-run alert
+  # reads it -- routing it into this bucket would hide the one record of who
+  # started an execution from everyone outside the bucket's readers.
+  workspace_log_filter = "resource.type=\"cloud_run_job\" AND resource.labels.job_name=\"${local.workspace_apply_name}\" AND NOT logName:\"cloudaudit.googleapis.com\""
 
   workspace_role_on = { for r in var.workspace_deployer_roles : r => true }
 }
@@ -165,15 +193,15 @@ resource "google_service_account" "workspace_deployer" {
   project      = var.project_id
   account_id   = local.workspace_deployer_account_id
   display_name = "Swarm workspace deployer"
-  description  = "managed-by=swarm-terraform; makes personal workspaces, only as the swarm-workspace-apply Cloud Build trigger, under the call guard (docs/workspaces.md §2.3). No key, no WIF."
+  description  = "managed-by=swarm-terraform; makes personal workspaces, only as the swarm-workspace-apply Cloud Run job, under the call guard (docs/workspaces.md §2.3). No key, no WIF."
 }
 
 # AUTHORITATIVE AND EMPTY, on purpose: nobody holds actAs, token creator or
 # workloadIdentityUser on this account at the account level, and anything added
-# by hand is removed at the next bootstrap apply. The trigger needs no binding
-# here -- Cloud Build's service agent mints the build's token through its own
-# project-level role -- and creating or editing the trigger needs actAs, which
-# only the owner exercises (safeguard 1).
+# by hand is removed at the next bootstrap apply. The job needs no binding here
+# -- Cloud Run's service agent mints an execution's token through its own
+# project-level role -- and creating or updating the job needs actAs, which
+# only the owner's bootstrap apply exercises (safeguard 1).
 data "google_iam_policy" "workspace_deployer_nobody" {}
 
 resource "google_service_account_iam_policy" "workspace_deployer" {
@@ -267,7 +295,8 @@ locals {
   # empty for the five §2.3 leaves unconditioned (the account admin, which IAM
   # cannot narrow; the reader, which only reads; Firestore, whose data plane
   # ignores conditions; the slot creator, whose create is checked on the
-  # project; and the log writer Cloud Build writes the job's log with).
+  # project; and the log writer, which a Cloud Run job's own output may not
+  # need: W0b reads that on the first execution, and only then does it go).
   workspace_project_grants = {
     "swarmWorkspaceAccountAdmin" = {
       role       = module.custom_role_ids.names.workspace_account_admin
@@ -378,21 +407,17 @@ resource "google_storage_bucket_iam_member" "workspace_deployer_marker" {
   depends_on = [google_service_account.workspace_deployer]
 }
 
-# The builder image's repository: pull, never list or push.
-resource "google_artifact_registry_repository_iam_member" "workspace_deployer_pull" {
-  count = var.enable_workspace_deployer && lookup(local.workspace_role_on, "swarmImagePuller", false) ? 1 : 0
-
-  project    = local.workspace_builder_parts.project
-  location   = local.workspace_builder_parts.location
-  repository = local.workspace_builder_parts.repository
-  role       = module.custom_role_ids.names.image_puller
-  member     = local.workspace_deployer_member
-
-  depends_on = [google_project_iam_custom_role.platform, google_service_account.workspace_deployer]
-}
+# No pull grant on the image's repository. Cloud Run pulls a job's image as
+# the project's Cloud Run service agent, not as the job's account, for an image
+# in the same project's Artifact Registry (§2.3); the build this replaced
+# needed swarmImagePuller, and workspace_deployer_pull went with it (W4b).
+# No removed block: the grant was count-gated on enable_workspace_deployer,
+# which the committed terraform.tfvars leaves at its default, false, so a
+# bootstrap applied from main never created it.
 
 # ---------------------------------------------------------------------------
-# The topic: swarm-api publishes, and nobody else is granted to
+# The topic: swarm-api publishes, and nobody else is granted to. Kept by
+# option (ii): the Eventarc trigger in workspace_dispatch.tf reads it.
 # ---------------------------------------------------------------------------
 
 resource "google_pubsub_topic" "workspace_apply" {
@@ -402,7 +427,7 @@ resource "google_pubsub_topic" "workspace_apply" {
   name    = local.workspace_apply_name
   labels  = local.labels
 
-  # A message nobody built for in a day is stale: the sweep (§2.2)
+  # A message nobody dispatched in a day is stale: the sweep (§2.2)
   # republishes an approved record that was never claimed.
   message_retention_duration = "86400s"
 }
@@ -422,83 +447,181 @@ resource "google_pubsub_topic_iam_binding" "workspace_apply_publisher" {
 }
 
 # ---------------------------------------------------------------------------
-# The trigger: Pub/Sub, main only, as the deployer
+# The job: the pinned image, a fixed command, one task, as the deployer
 # ---------------------------------------------------------------------------
 
-# No labels: google_cloudbuild_trigger has none in the pinned provider
-# (6.50.0); its description and its name say whose it is
-# (scripts/lib/unlabelable-types.json).
-resource "google_cloudbuild_trigger" "workspace_apply" {
+resource "google_cloud_run_v2_job" "workspace_apply" {
   count = local.workspace_deployer_on
 
-  project     = var.project_id
-  location    = local.workspace_apply_location
-  name        = local.workspace_apply_name
-  description = "managed-by=swarm-terraform; makes a personal workspace from an approved record: main's scripts/cloudbuild/workspace-apply.yaml as swarm-workspace-deployer (docs/workspaces.md §2.1)."
+  project  = var.project_id
+  location = var.region
+  name     = local.workspace_apply_name
+  labels   = local.labels
 
-  service_account = google_service_account.workspace_deployer[0].id
+  # Switching enable_workspace_deployer off must remove the job, not fail the
+  # owner's apply halfway. Losing it costs availability only: re-creating it
+  # needs actAs on the deployer, which is the owner's apply again.
+  deletion_protection = false
 
-  pubsub_config {
-    topic = google_pubsub_topic.workspace_apply[0].id
+  template {
+    # One task, no parallelism: A1's claim admits one run per workspace, and
+    # step 0 refuses a task count other than one whatever an override says.
+    task_count  = 1
+    parallelism = 1
+    labels      = local.labels
+
+    template {
+      service_account = local.workspace_deployer_email
+
+      # A retry is an admin's action (§1.3), never Cloud Run's.
+      max_retries = 0
+
+      # As the build had; entry.py keeps its own 1800-second deadline whatever
+      # timeout an override sets.
+      timeout = "1800s"
+
+      execution_environment = "EXECUTION_ENVIRONMENT_GEN2"
+
+      containers {
+        image = var.workspace_apply_image
+
+        # Fixed here, and not overridable by jobs.run (W0b (2)). No args: the
+        # two arguments arrive with each execution, from the workflow.
+        command = local.workspace_apply_command
+
+        resources {
+          # Invariant 7: a Cloud Run job states limits only, and they are what
+          # it gets. 2 GiB holds gcloud, kubectl, the render and the guard's
+          # expectation file in the execution's in-memory filesystem.
+          limits = {
+            cpu    = "1"
+            memory = "2Gi"
+          }
+        }
+      }
+
+      vpc_access {
+        # ALL_TRAFFIC, as the worker jobs do (modules/cloud_run_jobs): the GKE
+        # control plane is reached from inside the VPC, through the private
+        # endpoint where it is private and through the swarm Cloud NAT where
+        # it is public under master_authorized_cidrs (§2.1).
+        egress = "ALL_TRAFFIC"
+
+        network_interfaces {
+          network    = local.workspace_apply_network
+          subnetwork = local.workspace_apply_subnetwork
+          tags       = local.workspace_apply_tags
+        }
+      }
+    }
   }
-
-  # What is built, and the file that says how: main, both.
-  source_to_build {
-    repository = var.workspace_apply_repository
-    ref        = local.workspace_apply_ref
-    repo_type  = "GITHUB"
-  }
-
-  git_file_source {
-    path       = local.workspace_apply_build_file
-    repository = var.workspace_apply_repository
-    revision   = local.workspace_apply_ref
-    repo_type  = "GITHUB"
-  }
-
-  # The message's two fields and nothing else; the image is this root's.
-  substitutions = {
-    _WORKSPACE_ID  = "$(body.message.data.workspace_id)"
-    _MODE          = "$(body.message.data.mode)"
-    _BUILDER_IMAGE = var.workspace_apply_builder_image
-  }
-
-  # A message of any other shape starts no build. Step 1 of the build file
-  # checks the same again, so neither alone is load-bearing.
-  filter = "_WORKSPACE_ID.matches('^w-[0-9a-f]{6}$') && _MODE.matches('^(create|limits)$')"
 
   lifecycle {
     precondition {
-      condition     = var.workspace_apply_repository != ""
-      error_message = "enable_workspace_deployer needs workspace_apply_repository: connect this repository to Cloud Build first (docs/workspaces.md §10, the owner's one-time steps)."
+      condition     = var.workspace_apply_image != ""
+      error_message = "enable_workspace_deployer needs workspace_apply_image, the workspace-apply image by digest from the release's promotion manifest."
     }
     precondition {
-      condition     = var.workspace_apply_builder_image != ""
-      error_message = "enable_workspace_deployer needs workspace_apply_builder_image, the workspace-apply image by digest from the release's promotion manifest."
-    }
-    precondition {
-      condition     = local.workspace_builder_parts.project == var.project_id
-      error_message = "workspace_apply_builder_image must be in this project's Artifact Registry: only images this pipeline built, scanned and promoted run as swarm-workspace-deployer."
+      condition     = local.workspace_image_parts.project == var.project_id
+      error_message = "workspace_apply_image must be in this project's Artifact Registry: only images this pipeline built, scanned and promoted run as swarm-workspace-deployer."
     }
   }
 
   depends_on = [google_service_account_iam_policy.workspace_deployer]
 }
 
+# WHO MAY START IT: the dispatcher of option (ii), and nobody else, on the job.
+#
+# AUTHORITATIVE: a member added to the job's policy outside this file is
+# removed at the next bootstrap apply, and the job_changed alert pages on the
+# change itself. roles/run.jobsExecutorWithOverrides because the workflow
+# passes the two arguments as an override (run.jobs.runWithOverrides); bound
+# here, on the job, because Cloud Run exposes no resource name to IAM
+# Conditions (#965), so a project-level grant could not be narrowed to it.
+#
+# This bounds who holds the role ON THE JOB. It does not empty the list of who
+# may start it: swarm-scheduler, swarm-accept, the release deployer and the
+# project's owners hold run.jobs.runWithOverrides project-wide (§2.1), which
+# is why the image's scrub is load-bearing and why the foreign_run alert
+# exists. Changing what the job runs needs actAs on the deployer as well, which
+# Cloud Run checks on every update (W0b (1)).
+#
+# RESIDUAL RISK, NOT TOUCHED HERE: the project's default compute account
+# (<number>-compute@developer.gserviceaccount.com) holds roles/editor on the
+# whole shared project (W0b (3), live, 2026-10-10; #1020). Editor carries
+# actAs and Cloud Run job update and run, so a workload running as that
+# account steps around this policy and the deployer's empty one. It is
+# Google's legacy default grant, the other team's workloads may rely on it,
+# and it is removed together with that team, never from this file.
+data "google_iam_policy" "workspace_apply_job" {
+  binding {
+    role    = "roles/run.jobsExecutorWithOverrides"
+    members = [local.workspace_dispatch_member]
+  }
+}
+
+resource "google_cloud_run_v2_job_iam_policy" "workspace_apply" {
+  count = local.workspace_deployer_on
+
+  project     = var.project_id
+  location    = google_cloud_run_v2_job.workspace_apply[0].location
+  name        = google_cloud_run_v2_job.workspace_apply[0].name
+  policy_data = data.google_iam_policy.workspace_apply_job.policy_data
+
+  depends_on = [google_service_account.workspace_dispatch]
+}
+
+# ---------------------------------------------------------------------------
+# Cloud Run's DATA_WRITE audit log: the only record of who started an execution
+# ---------------------------------------------------------------------------
+#
+# A jobs.run is a Data Access entry (run.jobs.run and runWithOverrides are
+# DATA_WRITE), and Data Access logs are off by default (W0b (2), §0). Without
+# this, nothing records who started the job, and the foreign_run alert could
+# never fire.
+#
+# AUTHORITATIVE FOR run.googleapis.com: google_project_iam_audit_config owns
+# the project's whole audit config for that one service, so a type or an
+# exempted member set elsewhere for Cloud Run would be replaced at the next
+# bootstrap apply. The live project had NO audit config at all when read on
+# 2026-10-10, so there was nothing to carry over; the job_changed alert pages
+# on any later change to it. Other services' configs are untouched.
+#
+# DATA_WRITE ONLY. DATA_READ would log every get and list of every Cloud Run
+# resource in the shared project -- the scheduler's and reconciler's polls and
+# the other team's tooling -- for no question this platform asks.
+#
+# WHAT IT COSTS. It is project-wide for Cloud Run, so it logs the other team's
+# Cloud Run DATA_WRITE calls too (executions started, services invoked through
+# the Admin API), into _Default. Data Access entries are billed as ingested
+# logs above the free allotment; at this platform's rate (a run per dispatch,
+# the scheduler's job starts) that is a few MB a day, well inside it.
+resource "google_project_iam_audit_config" "run_data_write" {
+  count = local.workspace_deployer_on
+
+  project = var.project_id
+  service = "run.googleapis.com"
+
+  audit_log_config {
+    log_type = "DATA_WRITE"
+  }
+}
+
 # ---------------------------------------------------------------------------
 # Its logs: a restricted bucket, and out of _Default (§2.6)
 # ---------------------------------------------------------------------------
 #
-# The build log names a person's tenant id and email. _Default is readable by
+# The job's log names a person's tenant id and email. _Default is readable by
 # every holder of roles/logging.viewer in this shared project, the other team
 # included. A user-defined bucket is not: reading one needs logging.views.access
 # on its view, which logging.viewer does not carry (measured 2026-09-24,
 # log-reading-roles.json), so its readers are the project's owners and logging
 # admins and the people named in var.workspace_log_readers.
 #
-# What still reaches _Required, and so every log viewer, is the Admin Activity
-# audit trail of the job's calls, which names the accounts it creates. Cloud
-# Logging routes those entries to _Required whatever any sink says.
+# What still reaches every log viewer: the Admin Activity audit trail of the
+# job's calls, which names the accounts it creates (Cloud Logging routes those
+# entries to _Required whatever any sink says), and the DATA_WRITE entry of
+# each jobs.run, which carries the caller and the workspace id (§2.6 item 4).
 
 # No labels: google_logging_project_bucket_config has none
 # (scripts/lib/unlabelable-types.json). Its id carries the platform prefix.
@@ -509,7 +632,7 @@ resource "google_logging_project_bucket_config" "workspace_apply" {
   location       = "global"
   bucket_id      = local.workspace_apply_name
   retention_days = var.workspace_log_retention_days
-  description    = "managed-by=swarm-terraform; the swarm-workspace-apply job's build logs, which name people (docs/workspaces.md §2.6)."
+  description    = "managed-by=swarm-terraform; the swarm-workspace-apply Cloud Run job's logs, which name people (docs/workspaces.md §2.6)."
 }
 
 resource "google_logging_project_sink" "workspace_apply" {
@@ -519,7 +642,7 @@ resource "google_logging_project_sink" "workspace_apply" {
   name        = local.workspace_apply_name
   destination = local.workspace_log_destination
   filter      = local.workspace_log_filter
-  description = "managed-by=swarm-terraform; the swarm-workspace-apply trigger's build logs, to the restricted bucket."
+  description = "managed-by=swarm-terraform; the swarm-workspace-apply Cloud Run job's logs, to the restricted bucket."
 
   # A log bucket in the same project needs no grant to the writer.
   unique_writer_identity = true
@@ -536,7 +659,7 @@ resource "google_logging_project_exclusion" "workspace_apply" {
   project     = var.project_id
   name        = local.workspace_apply_name
   filter      = local.workspace_log_filter
-  description = "managed-by=swarm-terraform; keeps the swarm-workspace-apply job's build logs out of _Default, which the other team can read."
+  description = "managed-by=swarm-terraform; keeps the swarm-workspace-apply Cloud Run job's logs out of _Default, which the other team can read."
 
   depends_on = [google_logging_project_sink.workspace_apply]
 }
@@ -550,7 +673,7 @@ resource "google_project_iam_member" "workspace_log_readers" {
 
   condition {
     title       = "swarm-workspace-apply logs only"
-    description = "managed-by=swarm-terraform; the restricted bucket of the workspace job's build logs (docs/workspaces.md §2.6)."
+    description = "managed-by=swarm-terraform; the restricted bucket of the workspace job's logs (docs/workspaces.md §2.6)."
     expression  = "resource.name == \"${local.workspace_log_view}\""
   }
 
@@ -558,15 +681,17 @@ resource "google_project_iam_member" "workspace_log_readers" {
 }
 
 output "workspace_deployer" {
-  description = "What the owner reads a plan against: the workspace job's identity, its trigger, the image it runs, the log bucket and filter. Null while enable_workspace_deployer is false."
+  description = "What the owner reads a plan against: the workspace job's identity, the job, the image and command it runs, its dispatcher, the log bucket and filter. Null while enable_workspace_deployer is false."
   value = var.enable_workspace_deployer ? {
     service_account = local.workspace_deployer_email
-    trigger         = local.workspace_apply_name
-    location        = local.workspace_apply_location
-    ref             = local.workspace_apply_ref
-    build_file      = local.workspace_apply_build_file
-    builder_image   = var.workspace_apply_builder_image
+    job             = local.workspace_apply_name
+    location        = var.region
+    image           = var.workspace_apply_image
+    command         = local.workspace_apply_command
+    dispatcher      = local.workspace_dispatch_email
+    workflow        = local.workspace_apply_name
     log_bucket      = local.workspace_log_bucket
+    log_filter      = local.workspace_log_filter
     roles           = var.workspace_deployer_roles
   } : null
 }
