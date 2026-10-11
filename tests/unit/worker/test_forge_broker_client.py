@@ -330,8 +330,10 @@ def test_a_refused_write_is_forge_write_refused(db, worker_factory, code, cause)
         worker._read_action_git_token()
     assert raised.value.cause == cause
     assert client.accessed == []
-    # A push's read gets no token rather than an exception mid-publish.
-    assert worker._git_token(write=True) is None
+    # A push's read asks for `read` (its write gate is `_forge_write_refusal`,
+    # asked first); refused, it gets no token rather than the tenant's.
+    assert worker._git_token() is None
+    assert [r["access"] for r in routes.requests] == ["write", "read"]
 
 
 # --------------------------------------------------------------------------

@@ -150,6 +150,7 @@ from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
+from . import forgebroker as forgebroker_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import questions as questions_mod
@@ -1010,6 +1011,12 @@ class Worker:
         # the spool and the await. Inert unless the scheduler passed a nonce.
         self.children = children_mod.ChildPath(
             config, logger=deps.logger, memory=deps.memory, api=deps.child_api
+        )
+        # A person's `git-u-` slot comes only from swarm-api's broker, proven
+        # with the attempt key `children` registered (#1041,
+        # docs/design/user-scoped-secrets.md §3.2). Inert for a team token.
+        self.forge_broker = forgebroker_mod.ForgeBroker(
+            config, children=self.children, logger=deps.logger
         )
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
@@ -1978,18 +1985,27 @@ class Worker:
         A merge is a forge write, so a read grant, or a grant gone since
         submission, raises `ForgeWriteRefused` before any token is read; the
         merge ends the step FAILED and names that type.
+
+        A person's `git-u-` slot is asked of swarm-api's broker, not read
+        (#1041): its refusal raises a named `SecretError`, or
+        `ForgeWriteRefused` for a grant gone, and the merge fails on it.
         """
         forge_refused = self._forge_write_refusal()
         if forge_refused is not None:
             raise ForgeWriteRefused(*forge_refused)
         suffix = self._forge_suffix()
         tenant = load_tenant(self.db, self.cfg.tenant_id, call_options=self.control.call_options())
-        if self.secret_client is None or (
+        person = user_slot_hash(suffix) is not None
+        if (self.secret_client is None and not person) or (
             suffix == GIT_PROVIDER and GIT_PROVIDER not in tenant.credentials
         ):
             raise CredentialMissing(self.cfg.tenant_id, suffix)
+        # A person's slot comes from the broker, asked for a write (#1041): a
+        # refusal is `ForgeCredentialRefused`, or `ForgeWriteRefused` for a
+        # grant gone, and never the tenant token in its place.
         token = resolve_git_token(
-            tenant=tenant, client=self.secret_client, logger=self.log, provider=suffix
+            tenant=tenant, client=self.secret_client, logger=self.log, provider=suffix,
+            broker=self.forge_broker, write=True,
         )
         if not token:
             raise CredentialMissing(self.cfg.tenant_id, suffix)
@@ -6872,12 +6888,22 @@ class Worker:
         Nor is it read at all when `_git_token_refusal` names a reason: once
         read, the token stays in this process's heap for the rest of the
         attempt, next to an agent that may be able to read it there.
+
+        A PERSON'S SLOT comes from swarm-api's broker, never Secret Manager
+        (#1041, `forgebroker`), asked for `read`: every push and pull request
+        first asks `_forge_write_refusal`, which re-reads the grant for a
+        write, before it calls this. A refusal is None here -- no token, and
+        never the tenant's in its place, so a private repository fails with
+        git's own message and a push has no credential. A superseded attempt
+        raises `FencedError` and stands down. The merge, a write with no such
+        gate of its own, asks the broker for `write` (`_read_action_git_token`).
         """
         refusal = self._git_token_refusal()
         if refusal:
             self.log.error("not reading the tenant git credential", reason=refusal)
             return None
-        if self.secret_client is None:
+        suffix = self._forge_suffix()
+        if self.secret_client is None and user_slot_hash(suffix) is None:
             return None
         try:
             tenant = load_tenant(
@@ -6885,7 +6911,7 @@ class Worker:
             )
             return resolve_git_token(
                 tenant=tenant, client=self.secret_client, logger=self.log,
-                provider=self._forge_suffix(),
+                provider=suffix, broker=self.forge_broker,
             )
         except SecretError as exc:
             self.log.warning(

@@ -327,6 +327,13 @@ class WorkerConfig:
     #: SWARM_API_AUDIENCE), from the scheduler's own settings.
     swarm_api_url: str | None = None
     swarm_api_audience: str | None = None
+    #: Whether this attempt offers its agent a child path (SWARM_CHILD_PATH).
+    #: The scheduler writes `false` for a CHILD on a person's slot (#1041): it
+    #: gets the nonce so its worker can register the attempt key the forge
+    #: broker checks, and offers its agent nothing to submit grandchildren
+    #: with. Default True, because a root task is written nothing. A courtesy,
+    #: not the guard: swarm-api refuses depth itself (MAX_CHILD_DEPTH).
+    child_path: bool = True
     #: The design's limits (§7). Requests answered per control poll: four per
     #: 10 s keeps one worker far below the API's per-caller rate.
     max_child_requests_per_tick: int = 4
@@ -560,6 +567,7 @@ class WorkerConfig:
             child_nonce=os.environ.get("SWARM_CHILD_NONCE", "").strip() or None,
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip() or None,
             swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip() or None,
+            child_path=_bool_env("SWARM_CHILD_PATH", True),
             provider=profile.provider,
             model=os.environ.get("MODEL", "").strip() or None,
             spec_signature_mode=specverify.parse_mode(spec["SPEC_SIGNATURE_MODE"]),
