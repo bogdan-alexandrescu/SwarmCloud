@@ -162,6 +162,13 @@ SCHEDULE_NOT_ENABLED = "SCHEDULE_NOT_ENABLED"
 TYPE_UNAVAILABLE = "TYPE_UNAVAILABLE"
 RUN_OVER_BUDGET = "RUN_OVER_BUDGET"
 CONSECUTIVE_FAILURES = "CONSECUTIVE_FAILURES"
+#: A created firing whose executor started nothing. #1133: an empty `create`
+#: used to end the firing `done/succeeded` with `work: []` and no skip, so an
+#: issue sweep that started nothing for hours read as healthy and nobody could
+#: tell why. Its detail is what the executor reported (`Firing.report`).
+NOTHING_STARTED = "NOTHING_STARTED"
+#: NOTHING_STARTED's reason when the executor reported nothing itself.
+NOTHING_STARTED_REASON = "The schedule type's executor created no work and reported no reason."
 
 #: The `schedule_audit` action written when an approved firing is held back
 #: because its approval does not release it, once per approval and digest.
@@ -293,8 +300,12 @@ class Executor(Protocol):
     `create(firing)` creates the firing's work through `firing.submit_tasks`,
     `firing.submit_workflow` or `firing.api_action` (or, for an issue run, the
     issue-run creation with `firing.mark`), at most `firing.room` items, and
-    returns the work entries those return. `[]` is an answer: nothing was
-    due (a sweep with no candidates), and the firing ends `succeeded`.
+    returns the work entries those return. It says what it selected and why
+    through `firing.report(detail)`: what it considered, started and passed
+    over, as plain JSON. The tick stores that as the firing's `selection`.
+    `[]` is never a success: the firing ends `skipped` with code
+    `NOTHING_STARTED` and the report as its detail (#1133), so a firing that
+    did nothing always says why.
 
     `dry_run(firing)` returns, as data, what `create` would have made. It
     submits nothing, writes nothing to GitHub and never runs an agent (§2.8).
@@ -336,6 +347,19 @@ class Firing:
     #: Persists a non-task work item on the firing the moment it exists, so a
     #: finisher after a crash adopts it rather than doing it again (§2.2).
     record: Callable[[dict[str, Any]], None] = lambda item: None
+    #: What the executor selected and why (`report`), stored on the firing.
+    selection: dict[str, Any] | None = None
+
+    def report(self, detail: Mapping[str, Any]) -> None:
+        """Say what this firing selected and why: the firing's `selection`, and
+        its skip detail when nothing was started (§1.2, #1133).
+
+        A plain-JSON copy, so a later change to the executor's own dict does not
+        reach the firing and Firestore stores it as-is. It is served by the API:
+        an executor reports issue refs, counts and reason strings, never a token
+        or a credential.
+        """
+        self.selection = json.loads(json.dumps(dict(detail), default=_plain))
 
     @property
     def mark(self) -> dict[str, Any]:
@@ -415,6 +439,16 @@ def _aware(moment: Any) -> datetime | None:
     if moment.tzinfo is None:
         return moment.replace(tzinfo=timezone.utc)
     return moment
+
+
+def _plain(value: Any) -> Any:
+    """`json.dumps`'s fallback for `Firing.report`: a moment as ISO 8601, a
+    tuple or set as a list, anything else as its string."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, (tuple, set, frozenset)):
+        return list(value)
+    return str(value)
 
 
 def _iso(moment: Any) -> str | None:
@@ -562,8 +596,9 @@ def combine(outcomes: Sequence[str], *, independent: bool) -> str:
     All succeeded: `succeeded`. Any failed: `failed`, or `partial` when the
     type does several independent things and some succeeded. Otherwise any
     cancelled: `cancelled` (again `partial` beside successes of an
-    independent type). No work at all: `succeeded`, because "nothing was due"
-    is an answer.
+    independent type). No outcomes at all: `succeeded`, which only a firing
+    created before #1133 can still reach with `work: []`; a firing that
+    creates nothing now ends `skipped / NOTHING_STARTED` in the finish.
     """
     if not outcomes or all(o == "succeeded" for o in outcomes):
         return "succeeded"
@@ -1111,10 +1146,23 @@ class Ticker:
             made = self._adopt(schedule, fid)
             if made:
                 return self._created(fid, now, report, made, schedule, digest=digest,
-                                     extra={**detail_missing, "refusal": {"code": exc.code}})
+                                     extra={**detail_missing, "refusal": {"code": exc.code}},
+                                     selection=handle.selection)
             return self._refused(fid, now, report, schedule, exc.code,
                                  {"message": exc.message, **detail_missing})
-        return self._created(fid, now, report, work, schedule, digest=digest, extra=detail_missing)
+        if not work:
+            # #1133: a firing that started nothing says why, and is never a
+            # success. Skipped, not failed: it does not count toward §4.4's
+            # consecutive failures. `selection` is the executor's own report
+            # (issue refs and reasons, never a token).
+            detail = dict(handle.selection or {"reason": NOTHING_STARTED_REASON})
+            if missing:
+                detail.update(detail_missing)
+            return self._end(fid, now, report, state=SKIPPED, code=NOTHING_STARTED, detail=detail,
+                             schedule=schedule,
+                             extra={"params_digest": digest, "selection": handle.selection})
+        return self._created(fid, now, report, work, schedule, digest=digest, extra=detail_missing,
+                             selection=handle.selection)
 
     def _scope(self, schedule: Mapping[str, Any]) -> tuple[list[str], list[str]]:
         """(registered now, no longer registered). `all` lists every registration NOW."""
@@ -1236,8 +1284,11 @@ class Ticker:
 
     def _created(self, fid: str, now: datetime, report: TickReport, work: list[dict[str, Any]],
                  schedule: Mapping[str, Any], *, digest: str | None,
-                 extra: Mapping[str, Any] | None = None) -> str:
+                 extra: Mapping[str, Any] | None = None,
+                 selection: Mapping[str, Any] | None = None) -> str:
         patch: dict[str, Any] = {"work": work, "params_digest": digest}
+        if selection is not None:
+            patch["selection"] = dict(selection)
         if extra and extra.get("refusal"):
             # Part of the work was made and then a submission was refused.
             patch["skip"] = {"code": extra["refusal"]["code"], "detail": dict(extra)}

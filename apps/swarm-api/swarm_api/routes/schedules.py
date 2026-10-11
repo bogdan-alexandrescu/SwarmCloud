@@ -127,7 +127,9 @@ _ID = re.compile(r"^sch_[0-9a-f]{12}$")
 _EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 #: What a firing serves. The finisher's lease token and its private record of
-#: half-made work are the tick's own bookkeeping.
+#: half-made work are the tick's own bookkeeping. `selection` (what the
+#: executor considered, started and passed over, #1133) is deliberately NOT
+#: here: it is how a reader sees why a firing started what it did.
 _FIRING_PRIVATE = ("finisher", "finishing_until", "recorded", "dry_run_requested")
 
 

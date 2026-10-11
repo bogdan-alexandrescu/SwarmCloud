@@ -718,11 +718,117 @@ def test_a_firing_ends_when_its_work_ends_and_a_success_resets_failures(db, ctx)
     assert schedule["last_firing"]["outcome"] == "succeeded"
 
 
-def test_nothing_due_is_an_answer(db, ctx) -> None:
+class ReportingExecutor(FakeExecutor):
+    """An executor that says what it selected, the way issue-sweep's `describe()` does."""
+
+    def __init__(self, selection: dict[str, Any] | None, *, kind: str = "none") -> None:
+        super().__init__(kind=kind)
+        self.selection = selection
+
+    def create(self, firing: schedulefire.Firing) -> list[dict[str, Any]]:
+        work = super().create(firing)
+        if self.selection is not None:
+            firing.report(self.selection)
+        return work
+
+
+#: What an issue-sweep that started nothing says about why (#1133).
+PASSED_OVER = {
+    "started": [],
+    "passed_over": [{"issue": "acme/web#7", "reason": "not_ready_unchanged: run_prev"}],
+    "passed_over_by_reason": {"not_ready_unchanged": 1},
+    "room": 3,
+    "truncated": False,
+}
+
+
+def test_a_firing_whose_executor_creates_nothing_is_skipped_with_a_reason(db, ctx, client) -> None:
+    """#1133: an empty create used to end `done/succeeded` with `work: []` and no skip."""
+    seed_schedule(db)
+    report = ticker(ctx, ReportingExecutor(PASSED_OVER)).tick()
+    (firing,) = firings(db).values()
+    assert firing["state"] == "skipped" and firing["outcome"] == "skipped"
+    assert firing["outcome"] != "succeeded"
+    assert firing["skip"] == {"code": "NOTHING_STARTED", "detail": PASSED_OVER}
+    assert firing["selection"] == PASSED_OVER
+    assert firing.get("work") in (None, []) and firing["params_digest"].startswith("sha256:")
+    assert report.skipped == 1 and report.fired == 0
+    assert db.docs["schedules/sch_000000000001"]["last_firing"]["outcome"] == "skipped"
+    # The selection is the API's, not the tick's private bookkeeping (requirement 4).
+    response = client.get("/v1/schedules/sch_000000000001", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    (served,) = response.json()["firings"]
+    assert served["selection"] == PASSED_OVER and served["skip"]["code"] == "NOTHING_STARTED"
+
+
+def test_an_executor_that_reports_nothing_still_gets_a_reason(db, ctx) -> None:
     seed_schedule(db)
     ticker(ctx, FakeExecutor(kind="none")).tick()
     (firing,) = firings(db).values()
-    assert firing["state"] == "done" and firing["outcome"] == "succeeded" and firing["work"] == []
+    assert firing["state"] == "skipped" and firing["outcome"] == "skipped"
+    assert firing["skip"]["code"] == "NOTHING_STARTED"
+    assert firing["skip"]["detail"] == {"reason": schedulefire.NOTHING_STARTED_REASON}
+    assert firing["selection"] is None
+
+
+def test_an_empty_firing_keeps_the_repositories_it_skipped(db, ctx) -> None:
+    seed_schedule(db, repo_ids=("r1", "gone"))
+    del db.docs["repositories/gone"]
+    ticker(ctx, ReportingExecutor(PASSED_OVER)).tick()
+    (firing,) = firings(db).values()
+    assert firing["skip"]["code"] == "NOTHING_STARTED"
+    assert firing["skip"]["detail"]["passed_over"] == PASSED_OVER["passed_over"]
+    assert firing["skip"]["detail"]["skipped_repos"] == [{"repo_id": "gone", "code": "REPOSITORY_NOT_GRANTED"}]
+
+
+def test_a_firing_with_work_keeps_its_selection_and_no_skip(db, ctx) -> None:
+    seed_schedule(db)
+    selection = {"started": ["acme/web#8"], "passed_over": []}
+    ticker(ctx, ReportingExecutor(selection, kind="task")).tick()
+    (firing,) = firings(db).values()
+    assert firing["state"] == "created" and firing.get("skip") is None
+    assert firing["selection"] == selection and len(firing["work"]) == 1
+    for task in tasks(db):
+        task["state"] = "SUCCEEDED"
+    ticker(ctx, at=NOW + timedelta(minutes=1)).tick()
+    (firing,) = firings(db).values()
+    assert firing["state"] == "done" and firing["outcome"] == "succeeded"
+    assert firing.get("skip") is None and firing["selection"] == selection
+
+
+def test_a_reported_selection_is_a_plain_json_copy() -> None:
+    handle = schedulefire.Firing(ctx=None, schedule={}, firing={}, owner=None, repo_ids=[], room=1, now=NOW)
+    nested = {"passed_over": [{"issue": "acme/web#7"}], "at": NOW, "refs": ("a", "b")}
+    handle.report(nested)
+    nested["passed_over"].append({"issue": "acme/web#9"})
+    assert handle.selection == {"passed_over": [{"issue": "acme/web#7"}], "at": NOW.isoformat(),
+                                "refs": ["a", "b"]}
+
+
+def test_nothing_started_does_not_count_toward_consecutive_failures(db, ctx, monkeypatch) -> None:
+    monkeypatch.setenv("REFUSAL_CONSECUTIVE_FAILURES", "on")
+    seed_schedule(db, cron="0 * * * *", next_slot=datetime(2026, 10, 9, 9, 0, tzinfo=timezone.utc))
+    db.docs["schedules/sch_000000000001"]["consecutive_failures"] = 2
+    executor = ReportingExecutor(PASSED_OVER)
+    for hour in range(3):
+        ticker(ctx, executor, at=NOW + timedelta(hours=hour)).tick()
+    assert executor.calls == 3
+    assert [f["skip"]["code"] for f in firings(db).values()] == ["NOTHING_STARTED"] * 3
+    schedule = db.docs["schedules/sch_000000000001"]
+    assert schedule["state"] == "enabled" and schedule["consecutive_failures"] == 0
+
+
+def test_an_adopted_firing_is_not_skipped_as_empty(db, ctx) -> None:
+    """Work made before a crash is adopted (§2.2): the retry's executor is never
+    asked, so an empty selection cannot turn adopted work into NOTHING_STARTED."""
+    seed_schedule(db)
+    executor = ReportingExecutor(None, kind="task")
+    executor.fail_after_submit = True
+    assert ticker(ctx, executor).tick().errors == 1
+    ticker(ctx, executor, at=NOW + timedelta(minutes=3)).tick()
+    (firing,) = firings(db).values()
+    assert executor.calls == 1 and len(tasks(db)) == 1
+    assert firing["state"] == "created" and firing.get("skip") is None and len(firing["work"]) == 1
 
 
 def _spent(db, usd: float) -> None:

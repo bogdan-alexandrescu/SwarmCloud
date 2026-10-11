@@ -430,7 +430,8 @@ document already there is the duplicate that never happens twice.
 | `state` | §1.4 |
 | `params_digest` | sha256 of the resolved `{type, scope (resolved repo list), params, gate, budget}` the firing ran with. A run approval approves this digest (§4.5) |
 | `work` | `[{kind: issue_run \| task \| workflow \| api_action, id, repo_id}]`, what it created. A sweep creates several |
-| `skip` | `{code, detail}` when nothing was created: `OVERLAP`, `BUDGET_EXHAUSTED`, `MISSED_SLOT`, `OWNER_NOT_MEMBER`, `REPOSITORY_NOT_GRANTED`, `WORKSPACE_NOT_READY`, `NO_CLAUDE_ACCOUNT`, `SCHEDULES_DISABLED` or `DRY_RUN` |
+| `skip` | `{code, detail}` when nothing was created: `OVERLAP`, `BUDGET_EXHAUSTED`, `MISSED_SLOT`, `OWNER_NOT_MEMBER`, `REPOSITORY_NOT_GRANTED`, `WORKSPACE_NOT_READY`, `NO_CLAUDE_ACCOUNT`, `SCHEDULES_DISABLED`, `DRY_RUN` or `NOTHING_STARTED`. `NOTHING_STARTED` (§2.9) is a firing whose executor ran and created no work; its detail is the executor's `selection`, or `{reason}` when the executor reported none, plus `skipped_repos` when scope repositories were gone |
+| `selection` | what the executor considered, started and passed over, and why, as it reported it through `Firing.report` (for `issue-sweep`, the same data its dry run returns). Stored on every firing whose executor ran, and served by `GET /v1/schedules/{id}` and its `/firings`. Issue refs, counts and reasons only, never a token. Added for #1133, where a firing that did nothing could not say why |
 | `dry_run` | what a dry run would have created, as data (§2.8) |
 | `approval_id` | set while a run approval is pending |
 | `outcome` | `succeeded`, `failed`, `cancelled`, `refused`, `skipped`, `expired`, `rejected` or `partial`, derived from its work (§2.9) |
@@ -698,6 +699,16 @@ person: `WORKSPACE_NOT_READY` or `NO_CLAUDE_ACCOUNT` makes the firing
 `refused` with that code. Three refusals in a row auto-pause the schedule
 (§4.3).
 
+**Creating nothing is not success.** An executor whose `create` returns no
+work ends the firing `skipped / NOTHING_STARTED` (state `skipped`, outcome
+`skipped`), with what it reported through `Firing.report` as the skip's
+detail and as the firing's `selection`. It used to end `done / succeeded` with
+`work: []` and no `skip`. #1133 is what that cost: an issue sweep fired four
+times in two hours, started nothing each time, reported success each time, and
+its record could not say whether the repository had changed since the dry run
+or the create path was broken. A skipped firing is not a failed one, so
+`NOTHING_STARTED` does not count toward §4.4's consecutive failures.
+
 ### 2.8 Dry run
 
 With `policy.dry_run`, or `POST …:run` with `{"dry_run": true}`, the firing
@@ -720,7 +731,12 @@ derived from its steps:
 * any failed: `failed`, or `partial` when the type does several independent
   things (a sweep that started five runs, of which one failed);
 * a run that ended `NOT_READY` (§3.1) counts as succeeded, because "this issue
-  is not ready" is an answer.
+  is not ready" is an answer;
+* no work at all is **not** an outcome derived here: the firing never reaches
+  `created`, and ends `skipped / NOTHING_STARTED` with the executor's reason
+  (§2.7). "Nothing was due" is still an answer, but it is reported as a skip
+  with its reason, because a bare `succeeded` over `work: []` is
+  indistinguishable from an executor that silently did nothing (#1133).
 
 The tick advances live firings: up to one page, oldest first, after it has
 fired due slots. For an issue run it calls
