@@ -441,19 +441,23 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
     rm -rf "${LIVE_WORK}"
     die "could not read ${API_SERVICE}'s Direct VPC egress from its description; nothing was rendered."
   fi
-  SUBNET_REFS=()
+  # Counted, not `${#array[@]}`: an empty array is an unbound variable under
+  # bash 3.2's `set -u` (CLAUDE.md), and none is exactly the case to report.
+  SUBNET_REF=""
+  SUBNET_COUNT=0
   while IFS= read -r ref; do
-    [[ -n "${ref}" ]] && SUBNET_REFS+=("${ref}")
+    [[ -n "${ref}" ]] || continue
+    SUBNET_REF="${ref}"
+    SUBNET_COUNT=$((SUBNET_COUNT + 1))
   done <"${LIVE_WORK}/subnets"
-  if [[ "${#SUBNET_REFS[@]}" -ne 1 ]]; then
+  if [[ "${SUBNET_COUNT}" -ne 1 ]]; then
     rm -rf "${LIVE_WORK}"
-    die "${API_SERVICE} names ${#SUBNET_REFS[@]} Direct VPC egress subnetworks, not exactly one; the relay
+    die "${API_SERVICE} names ${SUBNET_COUNT} Direct VPC egress subnetworks, not exactly one; the relay
        admits one range and this script will not choose. (terraform/modules/cloud_run sets
        network_interfaces.subnetwork on every service.)"
   fi
   # A name or a path (projects/<p>/regions/<r>/subnetworks/<name>); the
   # region in a path wins over ${REGION}.
-  SUBNET_REF="${SUBNET_REFS[0]}"
   SUBNET="${SUBNET_REF##*/}"
   SUBNET_REGION="${REGION}"
   case "${SUBNET_REF}" in
