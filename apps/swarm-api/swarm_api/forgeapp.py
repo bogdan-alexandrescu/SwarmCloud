@@ -97,10 +97,10 @@ import time as _time
 import urllib.error
 import urllib.request
 import uuid
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping, Protocol
+from typing import Any, Callable, Iterator, Mapping, Protocol
 from urllib.parse import quote, urlencode, urlparse
 
 from google.cloud import firestore
@@ -136,8 +136,8 @@ from .onboarding import recovery_copy
 log = logging.getLogger(__name__)
 
 __all__ = [
-    "AppConfig", "AppNotConfigured", "AuthorisationRefused", "ForgeApp", "HttpAnswer",
-    "SlotUnreadable", "TokenRefresher", "connection_id_for", "slot_labels", "state_hash",
+    "AppConfig", "AppNotConfigured", "AppUnavailable", "AuthorisationRefused", "ForgeApp",
+    "HttpAnswer", "SlotUnreadable", "TokenRefresher", "connection_id_for", "slot_labels", "state_hash",
     "user_hash",
 ]
 
@@ -261,6 +261,16 @@ def _unreachable(message: str) -> AuthorisationRefused:
     refused = AuthorisationRefused("FORGE_UNREACHABLE", message, status=503)
     refused.code = "forge_unreachable"
     return refused
+
+
+class AppUnavailable(Exception):
+    """The App cannot act as itself here: one of a fixed set of words
+    (`app_id_not_configured`, `app_slug_not_configured`,
+    `private_key_missing`, `private_key_malformed`), never a value."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 class SlotUnreadable(Exception):
@@ -668,9 +678,16 @@ class _GitHub:
 
     def app(self, jwt: str) -> HttpAnswer:
         """`GET /app` as the App itself: the one call an App JWT answers."""
+        return self.as_app(jwt, "/app")
+
+    def as_app(self, jwt: str, path: str) -> HttpAnswer:
+        """A GET on api.github.com as the App itself (`GET /app`, `GET
+        /app/installations`, `GET /repos/{o}/{r}/installation`): reads only,
+        so nothing on GitHub changes. `path` is built by the caller from
+        quoted parts and always starts with `/`."""
         headers = {"Accept": "application/vnd.github+json", "Authorization": f"Bearer {jwt}",
                    "User-Agent": _USER_AGENT, "X-GitHub-Api-Version": "2022-11-28"}
-        return self._call("GET", APP_URL, headers, None)
+        return self._call("GET", f"https://api.github.com{path}", headers, None)
 
 
 def _b64url(data: bytes) -> str:
@@ -1699,6 +1716,33 @@ class ForgeApp:
         if got_slug != slug:
             return self._checked(False, app_id=got_id, slug=got_slug, reason="app_slug_mismatch")
         return self._checked(True, app_id=got_id, slug=got_slug)
+
+    @contextmanager
+    def as_app(self) -> Iterator[Callable[[str], HttpAnswer]]:
+        """Hold an App JWT for one bounded read and yield `get(path)`, a GET
+        on api.github.com as the App (#1086, `forgeperms`). The private key
+        and the JWT are registered with the redaction filter for as long as
+        they are in hand and never leave this frame; `get` raises
+        `_Unanswered` for a read that did not come back. A key that cannot
+        be read or signed with is `AppUnavailable` with the same fixed words
+        `check_app_key` answers, before anything is sent."""
+        app_id = self.config.app_id
+        if not (app_id.isascii() and app_id.isdigit()):
+            raise AppUnavailable("app_id_not_configured")
+        if not self.config.slug:
+            raise AppUnavailable("app_slug_not_configured")
+        try:
+            pem = self._secrets.private_key()
+        except AppNotConfigured:
+            raise AppUnavailable("private_key_missing") from None
+        with ExitStack() as held:
+            held.enter_context(redaction_literal(pem))
+            try:
+                jwt = app_jwt(app_id, pem, self._now())
+            except _KeyUnusable:
+                raise AppUnavailable("private_key_malformed") from None
+            held.enter_context(redaction_literal(jwt))
+            yield lambda path: self._github.as_app(jwt, path)
 
     @staticmethod
     def _checked(ok: bool, *, app_id: int | None = None, slug: str | None = None,

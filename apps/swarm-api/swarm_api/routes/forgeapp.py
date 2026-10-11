@@ -17,6 +17,12 @@ lane OB3). The flow is `swarm_api.forgeapp`'s.
     GET    /v1/admin/forge/app              the private key's self-check: signs an App
                                             JWT and reads the App back from GitHub;
                                             {ok, app_id, slug, reason}, admins only
+    GET    /v1/forge/permissions            (#1086) which GitHub permissions the App
+                                            and each connected org's installation
+                                            hold against what SwarmCloud needs, and a
+                                            status per registered repository; reads
+                                            only. `?refresh=true` reads GitHub again
+                                            (`swarm_api.forgeperms`)
 
 NO ROUTE RETURNS A VALUE: not the user access token, the refresh token, the
 App's client secret, the `code`, or the `state` after `authorize` issued it.
@@ -45,6 +51,7 @@ from ..access import org_to_api
 from ..auth import AuthContext
 from ..deps import admin_auth, current_auth, tenant_scope
 from ..forgeapp import Caller, ForgeApp, TokenRefresher
+from ..forgeperms import ForgePermissions
 from ..validation import _ISSUE_OWNER
 
 router = APIRouter(tags=["onboarding"])
@@ -53,6 +60,18 @@ router = APIRouter(tags=["onboarding"])
 def get_forge_app(request: Request) -> ForgeApp:
     """The service `create_app` hung on the app; a test injects one over fakes."""
     return request.app.state.forge_app
+
+
+def get_forge_permissions(request: Request) -> ForgePermissions:
+    """One `ForgePermissions` per app, built on first use over the app's
+    Firestore and its `ForgeApp`, and kept: its per-tenant cache lives on it.
+    A test injects one by setting `app.state.forge_permissions`."""
+    service = getattr(request.app.state, "forge_permissions", None)
+    if service is None:
+        ctx = request.app.state.ctx
+        service = ForgePermissions(ctx.db, get_forge_app(request), now=ctx.now)
+        request.app.state.forge_permissions = service
+    return service
 
 
 class AuthorizeBody(BaseModel):
@@ -143,3 +162,15 @@ def app_key_check(
     service: ForgeApp = Depends(get_forge_app),
 ) -> dict:
     return service.check_app_key()
+
+
+@router.get("/v1/forge/permissions")
+def forge_permissions(
+    refresh: bool = False,
+    tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
+    service: ForgePermissions = Depends(get_forge_permissions),
+) -> dict:
+    """The tenant comes from the verified identity (`tenant_scope`), never
+    the query; the App's settings URL is in the answer only for an admin."""
+    return service.read(tenant_id, is_admin=auth.is_admin, refresh=refresh)

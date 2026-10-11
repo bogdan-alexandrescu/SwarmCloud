@@ -333,6 +333,58 @@ each user holds their own `read` or `write` on it. A task acts as its
 connected first. The tenant view for an admin shows every member's connection
 state and grants, never a value.
 
+### 2.6 Which GitHub permissions are missing, before a run finds out (#1086)
+
+On 2026-10-11 sagaxyz/ai-studio merges failed `token_lacks_rights` because
+the App lacked **Commit statuses: Read**, and nothing said so until a merge
+had failed. `GET /v1/forge/permissions` (`swarm_api/forgeperms.py`, lane
+PERM-1; the console's GitHub section in Work › Setup is lane PERM-2) answers
+it ahead of time, for the caller's tenant (`tenant_scope`, never the query):
+
+* **The catalogue** (`forgeperms.REQUIRED`): each repository permission
+  SwarmCloud's runs use, its level, and what breaks without it in plain words
+  -- the sentence the console shows. Metadata: read; Contents: write (clone,
+  push the step's branch, merge); Pull requests: write; Checks: read (the
+  merge waits on check runs); **Commit statuses: read** ("merges can't see
+  CI, so they fail": merge.py reads `GET /commits/{sha}/status`); Issues:
+  write (issue-run comments).
+* **The App card**: the App's own requested permissions (`GET /app`, as the
+  App, with a JWT that never leaves `ForgeApp.as_app`) against the catalogue.
+  A permission the App does not request is an App gap, fixed on the App's
+  permissions settings page.
+* **One card per org** the tenant enabled through the installation
+  (`forge_orgs`, `install_state: installed`, not a token): that
+  installation's permissions (`GET /app/installations`) against the
+  catalogue. A permission the App requests and the installation does not hold
+  is a request the org has not accepted; its fix is the installation's
+  permission-update review page.
+* **A status per registered repository**, `ok`, `missing` or `unknown`, with
+  each problem's plain-words consequence. An installation-backed repository
+  takes its org's gaps, and under an installation limited to selected
+  repositories one `GET /repos/{o}/{r}/installation` says whether it is among
+  them. A token-backed repository (an owner reached by a fallback token, or
+  none enabled) reports what the token probe measured for the token R2
+  resolves to there (`git_token_checks`); the probe gained the
+  `read_statuses` row for exactly this read.
+
+**A fix is always a link.** GitHub has no API through which an App widens
+its own permissions or accepts a request on an org's behalf: both are a
+person on a GitHub settings page. So SwarmCloud grants nothing and stores
+nothing here, and every GitHub call is a read.
+
+**The App's settings link is an admin's.** Only the App's owner can change
+what it requests, so its URL is in the answer for a platform admin and
+omitted -- not hidden by the console -- for anyone else. An org's review link
+goes to everyone: the person who sees it is often the org owner who can
+accept.
+
+**Unknown is never ok.** The App not configured, its key missing or refused,
+GitHub not answering, the 20-second budget spent, a token never probed: each
+is `unknown` with a fixed reason word, never green, never a 500, and never
+GitHub's body. A minute's per-tenant cache answers the console's re-check on
+returning to the tab; `?refresh=true` (its Re-check button, pressed after
+accepting on GitHub) always reads GitHub again.
+
 ---
 
 ## 3. Data model, API, the worker's credential, Terraform
@@ -397,6 +449,7 @@ Every route below is additive: nothing existing changes shape.
 | `DELETE /v1/access/grants/{repo_id}` | revoke the grant |
 | `POST /v1/access/grants/{repo_id}/verify` | {checks?}: run clone, push, pull_request now |
 | `GET /v1/access/members` | admin: every member's connection state and grants |
+| `GET /v1/forge/permissions` | ?refresh=true: the App's and each org's permission gaps, a status per repository (§2.6) |
 
 **Every route above is served (2026-10-09).** Two late additions:
 `POST /v1/access/orgs/{owner}/install-request` records an install request

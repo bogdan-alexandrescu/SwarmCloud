@@ -264,7 +264,7 @@ describe('Git tokens are cards by scope (pick B)', () => {
 const CAP_OK = { state: 'ok', reason: 'Measured by a read the token was allowed to make' }
 const CAP_UNK = { state: 'unknown', reason: 'Fine-grained grants are not readable from the API; the role allows it' }
 const allCaps = (over: Record<string, unknown> = {}) => ({
-  clone: CAP_OK, push: CAP_OK, open_prs: CAP_UNK, read_checks: CAP_OK, merge: CAP_UNK, close_issues: CAP_UNK, read_issues: CAP_OK, workflow_dispatch: CAP_UNK, ...over,
+  clone: CAP_OK, push: CAP_OK, open_prs: CAP_UNK, read_checks: CAP_OK, read_statuses: CAP_OK, merge: CAP_UNK, close_issues: CAP_UNK, read_issues: CAP_OK, workflow_dispatch: CAP_UNK, ...over,
 })
 
 const PERMS = {
@@ -304,7 +304,7 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
     expect(visible(document.querySelector('.c-phead .c-acts'))).toContain('order R2')
     expect(visible(document.querySelector('.c-phead'))).not.toContain('tokens ×')
     const heads = Array.from(document.querySelectorAll('table.ur-mx thead th')).map((t) => visible(t))
-    expect(heads).toEqual(['Token', 'Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch', 'Expires in', 'Verified'])
+    expect(heads).toEqual(['Token', 'Clone', 'Push branches', 'Open PRs', 'Read checks', 'Read statuses', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch', 'Expires in', 'Verified'])
     expect(Array.from(document.querySelectorAll('tr.ur-grp')).map((g) => visible(g))).toEqual(['example-org/example-api', 'example-org/example-web'])
     expect(visible(gridRows()[0]!.cells[0]!)).toBe('example-api-bot · repository resolves')
     expect(visible(gridRows()[1]!.cells[0]!)).toBe('eng-swarm-bot · tenant')
@@ -316,17 +316,17 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
     await waitFor(() => expect(gridRows()).toHaveLength(3), WAIT)
     const cell = (r: number, c: number) => gridRows()[r]!.cells[c]!.querySelector<HTMLElement>('.ur-cap')!
     expect(cell(0, 1).getAttribute('data-cap')).toBe('ok')
-    expect(cell(0, 5).getAttribute('data-cap')).toBe('missing')
-    expect(cell(0, 5).getAttribute('title')).toBe('Merge: missing. The branch rules on main allow merges only by the merge App')
+    expect(cell(0, 6).getAttribute('data-cap')).toBe('missing')
+    expect(cell(0, 6).getAttribute('title')).toBe('Merge: missing. The branch rules on main allow merges only by the merge App')
     expect(cell(0, 3).getAttribute('data-cap')).toBe('unknown')
     expect(visible(cell(0, 3))).toBe('unknown')
     expect(cell(1, 2).getAttribute('data-cap')).toBe('missing')
     // The web row served only clone: every other cell is unknown, not ok.
-    expect([2, 3, 4, 5, 6, 7, 8].map((c) => cell(2, c).getAttribute('data-cap'))).toEqual(Array(7).fill('unknown'))
-    expect(visible(gridRows()[0]!.cells[9]!)).toBe('41 d')
-    expect(visible(gridRows()[1]!.cells[9]!)).toBe('9 d')
-    expect(gridRows()[1]!.cells[9]!.querySelector('[data-tone]')?.getAttribute('data-tone')).toBe('warn')
-    expect(visible(gridRows()[0]!.cells[10]!)).toBe('3h ago')
+    expect([2, 3, 4, 5, 6, 7, 8, 9].map((c) => cell(2, c).getAttribute('data-cap'))).toEqual(Array(8).fill('unknown'))
+    expect(visible(gridRows()[0]!.cells[10]!)).toBe('41 d')
+    expect(visible(gridRows()[1]!.cells[10]!)).toBe('9 d')
+    expect(gridRows()[1]!.cells[10]!.querySelector('[data-tone]')?.getAttribute('data-tone')).toBe('warn')
+    expect(visible(gridRows()[0]!.cells[11]!)).toBe('3h ago')
     expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
   })
 
@@ -371,10 +371,10 @@ describe('the permission matrix is a grid of tokens × repositories (pick A)', (
     await waitFor(() => expect(gridRows()).toHaveLength(3), WAIT)
     const sheets = ALL.map(([, t]) => t).join('\n')
     const heads = Array.from(document.querySelectorAll<HTMLElement>('table.ur-mx thead th'))
-    const caps = heads.slice(1, 9)
-    expect(caps.map((h) => visible(h))).toEqual(['Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch'])
+    const caps = heads.slice(1, 10)
+    expect(caps.map((h) => visible(h))).toEqual(['Clone', 'Push branches', 'Open PRs', 'Read checks', 'Read statuses', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch'])
     // Each nowrap head held its whole label on one line, which is what pushed the
-    // table 18 px past its card at 1440. The eight capability heads now wrap and
+    // table 18 px past its card at 1440. The nine capability heads now wrap and
     // their columns are 72 px, free to shrink to it.
     for (const h of caps) {
       expect(cascade(sheets, h, 'white-space', { width: 1440 }).winner?.value).toBe('normal')

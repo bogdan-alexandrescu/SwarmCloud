@@ -307,3 +307,138 @@ class GitHubWrites:
             "output": output or {"title": None, "summary": None, "text": None},
         })
         return run_id
+
+
+# -- GitHub as the App sees it (#1086, forge permissions) -----------------------
+
+
+def app_key() -> tuple[str, Any]:
+    """A throwaway App private key, built at runtime: no PEM is ever in the
+    repository. Returns the PEM and the public half GitHub would hold."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                            serialization.NoEncryption()).decode()
+    return pem, key.public_key()
+
+
+class AppKey:
+    """`forgeapp.AppSecrets` holding only the App's private key (None: no version)."""
+
+    def __init__(self, pem: str | None) -> None:
+        self.pem = pem
+
+    def client_secret(self) -> str:
+        from swarm_api.forgeapp import AppNotConfigured
+
+        raise AppNotConfigured("the client secret is not read by this test")
+
+    def private_key(self) -> str:
+        from swarm_api.forgeapp import AppNotConfigured
+
+        if not self.pem:
+            raise AppNotConfigured("the private key has no version")
+        return self.pem
+
+
+class AppGitHub:
+    """api.github.com's App reads, as `forgeapp.HttpSend` sees them.
+
+    `GET /app` answers the App and its requested `permissions`; `GET
+    /app/installations` pages `installations` (each `{id, account, permissions,
+    repository_selection}`); `GET /repos/{o}/{r}/installation` answers the
+    installation whose `repositories` (lower-cased `owner/repo`) include it, or
+    404. Each answer is refused (401) unless its JWT verifies against
+    `public_key`. `down` makes every request a network error; `echo` puts a
+    marker in every body, so a test can show no body reaches a response.
+    """
+
+    def __init__(self, public_key: Any, *, slug: str = "swarmcloud", owner: str = "saga",
+                 owner_type: str = "Organization",
+                 requested: dict[str, str] | None = None) -> None:
+        self.public_key = public_key
+        self.slug = slug
+        self.owner = owner
+        self.owner_type = owner_type
+        self.requested = dict(requested or {})
+        self.installations: list[dict[str, Any]] = []
+        #: installation id -> lower-cased `owner/repo` it covers when selected.
+        self.repositories: dict[int, set[str]] = {}
+        self.down = False
+        self.echo = "github-body-" + secrets.token_hex(6)
+        self.calls: list[tuple[str, str, dict[str, str]]] = []
+        self.jwts: list[str] = []
+
+    def install(self, installation_id: int, login: str, permissions: dict[str, str], *,
+                kind: str = "Organization", selection: str = "all",
+                repositories: tuple[str, ...] = ()) -> dict[str, Any]:
+        item = {"id": installation_id, "account": {"login": login, "type": kind},
+                "permissions": dict(permissions), "repository_selection": selection,
+                "suspended_at": None, "access_tokens_url": "https://api.github.com/x"}
+        self.installations.append(item)
+        self.repositories[installation_id] = {r.lower() for r in repositories}
+        return item
+
+    def paths(self) -> list[str]:
+        return [urlparse(url).path for _, url, _ in self.calls]
+
+    def _answer(self, status: int, data: Any):
+        from swarm_api.forgeapp import HttpAnswer
+
+        if isinstance(data, dict):
+            data = {**data, "description": self.echo}
+        return HttpAnswer(status, {"content-type": "application/json"},
+                          json.dumps(data).encode())
+
+    def _verified(self, headers: dict[str, str]) -> bool:
+        import base64
+
+        from cryptography.hazmat.primitives import hashes
+        from cryptography.hazmat.primitives.asymmetric import padding
+
+        jwt = headers.get("Authorization", "").removeprefix("Bearer ")
+        self.jwts.append(jwt)
+        try:
+            head, claims, signature = jwt.split(".")
+            raw = base64.urlsafe_b64decode(signature + "=" * (-len(signature) % 4))
+            self.public_key.verify(raw, f"{head}.{claims}".encode(), padding.PKCS1v15(),
+                                   hashes.SHA256())
+        except Exception:
+            return False
+        return True
+
+    def __call__(self, method: str, url: str, headers: dict[str, str], body: bytes | None,
+                 timeout: float):
+        self.calls.append((method, url, dict(headers)))
+        if self.down:
+            raise OSError("connection reset by " + self.echo)
+        if method != "GET":
+            return self._answer(405, {"message": "only reads here"})
+        if not self._verified(headers):
+            return self._answer(401, {"message": "A JSON web token could not be decoded"})
+        parsed = urlparse(url)
+        path = parsed.path
+        if path == "/app":
+            return self._answer(200, {"id": 12345, "slug": self.slug, "name": "SwarmCloud",
+                                      "owner": {"login": self.owner, "type": self.owner_type},
+                                      "permissions": dict(self.requested)})
+        if path == "/app/installations":
+            query = parse_qs(parsed.query)
+            page = int(query.get("page", ["1"])[0])
+            per_page = int(query.get("per_page", ["30"])[0])
+            chunk = self.installations[(page - 1) * per_page: page * per_page]
+            return self._answer(200, [dict(i, description=self.echo) for i in chunk])
+        parts = path.strip("/").split("/")
+        if len(parts) == 4 and parts[0] == "repos" and parts[3] == "installation":
+            repository = f"{parts[1]}/{parts[2]}".lower()
+            for item in self.installations:
+                login = item["account"]["login"].lower()
+                if login != parts[1].lower():
+                    continue
+                if item["repository_selection"] == "all" \
+                        or repository in self.repositories.get(item["id"], set()):
+                    return self._answer(200, {"id": item["id"]})
+            return self._answer(404, {"message": "Not Found"})
+        return self._answer(404, {"message": "Not Found"})

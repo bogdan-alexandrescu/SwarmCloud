@@ -337,16 +337,18 @@ describe('Settings A: schedule, languages, graph, selection policy, and the toke
     expect(tokenShapedIn(document.documentElement.outerHTML)).toEqual([])
   })
 
-  it('the capability row: eight capabilities, an unknown or unrecognised one grey with its reason, never ok', async () => {
+  it('the capability row: nine capabilities, an unknown or unrecognised one grey with its reason, never ok', async () => {
     routes()
     await mount('settings')
     await loaded()
     await waitFor(() => expect(document.querySelector('.ur-tokrow')).not.toBeNull(), WAIT)
     const caps = Array.from(document.querySelectorAll<HTMLElement>('.ur-tokrow .ur-cap'))
-    expect(caps.map((c) => visible(c))).toEqual(['Clone', 'Push branches', 'Open PRs', 'Read checks', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch'])
-    expect(caps.map((c) => c.getAttribute('data-cap'))).toEqual(['ok', 'ok', 'unknown', 'ok', 'missing', 'unknown', 'ok', 'unknown'])
-    expect(caps[4]!.getAttribute('title')).toBe('Merge: missing. The branch rules restrict merges on main to the merge App')
-    expect(caps[7]!.getAttribute('title')).toBe('Workflow dispatch: unknown. Not served for this pair')
+    expect(caps.map((c) => visible(c))).toEqual(['Clone', 'Push branches', 'Open PRs', 'Read checks', 'Read statuses', 'Merge', 'Close issues', 'Read issues', 'Workflow dispatch'])
+    expect(caps.map((c) => c.getAttribute('data-cap'))).toEqual(['ok', 'ok', 'unknown', 'ok', 'unknown', 'missing', 'unknown', 'ok', 'unknown'])
+    // A probe stored before read_statuses (#1086) has no such row: grey, never ok.
+    expect(caps[4]!.getAttribute('title')).toBe('Read statuses: unknown. Not served for this pair')
+    expect(caps[5]!.getAttribute('title')).toBe('Merge: missing. The branch rules restrict merges on main to the merge App')
+    expect(caps[8]!.getAttribute('title')).toBe('Workflow dispatch: unknown. Not served for this pair')
   })
 
   it('a region whose route is not there yet names its route; the others still draw', async () => {

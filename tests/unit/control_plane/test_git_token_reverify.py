@@ -154,10 +154,11 @@ DEFAULT = token_id_for("eng", "tenant", "")
 
 
 def test_the_pass_is_sized_as_section_5_3_says() -> None:
-    # Forty repositories x three tokens, each pair at most eight GETs: under a
-    # thousand requests a day, against GitHub's 5,000 an hour per token.
+    # Forty repositories x three tokens, each pair at most nine GETs (eight
+    # until #1086 added the commit-status read): 1,080 requests a day at
+    # most, against GitHub's 5,000 an hour per token.
     assert REVERIFY_MAX_PAIRS == 40 * 3
-    assert REVERIFY_MAX_PAIRS * MAX_GETS_PER_REPOSITORY < 1000
+    assert REVERIFY_MAX_PAIRS * MAX_GETS_PER_REPOSITORY <= 1080
     assert REVERIFY_EVERY == timedelta(days=1)
     assert REVERIFY_RETRY < REVERIFY_EVERY
 
@@ -180,7 +181,7 @@ def test_each_pair_is_probed_at_most_once_a_day(db, registry, slots, fake, clock
             assert report.pairs == 3
     # Twice in two days and a tick: at T0, and the first tick a day later.
     assert probed_at["default"] == [T0, T0 + REVERIFY_EVERY, T0 + 2 * REVERIFY_EVERY]
-    # The GETs a day cost: at most eight per pair (the account read included).
+    # The GETs a day cost: at most nine per pair (the account read included).
     assert len(fake.calls) <= 3 * len(targets) * MAX_GETS_PER_REPOSITORY
     for _, repository in targets:
         doc = pair_doc(db, DEFAULT, repo_id_for("eng", repository))
@@ -306,7 +307,7 @@ def test_the_pair_cap_leaves_the_rest_for_the_next_pass(db, registry, slots, fak
     assert first.deferred == total - REVERIFY_MAX_PAIRS == 5
     written = [path for path in db.docs if path.startswith(CHECKS_COLLECTION + "/")]
     assert len(written) == REVERIFY_MAX_PAIRS
-    # The GETs one pass may cost: eight per pair at most.
+    # The GETs one pass may cost: nine per pair at most.
     assert len(fake.calls) <= REVERIFY_MAX_PAIRS * MAX_GETS_PER_REPOSITORY
 
 

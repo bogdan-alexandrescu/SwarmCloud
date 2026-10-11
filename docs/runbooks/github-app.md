@@ -133,6 +133,12 @@ No access):
 * Pull requests: Read and write -- open and update the task's pull request
 * Issues: Read and write -- the issue-run comments (#454)
 * Checks: Read-only -- the merge step's CI wait
+* Commit statuses: Read-only -- the merge step reads the combined status at
+  the head (`GET /commits/{sha}/status`); without it merges fail
+  `token_lacks_rights` (sagaxyz/ai-studio, 2026-10-11, #1086). An App
+  registered before this line asks for it on its permissions page, and each
+  org then accepts it on its installation's review page; `GET
+  /v1/forge/permissions` lists the orgs that have not accepted it
 * Metadata: Read-only -- mandatory, GitHub sets it
 * Workflows: No access -- a push that changes `.github/workflows/` needs it,
   and it is the permission org admins refuse most; D8 makes it a separate

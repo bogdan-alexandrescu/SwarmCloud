@@ -875,12 +875,17 @@ export function normTokens(v: unknown): GitToken[] {
   return rows.map(normToken).filter((t): t is GitToken => t !== null)
 }
 
-/** The eight capabilities of git-tokens.md §5.1, in the frames' column order. */
+/**
+ * The nine capabilities of git-tokens.md §5.1, in the frames' column order.
+ * `read_statuses` (#1086) is the combined commit status merges read: a closed
+ * list, so a row the probe serves and this list lacks is never drawn.
+ */
 export const CAPABILITIES = [
   { key: 'clone', label: 'Clone' },
   { key: 'push', label: 'Push branches' },
   { key: 'open_prs', label: 'Open PRs' },
   { key: 'read_checks', label: 'Read checks' },
+  { key: 'read_statuses', label: 'Read statuses' },
   { key: 'merge', label: 'Merge' },
   { key: 'close_issues', label: 'Close issues' },
   { key: 'read_issues', label: 'Read issues' },

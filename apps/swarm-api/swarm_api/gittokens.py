@@ -1085,7 +1085,7 @@ def resolve_r2(
 # the probe: what a token can do, per repository (§5; lane GT2a)
 # --------------------------------------------------------------------------
 #
-# EIGHT READERS, EACH A NON-MUTATING READ. Every request is a GET, to
+# NINE READERS, EACH A NON-MUTATING READ. Every request is a GET, to
 # api.github.com or (for the push advertisement) github.com, and nothing
 # else: `forge.may_receive_forge_token` is asked before each one. The reads a
 # reader shares are made once per repository, so a token x repository costs
@@ -1114,6 +1114,11 @@ CAPABILITIES = (
     "push",
     "open_pull_requests",
     "read_checks",
+    # The combined commit status merges read at the pull request's head
+    # (agent_worker/merge.py, `GET /commits/{sha}/status`). Its own row since
+    # #1086: on 2026-10-11 sagaxyz/ai-studio merges failed token_lacks_rights
+    # on exactly this read while check runs were readable.
+    "read_statuses",
     "merge",
     "close_issues",
     "read_issues",
@@ -1124,10 +1129,12 @@ OK = "ok"
 MISSING = "missing"
 UNKNOWN = "unknown"
 
-#: §5.3: "a probe is at most eight GETs". The repository, the push
-#: advertisement, check runs, branch rules, issues, workflows (fine-grained
-#: only) and the account read, which is made once per token.
-MAX_GETS_PER_REPOSITORY = 8
+#: §5.3: "a probe is at most nine GETs". The repository, the push
+#: advertisement, check runs, the combined commit status (#1086: its own GET,
+#: since no other read answers whether statuses are readable), branch rules,
+#: issues, workflows (fine-grained only) and the account read, which is made
+#: once per token. Was eight before `read_statuses`.
+MAX_GETS_PER_REPOSITORY = 9
 
 #: The repositories a record remembers by name, so an unscoped verify knows
 #: what to probe. Past it the oldest-named are still covered, just not
@@ -1410,7 +1417,7 @@ def _api(owner: str, repo: str, path: str = "") -> str:
 
 
 class _Repository:
-    """The facts the eight readers share for one repository."""
+    """The facts the nine readers share for one repository."""
 
     def __init__(self, forge: _Forge, repository: str, kind: str | None) -> None:
         self.forge = forge
@@ -1539,6 +1546,26 @@ def read_read_checks(r: _Repository, clone: Check) -> Check:
     return _odd(answer, f"check runs on {branch}")
 
 
+def read_read_statuses(r: _Repository, clone: Check) -> Check:
+    """The combined commit status on the default branch: the read a merge
+    makes at the pull request's head (#1086). GitHub answers 200 with an
+    empty list for a commit nobody reported on, so a 200 is the permission
+    and a 403 or 404 is its absence."""
+    carried = _needs(clone, "clone")
+    if carried:
+        return carried
+    branch = r.default_branch
+    answer = r.forge.get(
+        _api(r.owner, r.name, f"commits/{_quote(branch, safe='')}/status?per_page=1"),
+        f"/repos/{r.repository}/commits/{branch}/status",
+    )
+    if answer.status == 200:
+        return Check(OK, f"commit statuses on {branch} are readable", answer.evidence)
+    if answer.status in (401, 403, 404):
+        return _refused(answer, f"commit statuses on {branch}")
+    return _odd(answer, f"commit statuses on {branch}")
+
+
 def read_merge(r: _Repository, push: Check) -> Check:
     carried = _needs(push, "push")
     if carried:
@@ -1642,6 +1669,7 @@ def _probe_repository(forge: _Forge, repo_id: str, repository: str,
     if clone is not None:
         push = attempt("push", lambda: read_push(r, clone))
         attempt("read_checks", lambda: read_read_checks(r, clone))
+        attempt("read_statuses", lambda: read_read_statuses(r, clone))
         attempt("close_issues", lambda: read_close_issues(r, clone))
         attempt("read_issues", lambda: read_read_issues(r, clone))
         attempt("workflow_dispatch", lambda: read_workflow_dispatch(r, clone))
@@ -1666,7 +1694,7 @@ def probe_token(
     budget_seconds: float = PROBE_BUDGET_SECONDS,
     timeout: float = PROBE_TIMEOUT_SECONDS,
 ) -> ProbeResult:
-    """Probe one token: the account it acts as, its expiry, and §5.1's eight
+    """Probe one token: the account it acts as, its expiry, and §5.1's nine
     rows for each `(repo_id, "owner/repo")`. GETs only; nothing is written.
 
     The value is registered with the redaction filter before the first
@@ -2187,7 +2215,7 @@ def _pair_api(doc: dict[str, Any]) -> dict[str, Any]:
 
 def probe_summary(record: GitTokenRecord, pair_docs: Iterable[dict[str, Any]]) -> dict[str, Any]:
     """What the permission matrix (A) reads for one token: per repository,
-    the eight rows with state, reason and evidence, and the probe's status."""
+    the nine rows with state, reason and evidence, and the probe's status."""
     rows = [_pair_api(doc) for doc in pair_docs
             if doc.get("token_id") == record.token_id and doc.get("tenant_id") == record.tenant_id]
     rows.sort(key=lambda row: (row["repository"] or "", row["repo_id"] or ""))
@@ -2229,8 +2257,9 @@ REVERIFY_EVERY = timedelta(days=1)
 REVERIFY_RETRY = timedelta(hours=1)
 #: §5.3 sizes the platform at forty repositories x three tokens (the
 #: repository's, the tenant default and a user's): one pass probes at most
-#: that many pairs, so even a pass that finds every pair due stays under
-#: 1,000 GETs (x MAX_GETS_PER_REPOSITORY), against GitHub's 5,000 an hour per
+#: that many pairs, so even a pass that finds every pair due stays at or
+#: under 1,080 GETs (x MAX_GETS_PER_REPOSITORY, nine since #1086's
+#: commit-status read; 960 before it), against GitHub's 5,000 an hour per
 #: token. A tenant past it is caught up over the next passes, stalest first.
 REVERIFY_REPOSITORIES = 40
 REVERIFY_TOKENS_PER_REPOSITORY = 3

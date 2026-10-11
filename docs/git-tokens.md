@@ -22,7 +22,7 @@ What the design settles, in one line each:
   with what each costs. When nothing fits, the task parks
   `CREDENTIAL_MISSING`, at no cost, as it does today (§3).
 * **What a token can do is computed server-side and served as labels**:
-  per token and repository, eight capabilities as `ok` / `missing` /
+  per token and repository, nine capabilities as `ok` / `missing` /
   `unknown`, each with its reason, plus "expires in N days" and "last
   verified". The token itself is never returned, logged or rendered (§5, §6).
 * **Phase 1 needs no frozen-contract change**: the registry, the probe and the
@@ -358,6 +358,7 @@ of `ok` / `missing` / `unknown` with a one-line reason:
 | **push branches** | publishing steps | the repository's `permissions.push`, and for a classic PAT the `repo` (or, public only, `public_repo`) scope; confirmed by asking for the push service advertisement (`info/refs?service=git-receive-pack`), which GitHub answers only for a credential that may push and which writes nothing |
 | **open pull requests** | publishing steps | `pull_requests: write` in an App token's permissions; for a classic PAT, `repo` scope plus push; for a fine-grained PAT, `unknown` (§5.2) |
 | **read checks** | the merge step, the selected-tests gate | `GET /repos/{o}/{r}/commits/{default_branch}/check-runs?per_page=1`: 200 `ok`, 403 `missing` |
+| **read statuses** | the merge step (#1086) | `GET /repos/{o}/{r}/commits/{default_branch}/status?per_page=1`, the combined status merges read at the head: 200 `ok`, 403 `missing`. Added 2026-10-11 after sagaxyz/ai-studio merges failed `token_lacks_rights` on this read |
 | **merge** | the merge step | push, plus the branch rules (`GET /repos/{o}/{r}/rules/branches/{base}`) not restricting merges to other actors; `missing` when a rule names a bypass list the token's actor is not on |
 | **close issues** | issue runs that close their issue | `issues: write` in an App token's permissions; classic `repo` with triage or above; fine-grained `unknown` |
 | **read issues** | issue runs | `GET /repos/{o}/{r}/issues?per_page=1`: 200 `ok`; 410 `missing` with "issues are disabled on this repository" |
@@ -392,8 +393,9 @@ A token is re-verified on registration and on rotation; then daily per token
 × repository it covers, in the same scheduler pass as the repository poll
 ([repo-index.md §3.3](repo-index.md)); on demand from the console's "Verify
 now"; and on the next pass after a worker reports a 401 or 403 from the forge
-for it. A probe is at most eight GETs; forty repositories × three tokens is
-under a thousand requests a day, against GitHub's 5,000 an hour per token.
+for it. A probe is at most nine GETs (eight until #1086 added the
+commit-status read, `read_statuses`); forty repositories × three tokens is at
+most 1,080 requests a day, against GitHub's 5,000 an hour per token.
 "last verified" is the time of the last complete probe; a probe that could
 not run (the forge unreachable) leaves the previous answer with "last
 verified 3 days ago — the last attempt failed: …" rather than turning rows
@@ -440,7 +442,7 @@ indistinguishable from a missing one.
 | `PUT /v1/git-tokens/{token_id}/value` | only if §4.2 is allowed: the value, once; answers `last4` and the probe |
 | `POST /v1/git-tokens/{token_id}:verify` | re-probe now |
 | `DELETE /v1/git-tokens/{token_id}` | revoke: the record becomes `revoked` and the secret's versions are disabled; typed confirmation in the console |
-| `GET /v1/git-tokens/permissions?repo_id=` | the matrix: per token × repository, the eight capabilities with state and reason, `expires_at`, `verified_at` |
+| `GET /v1/git-tokens/permissions?repo_id=` | the matrix: per token × repository, the nine capabilities with state and reason, `expires_at`, `verified_at` |
 | `GET /v1/repositories/{repo_id}/token?user=me` | which token resolves for this repository (under the picked order, §3.1) and its capability row |
 | `POST /v1/git-tokens:check` | `{"repo_id": "...", "capability": "merge"}` → the answer, the token that would be used, and why |
 

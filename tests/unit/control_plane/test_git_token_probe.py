@@ -2,10 +2,10 @@
 
 What is held here:
 
-  * each of §5.1's eight capability readers maps the forge's answers to
+  * each of §5.1's nine capability readers maps the forge's answers to
     `ok` / `missing` / `unknown`, a 403 and a network error included;
   * a probe is GETs only, to api.github.com and github.com only, at most
-    eight per token x repository;
+    nine per token x repository;
   * the expiry header is parsed, and a passed expiry makes the record
     `expired`;
   * `last verified` moves only on a COMPLETE probe; a partial one keeps the
@@ -95,6 +95,8 @@ def key_of(url: str) -> str:
         return "orgs"
     if path.endswith("/check-runs"):
         return "checks"
+    if re.fullmatch(r"/repos/[^/]+/[^/]+/commits/[^/]+/status", path):
+        return "statuses"
     if "/rules/branches/" in path:
         return "rules"
     if path.endswith("/issues"):
@@ -109,7 +111,7 @@ def key_of(url: str) -> str:
 class ProbeForge:
     """api.github.com and github.com as the probe sees them, in memory.
 
-    `status` maps a read (`repo`, `receive_pack`, `checks`, `rules`, `issues`,
+    `status` maps a read (`repo`, `receive_pack`, `checks`, `statuses`, `rules`, `issues`,
     `workflows`, `user`, `orgs`) to the status it answers; `raises` maps one
     to an exception the transport raises; `body` overrides one's JSON.
     `orgs` is the logins `GET /user/orgs` lists, paged as GitHub pages.
@@ -168,6 +170,7 @@ class ProbeForge:
                 "repo": self.repo,
                 "receive_pack": None,
                 "checks": {"total_count": 0, "check_runs": []},
+                "statuses": {"state": "pending", "total_count": 0, "statuses": []},
                 "rules": [],
                 "issues": [],
                 "workflows": {"total_count": 0, "workflows": []},
@@ -192,14 +195,14 @@ def states(result) -> dict[str, str | None]:
 # -- the shape of a probe ----------------------------------------------------
 
 
-def test_a_healthy_classic_token_is_ok_everywhere_in_at_most_eight_gets() -> None:
+def test_a_healthy_classic_token_is_ok_everywhere_in_at_most_nine_gets() -> None:
     fake = ProbeForge()
     result = run(classic_value(), fake)
     assert result.complete and result.error is None
-    assert set(checks(result)) == set(CAPABILITIES) and len(CAPABILITIES) == 8
+    assert set(checks(result)) == set(CAPABILITIES) and len(CAPABILITIES) == 9
     assert states(result) == {cap: "ok" for cap in CAPABILITIES}
     assert result.kind == "classic_pat" and result.forge_login == "swarm-bot"
-    assert len(fake.calls) <= MAX_GETS_PER_REPOSITORY == 8
+    assert len(fake.calls) <= MAX_GETS_PER_REPOSITORY == 9
     for method, url, _ in fake.calls:
         assert method == "GET"
         assert forge.may_receive_forge_token(url), url
@@ -305,6 +308,34 @@ def test_read_checks_reader() -> None:
     down = run(classic_value(), ProbeForge(raises={"checks": OSError()}))
     assert not down.complete and states(down)["read_checks"] is None
     assert states(down)["read_issues"] == "ok"
+
+
+# -- read statuses (#1086) --------------------------------------------------------
+
+
+def test_read_statuses_is_probed_and_a_403_is_missing() -> None:
+    # The combined commit status is the read merges make at the head; on
+    # 2026-10-11 its absence failed sagaxyz/ai-studio merges token_lacks_rights
+    # while check runs were readable. So a 403 on it alone is `missing` on
+    # its own row, and check runs stay ok.
+    fake = ProbeForge()
+    assert checks(run(classic_value(), fake))["read_statuses"].state == "ok"
+    (status_call,) = [(m, u) for m, u, _ in fake.calls if key_of(u) == "statuses"]
+    assert status_call[0] == "GET"
+    assert urlparse(status_call[1]).path == "/repos/saga-xyz/widgets/commits/main/status"
+    refused = run(classic_value(), ProbeForge(status={"statuses": 403}))
+    assert checks(refused)["read_statuses"].state == "missing"
+    assert "403" in checks(refused)["read_statuses"].evidence
+    assert checks(refused)["read_checks"].state == "ok"
+    assert refused.complete
+    # A read that did not come back is not an answer.
+    down = run(classic_value(), ProbeForge(raises={"statuses": OSError()}))
+    assert not down.complete and states(down)["read_statuses"] is None
+    # Nothing is asked for a repository the token cannot see.
+    unseen = ProbeForge(status={"repo": 404})
+    gone = run(classic_value(), unseen)
+    assert checks(gone)["read_statuses"].state == "missing"
+    assert "statuses" not in unseen.keys()
 
 
 # -- merge ----------------------------------------------------------------------------
@@ -640,7 +671,7 @@ def test_list_and_record_carry_the_probe_summaries(probe_client, slots) -> None:
     one = probe_client.get(f"/v1/git-tokens/{token_id}", headers=auth_header("alice")).json()["token"]
     for token in (by_id[token_id], one):
         (row,) = token["probe"]["repositories"]
-        assert row["summary"] == {"ok": 8, "missing": 0, "unknown": 0}
+        assert row["summary"] == {"ok": 9, "missing": 0, "unknown": 0}
         assert set(row["capabilities"]) == set(CAPABILITIES)
         for cell in row["capabilities"].values():
             assert set(cell) >= {"state", "reason", "evidence", "verified_at"}
