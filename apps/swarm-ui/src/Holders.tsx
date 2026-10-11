@@ -367,7 +367,12 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
     return (
       <section className="ctl-card hold-drift">
         <DriftHead note="not compared" />
-        <div className="ctl-card-body">
+        {/* ONE LINE, NOT A FIGURE AND A CHIP ADRIFT (visual QA V019,
+            2026-10-11): the dash sat alone on a figure line with the mark
+            under it in an otherwise empty card. The dash, the mark and what
+            they mean read left to right, the way a filled card's figure and
+            its qualifier do. */}
+        <div className="ctl-card-body hold-unread">
           <b
             className="ctl-figure is-absent"
             role="img"
@@ -375,9 +380,8 @@ function Drift({ board, coverage, rows }: { board: HoldersBoard; coverage: Lease
           >
             <span className="ctl-em">—</span>
           </b>
-          <div className="hold-mark">
-            <span className="ctl-mark is-unread">not read</span>
-          </div>
+          <span className="ctl-mark is-unread">not read</span>
+          <p>No pool was compared: the leases were read, the pool counters were not.</p>
         </div>
         <div className="ctl-card-foot">
           leases read · counters unread · {board.poolsDetail ?? 'the pool read did not complete'}

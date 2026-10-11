@@ -33,11 +33,18 @@
 
 /* The issue as read: a card inside the move. */
 .in-preview {
-  display: grid; gap: 8px; margin-top: 12px; min-width: 0;
+  /* ONE TRACK OF THE CARD'S WIDTH, NEVER ITS LONGEST WORD'S (VQA V003). An
+     `auto` track grew to the min-content of an unbroken title, reference,
+     label or URL: at 400px the card was cut off and unscrollable, at 1440 it
+     ran under the send panel. Its text wraps anywhere instead. */
+  display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; margin-top: 12px; min-width: 0;
+  overflow-wrap: anywhere;
   border: 1px solid var(--line); border-radius: var(--radius);
   background: var(--surface-2);
   padding: 12px 14px;
 }
+.in-preview > h3, .in-preview .in-meta { overflow-wrap: anywhere; }
+.in-preview .c-tag { max-width: 100%; white-space: normal; overflow-wrap: anywhere; }
 .in-preview > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; color: var(--text); }
 .in-meta {
   margin: 0; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
@@ -134,7 +141,10 @@
   background: var(--surface); color: var(--text);
   font-size: var(--t-meta); line-height: var(--lh-meta);
 }
-.in-rounds[aria-invalid='true'] { border-color: var(--warn-ink); }
+/* THE ERROR EDGE EVERY OTHER FIELD ON THESE FORMS HAS (VQA V132): `--warn`,
+   the field editor's (`.sbf-field [aria-invalid]`), doubled by an inset ring
+   so it reads as a state and not as a slightly different hairline. */
+.in-choice > .in-rounds[aria-invalid='true'] { border-color: var(--warn); box-shadow: inset 0 0 0 1px var(--warn); }
 
 /* ==========================================================================
    WORK › RUNS
