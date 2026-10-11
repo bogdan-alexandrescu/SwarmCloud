@@ -593,7 +593,8 @@ def test_the_policy_is_one_allowlist_with_a_named_denylist():
     paths = PolicyPaths(downloads_dir=Path("/run/downloads"), uploads_dir=Path("/run/uploads"))
     assert cdppolicy.check("Page.navigate", {"url": "https://example.com/"}, paths) is None
     for method in cdppolicy.DENIED:
-        refusal = cdppolicy.check(method, {"proxyServer": "x"} if method.startswith("Target.") else {}, paths)
+        params = {"proxyServer": "x"} if method.startswith("Target.") else {"files": ["/etc/hosts"]}
+        refusal = cdppolicy.check(method, params, paths)
         assert refusal is not None, method
     # A method Chromium adds next year is refused because it is not listed.
     assert cdppolicy.check("Page.someFutureMethod", {}, paths) is not None
