@@ -151,9 +151,13 @@ describe('Pool limits reads who changed a ceiling from the admin pool read (#133
     })
     await rows(capacity([pool('global', 40)]))
     await waitFor(
-      () => expect(lastChanged('global').querySelector('.adm-changed-none')?.getAttribute('title')).toMatch(/admins/i),
+      () => expect(lastChanged('global').querySelector('.adm-record-gap')?.getAttribute('title')).toMatch(/admins/i),
       WAIT,
     )
+    // DRAWN, NOT ONLY TITLED (VQA V078): the blue `admin only` mark, never
+    // the dash that means nobody changed the ceiling.
+    expect(lastChanged('global').textContent).toBe('admin only')
+    expect(lastChanged('global').querySelector('.adm-changed-none')).toBeNull()
     expect(lastChanged('global').textContent).not.toContain('@')
   })
 

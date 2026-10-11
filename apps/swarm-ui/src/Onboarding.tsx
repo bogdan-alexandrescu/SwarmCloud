@@ -302,10 +302,14 @@ function stepBarLabel(doc: OnboardingDoc): string {
   return `${doneCount(doc)} of ${required} ${word}setup steps done`
 }
 
-/** The steps' states as one bar (optional ones too): a glance at how far along this person is. */
+/**
+ * The steps' states as one bar (optional ones too): a glance at how far along this person is. One segment per step
+ * the API sent, on one row: the column count is the step count (visual QA V041), never a fixed six.
+ */
 export function StepBar({ doc }: { doc: OnboardingDoc }) {
+  const n = Math.max(doc.steps.length, 1)
   return (
-    <div className="ob-bar" role="img" aria-label={stepBarLabel(doc)}>
+    <div className="ob-bar" role="img" aria-label={stepBarLabel(doc)} style={{ gridTemplateColumns: `repeat(${n}, minmax(0, 1fr))` }}>
       {doc.steps.map((s) => (
         <i key={s.step} className={`is-${s.state}`} />
       ))}
