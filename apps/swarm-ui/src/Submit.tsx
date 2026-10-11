@@ -101,8 +101,10 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v)
 }
 
+// `method: 'POST'`: a failed submit is a write's failure, and the panel says
+// so rather than "a failure to read the platform" (fetch.ts `ApiError.method`).
 function fail(kind: ApiError['kind'], httpStatus: number | null, message: string): Outcome {
-  return { kind: 'failed', error: { kind, httpStatus, code: null, message } }
+  return { kind: 'failed', error: { kind, httpStatus, code: null, message, method: 'POST' } }
 }
 
 /** POST /v1/tasks. Exported for `submit.errors.test.ts`, which hands it real responses. */
@@ -151,7 +153,7 @@ export async function postTask(body: Record<string, unknown>): Promise<Outcome> 
   // for this task.
   dropRefusedTenant(res.status, code, tenant)
   const ra = Number(res.headers.get('retry-after'))
-  const error = classifyFailure(res.status, { code, message, detail: env.detail }, Number.isFinite(ra) && ra > 0 ? ra : undefined)
+  const error: ApiError = { ...classifyFailure(res.status, { code, message, detail: env.detail }, Number.isFinite(ra) && ra > 0 ? ra : undefined), method: 'POST' }
   return { kind: 'failed', error }
 }
 
