@@ -24,13 +24,14 @@ from typing import Any, Mapping
 from fastapi import APIRouter, Body, Depends, Query
 
 from swarm_common.identity import Principal
-from swarm_common.models import ProviderState, SlotPool, Tenant
+from swarm_common.models import ProviderState, SlotPool, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend
 
 from ..attempt_totals import totals_for, with_totals
 from ..auth import AuthContext
 from ..cifix import postback_tenant as postback_ci_fixes
 from ..codec import (
+    lease_dispatch_overdue,
     lease_to_api,
     pool_attribution,
     pool_to_api,
@@ -533,7 +534,7 @@ def list_leases(
     tenant_id: str | None = Query(default=None),
     active_only: bool = Query(default=True),
     state: str | None = Query(default=None, description="LEASED or DISPATCHED"),
-    overdue_only: bool = Query(default=False, description="dispatch_deadline already passed"),
+    overdue_only: bool = Query(default=False, description="dispatch_deadline passed with no heartbeat and no STARTING/RUNNING task"),
     limit: int | None = Query(default=None, ge=1),
     page_token: str | None = Query(default=None),
     auth: AuthContext = Depends(admin_auth),
@@ -604,15 +605,21 @@ def list_leases(
         wanted = state.strip().upper()
         leases = [x for x in leases if x.state.value == wanted]
     if overdue_only:
+        # The deadline first: it needs no read, and no lease inside it can be
+        # overdue. The rest are judged below, once their tasks are read.
         leases = [x for x in leases if x.dispatch_overdue(now)]
 
-    # One batched read for the error text, not one per row.
+    # One task read per distinct task, for the error text and for
+    # `dispatch_overdue`, which a STARTING or RUNNING task clears (the lease's
+    # own state stops at DISPATCHED -- `codec.lease_dispatch_overdue`).
+    tasks: dict[str, Task | None] = {}
     errors: dict[str, str | None] = {}
     for lease in leases:
         if lease.task_id in errors:
             continue
         try:
             task = ctx.store.get_task(lease.tenant_id, lease.task_id, submitted_by=None)
+            tasks[lease.task_id] = task
             # Masked by the task's own masker, as every task route serves it
             # (the PR #229 review): this row crosses tenants, and `last_error`
             # can be the agent's stderr tail.
@@ -620,11 +627,17 @@ def list_leases(
         except Exception:
             # A lease whose task is gone is itself a finding -- the reconciler
             # calls it task_missing. Do not let it fail the whole listing.
+            tasks[lease.task_id] = None
             errors[lease.task_id] = None
+
+    if overdue_only:
+        leases = [
+            x for x in leases if lease_dispatch_overdue(x, tasks.get(x.task_id), now)
+        ]
 
     rows = []
     for lease in leases:
-        row = lease_to_api(lease)
+        row = lease_to_api(lease, task=tasks.get(lease.task_id), now=now)
         row["last_error"] = errors.get(lease.task_id)
         # Written out rather than `heartbeat_at ?? created_at`: the fallback is
         # a real timestamp for a lease that has never beaten, never 0 and

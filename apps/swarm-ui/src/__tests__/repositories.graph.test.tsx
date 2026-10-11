@@ -193,8 +193,8 @@ describe('the Modules view (Graph A)', () => {
     expect(meta).toContain('23 changes in 90 days')
     expect(meta).toContain('called from 2 modules')
     expect(meta).toContain('test reach 78% of symbols')
-    // Lines per module are not served by the graph: a dash with its reason.
-    expect(inspector().querySelector('.rg-meta .c-dash')?.getAttribute('title')).toMatch(/not served/)
+    // Lines per module are never served by the graph, so no line figure is named (live QA RSA-21).
+    expect(meta).not.toMatch(/\blines\b/)
     await waitFor(() => expect(inspector().querySelectorAll('.rg-sym')).toHaveLength(2), WAIT)
     expect(symbolCalls(calls).some((p) => p.get('q') === 'src/core/orders.py')).toBe(true)
   })

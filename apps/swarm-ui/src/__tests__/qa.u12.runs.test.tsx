@@ -215,7 +215,9 @@ describe('B/R2/D11: the page head never leaves the column', () => {
       const h1 = head.querySelector('h1')!
       // V096: the title takes what the `?` leaves on the first row.
       expect(painted(h1, 'flex', env)).toBe('1 1 0')
-      expect(painted(h1, '-webkit-line-clamp', env)).toBe('2')
+      // Clamped to two lines, except a prose title on a phone, which RT-31
+      // (runs.css) wraps to its end so a touch reader sees all of it.
+      expect(painted(h1, '-webkit-line-clamp', env)).toBe(env === PHONE ? 'unset' : '2')
       expect(h1.getAttribute('title')).toBe(LONG_TITLE)
       // #138: no sub-line; the head's second row is its actions, which take
       // what the row leaves and never pass the column.
