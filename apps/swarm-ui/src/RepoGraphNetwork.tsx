@@ -24,6 +24,14 @@ import { radiusOf } from './RepoGraphLayout'
  * WHERE GRAPHIFY'S CONFIGURATION IS NOT FOLLOWED, AND WHY:
  *   * keyboard navigation is ON (Graphify sets `keyboard: false`): the
  *     canvas takes focus, arrow keys pan, + and - zoom;
+ *   * the mouse wheel is NOT a zoom (`zoomView: false`, visual QA V044):
+ *     vis-network otherwise swallows every wheel event over the canvas, and
+ *     with the pointer there the legend and the page below it could not be
+ *     scrolled to. Zoom is the buttons and the keys; the wheel scrolls;
+ *   * labels are held at the console's 12px on screen, whatever the zoom
+ *     (`labelFont`, V045): Graphify's fixed 12 canvas units printed at about
+ *     8px once the drawing was fitted, and with a halo in the card's colour,
+ *     so an edge or an arrowhead under a label is cut, not printed through;
  *   * colours are the console's tokens, read off <html> at render time and
  *     read again when the theme changes: a canvas cannot read a CSS variable;
  *   * stabilisation yields to the page after every iteration
@@ -38,6 +46,8 @@ import { radiusOf } from './RepoGraphLayout'
 /** The console's colours as concrete values, for a renderer that cannot read `var(--…)`. */
 export interface Tokens {
   surface: string
+  /** The canvas card's ground (`.rg-canvas`), behind every label: the labels' halo. */
+  surface2: string
   line: string
   edge: string
   text: string
@@ -55,6 +65,7 @@ export function readTokens(el: Element = document.documentElement): Tokens {
   const v = (name: string, fallback: string) => cs.getPropertyValue(name).trim() || fallback
   return {
     surface: v('--surface', 'canvas'),
+    surface2: v('--surface-2', 'canvas'),
     line: v('--line', 'gray'),
     edge: v('--ctl-bd', 'gray'),
     text: v('--text', 'canvastext'),
@@ -115,7 +126,6 @@ export function networkData(gv: GraphView, colour: ColourBy, shown: ReadonlySet<
           highlight: { background: fill[heat], border: t.accent },
           hover: { background: fill[heat], border: t.accent },
         },
-        font: { color: t.textDim, face: t.font, size: 12 },
         // A string title is drawn as text by vis-network 10, never parsed as HTML.
         title: nodeWords(n, colour),
       }
@@ -133,7 +143,26 @@ export function networkData(gv: GraphView, colour: ColourBy, shown: ReadonlySet<
   }
 }
 
-/** Graphify's graph.html options (graphify/exporters/html.py `_html_script`), with the three changes named above. */
+/** The on-screen size of a Network label: the console's 12px micro floor. */
+export const LABEL_PX = 12
+/** The largest a label grows in canvas units when the drawing is zoomed far out, so it never swamps the nodes. */
+const LABEL_MAX = 36
+
+/**
+ * The node label font for a view scale: LABEL_PX on screen at any scale
+ * where that stays under LABEL_MAX canvas units, with a 3px halo in the
+ * canvas card's colour and a 3px gap below the dot -- vis-network draws a
+ * dot's label after the arrows, so the halo is what keeps an arrowhead
+ * arriving from below from printing into the text.
+ */
+export function labelFont(t: Tokens, scale: number): { color: string; face: string; size: number; strokeWidth: number; strokeColor: string; vadjust: number } {
+  const k = scale > 0 && Number.isFinite(scale) ? scale : 1
+  const size = Math.min(LABEL_MAX, LABEL_PX / k)
+  const unit = size / LABEL_PX
+  return { color: t.textDim, face: t.font, size, strokeWidth: 3 * unit, strokeColor: t.surface2, vadjust: 3 * unit }
+}
+
+/** Graphify's graph.html options (graphify/exporters/html.py `_html_script`), with the changes named above. */
 export function networkOptions(t: Tokens): Options {
   return {
     physics: {
@@ -148,8 +177,9 @@ export function networkOptions(t: Tokens): Options {
       hideEdgesOnDrag: true,
       navigationButtons: false,
       keyboard: { enabled: true, bindToWindow: false },
+      zoomView: false,
     },
-    nodes: { shape: 'dot', borderWidth: 1.5 },
+    nodes: { shape: 'dot', borderWidth: 1.5, font: labelFont(t, 1) },
     edges: { smooth: { enabled: true, type: 'continuous', roundness: 0.2 }, selectionWidth: 3, color: { color: t.edge } },
   }
 }
@@ -195,6 +225,8 @@ export function NetworkCanvas({ name, gv, colour, shown, selected, onPick, bar, 
   pick.current = onPick
   const chosen = useRef(selected)
   chosen.current = selected
+  // Set while a network is built: resizes its labels to the current zoom.
+  const relabel = useRef<() => void>(() => {})
 
   const drawn = gv.nodes.filter((n) => shown.has(n.id))
   const tooMany = drawn.length > NETWORK_MAX
@@ -209,8 +241,22 @@ export function NetworkCanvas({ name, gv, colour, shown, selected, onPick, bar, 
       try {
         n = new Network(el, networkData(gv, colour, shown, tokens), networkOptions(tokens))
         const built = n
+        // Labels follow the zoom so they stay LABEL_PX on screen (V045).
+        let at = 1
+        const fitLabels = () => {
+          const k = built.getScale()
+          if (!(k > 0) || Math.abs(k - at) / at < 0.02) return
+          at = k
+          built.setOptions({ nodes: { font: labelFont(tokens, k) } })
+        }
         // Freeze after settling: the picture never drifts while it is being read.
-        built.once('stabilizationIterationsDone', () => built.setOptions({ physics: { enabled: false } }))
+        built.once('stabilizationIterationsDone', () => {
+          built.setOptions({ physics: { enabled: false } })
+          fitLabels()
+          // The keys and a pinch emit 'zoom'; the buttons call it themselves.
+          built.on('zoom', fitLabels)
+          relabel.current = fitLabels
+        })
         built.on('click', (p: { nodes: (string | number)[] }) => {
           const id = p.nodes[0]
           const v = id === undefined ? undefined : gv.nodes.find((x) => x.id === String(id))
@@ -229,6 +275,7 @@ export function NetworkCanvas({ name, gv, colour, shown, selected, onPick, bar, 
     const later = setTimeout(build, 0)
     return () => {
       clearTimeout(later)
+      relabel.current = () => {}
       n?.destroy()
       net.current = null
     }
@@ -242,7 +289,13 @@ export function NetworkCanvas({ name, gv, colour, shown, selected, onPick, bar, 
 
   const zoomBy = (f: number) => {
     const n = net.current
-    if (n !== null) n.moveTo({ scale: Math.max(0.1, Math.min(6, n.getScale() * f)) })
+    if (n === null) return
+    n.moveTo({ scale: Math.max(0.1, Math.min(6, n.getScale() * f)) })
+    relabel.current()
+  }
+  const fit = () => {
+    net.current?.fit()
+    relabel.current()
   }
   if (tooMany) {
     return (
@@ -266,7 +319,7 @@ export function NetworkCanvas({ name, gv, colour, shown, selected, onPick, bar, 
           <Button size="sm" aria-label="Zoom in" onClick={() => zoomBy(ZOOM_STEP)}>
             +
           </Button>
-          <Button size="sm" aria-label="Fit" onClick={() => net.current?.fit()}>
+          <Button size="sm" aria-label="Fit" onClick={fit}>
             Fit
           </Button>
         </div>

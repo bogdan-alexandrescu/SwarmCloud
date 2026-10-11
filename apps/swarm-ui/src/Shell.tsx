@@ -12,7 +12,7 @@ import {
 } from 'react'
 import { HIDDEN_LINE_AFTER_MS, HiddenTabLine } from './AppStates'
 import { Banner, Button } from './components'
-import { chosenTenant, errorHeading, errorReassurance, pageReads, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type ApiError, type ApiErrorKind, type Result } from './fetch'
+import { chosenTenant, errorHeading, errorReassurance, isWriteFailure, pageReads, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, writeRefused, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { type TopicId } from './help'
 import { HelpCard } from './HelpCard'
 import { Absent, type LinkOut } from './primitives'
@@ -1034,10 +1034,21 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
     )
   }
 
+  // A WRITE IS NOT A READ (visual QA V010, 2026-10-11). `not read` is a
+  // claim about a read, and a refused change was drawn with it. A write's
+  // panel has no mark -- the heading says what failed -- and a refusal has no
+  // Try again: resending the same input gets the same answer, and the form
+  // the person has to change is the control above the panel.
+  const wrote = isWriteFailure(error)
   return (
     <div className="state failed">
       <h3>
-        <i className="ctl-mark is-unread">not read</i> {errorHeading(error)}
+        {!wrote && (
+          <>
+            <i className="ctl-mark is-unread">not read</i>{' '}
+          </>
+        )}
+        {errorHeading(error)}
       </h3>
       <p>{error.message}</p>
       <p className="state-invariant">{errorReassurance(error)}</p>
@@ -1060,7 +1071,7 @@ export function FailedPanel({ error, onRetry }: { error: ApiError; onRetry: () =
         <p className="checked-at">
           paused {error.retryAfterSeconds ?? 'a few'}s — the API asked us to wait
         </p>
-      ) : (
+      ) : writeRefused(error) ? null : (
         <Button onClick={onRetry}>Try again</Button>
       )}
     </div>

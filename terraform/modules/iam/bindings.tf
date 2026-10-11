@@ -210,12 +210,71 @@ resource "google_project_iam_member" "firestore" {
 # --------------------------------------------------------------------------
 
 # The API serves result artifacts back to callers, so it reads objects. It
-# cannot write or delete them: the worker produces artifacts, the API only
-# hands them over.
+# cannot write them: the worker produces artifacts, the API only hands them
+# over. It deletes only through `api_history_purge_deleter`, below.
 resource "google_storage_bucket_iam_member" "api_reader" {
   bucket = var.artifact_bucket
   role   = "roles/storage.objectViewer"
   member = local.sa_member["swarm-api"]
+}
+
+# THE AUDITED HISTORY PURGE MAY DELETE A PURGED RUN'S OWN FILES (owner decision
+# 2026-10-11). POST /v1/admin/history:purge deletes the objects under
+# tenants/<stored tenant>/tasks/<id>/ before the run's documents; with
+# objectViewer alone GCS refused the delete and the item was audited as
+# history_purge_failed. swarmHistoryPurgeDeleter is storage.objects.delete and
+# nothing else (terraform/bootstrap/history_purge.tf says why not get).
+#
+# THE CONDITION is the whole of the narrowing, so read it as a boundary. It
+# admits an object only when its name is, in full form,
+#
+#   projects/_/buckets/<this bucket>/objects/tenants/<one segment>/tasks/...
+#   projects/_/buckets/<this bucket>/objects/tenants/<one segment>/checkpoints/...
+#
+# and nothing else: not tenants/<t>/verdicts/, markers, repos/ (the repository
+# index), a bucket-root object, or a tasks/ nested deeper than one tenant
+# segment. Cloud Storage names an object `projects/_/buckets/<b>/objects/<path>`
+# in a condition (the `_` is literal), as modules/tenancy's prefixes do.
+#
+# WHY A REGEX AND NOT ONE startsWith PER TENANT, as modules/tenancy writes them:
+# the purge reaches every tenant's history, personal tenants created at runtime
+# included, and var.tenants does not list those -- a per-tenant list would
+# refuse exactly the runs nobody else can clean up. The tenant is therefore one
+# `[^/]+` segment. The startsWith pins the bucket by its literal name, which is
+# why the pattern after it needs no escaping of the dots a bucket name may
+# carry; the pattern is anchored with ^, because CEL's matches() finds a match
+# anywhere in the string.
+#
+# tenants/<t>/checkpoints/ is admitted because the owner named it. No shipped
+# writer uses it today: a worker's checkpoints live under
+# tenants/<t>/tasks/<task>/attempts/<attempt>/checkpoints/ (agent_worker
+# checkpoint.py), which the tasks/ clause already covers, and the purge deletes
+# only tenants/<t>/tasks/<id>/. The clause admits deletes in an empty prefix.
+#
+# Held by tests/terraform/history_purge_iam.tftest.hcl, which evaluates the
+# expression against admitted and refused names and fails if the condition is
+# dropped or widened.
+locals {
+  history_purge_condition = {
+    title       = "swarm-history-purge-run-files"
+    description = "managed-by=swarm-terraform; swarm-api's audited history purge deletes objects under tenants/<t>/tasks/ and tenants/<t>/checkpoints/ only."
+    expression = join(" && ", [
+      "resource.name.startsWith(\"projects/_/buckets/${var.artifact_bucket}/objects/tenants/\")",
+      "resource.name.matches(\"^projects/_/buckets/[^/]+/objects/tenants/[^/]+/(tasks|checkpoints)/\")",
+    ])
+  }
+}
+
+resource "google_storage_bucket_iam_member" "api_history_purge_deleter" {
+  bucket = var.artifact_bucket
+  role   = module.custom_role_ids.names.history_purge_deleter
+  member = local.sa_member["swarm-api"]
+
+  condition {
+    title       = local.history_purge_condition.title
+    description = local.history_purge_condition.description
+    expression  = local.history_purge_condition.expression
+  }
 }
 
 # The reconciler cleans up artifacts belonging to tasks that were abandoned

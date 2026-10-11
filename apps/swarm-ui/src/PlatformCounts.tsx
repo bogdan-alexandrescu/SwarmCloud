@@ -107,6 +107,11 @@ export function PlatformCountsScreen() {
   }
 
   const data = run && (run.status === 'ok' || run.status === 'stale') ? run.data : null
+  // ONE BAR SCALE FOR BOTH CARDS (VQA V084). Each card scaled its bars to its
+  // own largest count, so side by side a tenant's 7 drew as long as the
+  // platform's 185. The scale is the largest count on the screen, so equal
+  // bars are equal counts in either card.
+  const scale = data ? Math.max(barMax(data.tasks_by_state), barMax(data.platform_tasks_by_state ?? {})) : 1
   // A RUN'S OWN ANSWER WINS WHEN THERE IS ONE: it is the route that bills, and
   // it says whether it counted the platform. Before any run, the session says.
   const admin = data ? data.platform_tasks_by_state !== undefined : sessionAdmin
@@ -123,7 +128,12 @@ export function PlatformCountsScreen() {
   // (the panel below says so), so it reads as a failed run here too, and
   // neither kind of failure is counted as a run.
   const failed = run !== null && (run.status === 'error' || run.status === 'empty')
-  const provenance = failed ? (
+  // WHILE COUNTING THE LINE SAYS SO (VQA V029), and the button keeps its
+  // words: it said `Counting…` instead, a third of its width, and the head
+  // re-laid itself around the shorter control on every press.
+  const provenance = busy ? (
+    'counting…'
+  ) : failed ? (
     'last run failed'
   ) : runs === 0 ? (
     'not counted yet'
@@ -146,13 +156,21 @@ export function PlatformCountsScreen() {
           THE COST IS ON THE BUTTON (#138), not beside it: `Run the count ·
           24 reads` is one control whose name says what pressing it spends,
           so the price cannot wrap away from the press or be read as a fact
-          about the last run. While a run is in flight the button says so
-          instead; the cost of that press is already being paid. */}
+          about the last run. While a run is in flight the button keeps its
+          words and is disabled, and the line before it says `counting…`
+          (VQA V029), so the head keeps its shape. */}
       <PageHead title="Platform counts">
         <span className="counts-prov">{provenance}</span>
         {/* The canonical button (components.html A): primary before the
-            first run, plain for a re-run, busy while counting. */}
-        <Button className="counts-run" kind={run === null ? 'primary' : 'secondary'} onClick={go} busy={busy ? 'Counting…' : false}>
+            first run, plain for a re-run, disabled while counting. */}
+        <Button
+          className="counts-run"
+          kind={run === null ? 'primary' : 'secondary'}
+          onClick={go}
+          // Disabled, not `busy`: `busy` swaps in a spinner and widens the
+          // control; the cards below carry `aria-busy` for the run.
+          disabled={busy}
+        >
           {run === null ? 'Run the count' : 'Run it again'}
           {' · '}
           <span className="counts-cost">{queries} reads</span>
@@ -161,11 +179,13 @@ export function PlatformCountsScreen() {
 
       {/* BOTH CARDS BEFORE THE FIRST RUN (#135), each with `not run` in its
           figure slot: the page has its shape before the press, and an empty
-          page is not mistaken for a platform with nothing on it. Gone the
-          moment a run is asked for, so a result never shares the screen with
-          the placeholder it replaces. */}
-      {run === null && !busy && (
-        <div className="ctl-cards counts-scopes">
+          page is not mistaken for a platform with nothing on it. They stay
+          while the first run is in flight (VQA V029) -- removing them on the
+          press left the page blank until the answer came -- marked busy, and
+          are replaced by the result, so a result never shares the screen
+          with the placeholder it replaces. */}
+      {run === null && (
+        <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
           <NotRun title="This tenant" queries={STATE_COUNT} />
           <NotRun title="Every tenant" queries={admin === false ? null : STATE_COUNT} />
         </div>
@@ -187,13 +207,14 @@ export function PlatformCountsScreen() {
       )}
 
       {data && (
-        <div className="ctl-cards counts-scopes">
-          <Scope title="This tenant" subtitle={data.tenant_id} counts={data.tasks_by_state} />
+        <div className="ctl-cards counts-scopes" aria-busy={busy || undefined}>
+          <Scope title="This tenant" subtitle={data.tenant_id} counts={data.tasks_by_state} scale={scale} />
           {data.platform_tasks_by_state !== undefined ? (
             <Scope
               title="Every tenant"
               subtitle="all tenants"
               counts={data.platform_tasks_by_state}
+              scale={scale}
             />
           ) : (
             <AdminGated />
@@ -324,18 +345,26 @@ function Failed({ error }: { error: ApiError }) {
   )
 }
 
+/** The largest count one scope carries over the written states, and never under 1 (a scale of 0 divides by zero). */
+function barMax(counts: Record<string, number>): number {
+  return Math.max(1, ...REAL_STATES.map((s) => (typeof counts[s] === 'number' ? counts[s] : 0)))
+}
+
 function Scope({
   title,
   subtitle,
   counts,
+  scale,
 }: {
   title: string
   subtitle: string
   counts: Record<string, number>
+  /** The count a full bar stands for: the largest on the screen, shared by both cards. */
+  scale: number
 }) {
   const real = REAL_STATES.map((s) => ({ state: s, n: counts[s] }))
   const missing = real.filter((r) => typeof r.n !== 'number').map((r) => r.state)
-  const max = Math.max(1, ...real.map((r) => (typeof r.n === 'number' ? r.n : 0)))
+  const max = Math.max(1, scale)
 
   // Only summed when every state arrived. A total over a partial response is
   // a wrong number wearing the clothes of a right one.
