@@ -1518,10 +1518,12 @@ class Ticker:
     def _finish_approved(self, now: datetime, report: TickReport, started: float) -> None:
         """`awaiting_approval` firings that carry a `run_approval`, finished
         by this tick under the gate they were claimed with. An unapproved one
-        is not touched; `_lease` decides whether the approval releases it."""
-        for firing in self._by_state(AWAITING_APPROVAL)[:ADVANCE_PAGE]:
-            if not firing.get("run_approval"):
-                continue
+        is not touched; `_lease` decides whether the approval releases it.
+        The filter comes before the page: the scan is platform-wide, and
+        ADVANCE_PAGE older unapproved (or digest-mismatched) firings would
+        otherwise fill every slot and an approved one would never run."""
+        approved = [f for f in self._by_state(AWAITING_APPROVAL) if f.get("run_approval")]
+        for firing in approved[:ADVANCE_PAGE]:
             if self._clock() - started >= TICK_BUDGET_SECONDS:
                 report.truncated = True
                 return

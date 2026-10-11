@@ -13,6 +13,8 @@ WHAT IS HELD HERE
   stays held and is audited, once.
 * An unapproved firing stays held.
 * Another tenant's approval cannot release a firing.
+* More than a page of older unapproved firings, platform-wide, does not
+  starve an approved one: the tick filters on `run_approval` before paging.
 
 Each negative case runs beside an approved CONTROL firing in the same tick,
 which must be created: the measurement could have come out the other way,
@@ -26,7 +28,7 @@ from __future__ import annotations
 from datetime import timedelta
 from typing import Any
 
-from swarm_api import approvals, schedaudit
+from swarm_api import approvals, schedaudit, schedulefire
 
 from .test_schedule_tick import (  # noqa: F401 - `ctx` and `tick_env` are fixtures
     ALICE,
@@ -215,3 +217,22 @@ def test_a_run_approval_without_its_approved_record_releases_nothing(db, ctx) ->
     _created(db, held[CONTROL])
     _still_held(db, subject)
     assert executor.calls == 1
+
+
+def test_a_page_of_older_unapproved_firings_does_not_starve_an_approved_one(db, ctx) -> None:
+    """The awaiting_approval scan is platform-wide and oldest first. More than
+    ADVANCE_PAGE older firings without a `run_approval` sit ahead of the
+    approved one; it is still created."""
+    held = _held(db, ctx, SUBJECT, CONTROL)
+    _approve(db, held[CONTROL])
+    template = _firing(db, held[SUBJECT])
+    for n in range(schedulefire.ADVANCE_PAGE + 5):
+        fid = f"fir_old{n:017d}"
+        db.docs[f"schedule_firings/{fid}"] = {
+            **template, "firing_id": fid, "fired_at": template["fired_at"] - timedelta(days=1, minutes=n),
+        }
+    executor = FakeExecutor()
+    ticker(ctx, executor, at=LATER).tick()
+    _created(db, held[CONTROL])
+    _still_held(db, held[SUBJECT])
+    assert executor.calls == 1 and len(tasks(db)) == 1
