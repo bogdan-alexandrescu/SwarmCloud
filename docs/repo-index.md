@@ -1183,6 +1183,17 @@ polled) and `behind_by` (commits between them, from GitHub's compare API,
 read when the head is polled). The rules:
 
 * **current** — `index_sha == head_sha`.
+
+`behind_by` and the stored compare (`head_relation`) are readings of ONE pair,
+`(current_sha, head_sha)`, so they are settled from those two shas whenever
+either moves and again on every read (`settle_relation` in
+`swarm_api/repositories.py`): 0 with no compare when the index is the head, the
+compare's own count only when it is of exactly this pair, and unknown
+otherwise. Before that, the registration kept whatever the last poll's compare
+said: on 2026-10-11 an index at its head was served as "2 behind" with 20
+changed files from a compare a day older than the index (live QA RSA-3), and a
+planner reading `behind_by` would have distrusted 20 files that had not
+changed.
 * **behind** — the index describes an ancestor of the head. Served, with the
   line "This index describes `<index_sha>`, N commits behind `<head_sha>`
   (read <time>); files changed since: …" first in every rendering, and up to
@@ -1320,6 +1331,18 @@ differs from the graph's: the index lists every module its indexer named,
 docs and config included, while a graph node is a directory holding at
 least one parsed code symbol (`module_graph` in `impact.py`), and the Graph
 tab says so beside both numbers.
+
+A count that is a cut says so. The indexer cuts `test_map` (and other lists)
+to fit its byte budget and names them in the document's `truncated`; the
+coverage block carries that list and `test_map_edges_capped`, because a card
+that read "1,000 edges" next to another repository's "3,150" presented the
+budget as the repository's whole map (live QA RSA-4). A block promoted
+before these keys existed is completed from the promoted version on read, and
+is `null` -- unknown, never "not capped" -- when that version is gone. The
+block also lists `degraded_languages`: each language whose server timed out
+or failed in this run, so its edges are tree-sitter's only and an impact or a
+selection touching it falls back to the full suite (RSA-6). That was visible
+only in Settings; the list and the Overview need it without a second read.
 
 ### 6.3 The frozen contract
 
