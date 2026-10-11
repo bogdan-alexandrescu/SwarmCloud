@@ -182,7 +182,7 @@ describe('G5-14: a pool filter no lease matches says so', () => {
     expect(body.length, 'the filtered table has no body row').toBe(1)
     const empty = body[0]!
     expect(text(empty)).toContain('No lease holds resource:browser right now')
-    expect(empty.querySelector('.ctl-mark.is-zero')?.textContent).toBe('real zero')
+    expect(empty.querySelector('.ctl-mark.is-zero')?.textContent).toBe('none')
     fireEvent.click(empty.querySelector('button')!)
     await waitFor(() => expect(document.querySelectorAll('.hold-all tbody tr a').length).toBe(2), WAIT)
   })

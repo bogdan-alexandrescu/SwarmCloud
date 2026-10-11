@@ -298,7 +298,7 @@ describe('absence and failure are not an empty checkpoint', () => {
     expect(within(region()).getByText('not measured')).toBeTruthy()
     expect(screen.queryByRole('tree')).toBeNull()
     expect(region().textContent).not.toMatch(/0 files/)
-    expect(region().textContent).not.toContain('real zero')
+    expect(region().querySelector('.ctl-mark.is-zero')).toBeNull()
     // Nothing to download: the server said so.
     expect(within(region()).queryByRole('link', { name: 'download archive' })).toBeNull()
   })
@@ -307,7 +307,7 @@ describe('absence and failure are not an empty checkpoint', () => {
     mount(loaders(ok(listing({ files: [], count: 0, file_count_agrees: true }))))
 
     expect(await screen.findByText(/^\s*0 files$/)).toBeTruthy()
-    expect(within(region()).getByText('real zero')).toBeTruthy()
+    expect(region().querySelector('.ctl-mark.is-zero')?.textContent).toBe('none')
     expect(screen.queryByRole('tree')).toBeNull()
   })
 
@@ -320,7 +320,7 @@ describe('absence and failure are not an empty checkpoint', () => {
     expect(await within(region()).findByText('partial')).toBeTruthy()
     expect(within(region()).getByText('read budget')).toBeTruthy()
     expect(region().textContent).not.toMatch(/0 files/)
-    expect(region().textContent).not.toContain('real zero')
+    expect(region().querySelector('.ctl-mark.is-zero')).toBeNull()
   })
 
   it('draws a FAILED read as not read, with no figure, and retries it', async () => {

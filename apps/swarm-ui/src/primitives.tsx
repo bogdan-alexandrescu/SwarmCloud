@@ -51,7 +51,7 @@ import { UsageTrack } from './components'
 export type MarkKind = 'zero' | 'absent' | 'unread' | 'partial' | 'admin' | 'pending'
 
 const MARK_WORD: Readonly<Record<MarkKind, string>> = {
-  zero: 'real zero',
+  zero: 'none',
   absent: 'not measured',
   unread: 'not read',
   partial: 'partial',

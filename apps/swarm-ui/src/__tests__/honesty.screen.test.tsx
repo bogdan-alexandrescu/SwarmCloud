@@ -133,7 +133,7 @@ describe('empty', () => {
     const panel = heading.closest('.ctl-empty')
     expect(panel, 'the empty state is not the shared .ctl-empty shape').not.toBeNull()
     expect(panel!.className, 'a real zero drew a failure or partial variant').toBe('ctl-empty')
-    expect(panel!.querySelector('h3 > .ctl-mark.is-zero')?.textContent).toBe('real zero')
+    expect(panel!.querySelector('h3 > .ctl-mark.is-zero')?.textContent).toBe('none')
     expect(document.querySelector('.state'), 'the hand-built .state box is back').toBeNull()
     expect(
       panel!.querySelector('.ctl-empty-foot'),

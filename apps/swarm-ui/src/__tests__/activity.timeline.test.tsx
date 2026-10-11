@@ -455,7 +455,7 @@ describe('partial and not read', () => {
     const root = await timeline(d)
     for (const title of [/^Time to result/, /^Reliability/, /^Workflows that failed/]) {
       const c = card(root, title)
-      expect(c.textContent, `${title} calls a partial span's nothing a real zero`).not.toMatch(/real zero/i)
+      expect(c.querySelector('.ctl-mark.is-zero'), `${title} calls a partial span's nothing a real zero`).toBeNull()
       expect(c.querySelector('.ctl-empty .ctl-mark.is-partial'), `${title} has no partial empty state`).not.toBeNull()
       expect(c.querySelector('.ctl-empty')!.textContent).toContain('13 of 14 days')
     }
@@ -481,7 +481,6 @@ describe('partial and not read', () => {
       const c = card(root, title)
       expect(c.querySelector('.ctl-mark.is-unread'), `${title} has no not-read mark`).not.toBeNull()
       expect(visibleText(c), `${title} prints a digit over a span nobody read`).not.toMatch(/\d/)
-      expect(c.textContent, `${title} calls nothing read a real zero`).not.toMatch(/real zero/i)
       expect(c.querySelector('.ctl-util-track.is-zero, .ctl-mark.is-zero'), `${title} draws a measured zero`).toBeNull()
     }
   })

@@ -391,7 +391,7 @@ describe('Agents, with every help card closed', () => {
     expect(empty).not.toBeNull()
     const mark = empty!.querySelector('.ctl-mark.is-zero')
     expect(mark, 'a real zero is not marked as one').not.toBeNull()
-    expect(mark!.textContent).toMatch(/real zero/i)
+    expect(mark!.textContent).toBe('none')
     // THE ROUTE TO THE WORDS. `.ctl-q` is a button while the card is shut and
     // becomes an anchor to `#help/capacity` when it opens, which is exactly
     // the property that makes this assertion mean something: the topic is

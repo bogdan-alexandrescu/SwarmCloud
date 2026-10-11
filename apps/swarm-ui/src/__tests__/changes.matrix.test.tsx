@@ -412,7 +412,7 @@ describe('an issue run’s Changes tab', () => {
     const state = container.querySelector('.chg-state')!
     expect(state.classList.contains('is-failed')).toBe(true)
     expect(state.textContent).toMatch(/steps not read/)
-    expect(container.textContent).not.toMatch(/real zero/)
+    expect(container.querySelector('.ctl-mark.is-zero')).toBeNull()
   })
 
   it('links a step row to the tab filtered to that step', () => {
