@@ -802,8 +802,10 @@ def park_human_required(
     with nothing written, so it can neither park the task nor refund an
     attempt (invariant 5). `next_eligible_at` is the park instant, which the
     scheduler's dead-letter sweep measures `human_park_max_seconds` from; NO
-    sweep promotes it, only swarm-api's `human-ready`. `human_wait` is cleared
-    in the same write: a parked task holds nothing and waits on nothing live.
+    sweep promotes it, only swarm-api's `human-ready`. `human_wait` is NOT
+    written here: it is swarm-api's field alone (`Task.human_wait`). The
+    worker's resolve route cleared it before this park, and `human-ready`
+    clears one a failed resolve left behind.
 
     Built on the control plane's own fenced-transaction helpers rather than as
     a `ControlPlane` method because `control.py` is outside lane L4's files;
@@ -830,7 +832,6 @@ def park_human_required(
             "next_eligible_at": now,
             "current_lease_id": None,
             "blocked_by": [{"reason": reason.value, **(detail or {})}],
-            "human_wait": None,
             "updated_at": now,
         }
         if refund:
