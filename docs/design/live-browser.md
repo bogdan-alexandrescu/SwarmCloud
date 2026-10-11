@@ -873,9 +873,17 @@ create with that resource type.
 * IAM. The only grant on a `swarm-tenant-u-<user>-browser-*` secret that
   reaches a worker is set on that secret, to `swarm-agent-worker-u-<user>`
   alone (lane L8c). No worker identity holds any project-level `-browser-`
-  grant. Platform admins with project-level Secret Manager roles can still
-  read these secrets. That is the same residual as every other secret in the
-  project.
+  grant. Two residual readers remain. Platform admins with project-level
+  Secret Manager roles can still read these secrets, the same residual as
+  every other secret in the project. And `swarm-api` holds no direct
+  `versions.access`, but its `secretmanager.secrets.setIamPolicy` on personal
+  `-browser-` secrets (the provisioner role, `browser_logins.tf`) lets it
+  grant read to any member, itself included, so it can make itself or anyone a
+  reader of every personal `-browser-` secret. The name condition limits which
+  secrets, not whom it may grant. Detection is deferred to the security epic
+  [#476](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/476#issuecomment-6114767079):
+  an alert on `SetIamPolicy` whose new bindings name anything other than
+  `swarm-agent-worker-u-*`.
 * The agent's CDP cannot read or plant cookies. The method policy of §5.4.4
   refuses:
   - `Network.getCookies`, `Network.getAllCookies` and `Storage.getCookies`;

@@ -145,16 +145,24 @@ resource "google_project_iam_custom_role" "browser_session_provisioner" {
   project     = var.project_id
   role_id     = module.custom_role_ids.ids["browser_session_provisioner"]
   title       = "Swarm Browser Session Provisioner"
-  description = "managed-by=swarm-terraform; swarm-api creates a personal tenant's signed-in browser session secret and grants that tenant's worker read and version-add on it alone (live browser LB-7, lane L8c of #1030). No access, no version add, no delete."
+  description = "managed-by=swarm-terraform; swarm-api creates a personal browser session secret and grants its tenant worker on it. No direct versions.access, but setIamPolicy lets it grant read to anyone, itself too. Detection deferred to epic 476."
   stage       = "GA"
 
   # create, with its TTL or expiry and labels as fields of the create call;
   # get, to read back a secret that already exists (a refreshed login, a
   # second step of a workflow); getIamPolicy and setIamPolicy, to write the
   # secret's own two bindings under the policy's etag. Not
-  # roles/secretmanager.admin, which reads every value: swarm-api never holds
-  # a jar. A separate role from swarmBrowserLoginRevoker, so the plan shows
-  # the IAM-writing permission on its own line.
+  # roles/secretmanager.admin, which reads every value. swarm-api holds no
+  # direct versions.access here, but that is NOT the same as being unable to
+  # read: setIamPolicy on a personal -browser- secret is effectively
+  # versions.access on it, because swarm-api can grant read to any member,
+  # itself included. The name condition bounds WHICH secrets, not WHO it may
+  # grant. Accepted residual (owner decision: the capability stays); detection
+  # is deferred to the security epic #476, an alert on SetIamPolicy whose new
+  # bindings name anything other than swarm-agent-worker-u-*
+  # (https://github.com/bogdan-alexandrescu/SwarmCloud/issues/476#issuecomment-6114767079).
+  # A separate role from swarmBrowserLoginRevoker, so the plan shows the
+  # IAM-writing permission on its own line.
   permissions = [
     "secretmanager.secrets.create",
     "secretmanager.secrets.get",
@@ -176,7 +184,9 @@ resource "google_project_iam_custom_role" "browser_login_revoker" {
   # versions.destroy), and a carry is deleted whole at its workflow's terminal
   # state (secrets.delete); secrets.get reads the metadata both start from.
   # Not roles/secretmanager.admin, which reads every value, and not
-  # secretVersionManager, which adds versions: swarm-api never holds a jar.
+  # secretVersionManager, which adds versions: this role has no
+  # IAM permission and no versions.access, so it cannot read a jar (the
+  # provisioner above can, through setIamPolicy).
   permissions = [
     "secretmanager.secrets.delete",
     "secretmanager.secrets.get",
