@@ -2,6 +2,7 @@ import { useId } from 'react'
 import { loadRuntimeTopology, type ResourceClasses, type RuntimeTopology } from './api'
 import { isPaused } from './fetch'
 import type { TopicId } from './help'
+import { POOLS_POLL_MS, capacityPoll, tableMode, usePhoneTables } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Id, Screen } from './Shell'
 import './styles/capacity.css'
@@ -92,6 +93,11 @@ export function RuntimesScreen() {
     <Screen
       title="Runtimes"
       load={loadRuntimeTopology}
+      // POOLS' CADENCE (visual QA V092, 2026-10-11). Backends' In use and
+      // Headroom are the same pool counts Pools re-reads every 30s, and this
+      // screen read them once: its refresh said a bare age beside siblings
+      // that say `every 30 s`, and its figures quietly went stale beside them.
+      pollMs={capacityPoll(POOLS_POLL_MS)}
       summary={(d) => {
         const runtimes = Object.values(d.runtimes)
         const backends = new Set(runtimes.map((r) => r.resolved_backend)).size
@@ -228,6 +234,10 @@ function Backends({
   }
   const groups = Array.from(byBackend.entries()).sort(([a], [b]) => a.localeCompare(b))
   const capped = backendPools(pools)
+  // A RECORD PER ROW ON A PHONE (visual QA V032), as every other capacity
+  // table has been since G5-08: scrolling, the answer columns sat off-screen
+  // at 400 with nothing to say they were there.
+  const phone = usePhoneTables()
 
   return (
     /* §B6.1: THE PANEL IS THE TABLE, AND THE TITLE IS ON THE PAGE.
@@ -291,7 +301,7 @@ function Backends({
         </div>
       )}
 
-      <div className="ctl-table is-scroll">
+      <div className={`ctl-table ${tableMode(phone)}`}>
         <table role="table">
             <thead role="rowgroup">
               <tr role="row">
@@ -614,7 +624,7 @@ function RuntimeCard({
             chip points at it, so
             a screen reader still hears it with the mark. */}
         {off && runtime.disabled_reason && (
-          <p className="muted" id={reasonId}>
+          <p className="muted rt-reason" id={reasonId}>
             {runtime.disabled_reason}
           </p>
         )}
@@ -635,10 +645,6 @@ function RuntimeCard({
                 ← {runtime.backend}
               </span>
             )}
-          </li>
-          <li className="ctl-fact rt-fact-wide">
-            <b>image</b>
-            <span className="mono rt-image">{runtime.image}</span>
           </li>
           <li className="ctl-fact">
             {/* §8.4(1): THE LABEL IS THE EXPLANATION. "before the platform
@@ -674,6 +680,16 @@ function RuntimeCard({
           <li className="ctl-fact">
             <b>weight</b>
             {spec.units}u
+          </li>
+          {/* THE IMAGE HAS A LINE OF ITS OWN, AFTER THE SHORT FACTS (visual QA
+              V088). It was second, in one ~220px track of the two-up grid --
+              `.rt-fact-wide` said `flex-basis: 100%` to a grid -- so a digest
+              wrapped to nine lines and stretched the card beside it. It spans
+              the row now (styles/capacity.css), and the short facts pair up
+              above it instead of around it. */}
+          <li className="ctl-fact rt-fact-wide">
+            <b>image</b>
+            <span className="mono rt-image">{runtime.image}</span>
           </li>
           <li className="ctl-fact rt-fact-wide">
             {/* `cred` NAMES WHAT IT SHOWS, which is why the `?` here could go
@@ -871,6 +887,8 @@ function Sizing({
         ).values(),
       )
   const rows = specs.slice().sort((a, b) => a.units - b.units || a.name.localeCompare(b.name))
+  // A record per class on a phone (visual QA V032), as Backends above.
+  const phone = usePhoneTables()
 
   return (
     /* §B6.1, as Backends above: title on the page, one box around the data. */
@@ -893,7 +911,7 @@ function Sizing({
         </span>
       </div>
 
-      <div className="ctl-table is-scroll">
+      <div className={`ctl-table ${tableMode(phone)}`}>
         <table role="table">
             <thead role="rowgroup">
               <tr role="row">
