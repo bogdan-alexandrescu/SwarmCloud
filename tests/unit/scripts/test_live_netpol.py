@@ -208,14 +208,14 @@ def test_the_workspace_deployer_may_write_the_new_tenant_policy():
 
 def test_swarm_system_denies_every_ingress_by_default(system_docs):
     deny = _one(system_docs, parity.SYSTEM_DENY_POLICY)
-    assert deny["metadata"]["namespace"] == "swarm-system"
+    assert deny["metadata"]["namespace"] == parity.SYSTEM_NAMESPACE
     assert deny["spec"] == {"podSelector": {}, "policyTypes": ["Ingress"]}
     assert parity.check_system_deny(deny) == []
 
 
 def test_the_relay_admits_only_tcp_8443_from_labelled_pods_and_swarm_apis_range(system_docs):
     policy = _one(system_docs, parity.LIVE_INGRESS_POLICY)
-    assert policy["metadata"]["namespace"] == "swarm-system"
+    assert policy["metadata"]["namespace"] == parity.SYSTEM_NAMESPACE
     assert policy["metadata"]["labels"]["managed-by"] == "swarm-terraform"
     assert parity.check_live_ingress(policy, FAKE_API_CIDR) == []
     spec = policy["spec"]
