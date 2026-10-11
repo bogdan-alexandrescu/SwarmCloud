@@ -745,15 +745,71 @@ def pool_attribution(pool: SlotPool) -> dict[str, Any]:
     return dict(found)
 
 
-def lease_to_api(lease: Lease) -> dict[str, Any]:
+#: The task states that prove a lease's dispatch landed: the worker itself
+#: writes them, so a container ran. LEASED and DISPATCHED are written by the
+#: scheduler before any container exists, and prove nothing.
+_WORKER_STARTED = frozenset({TaskState.STARTING, TaskState.RUNNING})
+
+
+def lease_task_is_current(lease: Lease, task: Task) -> bool:
+    """`task` is on the attempt `lease` was taken for -- not a later one.
+
+    By `current_lease_id` when the task names one, by generation otherwise
+    (a document written before the field existed). `routes/leases.py` and
+    `lease_dispatch_overdue` judge "this lease's task" by the same rule.
+    """
+    if task.current_lease_id is not None:
+        return task.current_lease_id == lease.lease_id
+    return task.current_generation == lease.generation
+
+
+def lease_dispatch_overdue(
+    lease: Lease, task: Task | None = None, now: datetime | None = None
+) -> bool:
+    """Past the dispatch deadline with NO EVIDENCE that the dispatch landed.
+
+    NOT `Lease.dispatch_overdue()` alone (QA, Capacity > Holders, 2026-10-11
+    ~12:30Z: 9 of 13 healthy, heartbeating leases flagged). The frozen
+    predicate is "the deadline has passed", and a lease's deadline passes on
+    every attempt that lives longer than `dispatch_timeout_seconds` -- the
+    lease's own state never says otherwise, because it stops at DISPATCHED:
+    the worker advances the TASK through STARTING and RUNNING and touches the
+    lease only to heartbeat.
+
+    So the flag is computed READ-SIDE from what the worker does write, and
+    nothing is added to the heartbeat path or to admission. Either of these is
+    proof a container ran, and clears it:
+
+      * the lease has a `heartbeat_at` -- the reconciler's own split
+        (`detect_stale_leases`): before the first beat the dispatch deadline
+        is the only clock; after it, `silent` and `expired` are, and they
+        still catch a worker that beat and then went quiet;
+      * the lease's task, on THIS lease's attempt, is STARTING or RUNNING.
+
+    A lease whose task never started and never beat stays overdue, whatever
+    the lease's state says -- `mark_dispatched` writes DISPATCHED the moment
+    the backend accepts the create call (contract change request 9).
+    """
+    if not lease.dispatch_overdue(now):
+        return False
+    if lease.heartbeat_at is not None:
+        return False
+    if task is not None and task.state in _WORKER_STARTED and lease_task_is_current(lease, task):
+        return False
+    return True
+
+
+def lease_to_api(
+    lease: Lease, *, task: Task | None = None, now: datetime | None = None
+) -> dict[str, Any]:
     """Public JSON shape for a lease. No credential material, no backend spec.
 
     `dispatch_overdue` and `expired` are COMPUTED here rather than left to the
-    caller. Both are one-line predicates on the model, and both are exactly
-    the kind of thing a UI gets subtly wrong -- `dispatch_overdue` is only
-    meaningful while the lease is still LEASED, because nothing ever writes
-    STARTING or RUNNING to a lease document. Computing them server-side means
-    every caller agrees with the reconciler.
+    caller. Both are exactly the kind of thing a UI gets subtly wrong, and
+    computing them server-side means every caller agrees with the reconciler.
+    `dispatch_overdue` is `lease_dispatch_overdue`: pass the lease's `task`
+    when the route has read it, so a STARTING or RUNNING task clears the flag
+    even before its first beat lands on the lease.
     """
     return {
         "lease_id": lease.lease_id,
@@ -778,16 +834,14 @@ def lease_to_api(lease: Lease) -> dict[str, Any]:
         # cannot be tidied -- calling the property returns a bool and then
         # tries to call it, which fails at runtime rather than at import.
         #
-        # `dispatch_overdue` no longer carries a `state is LEASED` guard. The
-        # old comment here argued the guard was safe "because nothing ever
-        # writes STARTING or RUNNING to a lease document". That premise was
-        # true and the conclusion did not follow: the state that ends the
-        # window is DISPATCHED, written by `mark_dispatched` as soon as the
-        # backend accepts the create call. So the flag read false on every
-        # lease whose dispatch was in flight -- the only population it is for.
+        # `dispatch_overdue` carries no `state is LEASED` guard: DISPATCHED is
+        # written as soon as the backend accepts the create call, so that guard
+        # hid every lease whose dispatch was in flight. Nor is it the bare
+        # deadline, which flagged every healthy agent older than the dispatch
+        # window -- see `lease_dispatch_overdue`.
         "released": lease.is_released,
-        "expired": lease.is_expired(),
-        "dispatch_overdue": lease.dispatch_overdue(),
+        "expired": lease.is_expired(now),
+        "dispatch_overdue": lease_dispatch_overdue(lease, task, now),
     }
 
 

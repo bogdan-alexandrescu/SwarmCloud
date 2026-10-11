@@ -68,8 +68,12 @@ lease only to read it (`apps/agent-worker/agent_worker/control.py::ControlPlane.
 (`apps/agent-worker/agent_worker/control.py::ControlPlane.heartbeat`). A "state" column on the lease table would therefore show
 `DISPATCHED` for an agent that has been running for an hour. The column is labelled
 **"dispatch"** with values `awaiting dispatch` / `dispatched`, and liveness is expressed
-by the *heartbeat age* next to it. (`Lease.dispatch_overdue` at `models.py:144-146` is
-still correct, because it only tests `state is LEASED`.)
+by the *heartbeat age* next to it. For the same reason the API's `dispatch_overdue` is
+not the lease's own predicate: `Lease.dispatch_overdue` is "the deadline has passed" and
+nothing else, which is true of every healthy agent older than the dispatch window (QA,
+2026-10-11: 9 of 13 heartbeating leases flagged). `swarm_api.codec.lease_dispatch_overdue`
+clears it on a first heartbeat or on the lease's task reaching `STARTING`/`RUNNING`, read
+from documents the routes already fetch, so no write was added to the heartbeat path.
 
 **Trap C — `pool.updated_at` is not a freshness signal.** Terraform bootstraps pool
 documents with `name, hard_limit, active, enabled, managed_by` and **no `updated_at`**
