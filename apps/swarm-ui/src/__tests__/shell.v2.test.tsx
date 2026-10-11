@@ -37,7 +37,7 @@ const ME: Me = {
     credentials: ['anthropic'],
     service_account: null,
     gcs_prefix: 'tenants/eng',
-    namespace: 'swarm-eng',
+    namespace: 'swarm-tenant-eng',
   },
   principal: { email: 'operator@example.com', domain: 'example.com', groups: [], is_admin: false },
   environment: 'dev',

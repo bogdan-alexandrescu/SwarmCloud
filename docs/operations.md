@@ -309,6 +309,12 @@ driven by hand, for an operator who already holds the credentials and is doing
 a break-glass deploy or a dev-environment push. It is not what someone
 authoring a change runs; see [where the gates run](ci.md).
 
+**A run of `cancelled` dev releases means one is waiting at `dev-iam`.** It
+holds the `release-dev` group, and each newer release cancels the one pending
+behind it, so nothing deploys until it ends. Find it with `gh run list
+--workflow release.yml --status waiting`; reject it if main has moved past it or
+its plan would fail ([why, and how to tell](ci.md#a-held-dev-iam-plan-cancels-every-release-behind-it)).
+
 ```bash
 make lint test          # shellcheck, terraform fmt/validate, tflint, unit tests
 make build push deploy
