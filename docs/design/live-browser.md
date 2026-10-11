@@ -67,6 +67,7 @@ Section 5.7 is about that.
 | **LB-4** | Frames and recordings are kept **7 days**, under the tenant's GCS prefix. | §7 |
 | **LB-5** | The console presentation is **a Browser tab on the agent page, with theater mode available from it** (owner's choice, 2026-10-11, from five in-console alternatives; recorded on #1030). This replaces the earlier phased plan of separate split, picture-in-picture and wall views. | §6 |
 | **LB-6** | The browser can run **as a mobile device, not only desktop**, and a person in control works it **by touch**. Presets: Desktop 1440×900, iPhone 15 393×852, Pixel 8 412×915, iPhone SE 375×667, iPad (gen 7) 810×1080, with rotate. | §6.1 |
+| **LB-7** | **Signed-in sessions are reusable** (2026-10-11, revising Q7). Inside a workflow, a session signed in once carries to that workflow's later browser steps and is destroyed when the workflow ends. Across workflows, a person can save it to the tenant as a **named browser login**; a task opts in by name. Any account may be saved, at the person's judgement. | §5.5, §5.5.1 |
 
 The brief also described a shape: "a VNC server bound to localhost only" and
 "Chromium launched by the agent's Playwright on that display", with "swarm-api
@@ -747,12 +748,82 @@ the attempt ends."
   an agent determined to smuggle a cookie out in another encoding can. Its
   agent instructions forbid it, and the residual is stated here rather than
   hidden.
+* **The checkpoint still never holds a session.** LB-7 reuses sessions
+  through the gate and Secret Manager (§5.5.1), never through `work/`, the
+  checkpoint or the outputs. The two bullets above hold unchanged.
 * **Encrypting the session into the checkpoint, so it survives a park, is the
   option turned down for phase 1 (Q7).** It would make a park cheap -- no
   second sign-in -- at the price of a long-lived session stored in the tenant's
   bucket, released to whichever attempt can present the attempt key. Most
   sign-ins worth automating (GitHub, Google) also bind sessions to device and
   address, so a restored jar often fails anyway.
+
+### 5.5.1 Reusing a signed-in session (LB-7)
+
+The owner revised Q7 on 2026-10-11. Prompting a person on every browser step
+made a seven-step visual QA run against a signed-in site ask seven times. The
+session is a cookie jar plus origin storage. It moves **gate to gate**: the
+gate reads it on its own pipe session (§3.2) and writes it into the next gate's
+context before the agent connects. The agent never holds it.
+
+**Workflow carry (automatic).**
+* When a browser step ends with a session its hand-off produced, the gate
+  exports the jar with `Storage.getCookies` and the local storage of the
+  signed-in origins. It does this before the `wipe` of §5.5, on its own pipe
+  session.
+* The worker stores the jar as one Secret Manager secret,
+  `swarm-tenant-<tenant>-browser-wf-<workflow>`, with a 24-hour TTL.
+* The next browser step of the same workflow and tenant reads it, and the gate
+  imports it before the agent's first CDP connection.
+* swarm-api deletes the secret when the workflow reaches a terminal state. The
+  TTL is the backstop.
+* A step outside a workflow carries nothing.
+
+**Named tenant logins (deliberate).**
+* After a person returns control, the Browser tab offers "Save as tenant
+  login", with a name (for example `github-qa`) and an expiry (default 14 days,
+  at most 30).
+* swarm-api stores the jar as `swarm-tenant-<tenant>-browser-login-<name>`, and
+  its metadata (site, saved by, saved at, expires, last used) in its own
+  collection `browser_logins`. That collection belongs to swarm-api, as
+  `live_sessions` does, not to the frozen models.
+* A task opts in with `input.browser_login: "<name>"`: a name, never cookies,
+  as invariant 10 asks of every caller choice. An unknown, expired or revoked
+  name fails the task before the agent runs.
+* Access › Browser logins lists them for tenant members, never with a value,
+  with Revoke. Revoke destroys every secret version.
+* When a login's site answers with a sign-in page anyway, the gate raises a
+  normal hand-off. The person's new sign-in refreshes the stored login (a new
+  version), so an expiry costs one prompt, not one per task.
+
+**Whose account (owner's answer).** Any account may be saved, at the saving
+person's judgement, including a personal one. The save dialog states that every
+agent of the tenant can act as that account on that site until the login
+expires or is revoked. No allow-list of sites applies.
+
+**What protects it, and what does not.**
+* The agent's CDP cannot read or plant cookies. The method policy of §5.4.4
+  refuses:
+  - `Network.getCookies`, `Network.getAllCookies` and `Storage.getCookies`;
+  - `Network.setCookie(s)` and `Storage.setCookies`;
+  - `Network.clearBrowserCookies`;
+  - `Storage.clearDataForOrigin`.
+
+  Each refusal records `cdp_method_refused`.
+* **Not covered, stated plainly:**
+  - A cookie without `HttpOnly` is readable by page script, which the agent
+    can run with `Runtime.evaluate`.
+  - An agent driving a signed-in browser can act as the account whatever
+    happens to the cookies. A stored login hands that power to every agent of
+    the tenant until it is revoked.
+
+  These are the cost of reuse the owner accepted.
+* The values never reach a log, an event, a checkpoint, an output or the
+  console. The audit (§5.8) records `browser_login_saved`, `_used`, `_refreshed`
+  and `_revoked`, with names only.
+* Secrets follow the forge-token rule: Secret Manager only, read at run time.
+  The worker's grant is conditioned on its own tenant's
+  `swarm-tenant-<tenant>-browser-` prefix (lane L8b).
 
 ### 5.6 Keyboard, clipboard and the browser itself
 
@@ -1114,6 +1185,10 @@ first, red, then the fix (CLAUDE.md, "Red first").
 | 3 | **L11b UI-THEATER** | `apps/swarm-ui/src/Theater.tsx`, `apps/swarm-ui/src/TheaterTimeline.tsx`, `apps/swarm-ui/src/styles/theater.css`, `apps/swarm-ui/test/Theater.test.tsx` | L11 | vitest: ⤢ and `T` open it on the same session (no second ticket); Esc returns to the tab; Timeline/Logs switch; prev/next walk the live agents in order; replay reads only the caller's tenant's segments |
 | 3 | **L12 UI-HANDOFF** | `apps/swarm-ui/src/Overview.tsx`, `apps/swarm-ui/src/Agents.tsx` (the banner row, the Live filter), `apps/swarm-ui/src/Recordings.tsx`, `apps/swarm-ui/test/Handoff.test.tsx` | L10, L11 | the tab banner and Overview card show reason, expected site and time left; "I'm ready to sign in" calls `human-ready`; the Live filter lists only running browser agents, needs-you first; recordings list only the caller's tenant's |
 | 3 | **L12b UI-GRAPH** | `apps/swarm-ui/src/WorkflowViews.tsx`, `apps/swarm-ui/src/LiveThumb.tsx`, `apps/swarm-ui/test/LiveThumb.test.tsx` | L11b | a running browser node expands a card with a thumbnail at ≤1 fps; Open Browser tab and ⤢ Theater navigate to the same session; no thumbnail stream for a finished step |
+| 1 | **L4c SESSION-CARRY** | `apps/agent-worker/agent_worker/livegate/session.py`, `apps/agent-worker/agent_worker/browser_login.py`, `apps/agent-worker/agent_worker/livegate/cdppolicy.py`, `tests/unit/worker/test_browser_session.py` | L2, L4 | a workflow step's jar is exported on the gate's pipe and written to `swarm-tenant-<t>-browser-wf-<wf>`, then imported by the next step before the agent connects; a step outside a workflow carries nothing; `input.browser_login` loads the named login, and an unknown or expired name fails before the agent runs; the agent's cookie-reading and cookie-writing CDP methods are refused; no cookie value in any log, event, checkpoint or output (fake jar built at runtime) |
+| 2 | **L8b VAULT-IAM** | `terraform/infra/browser_logins.tf`, `tests/terraform/browser_logins.tftest.hcl` | L8 | the worker's per-tenant grant is conditioned on the `swarm-tenant-<t>-browser-` prefix; swarm-api may create and destroy those secrets; no secret version in Terraform; `managed-by=swarm-terraform` on every resource |
+| 2 | **L9b LOGIN-VAULT** | `apps/swarm-api/swarm_api/browser_logins.py`, `apps/swarm-api/swarm_api/routes/browser_logins.py`, `apps/scheduler/scheduler/reconcile.py`, `tests/unit/control_plane/test_browser_logins.py` | L9 | only a member of the tenant can list, save or revoke; another tenant gets 404; a value is never returned; save takes a name and an expiry of at most 30 days; revoke destroys every version; a workflow's carry secret is deleted at its terminal state; the audit records names only |
+| 3 | **L12c UI-LOGINS** | `apps/swarm-ui/src/BrowserLogins.tsx`, `apps/swarm-ui/src/Access.tsx`, `apps/swarm-ui/src/LiveBrowser.tsx`, `apps/swarm-ui/test/BrowserLogins.test.tsx` | L9b, L12 | after Return control the tab offers "Save as tenant login" with the account warning; Access › Browser logins lists name, site, expiry and last use, never a value; Revoke asks for a typed confirmation |
 | 4 | **L13 ACCEPT** | `.github/workflows/accept.yml`, `tests/acceptance/test_live_browser.py`, `tests/acceptance/fixtures/login.html`, `docs/acceptance.md` | all | on dev: a `claude-code-browser` task asks for help on a fixture sign-in page; a scripted viewer takes control and types a password generated at run time; the recording's frames have the field's pixels painted; the transcript, logs, checkpoint and outputs do not contain the password; control returns and the task succeeds; a member of another tenant is refused |
 
 L1-L3 share `livegate/`, a new directory; they are three lanes because their
@@ -1144,7 +1219,9 @@ recommendation:
 6. **Q6** May a person take control when the agent did not ask?
    *Recommended: yes, the submitter only.*
 7. **Q7** Keep the browser session across a park (encrypted), or sign in again.
-   *Recommended: sign in again.*
+   *Recommended: sign in again.* **Revised by LB-7**: sessions are reused
+   through the gate (workflow carry, plus named tenant logins), still never
+   through the checkpoint.
 8. **Q8** Notify beyond the console? *Recommended: console only in phase 1.*
 9. **Q9** The relay shape (R2 or R3). *Recommended: R2.*
 10. **Q10** Console-to-pod paste in control mode. *Recommended: on.*
