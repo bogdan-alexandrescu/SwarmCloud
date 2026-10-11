@@ -17,6 +17,7 @@ import { useNow } from './useNow'
 import { proseWords, stateWord } from './words'
 import { RunContextCard, SelectedTestsGate, useRunIndex, type RunIndexRead } from './RunIndex'
 import { addressToPath } from './paths'
+import { Absent } from './primitives'
 import { RunChangesTab, changesAtOf, withChangesAt } from './WorkflowChanges'
 import './styles/intake.css'
 import './styles/runs.css'
@@ -432,85 +433,112 @@ function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void 
   const filtering = which !== 'all' || text.trim() !== ''
   return (
     <div className="rn-list">
-      {/* FILTER AND SEARCH (QA G2-18, 2026-10-07): over the runs read so far.
-          The API serves the list newest first with no filter, so an older run
-          is found once "Show older runs" has read it -- the note says so. */}
-      <div className="rn-filters">
-        <Segmented
-          label="Which runs"
-          value={which}
-          options={RUN_FILTERS.map((f) => ({ key: f, label: f, title: RUN_FILTER_TITLE[f], count: counts[f] }))}
-          onChange={setWhich}
-        />
-        <input
-          className="rn-search"
-          type="search"
-          aria-label="Find a run by issue or title"
-          placeholder="Find a run by issue or title"
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-        />
-        {filtering && older.next !== null && (
-          <span className="sb-note">Filters the {pluralise(rows.length, 'run')} read; older runs are not searched until shown.</span>
-        )}
-      </div>
-      {shown.length === 0 && (
-        <p className="sb-note rn-none">No run of the {rows.length} read matches{text.trim() === '' ? '' : ` “${text.trim()}”`}{which === 'all' ? '' : ` in ${which}`}.</p>
+      {rows.length === 0 ? (
+        // AN EMPTY STATE, NOT "NO RUN OF THE 0 READ MATCHES" (visual QA V040):
+        // a first page that holds no run but says older ones exist reaches the
+        // list rather than `Screen`'s own empty state. It says so, with the
+        // way to start a run, and keeps "Show older runs" below it.
+        <Absent
+          kind="zero"
+          heading="No runs yet"
+          say={older.next === null ? 'No run has been read for this tenant.' : 'The newest page of runs holds none; older runs may exist.'}
+          className="rn-empty"
+        >
+          {older.next === null ? 'This tenant has not planned an issue.' : 'The newest page holds no run; older ones may exist.'}{' '}
+          <a className="ctl-link" href={addressToPath('work/new-issue')} onClick={(e) => {
+            if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+            e.preventDefault()
+            go('work/new-issue')
+          }}>Submit › From a GitHub issue</a> starts one.
+        </Absent>
+      ) : (
+        <>
+          {/* FILTER AND SEARCH (QA G2-18, 2026-10-07): over the runs read so far.
+              The API serves the list newest first with no filter, so an older run
+              is found once "Show older runs" has read it -- the note says so. */}
+          <div className="rn-filters">
+            <Segmented
+              label="Which runs"
+              value={which}
+              options={RUN_FILTERS.map((f) => ({ key: f, label: f, title: RUN_FILTER_TITLE[f], count: counts[f] }))}
+              onChange={setWhich}
+            />
+            <input
+              className="rn-search"
+              type="search"
+              aria-label="Find a run by issue or title"
+              placeholder="Find a run by issue or title"
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+            />
+            {filtering && older.next !== null && (
+              <span className="sb-note">Filters the {pluralise(rows.length, 'run')} read; older runs are not searched until shown.</span>
+            )}
+          </div>
+          {shown.length === 0 && (
+            <p className="sb-note rn-none">No run of the {rows.length} read matches{text.trim() === '' ? '' : ` “${text.trim()}”`}{which === 'all' ? '' : ` in ${which}`}.</p>
+          )}
+          {/* NO BARE HEADER (visual QA V040): with no row to show, the table's
+              header row over nothing is not drawn. */}
+          {shown.length > 0 && <div className="rn-table-wrap">
+            {/* FIXED COLUMNS (browser QA D11): the table was 1085px in a 1056px
+                card and cut the By column mid-address. Each id and name is one
+                line, cut, whole in its title; the issue leads with its title. */}
+            <table className="rn-table">
+              <thead>
+                <tr>
+                  <th scope="col" data-col="run">Run</th>
+                  <th scope="col" data-col="issue">Issue</th>
+                  <th scope="col" data-col="state">State</th>
+                  <th scope="col" data-col="approval">Plan approval</th>
+                  <th scope="col" data-col="workflow">Workflow</th>
+                  <th scope="col" data-col="created">Created</th>
+                  <th scope="col" data-col="by">By</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((r) => (
+                  <tr key={r.id} className="rn-row">
+                    {/* THE CUT IS ON A SPAN, NOT THE CELL (visual QA V036): `.rn-cut`
+                        is `display: block`, and on the `<td>` it took the Run cell
+                        out of the table's row, ~16px off the others on a tall row. */}
+                    <td data-label="Run"><span className="rn-cut" title={r.id}><InApp go={go} to={runAddress(r.id)} href={`/runs/${encodeURIComponent(r.id)}`}>{r.id}</InApp></span></td>
+                    <td data-label="Issue">
+                      {r.issue_read?.title ? (
+                        <>
+                          <span className="rn-cut rn-issue-t" title={r.issue_read.title}>{r.issue_read.title}</span>
+                          <span className="mono rn-cut rn-issue-ref" title={r.issue.ref}>{r.issue.ref}</span>
+                        </>
+                      ) : (
+                        <span className="mono rn-cut" title={r.issue.ref}>{r.issue.ref}</span>
+                      )}
+                    </td>
+                    <td data-label="State">
+                      <RunStateMark state={r.state} />
+                      {runWhyLine(r) !== null && (
+                        <span className="sb-note rn-cut rn-why" data-why={r.state} title={runWhyLine(r) ?? ''}>{runWhyLine(r)}</span>
+                      )}
+                    </td>
+                    <td data-label="Plan approval">{r.plan_approval}</td>
+                    {r.workflow_id === null ? (
+                      <td data-label="Workflow"><i className="ctl-em">none yet</i></td>
+                    ) : (
+                      <td data-label="Workflow">
+                        <span className="mono rn-cut" title={r.workflow_id}>
+                          <InApp go={go} to={`work/workflows?${new URLSearchParams({ wf: r.workflow_id }).toString()}`}
+                            href={`/workflows/${encodeURIComponent(r.workflow_id)}`}>{r.workflow_id}</InApp>
+                        </span>
+                      </td>
+                    )}
+                    <td data-label="Created" title={r.created_at}>{timeAgo(r.created_at, now)}</td>
+                    <td data-label="By">{runCreatorWord(r) !== null ? <span className="rn-cut" title={runCreatorWord(r) ?? ''} data-sweep={r.created_by === SWEEP_CREATOR || undefined}>{runCreatorWord(r)}</span> : <i className="ctl-em">&mdash; not recorded</i>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>}
+        </>
       )}
-      <div className="rn-table-wrap">
-        {/* FIXED COLUMNS (browser QA D11): the table was 1085px in a 1056px
-            card and cut the By column mid-address. Each id and name is one
-            line, cut, whole in its title; the issue leads with its title. */}
-        <table className="rn-table">
-          <thead>
-            <tr>
-              <th scope="col" data-col="run">Run</th>
-              <th scope="col" data-col="issue">Issue</th>
-              <th scope="col" data-col="state">State</th>
-              <th scope="col" data-col="approval">Plan approval</th>
-              <th scope="col" data-col="workflow">Workflow</th>
-              <th scope="col" data-col="created">Created</th>
-              <th scope="col" data-col="by">By</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((r) => (
-              <tr key={r.id} className="rn-row">
-                <td data-label="Run" className="rn-cut" title={r.id}><InApp go={go} to={runAddress(r.id)} href={`/runs/${encodeURIComponent(r.id)}`}>{r.id}</InApp></td>
-                <td data-label="Issue">
-                  {r.issue_read?.title ? (
-                    <>
-                      <span className="rn-cut rn-issue-t" title={r.issue_read.title}>{r.issue_read.title}</span>
-                      <span className="mono rn-cut rn-issue-ref" title={r.issue.ref}>{r.issue.ref}</span>
-                    </>
-                  ) : (
-                    <span className="mono rn-cut" title={r.issue.ref}>{r.issue.ref}</span>
-                  )}
-                </td>
-                <td data-label="State">
-                  <RunStateMark state={r.state} />
-                  {runWhyLine(r) !== null && (
-                    <span className="sb-note rn-cut rn-why" data-why={r.state} title={runWhyLine(r) ?? ''}>{runWhyLine(r)}</span>
-                  )}
-                </td>
-                <td data-label="Plan approval">{r.plan_approval}</td>
-                {r.workflow_id === null ? (
-                  <td data-label="Workflow"><i className="ctl-em">none yet</i></td>
-                ) : (
-                  <td data-label="Workflow">
-                    <span className="mono rn-cut" title={r.workflow_id}>
-                      <InApp go={go} to={`work/workflows?${new URLSearchParams({ wf: r.workflow_id }).toString()}`}
-                        href={`/workflows/${encodeURIComponent(r.workflow_id)}`}>{r.workflow_id}</InApp>
-                    </span>
-                  </td>
-                )}
-                <td data-label="Created" title={r.created_at}>{timeAgo(r.created_at, now)}</td>
-                <td data-label="By">{runCreatorWord(r) !== null ? <span className="rn-cut" title={runCreatorWord(r) ?? ''} data-sweep={r.created_by === SWEEP_CREATOR || undefined}>{runCreatorWord(r)}</span> : <i className="ctl-em">&mdash; not recorded</i>}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
       {older.error !== null && <FailedPanel error={older.error} onRetry={() => void more()} />}
       {older.next !== null && (
         <p className="rn-more">
@@ -988,10 +1016,15 @@ function put<T extends object, K extends keyof T>(target: T, key: K, value: T[K]
  * card's edge (owner QA A, 2026-10-04). It takes the card's whole width under
  * its label and breaks only after `/` or `#`; its whole text is the title.
  */
+/** Where an issue reference may wrap: after `/` or `_`, and before the `#` so the number keeps it. */
+export const ISSUE_REF_BREAKS = /[/_]|(?=#)/g
+
 function IssueLink({ run }: { run: IssueRun }) {
   return (
     <a href={run.issue_read?.url || run.issue.url} target="_blank" rel="noreferrer" className="mono rn-ref" title={run.issue.ref} aria-label={run.issue.ref}>
-      {breakAt(run.issue.ref)}
+      {/* BEFORE THE `#`, NOT AFTER IT (visual QA V107): a break after `#`
+          left the number alone on the next line. `#454` is one piece. */}
+      {breakAt(run.issue.ref, ISSUE_REF_BREAKS)}
     </a>
   )
 }

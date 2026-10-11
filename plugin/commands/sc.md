@@ -1,6 +1,6 @@
 ---
 description: SwarmCloud cluster state — accounts, capacity, agents, trouble
-argument-hint: "[accounts|agents|capacity|trouble|task <id>|runs|run show <run>|plan show <run>]"
+argument-hint: "[accounts|agents|capacity|trouble|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals]"
 allowed-tools:
   - Bash(uv run sc)
   - Bash(uv run sc overview:*)
@@ -13,6 +13,12 @@ allowed-tools:
   - Bash(uv run sc runs:*)
   - Bash(uv run sc run show:*)
   - Bash(uv run sc plan show:*)
+  - Bash(uv run sc schedules)
+  - Bash(uv run sc schedules --json)
+  - Bash(uv run sc schedules show:*)
+  - Bash(uv run sc schedules preview:*)
+  - Bash(uv run sc approvals)
+  - Bash(uv run sc approvals --json)
   - Bash(uv run swarm doctor:*)
 ---
 
@@ -33,6 +39,26 @@ what they submit first and approve only the plan digest the operator was
 shown, or tell the operator the command (`uv run sc plan approve <run>` prints
 the plan and asks them to type `approve`). `--auto-merge` is visible but
 disabled: the API refuses it until #295.
+
+For schedules and the approval inbox (docs/schedules.md §7.3) the views are
+`uv run sc schedules` (the console's table), `uv run sc schedules show <name>`
+(one schedule and its last 10 firings), `uv run sc schedules preview "<cron>"`
+(the cron in words and its next slots) and `uv run sc approvals` (what waits
+for a person: firings, plans, merges, holds). `uv run sc approvals` is also how
+a session learns what is waiting: read it when the operator asks, or when
+`sc schedules` shows a pending count -- there is no session loop to run.
+
+If the arguments are `schedules new|pause|resume|run ...` or
+`approvals approve|reject ...`, do **not** run them here: they create a
+schedule, stop or start one, fire one, or decide an approval, so they are not
+views and this command is not granted them. Use the MCP tools
+(`swarm_schedule_create`, `swarm_schedule_pause`, `swarm_schedule_resume`,
+`swarm_schedule_run_now`, `swarm_schedule_approve`, `swarm_schedule_reject`),
+which say what they write first and approve only the digest the operator was
+shown, or tell the operator the command: `sc approvals approve <id>` prints
+the item and its digest and asks them to type `approve`. A schedule names a
+type from the catalogue (`swarm_schedule_types`); no image or command is
+accepted.
 
 If the arguments are `login`, `logout` or `context ...`, do **not** run them.
 They are not views: they change the operator's own sign-in, or which cluster
