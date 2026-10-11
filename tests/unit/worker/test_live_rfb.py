@@ -372,7 +372,7 @@ def test_pointer_coordinates_are_clamped_to_the_screen() -> None:
 def test_the_server_sends_frame_updates_and_nothing_else() -> None:
     async def main() -> None:
         gate = Gate()
-        gate.hub.publish(rfb.masked(_frame(), MaskState()))
+        gate.hub.publish(rfb.masked(_frame(), _unmasking()))
         person = await gate.connect("person-1")
         await gate.control.grant("person-1")
         person.cut_text(secrets.token_urlsafe(10))
@@ -380,7 +380,7 @@ def test_the_server_sends_frame_updates_and_nothing_else() -> None:
         person.request(incremental=False)
         await person.flush()
         await person.read_update()
-        gate.hub.publish(rfb.masked(_frame(rgb=(1, 2, 3)), MaskState()))
+        gate.hub.publish(rfb.masked(_frame(rgb=(1, 2, 3)), _unmasking()))
         person.request(incremental=True)
         await person.flush()
         await person.read_update()
@@ -458,6 +458,28 @@ def test_an_incremental_update_carries_only_the_rows_that_changed() -> None:
         await viewer.flush()
         [(x, y, w, h, enc, _data)] = await viewer.read_update()
         assert (x, y, w, h, enc) == (0, 10, 64, 3, 0)
+        await gate.close()
+
+    asyncio.run(main())
+
+
+def test_an_identical_frame_is_not_resent_and_the_request_waits_for_a_change() -> None:
+    async def main() -> None:
+        gate = Gate()
+        gate.hub.publish(rfb.masked(_frame(), _unmasking()))
+        viewer = await gate.connect("viewer-a")
+        viewer.request(incremental=False)
+        await viewer.flush()
+        await viewer.read_update()
+        gate.hub.publish(rfb.masked(_frame(), _unmasking()))  # a static page
+        viewer.request(incremental=True)
+        await viewer.flush()
+        assert gate.sessions["viewer-a"].counts.updates == 1
+        changed = _frame()
+        changed.fill(0, 0, 64, 1, (9, 9, 9))
+        gate.hub.publish(rfb.masked(changed, _unmasking()))
+        [(_x, y, _w, h, _enc, _)] = await asyncio.wait_for(viewer.read_update(), 2)
+        assert (y, h) == (0, 1)
         await gate.close()
 
     asyncio.run(main())
@@ -624,6 +646,8 @@ class FakeXServer:
                     for i in range(data):
                         self.mapping[first + i] = syms[i * per:(i + 1) * per]
                     self.remaps.append((first, syms))
+                elif opcode == 43:  # GetInputFocus: what XSync sends
+                    writer.write(struct.pack("<BBHII20x", 1, 0, seq, 0, ROOT))
                 elif opcode == XTEST_OPCODE and data == 2:  # XTestFakeInput
                     kind, detail = rest[0], rest[1]
                     (root,) = struct.unpack_from("<I", rest, 8)
