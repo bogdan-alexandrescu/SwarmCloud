@@ -530,8 +530,15 @@ does).
    that this platform should hold); its non-secret settings (app id, client
    id, slug, callback URL `https://<console>/onboarding/github/callback`)
    become tfvars, and its permissions are: contents read and write, pull
-   requests read and write, issues read and write, checks read, metadata read,
-   workflows write only if D8 says so. "Expire user authorization tokens" on.
+   requests read and write, issues read and write, checks read, commit
+   statuses read, metadata read, workflows write only if D8 says so. "Expire
+   user authorization tokens" on. Commit statuses read is there because the
+   merge step reads the legacy combined status at the head
+   (`/repos/{o}/{r}/commits/{sha}/status`, `apps/agent-worker/agent_worker/merge.py`)
+   before every merge, and without it GitHub answers 403 "Resource not
+   accessible by integration" and the step refuses `token_lacks_rights`
+   (measured on ai-studio, 2026-10-11, until the permission was added to the
+   App and accepted on the installation).
 2. **A platform secret for the App's client secret**, declared by Terraform
    with no version, value added by `scripts/create-secrets.sh --stdin`;
    `secretAccessor` for swarm-api only.
