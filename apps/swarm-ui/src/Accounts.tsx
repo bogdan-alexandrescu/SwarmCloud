@@ -13,7 +13,7 @@ import {
 import { agentName } from './agentlist'
 import { errorHeading, read, route, type ApiError, type Result } from './fetch'
 import type { TopicId } from './help'
-import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam } from './capacityPoll'
+import { ACCOUNTS_POLL_MS, capacityPoll, paneHref, useLinkedParam, usePhoneTables } from './capacityPoll'
 import { HelpCard, HelpLinks } from './HelpCard'
 import { Mark } from './primitives'
 import { Button, Chip, NamedMark, Segmented, ToneMark, UsageTrack, WarnMark } from './components'
@@ -534,16 +534,20 @@ function Broken({
           <p>
             <b>{names(mine)}</b> need{mine.length === 1 ? 's' : ''} someone to sign in again.{' '}
             {mine.length === 1 ? 'It gives' : 'They give'} out nothing until then.{' '}
-            {mine.map((a) => (
-              <button
-                key={a.account_id}
-                type="button"
-                className="acct-link"
-                aria-label={`Sign in again to ${a.label}`}
-                onClick={() => onOpen(a.account_id)}
-              >
-                {mine.length === 1 ? 'Sign in again' : `Sign in again to ${a.label}`}
-              </button>
+            {/* ONE LINK PER ACCOUNT, SEPARATED (visual QA V016): two or more ran
+                together as "Sign in again to aSign in again to b". */}
+            {mine.map((a, i) => (
+              <span key={a.account_id}>
+                {i > 0 && <span aria-hidden="true"> &middot; </span>}
+                <button
+                  type="button"
+                  className="acct-link"
+                  aria-label={`Sign in again to ${a.label}`}
+                  onClick={() => onOpen(a.account_id)}
+                >
+                  {mine.length === 1 ? 'Sign in again' : `Sign in again to ${a.label}`}
+                </button>
+              </span>
             ))}
           </p>
         )}
@@ -584,13 +588,22 @@ function Pool({
   // of flicker that makes a number look untrustworthy when it is not.
   const now = Date.now()
   const shown = shownAccount(accounts, ui.chosen, board.page.tenant_id)
+  const phone = usePhoneTables()
 
   if (shown === null) {
     return (
-      <>
-        <section className="section panel">
-          <h2>Subscription accounts</h2>
-          <div className="state" role="status">
+      /* THE EMPTY POOL IS THE SAME CARD (visual QA V072, 2026-10-11). The
+         heading sat on the page above a bordered panel and the add form floated
+         on the page background under it. Now the list half carries the heading
+         and the zero, and the pane half the form -- the layout a pool with
+         accounts has, so nothing moves when the first one lands. `is-adding`
+         keeps the form's pane drawn on a phone. */
+      <div className="acct-split is-adding is-empty">
+        <section className="section panel acct-list" aria-label="Subscription accounts">
+          <div className="acct-list-head">
+            <h2>Subscription accounts</h2>
+          </div>
+          <div className="state acct-empty" role="status">
             {/* A REAL ZERO, SAID AS ONE, on the surface. What the zero COSTS --
                 that work waits rather than fails, quietly -- is the topic. */}
             {/* ONE OF THIS SCREEN'S TWO `?` (B7.4), AND IT IS THE ONE THAT
@@ -610,13 +623,13 @@ function Pool({
                 vocabulary every other screen uses for the same kind of nothing. */}
             <p className="acct-flags">
               <Mark kind="zero" say="The account read succeeded and this pool has no accounts yet." />
-              <span>add the first one below</span>
+              <span>{phone ? 'add the first one below' : 'add the first one beside this list'}</span>
             </p>
           </div>
         </section>
         {/* The form with no click: on an empty pool it is the one fix. */}
-        {addForm}
-      </>
+        <div className="acct-pane">{addForm}</div>
+      </div>
     )
   }
 
@@ -648,7 +661,11 @@ function Pool({
               board={board}
               now={now}
               readAt={board.readAt}
-              chosen={x.account_id === a.account_id}
+              // A PHONE MARKS ONLY WHAT IT OPENED (visual QA V067). The default
+              // account is a desktop convenience -- the pane beside the list
+              // shows it -- and a phone draws no pane until a row is chosen,
+              // so highlighting the default there marked a row nobody opened.
+              chosen={x.account_id === a.account_id && (shown.explicit || !phone)}
               onChoose={() => choose(x.account_id)}
             />
           ))}
@@ -1216,6 +1233,19 @@ function PoolFindings({
 // One account, opened
 // ---------------------------------------------------------------------------
 
+/**
+ * An identifier that never breaks inside itself (visual QA V070): a hyphen is
+ * a line-break opportunity, so `u-bogdan` wrapped to `u-` and `bogdan`. One
+ * longer than its line is cut with an ellipsis, whole in its title.
+ */
+function Id({ children, className }: { children: string; className?: string }) {
+  return (
+    <span className={className === undefined ? 'acct-id' : `acct-id ${className}`} title={children}>
+      {children}
+    </span>
+  )
+}
+
 function Detail({
   account,
   board,
@@ -1253,11 +1283,31 @@ function Detail({
           </Chip>
         </div>
         <h3>{account.label}</h3>
+        {/* AN ID IS ONE WORD (visual QA V070): `u-bogdan` broke at its hyphen
+            onto two lines. Each id is an `.acct-id`, which never breaks inside
+            itself; the line breaks between words. */}
         <p className="acct-idt">
-          {account.account_id} &middot;{' '}
-          {owned
-            ? `You own this account (tenant ${account.owner_tenant}).`
-            : `You borrow this account from ${account.owner_tenant}${board.page.tenant_id !== null ? ` (tenant ${board.page.tenant_id})` : ''}.`}
+          {/* The ` ·` rides inside the id's box: the list item already prints
+              the bare id, and this is the subtitle's, not a second copy. */}
+          <span className="acct-id" title={account.account_id}>
+            {account.account_id} &middot;
+          </span>{' '}
+          {owned ? (
+            <>
+              You own this account (tenant <Id>{account.owner_tenant}</Id>).
+            </>
+          ) : (
+            <>
+              You borrow this account from <Id>{account.owner_tenant}</Id>
+              {board.page.tenant_id !== null && (
+                <>
+                  {' '}
+                  (tenant <Id>{board.page.tenant_id}</Id>)
+                </>
+              )}
+              .
+            </>
+          )}
         </p>
       </header>
       <div className="acct-tiles">
@@ -1374,7 +1424,7 @@ function Detail({
       </ul>
 
       <AllWindows account={account} now={now} />
-      <Holding account={account} now={now} />
+      <Holding account={account} now={now} fixture={board.fixture === true ? board.page.tenant_id : undefined} />
       {owned ? (
         <>
           <RefreshControl account={account} ui={ui} patch={patch} reload={reload} />
@@ -1457,7 +1507,8 @@ export interface HoldHistory {
  * reads this file as well as api.ts, so a path written here is held to the
  * router the same way.
  */
-export function loadAccountHolders(accountId: string): Promise<Result<AccountHolders>> {
+export function loadAccountHolders(accountId: string, fixture: HoldFixture | null = null): Promise<Result<AccountHolders>> {
+  if (fixture !== null) return Promise.resolve(fixtureHolders(fixture))
   return read<AccountHolders>(
     route('/v1/accounts/{account_id}/holders', { account_id: accountId }),
     () => false,
@@ -1467,12 +1518,93 @@ export function loadAccountHolders(accountId: string): Promise<Result<AccountHol
 export function loadAccountHistory(
   accountId: string,
   cursor: string | null,
+  fixture: HoldFixture | null = null,
 ): Promise<Result<HoldHistory>> {
+  if (fixture !== null) return Promise.resolve(fixtureHistory(fixture))
   const query = cursor ? new URLSearchParams({ cursor }) : undefined
   return read<HoldHistory>(
     route('/v1/accounts/{account_id}/history', { account_id: accountId }, query),
     () => false,
   )
+}
+
+/**
+ * THE DEVELOPMENT ANSWERS (visual QA V017, 2026-10-11). Holding now and
+ * History had no fixture, so in development both always drew a 404 and
+ * nobody could look at them. These are used only when the board itself came
+ * from the fixture (`AccountsBoard.fixture`), and they are built from the
+ * fixture account so the two agree with its row: as many live holds as its
+ * `assigned`, a lent account's holds split between owner and borrower, and a
+ * history that carries every ending -- released, unusable, expired, still
+ * holding -- plus one hold whose task was not recorded and one unverified.
+ */
+export interface HoldFixture {
+  account: Account
+  /** The tenant the fixture board was read as: whose holds are "mine". */
+  viewer: string | null
+}
+
+/** A task id that differs from its neighbours in its last eight, as real ones do. */
+function fixtureTask(account: Account, n: number): string {
+  let h = n + 1
+  for (const c of account.account_id) h = (h * 31 + c.charCodeAt(0)) >>> 0
+  return `task_fixture_${h.toString(16).padStart(8, '0')}`
+}
+
+function fixtureViewer({ account, viewer }: HoldFixture): 'owner' | 'borrower' {
+  return viewer === null || account.owner_tenant === viewer ? 'owner' : 'borrower'
+}
+
+function fixtureHolders(fx: HoldFixture): Result<AccountHolders> {
+  const { account } = fx
+  const now = Date.now()
+  const viewer = fixtureViewer(fx)
+  const lent = account.lend_to[0]
+  const holders: AccountHolder[] = []
+  let others = 0
+  for (let i = 0; i < account.assigned; i++) {
+    const since = new Date(now - (i + 1) * 23 * 60_000).toISOString()
+    // A lent account's last hold is the borrower's: the owner sees whose, a
+    // borrower sees only that there is one.
+    const borrowed = lent !== undefined && i === account.assigned - 1
+    if (viewer === 'borrower' && !borrowed) {
+      others++
+      continue
+    }
+    holders.push({
+      since,
+      task_id: fixtureTask(account, i),
+      attempt: i + 1,
+      tenant: borrowed ? lent : account.owner_tenant,
+      recorded: true,
+      verified: i !== 1,
+    })
+  }
+  const byTenant = viewer === 'owner' && lent !== undefined && account.assigned > 0 ? [{ tenant: lent, n: 1 }] : undefined
+  return {
+    status: 'ok',
+    fetchedAt: now,
+    data: { account_id: account.account_id, viewer, total: account.assigned, holders, others, by_tenant: byTenant },
+  }
+}
+
+function fixtureHistory(fx: HoldFixture): Result<HoldHistory> {
+  const { account } = fx
+  const now = Date.now()
+  const at = (minutesAgo: number) => new Date(now - minutesAgo * 60_000).toISOString()
+  const viewer = fixtureViewer(fx)
+  const tenant = account.owner_tenant
+  const spans: HoldSpan[] = [
+    { since: at(23), until: null, end: null, mine: true, tenant, task_id: fixtureTask(account, 0), attempt: 1, recorded: true, verified: true },
+    { since: at(190), until: at(95), end: 'released', mine: true, tenant, task_id: fixtureTask(account, 7), attempt: 2, recorded: true, verified: true },
+    { since: at(400), until: at(330), end: 'unusable', mine: true, tenant, task_id: fixtureTask(account, 8), attempt: 1, recorded: true, verified: false },
+    { since: at(1300), until: at(1180), end: 'expired', mine: true, tenant, recorded: false },
+  ]
+  return {
+    status: 'ok',
+    fetchedAt: now,
+    data: { account_id: account.account_id, viewer, from: at(7 * 24 * 60), to: at(0), spans, next_cursor: null, others: viewer === 'borrower' ? 2 : undefined },
+  }
 }
 
 /** "38m", "2h 5m", "3d 4h". Whole minutes: a hold is not timed to the second. */
@@ -1553,7 +1685,14 @@ function HoldWork({ h }: { h: { task_id?: string; attempt?: number | null; recor
  * tab is the one the listing already carried (`assigned`), so nothing has to
  * load to say how many.
  */
-function Holding({ account, now }: { account: Account; now: number }) {
+/** `fixture`: the viewing tenant when the board came from the development fixture, else undefined. */
+type FixtureViewer = string | null | undefined
+
+function holdFixture(account: Account, fixture: FixtureViewer): HoldFixture | null {
+  return fixture === undefined ? null : { account, viewer: fixture }
+}
+
+function Holding({ account, now, fixture }: { account: Account; now: number; fixture: FixtureViewer }) {
   const [tab, setTab] = useState<'none' | 'now' | 'history'>('none')
   const pick = (t: 'now' | 'history') => setTab(tab === t ? 'none' : t)
   return (
@@ -1568,8 +1707,8 @@ function Holding({ account, now }: { account: Account; now: number }) {
         ]}
         onChange={pick}
       />
-      {tab === 'now' && <HoldingNow accountId={account.account_id} now={now} />}
-      {tab === 'history' && <HoldingHistory account={account} now={now} />}
+      {tab === 'now' && <HoldingNow account={account} now={now} fixture={fixture} />}
+      {tab === 'history' && <HoldingHistory account={account} now={now} fixture={fixture} />}
     </div>
   )
 }
@@ -1592,8 +1731,9 @@ function useLoad<T>(load: () => Promise<Result<T>>, key: string): [Result<T>, ()
   return [res, () => setN((x) => x + 1)]
 }
 
-function HoldingNow({ accountId, now }: { accountId: string; now: number }) {
-  const [res, retry] = useLoad(() => loadAccountHolders(accountId), accountId)
+function HoldingNow({ account, now, fixture }: { account: Account; now: number; fixture: FixtureViewer }) {
+  const accountId = account.account_id
+  const [res, retry] = useLoad(() => loadAccountHolders(accountId, holdFixture(account, fixture)), accountId)
   if (res.status === 'loading') return <p className="muted small">Loading holders…</p>
   if (res.status === 'error') return <FailedPanel error={res.error} onRetry={retry} />
   if (res.status === 'empty') return <p className="muted small">Nobody holds it.</p>
@@ -1643,7 +1783,7 @@ function HoldingNow({ accountId, now }: { accountId: string; now: number }) {
         <ul className="acct-holder-tenants">
           {(b.by_tenant ?? []).map((t) => (
             <li key={`t:${t.tenant}`}>
-              {pluralise(t.n, 'agent')} · <span className="mono">{t.tenant}</span>
+              {pluralise(t.n, 'agent')} · <Id className="mono">{t.tenant}</Id>
             </li>
           ))}
         </ul>
@@ -1669,10 +1809,10 @@ function HolderAgent({ taskId, verified }: { taskId: string; verified?: boolean 
   )
 }
 
-function HoldingHistory({ account, now }: { account: Account; now: number }) {
+function HoldingHistory({ account, now, fixture }: { account: Account; now: number; fixture: FixtureViewer }) {
   const [cursor, setCursor] = useState<string | null>(null)
   const [res, retry] = useLoad(
-    () => loadAccountHistory(account.account_id, cursor),
+    () => loadAccountHistory(account.account_id, cursor, holdFixture(account, fixture)),
     `${account.account_id}|${cursor ?? ''}`,
   )
   if (res.status === 'loading') return <p className="muted small">Loading history…</p>
@@ -1745,7 +1885,10 @@ function HoldingHistory({ account, now }: { account: Account; now: number }) {
                   <td>{s.since ? clockOf(s.since) : <span className="muted">start not recorded</span>}</td>
                   <td className="is-num">{s.since ? heldFor(b - a) : '—'}</td>
                   <td title={s.end ?? 'holding'}>{s.end ?? <span className="muted">holding</span>}</td>
-                  <td>
+                  {/* ITS OWN CLASS (visual QA V015): the phone hides this column
+                      by name. `td:last-child` also matched Holding now's Since,
+                      the same table class with a different last column. */}
+                  <td className="acct-hist-when">
                     <span className="acct-hist-bar" aria-hidden="true">
                       <i
                         style={{
@@ -2268,9 +2411,12 @@ function Lending({
         <li className="ctl-fact">
           <b>serves</b>
           <span className="mono">
-            {account.lend_to.length === 0
-              ? owner
-              : `${owner}, ${account.lend_to.join(', ')}`}
+            {[owner, ...account.lend_to].map((t, i) => (
+              <span key={t}>
+                {i > 0 && ', '}
+                <Id>{t}</Id>
+              </span>
+            ))}
           </span>
         </li>
       </ul>
@@ -2632,6 +2778,20 @@ function exchangeRefusal(e: ApiError): Refusal {
  * gone, and disabling a control on a guess is the same fault pointed the other
  * way.
  */
+/**
+ * THE PLATFORM'S REFUSAL, WITHOUT ITS RESTART INSTRUCTION, for a code from
+ * another sign-in (visual QA V018). The broker refuses that paste before it
+ * reads the pending record, so this sign-in is untouched and still open --
+ * which `ExchangeAdvice` says, directly under the panel. The broker's message
+ * ends "Press Add account and sign in again.", so the two read as opposite
+ * instructions. The sentence saying WHAT was refused stays verbatim; only the
+ * instruction this page knows to be unnecessary is dropped.
+ */
+export function withoutRestart(e: ApiError): ApiError {
+  const kept = e.message.replace(/\s*Press Add account and sign in again\.?\s*$/i, '').trim()
+  return kept === '' || kept === e.message ? e : { ...e, message: kept }
+}
+
 function signInIsOver(refusal: Refusal | null): boolean {
   return (
     refusal === 'sign_in_expired' ||
@@ -3174,11 +3334,15 @@ function SignInSteps({
     await onExchanged(res.data.account, res.data.expires_at)
   }
 
+  // THE STEPS COUNT FROM THE FIRST ONE THIS PANEL DRAWS (visual QA V066).
+  // The add form's step 1 is naming the account; a re-auth has no such step
+  // -- the account is named -- and started at "2 ·" with no 1.
+  const first = mode === 'add' ? 2 : 1
   return (
     <>
       <div className="acct-action">
         <h4>
-          2 &middot; Sign in to Claude
+          {first} &middot; Sign in to Claude
         </h4>
         <DifferentBrowserNote mode={mode} />
         {/* THE HOST IS THE CHECKABLE FACT -- it is what a reader compares
@@ -3244,7 +3408,7 @@ function SignInSteps({
 
       <form className="acct-action" onSubmit={(e) => void submit(e)}>
         <h4>
-          3 &middot; Paste the code that page shows you
+          {first + 1} &middot; Paste the code that page shows you
         </h4>
         {/* THE IMPERATIVE STAYS (§6). "Paste all of it" is what stops a
             credential landing on the wrong account from a second tab; the
@@ -3291,7 +3455,7 @@ function SignInSteps({
                 before the request left, so there is nothing to re-send; what
                 follows names the controls that do work, per refusal. */}
             <SignInFailure
-              error={at.failed}
+              error={refusal === 'other_sign_in' ? withoutRestart(at.failed) : at.failed}
               what="the code exchange"
               /* A 201 is not a failure, and the panel may not shout that it
                  is over a message saying the platform accepted the sign-in. */
@@ -3358,6 +3522,12 @@ async function restoreStateIfNeeded(
 // ---------------------------------------------------------------------------
 // Add an account
 // ---------------------------------------------------------------------------
+
+/** The platform's message, ended as a sentence: the broker's label refusal has no full stop. */
+function asSentence(message: string): string {
+  const m = message.trim()
+  return /[.!?]$/.test(m) ? m : `${m}.`
+}
 
 function AddAccount({
   board,
@@ -3536,6 +3706,9 @@ function AddAccount({
         </>
       ) : (
         <form
+          // `acct-add-form` (visual QA V069): label, field and its rule as one
+          // group, groups 12px apart. The hints sat 4px above the next label.
+          className="acct-add-form"
           onSubmit={(e) => {
             e.preventDefault()
             void start()
@@ -3627,7 +3800,19 @@ function AddAccount({
               {state.kind === 'starting' ? 'asking for a sign-in link…' : 'Start the sign-in'}
             </button>
           </p>
-          {state.kind === 'start_failed' && (
+          {/* A REFUSED LABEL IS SAID AT THE FORM, NOT IN A FAILURE PANEL
+              (visual QA V010, 2026-10-11). A 422 is the platform answering
+              about the input -- usually the label rule -- and the read-failure
+              panel drew it as "a failure to read the platform" with a Try again
+              that resent the same refused label. It is a line under the button
+              naming the field to change; nothing was created. */}
+          {state.kind === 'start_failed' && state.error.kind === 'invalid' && (
+            <p className="warn-text acct-refused" role="alert">
+              <strong>The platform refused this sign-in:</strong> {asSentence(state.error.message)}{' '}
+              Nothing was created. Correct what it names above and press <em>Start the sign-in</em>.
+            </p>
+          )}
+          {state.kind === 'start_failed' && state.error.kind !== 'invalid' && (
             <>
               {/* THE RETRY IS NOT OFFERED WITHOUT SOMETHING TO RETRY WITH. The
                   label field sits directly above this panel and stays editable

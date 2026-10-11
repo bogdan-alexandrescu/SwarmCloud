@@ -510,3 +510,104 @@ describe('workspace building off in this deployment', () => {
     await screen.findByText(said, {}, WAIT)
   })
 })
+
+// VISUAL QA, LANE VQA-L06 (#1038): V021, V028, V064, V080, V081, V082. Each
+// case asserts the property the finding was about, not the markup's shape.
+describe('visual QA (VQA-L06)', () => {
+  const LONG = `${'a'.repeat(64)}@example.com`
+
+  it('V021: a long email or login breaks anywhere and is capped, so it widens no column', async () => {
+    // MUTATION: drop `.pp-who`'s `overflow-wrap: anywhere` or its `max-width`
+    // -- one unbroken address scrolled the page sideways at 400px.
+    await mount(people([...ROWS, person(LONG, ws('requested', 'w-10a000'), { github: `@${'g'.repeat(60)}` })]))
+    await waitFor(() => expect(rowOf(LONG)).not.toBeNull(), WAIT)
+    const who = [...rowOf(LONG).querySelectorAll<HTMLElement>('.pp-who')]
+    expect(who.map((w) => w.textContent)).toEqual([LONG, `@${'g'.repeat(60)}`])
+    for (const el of who) {
+      for (const env of [WIDE, PHONE]) {
+        expect(painted(el, 'overflow-wrap', env), `the address does not break at ${env.width}`).toBe('anywhere')
+        expect(painted(el, 'display', env)).toBe('block')
+        const cap = fixedPx(painted(el, 'max-width', env))
+        expect(cap, `the address has no cap at ${env.width}`).not.toBeNull()
+        expect(cap!).toBeLessThanOrEqual(320)
+      }
+    }
+  })
+
+  it('V028: opening Deny focuses the reason, and Cancel gives focus back to Deny', async () => {
+    // MUTATION: drop the focus effect in `Deny`.
+    await mount(people(ROWS))
+    await waitFor(() => expect(rowOf('alice@example.com')).not.toBeNull(), WAIT)
+    fireEvent.click(within(rowOf('alice@example.com')).getByRole('button', { name: 'Deny' }))
+    const reason = rowOf('alice@example.com').querySelector('textarea')
+    expect(reason).not.toBeNull()
+    await waitFor(() => expect(document.activeElement).toBe(reason))
+    fireEvent.click(within(rowOf('alice@example.com')).getByRole('button', { name: 'Cancel' }))
+    const deny = within(rowOf('alice@example.com')).getByRole('button', { name: 'Deny' })
+    await waitFor(() => expect(document.activeElement).toBe(deny))
+  })
+
+  it('V064: the gate keeps the refresh control, and the title row is a control tall in every state', async () => {
+    // MUTATION: drop `.pp-page > .c-phead`'s `min-height`, or hide UrRefresh at the gate.
+    const { container } = await mount({ code: 'forbidden', message: 'admin group membership is required for this operation' }, {}, 403)
+    await waitFor(() => expect(container.querySelector('.state.admin-gate')).not.toBeNull(), WAIT)
+    const head = container.querySelector<HTMLElement>('.pp-page > .c-phead')!
+    expect(head.querySelector('.c-acts .c-refresh'), 'the gate dropped the head control').not.toBeNull()
+    for (const env of [WIDE, PHONE]) expect(painted(head, 'min-height', env)).toBe('var(--h-ctl)')
+  })
+
+  it('V080: the action groups flow side by side, and Lend and Reclaim are drawn alike', async () => {
+    // MUTATION: `.pp-acts` back to `display: grid` (one group per line), or
+    // Reclaim back to `kind="ghost"` (a disabled ghost loses its border).
+    await mount(people(ROWS))
+    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
+    const acts = rowOf('bob@example.com').querySelector<HTMLElement>('.pp-acts')!
+    expect(painted(acts, 'display', WIDE)).toBe('flex')
+    expect(painted(acts, 'flex-wrap', WIDE)).toBe('wrap')
+    const lend = within(acts).getByRole('button', { name: 'Lend' })
+    const reclaim = within(acts).getByRole('button', { name: 'Reclaim' })
+    expect(lend.hasAttribute('disabled') && reclaim.hasAttribute('disabled')).toBe(true)
+    expect(reclaim.className).toBe(lend.className)
+    expect(reclaim.classList.contains('is-ghost')).toBe(false)
+  })
+
+  it('V081: a job step label wraps in its own column, its state does not, and a request id is one token', async () => {
+    // MUTATION: drop the `.pp-ws .ob-ws-steps li` grid, `.ob-state`'s nowrap,
+    // or `.pp-ws code` from the `.pp-id` rule.
+    const moving = person('fay@example.com', ws('approved', 'w-fa0000', { steps: { A1: { state: 'done' }, A2: { state: 'running' } } }))
+    const waiting = person('gil@example.com', ws('approved', 'w-61000a', { provisioning: { available: true, waiting_because: 'never_dispatched', approved_minutes_ago: 30 } }))
+    await mount(people([...ROWS, moving, waiting]))
+    await waitFor(() => expect(rowOf('fay@example.com')).not.toBeNull(), WAIT)
+    const step = [...rowOf('fay@example.com').querySelectorAll<HTMLElement>('.ob-ws-steps li')].find((li) => li.textContent?.includes('Checking the name is free'))
+    expect(step, 'the A2 step was not drawn').toBeDefined()
+    expect(painted(step!, 'display', WIDE)).toBe('grid')
+    expect(painted(step!, 'grid-template-columns', WIDE)).toBe('auto minmax(0, 1fr) auto')
+    expect(painted(step!.querySelector('.ob-state')!, 'white-space', WIDE)).toBe('nowrap')
+    const rid = [...rowOf('gil@example.com').querySelectorAll<HTMLElement>('.pp-ws code')].find((c) => c.textContent === 'req-w-61000a')
+    expect(rid, 'the request id was not drawn').toBeDefined()
+    for (const env of [WIDE, PHONE]) {
+      expect(painted(rid!, 'white-space', env)).toBe('nowrap')
+      expect(painted(rid!, 'overflow-wrap', env) ?? 'normal').toBe('normal')
+    }
+  })
+
+  it('V082: Remove admin is bordered like Grant admin, read or unread, and no card repeats the page title', async () => {
+    // MUTATION: either Remove admin back to `kind="ghost"`, or the people card titled "People" again.
+    await mount(people(ROWS))
+    await waitFor(() => expect(document.querySelector('.pp-admin-list')).not.toBeNull(), WAIT)
+    const grant = within(document.querySelector<HTMLElement>('.pp-admins')!).getByRole('button', { name: 'Grant admin' })
+    for (const b of within(document.querySelector<HTMLElement>('.pp-admins')!).getAllByRole('button', { name: 'Remove admin' })) {
+      expect(b.className).toBe(grant.className)
+    }
+    const titles = [...document.querySelectorAll('.pp-page .c-card h2, .pp-page .c-card h3')].map((h) => h.textContent?.trim())
+    expect(titles.length, 'no card title was drawn').toBeGreaterThan(0)
+    expect(titles).not.toContain('People')
+  })
+
+  it('V082: the typed Remove admin of an unread list is bordered too', async () => {
+    await mount(people(ROWS, { admins: null, admins_error: 'RuntimeError' }))
+    await waitFor(() => expect(document.querySelector('.pp-admins .ctl-mark.is-unread')).not.toBeNull(), WAIT)
+    const card = document.querySelector<HTMLElement>('.pp-admins')!
+    expect(within(card).getByRole('button', { name: 'Remove admin' }).className).toBe(within(card).getByRole('button', { name: 'Grant admin' }).className)
+  })
+})

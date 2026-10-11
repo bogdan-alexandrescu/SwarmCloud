@@ -20,13 +20,14 @@
  *
  * An unread count is an em dash with its reason as the title -- never a 0.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 
 import { agentName, type AgentTab } from './agentlist'
 import { loadTask } from './api'
 import type { Result } from './fetch'
 import { Dash } from './components/Chip'
-import { Mark } from './primitives'
+import { Absent, Mark } from './primitives'
+import { blindness } from './checks'
 import { StateMark } from './marks'
 import { addressToPath } from './paths'
 import { staleFoot } from './Shell'
@@ -315,18 +316,54 @@ export function waitGroups(all: readonly Task[]): WaitGroup[] {
     .sort((a, b) => b.n - a.n || a.key.localeCompare(b.key))
 }
 
+/**
+ * A card's nothing, drawn the way every other Overview card draws it (visual
+ * QA V141/V142, 2026-10-11): the shared `Absent` in its in-card variant, so a
+ * failed read is the `not read` mark and a real zero the `real zero` mark --
+ * not a line of em text beside a card that draws the mark for the same read.
+ */
+export function TaskListAbsent({ tasks }: { tasks: Result<TaskPage> }) {
+  // A read in flight is the skeleton every other card draws (Overview's `Reading`).
+  if (tasks.status === 'loading') return <div className="ctl-ghost ov-ghost" style={{ '--rows': '3' } as CSSProperties} aria-hidden />
+  if (tasks.status === 'error') {
+    const b = blindness(tasks.error)
+    return (
+      <Absent
+        className="ov-empty"
+        kind={b.admin ? 'admin' : 'failed'}
+        heading="Task list unread"
+        say={`${b.why} This card is blind; it is not reporting that nothing is here.`}
+      />
+    )
+  }
+  return (
+    <Absent
+      className="ov-empty"
+      kind="zero"
+      heading="No task exists"
+      say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+    />
+  )
+}
+
+/** A real zero over the page that was read, in the same picture as every other card's. */
+function NoneAmong({ heading, n }: { heading: string; n: number }) {
+  return (
+    <Absent
+      className="ov-empty"
+      kind="zero"
+      heading={heading}
+      say={`The task read succeeded and none of the ${n} newest tasks is one of these. A real zero over the page read, not a failure to read.`}
+    />
+  )
+}
+
 /** "Waiting, and why": one row per reason, with its count (O1 `.wlist`). */
 export function WaitingWhy({ tasks }: { tasks: Result<TaskPage> }) {
   const all = rows(tasks)
-  if (all === null) {
-    return (
-      <p className="ctl-em" title={tasks.status === 'error' ? `The task list could not be read: ${tasks.error.message}` : undefined}>
-        {tasks.status === 'loading' ? 'reading…' : tasks.status === 'empty' ? 'No task exists.' : '— not read'}
-      </p>
-    )
-  }
+  if (all === null) return <TaskListAbsent tasks={tasks} />
   const groups = waitGroups(all)
-  if (groups.length === 0) return <p className="ctl-em">Nothing waiting among the {all.length} newest.</p>
+  if (groups.length === 0) return <NoneAmong heading={`None among the ${all.length} newest`} n={all.length} />
   return (
     <div className="ov-wlist">
       {groups.slice(0, 6).map((g) => (
@@ -409,15 +446,30 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
   const all = rows(tasks)
   const now = Date.now()
   const failed = all === null ? [] : failuresOf(all, now).rows
-  const titleOf = useRowTitles(failed.slice(0, 6))
-  if (all === null) {
-    return (
-      <p className="ctl-em" title={tasks.status === 'error' ? `The task list could not be read: ${tasks.error.message}` : undefined}>
-        {tasks.status === 'loading' ? 'reading…' : tasks.status === 'empty' ? 'No task exists.' : '— not read'}
-      </p>
-    )
-  }
-  if (failed.length === 0) return <p className="ctl-em">None among the {all.length} newest.</p>
+  const titleOf = useRowTitles(failed.slice(0, FAILURE_ROWS))
+  if (all === null) return <TaskListAbsent tasks={tasks} />
+  if (failed.length === 0) return <NoneAmong heading={`None among the ${all.length} newest`} n={all.length} />
+  const shown = failed.slice(0, FAILURE_ROWS)
+  return (
+    <>
+    {failureTable(shown, titleOf, now)}
+    {/* THE REST, COUNTED AND IN PLACE (visual QA V144, 2026-10-11): the card
+        stopped at six rows and said nothing about a seventh, while Running
+        now beside it says "N more". The same disclosure, the same words. */}
+    {failed.length > shown.length && (
+      <details className="ov-more ov-failures-more">
+        <summary>{failed.length - shown.length} more</summary>
+        {failureTable(failed.slice(FAILURE_ROWS), titleOf, now)}
+      </details>
+    )}
+    </>
+  )
+}
+
+/** Rows the Recent failures card draws before its "N more". */
+const FAILURE_ROWS = 6
+
+function failureTable(failed: Task[], titleOf: (t: Task) => string | null, now: number) {
   return (
     // FIXED COLUMNS (browser QA D2, 2026-10-04): the row head inherited the
     // head row's `nowrap`, so one long error drew a 1532px table in a 1056px
@@ -431,7 +483,7 @@ export function RecentFailures({ tasks }: { tasks: Result<TaskPage> }) {
         <col className="ov-fc-open" />
       </colgroup>
       <tbody>
-        {failed.slice(0, 6).map((t) => {
+        {failed.map((t) => {
           const href = agentPath(t)
           const why = whyAgent(t) || (t.state === 'DEAD_LETTERED' ? 'Retry budget spent.' : '')
           return (
