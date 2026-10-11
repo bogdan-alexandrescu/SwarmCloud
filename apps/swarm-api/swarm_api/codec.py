@@ -193,7 +193,15 @@ def task_from_dict(data: dict[str, Any]) -> Task:
         # writes again keeps the signed fields it was submitted with.
         forge_credential=_forge_credential(data.get("forge_credential")),
         forge_access=_forge_access(data.get("forge_access")),
+        # Contract request 70 (LB-C). Read back so a task this service decodes
+        # and writes again never clears a live hand-off; anything but a dict
+        # is no wait.
+        human_wait=_human_wait(data.get("human_wait")),
     )
+
+
+def _human_wait(value: Any) -> dict[str, Any] | None:
+    return dict(value) if isinstance(value, dict) else None
 
 
 def _forge_credential(value: Any) -> str | None:
