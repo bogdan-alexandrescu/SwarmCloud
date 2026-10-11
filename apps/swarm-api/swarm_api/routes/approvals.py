@@ -168,7 +168,7 @@ def _approve_projected(ctx: AppContext, auth: AuthContext, tenant_id: str, item_
     if not isinstance(body.digest, str):
         raise ScheduleInvalid("invalid_digest", "a plan is approved by its plan_digest")
     schedule = approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id"))
-    if schedule is not None and not approvals.hold_blocks(run.approval_hold):
+    if schedule is not None:
         approvals.check_gate_approver(
             ctx, tenant_id, (schedule.get("gate") or {}).get("approvers"), email=auth.email,
             is_owner=auth.is_owner, schedule=schedule, merge_tier=False,
@@ -214,11 +214,11 @@ def approve(
         run = IssueRuns(ctx.db, now=ctx.now).get(tenant_id, str((doc.get("subject") or {}).get("run_id")))
         if run.approval_hold:
             approvals.check_hold(ctx, run, email=auth.email, is_owner=auth.is_owner, confirm=verb.confirm)
-        if not approvals.hold_blocks(run.approval_hold):
-            approvals.check_gate_approver(
-                ctx, tenant_id, ((schedule or {}).get("gate") or {}).get("approvers"),
-                email=auth.email, is_owner=auth.is_owner, schedule=schedule, merge_tier=True,
-            )
+        # A hold is checked above IN ADDITION to the schedule's approvers.
+        approvals.check_gate_approver(
+            ctx, tenant_id, ((schedule or {}).get("gate") or {}).get("approvers"),
+            email=auth.email, is_owner=auth.is_owner, schedule=schedule, merge_tier=True,
+        )
         move = approvals.merge_move(ctx.db, now, by=auth.email)
     elif kind == approvals.SPEC:
         # §4.5: a `custom-prompt` spec is approved by platform admins only.

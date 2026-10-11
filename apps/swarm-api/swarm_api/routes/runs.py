@@ -282,10 +282,11 @@ def _approve(
     approvals.check_hold(ctx, run, email=by, is_owner=is_owner, confirm=confirm)
     # §4.6: a scheduled run's named / owner_only approvers hold on EVERY
     # approval path (this route, `sc plan approve`, the inbox), not only the
-    # inbox's. A blocking hold is judged by `check_hold` alone; an
+    # inbox's. A hold is checked above IN ADDITION: it only ever makes
+    # approval stricter, never replaces the schedule's approvers. An
     # auto-approval is the gate's own `auto` mode and is not a person.
     schedule_ref = run.schedule or {}
-    if schedule_ref and by != AUTO_APPROVER and not approvals.hold_blocks(run.approval_hold):
+    if schedule_ref and by != AUTO_APPROVER:
         schedule = approvals.read_schedule(ctx.db, tenant_id, schedule_ref.get("schedule_id"))
         if schedule is not None:
             approvals.check_gate_approver(
