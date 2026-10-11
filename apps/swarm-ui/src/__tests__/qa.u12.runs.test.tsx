@@ -206,20 +206,22 @@ describe('R1/A: the side cards stack each label above its value', () => {
 
 describe('B/R2/D11: the page head never leaves the column', () => {
   for (const env of [WIDE, PHONE]) {
-    it(`gives the title its own row and the rest the next at ${env.width}px`, async () => {
+    it(`gives the title and its ? the first row and the rest the next at ${env.width}px`, async () => {
       const { container } = await mount(run())
       const head = container.querySelector('.rn-run .c-phead')!
       expect(painted(head, 'flex-wrap', env)).toBe('wrap')
       const block = head.querySelector(':scope > div.head')!
       expect(painted(block, 'display', env), 'the `?` stays on the title\'s row').toBe('contents')
       const h1 = head.querySelector('h1')!
-      expect(painted(h1, 'flex', env)).toBe('1 0 100%')
+      // V096: the title takes what the `?` leaves on the first row.
+      expect(painted(h1, 'flex', env)).toBe('1 1 0')
       expect(painted(h1, '-webkit-line-clamp', env)).toBe('2')
       expect(h1.getAttribute('title')).toBe(LONG_TITLE)
       // #138: no sub-line; the head's second row is its actions, which take
       // what the row leaves and never pass the column.
       expect(head.querySelector(':scope > .sub'), 'a sub-line is back in the head').toBeNull()
       const acts = head.querySelector(':scope > .c-acts')!
+      expect(painted(acts, 'flex', env)).toBe('1 0 100%')
       expect(painted(acts, 'min-width', env)).toBe('0')
       expect(painted(acts, 'max-width', env)).toBe('100%')
       // The refresh in them is cut, whole in its title, rather than pushed off.
