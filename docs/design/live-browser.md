@@ -380,7 +380,11 @@ upload, park, release, exit. `RUNNING -> PARKED` is already legal
 (`apps/common/swarm_common/states.py::_ALLOWED`). The park cannot reuse an
 existing reason: the scheduler promotes the existing ones by its own rules (a
 cooldown ends, a dependency finishes), and nothing but a person should promote
-this one. So it is a new `ParkReason` (contract request LB-A, section 8).
+this one. `MANUAL_PAUSE`, the obvious candidate, was considered and rejected
+for exactly that reason: the scheduler returns it to `READY` once what paused
+it clears (`Scheduler._promote_manual_pauses`,
+`apps/scheduler/scheduler/loop.py::Scheduler._promote_manual_pauses`), so a hand-off parked under it
+would be re-admitted with nobody there to sign in. So it is a new `ParkReason` (contract request LB-A, section 8).
 
 **What the park costs.** The browser is gone: its session, its tabs, its
 history (section 5.5 says why they are not checkpointed). The claude-code
@@ -605,6 +609,22 @@ agent exists -- the same first-registration-wins argument as the attempt key.
 Every later message is MAC'd with that key and carries a counter. A gate that
 receives a second registration refuses it and records `gate_ctl_refused`.
 
+**A gate that restarts refuses every registration.** A native sidecar has
+`restartPolicy: Always`, so the gate can restart mid-attempt while the agent
+is alive, and a fresh gate process would otherwise reopen the slot for
+whoever connects first. The gate therefore writes a marker to its own
+sidecar-only volume on its first start; a gate that finds the marker is a
+restart, accepts no registration at all, keeps Chromium closed and records
+`gate_restarted`. The live path ends for that attempt: the worker sees its MAC'd
+channel drop, treats it as "live view unavailable for this attempt", and an
+open hand-off ends as if the hold had expired (checkpoint, park,
+section 4.3), so the next attempt gets a fresh pod and a fresh gate. The worker
+does not re-key: re-keying would need the worker to prove itself to a gate
+that cannot tell it from the agent, which is the problem the first
+registration exists to avoid. The exposure in between is small anyway, since
+the agent holds no tunnel ticket, but a slot that silently reopens is the
+kind of gap this section exists to close.
+
 #### 5.4.3 While a person is in control, the agent's CDP is held
 
 The CDP proxy is the only way the worker container reaches Chromium. In
@@ -624,16 +644,80 @@ control mode it:
   `Page.addScriptToEvaluateOnNewDocument` and `Runtime.addBinding` it has seen
   the agent make, tracked by identifier -- and restores them on return, so a
   page loaded during control runs no agent-installed listener;
-* offers the person **"start from a fresh page"**: the gate opens the
-  hand-off's `expect` host in a new tab of the same browser context, so the
-  sign-in happens on a document no agent script has touched. A page loaded
-  before control may carry listeners the agent installed; the console says so,
-  and recommends the fresh page.
+* offers the person **"start from a fresh page"**, the default for a
+  hand-off: the gate creates **its own browser context**
+  (`Target.createBrowserContext` on the gate's session, with no proxy
+  parameters and downloads set to `downloads/`) and opens the hand-off's
+  `expect` host in it, so the sign-in happens on a document no agent script
+  has touched, in a context whose network settings no agent call set. On
+  return the gate hands that context to the agent (the proxy then forwards the
+  agent's attach to its targets), and the agent continues there, signed in. A
+  page loaded before control, in the agent's own context, may carry listeners
+  the agent installed; the console says so, and recommends the fresh page.
+
+Holding commands during control does not undo state the agent set **before**
+it asked for help, so the proxy also enforces section 5.4.4 at all times.
 
 This is enforcement, not a request. An agent that ignores `swarm-handoff wait`,
 or an escaped agent process, still cannot act on the browser or observe the
 person's session while control is held, because nothing it can reach leads to
-Chromium except the proxy.
+Chromium except the proxy, and the proxy never let it set up the state that
+would observe the session later (section 5.4.4).
+
+#### 5.4.4 State the agent sets before control: a method policy, always on
+
+The attack: before calling `swarm-handoff`, the agent calls
+`Target.createBrowserContext({proxyServer: <its own proxy>})` and
+`Security.setIgnoreCertificateErrors({ignore: true})`, navigates to the sign-in
+page in that context, then asks for help. Every hold and strip in section 5.4.3
+applies only from the moment control starts; the sign-in POST still travels
+through the agent's proxy, certificate errors are ignored, so the proxy can
+terminate TLS with its own certificate and read the password. The same shape
+works with `Page.setBypassCSP` (a page's own defences off) or
+`Network.setExtraHTTPHeaders`. So the defence cannot be "pause the agent
+during control"; it has to be "the agent can never set that state".
+
+**The proxy carries a method policy, applied to every agent command from the
+first one, not only in control mode.** It is an allowlist of the CDP domains
+and methods Playwright's `connectOverCDP` uses (`Page`, `Runtime`, `DOM`,
+`Input`, `Emulation`, `Accessibility`, `Target` attach and create-target, and
+the read side of `Network`, `Fetch` and `Storage`), and anything not on it is
+refused with a CDP error and recorded as `cdp_method_refused` with the method
+name (never the parameters, which may carry page text). Inside the allowlist a
+**named denylist** is refused regardless, because each one changes how the
+browser trusts or routes traffic:
+
+| Refused | Why |
+|---|---|
+| `Target.createBrowserContext` with `proxyServer` or `proxyBypassList` | routes the context's traffic, a sign-in included, through a server the agent chose |
+| every `Security.*` method (`setIgnoreCertificateErrors`, `handleCertificateError`, `setOverrideCertificateErrors`) | lets a man-in-the-middle certificate pass, so TLS no longer protects what the person types |
+| `Page.setBypassCSP` | turns off the site's own script defences on the page the person will type into |
+| `Network.setExtraHTTPHeaders` | adds headers the agent chose to every request, the person's included |
+| `Browser.setDownloadBehavior` / `Page.setDownloadBehavior` with a path outside `downloads/` | writes files where the gate, not the worker, reads them |
+
+The allowlist is the control and the denylist is its documentation: a method
+Chromium adds next year is refused because it is not on the list, not because
+someone remembered to deny it. A Playwright call that needs a refused method
+fails loudly in the agent, which is the intended outcome; L2 lists the
+methods `claude-code-browser`'s own tests use, and nothing else is opened
+without a change to this table.
+
+**The gate refuses control on a certificate error.** The gate's own CDP
+session watches `Security.visibleSecurityStateChanged` (the gate's session,
+not the agent's, so the denylist above does not apply to it). Control is not
+entered, and ends if already held, while the page being controlled is not
+`secure`: a certificate error, an interstitial, or a plain-`http:` page on the
+hand-off's `expect` host. The console says why ("this page's connection is not
+secure; control was refused") and the episode is audited with that cause.
+The Chromium policy `SSLErrorOverrideAllowed: false` (section 5.6) means the
+person cannot click through an interstitial either. With the denylist in
+force a certificate error should not be the agent's doing; the refusal is for
+the case where it is the network's, or where a refused-method check was
+missed.
+
+**What this does not cover.** The agent still sees the session after return,
+by design (below), and still chose where the person was sent, which is
+section 5.7's problem, not this one's.
 
 **After return the agent has the session, by design.** It can read the site's
 cookies through CDP and act as the signed-in user. That is the delegation the
@@ -685,6 +769,7 @@ the attempt ends."
   (`*.svc.cluster.local`, `swarm-system`); `DeveloperToolsAvailability: 2`;
   `PasswordManagerEnabled: false`; `AutofillAddressEnabled` and
   `AutofillCreditCardEnabled: false`; `FullscreenAllowed: false` (section 5.7);
+  `SSLErrorOverrideAllowed: false` (section 5.4.4);
   `BrowserSignin: 0`; `SyncDisabled: true`. A person in control therefore
   cannot read the sidecar's files, open devtools on the agent's pages, or
   save a password into a profile that is about to be wiped anyway.
@@ -773,6 +858,8 @@ the page there (section 5.4.3).
 | Replaying a captured stream or ticket | TLS on every hop; tickets one-use, 30-60 s, bound to session, person, role and generation. A recording is a stored object behind the same tenant check, not a re-stream. |
 | A stale worker (old generation) keeps streaming | The ticket carries the generation; swarm-api closes the session when the lease's generation moves (invariant 5), and the relay drops the tunnel. |
 | The agent keylogs the person | No display access (§3.1); CDP held and scripts removed during control (§5.4.3); postData stripped after. |
+| The agent sets traffic-routing or trust state before asking for help (a context with its own `proxyServer`, `Security.setIgnoreCertificateErrors`, `Page.setBypassCSP`, extra headers), so the sign-in passes through it | The proxy's method policy refuses those calls from the first command, not only in control (§5.4.4); the fresh page opens in a gate-owned context; the gate refuses or ends control while the page has a certificate error. |
+| The gate restarts mid-attempt and the agent registers on `ctl.sock` first | A restarted gate accepts no registration; the live path ends for that attempt (§5.4.2). |
 | The agent or an escaped process drives the browser during control | The proxy holds every command; there is no other path. |
 | The agent spams hand-offs to pester people or hold the pod | 3 per attempt; each hold bounded; the park gives capacity back. |
 | A controller sits on control to hold capacity | Idle 300 s and renewal 60 s end control; the hold's deadline then applies. |
@@ -935,8 +1022,8 @@ first, red, then the fix (CLAUDE.md, "Red first").
 |---|---|---|---|---|
 | 0 | **L0 CONTRACT** | `apps/common/swarm_common/states.py`, `models.py`, `profiles.py`, `docs/contract-change-requests.md`, `scripts/lib/check-contract-parity.sh`, `tests/unit/common/test_live_browser_contract.py` | owner's answers; lane PROFILE merged | `HUMAN_REQUIRED` is not in any capacity set; `live_browser` is true only on `claude-code-browser` and refused on a non-GKE profile; parity script green |
 | 1 | **L1 GATE-MASK** | `apps/agent-worker/agent_worker/livegate/mask.py`, `livegate/observer.js`, `livegate/capture.py`, `tests/unit/worker/test_live_mask.py` | L0 | a fixture frame plus rectangles comes out with those pixels painted; a field toggled from `password` to `text` stays masked; a stale report blanks the page area; a redaction-rule match in text is masked (fake built at runtime) |
-| 1 | **L2 GATE-CDP** | `livegate/cdpproxy.py`, `livegate/scripts.py`, `tests/unit/worker/test_live_cdp_proxy.py` | L0 | in control mode commands are held and released in order on return; events dropped; `postData` stripped for control-window requests; `Fetch.requestPaused` continued by the proxy; agent init scripts removed and restored; new connections refused |
-| 1 | **L3 GATE-RFB** | `livegate/rfb.py`, `livegate/inject.py`, `livegate/ctl.py`, `tests/unit/worker/test_live_rfb.py` | L1 | key events from a viewer, or in view mode, are discarded; pod-to-console clipboard never sent; a second `ctl.sock` registration refused; captured logs contain no keysym |
+| 1 | **L2 GATE-CDP** | `livegate/cdpproxy.py`, `livegate/cdppolicy.py`, `livegate/scripts.py`, `tests/unit/worker/test_live_cdp_proxy.py` | L0 | in control mode commands are held and released in order on return; events dropped; `postData` stripped for control-window requests; `Fetch.requestPaused` continued by the proxy; agent init scripts removed and restored; new connections refused; **outside control too**, `Target.createBrowserContext` with `proxyServer`, every `Security.*` method, `Page.setBypassCSP`, `Network.setExtraHTTPHeaders`, a download path outside `downloads/` and a method not on the allowlist are refused and `cdp_method_refused` recorded; the fresh page opens in a gate-owned context with no proxy; control is refused, and ended if held, while the page reports a certificate error |
+| 1 | **L3 GATE-RFB** | `livegate/rfb.py`, `livegate/inject.py`, `livegate/ctl.py`, `tests/unit/worker/test_live_rfb.py` | L1 | key events from a viewer, or in view mode, are discarded; pod-to-console clipboard never sent; a second `ctl.sock` registration refused, and a restarted gate refuses even the first; captured logs contain no keysym |
 | 1 | **L4 WORKER-HANDOFF** | `apps/agent-worker/agent_worker/handoff.py`, `lifecycle.py`, `workspace.py`, `images/agent-runtime-browser/swarm-handoff`, `tests/unit/worker/test_handoff.py` | L0, L3 | request -> gate paused -> signed route called; hold expiry -> checkpoint, wipe, park(`HUMAN_REQUIRED`), refund within the bound; cancel during hold -> exit code 4, wipe, cancel path; unprotected heap -> exit 5 and no tunnel |
 | 1 | **L4b WORKER-STATE** | `apps/agent-worker/agent_worker/checkpoint.py`, `artifact_manifest.py`, `tests/unit/worker/test_browser_state_refused.py` | L0 | a storage-state JSON or a `Cookies` database under `work/` is left out of the checkpoint and the outputs, and `browser_state_refused` is recorded |
 | 1 | **L5 DISPATCH** | `apps/scheduler/scheduler/dispatch.py`, `images/agent-runtime-browser/Dockerfile`, `images/agent-runtime-browser/chromium-policy.json`, `tests/unit/control_plane/test_dispatch_live_sidecar.py`, `docs/execution-backends.md` | L0 | a `claude-code-browser` manifest has a native sidecar with its own uid, `requests == limits` per container summing to `browser`, `/dev/shm` on the sidecar, the `swarm-live` label; every other profile's manifest unchanged |
@@ -992,5 +1079,8 @@ Written to `questions.json` with a recommendation each:
   load balancer in front of `swarm-live`) is named, not measured; L8 measures
   it, as the verification job's egress setting was once measured the hard way
   (`terraform/infra/verify.tf`).
+* **That Playwright's `connectOverCDP` picks up the gate-owned context** handed
+  over on return (section 5.4.3), and that the method allowlist of section 5.4.4
+  covers every call Playwright makes, are design; L2 proves both.
 * **Playwright's `connectOverCDP` through the proxy**, downloads and file
   uploads through the shared volumes, are design; L2 and L5 prove them.
