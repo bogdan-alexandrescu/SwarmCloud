@@ -56,6 +56,7 @@ disabled for every tenant; no Job exists for them yet):
 | `post-verdict` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (not moved by #939 option A: designed to run as its own account, which a GKE pod cannot be; contract request 66) |
 | `claude-code-review` | Cloud Run Jobs | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (not moved by #939 option A: designed to run as its own account, which a GKE pod cannot be; contract request 66) |
 | `indexer` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 48, accepted by the owner 2026-10-05; claude-code on `agent-runtime-indexer`; on GKE Autopilot since contract request 63, 2026-10-10, the canary for #939; its tenants' Cloud Run Jobs are kept, idle, as the rollback) |
+| `claude-code-browser` | GKE Autopilot | `apps/common/swarm_common/profiles.py::RUNNER_PROFILES` (contract request 67, accepted by the owner 2026-10-11; claude-code on `agent-runtime-browser` and the `browser` class, so an agent can render and screenshot pages; GKE because Cloud Run cannot size Chromium's `/dev/shm`) |
 
 `BackendRouter.for_backend` (`apps/scheduler/scheduler/dispatch.py::BackendRouter.for_backend`) sends
 `CLOUD_RUN_JOB` to `CloudRunJobDispatcher`

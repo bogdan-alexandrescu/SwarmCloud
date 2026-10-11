@@ -348,13 +348,52 @@ def test_the_deployer_policies_fail_closed_deny_and_are_scoped_by_caller(policy_
 
 
 def test_the_scope_policy_reads_the_request_alone(policy_docs):
-    """It matches every kind, which is safe only because no expression in it
-    reads `object`, whose schema differs per kind."""
+    """It matches every kind the deployer writes, which is safe only because no
+    expression in it reads `object`, whose schema differs per kind."""
     policy = _one(policy_docs, "ValidatingAdmissionPolicy", "swarm-workspace-deployer-scope")
-    rules = policy["spec"]["matchConstraints"]["resourceRules"]
-    assert rules == [{"apiGroups": ["*"], "apiVersions": ["*"], "operations": ["*"], "resources": ["*", "*/*"]}]
     for expression in _expressions(policy):
         assert not re.search(r"\b(object|oldObject)\b", expression), expression
+
+
+#: The verbs that write. A grant of any of these reaches admission, so the
+#: scope policy has to match its resource; `get` never does.
+WRITE_VERBS = {"create", "update", "patch", "delete", "deletecollection", "escalate", "bind", "*"}
+
+
+def _rbac_write_grants() -> set[tuple[str, str]]:
+    """Every (API group, resource) a ClusterRole or Role in
+    provisioner-rbac.yaml grants a write verb on, read from the file itself so a
+    grant added there is seen here without anyone listing it."""
+    granted: set[tuple[str, str]] = set()
+    for doc in yaml.safe_load_all((KUBERNETES / "rbac" / "provisioner-rbac.yaml").read_text()):
+        if not doc or doc["kind"] not in {"ClusterRole", "Role"}:
+            continue
+        for rule in doc.get("rules", []):
+            if WRITE_VERBS & set(rule["verbs"]):
+                granted |= {(g, r) for g in rule["apiGroups"] for r in rule["resources"]}
+    return granted
+
+
+def test_the_scope_policy_matches_every_resource_the_rbac_lets_it_write(policy_docs):
+    """GKE Autopilot's admission webhook refuses a rule matching ("*", "*") or
+    ("*", "*/*") (W5, measured 2026-10-11), so the scope policy lists its
+    resources. The list is the fence only if it covers every write RBAC grants:
+    a resource granted there and missing here is a write nothing scopes."""
+    policy = _one(policy_docs, "ValidatingAdmissionPolicy", "swarm-workspace-deployer-scope")
+    rules = policy["spec"]["matchConstraints"]["resourceRules"]
+    matched: set[tuple[str, str]] = set()
+    for rule in rules:
+        assert rule["operations"] == ["CREATE", "UPDATE", "DELETE"], rule
+        assert rule["apiVersions"] == ["*"], rule
+        for group in rule["apiGroups"]:
+            assert "*" not in group, rule
+            for resource in rule["resources"]:
+                assert "*" not in resource, rule
+                matched.add((group, resource))
+    grants = _rbac_write_grants()
+    assert grants, "provisioner-rbac.yaml grants no write: the reader is broken"
+    assert grants <= matched, f"written but unscoped: {sorted(grants - matched)}"
+    assert all("*" not in g and "*" not in r for g, r in grants), grants
 
 
 def test_the_scope_policy_refuses_every_operation_but_create_and_update(policy_docs):

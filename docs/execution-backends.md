@@ -72,6 +72,22 @@ backend.
 | `codex` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 65, #939 option A; its Cloud Run Jobs kept, idle, as the rollback; disabled) | openai |
 | `browser` | `agent-runtime-browser` | browser | **GKE Autopilot** | anthropic |
 | `indexer` | `agent-runtime-indexer` | standard | **GKE Autopilot** (contract request 63, the canary for #939; its Cloud Run Jobs kept, idle, as the rollback) | anthropic |
+| `claude-code-browser` | `agent-runtime-browser` | browser | **GKE Autopilot** (contract request 67: Cloud Run cannot size Chromium's `/dev/shm`) | anthropic |
+
+`claude-code-browser` (contract request 67, accepted by the owner 2026-10-11)
+is `claude-code` with Playwright and Chromium beside the agent, for work that
+has to SEE a page: visual QA, a screenshot of what a change rendered, a UI bug
+reproduced by following its report. `browser` cannot do that -- it is a
+scripted runner that plays `input.url` or `input.actions` and has no agent --
+and `claude-code` cannot either, because `agent-runtime-base` has no Chromium.
+It is not free: it costs a **`browser` resource class**, 8 vCPU and 16 GiB at
+2 units against the `resource:browser` pool it shares with `browser`, twice a
+`standard` claude-code step, because the 2 GiB memory-backed `/dev/shm` every
+GKE worker pod mounts is charged to the memory limit and Chromium needs that
+room before it opens a tab. Pick `claude-code` for work that never renders a
+page. Chromium's own sandbox stays off (the pod refuses user namespaces and
+drops every capability; the pod is the isolation), so the agent launches it
+with `chromium_sandbox=False`, and the runner says so in its instructions.
 
 `Backend.AUTO` resolves to Cloud Run when the class fits within 8 vCPU / 32 GiB,
 and to Autopilot otherwise.

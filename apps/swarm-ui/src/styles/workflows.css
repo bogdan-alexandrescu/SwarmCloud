@@ -700,6 +700,10 @@
   background: var(--wf-body-bg);
   overflow: hidden;
   cursor: pointer;
+  /* A finger dragged on the strip steers the canvas (the component's pointer
+     handlers) rather than scrolling the page under it; everywhere else the
+     page scrolls natively. */
+  touch-action: none;
 }
 .wf-vmap svg { display: block; width: 100%; height: 100%; }
 @media (max-width: 560px) {

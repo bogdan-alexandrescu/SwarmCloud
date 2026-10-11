@@ -132,6 +132,13 @@ run "runner_backends_match_resolve_backend" {
     error_message = "indexer runs on GKE Autopilot (contract request 63, the canary for #939)"
   }
 
+  # Contract request 67 (owner, 2026-10-11): claude-code on the browser image
+  # runs where the browser image must, on Autopilot, sized by the browser class.
+  assert {
+    condition     = output.runner_backends["claude-code-browser"] == "GKE_AUTOPILOT"
+    error_message = "claude-code-browser runs on GKE Autopilot (contract request 67): Cloud Run cannot size Chromium's /dev/shm"
+  }
+
   # Contract requests 64, 65 and 66 (owner, 2026-10-10, #939 option A, after
   # the indexer canary): the remaining profiles that reach the internet follow.
   assert {
@@ -149,8 +156,8 @@ run "runner_backends_match_resolve_backend" {
   }
 
   assert {
-    condition     = length(output.runner_backends) == 9
-    error_message = "nine runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review and contract request 48's indexer"
+    condition     = length(output.runner_backends) == 10
+    error_message = "ten runner profiles: mock, generic, claude-code, codex, browser, #295's merge, post-verdict, claude-code-review, contract request 48's indexer and contract request 67's claude-code-browser"
   }
 }
 
@@ -188,7 +195,7 @@ run "every_pool_name_the_contract_can_produce_is_materialised" {
       for r in [
         "runner:mock", "runner:generic", "runner:claude-code", "runner:codex", "runner:browser",
         "runner:merge", "runner:post-verdict", "runner:claude-code-review",
-        "runner:indexer",
+        "runner:indexer", "runner:claude-code-browser",
       ] :
       contains(output.pool_names, r)
     ])
@@ -395,17 +402,17 @@ run "the_python_catalogue_is_readable" {
   }
 
   assert {
-    condition     = length(output.runner_profiles) == 9
-    error_message = "expected 9 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer); the parser read a different number"
+    condition     = length(output.runner_profiles) == 10
+    error_message = "expected 10 runner profiles in profiles.py (mock, generic, claude-code, codex, browser, merge, post-verdict, claude-code-review, indexer, claude-code-browser); the parser read a different number"
   }
 
   # claude-code's and indexer's entries carry a comment above their backend;
-  # the parser must read the field, and the last entry (indexer) must not run
-  # on past the dict. post-verdict is read alongside so the check sees a
+  # the parser must read the field, and the last entry (claude-code-browser,
+  # contract request 67) must not run on past the dict. post-verdict is read alongside so the check sees a
   # CLOUD_RUN_JOB entry too, not only GKE ones.
   assert {
-    condition     = output.runner_profiles["claude-code"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "GKE_AUTOPILOT" && output.runner_profiles["merge"].backend == "GKE_AUTOPILOT" && output.runner_profiles["post-verdict"].backend == "CLOUD_RUN_JOB"
-    error_message = "the parser misread profiles.py: claude-code (contract request 53), indexer (63) and merge (66) must read GKE_AUTOPILOT, and post-verdict must keep CLOUD_RUN_JOB"
+    condition     = output.runner_profiles["claude-code"].backend == "GKE_AUTOPILOT" && output.runner_profiles["indexer"].backend == "GKE_AUTOPILOT" && output.runner_profiles["merge"].backend == "GKE_AUTOPILOT" && output.runner_profiles["post-verdict"].backend == "CLOUD_RUN_JOB" && output.runner_profiles["claude-code-browser"].image == "agent-runtime-browser" && output.runner_profiles["claude-code-browser"].resource_class == "browser"
+    error_message = "the parser misread profiles.py: claude-code (contract request 53), indexer (63) and merge (66) must read GKE_AUTOPILOT, post-verdict must keep CLOUD_RUN_JOB, and claude-code-browser (67) must read the browser image and class"
   }
 
   assert {
