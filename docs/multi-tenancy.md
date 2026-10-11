@@ -365,6 +365,32 @@ authorization layer rather than in our code.
 what stops one tenant's 429 storm from throttling everyone else — their AIMD
 target falls, nobody else's does.
 
+### Schedules: what a runaway one can and cannot do to another tenant
+
+From 2026-10-11 recurring tenant work runs as **schedules**
+([schedules.md](schedules.md), §5.6 there), not as a Cloud Scheduler job per
+tenant. Lane SWEEP's per-tenant `issue_sweep` job is **paused** and its
+`issue-sweep` schedule replaces it. The job and its route are deleted in a
+later change, held for the owner
+([operations.md §13](operations.md#13-schedules-the-s9-migration-sweep-paused-deletion-pending)).
+A schedule is a document in `schedules/`, carries its `tenant_id`, and fires
+**as its owner, in its own tenant**. The tick that fires every tenant's
+schedules holds one route and submits nothing as itself. So a schedule's work
+is ordinary tenant work, under every isolation mechanism above:
+
+| it CAN | it CANNOT |
+|---|---|
+| Fill its own tenant's `tenant:<id>` pool, up to `max_active` and `capacity_units`. The tenant's other work then queues behind it | Exceed its tenant's ceilings. Admission checks every pool in one transaction (invariants 2-3) |
+| Take `global` and `resource:<class>` slots up to its tenant ceiling, so other tenants' work queues longer when the platform is full. That is the ceiling arithmetic an admin already chose | Hold capacity while waiting. Approvals, queued firings and `PLANNED` runs are documents (invariant 1) |
+| Use a shared-pool Claude account's concurrency where its tenant borrows one. Per-key `provider:<p>:tenant:<id>` AIMD keeps its 429s to its own target | Exhaust another tenant's provider key: keys are per tenant (invariant 9) |
+| Spend its own forge token's rate limit | Delay another tenant's firings by more than one tick: at most 5 firings per tenant per tick, round-robin |
+| Fire as often as its type's minimum interval allows, across at most 25 schedules | Run without bound. `max_concurrent`, `per_day_usd`, the sweep's cap of 8 live runs and the consecutive-failure pause bound it, and an admin can pause it |
+
+Another tenant's schedule id answers 404 on every route, as a task's does. When
+one tenant's schedules crowd the platform, an admin uses what they use today:
+the tenant's ceiling (`PUT /admin/tenants/<t>/limits`), plus pausing the
+schedule from Admin › Schedules.
+
 ---
 
 ## 4. Cross-tenant escape: what would have to go wrong
@@ -472,7 +498,9 @@ described above. See [security.md](security.md#authentication) and
 # apps/agent-worker/agent_worker/control.py::ControlPlane.record_spend --
 # but only after the attempt has spent it, so it cannot bound admission;
 # max_active and capacity_units do. PARKED(BUDGET_EXHAUSTED) stays in the
-# frozen enum and nothing writes it (docs/cost-control.md section 2).
+# frozen enum and nothing writes it (docs/cost-control.md section 2). The one
+# carve-out is a schedule's own per-type dollar caps, which bound what its
+# firings start and nothing else (owner decision SD4, 2026-10-08; same section).
 ./scripts/api.sh PUT /admin/tenants/eng/limits \
     '{"max_active": 25, "capacity_units": 50}'
 
