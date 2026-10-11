@@ -1,0 +1,1160 @@
+"""The live browser, swarm-api's half (docs/design/live-browser.md §3.3, §4.2, §5.1-§5.2, §5.8, §5.10).
+
+Lane LB-L9. Read the design before changing anything here. In short, swarm-api
+is the ONE place that decides who may see and drive an agent's browser:
+
+  * `open_session` is §3.3 step 1. The WORKER, proving itself with the attempt
+    key under its own purpose (`swarm-live-session/v1`, §5.4.1), asks for a
+    TUNNEL ticket. One transaction checks the fence (invariant 5: RUNNING under
+    this lease and generation, no cancel) and writes `live_sessions/{id}`; the
+    ticket is minted after it, valid 60 seconds, and never stored.
+  * `viewer_ticket` is §5.2 step 3: a member of the task's tenant gets a
+    one-person, one-session, 30-second VIEWER ticket in a response BODY. The
+    console sends it as the first message of the socket; the URL carries only
+    the task id (§5.2, "Nothing secret travels in a URL").
+  * `take`, `renew`, `return_control` and `open_to_members` are §4.2 and §5.1:
+    one controller at a time, preemption by the task's owner only, and every
+    change written in ONE transaction together with its `live_audit` entry
+    (§5.8) and its task event (request LB-B).
+  * `admit` and `recheck` are the socket's checks (§5.2): the identity, the
+    tenant and the ticket on connect, and membership again every
+    `live_membership_recheck_seconds` while it stays open.
+
+THE TICKET. Lane L7's relay verifies what this module mints, against the same
+`swarm-live-key` (held by swarm-api and swarm-live only, created by
+`scripts/create-secrets.sh`, never a Terraform secret version). Its shape is
+fixed here and the relay restates it:
+
+    v1.<b64url(payload)>.<b64url(HMAC-SHA256(key, "swarm-live-ticket/v1\\n" + b64url(payload)))>
+
+`payload` is canonical JSON (sorted keys, no spaces) of `session_id`,
+`tenant_id`, `task_id`, `attempt_id`, `generation`, `role` (`tunnel` or
+`viewer`), `exp` (unix seconds), `jti` (random, the one-use id the relay
+remembers) and, for a viewer, `email`. The key is the UTF-8 bytes of the
+secret's value. Base64url is unpadded. The relay refuses a ticket used twice,
+expired, or naming another session, tenant or generation (§5.11).
+
+WHO MAY CONTROL (§5.1, Q1, Q6). The owner is `handoff.control_owner`: the
+submitter, or for a service account's task its workflow's or schedule's human
+owner. With no human owner any member may control. While the agent is asking
+for help (`Task.human_wait` set) the owner may open control to every member of
+the tenant; a take the agent did not ask for is the owner's alone (Q6).
+
+Nothing here logs, stores or serves a key, a signature or a ticket's value;
+the audit records counts, never content (§5.3.3).
+"""
+
+from __future__ import annotations
+
+import base64
+import binascii
+import hashlib
+import hmac
+import json
+import logging
+import re
+import secrets
+import time
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from typing import Any, Callable, Mapping, Sequence
+
+from google.cloud import firestore
+from google.cloud.firestore_v1.base_query import FieldFilter
+from pydantic import Field
+
+from swarm_common.admission import _snapshot
+from swarm_common.models import Task, TaskEvent, new_id, utcnow
+from swarm_common.profiles import RUNNER_PROFILES, Backend
+from swarm_common.states import EventType, ParkReason, TaskState
+
+from .childkey import AttemptTuple, verify_proof
+from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
+from .codec import event_to_firestore
+from .errors import ApiError, NotFound, ValidationFailed
+from .handoff import LIVE_AUDIT, control_owner, resolution_writes
+from .store import ATTEMPTS, EVENTS, LEASES, TASKS, Store
+
+log = logging.getLogger(__name__)
+
+#: swarm-api's own collection (§8.4): one document per attempt that opened a
+#: live path. Not a frozen model, as `admin_roles` is not.
+LIVE_SESSIONS = "live_sessions"
+
+#: The worker's signing purpose for the tunnel-ticket route (§5.4.1). Lane L4
+#: restates it; a hand-off or child signature never verifies as this one.
+LIVE_SESSION_PURPOSE = "swarm-live-session/v1"
+#: The ticket MAC's domain. Lane L7 restates it.
+TICKET_PURPOSE = b"swarm-live-ticket/v1\n"
+TICKET_VERSION = "v1"
+ROLE_TUNNEL = "tunnel"
+ROLE_VIEWER = "viewer"
+#: A ticket is short; anything longer is refused before it is decoded.
+MAX_TICKET_CHARS = 2048
+
+#: Why control ended without a Return press (§4.2, §5.8). `attempt_ended` is
+#: this lane's addition: the attempt stopped holding its lease for a reason
+#: that is neither a cancel nor an expired hold (a crash, a reclaim).
+END_CAUSES = (
+    "idle", "renew_lapsed", "preempted", "membership_lost", "cancelled", "hold_expired",
+    "attempt_ended",
+)
+
+#: RFB client-to-server message types the audit counts (RFC 6143 §7.5): a key
+#: and a pointer event. Counted by their first byte, never read further.
+RFB_KEY_EVENT = 4
+RFB_POINTER_EVENT = 5
+
+
+# --------------------------------------------------------------------------
+# Errors
+# --------------------------------------------------------------------------
+
+
+class LiveUnavailable(ApiError):
+    status_code = 503
+    code = "live_unavailable"
+
+
+class LiveUnauthenticated(ApiError):
+    status_code = 403
+    code = "live_unauthenticated"
+
+
+class LiveUnproven(ApiError):
+    status_code = 403
+    code = "live_unproven"
+
+
+class LiveFenced(ApiError):
+    status_code = 409
+    code = "live_fenced"
+
+
+class LiveNotAvailable(ApiError):
+    """The task's profile is not a live-browser profile, or it is not on GKE (§8.1)."""
+
+    status_code = 409
+    code = "live_not_available"
+
+
+class LiveSessionClosed(ApiError):
+    status_code = 409
+    code = "live_session_closed"
+
+
+class ControlNotEligible(ApiError):
+    status_code = 403
+    code = "control_not_eligible"
+
+
+class ControlHeld(ApiError):
+    status_code = 409
+    code = "control_held"
+
+
+class NotController(ApiError):
+    status_code = 409
+    code = "not_controller"
+
+
+class TicketRefused(Exception):
+    """A ticket that does not verify. Its message never contains the ticket."""
+
+
+# --------------------------------------------------------------------------
+# Tickets
+# --------------------------------------------------------------------------
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _unb64(text: str) -> bytes:
+    return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+
+
+def _ticket_mac(key: str, payload: str) -> bytes:
+    return hmac.new(key.encode("utf-8"), TICKET_PURPOSE + payload.encode("ascii"),
+                    hashlib.sha256).digest()
+
+
+def mint_ticket(key: str, claims: Mapping[str, Any]) -> str:
+    """The ticket for `claims`, in the shape the module docstring fixes."""
+    if not key:
+        raise LiveUnavailable("this deployment has no swarm-live-key")
+    payload = _b64(json.dumps(dict(claims), sort_keys=True, separators=(",", ":")).encode())
+    return f"{TICKET_VERSION}.{payload}.{_b64(_ticket_mac(key, payload))}"
+
+
+def verify_ticket(keys: Sequence[str], ticket: Any, *, now: float) -> dict[str, Any]:
+    """The claims of `ticket` when any of `keys` made it and it has not expired."""
+    if not isinstance(ticket, str) or not ticket or len(ticket) > MAX_TICKET_CHARS:
+        raise TicketRefused("no ticket")
+    parts = ticket.split(".")
+    if len(parts) != 3 or parts[0] != TICKET_VERSION:
+        raise TicketRefused("not a ticket of this version")
+    _, payload, mac = parts
+    try:
+        presented = _unb64(mac)
+    except (binascii.Error, ValueError):
+        raise TicketRefused("malformed") from None
+    if not any(
+        key and hmac.compare_digest(_ticket_mac(key, payload), presented) for key in keys
+    ):
+        raise TicketRefused("the ticket did not verify")
+    try:
+        claims = json.loads(_unb64(payload))
+    except (binascii.Error, ValueError):
+        raise TicketRefused("malformed") from None
+    if not isinstance(claims, dict):
+        raise TicketRefused("malformed")
+    exp = claims.get("exp")
+    if not isinstance(exp, int) or isinstance(exp, bool) or exp <= now:
+        raise TicketRefused("expired")
+    if claims.get("role") not in (ROLE_TUNNEL, ROLE_VIEWER):
+        raise TicketRefused("unknown role")
+    return claims
+
+
+def live_session_message(method: str, path: str, body: bytes, timestamp: str) -> bytes:
+    """What the worker signs to ask for a tunnel ticket: the child path's shape
+    under its own purpose, so neither signature verifies as the other."""
+    digest = hashlib.sha256(body).hexdigest()
+    return f"{LIVE_SESSION_PURPOSE}\n{method.upper()}\n{path}\n{digest}\n{timestamp}".encode()
+
+
+def session_id_for(attempt_id: str) -> str:
+    """One session per attempt, so a re-ticket after a dropped tunnel finds it."""
+    return f"live_{attempt_id}"
+
+
+# --------------------------------------------------------------------------
+# Membership
+# --------------------------------------------------------------------------
+
+
+def fresh_membership(authenticator: Any, email: str, tenant: Any) -> bool:
+    """Whether `email` belongs to `tenant` NOW, past any cached answer (§5.2:
+    "a taking of control always runs a fresh check").
+
+    `Authenticator.is_tenant_member` asks per registered group, as every
+    request's tenant resolution does, but through the resolver's 120-second
+    cache. The cache entry for this one (person, group) is dropped first: by
+    the resolver's own `forget` when it has one, or, for `CloudIdentityGroups`,
+    from its membership cache under its lock. A personal tenant is its own
+    address and needs no directory.
+    """
+    principal = (getattr(tenant, "principal", "") or "").strip().lower()
+    who = (email or "").strip().lower()
+    groups = getattr(authenticator, "_groups", None)
+    if principal and getattr(tenant, "kind", "") == "group" and groups is not None:
+        forget = getattr(groups, "forget", None)
+        if callable(forget):
+            forget(who, principal)
+        else:
+            cache = getattr(groups, "_memberships", None)
+            lock = getattr(groups, "_lock", None)
+            if isinstance(cache, dict) and lock is not None:
+                with lock:
+                    cache.pop((who, principal), None)
+    return bool(authenticator.is_tenant_member(who, tenant))
+
+
+# --------------------------------------------------------------------------
+# Bodies
+# --------------------------------------------------------------------------
+
+
+class LiveSessionOpen(_AttemptFields):
+    task_id: str = Field(min_length=1, max_length=128)
+
+
+# --------------------------------------------------------------------------
+# One transaction's worth of changes
+# --------------------------------------------------------------------------
+
+
+@dataclass
+class _Plan:
+    """Everything one transaction writes, flushed once at its end, so a
+    control change and its audit entry cannot be separated (§5.8)."""
+
+    db: Any
+    task: dict[str, Any]
+    session: dict[str, Any] | None
+    session_ref: Any
+    now: datetime
+    session_update: dict[str, Any] = field(default_factory=dict)
+    task_update: dict[str, Any] = field(default_factory=dict)
+    audits: list[tuple[str, str | None, dict[str, Any]]] = field(default_factory=list)
+    events: list[tuple[EventType, dict[str, Any]]] = field(default_factory=list)
+    resolve_by: str | None = None
+    resolve: bool = False
+
+    # -- reads of the planned state ---------------------------------------
+
+    @property
+    def state(self) -> dict[str, Any]:
+        return {**(self.session or {}), **self.session_update}
+
+    @property
+    def controller(self) -> dict[str, Any] | None:
+        current = self.state.get("controller")
+        return current if isinstance(current, dict) else None
+
+    @property
+    def wait(self) -> dict[str, Any] | None:
+        wait = self.task_update.get("human_wait", self.task.get("human_wait"))
+        return wait if isinstance(wait, dict) else None
+
+    # -- writes -------------------------------------------------------------
+
+    def audit(self, entry: str, email: str | None, detail: dict[str, Any]) -> None:
+        self.audits.append((entry, email, detail))
+
+    def set_wait_controller(self, value: dict[str, Any] | None, deadline: datetime | None) -> None:
+        wait = self.wait
+        if wait is None:
+            return
+        wait = dict(wait)
+        wait["controller"] = value
+        if deadline is not None:
+            wait["deadline"] = deadline
+        self.task_update["human_wait"] = wait
+
+    def end_control(self, cause: str, *, keys: int = 0, pointers: int = 0) -> None:
+        """Control ends: `control_returned` for the Return press, else
+        `control_ended` with its cause. One episode, one entry, with counts."""
+        current = self.controller
+        if current is None:
+            return
+        since = current.get("since")
+        held = (self.now - since).total_seconds() if isinstance(since, datetime) else None
+        detail = {
+            "cause": cause,
+            "episode_id": current.get("episode_id"),
+            "keys": int(current.get("keys") or 0) + keys,
+            "pointer_events": int(current.get("pointers") or 0) + pointers,
+            "held_seconds": int(held) if held is not None else None,
+        }
+        self.session_update["controller"] = None
+        self.audit("control_returned" if cause == "returned" else "control_ended",
+                   current.get("email"), detail)
+        self.events.append((EventType.HUMAN_CONTROL_RETURNED,
+                            {**detail, "email": current.get("email")}))
+        self.set_wait_controller(None, None)
+
+    def close(self, cause: str) -> None:
+        control_cause = cause if cause in END_CAUSES else "attempt_ended"
+        self.end_control(control_cause)
+        self.session_update.update(
+            {"state": "closed", "closed_at": self.now, "close_cause": cause}
+        )
+        self.audit("session_closed", None, {"cause": cause})
+
+    def flush(self, txn: Any) -> None:
+        session = self.state
+        task_ref = self.db.collection(TASKS).document(self.task["id"])
+        if self.session_update:
+            txn.update(self.session_ref, {**self.session_update, "updated_at": self.now})
+        if self.resolve:
+            resolution_writes(txn, self.db, self.task, outcome="returned", now=self.now,
+                              by=self.resolve_by)
+        elif self.task_update:
+            txn.update(task_ref, {**self.task_update, "updated_at": self.now})
+        for event_type, detail in self.events:
+            event = TaskEvent(
+                event_id=new_id("ev"),
+                task_id=self.task["id"],
+                tenant_id=self.task["tenant_id"],
+                type=event_type,
+                at=self.now,
+                detail={**detail, "session_id": session.get("id"),
+                        "attempt_id": session.get("attempt_id"),
+                        "generation": session.get("generation")},
+            )
+            txn.set(task_ref.collection(EVENTS).document(event.event_id),
+                    event_to_firestore(event))
+        for entry, email, detail in self.audits:
+            write_audit(txn, self.db, session, entry, email=email, detail=detail, now=self.now)
+
+
+def write_audit(
+    writer: Any, db: Any, session: Mapping[str, Any], entry: str, *, email: str | None,
+    detail: Mapping[str, Any], now: datetime,
+) -> None:
+    """One `live_audit` entry, in the shape `handoff._audit` writes, through
+    `writer` (the caller's transaction, or the collection for an entry that
+    records no other change: a viewer joining or leaving)."""
+    entry_id = new_id("la")
+    doc = {
+        "id": entry_id,
+        "entry": entry,
+        "task_id": session.get("task_id"),
+        "tenant_id": session.get("tenant_id"),
+        "session_id": session.get("id"),
+        "attempt_id": session.get("attempt_id"),
+        "generation": session.get("generation"),
+        "email": email,
+        "at": now,
+        "detail": dict(detail),
+    }
+    ref = db.collection(LIVE_AUDIT).document(entry_id)
+    if writer is None:
+        ref.set(doc)
+    else:
+        writer.set(ref, doc)
+
+
+# --------------------------------------------------------------------------
+# What a person is told
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Admission:
+    """A socket that passed §5.2: who, which tenant, which session."""
+
+    email: str
+    tenant_id: str
+    task_id: str
+    session_id: str
+    generation: int
+    ticket: str
+
+
+def _iso(value: Any) -> Any:
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
+class LiveService:
+    """The live routes' logic. Built per request from the app context."""
+
+    def __init__(
+        self,
+        *,
+        settings: Any,
+        db: Any,
+        store: Store,
+        authenticator: Any,
+        children: ChildService | None = None,
+        now: Callable[[], datetime] = utcnow,
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._settings = settings
+        self._db = db
+        self._store = store
+        self._authenticator = authenticator
+        self._children = children
+        self._now = now
+        self._clock = clock
+
+    # -- settings ------------------------------------------------------------
+
+    def _s(self, name: str, default: Any) -> Any:
+        return getattr(self._settings, name, default)
+
+    @property
+    def _keys(self) -> tuple[str, ...]:
+        return tuple(k for k in (self._s("live_key", ""), self._s("live_key_previous", "")) if k)
+
+    def _require_key(self) -> str:
+        key = self._s("live_key", "")
+        if not key:
+            raise LiveUnavailable(
+                "this deployment has no swarm-live-key, so it offers no live browser"
+            )
+        return key
+
+    # -- §3.3 step 1: the worker's tunnel ticket ---------------------------
+
+    def _prove(self, authorization: str | None, attempt: AttemptTuple, *, path: str,
+               body: bytes, proof: str | None, timestamp: str | None) -> None:
+        """§5.4.1, as the hand-off routes prove the worker. Every failure of
+        the signature is the same 403."""
+        children = self._children
+        if children is None or not children._keys.configured:
+            raise LiveUnavailable(
+                "this deployment has no swarm-child-key, so no attempt key can be proven"
+            )
+        try:
+            children.authenticate_worker(authorization, attempt.tenant_id)
+        except ApiError as exc:
+            if exc.status_code == 429:
+                raise
+            raise LiveUnauthenticated(
+                "only this tenant's worker service account may call this route"
+            ) from None
+        unproven = LiveUnproven("the attempt proof did not verify for this attempt")
+        if not proof or not timestamp or not re.fullmatch(r"\d{1,12}", timestamp):
+            raise unproven
+        skew = int(self._s("child_proof_skew_seconds", 120))
+        if abs(self._clock() - int(timestamp)) > skew:
+            raise unproven
+        registration = children._registration(attempt)
+        if registration is None:
+            raise unproven
+        if not verify_proof(registration["public_key"], proof,
+                            live_session_message("POST", path, body, timestamp)):
+            raise unproven
+
+    def open_session(
+        self, authorization: str | None, attempt_id: str, raw: bytes, *, path: str,
+        proof: str | None, timestamp: str | None,
+    ) -> tuple[dict[str, Any], bool]:
+        key = self._require_key()
+        if len(raw) > 4096:
+            raise ValidationFailed("a live-session request is at most 4096 bytes")
+        body: LiveSessionOpen = parse_body(LiveSessionOpen, raw)
+        if body.attempt_id != attempt_id:
+            raise ValidationFailed("the body's attempt_id is not the path's")
+        attempt = AttemptTuple(body.tenant_id, body.task_id, body.attempt_id, body.lease_id,
+                               body.generation)
+        self._prove(authorization, attempt, path=path, body=raw, proof=proof,
+                    timestamp=timestamp)
+
+        task_ref = self._db.collection(TASKS).document(attempt.task_id)
+        lease_ref = self._db.collection(LEASES).document(attempt.lease_id)
+        attempt_ref = self._db.collection(ATTEMPTS).document(attempt.attempt_id)
+        session_id = session_id_for(attempt.attempt_id)
+        session_ref = self._db.collection(LIVE_SESSIONS).document(session_id)
+        now = self._now()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            task_snap = _snapshot(txn.get(task_ref))
+            lease_snap = _snapshot(txn.get(lease_ref))
+            attempt_snap = _snapshot(txn.get(attempt_ref))
+            session_snap = _snapshot(txn.get(session_ref))
+            task = task_snap.to_dict() if task_snap.exists else None
+            lease = lease_snap.to_dict() if lease_snap.exists else None
+            if (
+                task is None
+                or task.get("state") != TaskState.RUNNING.value
+                or task.get("cancel_requested")
+                or not _lease_is_live(task, lease, attempt, now)
+            ):
+                raise LiveFenced(
+                    "the task is not RUNNING under this attempt's live lease, or a cancel "
+                    "was requested; no live session was opened"
+                )
+            # §8.1: a live-browser profile, on GKE, in this attempt's record.
+            profile = RUNNER_PROFILES.get(str(task.get("runner_profile") or ""))
+            backend = (attempt_snap.to_dict() or {}).get("backend") if attempt_snap.exists else None
+            if (
+                profile is None
+                or not getattr(profile, "live_browser", False)
+                or backend != Backend.GKE_AUTOPILOT.value
+            ):
+                raise LiveNotAvailable(
+                    "this task's profile is not a live-browser profile running on GKE "
+                    "Autopilot, so it has no live browser"
+                )
+            if session_snap.exists:
+                existing = session_snap.to_dict() or {}
+                if existing.get("state") != "open":
+                    raise LiveSessionClosed(
+                        "this attempt's live session was closed; its live path has ended"
+                    )
+                txn.update(session_ref, {"tunnel_tickets": int(existing.get("tunnel_tickets")
+                                                               or 0) + 1, "updated_at": now})
+                return False
+            session = {
+                "id": session_id,
+                "tenant_id": attempt.tenant_id,
+                "task_id": attempt.task_id,
+                "attempt_id": attempt.attempt_id,
+                "lease_id": attempt.lease_id,
+                "generation": attempt.generation,
+                "state": "open",
+                "opened_at": now,
+                "updated_at": now,
+                "closed_at": None,
+                "close_cause": None,
+                "controller": None,
+                "open_to_members": False,
+                "opened_to_members_by": None,
+                "tunnel_tickets": 1,
+            }
+            txn.set(session_ref, session)
+            write_audit(txn, self._db, session, "session_opened", email=None,
+                        detail={"profile": task.get("runner_profile")}, now=now)
+            return True
+
+        created = _apply(self._db.transaction())
+        seconds = int(self._s("live_tunnel_ticket_seconds", 60))
+        exp = int(self._clock()) + seconds
+        ticket = mint_ticket(key, {
+            "session_id": session_id,
+            "tenant_id": attempt.tenant_id,
+            "task_id": attempt.task_id,
+            "attempt_id": attempt.attempt_id,
+            "generation": attempt.generation,
+            "role": ROLE_TUNNEL,
+            "exp": exp,
+            "jti": secrets.token_urlsafe(16),
+        })
+        return {"session_id": session_id, "ticket": ticket, "expires_in": seconds}, created
+
+    # -- reading and settling a session -----------------------------------
+
+    def _load(self, get: Callable[[Any], Any], tenant_id: str, task_id: str,
+              session_id: str | None) -> tuple[dict, dict | None, Any, dict | None]:
+        """The task, the lease the session is judged by, the session's ref and
+        the session, through `get` (a transaction's, or a plain read).
+
+        With `session_id`, THAT session (a socket's own) and the lease it was
+        opened under, so a session left behind by an earlier attempt is seen
+        to have ended. Without, the session of the task's current attempt.
+        Another tenant's task is a 404.
+        """
+        task_snap = _snapshot(get(self._db.collection(TASKS).document(task_id)))
+        task = task_snap.to_dict() if task_snap.exists else None
+        if task is None or task.get("tenant_id") != tenant_id:
+            raise NotFound(f"task {task_id!r} not found")
+
+        def lease_of(lease_id: Any) -> dict | None:
+            if not lease_id:
+                return None
+            snap = _snapshot(get(self._db.collection(LEASES).document(str(lease_id))))
+            return snap.to_dict() if snap.exists else None
+
+        if session_id is None:
+            lease = lease_of(task.get("current_lease_id"))
+            attempt_id = (lease or {}).get("attempt_id")
+            if not attempt_id:
+                return task, lease, None, None
+            session_id = session_id_for(str(attempt_id))
+        else:
+            lease = None
+        ref = self._db.collection(LIVE_SESSIONS).document(session_id)
+        snap = _snapshot(get(ref))
+        session = snap.to_dict() if snap.exists else None
+        if session is not None and (
+            session.get("tenant_id") != tenant_id or session.get("task_id") != task_id
+        ):
+            session = None
+        if session is not None and lease is None:
+            lease = lease_of(session.get("lease_id"))
+        return task, lease, ref, session
+
+    def _closing_cause(self, task: Mapping[str, Any], lease: Mapping[str, Any] | None,
+                       session: Mapping[str, Any], now: datetime) -> str | None:
+        """Why an open session must close now, or None (invariant 5)."""
+        if task.get("cancel_requested") or task.get("state") == TaskState.CANCELLED.value:
+            return "cancelled"
+        if (
+            task.get("state") == TaskState.PARKED.value
+            and task.get("park_reason") == ParkReason.HUMAN_REQUIRED.value
+        ):
+            return "hold_expired"
+        attempt = AttemptTuple(
+            str(session.get("tenant_id")), str(session.get("task_id")),
+            str(session.get("attempt_id")), str(session.get("lease_id")),
+            int(session.get("generation") or 0),
+        )
+        if task.get("state") != TaskState.RUNNING.value or not _lease_is_live(
+            dict(task), dict(lease) if lease else None, attempt, now
+        ):
+            return "attempt_ended"
+        return None
+
+    def _lapse_cause(self, plan: _Plan) -> str | None:
+        """Why the current controller's control has ended by itself (§4.2)."""
+        current = plan.controller
+        if current is None:
+            return None
+        renew_by = current.get("renew_by")
+        if isinstance(renew_by, datetime) and renew_by < plan.now:
+            return "renew_lapsed"
+        idle = int(self._s("control_idle_seconds", 300))
+        last = current.get("last_input_at") or current.get("since")
+        if isinstance(last, datetime) and (plan.now - last).total_seconds() > idle:
+            return "idle"
+        wait = plan.wait
+        deadline = wait.get("deadline") if wait else None
+        if isinstance(deadline, datetime) and deadline < plan.now:
+            return "hold_expired"
+        return None
+
+    def _settle(self, plan: _Plan, lease: Mapping[str, Any] | None) -> None:
+        if plan.session is None or plan.state.get("state") != "open":
+            return
+        cause = self._closing_cause(plan.task, lease, plan.state, plan.now)
+        if cause is not None:
+            plan.close(cause)
+            return
+        lapse = self._lapse_cause(plan)
+        if lapse is not None:
+            plan.end_control(lapse)
+
+    def _transact(self, tenant_id: str, task_id: str,
+                  change: Callable[[_Plan], Any] | None,
+                  session_id: str | None = None) -> tuple[_Plan, Any]:
+        """Read the task, its lease and its session; settle what has lapsed;
+        apply `change`; write everything in one transaction.
+
+        `change` is not called on a session that is missing or closed; the
+        closing writes are committed and the caller decides what to say.
+        An error raised by `change` rolls back everything, settling included.
+        """
+        now = self._now()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> tuple[_Plan, Any]:
+            task, lease, ref, session = self._load(txn.get, tenant_id, task_id, session_id)
+            plan = _Plan(db=self._db, task=task, session=session, session_ref=ref, now=now)
+            self._settle(plan, lease)
+            result = None
+            if change is not None and session is not None and plan.state.get("state") == "open":
+                result = change(plan)
+            plan.flush(txn)
+            return plan, result
+
+        return _apply(self._db.transaction())
+
+    def _needs_settling(self, tenant_id: str, task_id: str, session_id: str) -> bool:
+        """A cheap, non-transactional look: is there anything to settle?"""
+        task, lease, ref, session = self._load(lambda r: r.get(), tenant_id, task_id, session_id)
+        if session is None or session.get("state") != "open":
+            return False
+        plan = _Plan(db=self._db, task=task, session=session, session_ref=ref, now=self._now())
+        return (self._closing_cause(task, lease, session, plan.now) is not None
+                or self._lapse_cause(plan) is not None)
+
+    # -- who may do what (§5.1) ---------------------------------------------
+
+    def _rights(self, task: Task, plan: _Plan, email: str, owner: str | None) -> dict[str, bool]:
+        email = email.strip().lower()
+        is_owner = owner is None or owner == email
+        waiting = plan.wait is not None
+        opened = bool(plan.state.get("open_to_members"))
+        current = plan.controller
+        open_ = plan.state.get("state") == "open"
+        may_take = open_ and (is_owner or (waiting and opened))
+        return {
+            "may_view": True,
+            "may_take": bool(may_take),
+            "may_preempt": bool(open_ and owner is not None and owner == email and current
+                                is not None and current.get("email") != email),
+            "may_open_to_members": bool(open_ and owner is not None and owner == email),
+            "in_control": bool(current is not None and current.get("email") == email),
+        }
+
+    def _view(self, task: Task, plan: _Plan | None, email: str, owner: str | None
+              ) -> dict[str, Any]:
+        if plan is None or plan.session is None:
+            return {
+                "available": False,
+                "session_id": None,
+                "state": None,
+                "close_cause": None,
+                "controller": None,
+                "open_to_members": False,
+                "human_wait": None,
+                "you": {"may_view": True, "may_take": False, "may_preempt": False,
+                        "may_open_to_members": False, "in_control": False},
+            }
+        state = plan.state
+        current = plan.controller
+        wait = plan.wait
+        return {
+            "available": state.get("state") == "open",
+            "session_id": state.get("id"),
+            "state": state.get("state"),
+            "close_cause": state.get("close_cause"),
+            "controller": None if current is None else {
+                "email": current.get("email"),
+                "since": _iso(current.get("since")),
+                "renew_by": _iso(current.get("renew_by")),
+            },
+            "open_to_members": bool(state.get("open_to_members")),
+            "human_wait": None if wait is None else {
+                k: _iso(wait.get(k)) for k in ("reason", "expect", "requested_at", "deadline")
+            },
+            "you": self._rights(task, plan, email, owner),
+        }
+
+    def _task(self, tenant_id: str, task_id: str, submitted_by: str | None) -> Task:
+        # The tenant read first: another tenant's task is a 404 (§5.2 step 2).
+        return self._store.get_task(tenant_id, task_id, submitted_by=submitted_by)
+
+    # -- the routes ------------------------------------------------------------
+
+    def view(self, tenant_id: str, task_id: str, *, email: str,
+             submitted_by: str | None) -> dict[str, Any]:
+        task = self._task(tenant_id, task_id, submitted_by)
+        owner = control_owner(task, self._db)
+        plan, _ = self._transact(tenant_id, task_id, None)
+        return self._view(task, plan, email, owner)
+
+    def viewer_ticket(self, tenant_id: str, task_id: str, *, email: str,
+                      submitted_by: str | None) -> dict[str, Any]:
+        key = self._require_key()
+        self._task(tenant_id, task_id, submitted_by)
+        plan, _ = self._transact(tenant_id, task_id, None)
+        self._require_open(plan)
+        seconds = int(self._s("live_viewer_ticket_seconds", 30))
+        state = plan.state
+        ticket = mint_ticket(key, {
+            "session_id": state["id"],
+            "tenant_id": tenant_id,
+            "task_id": task_id,
+            "attempt_id": state.get("attempt_id"),
+            "generation": state.get("generation"),
+            "role": ROLE_VIEWER,
+            "email": email.strip().lower(),
+            "exp": int(self._clock()) + seconds,
+            "jti": secrets.token_urlsafe(16),
+        })
+        return {
+            "ticket": ticket,
+            "session_id": state["id"],
+            "expires_in": seconds,
+            # The socket's address carries the task id and nothing else; the
+            # ticket goes in its first message (§5.2).
+            "socket_path": f"/v1/tasks/{task_id}/live",
+        }
+
+    @staticmethod
+    def _require_open(plan: _Plan) -> None:
+        if plan.session is None:
+            raise LiveSessionClosed("this task has no live browser session open")
+        if plan.state.get("state") != "open":
+            raise LiveSessionClosed(
+                f"this task's live session is closed ({plan.state.get('close_cause')})"
+            )
+
+    def take(self, tenant_id: str, task_id: str, *, email: str, submitted_by: str | None,
+             preempt: bool = False) -> dict[str, Any]:
+        task = self._task(tenant_id, task_id, submitted_by)
+        tenant = self._store.get_tenant(tenant_id)
+        if tenant is None or not fresh_membership(self._authenticator, email, tenant):
+            # Removed from the tenant since the cached answer: the same 404 as
+            # a stranger gets (§5.2 step 2).
+            raise NotFound(f"task {task_id!r} not found")
+        owner = control_owner(task, self._db)
+        who = email.strip().lower()
+        renew = int(self._s("live_control_renew_seconds", 60))
+        idle = int(self._s("control_idle_seconds", 300))
+
+        def change(plan: _Plan) -> None:
+            rights = self._rights(task, plan, who, owner)
+            current = plan.controller
+            if current is not None and current.get("email") == who:
+                plan.session_update["controller"] = {**current, "renew_by": plan.now
+                                                     + timedelta(seconds=renew)}
+                return
+            if not rights["may_take"]:
+                raise ControlNotEligible(
+                    "you may watch this browser but not control it: control is its "
+                    "submitter's, unless they opened it to the tenant while the agent "
+                    "asks for help"
+                )
+            if current is not None:
+                if not (preempt and rights["may_preempt"]):
+                    raise ControlHeld(
+                        f"{current.get('email')} is in control; one person at a time",
+                        detail={"controller": current.get("email"),
+                                "may_preempt": rights["may_preempt"]},
+                    )
+                plan.end_control("preempted")
+            episode = new_id("lc")
+            controller = {
+                "email": who,
+                "since": plan.now,
+                "renew_by": plan.now + timedelta(seconds=renew),
+                "last_input_at": plan.now,
+                "episode_id": episode,
+                "keys": 0,
+                "pointers": 0,
+            }
+            plan.session_update["controller"] = controller
+            plan.audit("control_taken", who, {"episode_id": episode,
+                                              "requested": plan.wait is not None})
+            plan.events.append((EventType.HUMAN_CONTROL_TAKEN,
+                                {"email": who, "episode_id": episode,
+                                 "requested": plan.wait is not None}))
+            plan.set_wait_controller({"email": who, "since": plan.now},
+                                     self._extended_deadline(plan, idle))
+
+        plan, _ = self._transact(tenant_id, task_id, change)
+        self._require_open(plan)
+        return self._view(task, plan, who, owner)
+
+    def _extended_deadline(self, plan: _Plan, idle: int) -> datetime | None:
+        """§4.3: control moves the hold's deadline to min(now + idle, the
+        attempt's own deadline), and never earlier than it already was."""
+        wait = plan.wait
+        if wait is None:
+            return None
+        current = wait.get("deadline")
+        target = plan.now + timedelta(seconds=idle)
+        started = plan.task.get("started_at")
+        timeout = plan.task.get("timeout_seconds")
+        if isinstance(started, datetime) and isinstance(timeout, int):
+            target = min(target, started + timedelta(seconds=timeout))
+        if isinstance(current, datetime):
+            target = max(current, target)
+        return target
+
+    def _controller_change(self, tenant_id: str, task_id: str, email: str,
+                           submitted_by: str | None, change: Callable[[_Plan, dict], None]
+                           ) -> dict[str, Any]:
+        task = self._task(tenant_id, task_id, submitted_by)
+        owner = control_owner(task, self._db)
+        who = email.strip().lower()
+
+        def guarded(plan: _Plan) -> bool:
+            current = plan.controller
+            if current is None or current.get("email") != who:
+                # Not raised here: settling may have just ended this person's
+                # control (a lapse), and that end must commit with its audit.
+                return False
+            change(plan, current)
+            return True
+
+        plan, held = self._transact(tenant_id, task_id, guarded)
+        self._require_open(plan)
+        if not held:
+            raise NotController("you are not in control of this browser")
+        return self._view(task, plan, who, owner)
+
+    def renew(self, tenant_id: str, task_id: str, *, email: str,
+              submitted_by: str | None) -> dict[str, Any]:
+        renew = int(self._s("live_control_renew_seconds", 60))
+
+        def change(plan: _Plan, current: dict) -> None:
+            plan.session_update["controller"] = {
+                **current, "renew_by": plan.now + timedelta(seconds=renew)}
+
+        return self._controller_change(tenant_id, task_id, email, submitted_by, change)
+
+    def return_control(self, tenant_id: str, task_id: str, *, email: str,
+                       submitted_by: str | None) -> dict[str, Any]:
+        def change(plan: _Plan, current: dict) -> None:
+            plan.end_control("returned")
+            if plan.task.get("human_wait") is not None:
+                # §4.2 step 3: the hand-off is over; one shape for both writers.
+                plan.resolve = True
+                plan.resolve_by = email.strip().lower()
+
+        return self._controller_change(tenant_id, task_id, email, submitted_by, change)
+
+    def open_to_members(self, tenant_id: str, task_id: str, *, email: str,
+                        submitted_by: str | None) -> dict[str, Any]:
+        task = self._task(tenant_id, task_id, submitted_by)
+        owner = control_owner(task, self._db)
+        who = email.strip().lower()
+
+        def change(plan: _Plan) -> None:
+            if owner is None or owner != who:
+                raise ControlNotEligible(
+                    "only the task's submitter may open control to the tenant"
+                )
+            if plan.state.get("open_to_members"):
+                return
+            plan.session_update.update({"open_to_members": True,
+                                        "opened_to_members_by": who})
+            plan.audit("control_opened_to_members", who, {})
+
+        plan, _ = self._transact(tenant_id, task_id, change)
+        self._require_open(plan)
+        return self._view(task, plan, who, owner)
+
+    def audit_entries(self, tenant_id: str, task_id: str, *, submitted_by: str | None,
+                      limit: int = 500) -> list[dict[str, Any]]:
+        self._task(tenant_id, task_id, submitted_by)
+        rows = []
+        # Equality on the task only: a single-field index, no composite needed.
+        query = self._db.collection(LIVE_AUDIT).where(filter=FieldFilter("task_id", "==", task_id))
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            if doc.get("tenant_id") != tenant_id:
+                continue
+            rows.append({k: _iso(v) for k, v in doc.items()})
+        rows.sort(key=lambda r: (str(r.get("at")), str(r.get("id"))))
+        return rows[-limit:]
+
+    # -- the socket (§5.2) ---------------------------------------------------
+
+    def admit(self, auth: Any, task_id: str, ticket: Any, *, submitted_by: str | None
+              ) -> Admission:
+        """Every check of §5.2 for one socket. Any refusal is NotFound, so a
+        foreign task, a foreign ticket and a closed session read the same."""
+        refused = NotFound(f"task {task_id!r} not found")
+        try:
+            claims = verify_ticket(self._keys, ticket, now=self._clock())
+        except TicketRefused:
+            raise refused from None
+        email = (auth.email or "").strip().lower()
+        if (
+            claims.get("role") != ROLE_VIEWER
+            or claims.get("task_id") != task_id
+            or claims.get("tenant_id") != auth.tenant_id
+            or str(claims.get("email") or "") != email
+        ):
+            raise refused
+        self._task(auth.tenant_id, task_id, submitted_by)
+        plan, _ = self._transact(auth.tenant_id, task_id, None)
+        state = plan.state
+        if (
+            plan.session is None
+            or state.get("state") != "open"
+            or state.get("id") != claims.get("session_id")
+            or state.get("generation") != claims.get("generation")
+        ):
+            raise refused
+        return Admission(email=email, tenant_id=auth.tenant_id, task_id=task_id,
+                         session_id=str(state["id"]), generation=int(state["generation"]),
+                         ticket=ticket)
+
+    def recheck(self, admission: Admission) -> bool:
+        """§5.2: is this person still a member of the task's tenant? Through
+        the ordinary per-group check and its cache, as every request is."""
+        tenant = self._store.get_tenant(admission.tenant_id)
+        if tenant is None:
+            return False
+        try:
+            return bool(self._authenticator.is_tenant_member(admission.email, tenant))
+        except ApiError:
+            # The directory did not answer: not a refusal, ask again next time.
+            return True
+
+    def status(self, admission: Admission) -> dict[str, Any]:
+        """What the socket needs each tick: open or not, and who controls."""
+        if self._needs_settling(admission.tenant_id, admission.task_id, admission.session_id):
+            self._transact(admission.tenant_id, admission.task_id, None,
+                           session_id=admission.session_id)
+        snap = self._db.collection(LIVE_SESSIONS).document(admission.session_id).get()
+        session = snap.to_dict() if snap.exists else None
+        if session is None:
+            return {"open": False, "cause": "attempt_ended", "in_control": False}
+        current = session.get("controller") if isinstance(session.get("controller"), dict) else None
+        return {
+            "open": session.get("state") == "open"
+            and session.get("generation") == admission.generation,
+            "cause": session.get("close_cause"),
+            "in_control": bool(current and current.get("email") == admission.email),
+            "controller": current.get("email") if current else None,
+        }
+
+    def record_input(self, admission: Admission, *, keys: int, pointers: int) -> bool:
+        """The controller's input since the last flush: counts for the audit,
+        and the hold's deadline moved (§4.3). False when they no longer hold
+        control, and nothing is written."""
+        idle = int(self._s("control_idle_seconds", 300))
+
+        def change(plan: _Plan) -> bool:
+            current = plan.controller
+            if (
+                plan.state.get("id") != admission.session_id
+                or current is None
+                or current.get("email") != admission.email
+            ):
+                return False
+            plan.session_update["controller"] = {
+                **current,
+                "last_input_at": plan.now,
+                "keys": int(current.get("keys") or 0) + keys,
+                "pointers": int(current.get("pointers") or 0) + pointers,
+            }
+            deadline = self._extended_deadline(plan, idle)
+            if deadline is not None:
+                plan.set_wait_controller(plan.wait.get("controller") if plan.wait else None,
+                                         deadline)
+            return True
+
+        _, held = self._transact(admission.tenant_id, admission.task_id, change,
+                                 session_id=admission.session_id)
+        return bool(held)
+
+    def end_control(self, admission: Admission, cause: str, *, keys: int = 0,
+                    pointers: int = 0) -> bool:
+        """End this person's control with `cause` (a socket's membership lapsed)."""
+
+        def change(plan: _Plan) -> bool:
+            current = plan.controller
+            if (
+                plan.state.get("id") != admission.session_id
+                or current is None
+                or current.get("email") != admission.email
+            ):
+                return False
+            plan.end_control(cause, keys=keys, pointers=pointers)
+            return True
+
+        _, ended = self._transact(admission.tenant_id, admission.task_id, change,
+                                  session_id=admission.session_id)
+        return bool(ended)
+
+    def viewer_event(self, admission: Admission, entry: str, detail: Mapping[str, Any]) -> None:
+        """`viewer_joined` / `viewer_left`: an entry that records no other
+        change, so it is its own write."""
+        snap = self._db.collection(LIVE_SESSIONS).document(admission.session_id).get()
+        session = snap.to_dict() if snap.exists else {
+            "id": admission.session_id, "task_id": admission.task_id,
+            "tenant_id": admission.tenant_id, "generation": admission.generation,
+        }
+        write_audit(None, self._db, session, entry, email=admission.email, detail=detail,
+                    now=self._now())
+
+
+# --------------------------------------------------------------------------
+# Per-person rate limits (§5.10), in-process like `ratelimit` itself
+# --------------------------------------------------------------------------
+
+
+class LiveLimits:
+    """Viewer tickets per person, and takes per person per task.
+
+    In-process, as `TokenBucketLimiter` is: N instances allow N times this,
+    which that module records."""
+
+    def __init__(self, settings: Any) -> None:
+        from .ratelimit import TokenBucketLimiter
+
+        tickets = int(getattr(settings, "live_viewer_tickets_per_minute", 30))
+        takes = int(getattr(settings, "live_takes_per_minute", 6))
+        self.tickets = TokenBucketLimiter(tickets / 60.0, tickets)
+        self.takes = TokenBucketLimiter(takes / 60.0, takes)
+
+    def ticket(self, email: str) -> None:
+        self.tickets.check(email.strip().lower())
+
+    def take(self, email: str, task_id: str) -> None:
+        self.takes.check(f"{email.strip().lower()}|{task_id}")
+
+
+def count_input(frame: bytes) -> tuple[int, int]:
+    """(keys, pointer events) in one viewer frame, by its first byte only."""
+    if not frame:
+        return 0, 0
+    if frame[0] == RFB_KEY_EVENT:
+        return 1, 0
+    if frame[0] == RFB_POINTER_EVENT:
+        return 0, 1
+    return 0, 0
+
+
+__all__ = [
+    "Admission",
+    "ControlHeld",
+    "ControlNotEligible",
+    "LIVE_SESSIONS",
+    "LIVE_SESSION_PURPOSE",
+    "LiveLimits",
+    "LiveService",
+    "NotController",
+    "ROLE_TUNNEL",
+    "ROLE_VIEWER",
+    "TicketRefused",
+    "count_input",
+    "fresh_membership",
+    "live_session_message",
+    "mint_ticket",
+    "session_id_for",
+    "verify_ticket",
+]

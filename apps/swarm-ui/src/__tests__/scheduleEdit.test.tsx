@@ -439,3 +439,188 @@ describe('the SD3 merge switch', () => {
     expect(sent(calls, 'POST', MODE)[0]!.body).toEqual({ mode: 'approve', revision: 2 })
   })
 })
+
+// EDIT A, THE OWNER'S PICK (2026-10-11, docs/schedules.md §6.2, mockup #edit-a):
+//   * the type is template tiles, not a <select>; an unavailable type is a
+//     disabled tile carrying the catalogue's reason;
+//   * a 360px side column on a desktop holds the cron's words, the next five
+//     and the template card (tier, gate, budget defaults, shortest interval),
+//     and folds under the fields below 1024px;
+//   * the head says "tenant eng · N of 25 used", a served limit winning;
+//   * Start is Enabled / Dry run first / Paused;
+//   * a budget field states the type's default instead of "Blank: the type's
+//     default".
+describe('edit A', () => {
+  const CAPS = { per_run_usd: 15, per_day_usd: 120, max_concurrent: 8 }
+  const unbuilt = sweepType({
+    name: 'epic-triage',
+    description: 'Triages epics.',
+    available: false,
+    disabled_reason: 'not built yet: lane S10',
+  })
+  const observer = sweepType({
+    name: 'observer',
+    description: 'A read-only report on the last day of work.',
+    params_schema: { properties: {} },
+    default_gate: { run: 'auto' },
+    min_interval_minutes: 1440,
+    budget_caps: { per_run_usd: 5, per_day_usd: 10, max_concurrent: 1 },
+    tier: 'R0',
+  })
+  const catalogue = [sweepType({ budget_caps: CAPS }), observer, unbuilt]
+  const list = (n: number, extra: Json = {}): Reply => ({
+    status: 200,
+    body: { schedules: Array.from({ length: n }, (_, i) => schedule({ schedule_id: `sch_${i}`, name: `S ${i}` })), tenant_id: 'eng', ...extra },
+  })
+  const createRoutes = (extra: Handler = () => null, listReply: Reply = list(6)) =>
+    routes((m, url, body) => {
+      const hit = extra(m, url, body)
+      if (hit !== null) return hit
+      if (m === 'GET' && url.split('?')[0] === '/v1/schedules') return listReply
+      if (m === 'POST' && url === '/v1/schedules') return { status: 201, body: { schedule: schedule({ schedule_id: 'sch_new' }), created: true } }
+      return null
+    }, catalogue)
+
+  async function openCreate(handler: Handler) {
+    const out = await mount('schedule=new', handler)
+    await screen.findByRole('heading', { name: 'New schedule', level: 1 }, WAIT)
+    await screen.findByTestId('sc-form', undefined, WAIT)
+    return out
+  }
+
+  it('picks the type from tiles, an unavailable type greyed with its reason', async () => {
+    const { calls } = await openCreate(createRoutes())
+    const tiles = screen.getByRole('radiogroup', { name: 'Type' })
+    // MUTATION: put the type <select> back and there is no radiogroup, and a select labelled Type.
+    expect(screen.getByTestId('sc-form').querySelector('select option[value="issue-sweep"]')).toBeNull()
+    const radios = within(tiles).getAllByRole('radio')
+    expect(radios.map((r) => r.querySelector('b')?.textContent)).toEqual(['issue-sweep', 'observer', 'epic-triage'])
+    expect(radios[0]!.getAttribute('aria-checked')).toBe('true')
+    const off = radios[2] as HTMLButtonElement
+    expect(off.disabled).toBe(true)
+    expect(off.className).toContain('is-off')
+    // The reason is drawn on the tile, not only in a tooltip.
+    expect(visible(off)).toContain('Not available: not built yet: lane S10')
+    fireEvent.click(radios[1]!)
+    expect(radios[1]!.getAttribute('aria-checked')).toBe('true')
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules:preview').at(-1)?.body).toMatchObject({ type: 'observer' }), WAIT)
+    fireEvent.change(field('Name'), { target: { value: 'Daily report' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
+    expect((sent(calls, 'POST', '/v1/schedules')[0]!.body as Json).type).toBe('observer')
+  })
+
+  it('puts the words, the next five and the template card in a 360px side column, under the fields below 1024px', async () => {
+    await openCreate(createRoutes())
+    const form = screen.getByTestId('sc-form')
+    const cols = form.querySelector<HTMLElement>('.sc-edit-cols')!
+    const side = cols.querySelector<HTMLElement>('.sc-edit-side')!
+    expect(side.contains(screen.getByTestId('sc-preview'))).toBe(true)
+    expect(side.contains(screen.getByTestId('sc-tpl-card'))).toBe(true)
+    // MUTATION: drop the column rule from the edit-A block of schedules.css.
+    expect(painted(cols, 'grid-template-columns', { width: 1440 })).toBe('minmax(0, 1fr) 360px')
+    // MUTATION: drop the 1023px block and a phone is left a 360px column.
+    expect(painted(cols, 'grid-template-columns', { width: 1000 })).toBe('minmax(0, 1fr)')
+    expect(painted(cols, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+  })
+
+  it('shows the template card: tier, gate, budget defaults and shortest interval', async () => {
+    await openCreate(createRoutes())
+    const card = () => screen.getByTestId('sc-tpl-card')
+    const fact = (name: string) =>
+      [...card().querySelectorAll('dt')].find((dt) => dt.textContent === name)?.nextElementSibling?.textContent ?? null
+    expect(visible(card())).toContain('issue-sweep')
+    expect(fact('Gate')).toBe('run auto · plan auto · merge approve · any member approves')
+    expect(fact('Budget')).toBe('$15.00 / run · $120.00 / day · 8 live')
+    expect(fact('Shortest interval')).toBe('15 min')
+    // The catalogue serves no tier for issue-sweep: said, not invented.
+    expect(fact('Tier')).toBe('set from the gate when the schedule is saved')
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Type' })).getAllByRole('radio')[1]!)
+    // MUTATION: read the card off the first type instead of the picked one.
+    await waitFor(() => expect(fact('Tier')).toBe('R0'), WAIT)
+    expect(fact('Shortest interval')).toBe('1 day')
+    expect(fact('Budget')).toBe('$5.00 / run · $10.00 / day · 1 live')
+  })
+
+  it('says how many of the tenant’s 25 schedules are used, a served limit winning', async () => {
+    await openCreate(createRoutes())
+    // MUTATION: drop TenantRoom from the create page and this is gone.
+    await waitFor(() => expect(visible(screen.getByTestId('sc-room'))).toBe('tenant eng · 6 of 25 used'), WAIT)
+  })
+
+  it('counts against a raised limit when the list serves one, and says a full tenant will be refused', async () => {
+    await openCreate(createRoutes(() => null, list(30, { limit: 30 })))
+    await waitFor(() => expect(visible(screen.getByTestId('sc-room'))).toContain('tenant eng · 30 of 30 used'), WAIT)
+    expect(screen.getByTestId('sc-room').getAttribute('data-full')).toBe('true')
+  })
+
+  it('starts Enabled, Dry run first or Paused', async () => {
+    const { calls } = await openCreate(createRoutes())
+    const start = screen.getByRole('radiogroup', { name: 'Start' })
+    const opts = within(start).getAllByRole('radio')
+    expect(opts.map((o) => o.textContent)).toEqual(['Enabled', 'Dry run first', 'Paused'])
+    expect(opts[0]!.getAttribute('aria-checked')).toBe('true')
+    // MUTATION: keep the old "Start paused" and "Dry run" checkboxes and these are still here.
+    expect(screen.queryByRole('checkbox', { name: /Start paused/ })).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: /Dry run/ })).toBeNull()
+    fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
+
+    fireEvent.click(opts[1]!)
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
+    const dry = sent(calls, 'POST', '/v1/schedules')[0]!.body as Json
+    // MUTATION: map "Dry run first" to state alone and the policy is missing.
+    expect(dry.state).toBe('enabled')
+    expect(dry.policy).toEqual({ dry_run: true })
+  })
+
+  it('creates a paused schedule with no dry run when Paused is chosen', async () => {
+    const { calls } = await openCreate(createRoutes())
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Start' })).getByRole('radio', { name: 'Paused' }))
+    fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
+    const body = sent(calls, 'POST', '/v1/schedules')[0]!.body as Json
+    expect(body.state).toBe('paused')
+    expect(body).not.toHaveProperty('policy')
+  })
+
+  it('states the type’s budget defaults in the budget fields', async () => {
+    const { calls } = await openCreate(createRoutes())
+    const hintOf = (label: string) => field(label).closest('label')!.querySelector('.c-hint')!.textContent
+    // MUTATION: put back "Blank: the type's default." and none of these name a value.
+    expect(hintOf('Per run (USD)')).toBe('Default $15.00, the most this type allows.')
+    expect(hintOf('Per day (USD)')).toBe('Default $120.00, the most this type allows.')
+    expect(hintOf('Live runs at most')).toBe('Default 8, the most this type allows.')
+    expect(field('Per run (USD)').placeholder).toBe('15')
+    expect(screen.getByTestId('sc-form').textContent).not.toContain('Blank')
+    // A blank field still sends nothing: the server starts the schedule at its caps.
+    fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
+    expect(sent(calls, 'POST', '/v1/schedules')[0]!.body).not.toHaveProperty('budget')
+  })
+
+  it('still never offers automatic merging among the tiles’ types', async () => {
+    await openCreate(createRoutes())
+    const merge = field('Merge') as unknown as HTMLSelectElement
+    expect([...merge.options].map((o) => o.value)).toEqual(['off', 'approve'])
+  })
+
+  it('in an edit, keeps the type fixed, shows the schedule’s own tier and offers no Start', async () => {
+    await mount(
+      'schedule=sch_a',
+      routes((m, url) => (m === 'GET' && url.split('?')[0] === '/v1/schedules/sch_a' ? { status: 200, body: { schedule: schedule(), firings: [] } } : null), catalogue),
+    )
+    await screen.findByRole('heading', { name: 'Weekday sweep', level: 1 }, WAIT)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByTestId('sc-form', undefined, WAIT)
+    expect(screen.queryByRole('radiogroup', { name: 'Type' })).toBeNull()
+    expect(screen.queryByRole('radiogroup', { name: 'Start' })).toBeNull()
+    expect(field('Type').readOnly).toBe(true)
+    // MUTATION: ignore the schedule's tier and the card says "set when saved".
+    const tierDt = [...screen.getByTestId('sc-tpl-card').querySelectorAll('dt')].find((dt) => dt.textContent === 'Tier')
+    expect(tierDt?.nextElementSibling?.textContent).toBe('R2')
+    expect(screen.getByTestId('sc-form').querySelector('.sc-edit-side')!.contains(screen.getByTestId('sc-preview'))).toBe(true)
+  })
+})

@@ -177,7 +177,7 @@ describe('the list', () => {
     })
     await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
     const heads = [...document.querySelectorAll('.sc-table:not(.is-builtin) thead th')].map((th) => th.textContent)
-    expect(heads).toEqual(['Name · type', 'Repository', 'When', 'Next run', 'Last run', 'Spend today', 'Approvals', 'State'])
+    expect(heads).toEqual(['Name · type', 'Repository', 'When', 'Next run', 'Last run', 'Spend today', 'Approvals', 'State', 'Actions'])
     const row = rowOf('sch_a')!
     expect(visible(row)).toContain('Schedule sch_a')
     expect(visible(row)).toContain('issue-sweep · R2')
@@ -260,21 +260,347 @@ describe('the list', () => {
     expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
   })
 
-  it('is a record per schedule on a phone, every cell named', async () => {
-    // MUTATION: drop the 560px block from schedules.css.
+  it('is two lines a row on a phone: name and state, then type · repository · when · last · next · spend · waiting', async () => {
+    // Owner decision 2026-10-11 (§6.2's "two lines a row on a phone"), replacing the record form.
+    // MUTATION: drop the `.sc-table.is-schedules` block from the 560px media query.
     media(true)
     await mountList({
-      '/v1/schedules': { status: 200, body: { schedules: [schedule('sch_a')], tenant_id: 'eng' } },
-      '/v1/repositories': { status: 200, body: { repositories: [] } },
+      '/v1/schedules': {
+        status: 200,
+        body: {
+          schedules: [
+            schedule('sch_a', {
+              pending_approvals: 2,
+              spend_today: { day: '2026-10-11', reported_usd: 3.1, unreported_attempts: 1, coverage: 'partial' },
+            }),
+          ],
+          tenant_id: 'eng',
+        },
+      },
+      '/v1/repositories': { status: 200, body: { repositories: [REPO] } },
     })
     await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
     expect(painted(document.querySelector<HTMLElement>('.sc-table thead')!, 'display', PHONE)).toBe('none')
     const row = rowOf('sch_a')!
+    expect(painted(row, 'display', PHONE)).toBe('grid')
+    expect(painted(row, 'grid-template-areas', PHONE)).toBe("'name state acts' 'line line line'")
+    // Line 1: the name (its cell hands it to the row's grid), the state and the actions.
+    const nameCell = row.querySelector<HTMLElement>('td[data-label="Name · type"]')!
+    expect(painted(nameCell, 'display', PHONE)).toBe('contents')
+    expect(painted(row.querySelector<HTMLElement>('.sc-name')!, 'grid-area', PHONE)).toBe('name')
+    expect(painted(row.querySelector<HTMLElement>('td[data-label="State"]')!, 'grid-area', PHONE)).toBe('state')
+    expect(painted(row.querySelector<HTMLElement>('td[data-label="Actions"]')!, 'grid-area', PHONE)).toBe('acts')
+    // Line 2: one line, cut, carrying what the hidden cells said, in the owner's order.
+    const line = row.querySelector<HTMLElement>('.sc-line2')!
+    expect(painted(line, 'grid-area', PHONE)).toBe('line')
+    expect(painted(line, 'display', PHONE)).toBe('block')
+    expect(painted(line, 'white-space', PHONE)).toBe('nowrap')
+    expect(painted(line, 'text-overflow', PHONE)).toBe('ellipsis')
+    await waitFor(() => expect(visible(line)).toContain('example-org/example-api'), WAIT)
+    const words = visible(line)
+    const order = ['issue-sweep', 'example-org/example-api', 'at 09:00, Monday through Friday', 'last succeeded', 'next in 3h', '$3.10', '2 waiting']
+    const at = order.map((w) => words.indexOf(w))
+    expect(at.every((n) => n >= 0), words).toBe(true)
+    expect([...at].sort((a, b) => a - b)).toEqual(at)
+    // A partial spend keeps its mark and its count on the phone too (§6.2).
+    expect(line.querySelector('.ctl-mark.is-partial')).not.toBeNull()
+    expect(words).toContain('1 attempt unreported')
+    // Every cell line 2 repeats is not drawn; none is a labelled record any more.
+    for (const label of ['Repository', 'When', 'Next run', 'Last run', 'Spend today', 'Approvals']) {
+      expect(painted(row.querySelector<HTMLElement>(`td[data-label="${label}"]`)!, 'display', PHONE), label).toBe('none')
+    }
+    expect(painted(row.querySelector<HTMLElement>('td[data-label="State"]')!, 'content', PHONE, 'before')).toBe('none')
+    // On a desktop the second line is not drawn: each value has its cell.
+    expect(painted(line, 'display', { width: 1440 })).toBe('none')
+  })
+
+  it('keeps the built-in rows a record on a phone, every cell named', async () => {
+    media(true)
+    await mountList({
+      '/v1/schedules': { status: 200, body: { schedules: [], tenant_id: 'eng' } },
+      '/v1/repositories': { status: 200, body: { repositories: [REPO] } },
+    })
+    const row = await waitFor(() => {
+      const el = document.querySelector<HTMLElement>('tr[data-builtin="repo_a"]')
+      expect(el).not.toBeNull()
+      return el!
+    }, WAIT)
     expect(painted(row, 'display', PHONE)).toBe('block')
     for (const td of row.querySelectorAll<HTMLElement>('td')) {
       expect(td.getAttribute('data-label'), 'a cell with no name').toBeTruthy()
       expect(painted(td, 'display', PHONE)).toBe('block')
     }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// The actions (owner decisions 2026-10-11)
+// ---------------------------------------------------------------------------
+
+type Handler = (method: string, url: string, body: unknown) => { status: number; body: unknown } | null
+
+/** Mount a Schedules address with a handler that sees every method; GETs fall back to `routes`. */
+async function mountActing(view: string | null, routes: Routes, handler: Handler) {
+  const calls = serve((m, url, body) => handler(m, url, body) ?? (m === 'GET' ? routes[url.split('?')[0]!] ?? null : null))
+  vi.stubEnv('VITE_LIVE', '1')
+  vi.resetModules()
+  const { SchedulesScreen } = await import('../Schedules')
+  const go = vi.fn()
+  const utils = render(<SchedulesScreen view={view} go={go} />)
+  return { ...utils, calls, go }
+}
+
+const posts = (calls: { method: string; url: string; body: unknown }[], path: string) =>
+  calls.filter((c) => c.method === 'POST' && c.url.split('?')[0] === path)
+const reads = (calls: { method: string; url: string }[], path: string) =>
+  calls.filter((c) => c.method === 'GET' && c.url.split('?')[0] === path).length
+
+const LIST: Routes = {
+  '/v1/schedules': {
+    status: 200,
+    body: {
+      schedules: [
+        schedule('sch_a'),
+        schedule('sch_p', { state: 'paused', next_run_at: null, pause: { by: 'a@example.com', reason: 'holiday' } }),
+        schedule('sch_q', { state: 'auto_paused', next_run_at: null, pause: { code: 'CONSECUTIVE_FAILURES' } }),
+        schedule('sch_d', { state: 'disabled', next_run_at: null, pause: { by: 'admin:root@example.com', reason: 'runaway' } }),
+        schedule('sch_g', { gate: { plan: 'approve', run: 'approve', merge: 'approve' } }),
+      ],
+      tenant_id: 'eng',
+    },
+  },
+  '/v1/repositories': { status: 200, body: { repositories: [] } },
+}
+
+const created = (id: string) => firing(`${id}:now`, { trigger: 'run_now', state: 'created', outcome: null, cost: null, ended_at: null })
+
+describe('a row of the list', () => {
+  it('offers Run now on every row, and Resume only when paused or auto-paused', async () => {
+    // MUTATION: offer Resume on every row, or drop it for auto-paused.
+    await mountActing(null, LIST, () => null)
+    await waitFor(() => expect(rowOf('sch_d')).not.toBeNull(), WAIT)
+    const names = (id: string) => within(rowOf(id)!.querySelector<HTMLElement>('td[data-label="Actions"]')!).getAllByRole('button').map((b) => visible(b))
+    expect(names('sch_a')).toEqual(['Run now'])
+    expect(names('sch_p')).toEqual(['Run now', 'Resume'])
+    expect(names('sch_q')).toEqual(['Run now', 'Resume'])
+    // A disabled schedule is an admin's: Run now says why it is off, and Resume is not offered.
+    expect(names('sch_d')).toEqual(['Run now'])
+    const off = within(rowOf('sch_d')!).getByRole('button', { name: 'Run now' })
+    expect(off).toHaveProperty('disabled', true)
+    expect(visible(rowOf('sch_d'))).toContain('An admin disabled this schedule.')
+  })
+
+  it('resumes a paused row through :resume, without asking, and reads the list again', async () => {
+    const { calls } = await mountActing(null, LIST, (m, url) =>
+      m === 'POST' && url === '/v1/schedules/sch_p:resume'
+        ? { status: 200, body: { schedule: schedule('sch_p', { state: 'enabled', next_run_at: hoursFromNow(3) }) } }
+        : null,
+    )
+    await waitFor(() => expect(rowOf('sch_p')).not.toBeNull(), WAIT)
+    expect(reads(calls, '/v1/schedules')).toBe(1)
+    fireEvent.click(within(rowOf('sch_p')!).getByRole('button', { name: 'Resume' }))
+    await waitFor(() => expect(posts(calls, '/v1/schedules/sch_p:resume')).toHaveLength(1), WAIT)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    const said = await screen.findByTestId('sc-said', undefined, WAIT)
+    expect(visible(said)).toContain('Schedule sch_p: Resumed: next run in 3h.')
+    await waitFor(() => expect(reads(calls, '/v1/schedules')).toBe(2), WAIT)
+  })
+
+  it('asks before a Run now that spends capacity, and sends nothing until confirmed', async () => {
+    // MUTATION: make `runSpends` return false and the POST goes out on the first click.
+    const { calls } = await mountActing(null, LIST, (m, url) =>
+      m === 'POST' && url === '/v1/schedules/sch_a:run' ? { status: 200, body: { firing: created('sch_a') } } : null,
+    )
+    await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
+    fireEvent.click(within(rowOf('sch_a')!).getByRole('button', { name: 'Run now' }))
+    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(0)
+    // The budget it names is the schedule's as served.
+    expect(visible(dialog)).toContain('$15.00')
+    expect(visible(dialog)).toContain('$120.00')
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Run now' }))
+    await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(1), WAIT)
+    expect(posts(calls, '/v1/schedules/sch_a:run')[0]!.body).toEqual({ dry_run: false })
+    const said = await screen.findByTestId('sc-said', undefined, WAIT)
+    expect(visible(said)).toContain('created 1 work item')
+  })
+
+  it('runs at once, unasked, when the gate holds the run for approval, since it then spends nothing', async () => {
+    const { calls } = await mountActing(null, LIST, (m, url) =>
+      m === 'POST' && url === '/v1/schedules/sch_g:run'
+        ? { status: 200, body: { firing: firing('sch_g:now', { trigger: 'run_now', state: 'awaiting_approval', work: [], outcome: null, cost: null }) } }
+        : null,
+    )
+    await waitFor(() => expect(rowOf('sch_g')).not.toBeNull(), WAIT)
+    fireEvent.click(within(rowOf('sch_g')!).getByRole('button', { name: 'Run now' }))
+    await waitFor(() => expect(posts(calls, '/v1/schedules/sch_g:run')).toHaveLength(1), WAIT)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(visible(await screen.findByTestId('sc-said', undefined, WAIT))).toContain('waits for approval')
+  })
+
+  it('says which rule refused a run, as an alert', async () => {
+    await mountActing(null, LIST, (m, url) =>
+      m === 'POST' && url === '/v1/schedules/sch_g:run' ? { status: 409, body: { code: 'schedules_disabled', message: 'off' } } : null,
+    )
+    await waitFor(() => expect(rowOf('sch_g')).not.toBeNull(), WAIT)
+    fireEvent.click(within(rowOf('sch_g')!).getByRole('button', { name: 'Run now' }))
+    const said = await screen.findByRole('alert', undefined, WAIT)
+    expect(visible(said)).toContain('switched off platform-wide')
+  })
+})
+
+describe("a schedule's page head", () => {
+  const ONE = (over: Json = {}): Routes => ({
+    '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a', over), firings: [] } },
+  })
+  const head = () => screen.getByTestId('sc-acts-head')
+
+  it('offers Run now, Dry run, Pause and Delete when enabled; Resume, not Pause, when paused', async () => {
+    const first = await mountActing('schedule=sch_a', ONE(), () => null)
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    expect(within(head()).getAllByRole('button').map((b) => visible(b))).toEqual(['Run now', 'Dry run', 'Pause', 'Delete…'])
+    expect(screen.getByRole('button', { name: 'Edit' })).toBeTruthy()
+    first.unmount()
+    await mountActing('schedule=sch_a', ONE({ state: 'auto_paused', next_run_at: null }), () => null)
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    expect(within(head()).getAllByRole('button').map((b) => visible(b))).toEqual(['Run now', 'Dry run', 'Resume', 'Delete…'])
+  })
+
+  it('dry-runs and pauses without asking, through :run and :pause, then reads the schedule again', async () => {
+    // MUTATION: route Dry run through the confirmation and the first click sends nothing.
+    const { calls } = await mountActing('schedule=sch_a', ONE(), (m, url) => {
+      if (m === 'POST' && url === '/v1/schedules/sch_a:run') {
+        return { status: 200, body: { firing: firing('sch_a:dry', { trigger: 'run_now', work: [], skip: { code: 'DRY_RUN' }, cost: null }) } }
+      }
+      if (m === 'POST' && url === '/v1/schedules/sch_a:pause') {
+        return { status: 200, body: { schedule: schedule('sch_a', { state: 'paused', next_run_at: null }) } }
+      }
+      return null
+    })
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    fireEvent.click(within(head()).getByRole('button', { name: 'Dry run' }))
+    await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(1), WAIT)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(posts(calls, '/v1/schedules/sch_a:run')[0]!.body).toEqual({ dry_run: true })
+    expect(visible(await screen.findByTestId('sc-said', undefined, WAIT))).toContain('Dry run recorded: nothing was created')
+    await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(2), WAIT)
+    await screen.findByTestId('sc-acts-head', undefined, WAIT)
+    fireEvent.click(within(head()).getByRole('button', { name: 'Pause' }))
+    await waitFor(() => expect(posts(calls, '/v1/schedules/sch_a:pause')).toHaveLength(1), WAIT)
+    expect(screen.queryByRole('dialog')).toBeNull()
+    await waitFor(() => expect(visible(screen.getByTestId('sc-said'))).toContain('Paused: no new firings'), WAIT)
+    await waitFor(() => expect(reads(calls, '/v1/schedules/sch_a')).toBe(3), WAIT)
+  })
+
+  it('asks before Run now on the page too, when it spends capacity', async () => {
+    const { calls } = await mountActing('schedule=sch_a', ONE(), (m, url) =>
+      m === 'POST' && url === '/v1/schedules/sch_a:run' ? { status: 200, body: { firing: created('sch_a') } } : null,
+    )
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    fireEvent.click(within(head()).getByRole('button', { name: 'Run now' }))
+    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Not now' }))
+    expect(screen.queryByRole('dialog')).toBeNull()
+    expect(posts(calls, '/v1/schedules/sch_a:run')).toHaveLength(0)
+  })
+
+  it('deletes only with the name typed, through DELETE with confirm, and goes back to the list', async () => {
+    // MUTATION: drop the `disabledReason` on Delete schedule and it sends with any text.
+    const { calls, go } = await mountActing('schedule=sch_a', ONE(), (m, url) =>
+      m === 'DELETE' && url.split('?')[0] === '/v1/schedules/sch_a' ? { status: 200, body: { deleted: 'sch_a' } } : null,
+    )
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    fireEvent.click(within(head()).getByRole('button', { name: 'Delete…' }))
+    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const confirm = () => within(dialog).getByRole('button', { name: 'Delete schedule' })
+    expect(confirm()).toHaveProperty('disabled', true)
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Schedule sch' } })
+    expect(confirm()).toHaveProperty('disabled', true)
+    fireEvent.click(confirm())
+    expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(0)
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: '  Schedule sch_a ' } })
+    expect(confirm()).toHaveProperty('disabled', false)
+    fireEvent.click(confirm())
+    await waitFor(() => expect(calls.filter((c) => c.method === 'DELETE')).toHaveLength(1), WAIT)
+    const sent = new URL(calls.find((c) => c.method === 'DELETE')!.url, 'http://x')
+    expect(sent.pathname).toBe('/v1/schedules/sch_a')
+    expect(sent.searchParams.get('confirm')).toBe('Schedule sch_a')
+    await waitFor(() => expect(go).toHaveBeenCalledWith('automate/schedules'), WAIT)
+  })
+
+  it('keeps the dialog open and says so when the server refuses the delete', async () => {
+    const { go } = await mountActing('schedule=sch_a', ONE(), (m) =>
+      m === 'DELETE' ? { status: 422, body: { code: 'confirmation_required', message: 'type the name' } } : null,
+    )
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    fireEvent.click(within(head()).getByRole('button', { name: 'Delete…' }))
+    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    fireEvent.change(within(dialog).getByRole('textbox'), { target: { value: 'Schedule sch_a' } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Delete schedule' }))
+    expect(visible(await within(dialog).findByRole('alert', undefined, WAIT))).toContain('nothing was deleted')
+    expect(go).not.toHaveBeenCalled()
+  })
+})
+
+describe('the Budget tab', () => {
+  const USE = {
+    day: '2026-10-11',
+    per_day_usd: 120,
+    per_run_usd: 15,
+    reported_usd: 41.2,
+    unreported_attempts: 1,
+    unreported_usd: 15,
+    live_firings: 1,
+    live_items: 2,
+    live_usd: 30,
+    free_usd: 33.8,
+  }
+
+  async function budgetTab(use: unknown) {
+    const over: Json = use === undefined ? {} : { budget_use: use }
+    await mountDetail({ '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a', over), firings: [] } } })
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    fireEvent.click(screen.getByRole('tab', { name: /Budget/ }))
+  }
+
+  /** A part's width, as a share of the bar, to the hundredth of a percent. */
+  const width = (part: string) => parseFloat(document.querySelector<HTMLElement>(`.sc-burn-bar [data-part="${part}"]`)!.style.width)
+  const pct = (part: number, whole: number) => Number(((part / whole) * 100).toFixed(2))
+
+  it("draws the burn bar from the served parts: reported, unreported at the cap, live, free", async () => {
+    // MUTATION: draw `free` as per_day minus reported, and the $33.80 and its width go.
+    await budgetTab(USE)
+    const bar = await screen.findByTestId('sc-burn', undefined, WAIT)
+    expect(width('reported')).toBe(pct(41.2, 120))
+    expect(width('unreported')).toBe(12.5)
+    expect(width('live')).toBe(25)
+    expect(width('free')).toBe(pct(33.8, 120))
+    const key = [...bar.querySelectorAll<HTMLElement>('.sc-burn-key li')].map((li) => visible(li))
+    expect(key).toEqual([
+      'Reported $41.20',
+      '1 attempt unreported, counted at the $15.00 per-run cap: $15.00',
+      '2 live runs reserved at $15.00 each: $30.00',
+      'Free $33.80',
+    ])
+    expect(visible(bar)).toContain('$33.80 free of $120.00 today')
+    expect(bar.querySelector('.ctl-mark.is-partial')).not.toBeNull()
+    expect(bar.querySelector('.sc-burn-tick')).toBeNull()
+  })
+
+  it('draws the parts against their total, with the day marked, when they pass the day', async () => {
+    await budgetTab({ ...USE, reported_usd: 100, free_usd: 0 })
+    const bar = await screen.findByTestId('sc-burn', undefined, WAIT)
+    expect(width('reported')).toBe(pct(100, 145))
+    expect(width('free')).toBe(0)
+    expect(parseFloat(bar.querySelector<HTMLElement>('.sc-burn-tick')!.style.left)).toBe(pct(120, 145))
+    expect(visible(bar)).toContain('a new firing is skipped')
+  })
+
+  it('draws no bar and invents no figure when the read did not serve the reservation', async () => {
+    await budgetTab(undefined)
+    await screen.findByTestId('sc-budget', undefined, WAIT)
+    expect(document.querySelector('[data-testid="sc-burn"]')).toBeNull()
+    expect(visible(screen.getByTestId('sc-burn-absent'))).toContain('did not serve')
   })
 })
 
