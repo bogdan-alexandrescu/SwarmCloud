@@ -21,15 +21,17 @@ import {
   type FiringWork,
   type Schedule,
   type ScheduleAuditEntry,
+  type ScheduleBudgetUse,
   type ScheduleFiring,
   type ScheduleTypeRow,
 } from './api'
 import { Button, Dialog, Tabs } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { usd } from './measure'
-import { Absent } from './primitives'
+import { pluralise } from './types'
+import { Absent, Mark } from './primitives'
 import { EditSchedule } from './ScheduleEdit'
-import { InApp, SCHEDULES_ADDRESS, STATE_WORD, SpendFigure, localTime, untilWords } from './Schedules'
+import { InApp, SCHEDULES_ADDRESS, STATE_WORD, Said, ScheduleActions, SpendFigure, localTime, untilWords, type ActNotice } from './Schedules'
 import { Screen, timeAgo } from './Shell'
 import { useNow } from './useNow'
 
@@ -123,8 +125,93 @@ function money(v: number | undefined): string {
   return v === undefined ? '— not set' : usd(v)
 }
 
+/** A share of the bar, as a CSS width: of the day's figure, or of the whole when the parts pass it. */
+function share(part: number, whole: number): string {
+  return whole <= 0 ? '0%' : `${Math.max(0, Math.min(100, (part / whole) * 100)).toFixed(2)}%`
+}
+
+/**
+ * THE BURN BAR (detail A's Budget, owner decision 2026-10-11): today's
+ * `per_day_usd` in four parts -- reported, each unreported attempt counted at
+ * the per-run cap, each live work item reserved at the per-run cap, and free
+ * -- every one a field of `budget_use` as served (`routes/schedules.py::
+ * _budget_use`). The console adds nothing up: a part the server did not
+ * serve is not drawn, and the bar is not drawn at all without `budget_use`.
+ * Hatching is the not-measured part (the unreported attempts), as the usage
+ * bar's rule says. When the parts pass the day's figure the bar is drawn
+ * against their total, with the day's figure marked, and says so.
+ */
+export function BurnBar({ use }: { use: ScheduleBudgetUse }) {
+  const parts = use.reported_usd + use.unreported_usd + use.live_usd
+  const over = parts > use.per_day_usd
+  const whole = over ? parts : use.per_day_usd
+  const legend: [string, string][] = [
+    ['reported', `Reported ${usd(use.reported_usd)}`],
+    [
+      'unreported',
+      use.unreported_attempts > 0
+        ? `${pluralise(use.unreported_attempts, 'attempt')} unreported, counted at the ${usd(use.per_run_usd)} per-run cap: ${usd(use.unreported_usd)}`
+        : 'No attempt unreported',
+    ],
+    [
+      'live',
+      use.live_items > 0
+        ? `${pluralise(use.live_items, 'live run')} reserved at ${usd(use.per_run_usd)} each: ${usd(use.live_usd)}`
+        : 'No live run reserved',
+    ],
+    ['free', `Free ${usd(use.free_usd)}`],
+  ]
+  return (
+    <div className="sc-burn" data-testid="sc-burn">
+      <div className="sc-burn-h">
+        <b>
+          {usd(use.free_usd)} free of {usd(use.per_day_usd)} today
+        </b>
+        {use.unreported_attempts > 0 && (
+          <Mark kind="partial" say={`${usd(use.reported_usd)} is a floor: ${pluralise(use.unreported_attempts, 'attempt')} did not report a cost`} />
+        )}
+      </div>
+      <div
+        className={`sc-burn-bar${over ? ' is-over' : ''}`}
+        role="img"
+        aria-label={legend.map(([, words]) => words).join('; ')}
+      >
+        <i className="sc-seg is-reported" data-part="reported" style={{ width: share(use.reported_usd, whole) }} />
+        <i className="sc-seg is-unreported" data-part="unreported" style={{ width: share(use.unreported_usd, whole) }} />
+        <i className="sc-seg is-live" data-part="live" style={{ width: share(use.live_usd, whole) }} />
+        <i className="sc-seg is-free" data-part="free" style={{ width: share(use.free_usd, whole) }} />
+        {over && <i className="sc-burn-tick" style={{ left: share(use.per_day_usd, whole) }} title={`The day's figure, ${usd(use.per_day_usd)}`} />}
+      </div>
+      <ul className="sc-burn-key">
+        {legend.map(([part, words]) => (
+          <li key={part} data-part={part}>
+            <i className={`sc-key is-${part}`} aria-hidden="true" />
+            {words}
+          </li>
+        ))}
+      </ul>
+      <p className="sb-note">
+        {over
+          ? `What is spent and held passes today's ${usd(use.per_day_usd)}, so a new firing is skipped until the day ends.`
+          : `A new firing needs what its runs would reserve free under today's ${usd(use.per_day_usd)}; ${usd(use.free_usd)} is free now.`}{' '}
+        The day is {use.day}, in the schedule's own timezone.
+      </p>
+    </div>
+  )
+}
+
 function Budget({ s }: { s: Schedule }) {
   return (
+    <div className="sc-budget">
+      {s.budget_use === undefined || s.budget_use === null ? (
+        <p className="sb-note" data-testid="sc-burn-absent">
+          {s.budget_use === null
+            ? '— no burn bar: the budget has no per-run or per-day figure to count against.'
+            : '— no burn bar: this read did not serve today’s reservation.'}
+        </p>
+      ) : (
+        <BurnBar use={s.budget_use} />
+      )}
     <dl className="sc-facts" data-testid="sc-budget">
       <Fact name="Per run">{money(s.budget.per_run_usd)}</Fact>
       <Fact name="Per day">{money(s.budget.per_day_usd)}</Fact>
@@ -137,6 +224,7 @@ function Budget({ s }: { s: Schedule }) {
         schedule, and a day can end above the daily figure by what its live runs overspend.
       </p>
     </dl>
+    </div>
   )
 }
 
@@ -399,6 +487,8 @@ function DetailBody({
   tab,
   setTab,
   reread,
+  notice,
+  onDone,
 }: {
   schedule: Schedule
   firings: ScheduleFiring[]
@@ -406,6 +496,8 @@ function DetailBody({
   tab: DetailTab
   setTab: (t: DetailTab) => void
   reread: () => void
+  notice: ActNotice | null
+  onDone: (notice: ActNotice) => void
 }) {
   const [editing, setEditing] = useState(false)
   const now = useNow()
@@ -423,11 +515,16 @@ function DetailBody({
   }
   return (
     <>
-      <div className="c-acts sc-acts">
-        <Button size="sm" onClick={() => setEditing(true)}>
-          Edit
-        </Button>
+      <div className="sc-head-row">
+        <ScheduleActions
+          s={s}
+          where="head"
+          onDone={onDone}
+          onDeleted={() => go(SCHEDULES_ADDRESS)}
+        />
+        <Button onClick={() => setEditing(true)}>Edit</Button>
       </div>
+      <Said notice={notice} />
       <dl className="sc-facts sc-head">
         <Fact name="Type">{s.tier === null ? s.type : `${s.type} · ${s.tier}`}</Fact>
         <Fact name="When">
@@ -488,6 +585,7 @@ export function ScheduleDetail({ scheduleId, go }: { scheduleId: string; go: (to
   // new `round`, which remounts the Screen -- lands on the tab it came from.
   const [tab, setTab] = useState<DetailTab>('history')
   const [round, setRound] = useState(0)
+  const [notice, setNotice] = useState<ActNotice | null>(null)
   return (
     <div className="sc-detail">
       <InApp go={go} to={SCHEDULES_ADDRESS} className="sc-back">‹ All schedules</InApp>
@@ -502,7 +600,19 @@ export function ScheduleDetail({ scheduleId, go }: { scheduleId: string; go: (to
         summary={(d) => `${d.schedule.schedule_id} · created by ${d.schedule.created_by}`}
       >
         {(d) => (
-          <DetailBody schedule={d.schedule} firings={d.firings} go={go} tab={tab} setTab={setTab} reread={() => setRound((n) => n + 1)} />
+          <DetailBody
+            schedule={d.schedule}
+            firings={d.firings}
+            go={go}
+            tab={tab}
+            setTab={setTab}
+            reread={() => setRound((n) => n + 1)}
+            notice={notice}
+            onDone={(n) => {
+              setNotice(n)
+              setRound((r) => r + 1)
+            }}
+          />
         )}
       </Screen>
     </div>
