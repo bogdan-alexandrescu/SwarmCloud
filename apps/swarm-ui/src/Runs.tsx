@@ -632,12 +632,12 @@ function RunList({ first, go, view = null }: { first: IssueRunSummaryPage; go: (
  * that ended in planning, not ready or rejected said `none yet`, which
  * promises a workflow that will never come.
  */
-export function noWorkflowWord(run: IssueRun): string {
+export function noWorkflowWord(run: IssueRunSummary): string {
   return run.terminal ? 'none · the run ended before a workflow' : 'none yet'
 }
 
 /** The issue's reference, linked to the issue on the forge (live QA RT-12: it was plain text). */
-function IssueRefLink({ run }: { run: IssueRun }) {
+function IssueRefLink({ run }: { run: IssueRunSummary }) {
   const url = run.issue.url
   return typeof url === 'string' && /^https:\/\//.test(url)
     ? <a href={url} target="_blank" rel="noreferrer">{run.issue.ref}</a>
