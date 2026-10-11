@@ -178,6 +178,7 @@ from .issueruns import (
     RunState,
     failure_text,
     hard_stop_hold,
+    iam_patch_hits,
     requirements_finding,
     verification_finding,
     verification_text,
@@ -1248,6 +1249,22 @@ def _changed_files(ctx: Any, run: IssueRun, number: int, token: str) -> list[str
     return list(files)
 
 
+def _iam_patch_files(ctx: Any, run: IssueRun, number: int, token: str) -> list[str] | None:
+    """The changed `.tf` files whose patch touches a `google_*_iam_*` line
+    (§4.4), or None when the patches could not all be read: held, not clean."""
+    issues = getattr(ctx, "forge", None)
+    if issues is None:
+        return None
+    try:
+        patches, cut = issues._pull_file_patches(run.issue, number, token, MERGE_FILES_CAP)
+    except Exception as exc:  # noqa: BLE001 -- a read that fails is not a clean patch
+        log.warning("issue run %s: patches not read (%s)", run.id, type(exc).__name__)
+        return None
+    if patches is None or cut:
+        return None
+    return iam_patch_hits(patches)
+
+
 def merge_gate(
     ctx: Any, tenant_id: str, run: IssueRun, record: dict[str, Any], head: str, *, token: str,
 ) -> IssueRun | None:
@@ -1268,6 +1285,9 @@ def merge_gate(
     hold = run.approval_hold
     if record.get("files_checked_head") != head:
         files = _changed_files(ctx, run, int(record["number"]), token)
+        iam_files = _iam_patch_files(ctx, run, int(record["number"]), token) if files is not None else None
+        if files is not None and iam_files is None:
+            files = None  # the patches could not all be read: the same wait as the files
         if files is None:
             if approvals.hold_blocks(hold) or refusals.enforced(HoldApproverRequired.code):
                 # A hard stop cannot be shown clear: the merge waits for a
@@ -1285,7 +1305,8 @@ def merge_gate(
             ) or {}
             hold = widen_hold(hold, hard_stop_hold(
                 files, platform=platform_of(registration),
-                hard_stop_paths=hard_stop_paths_of(registration), issue_read=run.issue_read, at=now,
+                hard_stop_paths=hard_stop_paths_of(registration), issue_read=run.issue_read,
+                iam_files=iam_files, at=now,
             ))
             record["files_checked_head"] = head
     changes: dict[str, Any] = {}

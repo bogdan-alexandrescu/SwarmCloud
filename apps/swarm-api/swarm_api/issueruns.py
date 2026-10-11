@@ -917,6 +917,27 @@ WORKFLOWS_PATTERN = ".github/workflows/**"
 IAM_PATTERNS: tuple[str, ...] = ("terraform/bootstrap/**", "**/iam*.tf")
 #: "any google_*_iam_* change": a resource type named in a step's prompt.
 _IAM_RESOURCE = re.compile(r"\bgoogle_[a-z0-9_]*_iam_[a-z0-9_]+\b")
+#: An added or removed line of a `.tf` patch that touches an IAM resource or
+#: data source type (docs/schedules.md §4.4: "any google_*_iam_* change").
+_IAM_PATCH_LINE = re.compile(r"^[+-](?![+-]{2}).*\bgoogle_[a-z0-9_]*_iam_", re.MULTILINE)
+
+
+def iam_patch_hits(patches: Mapping[str, str | None] | None) -> list[str]:
+    """The `.tf` files whose patch changes a `google_*_iam_*` line, or cannot be shown not to.
+
+    A `.tf` file with no patch text (the forge omits it for a large diff) is
+    a hit: held, not clean. `None` (the patches could not be read) is for the
+    caller to treat as held.
+    """
+    hits = []
+    for path, patch in sorted((patches or {}).items()):
+        if not path.endswith(".tf"):
+            continue
+        if patch is None or _IAM_PATCH_LINE.search(patch):
+            hits.append(path)
+    return hits
+
+
 #: The frozen contract, held only where the registration is `platform: true`.
 CONTRACT_PATTERNS: tuple[str, ...] = ("apps/common/swarm_common/**",)
 
@@ -1016,6 +1037,7 @@ def hard_stop_hold(
     hard_stop_paths: Any,
     issue_read: Mapping[str, Any] | None = None,
     prompt_text: str = "",
+    iam_files: Any = (),
     at: datetime | None = None,
 ) -> dict[str, Any] | None:
     """The hold §4.4's stops put on a run whose work touches `paths`, or None.
@@ -1030,6 +1052,7 @@ def hard_stop_hold(
     reasons: list[str] = []
     matched: list[str] = []
     iam = _matching(paths, IAM_PATTERNS) + sorted(set(_IAM_RESOURCE.findall(prompt_text)))
+    iam += [p for p in sorted({str(f) for f in iam_files or ()}) if p not in iam]
     if iam:
         reasons.append(STOP_IAM)
         matched += iam

@@ -168,7 +168,7 @@ def _approve_projected(ctx: AppContext, auth: AuthContext, tenant_id: str, item_
     if not isinstance(body.digest, str):
         raise ScheduleInvalid("invalid_digest", "a plan is approved by its plan_digest")
     schedule = approvals.read_schedule(ctx.db, tenant_id, (run.schedule or {}).get("schedule_id"))
-    if schedule is not None and not run.approval_hold:
+    if schedule is not None and not approvals.hold_blocks(run.approval_hold):
         approvals.check_gate_approver(
             ctx, tenant_id, (schedule.get("gate") or {}).get("approvers"), email=auth.email,
             is_owner=auth.is_owner, schedule=schedule, merge_tier=False,

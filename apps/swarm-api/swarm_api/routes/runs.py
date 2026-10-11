@@ -280,6 +280,18 @@ def _approve(
     runs = _runs(ctx)
     is_owner = bool(getattr(auth, "is_owner", False)) and by != AUTO_APPROVER
     approvals.check_hold(ctx, run, email=by, is_owner=is_owner, confirm=confirm)
+    # §4.6: a scheduled run's named / owner_only approvers hold on EVERY
+    # approval path (this route, `sc plan approve`, the inbox), not only the
+    # inbox's. A blocking hold is judged by `check_hold` alone; an
+    # auto-approval is the gate's own `auto` mode and is not a person.
+    schedule_ref = run.schedule or {}
+    if schedule_ref and by != AUTO_APPROVER and not approvals.hold_blocks(run.approval_hold):
+        schedule = approvals.read_schedule(ctx.db, tenant_id, schedule_ref.get("schedule_id"))
+        if schedule is not None:
+            approvals.check_gate_approver(
+                ctx, tenant_id, (schedule.get("gate") or {}).get("approvers"), email=by,
+                is_owner=is_owner, schedule=schedule, merge_tier=False,
+            )
     compile_plan(run)
     # docs/workspaces.md §5.3 (#847 W1): the submission gate, asked BEFORE the
     # claim, so a run whose submitter's workspace is not ready is refused and

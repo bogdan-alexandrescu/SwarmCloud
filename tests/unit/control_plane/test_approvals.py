@@ -306,6 +306,42 @@ def test_a_named_approvers_list_admits_only_its_members(client, db):
     assert _decide(client, item["approval_id"], "approve", user="dave", digest="digest-1").status_code == 200
 
 
+def _scheduled_plan(client, db, objects, gate) -> dict:
+    seed_tenant(db, "eng")
+    seed_schedule(db, gate=gate)
+    run = _planned(client, db, objects)
+    db.docs[f"issue_runs/{run['id']}"]["schedule"] = {"schedule_id": "sch_000000000001"}
+    return run
+
+
+def test_the_plan_approve_route_enforces_a_schedules_owner_only_approvers(client, db, objects):
+    """Not only the inbox: `POST /v1/runs/{id}/plan:approve` (and `sc plan approve`) too."""
+    run = _scheduled_plan(client, db, objects, {"run": "approve", "approvers": "owner_only"})
+    refused = _approve(client, run["id"], run["plan_digest"])
+    assert refused.status_code == 403 and refused.json()["code"] == "approver_not_allowed"
+    assert not _docs(db, "workflows")
+
+
+def test_the_plan_approve_route_enforces_a_schedules_named_approvers(client, db, objects):
+    run = _scheduled_plan(client, db, objects, {"run": "approve", "approvers": ["dave@saga.xyz"]})
+    refused = _approve(client, run["id"], run["plan_digest"])
+    assert refused.status_code == 403 and refused.json()["code"] == "approver_not_allowed"
+    assert _approve(client, run["id"], run["plan_digest"], user="dave").status_code == 200
+
+
+def test_a_report_only_hold_does_not_waive_the_schedules_named_approvers_in_the_inbox(client, db, objects):
+    """The switch is off, so the bootstrap hold is report-only: it must not make approval easier."""
+    seed_tenant(db, "eng")
+    seed_schedule(db, gate={"run": "approve", "approvers": ["dave@saga.xyz"]})
+    run = _planned(client, db, objects, _bootstrap_plan())
+    stored = db.docs[f"issue_runs/{run['id']}"]
+    stored["schedule"] = {"schedule_id": "sch_000000000001"}
+    assert stored["approval_hold"] is not None
+    refused = _decide(client, f"run:{run['id']}", "approve", digest=run["plan_digest"])
+    assert refused.status_code == 403 and refused.json()["code"] == "approver_not_allowed"
+    assert not _docs(db, "workflows")
+
+
 # --------------------------------------------------------------------------
 # expiry (§4.7)
 # --------------------------------------------------------------------------
@@ -419,6 +455,46 @@ def test_the_merge_point_reads_the_pull_requests_files_and_holds_on_them(
     assert run["approval_hold"]["matched"] == ["terraform/bootstrap/deployer.tf"]
     assert _merge_workflows(db) == []
     assert len(_inbox(client, kind="merge")) == 1
+
+
+_IAM_PATCH = '@@ -1,3 +1,4 @@\n+resource "google_project_iam_member" "x" {\n+}\n'
+_PLAIN_PATCH = '@@ -1,3 +1,4 @@\n+variable "name" {}\n'
+
+
+def _merge_held_matched(client, db, objects, writes, clock, _entry) -> tuple[dict, str]:
+    running = _checking(client, db, objects, writes, FULL_PLAN)
+    writes.check(SHA_A, "unit", "success")
+    return _read(client, clock, running["id"]), running["id"]
+
+
+@pytest.mark.parametrize("name", [
+    "terraform/modules/iam/bindings.tf", "terraform/modules/tenancy/main.tf", "terraform/infra/deployer.tf",
+])
+def test_the_merge_point_holds_a_tf_file_whose_patch_changes_a_google_iam_resource(
+    client, db, objects, writes, clock, switch_on, pr_files, name,
+):
+    """§4.4 says "any google_*_iam_* change", not any iam-named file."""
+    pr_files.append((name, _IAM_PATCH))
+    run, _ = _merge_held_matched(client, db, objects, writes, clock, name)
+    assert run["state"] == "CHECKING"
+    assert run["approval_hold"]["matched"] == [name]
+    assert _merge_workflows(db) == []
+
+
+def test_the_merge_point_holds_a_tf_file_whose_patch_cannot_be_read(
+    client, db, objects, writes, clock, switch_on, pr_files,
+):
+    pr_files.append("terraform/modules/tenancy/main.tf")  # no patch from the forge
+    run, _ = _merge_held_matched(client, db, objects, writes, clock, None)
+    assert run["approval_hold"]["matched"] == ["terraform/modules/tenancy/main.tf"]
+
+
+def test_the_merge_point_does_not_hold_a_tf_file_with_no_iam_line(
+    client, db, objects, writes, clock, switch_on, pr_files,
+):
+    pr_files.append(("terraform/modules/network/main.tf", _PLAIN_PATCH))
+    run, run_id = _merge_held_matched(client, db, objects, writes, clock, None)
+    assert db.docs[f"issue_runs/{run_id}"]["approval_hold"] is None
 
 
 def test_a_push_after_the_request_makes_the_merge_approval_stale(
