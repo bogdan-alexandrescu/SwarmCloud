@@ -150,7 +150,7 @@ export function CanStartFact({ profile }: { profile: RunnerProfile }) {
   const room = headroomFor(profile)
   if (room.agents !== null) {
     if (room.agents > 0) return <>{room.agents} more can start now</>
-    return <>0 can start now{room.binding !== null && <> · held by <span className="mono">{room.binding}</span></>}</>
+    return <>0 can start now{room.binding !== null && <> · held by <span className="sbf-runner-holder" title={room.binding}>{room.binding}</span></>}</>
   }
   if (room.basis === 'uncapped') return <>no pool caps it</>
   return (
