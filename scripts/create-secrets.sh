@@ -18,6 +18,7 @@
 #   scripts/create-secrets.sh --tenant eng --provider anthropic --subscription --stdin
 #   scripts/create-secrets.sh --list [--tenant eng]
 #   scripts/create-secrets.sh --child-key
+#   scripts/create-secrets.sh --live-key
 #   scripts/create-secrets.sh --github-app client-secret --stdin
 #   scripts/create-secrets.sh --github-app private-key --stdin < app.private-key.pem
 #
@@ -39,6 +40,15 @@
 # secret itself and its two accessor bindings (swarm-scheduler, swarm-api,
 # nobody else) are terraform's (terraform/infra/child_tasks.tf); this script
 # never creates the container, so a typo cannot make an unbound twin.
+#
+# --live-key adds a version to `swarm-live-key`, the PLATFORM key swarm-api
+# mints live-browser tunnel and viewer tickets with and the swarm-live relay
+# verifies them with (docs/design/live-browser.md §3.3). Generated and added
+# exactly as --child-key's is, never shown. The secret and its readers
+# (swarm-api, and the relay's Workload Identity principal once
+# enable_live_browser is applied) are terraform's (terraform/infra/live.tf).
+# A rotation refuses every ticket minted under the old version, which ends
+# every open live session; both ends reconnect with fresh tickets.
 #
 # --subscription stores a Claude SUBSCRIPTION credential (the JSON Claude Code
 # keeps in the keychain: accessToken, refreshToken, expiresAt) in
@@ -74,6 +84,7 @@ READ_STDIN=0
 DISABLE_PREVIOUS=0
 LIST=0
 CHILD_KEY=0
+LIVE_KEY=0
 GITHUB_APP_SLOT=""
 
 while [[ $# -gt 0 ]]; do
@@ -85,9 +96,10 @@ while [[ $# -gt 0 ]]; do
     --disable-previous) DISABLE_PREVIOUS=1; shift ;;
     --list|-l)          LIST=1; shift ;;
     --child-key)        CHILD_KEY=1; shift ;;
+    --live-key)         LIVE_KEY=1; shift ;;
     --github-app)       [[ $# -ge 2 ]] || die "--github-app needs a slot: client-secret or private-key"
                         GITHUB_APP_SLOT="$2"; shift 2 ;;
-    -h|--help)          sed -n '2,61p' "$0"; exit 0 ;;
+    -h|--help)          sed -n '2,71p' "$0"; exit 0 ;;
     # There is deliberately no --name. The secret's name is
     # swarm_common.models.Tenant.secret_name() and nothing else: docs call that
     # spelling the first of three independent mechanisms keeping one tenant's key
@@ -131,6 +143,37 @@ if [[ "${LIST}" -eq 1 ]]; then
   exit 0
 fi
 
+# Adds a generated version to a PLATFORM key terraform created: 48 random bytes
+# from python3's `secrets`, through a private 0600 file that is removed on every
+# exit path, never printed. $1 the secret's name, $2 the terraform file that creates
+# it and its readers, $3 this script's flag for it.
+add_generated_platform_key() {
+  local key_name="$1" tf_file="$2" flag="$3"
+  require_cmd python3
+  step "Secret ${key_name}"
+  local describe_err=""
+  if ! describe_err="$(gcloud secrets describe "${key_name}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${describe_err}"
+    die "${key_name} does not exist in ${PROJECT_ID}. terraform creates it with its accessor bindings (${tf_file}): run 'make apply' first, then ${flag}"
+  fi
+  KEY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
+  chmod 0700 "${KEY_TMP}"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "find '${KEY_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${KEY_TMP}' 2>/dev/null || true" EXIT INT TERM
+  local key_file="${KEY_TMP}/value"
+  ( umask 077; python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(48))' >"${key_file}" )
+  [[ -s "${key_file}" ]] || die "could not generate a key"
+  local added
+  added="$(gcloud secrets versions add "${key_name}" \
+    --project "${PROJECT_ID}" --data-file="${key_file}" --format='value(name)')"
+  ok "added version ${added##*/} of ${key_name}; its value was never printed"
+}
+
+if [[ "${CHILD_KEY}" -eq 1 && "${LIVE_KEY}" -eq 1 ]]; then
+  die "--child-key and --live-key are two keys; add one per run"
+fi
+
 if [[ "${CHILD_KEY}" -eq 1 ]]; then
   # Nothing about a tenant applies, and a value an operator supplies is a value
   # an operator has seen. Refused rather than ignored.
@@ -143,27 +186,25 @@ if [[ "${CHILD_KEY}" -eq 1 ]]; then
   if [[ "${DISABLE_PREVIOUS}" -eq 1 ]]; then
     die "--disable-previous is refused with --child-key: pin the old version as child_key_previous_version, apply, wait one dispatch window (the lease's 300 s dispatch deadline), then disable it by hand"
   fi
-  require_cmd python3
-  CHILD_SECRET="swarm-child-key"
-  step "Secret ${CHILD_SECRET}"
-  CHILD_ERR=""
-  if ! CHILD_ERR="$(gcloud secrets describe "${CHILD_SECRET}" --project "${PROJECT_ID}" \
-       --format='value(name)' 2>&1 >/dev/null)"; then
-    die_if_auth_failure "${CHILD_ERR}"
-    die "${CHILD_SECRET} does not exist in ${PROJECT_ID}. terraform creates it with its two accessor bindings (terraform/infra/child_tasks.tf): run 'make apply' first, then this"
-  fi
-  CHILD_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
-  chmod 0700 "${CHILD_TMP}"
-  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
-  trap "find '${CHILD_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${CHILD_TMP}' 2>/dev/null || true" EXIT INT TERM
-  CHILD_FILE="${CHILD_TMP}/value"
-  ( umask 077; python3 -c 'import secrets, sys; sys.stdout.write(secrets.token_urlsafe(48))' >"${CHILD_FILE}" )
-  [[ -s "${CHILD_FILE}" ]] || die "could not generate a key"
-  CHILD_VERSION="$(gcloud secrets versions add "${CHILD_SECRET}" \
-    --project "${PROJECT_ID}" --data-file="${CHILD_FILE}" --format='value(name)')"
-  ok "added version ${CHILD_VERSION##*/} of ${CHILD_SECRET}; its value was never printed"
+  add_generated_platform_key "swarm-child-key" "terraform/infra/child_tasks.tf" "--child-key"
   dim "swarm-scheduler and swarm-api read it as SWARM_CHILD_KEY once enable_child_tasks = true is applied"
   dim "rotating: set child_key_previous_version to the version this one replaced and apply in the same change"
+  exit 0
+fi
+
+if [[ "${LIVE_KEY}" -eq 1 ]]; then
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}" || "${READ_STDIN}" -eq 1 || "${SUBSCRIPTION}" -eq 1 || -n "${GITHUB_APP_SLOT}" ]]; then
+    die "--live-key takes no --tenant, --provider, --stdin, --from-file, --subscription or --github-app: the value is generated here and never shown"
+  fi
+  # A ticket lives 60 seconds at most (§3.3), so nothing waits on the old
+  # version beyond the sessions it ends; disabling it is still a separate,
+  # deliberate step, after swarm-api and the relay have both restarted onto
+  # the new one.
+  if [[ "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--disable-previous is refused with --live-key: restart swarm-api and the swarm-live relay onto the new version first, then disable the old one by hand"
+  fi
+  add_generated_platform_key "swarm-live-key" "terraform/infra/live.tf" "--live-key"
+  dim "swarm-api and the swarm-live relay read it at run time; the relay only once enable_live_browser = true is applied"
   exit 0
 fi
 
@@ -176,8 +217,8 @@ if [[ -n "${GITHUB_APP_SLOT}" ]]; then
     *) die "--github-app takes client-secret or private-key, not '${GITHUB_APP_SLOT}'" ;;
   esac
   APP_SLOT_ID="swarm-github-app-${GITHUB_APP_SLOT}"
-  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 ]]; then
-    die "--github-app takes only --stdin: no --tenant, --provider, --from-file, --subscription or --child-key. The App's secrets are the platform's, not a tenant's, and a file argument is a path to a plaintext copy"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 ]]; then
+    die "--github-app takes only --stdin: no --tenant, --provider, --from-file, --subscription, --child-key or --live-key. The App's secrets are the platform's, not a tenant's, and a file argument is a path to a plaintext copy"
   fi
   # GitHub keeps both client secrets (and both private keys) valid until you
   # delete the old one there, so a rotation is: add here, let swarm-api read

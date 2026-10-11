@@ -1928,7 +1928,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help="a registered repository's URL, when the pull request names none "
                     "and your tenant registered several (default: $SWARM_REPO, else the "
                     "tenant's only registered repository)")
-    mg.add_argument("--title", default=None, help="the workflow's short name")
+    mg.add_argument(
+        "--title", default=None,
+        help="the workflow's short name (default: \"Merge PR <number>\")",
+    )
     mg.add_argument("--json", action="store_true")
     mg.set_defaults(func=cmd_merge)
 

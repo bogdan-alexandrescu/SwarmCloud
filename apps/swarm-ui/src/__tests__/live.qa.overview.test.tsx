@@ -67,14 +67,15 @@ const CAPACITY: Capacity = { pools: [], runner_profiles: {}, tenant_id: 'eng', g
 const SPEND = { tenantId: 'eng', tasksOnPage: 0, tasksWithAttempts: 0, tasksSampled: 0, failedReads: 0, failedDetail: null, attempts: 0, attemptsWithCost: 0, attemptsWithTokens: 0, costUsd: 0, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, from: null, to: null } as unknown as SpendRollup
 
 /**
- * The live tenant, 61 tasks: 45 newest-created finished or running ones on
+ * The live tenant, 212 tasks: 200 newest-created finished or running ones on
  * the phone's page, then -- created earlier -- one running agent and eleven
  * that failed within the last two hours. Newest-created first, as the API
- * serves it.
+ * serves it. (The live phone read 50 rows; since live QA CH-4 it reads the
+ * same 200 as a wide screen, so the page here is 200 deep.)
  */
 function tenant(): Task[] {
-  const fresh = Array.from({ length: 46 }, (_, i) =>
-    task({ id: `tsk_ok_${i}`, tenant_id: 'eng', state: 'SUCCEEDED', created_at: ago(10 + i), updated_at: ago(5 + i), started_at: ago(9 + i), completed_at: ago(5 + i), attempt_count: 1 }),
+  const fresh = Array.from({ length: 196 }, (_, i) =>
+    task({ id: `tsk_ok_${i}`, tenant_id: 'eng', state: 'SUCCEEDED', created_at: ago(10 + i / 5), updated_at: ago(5 + i / 5), started_at: ago(9 + i / 5), completed_at: ago(5 + i / 5), attempt_count: 1 }),
   )
   const live = Array.from({ length: 4 }, (_, i) =>
     task({ id: `tsk_run_${i}`, tenant_id: 'eng', state: 'RUNNING', created_at: ago(60 + i), updated_at: ago(1), started_at: ago(50 + i), attempt_count: 1 }),
@@ -88,7 +89,7 @@ function tenant(): Task[] {
 
 const STATS: Stats = {
   tenant_id: 'eng',
-  tasks_by_state: { QUEUED: 0, READY: 0, PARKED: 0, LEASED: 0, DISPATCHED: 0, STARTING: 0, RUNNING: 5, SUCCEEDED: 46, FAILED: 11, DEAD_LETTERED: 0, CANCELLED: 0 },
+  tasks_by_state: { QUEUED: 0, READY: 0, PARKED: 0, LEASED: 0, DISPATCHED: 0, STARTING: 0, RUNNING: 5, SUCCEEDED: 196, FAILED: 11, DEAD_LETTERED: 0, CANCELLED: 0 },
   dispatch_paused: false,
   limits: {},
   generated_at: '2026-10-11T10:00:00Z',
@@ -126,7 +127,7 @@ async function mount(): Promise<HTMLElement> {
 
 const text = (el: Element | null): string => (el?.textContent ?? '').replace(/\s+/g, ' ').trim()
 
-describe('OV-1/OV-2: a phone counts the failures its 50 newest do not hold', () => {
+describe('OV-1/OV-2: a phone counts the failures its 200 newest do not hold', () => {
   /**
    * MUTATION: drop the state reads from `loadListPage`, or count Recent
    * failures off `page.tasks` alone.
@@ -135,8 +136,8 @@ describe('OV-1/OV-2: a phone counts the failures its 50 newest do not hold', () 
     media(true)
     serve(tenant())
     const el = await mount()
-    // The control: the phone read the 50-row page, and none of the 11 is on it.
-    expect(api.loadTasks.mock.calls.every((c) => c[0] === 50)).toBe(true)
+    // The control: the phone read the 200-row page, and none of the 11 is on it.
+    expect(api.loadTasks.mock.calls.every((c) => c[0] === 200)).toBe(true)
     const card = el.querySelector('#ov-failures')!
     expect(text(card)).toMatch(/last 24h · 11 failed/)
     expect(text(card)).not.toMatch(/real zero/i)
@@ -168,13 +169,13 @@ describe('OV-1/OV-2: a phone counts the failures its 50 newest do not hold', () 
     expect(text(card)).toMatch(/≥0 failed/)
     expect(text(card)).toMatch(/partial/)
     // And the check is not "clear": the state counts say 11 FAILED.
-    expect(text(el.querySelector('#ov-needs'))).not.toMatch(/none of the 50 most recently created tasks is FAILED/)
+    expect(text(el.querySelector('#ov-needs'))).not.toMatch(/none of the 200 most recently created tasks is FAILED/)
   })
 })
 
 describe('OV-4: Running now lists every agent holding capacity', () => {
   /** MUTATION: draw Running now from `page.tasks` alone. */
-  it('lists the fifth running agent, created before the 50 newest', async () => {
+  it('lists the fifth running agent, created before the 200 newest', async () => {
     media(true)
     serve(tenant())
     const el = await mount()
@@ -231,9 +232,9 @@ describe('OV-6: Finished today says how far back the phone read reaches', () => 
     serve(tenant())
     const el = await mount()
     const done = el.querySelectorAll('#ov-band .ov-lc')[2]!
-    expect(text(done.querySelector('.ov-lc-foot.is-page'))).toMatch(/^of the 50 newest read · created since \d\d:\d\d UTC$/)
+    expect(text(done.querySelector('.ov-lc-foot.is-page'))).toMatch(/^of the 200 newest read · created since \d\d:\d\d UTC$/)
     // The eleven failures are counted from their own read, not dropped: the
-    // phone's page holds 46 finished rows, and with the failed read 57 --
+    // phone's page holds 196 finished rows, and with the failed read 207 --
     // whichever of them ended today in UTC, so a run just after midnight
     // counts what the screen counts.
     const day = new Date().toISOString().slice(0, 10)
