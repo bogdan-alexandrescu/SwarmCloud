@@ -5456,6 +5456,179 @@ export async function dismissOnboarding(dismissed = true): Promise<Result<Onboar
 }
 
 // ---------------------------------------------------------------------------
+// GitHub permissions health (#1086, PERM-2 over PERM-1's read).
+//
+// `GET /v1/forge/permissions` is swarm_api/forgeperms.py. It answers what the
+// platform needs (`required`), what the App requests (`app`), what each org's
+// installation granted (`orgs`) and what each registered repository can do
+// (`repositories`). Every call it makes is a GET and it stores nothing; a fix
+// is always a link to GitHub, which is why the only URLs kept here are
+// github.com pages. `refresh=true` skips the server's 60 s cache.
+//
+// NORMALISE OR DROP, NEVER GUESS. A field of the wrong type is null (not
+// read), never false (refused) or true (granted): a dot or a card that turned
+// green on a malformed answer would hide the one failure this read exists for.
+// ---------------------------------------------------------------------------
+
+/** One unmet requirement: what it is, and in plain words what breaks without it. */
+export interface ForgeGap {
+  /** GitHub's permission name; null on a token's measured refusal, whose grant is not readable. */
+  permission: string | null
+  access: string | null
+  granted: string | null
+  needed_for: string
+  capabilities: string[]
+}
+
+/** A permission the App requests above what an installation accepted. */
+export interface ForgePending {
+  permission: string
+  requested: string
+  granted: string | null
+}
+
+export interface ForgeAppCard {
+  configured: boolean
+  slug: string | null
+  /** Null when `GET /app` was not read; then `error` says why. */
+  missing: ForgeGap[] | null
+  /** Served to platform admins only; null for everyone else. */
+  settings_url: string | null
+  error: string | null
+}
+
+export interface ForgeOrgCard {
+  org: string
+  account_type: string | null
+  installation_id: number
+  missing: ForgeGap[] | null
+  pending: ForgePending[] | null
+  review_url: string | null
+  error: string | null
+}
+
+/** A capability's state: granted, refused (measured), or null (not measured). */
+export type ForgeCapability = boolean | null
+
+/** What reaches a repository: the App's installation, or the tenant's stored git access. */
+export type ForgeReach = 'app' | 'token'
+
+export interface ForgeRepoStatus {
+  repo_id: string
+  repo: string
+  credential: ForgeReach | null
+  installation_id: number | null
+  capabilities: Record<string, ForgeCapability>
+  blocked_by: ForgeGap[]
+  error: string | null
+}
+
+export interface ForgePermissionsDoc {
+  checked_at: string | null
+  required: ForgeGap[]
+  app: ForgeAppCard
+  orgs: ForgeOrgCard[]
+  repositories: ForgeRepoStatus[]
+  cached: boolean
+}
+
+function fpStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function fpObj(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function fpList(v: unknown): Record<string, unknown>[] {
+  return Array.isArray(v) ? v.map(fpObj).filter((o): o is Record<string, unknown> => o !== null) : []
+}
+
+/** A fix link is a github.com page, or nothing: a button to anywhere else is not drawn. */
+function fpGitHubUrl(v: unknown): string | null {
+  const s = fpStr(v)
+  return s !== null && s.startsWith('https://github.com/') ? s : null
+}
+
+function fpGap(o: Record<string, unknown>): ForgeGap | null {
+  const why = fpStr(o.needed_for)
+  if (why === null) return null
+  return {
+    permission: fpStr(o.permission),
+    access: fpStr(o.access),
+    granted: fpStr(o.granted),
+    needed_for: why,
+    capabilities: Array.isArray(o.capabilities) ? o.capabilities.filter((c): c is string => typeof c === 'string') : [],
+  }
+}
+
+function fpGaps(v: unknown): ForgeGap[] | null {
+  if (!Array.isArray(v)) return null
+  return fpList(v).map(fpGap).filter((g): g is ForgeGap => g !== null)
+}
+
+export function normForgePermissions(raw: unknown): ForgePermissionsDoc {
+  const doc = fpObj(raw) ?? {}
+  const app = fpObj(doc.app) ?? {}
+  const orgs: ForgeOrgCard[] = []
+  for (const o of fpList(doc.orgs)) {
+    const org = fpStr(o.org)
+    if (org === null || typeof o.installation_id !== 'number') continue
+    orgs.push({
+      org,
+      account_type: fpStr(o.account_type),
+      installation_id: o.installation_id,
+      missing: fpGaps(o.missing),
+      pending: Array.isArray(o.pending)
+        ? fpList(o.pending).flatMap((p) => {
+            const permission = fpStr(p.permission)
+            const requested = fpStr(p.requested)
+            return permission === null || requested === null ? [] : [{ permission, requested, granted: fpStr(p.granted) }]
+          })
+        : null,
+      review_url: fpGitHubUrl(o.review_url),
+      error: fpStr(o.error),
+    })
+  }
+  const repositories: ForgeRepoStatus[] = []
+  for (const r of fpList(doc.repositories)) {
+    const repoId = fpStr(r.repo_id)
+    const name = fpStr(r.repo)
+    if (repoId === null || name === null) continue
+    const caps: Record<string, ForgeCapability> = {}
+    for (const [k, v] of Object.entries(fpObj(r.capabilities) ?? {})) caps[k] = typeof v === 'boolean' ? v : null
+    repositories.push({
+      repo_id: repoId,
+      repo: name,
+      credential: r.credential === 'app' || r.credential === 'token' ? r.credential : null,
+      installation_id: typeof r.installation_id === 'number' ? r.installation_id : null,
+      capabilities: caps,
+      blocked_by: fpGaps(r.blocked_by) ?? [],
+      error: fpStr(r.error),
+    })
+  }
+  return {
+    checked_at: fpStr(doc.checked_at),
+    required: fpGaps(doc.required) ?? [],
+    app: {
+      configured: app.configured === true,
+      slug: fpStr(app.slug),
+      missing: fpGaps(app.missing),
+      settings_url: fpGitHubUrl(app.settings_url),
+      error: fpStr(app.error),
+    },
+    orgs,
+    repositories,
+    cached: doc.cached === true,
+  }
+}
+
+/** `GET /v1/forge/permissions`: the tenant's GitHub permissions; `refresh` reads GitHub again. */
+export async function loadForgePermissions(refresh = false): Promise<Result<ForgePermissionsDoc>> {
+  return readAs(route('/v1/forge/permissions', {}, refresh ? 'refresh=true' : undefined), normForgePermissions)
+}
+
+// ---------------------------------------------------------------------------
 // Personal workspaces (#847, lane W8; docs/workspaces.md §6.3).
 //
 // The person's routes are swarm_api/routes/workspaces.py and are ALWAYS THE
@@ -5613,4 +5786,386 @@ export async function typedRepoId(tenantId: string, repository: string): Promise
   const digest = await globalThis.crypto.subtle.digest('SHA-256', bytes)
   const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
   return `repo_${hex.slice(0, 16)}`
+}
+
+// ---------------------------------------------------------------------------
+// Schedules and approvals (docs/schedules.md §7.1; the console is §6, lane S7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Today's reported spend of one schedule, in its own zone (§4.3). `partial`
+ * says some attempt never reported a cost, so `reported_usd` is a floor: the
+ * console draws it with `Mark kind="partial"`, never as the whole figure.
+ */
+export interface ScheduleSpendToday {
+  day: string
+  reported_usd: number
+  unreported_attempts: number
+  coverage: 'complete' | 'partial'
+}
+
+/** `last_firing`, the copy the list reads (§1.1). */
+export interface ScheduleLastFiring {
+  firing_id: string
+  slot: string | null
+  outcome: string | null
+  work_ref?: unknown
+  ended_at: string | null
+}
+
+/**
+ * One `schedules/` document as `routes/schedules.py::schedule_to_api` serves
+ * it: the stored fields, and `words`, `tier`, `spend_today` and
+ * `pending_approvals` computed on read. Every map is the caller's or the
+ * type's; the console reads and never writes one in this lane.
+ */
+export interface Schedule {
+  schedule_id: string
+  tenant_id: string
+  name: string
+  type: string
+  scope: { mode: 'repos' | 'all' | 'platform'; repo_ids?: string[] }
+  cron: string
+  timezone: string
+  params: Record<string, unknown>
+  gate: { plan?: string; run?: string; merge?: string; approvers?: string; approval_ttl_hours?: number }
+  budget: { per_run_usd?: number; per_day_usd?: number; max_concurrent?: number }
+  policy: { overlap?: string; catch_up?: string; jitter?: boolean; dry_run?: boolean; max_consecutive_failures?: number }
+  state: 'enabled' | 'paused' | 'auto_paused' | 'disabled'
+  pause: { by?: string; at?: string; reason?: string | null; code?: string | null } | null
+  owner: string
+  created_by: string
+  created_at: string
+  updated_by?: string | null
+  updated_at?: string | null
+  next_run_at: string | null
+  last_firing: ScheduleLastFiring | null
+  consecutive_failures?: number
+  revision: number
+  /** The cron in words, or null when the tick's parser refused it. */
+  words: string | null
+  /** The risk tier (§4.1), or null when the type has left the catalogue. */
+  tier: string | null
+  spend_today: ScheduleSpendToday
+  pending_approvals: number
+}
+
+/** One thing a firing created (§1.2). */
+export interface FiringWork {
+  kind: 'issue_run' | 'task' | 'workflow' | 'api_action'
+  id: string
+  repo_id?: string | null
+  outcome?: string | null
+}
+
+/** One `schedule_firings/` document as `firing_to_api` serves it (§1.2). */
+export interface ScheduleFiring {
+  firing_id: string
+  schedule_id: string
+  type: string
+  slot: string | null
+  fired_at: string | null
+  trigger: 'cron' | 'catch_up' | 'run_now' | 'queued'
+  state: string
+  work: FiringWork[]
+  skip: { code: string; detail?: unknown } | null
+  dry_run: unknown
+  approval_id: string | null
+  outcome: string | null
+  cost: { reported_usd?: number; unreported_attempts?: number } | null
+  ended_at: string | null
+}
+
+/** One `schedule_audit/` entry (§4.8). Never updated after it is written. */
+export interface ScheduleAuditEntry {
+  schedule_id: string
+  action: string
+  by: string
+  at: string
+  detail: Record<string, unknown>
+}
+
+/** One inbox item (§4.5): a stored approval, or a PLANNED run projected into it. */
+export interface ApprovalItem {
+  approval_id: string
+  kind: string
+  subject: { run_id?: string; issue?: string; schedule_id?: string | null; firing_id?: string | null } & Record<string, unknown>
+  summary: string
+  state: string
+  requested_at: string | null
+  expires_at: string | null
+  projected?: boolean
+}
+
+/** `GET /v1/schedules`: the tenant's schedules, by name. */
+export async function loadSchedules(): Promise<Result<{ schedules: Schedule[]; tenant_id: string }>> {
+  // Never `empty`: the list draws its own Absent beside the built-in rows,
+  // which exist whether or not the tenant has made a schedule (§8.3).
+  return read(route('/v1/schedules'), () => false)
+}
+
+/** `GET /v1/schedules/{id}`: one schedule and its last 50 firings, newest first. */
+export async function loadSchedule(scheduleId: string): Promise<Result<{ schedule: Schedule; firings: ScheduleFiring[] }>> {
+  return read(route('/v1/schedules/{id}', { id: scheduleId }), () => false)
+}
+
+/** `GET /v1/schedules/{id}/audit`: the decisions, newest first (§4.8). */
+export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ audit: ScheduleAuditEntry[] }>> {
+  return read(route('/v1/schedules/{id}/audit', { id: scheduleId }), (d) => d.audit.length === 0)
+}
+
+/**
+ * `GET /v1/approvals`: the inbox, oldest first -- the Automate badge and
+ * Overview's "Waiting on you" card. `empty` is a measured nothing-waiting.
+ * The development fixtures serve no inbox, and say so by being empty rather
+ * than by inventing items.
+ */
+export async function loadApprovals(options: { frame?: boolean } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
+  if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
+  // The frame reads this on every page. A 200 without an `approvals` list is
+  // not a measured empty inbox, and passing it on as one would draw "nothing
+  // waiting" over an answer nobody read; it is a failure, as an unreadable
+  // body is.
+  const r = await read<{ approvals: ApprovalItem[] }>(
+    route('/v1/approvals'),
+    (d) => Array.isArray(d.approvals) && d.approvals.length === 0,
+    { frame: options.frame === true },
+  )
+  if (r.status === 'ok' && !Array.isArray(r.data.approvals)) {
+    return {
+      status: 'error',
+      error: { kind: 'server_error', httpStatus: 200, code: null, message: 'The approvals answer carried no list of approvals.' },
+    }
+  }
+  return r
+}
+
+/**
+ * `GET /v1/approvals/{id}`: one item, with what it is decided on -- the run
+ * for a projected plan, and for a merge the head it was checked at and what
+ * its requirements say. `digest` is what an approve sends back: the server
+ * refuses one that no longer matches (409 `merge_changed`, `plan_changed`).
+ */
+export interface ApprovalDetail {
+  approval: ApprovalItem & {
+    digest?: unknown
+    approvers?: unknown
+    hold?: { code?: string; approvers?: string; matched?: string[]; reasons?: string[] } | null
+    decided_by?: string | null
+    decided_at?: string | null
+    reason?: string | null
+  }
+  run?: { id?: string; state?: string; plan?: { summary?: string; steps?: unknown[]; files?: string[] } | null } & Record<string, unknown>
+  merge?: {
+    green_sha?: string | null
+    pull_request?: { number?: number; url?: string } | null
+    requirements_met?: boolean | null
+    requirements_unmet?: string[]
+    files_checked_head?: string | null
+  }
+}
+
+export async function loadApproval(itemId: string): Promise<Result<ApprovalDetail>> {
+  const target = route('/v1/approvals/{id}', { id: itemId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return read(target, () => false)
+}
+
+/**
+ * `POST /v1/approvals/{id}:approve` with the digest the person was shown.
+ * A one-person tenant's own hold answers 403 `hold_approver_required` with
+ * `detail.confirm`, the words to type; the retry sends them as `confirm`.
+ */
+export async function approveApproval(itemId: string, body: { digest: unknown; confirm?: string }): Promise<Result<unknown>> {
+  const target = route('/v1/approvals/{id}:approve', { id: itemId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', body)
+}
+
+/** `POST /v1/approvals/{id}:reject`: any member may, and a reason is required (§4.5). */
+export async function rejectApproval(itemId: string, body: { reason: string }): Promise<Result<unknown>> {
+  const target = route('/v1/approvals/{id}:reject', { id: itemId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', body)
+}
+
+/**
+ * One row of `GET /v1/admin/schedules` (§5.3, `_admin_row`): what an admin
+ * sees of another tenant's schedule. Not its parameters, gate or spec --
+ * those are the tenant's decisions.
+ */
+export interface AdminScheduleRow {
+  schedule_id: string
+  tenant_id: string
+  name: string
+  type: string
+  tier: string | null
+  cron: string
+  timezone: string
+  words: string | null
+  next_run_at: string | null
+  last_outcome: string | null
+  last_firing_at: string | null
+  spend_today: ScheduleSpendToday
+  pending_approvals: number
+  state: Schedule['state']
+  pause: Schedule['pause']
+  owner: string
+}
+
+/** The schedule tick's last hour (§2.10), as the admin list serves it. */
+export interface ScheduleTickHealth {
+  window_minutes: number
+  ticks: number
+  disabled: number
+  errors: number
+  truncated: number
+  fired: number
+  max_lateness_seconds: number | null
+  last: Record<string, unknown> | null
+}
+
+export async function loadAdminSchedules(
+  pageToken: string | null = null,
+): Promise<Result<{ schedules: AdminScheduleRow[]; next_page_token: string | null; tick: ScheduleTickHealth }>> {
+  const target = route('/v1/admin/schedules', {}, pageToken === null ? undefined : new URLSearchParams({ page_token: pageToken }))
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  // Never `empty`: the screen draws its own Absent beside the tick's health.
+  return read(target, () => false)
+}
+
+/** `POST /v1/admin/schedules/{id}:pause|disable|enable` (§5.3), audited as `admin:<email>`. */
+export async function adminScheduleAction(
+  scheduleId: string,
+  action: 'pause' | 'disable' | 'enable',
+  reason?: string,
+): Promise<Result<{ schedule: AdminScheduleRow }>> {
+  const target =
+    action === 'pause'
+      ? route('/v1/admin/schedules/{id}:pause', { id: scheduleId })
+      : action === 'disable'
+        ? route('/v1/admin/schedules/{id}:disable', { id: scheduleId })
+        : route('/v1/admin/schedules/{id}:enable', { id: scheduleId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  const body = action === 'enable' || reason === undefined || reason.trim() === '' ? undefined : { reason: reason.trim() }
+  return (await write(target, 'POST', body)) as Result<{ schedule: AdminScheduleRow }>
+}
+
+/** `POST /v1/admin/tenants/{tenant}/schedules:pause`, typed with the tenant id (§2.11). */
+export async function adminPauseTenantSchedules(tenantId: string, confirm: string, reason?: string): Promise<Result<unknown>> {
+  const target = route('/v1/admin/tenants/{tenant}/schedules:pause', { tenant: tenantId })
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', { confirm, ...(reason === undefined || reason.trim() === '' ? {} : { reason: reason.trim() }) })
+}
+
+/**
+ * One row of `GET /v1/schedule-types` (§7.1, `scheduletypes.describe`): what
+ * the create form offers. The gates and the parameter schema are the type's,
+ * served, so the form never restates the catalogue.
+ */
+export interface ScheduleTypeRow {
+  name: string
+  description: string
+  params_schema: { properties?: Record<string, ParamSchema>; required?: string[] }
+  default_gate: Schedule['gate']
+  floor_gate: Schedule['gate']
+  min_interval_minutes: number
+  budget_caps: Schedule['budget'] | null
+  scopes: string[]
+  /** The scopes this caller may create the type in; absent from an older API. */
+  creatable_scopes?: string[]
+  gate_notes?: string | null
+  available: boolean
+  disabled_reason: string | null
+}
+
+/** The subset of a JSON-schema property the form draws a field for. */
+export interface ParamSchema {
+  type?: string
+  title?: string
+  description?: string
+  default?: unknown
+  enum?: unknown[]
+  minimum?: number
+  maximum?: number
+}
+
+/** `POST /v1/schedules:preview` (§6.3), from the tick's own parser. */
+export interface SchedulePreview {
+  words: string
+  /** ISO 8601 in the schedule's zone, with its offset. */
+  next: string[]
+  min_gap_minutes: number
+  /** Why the type would refuse this cadence, or null. */
+  refusal: unknown
+}
+
+/** The create body (§7.1). Never an image, a command or a resource spec (invariant 10). */
+export interface ScheduleCreateBody {
+  name: string
+  type: string
+  scope: Schedule['scope']
+  cron: string
+  timezone: string
+  params?: Record<string, unknown>
+  gate?: Schedule['gate']
+  budget?: Schedule['budget']
+  policy?: Schedule['policy']
+  state?: 'enabled' | 'paused'
+  client_request_id?: string
+}
+
+/** The edit body: what changed, and the revision it was read at. `type` is not editable. */
+export type ScheduleEditBody = Partial<Omit<ScheduleCreateBody, 'type' | 'state' | 'client_request_id'>> & { revision: number }
+
+function scheduleNotServed<T>(target: ApiRoute): Result<T> {
+  noteFixtureProbe(target, 0, false)
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no schedule routes.' },
+  }
+}
+
+/** A schedule write: the answer's `schedule`, or the refusal as served. */
+async function scheduleWrite(target: ApiRoute, method: 'POST' | 'PATCH', body: unknown): Promise<Result<{ schedule: Schedule }>> {
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return (await write(target, method, body)) as Result<{ schedule: Schedule }>
+}
+
+/** `GET /v1/schedule-types`: the types this caller may create, with their gates. */
+export async function loadScheduleTypes(): Promise<Result<{ types: ScheduleTypeRow[] }>> {
+  if (USE_FIXTURES) return scheduleNotServed(route('/v1/schedule-types'))
+  return read(route('/v1/schedule-types'), () => false)
+}
+
+/**
+ * `POST /v1/schedules:preview`: the words, the next five and the type's
+ * refusal. A bad expression or zone is a 422 with the parser's reason.
+ */
+export async function previewSchedule(body: { cron: string; timezone: string; type?: string }): Promise<Result<{ preview: SchedulePreview }>> {
+  const target = route('/v1/schedules:preview')
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return (await write(target, 'POST', body)) as Result<{ preview: SchedulePreview }>
+}
+
+/** `POST /v1/schedules`: create. A repeated `client_request_id` returns the first one's schedule. */
+export async function createSchedule(body: ScheduleCreateBody): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules'), 'POST', body)
+}
+
+/** `PATCH /v1/schedules/{id}`: a stale revision is 409 `schedule_changed`; `gate.merge: auto` is 422 `use_merge_switch`. */
+export async function updateSchedule(scheduleId: string, body: ScheduleEditBody): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules/{id}', { id: scheduleId }), 'PATCH', body)
+}
+
+/**
+ * `POST /v1/schedules/{id}:merge-mode`, the SD3 switch (§4.2). The server
+ * holds every rule -- the type's floor, the second person, the platform
+ * admin, the one-person tenant's typed name -- and says which one refused.
+ */
+export async function setMergeMode(
+  scheduleId: string,
+  body: { mode: 'approve' | 'auto'; revision: number; confirm?: string },
+): Promise<Result<{ schedule: Schedule }>> {
+  return scheduleWrite(route('/v1/schedules/{id}:merge-mode', { id: scheduleId }), 'POST', body)
 }

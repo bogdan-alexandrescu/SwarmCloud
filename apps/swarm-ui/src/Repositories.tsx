@@ -6,6 +6,8 @@ import { REGISTER, GT_PAGE, TestsMapped, UrFreshPill, UrNavButton, UrRefresh, Ur
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
+import { RepoDot, useRepoStatuses } from './PermissionCards'
+import type { ForgeRepoStatus } from './api'
 import { CountNote, PageHead } from './Shell'
 import { timeAgo } from './types'
 import './styles/repositories.css'
@@ -68,6 +70,8 @@ function RepositoryList({
   children: (meta: ReactNode, actions: ReactNode) => ReactNode
 }) {
   const { state, reload } = useUrRead(loadRepositories, 'list')
+  // GitHub permissions per repository (#1086): one dot each, absent until read.
+  const perms = useRepoStatuses()
   const [failed, setFailed] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const count = state.status === 'ok' || state.status === 'stale' ? state.data.length : state.status === 'empty' ? 0 : null
@@ -128,7 +132,7 @@ function RepositoryList({
         {(repos) => (
           <div className="ur-cards">
             {repos.map((r) => (
-              <RepoCard key={r.repo_id} r={r} go={go} busy={busy === r.repo_id} onIndex={() => void indexNow(r)} />
+              <RepoCard key={r.repo_id} r={r} go={go} busy={busy === r.repo_id} onIndex={() => void indexNow(r)} perm={perms.get(r.repo_id)} />
             ))}
           </div>
         )}
@@ -164,12 +168,21 @@ function lastIndexed(r: RepoRecord): ReactNode {
   )
 }
 
-function RepoCard({ r, go, busy, onIndex }: { r: RepoRecord; go: (to: string) => void; busy: boolean; onIndex: () => void }) {
+function RepoCard({ r, go, busy, onIndex, perm }: { r: RepoRecord; go: (to: string) => void; busy: boolean; onIndex: () => void; perm?: ForgeRepoStatus }) {
   const f = freshness(r.index)
   const head = r.index.head_sha
   const sched = scheduleWords(r.index)
   return (
-    <Card className="ur-card" title={repoName(r)} action={<UrFreshPill f={f} />}>
+    <Card
+      className="ur-card"
+      title={repoName(r)}
+      action={
+        <span className="ur-acts">
+          <RepoDot row={perm} />
+          <UrFreshPill f={f} />
+        </span>
+      }
+    >
       <div className="ur-cmeta">
         <span>
           Default branch {r.default_branch === null ? <Dash why="The default branch was not served" /> : <b>{r.default_branch}</b>}
