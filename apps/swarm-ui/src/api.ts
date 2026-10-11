@@ -3889,6 +3889,14 @@ export interface AccountsBoard {
    * age of what is on screen, which is the part that IS measurable here.
    */
   readAt: number
+  /**
+   * True only on the development fixture's board. Accounts' Holding now and
+   * History reads live in Accounts.tsx and had no fixture, so in development
+   * they always drew a 404 (visual QA V017); the board that came from the
+   * fixture is what tells them to answer from it too, without importing the
+   * build flag into a module the tests mock.
+   */
+  fixture?: true
 }
 
 export async function loadAccountsBoard(): Promise<Result<AccountsBoard>> {
@@ -4314,6 +4322,7 @@ async function fixtureAccountsBoard(): Promise<Result<AccountsBoard>> {
       tenants: null,
       tenantsDetail: 'Admin group membership is required for this endpoint.',
       readAt: Date.now(),
+      fixture: true,
     },
   }
 }

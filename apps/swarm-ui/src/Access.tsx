@@ -10,7 +10,8 @@ import { SETUP } from './Onboarding'
 import { addressToPath } from './paths'
 import { UrCap, UrRadio, UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import type { CapCell } from './RepositoriesData'
-import { PageHead } from './Shell'
+import { FailedPanel, PageHead } from './Shell'
+import { usePhoneTables } from './capacityPoll'
 import type {
   AccessCheck, AccessCheckName, AccessDisableResponse, AccessGrant, AccessMember, AccessMode, AccessOverview, AccessOwner,
   AccessRepository, AccessVerifyFailure, GitHubConnection,
@@ -176,27 +177,74 @@ function AccessRefusal({ error, title, onRetry }: { error: ApiError; title: stri
 // What SwarmCloud may do as you: the owner's decisions, stated (D6, D8, D9)
 // ---------------------------------------------------------------------------
 
+/** The owner's three rules: each one's headline, and the sentences under it. */
+const POLICY_RULES: ReadonlyArray<{ rule: string; head: string; body: ReactNode }> = [
+  {
+    rule: 'D9',
+    head: 'Read means read, and SwarmCloud enforces it.',
+    body: (
+      <>
+        A repository granted Read is cloned and never pushed: submission refuses a task that would push to it, and the
+        worker refuses the push. GitHub itself would let the push through if your account can write there, so the line
+        is held by SwarmCloud, not by GitHub.
+      </>
+    ),
+  },
+  {
+    rule: 'D8',
+    head: 'No workflow changes.',
+    body: (
+      <>
+        The SwarmCloud App asks GitHub for contents, pull requests, issues and checks (read). It does not ask for
+        workflows write, so a change under <code>.github/workflows/</code> cannot be pushed through SwarmCloud.
+      </>
+    ),
+  },
+  {
+    rule: 'D6',
+    head: 'Verifying only reads.',
+    body: (
+      <>
+        Clone reads the upload-pack advertisement, Push the receive-pack advertisement and your push permission, Pull
+        request the installation&apos;s pull-request permission. Nothing is written to GitHub unless you ask: Push test,
+        on a write grant, creates one branch named <code>swarmcloud/onboarding-check-&lt;nonce&gt;</code> and deletes it
+        again.
+      </>
+    ),
+  },
+]
+
+/**
+ * ON A PHONE THE RULES OPEN FOLDED (visual QA V122): each is its headline, a
+ * summary that opens its sentences, so the card is three lines rather than
+ * the first screen of every visit. Wider screens draw the whole list.
+ */
 export function AccessPolicy() {
+  const phone = usePhoneTables()
   return (
     <Card className="ac-policy" title="What SwarmCloud may do as you" level={2}>
-      <ul className="ac-rules">
-        <li data-rule="D9">
-          <b>Read means read, and SwarmCloud enforces it.</b> A repository granted Read is cloned and never pushed:
-          submission refuses a task that would push to it, and the worker refuses the push. GitHub itself would let
-          the push through if your account can write there, so the line is held by SwarmCloud, not by GitHub.
-        </li>
-        <li data-rule="D8">
-          <b>No workflow changes.</b> The SwarmCloud App asks GitHub for contents, pull requests, issues and checks
-          (read). It does not ask for workflows write, so a change under <code>.github/workflows/</code> cannot be
-          pushed through SwarmCloud.
-        </li>
-        <li data-rule="D6">
-          <b>Verifying only reads.</b> Clone reads the upload-pack advertisement, Push the receive-pack advertisement
-          and your push permission, Pull request the installation's pull-request permission. Nothing is written to
-          GitHub unless you ask: Push test, on a write grant, creates one branch named{' '}
-          <code>swarmcloud/onboarding-check-&lt;nonce&gt;</code> and deletes it again.
-        </li>
-      </ul>
+      {phone ? (
+        <ul className="ac-rules is-folded">
+          {POLICY_RULES.map((r) => (
+            <li key={r.rule} data-rule={r.rule}>
+              <details>
+                <summary>
+                  <b>{r.head}</b>
+                </summary>
+                <p>{r.body}</p>
+              </details>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <ul className="ac-rules">
+          {POLICY_RULES.map((r) => (
+            <li key={r.rule} data-rule={r.rule}>
+              <b>{r.head}</b> {r.body}
+            </li>
+          ))}
+        </ul>
+      )}
     </Card>
   )
 }
@@ -1152,8 +1200,8 @@ function Choose({ overview, reloadOverview }: { overview: AccessOverview; reload
       }
     >
       <p className="ur-hint ac-authz">
-        Authorized is not installed: Connect lets SwarmCloud act as you (GitHub › Authorized GitHub Apps); installing it on
-        an account or org lets it reach that owner's repositories (Installed GitHub Apps).
+        Connecting and installing are two steps. Connect lets SwarmCloud act as you (GitHub › Authorized GitHub Apps);
+        installing it on an account or org lets it reach that owner&apos;s repositories (Installed GitHub Apps).
       </p>
       <UrRegion state={owners.state} route="GET /v1/access/orgs" what="The owners your connection reaches" onRetry={owners.reload} plural lines={3} reading={ASKING_GITHUB}>
         {(o) => (
@@ -1239,25 +1287,46 @@ function MemberRow({ m }: { m: AccessMember }) {
   )
 }
 
+/**
+ * A 403 on the members view is the admin gate, not a failure (visual QA V047).
+ * The API refuses a non-admin with its generic `forbidden` code ("the
+ * tenant's members view is for admins"), which the client classifies as an
+ * unrecognised refusal and the region drew red, with a Try again that can
+ * never succeed. On this one admin-only route a refusal means exactly that,
+ * so it is drawn as the admin gate. A tenant or domain refusal keeps its own.
+ */
+function membersGated(state: Result<unknown>): ApiError | null {
+  if (state.status !== 'error') return null
+  const e = state.error
+  if (e.kind === 'admin_required') return e
+  if (e.kind === 'forbidden' && e.httpStatus === 403) return { ...e, kind: 'admin_required' }
+  return null
+}
+
 function Members() {
   const members = useUrRead(loadAccessMembers, 'access-members')
+  const gate = membersGated(members.state)
   return (
     <Card className="ac-members" title="Members">
-      <UrRegion state={members.state} route="GET /v1/access/members" what="The tenant's members" onRetry={members.reload} plural lines={4}>
-        {(d) =>
-          d.members.length === 0 ? (
-            <EmptyState kind="empty" heading="No member has started">
-              Nobody in tenant {d.tenant_id} has connected GitHub or chosen a repository yet.
-            </EmptyState>
-          ) : (
-            <ul className="ac-grid" aria-label={`Members of ${d.tenant_id}`}>
-              {d.members.map((m) => (
-                <MemberRow key={m.user} m={m} />
-              ))}
-            </ul>
-          )
-        }
-      </UrRegion>
+      {gate !== null ? (
+        <FailedPanel error={gate} onRetry={members.reload} />
+      ) : (
+        <UrRegion state={members.state} route="GET /v1/access/members" what="The tenant's members" onRetry={members.reload} plural lines={4}>
+          {(d) =>
+            d.members.length === 0 ? (
+              <EmptyState kind="empty" heading="No member has started">
+                Nobody in tenant {d.tenant_id} has connected GitHub or chosen a repository yet.
+              </EmptyState>
+            ) : (
+              <ul className="ac-grid" aria-label={`Members of ${d.tenant_id}`}>
+                {d.members.map((m) => (
+                  <MemberRow key={m.user} m={m} />
+                ))}
+              </ul>
+            )
+          }
+        </UrRegion>
+      )}
       <p className="ur-hint">
         Each member connects as themselves. An admin sees states and names, never a value, and cannot reconnect for
         someone else.
