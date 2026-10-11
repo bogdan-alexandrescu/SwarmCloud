@@ -78,7 +78,7 @@ const ME: Me = {
     credentials: ['anthropic'],
     service_account: null,
     gcs_prefix: 'tenants/u-bogdan',
-    namespace: 'swarm-u-bogdan',
+    namespace: 'swarm-tenant-u-bogdan',
   },
   principal: { email: 'someone@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: false },
   environment: 'dev',

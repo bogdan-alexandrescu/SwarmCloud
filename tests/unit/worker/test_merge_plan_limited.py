@@ -133,6 +133,7 @@ def test_a_plan_limited_403_on_a_pull_request_that_does_not_merge_cleanly_refuse
     world = MergeWorld(tmp_path)
     _plan_limited(world)
     world.pr.update(mergeable=False, mergeable_state="dirty")
+    world.spend_conflict_rounds()
     outcome = merge.run_merge(world.context())
     assert outcome.summary["refusal"]["code"] == "merge_conflict", outcome.summary
     assert world.merge_calls() == []
