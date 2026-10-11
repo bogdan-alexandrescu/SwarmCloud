@@ -989,6 +989,22 @@ export function useMoreRight<T extends HTMLElement>(): { ref: Ref<T>; on: boolea
   return { ref, on }
 }
 
+/**
+ * A sideways scroller that says when columns are off its right edge: the
+ * `useMoreRight` cue, mounted WITH its element. A table drawn only once its
+ * rows land (an Outcomes card, the workflow list) cannot take the hook from
+ * the screen above it -- the hook measures on mount, when there was no
+ * element yet -- so it takes this instead (VQA V109).
+ */
+export function MoreRight({ className, children }: { className: string; children: ReactNode }) {
+  const more = useMoreRight<HTMLDivElement>()
+  return (
+    <div ref={more.ref} className={more.on ? `${className} has-more` : className}>
+      {children}
+    </div>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // The inspector and its two scrubbers
 // ---------------------------------------------------------------------------
