@@ -201,3 +201,43 @@
 .sc-next { margin: 4px 0 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .sc-next .sc-sub { display: inline; }
 .sc-switch { display: grid; gap: 6px; justify-items: start; }
+
+/* ==== EDIT A: TEMPLATE TILES AND THE SIDE COLUMN (owner decisions 2026-10-11) ====
+   Owned by the create-and-edit lane; the rest of this sheet is another lane's.
+   §6.2 Edit A, docs/web-ui/mockups/schedules.html #edit-a: the type is picked
+   from tiles, an unavailable type greyed with its reason; the cron's words,
+   the next five and the template card sit in a 360px column beside the
+   fields on a desktop, and under them below 1024px, where 360px would leave
+   the fields too narrow to read. */
+.sc-room { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.sc-room[data-full='true'] { color: var(--s-warn); font-weight: 600; }
+.sc-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 8px; }
+.sc-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0;
+  padding: 8px 10px; text-align: left; cursor: pointer;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); color: var(--text);
+  font: inherit;
+}
+.sc-tile > b { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.sc-tile > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.sc-tile[aria-checked='true'] { border-color: var(--sk-ac); background: var(--sk-acs); }
+.sc-tile:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+/* Greyed by a dashed edge and the dim ink, never by opacity: the reason on the
+   tile is the one thing it says, so it keeps its contrast. */
+.sc-tile.is-off { cursor: not-allowed; border-style: dashed; background: none; color: var(--text-dim); }
+.sc-edit-cols { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; min-width: 0; }
+.sc-edit-main { display: grid; gap: 8px; min-width: 0; }
+.sc-edit-side { display: grid; gap: 12px; min-width: 0; position: sticky; top: 0; }
+.sc-edit-side > [data-testid='sc-preview'], .sc-tpl-card {
+  display: grid; gap: 6px; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface);
+}
+.sc-tpl-name { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.sc-tpl-facts { display: grid; gap: 4px; margin: 0; }
+.sc-tpl-facts > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+.sc-tpl-facts dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.sc-tpl-facts dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+@media (max-width: 1023px) {
+  .sc-edit-cols { grid-template-columns: minmax(0, 1fr); }
+  .sc-edit-side { position: static; }
+}
