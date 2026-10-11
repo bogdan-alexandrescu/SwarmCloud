@@ -41,7 +41,7 @@ THE POLL (lane RI4, §3.3). `RepoIndex.poll` is `POST /v1/admin/repositories/
 poll`, called every five minutes per tenant by the `repo_index_poll` Cloud
 Scheduler job. Per registration: settle, read the head with the last ETag
 (`read_head_if_changed`; a 304 costs no rate limit), store it, and queue a
-run when `poll_trigger` says `change` or `interval`. The queueing is `_start`,
+run when `poll_decision` says `change` or `interval`. The queueing is `_start`,
 the same claim "Index now" takes, so the poll and a person can never both
 submit, and a run in flight turns a newer head into the pending one. A run is
 submitted as the registration's creator in its tenant, never as the
@@ -966,35 +966,70 @@ def interval_due(
     return base is None or now - base >= timedelta(hours=hours)
 
 
-def poll_trigger(
+@dataclass(frozen=True)
+class PollDecision:
+    """What the poll decided for one head: the trigger it queues a run with
+    (`change` or `interval`), or None and the reason it queues nothing.
+
+    `reason` is the trigger when there is one, otherwise one of
+    `no_head`, `current` (the head IS the built index and the interval is not
+    due), `throttled` (the head moved but `min_change_interval_minutes` has not
+    passed since the newest run was queued) or `on_change_off`. It is stored on
+    the registration as `index.last_poll` (live QA AUT-7), so "why is the index
+    behind?" is answered by the document, not by a log search.
+    """
+
+    trigger: str | None
+    reason: str
+
+
+def poll_decision(
     index: Mapping[str, Any], head: str | None, *, newest_run: Mapping[str, Any] | None,
     created_at: Any, now: datetime,
-) -> str | None:
-    """`change`, `interval` or None: whether the poll queues a run of `head` (§3.3).
+) -> PollDecision:
+    """Whether the poll queues a run of `head`, and why (§3.3). Pure.
 
-    CHANGE when `on_change` is `poll`, the head is neither the promoted index
-    nor the commit the newest run was given (so a head is indexed once, and a
-    run that failed on it is retried by the interval, not every tick), and
-    `min_change_interval_minutes` has passed since that run was queued.
-    INTERVAL when `interval_due`. Pure: the caller settles and reads first.
+    CHANGE when `on_change` is `poll`, the head is not the BUILT index
+    (`current_sha`, what promotion recorded), and `min_change_interval_minutes`
+    has passed since the newest run was queued. Only the built index counts:
+    a run that was given this head and then failed, was refused at promotion
+    or went missing built nothing, so the head is still unbuilt and is queued
+    again once the throttle allows. Live QA AUT-7 (2026-10-11): the rule
+    used to also skip a head equal to the newest run's commit, so one failed
+    run on a head left the index behind until the 24-hour interval, while
+    every poll read the head (a 304, by then) and queued nothing. Whether the
+    read was a 304 plays no part here: a 304 stands for the head last read,
+    which is compared like any other.
+
+    INTERVAL when `interval_due`. The caller settles and reads first, and
+    keeps a run in flight from being duplicated.
     """
     if not head:
-        return None
-    last_sha = (newest_run or {}).get("commit_sha")
-    last_queued = _parse_time((newest_run or {}).get("queued_at"))
-    if (
-        index.get("on_change", ON_CHANGE_DEFAULT) == "poll"
-        and head != index.get("current_sha")
-        and head != last_sha
-    ):
+        return PollDecision(None, "no_head")
+    behind = head != index.get("current_sha")
+    on_change = index.get("on_change", ON_CHANGE_DEFAULT) == "poll"
+    if on_change and behind:
+        last_queued = _parse_time((newest_run or {}).get("queued_at"))
         minimum = timedelta(minutes=_int_or(
             index.get("min_change_interval_minutes"), MIN_CHANGE_INTERVAL_DEFAULT
         ))
         if last_queued is None or now - last_queued >= minimum:
-            return "change"
+            return PollDecision("change", "change")
     if interval_due(index, newest_run=newest_run, created_at=created_at, now=now):
-        return "interval"
-    return None
+        return PollDecision("interval", "interval")
+    if not behind:
+        return PollDecision(None, "current")
+    return PollDecision(None, "throttled" if on_change else "on_change_off")
+
+
+def poll_trigger(
+    index: Mapping[str, Any], head: str | None, *, newest_run: Mapping[str, Any] | None,
+    created_at: Any, now: datetime,
+) -> str | None:
+    """`change`, `interval` or None: `poll_decision`'s trigger alone."""
+    return poll_decision(
+        index, head, newest_run=newest_run, created_at=created_at, now=now
+    ).trigger
 
 
 @dataclass
@@ -1009,6 +1044,10 @@ class PollReport:
     skipped: int = 0
     truncated: bool = False
     failures: list[dict[str, str]] = field(default_factory=list)
+    #: Why the registrations that queued nothing did not, by reason
+    #: (`PollDecision.reason`, `paused`, `in_flight`): a tick that read every
+    #: head and built none says why, not just `submitted: 0` (AUT-7).
+    held: dict[str, int] = field(default_factory=dict)
     #: The pass's git token re-verification (git-tokens.md §5.3,
     #: `GitTokens.reverify`), or `{"error": <type>}` when it raised.
     git_tokens: dict[str, Any] = field(default_factory=dict)
@@ -1018,7 +1057,8 @@ class PollReport:
             "registrations": self.registrations, "read": self.read,
             "not_modified": self.not_modified, "submitted": self.submitted,
             "coalesced": self.coalesced, "skipped": self.skipped,
-            "truncated": self.truncated, "git_tokens": dict(self.git_tokens),
+            "truncated": self.truncated, "held": dict(self.held),
+            "git_tokens": dict(self.git_tokens),
         }
 
 
@@ -2758,6 +2798,8 @@ class RepoIndex:
                 else:
                     continue
                 report.failures.append({"repo_id": record["repo_id"], "code": code})
+                self._record_poll(tenant_id, record["repo_id"], head=None,
+                                  outcome="failed", reason=code)
                 log.info("repo index poll tenant=%s repo_id=%s outcome=%s",
                          tenant_id, record["repo_id"], code)
             if report.truncated or token is None:
@@ -2788,16 +2830,34 @@ class RepoIndex:
         owner_auth: Callable[[Mapping[str, Any]], AuthContext], report: PollReport,
     ) -> None:
         repo_id = record["repo_id"]
+        outcome, reason, head = self._decide_one(tenant_id, record, tenant, owner_auth, report)
+        if outcome == "held":
+            report.held[reason] = report.held.get(reason, 0) + 1
+        self._record_poll(tenant_id, repo_id, head=head, outcome=outcome, reason=reason)
+        log.info("repo index poll tenant=%s repo_id=%s head=%s outcome=%s reason=%s",
+                 tenant_id, repo_id, (head or "-")[:12], outcome, reason)
+
+    def _decide_one(
+        self, tenant_id: str, record: Mapping[str, Any], tenant: Tenant,
+        owner_auth: Callable[[Mapping[str, Any]], AuthContext], report: PollReport,
+    ) -> tuple[str, str, str | None]:
+        """Settle, read, decide and queue for one registration: (outcome, reason, head).
+
+        `outcome` is `queued` (a run was submitted), `pending` (a run is in
+        flight and this head is recorded to follow it) or `held` (nothing was
+        queued, and `reason` says why).
+        """
+        repo_id = record["repo_id"]
         # Settle first: a run that ended since the last tick is promoted and
         # frees the slot, so the decision below reads what is really in flight.
         self.settle(tenant_id, repo_id, tenant=tenant)
         record = self.registrations.get(tenant_id, repo_id)
         index: Mapping[str, Any] = record.get("index") or {}
+        head = index.get("head_sha")
         if index.get("paused"):
             report.skipped += 1
-            return
+            return "held", "paused", head
         newest = next(iter(self.runs(tenant_id, repo_id, limit=1)), None)
-        head = index.get("head_sha")
         reads = index.get("on_change", ON_CHANGE_DEFAULT) == "poll" or interval_due(
             index, newest_run=newest, created_at=record.get("created_at"), now=self._now()
         )
@@ -2810,6 +2870,9 @@ class RepoIndex:
             self._record_head(tenant_id, repo_id, read)
             report.read += 1
             report.not_modified += int(read.not_modified)
+            # A 304 stands for the head last read: it is decided on below
+            # exactly as a 200 is, against the built index, so a head read
+            # once and not built is not hidden by every later 304 (AUT-7).
             head = read.sha
             if not read.not_modified:
                 # §5.1: `behind_by` is read when the head is polled.
@@ -2817,9 +2880,10 @@ class RepoIndex:
             record = self.registrations.get(tenant_id, repo_id)
             index = record.get("index") or {}
         now = self._now()
-        trigger = poll_trigger(
+        decision = poll_decision(
             index, head, newest_run=newest, created_at=record.get("created_at"), now=now
         )
+        trigger = decision.trigger
         in_flight = index.get("in_flight_task_id")
         busy = bool(in_flight) and not _claim_expired(index, now)
         if busy:
@@ -2829,24 +2893,24 @@ class RepoIndex:
             # counts from that run's queueing, so a run still queued after
             # `interval_hours` (it is priority -50, behind all tenant work)
             # would otherwise be followed by a second run of the same commit.
-            if trigger is None or head in (
-                index.get("pending_sha"), self._in_flight_sha(in_flight, newest)
-            ):
-                return
+            if trigger is None:
+                return "held", decision.reason, head
+            if head in (index.get("pending_sha"), self._in_flight_sha(in_flight, newest)):
+                return "held", "in_flight", head
             self._start(
                 owner_auth(record), tenant_id, record, head, kind="incremental", trigger=trigger,
                 requested_by=POLL_REQUESTED_BY, head_read=False, from_pending=False,
             )
             report.coalesced += 1
-            return
+            return "pending", trigger, head
         pending = index.get("pending_sha")
         if not trigger and pending and pending == index.get("current_sha"):
             # The pending head is already the promoted index: nothing to run.
             self._drop_pending(tenant_id, repo_id, pending)
-            return
+            return "held", "current", head
         sha = head if trigger else pending
         if not sha:
-            return
+            return "held", decision.reason, head
         # A claim clears the pending head: a newer head supersedes it, and
         # the pending one itself is this run when nothing newer triggered.
         _run, coalesced = self._start(
@@ -2858,9 +2922,33 @@ class RepoIndex:
         )
         if coalesced:
             report.coalesced += 1
-        else:
-            report.submitted += 1
+            return "pending", trigger or "pending", head
+        report.submitted += 1
+        return "queued", trigger or "pending", head
 
+    def _record_poll(self, tenant_id: str, repo_id: str, *, head: str | None,
+                     outcome: str, reason: str) -> None:
+        """Store this tick's decision as `index.last_poll`: when, which head,
+        what was done and why. Never fails the poll: it is a reading."""
+        ref = self._repo_ref(repo_id)
+        entry = {"at": self._now(), "head_sha": head, "outcome": outcome, "reason": reason}
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                return
+            index = dict(data.get("index") or {})
+            index["last_poll"] = entry
+            txn.update(ref, {"index": index})
+
+        try:
+            _apply(transaction)
+        except Exception as failed:
+            log.warning("repo index poll tenant=%s repo_id=%s last_poll=%s",
+                        tenant_id, repo_id, type(failed).__name__)
 
     def _in_flight_sha(self, in_flight: Any, newest: Mapping[str, Any] | None) -> str | None:
         """The commit the run holding the in-flight slot was given, if known."""
@@ -2910,7 +2998,7 @@ __all__ = [
     "PollReport", "RUNS_COLLECTION", "RepoIndex",
     "RepoIndexSpec", "SCHEMA", "SelectRequest", "check_run_kind", "content_digest", "coverage", "freshness",
     "graph_destination", "indexer_prompt", "indexer_task", "interval_due", "parse_index",
-    "poll_trigger",
+    "PollDecision", "poll_decision", "poll_trigger",
     "promotion_decision", "read_head", "read_head_if_changed", "read_relation", "render_markdown", "run_to_api", "select_tests",
     "staleness_line", "version_to_api",
     "TEST_MAP_PAGE_DEFAULT", "TEST_MAP_PAGE_MAX", "history_depth", "page_test_map",

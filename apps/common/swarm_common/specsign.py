@@ -50,6 +50,13 @@ _FORMAT_2_FIELDS = ("parent_task_id", "parent_attempt_id")
 #: signed without one must fail verification, not slip outside the bytes.
 _FORMAT_3_FIELDS = ("forge_credential", "forge_access")
 
+#: The top-level fields every writer stores as integers (`Task`'s types).
+#: JCS gives 3600 and 3600.0 the same bytes, so without this a rewrite of one
+#: to the other keeps the signature valid. Checked at every format: it removes
+#: a canonical form from a value no signer writes, and changes the bytes of
+#: none that has one, so it is not a new format (contract request 58).
+_INTEGER_FIELDS = ("timeout_seconds", "max_attempts")
+
 
 def signing_format(doc: Mapping[str, Any]) -> int:
     """The format a signer signs `doc` at: the oldest one that covers every field it sets.
@@ -90,6 +97,13 @@ SIGNED_METADATA_KEYS = ("dispatch", "input_from", "expected_outputs")
 #: JCS numbers are IEEE doubles, so an integer is exact only within this bound.
 MAX_SAFE_INTEGER = 2**53 - 1
 
+#: How deep `_encode` follows lists and maps. Firestore refuses a document
+#: nested deeper than 20 levels and the spec puts a stored field one level
+#: down, so 32 refuses nothing Firestore can hold, and stays far inside
+#: Python's recursion limit -- which `_encode` reached as `RecursionError`,
+#: not `SpecNotCanonical`, before this bound (contract request 59).
+MAX_DEPTH = 32
+
 
 class SpecNotCanonical(ValueError):
     """A value in the spec has no canonical form (see `jcs`)."""
@@ -122,6 +136,10 @@ def canonical_step_spec(
         for key in _FORMAT_3_FIELDS:
             if doc.get(key) is not None:
                 raise SpecNotCanonical(f"{key} is set, and format {spec_format} does not cover it")
+    for key in _INTEGER_FIELDS:
+        value = doc.get(key)
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int)):
+            raise SpecNotCanonical(f"{key} is a {type(value).__name__}, not an integer")
     spec = {
         "purpose": SPEC_PURPOSE,
         "format": spec_format,
@@ -158,10 +176,10 @@ def spec_digest(canonical: bytes) -> bytes:
 
 def jcs(value: Any) -> bytes:
     """RFC 8785 serialisation of `value`, as UTF-8 bytes."""
-    return _encode(value, "$").encode("utf-8")
+    return _encode(value, "$", 0).encode("utf-8")
 
 
-def _encode(value: Any, path: str) -> str:
+def _encode(value: Any, path: str, depth: int) -> str:
     if value is None:
         return "null"
     if value is True:
@@ -177,8 +195,14 @@ def _encode(value: Any, path: str) -> str:
     if isinstance(value, str):
         return _string(value, path)
     if isinstance(value, (list, tuple)):
-        return "[" + ",".join(_encode(v, f"{path}[{i}]") for i, v in enumerate(value)) + "]"
+        if depth >= MAX_DEPTH:
+            raise SpecNotCanonical(f"{path} is nested deeper than {MAX_DEPTH} levels")
+        return "[" + ",".join(
+            _encode(v, f"{path}[{i}]", depth + 1) for i, v in enumerate(value)
+        ) + "]"
     if isinstance(value, Mapping):
+        if depth >= MAX_DEPTH:
+            raise SpecNotCanonical(f"{path} is nested deeper than {MAX_DEPTH} levels")
         items = []
         for key in value:
             if not isinstance(key, str):
@@ -189,7 +213,8 @@ def _encode(value: Any, path: str) -> str:
         # names -- not their escaped form, which would put "\r" after "1".
         items.sort(key=lambda k: k.encode("utf-16-be"))
         return "{" + ",".join(
-            _string(k, path) + ":" + _encode(value[k], f"{path}.{k}") for k in items
+            _string(k, path) + ":" + _encode(value[k], f"{path}.{k}", depth + 1)
+            for k in items
         ) + "}"
     raise SpecNotCanonical(f"{path} is a {type(value).__name__}, which JSON has no form for")
 
