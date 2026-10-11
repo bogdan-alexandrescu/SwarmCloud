@@ -169,12 +169,15 @@ describe('G1-07: on a phone, Recent failures comes before Headroom and the pools
     host.remove()
   })
 
-  // MUTATION: drop the page's phone padding-bottom.
-  it('leaves room under the last card for the sticky Top pill', () => {
+  // VISUAL QA V009 (2026-10-11) REVERSED G1-07's 56px. `↑ Top` is an in-flow
+  // sticky child of the scroller after the page (Spine.tsx), so at the foot it
+  // already sits below the last card; 56px more was a second blank band
+  // (~115px measured at 400x800). The scroller reserves the room, once.
+  // MUTATION: put a phone-only padding-bottom back on `.ov-page`.
+  it('reserves no second room of its own for the Top pill at 390', () => {
     const host = frame()
-    const pad = painted(host.querySelector('.ov-page')!, 'padding-bottom', PHONE)
-    expect(pad, 'no padding-bottom at 390').toMatch(/^\d+px$/)
-    expect(parseInt(pad!, 10)).toBeGreaterThanOrEqual(56)
+    const page = host.querySelector('.ov-page')!
+    expect(painted(page, 'padding-bottom', PHONE)).toBe(painted(page, 'padding-bottom', TABLET))
     host.remove()
   })
 

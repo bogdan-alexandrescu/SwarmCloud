@@ -63,6 +63,13 @@ unset, or not a current member, is SKIPPED: nothing is read or started, the
 reason is logged and returned as `tenant_skipped`, and it never falls back
 to the registrant.
 
+THE `issue-sweep` SCHEDULE TYPE RUNS THIS MODULE'S SELECTION (docs/schedules.md
+§8.1 step 1, lane S6). `collect_candidates` is the read and the filter, and
+`swarm_api/schedtypes/issue_sweep.py` calls it with a schedule's parameters
+where this route passes the tenant document's settings; `skip_reason`'s
+`labels_include` and `not_ready_cooldown` are that type's, and default to
+this route's own rules. The route and its settings stay until §8.1 step 4.
+
 INVARIANTS. The sweep itself creates no infrastructure demand: a planner is an
 ordinary task, admitted like any other (invariants 1-3), and a run waiting on
 its planner or its verdict is a Firestore document. Its reads and writes are
@@ -278,14 +285,19 @@ class Candidate:
     snapshot: Mapping[str, Any]
 
 
+def _last_write(run: IssueRun) -> datetime:
+    """When `run` last changed or last wrote to its issue, whichever is later."""
+    seen = run.updated_at
+    if run.last_writeback_at is not None and run.last_writeback_at > seen:
+        seen = run.last_writeback_at
+    return seen
+
+
 def _changed_since(issue: SweepIssue, run: IssueRun) -> bool:
     """Whether the issue was edited or commented on after `run` last wrote to it."""
     if issue.updated_at is None:
         return False  # GitHub did not say: not proof of a change
-    seen = run.updated_at
-    if run.last_writeback_at is not None and run.last_writeback_at > seen:
-        seen = run.last_writeback_at
-    return issue.updated_at > seen + WRITEBACK_SLACK
+    return issue.updated_at > _last_write(run) + WRITEBACK_SLACK
 
 
 def skip_reason(
@@ -296,6 +308,9 @@ def skip_reason(
     live: Mapping[tuple[str, int], IssueRun],
     claimed: Mapping[int, int],
     last_run: Callable[[int], IssueRun | None],
+    labels_include: frozenset[str] = frozenset(),
+    not_ready_cooldown: timedelta | None = None,
+    now: datetime | None = None,
 ) -> str | None:
     """Why the sweep does NOT start a run for `issue`, or None: it is a candidate.
 
@@ -303,6 +318,14 @@ def skip_reason(
     reads Firestore, so it is asked only of an issue every other rule let
     through. `live` is keyed by (lower-cased `owner/repo`, number); `claimed`
     maps an issue number to the open pull request that claims it.
+
+    The last two keywords are the `issue-sweep` schedule type's (docs/
+    schedules.md §3.1), and their defaults are this route's own rules:
+    `labels_include` (lower-cased; empty is any label) passes over an issue
+    carrying none of them, and `not_ready_cooldown` ends the
+    `not_ready_unchanged` skip once that long has passed since the run last
+    wrote, so an unchanged NOT_READY issue is planned again; None keeps it
+    skipped until the issue changes.
     """
     association = (issue.author_association or "").strip().upper()
     if association not in TRUSTED_AUTHORS:
@@ -316,6 +339,8 @@ def skip_reason(
     excluded = sorted(labels & set(config.exclude_labels))
     if excluded:
         return f"excluded: label {excluded[0]}"
+    if labels_include and not labels & labels_include:
+        return "not_included: no listed label"
     running = live.get((repository.lower(), issue.number))
     if running is not None:
         return f"live_run: {running.id}"
@@ -325,6 +350,9 @@ def skip_reason(
     if previous is not None and previous.state in TERMINAL_RUN_STATES:
         if not _changed_since(issue, previous):
             if previous.state == RunState.NOT_READY:
+                if (not_ready_cooldown is not None and now is not None
+                        and now - _last_write(previous) >= not_ready_cooldown):
+                    return None
                 return f"not_ready_unchanged: {previous.id}"
             return f"unchanged_since_run: {previous.id} ({previous.state.value})"
     return None
@@ -376,6 +404,93 @@ class SweepReport:
             "truncated": self.truncated,
             "tenant_skipped": self.tenant_skipped,
         }
+
+
+def collect_candidates(
+    ctx: Any,
+    tenant: Tenant,
+    tenant_id: str,
+    registrations: list[Mapping[str, Any]],
+    *,
+    config: SweepConfig,
+    report: SweepReport,
+    runs: IssueRuns,
+    live: Mapping[tuple[str, int], IssueRun],
+    clock: Callable[[], float],
+    started_at: float,
+    labels_include: frozenset[str] = frozenset(),
+    not_ready_cooldown: timedelta | None = None,
+) -> list[Candidate]:
+    """Read each registration's open issues and pull requests, filter them by
+    `skip_reason`, and return the candidates oldest-updated first.
+
+    The read and the filter of one sweep, and nothing else: it starts no run
+    and writes nothing, to Firestore or to GitHub. This route's sweep and the
+    `issue-sweep` and `issue-plan-only` schedule types (`swarm_api/schedtypes/`,
+    docs/schedules.md §8.1 step 1) both call it, so the readiness rules exist
+    once. Skips and per-repository failures go on `report`; running past
+    `SWEEP_BUDGET_SECONDS` from `started_at` sets `report.truncated`.
+    """
+    now = ctx.now()
+    candidates: list[Candidate] = []
+    for registration in registrations:
+        if clock() - started_at > SWEEP_BUDGET_SECONDS:
+            report.truncated = True
+            break
+        repository = f"{registration.get('owner')}/{registration.get('repo')}"
+        if registration.get("archived"):
+            report.failures.append({"repository": repository, "error": "archived"})
+            continue
+        try:
+            listing, snapshot = _read(ctx, tenant, registration)
+        except ForgeReadError as refused:
+            log.info("issue sweep tenant=%s repository=%s not read (%s)",
+                     tenant_id, repository, refused.code)
+            report.failures.append({"repository": repository, "error": refused.code})
+            continue
+        except Exception as exc:  # noqa: BLE001 -- one repository's failure is its own
+            log.warning("issue sweep tenant=%s repository=%s not read (%s)",
+                        tenant_id, repository, type(exc).__name__)
+            report.failures.append({"repository": repository, "error": type(exc).__name__})
+            continue
+        if listing.pulls_truncated:
+            # Unseen pull requests may claim any issue: none is safe to start.
+            report.failures.append({"repository": repository, "error": "too_many_pull_requests"})
+            continue
+        claimed: dict[int, int] = {}
+        for pull in listing.pulls:
+            for number in claimed_issues(f"{pull.title}\n{pull.body}", listing.repository):
+                claimed.setdefault(number, pull.number)
+
+        def last_run(number: int, _owner=registration.get("owner"), _repo=registration.get("repo")):
+            rows = runs.for_issue(
+                tenant_id, IssueRef(owner=_owner, repo=_repo, number=number), limit=ISSUE_HISTORY,
+            )
+            return rows[0] if rows else None
+
+        for issue in listing.issues:
+            short = f"{listing.repository}#{issue.number}"
+            reason = skip_reason(
+                issue, repository=listing.repository, config=config, live=live,
+                claimed=claimed, last_run=last_run, labels_include=labels_include,
+                not_ready_cooldown=not_ready_cooldown, now=now,
+            )
+            if reason is not None:
+                report.skip(short, reason)
+                continue
+            candidates.append(Candidate(
+                ref=IssueRef(owner=str(registration.get("owner")),
+                             repo=str(registration.get("repo")), number=issue.number),
+                issue=issue, registration=registration, snapshot=snapshot,
+            ))
+
+    # Oldest-updated first, across every repository: the issue nobody has
+    # touched longest is the one most likely waiting on nobody. An issue
+    # GitHub gave no time for goes last.
+    candidates.sort(key=lambda c: (
+        c.issue.updated_at is None, c.issue.updated_at or _EPOCH, c.ref.short,
+    ))
+    return candidates
 
 
 #: (ctx, auth, ref, open_work=..., plan_approval=..., auto_merge=...,
@@ -450,63 +565,10 @@ def sweep_tenant(
     report.truncated = report.truncated or more is not None
     report.repositories = len(registrations)
 
-    candidates: list[Candidate] = []
-    for registration in registrations:
-        if clock() - started_at > SWEEP_BUDGET_SECONDS:
-            report.truncated = True
-            break
-        repository = f"{registration.get('owner')}/{registration.get('repo')}"
-        if registration.get("archived"):
-            report.failures.append({"repository": repository, "error": "archived"})
-            continue
-        try:
-            listing, snapshot = _read(ctx, tenant, registration)
-        except ForgeReadError as refused:
-            log.info("issue sweep tenant=%s repository=%s not read (%s)",
-                     tenant_id, repository, refused.code)
-            report.failures.append({"repository": repository, "error": refused.code})
-            continue
-        except Exception as exc:  # noqa: BLE001 -- one repository's failure is its own
-            log.warning("issue sweep tenant=%s repository=%s not read (%s)",
-                        tenant_id, repository, type(exc).__name__)
-            report.failures.append({"repository": repository, "error": type(exc).__name__})
-            continue
-        if listing.pulls_truncated:
-            # Unseen pull requests may claim any issue: none is safe to start.
-            report.failures.append({"repository": repository, "error": "too_many_pull_requests"})
-            continue
-        claimed: dict[int, int] = {}
-        for pull in listing.pulls:
-            for number in claimed_issues(f"{pull.title}\n{pull.body}", listing.repository):
-                claimed.setdefault(number, pull.number)
-
-        def last_run(number: int, _owner=registration.get("owner"), _repo=registration.get("repo")):
-            rows = runs.for_issue(
-                tenant_id, IssueRef(owner=_owner, repo=_repo, number=number), limit=ISSUE_HISTORY,
-            )
-            return rows[0] if rows else None
-
-        for issue in listing.issues:
-            short = f"{listing.repository}#{issue.number}"
-            reason = skip_reason(
-                issue, repository=listing.repository, config=config, live=live,
-                claimed=claimed, last_run=last_run,
-            )
-            if reason is not None:
-                report.skip(short, reason)
-                continue
-            candidates.append(Candidate(
-                ref=IssueRef(owner=str(registration.get("owner")),
-                             repo=str(registration.get("repo")), number=issue.number),
-                issue=issue, registration=registration, snapshot=snapshot,
-            ))
-
-    # Oldest-updated first, across every repository: the issue nobody has
-    # touched longest is the one most likely waiting on nobody. An issue
-    # GitHub gave no time for goes last.
-    candidates.sort(key=lambda c: (
-        c.issue.updated_at is None, c.issue.updated_at or _EPOCH, c.ref.short,
-    ))
+    candidates = collect_candidates(
+        ctx, tenant, tenant_id, registrations, config=config, report=report, runs=runs,
+        live=live, clock=clock, started_at=started_at,
+    )
     room = max(0, config.max_live_runs - report.live_runs)
     try:
         refuse_auto_merge(SWEEP_AUTO_MERGE)
