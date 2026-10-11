@@ -6081,14 +6081,15 @@ export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ au
  * The development fixtures serve no inbox, and say so by being empty rather
  * than by inventing items.
  */
-export async function loadApprovals(options: { frame?: boolean } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
+export async function loadApprovals(options: { frame?: boolean; kind?: string } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
   if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
   // The frame reads this on every page. A 200 without an `approvals` list is
   // not a measured empty inbox, and passing it on as one would draw "nothing
   // waiting" over an answer nobody read; it is a failure, as an unreadable
-  // body is.
+  // body is. `kind` is the route's own filter (`?kind=`, §4.5).
+  const kind = options.kind === undefined || options.kind === '' ? undefined : new URLSearchParams({ kind: options.kind })
   const r = await read<{ approvals: ApprovalItem[] }>(
-    route('/v1/approvals'),
+    route('/v1/approvals', {}, kind),
     (d) => Array.isArray(d.approvals) && d.approvals.length === 0,
     { frame: options.frame === true },
   )
