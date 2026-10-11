@@ -206,7 +206,7 @@ export function HoldersScreen() {
                 with the summary card: the pick has neither, and the Units
                 column and each lease's pools say what it said. */}
             <DriftCallout rows={drift} coverage={coverage} rowsRead={board.page.leases.length} />
-            <HolderTable rows={board.page.leases} coverage={coverage} page={board.page} />
+            <HolderTable rows={board.page.leases} coverage={coverage} page={board.page} pools={board.pools} />
             <Drift board={board} coverage={coverage} rows={drift} />
           </>
         )
@@ -486,10 +486,13 @@ function HolderTable({
   rows,
   coverage,
   page,
+  pools,
 }: {
   rows: LeaseRow[]
   coverage: LeaseCoverage
   page: Pick<LeasePage, 'thresholds' | 'evaluated_at'>
+  /** The pools `/v1/capacity` lists; null when that read failed. */
+  pools: readonly { name: string }[] | null
 }) {
   // FILTERABLE BY TENANT (capacity.html §C, decided 2026-10-01), over the rows
   // this read loaded. The filter narrows what is drawn; the note beside the
@@ -513,6 +516,12 @@ function HolderTable({
   const tenant = linkedTenant !== null && tenants.includes(linkedTenant) ? linkedTenant : null
   const shown = tenant === null ? inPool : inPool.filter((l) => l.tenant_id === tenant)
   const sorted = [...shown].sort((a, b) => b.units - a.units)
+  // A POOL THAT DOES NOT EXIST IS NOT A ZERO (live QA CAP-5). `?pool=nope:x`
+  // read "No lease holds nope:x right now · real zero": a measured zero for
+  // something nobody could measure. Checked against the pools the capacity
+  // read listed; when that read failed, nothing is claimed either way.
+  const unknownPool = pool !== null && inPool.length === 0 && pools !== null && !pools.some((p) => p.name === pool)
+  const filtered = pool !== null || tenant !== null
   const clearPool = (name: string) => {
     setCleared(name)
     if (typeof window !== 'undefined') window.location.hash = paneHref('capacity/holders', { tenant })
@@ -534,12 +543,13 @@ function HolderTable({
             would otherwise be the same picture. */}
         <h2 className="ctl-card-title">Every holder</h2>
         {pool !== null && (
+          /* "EVERY HOLDER OF POOL X" (live QA CAP-6): the heading and the
+             chip read as one phrase, and the count is the note's alone. */
           <span className="hold-pool">
-            pool{' '}
+            of pool{' '}
             <span className="mono" title={pool}>
               {pool}
             </span>{' '}
-            · {inPool.length} of {rows.length}{' '}
             <button
               type="button"
               className="hold-pool-clear"
@@ -565,6 +575,9 @@ function HolderTable({
         )}
         <span className="ctl-card-note is-end">
           {coverage.kind !== 'complete' && <>{coverageMark(rows.length, coverage, 'This list')} </>}
+          {/* WHAT IS DRAWN, OUT OF WHAT WAS READ (live QA CAP-6): a filter
+              showed "12 rows" over an empty table. */}
+          {filtered && <>{sorted.length} of </>}
           {ofTotal(rows.length, coverage)} row{rows.length === 1 && coverage.kind !== 'cut' ? '' : 's'}
           {coverage.kind === 'cut' && coverage.beyond !== null && ` · ${coverage.beyond} not shown`}
           {coverage.kind === 'cut' && coverage.beyond === null && ' · more not shown'}
@@ -583,7 +596,13 @@ function HolderTable({
                     about. In the heading it cannot be missed and cannot be
                     applied to the wrong column. */}
                 <th role="columnheader" scope="col" className="is-num">Units (weighted)</th>
-                <th role="columnheader" scope="col">Dispatch</th>
+                {/* "LEASE WRITTEN", NOT "DISPATCH" (live QA CAP-9). The lease's
+                    `dispatch_state` stops at DISPATCHED: nothing writes
+                    STARTING or RUNNING to a lease, so under "Dispatch" a task
+                    running for 33 minutes read as a stuck dispatch. The column
+                    says what the lease records; Heartbeat says whether the
+                    worker is alive. */}
+                <th role="columnheader" scope="col">Lease written</th>
                 <th role="columnheader" scope="col" className="is-num">Gen</th>
                 <th role="columnheader" scope="col" className="is-num">Held for</th>
                 {/* LIVENESS (#92). Overview's silent-workers item links here,
@@ -597,7 +616,19 @@ function HolderTable({
                   the toolbar the only clue. One row: which pool, which kind of
                   nothing -- `real zero` only over every live lease, the
                   coverage mark otherwise -- and the way back. */}
-              {pool !== null && inPool.length === 0 && (
+              {unknownPool && (
+                <tr role="row" className="hold-empty hold-unknown-pool">
+                  <td role="cell" colSpan={7}>
+                    No pool is named <span className="mono">{pool}</span> in the capacity read ·{' '}
+                    <Mark kind="absent" say={`The capacity read lists no pool named ${pool}, so nothing here was measured for it.`} />
+                    {' · '}
+                    <button type="button" className="hold-pool-clear" onClick={() => clearPool(pool)}>
+                      All pools
+                    </button>
+                  </td>
+                </tr>
+              )}
+              {pool !== null && inPool.length === 0 && !unknownPool && (
                 <tr role="row" className="hold-empty">
                   <td role="cell" colSpan={7}>
                     No lease holds <span className="mono">{pool}</span> right now ·{' '}
@@ -622,7 +653,7 @@ function HolderTable({
                   </th>
                   <td role="cell" data-label="Tenant">{l.tenant_id}</td>
                   <td role="cell" data-label="Units (weighted)" className="is-num">{l.units}</td>
-                  <td role="cell" data-label="Dispatch">
+                  <td role="cell" data-label="Lease written">
                     {/* BRAND §3'S HOLDING-CAPACITY MARK (#503). LEASED and
                         DISPATCHED both hold a slot and are not yet working, so
                         both are the half-filled teal-green disc -- the mark is
@@ -631,7 +662,7 @@ function HolderTable({
                         a grey dot chip, the healthy-and-free picture. */}
                     <StateMark
                       state={l.dispatch_state === 'LEASED' ? 'LEASED' : 'DISPATCHED'}
-                      label={l.dispatch_state === 'LEASED' ? 'awaiting' : 'dispatched'}
+                      label={l.dispatch_state === 'LEASED' ? 'leased' : 'dispatched'}
                     />
                   </td>
                   <td role="cell" data-label="Gen" className="is-num">{l.generation}</td>

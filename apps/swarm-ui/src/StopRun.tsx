@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 
 import { cancelTask } from './api'
@@ -173,13 +173,48 @@ function earlierWorkSentence(task: { latest_checkpoint?: string | null }): strin
         'logs earlier attempts uploaded are left where they are.'
 }
 
-/** Steps that share the workflow and do not depend on the one being stopped. */
+/**
+ * Steps that share the workflow, do not depend on the one being stopped, and
+ * have not already ended.
+ *
+ * "KEEPS RUNNING" IS A CLAIM ABOUT STEPS THAT ARE STILL GOING (live QA WF-4,
+ * 2026-10-11). Every non-downstream step was listed, so stopping a parked
+ * `merge` said `keeps running: implement, review, fix, re-review` over four
+ * steps that had SUCCEEDED or been skipped by verdict. With the task read
+ * (`taskById`), a step whose task is in a terminal state is left out. A step
+ * with no task yet has not ended and is kept, and so is one whose task this
+ * read did not reach: the read cannot say it ended. With no `taskById` at all
+ * nothing is known, and the list is every non-downstream step as before.
+ */
 export function survivorsOf(
   step: WorkflowStep,
   steps: WorkflowStep[],
+  taskById: ReadonlyMap<string, Task> | null = null,
 ): WorkflowStep[] {
   const doomed = new Set(dependentsOf(step, steps).map((s) => s.step_id))
-  return steps.filter((s) => s.step_id !== step.step_id && !doomed.has(s.step_id))
+  return steps.filter((s) => {
+    if (s.step_id === step.step_id || doomed.has(s.step_id)) return false
+    const t = s.task_id ? taskById?.get(s.task_id) : undefined
+    return t === undefined || !TERMINAL_STATES.has(t.state)
+  })
+}
+
+/**
+ * Step ids as one run of text: `review, fix, merge`. One element, so a flex
+ * fact row (`.ctl-fact`) lays out ONE item and its gap does not land before
+ * each comma (live QA WF-14: `review , fix , re-review`).
+ */
+function StepIdList({ steps }: { steps: readonly WorkflowStep[] }) {
+  return (
+    <span className="stop-steps">
+      {steps.map((s, i) => (
+        <Fragment key={s.step_id}>
+          {i > 0 && ', '}
+          <code>{s.step_id}</code>
+        </Fragment>
+      ))}
+    </span>
+  )
 }
 
 export interface StopRunProps {
@@ -189,6 +224,8 @@ export interface StopRunProps {
   /** The workflow this task is a step of, when it is one. */
   workflow?: Workflow | null
   step?: WorkflowStep | null
+  /** The workflow's task read, so `keeps running` leaves out steps that already ended. */
+  taskById?: ReadonlyMap<string, Task> | null
   /** Re-read the screen after the request is recorded. */
   reload: () => void
   /** `inline` sits on a graph node; `panel` sits in the run detail. */
@@ -213,6 +250,7 @@ export function StopRun({
   what,
   workflow = null,
   step = null,
+  taskById = null,
   reload,
   variant = 'panel',
   overlay = false,
@@ -269,7 +307,7 @@ export function StopRun({
 
   const live = stoppingEndsALiveAttempt(task)
   const doomed = workflow && step ? dependentsOf(step, workflow.steps) : []
-  const survivors = workflow && step ? survivorsOf(step, workflow.steps) : []
+  const survivors = workflow && step ? survivorsOf(step, workflow.steps, taskById) : []
 
   const run = async () => {
     setBusy(true)
@@ -498,23 +536,13 @@ export function StopRun({
             {doomed.length === 0 ? (
               'nothing — no other step depends on this one'
             ) : (
-              doomed.map((s, i) => (
-                <span key={s.step_id}>
-                  {i > 0 && ', '}
-                  <code>{s.step_id}</code>
-                </span>
-              ))
+              <StepIdList steps={doomed} />
             )}
           </li>
           {survivors.length > 0 && (
             <li className="ctl-fact">
               <b>keeps running</b>
-              {survivors.map((s, i) => (
-                <span key={s.step_id}>
-                  {i > 0 && ', '}
-                  <code>{s.step_id}</code>
-                </span>
-              ))}
+              <StepIdList steps={survivors} />
             </li>
           )}
         </ul>

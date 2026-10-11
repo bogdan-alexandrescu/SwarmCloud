@@ -306,6 +306,8 @@ describe('G4-14: the full index run is a labelled head action, not a control on 
     expect(head).not.toBeNull()
     expect(within(head as HTMLElement).getByRole('button', { name: 'Index now' })).toBeTruthy()
     fireEvent.click(full)
+    // Queued only once confirmed (RSA-15).
+    fireEvent.click(screen.getByRole('button', { name: 'Queue full run' }))
     await waitFor(() => expect(calls.some((c) => c.method === 'POST' && c.url === `/v1/repositories/${ID}/index:run`)).toBe(true), WAIT)
     expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ kind: 'full' })
   })

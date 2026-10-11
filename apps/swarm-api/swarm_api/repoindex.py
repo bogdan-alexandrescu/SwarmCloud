@@ -136,6 +136,7 @@ from .repositories import (
     MIN_CHANGE_INTERVAL_DEFAULT,
     ON_CHANGE_DEFAULT,
     Repositories,
+    settle_relation,
 )
 from .schemas import TaskCreate
 from .task_input import masking_for
@@ -1603,7 +1604,48 @@ def select_tests(document: Mapping[str, Any], paths: Sequence[str]) -> dict[str,
     }
 
 
-def coverage(document: Mapping[str, Any]) -> dict[str, Any]:
+def capped_counts(truncated: Any) -> dict[str, Any]:
+    """Which of the coverage block's counts are a cut, not a total (RSA-4).
+
+    The indexer cuts `test_map` to fit its size budget and names it in
+    `truncated`; a card that showed `test_map_edges` alone read the cut
+    ("1,000 edges") as the repository's whole map. `truncated` is every list
+    the indexer cut, and `test_map_edges_capped` says the edge count is a
+    lower bound. A coverage block stored before these two keys existed is
+    filled in by `RepoIndex.served_coverage` from the promoted version.
+    """
+    cut = sorted({str(name) for name in truncated or []})
+    return {"truncated": cut, "test_map_edges_capped": "test_map" in cut}
+
+
+#: A language whose server was meant to run and did not finish (RSA-6): its
+#: edges are tree-sitter's only, and an impact or a test selection that
+#: touches it falls back to the full suite. `unsupported` (no server exists)
+#: and `not_run` are not a degraded run of this index, so they are not here.
+DEGRADED_LANGUAGE_STATUSES = ("timed_out", "failing")
+
+
+def degraded_languages(rows: Any) -> list[dict[str, Any]]:
+    """The languages a run left at `ast` because their server timed out or
+    failed, most files first: what the list card and the Overview warn about
+    without the reader opening Settings (live QA RSA-6).
+
+    `status` is the LANGUAGE SERVER's; the row's `parsed`/`timed_out`/...
+    counters are tree-sitter's per-file parse, which is why a language can
+    be `timed_out` with `timed_out: 0` -- `impact.languages_table` says so.
+    """
+    out = [
+        {"language": row.get("language"), "status": row.get("status"),
+         "files": row.get("files"), "reason": row.get("reason")}
+        for row in rows or []
+        if isinstance(row, Mapping) and row.get("status") in DEGRADED_LANGUAGE_STATUSES
+    ]
+    return sorted(out, key=lambda r: (-(r["files"] if isinstance(r["files"], int) else 0),
+                                      str(r["language"])))
+
+
+def coverage(document: Mapping[str, Any],
+             manifest: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The list card's "tests mapped": modules with at least one test-map edge.
 
     `basis` says whose count it is. "extractor": the document's
@@ -1618,6 +1660,10 @@ def coverage(document: Mapping[str, Any]) -> dict[str, Any]:
     behind = {
         "test_map_edges": len(sources),
         "always_tests": len(document.get("always_tests") or []),
+        **capped_counts(document.get("truncated")),
+        # The graph's table when there is one, as `languages_table` reads it.
+        "degraded_languages": degraded_languages(
+            (manifest or {}).get("languages") or document.get("languages")),
     }
     block = document.get("test_coverage")
     if isinstance(block, Mapping):
@@ -2423,11 +2469,13 @@ class RepoIndex:
                 index.update(
                     current_sha=new, current_digest=digest, current_task_id=task.id,
                     current_built_at=document["built_at"], last_indexed_at=now,
-                    last_kind=document["kind"], coverage=coverage(document),
+                    last_kind=document["kind"], coverage=coverage(document, manifest),
                 )
                 if document["kind"] == "full":
                     # What `full_every_days` counts from (§3.3, `choose_kind`).
                     index["last_full_at"] = now
+                # The stored compare was of the previous index; RSA-3.
+                index = settle_relation(index)
             if index.get("in_flight_task_id") == task.id:
                 index["in_flight_task_id"] = None
             txn.update(repo_ref, {"index": index})
@@ -2496,6 +2544,35 @@ class RepoIndex:
             txn.update(ref, {"index": fresh})
 
         _apply(transaction)
+
+    def served_coverage(self, record: Mapping[str, Any]) -> dict[str, Any] | None:
+        """The registration's coverage block, saying which counts are capped.
+
+        Promotion stores `capped_counts` in the block; one promoted before
+        that is completed here from the current version's `truncated`, so a
+        card never reads a cut count as a total (RSA-4). None when there is
+        no coverage yet.
+        """
+        index = record.get("index") or {}
+        block = index.get("coverage")
+        if not isinstance(block, Mapping):
+            return None
+        served = dict(block)
+        # Recorded at promotion from the graph's language table; a block
+        # promoted before that has no reading -- None, never "none degraded"
+        # -- until the next index run records one.
+        served.setdefault("degraded_languages", None)
+        if "test_map_edges_capped" in served:
+            return served
+        current = index.get("current_sha")
+        version = None
+        if current and _SHA.match(current):
+            snap = self._version_ref(str(record.get("repo_id")), current).get()
+            version = snap.to_dict() if snap.exists else None
+        if version is None:
+            # Unknown, not "not capped": the version that would say is gone.
+            return {**served, "truncated": None, "test_map_edges_capped": None}
+        return {**served, **capped_counts(version.get("truncated"))}
 
     # -- reading a version -------------------------------------------------
     def version(self, tenant_id: str, repo_id: str, sha: str | None = None
@@ -2636,6 +2713,8 @@ class RepoIndex:
             # an unconditional read and no ETag, and a 304 against a tag for
             # some other head would vouch for the wrong commit.
             index["etag_sha"] = read.sha
+            # A new head makes the stored compare another pair's (RSA-3).
+            index = settle_relation(index)
             txn.update(ref, {"index": index})
 
         _apply(transaction)

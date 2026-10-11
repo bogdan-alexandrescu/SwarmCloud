@@ -123,9 +123,15 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: a merge step's CI wait, written by its park and its wake tick (lane MS2),
 #: and the reconciler's disk-eviction count, written on an evicted attempt (#893),
 #: and a schedule firing's mark on its work, which only swarm-api reads
-#: (docs/schedules.md §2.7, lane S2): no worker acts on it.
+#: (docs/schedules.md §2.7, lane S2): no worker acts on it. And the
+#: live-browser hand-off's three (docs/design/live-browser.md §4.3, lane
+#: LB-L10): the park-refund counter, the "a person is ready" mark and the
+#: per-attempt hand-off count, each written during or between attempts.
 UNSIGNED_PLATFORM_KEYS = {
     "schedule",
+    "human_wait_resumes",
+    "human_ready",
+    "human_handoffs",
     "startup_refunds",
     "disk_evictions",
     "child_await_resumes",
@@ -145,10 +151,16 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         RESERVED_METADATA_KEYS,
         SCHEDULE_METADATA_KEY,
         STARTUP_REFUNDS_METADATA_KEY,
+        HUMAN_HANDOFFS_METADATA_KEY,
+        HUMAN_READY_METADATA_KEY,
+        HUMAN_WAIT_RESUMES_METADATA_KEY,
     )
 
     assert set(SIGNED_METADATA_KEYS) == set(RESERVED_METADATA_KEYS) - UNSIGNED_PLATFORM_KEYS
     assert {
+        HUMAN_HANDOFFS_METADATA_KEY,
+        HUMAN_READY_METADATA_KEY,
+        HUMAN_WAIT_RESUMES_METADATA_KEY,
         STARTUP_REFUNDS_METADATA_KEY,
         CHILD_AWAIT_RESUMES_METADATA_KEY,
         CHILD_CASCADE_METADATA_KEY,

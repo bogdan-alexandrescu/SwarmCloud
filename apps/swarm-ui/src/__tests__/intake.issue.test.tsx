@@ -157,6 +157,10 @@ describe('step 1: the issue is read and shown before anything is created', () =>
     expect(planButton().disabled, 'a closed issue can be planned without saying so').toBe(true)
     fireEvent.click(within(warn.closest('.in-closed') as HTMLElement).getByRole('button', { name: 'Plan it anyway' }))
     expect(planButton().disabled).toBe(false)
+    // And it can be taken back without reading the issue again (live QA SUB-12).
+    fireEvent.click(within(warn.closest('.in-closed') as HTMLElement).getByRole('button', { name: 'Undo' }))
+    expect(planButton().disabled).toBe(true)
+    expect(within(warn.closest('.in-closed') as HTMLElement).getByRole('button', { name: 'Plan it anyway' })).toBeTruthy()
   })
 
   const REFUSALS: Array<[string, number, RegExp]> = [
@@ -321,6 +325,46 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     expect(served.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: true })
   })
 
+  it('live QA SUB-2: a repository whose preview serves default: true starts the switch on, says so, and sends it', async () => {
+    const served = serve({ status: 200, body: preview({}, { auto_merge: { available: true, default: true, requires: '#295', reason: null } }) })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    const merge = screen.getByRole('switch', { name: 'Merge the pull request when it is ready' }) as HTMLInputElement
+    expect(merge.checked, 'the served default was ignored').toBe(true)
+    expect(visible(container.querySelector('.in-merge'))).toContain('On (default)')
+    expect(visible(container.querySelector('.in-send'))).toMatch(/auto-merge\s*on/)
+    // Turned off by hand, it is off and not called the default.
+    fireEvent.click(merge)
+    expect(merge.checked).toBe(false)
+    expect(visible(container.querySelector('.in-merge'))).not.toContain('(default)')
+    fireEvent.click(merge)
+    fireEvent.click(planButton())
+    await waitFor(() => expect(served.calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(served.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: true })
+  })
+
+  it('live QA SUB-2: an untouched switch sends the served default, and default: false stays off', async () => {
+    const served = serve({ status: 200, body: preview({}, { auto_merge: { available: true, default: true, requires: '#295', reason: null } }) })
+    await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    fireEvent.click(planButton())
+    await waitFor(() => expect(served.calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(served.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: true })
+
+    // The control: the same form under default: false sends false.
+    document.body.innerHTML = ''
+    const off = serve({ status: 200, body: preview({}, { auto_merge: { available: true, default: false, requires: '#295', reason: null } }) })
+    const { container } = await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    expect(visible(container.querySelector('.in-merge'))).toContain('Off (default)')
+    fireEvent.click(planButton())
+    await waitFor(() => expect(off.calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
+    expect(off.calls.find((c) => c.method === 'POST')!.body).toMatchObject({ auto_merge: false })
+  })
+
   it('a preview that does not say is read as unavailable: nothing switches it on', async () => {
     const served = serve({ status: 200, body: preview() })
     await mount()
@@ -340,7 +384,9 @@ describe('steps 2 and 3: the runner and what it may do on its own', () => {
     expect(side()).toContain('Not ready to send')
     await readIssue('example-org/infra#512')
     await waitFor(() => expect(side()).toContain('Ready to send'), WAIT)
-    expect(side()).toContain('example-org/infra#512')
+    // The number first, the repository on its own row (live QA SUB-9).
+    expect(side()).toContain('#512 · open')
+    expect(side()).toContain('example-org/infra')
     expect(side()).toContain('claude-code')
     expect(side()).toContain('waits for approval')
     expect(side()).toContain('off · not available yet')
@@ -366,6 +412,20 @@ describe('submit creates the run', () => {
     expect(post.url).toBe('/v1/runs')
     // The reference AS THE PREVIEW SERVED IT, so what is planned is what was shown.
     expect(post.body).toEqual({ issue: 'example-org/infra#512', plan_approval: 'required', auto_merge: false, fix_rounds: 2 })
+  })
+
+  it('live QA SUB-13: Enter in the fix-rounds field confirms the number and plans nothing', async () => {
+    const served = serve({ status: 200, body: preview() })
+    await mount()
+    await readIssue('example-org/infra#512')
+    await waitFor(() => expect(planButton().disabled).toBe(false), WAIT)
+    const rounds = screen.getByLabelText('Fix rounds when checks go red')
+    fireEvent.change(rounds, { target: { value: '2' } })
+    // `fireEvent` returns false when the handler prevented the default: the
+    // implicit submission Enter would start in a browser.
+    expect(fireEvent.keyDown(rounds, { key: 'Enter' }), 'Enter in fix rounds would submit the form').toBe(false)
+    await new Promise((r) => setTimeout(r, 50))
+    expect(served.calls.filter((c) => c.method === 'POST')).toEqual([])
   })
 
   it('a fix-round count outside 1-5 is not sent', async () => {
