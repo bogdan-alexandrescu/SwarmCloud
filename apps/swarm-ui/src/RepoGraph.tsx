@@ -552,9 +552,9 @@ const NodeChunk = memo(function NodeChunk({ nodes, plan, colour, selected, onPic
           >
             <circle cx={p.x} cy={p.y} r={p.r} />
             <text
-              x={p.x}
+              x={label?.x ?? p.x}
               y={label?.y ?? p.y + p.r + 13}
-              textAnchor="middle"
+              textAnchor={label?.anchor ?? 'middle'}
               data-label={label?.side ?? 'below'}
               className={label?.side === 'hidden' ? 'is-hidden' : undefined}
             >
