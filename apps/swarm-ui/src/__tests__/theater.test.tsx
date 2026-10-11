@@ -240,18 +240,52 @@ describe('the left column', () => {
 
     const timeline = screen.getByRole('tab', { name: 'Timeline' })
     const logs = screen.getByRole('tab', { name: 'Logs' })
+    // The panel shown is the one role queries find: a hidden panel is not.
+    const shown = () => screen.getByRole('tabpanel')
     expect(timeline.getAttribute('aria-selected')).toBe('true')
     expect(await screen.findByText('Page.navigate')).toBeTruthy()
-    expect(screen.getByText('https://example.com/login')).toBeTruthy()
+    expect(shown().textContent).toContain('Page.navigate')
+    expect(shown().textContent).toContain('https://example.com/login')
+    expect(shown().textContent).toContain('12 characters typed')
     expect(screen.queryByTestId('tab-logs')).toBeNull()
 
     fireEvent.click(logs)
     expect(logs.getAttribute('aria-selected')).toBe('true')
-    expect(screen.getByTestId('tab-logs')).toBeTruthy()
-    expect(screen.queryByText('Page.navigate')).toBeNull()
+    expect(timeline.getAttribute('aria-selected')).toBe('false')
+    expect(shown().contains(screen.getByTestId('tab-logs'))).toBe(true)
+    expect(shown().textContent).not.toContain('Page.navigate')
 
     fireEvent.click(timeline)
-    expect(screen.getByText('Page.navigate')).toBeTruthy()
+    expect(shown().textContent).toContain('Page.navigate')
+    expect(shown().textContent).not.toContain('log line from the tab')
+  })
+
+  it('becomes the hand-off checklist while the agent waits for a person, and Timeline is still a click away', async () => {
+    stubFetch(NO_ACTIONS)
+    function Waiting() {
+      const ref = useRef<HTMLDivElement>(null)
+      const session: TheaterSession = {
+        taskId: TASK, tenantId: TENANT, attemptId: ATTEMPT, sessionId: 'sess_one', screen: null, live: true,
+      }
+      return (
+        <TheaterHost
+          session={session}
+          initiallyOpen
+          handoff={{ reason: 'Sign in to the fixture site', expect: 'login.example.com', deadline: new Date(Date.now() + 300_000).toISOString() }}
+        >
+          <div ref={ref} />
+        </TheaterHost>
+      )
+    }
+    render(<Waiting />)
+    await flush()
+    expect(screen.getByRole('tab', { name: 'Hand-off' }).getAttribute('aria-selected')).toBe('true')
+    const panel = screen.getByRole('tabpanel')
+    expect(panel.textContent).toContain('Sign in to the fixture site')
+    expect(panel.textContent).toContain('login.example.com')
+    expect(panel.textContent).toMatch(/\d+:\d\d left/)
+    fireEvent.click(screen.getByRole('tab', { name: 'Timeline' }))
+    expect(screen.getByRole('tabpanel').textContent).not.toContain('Sign in to the fixture site')
   })
 
   it('reads the timeline from the task route, never from a storage path', async () => {
