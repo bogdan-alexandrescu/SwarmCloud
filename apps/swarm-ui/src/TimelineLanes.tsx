@@ -183,6 +183,42 @@ export function axisLabels(
   return kept
 }
 
+/** A lane mark's disc (`.tl-mkr`: 18 px). */
+export const MARK_PX = 18
+/** The clear pixels between two marks pushed together, so they read as two. */
+export const MARK_GAP_PX = 2
+/**
+ * Where a mark's disc starts against its instant: an end mark sits 2 px after
+ * it (`.tl-mkr.is-end`, Q6), a mid-lane mark is centred on it (`.tl-mkr`).
+ */
+const MARK_FROM_PX = { end: 2, mid: -MARK_PX / 2 } as const
+
+/**
+ * WHERE A LANE'S MARKS ARE DRAWN, as percentages of its track (VQA V039).
+ *
+ * The track clips (`overflow: hidden`) and an end mark starts 2 px AFTER its
+ * instant, so a task that ended at `now` drew its mark wholly past the
+ * track's right edge, and marks a minute apart near `now` drew one disc over
+ * the other. With the track measured, the marks are laid out from the right:
+ * the last disc ends at the track's edge or before, and each earlier one ends
+ * `MARK_GAP_PX` before the next starts. A mark moves only when it has to, and
+ * only left -- its title still gives the instant. Unmeasured, the instant.
+ */
+export function markLefts(marks: readonly { pct: number; end: boolean }[], trackPx: number | null): number[] {
+  const out = marks.map((m) => m.pct)
+  if (trackPx === null || !(trackPx > 0)) return out
+  const order = marks.map((_, i) => i).sort((a, b) => marks[a]!.pct - marks[b]!.pct || a - b)
+  let edge = trackPx
+  for (let j = order.length - 1; j >= 0; j--) {
+    const i = order[j]!
+    const from = marks[i]!.end ? MARK_FROM_PX.end : MARK_FROM_PX.mid
+    const start = Math.max(0, Math.min((marks[i]!.pct / 100) * trackPx + from, edge - MARK_PX))
+    out[i] = ((start - from) / trackPx) * 100
+    edge = start - MARK_GAP_PX
+  }
+  return out
+}
+
 /**
  * WHERE `+` AND `−` ZOOM (QA G3-30, 2026-10-07). About the window's middle,
  * `+` on a 24 h span at 21:07 drew 03:07–15:07 and dropped the last six
@@ -393,6 +429,8 @@ export function TimelineLanesScreen({
   const [nonce, setNonce] = useState(0)
   const spanKey = view.since !== null ? `${view.since}|${view.until}` : `span:${view.span}`
   const [anchor, setAnchor] = useState(() => Date.now())
+  /** The lane track's width, measured on the axis; null until it is (V039). */
+  const [trackPx, setTrackPx] = useState<number | null>(null)
   const lastSpan = useRef(spanKey)
   if (lastSpan.current !== spanKey) {
     lastSpan.current = spanKey
@@ -773,7 +811,7 @@ export function TimelineLanesScreen({
         <TlPicker label="Profile" options={profiles} selected={view.profile} onChange={(next) => setView({ ...view, profile: next })} />
         <label className={view.wf !== null ? 'tl-flt is-on' : 'tl-flt'}>
           Workflow{' '}
-          <select value={view.wf ?? ''} onChange={(e) => setView({ ...view, wf: e.target.value === '' ? null : e.target.value })}>
+          <select className="tl-wf-sel" value={view.wf ?? ''} onChange={(e) => setView({ ...view, wf: e.target.value === '' ? null : e.target.value })}>
             <option value="">any</option>
             {[...workflowIds, ...(view.wf !== null && !workflowIds.includes(view.wf) ? [view.wf] : [])].map((w) => (
               <option key={w} value={w}>
@@ -864,6 +902,7 @@ export function TimelineLanesScreen({
               nowAt={anchor}
               summary={laneSummary(blocks, view.by)}
               onZoom={(a, b) => setView(zoomedTo(view, a, b))}
+              onTrackPx={setTrackPx}
             />
             {blocks.map((b) => (
               <Fragment key={b.key}>
@@ -878,6 +917,7 @@ export function TimelineLanesScreen({
                     lane={l}
                     since={win.since}
                     until={win.until}
+                    trackPx={trackPx}
                     events={events.get(l.taskId) ?? null}
                     single={single.get(l.taskId) ?? null}
                     taskPageFailed={taskPage === 'error'}
@@ -1057,12 +1097,15 @@ function Axis({
   nowAt,
   summary,
   onZoom,
+  onTrackPx,
 }: {
   since: number
   until: number
   nowAt: number
   summary: string
   onZoom: (since: number, until: number) => void
+  /** Told the track's measured width: every lane's track is the same column (V039). */
+  onTrackPx?: (px: number | null) => void
 }) {
   // The track's width, so the ticks keep their pixel gaps (G3-15). Null
   // until measured, and in a browser without ResizeObserver: the
@@ -1072,11 +1115,17 @@ function Axis({
   useEffect(() => {
     const el = track.current
     if (el === null || typeof ResizeObserver === 'undefined') return
-    const measure = () => setTrackPx(el.getBoundingClientRect().width || null)
+    const measure = () => {
+      const px = el.getBoundingClientRect().width || null
+      setTrackPx(px)
+      onTrackPx?.(px)
+    }
     measure()
     const watch = new ResizeObserver(measure)
     watch.observe(el)
     return () => watch.disconnect()
+    // `onTrackPx` is a state setter, stable for the screen's life.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
   const ticks = axisLabels(since, until, nowAt, trackPx)
   const [drag, setDrag] = useState<{ x0: number; x1: number; w: number; left: number } | null>(null)
@@ -1229,6 +1278,7 @@ function LaneRow({
   lane,
   since,
   until,
+  trackPx,
   events,
   single,
   taskPageFailed,
@@ -1241,6 +1291,7 @@ function LaneRow({
   lane: Lane
   since: number
   until: number
+  trackPx: number | null
   events: EventsRead | null
   single: Task | string | null
   taskPageFailed: boolean
@@ -1266,6 +1317,10 @@ function LaneRow({
   const wide = until - since > 36 * 3_600_000
   const segs = lane.segs.filter((s) => s.to > since && s.from < until)
   const marks = lane.marks.filter((m) => m.at >= since && m.at <= until)
+  const lefts = markLefts(
+    marks.map((m) => ({ pct: pct(m.at, since, until), end: m.kind !== 'cancel_requested' })),
+    trackPx,
+  )
   return (
     <div ref={ref} className={selected ? 'tl-row is-sel' : 'tl-row'} data-lane={lane.taskId}>
       <div className="tl-lab">
@@ -1307,7 +1362,7 @@ function LaneRow({
             key={`m${i}`}
             className={`tl-mkr is-${MARK_HUE[m.kind]}${m.kind === 'cancel_requested' ? '' : ' is-end'}`}
             data-mark={m.kind}
-            style={{ left: `${pct(m.at, since, until)}%` }}
+            style={{ left: `${lefts[i]!}%` }}
             title={`${MARK_WORD[m.kind]} ${clock(m.at, wide)}`}
           >
             <MarkIcon mark={MARK_OF[m.kind]} />
@@ -1404,10 +1459,24 @@ function OutcomeStrip({ strip, lanes, view, since, until }: { strip: StripRead; 
               succeeded + failed + cancelled = finished, with failed FAILED +
               DEAD_LETTERED, the one definition the ledger uses. The rate
               beside it leaves the cancels out, so its n is not this total. */}
+          {/* EACH FIGURE KEEPS ITS WORD AND ITS SEPARATOR (VQA V105): the
+              words between the figures were bare flex items, so at 400px
+              "succeeded ·" wrapped inside itself and left each "·" alone on
+              a line. A part is one unbreakable `.tl-xp`; the line breaks
+              only between parts, after a separator, never before one. */}
           <span className="tl-x tl-ended">
-            <b className="tl-n-ended">{strip.data.totals.ended}</b> finished: <b className="tl-n-ok">{strip.data.totals.succeeded}</b> succeeded ·{' '}
-            <b className="tl-n-bad">{strip.data.totals.failed + strip.data.totals.dead_lettered}</b> failed ·{' '}
-            <b className="tl-n-cancelled">{strip.data.totals.cancelled.total}</b> cancelled
+            <span className="tl-xp">
+              <b className="tl-n-ended">{strip.data.totals.ended}</b> finished:
+            </span>{' '}
+            <span className="tl-xp">
+              <b className="tl-n-ok">{strip.data.totals.succeeded}</b> succeeded ·
+            </span>{' '}
+            <span className="tl-xp">
+              <b className="tl-n-bad">{strip.data.totals.failed + strip.data.totals.dead_lettered}</b> failed ·
+            </span>{' '}
+            <span className="tl-xp">
+              <b className="tl-n-cancelled">{strip.data.totals.cancelled.total}</b> cancelled
+            </span>
           </span>
           {unread > 0 && fenced === 0 ? (
             <span className="tl-x">

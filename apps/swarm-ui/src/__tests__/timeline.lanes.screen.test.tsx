@@ -14,6 +14,7 @@ import { ledgerFixture } from '../outcomes.fixture'
 import type { AttemptRow, AttemptsPage, Task, TaskEvent, TaskEventsPage, TaskPage } from '../types'
 import type { WorkflowRead } from '../api'
 import { landed } from './reads'
+import { painted } from './marks'
 
 const api = vi.hoisted(() => ({
   loadAttemptsPage: vi.fn(),
@@ -28,7 +29,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { TimelineLanesScreen, STRIP_DEADLINE_MS } = await import('../TimelineLanes')
+const { TimelineLanesScreen, STRIP_DEADLINE_MS, MARK_GAP_PX, MARK_PX, markLefts } = await import('../TimelineLanes')
 
 // jsdom has no PointerEvent, and without one a pointer event carries no
 // clientX: a MouseEvent with a pointerId is what a browser hands the axis.
@@ -467,3 +468,75 @@ describe('walkthrough G: a lane label leads with its name, state and duration', 
   })
 })
 
+
+// VQA-L13 (#1038), the Lanes half.
+describe('VQA-L13: the marks at now, the filter row and the counts strip', () => {
+  // V039: an end mark starts 2px after its instant and the track clips, so a
+  // task that ended at `now` drew its mark past the edge, and two ending a
+  // minute apart drew one disc over the other.
+  // MUTATION: return the instants unchanged from `markLefts`.
+  it('V039: keeps every mark inside the track at now, and two marks at now apart', () => {
+    const px = 600
+    const disc = (m: { pct: number; end: boolean }, left: number) => {
+      const start = (left / 100) * px + (m.end ? 2 : -MARK_PX / 2)
+      return [start, start + MARK_PX] as const
+    }
+    const marks = [
+      { pct: 99.9, end: true },
+      { pct: 100, end: true },
+      { pct: 40, end: true },
+      { pct: 99.95, end: false },
+    ]
+    const lefts = markLefts(marks, px)
+    const boxes = marks.map((m, i) => disc(m, lefts[i]!)).sort((a, b) => a[0] - b[0])
+    for (const [from, to] of boxes) {
+      expect(from).toBeGreaterThanOrEqual(0)
+      expect(to, 'a mark is clipped by the track’s right edge').toBeLessThanOrEqual(px)
+    }
+    for (let i = 1; i < boxes.length; i++) {
+      expect(boxes[i]![0] - boxes[i - 1]![1], 'two marks at now are drawn as one').toBeGreaterThanOrEqual(MARK_GAP_PX - 1e-9)
+    }
+    // A mark with room keeps its instant, and an unmeasured track moves nothing.
+    expect(lefts[2]).toBe(40)
+    expect(markLefts(marks, null)).toEqual(marks.map((m) => m.pct))
+  })
+
+  // V104: the workflow select was as wide as its longest option, so it grew
+  // when the rows landed and pushed Group by onto a second line.
+  // MUTATION: drop `.tl-wf-sel`'s width, or the class from the select.
+  it('V104: gives the workflow select a width of its own, so the rows landing cannot widen it', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await landed(api.loadAttemptsPage)
+    const sel = document.querySelector('.tl-ctl select.tl-wf-sel')
+    expect(sel, 'the workflow select carries no fixed width').not.toBeNull()
+    for (const width of [400, 1440]) {
+      expect(painted(sel!, 'width', { width }) ?? '', `${width}px: the select sizes to its options`).toMatch(/^\d+(\.\d+)?(em|px)$/)
+    }
+    // A picker's count ("all 0" -> "all 12") keeps a floor.
+    const count = document.querySelector('.tl-ctl .tl-pick i')!
+    expect(painted(count, 'min-width', { width: 400 }) ?? '').toMatch(/^\d+(\.\d+)?em$/)
+  })
+
+  // V105: the words between the figures were bare flex items, so at 400px
+  // "succeeded ·" wrapped inside itself and left each "·" alone on a line.
+  // MUTATION: put the parts back as bare text, or drop `.tl-xp`'s nowrap.
+  it('V105: keeps each separator on the line of the figure before it, and wraps only between parts', async () => {
+    render(<TimelineLanesScreen view={null} onView={() => {}} />)
+    await waitFor(() => expect(document.querySelector('.tl-strip .tl-ended')).not.toBeNull())
+    const ended = document.querySelector('.tl-strip .tl-ended') as HTMLElement
+    expect(painted(ended, 'flex-wrap', { width: 400 })).toBe('wrap')
+    // No bare text beside the parts: everything the strip prints is in one.
+    for (const n of ended.childNodes) {
+      if (n.nodeType === Node.TEXT_NODE) expect(n.textContent?.trim(), 'a bare word can wrap inside itself').toBe('')
+      else expect((n as Element).classList.contains('tl-xp')).toBe(true)
+    }
+    const parts = [...ended.querySelectorAll<HTMLElement>(':scope > .tl-xp')]
+    expect(parts).toHaveLength(4)
+    for (const p of parts) {
+      expect(painted(p, 'white-space', { width: 400 })).toBe('nowrap')
+      expect(p.querySelector('b'), `"${p.textContent}" has no figure`).not.toBeNull()
+    }
+    // Every separator ends a part: none can start a line or stand on its own.
+    expect(parts.filter((p) => p.textContent!.includes('·')).map((p) => /^\S.*\S ·$/.test(p.textContent!))).toEqual([true, true])
+  })
+})

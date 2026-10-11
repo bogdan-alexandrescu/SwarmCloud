@@ -39,7 +39,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { WorkflowCard, integratorShort } = await import('../Workflows')
+const { WorkflowCard } = await import('../Workflows')
 const { workflowSpend, dueSteps, layoutOf, nodeWidthAt, CHAIN_NODE_W } = await import('../dag')
 const { attemptFacts, attemptPhase, failureCause } = await import('../stepviews')
 const { TIMELINE_KEY } = await import('../WorkflowViews')
@@ -539,10 +539,10 @@ describe('G3-25: the integrator is a task, linked to its agent', () => {
     expect(fact, 'no integrator fact').toBeDefined()
     const link = fact!.querySelector<HTMLAnchorElement>('a')!
     expect(link.getAttribute('href')).toBe(`#work/task/${INTEGRATOR}`)
-    expect(link.textContent).toBe('task_…18680')
+    // The whole id, never cut in the text (V102): only CSS may ellipse it.
+    expect(link.textContent).toBe(INTEGRATOR)
     expect(link.getAttribute('title')).toBe(INTEGRATOR)
     expect([...container.querySelectorAll('.wf-dispatch b')].map((b) => b.textContent)).not.toContain('via')
-    expect(integratorShort('abc')).toBe('abc')
   })
 })
 
