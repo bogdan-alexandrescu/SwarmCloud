@@ -154,6 +154,13 @@ SWITCHES: dict[str, Switch] = {
         "names. Off, it is created and files nothing there. On with "
         "observer_file_issues_repo_required",
     ),
+    "epic_triage_unreadable": Switch(
+        code="epic_triage_unreadable",
+        why="an epic-triage firing whose every repository failed to list its epics with "
+        "the tenant's forge credential, and that applied and took in nothing, ends refused "
+        "instead of succeeding empty. On once the per-repository codes in the log show only "
+        "credentials that really lack issues: read",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
