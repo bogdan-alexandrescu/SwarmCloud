@@ -42,9 +42,13 @@ INVARIANTS, each by construction here:
 
 WHAT IS NOT HERE. Each type's executor (`swarm_api/schedtypes/<type>.py`,
 lanes S6 and S10) decides what a firing creates; this module defines the seam
-they implement (`Firing`, `load_executor`). Approvals (S5) turn an
-`awaiting_approval` firing into work; until S5 an `approve` run gate holds the
-firing there with no work. The tenant routes (S3) call `fire_now`.
+they implement (`Firing`, `load_executor`). An `approve` run gate holds the
+firing at `awaiting_approval` with no work; the approval itself is lane S5's
+(`approvals.firing_move` records `run_approval` on the firing in the
+decision's transaction), and the tick then finishes the approved firing like
+a claimed one (`_finish_approved`), only while the approval is the firing's
+own tenant's, approved, and for the digest it would run with. The tenant
+routes (S3) call `fire_now`.
 """
 
 from __future__ import annotations
@@ -67,7 +71,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.identity import Principal
 from swarm_common.states import TaskState
 
-from . import cronexpr, refusals, scheduletypes, schedules
+from . import cronexpr, refusals, schedaudit, scheduletypes, schedules
 from .attempt_totals import totals_for
 from .auth import AuthContext
 from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable
@@ -158,6 +162,17 @@ SCHEDULE_NOT_ENABLED = "SCHEDULE_NOT_ENABLED"
 TYPE_UNAVAILABLE = "TYPE_UNAVAILABLE"
 RUN_OVER_BUDGET = "RUN_OVER_BUDGET"
 CONSECUTIVE_FAILURES = "CONSECUTIVE_FAILURES"
+
+#: The `schedule_audit` action written when an approved firing is held back
+#: because its approval does not release it, once per approval and digest.
+RUN_APPROVAL_REFUSED = "run_approval_refused"
+#: Why, in that entry's `detail.code`: the approval record is missing, another
+#: tenant's, of another kind or for another firing; it is not approved; or the
+#: digest approved is not the one the firing would run with. The last is the
+#: approvals route's own 409 code for the same case.
+APPROVAL_NOT_FOUND = "approval_not_found"
+APPROVAL_NOT_APPROVED = "approval_not_approved"
+APPROVAL_CHANGED = "approval_changed"
 
 #: What a person reads for each auto-pause (§1.3).
 PAUSE_COPY = {
@@ -701,6 +716,8 @@ class Ticker:
         if self._clock() - started < TICK_BUDGET_SECONDS:
             self._finish_stale(now, report, started)
         if self._clock() - started < TICK_BUDGET_SECONDS:
+            self._finish_approved(now, report, started)
+        if self._clock() - started < TICK_BUDGET_SECONDS:
             self._advance_live(now, report, started)
         else:
             report.truncated = True
@@ -837,9 +854,10 @@ class Ticker:
     # -- 2. finish (§2.7) ---------------------------------------------------
 
     def finish(self, fid: str, now: datetime, report: TickReport, *, dry_run: bool = False) -> str | None:
-        """Turn a claimed (or released queued) firing into work, or a skip, a
-        refusal or a hold. Returns the state it moved to, or None when another
-        finisher holds it or it is no longer claimed."""
+        """Turn a claimed (or released queued, or approved) firing into work,
+        or a skip, a refusal or a hold. Returns the state it moved to, or None
+        when another finisher holds it, it is no longer claimed, or its
+        approval does not release it."""
         firing = self._lease(fid)
         if firing is None:
             return None
@@ -853,7 +871,13 @@ class Ticker:
         return state
 
     def _lease(self, fid: str) -> dict[str, Any] | None:
-        """Hold a claimed firing for FINISH_LEASE from NOW, the wall clock."""
+        """Hold a claimed firing for FINISH_LEASE from NOW, the wall clock.
+
+        An `awaiting_approval` firing is leased too, but only when its
+        `run_approval` releases it (`_approval_refusal`), checked in this
+        transaction; one that does not stays held, and the refusal is audited
+        once per approval and digest, never on every tick.
+        """
         ref = self._firing_ref(fid)
         wall = _aware(self.ctx.now())
         token = uuid.uuid4().hex
@@ -864,7 +888,12 @@ class Ticker:
             if not snap.exists:
                 return None
             doc = snap.to_dict() or {}
-            if doc.get("state") != CLAIMED:
+            if doc.get("state") == AWAITING_APPROVAL and doc.get("run_approval"):
+                refusal = self._approval_refusal(txn, doc)
+                if refusal is not None:
+                    self._audit_refusal(txn, ref, doc, wall, refusal)
+                    return None
+            elif doc.get("state") != CLAIMED:
                 return None
             held = _aware(doc.get("finishing_until"))
             if held is not None and held > wall:
@@ -876,6 +905,74 @@ class Ticker:
         if doc is not None:
             self._leases[fid] = token
         return doc
+
+    def _approval_refusal(self, txn: Any, firing: Mapping[str, Any]) -> tuple[str, dict[str, Any]] | None:
+        """Why the firing's `run_approval` does not release it, or None when it does.
+
+        It releases the firing only when its digest is the firing's
+        `params_digest`, and the record it names is this firing's own: in the
+        firing's tenant, a `run` approval, for this firing, named on the
+        firing, decided `approved`, at the same digest. The field alone is
+        never trusted: the record is the decision, written with its audit in
+        the decision's transaction (`approvals.decide`).
+        """
+        # Imported here: `approvals` imports this module.
+        from . import approvals
+
+        approval = firing.get("run_approval") or {}
+        approval_id = approval.get("approval_id")
+        detail: dict[str, Any] = {"approval_id": approval_id, "digest": approval.get("digest"),
+                                  "params_digest": firing.get("params_digest")}
+        if not approval.get("digest") or approval.get("digest") != firing.get("params_digest"):
+            return APPROVAL_CHANGED, detail
+        if not approval_id or approval_id != firing.get("approval_id"):
+            return APPROVAL_NOT_FOUND, detail
+        snap = _snapshot(txn.get(self.db.collection(approvals.COLLECTION).document(str(approval_id))))
+        record = (snap.to_dict() or {}) if snap.exists else {}
+        if record.get("tenant_id") != firing.get("tenant_id") or record.get("kind") != approvals.RUN \
+                or (record.get("subject") or {}).get("firing_id") != firing.get("firing_id"):
+            return APPROVAL_NOT_FOUND, detail
+        if record.get("state") != approvals.APPROVED:
+            return APPROVAL_NOT_APPROVED, {**detail, "state": record.get("state")}
+        if record.get("digest") != approval.get("digest"):
+            return APPROVAL_CHANGED, detail
+        return None
+
+    def _audit_refusal(self, txn: Any, ref: Any, firing: Mapping[str, Any], now: datetime,
+                       refusal: tuple[str, Mapping[str, Any]]) -> None:
+        """The held firing's audit entry and its `run_approval_refused`, once per refusal."""
+        code, detail = refusal
+        marker = {"code": code, "approval_id": detail.get("approval_id"), "digest": detail.get("digest"),
+                  "params_digest": detail.get("params_digest")}
+        seen = dict(firing.get("run_approval_refused") or {})
+        seen.pop("at", None)
+        if seen == marker:
+            return
+        schedaudit.append(
+            txn, self.db, schedule_id=str(firing.get("schedule_id")), tenant_id=str(firing.get("tenant_id")),
+            action=RUN_APPROVAL_REFUSED, by=TICK_ACTOR, at=now,
+            detail={"firing_id": firing.get("firing_id"), **dict(detail), "code": code},
+        )
+        txn.update(ref, {"run_approval_refused": {**marker, "at": now}})
+        log.warning("schedule firing %s: approval does not release it (%s)", firing.get("firing_id"), code)
+
+    def _hold_approved(self, fid: str, now: datetime, report: TickReport,
+                       refusal: tuple[str, Mapping[str, Any]]) -> str:
+        """An approved firing whose digest at finish is not the one approved:
+        it stays `awaiting_approval`, the lease is given back, and it is audited."""
+        ref = self._firing_ref(fid)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            doc = _snapshot(txn.get(ref)).to_dict() or {}
+            if not self._holds(fid, doc):
+                raise Conflict(f"firing {fid} is held by another finisher")
+            self._audit_refusal(txn, ref, doc, now, refusal)
+            txn.update(ref, {"finishing_until": None, "finisher": None})
+
+        _apply(self.db.transaction())
+        report.held += 1
+        return AWAITING_APPROVAL
 
     def _holds(self, fid: str, doc: Mapping[str, Any]) -> bool:
         token = self._leases.get(fid)
@@ -962,6 +1059,15 @@ class Ticker:
             return self._refused(fid, now, report, schedule, REPOSITORY_NOT_GRANTED,
                                  {"repo_ids": missing})
         digest = params_digest(schedule, repo_ids)
+        # An approved firing runs only what was approved: the scope or
+        # parameters it would run with now must give the digest approved.
+        approved = firing.get("state") == AWAITING_APPROVAL
+        if approved and digest != (firing.get("run_approval") or {}).get("digest"):
+            return self._hold_approved(fid, now, report, (APPROVAL_CHANGED, {
+                "approval_id": (firing.get("run_approval") or {}).get("approval_id"),
+                "digest": (firing.get("run_approval") or {}).get("digest"),
+                "params_digest": digest,
+            }))
         # Budget (§4.3): a firing gate, never an admission control.
         budget = schedule["budget"]
         spend = schedules.spend_for(schedule.get("spend"), schedules.spend_day(now, schedule["timezone"]))
@@ -988,7 +1094,7 @@ class Ticker:
             output = executor.dry_run(handle)
             return self._end(fid, now, report, state=SKIPPED, code=DRY_RUN, detail=detail_missing,
                              schedule=schedule, extra={"dry_run": output, "params_digest": digest})
-        if (schedule.get("gate") or {}).get("run") == "approve":
+        if (schedule.get("gate") or {}).get("run") == "approve" and not approved:
             # §1.4: held as a document and nothing else. The approval record
             # and its inbox are lane S5's; nothing is submitted here.
             report.held += 1
@@ -1083,14 +1189,16 @@ class Ticker:
 
     def _move(self, fid: str, now: datetime, report: TickReport, state: str,
               patch: Mapping[str, Any]) -> str:
-        """claimed -> `state`, only from claimed; the history says when and by whom."""
+        """claimed -> `state`, only from claimed, or from an approved
+        `awaiting_approval` this finisher leased; the history says when and by whom."""
         ref = self._firing_ref(fid)
 
         @firestore.transactional
         def _apply(txn: Any) -> None:
             snap = _snapshot(txn.get(ref))
             doc = snap.to_dict() or {}
-            if doc.get("state") != CLAIMED:
+            approved = doc.get("state") == AWAITING_APPROVAL and bool(doc.get("run_approval"))
+            if doc.get("state") != CLAIMED and not approved:
                 raise Conflict(f"firing {fid} is {doc.get('state')}, not claimed")
             if not self._holds(fid, doc):
                 raise Conflict(f"firing {fid} is held by another finisher")
@@ -1402,6 +1510,23 @@ class Ticker:
             fired_at = _aware(firing.get("fired_at"))
             if fired_at is None or now - fired_at < CLAIM_STALE:
                 continue
+            try:
+                self.finish(firing["firing_id"], now, report)
+            except Exception as exc:
+                self._failed(report, firing["firing_id"], exc)
+
+    def _finish_approved(self, now: datetime, report: TickReport, started: float) -> None:
+        """`awaiting_approval` firings that carry a `run_approval`, finished
+        by this tick under the gate they were claimed with. An unapproved one
+        is not touched; `_lease` decides whether the approval releases it.
+        The filter comes before the page: the scan is platform-wide, and
+        ADVANCE_PAGE older unapproved (or digest-mismatched) firings would
+        otherwise fill every slot and an approved one would never run."""
+        approved = [f for f in self._by_state(AWAITING_APPROVAL) if f.get("run_approval")]
+        for firing in approved[:ADVANCE_PAGE]:
+            if self._clock() - started >= TICK_BUDGET_SECONDS:
+                report.truncated = True
+                return
             try:
                 self.finish(firing["firing_id"], now, report)
             except Exception as exc:
