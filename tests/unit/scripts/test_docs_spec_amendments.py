@@ -63,7 +63,7 @@ def _backends() -> dict[str, Backend]:
 
 
 def test_the_catalogue_is_what_the_amendment_describes():
-    """The premise: Cloud Run Jobs for most profiles, GKE for browser, claude-code and indexer.
+    """The premise: GKE for every profile that reaches the internet, Cloud Run Jobs for the rest.
 
     If this fails the profiles moved, and every document below is describing
     the old split: amend them before changing the expectation here.
@@ -71,14 +71,21 @@ def test_the_catalogue_is_what_the_amendment_describes():
     backends = _backends()
     # claude-code: contract request 53, applied 2026-10-08 after request 55's
     # canary (claude-code-gke, removed by the same change). indexer: contract
-    # request 63 (owner, 2026-10-10), the canary for #939.
-    assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {"browser", "claude-code", "indexer"}
-    assert {n for n, b in backends.items() if b is Backend.CLOUD_RUN_JOB} == {
-        "mock",
+    # request 63 (owner, 2026-10-10), the canary for #939. generic, codex and
+    # merge: contract requests 64, 65 and 66 (owner, 2026-10-10, #939 option A).
+    assert {n for n, b in backends.items() if b is Backend.GKE_AUTOPILOT} == {
+        "browser",
+        "claude-code",
+        "indexer",
         "generic",
         "codex",
-        # #295, contract requests 33, 35 and 36 (accepted 2026-10-01).
         "merge",
+    }
+    assert {n for n, b in backends.items() if b is Backend.CLOUD_RUN_JOB} == {
+        # reaches no internet, so #939 option A left it.
+        "mock",
+        # #295, contract requests 35 and 36: each designed to run as its own
+        # account, which a GKE pod cannot be (contract request 66).
         "post-verdict",
         "claude-code-review",
     }

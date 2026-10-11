@@ -15,6 +15,9 @@ the three things Cloud Run cannot do, and, since contract request 53
 (2026-10-08), for `claude-code`, the one thing Cloud Run did too slowly: start
 it (§4). Since contract request 63 (2026-10-10) `indexer` runs there too, the
 canary for #939: a new Cloud Run instance's internet path opens too slowly.
+Contract requests 64-66 (owner, 2026-10-10, #939 option A) move `generic`,
+`codex` and `merge` after it, for the same reason, so Cloud Run is left with
+`mock` and the two disabled profiles that cannot move (§4, item 6).
 
 ---
 
@@ -64,9 +67,9 @@ backend.
 | Profile | Image | Class | Backend | Provider |
 |---|---|---|---|---|
 | `mock` | `agent-runtime-base` | standard | Cloud Run Job | none |
-| `generic` | `agent-runtime-base` | standard | Cloud Run Job | none |
+| `generic` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 64, #939 option A; its Cloud Run Jobs kept, idle, as the rollback) | none |
 | `claude-code` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 53; its Cloud Run Jobs kept, idle, until 2026-10-15 as the rollback) | anthropic |
-| `codex` | `agent-runtime-base` | standard | Cloud Run Job | openai |
+| `codex` | `agent-runtime-base` | standard | **GKE Autopilot** (contract request 65, #939 option A; its Cloud Run Jobs kept, idle, as the rollback; disabled) | openai |
 | `browser` | `agent-runtime-browser` | browser | **GKE Autopilot** | anthropic |
 | `indexer` | `agent-runtime-indexer` | standard | **GKE Autopilot** (contract request 63, the canary for #939; its Cloud Run Jobs kept, idle, as the rollback) | anthropic |
 
@@ -179,6 +182,19 @@ Reserved for:
    measured with `scripts/egress-ready-report.sh`. It carries the same
    node-side costs as `claude-code` above, and rolls back the same way: one
    line in `profiles.py` while `cloud_run_fallback_profiles` keeps its Jobs.
+6. **`generic`, `codex` and `merge`, for the same internet path** (contract
+   requests 64, 65 and 66, owner 2026-10-10, #939 option A, merged only after
+   the indexer canary is measured). Each clones or calls GitHub or a provider
+   API first; each keeps its Cloud Run Jobs, idle, as the rollback, and rolls
+   back as `indexer` does. `merge` can move because it runs as the tenant's
+   worker account on either backend (contract request 47), which is the
+   identity the GKE pod's KSA is bound to. `post-verdict` and
+   `claude-code-review` cannot: each was designed to run as an account of its
+   own (`swarm-<tenant>-post-verdict`, `swarm-<tenant>-review`), and
+   `post-verdict` also reads `FORGE_HOST`/`FORGE_OWNER`/`FORGE_REPO` from its
+   Job's Terraform-rendered environment, while a GKE pod runs as the tenant's
+   one worker KSA and carries neither. Both are disabled, so nothing waits on
+   them. `mock` reaches no internet and stays.
 
 Every pod carries:
 

@@ -50,10 +50,14 @@ locals {
       secret_env      = {}
       timeout_seconds = 600
     }
+    # GKE Autopilot since contract request 64 (owner, 2026-10-10, option A of
+    # #939): a new Cloud Run instance's internet path opens a median 20.2 s
+    # after start against GKE's 1.17 s. Its tenants' Cloud Run Jobs are still
+    # created, as the rollback, by `cloud_run_fallback_profiles` below.
     "generic" = {
       image           = "agent-runtime-base"
       resource_class  = "standard"
-      backend         = "CLOUD_RUN_JOB"
+      backend         = "GKE_AUTOPILOT"
       provider        = null
       secret_env      = {}
       timeout_seconds = 3600
@@ -82,10 +86,12 @@ locals {
       }
       timeout_seconds = 7200
     }
+    # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A of
+    # #939); its Cloud Run Jobs stay as the rollback, as generic's do.
     "codex" = {
       image           = "agent-runtime-base"
       resource_class  = "standard"
-      backend         = "CLOUD_RUN_JOB"
+      backend         = "GKE_AUTOPILOT"
       provider        = "openai"
       secret_env      = { OPENAI_API_KEY = "openai" }
       timeout_seconds = 7200
@@ -111,10 +117,16 @@ locals {
     # merge reads the tenant's `-git` token since contract request 47 (owner,
     # 2026-10-04): its Job exists for a tenant that registers `git`, and runs
     # as the tenant's worker account, the secret's ordinary reader.
+    #
+    # GKE Autopilot since contract request 66 (owner, 2026-10-10, option A of
+    # #939): the pod's KSA is bound to that same worker account, so it reads
+    # the same secret. Its Cloud Run Jobs stay as the rollback, as generic's do.
+    # post-verdict and claude-code-review stay on CLOUD_RUN_JOB: each was
+    # designed to run as its own account, which a GKE pod cannot be.
     "merge" = {
       image           = "agent-runtime-base"
       resource_class  = "standard"
-      backend         = "CLOUD_RUN_JOB"
+      backend         = "GKE_AUTOPILOT"
       provider        = "git"
       secret_env      = {}
       timeout_seconds = 600
@@ -183,6 +195,8 @@ locals {
   # claude-code: kept until 2026-10-15 as the request 53 rollback; remove then.
   # indexer: kept as the contract request 63 rollback (#939's canary, owner
   # 2026-10-10) until the owner decides the canary on its measurement.
+  # generic, codex, merge: kept as the rollback of contract requests 64, 65
+  # and 66 (#939 option A, owner 2026-10-10), on the same terms as indexer.
   #
   # The Job matrix below makes a Cloud Run Job only for a CLOUD_RUN_JOB
   # profile, so moving claude-code to GKE Autopilot (contract request 53,
@@ -194,7 +208,7 @@ locals {
   # catalogue's backend, so nothing dispatches to it while the profile names
   # GKE_AUTOPILOT. tests/terraform/catalogue.tftest.hcl holds that the Jobs are
   # still planned.
-  cloud_run_fallback_profiles = ["claude-code", "indexer"]
+  cloud_run_fallback_profiles = ["claude-code", "indexer", "generic", "codex", "merge"]
 
   # --- the model each profile's agent CLI runs (#226) -----------------------
   #

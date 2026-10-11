@@ -1087,7 +1087,14 @@ _GENERIC_PROFILE = RunnerProfile(
     name="generic",
     image="agent-runtime-base",
     resource_class="standard",
-    backend=Backend.CLOUD_RUN_JOB,
+    # GKE Autopilot since contract request 64 (owner, 2026-10-10, option A of
+    # #939, after request 63's indexer canary): a generic task clones first,
+    # and a new Cloud Run instance's internet path opens a median 20.2 s after
+    # start (n=19) against GKE's 1.17 s (n=148) through the same NAT. Its
+    # tenants' Cloud Run Jobs are kept as the rollback
+    # (terraform/infra/locals.tf `cloud_run_fallback_profiles`): rolling back
+    # is this one line, back to CLOUD_RUN_JOB.
+    backend=Backend.GKE_AUTOPILOT,
     runner_argv=("python", "-m", "agent_worker.runners.generic"),
     provider=None,
 )
@@ -1222,7 +1229,11 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         name="codex",
         image="agent-runtime-base",
         resource_class="standard",
-        backend=Backend.CLOUD_RUN_JOB,
+        # GKE Autopilot since contract request 65 (owner, 2026-10-10, option A
+        # of #939), for the internet path generic's request 64 records. Its
+        # tenants' Cloud Run Jobs are kept as the rollback
+        # (`cloud_run_fallback_profiles`): rolling back is this one line.
+        backend=Backend.GKE_AUTOPILOT,
         runner_argv=("python", "-m", "agent_worker.runners.codex"),
         provider="openai",
         secrets=("OPENAI_API_KEY",),
@@ -1281,7 +1292,14 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         name="merge",
         image="agent-runtime-base",
         resource_class="standard",
-        backend=Backend.CLOUD_RUN_JOB,
+        # GKE Autopilot since contract request 66 (owner, 2026-10-10, option A
+        # of #939): the merge reads GitHub, and a new Cloud Run instance's
+        # internet path opens a median 20.2 s after start. It runs as the
+        # tenant's worker account on either backend (contract request 47), so
+        # the GKE pod's KSA, bound to that account, reads the same `-git`
+        # secret. Its tenants' Cloud Run Jobs are kept as the rollback
+        # (`cloud_run_fallback_profiles`): rolling back is this one line.
+        backend=Backend.GKE_AUTOPILOT,
         runner_argv=(),
         worker_action=WorkerAction.MERGE,
         # The credential is never mounted: the worker reads the tenant's `-git`
@@ -1298,6 +1316,10 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         name="post-verdict",
         image="agent-runtime-base",
         resource_class="standard",
+        # NOT moved by #939's option A (contract request 66): it was designed
+        # to run as its own Job's service account with FORGE_HOST/OWNER/REPO
+        # rendered onto that Job (`forge.forge_target_from_env`), and a GKE
+        # pod has neither -- it runs as the tenant's one worker KSA.
         backend=Backend.CLOUD_RUN_JOB,
         runner_argv=(),
         worker_action=WorkerAction.POST_VERDICT,
@@ -1321,7 +1343,9 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
     # account, `swarm-<tenant>-review` -- and never_restore_checkpoint, and,
     # since contract request 53 moved claude-code to GKE Autopilot, its
     # backend: this profile is retired (no Job for any tenant,
-    # `profiles_without_a_job`), so request 53 did not move it.
+    # `profiles_without_a_job`), so request 53 did not move it, and neither
+    # did #939's option A (contract request 66): it was designed to run as its
+    # own account, `swarm-<tenant>-review`, which a GKE pod cannot be.
     "claude-code-review": RunnerProfile(
         name="claude-code-review",
         image="agent-runtime-base",

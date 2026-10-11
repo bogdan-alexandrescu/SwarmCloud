@@ -167,16 +167,19 @@ fails when a profile's backend moves and this table does not.
 | `claude-code` | `GKE_AUTOPILOT` | none used: since contract request 53 (applied 2026-10-08); each tenant's old Job is kept idle until 2026-10-15 as the rollback |
 | `browser` | `GKE_AUTOPILOT` | none: Chromium needs the `/dev/shm` GKE gives it |
 | `mock` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
-| `generic` | `CLOUD_RUN_JOB` | one per tenant (no provider) |
+| `generic` | `GKE_AUTOPILOT` | none used: since contract request 64 (2026-10-10, #939 option A); each tenant's old Job (one per tenant, no provider) is kept idle as the rollback |
 | `indexer` | `GKE_AUTOPILOT` | none used: since contract request 63 (2026-10-10, the canary for #939); each tenant's old Job (one per tenant that registers `anthropic`) is kept idle as the rollback |
-| `merge` | `CLOUD_RUN_JOB` | one per tenant that registers `git` (contract request 47); every MERGE verdict pays a Cloud Run start (#748) |
-| `codex` | `CLOUD_RUN_JOB` | one per tenant that registers `openai`; the profile is disabled (`available=False`) |
+| `merge` | `GKE_AUTOPILOT` | none used: since contract request 66 (2026-10-10, #939 option A); each tenant's old Job (one per tenant that registers `git`, contract request 47) is kept idle as the rollback. Until then every MERGE verdict paid a Cloud Run start (#748) |
+| `codex` | `GKE_AUTOPILOT` | none used: since contract request 65 (2026-10-10, #939 option A); each tenant's old Job (one per tenant that registers `openai`) is kept idle as the rollback; the profile is disabled (`available=False`) |
 | `post-verdict` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); disabled |
 | `claude-code-review` | `CLOUD_RUN_JOB` | no Job (`profiles_without_a_job`); retired |
 
-So `mock`, `generic`, `merge` and `codex` are the profiles still started on
-Cloud Run. `scripts/warm-jobs.sh` warms every per-tenant worker Job it lists:
-theirs, and the idle claude-code and indexer Jobs until they are removed.
+So `mock` is the one enabled profile still started on Cloud Run: it reaches no
+internet, so #939's option A left it there, and `post-verdict` and
+`claude-code-review` stay because each was designed to run as an account of its
+own, which a GKE pod cannot be (contract request 66). `scripts/warm-jobs.sh`
+warms every per-tenant worker Job it lists: mock's, and the idle rollback Jobs
+of claude-code, indexer, generic, codex and merge until they are removed.
 
 ## The `indexer` profile (contract request 48)
 
