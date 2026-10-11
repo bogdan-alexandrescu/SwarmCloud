@@ -198,9 +198,10 @@ this session supplies.
    `--plan auto`, `--auto-merge` or `--fix-rounds`. The terminal equivalent,
    `uv run sc run --issue <owner/repo#N> --follow`, is the developer's to run
    (this skill is not granted it); it prints one row per step as it moves.
-2. `--auto-merge` is visible but disabled: the API refuses it until #295 and
-   nothing is created. Report that refusal plainly, in its own words, and offer
-   the same run without `--auto-merge`.
+2. `--auto-merge` merges the run's pull request with the `merge` step (#295,
+   enabled by contract request 47). The API refuses it only while the `merge`
+   profile is disabled, and then nothing is created: report that refusal
+   plainly, in its own words, and offer the same run without `--auto-merge`.
 3. Report the run's `id` and `state`. A `required` run (the default) stops at
    `PLANNED`, holding no capacity, until the developer approves — go on to
    `plan show`. Once the run is `RUNNING` (or `FIXING`, a CI fix round), its
