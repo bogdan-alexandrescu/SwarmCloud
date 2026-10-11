@@ -290,24 +290,41 @@ accessors (`docs/merge-step.md` §1.3), and swarm-api never needs to sign as an
 App. Without this grant the preview answers `no_access` for every tenant.
 
 **A person's forge slot, `swarm-tenant-<tenant>-git-u-<hex>`, is the other
-exception, and its readers are changing.** Today, under owner decision D7
-([git-tokens.md](git-tokens.md#built-for-780-per-person-slots-the-migration-policy-retiring-the-tenant-token)),
-it has two readers: swarm-api, and the tenant's worker account, through one
-prefix-conditioned binding per tenant (`forge_slot_reader` in
-`terraform/bootstrap/forge_user_slots.tf`). Every member of a group tenant runs
-agents as that one account, so isolation between tenants holds, but
-isolation between the people inside one tenant does not. The owner decided on
-2026-10-11 that secrets are user-scoped (#1041), and the proposed design is
-[design/user-scoped-secrets.md](design/user-scoped-secrets.md). Status:
-PROPOSED until its steps land. Under it:
+exception: swarm-api is its only reader, and the worker obtains it from
+swarm-api.** Every member of a group tenant runs agents as the tenant's one
+worker account, and an agent can mint that account's token. So while that
+account could read the slots (owner decision D7,
+[git-tokens.md](git-tokens.md#built-for-780-per-person-slots-the-migration-policy-retiring-the-tenant-token)),
+isolation between tenants held but isolation between the people inside one
+tenant did not. The owner decided on 2026-10-11 that secrets are user-scoped
+(#1041). As built
+([design/user-scoped-secrets.md](design/user-scoped-secrets.md)):
 
-* swarm-api becomes the slot's **only** reader;
-* the worker obtains the slot from swarm-api's broker
-  (`POST /v1/attempts/forge-credential`), signed with its attempt key, and
+* swarm-api is the slot's **only** reader (`forge_refresh_reader` in
+  `terraform/bootstrap/forge_user_slots.tf`). The tenant worker's binding,
+  `forge_slot_reader`, is removed, and
+  `tests/terraform/forge_app.tftest.hcl`, run
+  `no_tenant_worker_holds_secret_accessor_on_a_user_slot`, fails if any IAM
+  resource in that root grants a tenant worker `secretAccessor` again;
+* the worker obtains the slot from swarm-api's broker,
+  `POST /v1/attempts/forge-credential`
+  (`apps/swarm-api/swarm_api/credbroker.py::ForgeCredentialBroker.release`),
+  signed with its attempt key
+  (`apps/agent-worker/agent_worker/forgebroker.py::ForgeBroker.fetch`), and
   only for the current attempt of a task whose signed `submitted_by` owns
-  the slot;
+  the slot and still holds the grant. Bob's attempt asking for Alice's slot
+  is refused before Secret Manager is read
+  (`tests/unit/control_plane/test_forge_credential_broker.py::test_bobs_attempt_is_refused_alices_slot_and_reads_no_secret`);
+* the scheduler issues the attempt key's nonce to every attempt whose signed
+  `forge_credential` is a user slot, children included
+  (`apps/scheduler/scheduler/dispatch.py::worker_env`);
 * the tenant token, repository tokens, the App keys and every provider key
   stay team credentials, read as described above.
+
+The IAM removal reaches a project by the owner's bootstrap apply, made only
+after a release carrying the worker's broker client is deployed; applied
+earlier, every user-slot task fails closed until that release lands
+([runbooks/github-app.md](runbooks/github-app.md), step 2).
 
 #### What the forge credential must be allowed
 

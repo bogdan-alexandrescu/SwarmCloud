@@ -1,11 +1,12 @@
 # User-scoped secrets in group tenants: a credential broker in swarm-api
 
-**Status: PROPOSED 2026-10-11, design only (#1041, step 1 of 5).** Nothing
-below is built yet. The broker route, the scheduler's nonce, the worker's
-client and the IAM removal are steps 2-5 of the plan for #1041. Until they
-land, a user slot is read exactly as
-[git-tokens.md](../git-tokens.md#built-for-780-per-person-slots-the-migration-policy-retiring-the-tenant-token)
-says: directly, by the tenant's worker account.
+**Status: BUILT 2026-10-11 (#1041, steps 1-5).** Designed 2026-10-11 and
+built the same day: the broker route, the scheduler's nonce, the worker's
+client and the IAM removal are all in the repository. §9 names the file and
+the test that holds each guarantee. One thing is the operator's, not the
+code's: the IAM removal reaches a project only through the owner's bootstrap
+apply, and that apply goes **after** a release carrying the worker's client
+is deployed (§5, "The rollout order").
 
 **The owner's decision, 2026-10-11: secrets are user-scoped, not
 tenant-scoped.** A person's credential is used only on the tasks that person
@@ -48,10 +49,10 @@ the task as `forge_credential`
 The worker reads the slot that the signed task names
 (`apps/agent-worker/agent_worker/secrets.py::resolve_git_token`).
 
-**What is wrong.** `terraform/bootstrap/forge_user_slots.tf`
-(`resource "google_project_iam_member" "forge_slot_reader"`) grants the
-tenant's worker account `secretAccessor` on every member's base slot, one
-prefix-conditioned binding per tenant. That was owner decision D7, option U1
+**What was wrong.** `terraform/bootstrap/forge_user_slots.tf`
+(`resource "google_project_iam_member" "forge_slot_reader"`, removed in step 5)
+granted the tenant's worker account `secretAccessor` on every member's base
+slot, one prefix-conditioned binding per tenant. That was owner decision D7, option U1
 of [git-tokens.md §2](../git-tokens.md#2-secret-manager-naming-and-who-can-read-each-secret):
 "a user token is a tenant secret attributed to a person". Every member of
 `eng` runs agents as `swarm-agent-worker-eng`. An agent runs as its worker's
@@ -330,11 +331,22 @@ directly with its own account:
 
 ## 5. IAM: the worker loses its read of user slots
 
-Once the worker's client and the scheduler's nonce are deployed, the binding
-`terraform/bootstrap/forge_user_slots.tf` (`resource "google_project_iam_member" "forge_slot_reader"`)
-is removed (step 5). After that, the only reader of a `-git-u-` base slot is
-swarm-api (`forge_refresh_reader`, already the reader of the `-refresh`
-twins).
+The binding `forge_slot_reader` is gone from
+`terraform/bootstrap/forge_user_slots.tf` (step 5). The only reader of a
+`-git-u-` slot, base or `-refresh` twin, is swarm-api (`forge_refresh_reader`
+in the same file). `tests/terraform/forge_app.tftest.hcl`, run
+`no_tenant_worker_holds_secret_accessor_on_a_user_slot`, holds it two ways:
+every `secretAccessor` binding the root plans on a `-git-u-` condition is
+swarm-api's, and no IAM resource anywhere in `terraform/bootstrap/` grants a
+tenant worker account `secretAccessor` at all, so a binding re-added under a
+new address fails too. Destroying the binding needed no `removed` block; the
+one `removed` pair that names `forge_slot_reader` is W9's
+(`terraform/bootstrap/removed.tf`), which forgets u-bogdan's personal grant
+with `destroy = false` and is unchanged.
+
+A personal tenant's worker (`u-<user>`) still reads its own slots, through
+the binding the workspace job makes (docs/workspaces.md, A6). That account is
+the person's alone, so the read reaches nobody else's credential.
 
 **This is what makes the guarantee IAM's.** An agent in Bob's task that
 mints its worker's token and calls Secret Manager for Alice's slot gets
@@ -343,11 +355,13 @@ worker's private key is in a heap it cannot read, and Alice's task's key is in
 another container. Signing Bob's own tuple gets it Bob's task's checks, which
 end at step 5, 7 or 8.
 
-**The rollout order matters.** The IAM removal is applied by the operator's
+**The rollout order.** The IAM removal is applied by the operator's
 bootstrap apply only after a release that carries the worker's broker client
-and the scheduler's nonce is deployed. Otherwise every user-slot task fails
-closed (step 3.3) until that release is deployed. Rolling back the worker
-after the removal has the same effect. Re-applying the binding is the undo.
+(`apps/agent-worker/agent_worker/forgebroker.py`) and the scheduler's nonce is
+deployed. Otherwise every user-slot task fails closed (§3.3) until that
+release is deployed. Rolling back the worker after the removal has the same
+effect. Re-applying the binding is the undo. The operator's step is in
+[runbooks/github-app.md](../runbooks/github-app.md), step 2.
 
 **What it does not stop, stated plainly.** An agent can obtain its own
 submitter's token, which is no more than today:
@@ -366,7 +380,9 @@ credential.
 ## 6. Provider keys: team or personal
 
 **This classification is a recommendation, awaiting the owner's
-confirmation.** The question is in this step's `questions.json`.
+confirmation.** The owner confirms it on #1041. Nothing built in
+steps 2-5 depends on the answer: every provider key below is read exactly as
+before.
 
 Every provider credential the platform reads today:
 
@@ -418,22 +434,29 @@ registration lives in `child_keys`, which only swarm-api writes and which is
 not frozen. So `apps/common/swarm_common/` is not touched, and no entry is
 added to [contract-change-requests.md](../contract-change-requests.md).
 
-## 9. Build plan
+## 9. As built: where each guarantee lives
 
 | step | what | files |
 |---|---|---|
 | 1 | this design; git-tokens.md and multi-tenancy.md point at it | `docs/` |
-| 2 | the broker route and its decision function, with checks 1-9 above, including the spec-signature check | `apps/swarm-api/swarm_api/` |
-| 3 | the nonce for every user-slot attempt, `SWARM_CHILD_PATH=false` for a child | `apps/scheduler/scheduler/dispatch.py` |
-| 4 | the worker reads `git-u-` only through the broker and fails closed | `apps/agent-worker/agent_worker/` |
-| 5 | remove `forge_slot_reader`; mark these docs as built | `terraform/bootstrap/`, `docs/` |
+| 2 | the broker route and its decision function, checks 1-9 above | `apps/swarm-api/swarm_api/credbroker.py`, `apps/swarm-api/swarm_api/routes/credentials.py` |
+| 3 | the nonce for every user-slot attempt, `SWARM_CHILD_PATH=false` for a child | `apps/scheduler/scheduler/dispatch.py` (`worker_env`) |
+| 4 | the worker reads `git-u-` only through the broker and fails closed | `apps/agent-worker/agent_worker/forgebroker.py`, `apps/agent-worker/agent_worker/secrets.py` (`resolve_git_token`) |
+| 5 | `forge_slot_reader` removed; these docs marked as built | `terraform/bootstrap/forge_user_slots.tf`, `docs/` |
 
-The tests that will hold each guarantee:
+The tests that hold each guarantee:
 
-* Alice's attempt receives Alice's slot.
-* Bob's attempt is refused Alice's slot, and Secret Manager is never read.
-* A superseded generation is refused before any read.
-* The token is in no log line and no header.
-* No tenant worker holds `secretAccessor` on a `-git-u-` name.
+| guarantee | test |
+|---|---|
+| Alice's attempt receives Alice's slot | `tests/unit/control_plane/test_forge_credential_broker.py::test_alices_attempt_receives_alices_slot`, and through the emulator `tests/integration/test_forge_credential_broker.py::test_alices_attempt_receives_alices_slot_through_the_emulator` |
+| Bob's attempt is refused Alice's slot, and Secret Manager is never read | `tests/unit/control_plane/test_forge_credential_broker.py::test_bobs_attempt_is_refused_alices_slot_and_reads_no_secret`, `::test_bobs_agent_rewriting_the_submitter_fails_the_spec_check`, `::test_bob_cannot_sign_alices_tuple_with_his_own_key`; `tests/integration/test_forge_credential_broker.py::test_bobs_attempt_is_refused_alices_slot_through_the_emulator` |
+| a superseded generation is refused before any read | `tests/unit/control_plane/test_forge_credential_broker.py::test_a_superseded_generation_is_refused_before_any_read`; the worker fences on it, `tests/unit/worker/test_forge_broker_client.py::test_a_superseded_attempt_is_fenced` |
+| the token is in no log line, no header and no environment | `tests/unit/control_plane/test_forge_credential_broker.py::test_the_token_is_in_no_log_and_no_header`, `tests/unit/worker/test_forge_broker_client.py::test_the_token_is_in_no_env_and_no_log` |
+| every user-slot attempt gets a nonce, a child one with no child path | `tests/unit/scheduler/test_dispatch_forge_nonce.py::test_a_child_with_a_user_slot_gets_a_nonce_and_no_child_path` |
+| the worker never reads a user slot from Secret Manager, and fails closed without the tenant token | `tests/unit/worker/test_forge_broker_client.py::test_a_user_slot_is_never_read_from_secret_manager`, `::test_a_refused_attempt_fails_closed_without_the_tenant_token`, `::test_an_attempt_without_a_key_fails_closed_before_asking` |
+| no tenant worker holds `secretAccessor` on a `-git-u-` name | `tests/terraform/forge_app.tftest.hcl`, run `no_tenant_worker_holds_secret_accessor_on_a_user_slot` |
 
-They are named in steps 2-5 and are written before the code they test.
+What the tests do not prove: that IAM answers `PERMISSION_DENIED` live once
+the binding is destroyed. That is the Policy Troubleshooter check in
+[runbooks/github-app.md](../runbooks/github-app.md), step 8, after the
+owner's bootstrap apply.

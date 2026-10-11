@@ -17,7 +17,7 @@ registration is by hand. Everything around it is code:
 |---|---|---|
 | the App's public settings (id, client id, slug) | `terraform/environments/dev/dev.tfvars`: `github_app_id`, `github_app_client_id`, `github_app_slug` | the release |
 | two empty secret slots, `swarm-github-app-client-secret` and `swarm-github-app-private-key`, swarm-api their one reader | `terraform/modules/secret_manager` (`github_app`, `github_app_accessor`), switched on by `enable_github_app` | the release, held at `dev-iam` |
-| the user slots' IAM: `swarmForgeSlotCreator` and `swarmForgeSlotVersionManager` for swarm-api, and per tenant swarm-api's version-add, version disable/enable and `-refresh` read, the worker's base-slot read | `terraform/bootstrap/forge_user_slots.tf`, switched on by `enable_forge_user_slots` | the owner, by bootstrap apply |
+| the user slots' IAM: `swarmForgeSlotCreator` and `swarmForgeSlotVersionManager` for swarm-api, and per tenant swarm-api's version-add, version disable/enable and read (base slots and `-refresh` twins). No worker reads a user slot: it obtains one through swarm-api's broker (#1041) | `terraform/bootstrap/forge_user_slots.tf`, switched on by `enable_forge_user_slots` | the owner, by bootstrap apply |
 | the refresh sweep, `swarm-forge-refresh`, every 15 minutes | `terraform/modules/scheduler/jobs.tf` (`forge_refresh`), switched on by `enable_forge_refresh` | the release, once lane OB3 ships |
 | the `forge_grants` and `forge_orgs` indexes on (`tenant_id`, `user_hash`) | `terraform/modules/firestore/indexes.tf` | the release |
 | the values of the client secret and the private key | Secret Manager only, by `scripts/create-secrets.sh --github-app <slot> --stdin` | the owner, from a terminal |
@@ -90,18 +90,29 @@ must show exactly, with `<n>` the project number and `<t>` each tenant in
   the refresh token that mints access tokens. Changing the condition replaces
   the binding; the resource carries `create_before_destroy`, so the new
   binding exists before the old one goes. Until this is applied swarm-api
-  falls back to refreshing per call, as before;
-* `google_project_iam_member.forge_slot_reader["<t>"]` -- the tenant's
-  worker, `swarm-agent-worker-<t>`, `roles/secretmanager.secretAccessor`, on
-  that prefix and **not** a `-refresh` twin.
+  falls back to refreshing per call, as before.
+
+No grant to the tenant's worker. `forge_slot_reader["<t>"]`, its
+`secretAccessor` on that prefix, was removed by the owner's 2026-10-11
+decision that secrets are user-scoped (#1041): the worker obtains a user slot
+only from swarm-api's broker, `POST /v1/attempts/forge-credential`
+([design/user-scoped-secrets.md](../design/user-scoped-secrets.md)). On a
+project where it was applied, the plan shows it **destroyed** for each tenant.
+
+**Apply that destroy only after a release carrying the worker's broker client
+(`apps/agent-worker/agent_worker/forgebroker.py`) and the scheduler's nonce
+for user-slot attempts is deployed** -- read the running worker image's
+commit off the release before applying. Applied first, a worker that still
+reads the slot directly is `PERMISSION_DENIED`, and every task that resolved
+to a person's slot fails closed until that release lands. Rolling the worker
+back after the apply has the same effect; re-adding the binding is the undo.
 
 These are bootstrap's, not the release's, on purpose: a project-level
 `secretAccessor` grant made by CI would have to be on the deployer's
 grantable list, and that list limits which roles CI grants, never to whom --
 CI could then grant itself read of every secret in `saga-agents-staging`, the
 other team's included. `terraform/bootstrap/forge_user_slots.tf` has the full
-reasoning, and why the `-refresh` test reads both the secret's and the
-version's resource name. A tenant added later gets its four per-tenant
+reasoning. A tenant added later gets its three per-tenant
 grants from the same bootstrap apply that grants the deployer on its worker
 account ([docs/ci.md](../ci.md), "A new account exists before the release that
 adds it").
@@ -268,10 +279,15 @@ gcloud policy-intelligence troubleshoot-policy iam \
   --permission=secretmanager.versions.access
 ```
 
-Expected: access **granted** for `<slot>` and **denied** for `<slot>-refresh`;
-for `swarm-api@`, **granted** for both. Any other answer means a condition does
-not match the resource-name form IAM evaluates: set
-`enable_forge_user_slots = false` and apply bootstrap before anything else.
+Expected: for `swarm-agent-worker-eng@`, access **denied** for both `<slot>`
+and `<slot>-refresh` (#1041: no worker reads a user slot); for `swarm-api@`,
+**granted** for both. A worker granted is a binding the removal missed: find it
+with `gcloud projects get-iam-policy` and remove it before anything else.
+swarm-api denied means its condition does not match the resource-name form
+IAM evaluates: set `enable_forge_user_slots = false` and apply bootstrap.
+Then submit a task as that user in a group tenant: it clones and pushes
+through the broker, and swarm-api logs `forge credential released decision=released`
+with the secret's name and no value.
 
 ## Rotating
 
