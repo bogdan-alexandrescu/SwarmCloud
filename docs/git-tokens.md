@@ -138,7 +138,7 @@ it, so the owner decides it rather than discovers it.
 
 **The merge step.** [merge-step.md §2.1](merge-step.md) designs the merge
 credential as a GitHub App key in `swarm-tenant-<tenant>-git-merge`, read only
-by `swarm-<tenant>-merge` (`terraform/modules/tenancy/main.tf`, the
+by `swarm-<tenant>-merge` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists) (`terraform/modules/tenancy/main.tf`, the
 `sole_accessor` comment), so that a merge is attributed to a bot identity no
 agent can read. The lane brief for RI0b says the merge step (#295, lane M1a,
 in flight) "uses that same token", the tenant's `-git`. Those two statements
@@ -218,7 +218,7 @@ protection `-git` has, and no stronger. Three options, for the owner:
   `eng`.
 * **(U3) A per-user reader identity** (a service account per registered user,
   the only accessor of `-git-u-<hex>`, used by a credential step the way
-  `swarm-<tenant>-merge` is used for `-git-merge`). Strongest; one more
+  `swarm-<tenant>-merge` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists) is used for `-git-merge`). Strongest; one more
   identity per user and a step that runs no agent.
 
 **Creating the secret.** Today every tenant secret is declared by Terraform

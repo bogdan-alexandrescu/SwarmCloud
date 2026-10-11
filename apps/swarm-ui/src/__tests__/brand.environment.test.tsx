@@ -44,7 +44,7 @@ function me(environment: unknown, declared: unknown): Me {
       credentials: ['anthropic'],
       service_account: 'swarm-agent-worker-u-bogdan@example.iam.gserviceaccount.com',
       gcs_prefix: 'tenants/u-bogdan',
-      namespace: 'swarm-u-bogdan',
+      namespace: 'swarm-tenant-u-bogdan',
     },
     principal: { email: 'someone@saga.xyz', domain: 'saga.xyz', groups: [], is_admin: false },
   }
