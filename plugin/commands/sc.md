@@ -37,8 +37,9 @@ If the arguments are `run --issue ...` or `plan approve|edit|reject ...`, do
 are not views. Use the `sc` skill's `run --issue` and `plan` verbs, which say
 what they submit first and approve only the plan digest the operator was
 shown, or tell the operator the command (`uv run sc plan approve <run>` prints
-the plan and asks them to type `approve`). `--auto-merge` is visible but
-disabled: the API refuses it until #295.
+the plan and asks them to type `approve`). `--auto-merge` merges the run's
+pull request with the `merge` step (#295, enabled by contract request 47); the
+API refuses it only while the `merge` profile is disabled, and prints why.
 
 For schedules and the approval inbox (docs/schedules.md §7.3) the views are
 `uv run sc schedules` (the console's table), `uv run sc schedules show <name>`
