@@ -131,7 +131,23 @@
 
 /* Auto-merge: a switch drawn off and disabled until #295. */
 .in-switch { flex: none; display: inline-flex; align-items: center; gap: 6px; min-height: 32px; }
-.in-switch > input { width: 32px; height: 18px; margin: 0; accent-color: var(--sk-ac); }
+/* A TRACK AND A THUMB, AS A SWITCH IS DRAWN (live QA SUB-11): the control is
+   `role="switch"` and was a square checkbox stretched to 32px. The thumb is a
+   radial gradient on the input itself rather than a pseudo-element, which a
+   form control does not reliably carry; off it sits left in the faint ink,
+   on it sits right on the accent track. */
+.in-switch > input {
+  appearance: none; -webkit-appearance: none;
+  flex: none; width: 32px; height: 18px; margin: 0; border-radius: 9px;
+  border: 1px solid var(--line);
+  background: var(--surface-2) radial-gradient(circle at 8px 50%, var(--text-faint) 0 5px, transparent 5.5px) no-repeat;
+  cursor: pointer;
+}
+.in-switch > input:checked {
+  border-color: var(--sk-ac);
+  background: var(--sk-ac) radial-gradient(circle at calc(100% - 8px) 50%, var(--surface) 0 5px, transparent 5.5px) no-repeat;
+}
+.in-switch > input:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
 .in-switch > input:disabled { opacity: .45; cursor: not-allowed; }
 .in-switch-w { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 

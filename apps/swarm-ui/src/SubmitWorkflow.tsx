@@ -1,8 +1,9 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useEffect, useRef, useState } from 'react'
 import { loadCapacity, loadStats } from './api'
-import { DispatchChoice, asSentence, type DispatchDraft } from './Dispatch'
+import { DispatchChoice, asSentence, repositorySchemeRefused, type DispatchDraft } from './Dispatch'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, errorHeading, type ApiError, type ApiErrorKind, type Result } from './fetch'
 import { HelpCard } from './HelpCard'
+import { workflowHref } from './agentlist'
 import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { RunnerSelect, StepRunnerFacts, useProviderKeys, type ProviderKeys } from './RunnerPicker'
 import { Screen, timeAgo, useSubmitAs } from './Shell'
@@ -12,6 +13,7 @@ import {
   OutcomeSlot,
   buildInput,
   inputFieldId,
+  inputSizeProblem,
   missingRequired,
   repositorySlug,
   seedFields,
@@ -104,7 +106,7 @@ async function loadSubmitForm(): Promise<Result<FormSources>> {
 interface StepProblem {
   key: number
   stepId: string
-  kind: 'name' | 'runner' | 'input' | 'required'
+  kind: 'name' | 'runner' | 'input' | 'required' | 'size'
   message: string
   missing?: string[]
 }
@@ -286,6 +288,7 @@ const stepFields = (key: number) => `wf${key}`
 function planOf(
   steps: StepDraft[],
   byName: ReadonlyMap<string, RunnerProfile>,
+  inputLimit: number | null,
 ): { problems: StepProblem[]; body: Array<Record<string, unknown>> } {
   const problems: StepProblem[] = []
   const body: Array<Record<string, unknown>> = []
@@ -325,6 +328,14 @@ function planOf(
         message: `${s.profile} will not start without ${missing.join(', ')}`,
         missing,
       })
+      continue
+    }
+    // OVER THE SERVED LIMIT (live QA SUB-4): `submit_workflow` measures each
+    // step's input against `max_input_bytes`, so a step over it is a 422 the
+    // form can name first. Null limit (not read) checks nothing.
+    const tooBig = inputSizeProblem(built.input, inputLimit)
+    if (tooBig !== null) {
+      problems.push({ key: s.key, stepId: id, kind: 'size', message: tooBig })
       continue
     }
     const depends = dependsOf(s, steps)
@@ -452,6 +463,8 @@ function Form({ sources }: { sources: FormSources }) {
   // so `maxSteps` stays null and nothing here caps the form.
   const raw = sources.limits === null ? undefined : sources.limits.max_workflow_steps
   const maxSteps = typeof raw === 'number' ? raw : null
+  const rawInput = sources.limits === null ? undefined : sources.limits.max_input_bytes
+  const inputLimit = typeof rawInput === 'number' && rawInput > 0 ? rawInput : null
 
   const stageCount = steps.reduce((m, s) => Math.max(m, s.stage + 1), 1)
   const stages = Array.from({ length: stageCount }, (_, i) => steps.filter((s) => s.stage === i))
@@ -485,7 +498,7 @@ function Form({ sources }: { sources: FormSources }) {
   // THE LIVE PLAN. What disables the button, titles the send panel and lists
   // the steps that stop it -- the same pass `send` makes, so what the panel
   // says and what the click does cannot disagree.
-  const plan = planOf(steps, byName)
+  const plan = planOf(steps, byName, inputLimit)
   // THE REPOSITORY THE CLICK PUSHES TO (VQA V139), as on the task form: the
   // trimmed URL, named in the panel whenever the strategy pushes. A push with
   // nowhere to push is refused by the API at either scale
@@ -494,7 +507,11 @@ function Form({ sources }: { sources: FormSources }) {
   const repo = dispatch.repositoryUrl.trim()
   const pushes = consequenceOf(dispatch.strategy, steps.length).pushes
   const noRepo = pushes && repo === ''
-  const blocked = plan.problems.length > 0 || noRepo
+  // A REPOSITORY THE API WILL REFUSE holds the button too (live QA SUB-3):
+  // the field said "it will refuse this one" under "Ready to send". It is the
+  // field's own test, so the field, the heading and the button agree.
+  const badRepo = repositorySchemeRefused(repo)
+  const blocked = plan.problems.length > 0 || noRepo || badRepo
   // WHAT THIS CLICK WOULD SEND, as one comparable value (VQA V048, owner
   // decision Q1 on #1038): after a 201 the button is "Submit another" for as
   // long as the form still says exactly what was sent.
@@ -508,7 +525,18 @@ function Form({ sources }: { sources: FormSources }) {
     setPriority('0')
     setSub({ kind: 'idle' })
     setSentKey(null)
+    setRestarted((n) => n + 1)
   }
+  // AND FOCUS STARTS AGAIN AT STEP 1's NAME (live QA SUB-16): the button that
+  // had it is unmounted by the reset, and focus fell to `<body>`.
+  const [restarted, setRestarted] = useState(0)
+  useEffect(() => {
+    if (restarted === 0) return
+    document.getElementById(stepNameId(firstSteps()[0]!.key))?.focus()
+  }, [restarted])
+  // A REF, NOT `sub`: two activations inside one render both read `sub` as it
+  // was before the first.
+  const inFlight = useRef(false)
   // WHAT THE API REFUSED, BY STEP (VQA V051): the step a 422 names is marked
   // on its own card, not left inside a dump of the response.
   // A 5xx's detail is read the same way for the outcome, but marks no card:
@@ -553,9 +581,14 @@ function Form({ sources }: { sources: FormSources }) {
     // button is disabled while a problem stands, so this branch should not be
     // reachable; it stays because "the form refuses before it posts" is the
     // invariant, and a disabled attribute is only one way of keeping it.
-    const { problems, body } = planOf(steps, byName)
+    const { problems, body } = planOf(steps, byName, inputLimit)
     if (problems.length > 0) { setSub({ kind: 'not_sent', problems }); return }
-    if (!priorityOk || noRepo) return
+    // ONE POST PER CLICK (live QA SUB-1, the task form's defect): nothing is
+    // sent while a request is in flight, or while the form still says exactly
+    // what the last 201 created.
+    if (inFlight.current || sub.kind === 'sending' || justSent) return
+    if (!priorityOk || noRepo || badRepo) return
+    inFlight.current = true
     setSub({ kind: 'sending' })
     setSentIds(body.map((b) => String(b.step_id)))
     const sending = draftKey
@@ -569,6 +602,7 @@ function Form({ sources }: { sources: FormSources }) {
       ...(onFailure === 'fail_workflow' ? {} : { on_step_failure: onFailure }),
       ...(priorityN === 0 ? {} : { priority: priorityN }),
     }).then((result) => {
+      inFlight.current = false
       if (result.kind === 'created') setSentKey(sending)
       setSub(result)
     })
@@ -628,6 +662,7 @@ function Form({ sources }: { sources: FormSources }) {
                   <StepCard key={s.key} step={s} steps={steps} profiles={sources.profiles} keys={keys}
                     required={requiredInputKeys(byName.get(s.profile))}
                     nameProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'name')?.message ?? null}
+                    sizeProblem={plan.problems.find((p) => p.key === s.key && p.kind === 'size')?.message ?? null}
                     refused={sub.kind === 'rejected' ? refusal?.byStep[s.id.trim()] ?? null : null}
                     removable={steps.length > 1}
                     onChange={(next) => patch(s.key, next)} onRemove={() => drop(s.key)} />
@@ -726,10 +761,11 @@ function Form({ sources }: { sources: FormSources }) {
               {priorityWrong !== null ? <i className="sbf-bad">{priorityWrong}</i>
                 : priorityN === 0 ? '0 (default)' : String(priorityN)}
             </li>
-            {pushes && (
+            {(pushes || badRepo) && (
               <li className="ctl-fact">
                 <b>repository</b>
                 {repo === '' ? <i className="sbf-bad">none — nowhere to push</i>
+                  : badRepo ? <i className="sbf-bad sbf-cut" title={repo}>not a URL the API accepts</i>
                   : <code className="sbf-cut" title={repo}>{repositorySlug(repo)}</code>}
               </li>
             )}
@@ -777,7 +813,7 @@ function Form({ sources }: { sources: FormSources }) {
   )
 }
 
-function StepCard({ step, steps, profiles, keys, required, nameProblem, refused, removable, onChange, onRemove }: {
+function StepCard({ step, steps, profiles, keys, required, nameProblem, sizeProblem, refused, removable, onChange, onRemove }: {
   step: StepDraft
   steps: StepDraft[]
   /** The whole catalogue: a disabled runner is drawn, refused, with its reason. */
@@ -791,6 +827,9 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, refused,
    *  from the form's live plan. The name is the one problem only the whole
    *  plan can see, so the card is told it rather than working it out. */
   nameProblem: string | null
+  /** Why this step's input is too large to send (live QA SUB-4), from the
+   *  plan, which holds the served limit; null when it fits or is unread. */
+  sizeProblem: string | null
   /** What the API said about this step when it refused the last submission
    *  (a 422 naming it), or null. */
   refused: string | null
@@ -857,6 +896,7 @@ function StepCard({ step, steps, profiles, keys, required, nameProblem, refused,
           name in the send panel; drawn alone here, each is a line of its own. */}
       {nameProblem !== null && <p className="warn-text" role="alert">{asSentence(nameProblem)}</p>}
       {!built.ok && <p className="warn-text" role="alert">{asSentence(built.message)}</p>}
+      {sizeProblem !== null && <p className="warn-text" role="alert">{asSentence(sizeProblem)}</p>}
       {refused !== null && <p className="warn-text" role="alert">The API refused this step: {refused}</p>}
 
       {/* THE TWO ADVANCED CONTROLS, BEHIND THE ANSWER THEY ALREADY HAVE.
@@ -1062,7 +1102,10 @@ function Outcome({ sub, refusal, onStep }: {
         <ul className="ctl-facts">
           <li className="ctl-fact">
             <b>id</b>
-            <span className="mono">{sub.workflow.workflow_id}</span>
+            {/* A WAY BACK TO IT (live QA SUB-5): the id was plain text, and after
+                "Submit another" it was nowhere on the page. The task card's
+                "Open it" and the issue form's navigation are the same promise. */}
+            <a className="mono" href={workflowHref(sub.workflow.workflow_id)}>{sub.workflow.workflow_id}</a>
           </li>
           <li className="ctl-fact">
             <b>steps</b>

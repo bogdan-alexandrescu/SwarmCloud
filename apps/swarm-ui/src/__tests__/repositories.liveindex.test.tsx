@@ -157,12 +157,13 @@ describe('G4-03: tests mapped is counts of modules, as the API serves it', () =>
     await waitFor(() => expect(document.querySelector('.ur-kv')).not.toBeNull(), WAIT)
     const kv = visible(document.querySelector('.ur-kv'))
     expect(kv).toContain('Tests mapped 20 of 83 modules')
-    expect(kv).toContain('1,339 edges · 7 always-run')
+    // The fixture's document cut its test map (`truncated: ['test_map']`), so the edges are said as cut (RSA-4).
+    expect(kv).toContain('1,339+ edges (cut) · 7 always-run')
     expect(kv).not.toContain('%')
     const tile = Array.from(document.querySelectorAll('.ur-tile')).find((t) => visible(t).startsWith('Tests mapped'))!
     expect(tile.querySelector('.c-dash')).toBeNull()
     const tab = Array.from(document.querySelectorAll<HTMLElement>('.ur-tabs a')).find((a) => visible(a.querySelector('.c-tab-label')) === 'Test map')!
-    expect(visible(tab.querySelector('em'))).toBe('1,339')
+    expect(visible(tab.querySelector('em'))).toBe('1,339+')
   })
 
   it('the Test map tab\'s bar is filled to 20/83 and named for modules, not source files', async () => {
@@ -171,7 +172,7 @@ describe('G4-03: tests mapped is counts of modules, as the API serves it', () =>
     await waitFor(() => expect(document.querySelector('.ur-tmap .ur-tm')).not.toBeNull(), WAIT)
     const tm = document.querySelector<HTMLElement>('.ur-tmap .ur-tm')!
     expect(visible(tm)).toContain('20 of 83 modules')
-    expect(visible(tm)).toContain('1,339 edges · 7 always-run')
+    expect(visible(tm)).toContain('1,339+ edges (cut) · 7 always-run')
     const bar = tm.querySelector<HTMLElement>('.ur-bar')!
     expect(bar.classList.contains('is-unmeasured')).toBe(false)
     expect(bar.querySelector('i')!.style.width).toBe('24%')

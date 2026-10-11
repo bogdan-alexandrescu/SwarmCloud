@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from 'react'
-import { loadRepositories, runRepositoryIndex } from './api'
+import { loadRepositories, loadRepositoryIndex, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
 import { HEAD_UNREAD, freshness, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
-import { REGISTER, GT_PAGE, TestsMapped, UrFreshPill, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
+import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
@@ -32,7 +32,8 @@ import './styles/repositories.css'
  *
  * INDEXING IS ORDINARY CAPACITY-ACCOUNTED WORK (repo-index.md §3.2): Index now
  * queues a task through the API like any other, which holds capacity only
- * once it is LEASED (invariants 1 and 3). This page reserves nothing itself.
+ * once it is LEASED (invariants 1 and 3). This page reserves nothing itself,
+ * and queues nothing until the run is confirmed (`UrConfirmIndex`, RSA-15).
  *
  * Classes are `ur-` so a later pass can swap them for lane U0's components.
  */
@@ -74,6 +75,8 @@ function RepositoryList({
   const perms = useRepoStatuses()
   const [failed, setFailed] = useState<string | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
+  // The card whose Index now is waiting for its confirmation (RSA-15): one at a time.
+  const [confirm, setConfirm] = useState<string | null>(null)
   const count = state.status === 'ok' || state.status === 'stale' ? state.data.length : state.status === 'empty' ? 0 : null
 
   async function indexNow(r: RepoRecord) {
@@ -81,6 +84,7 @@ function RepositoryList({
     setFailed(null)
     const res = await runRepositoryIndex(r.repo_id, r.index.current_sha === null ? 'full' : 'incremental')
     setBusy(null)
+    setConfirm(null)
     if (res.status === 'error') {
       setFailed(`${repoName(r)}: ${writeFailure(res.error)}`)
       return
@@ -132,7 +136,17 @@ function RepositoryList({
         {(repos) => (
           <div className="ur-cards">
             {repos.map((r) => (
-              <RepoCard key={r.repo_id} r={r} go={go} busy={busy === r.repo_id} onIndex={() => void indexNow(r)} perm={perms.get(r.repo_id)} />
+              <RepoCard
+                key={r.repo_id}
+                r={r}
+                go={go}
+                busy={busy === r.repo_id}
+                confirming={confirm === r.repo_id}
+                onAsk={() => setConfirm(r.repo_id)}
+                onCancel={() => setConfirm(null)}
+                onIndex={() => void indexNow(r)}
+                perm={perms.get(r.repo_id)}
+              />
             ))}
           </div>
         )}
@@ -168,10 +182,51 @@ function lastIndexed(r: RepoRecord): ReactNode {
   )
 }
 
-function RepoCard({ r, go, busy, onIndex, perm }: { r: RepoRecord; go: (to: string) => void; busy: boolean; onIndex: () => void; perm?: ForgeRepoStatus }) {
+/**
+ * WHETHER THIS CARD'S TEST MAP WAS CUT AT ITS CEILING (live QA RSA-4,
+ * 2026-10-11). The list record serves `index.coverage.test_map_edges` but not
+ * the document's `truncated`, so SwarmCloud's card read "1,000 edges" as a
+ * complete count when 1,000 is where the indexer stopped. Each card with an
+ * index and an edge count reads its own document for `truncated`; the key
+ * carries `current_sha`, so a new index is read again and an unchanged one is
+ * not. Until the document answers (or if it never does) the card says the
+ * served count, exactly as the detail page does before its own read lands.
+ */
+function useTestMapCut(r: RepoRecord): boolean {
+  const sha = r.index.current_sha
+  const wanted = sha !== null && r.index.coverage !== null && r.index.coverage.test_map_edges !== null
+  const read = useUrRead(
+    () => (wanted ? loadRepositoryIndex(r.repo_id) : Promise.resolve({ status: 'empty' as const, fetchedAt: Date.now() })),
+    wanted ? `cut:${r.repo_id}:${sha}` : `cut:${r.repo_id}:none`,
+  )
+  const doc = read.state.status === 'ok' || read.state.status === 'stale' ? read.state.data : null
+  return doc?.truncated.includes('test_map') === true
+}
+
+function RepoCard({
+  r,
+  go,
+  busy,
+  confirming,
+  onAsk,
+  onCancel,
+  onIndex,
+  perm,
+}: {
+  r: RepoRecord
+  go: (to: string) => void
+  busy: boolean
+  /** Index now was pressed and waits for its confirmation (RSA-15). */
+  confirming: boolean
+  onAsk: () => void
+  onCancel: () => void
+  onIndex: () => void
+  perm?: ForgeRepoStatus
+}) {
   const f = freshness(r.index)
   const head = r.index.head_sha
   const sched = scheduleWords(r.index)
+  const cut = useTestMapCut(r)
   return (
     <Card
       className="ur-card"
@@ -198,7 +253,7 @@ function RepoCard({ r, go, busy, onIndex, perm }: { r: RepoRecord; go: (to: stri
           )}
         </span>
       </div>
-      <TestsMapped r={r} />
+      <TestsMapped r={r} cut={cut} />
       <div className="ur-cmeta">
         {lastIndexed(r)}
         <span>Schedule {sched === null ? <Dash why="The schedule was not served" /> : <b>{sched}</b>}</span>
@@ -210,11 +265,21 @@ function RepoCard({ r, go, busy, onIndex, perm }: { r: RepoRecord; go: (to: stri
         {r.index.in_flight_task_id !== null ? (
           <NamedMark mark="running" hue="live" word="indexing now" title={r.index.in_flight_task_id} />
         ) : (
-          <Button size="sm" busy={busy} onClick={onIndex}>
+          <Button size="sm" busy={busy} disabled={confirming} onClick={onAsk}>
             Index now
           </Button>
         )}
       </div>
+      {confirming && r.index.in_flight_task_id === null && (
+        <UrConfirmIndex
+          name={repoName(r)}
+          kind={r.index.current_sha === null ? 'full' : 'incremental'}
+          base={r.index.current_sha}
+          busy={busy}
+          onConfirm={onIndex}
+          onCancel={onCancel}
+        />
+      )}
     </Card>
   )
 }

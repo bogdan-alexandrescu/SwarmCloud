@@ -242,9 +242,10 @@ describe('N8: the Workflow cell is the row\'s own cell', () => {
   it('lays the name cell out as a table cell, so its border is the row\'s', async () => {
     const t = await list()
     const td = t.querySelector('tbody tr.wfl-row td[data-col="workflow"]')!
-    for (const width of [1440, 390]) {
-      expect(painted(td, 'display', { width }) ?? 'table-cell', `at ${width}`).toBe('table-cell')
-    }
+    expect(painted(td, 'display', { width: 1440 }) ?? 'table-cell', 'at 1440').toBe('table-cell')
+    // At 390 the row is a card (WF-8): the cell is a block in the row's grid,
+    // and the border is the row's own, so the name cell still draws none.
+    expect(painted(td.parentElement!, 'display', { width: 390 }), 'the row at 390').toBe('grid')
     // Its pieces still stack, one under the other.
     const a = td.querySelector(':scope > a')!
     expect(painted(a, 'display', { width: 1440 })).toBe('block')

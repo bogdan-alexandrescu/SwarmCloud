@@ -106,13 +106,17 @@ export { TASK_PAGE_LIMIT }
  */
 export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
-  options: { view?: 'summary' } = {},
+  options: { view?: 'summary'; submittedBy?: 'me' } = {},
 ): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
   // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
-  // whatever page size and view the caller asked for.
-  const query = options.view === 'summary' ? `limit=${limit}&view=summary` : `limit=${limit}`
-  return read<TaskPage>(route('/v1/tasks', {}, query), (d) => d.tasks.length === 0)
+  // whatever page size and view the caller asked for. `submitted_by=me` (U5)
+  // narrows the page to the caller IN THE QUERY, so the page is full of
+  // theirs rather than the tenant's newest filtered down (live QA SUB-6).
+  const query = new URLSearchParams({ limit: String(limit) })
+  if (options.view === 'summary') query.set('view', 'summary')
+  if (options.submittedBy === 'me') query.set('submitted_by', 'me')
+  return read<TaskPage>(route('/v1/tasks', {}, query.toString()), (d) => d.tasks.length === 0)
 }
 
 /**
@@ -135,13 +139,19 @@ export interface WorkflowBoard {
   taskById: Map<string, Task> | null
   /** Why states are missing, for the banner. null when the join succeeded. */
   statesDetail: string | null
+  /**
+   * The list read's `next_page_token`: older workflows exist past these 100
+   * (live QA WF-2). Absent or null when the read holds the whole history, or
+   * when it is not a list read at all.
+   */
+  nextPageToken?: string | null
 }
 
 export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   if (USE_FIXTURES) return fixtureWorkflowBoard()
 
   const [wf, tasks] = await Promise.all([
-    read<{ workflows: Workflow[] }>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
+    read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
     read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0),
   ])
 
@@ -161,7 +171,12 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
       status: 'ok',
       fetchedAt: wf.fetchedAt,
       serverAt: wf.serverAt,
-      data: { workflows: wf.data.workflows, taskById: null, statesDetail: tasks.error.message },
+      data: {
+        workflows: wf.data.workflows,
+        taskById: null,
+        statesDetail: tasks.error.message,
+        nextPageToken: wf.data.next_page_token ?? null,
+      },
     }
   }
 
@@ -171,8 +186,24 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
     status: 'ok',
     fetchedAt: wf.fetchedAt,
     serverAt: wf.serverAt,
-    data: { workflows: wf.data.workflows, taskById, statesDetail: null },
+    data: { workflows: wf.data.workflows, taskById, statesDetail: null, nextPageToken: wf.data.next_page_token ?? null },
   }
+}
+
+/**
+ * THE NEXT 100 WORKFLOWS, OLDER THAN A LIST READ (live QA WF-2, 2026-10-11).
+ * The list read only its newest 100 and offered no way past them, while its
+ * counts and its "oldest first" read as the tenant's whole history:
+ * `Failed 15` against 52 failed workflows. `token` is the previous read's
+ * `next_page_token`. No task join: the list reads each older row's steps by
+ * id as it scrolls in (`useRowReads`), as it already does for the first 100.
+ */
+export async function loadOlderWorkflows(token: string): Promise<Result<WorkflowPage>> {
+  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { workflows: [], next_page_token: null } }
+  return read<WorkflowPage>(
+    route('/v1/workflows', {}, new URLSearchParams({ limit: '100', page_token: token })),
+    (d) => d.workflows.length === 0,
+  )
 }
 
 function emptyBoard(workflows: Workflow[]): WorkflowBoard {
@@ -194,11 +225,15 @@ function emptyBoard(workflows: Workflow[]): WorkflowBoard {
  * complete. A caller that ignores it can report an all-clear over workflows
  * whose state was never established.
  */
-export async function loadWorkflows(): Promise<Result<WorkflowPage>> {
+export async function loadWorkflows(limit: number = 100): Promise<Result<WorkflowPage>> {
   if (USE_FIXTURES) return fixtureWorkflows()
   // 100, matching loadWorkflowBoard: `max_workflow_steps` is 50 and the route's
   // step-read budget is what actually binds, so a larger page buys rows whose
-  // rollup is incomplete rather than more information.
+  // rollup is incomplete rather than more information. A caller that lists a
+  // handful (Submit's recent card, live QA SUB-6) asks for fewer.
+  // Both are the one registry route, `/v1/workflows`: `route` keys by the
+  // template without its query.
+  if (limit !== 100) return read<WorkflowPage>(route('/v1/workflows', {}, `limit=${limit}`), (d) => d.workflows.length === 0)
   return read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0)
 }
 
@@ -1107,9 +1142,13 @@ export async function loadIssuePreview(issue: string): Promise<Result<IssuePrevi
 }
 
 /** `GET /v1/runs`: the tenant's runs, newest first. Empty is a measured zero. */
-export async function loadRuns(pageToken: string | null = null): Promise<Result<IssueRunPage>> {
+export async function loadRuns(pageToken: string | null = null, limit: number | null = null): Promise<Result<IssueRunPage>> {
   if (USE_FIXTURES) return fixtureRuns(pageToken)
-  const query = pageToken === null ? undefined : new URLSearchParams({ page_token: pageToken })
+  // `limit` null is the route's own page, as before.
+  const params = new URLSearchParams()
+  if (pageToken !== null) params.set('page_token', pageToken)
+  if (limit !== null) params.set('limit', String(limit))
+  const query = params.toString() === '' ? undefined : params
   return read<IssueRunPage>(route('/v1/runs', {}, query), (d) => d.runs.length === 0 && d.next_page_token === null)
 }
 

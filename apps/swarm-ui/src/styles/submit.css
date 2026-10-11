@@ -163,6 +163,24 @@
    widening it. */
 .sbf-send > .sbf-outcome { display: grid; gap: 12px; min-width: 0; overflow-wrap: anywhere; }
 .sbf-outcome > .state { margin: 0; }
+/* THE CARD SPEAKS AT THE PANEL'S SIZE (live QA SUB-7). `.state p` is the
+   full-page lead, 16px: in a 260px card "That is not a running agent" was set
+   larger than the facts beside it, and the task id broke with one letter on
+   its second line. The panel's facts are meta; the id is micro mono, which
+   holds a 25-character id on one line at that width, and still wraps rather
+   than widening the panel when an id is longer. (0,2,1), so it outranks
+   `.state p` (0,1,1) on specificity rather than on order. */
+.sbf-outcome > .state { padding: 12px; }
+.sbf-outcome > .state p { font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sbf-outcome > .state p.sbf-id { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text); }
+.sbf-outcome > .state p.sbf-woke { margin-top: 8px; }
+/* A FACT'S VALUE WRAPS AS WORDS, NEVER INSIDE ONE (live QA SUB-8): the slot's
+   `overflow-wrap: anywhere` reached each `<code>` of "accepted as collect /
+   checkpoints", whose min-content became one letter, and the 260px card
+   printed "collec / t". A fact's parts wrap onto the next line whole; only
+   the id, which can be longer than the card, still breaks anywhere. */
+.sbf-outcome .ctl-fact { flex-wrap: wrap; }
+.sbf-outcome .ctl-fact > code { white-space: nowrap; overflow-wrap: normal; }
 /* The steps a refusal names (V051), each a way to its card. */
 .sbf-refused { margin: 0; padding-left: 16px; display: grid; gap: 4px; }
 
@@ -314,3 +332,13 @@
 .sbf-addset > .sbf-addset-list { width: min(420px, 100%); scroll-margin-bottom: 12px; }
 .sbf-addset-list > .sbf-addset-item { flex-direction: column; align-items: flex-start; gap: 2px; }
 .sbf-addset-list > .sbf-addset-item em { text-align: left; }
+
+/* A SETTING'S "remove" IS ON ITS NAME'S LINE AND AFTER ITS FIELD IN TAB ORDER
+   (live QA SUB-17). The button follows the value in the DOM, so a keyboard
+   meets the setting before the way to delete it; the grid draws it back
+   beside the name, where it was. Every other part of the row spans both
+   columns and is placed below row 1, in its source order. */
+.sbf-field.has-remove { grid-template-columns: auto 1fr; column-gap: var(--ctl-s2); }
+.sbf-field.has-remove > * { grid-column: 1 / -1; }
+.sbf-field.has-remove > .sbf-key { grid-row: 1; grid-column: 1; }
+.sbf-field.has-remove > .sbf-remove { grid-row: 1; grid-column: 2; justify-self: start; align-self: center; }
