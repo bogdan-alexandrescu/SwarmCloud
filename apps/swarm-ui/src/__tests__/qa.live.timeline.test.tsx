@@ -4,7 +4,9 @@
  *
  *   RT-1   the lanes cover the span picked: the attempts read follows its
  *          page token across the span, and a read that stops short says how
- *          far back it reaches instead of naming the span.
+ *          far back it reaches instead of naming the span. The task read
+ *          pages back across the span too, so an old lane carries its state
+ *          and profile and survives a filter.
  *   RT-7b  a settled workflow and an ended lane's events are not re-read
  *          every minute.
  *   RT-22  the count follows the filters; zooming keeps one way back; the
@@ -14,7 +16,8 @@
  *          task's, beside the span's.
  *   RT-25  a workflow is named as the Workflows list names it.
  *
- * MUTATIONS: read one attempts page (`goOn = false`); drop `reach` from the
+ * MUTATIONS: read one attempts page (`goOn = false`); read one task page
+ * (`taskReadCovers` always true); drop `reach` from the
  * count note; clear every workflow on refresh; keep `back` from
  * `zoomedTo` alone -- each turns a case red.
  */
@@ -40,7 +43,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...real, ...api }
 })
 
-const { TimelineLanesScreen, SPAN_PAGES_READ, drawnReach, panWindow, workflowSettled } = await import('../TimelineLanes')
+const { TimelineLanesScreen, SPAN_PAGES_READ, TASK_PAGES_READ, drawnReach, panWindow, taskReadCovers, workflowSettled } = await import('../TimelineLanes')
 const { parseLanesView } = await import('../lanes')
 
 const ok = <T,>(data: T): Result<T> => ({ status: 'ok', data, fetchedAt: Date.now() })
@@ -135,6 +138,37 @@ describe('RT-1: the lanes cover the span picked', () => {
     expect(document.querySelector('.tl-lanes-range')?.textContent ?? '').not.toBe('')
   })
 
+  it('pages the task read back across the span, so a lane off the first task page keeps its state and profile', async () => {
+    // The real shape of a wide span: the first task page holds only the newest
+    // tasks, the week-old one is on a later page, and a single read of it fails.
+    api.loadTasks.mockImplementation(async (_limit: number, o: { pageToken?: string | null }) =>
+      o.pageToken === 't2'
+        ? ok({ tasks: [OLD], next_page_token: 't3' } as TaskPage)
+        : ok({ tasks: [STEP_A, STEP_B], next_page_token: 't2' } as TaskPage),
+    )
+    render(<TimelineLanesScreen view="span=7d&state=SUCCEEDED&profile=claude-code" onView={() => {}} />)
+    await waitFor(() => expect(lane('task_old')).not.toBeNull())
+    await waitFor(() => expect(lane('task_old')!.textContent).toContain('claude-code'))
+    expect(lane('task_old')!.textContent).not.toMatch(/task not read/)
+    expect(lane('task_b'), 'the State filter still applies').toBeNull()
+    // OLD was created before the span's start, so the read stopped there.
+    expect(api.loadTasks).toHaveBeenCalledTimes(2)
+    expect(api.loadTask).not.toHaveBeenCalledWith('task_old')
+  })
+
+  it('stops the task read at the span\'s start, at TASK_PAGES_READ, or, on a re-read, past the oldest task that can change', () => {
+    const since = NOW - 7 * 24 * HOUR
+    expect(taskReadCovers([STEP_A], since, null)).toBe(false)
+    expect(taskReadCovers([STEP_A, OLD], since + HOUR, null)).toBe(true)
+    expect(taskReadCovers([], since, null)).toBe(true)
+    const prior = new Map([STEP_A, STEP_B].map((t) => [t.id, t]))
+    expect(taskReadCovers([STEP_A], since, prior), 'every task read has ended').toBe(true)
+    const running = task('task_live', { state: 'RUNNING', created_at: ago(2 * 24 * 60) })
+    prior.set(running.id, running)
+    expect(taskReadCovers([STEP_A], since, prior), 'a running task is older than this page').toBe(false)
+    expect(TASK_PAGES_READ).toBeGreaterThanOrEqual(SPAN_PAGES_READ)
+  })
+
   it('the reach is the oldest attempt read, and null once the span is read', () => {
     const rows = [attempt('a', 1, 60, 30), attempt('b', 1, 600, 590)]
     expect(drawnReach({ rows, next: 'x' })).toBe(Date.parse(ago(600)))
@@ -162,7 +196,7 @@ describe('RT-7b: what cannot change is not read again every minute', () => {
   it('reads the task page in its summary view', async () => {
     render(<TimelineLanesScreen view={null} onView={() => {}} />)
     await waitFor(() => expect(api.loadTasks).toHaveBeenCalled())
-    expect(api.loadTasks.mock.calls[0]![1]).toEqual({ view: 'summary' })
+    expect(api.loadTasks.mock.calls[0]![1]).toMatchObject({ view: 'summary' })
   })
 })
 

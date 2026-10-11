@@ -106,13 +106,16 @@ export { TASK_PAGE_LIMIT }
  */
 export async function loadTasks(
   limit: number = TASK_PAGE_LIMIT,
-  options: { view?: 'summary' } = {},
+  options: { view?: 'summary'; pageToken?: string | null } = {},
 ): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) return fixtureTasks()
   // One route with the `?state=` and paged reads below: `/v1/tasks` (CH-18),
-  // whatever page size and view the caller asked for.
-  const query = options.view === 'summary' ? `limit=${limit}&view=summary` : `limit=${limit}`
-  return read<TaskPage>(route('/v1/tasks', {}, query), (d) => d.tasks.length === 0)
+  // whatever page size and view the caller asked for, and the page after a
+  // token (the timeline's span read, live QA RT-1).
+  const q = new URLSearchParams({ limit: String(limit) })
+  if (options.view === 'summary') q.set('view', 'summary')
+  if (options.pageToken) q.set('page_token', options.pageToken)
+  return read<TaskPage>(route('/v1/tasks', {}, q), (d) => d.tasks.length === 0)
 }
 
 /**

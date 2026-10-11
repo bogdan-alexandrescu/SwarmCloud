@@ -161,3 +161,14 @@
    run page's type and inside its card. */
 .rn-issue-md { min-width: 0; overflow-wrap: anywhere; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
 .rn-issue-md pre { max-width: 100%; overflow-x: auto; white-space: pre-wrap; }
+
+/* RT-31: A RUN'S TITLE IS READ WHOLE ON A PHONE. The page title is clamped
+   (names.css), and on a 400 px screen a long issue title showed one line and
+   an ellipsis, with its title attribute unreachable by touch. On a phone the
+   run page's prose title wraps to its end; a reference (`.is-ref`) keeps its
+   one line (D11). */
+@media (max-width: 560px) {
+  .rn-run:not(.is-ref) .c-phead > div.head > h1 {
+    display: block; -webkit-line-clamp: unset; line-clamp: none; overflow: visible; overflow-wrap: anywhere;
+  }
+}

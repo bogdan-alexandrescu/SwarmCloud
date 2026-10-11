@@ -10,8 +10,10 @@
  *                                left is a dash: the route returns a token,
  *                                never a total.
  *   GET /v1/tasks                names, profiles, states and workflows for the
- *                                lanes; a task not on that page is read on its
- *                                own (`loadTask`), up to MISSING_TASK_READS.
+ *                                lanes, paged back across the span
+ *                                (`taskReadCovers`); a task the pages did not
+ *                                reach is read on its own (`loadTask`), up to
+ *                                MISSING_TASK_READS.
  *   GET /v1/workflows/{id}       each workflow drawn: its state, and the steps
  *                                that never had an attempt (drawn, no bar).
  *   GET /v1/tasks/{id}/events    ONE PAGE PER LANE IN VIEW, newest first
@@ -97,6 +99,45 @@ export const MISSING_TASK_READS = 40
  * span, and "Read the next page" goes on by hand.
  */
 export const SPAN_PAGES_READ = 10
+
+/**
+ * HOW MANY TASK PAGES THE SPAN'S TASK READ FOLLOWS (live QA RT-1, review of
+ * 2026-10-11). One page of the 200 newest tasks covered about five hours, so
+ * on a 7d to 90d span every lane older than that drew as an anonymous bar --
+ * no name, state, profile or workflow -- and any filter dropped it. The task
+ * read now pages back, in the summary view, until it reaches the span's
+ * start. A tenant also creates tasks that never run, so it is allowed twice
+ * the attempts read's pages to cover the same reach; past that a lane is read
+ * on its own, up to MISSING_TASK_READS.
+ */
+export const TASK_PAGES_READ = 2 * SPAN_PAGES_READ
+
+/**
+ * Whether the task read has gone far enough back to stop after this page.
+ *
+ * Newest first, so it has when the page's oldest task was created before the
+ * span's start. On a re-read of the same span (`prior`, the tasks already
+ * read), a task that has ended cannot change, so the read stops once it has
+ * passed the oldest task still able to: the minute's re-read is then one
+ * page, not the whole span again. An empty page is the end of the list.
+ */
+export function taskReadCovers(page: readonly Task[], since: number, prior: ReadonlyMap<string, Task> | null): boolean {
+  let oldest = Infinity
+  for (const t of page) {
+    const c = Date.parse(t.created_at)
+    if (Number.isFinite(c) && c < oldest) oldest = c
+  }
+  if (!Number.isFinite(oldest)) return true
+  if (oldest < since) return true
+  if (prior === null) return false
+  let oldestLive = Infinity
+  for (const t of prior.values()) {
+    if (TERMINAL_STATES.has(t.state)) continue
+    const c = Date.parse(t.created_at)
+    if (Number.isFinite(c) && c < oldestLive) oldestLive = c
+  }
+  return oldest <= oldestLive
+}
 
 /** Past this many days the bars are slivers, and the page suggests Outcomes. */
 const SUGGEST_OUTCOMES_DAYS = 7
@@ -479,9 +520,16 @@ export function TimelineLanesScreen({
   const [att, setAtt] = useState<AttemptsRead>({ key: readKey, status: 'loading' })
   /** The last drawing, kept dimmed while a new span is read. */
   const [drawn, setDrawn] = useState<Extract<AttemptsRead, { status: 'done' }> | null>(null)
+  /** The span of the last drawing whose page chain finished. */
+  const drawnSpan = useRef<string | null>(null)
   useEffect(() => {
     let live = true
     setAtt({ key: readKey, status: 'loading' })
+    // A RE-READ OF THE SAME SPAN KEEPS THE LAST DRAWING UNTIL ITS CHAIN ENDS
+    // (review of RT-1): drawing each page as it landed shrank a wide span to
+    // its newest few hours and regrew it over up to ten reads, every minute,
+    // and an older lane open in the inspector vanished meanwhile.
+    const holding = drawnSpan.current === spanKey
     // THE LANES COVER THE SPAN PICKED (live QA RT-1, 2026-10-11): one page of
     // 200 attempts, newest first, covered about the last five hours, so 7d to
     // 90d all drew the same lanes in the right-hand sliver of their axis. The
@@ -494,7 +542,13 @@ export function TimelineLanesScreen({
         if (r.status === 'loading') return
         if (r.status === 'error') {
           if (pages === 0) setAtt({ key: readKey, status: 'error', error: r.error, at: Date.now() })
-          else setAtt((cur) => (cur.key === readKey && cur.status === 'done' ? { ...cur, more: r.error } : cur))
+          else {
+            // What was read is drawn, with the failure on "Read the next page".
+            const partial = { key: readKey, status: 'done' as const, rows, next: pageToken, pages, fetchedAt: Date.now(), more: r.error }
+            drawnSpan.current = spanKey
+            setAtt(partial)
+            setDrawn(partial)
+          }
           return
         }
         const all = r.status === 'empty' ? rows : [...rows, ...r.data.attempts]
@@ -509,8 +563,11 @@ export function TimelineLanesScreen({
           fetchedAt: r.fetchedAt,
           more: goOn ? ('reading' as const) : ('idle' as const),
         }
-        setAtt(done)
-        setDrawn(done)
+        if (!goOn) drawnSpan.current = spanKey
+        if (!(holding && goOn)) {
+          setAtt(done)
+          setDrawn(done)
+        }
         if (goOn) follow(all, next, pages + 1)
       })
     }
@@ -549,20 +606,54 @@ export function TimelineLanesScreen({
 
   // ---- the tasks behind the lanes ----------------------------------------
   const [taskPage, setTaskPage] = useState<Map<string, Task> | 'error' | null>(null)
+  /** The task read has stopped paging: what it did not reach is read one by one. */
+  const [tasksDone, setTasksDone] = useState(false)
+  /** The last finished task read, and the span it was for. */
+  const taskPrior = useRef<{ spanKey: string; tasks: Map<string, Task> } | null>(null)
   useEffect(() => {
     let live = true
-    setTaskPage(null)
+    const since = win.since
+    const prior = taskPrior.current !== null && taskPrior.current.spanKey === spanKey ? taskPrior.current.tasks : null
+    if (prior === null) setTaskPage(null)
+    setTasksDone(false)
+    const finish = (m: Map<string, Task>) => {
+      taskPrior.current = { spanKey, tasks: m }
+      setTaskPage(m)
+      setTasksDone(true)
+    }
     // The summary view (live QA RT-7b): names, profiles, states and workflows are
     // all a lane reads from it; the full rows were 2.7 MB a minute. A step's
-    // full row, with its verdict, comes from its workflow read.
-    loadTasks(TASK_PAGE_LIMIT, { view: 'summary' }).then((r) => {
-      if (!live) return
-      setTaskPage(isData(r) ? new Map(r.data.tasks.map((t) => [t.id, t])) : r.status === 'empty' ? new Map() : 'error')
-    })
+    // full row, with its verdict, comes from its workflow read. THE READ PAGES
+    // BACK ACROSS THE SPAN (RT-1): see TASK_PAGES_READ and taskReadCovers.
+    const follow = (m: Map<string, Task>, pageToken: string | null, pages: number): void => {
+      loadTasks(TASK_PAGE_LIMIT, { view: 'summary', pageToken }).then((r) => {
+        if (!live) return
+        if (r.status === 'loading') return
+        if (r.status === 'error') {
+          if (pages === 0 && prior === null) {
+            setTaskPage('error')
+            setTasksDone(true)
+          } else finish(m)
+          return
+        }
+        const page = isData(r) ? r.data.tasks : []
+        const merged = new Map(m)
+        for (const t of page) merged.set(t.id, t)
+        const next = isData(r) ? (r.data.next_page_token ?? null) : null
+        if (next === null || pages + 1 >= TASK_PAGES_READ || taskReadCovers(page, since, prior)) {
+          finish(merged)
+          return
+        }
+        if (prior === null) setTaskPage(merged)
+        follow(merged, next, pages + 1)
+      })
+    }
+    follow(prior === null ? new Map() : new Map(prior), null, 0)
     return () => {
       live = false
     }
-  }, [nonce])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nonce, spanKey])
 
   const [single, setSingle] = useState<Map<string, Task | string>>(new Map())
   const asked = useRef(new Set<string>())
@@ -632,9 +723,9 @@ export function TimelineLanesScreen({
   tasksNow.current = tasks
   const laneIds = useMemo(() => Array.from(new Set(rows.map((a) => a.task_id))), [rows])
 
-  // Tasks not on the task page, one by one, up to the cap.
+  // Tasks the task read did not reach, one by one, up to the cap.
   useEffect(() => {
-    if (taskPage === null) return
+    if (taskPage === null || !tasksDone) return
     const missing = laneIds.filter((id) => !tasks.has(id) && !asked.current.has(id))
     const room = MISSING_TASK_READS - asked.current.size
     for (const id of missing.slice(0, Math.max(0, room))) {
@@ -643,7 +734,7 @@ export function TimelineLanesScreen({
         setSingle((m) => new Map(m).set(id, isData(r) ? r.data : r.status === 'error' ? `${r.error.httpStatus ?? 'no answer'}` : 'not read'))
       })
     }
-  }, [taskPage, laneIds, tasks])
+  }, [taskPage, tasksDone, laneIds, tasks])
 
   // Each workflow the lanes name, once.
   useEffect(() => {
@@ -1402,7 +1493,7 @@ function laneNote(lane: Lane, events: EventsRead | null, single: Task | string |
         : single === null
           ? taskPageFailed
             ? 'the task list read failed'
-            : `not on the task page, and over the ${MISSING_TASK_READS}-read cap or still reading`
+            : `older than the task read reached, and over the ${MISSING_TASK_READS}-read cap or still reading`
           : 'not read'
     return `profile —, task not read (${why})`
   }

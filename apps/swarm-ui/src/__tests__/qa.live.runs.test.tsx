@@ -278,6 +278,21 @@ describe('RT-6: the list\'s chip and search are its address', () => {
   })
 })
 
+describe('RT-31: a run\'s title is read whole on a phone', () => {
+  it('lifts the two-line clamp from a prose title on a phone, and keeps a reference to one line', async () => {
+    const { container } = await mountRun(run())
+    const h1 = await waitFor(() => {
+      const el = container.querySelector('.rn-run .c-phead > div.head > h1')
+      expect(el).not.toBeNull()
+      expect(container.querySelector('.rn-run.is-ref')).toBeNull()
+      return el!
+    }, WAIT)
+    expect(painted(h1, 'line-clamp', PHONE)).toBe('none')
+    expect(painted(h1, 'overflow', PHONE)).toBe('visible')
+    expect(painted(h1, 'line-clamp', DESKTOP), 'the desktop clamp stays').toBe('2')
+  })
+})
+
 describe('the smaller findings, each by its rule', () => {
   it('RT-13: an overlap row draws its own chevron, which turns when open', async () => {
     const { container } = await mountRun(run({
