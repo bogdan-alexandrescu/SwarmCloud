@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useRef, useState, type KeyboardEvent, type ReactNode, type Ref } from 'react'
+import { Fragment, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode, type Ref } from 'react'
 
 import { loadAttempts } from './api'
 import { DECLARED_WORDS, NEVER_STARTED_WORD, type DagShape, type ResultUsage, type StepInputs, type StrayInput } from './dag'
@@ -589,6 +589,25 @@ const COLUMNS: ReadonlyArray<{ col: string; label: string; sort: SortKey | null;
   { col: 'inputs', label: 'Inputs', sort: null, num: false },
 ]
 
+/**
+ * THE STEP COLUMN'S WIDTH: ITS LONGEST NAME, OUT OF WHY'S SLACK (V098, #1038).
+ *
+ * At the sheet's 96px every name past nine characters was cut -- `cold-start`,
+ * `scan-scr…` -- while all the slack went to Why. The column now asks for its
+ * longest name: the name's characters at the pick's mono advance (0.6em of
+ * `--t-body`, DM Mono's, rounded up) plus the cell's and the button's 22px of
+ * chrome. It is capped at the floor plus whatever the table's box has over its
+ * 980px minimum (`100cqi`: the `wf-steps` container the table sits in), so Why
+ * keeps what it has at the minimum and a name longer than that is still cut,
+ * whole in its title. The 96px floor is the sheet's `min-width`, which this
+ * cannot go under. Inline, on the head cell, because a fixed table takes its
+ * column widths from there and the length is this table's own.
+ */
+export function stepColumnWidth(rows: readonly { step: { step_id: string } }[]): CSSProperties {
+  const longest = rows.reduce((n, r) => Math.max(n, r.step.step_id.length), 0)
+  return { width: `min(calc(${longest} * 0.6 * var(--t-body) + 22px), calc(96px + 100cqi - 980px))` }
+}
+
 /** The columns a table draws: every one, less Why when no row has a why (D12). */
 export function tableColumns(rows: readonly Pick<StepRowModel, 'why'>[]): typeof COLUMNS {
   return rows.some((r) => r.why !== null) ? COLUMNS : COLUMNS.filter((c) => c.col !== 'why')
@@ -809,6 +828,8 @@ export function WorkflowTable({
   // waiting on a reason or failed, Why was ~110px of blank while ten long step
   // names were squeezed beside it. The step column takes that room instead.
   const columns = tableColumns(rows)
+  // The Step column grows to its longest name (V098; `stepColumnWidth`).
+  const stepWidth = stepColumnWidth(rows)
   const [opened, setOpened] = useState<ReadonlySet<string>>(() => new Set())
   const toggleInputs = (stepId: string) =>
     setOpened((was) => {
@@ -840,6 +861,8 @@ export function WorkflowTable({
                 key={c.col}
                 data-col={c.col}
                 className={c.num ? 'is-num' : undefined}
+                // With no Why column the sheet's `width: auto` gives Step all the slack already.
+                style={c.col === 'step' && columns.length === COLUMNS.length ? stepWidth : undefined}
                 aria-sort={c.sort !== null && sort.key === c.sort ? sort.dir : undefined}
               >
                 {c.sort === null ? (
@@ -1290,6 +1313,14 @@ export function StepInspector({
           )}
           <Id title={workflowId}>{workflowId}</Id>
         </span>
+        {/* THE CLOSE BUTTON ENDS THE HEAD'S FIRST LINE (V100, #1038). It was
+            the head's last item, after Open agent and Changes, so in a panel
+            or a narrow pane the row wrapped and the × sat alone on a line of
+            its own under the step name, tied to nothing. Beside the workflow's
+            name it is the panel's top-right corner, where a close goes. */}
+        <button type="button" className="wf-inspect-close" aria-label="Stop inspecting this step" onClick={onClose}>
+          ×
+        </button>
         {/* THE WORKFLOW'S START AND SUBMIT (#376), on their own line under
             its name: derived from the earliest step, as the row prints it. */}
         {workflowStarted !== null && (
@@ -1318,12 +1349,13 @@ export function StepInspector({
         )}
         {changes !== null && (
           <a className="ctl-link wf-inspect-changes" href={changes.href} title={changes.say ?? undefined}>
-            Changes · {changes.count === null ? '—' : `${changes.count} ${changes.count === 1 ? 'file' : 'files'}`} ›
+            {/* UNCOUNTED, THE LINK SAYS NO COUNT AT ALL (V111, #1038). It
+                printed `Changes · — ›`, a dash where a figure goes, which read
+                as a broken number; and a 0 would claim a count nobody took.
+                The reason nothing was counted is the link's title. */}
+            {changes.count === null ? 'Changes ›' : `Changes · ${changes.count} ${changes.count === 1 ? 'file' : 'files'} ›`}
           </a>
         )}
-        <button type="button" className="wf-inspect-close" aria-label="Stop inspecting this step" onClick={onClose}>
-          ×
-        </button>
       </div>
 
       {children}

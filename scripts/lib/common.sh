@@ -326,6 +326,50 @@ guard_deny_json() {
 guard_name_prefix() { printf '%s' "${SWARM_NAME_PREFIX:-swarm-}"; }
 
 # ---------------------------------------------------------------------------
+# Images a release promotes, and jobs a release may not move
+# ---------------------------------------------------------------------------
+#
+# OWNER-PINNED JOBS. A Cloud Run job here is created by terraform/bootstrap and
+# runs the image the OWNER pinned there by digest -- never what a release
+# promoted. By design (docs/workspaces.md, "only the owner's bootstrap apply
+# moves that digest", and §2.4 R1): swarm-workspace-apply runs as a privileged
+# account, so a merge alone must never change what it runs. After any release
+# that rebuilds its image the job therefore LAGS the promoted digest until the
+# owner re-pins it, and that is the design working, not a broken deploy.
+#
+# deploy.sh reads this list, and only this list, to tell that lag (a warning
+# and "owner action pending") from a job on an image nobody released (still a
+# failure). Each entry is JOB=VARIABLE: the job's name, and the
+# terraform/bootstrap variable that pins its image -- the one the owner sets.
+# tests/unit/scripts/test_owner_pinned_jobs.py holds this to every
+# google_cloud_run_v2_job terraform/bootstrap declares.
+OWNER_PINNED_JOBS=(
+  "swarm-workspace-apply=workspace_apply_image"
+)
+
+# owner_pinned_job_variable JOB -- the bootstrap variable that pins JOB's
+# image, or return 1 when a release (terraform/infra) pins it instead.
+owner_pinned_job_variable() {
+  local entry
+  for entry in "${OWNER_PINNED_JOBS[@]}"; do
+    if [[ "${entry%%=*}" == "$1" ]]; then
+      printf '%s\n' "${entry#*=}"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# THE PROMOTION MARK. Moving `:<channel>` leaves no trace of the digest it
+# moved away from, so nothing could answer "did some earlier release promote
+# this digest?". push-images.sh therefore also tags every digest it promotes
+# `<channel>-promoted-<release tag>`, a tag that never moves; deploy.sh asks
+# for it before it calls a lagging owner-pinned job "awaiting re-pin" rather
+# than "an image nobody released". Compared exactly, never through gcloud's
+# word-matching `tags:` filter (see push-images.sh, digest_for).
+promotion_mark_prefix() { printf '%s-promoted-' "$1"; }
+
+# ---------------------------------------------------------------------------
 # Is a shared resource still there?
 # ---------------------------------------------------------------------------
 #

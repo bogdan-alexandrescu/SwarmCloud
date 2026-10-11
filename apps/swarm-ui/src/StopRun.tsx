@@ -1,8 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 
 import { cancelTask } from './api'
 import { Button } from './components'
 import { errorHeading, type ApiError } from './fetch'
+import { trapTab } from './focus'
 import {
   TERMINAL_STATES,
   canBeStopped,
@@ -191,6 +193,19 @@ export interface StopRunProps {
   reload: () => void
   /** `inline` sits on a graph node; `panel` sits in the run detail. */
   variant?: 'inline' | 'panel'
+  /**
+   * Open the confirmation as a modal over the page instead of in place.
+   *
+   * THE GRAPH NODE ASKS FOR THIS, AND NOTHING ELSE DOES (V001, #1038). In
+   * place on a node the dialog grew upward out of a 221px strip: its title
+   * and its facts were above the canvas's clip, the buttons spilled out of
+   * the card, and focus stayed on `<body>` because the button that held it
+   * had been replaced. `styles.css` said the answer in advance -- "if the
+   * wrapped dialog ever needs more room than this, the answer is to move it
+   * out of the card" -- and this is that move. The pick panel and the run
+   * detail have the width, so they keep the in-place dialog.
+   */
+  overlay?: boolean
 }
 
 export function StopRun({
@@ -200,8 +215,30 @@ export function StopRun({
   step = null,
   reload,
   variant = 'panel',
+  overlay = false,
 }: StopRunProps) {
   const [open, setOpen] = useState(false)
+  const buttonId = useId()
+  const box = useRef<HTMLDivElement | null>(null)
+  const refocus = useRef(false)
+  // FOCUS GOES INTO THE DIALOG WHEN IT OPENS AND BACK TO THE BUTTON WHEN IT
+  // CLOSES. The button that held focus is unmounted by the very click that
+  // opens the dialog, so without this focus fell to `<body>` and a keyboard
+  // reader had to Tab the whole page again to reach the question (V001). The
+  // dialog box itself takes focus, not its first button: the first button is
+  // the destructive one, and Enter pressed twice must not stop a task. The
+  // button is a new element after closing, so it is found again by its id.
+  useEffect(() => {
+    if (open) {
+      box.current?.focus()
+      refocus.current = true
+      return
+    }
+    if (refocus.current) {
+      refocus.current = false
+      document.getElementById(buttonId)?.focus()
+    }
+  }, [open, buttonId])
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<ApiError | null>(null)
   const [outcome, setOutcome] = useState<'requested' | 'released' | null>(null)
@@ -301,17 +338,24 @@ export function StopRun({
     )
   }
 
-  if (!open) {
-    return (
-      // The canonical button (components.html A). In a row or on a graph node
-      // it is QUIET until opened (B28) -- the plain small button, whose 28px
-      // the node's slot is measured for; in an agent's header, where there is
-      // one, it is the danger outline: a destructive action that will still ask.
-      <Button kind={variant === 'inline' ? 'secondary' : 'danger'} size={variant === 'inline' ? 'sm' : 'md'} className="run-stop-btn" onClick={() => setOpen(true)}>
-        stop
-      </Button>
-    )
-  }
+  // The canonical button (components.html A). In a row or on a graph node
+  // it is QUIET until opened (B28) -- the plain small button, whose 28px
+  // the node's slot is measured for; in an agent's header, where there is
+  // one, it is the danger outline: a destructive action that will still ask.
+  const stopButton = (
+    <Button
+      kind={variant === 'inline' ? 'secondary' : 'danger'}
+      size={variant === 'inline' ? 'sm' : 'md'}
+      id={buttonId}
+      className="run-stop-btn"
+      aria-haspopup={overlay ? 'dialog' : undefined}
+      aria-expanded={overlay ? open : undefined}
+      onClick={() => setOpen(true)}
+    >
+      stop
+    </Button>
+  )
+  if (!open) return stopButton
 
   // FOUR PARAGRAPHS BECAME FOUR FACTS, AND EVERY CLAIM SURVIVES.
   //
@@ -356,8 +400,26 @@ export function StopRun({
   const earlierWorkFact = task.latest_checkpoint
     ? 'an earlier attempt checkpointed — not resumed once stopped'
     : 'an earlier attempt ran — not resumed once stopped'
-  return (
-    <div className="stop-confirm" role="group" aria-label={`Stop ${what}`}>
+  const close = () => {
+    if (!busy) setOpen(false)
+  }
+  const confirm = (
+    <div
+      className={overlay ? 'stop-confirm is-overlay' : 'stop-confirm'}
+      role={overlay ? 'dialog' : 'group'}
+      aria-modal={overlay ? true : undefined}
+      aria-label={`Stop ${what}`}
+      tabIndex={-1}
+      ref={box}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape') {
+          e.stopPropagation()
+          close()
+          return
+        }
+        if (overlay) trapTab(e, box.current)
+      }}
+    >
       <h4>Stop {what}?</h4>
 
       <ul
@@ -462,7 +524,7 @@ export function StopRun({
         <Button kind="danger-filled" disabled={busy} onClick={() => void run()}>
           {busy ? 'stopping…' : `stop ${what}`}
         </Button>
-        <Button kind="ghost" disabled={busy} onClick={() => setOpen(false)}>
+        <Button kind="ghost" disabled={busy} onClick={close}>
           keep running
         </Button>
       </div>
@@ -475,5 +537,26 @@ export function StopRun({
         </p>
       )}
     </div>
+  )
+  if (!overlay) return confirm
+  // ON A GRAPH NODE THE BUTTON STAYS WHERE IT WAS and the question opens over
+  // the page, on the same scrim every other dialog here uses. The scrim closes
+  // it like "keep running" does -- never like "stop", which only its own
+  // button may do.
+  const modal: ReactNode = (
+    <div
+      className="c-scrim stop-scrim"
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) close()
+      }}
+    >
+      {confirm}
+    </div>
+  )
+  return (
+    <>
+      {stopButton}
+      {typeof document === 'undefined' ? modal : createPortal(modal, document.body)}
+    </>
   )
 }
