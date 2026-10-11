@@ -331,6 +331,10 @@ class _NoClient:
         return False
 
 
+#: The parsers `_reached` runs, built once with its stand-ins as handlers.
+_STAND_IN_PARSERS: dict[str, argparse.ArgumentParser] = {}
+
+
 @functools.lru_cache(maxsize=None)
 def _reached(command: str) -> str | None:
     """The handler a shell command would run -- e.g. `sc.cmd_login` -- or None.
@@ -339,6 +343,10 @@ def _reached(command: str) -> str | None:
     hand it over, with every `cmd_*` handler replaced by a stand-in that
     reports its own name. `cli.cmd_sc` is left alone: it is routing, not a
     command -- it hands the line to `sc`. None means argparse refused the line.
+
+    Cached: the answer is a function of the string alone (the parsers are
+    built once, at import), and the grant tests below ask it about the same
+    candidates once per rule.
     """
     try:
         words = shlex.split(command)
@@ -363,6 +371,15 @@ def _reached(command: str) -> str | None:
                     patch.setattr(module, name, _stand_in(f"{short}.{name}"))
         patch.setattr(sc, "SwarmClient", _NoClient)
         patch.setattr(cli, "SwarmClient", _NoClient)
+        # Each parser binds the stand-ins above as its handlers, and every
+        # call's stand-ins are the same, so it is built once per program and
+        # reused: building `sc`'s took ~65 ms, times every candidate of every
+        # grant test, which had two tests near the file's 60 s timeout.
+        for module in (sc, cli):
+            built = _STAND_IN_PARSERS.get(module.__name__)
+            if built is None:
+                built = _STAND_IN_PARSERS[module.__name__] = module.build_parser()
+            patch.setattr(module, "build_parser", lambda built=built: built)
         try:
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 (sc.main if program == "sc" else cli.main)(argv)
@@ -446,6 +463,9 @@ _DEVELOPER_STATE = frozenset(
         # and an install request records that the person asked an org.
         "sc.cmd_setup_token",
         "sc.cmd_access_request_install",
+        # 2026-10-11: the audited purge of failed history DELETES workflows,
+        # tasks and their artifacts. Typed at a terminal, never granted.
+        "sc.cmd_admin_purge",
     }
 )
 
@@ -467,14 +487,24 @@ def _writing_handlers() -> frozenset[str]:
     return frozenset(v for v in found.values() if v)
 
 
-def _probes(forbidden: frozenset[str]) -> list[str]:
-    """Every argv tail, from either parser, that reaches a forbidden handler."""
+def _probes(forbidden: frozenset[str]) -> tuple[str, ...]:
+    """Every argv tail, from either parser, that reaches a forbidden handler.
+
+    Cached: `_allowed` asks once per granted rule, every answer is the same
+    full parse of every leaf, and recomputing it per rule had this file's
+    slowest test at 48 of its 60 seconds before `sc admin purge` added a leaf.
+    """
+    return _probes_cached(forbidden)
+
+
+@functools.lru_cache(maxsize=None)
+def _probes_cached(forbidden: frozenset[str]) -> tuple[str, ...]:
     tails: list[str] = []
     for program, parser in _PARSERS.items():
         for leaf in _leaves(parser):
             if _reached(" ".join([program] + leaf)) in forbidden:
                 tails.append(" ".join(leaf))
-    return tails
+    return tuple(tails)
 
 
 def _granted_rules(path: Path) -> list[str]:

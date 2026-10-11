@@ -75,6 +75,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 64 | `profiles.py`: generic runs on GKE_AUTOPILOT (#939 option A) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured |
 | 65 | `profiles.py`: codex runs on GKE_AUTOPILOT (#939 option A) | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured |
 | 66 | `profiles.py`: merge runs on GKE_AUTOPILOT (#939 option A); post-verdict and claude-code-review stay on CLOUD_RUN_JOB | ACCEPTED by the owner 2026-10-10 and APPLIED by the pull request that adds this line, held until the indexer canary is measured; conflicts with proposed request 60's item 2 (see 60's amendment) |
+| 67 | `profiles.py`: a `claude-code-browser` runner profile, claude-code on agent-runtime-browser | ACCEPTED by the owner 2026-10-11 and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -10786,3 +10787,77 @@ As request 64: 1-8 unchanged or preserved by the same GKE manifest. **9**
 unchanged: merge already ran as the tenant's worker account, now through its
 namespace's KSA; the `-git` token is still never mounted, written or logged.
 **10**: a caller still names `merge` and cannot choose where it runs.
+
+---
+
+## 67. `profiles.py`: a `claude-code-browser` runner profile, claude-code on agent-runtime-browser
+
+**Status:** ACCEPTED by the owner 2026-10-11, and APPLIED by the pull request
+that adds this entry.
+
+### Why
+
+An agent could not render or screenshot a page. `browser` is a scripted
+runner: it opens `input.url` or plays `input.actions` and needs one of them,
+so it cannot look at a page it has just built or follow a bug report's steps
+on its own judgement. `claude-code` can, but its image, agent-runtime-base,
+carries no Chromium. agent-runtime-browser (agent-runtime-base plus Playwright
+and Chromium, `images/agent-runtime-browser/Dockerfile`) is already built,
+scanned and promoted by every release. Visual QA and reproducing a UI bug
+need the agent and the browser in one pod.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, a new entry in `RUNNER_PROFILES`:
+
+```python
+"claude-code-browser": RunnerProfile(
+    name="claude-code-browser",
+    image="agent-runtime-browser",
+    resource_class="browser",
+    backend=Backend.GKE_AUTOPILOT,
+    runner_argv=("python", "-m", "agent_worker.runners.claude_code"),
+    provider="anthropic",
+    secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
+    secrets_any_of=True,
+    timeout_seconds=7200,
+    inputs=_CLI_AGENT_INPUTS,
+),
+```
+
+It is `claude-code` in every field but three: its name; its image; and its
+resource class, `browser` (8 vCPU, 16 GiB, 2 units), because the image needs
+it: the GKE pod mounts a 2 GiB memory-medium tmpfs at `/dev/shm` for Chromium
+and that tmpfs counts against the memory limit before a tab is open. Its
+backend is GKE Autopilot, as claude-code's is and as the browser image's must
+be: Cloud Run cannot size `/dev/shm`. Its runner is claude-code's, so it
+takes the same prompt handling, the same `issue` input (request 28), the same
+credential choice and the same model (`local.runner_models`).
+
+The non-frozen follow-ups, in the same pull request: the Terraform mirror
+(`runner_profiles`, `runner_models`); the worker's `cli_agent_spec` and the
+API's `AGENT_STREAM_FILES`, so its streams are claude-code's; the claude-code
+runner passes `PLAYWRIGHT_BROWSERS_PATH` to the CLI when the image sets it,
+and tells the agent Chromium launches only with its sandbox off (no user
+namespaces, every capability dropped -- the pod is the isolation); the UI's
+and the plugin's profile lists; the parity script; the runner-profiles doc.
+
+### Rollback
+
+Delete the entry and its mirrors (the follow-ups above) and release. No Cloud
+Run Job exists for it (a GKE profile gets none), so nothing in Terraform is
+destroyed but the pool document Terraform made for it.
+
+### What it would break
+
+Nothing that exists: a new name. It costs a `browser` resource class, twice a
+`standard` step's units, so a tenant's browser pool ceiling is shared with the
+scripted `browser` profile.
+
+### Invariants
+
+1-8 unchanged: the same GKE manifest, requests == limits from the `browser`
+class, on-demand only, checkpointing as claude-code's. **9**: the tenant's own
+namespace, KSA and secret, as claude-code's. **10**: a caller names
+`claude-code-browser`; the image, class and backend are the catalogue's, and a
+task that sends an image is refused as every task is.

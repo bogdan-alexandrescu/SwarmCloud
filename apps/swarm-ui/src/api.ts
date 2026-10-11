@@ -3263,7 +3263,8 @@ const FIXTURE_INPUT_CONTRACTS: Record<string, RunnerInputContract> = {
   "merge": {"required_keys": []},
   "post-verdict": {"required_keys": []},
   "claude-code-review": {"required_keys": ["prompt"]},
-  "indexer": {"required_keys": ["prompt"]}
+  "indexer": {"required_keys": ["prompt"]},
+  "claude-code-browser": {"required_keys": ["prompt"]}
 }
 
 /**
@@ -3295,7 +3296,8 @@ const FIXTURE_AVAILABILITY: Record<string, FixtureAvailability> = {
   "merge": {"available": true, "disabled_reason": ""},
   "post-verdict": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
   "claude-code-review": {"available": false, "disabled_reason": "the merge chain (#295) is disabled for every tenant until signed step specs (#342) are enforced and the review and merge GitHub Apps exist."},
-  "indexer": {"available": true, "disabled_reason": ""}
+  "indexer": {"available": true, "disabled_reason": ""},
+  "claude-code-browser": {"available": true, "disabled_reason": ""}
 }
 
 async function fixtureCapacity(): Promise<Result<Capacity>> {
@@ -3329,7 +3331,7 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
       // unconfigured rather than unread.
       pools_complete: true,
       blocked_reason_groups: FIXTURE_REASON_GROUPS,
-      // The real five from the frozen catalogue, with the pool lists
+      // Six real entries from the frozen catalogue, with the pool lists
       // pool_names_for builds for one tenant. Not invented: an empty map here
       // meant the headroom rows never rendered in development, which is how a
       // panel ships untested.
@@ -3378,6 +3380,18 @@ async function fixtureCapacity(): Promise<Result<Capacity>> {
           admission: FIXTURE_ADMISSION.browser,
           input_contract: FIXTURE_INPUT_CONTRACTS.browser,
         },
+        // Contract request 67: claude-code on the browser image, so it costs a
+        // browser class (2 units) and runs where the browser image must. No
+        // admission row: the panel reads a missing one as not measured.
+        'claude-code-browser': {
+          resource_class: 'browser', backend: 'GKE_AUTOPILOT', provider: 'anthropic', units: 2,
+          ...FIXTURE_AVAILABILITY['claude-code-browser'],
+          pools: [
+            'global', 'tenant:u-bogdan', 'resource:browser', 'runner:claude-code-browser',
+            'backend:GKE_AUTOPILOT', 'provider:anthropic', 'provider:anthropic:tenant:u-bogdan',
+          ],
+          input_contract: FIXTURE_INPUT_CONTRACTS['claude-code-browser'],
+        },
       },
       pools: [
         pool('global', 20, 5),
@@ -3425,7 +3439,7 @@ async function fixtureTasks(): Promise<Result<TaskPage>> {
     tenant_id: 'u-bogdan',
     state,
     runner_profile: profile,
-    resource_class: profile === 'browser' ? 'browser' : 'standard',
+    resource_class: profile === 'browser' || profile === 'claude-code-browser' ? 'browser' : 'standard',
     provider: profile === 'mock' ? null : 'anthropic',
     priority: 0,
     created_at: at(minsAgo),
