@@ -93,7 +93,7 @@ from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from swarm_common.models import Lease, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, RunnerProfile
 
-from .credentials import AccountPool, CredentialSource, credential_for
+from .credentials import AccountPool, CredentialSource, credential_for, needs_user_slot
 
 log = logging.getLogger(__name__)
 
@@ -695,14 +695,32 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
     # THE CHILD PATH (docs/design/child-tasks.md §3.2). A one-use registration
     # nonce bound to this exact attempt, which its worker spends registering
     # the attempt key it generates BEFORE its agent exists; the agent can read
-    # it later from /proc/1/environ, by which time it is worthless. Only for a
-    # task that is not itself a child (depth 1), and only when this deployment
-    # has the key -- omitted otherwise, so the worker offers no child path.
+    # it later from /proc/1/environ, by which time it is worthless. The child
+    # path is only for a task that is not itself a child (depth 1), and only
+    # when this deployment has the key -- omitted otherwise, so the worker
+    # offers no child path.
     # The nonce and the API's address travel together: a nonce the worker
     # had nowhere to spend would sit unspent in an environment its agent reads.
+    #
+    # THE FORGE BROKER (#1041, docs/design/user-scoped-secrets.md) reuses the
+    # same registered attempt key: swarm-api releases a person's `git-u-` slot
+    # only to an attempt that signs with it. So an attempt whose signed
+    # `forge_credential` is a user slot gets the nonce too, child or not --
+    # without it a child running on its submitter's slot could never prove
+    # itself and the broker would refuse it its own credential.
+    #
+    # A CHILD STILL GETS NO CHILD PATH. SWARM_CHILD_PATH=false tells its worker
+    # to register the key and offer its agent nothing to submit children with.
+    # That flag is a courtesy, not the guard: swarm-api refuses depth itself
+    # (`swarm_api.children` raises ChildDepthExceeded for any parent that has a
+    # `parent_task_id`, both when it reads the parent and again inside the
+    # creating transaction; MAX_CHILD_DEPTH is 1), so a key registered by a
+    # child cannot be spent on a grandchild whatever its worker does. A root
+    # task is written nothing: the child path is the worker's default there.
     child_key = str(getattr(settings, "child_key", "") or "")
     api_url = str(getattr(settings, "swarm_api_url", "") or "").strip()
-    if child_key and api_url and not task.parent_task_id:
+    is_child = bool(task.parent_task_id)
+    if child_key and api_url and (not is_child or needs_user_slot(task)):
         from .children import registration_nonce
 
         env["SWARM_CHILD_NONCE"] = registration_nonce(
@@ -717,6 +735,8 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         api_audience = str(getattr(settings, "swarm_api_audience", "") or "").strip()
         if api_audience:
             env["SWARM_API_AUDIENCE"] = api_audience
+        if is_child:
+            env["SWARM_CHILD_PATH"] = "false"
     return env
 
 
