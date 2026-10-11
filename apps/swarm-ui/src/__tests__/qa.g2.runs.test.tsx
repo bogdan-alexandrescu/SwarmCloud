@@ -298,7 +298,8 @@ describe('G2-18: the Runs list links its workflows and filters by state and text
 describe('G2-19: a phone cell\'s label is a micro label on its own line, with no separator', () => {
   it('prints attr(data-label) alone, as a block', async () => {
     const { container } = await mountList()
-    const td = container.querySelector('.rn-row > td')!
+    // A fact's cell (V112 drew the id, state and issue with no label at all).
+    const td = container.querySelector('.rn-row > td[data-label="Workflow"]')!
     expect(painted(td, 'content', PHONE, 'before')).toBe('attr(data-label)')
     expect(painted(td, 'display', PHONE, 'before')).toBe('block')
     expect(painted(td, 'font-size', PHONE, 'before')).toBe('var(--t-micro)')
