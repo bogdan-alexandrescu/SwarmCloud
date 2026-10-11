@@ -385,7 +385,12 @@ repository it merges in:**
 | Metadata: read | mandatory on every fine-grained token; the branch rules (`rules/branches/{b}`) and protection summary (`branches/{b}`) |
 
 A classic personal access token needs the `repo` and `workflow` scopes for
-the same calls.
+the same calls. A GitHub App installation token needs the same permissions
+granted to the App and accepted on the installation; **Commit statuses: read**
+is the one most easily missed, because the step reads the combined status
+(`commits/{sha}/status`) on every merge, not only when a status is required,
+and its absence is a 403 that refuses `token_lacks_rights` (ai-studio,
+2026-10-11, merged once the permission was accepted).
 
 The step **does not need Administration**. It never reads or changes a
 ruleset's configuration: it reads the rules that apply to a branch, which
