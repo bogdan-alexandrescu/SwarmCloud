@@ -757,8 +757,7 @@ def emit(status, name, detail):
     REPORT.append("%s|%s|%s" % (status, name, detail))
 
 
-# Directories that hold no source, plus one that holds source this lane may not
-# edit. See the swarm-ui note at 6b.
+# Directories that hold no source.
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "dist", "build", ".mypy_cache",
              "__pycache__", ".pytest_cache", ".terraform", ".claude"}
 SKIP_SUFFIXES = {".md", ".lock", ".png", ".svg", ".ico", ".woff", ".woff2"}
@@ -839,7 +838,24 @@ DECLARATIONS = (
     # scanned. Two literals in one expression look like they must be edited
     # together, right up until one of them is not.
     (r"or\s+\"(swarm-tenant-[a-z0-9-]*)\"", "python empty-string fallback"),
+    # A prefix REBUILT from Terraform's name_prefix rather than written out:
+    # terraform/modules/monitoring/metrics.tf extracts the tenant from
+    # `resource.labels.namespace_name` with "^${var.name_prefix}-tenant-(.+)$".
+    # The captured template has `${var.name_prefix}` resolved below against
+    # terraform/infra's default, the value it is applied with. A drift here
+    # would not fail anything loudly: the GKE spec-refusal metric's tenant_id
+    # label would read empty for every tenant (2026-10-11 stale-name audit).
+    (r"\^(\$\{var\.name_prefix\}-[a-z0-9-]*-)\(", "terraform namespace regex"),
 )
+
+# `${var.name_prefix}` in a captured template is terraform/infra's default.
+INFRA_VARS = (root / "terraform" / "infra" / "variables.tf").read_text()
+NAME_PREFIX = re.search(
+    r"variable\s+\"name_prefix\"\s*\{[^}]*?default\s*=\s*\"([^\"]*)\"", INFRA_VARS, re.S)
+if NAME_PREFIX is None:
+    emit("MISSING", "terraform/infra name_prefix default",
+         "no `variable \"name_prefix\"` default in terraform/infra/variables.tf, so the "
+         "templates built from it cannot be resolved")
 
 declared = []
 for path, text in FILES:
@@ -847,11 +863,15 @@ for path, text in FILES:
     for pattern, kind in DECLARATIONS:
         for match in re.finditer(pattern, text, re.M | re.S):
             line = text.count("\n", 0, match.start()) + 1
-            declared.append((str(rel), line, kind, match.group(1)))
+            value = match.group(1)
+            if "${var.name_prefix}" in value and NAME_PREFIX is not None:
+                value = value.replace("${var.name_prefix}", NAME_PREFIX.group(1))
+            declared.append((str(rel), line, kind, value))
 
-# The count when this was written. Lower means a restatement moved or was
-# renamed and this scan stopped seeing it, which is not the same as agreement.
-MIN_DECLARATIONS = 7
+# The count when this was last raised (10 on 2026-10-11, with the monitoring
+# regex; 7 when written). Lower means a restatement moved or was renamed and
+# this scan stopped seeing it, which is not the same as agreement.
+MIN_DECLARATIONS = 10
 if len(declared) < MIN_DECLARATIONS:
     emit("MISSING", "declared namespace prefixes",
          "found %d, expected at least %d; a restatement moved or was renamed -- "
@@ -877,14 +897,10 @@ else:
 # that feed the WRONG spelling in on purpose. The marker carries a reason, and
 # it is a line comment in every language scanned here.
 #
-# apps/swarm-ui IS SCANNED AND ITS FAILURES ARE REPORTED, not excluded: as of
-# 2026-09-24 two browser-side fixtures still carry `swarm-u-bogdan`
-# (src/api.ts and src/__tests__/brand.test.tsx). They are display-only mock
-# data and cannot dispatch anything, but an exclusion with a comment is how a
-# deficit becomes permanent, so they are listed below as ADVISORY -- printed on
-# every run, failing nothing, until the lane that owns that directory fixes
-# them and the ADVISORY branch here is deleted.
-ADVISORY_PREFIX = "apps/swarm-ui/"
+# apps/swarm-ui IS SCANNED LIKE EVERYTHING ELSE. Its display-only fixtures
+# carried `swarm-u-bogdan` and were reported ADVISORY from 2026-09-24 until the
+# 2026-10-11 stale-name audit renamed them; the advisory branch went with them,
+# so a browser fixture that restates a wrong prefix now fails like any other.
 # The apostrophe is BUILT, not written. This probe is a heredoc inside a
 # command substitution and bash scans that body for quote characters while it
 # looks for the closing paren, so a single one here truncates the script -- the
@@ -923,20 +939,13 @@ if len(literals) < MIN_LITERALS:
          % (len(literals), MIN_LITERALS))
 else:
     bad = [lit for lit in literals if not lit[2].startswith(AUTHORITY)]
-    hard = [lit for lit in bad if not lit[0].startswith(ADVISORY_PREFIX)]
-    soft = [lit for lit in bad if lit[0].startswith(ADVISORY_PREFIX)]
-    for rel, number, value in hard:
+    for rel, number, value in bad:
         emit("DRIFT", "namespace literal",
              "%s:%d is %s; the scheduler dispatches into %s<tenant>, so this "
              "names a namespace nothing creates" % (rel, number, value, AUTHORITY))
-    for rel, number, value in soft:
-        emit("ADVISORY", "namespace literal",
-             "%s:%d is %s -- browser-side mock data, owned by the UI lane, "
-             "dispatches nothing" % (rel, number, value))
-    if not hard:
+    if not bad:
         emit("OK", "namespace literals",
-             "%d of %d literal(s) start with %s; %d advisory"
-             % (len(literals) - len(bad), len(literals), AUTHORITY, len(soft)))
+             "%d literal(s) all start with %s" % (len(literals), AUTHORITY))
 
 print("\n".join(REPORT))
 PY
@@ -953,7 +962,6 @@ else
     NS_SEEN=$(( NS_SEEN + 1 ))
     case "${NS_STATUS}" in
       OK)       ok "namespace ${NS_NAME}: ${NS_DETAIL}" ;;
-      ADVISORY) warn "namespace ${NS_NAME}: ${NS_DETAIL}" ;;
       MISSING)
         err "the tenant-namespace scan lost sight of what it compares: ${NS_DETAIL}"
         err "A scan that passes because it stopped looking reports an agreement it never established."

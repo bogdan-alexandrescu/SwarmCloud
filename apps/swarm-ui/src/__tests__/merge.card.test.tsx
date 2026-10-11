@@ -3,7 +3,7 @@
  * the run and workflow pages.
  *
  * A merge step's card shows its state -- waiting for CI (the pending checks and
- * the head), behind and updated (n of 3), merged (commit and issues closed) or
+ * the head), behind and updated (n of 12), merged (commit and issues closed) or
  * refused (code and reason) -- the pull request link and
  * `merge_wait.first_parked_at`. A CI_PENDING park reads "waiting for CI",
  * never "stalled" or "blocked": it holds no capacity and wakes by itself
@@ -13,6 +13,9 @@
  *
  * Each case was written before the card existed and failed without it.
  */
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { render, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -36,7 +39,7 @@ vi.mock('../api', async (importOriginal) => {
 const { WorkflowsScreen } = await import('../Workflows')
 const { StepsCard } = await import('../RunSteps')
 const { MergeStepCard } = await import('../WorkflowViews')
-const { mergeCardOf, MERGE_MAX_BRANCH_UPDATES } = await import('../stepviews')
+const { mergeCardOf, MERGE_MAX_HEAD_UPDATES } = await import('../stepviews')
 
 const T0 = Date.parse('2026-10-06T12:00:00.000Z')
 const iso = (offsetSeconds: number) => new Date(T0 + offsetSeconds * 1000).toISOString()
@@ -178,8 +181,13 @@ describe('which steps have a merge card', () => {
     expect(mergeCardOf(task('t_x', 'SUCCEEDED', { result_summary: { merge: { merged_by_this_task: true } } }), [])).toBeNull()
   })
 
-  it('holds the worker\'s bound on branch updates', () => {
-    expect(MERGE_MAX_BRANCH_UPDATES).toBe(3)
+  it('holds the worker\'s bound on branch updates, read from merge.py\'s source', () => {
+    // The console carries no worker, so the cap is restated; this reads the
+    // worker's own assignment, as the API's test_the_cap_is_the_workers does.
+    const merge = join(__dirname, '..', '..', '..', 'agent-worker', 'agent_worker', 'merge.py')
+    const found = [...readFileSync(merge, 'utf8').matchAll(/^MERGE_MAX_HEAD_UPDATES\s*=\s*(\d+)\s*$/gm)]
+    expect(found).toHaveLength(1)
+    expect(MERGE_MAX_HEAD_UPDATES).toBe(Number(found[0]?.[1]))
   })
 })
 
@@ -203,10 +211,10 @@ describe('one render per state', () => {
     expect(card(waiting({ code: 'no_checks', pending: [] })).textContent).toContain('first check')
   })
 
-  it('behind and updated: n of 3, at the new head', () => {
+  it('behind and updated: n of 12, at the new head', () => {
     const c = card(waiting({ code: 'branch_updated', head: NEW_HEAD, pending: [], updates: 2 }))
     expect(c.dataset.merge).toBe('updated')
-    expect(c.textContent).toContain('updated 2 of 3')
+    expect(c.textContent).toContain('updated 2 of 12')
     expect(c.textContent).toContain(NEW_HEAD.slice(0, 7))
     expect(c.textContent).not.toContain('waiting for CI ·')
   })
@@ -214,7 +222,7 @@ describe('one render per state', () => {
   it('behind and updated, with no count recorded, says so rather than inventing one', () => {
     const c = card(waiting({ code: 'branch_updated', head: NEW_HEAD, pending: [], updates: 0 }))
     expect(c.textContent).toContain('count not recorded')
-    expect(c.textContent).not.toMatch(/updated 0 of 3/)
+    expect(c.textContent).not.toMatch(/updated 0 of/)
   })
 
   it('merged: the commit and the issues closed', () => {

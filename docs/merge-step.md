@@ -699,7 +699,9 @@ only after its dependency has merged.
 * behind leads to an update with `expected_head_sha`, and a re-park at the
   new head;
 * an update 422 for a conflict gives `merge_conflict`;
-* a fourth update gives `behind_too_often`;
+* a sixth update while the step holds the merge slot gives
+  `behind_too_often` (`MERGE_MAX_BRANCH_UPDATES` is 5 since 2026-10-10; it
+  was 3, and this line said "a fourth update");
 * a head that is not a GitHub base-merge of the pushed head gives
   `head_moved`;
 * a stale generation makes no update call;
@@ -713,7 +715,7 @@ only after its dependency has merged.
 **What:** a card on the merge step showing three things:
 
 * the state: waiting for CI (with the pending checks and the head), behind
-  and updated (n of 3), merged (commit and issues closed), or refused (code
+  and updated (n of 12, the walk's cap), merged (commit and issues closed), or refused (code
   and reason);
 * the pull request link;
 * `merge_wait.first_parked_at`.
@@ -1322,7 +1324,7 @@ it cannot be overridden per execution, so the dispatcher creates
 per-tenant-per-profile Job resources."* **The profile is the one place where a
 step's identity can differ from its tenant's other steps.** A `merge` profile
 gets the Job `swarm-job-<tenant>-merge`. That Job can run as a separate service
-account, `swarm-<tenant>-merge`, which is the only accessor of the merge
+account, `swarm-<tenant>-merge` (history: retired, §3 "What this supersedes"; the account no longer exists), which is the only accessor of the merge
 credential. No agent ever runs as that account, because the profile starts no
 agent.
 
@@ -1433,7 +1435,7 @@ its own change, listed in §10):
 * **`review` runs on its own profile too — `claude-code-review` — but ONLY
   for a GCS write grant, never for an App key (round-3 correction,
   2026-09-29; do not conflate with the rejected bullet immediately below).**
-  Its Job's service account, `swarm-<tenant>-review`, is the only identity
+  Its Job's service account, `swarm-<tenant>-review` (history: retired, §3 "What this supersedes"; the account no longer exists), is the only identity
   with write access to the review-only-writable prefix (§4.3) where
   `review.json` lands. **Corrected (2026-09-30, #364): this is not the "no
   portable secret" case it was first written as.** A prompt-injected review
@@ -1589,7 +1591,7 @@ it runs.
 5. **Stage and check every claim that needs no credential** (§4.1, §4.2): the
    staged artifacts parse, the outcome and evidence fields are readable, and
    the shas agree with each other. A refusal here costs no secret read at all.
-6. **Read the secret.** Secret Manager `access`, as `swarm-<tenant>-merge`,
+6. **Read the secret.** Secret Manager `access`, as `swarm-<tenant>-merge` (history: retired, §3 "What this supersedes"; the account no longer exists),
    into a local variable. It is registered with the logger's redaction at once,
    the same way `resolve_git_token` does it.
 7. **Mint the installation token.** The worker signs a JWT with the key (valid
@@ -1846,7 +1848,7 @@ review step succeeds and posts the GitHub review.
 
 **`post-verdict`: a worker-action profile, structured exactly like `merge`
 (§1.3).** Its own Job, `swarm-job-<tenant>-post-verdict`; its own service
-account, `swarm-<tenant>-post-verdict`, the **sole** accessor of
+account, `swarm-<tenant>-post-verdict` (history: retired, §3 "What this supersedes"; the account no longer exists), the **sole** accessor of
 `swarm-tenant-<tenant>-git-review`; `runner_argv=()`; no agent ever runs
 there. It depends on `review` alone.
 
@@ -1957,7 +1959,7 @@ bindings, not adding a third:
    conditioned rather than being dropped once binding 2 is added. This
    replaces `worker_objects`; it is not an addition alongside it, since two
    overlapping write grants would defeat the exclusion;
-3. **the review SA, `swarm-<tenant>-review`, gets `roles/storage.objectCreator`
+3. **the review SA, `swarm-<tenant>-review` (history: retired, §3 "What this supersedes"; the account no longer exists), gets `roles/storage.objectCreator`
    — not `objectUser`, and with NO delete — on `tenants/<t>/verdicts/`
    alone**, per the owner's decision, round-5 re-review: `objectCreator`
    grants only `storage.objects.create`, never `update` or `delete`, so the
@@ -2033,7 +2035,7 @@ cross-workflow one unconditionally — corrected, joint review with CR 34,
 * **cross-workflow verdict laundering (R8) — the write-path attack is
   closed, round-5 re-review; the App-token half is not, and the owner still
   did not choose to bind a review to a specific pull request or task id.**
-  `swarm-<tenant>-review` is one identity shared by *every* `single-pr`
+  `swarm-<tenant>-review` (history: retired, §3 "What this supersedes"; the account no longer exists) is one identity shared by *every* `single-pr`
   workflow of the tenant, not scoped per-workflow (the same "one Job per
   tenant per profile" constraint that shapes every other identity in this
   design, §1.1). Its GCS grant (`objectCreator` on the whole

@@ -606,8 +606,9 @@ deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceac
 enable_issue_sweep = true
 
 # Personal-workspace publishing (swarm-api WORKSPACE_APPLY_PUBLISH, #847).
-# OFF until the swarm-workspace-apply topic and its Cloud Build trigger exist,
-# which is the owner's one-time bootstrap apply with
+# OFF until the swarm-workspace-apply topic exists with what it starts --
+# Eventarc -> Workflows -> the Cloud Run job swarm-workspace-apply (WD2,
+# re-decided 2026-10-10) -- which is the owner's one-time bootstrap apply with
 # enable_workspace_deployer = true (docs/workspaces.md §10). Flip this to true
 # in the SAME release as that apply, not before: publishing to a topic that
 # does not exist records publish_failed on every sweep, and not after: while it

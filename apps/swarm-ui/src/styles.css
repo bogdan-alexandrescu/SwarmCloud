@@ -8044,7 +8044,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   .is-stacked > table > tbody > tr > td[data-label] > .scope { margin-left: 0; }
   /* AN IDENTITY BREAKS RATHER THAN RUNS OFF THE CARD (CH-12). A service
-     account or a principal is one unbroken token -- `swarm-u-bogdan@saga-
+     account or a principal is one unbroken token -- `swarm-agent-worker-u-bogdan@saga-
      agents-staging.iam.gserviceaccount.com` -- and in a 200px value column it
      ran past the card's edge with the `.com` cut off. It has no spaces to
      break at, so it breaks anywhere; a cut identity is a different identity.

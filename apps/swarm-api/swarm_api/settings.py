@@ -470,12 +470,14 @@ class ApiSettings:
     execution_cancel_topic: str = ""
     # --- the personal-workspace job's trigger (docs/workspaces.md §2.1, W7) -
     #: The Pub/Sub topic an approval, a retry, a ceiling change and the
-    #: dispatch sweep publish a workspace id to (WORKSPACE_APPLY_TOPIC). The
-    #: Cloud Build trigger subscribed to it is the owner's bootstrap apply
-    #: (lane W4), so the name is the one that apply creates.
+    #: dispatch sweep publish a workspace id to (WORKSPACE_APPLY_TOPIC). An
+    #: Eventarc trigger on it starts a Workflows execution that runs the Cloud
+    #: Run job swarm-workspace-apply (WD2, re-decided 2026-10-10); all three are
+    #: the owner's bootstrap apply (lane W4), so the name is the one that apply
+    #: creates.
     workspace_apply_topic: str = "swarm-workspace-apply"
     #: Whether swarm-api publishes to it at all (WORKSPACE_APPLY_PUBLISH).
-    #: OFF by default, because the topic and its trigger do not exist until the
+    #: OFF by default, because the topic and what it starts do not exist until the
     #: owner's W4 apply: publishing into a missing topic would fail every
     #: approval's dispatch and fill the sweep's attempts with noise. Off, an
     #: approval still records the decision and stays `approved`, and the sweep

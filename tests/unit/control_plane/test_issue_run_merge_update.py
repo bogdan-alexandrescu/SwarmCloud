@@ -7,10 +7,10 @@ repository's ruleset requires a branch to be up to date, so the merge step
 updates a behind branch through GitHub's `update-branch`, and the head that
 leaves -- "Merge branch 'main' into swarm/task_..." -- is a commit no task
 pushed. The worker's first-parent walk (`agent_worker.merge._updates_onto`)
-accepts up to MERGE_MAX_BRANCH_UPDATES of them; `issueci._merge` accepted
+accepts up to MERGE_MAX_HEAD_UPDATES of them; `issueci._merge` accepted
 none. What these tests hold:
 
-  1. A head that is 1..MERGE_MAX_BRANCH_UPDATES of GitHub's base merges on
+  1. A head that is 1..MERGE_MAX_HEAD_UPDATES of GitHub's base merges on
      top of a task-pushed head is merged, continuing the task that pushed it.
   2. One past the cap, a commit that is not a merge, a merge GitHub did not
      commit and sign, and a merge whose second parent is not on the base are
@@ -117,7 +117,7 @@ def _green_at(writes: CommitWrites, head: str) -> None:
     writes.check(head, "unit", "success")
 
 
-@pytest.mark.parametrize("count", range(1, issueci.MERGE_MAX_BRANCH_UPDATES + 1))
+@pytest.mark.parametrize("count", range(1, issueci.MERGE_MAX_HEAD_UPDATES + 1))
 def test_a_head_of_base_merges_on_the_pushed_head_is_merged(
     client, db, objects, writes, clock, count,
 ):
@@ -140,13 +140,13 @@ def test_a_head_of_base_merges_on_the_pushed_head_is_merged(
 
 def test_one_base_merge_past_the_cap_is_refused(client, db, objects, writes, clock):
     running = _checking(client, db, objects, writes)
-    _green_at(writes, _updates(writes, issueci.MERGE_MAX_BRANCH_UPDATES + 1))
+    _green_at(writes, _updates(writes, issueci.MERGE_MAX_HEAD_UPDATES + 1))
 
     run = _read(client, clock, running["id"])
 
     assert run["state"] == "FAILED"
     assert "not pushed by any of this run's tasks" in run["error"]
-    assert (f"more than {issueci.MERGE_MAX_BRANCH_UPDATES} of GitHub's base merges"
+    assert (f"more than {issueci.MERGE_MAX_HEAD_UPDATES} of GitHub's base merges"
             in run["error"])
     assert _merge_workflows(db) == []
 
@@ -242,7 +242,7 @@ def _worker_value(name: str) -> str:
 
 
 def test_the_cap_is_the_workers():
-    assert int(_worker_value("MERGE_MAX_BRANCH_UPDATES")) == issueci.MERGE_MAX_BRANCH_UPDATES
+    assert int(_worker_value("MERGE_MAX_HEAD_UPDATES")) == issueci.MERGE_MAX_HEAD_UPDATES
 
 
 def test_githubs_committer_is_the_workers():

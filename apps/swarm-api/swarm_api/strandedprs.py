@@ -10,8 +10,9 @@ workflow ends at the pull request, a manual issue run defaults to
 `auto_merge: false`, and one repository has no auto-merge workflow. 7 merge
 steps failed `behind_too_often`: the ruleset requires a branch to be up to
 date, 16 merge steps ran against main at once, each merge that landed put the
-rest behind, and a step updates its branch at most
-`agent_worker.merge.MERGE_MAX_BRANCH_UPDATES` (3) times. A user-owned
+rest behind, and a step then updated its branch at most
+`agent_worker.merge.MERGE_MAX_BRANCH_UPDATES` (3 then; 5 since 2026-10-10,
+counted only while the step holds its repository's merge slot) times. A user-owned
 repository has no GitHub merge queue (docs/ci.md). Nothing on the platform
 looked at an open pull request after the run that opened it ended.
 

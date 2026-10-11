@@ -1783,7 +1783,7 @@ What each step does:
 | step | clones | publishes | writes |
 |---|---|---|---|
 | implement (`author`) | `main` | pushes `swarm/<its task id>` and opens the pull request | the code, and `pr-title.txt` |
-| review (`reader`, profile `claude-code-review`) | the implement branch | no git push, nothing to GitHub at all. Writes `review.json` under its own identity, `swarm-<tenant>-review`, to a prefix the tenant's ordinary worker account cannot write | `review.json` |
+| review (`reader`, profile `claude-code-review`) | the implement branch | no git push, nothing to GitHub at all. Writes `review.json` under its own identity, `swarm-<tenant>-review` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists), to a prefix the tenant's ordinary worker account cannot write | `review.json` |
 | post-verdict (no agent, profile `post-verdict`) | nothing | submits a GitHub PR review (`APPROVE` or `REQUEST_CHANGES`, `commit_id` pinned to `review.json.sha`), from a credential only this step's own service account can read — the review agent that wrote `review.json` cannot read it. Reads `review.json` from the review-only-writable prefix, not the general staged-artifact location | nothing |
 | fix (`amender`) | the implement branch | fast-forward pushes to the **same** branch, only if it changed something | the fix |
 | proof (`reader`) | the implement branch | no git push, nothing to GitHub at all | `proof.json` |
@@ -1856,7 +1856,7 @@ recommended but, per the owner's round-3 decision, is **not** a
 precondition ([merge-step.md](merge-step.md) §7 R4, §11 open question (b)).
 **Separately, and NOT closed by anything above (named residual R8, joint
 review with CR 34, 2026-09-29):** the review-only-writable prefix stops the
-ordinary tenant account from writing there, but `swarm-<tenant>-review` is
+ordinary tenant account from writing there, but `swarm-<tenant>-review` (history: retired with the #295 design, docs/merge-step.md §3; the account no longer exists) is
 one identity shared by every `single-pr` workflow of the tenant, and its
 write grant covers every workflow's verdict path at once. A review agent of
 one workflow, compromised by prompt injection, can still write a fabricated

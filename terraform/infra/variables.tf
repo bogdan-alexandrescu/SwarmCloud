@@ -373,14 +373,10 @@ variable "tenants" {
   # change or destroy one; a person in this map would be in state, and in a
   # public tfvars file besides (§2.6). So a `kind = "user"` tenant must be a
   # SERVICE account's -- swarm-verify's u-sw-c90291 is the one there is.
-  #
-  # u-bogdan is the one exception, and only until lane W9 moves it out of this
-  # map with `removed` blocks (§3.3); W9 deletes it from the list below in the
-  # same change, and from then on the list is empty.
   validation {
     condition = alltrue([
       for t, v in var.tenants :
-      v.kind != "user" || endswith(lower(v.principal), ".iam.gserviceaccount.com") || contains(["u-bogdan"], t)
+      v.kind != "user" || endswith(lower(v.principal), ".iam.gserviceaccount.com")
     ])
     error_message = "a `kind = \"user\"` tenant whose principal is a person is a personal workspace, and personal workspaces are made by the workspace job, never by Terraform (docs/workspaces.md §3.2). Ask for it in the console's setup checklist; only a service account's tenant belongs here."
   }
@@ -858,9 +854,10 @@ variable "workspace_apply_publish" {
   description = <<-EOT
     swarm-api's WORKSPACE_APPLY_PUBLISH: whether approving a personal
     workspace (and its dispatch sweep) publishes the workspace id to the
-    swarm-workspace-apply topic, which starts the workspace job's Cloud Build
-    trigger (docs/workspaces.md §2.1-2.2). OFF by default because the topic
-    and the trigger exist only after the owner's bootstrap apply with
+    swarm-workspace-apply topic, which starts the workspace job through
+    Eventarc -> Workflows -> the Cloud Run job swarm-workspace-apply (WD2,
+    re-decided 2026-10-10; docs/workspaces.md §2.1-2.2). OFF by default because
+    the topic and what it starts exist only after the owner's bootstrap apply with
     enable_workspace_deployer = true (§10): publishing to a topic that does
     not exist records publish_failed on every sweep. Turn it on in the same
     release as that apply. Off, nothing is silent: the swarm-workspace-sweep

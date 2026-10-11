@@ -1666,11 +1666,16 @@ export function workflowPullRequest(
 export const MERGE_PROFILE = 'merge'
 
 /**
- * `agent_worker.merge.MERGE_MAX_BRANCH_UPDATES`: how many times the step
- * updates a branch that is behind before it refuses `behind_too_often`.
- * Restated because the console carries no worker; the card prints "n of 3".
+ * `agent_worker.merge.MERGE_MAX_HEAD_UPDATES`: how many of GitHub's base
+ * merges the step's first-parent walk accepts on the pushed head, in all,
+ * before it refuses `behind_too_often`. The card's count (`merge_wait.updates`,
+ * the worker's `branch_updated.updates`) is that walk's total, so this is its
+ * cap -- not `MERGE_MAX_BRANCH_UPDATES` (5 since 2026-10-10, was 3), which
+ * bounds only the updates made while the step held the merge slot. Restated
+ * because the console carries no worker; held to merge.py's source by
+ * __tests__/merge.card.test.tsx. The card prints "n of 12".
  */
-export const MERGE_MAX_BRANCH_UPDATES = 3
+export const MERGE_MAX_HEAD_UPDATES = 12
 
 /** What the merge step is doing, as its card says it. */
 export type MergeCardState =

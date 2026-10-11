@@ -223,10 +223,12 @@ NO_CHANGE_MARKER = "no_change"
 #: How many of GitHub's base merges (`update-branch`) an `auto_merge` run
 #: accepts on top of a head one of its tasks pushed. The merge step makes
 #: them itself when the branch is behind, and its first-parent walk accepts
-#: at most this many: `agent_worker.merge.MERGE_MAX_BRANCH_UPDATES`, spelled
-#: again because the API image does not carry the worker, and held equal to
-#: it by tests/unit/control_plane/test_issue_run_merge_update.py.
-MERGE_MAX_BRANCH_UPDATES = 5
+#: at most this many: `agent_worker.merge.MERGE_MAX_HEAD_UPDATES` -- the
+#: walk's cap, not the per-slot `MERGE_MAX_BRANCH_UPDATES`, because the
+#: re-takes' catch-ups are base merges on the same head too -- spelled again
+#: because the API image does not carry the worker, and held equal to it by
+#: tests/unit/control_plane/test_issue_run_merge_update.py.
+MERGE_MAX_HEAD_UPDATES = 12
 #: The committer of a commit GitHub itself made and signed, as `update-branch`
 #: merges are (`agent_worker.merge.GITHUB_COMMITTER_EMAIL`, held the same way).
 GITHUB_COMMITTER_EMAIL = "noreply@github.com"
@@ -1190,7 +1192,7 @@ def through_base_merges(
     From `head`, each step down must be one of GitHub's base merges
     (`_base_merge_parent`) and its first parent is the next step; `known` is
     asked at every step, `head` first, and must answer within
-    MERGE_MAX_BRANCH_UPDATES steps. The worker's `_updates_onto` walk, read
+    MERGE_MAX_HEAD_UPDATES steps. The worker's `_updates_onto` walk, read
     the same way: a merge step that updated a behind branch leaves a head no
     task pushed, and that head is still this run's to merge, while a
     person's push -- any other commit -- is not.
@@ -1200,9 +1202,9 @@ def through_base_merges(
         found = known(head)
         if found is not None:
             return found, ""
-        if steps >= MERGE_MAX_BRANCH_UPDATES:
+        if steps >= MERGE_MAX_HEAD_UPDATES:
             return None, (
-                f"it is more than {MERGE_MAX_BRANCH_UPDATES} of GitHub's base merges on top "
+                f"it is more than {MERGE_MAX_HEAD_UPDATES} of GitHub's base merges on top "
                 "of any head this run's tasks pushed"
             )
         parent, why = _base_merge_parent(writer, ref, token, sha=head, base=base)
@@ -1266,7 +1268,7 @@ def _merge(
     THE MERGE STEP MOVES THE HEAD ITSELF. A branch that is behind its base is
     updated by the step through GitHub's `update-branch`, which makes a base
     merge no task pushed. So a head is this run's when one of its tasks
-    pushed it OR it is at most MERGE_MAX_BRANCH_UPDATES of GitHub's base
+    pushed it OR it is at most MERGE_MAX_HEAD_UPDATES of GitHub's base
     merges on top of one (`through_base_merges`), and a merge whose head moved
     that way from the head it claimed is the same merge, still running, not
     a new one to submit. Any other head is still refused.

@@ -27,7 +27,7 @@ import {
   type StepWhy,
   type TimelineAxis,
   type WorkflowView,
-  MERGE_MAX_BRANCH_UPDATES,
+  MERGE_MAX_HEAD_UPDATES,
   type MergeCard,
 } from './stepviews'
 import { TERMINAL_STATES, bytesLabel, timeAgo, type AttemptRow, type TaskState, type Tone, type WorkflowStep } from './types'
@@ -1450,7 +1450,7 @@ const plural = (n: number, one: string) => `${n} ${one}${n === 1 ? '' : 's'}`
  * THE MERGE STEP'S CARD (docs/merge-step.md "Revised 2026-10-06" §6 MS4), on
  * the run page's Steps card and in the workflow page's step inspector: the
  * state -- waiting for CI with the pending checks and the head, behind and
- * updated (n of 3), merged with the commit and the issues closed, or refused
+ * updated (n of 12), merged with the commit and the issues closed, or refused
  * with the code and the reason -- the pull request, and when the step first
  * parked for CI. Every fact is `mergeCardOf`'s; this draws them.
  *
@@ -1473,8 +1473,8 @@ export function MergeStepCard({ card, now }: { card: MergeCard; now: number }) {
     case 'updated':
       head =
         s.updates === null
-          ? `behind, updated (count not recorded) · at most ${MERGE_MAX_BRANCH_UPDATES}`
-          : `behind, updated ${s.updates} of ${MERGE_MAX_BRANCH_UPDATES}`
+          ? `behind, updated (count not recorded) · at most ${MERGE_MAX_HEAD_UPDATES}`
+          : `behind, updated ${s.updates} of ${MERGE_MAX_HEAD_UPDATES}`
       lines = [
         <>GitHub merged the base into the branch; the checks run again{s.head !== null && <> at <Sha sha={s.head} /></>}</>,
         'Holds no capacity. Woken when the checks settle.',
