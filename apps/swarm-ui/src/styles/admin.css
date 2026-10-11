@@ -17,18 +17,40 @@
 
 /* -- Pool limits ---------------------------------------------------------- */
 /* POOL LIMITS L2, THE SIDE EDITOR (owner's pick 2026-10-01). The families keep
-   the full width until a pool is picked; then the editor takes a column beside
-   them, so the table stays still while editing. Below 1100px it stacks under
-   the families, where `autoFocus` on its field brings it into view. */
+   the full width, and the table stays still while editing.
+
+   FROM 1280px THE EDITOR FLOATS OVER THE RIGHT OF THE FAMILIES (VQA V024). It
+   took a grid column of its own, which narrowed the families from ~1024 to
+   ~660px at 1440: every fixed-width row re-laid itself, `edit` wrapped under
+   its figure and `AIMD back-off` broke in two, the opposite of the rule
+   above. Both now share the one grid cell, so the families' width -- and
+   with it every column and every row -- is the same open or shut; the editor
+   sits over Set by and Last changed (it carries the open pool's own), sticky
+   so it stays in view down a long list. 1280 is where the ~340px panel still
+   clears the Ceiling column and `edit` (AdminSettings.tsx `BESIDE_QUERY`).
+
+   BELOW 1280px IT IS IN THE FLOW, UNDER THE ROW IT EDITS (VQA V025;
+   AdminSettings.tsx `Family`), where `autoFocus` on its field brings it into
+   view without leaving the row: after all six families, a phone's first
+   record jumped ~5,000px to it. */
 .adm-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ctl-gutter); align-items: start; }
+.adm-inline { padding: var(--ctl-s2) 0; }
 .adm-side {
   display: flex; flex-direction: column; gap: 8px; min-width: 0;
   padding: 12px 14px; border: 1px solid var(--line); border-left: 3px solid var(--sk-ac);
   border-radius: 10px; background: var(--surface);
 }
-@media (min-width: 1100px) {
-  .adm-split.is-editing { grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); }
-  .adm-split.is-editing > .adm-side { position: sticky; top: 12px; }
+@media (min-width: 1280px) {
+  .adm-split.is-editing > .cap-families,
+  .adm-split.is-editing > .adm-side { grid-area: 1 / 1; }
+  .adm-split.is-editing > .adm-side {
+    justify-self: end;
+    width: 340px;
+    position: sticky;
+    top: 12px;
+    z-index: 2;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, .28);
+  }
 }
 .adm-side-title { margin: 0; display: flex; flex-direction: column; gap: 2px; font: 600 var(--t-lead)/var(--lh-lead) var(--font); }
 .adm-side-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 12px; margin: 0; font-size: var(--t-meta); }
@@ -61,9 +83,10 @@
 .adm-side-actions > button.is-danger { background: var(--bad); border-color: var(--bad); }
 .adm-side-actions > button:disabled { opacity: .45; cursor: not-allowed; }
 .adm-not-recorded { margin: 0; color: var(--text-faint); font-style: italic; }
+.adm-not-recorded.is-gap { font-style: normal; }
 /* THE LAST ADMIN WRITE, once the API serves it (#133): who, and how long ago. */
 .adm-changed { margin: 0; color: var(--text); font-size: var(--t-meta); line-height: var(--lh-meta); }
-.adm-changed > time { color: var(--text-dim); }
+.adm-changed > time { color: var(--text-dim); white-space: nowrap; }
 /* A record the pool no longer holds (#133): neutral, like `.adm-over` -- a
    ceiling written since by scripts/pool-limit.sh is a fact to read, not a fault. */
 .adm-changed-since { color: var(--text-dim); text-decoration: underline dotted; cursor: help; }
@@ -79,6 +102,12 @@
 .adm-saved-what.warn-text { color: var(--warn); }
 .adm-family tr.is-editing > th[scope="row"],
 .adm-family tr.is-editing > td { background: var(--sk-acs); }
+/* DIM TEXT ON THE EDITED ROW'S TINT KEEPS AA (VQA V065). `--text-faint` on
+   `--sk-acs` is 4.33:1 in the dark theme (#828d9b on #10294a), under the
+   4.5 AA asks of the pool id under the name, the configured dot and the
+   Last changed dash. On this row the faint step is the dim one, 6.59:1 dark
+   and 5.94:1 light; every other row keeps the faint step. */
+.adm-family tr.is-editing { --text-faint: var(--text-dim); }
 @media (max-width: 560px) {
   .adm-side input,
   .adm-side-actions > button { min-height: 44px; }
@@ -91,7 +120,8 @@
   font: var(--t-micro)/var(--lh-micro) var(--font);
   color: var(--text-faint);
 }
-/* The phone's filter over the pool names: the full width of the column. */
+/* The filter over the pool names (a phone, or more pools than a screen
+   holds, VQA V077): the full width of the column. */
 .adm-filter > input {
   flex: 1 1 auto;
   min-width: 0;
@@ -115,14 +145,21 @@
    would only fight that. */
 @media (min-width: 900px) {
   table.adm-limits { table-layout: fixed; width: 100%; }
-  /* IN USE HOLDS ITS HEAD ON ONE LINE (browser QA N19, 2026-10-04): at 12%
-     of the ~660px column beside the open editor it was 79px, and "In use
-     (units)" wrapped. 19% is 125px there, that head and its padding. */
-  table.adm-limits > colgroup > col.adm-col-pool { width: 23%; }
-  table.adm-limits > colgroup > col.adm-col-use { width: 19%; }
-  table.adm-limits > colgroup > col.adm-col-ceiling { width: 24%; }
-  table.adm-limits > colgroup > col.adm-col-by { width: 14%; }
-  table.adm-limits > colgroup > col.adm-col-changed { width: 20%; }
+  /* SIZED TO WHAT EACH COLUMN HOLDS (VQA V076, V077). The families are no
+     longer narrowed to ~660px by the open editor (V024), so In use needs no
+     19% to hold its head (browser QA N19): 15% is 150px at 1024, that head
+     and its padding. The Ceiling slot is 6ch + 7ch + `edit`, ~175px, and its
+     24% left ~70px empty in every row; Last changed -- `ops@… · 20 → 10 ·
+     3h ago` -- takes the room, and wrapped `3h / ago` in its 20%. */
+  table.adm-limits > colgroup > col.adm-col-pool { width: 25%; }
+  table.adm-limits > colgroup > col.adm-col-use { width: 15%; }
+  table.adm-limits > colgroup > col.adm-col-ceiling { width: 21%; }
+  table.adm-limits > colgroup > col.adm-col-by { width: 13%; }
+  table.adm-limits > colgroup > col.adm-col-changed { width: 26%; }
+  /* SET BY IS A TERM, ON ONE LINE (VQA V024): `AIMD back-off` broke at its
+     hyphen. Where the column is too narrow it is cut, whole on the cell's
+     title, which carries the sentence why. */
+  table.adm-limits td.adm-setby { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* One line: `.cap-families .ctl-table th` lets Capacity's heads wrap. */
   .cap-families table.adm-limits > thead th { white-space: nowrap; }
 }
@@ -152,6 +189,34 @@
 .adm-ceiling-cell > .limit-edit { vertical-align: middle; }
 .adm-unset { color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); white-space: nowrap; }
 .adm-changed-none { color: var(--text-faint); }
+
+/* THE GITHUB FALLBACK TOKEN CARD (#780). Its own row, never the ceiling
+   editor's `.adm-side-field`, whose 96px input holds six digits and cut the
+   owner and the pasted token at a dozen characters (VQA V023): the two
+   fields share the row and grow, and wrap one under the other before either
+   is narrower than its placeholder.
+   SPACED OFF WHAT IS ABOVE IT (VQA V022). Under the families it followed
+   `.section`'s `--ctl-s5`; under the screen's error or empty block, which
+   carries no margin, it touched it. The same `--ctl-s5` on its own top
+   collapses with the section's in the first case and is the gap in the
+   second. */
+.adm-fallback-token { margin-top: var(--ctl-s5); }
+.adm-token-form { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.adm-token-form > input {
+  flex: 1 1 24ch;
+  min-width: 24ch;
+  min-height: 36px;
+  padding: 3px 8px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: var(--t-body)/var(--lh-body) var(--mono);
+}
+.adm-token-form > input:disabled { opacity: .5; cursor: not-allowed; }
+@media (max-width: 560px) {
+  .adm-token-form > input { flex-basis: 100%; min-width: 0; min-height: 44px; }
+}
 
 /* -- Tenants ---------------------------------------------------------------- */
 /* TENANTS: the status is a mark and a word (brand.html vocabulary), and a
@@ -225,21 +290,37 @@
      .n` drew the two figure heads bold mono beside sans ones. A head never
      wraps -- it is cut, whole in its column's name -- and every head is sans. */
   table.ten-table > thead > tr > th { white-space: nowrap; overflow-wrap: normal; overflow: hidden; text-overflow: ellipsis; }
-  table.ten-table > colgroup > col.ten-col-tenant { width: 11%; }
+  /* THE TENANT ID AND THE CREDENTIALS TAKE THE ROOM (VQA V079). At 11% a
+     long tenant id broke into five lines at its hyphens, and at 14% two
+     credential tags stacked one per line. The two identities give way
+     instead -- they are cut in the middle by design (below) -- and the two
+     short figures need no more than `45 · 40u`. */
+  table.ten-table > colgroup > col.ten-col-tenant { width: 15%; }
   table.ten-table > colgroup > col.ten-col-status { width: 10%; }
   table.ten-table > colgroup > col.ten-col-kind { width: 7%; }
-  table.ten-table > colgroup > col.ten-col-principal { width: 19%; }
-  table.ten-table > colgroup > col.ten-col-enforced { width: 8%; }
-  table.ten-table > colgroup > col.ten-col-configured { width: 10%; }
-  table.ten-table > colgroup > col.ten-col-credentials { width: 14%; }
-  table.ten-table > colgroup > col.ten-col-identity { width: 21%; }
+  table.ten-table > colgroup > col.ten-col-principal { width: 15%; }
+  table.ten-table > colgroup > col.ten-col-enforced { width: 7%; }
+  table.ten-table > colgroup > col.ten-col-configured { width: 8%; }
+  table.ten-table > colgroup > col.ten-col-credentials { width: 20%; }
+  table.ten-table > colgroup > col.ten-col-identity { width: 18%; }
+  /* A tenant id breaks at its hyphens only, never mid-word. */
+  table.ten-table > tbody > tr > th[scope='row'] { overflow-wrap: break-word; }
   .ten-ident-row { display: flex; flex-wrap: wrap; }
   /* CUT IN THE MIDDLE (G5-12, QA 2026-10-07; Activity.tsx `identParts`).
      Cut at its end, every identity read "swarm-agent-work…" -- the shared
      prefix -- and lost the tenant's own part. The identity is a row of three
      pieces: the key (the tenant's part and its `@`) never shrinks; the prefix
      before it and the domain after it each give way with their own ellipsis,
-     the domain first (it is the same for every row). */
+     the domain first (it is the same for every row).
+
+     NEVER A SLIVER, NEVER A HARD CLIP (VQA V026, V075). Shrunk to nothing,
+     the domain was a 3px box holding half a glyph and no ellipsis; and a
+     tenant id longer than the column -- a key that could not shrink --
+     painted past the cell's edge and was clipped mid-letter with the domain
+     gone. Each cut piece keeps 2ch, room for a letter and its ellipsis, and
+     the key gives way last of all, with an ellipsis of its own: its shrink
+     weight is a thousandth of the others', so it only shrinks once both are
+     down to their 2ch. */
   .ten-ident {
     display: flex;
     flex: 1 1 0;
@@ -250,12 +331,17 @@
   .ten-ident > .ten-ident-head,
   .ten-ident > .ten-ident-tail {
     flex: 0 1 auto;
-    min-width: 0;
+    min-width: 2ch;
     overflow: hidden;
     text-overflow: ellipsis;
   }
   .ten-ident > .ten-ident-tail { flex-shrink: 4; }
-  .ten-ident > .ten-ident-key { flex: none; }
+  .ten-ident > .ten-ident-key {
+    flex: 0 0.001 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
   /* What a copy said takes a line of its own, so `principal copied` never
      squeezes the identity it is about. */
   .ten-copy-said { flex-basis: 100%; }
@@ -287,4 +373,10 @@ table.ten-table > thead > tr > th.n { font-family: var(--font); }
    `.cap-families` cells wrap anywhere, which split `…:tenant:smok / e` and,
    beside the open editor, `backend:CLOUD_RUN_J / OB`. The row header puts a
    `<wbr>` after each colon (`keyBreaks`), and these stop every other break. */
-table.adm-limits th.pool-name > .ctl-sub { overflow-wrap: normal; word-break: keep-all; }
+table.adm-limits th.pool-name > .ctl-sub { overflow-wrap: normal; word-break: keep-all; line-height: var(--lh-micro); }
+/* AND NEVER AT A HYPHEN, ON LINES THAT DO NOT TOUCH (VQA V076). Each segment
+   between colons is one unbroken run (`keyBreaks`); and the `line-height`
+   above gives a key that does wrap the micro step's own leading back from
+   `.ctl-sub`'s flush 1, which is sized for one line under a name and set a
+   second line on the first. */
+table.adm-limits th.pool-name > .ctl-sub > .adm-key-seg { white-space: nowrap; }
