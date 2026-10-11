@@ -135,13 +135,19 @@ export interface WorkflowBoard {
   taskById: Map<string, Task> | null
   /** Why states are missing, for the banner. null when the join succeeded. */
   statesDetail: string | null
+  /**
+   * The list read's `next_page_token`: older workflows exist past these 100
+   * (live QA WF-2). Absent or null when the read holds the whole history, or
+   * when it is not a list read at all.
+   */
+  nextPageToken?: string | null
 }
 
 export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
   if (USE_FIXTURES) return fixtureWorkflowBoard()
 
   const [wf, tasks] = await Promise.all([
-    read<{ workflows: Workflow[] }>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
+    read<WorkflowPage>(route('/v1/workflows?limit=100'), (d) => d.workflows.length === 0),
     read<TaskPage>(route('/v1/tasks', {}, 'limit=200'), (d) => d.tasks.length === 0),
   ])
 
@@ -161,7 +167,12 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
       status: 'ok',
       fetchedAt: wf.fetchedAt,
       serverAt: wf.serverAt,
-      data: { workflows: wf.data.workflows, taskById: null, statesDetail: tasks.error.message },
+      data: {
+        workflows: wf.data.workflows,
+        taskById: null,
+        statesDetail: tasks.error.message,
+        nextPageToken: wf.data.next_page_token ?? null,
+      },
     }
   }
 
@@ -171,8 +182,24 @@ export async function loadWorkflowBoard(): Promise<Result<WorkflowBoard>> {
     status: 'ok',
     fetchedAt: wf.fetchedAt,
     serverAt: wf.serverAt,
-    data: { workflows: wf.data.workflows, taskById, statesDetail: null },
+    data: { workflows: wf.data.workflows, taskById, statesDetail: null, nextPageToken: wf.data.next_page_token ?? null },
   }
+}
+
+/**
+ * THE NEXT 100 WORKFLOWS, OLDER THAN A LIST READ (live QA WF-2, 2026-10-11).
+ * The list read only its newest 100 and offered no way past them, while its
+ * counts and its "oldest first" read as the tenant's whole history:
+ * `Failed 15` against 52 failed workflows. `token` is the previous read's
+ * `next_page_token`. No task join: the list reads each older row's steps by
+ * id as it scrolls in (`useRowReads`), as it already does for the first 100.
+ */
+export async function loadOlderWorkflows(token: string): Promise<Result<WorkflowPage>> {
+  if (USE_FIXTURES) return { status: 'ok', fetchedAt: Date.now(), data: { workflows: [], next_page_token: null } }
+  return read<WorkflowPage>(
+    route('/v1/workflows', {}, new URLSearchParams({ limit: '100', page_token: token })),
+    (d) => d.workflows.length === 0,
+  )
 }
 
 function emptyBoard(workflows: Workflow[]): WorkflowBoard {
@@ -2049,7 +2076,13 @@ export async function loadProviders(): Promise<Result<ProvidersPage>> {
 }
 
 /** One page of tasks in one state. Server-side filter, backed by a real index. */
-export async function loadTasksInState(state: TaskState): Promise<Result<TaskPage>> {
+export async function loadTasksInState(
+  state: TaskState,
+  // THE OVERVIEW'S STATE READS (live QA OV-1/OV-4, 2026-10-11) ask for the
+  // summary rows, as its page read does (#168); everyone else keeps the full
+  // 200-row page this always served.
+  options: { limit?: number; view?: 'summary' } = {},
+): Promise<Result<TaskPage>> {
   if (USE_FIXTURES) {
     const page = await fixtureTasks()
     if (page.status !== 'ok') return page
@@ -2059,7 +2092,11 @@ export async function loadTasksInState(state: TaskState): Promise<Result<TaskPag
       : { status: 'ok', fetchedAt: Date.now(), data: { ...page.data, tasks } }
   }
   return read<TaskPage>(
-    route('/v1/tasks', {}, new URLSearchParams({ state, limit: '200' })),
+    route(
+      '/v1/tasks',
+      {},
+      new URLSearchParams({ state, limit: String(options.limit ?? 200), ...(options.view === 'summary' ? { view: 'summary' } : {}) }),
+    ),
     (d) => d.tasks.length === 0,
   )
 }
@@ -5453,6 +5490,179 @@ export async function storeOwnerToken(owner: string, token: string): Promise<Res
 /** `POST /v1/onboarding/dismiss`: hide the caller's checklist (`true`), or show it again. Steps keep their state. */
 export async function dismissOnboarding(dismissed = true): Promise<Result<OnboardingDismissal>> {
   return writeTo(route('/v1/onboarding/dismiss'), 'POST', { dismissed }) as Promise<Result<OnboardingDismissal>>
+}
+
+// ---------------------------------------------------------------------------
+// GitHub permissions health (#1086, PERM-2 over PERM-1's read).
+//
+// `GET /v1/forge/permissions` is swarm_api/forgeperms.py. It answers what the
+// platform needs (`required`), what the App requests (`app`), what each org's
+// installation granted (`orgs`) and what each registered repository can do
+// (`repositories`). Every call it makes is a GET and it stores nothing; a fix
+// is always a link to GitHub, which is why the only URLs kept here are
+// github.com pages. `refresh=true` skips the server's 60 s cache.
+//
+// NORMALISE OR DROP, NEVER GUESS. A field of the wrong type is null (not
+// read), never false (refused) or true (granted): a dot or a card that turned
+// green on a malformed answer would hide the one failure this read exists for.
+// ---------------------------------------------------------------------------
+
+/** One unmet requirement: what it is, and in plain words what breaks without it. */
+export interface ForgeGap {
+  /** GitHub's permission name; null on a token's measured refusal, whose grant is not readable. */
+  permission: string | null
+  access: string | null
+  granted: string | null
+  needed_for: string
+  capabilities: string[]
+}
+
+/** A permission the App requests above what an installation accepted. */
+export interface ForgePending {
+  permission: string
+  requested: string
+  granted: string | null
+}
+
+export interface ForgeAppCard {
+  configured: boolean
+  slug: string | null
+  /** Null when `GET /app` was not read; then `error` says why. */
+  missing: ForgeGap[] | null
+  /** Served to platform admins only; null for everyone else. */
+  settings_url: string | null
+  error: string | null
+}
+
+export interface ForgeOrgCard {
+  org: string
+  account_type: string | null
+  installation_id: number
+  missing: ForgeGap[] | null
+  pending: ForgePending[] | null
+  review_url: string | null
+  error: string | null
+}
+
+/** A capability's state: granted, refused (measured), or null (not measured). */
+export type ForgeCapability = boolean | null
+
+/** What reaches a repository: the App's installation, or the tenant's stored git access. */
+export type ForgeReach = 'app' | 'token'
+
+export interface ForgeRepoStatus {
+  repo_id: string
+  repo: string
+  credential: ForgeReach | null
+  installation_id: number | null
+  capabilities: Record<string, ForgeCapability>
+  blocked_by: ForgeGap[]
+  error: string | null
+}
+
+export interface ForgePermissionsDoc {
+  checked_at: string | null
+  required: ForgeGap[]
+  app: ForgeAppCard
+  orgs: ForgeOrgCard[]
+  repositories: ForgeRepoStatus[]
+  cached: boolean
+}
+
+function fpStr(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : null
+}
+
+function fpObj(v: unknown): Record<string, unknown> | null {
+  return typeof v === 'object' && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null
+}
+
+function fpList(v: unknown): Record<string, unknown>[] {
+  return Array.isArray(v) ? v.map(fpObj).filter((o): o is Record<string, unknown> => o !== null) : []
+}
+
+/** A fix link is a github.com page, or nothing: a button to anywhere else is not drawn. */
+function fpGitHubUrl(v: unknown): string | null {
+  const s = fpStr(v)
+  return s !== null && s.startsWith('https://github.com/') ? s : null
+}
+
+function fpGap(o: Record<string, unknown>): ForgeGap | null {
+  const why = fpStr(o.needed_for)
+  if (why === null) return null
+  return {
+    permission: fpStr(o.permission),
+    access: fpStr(o.access),
+    granted: fpStr(o.granted),
+    needed_for: why,
+    capabilities: Array.isArray(o.capabilities) ? o.capabilities.filter((c): c is string => typeof c === 'string') : [],
+  }
+}
+
+function fpGaps(v: unknown): ForgeGap[] | null {
+  if (!Array.isArray(v)) return null
+  return fpList(v).map(fpGap).filter((g): g is ForgeGap => g !== null)
+}
+
+export function normForgePermissions(raw: unknown): ForgePermissionsDoc {
+  const doc = fpObj(raw) ?? {}
+  const app = fpObj(doc.app) ?? {}
+  const orgs: ForgeOrgCard[] = []
+  for (const o of fpList(doc.orgs)) {
+    const org = fpStr(o.org)
+    if (org === null || typeof o.installation_id !== 'number') continue
+    orgs.push({
+      org,
+      account_type: fpStr(o.account_type),
+      installation_id: o.installation_id,
+      missing: fpGaps(o.missing),
+      pending: Array.isArray(o.pending)
+        ? fpList(o.pending).flatMap((p) => {
+            const permission = fpStr(p.permission)
+            const requested = fpStr(p.requested)
+            return permission === null || requested === null ? [] : [{ permission, requested, granted: fpStr(p.granted) }]
+          })
+        : null,
+      review_url: fpGitHubUrl(o.review_url),
+      error: fpStr(o.error),
+    })
+  }
+  const repositories: ForgeRepoStatus[] = []
+  for (const r of fpList(doc.repositories)) {
+    const repoId = fpStr(r.repo_id)
+    const name = fpStr(r.repo)
+    if (repoId === null || name === null) continue
+    const caps: Record<string, ForgeCapability> = {}
+    for (const [k, v] of Object.entries(fpObj(r.capabilities) ?? {})) caps[k] = typeof v === 'boolean' ? v : null
+    repositories.push({
+      repo_id: repoId,
+      repo: name,
+      credential: r.credential === 'app' || r.credential === 'token' ? r.credential : null,
+      installation_id: typeof r.installation_id === 'number' ? r.installation_id : null,
+      capabilities: caps,
+      blocked_by: fpGaps(r.blocked_by) ?? [],
+      error: fpStr(r.error),
+    })
+  }
+  return {
+    checked_at: fpStr(doc.checked_at),
+    required: fpGaps(doc.required) ?? [],
+    app: {
+      configured: app.configured === true,
+      slug: fpStr(app.slug),
+      missing: fpGaps(app.missing),
+      settings_url: fpGitHubUrl(app.settings_url),
+      error: fpStr(app.error),
+    },
+    orgs,
+    repositories,
+    cached: doc.cached === true,
+  }
+}
+
+/** `GET /v1/forge/permissions`: the tenant's GitHub permissions; `refresh` reads GitHub again. */
+export async function loadForgePermissions(refresh = false): Promise<Result<ForgePermissionsDoc>> {
+  return readAs(route('/v1/forge/permissions', {}, refresh ? 'refresh=true' : undefined), normForgePermissions)
 }
 
 // ---------------------------------------------------------------------------
