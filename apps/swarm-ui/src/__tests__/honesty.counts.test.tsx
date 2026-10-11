@@ -437,12 +437,17 @@ describe('the page head (AH-25, #503)', () => {
     expect(line().textContent).toBe('last run failed')
   })
 
-  it('while counting: the control says so and cannot be pressed twice', async () => {
+  it('while counting: the head says so, keeps its shape, and cannot be pressed twice', async () => {
     loadStats.mockReturnValue(new Promise<Result<Stats>>(() => {}))
     render(<PlatformCountsScreen />)
     screen.getByRole('button', { name: /^Run the count · / }).click()
-    const busy = await screen.findByRole('button', { name: 'Counting…' })
+    // THE BUTTON KEEPS ITS WORDS (VQA V029): it became `Counting…`, a third
+    // of its width, and the head re-laid itself around it. The line before
+    // it says so instead.
+    await waitFor(() => expect(line().textContent).toBe('counting…'))
+    const busy = screen.getByRole('button', { name: /^Run the count · / })
     expect((busy as HTMLButtonElement).disabled).toBe(true)
+    expect(document.querySelector('.counts-scopes')?.getAttribute('aria-busy')).toBe('true')
     expect(busy.closest('.c-phead > .c-acts')).not.toBeNull()
   })
 })

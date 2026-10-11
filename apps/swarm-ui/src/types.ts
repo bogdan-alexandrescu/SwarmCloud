@@ -2793,6 +2793,23 @@ export const RESOURCE_UNITS: Readonly<Record<string, number>> = {
 }
 
 /**
+ * When a parked task falls due again, as a reader takes it in (V060).
+ *
+ * The raw ISO string ("Eligible again 2026-10-11T02:50:58.413Z") was printed
+ * here until the visual QA of #1038: UTC, milliseconds and a `T` in a sentence
+ * a person reads. It now goes through `clockTime` -- the one formatter every
+ * start and submit time on the Agents list uses -- with the wait still to go,
+ * so the row and the inspector beside it print the instant the same way.
+ * Null for a missing or unparseable value: never an invented time.
+ */
+export function eligibleAgain(iso: string | null | undefined, now: number = Date.now()): string | null {
+  const at = clockTime(iso, now)
+  if (at === null) return null
+  const left = new Date(iso as string).getTime() - now
+  return left > 0 ? `Eligible again at ${at.text} (in ${humaniseUntil(left)}).` : `Eligible again since ${at.text}.`
+}
+
+/**
  * Column 3, "Why". First match wins.
  *
  * The CANCELLED cascade case is the subtle one. When a workflow parent fails,
@@ -2815,7 +2832,8 @@ export const RESOURCE_UNITS: Readonly<Record<string, number>> = {
 export function whyAgent(task: Task, units: number | null = null): string {
   if (task.state === 'PARKED') {
     const base = task.park_reason ? reasonCopy(task.park_reason) : 'Parked.'
-    return task.next_eligible_at ? `${base} Eligible again ${task.next_eligible_at}.` : base
+    const again = eligibleAgain(task.next_eligible_at)
+    return again ? `${base} ${again}` : base
   }
   // #362: the live reading of the task's own pools wins over `blocked_by`,
   // which is only as fresh as the scheduler's last pass over it.

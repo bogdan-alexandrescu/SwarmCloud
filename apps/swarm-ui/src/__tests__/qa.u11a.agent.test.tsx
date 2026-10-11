@@ -19,7 +19,7 @@
  *
  * MUTATIONS: drop the span's title; draw the Checkpoints pane only on its
  * tab, or say `in bucket` again; drop the strip's sticky head or its hidden
- * breadcrumb; drop the phone `?` rule or the tabs' wrap; scroll the viewer
+ * breadcrumb; drop the phone `?` rule or put the tabs' wrap back; scroll the viewer
  * with `scrollIntoView` inside the pane; drop `openRow`'s report; split the
  * refresh's age from its press, drop its title, let the title block shrink,
  * or drop the count note's title; file a park under
@@ -225,11 +225,16 @@ describe('D39: the phone frame', () => {
     expect(painted(host.querySelector('h1')!, 'display', PHONE) ?? 'block').not.toBe('none')
   })
 
-  it('wraps the agent’s tabs onto as many lines as they take, so none is cut', () => {
+  // SUPERSEDED BY V148 (visual QA #1038): the wrap this case held drew the
+  // tabs as two ragged rows. They are one row that scrolls, with the `›` edge
+  // and the open tab scrolled into view (`AgTabsEdge`); `qa.vqa.l04.test.tsx`
+  // holds that. What D39 asked -- no tab cut with nothing to say so -- is
+  // the edge's job, which `qa.u10a.agent.test.tsx` holds.
+  it('keeps the agent’s tabs on one row that scrolls, never wrapped (V148)', () => {
     const host = tree('<div class="ag-split"><div class="ag-tabs-edge"><div class="c-tabs ag-split-tabs" role="tablist"></div></div></div>')
     const strip = host.querySelector('.ag-split-tabs')!
-    expect(painted(strip, 'flex-wrap', PHONE)).toBe('wrap')
-    expect(painted(strip, ['overflow-x', 'overflow'], PHONE)).toBe('visible')
+    expect(painted(strip, 'flex-wrap', PHONE)).toBe('nowrap')
+    expect(painted(strip, ['overflow-x', 'overflow'], PHONE)).toBe('auto')
     expect(painted(strip, 'flex-wrap', WIDE)).toBe('nowrap')
   })
 })

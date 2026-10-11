@@ -150,6 +150,9 @@ describe('every family table has the same columns, and edit in the same one (#50
   })
 
   it('reads the pool\'s last admin write in Last changed, and a dash with its reason when unknown', async () => {
+    // The admin pool read answered and holds no record for these pools: the
+    // "nobody has changed it" case, which alone is the dash (VQA V078).
+    api.loadAdminPools.mockResolvedValue({ status: 'ok', data: { pools: [] }, fetchedAt: Date.now() })
     const at = new Date(Date.now() - 2 * 3_600_000).toISOString()
     const cap = everyFamily()
     cap.pools[1] = pool('tenant:eng', {

@@ -69,7 +69,10 @@
   padding: 0 4px;
   color: var(--text-dim);
 }
-.ag-find { flex: 1 1 200px; min-width: 0; display: flex; }
+/* THE SCOPE AT THE SEARCH BOX'S END (V147): `26 loaded` was the toolbar's
+   last item and, on any wrap, a line of its own. Inside the find group it
+   stays on the line that takes the slack. */
+.ag-find { flex: 1 1 200px; min-width: 0; display: flex; align-items: center; gap: var(--ctl-s2); }
 .ag-find > input {
   flex: 1;
   min-width: 0;
@@ -83,6 +86,12 @@
 }
 .ag-find > input:focus-visible { outline: 2px solid var(--info); outline-offset: 1px; }
 .ag-filter-k { color: var(--text-dim); font-size: var(--t-meta); }
+.ag-find > .ag-scope { flex: 0 1 auto; max-width: 45%; overflow: hidden; text-overflow: ellipsis; }
+/* THE PROFILE SELECT IS CAPPED (V061, visual QA #1038). A native select is as
+   wide as its longest option, so one long profile name made it ~450px and
+   pushed every other control down a line. The chosen value ellipsises; the
+   whole of it is the select's title and the open list's own width. */
+.ag-list-head .ag-filter select { max-width: 16em; min-width: 0; text-overflow: ellipsis; }
 
 /* --- the compact row, at every width ------------------------------------- */
 /* LINE ONE is the mark, the name and the elapsed time; LINE TWO profile ·
@@ -118,6 +127,21 @@
 .row.is-compact > .when { grid-column: age; white-space: nowrap; }
 .row.is-compact > .cr-sub,
 .row.is-compact > .why { grid-column: name / -1; }
+/* TWO LINES, AT EVERY WIDTH (V061, visual QA #1038). The clamp was the
+   phone's alone (styles.css), so on a wide list a failed row printed its
+   whole multi-line error. The sentence is whole in the span's title and on
+   the agent's own panel, one click away. `.is-same` is one line already. */
+.row.is-compact > .why:not(.is-same) {
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+/* A FAILED ROW'S REASON IS RED (V146), in the text-safe red its mark's word
+   uses; it was --warn amber beside a red mark and a red rule. */
+.row.is-compact > .why.is-bad { color: var(--bad-ink); }
 .cr-sub {
   min-width: 0;
   overflow: hidden;
@@ -234,6 +258,25 @@
   }
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-collapse { padding: 0 8px; }
   :root[data-agent-list='strip'] .app.has-inspector > .work .ag-collapse > kbd { display: none; }
+  /* THE PROVENANCE LINE STEPS ASIDE TOO (V059, visual QA #1038). Opening
+     Changes folds the list to this strip, and `26 loaded · 3 live · <tenant>`
+     (`Screen`'s count note) was squeezed into its 64px over four lines. It
+     goes the way the page head went: hidden, kept for a screen reader. */
+  :root[data-agent-list='strip'] .app.has-inspector > .work .c-count-note {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  /* AND THE WAY BACK MOVES INTO THE AGENT (V059). With the breadcrumb and the
+     page title out of the strip, nothing on screen named the list or led back
+     to it but the » that unfolds it. The agent's own back link -- drawn only
+     where the agent covers the list -- is drawn over its header while the
+     list is folded: `‹ Agents`, the section the breadcrumb named. */
+  :root[data-agent-list='strip'] .app.has-inspector > .ag-split > .ctl-agent-back { display: inline-flex; }
 }
 
 /* THE DIVIDER HAS A HANDLE YOU CAN SEE (#503: a transparent 6px grip). The
@@ -753,6 +796,12 @@
 @media (min-width: 1100px) {
   .ctl-agent-back { display: none; }
 }
+/* NOR A DIVIDER TO DRAG (V148, visual QA #1038). Where the agent covers the
+   list there is no list beside it to resize, and the grip's handle showed as
+   a sliver down the drawer's left edge on a phone. */
+@media (max-width: 1099px) {
+  .ag-split > .ag-divider { display: none; }
+}
 /* ON A PHONE THE LIST AND THE AGENT ARE TWO PAGES (agents.html V1): with an
    agent open the list is not drawn behind it, and the back link replaces the
    close cross. */
@@ -775,10 +824,15 @@
   .ag-head-actions { margin-inline-start: 0; }
   /* The back link replaces the ✕ on a phone, as it did on the column. */
   .ag-head-actions > .drawer-close { display: none; }
-  /* THE AGENT'S TABS WRAP (U11a D39, owner QA at 390px): the strip
-     scrolled sideways and was cut at `Chi`, and the fade that said so was
-     missed. On a phone every tab is on screen, on as many lines as it takes. */
-  .c-tabs.ag-split-tabs { flex-wrap: wrap; overflow-x: visible; }
+  /* THE AGENT'S TABS ARE ONE ROW (V148, visual QA #1038). They wrapped
+     (U11a D39) because a strip cut at `Chi` with a missed fade hid tabs; on
+     two ragged rows they read as two strips, with the open tab's underline
+     floating mid-block. One row, packed tighter, scrolls sideways where it
+     must: the edge says `›` where more lies beyond (`AgTabsEdge`), and the
+     open tab is scrolled into view, so no tab is ever chosen and unseen. */
+  .c-tabs.ag-split-tabs { flex-wrap: nowrap; overflow-x: auto; gap: 0; }
+  .c-tabs.ag-split-tabs > a,
+  .c-tabs.ag-split-tabs > button { padding-inline: 8px; gap: 4px; }
   /* THE HEADER SCROLLS AWAY ON A PHONE (G2-01, QA 2026-10-07). At 390x844
      the header -- state, title, id, facts, chips -- and the two rows of
      tabs held y 0-373 and never moved, so with the stat strip stuck under
