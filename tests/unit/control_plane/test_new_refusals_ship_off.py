@@ -123,6 +123,22 @@ NOT_SWITCHABLE_CODES = frozenset({
     "WORKSPACE_WRONG_STATE",
     "ACCOUNT_NOT_LENDABLE",
     "ACCOUNT_IS_THEIRS",
+    # The forge-credential broker (#1041; docs/design/user-scoped-secrets.md
+    # §3.2), for the same two reasons: raised only by the new route
+    # `POST /v1/attempts/forge-credential`, which no existing caller uses, and
+    # continuing past any of them IS the breach -- report-only would hand a
+    # person's GitHub token to another member's attempt, a stale generation,
+    # or another tenant. Owner to confirm (questions.json on #1041 step 2).
+    "forge_credential_unauthenticated",
+    "forge_credential_unproven",
+    "task_not_found",
+    "attempt_superseded",
+    "spec_unverified",
+    "credential_not_user_slot",
+    "credential_not_submitters",
+    "grant_removed",
+    "grant_read_only",
+    "credential_unavailable",
 })
 
 #: What the guard lets through without a switch.

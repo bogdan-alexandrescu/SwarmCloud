@@ -30,6 +30,7 @@ from .routes import (
     attempts,
     checkpoints,
     children,
+    credentials,
     forgeapp,
     gittokens,
     health,
@@ -165,6 +166,7 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.
     app.include_router(children.router)
+    app.include_router(credentials.router)
 
     @app.middleware("http")
     async def observe(request: Request, call_next):
