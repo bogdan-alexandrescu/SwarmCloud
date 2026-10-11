@@ -1339,11 +1339,14 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         backend=Backend.CLOUD_RUN_JOB,
         runner_argv=(),
         worker_action=WorkerAction.POST_VERDICT,
-        # The credential is never mounted: its secret is read by the worker at
-        # post-time, as `swarm-<tenant>-post-verdict`, the Job's own service
-        # account. `provider` is what parks the step CREDENTIAL_MISSING, at no
-        # cost, for a tenant that has not registered one, and keeps Terraform
-        # from creating a post-verdict Job for that tenant.
+        # The credential is never mounted: its secret was to be read by the
+        # worker at post-time, as a per-tenant post-verdict service account
+        # that was retired with the #295 design (docs/merge-step.md §3 "What
+        # this supersedes"); the profile has no Job for any tenant
+        # (contract request 72). `provider` is what parks the step
+        # CREDENTIAL_MISSING, at no cost, for a tenant that has not registered
+        # one, and keeps Terraform from creating a post-verdict Job for that
+        # tenant.
         #
         # Listing `git-review` here is not by itself sufficient to keep the
         # ordinary worker account off this secret (contract request 35, "What
@@ -1355,13 +1358,14 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         available=False,
         disabled_reason=_DISABLED_UNTIL_342,
     ),
-    # Identical to claude-code except its name -- and so its Job and service
-    # account, `swarm-<tenant>-review` -- and never_restore_checkpoint, and,
-    # since contract request 53 moved claude-code to GKE Autopilot, its
+    # Identical to claude-code except its name and never_restore_checkpoint,
+    # and, since contract request 53 moved claude-code to GKE Autopilot, its
     # backend: this profile is retired (no Job for any tenant,
     # `profiles_without_a_job`), so request 53 did not move it, and neither
     # did #939's option A (contract request 66): it was designed to run as its
-    # own account, `swarm-<tenant>-review`, which a GKE pod cannot be.
+    # own per-tenant review account, which a GKE pod cannot be, and that
+    # account is retired (docs/merge-step.md §3 "What this supersedes";
+    # contract request 72).
     "claude-code-review": RunnerProfile(
         name="claude-code-review",
         image="agent-runtime-base",
