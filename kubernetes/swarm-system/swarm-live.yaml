@@ -1,0 +1,209 @@
+# swarm-live: the live browser's relay (docs/design/live-browser.md §3.3, §7,
+# §8; lane LB-L8, part of #1030).
+#
+# The meeting point of a live session: a tenant pod's live gate dials IN to it
+# with a tunnel ticket, swarm-api proxies a viewer's websocket IN to it with a
+# viewer ticket, and it joins the two and records the masked frames to the
+# artifact bucket. It holds no task state; a restart drops every live session
+# for the seconds it takes to come back, both ends reconnect, and nothing
+# about any task changes.
+#
+# A TEMPLATE. Its double-underscore placeholders are filled by terraform/infra/live.tf
+# from that root's own values (the image digest, the bucket, the key's name, the
+# reserved address) and the result is its `swarm_live_manifest` output:
+#
+#   terraform -chdir=terraform/infra output -raw swarm_live_manifest
+#
+# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# another team's cluster (CLAUDE.md rule 2; the deny-list is
+# scripts/lib/common.sh's). The namespace this creates is the one
+# `kubernetes/apply.sh --swarm-system` refuses to apply its ingress policies
+# without (network-policies/swarm-system-live.yaml).
+#
+# WHY A ONE-REPLICA STATEFULSET AND NOT A DEPLOYMENT OR CLOUD RUN. Both ends of
+# a session must meet in the same process (§3.3). A StatefulSet of one replica
+# is at most one pod, through a rollout too: the old pod is gone before the
+# new one starts. A Deployment's rolling update overlaps two pods, and a Cloud
+# Run service with max_instances = 1 overlaps two revisions, and either way the
+# gate and the viewer can land on different processes. Scale-out, when it is
+# measured to be needed, is sharding by session_id across named replicas.
+#
+# WHO IT RUNS AS. The KSA `swarm-live` in `swarm-system`, which holds its two
+# grants directly as a Workload Identity Federation for GKE principal
+# (live.tf): create-only on the artifact bucket under an attempt's live/ key
+# with the two recording suffixes, and read on swarm-live-key. Nothing else:
+# no Kubernetes RBAC (no Role, no binding, no API token mounted), no
+# Firestore, no Google service account.
+#
+# WHO REACHES IT. 8443 only, from a labelled live-browser pod in a tenant
+# namespace and from swarm-api's egress range
+# (network-policies/swarm-system-live.yaml, which selects
+# `app.kubernetes.io/name: swarm-live` -- the label on the pod below).
+#
+# THE RELAY'S SETTINGS ARE NAMED HERE FOR LANE L7. The relay (apps/swarm-live,
+# lane L7) was not on main when this was written; the environment below is
+# what this manifest provides, by the names the design uses, and L7's
+# settings read them. The command is the image's own entrypoint, so the
+# module path is L7's to choose.
+#
+# NOT MEASURED: the resource size, below. No relay has run on this cluster yet
+# (§11: "No measurement backs ... the relay's capacity").
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    # The relay carries frames, input and a person's keystrokes during a
+    # sign-in: the strictest pod standard, enforced, not merely warned.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: swarm-live
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-live
+# The relay never calls the Kubernetes API, so it carries no API token. GKE's
+# metadata server still answers it as this KSA, which is all Workload Identity
+# needs.
+automountServiceAccountToken: false
+---
+# The governing Service of the StatefulSet, and the gate's address:
+# swarm-live.swarm-system.svc.cluster.local:8443. Headless, so the name
+# resolves to the pod itself and the tenant egress policy's pod selector
+# (network-policies/allow-live-egress.yaml) is what admits the connection.
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm-live
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-live
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/name: swarm-live
+  ports:
+    - name: wss
+      protocol: TCP
+      port: 8443
+      targetPort: 8443
+---
+# swarm-api's address. swarm-api is Cloud Run and cannot resolve a cluster
+# Service; it reaches the VPC by Direct VPC egress, and this internal
+# passthrough load balancer puts the relay on the address live.tf reserved.
+# externalTrafficPolicy Cluster: the load balancer health-checks the nodes,
+# not the pod, so swarm-system's ingress policy needs no health-check range.
+apiVersion: v1
+kind: Service
+metadata:
+  name: swarm-live-internal
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-live
+  annotations:
+    networking.gke.io/load-balancer-type: "Internal"
+spec:
+  type: LoadBalancer
+  loadBalancerIP: __SWARM_LIVE_ILB_IP__
+  externalTrafficPolicy: Cluster
+  selector:
+    app.kubernetes.io/name: swarm-live
+  ports:
+    - name: wss
+      protocol: TCP
+      port: 8443
+      targetPort: 8443
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: swarm-live
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: swarm-live
+spec:
+  replicas: 1
+  serviceName: swarm-live
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: swarm-live
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-terraform
+        app.kubernetes.io/name: swarm-live
+    spec:
+      serviceAccountName: swarm-live
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: relay
+          image: __SWARM_LIVE_IMAGE__
+          ports:
+            - name: wss
+              containerPort: 8443
+              protocol: TCP
+          env:
+            - name: SWARM_LIVE_PORT
+              value: "8443"
+            - name: GOOGLE_CLOUD_PROJECT
+              value: __PROJECT_ID__
+            # The bucket the recorder writes segments to, under
+            # tenants/<t>/tasks/<task>/attempts/<a>/live/ (§7).
+            - name: SWARM_ARTIFACT_BUCKET
+              value: __ARTIFACT_BUCKET__
+            # A Secret Manager REFERENCE, read at run time with the pod's
+            # own identity; never the key itself, which stays out of the pod
+            # spec, the environment and every log.
+            - name: SWARM_LIVE_KEY_SECRET
+              value: __LIVE_KEY_VERSION__
+          # Invariant 7: requests == limits, no bursting.
+          resources:
+            requests:
+              cpu: "1"
+              memory: 2Gi
+              ephemeral-storage: 1Gi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+              ephemeral-storage: 1Gi
+          readinessProbe:
+            tcpSocket:
+              port: 8443
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        # Segments are encoded here before upload: memory, inside the limit
+        # above, and gone with the pod.
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 512Mi

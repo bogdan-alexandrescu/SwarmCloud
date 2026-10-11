@@ -87,9 +87,10 @@ async function mount(handler: Handler) {
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
   const { AdminSchedulesScreen } = await import('../AdminSchedules')
-  const utils = render(<AdminSchedulesScreen />)
+  const go = vi.fn()
+  const utils = render(<AdminSchedulesScreen go={go} />)
   await screen.findByRole('heading', { name: 'Schedules', level: 1 }, WAIT)
-  return { ...utils, calls }
+  return { ...utils, calls, go }
 }
 
 const sent = (calls: { method: string; url: string; body: unknown }[], method: string, path: string) =>
@@ -225,5 +226,33 @@ describe('Admin › Schedules', () => {
       expect(painted(td, 'display', PHONE)).toBe('block')
     }
     expect(painted(r.querySelector<HTMLElement>('.as-acts .c-btn')!, 'min-height', PHONE)).toBe('44px')
+  })
+})
+
+// LIVE QA, AUTOMATE (2026-10-11), AUT-18: the admin row's name opens the
+// schedule's own page when its tenant is the one the console works in.
+describe('live QA: automate, admin schedules', () => {
+  const me = { tenant: { tenant_id: 'eng', kind: 'group' }, principal: { email: 'admin@example.com', domain: 'example.com', groups: [], is_admin: true } }
+
+  it('links the name of a schedule in the working tenant, and says to switch tenant for another', async () => {
+    const { go } = await mount(routes((m, url) => (m === 'GET' && url === '/v1/tenants/me' ? { status: 200, body: me } : null)))
+    // MUTATION: draw every name as plain text again and there is no link.
+    const link = await waitFor(() => {
+      const a = rowOf('sch_a')!.querySelector<HTMLAnchorElement>('td[data-label="Name · type"] a')
+      expect(a).not.toBeNull()
+      return a!
+    }, WAIT)
+    expect(link.getAttribute('href')).toBe('/automate/schedules/sch_a')
+    fireEvent.click(link)
+    expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
+    // Another tenant's schedule: its page would read as the working tenant and 404.
+    expect(rowOf('sch_b')!.querySelector('td[data-label="Name · type"] a')).toBeNull()
+    expect(rowOf('sch_b')!.querySelector('.sc-name')!.getAttribute('title')).toContain('switch the console to tenant research')
+  })
+
+  it('links nothing while the working tenant is not read', async () => {
+    await mount(routes(() => null))
+    await waitFor(() => expect(rowOf('sch_a')).not.toBeNull(), WAIT)
+    expect(rowOf('sch_a')!.querySelector('td[data-label="Name · type"] a')).toBeNull()
   })
 })

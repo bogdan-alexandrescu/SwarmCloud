@@ -446,10 +446,10 @@ const STATS_POLL_MS = 60_000
  * task ids and `attempt_count` alone; its figures come from each task's
  * attempts read.
  *
- * 50 on a phone was §2.5's interim rule until `view=summary` existed. It
- * stays: the agent list caps its phone page at the same 50, and this screen
- * counts over the page the list shows (OV-10), so the two move together or
- * not at all.
+ * 50 on a phone was §2.5's interim rule until `view=summary` existed. Since
+ * live QA CH-4 (2026-10-11) the phone page is the full page too
+ * (`PHONE_PAGE_LIMIT` is `TASK_PAGE_LIMIT`, pageLimits.ts), and this screen
+ * still counts over the page the list shows (OV-10): the two moved together.
  */
 async function loadListPage(): Promise<Result<OverviewTaskPage>> {
   const page = await loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT, { view: 'summary' })

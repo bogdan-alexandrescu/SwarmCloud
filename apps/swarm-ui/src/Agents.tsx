@@ -148,11 +148,11 @@ export function pollInterval(page: TaskPage | null): number {
  * 200-row page on every viewport -- 2-4 MB every 5s over cellular, for as
  * long as Live held a row and the tab was visible.
  *
- * `view=summary` EXISTS NOW (#168) AND THE CAP STAYS. The summary view cuts
- * each row; the cap cuts the row count, and the Overview's failures check
- * counts over this same phone page (OV-10), so lifting it changes what two
- * screens' figures describe at once. Whether a phone should go back to 200
- * summary rows is a decision #168 left open, not one this read makes.
+ * `view=summary` EXISTS NOW (#168), AND THE PHONE READS THE FULL PAGE (live QA
+ * CH-4, 2026-10-11): 50 rows made the phone say "failed 0+" where the desktop
+ * said "failed 6+" at the same minute. `PHONE_PAGE_LIMIT` is `TASK_PAGE_LIMIT`
+ * (pageLimits.ts says why); the Overview's failures check counts over this
+ * same page (OV-10), so the two moved together.
  *
  * "PHONE" IS `phoneWidth()` from HelpCard.tsx: 560px and under, the width at
  * which this list already draws as cards and a `?` takes a fingertip. §2.1

@@ -28,10 +28,61 @@
 .sc-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .sc-name { font-weight: 600; }
 .sc-state.is-auto_paused, .sc-state.is-disabled { color: var(--s-warn); font-weight: 600; }
+/* A dry-run schedule's chip, beside its state in the list and the head
+   (AUT-3): its firings create nothing, and it must not read as a real one.
+   The words carry it; the dashed edge is a second channel, never colour alone. */
+.sc-dry {
+  display: inline-block; margin-left: 6px; padding: 0 6px;
+  border: 1px dashed var(--line); border-radius: 999px;
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim);
+  white-space: nowrap;
+}
+.sc-gone-h { margin: 8px 0; font-size: var(--t-h2, var(--t-body)); font-weight: 600; }
+.sc-list-field { border: 0; padding: 0; margin: 0; min-width: 0; }
+.ap-filter { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; }
+.ap-linked { margin: 0 0 12px; }
 .sc-spend { white-space: nowrap; }
 .sc-work { display: flex; flex-wrap: wrap; gap: 4px 8px; }
 .sc-h2 { margin: 8px 0 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
 .sc-h3 { margin: 12px 0 4px; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+
+/* ---- the actions (owner decisions 2026-10-11) ------------------------------ */
+/* A row's Run now and Resume; the page head's Run now, Dry run, Pause,
+   Resume, Delete and Edit. What an action said sits under them. */
+.sc-table th[data-col='acts'] { width: 172px; }
+.sc-row-acts { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.sc-head-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
+.sc-head-row > .sc-head-acts { margin: 0; }
+.sc-said { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); overflow-wrap: anywhere; }
+.sc-said.is-bad { color: var(--s-bad); }
+.sc-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+/* The phone's second line of a row (below); the desktop row has a cell for each. */
+.sc-line2 { display: none; }
+
+/* ---- the Budget tab's burn bar: reported, unreported at cap, live, free ---- */
+/* Hatching is the not-measured part, as the usage bar's rule has it: an
+   attempt that never reported its cost, counted at the per-run cap. */
+.sc-budget { display: grid; gap: 12px; min-width: 0; }
+.sc-burn { display: grid; gap: 6px; min-width: 0; }
+.sc-burn-h { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sc-burn-h b { font-weight: 600; font-variant-numeric: tabular-nums; }
+.sc-burn-bar {
+  position: relative; display: flex; height: 10px; min-width: 0;
+  border-radius: var(--track-radius); background: var(--line); overflow: hidden;
+}
+.sc-burn-bar.is-over { overflow: visible; }
+.sc-seg { display: block; flex: none; height: 100%; }
+.sc-seg.is-reported, .sc-key.is-reported { background: var(--sk-ac); }
+.sc-seg.is-unreported, .sc-key.is-unreported { background: var(--ctl-hatch); }
+.sc-seg.is-live, .sc-key.is-live { background: color-mix(in srgb, var(--sk-ac) 45%, var(--line)); }
+.sc-seg.is-free, .sc-key.is-free { background: var(--line); }
+.sc-burn-tick { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--text); }
+.sc-burn-key {
+  margin: 0; padding: 0; list-style: none; display: flex; flex-wrap: wrap; gap: 4px 16px;
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+}
+.sc-key { display: inline-block; width: 10px; height: 10px; margin-right: 6px; border-radius: 2px; vertical-align: -1px; }
+.sc-key.is-free { box-shadow: inset 0 0 0 1px var(--text-dim); }
 
 /* ---- one schedule: a head of facts, then tabs (detail A) -------------------- */
 .sc-detail { display: contents; }
@@ -119,6 +170,30 @@
     color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
   }
   .sc-row a { display: inline-flex; align-items: center; min-height: 44px; }
+  /* THE SCHEDULES LIST IS TWO LINES A ROW (§6.2, owner decision 2026-10-11),
+     not a record: name, state and the row's actions on line 1; type ·
+     repository · when, then last · next · spend · waiting on line 2, cut with
+     an ellipsis and whole in its title. The name cell gives its children to
+     the row's grid; the cells line 2 repeats are not drawn. The built-in rows
+     and a schedule's firings stay records, every cell named. */
+  .sc-table.is-schedules .sc-row {
+    display: grid; grid-template-columns: minmax(0, 1fr) auto auto;
+    grid-template-areas: 'name state acts' 'line line line';
+    column-gap: 8px; align-items: center;
+  }
+  .sc-table.is-schedules .sc-row > td::before { content: none; }
+  .sc-table.is-schedules .sc-row > td.sc-c-name { display: contents; }
+  .sc-table.is-schedules .sc-row > td.sc-c-more { display: none; }
+  .sc-table.is-schedules .sc-row > td.sc-c-state { grid-area: state; width: auto; }
+  .sc-table.is-schedules .sc-row > td.sc-c-acts { grid-area: acts; width: auto; }
+  .sc-table.is-schedules .sc-c-name > .sc-name { grid-area: name; display: block; min-height: 44px; padding: 12px 0; }
+  .sc-table.is-schedules .sc-c-name > .sc-type { display: none; }
+  .sc-table.is-schedules .sc-c-state > .sc-why { display: none; }
+  .sc-table.is-schedules .sc-c-name > .sc-line2 {
+    grid-area: line; display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim);
+  }
+  .sc-row-acts .c-btn, .sc-head-row .c-btn { min-height: 44px; }
   .sc-waiting-list > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
   /* The detail's facts and the form's fields: one column, said rather than
      left to auto-fill, so a 180px minimum never puts two side by side. */
@@ -139,3 +214,43 @@
 .sc-next { margin: 4px 0 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .sc-next .sc-sub { display: inline; }
 .sc-switch { display: grid; gap: 6px; justify-items: start; }
+
+/* ==== EDIT A: TEMPLATE TILES AND THE SIDE COLUMN (owner decisions 2026-10-11) ====
+   Owned by the create-and-edit lane; the rest of this sheet is another lane's.
+   §6.2 Edit A, docs/web-ui/mockups/schedules.html #edit-a: the type is picked
+   from tiles, an unavailable type greyed with its reason; the cron's words,
+   the next five and the template card sit in a 360px column beside the
+   fields on a desktop, and under them below 1024px, where 360px would leave
+   the fields too narrow to read. */
+.sc-room { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text-dim); }
+.sc-room[data-full='true'] { color: var(--s-warn); font-weight: 600; }
+.sc-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 200px), 1fr)); gap: 8px; }
+.sc-tile {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-width: 0;
+  padding: 8px 10px; text-align: left; cursor: pointer;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface); color: var(--text);
+  font: inherit;
+}
+.sc-tile > b { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.sc-tile > small { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.sc-tile[aria-checked='true'] { border-color: var(--sk-ac); background: var(--sk-acs); }
+.sc-tile:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+/* Greyed by a dashed edge and the dim ink, never by opacity: the reason on the
+   tile is the one thing it says, so it keeps its contrast. */
+.sc-tile.is-off { cursor: not-allowed; border-style: dashed; background: none; color: var(--text-dim); }
+.sc-edit-cols { display: grid; grid-template-columns: minmax(0, 1fr) 360px; gap: 16px; align-items: start; min-width: 0; }
+.sc-edit-main { display: grid; gap: 8px; min-width: 0; }
+.sc-edit-side { display: grid; gap: 12px; min-width: 0; position: sticky; top: 0; }
+.sc-edit-side > [data-testid='sc-preview'], .sc-tpl-card {
+  display: grid; gap: 6px; padding: 12px 14px;
+  border: 1px solid var(--line); border-radius: var(--r-card); background: var(--surface);
+}
+.sc-tpl-name { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.sc-tpl-facts { display: grid; gap: 4px; margin: 0; }
+.sc-tpl-facts > div { display: grid; grid-template-columns: 120px minmax(0, 1fr); gap: 8px; }
+.sc-tpl-facts dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.sc-tpl-facts dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+@media (max-width: 1023px) {
+  .sc-edit-cols { grid-template-columns: minmax(0, 1fr); }
+  .sc-edit-side { position: static; }
+}

@@ -3,8 +3,9 @@
  *
  *   R12      A phone said "8 failed among the 50 most recent" while the desktop
  *            said "26 among the 200" at the same moment. Each counts the page
- *            its own agent list reads (OV-10); each figure now says the other
- *            width reads a different window.
+ *            its own agent list reads (OV-10); each figure said the other
+ *            width reads a different window. Since live QA CH-4 (2026-10-11)
+ *            both widths read the same 200 rows, and no other window is named.
  *   N17/D19  ~388px blank beside Headroom and ~157px beside Cost: two rows of
  *            pairs, each as tall as its taller card. Each column now stacks its
  *            own cards; the pools span both under them.
@@ -52,21 +53,26 @@ describe('R12: each width says which window it counts', () => {
     task({ id: `task_f${i}`, state: 'FAILED', completed_at: new Date(NOW - 60_000).toISOString(), last_error: 'boom' }))
   const page = [...failed, ...Array.from({ length: 42 }, (_, i) => task({ id: `task_ok${i}`, state: 'SUCCEEDED' }))]
 
-  it('says on a phone that a wider screen reads a larger window', () => {
+  // Since live QA CH-4 (2026-10-11) a phone reads the same 200 rows as a wide
+  // screen (`PHONE_PAGE_LIMIT` is `TASK_PAGE_LIMIT`), so there is no other
+  // window to name. MUTATION: put `PHONE_PAGE_LIMIT` back to 50.
+  it('names no other window on a phone, because a phone reads the same page', () => {
     const h = failures(inputs(page, true))
     expect(h).toMatch(/^8 failed tasks among the 50 most recent/)
-    expect(h).toContain('a phone reads the newest 50, a wider screen the newest 200')
+    expect(h).not.toContain('a phone reads')
+    expect(h).not.toContain('a wider screen')
   })
 
-  it('says on a wide screen that a phone reads a smaller one', () => {
-    expect(failures(inputs(page, false))).toContain('a phone reads only the newest 50')
-    expect(failures(inputs(page))).toContain('a phone reads only the newest 50')
+  it('names no other window on a wide screen either', () => {
+    expect(failures(inputs(page, false))).not.toContain('a phone reads')
+    expect(failures(inputs(page))).not.toContain('a phone reads')
   })
 
-  it('says it in the clear note too', () => {
-    const none = Array.from({ length: 50 }, (_, i) => task({ id: `task_ok${i}`, state: 'SUCCEEDED' }))
-    expect(failures(inputs(none, true))).toContain('a wider screen the newest 200')
-    expect(windowNote(true, 50, 200)).not.toBe(windowNote(false, 50, 200))
+  it('would still say both windows if the two widths read different pages', () => {
+    expect(windowNote(true, 50, 200)).toContain('a phone reads the newest 50, a wider screen the newest 200')
+    expect(windowNote(false, 50, 200)).toContain('a phone reads only the newest 50')
+    expect(windowNote(true, 200, 200)).toBe('')
+    expect(windowNote(false, 200, 200)).toBe('')
   })
 })
 
