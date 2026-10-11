@@ -70,8 +70,9 @@ KEY_BYTES = 32
 OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status"})
 
 #: The first start's marker, in the sidecar's own /tmp (§3.1; the dispatcher
-#: mounts that volume in the sidecar only).
-DEFAULT_MARKER = "/tmp/swarm-gate/started"
+#: mounts that volume in the sidecar only). Directly in /tmp, not a subdirectory:
+#: a directory nothing created would make every first start look like a restart.
+DEFAULT_MARKER = "/tmp/swarm-gate.started"
 
 #: One message is a line of JSON no longer than this.
 MAX_LINE = 64 * 1024
