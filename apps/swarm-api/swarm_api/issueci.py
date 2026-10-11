@@ -77,8 +77,12 @@ today's prompt: a round is never delayed or refused for an index.
 
 A READ THAT FAILS IS NOT A RED READING. GitHub down, a 403 for a credential
 without `checks: read`, a pull request not visible: the run stays CHECKING,
-the failure is recorded on `pull_request.read_error` (redacted), and the
-next read tries again. A pull request CLOSED without merging is FAILED; one
+the failure is recorded on `pull_request.read_error` (redacted) and served
+with `checked_at`, so the run page says why there is no reading, and the
+next read tries again. A read that WORKED is stored even when the move after
+it raises (the merge gate's reads, the merge, a round's submission): the
+reading is kept, `read_error` says what failed, and the run stays CHECKING
+(RT-4). A pull request CLOSED without merging is FAILED; one
 merged is DONE, and `green_sha` is set only if CI was green at its head.
 
 `Closes #N` ONLY WHEN THE REVIEW CONFIRMED EVERY REQUIREMENT (owner
@@ -899,76 +903,103 @@ def from_checks(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAuth) 
             "read_error": None,
         }
 
-        if pull.merged:
-            return runs.transition(
-                tenant_id, run.id, RunState.DONE, by=ACTOR, from_states={RunState.CHECKING},
-                patch={"pull_request": record,
-                       "green_sha": head if reading.state == GREEN else None},
-            )
-        if pull.state == "closed":
-            return runs.transition(
-                tenant_id, run.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
-                patch={"pull_request": record, "error": failure_text(
-                    f"pull request #{pull.number} was closed without being merged"
-                )},
-            )
-        if reading.state == GREEN or (
-            reading.state == NONE and now - seen_since >= timedelta(seconds=NO_CHECKS_SECONDS)
-        ):
-            if keyword_pending(run):
-                # Green, but the pull request may still say "Fixes #N": a run
-                # is DONE only once its keyword block is written, so it stays
-                # CHECKING and the next visit writes it again.
-                log.warning(
-                    "issue run %s tenant=%s: green, keyword block not written yet",
-                    run.id, run.tenant_id,
+        # THE READING IS NEVER LOST TO WHAT COMES AFTER IT (RT-4, 2026-10-11).
+        # Everything below can raise -- the merge gate's reads, the merge,
+        # the excerpt, a round's submission -- and before this an exception
+        # here left `checks` null and `checked_at` unmoved, for every visit,
+        # while the list route only logged it: run_e525710be66e4d4fbb29 sat
+        # CHECKING for 15 hours as "not read yet". So the reading is stored
+        # with the failure on `read_error`, the run stays CHECKING, and the
+        # next visit past `CI_READ_SECONDS` tries the move again. A Conflict
+        # is a race another visit won, and goes up to `_advance_state`.
+        try:
+            if pull.merged:
+                return runs.transition(
+                    tenant_id, run.id, RunState.DONE, by=ACTOR, from_states={RunState.CHECKING},
+                    patch={"pull_request": record,
+                           "green_sha": head if reading.state == GREEN else None},
                 )
+            if pull.state == "closed":
+                return runs.transition(
+                    tenant_id, run.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
+                    patch={"pull_request": record, "error": failure_text(
+                        f"pull request #{pull.number} was closed without being merged"
+                    )},
+                )
+            if reading.state == GREEN or (
+                reading.state == NONE and now - seen_since >= timedelta(seconds=NO_CHECKS_SECONDS)
+            ):
+                if keyword_pending(run):
+                    # Green, but the pull request may still say "Fixes #N": a run
+                    # is DONE only once its keyword block is written, so it stays
+                    # CHECKING and the next visit writes it again.
+                    log.warning(
+                        "issue run %s tenant=%s: green, keyword block not written yet",
+                        run.id, run.tenant_id,
+                    )
+                    return runs.patch(tenant_id, run.id, {"pull_request": record})
+                if run.auto_merge:
+                    # Green AND the keyword block written: only now is the pull
+                    # request in the shape a merge may land (contract request 47).
+                    # And only past the §4.4 stops at the merge point, and the
+                    # merge approval a hold or a `merge: approve` gate asks for.
+                    waiting = merge_gate(ctx, tenant_id, run, record, head, token=token)
+                    if waiting is not None:
+                        return waiting
+                    return _merge(ctx, tenant_id, run, record, head, owner_auth,
+                                  writer=writer, token=token, base=pull.base_ref)
+                return runs.transition(
+                    tenant_id, run.id, RunState.DONE, by=ACTOR, from_states={RunState.CHECKING},
+                    patch={"pull_request": record, "green_sha": head},
+                )
+            if reading.state in (PENDING, NONE):
                 return runs.patch(tenant_id, run.id, {"pull_request": record})
-            if run.auto_merge:
-                # Green AND the keyword block written: only now is the pull
-                # request in the shape a merge may land (contract request 47).
-                # And only past the §4.4 stops at the merge point, and the
-                # merge approval a hold or a `merge: approve` gate asks for.
-                waiting = merge_gate(ctx, tenant_id, run, record, head, token=token)
-                if waiting is not None:
-                    return waiting
-                return _merge(ctx, tenant_id, run, record, head, owner_auth,
-                              writer=writer, token=token, base=pull.base_ref)
-            return runs.transition(
-                tenant_id, run.id, RunState.DONE, by=ACTOR, from_states={RunState.CHECKING},
-                patch={"pull_request": record, "green_sha": head},
-            )
-        if reading.state in (PENDING, NONE):
-            return runs.patch(tenant_id, run.id, {"pull_request": record})
 
-        assert reading.state == RED
-        if run.ci_fix_round and run.ci_round_sha and head == run.ci_round_sha:
-            # Red at the commit the last round was given: it pushed nothing.
-            # (Green or pending there -- a flaky check re-run -- is read as
-            # what it is, above.)
-            return runs.transition(
-                tenant_id, run.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
-                patch={"pull_request": record, "error": failure_text(
-                    f"CI fix round {run.ci_fix_round} ended but pushed nothing to pull request "
-                    f"#{pull.number}: its head is still {head[:12]}, where CI was red"
-                )},
+            assert reading.state == RED
+            if run.ci_fix_round and run.ci_round_sha and head == run.ci_round_sha:
+                # Red at the commit the last round was given: it pushed nothing.
+                # (Green or pending there -- a flaky check re-run -- is read as
+                # what it is, above.)
+                return runs.transition(
+                    tenant_id, run.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
+                    patch={"pull_request": record, "error": failure_text(
+                        f"CI fix round {run.ci_fix_round} ended but pushed nothing to pull request "
+                        f"#{pull.number}: its head is still {head[:12]}, where CI was red"
+                    )},
+                )
+            excerpt = build_excerpt(writer, run, head, reading, token)
+            spent = run.ci_fix_round
+            if spent >= run.fix_rounds:
+                return runs.transition(
+                    tenant_id, run.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
+                    patch={
+                        "pull_request": record,
+                        "failure_excerpt": excerpt,
+                        "error": failure_text(
+                            f"CI is still red on pull request #{pull.number} at {head[:12]} after "
+                            f"{_rounds(spent)} (the run's cap): "
+                            + ", ".join(reading.failing_names())
+                        ),
+                    },
+                )
+            return _start_round(ctx, tenant_id, run, record, excerpt, head, owner_auth)
+        except Conflict:
+            raise
+        except Exception as exc:
+            code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
+            message = exc.message if isinstance(exc, ApiError) else f"the move failed ({code})"
+            log.warning(
+                "issue run %s tenant=%s: CI read (%s) but not acted on (%s)",
+                run.id, run.tenant_id, reading.state, code,
             )
-        excerpt = build_excerpt(writer, run, head, reading, token)
-        spent = run.ci_fix_round
-        if spent >= run.fix_rounds:
-            return runs.transition(
-                tenant_id, run.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
-                patch={
-                    "pull_request": record,
-                    "failure_excerpt": excerpt,
-                    "error": failure_text(
-                        f"CI is still red on pull request #{pull.number} at {head[:12]} after "
-                        f"{_rounds(spent)} (the run's cap): "
-                        + ", ".join(reading.failing_names())
-                    ),
-                },
-            )
-        return _start_round(ctx, tenant_id, run, record, excerpt, head, owner_auth)
+            return runs.patch(tenant_id, run.id, lambda current: {"pull_request": {
+                **record,
+                # Anything another write recorded meanwhile (the keyword block).
+                **{k: v for k, v in (current.pull_request or {}).items() if k not in record},
+                "read_error": failure_text(
+                    f"CI was read ({reading.state}) but the run could not move on: {code}: {message}"
+                ),
+            }})
     finally:
         token = ""
 

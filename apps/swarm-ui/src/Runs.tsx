@@ -12,7 +12,7 @@ import {
   CostFact, PlanStepLive, previousAt, ProgressTime, progressEntries, redReading, shortSha, StepProgress, stepRows, StepsCard, useRunWorkflows,
   type RunWorkflows, type StepRow,
 } from './RunSteps'
-import type { IssueRun, IssueRunPage, IssueRunState, OpenWork, PlanOverlap, PlanStepDoc, RunCheckCounts, RunPlan } from './types'
+import type { IssueRun, IssueRunState, IssueRunSummary, IssueRunSummaryPage, OpenWork, PlanOverlap, PlanStepDoc, RunCheckCounts, RunPlan } from './types'
 import { useNow } from './useNow'
 import { proseWords, stateWord } from './words'
 import { RunContextCard, SelectedTestsGate, useRunIndex, type RunIndexRead } from './RunIndex'
@@ -149,7 +149,7 @@ const RUN_MARK: Readonly<Record<IssueRunState, { mark: MarkName; hue: MarkHue }>
 export const SWEEP_CREATOR = 'issue-sweep'
 
 /** Who a run is by, as the list and the run page say it. */
-export function runCreatorWord(run: IssueRun): string | null {
+export function runCreatorWord(run: IssueRunSummary): string | null {
   if (run.created_by === SWEEP_CREATOR) {
     return run.on_behalf_of ? `issue sweep, as ${run.on_behalf_of}` : 'issue sweep'
   }
@@ -157,7 +157,7 @@ export function runCreatorWord(run: IssueRun): string | null {
 }
 
 /** A NOT_READY run's reason, or why an auto approval waits; null otherwise. */
-export function runWhyLine(run: IssueRun): string | null {
+export function runWhyLine(run: IssueRunSummary): string | null {
   if (run.state === 'NOT_READY') {
     const reason = run.not_ready?.reason?.trim()
     return reason ? `Not ready: ${reason}` : 'Not ready: the planner gave no reason.'
@@ -382,7 +382,7 @@ export function RunsScreen({ view, go }: { view: string | null; go: (to: string)
 const RUN_FILTERS = ['all', 'active', 'done', 'failed'] as const
 type RunFilter = (typeof RUN_FILTERS)[number]
 
-const RUN_FILTER_TEST: Readonly<Record<RunFilter, (r: IssueRun) => boolean>> = {
+const RUN_FILTER_TEST: Readonly<Record<RunFilter, (r: IssueRunSummary) => boolean>> = {
   all: () => true,
   active: (r) => !r.terminal,
   done: (r) => r.state === 'DONE',
@@ -397,17 +397,17 @@ const RUN_FILTER_TITLE: Readonly<Record<RunFilter, string>> = {
 }
 
 /** Whether a run matches the search: its issue ref, its issue's title or its id, any case. */
-function runMatches(r: IssueRun, text: string): boolean {
+function runMatches(r: IssueRunSummary, text: string): boolean {
   const q = text.trim().toLowerCase()
   if (q === '') return true
   return [r.issue.ref, r.issue_read?.title ?? '', r.id].some((v) => v.toLowerCase().includes(q))
 }
 
-function RunList({ first, go }: { first: IssueRunPage; go: (to: string) => void }) {
+function RunList({ first, go }: { first: IssueRunSummaryPage; go: (to: string) => void }) {
   const now = useNow()
   const [which, setWhich] = useState<RunFilter>('all')
   const [text, setText] = useState('')
-  const [older, setOlder] = useState<{ runs: IssueRun[]; next: string | null; error: ApiError | null; reading: boolean }>(
+  const [older, setOlder] = useState<{ runs: IssueRunSummary[]; next: string | null; error: ApiError | null; reading: boolean }>(
     { runs: [], next: first.next_page_token, error: null, reading: false },
   )
   // A poll or refresh replaced the first page: what was appended belonged to the old one.
@@ -1710,6 +1710,7 @@ function CiCard({ run, go, wfPr: read, index, merge }: {
   const served = pr?.check_counts ?? null
   const checkList = pr?.check_list ?? null
   const ciUrl = checkLink(pr?.ci_url)
+  const readError = pr?.read_error?.trim() ? pr.read_error.trim() : null
   const counts: string[] = []
   if (redAtHead && pr?.checks === 'red') counts.push(`failed ${red!.names.length}`)
   if (waiting !== null) counts.push(`pending ${waiting.pending.length}`)
@@ -1728,8 +1729,23 @@ function CiCard({ run, go, wfPr: read, index, merge }: {
           <b>checks</b>
           {pr?.checks
             ? <span>{pr.checks}{head ? <> at <code title={head}>{shortSha(head)}</code><CopyText text={head} /></> : null}</span>
+            : readError !== null
+            ? <i className="ctl-em" data-ci-read="failed">not read</i>
             : <i className="ctl-em">not read yet</i>}
         </li>
+        {/* WHY THERE IS NO READING (RT-4, 2026-10-11): a run whose every CI
+            read failed -- a 403 on commit statuses -- said "not read yet" for
+            15 hours. The server's `read_error` is the reason, masked and
+            bounded there; `checked_at` is when it was last tried. */}
+        {readError !== null && (
+          <li className="ctl-fact rn-ci-error" role="status">
+            <b>last read</b>
+            <span>
+              <WarnMark /> {readError}
+              {pr?.checked_at ? <> · <span title={pr.checked_at}>{timeAgo(pr.checked_at)}</span></> : null}
+            </span>
+          </li>
+        )}
         {/* ONE REASON, NOT FOUR DASHES (QA G2-06, 2026-10-07): "passed — ·
             pending — · failed — · skipped —" beside "checks green" read as a
             result every count disowned. The one count the run can carry is

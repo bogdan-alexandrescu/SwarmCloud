@@ -41,7 +41,7 @@ from swarm_api.metrics import ApiMetrics
 from swarm_api.waker import NullWaker
 
 from . import forge_fakes
-from .conftest import api_settings
+from .conftest import api_settings, auth_header
 from .test_issue_runs import _approve, _docs, _planned, _run
 
 SHA_A, SHA_B, SHA_C, SHA_D = ("a" * 40, "b" * 40, "c" * 40, "d" * 40)
@@ -800,6 +800,150 @@ def test_an_unresolved_membership_spends_no_round_and_the_next_read_does(
     assert run["state"] == "FIXING" and run["ci_fix_round"] == 1
     assert len(_rounds(db, running["id"])) == 1
 
+
+
+# --------------------------------------------------------------------------
+# RT-4 (2026-10-11): a read that fails is recorded where the page can show it
+# --------------------------------------------------------------------------
+
+def _refuse_statuses(writes, sha: str = SHA_A) -> tuple[str, str]:
+    """GitHub answers 403 on the commit statuses at `sha` -- an App installation
+    without `Commit statuses: read` -- and nothing else."""
+    route = ("GET", f"/repos/saga-xyz/widgets/commits/{sha}/status")
+    writes.refuse[route] = 403
+    return route
+
+
+def test_a_403_on_commit_statuses_is_served_as_read_error_with_checked_at(
+    client, db, objects, writes, clock
+):
+    # run_e525710be66e4d4fbb29: CHECKING for 15 hours, `checks` null, and the
+    # page said "not read yet" because the failure was stored but not served.
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "success")
+    _refuse_statuses(writes)
+
+    run = _read(client, clock, running["id"])
+
+    pr = run["pull_request"]
+    assert run["state"] == "CHECKING"
+    assert pr["checks"] is None, "a failed read is not a reading"
+    assert pr["read_error"] is not None
+    assert "statuses: read" in pr["read_error"] and "403" in pr["read_error"]
+    assert pr["checked_at"] == clock.at.isoformat()
+    assert _rounds(db, running["id"]) == []
+
+
+def test_the_read_after_the_permission_is_granted_records_checks_and_clears_the_error(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "pending", status="in_progress")
+    route = _refuse_statuses(writes)
+    assert _read(client, clock, running["id"])["pull_request"]["read_error"]
+
+    del writes.refuse[route]  # the App gained "Commit statuses: read"
+    run = _read(client, clock, running["id"])
+
+    pr = run["pull_request"]
+    assert run["state"] == "CHECKING"
+    assert pr["checks"] == "pending"
+    assert pr["read_error"] is None
+    assert pr["checked_at"] == clock.at.isoformat()
+
+
+def test_a_move_that_raises_after_a_good_read_keeps_the_reading_and_records_why(
+    client, db, objects, writes, clock, monkeypatch
+):
+    # Before RT-4 an exception after the read -- here a round's start --
+    # discarded the reading: `checks` stayed null and `checked_at` unmoved on
+    # every visit, and the list route only logged it.
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "failure", output={"summary": "test_a"})
+
+    def broken(*args, **kwargs):
+        raise RuntimeError("the store went away")
+
+    monkeypatch.setattr(issueci, "_start_round", broken)
+    run = _read(client, clock, running["id"])
+
+    pr = run["pull_request"]
+    assert run["state"] == "CHECKING"
+    assert pr["checks"] == "red" and pr["head_sha"] == SHA_A
+    assert pr["checked_at"] == clock.at.isoformat()
+    assert "could not move on" in pr["read_error"] and "RuntimeError" in pr["read_error"]
+    assert "the store went away" not in pr["read_error"], "an exception's text is not served"
+
+    monkeypatch.undo()
+    again = _read(client, clock, running["id"])
+    assert again["state"] == "FIXING" and again["ci_fix_round"] == 1
+    assert again["pull_request"]["read_error"] is None
+
+
+# --------------------------------------------------------------------------
+# RT-7 (2026-10-11): GET /v1/runs?view=summary drops what the list never shows
+# --------------------------------------------------------------------------
+
+def _list(client, **params) -> dict:
+    response = client.get("/v1/runs", headers=auth_header("alice"), params=params)
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_the_summary_view_drops_the_heavy_fields_and_keeps_what_the_list_draws(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "pending", status="in_progress")
+    full_run = _read(client, clock, running["id"])
+    assert full_run["plan"] and full_run["history"] and full_run["pull_request"]["check_list"]
+
+    page = _list(client, view="summary")
+
+    assert page["view"] == "summary"
+    (row,) = page["runs"]
+    for key in issueruns.RUN_SUMMARY_DROPPED:
+        assert key not in row, key
+    assert "check_list" not in row["pull_request"]
+    # What the Runs list and Submit's recent list read, unchanged.
+    for key in ("id", "tenant_id", "state", "terminal", "issue", "plan_approval", "workflow_id",
+                "created_at", "created_by", "on_behalf_of", "not_ready", "hold", "plan_shape",
+                "plan_digest", "error"):
+        assert row[key] == full_run[key], key
+    assert row["pull_request"]["checks"] == "pending"
+    assert row["pull_request"]["check_counts"] == full_run["pull_request"]["check_counts"]
+    if full_run["issue_read"] is not None:
+        assert set(row["issue_read"]) == set(issueruns.ISSUE_READ_SUMMARY_KEYS)
+        assert row["issue_read"]["title"] == full_run["issue_read"]["title"]
+    # Smaller, by construction rather than by a byte budget.
+    import json
+
+    assert len(json.dumps(row)) < len(json.dumps(full_run))
+
+
+def test_no_view_and_view_full_serve_the_full_row_and_a_single_read_is_always_full(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "pending", status="in_progress")
+    _read(client, clock, running["id"])
+
+    for params in ({}, {"view": "full"}):
+        page = _list(client, **params)
+        assert "view" not in page
+        (row,) = page["runs"]
+        for key in issueruns.RUN_SUMMARY_DROPPED:
+            assert key in row, (params, key)
+        assert "check_list" in row["pull_request"]
+    single = _run(client, running["id"]).json()["run"]
+    for key in issueruns.RUN_SUMMARY_DROPPED:
+        assert key in single, key
+
+
+def test_an_unknown_view_is_refused(client, db, objects, writes, clock):
+    response = client.get("/v1/runs", headers=auth_header("alice"), params={"view": "tiny"})
+    assert response.status_code == 422
+    assert "tiny" in response.text
 
 
 @pytest.fixture(autouse=True)
