@@ -6375,17 +6375,31 @@ export function liveSocketUrl(taskId: string): string {
 
 /**
  * Open the live websocket and send the ticket as its FIRST message (§5.2),
- * resolving with the open socket for noVNC to attach to. No byte goes before
- * the ticket; swarm-api answers nothing until it has checked it, then
- * proxies the RFB stream (and closes the socket if it refuses).
+ * then hand the open socket to `attach` IN THE SAME 'open' HANDLER. No byte
+ * goes before the ticket; swarm-api answers nothing until it has checked it,
+ * then proxies the RFB stream (and closes the socket if it refuses).
+ *
+ * WHY `attach` RUNS INSIDE THE HANDLER, NOT AFTER THE PROMISE. noVNC only
+ * reads frames once it has set the socket's `onmessage`, and an RFB server
+ * speaks first (its ProtocolVersion). A frame that arrives before that is
+ * dropped, and noVNC then waits forever for a handshake that already went
+ * past. Constructing noVNC synchronously here, before control returns to the
+ * event loop, means no frame can arrive in between; and the socket is still
+ * open, so noVNC never sees an already-closed channel. If `attach` throws,
+ * the socket is closed and the promise rejects, so the caller retries.
  */
-export function openLiveSocket(taskId: string, ticket: string): Promise<WebSocket> {
+export function openLiveSocket<T>(taskId: string, ticket: string, attach: (ws: WebSocket) => T): Promise<T> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(liveSocketUrl(taskId))
     ws.binaryType = 'arraybuffer'
     ws.addEventListener('open', () => {
       ws.send(JSON.stringify({ ticket }))
-      resolve(ws)
+      try {
+        resolve(attach(ws))
+      } catch (err) {
+        ws.close()
+        reject(err instanceof Error ? err : new Error('The live viewer could not attach to the connection.'))
+      }
     }, { once: true })
     ws.addEventListener('error', () => reject(new Error('The live connection did not open.')), { once: true })
     ws.addEventListener('close', () => reject(new Error('The live connection closed before it opened.')), { once: true })

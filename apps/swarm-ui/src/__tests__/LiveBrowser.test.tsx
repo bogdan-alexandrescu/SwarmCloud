@@ -18,7 +18,9 @@
 // MUTATIONS, one per block: put the ticket in the socket URL's query; drop
 // the `can_control` check in LiveControl; enable the device select for every
 // viewer; skip the second ask on a mismatch; set `viewOnly` from control
-// alone, ignoring focus; let touches through whenever in control.
+// alone, ignoring focus; let touches through whenever in control; await
+// anything between the socket's 'open' and noVNC's construction (the server's
+// first frame is then lost); construct noVNC outside the retry.
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
@@ -63,8 +65,20 @@ const rfb = vi.hoisted(() => {
     touches = 0
     /** How many frames the socket had carried when noVNC was handed it. */
     readonly sentBeforeAttach: number
+    /** Server frames noVNC read: like noVNC's Websock.attach, only through `onmessage`, set here. */
+    readonly received: unknown[] = []
+    /** Set to make the next construction throw, as noVNC's does on an already-closed socket. */
+    static throwNext = false
     private listeners = new Map<string, ((e: Event) => void)[]>()
-    constructor(target: HTMLElement, readonly channel: { sent: string[] }) {
+    constructor(
+      target: HTMLElement,
+      readonly channel: { sent: string[]; readyState: number; onmessage: ((e: MessageEvent) => void) | null },
+    ) {
+      if (FakeRfb.throwNext || channel.readyState !== 1) {
+        FakeRfb.throwNext = false
+        throw new Error('Cannot use already closed WebSocket/RTCDataChannel')
+      }
+      channel.onmessage = (e) => this.received.push(e.data)
       this.sentBeforeAttach = channel.sent.length
       this.canvas = document.createElement('canvas')
       this.canvas.tabIndex = -1
@@ -90,17 +104,28 @@ vi.mock('@novnc/novnc/core/rfb.js', () => ({ default: rfb.FakeRfb }))
 
 class FakeSocket extends EventTarget {
   static made: FakeSocket[] = []
+  /** The frame the relay sends the moment the socket is open, in the same task: the RFB server speaks first. */
+  static greeting: string | null = null
   binaryType = 'blob'
+  readyState = 0
+  onmessage: ((e: MessageEvent) => void) | null = null
   readonly sent: string[] = []
   constructor(readonly url: string) {
     super()
     FakeSocket.made.push(this)
-    queueMicrotask(() => this.dispatchEvent(new Event('open')))
+    queueMicrotask(() => {
+      this.readyState = 1
+      this.dispatchEvent(new Event('open'))
+      const greeting = FakeSocket.greeting
+      if (greeting !== null) this.onmessage?.(new MessageEvent('message', { data: greeting }))
+    })
   }
   send(data: string) {
     this.sent.push(data)
   }
-  close() {}
+  close() {
+    this.readyState = 3
+  }
 }
 
 const { AgentSplit } = await import('../AgentSplit')
@@ -209,7 +234,9 @@ beforeEach(() => {
   localStorage.clear()
   resetListSnap()
   rfb.FakeRfb.made = []
+  rfb.FakeRfb.throwNext = false
   FakeSocket.made = []
+  FakeSocket.greeting = null
   vi.stubGlobal('WebSocket', FakeSocket)
   api.loadAgentRun.mockReturnValue(new Promise(() => {}))
   api.loadAttempts.mockResolvedValue(ok({ attempts: [] }))
@@ -273,6 +300,22 @@ describe('the ticket goes in the first message, never the URL', () => {
     expect(ws.sent[0]).toBe(JSON.stringify({ ticket }))
     expect(r.sentBeforeAttach, 'noVNC was handed the socket before the ticket went').toBe(1)
     expect(r.channel).toBe(ws)
+  })
+
+  it('has noVNC reading the socket before the relay\'s first frame can arrive', async () => {
+    FakeSocket.greeting = 'RFB 003.008\n'
+    pane(session())
+    const r = await connected()
+    expect(r.received, 'the RFB server\'s ProtocolVersion went past noVNC').toEqual(['RFB 003.008\n'])
+  })
+
+  it('retries, with a message, when noVNC refuses the socket', async () => {
+    rfb.FakeRfb.throwNext = true
+    pane(session())
+    await waitFor(() => expect(FakeSocket.made.length).toBe(1))
+    await waitFor(() => expect(document.querySelector('.live-screen-say')?.textContent).toContain('already closed'))
+    expect(rfb.FakeRfb.made).toHaveLength(0)
+    expect(FakeSocket.made[0]!.readyState, 'the refused socket was left open').toBe(3)
   })
 })
 

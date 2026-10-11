@@ -618,40 +618,50 @@ function LiveScreen({ taskId, control, touch }: { taskId: string; control: boole
       timer = setTimeout(() => void connect(), Math.min(RECONNECT_MAX_MS, 1000 * 2 ** Math.min(tries, 5)))
     }
     const connect = async () => {
+      // noVNC is loaded BEFORE a ticket is minted or a socket opened, so the
+      // socket's 'open' handler can construct it at once (`openLiveSocket`):
+      // a frame the relay sends while noVNC's chunk is still importing would
+      // otherwise be lost, and the tab would wait on a handshake forever.
+      let Ctor: RfbConstructor
+      try {
+        Ctor = await loadRfb()
+      } catch (err) {
+        retry(err instanceof Error ? err.message : 'The live viewer did not load.')
+        return
+      }
+      if (stopped) return
       const ticket = await mintLiveTicket(taskId)
       if (stopped) return
       if (ticket.status !== 'ok') {
         retry(ticket.status === 'error' ? ticket.error.message : 'No viewer ticket was issued.')
         return
       }
-      let ws: WebSocket
-      let Ctor: RfbConstructor
       try {
-        ;[ws, Ctor] = await Promise.all([openLiveSocket(taskId, ticket.data.ticket), loadRfb()])
+        await openLiveSocket(taskId, ticket.data.ticket, (ws) => {
+          if (stopped || host.current === null) {
+            ws.close()
+            return
+          }
+          const r = new Ctor(host.current, ws, { shared: true })
+          r.scaleViewport = true
+          // The gate sizes the display from the device preset (§6.1); the viewer never asks for a size.
+          r.resizeSession = false
+          r.focusOnClick = true
+          rfb.current = r
+          applyInput()
+          r.addEventListener('connect', () => {
+            tries = 0
+            setWhy(null)
+            setConn('connected')
+          })
+          r.addEventListener('disconnect', () => {
+            if (rfb.current === r) rfb.current = null
+            retry('The live connection closed. Reconnecting with a new ticket.')
+          })
+        })
       } catch (err) {
         retry(err instanceof Error ? err.message : 'The live connection did not open.')
-        return
       }
-      if (stopped || host.current === null) {
-        ws.close()
-        return
-      }
-      const r = new Ctor(host.current, ws, { shared: true })
-      r.scaleViewport = true
-      // The gate sizes the display from the device preset (§6.1); the viewer never asks for a size.
-      r.resizeSession = false
-      r.focusOnClick = true
-      rfb.current = r
-      applyInput()
-      r.addEventListener('connect', () => {
-        tries = 0
-        setWhy(null)
-        setConn('connected')
-      })
-      r.addEventListener('disconnect', () => {
-        if (rfb.current === r) rfb.current = null
-        retry('The live connection closed. Reconnecting with a new ticket.')
-      })
     }
     void connect()
     return () => {
