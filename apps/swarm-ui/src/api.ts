@@ -5602,3 +5602,140 @@ export async function typedRepoId(tenantId: string, repository: string): Promise
   const hex = [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, '0')).join('')
   return `repo_${hex.slice(0, 16)}`
 }
+
+// ---------------------------------------------------------------------------
+// Schedules and approvals (docs/schedules.md §7.1; the console is §6, lane S7)
+// ---------------------------------------------------------------------------
+
+/**
+ * Today's reported spend of one schedule, in its own zone (§4.3). `partial`
+ * says some attempt never reported a cost, so `reported_usd` is a floor: the
+ * console draws it with `Mark kind="partial"`, never as the whole figure.
+ */
+export interface ScheduleSpendToday {
+  day: string
+  reported_usd: number
+  unreported_attempts: number
+  coverage: 'complete' | 'partial'
+}
+
+/** `last_firing`, the copy the list reads (§1.1). */
+export interface ScheduleLastFiring {
+  firing_id: string
+  slot: string | null
+  outcome: string | null
+  work_ref?: unknown
+  ended_at: string | null
+}
+
+/**
+ * One `schedules/` document as `routes/schedules.py::schedule_to_api` serves
+ * it: the stored fields, and `words`, `tier`, `spend_today` and
+ * `pending_approvals` computed on read. Every map is the caller's or the
+ * type's; the console reads and never writes one in this lane.
+ */
+export interface Schedule {
+  schedule_id: string
+  tenant_id: string
+  name: string
+  type: string
+  scope: { mode: 'repos' | 'all' | 'platform'; repo_ids?: string[] }
+  cron: string
+  timezone: string
+  params: Record<string, unknown>
+  gate: { plan?: string; run?: string; merge?: string; approvers?: string; approval_ttl_hours?: number }
+  budget: { per_run_usd?: number; per_day_usd?: number; max_concurrent?: number }
+  policy: { overlap?: string; catch_up?: string; jitter?: boolean; dry_run?: boolean }
+  state: 'enabled' | 'paused' | 'auto_paused' | 'disabled'
+  pause: { by?: string; at?: string; reason?: string | null; code?: string | null } | null
+  owner: string
+  created_by: string
+  created_at: string
+  updated_by?: string | null
+  updated_at?: string | null
+  next_run_at: string | null
+  last_firing: ScheduleLastFiring | null
+  consecutive_failures?: number
+  revision: number
+  /** The cron in words, or null when the tick's parser refused it. */
+  words: string | null
+  /** The risk tier (§4.1), or null when the type has left the catalogue. */
+  tier: string | null
+  spend_today: ScheduleSpendToday
+  pending_approvals: number
+}
+
+/** One thing a firing created (§1.2). */
+export interface FiringWork {
+  kind: 'issue_run' | 'task' | 'workflow' | 'api_action'
+  id: string
+  repo_id?: string | null
+  outcome?: string | null
+}
+
+/** One `schedule_firings/` document as `firing_to_api` serves it (§1.2). */
+export interface ScheduleFiring {
+  firing_id: string
+  schedule_id: string
+  type: string
+  slot: string | null
+  fired_at: string | null
+  trigger: 'cron' | 'catch_up' | 'run_now' | 'queued'
+  state: string
+  work: FiringWork[]
+  skip: { code: string; detail?: unknown } | null
+  dry_run: unknown
+  approval_id: string | null
+  outcome: string | null
+  cost: { reported_usd?: number; unreported_attempts?: number } | null
+  ended_at: string | null
+}
+
+/** One `schedule_audit/` entry (§4.8). Never updated after it is written. */
+export interface ScheduleAuditEntry {
+  schedule_id: string
+  action: string
+  by: string
+  at: string
+  detail: Record<string, unknown>
+}
+
+/** One inbox item (§4.5): a stored approval, or a PLANNED run projected into it. */
+export interface ApprovalItem {
+  approval_id: string
+  kind: string
+  subject: { run_id?: string; issue?: string; schedule_id?: string | null; firing_id?: string | null } & Record<string, unknown>
+  summary: string
+  state: string
+  requested_at: string | null
+  expires_at: string | null
+  projected?: boolean
+}
+
+/** `GET /v1/schedules`: the tenant's schedules, by name. */
+export async function loadSchedules(): Promise<Result<{ schedules: Schedule[]; tenant_id: string }>> {
+  // Never `empty`: the list draws its own Absent beside the built-in rows,
+  // which exist whether or not the tenant has made a schedule (§8.3).
+  return read(route('/v1/schedules'), () => false)
+}
+
+/** `GET /v1/schedules/{id}`: one schedule and its last 50 firings, newest first. */
+export async function loadSchedule(scheduleId: string): Promise<Result<{ schedule: Schedule; firings: ScheduleFiring[] }>> {
+  return read(route('/v1/schedules/{id}', { id: scheduleId }), () => false)
+}
+
+/** `GET /v1/schedules/{id}/audit`: the decisions, newest first (§4.8). */
+export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ audit: ScheduleAuditEntry[] }>> {
+  return read(route('/v1/schedules/{id}/audit', { id: scheduleId }), (d) => d.audit.length === 0)
+}
+
+/**
+ * `GET /v1/approvals`: the inbox, oldest first -- the Automate badge and
+ * Overview's "Waiting on you" card. `empty` is a measured nothing-waiting.
+ * The development fixtures serve no inbox, and say so by being empty rather
+ * than by inventing items.
+ */
+export async function loadApprovals(options: { frame?: boolean } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
+  if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
+  return read(route('/v1/approvals'), (d) => d.approvals.length === 0, { frame: options.frame === true })
+}

@@ -86,9 +86,12 @@ import {
  *     checks are DERIVED from state that exists, re-derived on every read.
  *
  * `setup` is the onboarding card (#780 OB8, Entry A), passed in by App rather
- * than imported here, so this screen reads only its own routes.
+ * than imported here, so this screen reads only its own routes. `waitingOnYou` is
+ * Automate's "Waiting on you" card (docs/schedules.md §6.1), passed in the
+ * same way and for the same reason: it reads the approvals inbox, and draws
+ * nothing unless something waits.
  */
-export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
+export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; waitingOnYou?: ReactNode } = {}) {
   // THREE REFRESH CADENCES, on purpose. `live` drives the six cheap reads
   // every twenty seconds; `counted` drives `/v1/stats` -- twelve count()
   // queries -- every sixty (OV-16, owner decision 2026-09-25); `heavy` drives
@@ -248,6 +251,8 @@ export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
           done. App passes Onboarding.tsx's `SetupCard` in; it draws nothing
           while its read is pending or failed. */}
       {setup}
+
+      {waitingOnYou}
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
         <NeedsALook checks={checks} />

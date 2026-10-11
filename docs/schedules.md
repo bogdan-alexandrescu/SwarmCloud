@@ -1521,6 +1521,20 @@ with a regex, and every tab needs a `SectionBody` case. S7 reads how both
 tests parse sections before it edits them, and records any difference
 here.
 
+**Read by S7, 2026-10-11.** Neither parser needed a change. Both read
+`SECTIONS` with the same regex (`test_issue_forms.py` imports
+`test_nav_headings_agree.py`'s), and the literal `id: 'automate'` entry parses
+like the other four. Two things follow from how they read it. A one-tab
+section draws no tab strip, so the forms name it by the section alone ("Web UI
+· Automate (/automate/schedules)"); when Approvals becomes the second tab both
+forms' options become "Automate › Schedules" and "Automate › Approvals", and
+the forms test fails until they do. And a tab is added only with its
+`SectionBody` case and its screen, because the nav test fails a tab whose
+route renders "No such pane": so Approvals joins `SECTIONS` in the lane that
+builds `Approvals.tsx`, not before. `docs/web-ui/redesign.md` §2 also carries
+each section's question verbatim (`apps/swarm-ui/tests/sections.test.ts`), so
+Automate's row was added there.
+
 ### 6.2 Screens
 
 Each screen is drawn in 2-3 variants in the mock-ups, with a recommendation.

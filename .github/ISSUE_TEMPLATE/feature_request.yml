@@ -56,6 +56,7 @@ body:
         - "Web UI · Work › Submit a task (/submit/task)"
         - "Web UI · Work › Submit a workflow (/submit/workflow)"
         - "Web UI · Work › Submit from a GitHub issue (/submit/issue)"
+        - "Web UI · Automate (/automate/schedules)"
         - "Web UI · Capacity › Pools (/capacity/pools)"
         - "Web UI · Capacity › Runtimes (/capacity/runtimes)"
         - "Web UI · Capacity › By runner profile (/capacity/pools/profiles)"

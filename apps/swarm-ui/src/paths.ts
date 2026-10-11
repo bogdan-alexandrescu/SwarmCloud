@@ -54,6 +54,9 @@ export const FIXED: Readonly<Record<string, string>> = {
   // #780 OB8: the onboarding checklist and the steady-state Access page.
   'work/setup': '/setup',
   'work/access': '/access',
+  // docs/schedules.md §6.1 (SD1): Automate › Schedules. One schedule is
+  // `/automate/schedules/<id>`, below.
+  'automate/schedules': '/automate/schedules',
   submit: '/submit',
   'capacity/pools': '/capacity/pools',
   'capacity/profiles': '/capacity/pools/profiles',
@@ -83,6 +86,7 @@ const FIXED_BACK: Readonly<Record<string, string>> = Object.fromEntries(
  */
 export const SECTION_ROOTS: Readonly<Record<string, string>> = {
   '/work': 'work/running',
+  '/automate': 'automate/schedules',
   '/capacity': 'capacity/pools',
   '/admin': 'admin/limits',
 }
@@ -220,6 +224,11 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     // `run_console_url`, held to this line by test_issue_writeback.py).
     if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}`
   }
+  // One schedule rides on the list's query as `schedule=<id>`: `/automate/schedules/<id>`.
+  if (bare === 'automate/schedules' && query !== '') {
+    const id = new URLSearchParams(query).get('schedule')
+    if (id !== null && id !== '') return `/automate/schedules/${encodeURIComponent(id)}`
+  }
   // Work › Repositories (repositories.html): the page rides on the tab's query.
   if (bare === 'work/repositories' && query !== '') {
     const q = new URLSearchParams(query)
@@ -325,6 +334,10 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
       }
     }
     return plain(`work/runs?${params.toString()}`)
+  }
+
+  if (seg[0] === 'automate' && seg[1] === 'schedules' && seg.length === 3 && seg[2] !== '') {
+    return plain(`automate/schedules?${new URLSearchParams({ schedule: decodeURIComponent(seg[2]!) }).toString()}`)
   }
 
   if (seg[0] === 'repositories' && seg.length >= 2) {

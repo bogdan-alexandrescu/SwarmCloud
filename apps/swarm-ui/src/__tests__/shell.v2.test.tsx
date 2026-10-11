@@ -154,7 +154,7 @@ describe('#503: the panel lights the current page, not its parent', () => {
 // ---------------------------------------------------------------------------
 
 describe('#503: every spine item is a link, so it opens in a new tab and copies', () => {
-  it('draws Submit, the four sections, Help and API reads as anchors with a path', async () => {
+  it('draws Submit, the five sections, Help and API reads as anchors with a path', async () => {
     // MUTATION: put `<button data-sec>` back.
     const c = await at('/overview')
     const spine = c.querySelector('.sk-spine')!
@@ -164,6 +164,7 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
       Submit: '/submit',
       Overview: '/overview',
       Work: '/agents',
+      Automate: '/automate/schedules',
       Capacity: '/capacity/pools',
       Admin: '/admin/limits',
       Help: '/help',
@@ -190,7 +191,7 @@ describe('#503: every spine item is a link, so it opens in a new tab and copies'
     // MUTATION: drop a clause from `routedClick`, or bind onClick without it.
     const c = await at('/overview')
     const sections = [...c.querySelectorAll<HTMLAnchorElement>('.sk-spine a[data-sec]')]
-    expect(sections).toHaveLength(4)
+    expect(sections).toHaveLength(5)
     for (const a of sections) {
       const e = new MouseEvent('click', { bubbles: true, cancelable: true, ...init })
       a.dispatchEvent(e)
@@ -400,7 +401,7 @@ describe('states.html C: the takeover replaces the content area and keeps the na
     expect(panel).toBeTruthy()
     // The page is gone; the nav is not.
     expect(c.querySelector('main.work')).toBeNull()
-    expect(c.querySelectorAll('.sk-spine a[data-sec]')).toHaveLength(4)
+    expect(c.querySelectorAll('.sk-spine a[data-sec]')).toHaveLength(5)
     expect(c.querySelector('.sk-panel')).not.toBeNull()
     // The meter claims nothing during a whole-app state.
     expect(c.querySelector('.sk-meter b')?.textContent).toBe('not read')

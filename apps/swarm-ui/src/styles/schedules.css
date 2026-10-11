@@ -1,0 +1,87 @@
+/* AUTOMATE › SCHEDULES (docs/schedules.md §6, lane S7): the list, one
+   schedule's page, the spine's Automate badge and Overview's "Waiting on you"
+   card. Tokens only; the type scale is the tokens' (the 12px floor). */
+
+/* ---- the list: list A, a table that is two lines a row on a phone ---------- */
+.sc-list { display: grid; gap: 12px; min-width: 0; }
+.sc-table-wrap { overflow-x: auto; min-width: 0; }
+/* FIXED COLUMNS, as the Runs list's: names and ids are one line each, cut with
+   an ellipsis and whole in their titles, so the eight columns the owner
+   listed fit 1280px without wrapping (§6.2). */
+.sc-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.sc-table th {
+  text-align: left; padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim);
+}
+.sc-table th[data-col='name'] { width: 22%; }
+.sc-table th[data-col='approvals'] { width: 88px; }
+.sc-table th[data-col='state'] { width: 120px; }
+.sc-row > td {
+  padding: 4px 8px; vertical-align: top;
+  border-bottom: 1px solid var(--line);
+  font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text);
+}
+.sc-row a { color: var(--sk-ac); }
+.sc-row .mono { font-size: var(--t-micro); }
+.sc-cut { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sc-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.sc-name { font-weight: 600; }
+.sc-state.is-auto_paused, .sc-state.is-disabled { color: var(--s-warn); font-weight: 600; }
+.sc-spend { white-space: nowrap; }
+.sc-work { display: flex; flex-wrap: wrap; gap: 4px 8px; }
+.sc-h2 { margin: 8px 0 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.sc-h3 { margin: 12px 0 4px; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+
+/* ---- one schedule: a head of facts, then tabs (detail A) -------------------- */
+.sc-detail { display: contents; }
+.sc-back { color: var(--sk-ac); font-size: var(--t-meta); line-height: var(--lh-meta); text-decoration: none; }
+.sc-facts {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 8px 16px; margin: 0; min-width: 0;
+}
+.sc-fact { min-width: 0; }
+.sc-fact > dt { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.sc-fact > dd { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
+.sc-wide { grid-column: 1 / -1; margin: 0; }
+.sc-tabs { margin-top: 12px; }
+.sc-pane { padding-top: 8px; min-width: 0; }
+.sc-stops { margin: 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sc-audit { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.sc-audit > li { font-size: var(--t-meta); line-height: var(--lh-meta); border-bottom: 1px solid var(--line); padding-bottom: 6px; }
+.sc-who { color: var(--text-dim); }
+
+/* ---- the Automate badge on the spine (§6.1) --------------------------------- */
+/* Where the Capacity dot sits, but a count: how many items wait in the inbox.
+   A failed read is a dash, drawn in the absent colour, never a 0. */
+.sk-badge {
+  position: absolute; top: 2px; right: 8px; min-width: 16px; padding: 0 4px;
+  border-radius: 8px; background: var(--s-warn); color: var(--bg);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--mono); font-style: normal; text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+.sk-badge.is-unread { background: none; color: var(--ctl-absent); cursor: help; }
+
+/* ---- Overview's "Waiting on you", drawn only when something waits ---------- */
+.sc-waiting { border-left: 3px solid var(--s-warn); }
+.sc-waiting-h { display: flex; align-items: center; gap: 8px; }
+.sc-waiting-h > h2 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.sc-waiting .sc-count { position: static; }
+.sc-waiting-list { margin: 8px 0; padding: 0; list-style: none; display: grid; gap: 4px; }
+.sc-waiting-list > li { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: baseline; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sc-waiting-list a { color: var(--sk-ac); }
+.sc-kind { font-weight: 600; }
+
+/* ---- a phone (§6.2's 390px frames): a record per row, every cell named ------ */
+@media (max-width: 560px) {
+  .sc-table thead { display: none; }
+  .sc-table, .sc-table tbody, .sc-row, .sc-row > td { display: block; width: 100%; }
+  .sc-row { padding: 6px 0; border-bottom: 1px solid var(--line); }
+  .sc-row > td { padding: 2px 0; border-bottom: 0; min-height: 0; }
+  .sc-row > td::before {
+    content: attr(data-label); display: block;
+    color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600;
+  }
+  .sc-row a { display: inline-flex; align-items: center; min-height: 44px; }
+  .sc-waiting-list > li { grid-template-columns: minmax(0, 1fr); gap: 0; }
+}
