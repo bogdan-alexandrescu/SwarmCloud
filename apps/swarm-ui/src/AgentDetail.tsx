@@ -883,6 +883,14 @@ interface DtCell {
  */
 function DtStatCell({ c }: { c: DtCell }) {
   const id = useId()
+  // THE SUB-LINE IS WHOLE IN ITS TITLE (V058): a narrow pane clamps it to two
+  // lines (details.css), and a sub-line is a node as often as a string (Cost's
+  // `last attempt … · tokens`), so the title is what it rendered.
+  const sub = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    const el = sub.current
+    if (el !== null) el.title = el.textContent ?? ''
+  })
   return (
     <div className={`dt-sc${c.tone ? ` is-${c.tone}` : ''}`}>
       <span className="dt-sc-l" aria-describedby={c.help === undefined ? undefined : id}>
@@ -894,7 +902,11 @@ function DtStatCell({ c }: { c: DtCell }) {
         {c.unit !== undefined && <small> {c.unit}</small>}
       </span>
       {c.bar !== undefined && <DtBar pct={c.bar} warn={c.tone === 'alert'} />}
-      {c.sub !== undefined && c.sub !== '' && <span className="dt-sc-s">{c.sub}</span>}
+      {c.sub !== undefined && c.sub !== '' && (
+        <span className="dt-sc-s" ref={sub}>
+          {c.sub}
+        </span>
+      )}
     </div>
   )
 }
@@ -2354,7 +2366,8 @@ function AttemptAccount({ a }: { a: AttemptRow }) {
   return (
     <li className={`ctl-fact${account.known ? '' : ' is-absent'}`} title={account.title}>
       <b>account</b>
-      <span className="mono">{account.text}</span>
+      {/* Mono for an account id only; `not read` is words, not a name (V149). */}
+      <span className={account.known ? 'mono' : undefined}>{account.text}</span>
     </li>
   )
 }
