@@ -365,9 +365,12 @@ def test_rectangles_scale_by_the_device_scale_factor(tmp_path):
 
 def test_a_device_change_makes_every_report_stale(tmp_path):
     state = _state()
-    state.on_message(TOP, _report())
+    state.on_message(TOP, _report(viewport=(100, 60, 0, 0, 1)))
+    assert state.apply(_frame(tmp_path)) is Outcome.MASKED
     state.set_scale(2.0)
     assert state.apply(_frame(tmp_path)) is Outcome.PAGE_BLANKED
+    state.on_message(TOP, _report(viewport=(100, 60, 0, 0, 1)))
+    assert state.apply(_frame(tmp_path)) is Outcome.MASKED
 
 
 def test_a_pinch_zoomed_visual_viewport_is_mapped(tmp_path):
