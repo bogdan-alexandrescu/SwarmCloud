@@ -454,9 +454,11 @@ describe('#139: the phone header compacts on scroll, and a long page has a way b
     expect(painted(pick(f, '[data-k="down"] .sk-pbar'), 'position', PHONE), 'the header scrolls away').toBe('sticky')
   })
 
-  it('offers `Top` on the phone only, sticky above the dock, and it goes to the top', async () => {
+  it('offers `Top` on the phone only, in the sticky header, and it goes to the top', async () => {
     // MUTATION: never render it, render it on the desktop, or make it do
-    // nothing.
+    // nothing. It moved out of the page into the header (visual QA V009,
+    // 2026-10-11): a pill floating over the scrollport covered what
+    // scrolled under it at 400px. Its 44px target is its `::after`.
     window.history.replaceState(null, '', '/help')
     render(<App />)
     const scroller = document.querySelector<HTMLElement>('.ctl-scroll')!
@@ -475,11 +477,13 @@ describe('#139: the phone header compacts on scroll, and a long page has a way b
       scroller.scrollTop = 4000
       scroller.dispatchEvent(new Event('scroll'))
     })
-    const top = screen.getByRole('button', { name: /Top/ })
-    expect(painted(top, 'display', PHONE)).toBe('flex')
+    const top = screen.getByRole('button', { name: /top of the page/ })
+    expect(top.closest('.sk-pbar'), '`Top` is drawn over the page, not in the header').not.toBeNull()
+    expect(top.closest('.ctl-scroll')).toBeNull()
+    expect(painted(top, 'display', PHONE)).toBe('inline-flex')
     expect(painted(top, 'display', WIDE)).toBe('none')
-    expect(painted(top, 'position', PHONE)).toBe('sticky')
-    expect(painted(top, 'min-height', PHONE), 'not a touch target').toBe('44px')
+    expect(painted(top, 'flex', PHONE), 'the title should give way, not `Top`').toBe('none')
+    expect(painted(top, 'height', PHONE, 'after'), 'not a touch target').toBe('44px')
 
     await act(async () => {
       fireEvent.click(top)
