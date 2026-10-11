@@ -412,9 +412,18 @@ export function WorkflowsScreen({
       // head, so the first row lands where the skeleton's first row was.
       skeleton={<WorkflowListSkeleton query={query} />}
       summary={(d) => listSummary(d.workflows)}
+      // THE EMPTY LIST SAYS WHERE A WORKFLOW COMES FROM (V110, #1038). It was
+      // one line about where tasks go, and nothing about how to start the
+      // thing this screen lists; the link is the Submit › workflow form.
       empty={{
         heading: 'No workflows',
-        body: 'Individually submitted tasks appear under Agents.',
+        body: (
+          <>
+            A workflow is a set of steps submitted together, run in the order their dependencies give, and this read found
+            none. Individually submitted tasks appear under Agents.
+          </>
+        ),
+        link: { href: '#work/new-workflow', label: 'Submit a workflow' },
       }}
     >
       {(d) => <WorkflowList board={d} query={query} choose={choose} />}
@@ -1144,7 +1153,12 @@ export function WorkflowCard({
   const strays = straysOf(workflow, taskById)
   const unreadable = unreadableOf(workflow, taskById)
   const sectionRef = useRef<HTMLElement | null>(null)
-  const narrow = useNarrow()
+  const viewportNarrow = useNarrow()
+  // THE SPLIT'S OWN WIDTH, NOT ONLY THE VIEWPORT'S (V099, V100; #1038). See
+  // `DOCK_MIN_PX`: at 1440 the page's column is ~1,020px, so docking by the
+  // viewport alone gave the Table ~600px of step cards and the Timeline ~420px
+  // beside a 405px panel. Unmeasured (0, jsdom) is the desktop's answer.
+  const [splitRef, splitWidth] = useBoxWidth()
 
   // THE LOCAL FALLBACKS, used only when the caller holds no store. The board
   // always passes both, so on the real screen these are never read.
@@ -1155,6 +1169,7 @@ export function WorkflowCard({
   // workflow's page, drawn there in place of the board (WorkflowChanges.tsx),
   // so a card that is somehow asked for it draws its graph.
   const view = asked === 'changes' ? 'graph' : asked
+  const narrow = viewportNarrow || (splitWidth > 0 && splitWidth < (view === 'table' ? DOCK_MIN_PX.table : DOCK_MIN_PX.timeline))
   const chooseView = (v: WorkflowView) => (onView !== undefined ? onView(workflow.workflow_id, v) : setLocalView(v))
   const picked = onPick !== undefined ? (pickedProp ?? null) : localPick
   // WHETHER A READER HAS PICKED A STEP ON THIS CARD (QA G3-28): the page's
@@ -1303,7 +1318,7 @@ export function WorkflowCard({
             picked row or track. The split is drawn whether or not a step is
             picked, so picking one never remounts the table and its sort. */}
         {view === 'graph' ? null : (
-          <div className={`wf-split is-rows${picked !== null && !narrow ? ' has-panel' : ''}`}>
+          <div ref={splitRef} className={`wf-split is-rows${picked !== null && !narrow ? ' has-panel' : ''}`}>
             <div className="wf-split-main">
               <WorkflowSteps
                 workflow={workflow}
@@ -1352,6 +1367,36 @@ function atNarrowWidth(): boolean {
 
 function useNarrow(): boolean {
   return useSyncExternalStore(subscribeNarrow, atNarrowWidth, () => false)
+}
+
+/**
+ * HOW WIDE THE TABLE'S OR THE TIMELINE'S SPLIT MUST BE FOR THE INSPECTOR TO
+ * DOCK BESIDE IT (V099, V100; #1038). `DOCK_QUERY` asks the viewport, but on a
+ * workflow's page the split is the viewport less the rail, the nav and the
+ * card's padding -- ~1,020px at 1440 -- and the docked panel's 300-400px
+ * column then took what the view needed: the step table fell below its 980px
+ * container query (`wf-steps`, styles/workflows.css) into stacked cards, and
+ * the Timeline's tracks were ~420px. Below these widths the inspector opens
+ * under the picked row or track instead, exactly as it does below 1100px.
+ *
+ *   table:    980 (the table's row layout) + 12 (gap) + 400 (panel) = 1,392
+ *   timeline: 700 (tracks a run's minutes read across) + 12 + 400 = 1,112
+ */
+export const DOCK_MIN_PX = { table: 1392, timeline: 1112 } as const
+
+/** A box's content width, kept current; 0 until measured (and always in jsdom). */
+function useBoxWidth(): [(el: HTMLElement | null) => void, number] {
+  const [el, setEl] = useState<HTMLElement | null>(null)
+  const [width, setWidth] = useState(0)
+  useEffect(() => {
+    if (el === null || typeof ResizeObserver === 'undefined') return
+    const measure = () => setWidth(el.clientWidth)
+    measure()
+    const watch = new ResizeObserver(measure)
+    watch.observe(el)
+    return () => watch.disconnect()
+  }, [el])
+  return [setEl, width]
 }
 
 /**
@@ -1621,13 +1666,6 @@ function money(v: number): string {
   return usd(v)
 }
 
-/** A task id cut to its kind and its last five characters: `task_…18680`. */
-export function integratorShort(id: string): string {
-  const m = /^([A-Za-z]+_)(.*)$/.exec(id)
-  const prefix = m === null ? '' : m[1]!
-  const rest = m === null ? id : m[2]!
-  return rest.length <= 6 ? id : `${prefix}…${rest.slice(-5)}`
-}
 
 /**
  * HOW MANY PULL REQUESTS THIS WORKFLOW IS GOING TO PRODUCE.
@@ -1751,12 +1789,18 @@ function WorkflowDispatch({
           <li className="ctl-fact">
             <b>integrator</b>
             <a
-              className="ctl-link wf-integrator"
+              className="ctl-link wf-integrator id"
               href={`#work/task/${encodeURIComponent(integratorTaskId)}`}
               title={integratorTaskId}
               aria-label={`Open the integrator task ${integratorTaskId}`}
             >
-              {integratorShort(integratorTaskId)}
+              {/* THE WHOLE ID (V102, #1038). It was cut to `task_…18680` in a row
+                  with hundreds of pixels free; a task id is the thing a reader
+                  copies, and a cut one cannot be pasted. `.wf-integrator`
+                  (styles/workflows.css) ellipses it only where the row is
+                  narrower than the id; the whole id is the title. `.id`: it is
+                  drawn as the identifier it is, in mono. */}
+              {integratorTaskId}
             </a>
           </li>
         )}
@@ -2609,9 +2653,10 @@ function MiniMarks({ layout, taskById }: { layout: DagLayout; taskById: Readonly
  * strand the map the same way.
  *
  * "SCROLLS" MEANS IT HAS SOMEWHERE TO GO, not only that its style allows it:
- * `.wf-canvas-wrap` is `overflow-x: auto`, which computes `overflow-y` to
- * `auto` too, and it is the canvas's own wrapper -- exactly as tall as the
- * canvas, so scrolling it moves nothing.
+ * `.wf-canvas-wrap` is `overflow: auto` and held to the screen's height (V034),
+ * so a canvas taller than that scrolls inside the wrapper and the wrapper is
+ * the port; a canvas that fits leaves it with nowhere to go, and the search
+ * walks on to the frame.
  */
 export function scrollPortOf(el: Element): HTMLElement | null {
   for (let p = el.parentElement; p !== null; p = p.parentElement) {
@@ -4141,6 +4186,7 @@ function StepNode({
             step={step}
             reload={reload}
             variant="inline"
+            overlay
           />
         </div>
       )}
@@ -5352,6 +5398,18 @@ const PAGE_SKELETON_LINES: readonly number[] = [42, 88, 76, 64, 82, 58]
  */
 function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: WorkflowQuery; choose: (q: WorkflowQuery) => void }) {
   return (
+    <>
+    {/* THE COUNT NOTE'S LINE (V103, #1038). The loaded page opens with the
+        census note `Screen` draws over the first card (`pageSummary`), and the
+        skeleton drew nothing there: the tabs jumped down by that line and its
+        margin, 25px at 1440, the moment the read landed. The same
+        `.c-count-note`, holding a bar instead of the census, keeps the line.
+        A phone column wraps the census onto a second line, so the second bar
+        is drawn there only (styles/workflows.css). */}
+    <p className="c-count-note wfp-skel-sum" aria-hidden="true">
+      <span className="wfl-skel" style={{ width: '24em' }} />
+      <span className="wfl-skel wfp-skel-sum-2" style={{ width: '14em' }} />
+    </p>
     <div className="wfp is-loading" aria-busy="true">
       <div className="wfp-head">
         <div className="wfp-chips" aria-hidden="true">
@@ -5375,6 +5433,7 @@ function WorkflowPageSkeleton({ id, query, choose }: { id: string; query: Workfl
         ))}
       </div>
     </div>
+    </>
   )
 }
 
