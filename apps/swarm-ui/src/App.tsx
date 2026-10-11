@@ -29,7 +29,7 @@ import {
   type ScreenReads,
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
-import { HELP_ROUTE } from './help'
+import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
 import { GITHUB_CALLBACK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { NotFound, nearestPath } from './NotFound'
@@ -53,7 +53,7 @@ import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
-import { SchedulesScreen, WaitingOnYouCard } from './Schedules'
+import { NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
 import { ApprovalsScreen } from './Approvals'
 import { AdminSchedulesScreen } from './AdminSchedules'
 import { RepositoriesScreen } from './Repositories'
@@ -1198,7 +1198,7 @@ export function App() {
           : at.sectionId === GITHUB_CALLBACK
             ? 'Connect GitHub'
             : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
-  const object = at.missing ? null : openObjectOf(at)
+  const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
     document.title = documentTitleOf(title, object)
   }, [title, object])
@@ -1224,6 +1224,7 @@ export function App() {
           // AN UNSENT FORM IS KEPT ON A TENANT SWITCH (intake-tenants.html
           // 2A): the two submit forms re-read under the new tenant in place.
           keepOnSwitch={at.sectionId === WORK && (at.tab === 'new' || at.tab === 'new-workflow')}
+          place={pathFor(at)}
           foot={
             // THE UTILITY CORNER: Help and API reads at the spine's foot,
             // links like every spine item (#503). `ctl-nav-util` is
@@ -1581,6 +1582,33 @@ export function openObjectOf(at: Route): string | null {
     const id = new URLSearchParams(at.view).get(at.tab === 'workflows' ? 'wf' : 'run')
     if (id !== null && id !== '') return id
   }
+  return null
+}
+
+/**
+ * WHAT A DOCUMENT TITLE NAMES BEFORE THE PAGE (live QA CH-16, 2026-10-11): the
+ * open object (`openObjectOf`), and on the pages that have no object but are
+ * still one of many -- a repository, a schedule or the new-schedule form, an
+ * inbox item, a help topic or group -- that one's name. They were titled by
+ * their section alone ("Repositories · SwarmCloud", "Help · SwarmCloud"), so
+ * tabs and history could not tell two of them apart. Title only: the head's
+ * breadcrumb still follows `openObjectOf`.
+ */
+export function documentObjectOf(at: Route): string | null {
+  const open = openObjectOf(at)
+  if (open !== null) return open
+  if (at.sectionId === HELP && at.tab !== '') {
+    if ((TOPIC_IDS as readonly string[]).includes(at.tab)) return HELP_TOPICS[at.tab as TopicId].title
+    return HELP_GROUPS.find((g) => g.id === at.tab)?.title ?? null
+  }
+  if (!at.view) return null
+  const q = new URLSearchParams(at.view)
+  if (at.sectionId === WORK && at.tab === 'repositories') return q.get('repo') || null
+  if (at.sectionId === AUTOMATE && at.tab === 'schedules') {
+    const id = q.get('schedule')
+    return id === NEW_SCHEDULE ? 'New schedule' : id || null
+  }
+  if (at.sectionId === AUTOMATE && at.tab === 'approvals') return q.get('approval') || null
   return null
 }
 
