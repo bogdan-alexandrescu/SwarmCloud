@@ -170,6 +170,36 @@ def test_the_token_is_in_no_response(client, db, forge_tokens):
 
 
 # --------------------------------------------------------------------------
+# The name (owner report 2026-10-11: a merge workflow listed as its bare id)
+# --------------------------------------------------------------------------
+
+def test_a_nameless_merge_pr_workflow_is_stored_as_merge_pr_and_its_number(client, db):
+    _register(db, "eng", OWNER, NAME)
+    response = _post(client, _spec())
+    assert response.status_code == 201, response.text
+    (step,) = response.json()["workflow"]["steps"]
+    metadata = db.docs[f"tasks/{step['task_id']}"]["metadata"]
+    # The words the plugin defaults to, and no "#": GitHub can read "#41" as a reference.
+    assert metadata["unit"] == f"Merge PR {NUMBER}"
+    assert "#" not in metadata["unit"]
+
+
+@pytest.mark.parametrize("metadata, key, name", [
+    ({"unit": "land the docs fix"}, "unit", "land the docs fix"),
+    ({"title": "Merge the docs fix"}, "title", "Merge the docs fix"),
+])
+def test_a_merge_pr_workflow_keeps_the_name_its_caller_gave(client, db, metadata, key, name):
+    _register(db, "eng", OWNER, NAME)
+    response = _post(client, _spec(metadata=metadata))
+    assert response.status_code == 201, response.text
+    (step,) = response.json()["workflow"]["steps"]
+    stored = db.docs[f"tasks/{step['task_id']}"]["metadata"]
+    assert stored[key] == name
+    # A caller's title is not shadowed by a filled-in `unit`.
+    assert stored.get("unit", name) == name
+
+
+# --------------------------------------------------------------------------
 # The head
 # --------------------------------------------------------------------------
 

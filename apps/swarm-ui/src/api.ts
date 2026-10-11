@@ -6081,14 +6081,15 @@ export async function loadScheduleAudit(scheduleId: string): Promise<Result<{ au
  * The development fixtures serve no inbox, and say so by being empty rather
  * than by inventing items.
  */
-export async function loadApprovals(options: { frame?: boolean } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
+export async function loadApprovals(options: { frame?: boolean; kind?: string } = {}): Promise<Result<{ approvals: ApprovalItem[] }>> {
   if (USE_FIXTURES) return { status: 'empty', fetchedAt: Date.now() }
   // The frame reads this on every page. A 200 without an `approvals` list is
   // not a measured empty inbox, and passing it on as one would draw "nothing
   // waiting" over an answer nobody read; it is a failure, as an unreadable
-  // body is.
+  // body is. `kind` is the route's own filter (`?kind=`, §4.5).
+  const kind = options.kind === undefined || options.kind === '' ? undefined : new URLSearchParams({ kind: options.kind })
   const r = await read<{ approvals: ApprovalItem[] }>(
-    route('/v1/approvals'),
+    route('/v1/approvals', {}, kind),
     (d) => Array.isArray(d.approvals) && d.approvals.length === 0,
     { frame: options.frame === true },
   )
@@ -6357,4 +6358,227 @@ export async function setMergeMode(
   body: { mode: 'approve' | 'auto'; revision: number; confirm?: string },
 ): Promise<Result<{ schedule: Schedule }>> {
   return scheduleWrite(route('/v1/schedules/{id}:merge-mode', { id: scheduleId }), 'POST', body)
+}
+
+// ---------------------------------------------------------------------------
+// The live browser (docs/design/live-browser.md §3.3, §4.2, §5.1-5.2, §5.7,
+// §6, §6.1; lane L11). The routes are swarm-api's, built by lane L9 in
+// parallel; this client is written against the design's interface and names
+// each route once, here. NO FIXTURES: the fixture build has no browser to
+// show and invents none, so every route answers as not served -- which the
+// split reads as "this agent has no live browser" and draws no Browser tab.
+// ---------------------------------------------------------------------------
+
+/** The top frame's origin as the GATE read it from Chromium over CDP (§5.7), never from the page. */
+export interface LiveOrigin {
+  /** `https://github.com`: scheme, host and port, nothing else. */
+  origin: string
+  /** The host as Chromium reports it, punycode included (`xn--...`). */
+  host: string
+  /** The host decoded for display; differs from `host` only for punycode. */
+  display_host?: string
+  /** The registrable domain (public-suffix aware), emphasised in the strip. */
+  registrable_domain: string
+  /** `https:` or `http:`. The gate refuses control over `http:` (§5.7 item 4). */
+  scheme: string
+  /** True when the host is an IP literal. The gate refuses control (§5.7 item 4). */
+  ip_literal?: boolean
+  /** True while the page reports a certificate error; the gate refuses control (§5.4.4). */
+  cert_error?: boolean
+}
+
+/** `Task.human_wait` as the session read serves it (§4.1 step 3). */
+export interface LiveHumanWait {
+  /** Redacted by the worker before it was stored (§4.1). */
+  reason: string
+  /** The host the agent said it would ask to sign in to, or null when it named none. */
+  expect: string | null
+  requested_at: string
+  deadline: string
+}
+
+/** One device preset, served from the gate's fixed list (§6.1). A caller never sends dimensions. */
+export interface LivePreset {
+  name: string
+  width: number
+  height: number
+  scale: number
+  mobile: boolean
+}
+
+/** The device the gate has applied (§6.1). */
+export interface LiveDevice {
+  preset: string
+  orientation: 'portrait' | 'landscape'
+  /** The person in control works it by touch (§6.1): pointer events become touch events at the gate. */
+  touch: boolean
+}
+
+/**
+ * One live browser session, as the CALLER may see it (`LiveRead.session`).
+ * What the caller may do is the server's answer in `you`; the console only
+ * draws it.
+ */
+export interface LiveSession {
+  session_id: string
+  /** `open` while the tunnel is up; `closed` once the attempt ended or was cancelled. */
+  state: 'open' | 'closed'
+  /** Why it closed (`cancelled`, `attempt_ended`, ...), when it has. */
+  closed_reason?: string | null
+  origin: LiveOrigin | null
+  human_wait: LiveHumanWait | null
+  /** The person in control, or null in view mode. One at a time, always (§4.2). */
+  controller: { email: string; since: string } | null
+  /** Whether the submitter opened control to every member of the tenant (§5.1, Q1). */
+  open_to_members: boolean
+  device: LiveDevice
+  presets: LivePreset[]
+  /** What THIS caller may do (§5.1). The server decides; the console only draws it. */
+  you: {
+    email: string
+    /** May take control now: the submitter, or any member once control is opened (§5.1). */
+    can_control: boolean
+    /** May take control from someone who holds it: the submitter only (§5.1). */
+    can_preempt: boolean
+    /** May open control to every member: the submitter only (§5.1). */
+    can_open: boolean
+  }
+}
+
+/**
+ * `GET /v1/tasks/{task_id}/live/session`. `live_browser` is the task's
+ * profile's catalogue property (contract request 71, LB-D), never inferred
+ * here from a profile name; `session` is null until the gate's tunnel is up
+ * (a LEASED or STARTING attempt, or a browser being started for a person).
+ *
+ * A TASK WITH NO LIVE BROWSER IS A 200, NOT A 404. The split asks this of
+ * every running agent it opens; a 404 for each ordinary one would put a
+ * failing route in the data-source strip on every open. A 404 is what the
+ * route answers for a task the caller cannot see at all -- another tenant's
+ * answers exactly as a missing one (§5.2 step 2) -- and the split reads it,
+ * like any failure, as "no Browser tab".
+ */
+export interface LiveRead {
+  live_browser: boolean
+  session: LiveSession | null
+}
+
+export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>> {
+  const target = route('/v1/tasks/{id}/live/session', { id: taskId })
+  if (USE_FIXTURES) {
+    // The fixture build has no browser to show. Answered as the API answers
+    // a task with none, so opening a fixture agent records no failed route.
+    noteFixtureProbe(target, 0, true)
+    return { status: 'ok', fetchedAt: Date.now(), data: { live_browser: false, session: null } }
+  }
+  return read<LiveRead>(target, () => false)
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/ticket`: a one-use viewer ticket, 30 seconds
+ * (§5.2 step 3), rate limited per person (§5.10). It travels ONLY as the
+ * websocket's first message (`openLiveSocket`), never in a URL: load
+ * balancer, IAP and Cloud Run request logs record URLs (§5.2).
+ */
+export async function mintLiveTicket(taskId: string): Promise<Result<{ ticket: string; expires_at: string }>> {
+  const target = route('/v1/tasks/{id}/live/ticket', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return (await write(target, 'POST')) as Result<{ ticket: string; expires_at: string }>
+}
+
+/**
+ * The live websocket's address: `wss://<console host>/v1/tasks/{task_id}/live`
+ * through the same IAP load balancer as every `/v1` read (§3.3 step 3). It
+ * carries the task id AND NOTHING ELSE -- no ticket, no tenant, no query.
+ */
+export function liveSocketUrl(taskId: string): string {
+  const loc = typeof window === 'undefined' ? null : window.location
+  const scheme = loc !== null && loc.protocol === 'http:' ? 'ws' : 'wss'
+  return `${scheme}://${loc?.host ?? ''}${route('/v1/tasks/{id}/live', { id: taskId }).url}`
+}
+
+/**
+ * Open the live websocket and send the ticket as its FIRST message (§5.2),
+ * then hand the open socket to `attach` IN THE SAME 'open' HANDLER. No byte
+ * goes before the ticket; swarm-api answers nothing until it has checked it,
+ * then proxies the RFB stream (and closes the socket if it refuses).
+ *
+ * WHY `attach` RUNS INSIDE THE HANDLER, NOT AFTER THE PROMISE. noVNC only
+ * reads frames once it has set the socket's `onmessage`, and an RFB server
+ * speaks first (its ProtocolVersion). A frame that arrives before that is
+ * dropped, and noVNC then waits forever for a handshake that already went
+ * past. Constructing noVNC synchronously here, before control returns to the
+ * event loop, means no frame can arrive in between; and the socket is still
+ * open, so noVNC never sees an already-closed channel. If `attach` throws,
+ * the socket is closed and the promise rejects, so the caller retries.
+ */
+export function openLiveSocket<T>(taskId: string, ticket: string, attach: (ws: WebSocket) => T): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(liveSocketUrl(taskId))
+    ws.binaryType = 'arraybuffer'
+    ws.addEventListener('open', () => {
+      ws.send(JSON.stringify({ ticket }))
+      try {
+        resolve(attach(ws))
+      } catch (err) {
+        ws.close()
+        reject(err instanceof Error ? err : new Error('The live viewer could not attach to the connection.'))
+      }
+    }, { once: true })
+    ws.addEventListener('error', () => reject(new Error('The live connection did not open.')), { once: true })
+    ws.addEventListener('close', () => reject(new Error('The live connection closed before it opened.')), { once: true })
+  })
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/control`: take control (§4.2 step 1). When
+ * the top frame's registrable domain is not the one the hand-off expected,
+ * the person was asked twice and `confirmed_mismatch` names both domains, so
+ * the audit records what they confirmed past (§5.7 item 2). `preempt` is the
+ * submitter taking control from someone who holds it (§5.1).
+ */
+export async function takeLiveControl(
+  taskId: string,
+  body: { preempt?: boolean; confirmed_mismatch?: { expected: string; actual: string } } = {},
+): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/control', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'POST', body)
+}
+
+/** `DELETE /v1/tasks/{task_id}/live/control`: return control (§4.2 step 3). */
+export async function returnLiveControl(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/control', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'DELETE')
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/control/renew`: the controller's console
+ * renews while it is open. Control ends when `renew_by` passes, 60 seconds
+ * after the last renewal (§4.2), so a closed tab cannot hold it.
+ */
+export async function renewLiveControl(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/control/renew', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'POST')
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/open-to-members`: the submitter opens control
+ * to every member (§5.1, audited). One way only: swarm-api serves no route that
+ * closes it again, so the console offers no uncheck.
+ */
+export async function openLiveToMembers(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'POST')
+}
+
+function liveNotServed<T>(target: ApiRoute): Result<T> {
+  noteFixtureProbe(target, 0, false)
+  return {
+    status: 'error',
+    error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no live browser.' },
+  }
 }

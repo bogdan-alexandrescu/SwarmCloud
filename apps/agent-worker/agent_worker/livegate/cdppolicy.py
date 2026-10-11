@@ -51,6 +51,17 @@ timezone), stays allowed. Playwright sends `Emulation.setDeviceMetricsOverride`
 only for a context with a viewport, so the agent's `connectOverCDP` default
 context is unaffected and `browser.newContext()` needs `viewport: null`.
 
+COOKIES ARE THE GATE'S (section 5.5.1, LB-7). A signed-in session moves gate
+to gate (session.py), read and written on the gate's own pipe session, where
+this policy does not apply. The agent's CDP can neither read the jar
+(`Network.getCookies`, `Network.getAllCookies`, `Storage.getCookies`) nor
+plant, change or clear one (`Network.setCookie(s)`, `Storage.setCookies`,
+`Network.deleteCookies`, `Network.clearBrowserCookies`, `Storage.clearCookies`,
+`Storage.clearDataForOrigin`). Playwright's `context.cookies()`,
+`addCookies()` and `clearCookies()` therefore fail loudly in the agent, which
+is the intended outcome. Not covered, as the design says: a cookie without
+`HttpOnly` is readable by page script through `Runtime.evaluate`.
+
 A REFUSAL IS RECORDED BY METHOD NAME ONLY (`cdp_method_refused`), never with
 its parameters, which can carry page text.
 """
@@ -109,12 +120,16 @@ DENIED: Mapping[str, str] = {
     "Emulation.setEmitTouchEventsForMouse": "the device is the gate's, by preset name",
     "Emulation.setVisibleSize": "the device is the gate's, by preset name",
     "Network.setUserAgentOverride": "the device is the gate's, by preset name",
+    "Network.getCookies": "reads the browser's cookies, a carried session's included",
+    "Network.getAllCookies": "reads the browser's cookies, a carried session's included",
+    "Storage.getCookies": "reads the browser's cookies, a carried session's included",
     "Network.setCookie": "writes the browser's cookies",
     "Network.setCookies": "writes the browser's cookies",
     "Network.deleteCookies": "writes the browser's cookies",
     "Network.clearBrowserCookies": "writes the browser's cookies",
     "Storage.setCookies": "writes the browser's cookies",
     "Storage.clearCookies": "writes the browser's cookies",
+    "Storage.clearDataForOrigin": "writes the browser's cookies",
 }
 
 # Methods refused only for one shape of their parameters; every other entry
@@ -244,14 +259,13 @@ ALLOWED_METHODS: frozenset[str] = frozenset(
         "Accessibility.getChildAXNodes",
         "Accessibility.getRootAXNode",
         "Accessibility.getAXNodeAndAncestors",
-        # Network: the read side, and the switches Playwright's network
-        # manager sets that do not route, re-header or re-credential traffic.
+        # Network: the read side less cookies (section 5.5.1), and the
+        # switches Playwright's network manager sets that do not route,
+        # re-header or re-credential traffic.
         "Network.enable",
         "Network.disable",
         "Network.getResponseBody",
         "Network.getRequestPostData",
-        "Network.getCookies",
-        "Network.getAllCookies",
         "Network.setCacheDisabled",
         "Network.setBypassServiceWorker",
         "Network.emulateNetworkConditions",
@@ -265,8 +279,8 @@ ALLOWED_METHODS: frozenset[str] = frozenset(
         "Fetch.fulfillRequest",
         "Fetch.failRequest",
         "Fetch.getResponseBody",
-        # Storage: the read side.
-        "Storage.getCookies",
+        # Storage: the storage key only. Its cookie methods are the gate's
+        # (section 5.5.1), refused above.
         "Storage.getStorageKeyForFrame",
         # Log and IO: console capture, and reading a PDF stream the agent made.
         "Log.enable",
