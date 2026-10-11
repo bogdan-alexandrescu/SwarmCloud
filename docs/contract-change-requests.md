@@ -80,6 +80,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 69 | `states.py`: the four `human_*` hand-off `EventType` members (LB-B) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
 | 70 | `models.py`: `Task.human_wait`, the hand-off a holding task waits on, as a field and not a new state (LB-C) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
 | 71 | `profiles.py`: `RunnerProfile.live_browser`, True only on `claude-code-browser`, valid only on a GKE_AUTOPILOT profile (LB-D) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
+| 72 | `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist | proposed |
 
 ---
 
@@ -11080,3 +11081,55 @@ Nothing: a defaulted field. `claude-code-browser` now differs from
 **10**: a caller still names a profile; whether it is live is the catalogue's,
 and there is no input, field or parameter by which a caller asks for a live
 browser on another profile. 1-9 unchanged.
+
+---
+
+## 72. `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist
+
+**Status:** proposed, filed 2026-10-11 by the stale-name audit lane. A comment
+fix only; no field changes.
+
+### What is true today
+
+`apps/common/swarm_common/profiles.py` says, in the `"post-verdict"` entry,
+that its secret is read "as `swarm-<tenant>-post-verdict`, the Job's own
+service account", and, above `"claude-code-review"`, that the profile has its
+own "Job and service account, `swarm-<tenant>-review`". Neither account
+exists: `terraform/infra/variables.tf` (the retired #295 App keys validation)
+records that the per-tenant merge and post-verdict accounts are gone, and
+docs/merge-step.md §3 "What this supersedes" lists the `-merge`,
+`-post-verdict` and `-review` accounts as superseded. Both profiles are
+`available=False` with no Job for any tenant (`profiles_without_a_job`).
+
+### Why
+
+A reader of the frozen catalogue is told an identity exists that no
+Terraform creates. The docs that said the same were marked as history in the
+same change that files this request; the frozen file cannot be edited by a
+lane.
+
+### The requested change
+
+Comments only, in `apps/common/swarm_common/profiles.py`:
+
+* `"post-verdict"`: replace "as `swarm-<tenant>-post-verdict`, the Job's own
+  service account" with a note that the per-tenant post-verdict account was
+  retired with the #295 design (docs/merge-step.md §3) and the profile has no
+  Job;
+* above `"claude-code-review"`: drop "and so its Job and service account,
+  `swarm-<tenant>-review`" (the profile has no Job and that account is gone).
+
+### What it would break if accepted
+
+Nothing: no value, type or field changes, so no component written against the
+contract sees a difference.
+
+### If it is declined
+
+The two comments keep naming accounts that do not exist; the docs say they
+are history.
+
+### Invariants
+
+None touched: a comment change in the catalogue alters no admission, lease,
+fencing, checkpoint or isolation behaviour.
