@@ -1416,6 +1416,12 @@ class Ticker:
                 self.advance(firing, now, report)
             except Exception as exc:
                 self._failed(report, firing["firing_id"], exc)
+        # §4.9 (lane S12): the pending approvals' GitHub threads, read for
+        # `/swarmcloud approve <digest>` comments. Bounded by the inbox and
+        # by what is left of the tick; it never raises.
+        from .ghapprove import poll
+
+        poll(self.ctx, out_of_time=lambda: self._clock() - started >= TICK_BUDGET_SECONDS)
 
     def _write_report(self, now: datetime, report: TickReport) -> None:
         """§2.10: `schedule_ticks/{unix_minute}`, 7 days, for the admin view's tick health."""

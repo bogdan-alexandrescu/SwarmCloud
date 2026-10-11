@@ -1326,7 +1326,12 @@ def merge_gate(
             runs.patch(tenant_id, run.id, changes)
         return None
     verdict, _why = _review_verdict(ctx, tenant_id, run)
-    approvals.request_merge(ctx.db, now, run, head_sha=head, verdict=verdict)
+    record_doc = approvals.request_merge(ctx.db, now, run, head_sha=head, verdict=verdict)
+    # §4.9: the merge request on the pull request, with the exact
+    # `/swarmcloud approve <head_sha>:<verdict>` command; once per record.
+    from .ghapprove import announce_merge
+
+    announce_merge(ctx, run, record_doc, token)
     log.info("issue run %s tenant=%s: merge of %s waits for approval", run.id, tenant_id, head[:12])
     return runs.patch(tenant_id, run.id, {**changes, "pull_request": record})
 
