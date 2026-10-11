@@ -146,7 +146,8 @@ export const meta = {
 // path (anything that is not a spec object or JSON text) one sc:workflow row
 // calls swarm_workflow_spec, which reads and checks the file in the session's
 // checkout and returns its digest, a `spec_ref` and the spec's OUTLINE -- its
-// label and each step's id, depends_on and stage. The row relays those, never
+// label, strategy and merge choice and each step's id, depends_on and stage,
+// with the runner profile, verdict gate and input_from `appendable` reads. The row relays those, never
 // the spec; the submit row passes the ref and the digest, and the reply is
 // checked against the outline exactly as it is checked against a spec.
 //
@@ -322,12 +323,19 @@ const READ = {
               step_id: { type: 'string' },
               depends_on: { type: 'array', items: { type: 'string' } },
               stage: { type: ['string', 'null'] },
+              // What `appendable` reads to know the merge steps SwarmCloud
+              // appends: a stated merge step, the verdict gate, the staged files.
+              runner_profile: { type: ['string', 'null'] },
+              when_step: { type: ['string', 'null'] },
+              input_from: { type: 'object', additionalProperties: { type: 'string' } },
             },
-            required: ['step_id', 'depends_on', 'stage'],
+            required: ['step_id', 'depends_on', 'stage', 'runner_profile', 'when_step', 'input_from'],
           },
         },
+        strategy: { type: ['string', 'null'] },
+        merge: { type: ['string', 'null'] },
       },
-      required: ['title', 'label', 'steps'],
+      required: ['title', 'label', 'steps', 'strategy', 'merge'],
     },
     error: { type: ['string', 'null'] },
   },
@@ -725,6 +733,96 @@ function sameSet(left, right) {
   return a.length === b.length && a.every((item, index) => item === b[index])
 }
 
+// THE STEPS SWARMCLOUD APPENDS FOR A MERGE (2026-10-11). swarm-api appends a
+// `merge` step -- and, for "on_merge_verdict", a `re-review` before it -- to
+// the spec it was sent (swarm_api.service._with_merge_step), so the reply can
+// name steps the spec does not. Every rule below restates that function and
+// swarm_api.validation's merge_sources, merge_step_for and rereview_step_for,
+// which a script cannot import; a unit test holds each shape to the server's.
+// The choice is the spec's `merge`, else the repository's registered
+// merge_policy ("off" | "on_merge_verdict"), else the platform's
+// merge_by_default ("on"). The last two are not visible from here, so a spec
+// that says nothing accepts any one of the shapes they could produce, and
+// nothing else.
+const MERGE_STEP_ID = 'merge'
+const REREVIEW_STEP_ID = 're-review'
+const MERGE_ON_VERDICT = 'on_merge_verdict'
+
+// `base`, or `base-2`, `base-3`... -- the first id no step has.
+function freeStepId(base, taken) {
+  let id = base
+  for (let n = 2; taken.indexOf(id) >= 0; n++) id = base + '-' + n
+  return id
+}
+
+// A step's verdict gate: a spec's `when.step`, or a file outline's `when_step`.
+function whenStep(step) {
+  if (typeof step.when_step === 'string' && step.when_step) return step.when_step
+  return step.when && typeof step.when.step === 'string' && step.when.step ? step.when.step : null
+}
+
+function inputFrom(step) {
+  const staged = step.input_from
+  return staged && typeof staged === 'object' && !Array.isArray(staged) ? staged : {}
+}
+
+// merge_sources: the step that opens the one pull request, the review its
+// gate reads and the file it stages from it; null when there is not ONE.
+function mergeSources(steps, strategy) {
+  if (strategy === 'direct-pr') return steps.length === 1 ? { pr: steps[0].step_id, review: null, file: null } : null
+  if (strategy !== 'integrate' || steps.length < 2) return null
+  const dependedOn = {}
+  for (const step of steps) for (const dep of step.depends_on || []) dependedOn[dep] = true
+  const sinks = steps.filter((step) => !dependedOn[step.step_id])
+  if (sinks.length !== 1) return null
+  const review = whenStep(sinks[0])
+  return { pr: sinks[0].step_id, review: review, file: review ? inputFrom(sinks[0])[review] || null : null }
+}
+
+// What SwarmCloud may append to `spec`: a list of the step lists it could
+// append, each step {step_id, depends_on, why}. `[[]]` when it appends nothing.
+function appendable(spec) {
+  const strategy = typeof spec.strategy === 'string' && spec.strategy ? spec.strategy : 'collect'
+  const choice = typeof spec.merge === 'string' ? spec.merge : null
+  const steps = spec.steps
+  // single-pr ends in its own merge; a spec that states a merge step keeps it
+  // (or is refused, which names no workflow).
+  if (strategy === 'single-pr' || choice === 'off' || steps.some((step) => step.runner_profile === MERGE_STEP_ID)) return [[]]
+  const ids = steps.map((step) => step.step_id)
+  const sources = mergeSources(steps, strategy)
+  let on = null
+  if (sources) {
+    on = [{ step_id: freeStepId(MERGE_STEP_ID, ids), depends_on: [sources.pr].concat(sources.review ? [sources.review] : []) }]
+  }
+  let verdict = null
+  const review = sources && sources.review ? steps.filter((step) => step.step_id === sources.review)[0] : null
+  if (strategy === 'integrate' && review && sources.file) {
+    const staged = Object.keys(inputFrom(review)).concat([sources.review])
+    const rereview = freeStepId(REREVIEW_STEP_ID, ids)
+    verdict = [
+      { step_id: rereview, depends_on: [sources.pr].concat(staged).filter((id, at, all) => all.indexOf(id) === at) },
+      { step_id: freeStepId(MERGE_STEP_ID, ids.concat([rereview])), depends_on: [sources.pr, rereview] },
+    ]
+  }
+  const why = (shape, said) => shape.map((step) => Object.assign({ why: said }, step))
+  if (choice === MERGE_ON_VERDICT) return [why(verdict || [], 'the spec\'s merge ' + MERGE_ON_VERDICT)]
+  if (choice === 'on') return [why(on || [], 'the spec\'s merge on')]
+  // Said nothing: the repository's merge_policy, else the platform default.
+  const shapes = [[]]
+  if (verdict) shapes.push(why(verdict, 'the repository\'s merge_policy ' + MERGE_ON_VERDICT))
+  if (on) shapes.push(why(on, 'the platform\'s merge_by_default'))
+  return shapes
+}
+
+// The steps the reply names beyond the spec, when they are exactly one shape
+// SwarmCloud appends for this spec's merge choice; else null.
+function appendedShape(spec, submitted) {
+  const given = {}
+  for (const step of spec.steps) given[step.step_id] = true
+  const extra = (submitted.steps || []).map((step) => step && step.step_id).filter((id) => !given[id])
+  return appendable(spec).filter((shape) => sameSet(shape.map((step) => step.step_id), extra))[0] || null
+}
+
 // Every way the Submit reply can differ from the spec this script was given.
 // Empty means the relay carried both directions faithfully.
 function mismatches(spec, submitted, digest) {
@@ -739,6 +837,11 @@ function mismatches(spec, submitted, digest) {
   if (submitted.error) problems.push('the reply names a workflow and also an error: ' + clip(submitted.error, 160))
   const given = {}
   for (const step of spec.steps) given[step.step_id] = step
+  // The steps SwarmCloud appended for the merge, checked as the server builds
+  // them; any other step the spec does not have is still refused.
+  const appended = {}
+  const shape = appendedShape(spec, submitted)
+  for (const step of shape || []) appended[step.step_id] = step
   const seen = {}
   const owner = {}
   for (const step of submitted.steps || []) {
@@ -748,12 +851,14 @@ function mismatches(spec, submitted, digest) {
       continue
     }
     seen[id] = true
-    if (!given[id]) {
+    const expected = given[id] || appended[id]
+    if (!expected) {
       problems.push('the reply names a step the spec does not have: ' + id)
       continue
     }
-    if (!sameSet(step.depends_on, given[id].depends_on)) {
-      problems.push('step ' + id + ' depends on [' + (step.depends_on || []).join(', ') + '] in the reply and on [' + (given[id].depends_on || []).join(', ') + '] in the spec')
+    if (!sameSet(step.depends_on, expected.depends_on)) {
+      const where = given[id] ? 'in the spec' : 'as SwarmCloud appends it for ' + expected.why
+      problems.push('step ' + id + ' depends on [' + (step.depends_on || []).join(', ') + '] in the reply and on [' + (expected.depends_on || []).join(', ') + '] ' + where)
     }
     if (typeof step.task_id !== 'string' || !step.task_id) {
       problems.push('the reply names no task for step ' + id)
@@ -765,6 +870,14 @@ function mismatches(spec, submitted, digest) {
   }
   for (const step of spec.steps) {
     if (!seen[step.step_id]) problems.push('step ' + step.step_id + ' is in the spec and missing from the reply')
+  }
+  // The spec's own merge choice appends steps for certain: a reply without
+  // them is not what SwarmCloud built.
+  const shapes = appendable(spec)
+  if (!shape && shapes.length === 1) {
+    for (const step of shapes[0]) {
+      if (!seen[step.step_id]) problems.push('step ' + step.step_id + ' is appended by SwarmCloud for ' + step.why + ' and missing from the reply')
+    }
   }
   return problems
 }
@@ -1308,6 +1421,9 @@ if (given.path) {
     return notSubmitted('the row reading ' + given.path + ' did not hand back the spec_ref, spec_digest and outline the bridge returns, so nothing was submitted. Run /sc:swarmcloud again, or pass the spec object with its spec_path.')
   }
   spec = { steps: outline.steps }
+  // What decides the merge steps SwarmCloud appends (`appendable`).
+  if (typeof outline.strategy === 'string' && outline.strategy) spec.strategy = outline.strategy
+  if (typeof outline.merge === 'string' && outline.merge) spec.merge = outline.merge
   if (typeof outline.label === 'string' && outline.label.trim()) spec.label = outline.label
   if (typeof outline.title === 'string' && outline.title.trim()) spec.title = outline.title
   source.specRef = read.spec_ref
@@ -1362,12 +1478,15 @@ if (submitted.follow_error) return followRefused(submitted.workflow_id, submitte
 
 // The steps in the SPEC's order, which is the order SwarmCloud serves them in
 // and so the console's; the reply's own order is the relay's.
+// The steps SwarmCloud appended for the merge come last, as the server
+// appends them, and get a row each: the console counts them as steps.
 const replied = {}
 for (const step of submitted.steps) replied[step.step_id] = step
+const appendedSteps = appendedShape(spec, submitted) || []
 const wf = workflowView(
   submitted.workflow_id,
   titleName([spec.title, spec.label, submitted.workflow_id]),
-  spec.steps.map((step) => replied[step.step_id]),
+  spec.steps.concat(appendedSteps).map((step) => replied[step.step_id]),
 )
 
 const where = submitted.repository ? ' · clones ' + submitted.repository : ' · clones no repository'
@@ -1376,6 +1495,9 @@ log(wf.title + ' · ' + submitted.workflow_id)
 // Every inference note the bridge made, verbatim: it exists only in this
 // reply, and this is the one place a session watching the workflow can see it.
 for (const note of submitted.repository_notes || []) log(submitted.workflow_id + ' repository note: ' + note)
+if (appendedSteps.length > 0) {
+  log(submitted.workflow_id + ' · SwarmCloud appended ' + appendedSteps.map((step) => step.step_id).join(', ') + ' for ' + appendedSteps[0].why)
+}
 
 // Just submitted, so no parent has finished: every row is handed all of its
 // parents' task ids.

@@ -239,6 +239,13 @@ APP_USER = "app_user"
 #: (§3.1). Restated for the same reason as APP_USER.
 GRANTS = "forge_grants"
 
+#: `forgeapp.ORGS`: one document per person x owner they enabled on Work ›
+#: Access (or asked to install). Restated for the same reason as APP_USER.
+ORG_DOCS = "forge_orgs"
+
+#: `access.REQUESTED`: an owner asked for and not installed -- not enabled.
+_ORG_REQUESTED = "requested"
+
 #: §3.1's per-person document, which holds what the person set: `dismissed_at`.
 ONBOARDING = "onboarding"
 
@@ -576,10 +583,29 @@ def _owner_issue(caller: Caller, record: GitTokenRecord, owner: str,
     return issue
 
 
+def _own_orgs(caller: Caller, docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The owners the caller ENABLED, as Work › Access lists them
+    (`access.org_to_api`: every org document but a pending request), from
+    their own documents in their tenant only (invariant 9)."""
+    mine = [d for d in docs if d.get("tenant_id") == caller.tenant_id
+            and str(d.get("user") or "").lower() == caller.key
+            and d.get("install_state") != _ORG_REQUESTED
+            and (d.get("owner_login") or d.get("owner"))]
+    return sorted(mine, key=lambda d: str(d.get("owner_login") or d.get("owner")).lower())
+
+
 def _orgs_step(caller: Caller, record: GitTokenRecord, via: str,
                regs: list[dict[str, Any]], now: datetime,
-               pending: list[dict[str, Any]] = ()) -> dict[str, Any]:
+               pending: list[dict[str, Any]] = (),
+               enabled: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    """`enabled` is the caller's own org documents for an App connection,
+    read on this read (None for a token connection, which enables nothing).
+    Live QA RSA-2: this step listed only the owners the token's probe had
+    seen 12 hours earlier while Access listed both enabled orgs; an App
+    connection's enabled owners are now this step's evidence, read each
+    time, and the step is checked at this read when they decide it."""
     owners: dict[str, dict[str, Any]] = {}
+    on = _own_orgs(caller, enabled) if enabled is not None else None
 
     def add(login: str | None, owner_type: str, source: str) -> None:
         if login and login.lower() not in owners:
@@ -591,6 +617,9 @@ def _orgs_step(caller: Caller, record: GitTokenRecord, via: str,
         add(org, "Organization", "orgs")
     for org in [*record.sso_required_orgs, *record.classic_blocked_orgs]:
         add(org, "Organization", "refusal")
+    for doc in on or []:
+        add(str(doc.get("owner_login") or doc.get("owner")),
+            str(doc.get("owner_type") or "Organization"), "enabled")
     if via == "tenant":
         # A registration was read with the tenant token: its owner was reached.
         for reg in regs:
@@ -603,6 +632,11 @@ def _orgs_step(caller: Caller, record: GitTokenRecord, via: str,
                            "CLASSIC_PAT_BLOCKED": "classic_blocked"}[issue["code"]]
                           if issue else "reachable")
         entry["registered"] = sum(1 for reg in regs if (reg.get("owner") or "").lower() == key)
+        if on is not None:
+            doc = next((d for d in on if str(d.get("owner_login") or d.get("owner")).lower()
+                        == key), None)
+            entry["enabled"] = doc is not None
+            entry["enabled_at"] = _iso(doc.get("enabled_at")) if doc is not None else None
         if issue:
             issues.append(issue)
     for issue in pending:
@@ -610,6 +644,8 @@ def _orgs_step(caller: Caller, record: GitTokenRecord, via: str,
         add(issue["owner"], "Organization", "requested")
         entry = owners[issue["owner"].lower()]
         entry["reach"] = "approval_pending"
+        if on is not None:
+            entry["enabled"], entry["enabled_at"] = False, None
         entry.setdefault("registered", sum(
             1 for reg in regs if (reg.get("owner") or "").lower() == issue["owner"].lower()))
     pending = list(pending)
@@ -618,12 +654,22 @@ def _orgs_step(caller: Caller, record: GitTokenRecord, via: str,
         "orgs_read": record.orgs is not None,
         "orgs_capped": record.orgs_capped,
         "sso_hidden_orgs": len(record.sso_partial_org_ids),
+        # When the token's probe read the orgs and their SSO refusals.
         "read_at": _iso(record.access_evidence_at),
+        # The owners enabled on Work › Access, read on THIS read; None for a
+        # token connection, which has no enabled owners to read.
+        "enabled": [e["owner"] for e in owners.values() if e.get("enabled")]
+        if on is not None else None,
+        "enabled_read_at": _iso(now) if on is not None else None,
     }
     checked = record.access_evidence_at
     if issues:
         return _step(ORGS_ENABLED, FAILED, evidence=evidence, issues=issues + pending,
                      checked_at=checked)
+    if any(entry["reach"] == "reachable" and entry.get("enabled") for entry in owners.values()):
+        # An owner enabled on Access, read now, with no refusal on the
+        # token: the step holds on this read's evidence (RSA-2).
+        return _step(ORGS_ENABLED, DONE, evidence=evidence, issues=pending, checked_at=now)
     if any(entry["reach"] == "reachable" for entry in owners.values()):
         # A pending request does not hold the step: "you can carry on with
         # your other orgs" (§2.3). It is served as an issue all the same.
@@ -885,6 +931,7 @@ def derive(
     registrations_capped: bool = False,
     installations: dict[str, Any] | None = None,
     grants: list[dict[str, Any]] | None = None,
+    orgs: list[dict[str, Any]] | None = None,
     workspace: dict[str, Any] | None = None,
     accounts: dict[str, Any] | None = None,
     loan: dict[str, Any] | None = None,
@@ -898,7 +945,8 @@ def derive(
     names another tenant or person is dropped here.
     `installations` is `AccessService.installations`'s answer for an App
     connection, or None when it was not asked. `grants` is the caller's
-    `forge_grants`, read only for an App connection; None is none.
+    `forge_grants`, read only for an App connection; None is none. `orgs` is
+    the caller's `forge_orgs`, likewise; None is none.
 
     Every input is filtered on `caller.tenant_id` again here, whatever the
     reads returned, and only the caller's own user slot is ever considered.
@@ -940,7 +988,8 @@ def derive(
         steps.append(installed)
         steps.append(_orgs_step(caller, record, via, regs, now,
                                 pending=_pending_issues(installations)
-                                if uses_app(record, via) else []))
+                                if uses_app(record, via) else [],
+                                enabled=(orgs or []) if uses_app(record, via) else None))
         # An App connection's repositories are the caller's own grants (#896).
         mine = _own_grants(caller, grants or []) if uses_app(record, via) else None
         chosen = _repos_step(caller, record, regs, registrations_capped, now, grants=mine)
@@ -989,6 +1038,15 @@ def _read_grants(db: Any, caller: Caller) -> list[dict[str, Any]]:
     query = db.collection(GRANTS).where(
         filter=FieldFilter("tenant_id", "==", caller.tenant_id)).where(
         filter=FieldFilter("user_hash", "==", hashed)).limit(MAX_GRANTS)
+    return [snap.to_dict() or {} for snap in query.stream()]
+
+
+def _read_orgs(db: Any, caller: Caller) -> list[dict[str, Any]]:
+    """The caller's own org documents, queried as `AccessService._mine`
+    reads them -- what Work › Access lists -- filtered again in `derive`."""
+    query = db.collection(ORG_DOCS).where(
+        filter=FieldFilter("tenant_id", "==", caller.tenant_id)).where(
+        filter=FieldFilter("user_hash", "==", _user_hash(caller))).limit(MAX_GRANTS)
     return [snap.to_dict() or {} for snap in query.stream()]
 
 
@@ -1063,6 +1121,7 @@ def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
             and record.state is TokenState.ACTIVE:
         found = installations()
     grants = _read_grants(db, caller) if uses_app(record, via) else None
+    orgs = _read_orgs(db, caller) if uses_app(record, via) else None
     view = derive(
         caller,
         records=records,
@@ -1073,6 +1132,7 @@ def read(db: Any, caller: Caller, *, tenant: Tenant | None, now: datetime,
         registrations_capped=more is not None,
         installations=found,
         grants=grants,
+        orgs=orgs,
         workspace=workspace,
         accounts=accounts,
         loan=loan,

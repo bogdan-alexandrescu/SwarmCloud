@@ -8070,26 +8070,36 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   /* A FIELD IS A KEY AND A VALUE ON ONE LINE, with every key STARTING at the
      same x down the whole record -- the property a table had and a wrapped
-     list of pairs does not. The key column is `13ch` wide rather than
+     list of pairs does not. The key column is a fixed width rather than
      `max-content` so the values' left edge is one straight line as well.
 
-     THE KEYS ARE LEFT-ALIGNED, EVERY ONE (CH-11). This comment used to promise
-     "every key ENDING at the same x", and the sheet did not deliver it: the
-     key is the cell's `::before`, it inherits the cell's `text-align`, and
-     `.ctl-table .is-num` (0,2,0) and `table.pools .n` out-rank this block's
-     `text-align: left` -- so numeric cells right-aligned their keys and text
-     cells left-aligned theirs, and one record's keys ended at two different
-     x positions. The key now states its own alignment. LEFT rather than right
-     because "Ceiling (units)" is longer than 13ch: right-aligned, an
-     overlong key is cut on the side a reader starts from.
+     THE KEY COLUMN IS MEASURED IN THE KEY'S OWN FACE (visual QA V085, V086,
+     2026-10-11). It was `13ch`, and `ch` is the CELL's font: a numeric cell is
+     mono (`.ctl-table td.is-num`), a text cell is sans, so one record's value
+     column started at two x positions, and 13 sans characters held 11 of the
+     key's 12px mono -- `Ceiling (units)` wrapped on every pool record. The
+     width is now 17.5 advances of the key face (DM Mono is 0.6em; 12px x 0.6
+     x 17.5 = 126px), the same in every cell, which holds every key the
+     capacity and admin records draw (`Quota cap (units)`, 17, is the longest).
+     A table whose keys are longer says so with `--stack-key` on its wrapper
+     (Sizing's `Workspace (of memory)`, styles/capacity.css), rather than
+     every record on every screen giving its values 40px less.
 
-     `.ctl-table .is-num`'s right alignment of the VALUE still survives, on
-     specificity, and that is wanted: the figures line up on their own right
-     edge with the tabular-nums they are set in, so `4210` and `9` are
-     comparable down a record the way they were down a column. */
+     THE KEYS ARE LEFT-ALIGNED, EVERY ONE (CH-11). The key is the cell's
+     `::before`, it inherits the cell's `text-align`, and `.ctl-table .is-num`
+     (0,2,0) and `table.pools .n` out-rank this block's `text-align: left` --
+     so numeric cells right-aligned their keys and text cells left-aligned
+     theirs. The key states its own alignment.
+
+     AND SO DOES THE VALUE (visual QA V011, 2026-10-11). The right alignment a
+     figure keeps in a column put `0` and `6` at the card's right edge while
+     `paused` and `0 holders` sat at the value column's left -- two edges in
+     one record, the figures 150px from their keys. A record is read key by
+     key, not compared down a column, so every value starts at the value
+     column: the `td.is-num` / `td.n` rule below out-ranks both column rules. */
   .is-stacked > table > tbody > tr > td {
     display: grid;
-    grid-template-columns: minmax(0, 13ch) minmax(0, 1fr);
+    grid-template-columns: minmax(0, var(--stack-key, calc(var(--t-micro) * 10.5))) minmax(0, 1fr);
     align-items: baseline;
     gap: var(--ctl-s3);
     padding: 2px 0;
@@ -8102,20 +8112,29 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     color: var(--text-faint);
     text-align: left;
   }
+  .is-stacked > table > tbody > tr > td.is-num,
+  .is-stacked > table > tbody > tr > td.n {
+    text-align: left;
+  }
   /* EVERY PART OF THE VALUE STAYS IN THE VALUE COLUMN. A cell is often two or
      three elements -- Accounts' window cell is `—` plus `not measured`, its
      state cell is a chip plus a mark plus a note -- and each one is a grid
      item, so without this the second lands in the KEY column on the next row
      and `not measured` reads as the name of the field below it. Pinned to
-     column 2 they stack under the first part, where they belong. */
+     column 2 they stack under the first part, where they belong.
+     A BARE TEXT NODE CANNOT BE PINNED (visual QA V012, 2026-10-11). Text
+     between two elements -- Pools' `holders · limit`, `6` before `/10` -- is
+     an anonymous grid item no selector reaches, so it was auto-placed into
+     the next free cell: a keyless row holding a lone `·`. A value of several
+     parts is therefore ONE element in the markup (Capacity.tsx `.cap-ceil`,
+     `.cap-open`), and capacity.v15.test.tsx holds every stacked capacity cell
+     to it. */
   .is-stacked > table > tbody > tr > td[data-label] > * {
     grid-column: 2;
   }
   /* A grid item fills its column by default, which for a mark or a chip means
      a 190px dashed box around two words. The children that draw an edge or a
-     fill are the ones that have to be told to be as wide as they are -- a
-     figure must keep `stretch`, or `.is-num`'s right alignment has nothing to
-     align against.
+     fill are the ones that have to be told to be as wide as they are.
      `.tag` AND `.scope` JOIN THE LIST (CH-12). They draw an edge and a fill
      respectively, and stacked they stretched into 200px boxes around one word
      -- `none registered`, `this tenant` -- on Tenants and Profile headroom.
@@ -8129,7 +8148,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   .is-stacked > table > tbody > tr > td[data-label] > .scope { margin-left: 0; }
   /* AN IDENTITY BREAKS RATHER THAN RUNS OFF THE CARD (CH-12). A service
-     account or a principal is one unbroken token -- `swarm-u-bogdan@saga-
+     account or a principal is one unbroken token -- `swarm-agent-worker-u-bogdan@saga-
      agents-staging.iam.gserviceaccount.com` -- and in a 200px value column it
      ran past the card's edge with the `.com` cut off. It has no spaces to
      break at, so it breaks anywhere; a cut identity is a different identity.
@@ -8257,7 +8276,7 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
   }
   .is-stacked > table > tbody > tr > td {
     display: grid;
-    grid-template-columns: minmax(0, 13ch) minmax(0, 1fr);
+    grid-template-columns: minmax(0, var(--stack-key, calc(var(--t-micro) * 10.5))) minmax(0, 1fr);
     align-items: baseline;
     gap: var(--ctl-s3);
     padding: 2px 0;
@@ -8268,6 +8287,10 @@ tr.is-open > th .art-open { border-bottom-style: solid; }
     content: attr(data-label);
     font: 500 var(--t-micro)/var(--lh-micro) var(--mono);
     color: var(--text-faint);
+    text-align: left;
+  }
+  .is-stacked > table > tbody > tr > td.is-num,
+  .is-stacked > table > tbody > tr > td.n {
     text-align: left;
   }
   .is-stacked > table > tbody > tr > td[data-label] > * {
@@ -10627,7 +10650,11 @@ span.sk-ttile { cursor: default; }
      icon on a white square in the spine-blue header. The spine's own hover
      fill (`.sk-ri:hover`), one value in both themes. */
   .sk-pbar .sk-ibtn:hover { background: #194b89; color: #fff; }
-  .sk-pbar b { font-size: var(--t-body); flex: 1; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* A FLOOR UNDER THE TITLE (live QA OV-19, 2026-10-11): once `Top` joined
+     the row at 400px the title gave way to "Overvi…". It still gives way
+     first, down to a short page name whole; past that the tenant chip and
+     label (`min-width: 0` through their `overflow: hidden`) shrink instead. */
+  .sk-pbar b { font-size: var(--t-body); flex: 1; min-width: 5.5em; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sk-pbar .sk-tn { font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--sk-spine-ink); }
   /* THE TENANT GIVES WAY AFTER THE TITLE, NEVER PAST THE GLASS (#139). With
      no floor and no cap, a long tenant name -- a user tenant's is its email

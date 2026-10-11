@@ -23,7 +23,7 @@
  */
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore, type FocusEvent as ReactFocusEvent, type KeyboardEvent as ReactKeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type RefObject } from 'react'
 import { AGENT_TABS, type AgentTab } from './agentlist'
-import { loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
+import { loadApprovals, loadCapacity, loadMe, loadMyTenants, loadStats, type TenantChoice } from './api'
 import { classifyEnvironment, envTreatment, servedEnvironment, SwarmMark } from './Brand'
 import { Banner, Button, NamedMark, Toaster, acknowledge, routedClick } from './components'
 import { chooseTenant, chosenTenant, clearTenantSwitch, errorHeading, noteTenantSwitch, probeSnapshot, subscribeProbes, subscribeTenant, subscribeTenantSwitch, tenantSwitchSnapshot, type Result } from './fetch'
@@ -35,7 +35,10 @@ import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 
-export type SpineSection = 'overview' | 'work' | 'capacity' | 'admin' | 'help' | 'api' | null
+export type SpineSection = 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
+
+/** The spine sections that draw a panel of pages. */
+type PanelSection = 'work' | 'automate' | 'capacity' | 'admin'
 
 /** One page in the panel: its label, its icon, the address `go()` takes, and its children. */
 interface PanelPage {
@@ -59,7 +62,7 @@ const AGENT_LABEL: Readonly<Record<AgentTab, string>> = { live: 'Live', waiting:
  * The panel's pages, per spine section (common.py NAV). The `to` values are
  * router addresses, so they resolve exactly as a click on the old rail did.
  */
-export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPage[]>> = {
+export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
   work: [
     {
       key: 'agents',
@@ -79,6 +82,12 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
     // #780 OB8 (onboarding.html): Setup until it is done, then Access.
     { key: 'setup', label: 'Setup', icon: 'setup', to: 'work/setup' },
     { key: 'access', label: 'Access', icon: 'access', to: 'work/access' },
+  ],
+  // docs/schedules.md §6.1 (SD1): the section's two pages. Approvals carries
+  // the inbox count, as the section does on the spine.
+  automate: [
+    { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'automate/schedules' },
+    { key: 'approvals', label: 'Approvals', icon: 'approvals', to: 'automate/approvals' },
   ],
   capacity: [
     {
@@ -112,11 +121,16 @@ export const PANEL_PAGES: Readonly<Record<'work' | 'capacity' | 'admin', PanelPa
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again.
     { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
+    // docs/schedules.md §5.3: every tenant's schedules, beside Tenants.
+    { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'admin/schedules' },
   ],
 }
 
+/** Each panel's heading: its spine section's label. */
+const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
+
 /** Which panel row a route's tab belongs to: a child's tab belongs to its parent. */
-function rowFor(section: 'work' | 'capacity' | 'admin', tab: string): string {
+function rowFor(section: PanelSection, tab: string): string {
   if (section === 'work' && (tab === 'running' || tab === '')) return 'agents'
   if (section === 'capacity' && tab === 'profiles') return 'pools'
   if (section === 'capacity' && tab === 'quota') return 'accounts'
@@ -129,7 +143,7 @@ function rowFor(section: 'work' | 'capacity' | 'admin', tab: string): string {
  * page -- one of its children is. `agentTab` is the Agents list's own tab,
  * which the route's tab (`running`) does not carry.
  */
-export function litPage(section: 'work' | 'capacity' | 'admin', tab: string, agentTab: AgentTab): { row: string; kid: string | null } {
+export function litPage(section: PanelSection, tab: string, agentTab: AgentTab): { row: string; kid: string | null } {
   const row = rowFor(section, tab)
   const page = PANEL_PAGES[section].find((p) => p.key === row)
   if (page?.kids === undefined) return { row, kid: null }
@@ -154,7 +168,7 @@ export const OVERVIEW_JUMPS: readonly { id: string; label: string }[] = [
   { id: 'ov-running', label: 'Running now' },
   { id: 'ov-waiting', label: 'Waiting, and why' },
   { id: 'ov-failures', label: 'Recent failures' },
-  { id: 'ov-spend', label: 'Cost so far' },
+  { id: 'ov-spend', label: 'Recent token cost' },
   { id: 'ov-headroom', label: 'Headroom' },
   { id: 'ov-pools', label: 'Pools' },
 ]
@@ -474,6 +488,22 @@ const SUBMIT_SHORTCUT = shortcut('anywhere', 'n')
 const HELP_SHORTCUT = shortcut('anywhere', '?')
 const loadFrameCapacity = () => loadCapacity({ frame: true })
 const loadFrameStats = () => loadStats({ frame: true })
+const loadFrameApprovals = () => loadApprovals({ frame: true })
+
+/**
+ * THE AUTOMATE BADGE (docs/schedules.md §6.1): how many items wait in the
+ * approvals inbox, plans of issue runs included. Nothing while the read is in
+ * flight or when nothing waits -- a measured zero is no badge, the way a pool
+ * that is not full draws no dot. A FAILED read is a dash with its reason,
+ * never a 0: "nothing waits" and "could not ask" are opposite facts.
+ */
+export function approvalsBadge(r: Result<{ approvals: unknown[] }>): PanelCount | null {
+  if (r.status === 'error') return { n: null, why: `Approvals not read: ${errorHeading(r.error)}` }
+  const d = dataOf(r)
+  if (d === null || d.approvals.length === 0) return null
+  const n = d.approvals.length
+  return { n, alert: true, why: `${n} waiting for approval` }
+}
 
 function dataOf<T>(r: Result<T>): T | null {
   return r.status === 'ok' || r.status === 'stale' ? r.data : null
@@ -753,6 +783,27 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   counts: <path d="M9 4 7 20M17 4l-2 16M4.5 9h16M3.5 15h16" />,
+  // docs/schedules.md §6.1: a loop for the section, a clock for its Schedules page.
+  automate: (
+    <>
+      <path d="M19.5 12a7.5 7.5 0 0 1-13.2 4.9M4.5 12a7.5 7.5 0 0 1 13.2-4.9" />
+      <path d="M17.7 3.5v3.6h-3.6M6.3 20.5v-3.6h3.6" />
+    </>
+  ),
+  schedules: (
+    <>
+      <circle cx="12" cy="12" r="8" />
+      <path d="M12 7.5V12l3 2" />
+    </>
+  ),
+  // §6.1: a tray with a tick, for the inbox of things waiting on a person.
+  approvals: (
+    <>
+      <path d="M4 13.5h4.5l1.5 2.5h4l1.5-2.5H20" />
+      <path d="M4 13.5 6.5 5h11l2.5 8.5V19H4z" />
+      <path d="m9.5 9.5 2 2 3.5-3.5" />
+    </>
+  ),
   people: (
     <>
       <circle cx="12" cy="7.5" r="3.5" />
@@ -783,6 +834,7 @@ export function Icon({ name, className = 'sk-ic' }: { name: string; className?: 
 const SPINE: readonly { key: Exclude<SpineSection, null>; label: string; to: string }[] = [
   { key: 'overview', label: 'Overview', to: 'overview/now' },
   { key: 'work', label: 'Work', to: 'work/running' },
+  { key: 'automate', label: 'Automate', to: 'automate/schedules' },
   { key: 'capacity', label: 'Capacity', to: 'capacity/pools' },
   { key: 'admin', label: 'Admin', to: 'admin/limits' },
 ]
@@ -864,6 +916,9 @@ export function SkyShell({
   // A capped list re-reads the stats with each of its own reads (D27).
   const [stats] = useFrameRead(loadFrameStats, 30_000, `${tenant ?? ''}:${fromList !== null && !fromList.whole ? fromList.at : ''}`)
   const [mine, rereadMine] = useFrameRead(loadFrameTenants, null)
+  // Once a minute: the inbox route syncs the tenant's held firings as it reads.
+  const [inbox] = useFrameRead(loadFrameApprovals, 60_000, tenant ?? '')
+  const waiting = approvalsBadge(inbox)
   const who = dataOf(me)
   const admin = who?.principal.is_admin === true
   const env = classifyEnvironment(
@@ -873,7 +928,8 @@ export function SkyShell({
   )
   const t = envTreatment(env)
   const meter = meterOf(dataOf(cap))
-  const counts = panelCounts(stats, cap, fromList)
+  // The Approvals page carries the inbox count the Automate section does (§6.1).
+  const counts = waiting === null ? panelCounts(stats, cap, fromList) : { ...panelCounts(stats, cap, fromList), approvals: waiting }
   const online = useOnline()
   const probes = useSyncExternalStore(subscribeProbes, probeSnapshot, probeSnapshot)
   const fault = wholeAppFault(me, probes)
@@ -980,6 +1036,8 @@ export function SkyShell({
       return !c
     })
   }, [])
+
+  const closeDrawer = useCallback(() => setDrawer(false), [])
 
   // A navigation closes the phone drawer, any flyout and the tenant list.
   const nav = useCallback(
@@ -1118,6 +1176,11 @@ export function SkyShell({
             <Icon name={s.key} />
             <small>{s.label}</small>
             {s.key === 'capacity' && meter?.warn != null && <i className="sk-dot" title={meter.warn} />}
+            {s.key === 'automate' && waiting !== null && (
+              <i className={waiting.n === null ? 'sk-badge is-unread' : 'sk-badge'} title={waiting.why} aria-label={waiting.why}>
+                {waiting.n === null ? '—' : waiting.n}
+              </i>
+            )}
             {locked && <Icon name="lock" className="sk-ic sk-lkd" />}
           </a>
         )
@@ -1152,6 +1215,7 @@ export function SkyShell({
       apiFailuresOnly={apiFailuresOnly}
       onApiFilter={onApiFilter}
       missing={missing}
+      onJump={closeDrawer}
     />
   )
 
@@ -1625,6 +1689,7 @@ function PanelPages({
   apiFailuresOnly,
   onApiFilter,
   missing,
+  onJump,
 }: {
   section: SpineSection
   tab: string
@@ -1637,6 +1702,8 @@ function PanelPages({
   apiFailuresOnly: boolean
   onApiFilter?: (failuresOnly: boolean) => void
   missing: boolean
+  /** Called before an Overview jump: closes the phone drawer. */
+  onJump?: () => void
 }) {
   // A 404 lit as Overview has none of Overview's cards to jump to.
   if (section === 'overview' && missing) return null
@@ -1652,6 +1719,11 @@ function PanelPages({
             onClick={(e) => {
               if (!routedClick(e)) return
               e.preventDefault()
+              // THE PHONE DRAWER CLOSES ON A JUMP (live QA OV-5, 2026-10-11):
+              // the page scrolled behind it and the drawer still covered the
+              // card, so the tap looked like it did nothing. A navigation
+              // closes it (`nav`); a jump is one too.
+              onJump?.()
               jumpTo(j.id)
             }}
           >
@@ -1698,7 +1770,7 @@ function PanelPages({
   // the rows are disabled, and "admins only" said, only once it says not.
   const shut = sec === 'admin' && !admin
   const locked = shut && known
-  const title = sec === 'work' ? 'Work' : sec === 'capacity' ? 'Capacity' : 'Admin'
+  const title = PANEL_TITLE[sec]
   const lit = section === null ? { row: '', kid: null } : litPage(sec, tab, agentTab)
   return (
     <>
@@ -1875,9 +1947,9 @@ function Flyout({
   onBlur: (e: ReactFocusEvent) => void
   onKeyDown: (e: ReactKeyboardEvent) => void
 }) {
-  if (section !== 'work' && section !== 'capacity' && section !== 'admin') return null
+  if (section !== 'work' && section !== 'automate' && section !== 'capacity' && section !== 'admin') return null
   const lit = tab === '' ? { row: '', kid: null } : litPage(section, tab, agentTab)
-  const name = section === 'work' ? 'Work' : section === 'capacity' ? 'Capacity' : 'Admin'
+  const name = PANEL_TITLE[section]
   // A plain labelled group of links, not role="menu": a menu promises arrow
   // keys and roving focus, which this does not have. Tab walks it.
   return (

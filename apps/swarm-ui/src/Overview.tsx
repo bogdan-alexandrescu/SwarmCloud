@@ -1,6 +1,19 @@
 import './styles/overview.css'
 import './styles/names.css'
-import { LifecycleBand, RecentFailures, WaitingWhy, agentPath, failuresOf, rowLabel, useRowTitles, waitGroups } from './OverviewRegions'
+import {
+  ENDED_BADLY,
+  LifecycleBand,
+  RecentFailures,
+  WaitingWhy,
+  agentPath,
+  failuresOf,
+  rowLabel,
+  stateView,
+  useRowTitles,
+  waitGroups,
+  type OverviewTaskPage,
+  type StateRead,
+} from './OverviewRegions'
 import { addressToPath } from './paths'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
@@ -11,6 +24,7 @@ import {
   loadSpend,
   loadStats,
   loadTasks,
+  loadTasksInState,
   loadWorkflows,
   TASK_PAGE_LIMIT,
   type SpendRollup,
@@ -37,6 +51,7 @@ import {
   needsAHuman,
   overCeiling,
   poolLabel,
+  poolLabelAmong,
   readingOf,
   unreadableFor,
   type AccountsPage,
@@ -86,9 +101,12 @@ import {
  *     checks are DERIVED from state that exists, re-derived on every read.
  *
  * `setup` is the onboarding card (#780 OB8, Entry A), passed in by App rather
- * than imported here, so this screen reads only its own routes.
+ * than imported here, so this screen reads only its own routes. `waitingOnYou` is
+ * Automate's "Waiting on you" card (docs/schedules.md §6.1), passed in the
+ * same way and for the same reason: it reads the approvals inbox, and draws
+ * nothing unless something waits.
  */
-export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
+export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; waitingOnYou?: ReactNode } = {}) {
   // THREE REFRESH CADENCES, on purpose. `live` drives the six cheap reads
   // every twenty seconds; `counted` drives `/v1/stats` -- twelve count()
   // queries -- every sixty (OV-16, owner decision 2026-09-25); `heavy` drives
@@ -185,7 +203,9 @@ export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
     null
   const page = dataOf(tasks)?.tasks ?? null
   const waiting = page === null ? null : waitGroups(page)
-  const failures = page === null ? null : failuresOf(page, Date.now())
+  const read = dataOf(tasks)
+  const ended = read === null ? null : stateView(read, ENDED_BADLY)
+  const failures = ended === null ? null : failuresOf(ended.rows, Date.now(), ended)
   const spent = dataOf(spend)
 
   return (
@@ -248,6 +268,8 @@ export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
           done. App passes Onboarding.tsx's `SetupCard` in; it draws nothing
           while its read is pending or failed. */}
       {setup}
+
+      {waitingOnYou}
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
         <NeedsALook checks={checks} />
@@ -316,7 +338,7 @@ export function OverviewScreen({ setup }: { setup?: ReactNode } = {}) {
             under Headroom, a long pool list made that card ~1100px taller than
             Waiting beside it, and the left column was blank for all of it. */}
         <section className="ctl-card ov-card ov-pools" id="ov-pools">
-          <CardHead title="Pools" href="/capacity/pools" cta="Pools" />
+          <CardHead title="Pools" note={poolsNote(dataOf(capacity))} href="/capacity/pools" cta="Pools" />
           <PoolsBody state={capacity} />
         </section>
       </div>
@@ -424,8 +446,53 @@ const STATS_POLL_MS = 60_000
  * counts over the page the list shows (OV-10), so the two move together or
  * not at all.
  */
-function loadListPage(): Promise<Result<TaskPage>> {
-  return loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT, { view: 'summary' })
+async function loadListPage(): Promise<Result<OverviewTaskPage>> {
+  const page = await loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT, { view: 'summary' })
+  if (page.status !== 'ok' && page.status !== 'stale') return page
+  if ((page.data.next_page_token ?? null) === null) return page
+  const byState = await loadStateReads()
+  return { ...page, data: { ...page.data, byState } }
+}
+
+/**
+ * THE STATES THE OVERVIEW MUST NOT MISS, read by state when the page has more
+ * behind it (live QA OV-1/OV-2/OV-4/OV-7, 2026-10-11).
+ *
+ * The page is the newest-created N. A task created before it that is running
+ * now, or that failed in the last hour, is not on it: a phone said `0 failed ·
+ * real zero` while 11 tasks had failed, dropped the failed-tasks check, and
+ * listed 4 of the 5 running agents. The four capacity-holding states and the
+ * three ways of ending badly are each one `?state=` read (an indexed query,
+ * `tasks-tenant-state-created`), in the summary view, at the api's full page.
+ *
+ * ONLY WHEN THE PAGE IS NOT EVERY TASK: a page with no next page already holds
+ * every one of these, so a small tenant pays nothing for this. SUCCEEDED is
+ * not read: 3,600 rows all-time, and nothing on this screen lists it.
+ *
+ * A state read that fails is left out, and the cards that needed it fall back
+ * to the page and say they are partial. It never fails the page: the page is
+ * still a reading, and "8/8 reads" still counts the page.
+ */
+/** The four states that hold capacity (CONTRACT invariant 1), in lifecycle order. */
+const HOLDING: readonly TaskState[] = ['LEASED', 'DISPATCHED', 'STARTING', 'RUNNING']
+
+const OVERVIEW_STATE_READS: readonly TaskState[] = [...HOLDING, ...ENDED_BADLY]
+
+async function loadStateReads(): Promise<StateRead[]> {
+  const reads = await Promise.all(
+    OVERVIEW_STATE_READS.map(async (state): Promise<StateRead | null> => {
+      try {
+        const r = await loadTasksInState(state, { limit: TASK_PAGE_LIMIT, view: 'summary' })
+        if (r.status === 'empty') return { state, tasks: [], complete: true }
+        if (r.status !== 'ok') return null
+        return { state, tasks: r.data.tasks, complete: (r.data.next_page_token ?? null) === null }
+      } catch {
+        // A read that threw is a read that did not land: the page stands alone.
+        return null
+      }
+    }),
+  )
+  return reads.filter((r): r is StateRead => r !== null)
 }
 
 // ---------------------------------------------------------------------------
@@ -1026,8 +1093,11 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
       )}
       <p className="ov-foot">
         <FootRun>
-          <span>{countOf(cap.pools.length, 'pool')}</span>
-          <span>{tenant === undefined ? 'no tenant pool read' : `tenant ${tenant}`}</span>
+          {/* WHOSE VIEW, NOT WHOSE POOLS (live QA OV-15, 2026-10-11): "30
+              pools · tenant eng" read as thirty pools of eng's, over a list
+              an admin reads with every tenant's pools in it. */}
+          <span>{countOf(cap.pools.length, 'pool')} read</span>
+          <span>{tenant === undefined ? 'no tenant pool read' : `profiles as tenant ${tenant}`}</span>
           {footFor(state, 'not read', now) !== null && <span>{footFor(state, 'not read', now)}</span>}
         </FootRun>
       </p>
@@ -1067,11 +1137,33 @@ function PoolsBody({ state }: { state: Result<Capacity> }) {
   }
   return (
     <div className="ov-pls">
-      {state.data.pools.map((p) => (
+      {busiestFirst(state.data.pools).map((p) => (
         <PoolRow key={p.name} pool={p} />
       ))}
     </div>
   )
+}
+
+/**
+ * BUSIEST FIRST (live QA OV-15, 2026-10-11): alphabetically, the pools at
+ * 5/40 sat among thirty rows of 0/N and did not stand out. By share of the
+ * ceiling used, then units in use, then name; a pool with no limit set has no
+ * share and goes after every one that does, by units.
+ */
+export function busiestFirst(pools: readonly Pool[]): Pool[] {
+  const share = (p: Pool) => (p.effective_limit !== null && p.effective_limit > 0 ? p.active / p.effective_limit : -1)
+  return [...pools].sort((a, b) => share(b) - share(a) || b.active - a.active || a.name.localeCompare(b.name))
+}
+
+/**
+ * The Pools card's note: how many, in which order, and how many sit below
+ * their configured hard ceiling -- the "lowered" Capacity › Pools shows.
+ */
+function poolsNote(cap: Capacity | null): string | undefined {
+  if (cap === null) return undefined
+  // Capacity › Pools' own test (Capacity.tsx), so the two screens agree.
+  const lowered = cap.pools.filter((p) => p.effective_limit !== null && p.hard_limit !== null && p.effective_limit < p.hard_limit).length
+  return [countOf(cap.pools.length, 'pool'), 'busiest first', ...(lowered > 0 ? [`${lowered} lowered`] : [])].join(' · ')
 }
 
 /**
@@ -1106,6 +1198,12 @@ export function ProfileTile({
   }
   const h = headroomFor(profile)
   const binding = h.binding !== null ? (byName.get(h.binding) ?? null) : null
+  // EVERY BINDING POOL, EACH TOLD APART (live QA OV-12, 2026-10-11): the tile
+  // read "binds GKE_AUTOPILOT" while `/v1/capacity` gave the anthropic pool
+  // as binding too, and "binds browser" could be `resource:browser` or
+  // `runner:browser` -- both bound. Raising either one alone admits nothing.
+  const binds = profile.admission?.binding.length ? profile.admission.binding : h.binding !== null ? [h.binding] : []
+  const bindWords = binds.map((b) => (poolLabelAmong(b, binds) === poolLabel(b) ? bindingLabel(b, tenant) : poolLabelAmong(b, binds))).join(' + ')
   const paused = binding !== null && isPaused(binding)
   // More than one pool can refuse at once, and "refusing" rather than "full":
   // one of them may be PAUSED, which has the opposite remedy.
@@ -1119,7 +1217,7 @@ export function ProfileTile({
         : paused
           ? `${bindingLabel(binding.name, tenant)} paused`
           : h.binding !== null
-            ? `binds ${bindingLabel(h.binding, tenant)}`
+            ? `binds ${bindWords}`
             : h.missing.length > 0
               ? `${countOf(h.missing.length, 'pool')} uncapped`
               : 'nothing binds'
@@ -1132,7 +1230,7 @@ export function ProfileTile({
         (h.blockers.length > 0
           ? ` Refusing: ${h.blockers.map((b) => `${b.pool} (${b.active}/${b.limit ?? 'no limit set'})`).join(', ')}.`
           : h.binding !== null
-            ? ` Bound by ${h.binding}.`
+            ? ` Bound by ${binds.join(' and ')}.`
             : '')
   return (
     <div className="ov-hp" title={long}>
@@ -1274,6 +1372,7 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
  */
 const RUNNING_ROWS = 8
 
+
 /**
  * Why the Cost so far column is a dash for a row served without attempt
  * totals: an API older than the P1 follow-up (2026-10-05), whose
@@ -1327,13 +1426,20 @@ function CostSoFar({ task }: { task: Task }) {
  * `/v1/stats`'s. An agent running for two days while 200 newer tasks were
  * created is counted and not listed, so the foot prints both when they
  * differ, with the count's age.
+ *
+ * READ BY STATE WHEN THE PAGE IS NOT EVERY TASK (live QA OV-4, 2026-10-11):
+ * a phone listed 4 running agents under "Holding capacity 5", because the
+ * fifth was created before its 50 newest. The four capacity-holding states
+ * are read by state then (`OVERVIEW_STATE_READS`), so the list is every
+ * agent holding capacity, and the page's caveat is left for a state read
+ * that did not land.
  */
 function RunningCard({
   tasks,
   stats,
   leases,
 }: {
-  tasks: Result<TaskPage>
+  tasks: Result<OverviewTaskPage>
   stats: Result<Stats>
   leases: Result<LeasePage>
 }) {
@@ -1341,11 +1447,13 @@ function RunningCard({
   const page = dataOf(tasks)
   const silent = silentByTask(leases)
   const leased = leasedAtByTask(leases)
+  const view = page === null ? null : stateView(page, HOLDING)
+  // Every capacity-holding task was read: a whole page, or every state read.
+  const whole = view !== null && HOLDING.every((s) => view.whole(s))
   const running =
-    page === null
+    view === null
       ? []
-      : page.tasks
-          .filter((t) => CONCURRENCY_STATES.has(t.state))
+      : view.rows
           // A SILENT worker first (#92), then the longest-running.
           .sort((a, b) => Number(silent.has(b.id)) - Number(silent.has(a.id)) || startKey(a) - startKey(b))
   const titleOf = useRowTitles(running)
@@ -1409,9 +1517,7 @@ function RunningCard({
   const foot = (
     <p className="ov-foot">
       <FootRun>
-        <span>
-          {running.length} of {page.tasks.length} newest
-        </span>
+        <span>{whole ? `${running.length} read by state` : `${running.length} of ${page.tasks.length} newest`}</span>
         {counted !== null && counted !== running.length && <span>stats say {counted}</span>}
         {counted !== null && counted !== running.length && countedAge !== null && <span>counted {countedAge}</span>}
       </FootRun>
@@ -1426,7 +1532,9 @@ function RunningCard({
           kind="zero"
           heading="Nothing running"
           say={
-            `No task on the ${page.tasks.length} most recently created is in LEASED, DISPATCHED, STARTING or RUNNING. ` +
+            (whole && (page.next_page_token ?? null) !== null
+              ? 'No task is in LEASED, DISPATCHED, STARTING or RUNNING: each of those states was read on its own. '
+              : `No task on the ${page.tasks.length} most recently created is in LEASED, DISPATCHED, STARTING or RUNNING. `) +
             (counted === null
               ? 'The exact count could not be read, so this is the page’s answer rather than the platform’s.'
               : counted === 0

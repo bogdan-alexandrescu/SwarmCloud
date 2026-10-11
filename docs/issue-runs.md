@@ -18,7 +18,7 @@ the module docstrings, which are the reference:
 | the write-back to the issue and the pull request | `apps/swarm-api/swarm_api/issuesync.py`, `issuecomments.py`, `forgewrite.py` |
 | the open-work read the planner is shown | `apps/swarm-api/swarm_api/forge.py` (`read_open_work`) |
 | the tick | `POST /v1/admin/runs/advance`, `terraform/modules/scheduler/jobs.tf` (`issue_run_advance`) |
-| the sweeper, and the territory guard | `apps/swarm-api/swarm_api/issuesweep.py`, `POST /v1/admin/issues/sweep`, `jobs.tf` (`issue_sweep`); `routes/runs.py` `territory_conflict` |
+| the sweeper, and the territory guard | `apps/swarm-api/swarm_api/issuesweep.py`, fired by the `issue-sweep` schedule (`swarm_api/schedtypes/issue_sweep.py`) since 2026-10-11; `POST /v1/admin/issues/sweep` and `jobs.tf` (`issue_sweep`, **paused**) until their deletion; `routes/runs.py` `territory_conflict` |
 | the surfaces | console `Work › Submit from a GitHub issue` and `Work › Runs` (`apps/swarm-ui/src/IssueSubmit.tsx`, `Runs.tsx`); `sc run --issue`, `sc plan approve\|edit\|reject` and the MCP tools ([plugin/README.md](../plugin/README.md#planning-and-running-a-github-issue)) |
 
 ```
@@ -230,19 +230,41 @@ for someone to look.
 
 ## Sweeper: SwarmCloud finds the issues to work on
 
+> **Since 2026-10-11 the sweep is a schedule, and SWEEP's job is paused**
+> (Schedules S9, [schedules.md §8.1](schedules.md#81-lane-sweeps-issue_sweep-becomes-the-issue-sweep-type)).
+> What fires it now is tenant `eng`'s `issue-sweep` schedule: the same
+> module's selection, at the same `:07`/`:37`, over every registered
+> repository, as the schedule's owner. Its gate is plan `auto` and merge
+> `approve`, so a swept pull request waits in Automate › Approvals. Unattended
+> merge is the audited SD3 switch. The schedule is created **paused**, and is
+> resumed after one dry firing has been compared with SWEEP's last sweep
+> ([operations.md §13](operations.md#13-schedules-the-s9-migration-sweep-paused-deletion-pending)).
+>
+> `google_cloud_scheduler_job.issue_sweep` is **paused** (`paused = true` in
+> `jobs.tf`), not deleted. The job, the route below, `SWEEP_ENABLED` and the
+> tenant document's `issue_sweep` settings all stay until the owner has watched
+> the schedule fire for 7 days without an auto-pause. A second change then
+> deletes them and this section is cut down to the rules the schedule still
+> applies. Until then everything below describes SWEEP as built, and as it
+> would run again if the job were un-paused. The skip rules, the planner's
+> readiness verdict, the territory guard and the cap are the schedule's too.
+> The cap is now `max_live_runs`, at most 8.
+
 Owner decisions, 2026-10-08: readiness is decided by the **planner**, not by a
 label; the sweeper runs **inside the platform on a schedule**; at most **8 live
 issue runs per tenant**; plans **auto-approve** and pull requests
 **auto-merge** through the merge step.
 
-`google_cloud_scheduler_job.issue_sweep` (one per registered tenant, named
+Until 2026-10-11, `google_cloud_scheduler_job.issue_sweep` (one per registered tenant, named
 `swarm-issue-sweep-<tenant>`, at `:07` and `:37` -- every 30 minutes, never on
-the hour or the half hour) calls `POST /v1/admin/issues/sweep?tenant_id=<t>` as
+the hour or the half hour) called `POST /v1/admin/issues/sweep?tenant_id=<t>` as
 the same `swarm-rollup-sweeper` identity and OIDC audience as the tick above.
 swarm-api admits that identity to the route by name
 (`auth.ROLLUP_SWEEPER_ROUTES`) and, like the repository poll, admits **nobody
-else** -- not an admin: an operator who wants a sweep now runs the job
-(`gcloud scheduler jobs run swarm-issue-sweep-eng --location <region>`). The
+else** -- not an admin. An operator who wants a sweep now fires the schedule
+(`sc schedules run <name>`, or `--dry-run` to list what it would start). Running
+the paused job by hand (`gcloud scheduler jobs run swarm-issue-sweep-eng
+--location <region>`) still works, and is a second trigger of the same sweep. The
 job adds no IAM binding: its one grant, `run.invoker` on swarm-api, is the
 rollup's.
 
