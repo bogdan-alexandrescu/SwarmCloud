@@ -74,6 +74,25 @@ def test_submit_merge_pr_sends_the_one_merge_step_and_no_repository_unless_named
     assert _body(named)["repository_url"] == "https://github.com/octo-org/widget-shop"
 
 
+def test_submit_merge_pr_without_a_title_names_the_run_merge_pr_and_its_number():
+    # Owner report 2026-10-11: with no title the run was named after its wf_ id.
+    recorder = _Recorder()
+    workflows.submit_merge_pr(recorder, number=1127, head_sha=HEAD)
+    assert _body(recorder)["metadata"]["title"] == "Merge PR 1127"
+    titled = _Recorder()
+    workflows.submit_merge_pr(titled, number=1127, head_sha=HEAD, title="Land the docs fix")
+    assert _body(titled)["metadata"]["title"] == "Land the docs fix"
+
+
+def test_the_cli_merge_verb_and_swarm_workflow_send_the_default_name_too():
+    recorder = _Recorder()
+    cli.cmd_merge(recorder, build_parser().parse_args(["merge", "1127", "--sha", HEAD, "--json"]))
+    assert _body(recorder)["metadata"]["title"] == "Merge PR 1127"
+    tool = _Recorder()
+    server._call(tool, "swarm_workflow", {"merge_pr": {"number": 1127, "head_sha": HEAD}})
+    assert _body(tool)["metadata"]["title"] == "Merge PR 1127"
+
+
 @pytest.mark.parametrize("sha", ["C" * 40, "c" * 39, "main", ""])
 def test_a_head_sha_that_is_not_a_full_sha_is_refused_here(sha):
     with pytest.raises(SwarmError, match="head"):
