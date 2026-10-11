@@ -149,6 +149,7 @@ from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
+from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
 from . import questions as questions_mod
@@ -995,6 +996,13 @@ class Worker:
         # the spool and the await. Inert unless the scheduler passed a nonce.
         self.children = children_mod.ChildPath(
             config, logger=deps.logger, memory=deps.memory, api=deps.child_api
+        )
+        # The live-browser path (docs/design/live-browser.md §4, lane L4): the
+        # gate's ctl.sock slot, the tunnel ticket and the hand-off spool. Inert
+        # unless the profile is a live-browser one; signs with the child
+        # path's attempt key, so it needs that registered.
+        self.handoff = handoff_mod.HandoffPath(
+            config, logger=deps.logger, memory=deps.memory, children=self.children
         )
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
@@ -2292,6 +2300,11 @@ class Worker:
             if moved or notes:
                 self.control.emit(EventType.STARTING, notes[-1] if notes else None)
         self.control.advance_to_running()
+        # STEP 2b: the live path (live-browser §3.3, §5.4.2), once RUNNING --
+        # the live-session route checks the fence on RUNNING -- and long before
+        # the agent exists, so the gate's one registration is this worker's.
+        # Never raises; an attempt without a live path runs without one.
+        self.handoff.setup()
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
         #
@@ -2867,6 +2880,13 @@ class Worker:
                     return self._exit_fenced_mid_run(
                         child, observed_generation=-1, reason=f"child submission: {exc.code}"
                     )
+                if self.handoff.spooled:
+                    # Live-browser §4.1-§4.3: answer the agent's requests and
+                    # watch an open hand-off's hold. Never raises.
+                    with self._heartbeat_meanwhile("hand-off"):
+                        ended = self.handoff.tick(ws.work, self.control.fetch_task)
+                    if ended is not None:
+                        return self._park_for_human(child, cause=ended)
 
             if now >= self._runner_deadline:
                 self.log.error("task timeout reached", timeout_seconds=cfg.timeout_seconds)
@@ -2876,6 +2896,9 @@ class Worker:
 
         result = child.finish()
         self._child_ended()
+        # An agent that ended with a hand-off open is waiting for nobody now:
+        # resolved while the task is still RUNNING (live-browser §4.1).
+        self.handoff.agent_exited(ws.work)
         self.log.info(
             "runner finished",
             exit_code=result.exit_code,
@@ -3028,6 +3051,15 @@ class Worker:
 
         if signals.cancel_requested:
             self.log.warning("cancellation requested; stopping the runner")
+            # CANCEL DURING A HAND-OFF'S HOLD (live-browser §4.4): the agent's
+            # `wait` exits 4, the gate ends control and wipes, swarm-api's
+            # wait is resolved `cancelled`; then the ordinary cancel path.
+            if self.handoff.end(
+                self.ws.work if self.ws is not None else None,
+                outcome="cancelled",
+                cause="cancelled",
+            ):
+                child.wait(handoff_mod.CANCEL_ANSWER_SECONDS)
             child.terminate(cfg.termination_grace_seconds, reason="cancelled")
             child.finish()
             self._child_ended()
@@ -6931,6 +6963,9 @@ class Worker:
         # variable an agent needs to submit and await helpers (child tasks,
         # §3.1). A path, never a credential: the attempt key stays here.
         base.update(self.children.prepare(ws.work))
+        # The hand-off spool, on a live-browser attempt (live-browser §4.1):
+        # a path and the gate's loopback CDP address, never a credential.
+        base.update(self.handoff.prepare(ws.work))
         return ws.child_env(base)
 
     # -- the account pool --------------------------------------------------
@@ -7788,6 +7823,42 @@ class Worker:
                 reason=ParkReason.CREDENTIAL_MISSING,
                 next_eligible_at=utcnow() + timedelta(hours=1),
                 detail={"provider": exc.provider, **summary},
+            )
+        return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
+
+    def _park_for_human(self, child: ChildProcess, *, cause: str) -> Outcome:
+        """A hand-off's hold ended with nobody in control (live-browser §4.3).
+
+        The agent's `wait` exits 3 and it gets `EXPIRY_NOTES_SECONDS` to write
+        its notes into `work/`; then: wipe, checkpoint, upload,
+        PARKED(HUMAN_REQUIRED) with the attempt refunded within
+        `max_human_resumes`, release, exit. Only a person's `human-ready`
+        promotes it. `cause` is `hold_expired`, or `gate_lost` when the gate's
+        channel dropped (§5.4.2), which ends the hand-off the same way.
+        """
+        cfg = self.cfg
+        ws = self.ws
+        assert ws is not None
+        self.log.warning(
+            "nobody took control within the hand-off's hold; parking for a person",
+            cause=cause,
+        )
+        # Resolved at swarm-api while the task is RUNNING, the agent told, and
+        # the browser wiped before the checkpoint (§5.5).
+        self.handoff.end(ws.work, outcome="expired", cause=cause)
+        with self._heartbeat_meanwhile("hand-off notes"):
+            if child.wait(handoff_mod.EXPIRY_NOTES_SECONDS) is None:
+                child.terminate(cfg.termination_grace_seconds, reason="hand-off hold expired")
+        child.finish()
+        self._child_ended()
+        self._checkpoint("human-wait")
+        uploaded = self._upload_outputs().get("artifacts")
+        with self._metrics_after_the_record():
+            handoff_mod.park_human_required(
+                self.control,
+                max_resumes=self.handoff.max_resumes,
+                detail={"park_phase": "human_wait", "cause": cause},
+                uploads=uploaded if isinstance(uploaded, list) else None,
             )
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
@@ -11719,6 +11790,11 @@ class Worker:
 
         for step, action in (
             ("terminate_runner", terminate_runner),
+            # THE BROWSER IS WIPED ON EVERY EXIT (live-browser §5.5): success,
+            # failure, park, cancel, fence. The hand-off's own park and cancel
+            # wipe earlier, before their checkpoint; this is every other exit,
+            # once the agent is gone. Once per attempt either way.
+            ("wipe_browser", self.handoff.close),
             # THE SPEND BACKSTOP, after the runner is gone and before the
             # workspace holding its result.json is destroyed. Every orderly
             # exit has already recorded in `_upload_outputs`; this catches the
