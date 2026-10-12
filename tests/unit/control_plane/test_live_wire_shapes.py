@@ -32,6 +32,7 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
+from starlette.websockets import WebSocketDisconnect
 
 from swarm_api import live as live_module
 from swarm_api.main import create_app  # noqa: F401  (the routes' module graph loads)
@@ -276,15 +277,19 @@ GITHUB = ("https://github.com/login", "github.com", "iphone-15", "portrait")
 
 
 def _watch(client, relay, user: str, *texts: str) -> list[Any]:
-    """Open `user`'s console socket with the relay double answering `ready`
-    and then `texts`; what the console received before it closed."""
-    relay._frames = [READY, *texts]
+    """Open `user`'s console socket with the relay double answering `ready`,
+    then `texts`, then going away; everything the console received before
+    swarm-api closed the socket (1012, "the relay went away")."""
+    relay._frames, relay._refuse = [READY, *texts], True
     ticket = ticket_for(client, user)
+    received: list[Any] = []
     with client.websocket_connect(SOCKET, headers=bearer(user)) as ws:
         ws.send_text(json.dumps({"ticket": ticket}))
-        first = ws.receive_json()
-        assert wait_until(lambda: len(relay.links) == 1 and not relay.links[0]._frames)
-        return [first]
+        with pytest.raises(WebSocketDisconnect) as closed:
+            while True:
+                received.append(ws.receive_json())
+    assert closed.value.code == 1012
+    return received
 
 
 def test_a_reported_origin_and_device_are_stored_and_served_as_the_fixture_shows(client, ldb, live, relay):
@@ -295,7 +300,6 @@ def test_a_reported_origin_and_device_are_stored_and_served_as_the_fixture_shows
     _ask_for_help(ldb)
     assert _served(client, "GET", "/v1/tasks/{task_id}/live/session", "alice")["session"]["origin"] is None
     _watch(client, relay, "alice", relay_report_text(*GITHUB))
-    assert wait_until(lambda: session_doc(ldb).get("origin") is not None)
     session = _served(client, "GET", "/v1/tasks/{task_id}/live/session", "alice")["session"]
     reported = fixture("session.reported.json")["session"]
     assert session["origin"] == reported["origin"]
@@ -308,7 +312,6 @@ def test_a_reported_origin_and_device_are_stored_and_served_as_the_fixture_shows
 
 def test_the_report_is_recorded_not_forwarded_to_the_console(client, ldb, live, relay):
     received = _watch(client, relay, "alice", relay_report_text(*GITHUB))
-    assert wait_until(lambda: session_doc(ldb).get("origin") is not None)
     assert all(m.get("type") != "report" for m in received)
 
 
