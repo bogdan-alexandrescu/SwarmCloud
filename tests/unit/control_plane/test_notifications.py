@@ -370,8 +370,9 @@ def test_the_order_is_needs_you_oldest_first_then_updates_newest_first(client, d
     ids = [i["id"] for i in _feed(client)["items"]]
     assert ids[:2] == ["task:questions:task_q_old", "task:questions:task_q_new"]
     updates = [i for i in ids if i.startswith("finished:")]
-    assert updates[0] == "finished:task:task_upd_new:SUCCEEDED"
-    assert updates[-1] == "finished:task:task_upd_old:SUCCEEDED"
+    # The tasks that asked also finished: every update, newest first.
+    assert updates == ["finished:task:task_q_new:SUCCEEDED", "finished:task:task_upd_new:SUCCEEDED",
+                       "finished:task:task_upd_old:SUCCEEDED", "finished:task:task_q_old:SUCCEEDED"]
 
 
 def test_at_most_50_updates(client, db):
