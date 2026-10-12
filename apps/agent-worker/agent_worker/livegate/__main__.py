@@ -69,7 +69,7 @@ from .capture import CaptureError, XvfbFramebuffer
 from .cdppolicy import PolicyPaths
 from .cdpproxy import AgentConnection, AgentLink, CdpProxy, PipeTransport, serve_agents
 from .ctl import DEFAULT_MARKER, CtlServer
-from .device import DeviceController, XRandrDisplay, crop
+from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, crop
 from .inject import InjectError, XInjector, display_socket
 from .mask import MaskCdp, MaskState
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
@@ -260,6 +260,10 @@ def chromium_args(cfg: GateConfig) -> list[str]:
     namespaces and CAP_SYS_ADMIN, which the sidecar drops). No `--kiosk`, no
     `--app`: the address bar is part of the anti-phishing design (§5.7). The
     enterprise policy of §5.6 is read from /etc/chromium/policies/managed.
+    `--disable-infobars`: the image's Chromium is Chrome for Testing, whose
+    "only for automated testing" infobar took 56 rows of the page area
+    `presets.BROWSER_UI_HEIGHT` measures without it (LB-R3, 2026-10-12). The
+    window is one pixel past the display each way (`device.WINDOW_OVERHANG`).
     """
     desktop = resolve(DEFAULT_PRESET)
     return [
@@ -270,7 +274,8 @@ def chromium_args(cfg: GateConfig) -> list[str]:
         "--no-default-browser-check",
         "--password-store=basic",
         "--window-position=0,0",
-        f"--window-size={desktop.display_width},{desktop.display_height}",
+        "--disable-infobars",
+        f"--window-size={desktop.display_width + WINDOW_OVERHANG},{desktop.display_height + WINDOW_OVERHANG}",
         "about:blank",
     ]
 
