@@ -312,14 +312,19 @@ export interface NamedTenantChoice extends TenantChoice {
   group: string
 }
 
+/** What the switcher calls the caller's own personal workspace (#1200), whatever its tenant document says. */
+export const OWN_WORKSPACE_LABEL = 'Your workspace'
+
 /**
  * The one name the shell draws for a tenant: the current tenant's from `me`,
  * another's as `me` last gave it in this browser, and the group email only
- * for a tenant never acted as here. The id is always the secondary line.
+ * for a tenant never acted as here. The caller's own personal workspace
+ * (`kind: user`) is always "Your workspace". The id is always the secondary line.
  */
 export function nameTenants(choices: readonly TenantChoice[], me: Me | null): NamedTenantChoice[] {
   const known = knownTenantNames()
   return choices.map((c) => {
+    if (c.kind === 'user') return { tenant_id: c.tenant_id, display_name: OWN_WORKSPACE_LABEL, group: OWN_WORKSPACE_LABEL }
     const current = me !== null && me.tenant.tenant_id === c.tenant_id ? me.tenant.display_name || null : null
     return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name }
   })
@@ -1374,7 +1379,8 @@ export function SkyShell({
     (to: TenantChoice) => {
       setPicker(null)
       if (who === null || to.tenant_id === who.tenant.tenant_id) return
-      const from = { id: who.tenant.tenant_id, name: who.tenant.display_name ?? who.tenant.tenant_id }
+      const named = choices.find((c) => c.tenant_id === who.tenant.tenant_id)
+      const from = { id: who.tenant.tenant_id, name: named?.display_name ?? who.tenant.display_name ?? who.tenant.tenant_id }
       noteTenantSwitch({ from, to: { id: to.tenant_id, name: to.display_name }, kept: keepOnSwitch })
       chooseTenant(to.tenant_id)
       // A TOAST, because it acknowledges what the viewer just did -- and it
@@ -1392,7 +1398,7 @@ export function SkyShell({
         },
       )
     },
-    [who, keepOnSwitch],
+    [who, keepOnSwitch, choices],
   )
 
   const spine = (
@@ -1783,8 +1789,9 @@ function TenantBlock({
       () => setSaid('copy refused; select the id instead'),
     )
   }
-  const name = who.tenant.display_name ?? id
   const choices = dataOf(mine) ?? []
+  const own = choices.some((c) => c.kind === 'user' && c.tenant_id === id)
+  const name = own ? OWN_WORKSPACE_LABEL : (who.tenant.display_name ?? id)
   const copyId = (
     <>
       <button type="button" className="sk-cp" aria-label={`Copy tenant id ${id}`} title={id} onClick={copy}>
