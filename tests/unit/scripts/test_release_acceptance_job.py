@@ -62,12 +62,11 @@ PEAK = {"mock": 13, "generic": 8, "workflow": 4, "claude-code": 3, "browser": 3,
 
 ACCEPT_JOBS = ("acceptance", "acceptance-2")
 
-#: Groups the suite has that accept.yml does not run YET, because the lane that
-#: added them cannot push workflow files. 2026-10-12: live-browser (LB-L13,
-#: part of #1030); the operator pushes accept-yml.patch, which adds it to wave
-#: 2, and that change removes it from here. A group in this set may be missing
-#: from accept.yml; any other missing group is still red.
-PENDING_IN_ACCEPT_YML = frozenset({"live-browser"})
+#: Groups the suite has that accept.yml does not run YET, for a lane that cannot
+#: push workflow files. Nothing is pending: live-browser (LB-L13, part of #1030)
+#: now runs in wave 2. A group added here may be missing from accept.yml; any
+#: other missing group is red.
+PENDING_IN_ACCEPT_YML: frozenset[str] = frozenset()
 
 
 def _accept() -> dict:
