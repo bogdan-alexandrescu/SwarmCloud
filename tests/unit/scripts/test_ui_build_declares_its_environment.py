@@ -35,10 +35,14 @@ BUILD_TIMEOUT=1200s
 BUILD_MACHINE=E2_HIGHCPU_8
 TAG=testtag
 BUILD_ONLY=0
+LOCAL_BUILD=0
+REPO_ROOT={REPO}
+source scripts/lib/build-mirror.sh
 # Pull in just the functions, not the whole script's side effects. The
 # per-target build args are their own function, shared with --build-only's
 # chained config, so both are read.
 eval "$(sed -n '/^target_build_args() {{/,/^}}/p' scripts/build-images.sh)"
+eval "$(sed -n '/^mirror_step_for() {{/,/^}}/p' scripts/build-images.sh)"
 eval "$(sed -n '/^generate_config() {{/,/^}}/p' scripts/build-images.sh)"
 generate_config images/{target}/Dockerfile IMAGE /dev/stdout {target}
 """
