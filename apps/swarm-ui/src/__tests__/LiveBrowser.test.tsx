@@ -553,6 +553,24 @@ describe('a mismatched origin turns the strip red and asks twice', () => {
     )
   })
 
+  it('one take is one request: the header opens the ask, the ask posts once, however often it is pressed (LB-R4)', async () => {
+    let settle: (v: unknown) => void = () => {}
+    api.takeLiveControl.mockReturnValue(new Promise((r) => (settle = r)))
+    render(<LiveControl taskId={ID} session={session({ human_wait: wait('github.com') })} reload={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Take control' }))
+    expect(api.takeLiveControl).not.toHaveBeenCalled()
+    const yes = within(screen.getByRole('dialog')).getByRole('button', { name: 'Take control' })
+    fireEvent.click(yes)
+    fireEvent.click(yes)
+    // The header button again while the first request is in flight.
+    fireEvent.click(screen.getByRole('button', { name: /Take control|Taking control/ }))
+    const again = screen.queryByRole('dialog')
+    if (again !== null) fireEvent.click(within(again).getByRole('button', { name: 'Take control' }))
+    expect(api.takeLiveControl).toHaveBeenCalledTimes(1)
+    await act(async () => settle(ok(null)))
+    expect(api.takeLiveControl).toHaveBeenCalledTimes(1)
+  })
+
   it('asks once on the named site', async () => {
     render(<LiveControl taskId={ID} session={session({ human_wait: wait('github.com') })} reload={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: 'Take control' }))

@@ -14,8 +14,10 @@ becomes touch, sent from the gate's own session on the controlled page
   CSS pixels against the wheel's direction, as a finger scrolls a page.
 
 Everything else -- keys, a paste, a pointer on the browser's own UI above the
-page (the address bar is not a touch surface), the pointer on a desktop
-preset or with touch off -- goes to the X injector as before.
+page (the address bar is not a touch surface; a mobile frame no longer shows
+it, LB-R5, but a drag held past the frame's edge still clamps as below), the
+pointer on a desktop preset or with touch off -- goes to the X injector as
+before.
 
 `TouchInjector` is an injector in the shape `livegate.rfb` injects through
 (`inject.Injector`: `key`, `pointer_event`, `type_text`, `release_all`), so
@@ -32,6 +34,13 @@ the mask places it. A screen point in the page area is
 `((x - 0) / screen_scale, (y - page_top) / screen_scale)` CSS pixels, which is what
 `dispatchTouchEvent` takes. A drag that leaves the page area is clamped to its
 edge rather than turned into a mouse event half-way through.
+
+THE FRAME IS NOT ALWAYS THE SCREEN. On a mobile preset the viewer is sent the
+page alone, from `Device.frame_top` down (LB-R5, presets.py), so the pointer
+arrives in that frame's coordinates. `pointer_event` moves it down by
+`frame_top` first, once, and everything after it -- the page test, the CSS
+mapping, the X injector -- works in screen pixels. On the desktop
+`frame_top` is 0 and the pointer is where the frame says.
 
 NOTHING HERE IS LOGGED BUT COUNTS (section 5.3.3): no coordinate, keysym or
 gesture position is a log argument.
@@ -155,6 +164,7 @@ class TouchInjector:
             self.dropped += 1
             return
         device = self._devices.device
+        y += device.frame_top  # the frame's coordinates to the screen's (module docstring)
         session = self._devices.session_for(self._target)
         if not (self._touch_on and device.touch and session is not None):
             await self._lift("touchCancel")
