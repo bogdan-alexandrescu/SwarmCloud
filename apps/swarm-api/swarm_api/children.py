@@ -257,7 +257,24 @@ def _lease_is_live(
         return False
     expires = lease.get("expires_at")
     if isinstance(expires, datetime) and expires <= now:
-        return False
+        # NOT YET ALIVE IS NOT EXPIRED. A lease is written with
+        # `heartbeat_at: None` and `expires_at = created_at + 120 s`, and until
+        # the worker's first beat the reconciler judges it by
+        # `dispatch_deadline` alone (`reconciler/detect.py`
+        # `detect_stale_leases`). The worker registers its child key, and opens
+        # its live session, before that beat, so a pod that took longer than
+        # 120 s to start was refused here on a lease nothing else considered
+        # dead: task_23cc2e82178640709a45, 2026-10-12, 154 s from dispatch to
+        # STARTING, `child_key_window_closed`, no live browser (LB-KEYRACE).
+        # The fence is unchanged -- task, lease, attempt, generation and
+        # `released_at` are checked above; this is only the liveness clock.
+        deadline = lease.get("dispatch_deadline")
+        if not (
+            lease.get("heartbeat_at") is None
+            and isinstance(deadline, datetime)
+            and deadline > now
+        ):
+            return False
     return True
 
 

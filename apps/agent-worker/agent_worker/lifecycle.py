@@ -2303,8 +2303,11 @@ class Worker:
         # STEP 2b: the live path (live-browser §3.3, §5.4.2), once RUNNING --
         # the live-session route checks the fence on RUNNING -- and long before
         # the agent exists, so the gate's one registration is this worker's.
-        # Never raises; an attempt without a live path runs without one.
-        self.handoff.setup()
+        # Never raises; an attempt without a live path runs without one -- but
+        # never SILENTLY: a live profile whose path did not open says so on the
+        # task's events, where the console shows it beside an empty Browser
+        # tab (task_23cc2e82178640709a45, 2026-10-12, LB-KEYRACE).
+        self.handoff.setup(self._live_browser_unavailable)
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
         #
@@ -7590,6 +7593,24 @@ class Worker:
                 account_id=account.account_id,
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+    def _live_browser_unavailable(self, note: dict[str, Any]) -> None:
+        """`live_browser_unavailable`: a live profile ran with no live session.
+
+        `note` is `HandoffPath._refuse`'s: the code (`live_path`) and a reason
+        that is a swarm-api error code, an exception's class name or a fixed
+        sentence -- never a ticket, a key or a response body.
+        """
+        reason = note.get("reason") or note.get("live_path") or "unknown"
+        self._emit_startup_mark(
+            "live_browser_unavailable",
+            {
+                "phase": note.get("phase", "live_session"),
+                "live_path": note.get("live_path"),
+                "reason": reason,
+                "message": f"live browser unavailable: {reason}",
+            },
+        )
 
     def _emit_startup_mark(self, cause: str, detail: dict[str, Any]) -> None:
         """One startup mark on the task's events: RUNNING, with `cause`.
