@@ -22,9 +22,9 @@ network, no emulator.
 
 from __future__ import annotations
 
-import pytest
-
 from datetime import timedelta
+
+import pytest
 
 import json
 

@@ -884,7 +884,8 @@ def test_a_move_that_raises_after_a_good_read_keeps_the_reading_and_records_why(
 # RUNS (2026-10-12): CHECKING has a deadline
 # --------------------------------------------------------------------------
 
-DEADLINE = timedelta(seconds=issueci.CHECKING_DEADLINE_SECONDS)
+def _deadline() -> timedelta:
+    return timedelta(seconds=issueci.CHECKING_DEADLINE_SECONDS)
 
 
 def _entered_checking(client, clock, run_id: str) -> datetime:
@@ -909,10 +910,10 @@ def test_a_run_whose_checks_cannot_be_read_fails_at_the_deadline_saying_why(
     _refuse_statuses(writes)
     entered = _entered_checking(client, clock, running["id"])
 
-    clock.at = entered + DEADLINE - timedelta(minutes=2)
+    clock.at = entered + _deadline() - timedelta(minutes=2)
     assert _read(client, clock, running["id"])["state"] == "CHECKING", "not before the deadline"
 
-    clock.at = entered + DEADLINE - timedelta(minutes=1)
+    clock.at = entered + _deadline() - timedelta(minutes=1)
     run = _read(client, clock, running["id"])
 
     assert run["state"] == "FAILED"
@@ -931,7 +932,7 @@ def test_ci_that_stays_pending_past_the_deadline_fails_naming_the_head(
     writes.check(SHA_A, "unit", None, status="in_progress")
     entered = _entered_checking(client, clock, running["id"])
 
-    clock.at = entered + DEADLINE
+    clock.at = entered + _deadline()
     run = _read(client, clock, running["id"])
 
     assert run["state"] == "FAILED"
@@ -947,7 +948,7 @@ def test_a_read_that_turns_green_at_the_deadline_is_done_not_failed(
     entered = _entered_checking(client, clock, running["id"])
 
     writes.check(SHA_A, "unit", "success")
-    clock.at = entered + DEADLINE
+    clock.at = entered + _deadline()
     run = _read(client, clock, running["id"])
 
     assert run["state"] == "DONE" and run["green_sha"] == SHA_A
@@ -962,7 +963,7 @@ def test_the_deadline_restarts_when_a_fix_round_returns_the_run_to_checking(
     assert first["state"] == "FIXING"
 
     # The round takes most of a deadline; its head's CI is still pending.
-    clock.at += DEADLINE - timedelta(minutes=5)
+    clock.at += _deadline() - timedelta(minutes=5)
     _round_ends(db, _rounds(db, running["id"])[0])
     writes.open_pull(PR, SHA_B)
     writes.check(SHA_B, "unit", None, status="in_progress")
@@ -972,7 +973,7 @@ def test_the_deadline_restarts_when_a_fix_round_returns_the_run_to_checking(
 
     clock.at = reentered + timedelta(hours=1)
     assert _read(client, clock, running["id"])["state"] == "CHECKING"
-    clock.at = reentered + DEADLINE
+    clock.at = reentered + _deadline()
     assert _read(client, clock, running["id"])["state"] == "FAILED"
 
 
