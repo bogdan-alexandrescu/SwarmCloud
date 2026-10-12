@@ -1,6 +1,8 @@
 import {
   useCallback,
   useEffect,
+  useId,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -549,6 +551,7 @@ export function LiveBrowserPane({
             control={mine}
             touch={mine && session.device !== null && session.device.touch}
             onScreen={setScreenNode}
+            device={deviceSize(session)}
             caption={<span className="live-caption">{deviceCaption(session)}</span>}
             onControlChange={reload}
           />
@@ -608,8 +611,29 @@ function OpenInTheater() {
 }
 
 /**
+ * THE DEVICE AS DRAWN, IN CSS PIXELS (LB-V1): the preset's size with its
+ * sides in the orientation's order -- the long side across in landscape, down
+ * in portrait. Ordered rather than swapped, because the gate's presets are not
+ * all written portrait: desktop's natural orientation is landscape and its
+ * preset is already 1440×900, so a swap printed "Desktop · 900×1440" for the
+ * desktop the person was looking at (visual QA 5, B2). Null while the gate
+ * has not reported a device, or reports one not in the list.
+ */
+export function deviceSize(
+  session: Pick<LiveSession, 'device' | 'presets'>,
+): { width: number; height: number; scale: number; mobile: boolean } | null {
+  const d = session.device
+  const p = d === null ? undefined : session.presets.find((x) => x.name === d.preset)
+  if (d === null || p === undefined) return null
+  const [long, short] = [Math.max(p.width, p.height), Math.min(p.width, p.height)]
+  return d.orientation === 'landscape'
+    ? { width: long, height: short, scale: p.scale, mobile: p.mobile }
+    : { width: short, height: long, scale: p.scale, mobile: p.mobile }
+}
+
+/**
  * UNDER THE DEVICE, WHAT IT IS (the mockup's caption): `iPhone 15 · 393×852
- * · <path>`. The size is the preset's, its sides swapped in landscape. The
+ * · <path>`, width × height as the device is turned (`deviceSize`). The
  * page's path is not served: the session's origin is scheme, host and port
  * by design (§5.7), and nothing carries the path to swarm-api, so it says so
  * rather than print one nobody measured. A device the gate has not reported
@@ -617,14 +641,34 @@ function OpenInTheater() {
  */
 export function deviceCaption(session: Pick<LiveSession, 'device' | 'presets'>): string {
   const d = session.device
-  const p = d === null ? undefined : session.presets.find((x) => x.name === d.preset)
+  const size = deviceSize(session)
   const device =
     d === null
       ? 'Device not reported'
-      : p === undefined
+      : size === null
         ? presetLabel(d.preset)
-        : `${presetLabel(d.preset)} · ${d.orientation === 'landscape' ? `${p.height}×${p.width}` : `${p.width}×${p.height}`}`
+        : `${presetLabel(d.preset)} · ${size.width}×${size.height}`
   return `${device} · path not reported`
+}
+
+/**
+ * THE DEVICE, FITTED INTO THE STAGE (LB-V1, visual QA 5 B3): the largest box
+ * of the device's proportions that fits `room` both ways -- CSS `contain`,
+ * whole pixels, never larger than the room. An iPhone 15 frame drawn to the
+ * stage's width alone was 692×1552 in a 900 px window, and only its top 40%
+ * could be seen. Null when there is no room to fit into (not laid out yet).
+ */
+export function fitDevice(
+  room: { width: number; height: number },
+  device: { width: number; height: number },
+): { width: number; height: number } | null {
+  if (room.width <= 0 || room.height <= 0 || device.width <= 0 || device.height <= 0) return null
+  // The bounding side is the room's exactly; the other is cut to whole pixels,
+  // computed in one division so float error never takes a pixel off the first.
+  if (room.width * device.height <= room.height * device.width) {
+    return { width: Math.floor(room.width), height: Math.max(1, Math.floor((device.height * room.width) / device.width)) }
+  }
+  return { width: Math.max(1, Math.floor((device.width * room.height) / device.height)), height: Math.floor(room.height) }
 }
 
 /**
@@ -635,7 +679,10 @@ export function deviceCaption(session: Pick<LiveSession, 'device' | 'presets'>):
  *
  * THE DEVICE CONTROLS ARE SWITCHED BY THE PERSON IN CONTROL (§6.1, Q13;
  * LB-DEV-B): enabled when `you.can_switch_device`, disabled with why for
- * everyone else.
+ * everyone else. The why is the disabled controls' tooltip and their
+ * accessible description, NOT a line in the toolbar: as a line it pushed
+ * ⤢ Theater to a second row at 1440 with the agent list open, and the
+ * toolbar to three rows at 1024 (visual QA 5, U3; LB-V1).
  */
 function LiveToolbar({
   taskId,
@@ -659,7 +706,6 @@ function LiveToolbar({
           ◫ logs
         </Button>
       </LiveToolMenu>
-      {!session.you.can_switch_device && <span className="live-toolbar-why">{DEVICE_WHY}</span>}
       <span className="live-toolbar-end">
         <TheaterButton />
         {session.you.can_open && (
@@ -709,6 +755,7 @@ function rotated(orientation: Orientation): Orientation {
 function LiveDevice({ taskId, session, reload }: { taskId: string; session: LiveSession; reload: () => void }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const whyId = useId()
   const device = session.device
   // NOT REPORTED (LB-SEAM): the gate reports the device it applied over the
   // viewer link; until a report has reached swarm-api the session serves
@@ -722,6 +769,8 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
   const can = session.state === 'open' && session.you.can_switch_device && device !== null
   const why = device === null ? 'The gate has not reported which device it applied.' : can ? undefined : DEVICE_WHY
   const mobile = device === null ? false : (session.presets.find((p) => p.name === device.preset)?.mobile ?? device.touch)
+  // The why, said to a screen reader as each disabled control's description.
+  const describedBy = why === undefined ? undefined : whyId
   const send = (body: Parameters<typeof setLiveDevice>[1]) => {
     setBusy(true)
     void setLiveDevice(taskId, body).then((r) => {
@@ -741,6 +790,7 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
             aria-pressed={device !== null && device.preset === n}
             disabled={!can || busy}
             title={why}
+            aria-describedby={describedBy}
             onClick={() => {
               if (device !== null && n !== device.preset) send({ preset: n })
             }}
@@ -753,6 +803,7 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
         size="sm"
         disabled={!can || busy}
         title={why}
+        aria-describedby={describedBy}
         onClick={() => {
           if (device !== null) send({ preset: device.preset, orientation: rotated(device.orientation) })
         }}
@@ -764,12 +815,18 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
         aria-pressed={device?.touch ?? false}
         disabled={!can || busy || !mobile}
         title={can && !mobile ? 'This preset has no touch.' : why}
+        aria-describedby={describedBy}
         onClick={() => {
           if (device !== null) send({ preset: device.preset, orientation: device.orientation, touch: !device.touch })
         }}
       >
         {device?.touch === true ? 'touch: on' : 'touch: off'}
       </Button>
+      {why !== undefined && (
+        <span id={whyId} className="sk-vh">
+          {why}
+        </span>
+      )}
       {error !== null && (
         <span className="live-control-error" role="alert">
           {error}
@@ -805,11 +862,26 @@ async function loadRfb(): Promise<RfbConstructor> {
 
 type Conn = 'connecting' | 'connected' | 'reconnecting' | 'failed'
 
+// The frame's border, in CSS pixels, as live.css draws it (`.live-frame`,
+// content-box, so the fit is the screen's size and the outline is outside
+// it): the fit leaves room for it on every side. A phone or tablet is drawn
+// in an outline; a desktop is not, and keeps only the hairline the screen
+// itself always had, which sits inside the fit.
+const MOBILE_BEZEL = 10
+const DESKTOP_BEZEL = 0
+/** `.live-screen`'s own border, inside the frame: the fit is the box inside it, where noVNC draws. */
+const HAIRLINE = 1
+/** The gap between the device and its caption (`.live-stage`'s `gap`). */
+const STAGE_GAP = 6
+/** A mobile preset this wide on its short side is a tablet (iPad: 810), and gets the tablet's outline. */
+const TABLET_MIN = 600
+
 function LiveScreen({
   taskId,
   control,
   touch,
   onScreen,
+  device = null,
   caption,
   onControlChange,
 }: {
@@ -818,6 +890,8 @@ function LiveScreen({
   touch: boolean
   /** Told the element noVNC draws into, and null when it goes: the theater borrows it. */
   onScreen?: (node: HTMLElement | null) => void
+  /** The device as turned (`deviceSize`): the frame is fitted to its proportions, in an outline when it is mobile. */
+  device?: { width: number; height: number; mobile: boolean } | null
   /** Under the device frame: what it is, its size and the page's path. */
   caption?: ReactNode
   /** Called when swarm-api's status frames say control or the session changed: the pane re-reads the session. */
@@ -833,6 +907,37 @@ function LiveScreen({
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
   const [hasFocus, setHasFocus] = useState(false)
+  const stage = useRef<HTMLDivElement>(null)
+  const below = useRef<HTMLDivElement>(null)
+  const [room, setRoom] = useState<{ width: number; height: number } | null>(null)
+
+  // THE ROOM THE DEVICE HAS: the stage's box, less the caption under the
+  // device and the outline around it. Measured before paint and again
+  // whenever the stage changes size (the logs opening, the agent list
+  // folding, the window), so the device is never drawn bigger than it.
+  useLayoutEffect(() => {
+    const node = stage.current
+    if (node === null) return
+    const measure = () => {
+      const next = { width: node.clientWidth, height: node.clientHeight - (below.current?.offsetHeight ?? 0) - STAGE_GAP }
+      setRoom((was) => (was !== null && was.width === next.width && was.height === next.height ? was : next))
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const watch = new ResizeObserver(measure)
+    watch.observe(node)
+    return () => watch.disconnect()
+  }, [])
+
+  const bezel = device !== null && device.mobile ? MOBILE_BEZEL : DESKTOP_BEZEL
+  // Fitted is the box noVNC scales its canvas into -- inside the outline AND
+  // the screen's hairline -- so the canvas fills it, edge to edge.
+  const edge = bezel + HAIRLINE
+  const fit =
+    device === null || room === null
+      ? null
+      : fitDevice({ width: room.width - 2 * edge, height: room.height - 2 * edge }, device)
+  const kind = device === null || !device.mobile ? 'desktop' : Math.min(device.width, device.height) >= TABLET_MIN ? 'tablet' : 'phone'
 
   useEffect(() => {
     onScreen?.(host.current)
@@ -954,24 +1059,41 @@ function LiveScreen({
 
   return (
     <div className="live-screen-wrap">
-      <div
-        ref={host}
-        className={`live-screen${control ? ' is-control' : ''}`}
-        data-conn={conn}
-        // Keys here are the remote browser's: the theater's `T` and Esc leave them alone.
-        data-live-screen=""
-        aria-label={control ? 'The agent’s browser. Click it to type into it.' : 'The agent’s browser, view only.'}
-        onFocus={onFocus}
-        onBlur={onBlur}
-        onKeyDown={keepKey}
-        onKeyUp={keepKey}
-        onPaste={onPaste}
-        onTouchStartCapture={gateTouch}
-        onTouchMoveCapture={gateTouch}
-        onTouchEndCapture={gateTouch}
-        onTouchCancelCapture={gateTouch}
-      />
-      {caption}
+      {/* THE STAGE: the device fitted into it both ways and centred, in a
+          phone or tablet outline for a mobile preset, the caption under it.
+          The fit sizes the FRAME, and noVNC (scaleViewport) scales its canvas
+          to the screen element that fills it -- never a CSS transform, which
+          would move the pixels away from where noVNC maps a click. The screen
+          element carries no size of its own, so the theater, which borrows
+          it, sizes it to its stage instead. */}
+      <div ref={stage} className="live-stage">
+        <div
+          className={`live-frame is-${kind}`}
+          data-device={kind}
+          style={fit === null ? undefined : { width: `${fit.width + 2 * HAIRLINE}px`, height: `${fit.height + 2 * HAIRLINE}px` }}
+        >
+          <div
+            ref={host}
+            className={`live-screen${control ? ' is-control' : ''}`}
+            data-conn={conn}
+            // Keys here are the remote browser's: the theater's `T` and Esc leave them alone.
+            data-live-screen=""
+            aria-label={control ? 'The agent’s browser. Click it to type into it.' : 'The agent’s browser, view only.'}
+            onFocus={onFocus}
+            onBlur={onBlur}
+            onKeyDown={keepKey}
+            onKeyUp={keepKey}
+            onPaste={onPaste}
+            onTouchStartCapture={gateTouch}
+            onTouchMoveCapture={gateTouch}
+            onTouchEndCapture={gateTouch}
+            onTouchCancelCapture={gateTouch}
+          />
+        </div>
+        <div ref={below} className="live-stage-caption">
+          {caption}
+        </div>
+      </div>
       <p className="live-screen-say" role="status">
         {conn === 'connecting'
           ? 'Connecting to the agent’s browser.'

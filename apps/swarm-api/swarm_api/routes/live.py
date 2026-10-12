@@ -397,7 +397,7 @@ _SEGMENT_NAME = re.compile(r"rec-([0-9]{1,13})\.live\.webm")
 
 
 def _recordings(ctx: AppContext) -> LiveRecordings:
-    return LiveRecordings(store=ctx.store, objects=ctx.inspection._objects)
+    return LiveRecordings(store=ctx.store, objects=ctx.inspection._objects, db=ctx.db)
 
 
 @router.get("/tasks/{task_id}/live/recordings", response_model=RecordingsView)
@@ -462,11 +462,14 @@ def live_actions(
     task_id: str,
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """The newest attempt's action timeline (§7): CDP methods as the relay
-    recorded them, a typed text as its length, and control events."""
-    return _recordings(ctx).actions(tenant_id, task_id, submitted_by=submitted_by)
+    recorded them, a typed text as its length, and what people did, from the
+    audit -- each with who, and `you` when it was the reader (LB-V3)."""
+    return _recordings(ctx).actions(tenant_id, task_id, submitted_by=submitted_by,
+                                    viewer=auth.email)
 
 
 # --------------------------------------------------------------------------

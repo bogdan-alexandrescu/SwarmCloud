@@ -1876,6 +1876,16 @@ class LiveActionView(_Wire):
     event: str | None = None
     cause: str | None = None
     outcome: str | None = None
+    #: Who did it, for an entry from the audit that names a person (§5.8):
+    #: the same address `GET .../live/audit` serves the tenant's members.
+    by: str | None = None
+    #: `by` is the person reading the timeline, so the console says "You".
+    you: bool | None = None
+    #: A device the person in control chose (`device_requested`): a preset BY
+    #: NAME, its orientation, and the touch toggle -- never a size (invariant 10).
+    preset: str | None = None
+    orientation: str | None = None
+    touch: bool | None = None
 
 
 class LiveActionsView(_Wire):
@@ -1901,9 +1911,10 @@ def recording_key(tenant_id: str, task_id: str, attempt_id: str, seq: int) -> st
 class LiveRecordings:
     """§7's read side. Built per request from the app context."""
 
-    def __init__(self, *, store: Store, objects: Any) -> None:
+    def __init__(self, *, store: Store, objects: Any, db: Any = None) -> None:
         self._store = store
         self._objects = objects
+        self._db = db
 
     def _reader(self) -> Any:
         if self._objects is None:
@@ -1967,10 +1978,21 @@ class LiveRecordings:
 
         return chunks(), first.total_bytes
 
-    def actions(self, tenant_id: str, task_id: str, *, submitted_by: str | None
-                ) -> dict[str, Any]:
-        """The newest attempt's action lines, oldest first. The newest attempt
-        is the one whose action log was written last."""
+    def actions(self, tenant_id: str, task_id: str, *, submitted_by: str | None,
+                viewer: str | None = None) -> dict[str, Any]:
+        """The newest attempt's timeline, oldest first: the relay's action log
+        (what the agent's CDP proxy forwarded, what the gate refused) merged
+        with the task's `live_audit` (what people did, and who). The newest
+        attempt is the one either source wrote last.
+
+        LANE LB-V3 (part of #1030). MEASURED 2026-10-12 on SwarmCloud: after a
+        person took control, chose iPhone 15, rotated it and returned control,
+        the timeline read "A person took control" and "refused" -- the relay's
+        log holds two control lines without a name, and the device and the
+        return reached only the audit. The audit is the record of what people
+        did (§5.8: written in the transaction that made the change), so it is
+        read here, and the relay's own copies of the same take and return are
+        dropped (`_DUPLICATED`) rather than shown twice."""
         self._store.get_task(tenant_id, task_id, submitted_by=submitted_by)
         prefix = _attempts_prefix(tenant_id, task_id)
         listing = self._listing(tenant_id, task_id)
@@ -1981,9 +2003,13 @@ class LiveRecordings:
             match = _ACTIONS.fullmatch(info.key[len(prefix):])
             if match is not None:
                 found.append((match.group("a"), int(match.group("seq")), info))
-        if not found:
+        audited = self._audited(tenant_id, task_id)
+        candidates = [(_moment(_iso(f[2].updated)), f[0]) for f in found]
+        candidates += [(_moment(_iso(doc.get("at"))), str(doc["attempt_id"])) for doc in audited
+                       if isinstance(doc.get("attempt_id"), str) and doc.get("entry") in _AUDIT_EVENTS]
+        if not candidates:
             return {"attempt_id": None, "actions": [], "truncated": bool(listing.truncated)}
-        newest = max(found, key=lambda f: (str(_iso(f[2].updated) or ""), f[1]))[0]
+        newest = max(candidates, key=lambda c: c[0])[1]
         mine = sorted((f for f in found if f[0] == newest), key=lambda f: f[1])
         budget = MAX_ACTION_BYTES
         kept: list[Any] = []
@@ -1998,9 +2024,131 @@ class LiveRecordings:
             data = self._reader().read_range(info.key, offset=0, length=max(info.size, 1)).data
             for raw in data.decode("utf-8", errors="replace").splitlines():
                 line = _action_line(raw)
-                if line is not None:
+                if line is not None and (line.get("event"), line.get("cause")) not in _DUPLICATED:
                     lines.append(line)
+        lines += audit_lines([d for d in audited if d.get("attempt_id") == newest], viewer)
+        lines.sort(key=lambda a: (_moment(a["at"]), _EVENT_RANK.get(str(a.get("event")), 1)))
         return {"attempt_id": newest, "actions": lines, "truncated": truncated}
+
+    def _audited(self, tenant_id: str, task_id: str) -> list[dict[str, Any]]:
+        """The task's `live_audit` entries in the tenant, in the order they
+        were written. A deployment built without Firestore reads none.
+
+        Sorted here, by (`at`, `id`) as `audit_entries` sorts: Firestore
+        streams an equality query in document-ID order, and `new_id("la")` is
+        random, so the stream's order is not the writing order -- and
+        `audit_lines` tells `device_changed` from `rotated` and
+        `touch_toggled` by the entry before each one."""
+        if self._db is None:
+            return []
+        query = self._db.collection(LIVE_AUDIT).where(filter=FieldFilter("task_id", "==", task_id))
+        rows = [snap.to_dict() or {} for snap in query.stream()]
+        rows = [r for r in rows if r.get("tenant_id") == tenant_id]
+        rows.sort(key=lambda r: (_moment(_iso(r.get("at"))), str(r.get("id"))))
+        return rows
+
+
+#: The relay's and the gate's lines for a take and a return the audit already
+#: records WITH the person's name: the relay's `control_taken` and
+#: `control_returned`, the gate's `granted` and its `ended` on the relay's
+#: release. The gate's `refused`, and an `ended` the gate caused itself (an
+#: insecure page, the page closed), are only in the relay's log and stay.
+_DUPLICATED = frozenset({
+    ("control_taken", None), ("control_returned", None), ("granted", None),
+    ("ended", "released"),
+})
+
+#: The order of entries written at the same instant. A Return press that
+#: resolves a hand-off writes `handoff_resolved` and `control_returned` in one
+#: transaction, at one `now`; the control comes back before the hand-off ends.
+_EVENT_RANK: Mapping[str, int] = {
+    "handoff_requested": 0,
+    "control_returned": 2, "control_ended": 2,
+    "handoff_resolved": 3,
+}
+
+#: The audit entries the timeline shows, and the event each one is served as.
+#: `device_requested` becomes `device_changed`, `rotated` or `touch_toggled`
+#: (`audit_lines`). Not shown: viewers joining and leaving, and the session
+#: opening and closing -- who watched is the audit's business, not what was done.
+_AUDIT_EVENTS = frozenset({
+    "control_taken", "control_returned", "control_ended", "control_opened_to_members",
+    "handoff_requested", "handoff_resolved", "device_requested",
+})
+
+#: A word the audit's detail may carry to the timeline as `cause` or `outcome`:
+#: a fixed name, never free text.
+_WORD = re.compile(r"[a-z][a-z0-9_]{0,63}")
+
+
+def _moment(iso: Any) -> datetime:
+    if isinstance(iso, str):
+        try:
+            at = datetime.fromisoformat(iso)
+        except ValueError:
+            at = None
+        if at is not None:
+            return at if at.tzinfo is not None else at.replace(tzinfo=timezone.utc)
+    return datetime.min.replace(tzinfo=timezone.utc)
+
+
+def audit_lines(entries: Sequence[Mapping[str, Any]], viewer: str | None
+                ) -> list[dict[str, Any]]:
+    """`live_audit` entries, in the order written, as timeline lines.
+
+    Only names reach the console: the entry, the person's address, a cause or
+    outcome that is a fixed word, a preset by name, an orientation and a touch
+    boolean. Never the detail's other fields (a hand-off's reason, a confirmed
+    mismatch's hosts, counts): the audit route serves those to whoever needs
+    the whole record."""
+    me = (viewer or "").strip().lower()
+    out: list[dict[str, Any]] = []
+    device: dict[str, Any] | None = None
+    for doc in entries:
+        entry = doc.get("entry")
+        if entry not in _AUDIT_EVENTS or not isinstance(doc.get("at"), (datetime, str)):
+            continue
+        detail = doc.get("detail") if isinstance(doc.get("detail"), Mapping) else {}
+        line: dict[str, Any] = {"at": _iso(doc["at"]), "kind": "control", "event": entry}
+        email = doc.get("email")
+        if isinstance(email, str) and email:
+            line["by"] = email
+            line["you"] = bool(me) and email.strip().lower() == me
+        for name in ("cause", "outcome"):
+            value = detail.get(name)
+            if isinstance(value, str) and _WORD.fullmatch(value):
+                line[name] = value
+        if entry == "device_requested":
+            preset = live_preset(detail.get("preset"))
+            if preset is None:
+                continue
+            line["event"], device = _device_step(device, preset["name"], detail)
+            line.update({k: v for k, v in device.items() if v is not None})
+        out.append(line)
+    return out
+
+
+def _device_step(before: Mapping[str, Any] | None, preset: str, choice: Mapping[str, Any]
+                 ) -> tuple[str, dict[str, Any]]:
+    """What one device choice changed, against the one before it: the preset
+    (`device_changed`), only the orientation (`rotated`) or only the touch
+    toggle (`touch_toggled`). An orientation or a toggle the console left out
+    is the one before it, on the same preset (`SetDevice`)."""
+    orientation = choice.get("orientation") if choice.get("orientation") in (
+        "portrait", "landscape") else None
+    touch = choice.get("touch") if isinstance(choice.get("touch"), bool) else None
+    if before is None or before.get("preset") != preset:
+        return "device_changed", {"preset": preset, "orientation": orientation, "touch": touch}
+    orientation = orientation or before.get("orientation")
+    touch = before.get("touch") if touch is None else touch
+    after = {"preset": preset, "orientation": orientation, "touch": touch}
+    turned = orientation != before.get("orientation")
+    toggled = touch != before.get("touch")
+    if turned and not toggled:
+        return "rotated", after
+    if toggled and not turned:
+        return "touch_toggled", after
+    return "device_changed", after
 
 
 def _action_line(raw: str) -> dict[str, Any] | None:
