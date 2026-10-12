@@ -427,7 +427,7 @@ POLICY_FILES = (
 )
 
 #: `swarm-system`'s NetworkPolicies, which `kubernetes/apply.sh --swarm-system`
-#: applies: a default deny for ingress, and TCP 8443 to the live relay from
+#: applies: a default deny for ingress, and TCP 8080 to the live relay from
 #: labelled tenant pods and from swarm-api's Direct VPC egress range
 #: (docs/design/live-browser.md §8.3). The namespace and the relay are lane
 #: L8's (`kubernetes/swarm-system/`); these two only decide who reaches them.
@@ -671,7 +671,7 @@ def swarm_system_values(args: argparse.Namespace) -> dict[str, str]:
     if not any(network.subnet_of(space) for space in _PRIVATE_SPACE):
         raise RenderError(
             f"render: --swarm-api-egress-cidr {network} is not inside RFC 1918 space. It is "
-            "admitted to the live relay on 8443; swarm-api's Direct VPC egress subnet is "
+            "admitted to the live relay on 8080; swarm-api's Direct VPC egress subnet is "
             "private, and a public or wider range is not that subnet."
         )
     return check_values(
@@ -1262,7 +1262,7 @@ def main(argv: list[str] | None = None) -> int:
     # network.
     system = sub.add_parser(
         "swarm-system",
-        help="swarm-system's default-deny ingress and the live relay's TCP 8443",
+        help="swarm-system's default-deny ingress and the live relay's TCP 8080",
         allow_abbrev=False,
     )
     system.add_argument(

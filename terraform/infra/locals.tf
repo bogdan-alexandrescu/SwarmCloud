@@ -291,7 +291,13 @@ locals {
   # moves rather than the day someone remembers this list.
   platform_images = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-ui", "swarm-verify"]
   runner_images   = sort(distinct([for name, p in local.runner_profiles : p.image]))
-  deployed_images = sort(distinct(concat(local.platform_images, local.runner_images)))
+  # The live relay (live.tf) only while it is on. On, it is deployed, so it
+  # must have a digest and must be in the `image_refs` output: that output is
+  # what scripts/plan.sh pins a non-deploy plan to, and a relay missing from it
+  # would plan with no image. Off, nothing deploys it, and a state applied
+  # before the release built swarm-live must still plan.
+  live_images     = local.live_relay_enabled ? ["swarm-live"] : []
+  deployed_images = sort(distinct(concat(local.platform_images, local.runner_images, local.live_images)))
 
   # Read by the precondition on google_cloud_run_v2_job.verify, which fails the
   # plan while this is non-empty.
