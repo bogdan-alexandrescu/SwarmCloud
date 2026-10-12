@@ -197,13 +197,16 @@ class FakeLink:
 
 
 class FakeRelay:
-    """The relay's websocket and its close route. By default it accepts every
-    viewer ticket with `{"type": "ready"}`, as the real one does a good one."""
+    """The relay's websocket, its close route and its device route. By
+    default it accepts every viewer ticket with `{"type": "ready"}`, as the
+    real one does a good one, and every device request (`accept_devices`)."""
 
     def __init__(self, frames: list[Any] | None = None, close_code: int | None = None,
                  refuse: bool = False) -> None:
         self.links: list[FakeLink] = []
         self.closed: list[str] = []
+        self.devices: list[str] = []
+        self.accept_devices = True
         self._frames = [] if refuse else [READY] if frames is None else frames
         self._close_code = close_code
         self._refuse = refuse
@@ -215,6 +218,10 @@ class FakeRelay:
 
     def close_session(self, session_id: str) -> None:
         self.closed.append(session_id)
+
+    def send_device(self, request: str) -> bool:
+        self.devices.append(request)
+        return self.accept_devices
 
 
 def claims_of(ticket: str) -> dict[str, Any]:
@@ -496,6 +503,7 @@ def test_another_tenants_member_gets_404_on_every_route(client, ldb, live):
         ("POST", f"/v1/tasks/{TASK}/live/control/return"),
         ("DELETE", f"/v1/tasks/{TASK}/live/control"),
         ("POST", f"/v1/tasks/{TASK}/live/open-to-members"),
+        ("POST", f"/v1/tasks/{TASK}/live/device"),
         ("GET", f"/v1/tasks/{TASK}/live/audit"),
     ):
         response = client.request(method, path, headers=bearer("bob"), json={})
@@ -532,7 +540,7 @@ def test_a_non_submitter_can_view_and_cannot_take_until_opened(client, ldb, live
     assert view.json()["live_browser"] is True
     assert view.json()["session"]["you"] == {
         "email": "root@saga.xyz", "can_control": False, "can_preempt": False,
-        "can_open": False,
+        "can_open": False, "can_switch_device": False,
     }
     assert client.post(f"/v1/tasks/{TASK}/live/ticket", headers=bearer("root")).status_code == 200
 

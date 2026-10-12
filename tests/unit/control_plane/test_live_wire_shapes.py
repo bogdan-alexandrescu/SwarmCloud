@@ -65,7 +65,8 @@ INDEX = json.loads((FIXTURES / "index.json").read_text())["fixtures"]
 #: rather than the collection of this whole file.
 MODELS: dict[str, type[BaseModel] | None] = {
     name: getattr(live_module, name, None)
-    for name in ("LiveRead", "LiveTicketView", "TakeControl", "RecordingsView", "LiveActionsView")
+    for name in ("LiveRead", "LiveTicketView", "TakeControl", "SetDevice", "RecordingsView",
+                 "LiveActionsView")
 }
 
 
@@ -184,7 +185,8 @@ def test_the_session_read_serves_live_browser_and_a_session(client, ldb, live):
     assert session["session_id"] == "live_" + ATTEMPT
     assert session["state"] == "open" and session["closed_reason"] is None
     assert session["you"] == {"email": "alice@saga.xyz", "can_control": True,
-                              "can_preempt": False, "can_open": True}
+                              "can_preempt": False, "can_open": True,
+                              "can_switch_device": False}
     assert session["human_wait"]["expect"] == "github.com"
     # Nothing reported by the gate yet: null, never invented.
     assert session["origin"] is None and session["device"] is None
@@ -218,7 +220,8 @@ def test_a_closed_session_says_why(client, ldb, live):
 def test_a_member_who_is_not_the_submitter_is_told_they_may_watch_only(client, ldb, live):
     served = _served(client, "GET", "/v1/tasks/{task_id}/live/session", "root")
     assert served["session"]["you"] == {"email": "root@saga.xyz", "can_control": False,
-                                        "can_preempt": False, "can_open": False}
+                                        "can_preempt": False, "can_open": False,
+                                        "can_switch_device": False}
 
 
 def test_the_ticket_route_serves_the_tickets_shape(client, ldb, live):
@@ -267,6 +270,19 @@ def test_delete_control_is_the_consoles_return(client, ldb, live):
     assert session_doc(ldb)["controller"] is None
     assert ldb.docs[f"tasks/{TASK}"]["human_wait"] is None
     assert [r["detail"]["cause"] for r in audit(ldb, "control_returned")] == ["returned"]
+
+
+def test_the_device_route_answers_as_the_session_read_and_takes_the_consoles_body(
+        client, ldb, live, relay):
+    """LB-DEV-B: `setLiveDevice` sends device.request.json; the route answers
+    in device.switched.json's shape, and says the controller may switch."""
+    _ask_for_help(ldb)
+    assert _served(client, "POST", "/v1/tasks/{task_id}/live/control", "alice", {})
+    served = _served(client, "POST", "/v1/tasks/{task_id}/live/device", "alice",
+                     fixture("device.request.json"))
+    assert fits(served, fixture("device.switched.json")) == []
+    assert served["session"]["you"]["can_switch_device"] is True
+    assert len(relay.devices) == 1
 
 
 # --------------------------------------------------------------------------
@@ -347,7 +363,8 @@ def test_an_origin_that_does_not_hold_together_is_not_stored(origin):
 @pytest.mark.parametrize("device", [
     {**DEVICE, "preset": "galaxy-fold"},
     {**DEVICE, "orientation": "upside-down"},
-    {**DEVICE, "touch": False},
+    {"preset": "desktop", "orientation": "landscape", "touch": True},
+    {**DEVICE, "touch": "yes"},
     {**DEVICE, "width": 393},
     "iphone-15",
 ])
@@ -355,6 +372,13 @@ def test_a_device_that_is_not_a_preset_by_name_is_not_stored(device):
     """Invariant 10: a device is a preset NAME; a report carrying dimensions,
     an unknown name or a touch the preset does not have is refused."""
     assert live_module.parse_report(_report(ORIGIN, device)) == {"origin": ORIGIN, "device": None}
+
+
+def test_a_touch_preset_with_the_persons_touch_turned_off_is_stored():
+    """LB-DEV-B: the controller's touch toggle. The gate reports a phone with
+    touch off as touch false; that is a device the preset can be, not a forgery."""
+    off = {**DEVICE, "touch": False}
+    assert live_module.parse_report(_report(ORIGIN, off)) == {"origin": ORIGIN, "device": off}
 
 
 @pytest.mark.parametrize("text", [

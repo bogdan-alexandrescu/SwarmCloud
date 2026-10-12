@@ -720,12 +720,136 @@ def test_a_report_ends_with_its_session():
     assert run(go()) is None
 
 
+# ---------------------------------------------------------------- device requests (LB-DEV-B)
+
+
+def device(key: bytes, clock: Clock, **overrides) -> str:
+    fields = dict(session_id=SESSION, tenant_id=TENANT, task_id=TASK, attempt_id=ATTEMPT,
+                  generation=GEN, preset="iphone-15", orientation="landscape", touch=None,
+                  now=clock())
+    fields.update(overrides)
+    return rz.mint_device(key, **fields)
+
+
+def _devices(endpoint: Endpoint) -> list[tuple[str, dict]]:
+    return [(c, json.loads(p)) for op, c, p in endpoint.frames() if op == rz.OP_DEVICE]
+
+
+def test_a_device_request_reaches_the_sessions_gate_as_one_device_frame():
+    """swarm-api checked the controller and MAC'd the choice; the relay checks
+    the MAC, the clock, single use and the session, and hands the device --
+    and nothing else -- to the gate."""
+    key, clock, relay = build()
+    gate, other_gate = Endpoint(), Endpoint()
+
+    async def go():
+        await relay.open_tunnel(ticket(key, clock), gate)
+        await relay.open_tunnel(ticket(key, clock, session_id="ls_other", task_id="task_b"), other_gate)
+        assert await relay.device_request(device(key, clock)) == SESSION
+        await relay.flush()
+
+    run(go())
+    assert _devices(gate) == [("", {"preset": "iphone-15", "orientation": "landscape", "touch": None})]
+    assert _devices(other_gate) == []
+
+
+@pytest.mark.parametrize("overrides, reason", [
+    ({"tenant_id": "research"}, "wrong_tenant"),
+    ({"task_id": "task_other"}, "wrong_task"),
+    ({"generation": GEN - 1}, "wrong_generation"),
+    ({"session_id": "ls_none"}, "no_tunnel"),
+])
+def test_a_device_request_for_another_session_or_generation_is_refused(overrides, reason):
+    key, clock, relay = build()
+    gate = Endpoint()
+
+    async def go():
+        await relay.open_tunnel(ticket(key, clock), gate)
+        with pytest.raises(Refused) as e:
+            await relay.device_request(device(key, clock, **overrides))
+        await relay.flush()
+        return e.value.reason
+
+    assert run(go()) == reason
+    assert _devices(gate) == []
+
+
+def test_a_device_request_must_be_swarm_apis_fresh_and_used_once():
+    key, clock, relay = build()
+    gate = Endpoint()
+
+    async def go():
+        await relay.open_tunnel(ticket(key, clock), gate)
+        reasons = []
+        for raw in (device(secrets.token_bytes(32), clock),
+                    device(key, clock, now=clock() - 60),
+                    device(key, clock, ttl=600),
+                    ticket(key, clock, "control"),
+                    mint_close(key, SESSION, now=clock())):
+            with pytest.raises(Refused) as e:
+                await relay.device_request(raw)
+            reasons.append(e.value.reason)
+        good = device(key, clock)
+        await relay.device_request(good)
+        with pytest.raises(Refused) as e:
+            await relay.device_request(good)
+        reasons.append(e.value.reason)
+        await relay.close_session(SESSION)
+        with pytest.raises(Refused) as e:
+            await relay.device_request(device(key, clock))
+        reasons.append(e.value.reason)
+        return reasons
+
+    assert run(go()) == ["bad_signature", "expired", "lifetime", "bad_signature", "bad_signature",
+                         "replayed", "session_closed"]
+
+
+@pytest.mark.parametrize("field, value", [
+    ("preset", ""), ("preset", "p" * 64), ("preset", 393), ("orientation", "upside-down"),
+    ("touch", 1), ("touch", "yes"), ("generation", True),
+])
+def test_a_device_request_carries_a_short_name_never_a_size(field, value):
+    key, clock, _ = build()
+    body = {"session_id": SESSION, "tenant_id": TENANT, "task_id": TASK, "attempt_id": ATTEMPT,
+            "generation": GEN, "preset": "desktop", "orientation": None, "touch": None,
+            "exp": int(clock()) + 20, "nonce": secrets.token_hex(16), field: value}
+    with pytest.raises(Refused) as e:
+        rz.verify_device(key, rz._signed(key, body, rz.DEVICE_DOMAIN), now=clock())
+    assert e.value.reason == "malformed"
+    extra = {**body, field: "desktop" if field == "preset" else None, "width": 1920}
+    with pytest.raises(Refused):
+        rz.verify_device(key, rz._signed(key, extra, rz.DEVICE_DOMAIN), now=clock())
+
+
+def test_post_internal_device_sends_the_frame_and_refuses_a_forgery_alike():
+    from fastapi.testclient import TestClient
+
+    from swarm_live.main import create_app
+
+    key, clock, relay = build()
+    with TestClient(create_app(relay)) as client:
+        with client.websocket_connect("/v1/tunnel") as gate:
+            gate.send_text(ticket(key, clock))
+            assert json.loads(gate.receive_text()) == {"type": "ready"}
+            forged = client.post("/internal/device", content=device(secrets.token_bytes(32), clock))
+            assert forged.status_code == 404 and forged.json() == {"sent": False}
+            none = client.post("/internal/device", content=device(key, clock, session_id="ls_none"))
+            assert none.status_code == 404 and none.json() == {"sent": False}
+            sent = client.post("/internal/device", content=device(key, clock, orientation=None, touch=False))
+            assert sent.status_code == 200, sent.text
+            assert sent.json() == {"sent": True, "session_id": SESSION}
+            op, conn, payload = decode_frame(gate.receive_bytes())
+            assert (op, conn, json.loads(payload)) == (
+                rz.OP_DEVICE, "", {"preset": "iphone-15", "orientation": None, "touch": False})
+
+
 # ---------------------------------------------------------------- frames
 
 
 def test_tunnel_frames_round_trip_and_refuse_junk():
     for op, conn, payload in [(OP_DATA, "c1", b"\x00\xff"), (OP_OPEN, "rec-1", b""),
-                              (OP_CONTROL, "", b""), (OP_ACTION, "", b"{}"), (rz.OP_REPORT, "", b"{}")]:
+                              (OP_CONTROL, "", b""), (OP_ACTION, "", b"{}"), (rz.OP_REPORT, "", b"{}"),
+                              (rz.OP_DEVICE, "", b"{}")]:
         assert decode_frame(encode_frame(op, conn, payload)) == (op, conn, payload)
     for junk in (b"", b"\x02", b"\x09\x00", b"\x02\x05ab"):
         with pytest.raises(ValueError):
