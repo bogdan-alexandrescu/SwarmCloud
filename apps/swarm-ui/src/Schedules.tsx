@@ -200,6 +200,7 @@ export function runSpends(s: Schedule, dryRun: boolean): boolean {
 export function firedWords(f: ScheduleFiring, dryRun: boolean): string {
   if (f.skip !== null) {
     if (f.skip.code === 'DRY_RUN') return `${dryRun ? 'Dry run' : 'Run'} recorded: nothing was created. What it would create is in History.`
+    if (f.skip.code === 'NOTHING_STARTED') return 'Fired: nothing started. Why is on its row in History.'
     return `Not run: the firing was skipped, ${f.skip.code}.`
   }
   if (f.state === 'awaiting_approval') return 'Fired: the firing waits for approval in Approvals, holding no capacity.'

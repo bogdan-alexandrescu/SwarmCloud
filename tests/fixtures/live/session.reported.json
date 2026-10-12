@@ -11,7 +11,7 @@
       "registrable_domain": "github.com",
       "scheme": "https:",
       "ip_literal": false,
-      "cert_error": false
+      "cert_error": null
     },
     "human_wait": {
       "reason": "Sign in to GitHub so I can open the pull request",
