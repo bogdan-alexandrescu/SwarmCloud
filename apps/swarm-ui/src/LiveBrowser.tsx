@@ -36,7 +36,7 @@ import './styles/live.css'
  *
  * THE TICKET GOES IN THE FIRST MESSAGE, NEVER THE URL (§5.2). Load balancer,
  * IAP and Cloud Run logs record URLs; `openLiveSocket` opens
- * `/v1/tasks/<id>/live` and sends the one-use ticket as its first frame.
+ * `/v1/live/<session>/stream` and sends the one-use ticket as its first frame.
  *
  * KEYS ONLY WITH CANVAS FOCUS (§5.6). noVNC listens for keys on its own
  * canvas, so a key pressed anywhere else in the console never reaches it;
@@ -621,7 +621,7 @@ function LiveScreen({ taskId, control, touch }: { taskId: string; control: boole
         return
       }
       try {
-        await openLiveSocket(taskId, ticket.data.ticket, (ws) => {
+        await openLiveSocket(ticket.data.session_id, ticket.data.ticket, (ws) => {
           if (stopped || host.current === null) {
             ws.close()
             return

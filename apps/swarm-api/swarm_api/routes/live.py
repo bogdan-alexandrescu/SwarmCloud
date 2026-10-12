@@ -9,24 +9,36 @@ Two kinds of caller, as the hand-off routes have:
     the same per-group membership, the same principal check every route has --
     reads the session, gets a viewer ticket, takes, renews and returns control,
     opens control to the tenant, and reads the audit. The socket
-    (`/v1/tasks/{task_id}/live`) authenticates the same identity from the
+    (`/v1/live/{session_id}/stream`) authenticates the same identity from the
     upgrade request's headers and selects the tenant the ticket names.
+
+THE PROXY (owner decision 2026-10-11 (b)). Browsers never reach the relay.
+They open wss to swarm-api through IAP, and swarm-api proxies the socket to
+the relay as plain ws over the internal load balancer, at `SWARM_LIVE_URL`
+(`ws://<internal address>:8080`) + `/v1/view`.
 
 NO TICKET IN A URL (§5.2). Load balancer, IAP and Cloud Run logs record URLs.
 A viewer ticket is returned in a response body and sent as the socket's first
-message; the socket's URL carries the task id and nothing else, and a socket
-opened with any query string is closed before anything is read.
+message; the socket's URL carries the session id and nothing else, and a
+socket opened with any query string is closed before anything is read.
 
 THE SOCKET'S MESSAGES. Console to swarm-api: the first TEXT frame is
 `{"ticket": "<viewer ticket>"}`; after it, BINARY frames are RFB and go to the
 relay unchanged, and text frames are dropped (control is the HTTP routes').
-swarm-api to the relay (lane L7): `{"type": "hello", "ticket": ...}` first,
-then `{"type": "control", "controller": true|false}` whenever this person
-takes or loses control, then binary RFB. Relay to console: forwarded as is.
-swarm-api to console: `{"type": "status", ...}` text frames. Close codes: 4400
-a malformed open (a query string, no ticket), 4401 no identity, 4404 refused
-(every §5.2 refusal, alike), 4403 membership lost, 4409 the session closed,
-4503 no relay, 1012 the relay went away (reconnect).
+swarm-api to the relay (lane L7's protocol, `swarm_live.main`): the viewer
+ticket itself as the first text message, which the relay answers
+`{"type": "ready"}` or refuses by closing; then
+`{"type": "control", "ticket": <control or release ticket>}` whenever this
+person takes or loses control, then binary RFB. Relay to console: forwarded
+as is. swarm-api to console: `{"type": "status", ...}` text frames. Close
+codes: 4400 a malformed open (a query string, no ticket), 4401 no identity,
+4404 refused (every §5.2 refusal, alike, the relay's included), 4429 the
+relay's viewer cap, 4403 membership lost, 4409 the session closed, 4503 no
+relay, 1012 the relay went away (reconnect).
+
+CLOSING (decision (a)). When a session closes, or a stale generation is seen,
+`LiveService` POSTs the relay's `/internal/close`; the relay drops every
+connection of the session, this socket's relay link included.
 """
 
 from __future__ import annotations
@@ -44,7 +56,14 @@ from ..auth import AuthContext, require_continuation_route
 from ..children import PROOF_HEADER, TIMESTAMP_HEADER, ChildService
 from ..deps import AppContext, current_auth, get_context, submission_scope, tenant_scope
 from ..errors import ApiError
-from ..live import Admission, LiveLimits, LiveService, count_input
+from ..live import (
+    Admission,
+    LiveLimits,
+    LiveService,
+    RelayCloser,
+    count_input,
+    relay_closer_for,
+)
 from .children import child_service
 
 log = logging.getLogger(__name__)
@@ -61,7 +80,13 @@ CLOSE_UNAUTHENTICATED = 4401
 CLOSE_MEMBERSHIP_LOST = 4403
 CLOSE_REFUSED = 4404
 CLOSE_SESSION_CLOSED = 4409
+CLOSE_FULL = 4429
 CLOSE_NO_RELAY = 4503
+#: The relay's viewer cap (`swarm_live.rendezvous.CLOSE_FULL`), passed on as
+#: itself; every other refusal by the relay reads as 4404, as ours do.
+RELAY_CLOSE_FULL = 4429
+#: The relay's route for a proxied viewer (`swarm_live.main`).
+RELAY_VIEW_PATH = "/v1/view"
 
 
 # --------------------------------------------------------------------------
@@ -73,6 +98,8 @@ class RelayLink(Protocol):
     async def send(self, data: str | bytes) -> None: ...
     async def recv(self) -> str | bytes | None: ...
     async def close(self) -> None: ...
+    #: The relay's close code once `recv` has returned None, when it sent one.
+    close_code: int | None
 
 
 class RelayConnector(Protocol):
@@ -82,6 +109,7 @@ class RelayConnector(Protocol):
 class _WebsocketsLink:
     def __init__(self, conn: Any) -> None:
         self._conn = conn
+        self.close_code: int | None = None
 
     async def send(self, data: str | bytes) -> None:
         await self._conn.send(data)
@@ -91,7 +119,9 @@ class _WebsocketsLink:
 
         try:
             return await self._conn.recv()
-        except ConnectionClosed:
+        except ConnectionClosed as exc:
+            received = getattr(exc, "rcvd", None)
+            self.close_code = getattr(received, "code", None)
             return None
 
     async def close(self) -> None:
@@ -100,7 +130,8 @@ class _WebsocketsLink:
 
 class WebsocketsRelay:
     """Dials `swarm-live` with the `websockets` client uvicorn[standard]
-    already installs. The ticket is the first MESSAGE, never part of the URL."""
+    already installs: plain ws inside the VPC (decision (b)). The ticket is the
+    first MESSAGE, never part of the URL."""
 
     async def connect(self, url: str) -> RelayLink:
         from websockets.asyncio.client import connect
@@ -118,6 +149,16 @@ def _relay(app: Any) -> RelayConnector:
     return relay
 
 
+def _closer(app: Any, ctx: AppContext) -> RelayCloser | None:
+    """The relay's close route, from `SWARM_LIVE_URL` and the key; a test puts
+    its own on `app.state.live_relay_closer`."""
+    closer = getattr(app.state, "live_relay_closer", None)
+    if closer is None:
+        closer = relay_closer_for(ctx.settings)
+        app.state.live_relay_closer = closer
+    return closer
+
+
 def _limits(app: Any, ctx: AppContext) -> LiveLimits:
     limits = getattr(app.state, "live_limits", None)
     if limits is None:
@@ -132,15 +173,18 @@ def _limits(app: Any, ctx: AppContext) -> LiveLimits:
 
 
 def live_service(
-    ctx: AppContext = Depends(get_context), children: ChildService = Depends(child_service)
+    request: Request,
+    ctx: AppContext = Depends(get_context),
+    children: ChildService = Depends(child_service),
 ) -> LiveService:
     return LiveService(settings=ctx.settings, db=ctx.db, store=ctx.store,
-                       authenticator=ctx.authenticator, children=children, now=ctx.now)
+                       authenticator=ctx.authenticator, children=children,
+                       relay=_closer(request.app, ctx), now=ctx.now)
 
 
-def _person_service(ctx: AppContext) -> LiveService:
+def _person_service(ctx: AppContext, app: Any) -> LiveService:
     return LiveService(settings=ctx.settings, db=ctx.db, store=ctx.store,
-                       authenticator=ctx.authenticator, now=ctx.now)
+                       authenticator=ctx.authenticator, relay=_closer(app, ctx), now=ctx.now)
 
 
 # --------------------------------------------------------------------------
@@ -188,6 +232,7 @@ async def open_live_session(
 @router.get("/tasks/{task_id}/live/session")
 def get_live_session(
     task_id: str,
+    request: Request,
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     auth: AuthContext = Depends(current_auth),
@@ -195,7 +240,7 @@ def get_live_session(
 ) -> dict:
     """The session as the console draws it: open or closed, who controls, and
     what THIS caller may do."""
-    return _person_service(ctx).view(tenant_id, task_id, email=auth.email,
+    return _person_service(ctx, request.app).view(tenant_id, task_id, email=auth.email,
                                      submitted_by=submitted_by)
 
 
@@ -211,7 +256,7 @@ def mint_viewer_ticket(
     """A viewer ticket for this caller and this session, 30 seconds, one use.
     Returned in the BODY; the console sends it as the socket's first message."""
     _limits(request.app, ctx).ticket(auth.email)
-    return _person_service(ctx).viewer_ticket(tenant_id, task_id, email=auth.email,
+    return _person_service(ctx, request.app).viewer_ticket(tenant_id, task_id, email=auth.email,
                                               submitted_by=submitted_by)
 
 
@@ -229,39 +274,42 @@ def take_control(
     take it from whoever holds it; nobody else can preempt."""
     _limits(request.app, ctx).take(auth.email, task_id)
     preempt = bool((payload or {}).get("preempt") is True)
-    return _person_service(ctx).take(tenant_id, task_id, email=auth.email,
+    return _person_service(ctx, request.app).take(tenant_id, task_id, email=auth.email,
                                      submitted_by=submitted_by, preempt=preempt)
 
 
 @router.post("/tasks/{task_id}/live/control/renew")
 def renew_control(
     task_id: str,
+    request: Request,
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """The controller's console says it is still there (§4.2: 60 seconds)."""
-    return _person_service(ctx).renew(tenant_id, task_id, email=auth.email,
+    return _person_service(ctx, request.app).renew(tenant_id, task_id, email=auth.email,
                                       submitted_by=submitted_by)
 
 
 @router.post("/tasks/{task_id}/live/control/return")
 def return_control(
     task_id: str,
+    request: Request,
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """Return control (§4.2 step 3); a waiting hand-off is resolved with it."""
-    return _person_service(ctx).return_control(tenant_id, task_id, email=auth.email,
+    return _person_service(ctx, request.app).return_control(tenant_id, task_id, email=auth.email,
                                                submitted_by=submitted_by)
 
 
 @router.post("/tasks/{task_id}/live/open-to-members")
 def open_to_members(
     task_id: str,
+    request: Request,
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     auth: AuthContext = Depends(current_auth),
@@ -269,19 +317,20 @@ def open_to_members(
 ) -> dict:
     """The owner lets any member of the tenant take control of this task's
     browser while its agent asks for help (§5.1, Q1). Audited."""
-    return _person_service(ctx).open_to_members(tenant_id, task_id, email=auth.email,
+    return _person_service(ctx, request.app).open_to_members(tenant_id, task_id, email=auth.email,
                                                 submitted_by=submitted_by)
 
 
 @router.get("/tasks/{task_id}/live/audit")
 def live_audit(
     task_id: str,
+    request: Request,
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     """The task's live audit (§5.8): members of its tenant, nobody else."""
-    return {"entries": _person_service(ctx).audit_entries(tenant_id, task_id,
+    return {"entries": _person_service(ctx, request.app).audit_entries(tenant_id, task_id,
                                                           submitted_by=submitted_by)}
 
 
@@ -290,7 +339,7 @@ def live_audit(
 # --------------------------------------------------------------------------
 
 #: The route template the continuation default-deny is checked against.
-SOCKET_ROUTE = ("GET", "/v1/tasks/{task_id}/live")
+SOCKET_ROUTE = ("GET", "/v1/live/{session_id}/stream")
 
 
 async def _close(websocket: WebSocket, code: int) -> None:
@@ -301,7 +350,7 @@ async def _close(websocket: WebSocket, code: int) -> None:
             pass
 
 
-async def _admit(websocket: WebSocket, task_id: str, ctx: AppContext,
+async def _admit(websocket: WebSocket, session_id: str, ctx: AppContext,
                  service: LiveService) -> Admission | int:
     """§5.2 for one socket: identity, ticket, tenant, task, session. A close
     code when refused."""
@@ -340,7 +389,7 @@ async def _admit(websocket: WebSocket, task_id: str, ctx: AppContext,
             return CLOSE_REFUSED
         submitted_by = auth.email if auth.member_scope else None
         return await run_in_threadpool(
-            lambda: service.admit(auth, task_id, ticket, submitted_by=submitted_by)
+            lambda: service.admit(auth, session_id, ticket, submitted_by=submitted_by)
         )
     except Exception as exc:  # every refusal reads alike (§5.2 step 2)
         log.info("live socket refused (%s)", type(exc).__name__)
@@ -353,7 +402,7 @@ def _ticket_tenant(ticket: str) -> str | None:
     import base64
 
     try:
-        payload = ticket.split(".")[1]
+        payload = ticket.split(".")[0]
         claims = json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
         tenant = claims.get("tenant_id")
         return tenant if isinstance(tenant, str) and tenant else None
@@ -361,14 +410,14 @@ def _ticket_tenant(ticket: str) -> str | None:
         return None
 
 
-@router.websocket("/tasks/{task_id}/live")
-async def live_socket(websocket: WebSocket, task_id: str) -> None:
+@router.websocket("/live/{session_id}/stream")
+async def live_socket(websocket: WebSocket, session_id: str) -> None:
     """Proxy one person's view to the relay, re-checking them while it lasts."""
     ctx: AppContext = websocket.app.state.ctx
-    service = _person_service(ctx)
+    service = _person_service(ctx, websocket.app)
     settings = ctx.settings
     await websocket.accept()
-    admitted = await _admit(websocket, task_id, ctx, service)
+    admitted = await _admit(websocket, session_id, ctx, service)
     if not isinstance(admitted, Admission):
         await _close(websocket, admitted)
         return
@@ -378,13 +427,45 @@ async def live_socket(websocket: WebSocket, task_id: str) -> None:
         await _close(websocket, CLOSE_NO_RELAY)
         return
     try:
-        link = await _relay(websocket.app).connect(url)
+        link = await _relay(websocket.app).connect(url.rstrip("/") + RELAY_VIEW_PATH)
     except Exception as exc:
         log.warning("the live relay could not be reached (%s)", type(exc).__name__)
         await _close(websocket, CLOSE_NO_RELAY)
         return
+    refused = await _hello(link, admission)
+    if refused is not None:
+        await _close(websocket, refused)
+        return
     proxy = _Proxy(websocket, link, service, admission, settings)
     await proxy.run()
+
+
+async def _hello(link: RelayLink, admission: Admission) -> int | None:
+    """Present the viewer ticket to the relay as its first message and wait
+    for `{"type": "ready"}`. A close code for the console when the relay
+    refused it -- the relay spends each ticket once, so a ticket replayed to
+    swarm-api passes our checks and stops here."""
+    try:
+        await link.send(admission.ticket)
+        first = await asyncio.wait_for(link.recv(), FIRST_MESSAGE_SECONDS)
+    except Exception as exc:
+        log.info("the live relay did not answer the viewer ticket (%s)", type(exc).__name__)
+        first = None
+    ready = False
+    if isinstance(first, str):
+        try:
+            ready = json.loads(first) == {"type": "ready"}
+        except ValueError:
+            ready = False
+    if ready:
+        return None
+    code = getattr(link, "close_code", None)
+    try:
+        await link.close()
+    except Exception:  # the relay already went
+        pass
+    log.info("live socket refused by the relay (close code %s)", code)
+    return CLOSE_FULL if code == RELAY_CLOSE_FULL else CLOSE_REFUSED
 
 
 class _Proxy:
@@ -409,7 +490,6 @@ class _Proxy:
         self.last_sent: dict[str, Any] | None = None
 
     async def run(self) -> None:
-        await self.link.send(json.dumps({"type": "hello", "ticket": self.admission.ticket}))
         await run_in_threadpool(self.service.viewer_event, self.admission, "viewer_joined", {})
         await self._status()
         tasks = [asyncio.ensure_future(c) for c in (self._from_viewer(), self._from_relay(),
@@ -439,12 +519,17 @@ class _Proxy:
             await self._send_viewer({"type": "status", "open": False,
                                      "cause": status_.get("cause")})
             self.close_code = CLOSE_SESSION_CLOSED
+            # Closed, or its generation moved: the relay drops every
+            # connection of it, not only this one (decision (a)).
+            await run_in_threadpool(self.service.close_relay, self.admission.session_id)
             return False
         if status_["in_control"] != self.in_control:
             if not status_["in_control"] and (self.keys or self.pointers):
                 self.keys = self.pointers = 0  # the episode ended; its counts are its own
             self.in_control = status_["in_control"]
-            await self.link.send(json.dumps({"type": "control", "controller": self.in_control}))
+            ticket = await run_in_threadpool(self.service.control_ticket, self.admission,
+                                             self.in_control)
+            await self.link.send(json.dumps({"type": "control", "ticket": ticket}))
         await self._send_viewer({"type": "status", "open": True,
                                  "in_control": self.in_control,
                                  "controller": status_.get("controller")})

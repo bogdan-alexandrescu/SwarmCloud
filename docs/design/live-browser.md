@@ -92,10 +92,10 @@ overrule is a question (Q9, Q12).
  |   +---registration wins)------->|    memory emptyDir)       |
  |                                 |  live gate:               |
  |  agent (claude-code +           |   capture -> MASK -> encode|
- |  Playwright, connectOverCDP)    |   input injection (XTEST) |    outbound WSS,
+ |  Playwright, connectOverCDP)    |   input injection (XTEST) |    outbound WS,  
  |   +--- 127.0.0.1:9222 --------->|   CDP proxy  <-pipe-> Chromium   ticket from      +-----------+      +-----------+     +---------+
  |                                 |   tunnel client ---------------- swarm-api ----->| swarm-live|<---->| swarm-api |<--->| console |
- |                                 |                           |    (TCP 8443)        | relay     |      | (IAP, per-|     | noVNC   |
+ |                                 |                           |    (ws, TCP 8080)    | relay     |      | (IAP, per-|     | noVNC   |
  +-------------------------------------------------------------+                      | rendezvous|      | connection|     +---------+
                                                                                       | + recorder|      | tenant    |
                                                                                       +-----------+      | check)    |
@@ -180,7 +180,7 @@ loudly rather than drawing somewhere nobody sees.
 No inbound port on the pod and no public endpoint: the gate **dials out**.
 
 ```
-gate --(WSS, TCP 8443, in-cluster)--> swarm-live <--(WSS, internal)-- swarm-api <--(WSS via IAP LB)-- console
+gate --(WS, TCP 8080, in-cluster)--> swarm-live <--(WS, TCP 8080, internal LB)-- swarm-api <--(WSS via IAP LB)-- console
 ```
 
 1. **The worker asks swarm-api for a tunnel ticket** (`POST
@@ -191,20 +191,86 @@ gate --(WSS, TCP 8443, in-cluster)--> swarm-live <--(WSS, internal)-- swarm-api 
    `live_sessions/{session_id}` and returns a one-use ticket, an HMAC under
    `swarm-live-key` (held by `swarm-api` and `swarm-live` only, value created by
    `scripts/create-secrets.sh`, never a Terraform secret version) over
-   `(session_id, tenant_id, task_id, attempt_id, generation, role=tunnel, exp)`,
-   valid 60 seconds.
+   `(session_id, tenant_id, task_id, attempt_id, generation, role=tunnel, exp,
+   nonce)`, valid 60 seconds. The exact format is the relay's
+   (`apps/swarm-live/swarm_live/rendezvous.py::mint_ticket`), restated by
+   `apps/swarm-api/swarm_api/live.py::mint_ticket`;
+   `tests/unit/control_plane/test_live_relay_wire.py` feeds what swarm-api
+   mints to the real relay.
 2. **The worker hands the ticket to the gate** over `ctl.sock` (section 5.4.2),
    and the gate opens the tunnel to `swarm-live` with the ticket as its first
    message. The ticket never sits in an environment variable, a file or
    `work/`.
-3. **The console never talks to the relay directly.** It opens
-   `wss://<console host>/v1/tasks/{task_id}/live` through the existing IAP
-   load balancer (the same origin the console already uses for `/v1`;
-   `apps/swarm-ui/README.md`: "IAP sits in front"). swarm-api authenticates the
-   connection exactly as every route does (`Authenticator.authenticate`,
-   `apps/swarm-api/swarm_api/auth.py::Authenticator.authenticate`), checks the tenant and the role
-   (section 5.1), mints a viewer ticket for itself, and proxies the websocket
-   to `swarm-live` over the internal path.
+3. **The console never talks to the relay directly.** It asks for a viewer
+   ticket (`POST /v1/tasks/{task_id}/live/ticket`, in the response body) and
+   opens `wss://<console host>/v1/live/{session_id}/stream` through the
+   existing IAP load balancer (the same origin the console already uses for
+   `/v1`; `apps/swarm-ui/README.md`: "IAP sits in front"), sending the ticket
+   as its first message. swarm-api authenticates the connection exactly as
+   every route does (`Authenticator.authenticate`,
+   `apps/swarm-api/swarm_api/auth.py::Authenticator.authenticate`), checks the
+   tenant, the task, the role (section 5.1) and the generation, and proxies the
+   websocket to `swarm-live` as plain ws over the internal load balancer
+   (`SWARM_LIVE_URL`, `ws://<reserved internal address>:8080`, + `/v1/view`),
+   presenting the viewer ticket as the relay's first message.
+
+#### The relay's wire: owner decisions 2026-10-11
+
+Lanes L7 (the relay), L8 (its infrastructure) and L9 (swarm-api's routes) were
+built in parallel and disagreed: L7's relay read `live_sessions` from
+Firestore, which L8 had granted it no access to; L7 served TLS on 8443 with a
+mounted key file, while L8 rendered a Secret Manager version reference; and L7
+and L9 minted different ticket shapes. The owner resolved it on 2026-10-11
+(~14:35 PDT), and lane LB-L8d wired it:
+
+* **(a) Relay auth: a signed ticket, closed by swarm-api.** The relay has **no
+  Firestore access** and never reads `live_sessions`. swarm-api mints every
+  ticket, MAC'd with `swarm-live-key`, carrying `tenant_id`, `task_id`,
+  `attempt_id`, `generation`, `session_id`, `role` (`tunnel` or `viewer`),
+  `exp` (at most 60 s ahead) and a `nonce`. The relay checks the MAC, the
+  expiry and single use, and trusts only the ticket: a tunnel ticket defines
+  the session, and every later ticket for it must name the same tenant, task,
+  attempt and generation. When a session closes or its generation goes stale,
+  swarm-api calls the relay's `POST /internal/close` with the session id,
+  MAC'd with the same key under its own domain (so a ticket is never a close
+  request), and the relay drops every connection of that session and refuses
+  every ticket for it still in flight.
+  *Why:* Firestore IAM cannot name a document or a collection -- the narrowest
+  binding is the database (`terraform/infra/live.tf` records the measurement)
+  -- so "the session document only" is not a grant that exists, and the
+  faithful grant is none. Everything the relay must check already travels
+  under the MAC. The cost is that the relay no longer notices a stale
+  generation on its own: swarm-api must tell it, which is why the close route
+  exists and why swarm-api calls it on every close it commits, on a fenced
+  worker's request, on a new attempt's session, and on a socket that sees the
+  session closed.
+* **(b) Relay transport: proxied through swarm-api, plain ws inside the VPC.**
+  Browsers never reach the relay. They open wss to swarm-api (the existing IAP
+  and HTTPS) at `/v1/live/{session_id}/stream`, and swarm-api proxies that
+  socket to the relay as plain ws over the internal load balancer. The relay
+  listens on plain WS on **port 8080**, with no TLS and no certificate
+  anywhere; a NetworkPolicy admits only swarm-api's egress range and the
+  tenant gates. Port 8080 and plain ws are fixed for both integration lanes
+  (L8d: code and swarm-api's environment; L8e: image and deploy).
+  *Why:* one public surface and one authenticator (R2 below): the tenant check
+  is not restated in a second service. A certificate on the relay would have
+  to be issued, mounted and rotated for a hop that never leaves the VPC and
+  whose every connection is already authenticated by a one-use ticket. The
+  cost, stated plainly: what crosses swarm-api -> relay -> gate is not
+  encrypted by this platform, so a person's keystrokes during control are in
+  clear on those internal hops (section 5.11). TLS ends at the load balancer
+  in front of swarm-api.
+* **(c) Key: read from Secret Manager by version reference.** The relay reads
+  `swarm-live-key` by the version reference in `SWARM_LIVE_KEY_SECRET` (L8's
+  interface, rendered by `live.tf` into the manifest) with its own Workload
+  Identity principal, the secret's only reader besides swarm-api. There is no
+  `SWARM_LIVE_KEY_FILE`. swarm-api reads the same secret as `SWARM_LIVE_KEY`,
+  by Cloud Run secret reference (`terraform/infra/locals.tf`
+  `live_key_secret_env`), never as a value.
+  *Why:* a mounted file needs a secret volume or CSI driver that nothing here
+  provisions, and L8 had already built the reference and the grant; reading
+  it once into memory keeps the key out of every file, environment and crash
+  dump.
 
 #### Why a relay at all, and why this shape
 
@@ -236,9 +302,10 @@ document.
 **What the relay is not.** It is not trusted with authorisation: it verifies
 tickets it did not mint against a key it shares only with swarm-api, and it
 refuses a ticket whose tenant, task, attempt or generation does not match the
-session's. It has no Firestore access except the session document and the
-audit collection (section 5.8), and its only GCS grant is object creation under
-the `live/` key of an attempt (section 7).
+session's tunnel ticket. It has **no Firestore access at all** (decision (a)
+above; the audit of section 5.8 is written by swarm-api in the transaction of
+the change it records), and its only GCS grant is object creation under the
+`live/` key of an attempt (section 7).
 
 ### 3.4 In the console: noVNC on the agent's page
 
@@ -313,14 +380,17 @@ notification" is a new integration, and Q8 asks whether it is wanted.
    runs one Firestore transaction on `live_sessions/{session_id}`: no current
    controller (or the caller may preempt, section 5.1), then sets
    `controller = {email, since, renew_by}` and appends to `live_audit` in the
-   same transaction. It tells the relay, which tells the gate. The gate enters
+   same transaction. It tells the relay with a `control` ticket for that
+   person, session and generation, sent on the person's own proxied viewer
+   connection (a `release` ticket ends it), and the relay tells the gate. The gate enters
    **control mode**: input from that one viewer connection is injected through
    XTEST; every other viewer's input is dropped; the agent's CDP stays paused.
    One controller at a time, always.
 2. **Sign in.** The person sees the address bar and the console's origin strip
    (section 5.7), types, and completes the sign-in. Keys travel console ->
-   swarm-api -> relay -> gate -> Xvfb, inside TLS on every hop, and no hop logs
-   their content (section 5.3.3).
+   swarm-api -> relay -> gate -> Xvfb: inside TLS to swarm-api's load
+   balancer, then as plain ws inside the VPC (decision (b), section 3.3), and
+   no hop logs their content (section 5.3.3).
 3. **Return.** The person presses Return control. Before the gate resumes the
    agent's CDP it **clears every password input** in every frame through its
    own CDP session (a page left on a half-submitted form must not hand the
@@ -488,7 +558,7 @@ alternative offered.
 
 ### 5.2 Every connection is checked, and keeps being checked
 
-On every websocket connection to `/v1/tasks/{task_id}/live`, swarm-api:
+On every websocket connection to `/v1/live/{session_id}/stream`, swarm-api:
 
 1. verifies the IAP assertion and resolves the tenant with the same
    `Authenticator` every route uses, so the Cloud Identity constraint applies
@@ -501,9 +571,14 @@ On every websocket connection to `/v1/tasks/{task_id}/live`, swarm-api:
    `AuthContext.tenant_principal`, `apps/swarm-api/swarm_api/auth.py::AuthContext`). A
    refusal is a 404, the same answer as a task that does not exist, so a
    foreign task id is not confirmed;
-3. mints a one-use viewer ticket (`role = viewer`, the caller's email, the
-   session, the generation, 30-second expiry) and presents it to the relay,
-   which refuses a ticket used twice, expired, or naming another session.
+3. verifies the one-use viewer ticket it minted for this caller (`role =
+   viewer`, the caller's email, the session, the generation, 30-second expiry,
+   sent as the socket's first message), refuses it unless it names this
+   address's session, the session is the task's current one, open, at the
+   ticket's generation, and presents it to the relay, which refuses a ticket
+   used twice, expired, or naming another session, tenant or generation. A
+   refusal by the relay closes the console's socket as a 404 (4404), as every
+   other refusal does; the relay's viewer cap passes through as 4429.
 
 **Membership is re-checked while the socket is open.** swarm-api re-runs step 1
 every 5 minutes for each proxied socket and closes it when the answer changes.
@@ -514,7 +589,19 @@ a fresh check, not the cached one.
 
 **Nothing secret travels in a URL.** Load balancer, IAP and Cloud Run request
 logs record URLs. Tickets travel as the first websocket message; the URL
-carries only the task id.
+carries only the session id, which is not secret (`live_<attempt id>`).
+
+**A session that ends is ended at the relay too** (decision (a)). The relay
+reads no session state, so swarm-api tells it: on every transaction that
+closes a session (a cancel, an expired hold, an attempt that lost its lease),
+when a worker of a stale generation asks for a tunnel ticket, when a new
+attempt's session opens (every earlier one of that task is stale, watched or
+not), and when a proxied socket sees its session closed or its generation
+moved, swarm-api POSTs the relay's `/internal/close`. The relay drops the
+tunnel and every viewer of that session and refuses, until they have expired,
+every ticket for it minted before the close. A close the relay does not
+receive is logged; the session's tunnel still ends with the stale worker's
+pod, and no new ticket for a closed session is minted.
 
 ### 5.3 Masking before anything leaves the pod (LB-3)
 
@@ -1008,8 +1095,8 @@ the page there (section 5.4.3).
 | Case | What stops it |
 |---|---|
 | A member of tenant A watches or controls tenant B's agent | §5.2 step 2 on every connection; the relay refuses a ticket whose tenant is not the session's; a refusal is a 404. |
-| Replaying a captured stream or ticket | TLS on every hop; tickets one-use, 30-60 s, bound to session, person, role and generation. A recording is a stored object behind the same tenant check, not a re-stream. |
-| A stale worker (old generation) keeps streaming | The ticket carries the generation; swarm-api closes the session when the lease's generation moves (invariant 5), and the relay drops the tunnel. |
+| Replaying a captured stream or ticket | TLS from the console to swarm-api's load balancer; tickets one-use, 30-60 s, bound to session, person, role and generation, and refused after their session closes. Past the load balancer the hops are plain ws inside the VPC (decision (b), section 3.3): only swarm-api's egress range and the tenant gates may connect to the relay, and a connection without a fresh ticket is closed. Capturing those hops needs a foothold inside the VPC; that is the accepted cost of having no certificate on the relay. A recording is a stored object behind the same tenant check, not a re-stream. |
+| A stale worker (old generation) keeps streaming | The ticket carries the generation; swarm-api closes the session when the lease's generation moves (invariant 5) and POSTs the relay's `/internal/close`, and the relay drops the tunnel and its viewers (section 5.2). |
 | The agent keylogs the person | No display access (§3.1); CDP held and scripts removed during control (§5.4.3); postData stripped after. |
 | The agent sets traffic-routing or trust state before asking for help (a context with its own `proxyServer`, `Security.setIgnoreCertificateErrors`, `Page.setBypassCSP`, extra headers), so the sign-in passes through it | The proxy's method policy refuses those calls from the first command, not only in control (§5.4.4); the fresh page opens in a gate-owned context; the gate refuses or ends control while the page has a certificate error. |
 | The gate restarts mid-attempt and the agent registers on `ctl.sock` first | A restarted gate accepts no registration; the live path ends for that attempt (§5.4.2). |
@@ -1244,17 +1331,22 @@ moved to the sidecar.
   "Pod traffic is never covered by an ipBlock rule"
   (`kubernetes/network-policies/allow-egress.yaml`). A second policy,
   `swarm-allow-live-egress`, selects pods labelled `swarm-live: "enabled"`
-  (which the dispatcher sets only on live-browser pods) and allows TCP 8443 to
+  (which the dispatcher sets only on live-browser pods) and allows TCP 8080 to
   pods `app.kubernetes.io/name=swarm-live` in namespace `swarm-system`.
   NetworkPolicies are unions, so it adds a path and removes nothing. A pod
   missing the label simply has no live path; unlike the trap that comment
   records, nothing else breaks, because DNS and the internet still come from
   the existing policy.
-* **`swarm-system`: default-deny ingress, and allow** TCP 8443 to `swarm-live`
+* **`swarm-system`: default-deny ingress, and allow** TCP 8080 to `swarm-live`
   from tenant namespaces (by the namespace label the tenant template sets) and
   from swarm-api's Direct VPC egress subnet range.
 * The cluster's ranges are read from the live cluster, never written, as
   `kubernetes/apply.sh` and `kubernetes/network_parity.py` already require.
+* **The port is 8080, plain ws, since owner decision (b) of 2026-10-11**
+  (section 3.3). Lane L6 built both policies, and L8 the relay's Service, on
+  TCP 8443; the relay now listens on 8080 and swarm-api dials 8080, and the
+  manifest and policy files under `kubernetes/` move to it with lane LB-L8e
+  (image and deploy). Until that lands, the files there still say 8443.
 
 ### 8.4 Frozen-contract touchpoints, as requests
 

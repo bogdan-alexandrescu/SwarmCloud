@@ -597,3 +597,73 @@ run "the_relay_runs_only_on_gke" {
 
   expect_failures = [check.live_browser_needs_gke]
 }
+
+# ---------------------------------------------------------------------------
+# swarm-api's side of the wire (LB-L8d; owner decisions 2026-10-11 (b), (c))
+# ---------------------------------------------------------------------------
+
+run "off_swarm_api_has_no_relay_address_and_no_key_reference" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition     = local.service_env["swarm-api"].SWARM_LIVE_URL == ""
+    error_message = "with enable_live_browser off swarm-api has no relay address, which swarm_api.settings reads as no relay"
+  }
+
+  # A reference to swarm-live-key before create-secrets.sh --live-key added a
+  # version would stop swarm-api starting.
+  assert {
+    condition     = !contains(keys(local.api_secret_env), "SWARM_LIVE_KEY")
+    error_message = "with enable_live_browser off swarm-api carries no swarm-live-key reference"
+  }
+}
+
+run "on_swarm_api_carries_the_relay_address_and_the_keys_reference_never_the_key" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_live_browser = true
+  }
+
+  # Plain ws to the internal load balancer's reserved address, on the port
+  # both integration lanes fixed (decision (b)).
+  assert {
+    condition     = local.service_env["swarm-api"].SWARM_LIVE_URL == "ws://${output.live_relay.internal_address}:8080"
+    error_message = "swarm-api's SWARM_LIVE_URL is ws://<the relay's reserved internal address>:8080"
+  }
+
+  assert {
+    condition     = local.service_env["swarm-api"].SWARM_LIVE_URL == "ws://10.10.0.42:8080"
+    error_message = "swarm-api's SWARM_LIVE_URL renders the reserved address"
+  }
+
+  # The key by Secret Manager reference, through the secret_env merge, next to
+  # the child key's: a secret name and a version, nothing else.
+  assert {
+    condition = (
+      local.api_secret_env["SWARM_LIVE_KEY"].secret == google_secret_manager_secret.live_key.secret_id
+      && local.api_secret_env["SWARM_LIVE_KEY"].version == "latest"
+      && length(keys(local.api_secret_env["SWARM_LIVE_KEY"])) == 2
+    )
+    error_message = "swarm-api reads SWARM_LIVE_KEY by reference to swarm-live-key/latest"
+  }
+
+  # Never the key itself: no plain environment variable carries it, and no
+  # Terraform-managed secret version exists for it.
+  assert {
+    condition = (
+      !contains(keys(local.service_env["swarm-api"]), "SWARM_LIVE_KEY")
+      && !contains(keys(local.service_env["swarm-api"]), "SWARM_LIVE_KEY_SECRET")
+      && !strcontains(file("${var.tf_root}/live.tf"), "google_secret_manager_secret_version")
+    )
+    error_message = "swarm-live-key reaches swarm-api only as a Secret Manager reference, never as a plain value or a managed version"
+  }
+}

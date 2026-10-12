@@ -7,6 +7,15 @@ may watch and who may control, and says so with a ticket. The relay's job is to
 check that each ticket is genuine, unspent, unexpired and names exactly the
 session it is used on -- then to splice bytes.
 
+THE RELAY READS NOTHING BUT THE TICKET (owner decision 2026-10-11 (a), §3.3).
+It has no Firestore client and no session document. A tunnel ticket DEFINES
+the session it opens: its tenant, task, attempt and generation. Every later
+ticket for that session -- a viewer's, a control message's -- must name the
+same four, or it is refused. swarm-api ends a session by POSTing a close
+request (below) when the session closes or its generation goes stale; the
+relay then drops every connection of it and refuses every ticket for it that
+is still in flight.
+
 TICKETS. `<base64url(json)>.<base64url(hmac-sha256)>`, the MAC under
 `swarm-live-key` (held by swarm-api and swarm-live only) over a domain tag and
 the encoded body, so a MAC for any other purpose is never a ticket. The body
@@ -15,17 +24,27 @@ plus `email` for a person's role and a random `nonce` that makes each ticket
 one-use. Roles:
 
 * `tunnel`  -- the gate's tunnel, minted for the worker (60 s);
-* `viewer`  -- one proxied console websocket, minted by swarm-api (30 s);
+* `viewer`  -- one proxied console websocket, minted by swarm-api (30 s).
+
+Those two open connections. Two more are MESSAGES on a viewer connection that
+is already open, never a connection of their own:
+
 * `control` -- swarm-api granting control to that viewer, after its
   transaction on `live_sessions/{id}` (§4.2) (30 s);
 * `release` -- swarm-api ending that viewer's control (30 s).
 
 A ticket is refused if its MAC is wrong, it has expired, it claims a lifetime
 longer than its role's, it was presented before, its role is not the one the
-route takes, or its tenant, task, attempt or generation differs from the
-session document's. Every refusal of a ticket closes with the same code, so a
-caller probing for another tenant's session learns nothing it would not learn
-from a session that does not exist (§5.2 step 2: "a refusal is a 404").
+route takes, its session was closed, or its tenant, task, attempt or
+generation differs from the session's tunnel ticket. Every refusal of a ticket
+closes with the same code, so a caller probing for another tenant's session
+learns nothing it would not learn from a session that does not exist (§5.2
+step 2: "a refusal is a 404").
+
+CLOSE REQUESTS. `POST /internal/close`, body `<base64url(json)>.<base64url(mac)>`
+in the ticket's shape under its OWN domain tag, so no ticket is ever a close
+request and no close request is ever a ticket. The body names `session_id`,
+`exp` (at most 60 s ahead) and a one-use `nonce`.
 
 THE TUNNEL'S FRAMES. After the ticket (the first message, text) and the
 relay's `{"type": "ready"}`, every tunnel message is binary:
@@ -69,6 +88,8 @@ from typing import Any, Awaitable, Callable, Protocol
 log = logging.getLogger(__name__)
 
 TICKET_DOMAIN = b"swarm-live-ticket/v1\0"
+#: A close request's MAC domain: never a ticket's.
+CLOSE_DOMAIN = b"swarm-live-close/v1\0"
 
 #: Lifetime of each role's ticket (§3.3: 60 s for the tunnel; §5.2: 30 s for a
 #: viewer). Control tickets are minted by swarm-api the moment its transaction
@@ -78,6 +99,15 @@ TICKET_TTL_SECONDS = {"tunnel": 60, "viewer": 30, "control": 30, "release": 30}
 #: Clock skew tolerated between swarm-api's clock and the relay's, on expiry and
 #: on the lifetime check. Both run on Google infrastructure with NTP.
 CLOCK_SKEW_SECONDS = 5
+
+#: A close request's lifetime: the decision's 60 s, as the tunnel ticket's.
+CLOSE_TTL_SECONDS = 60
+
+#: How long a closed session's id is remembered. Every ticket minted before
+#: the close has expired by then -- the longest lives 60 s, plus skew either
+#: way -- and swarm-api mints none after it (a closed session never reopens:
+#: `LiveService.open_session` refuses it), so forgetting it then admits nothing.
+CLOSED_MEMORY_SECONDS = max(TICKET_TTL_SECONDS.values()) + 2 * CLOCK_SKEW_SECONDS
 
 #: §5.10. The relay is one replica, so these are global counts.
 MAX_VIEWERS_PER_TASK = 10
@@ -104,6 +134,9 @@ CLOSE_SLOW = 4408
 
 _TICKET_FIELDS = ("session_id", "tenant_id", "task_id", "attempt_id", "generation",
                   "role", "exp", "nonce", "email")
+_CLOSE_FIELDS = ("session_id", "exp", "nonce")
+#: The roles that open a connection; the others are messages on one.
+CONNECTION_ROLES = ("tunnel", "viewer")
 
 
 class Refused(Exception):
@@ -126,8 +159,33 @@ def _b64decode(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def _mac(key: bytes, body: str) -> bytes:
-    return hmac.new(key, TICKET_DOMAIN + body.encode("ascii"), hashlib.sha256).digest()
+def _mac(key: bytes, body: str, domain: bytes = TICKET_DOMAIN) -> bytes:
+    return hmac.new(key, domain + body.encode("ascii"), hashlib.sha256).digest()
+
+
+def _signed(key: bytes, body: dict[str, Any], domain: bytes) -> str:
+    encoded = _b64encode(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
+    return encoded + "." + _b64encode(_mac(key, encoded, domain))
+
+
+def _unsigned(key: bytes, raw: Any, domain: bytes) -> dict[str, Any]:
+    """The JSON body of `raw` when `key` signed it under `domain`."""
+    if not isinstance(raw, str) or len(raw) > MAX_TICKET_CHARS or raw.count(".") != 1:
+        raise Refused("malformed")
+    encoded, mac = raw.split(".")
+    try:
+        given = _b64decode(mac)
+    except (binascii.Error, ValueError):
+        raise Refused("malformed") from None
+    if not encoded or not hmac.compare_digest(given, _mac(key, encoded, domain)):
+        raise Refused("bad_signature")
+    try:
+        body = json.loads(_b64decode(encoded))
+    except (binascii.Error, ValueError):
+        raise Refused("malformed") from None
+    if not isinstance(body, dict):
+        raise Refused("malformed")
+    return body
 
 
 @dataclass(frozen=True)
@@ -147,8 +205,9 @@ def mint_ticket(key: bytes, *, session_id: str, tenant_id: str, task_id: str, at
                 generation: int, role: str, email: str = "", now: float | None = None,
                 ttl: int | None = None) -> str:
     """A ticket as swarm-api mints it. The relay never mints one in production;
-    this is the single statement of the format, for swarm-api to use (see the
-    PR's contract request) and for the tests."""
+    `swarm_api.live.mint_ticket` restates this format, and
+    tests/unit/control_plane/test_live_relay_wire.py holds the two to each
+    other (a frozen-contract home for it is a request, not a change)."""
     if role not in TICKET_TTL_SECONDS:
         raise ValueError(f"unknown ticket role {role!r}")
     issued = int(time.time() if now is None else now)
@@ -158,26 +217,13 @@ def mint_ticket(key: bytes, *, session_id: str, tenant_id: str, task_id: str, at
         "exp": issued + (TICKET_TTL_SECONDS[role] if ttl is None else int(ttl)),
         "nonce": secrets.token_hex(16), "email": email,
     }
-    encoded = _b64encode(json.dumps(body, sort_keys=True, separators=(",", ":")).encode())
-    return encoded + "." + _b64encode(_mac(key, encoded))
+    return _signed(key, body, TICKET_DOMAIN)
 
 
 def verify_ticket(key: bytes, raw: str, *, now: float) -> Ticket:
     """Check the MAC, the shape and the clock. One-use is the ledger's job."""
-    if not isinstance(raw, str) or len(raw) > MAX_TICKET_CHARS or raw.count(".") != 1:
-        raise Refused("malformed")
-    encoded, mac = raw.split(".")
-    try:
-        given = _b64decode(mac)
-    except (binascii.Error, ValueError):
-        raise Refused("malformed") from None
-    if not encoded or not hmac.compare_digest(given, _mac(key, encoded)):
-        raise Refused("bad_signature")
-    try:
-        body = json.loads(_b64decode(encoded))
-    except (binascii.Error, ValueError):
-        raise Refused("malformed") from None
-    if not isinstance(body, dict) or set(body) != set(_TICKET_FIELDS):
+    body = _unsigned(key, raw, TICKET_DOMAIN)
+    if set(body) != set(_TICKET_FIELDS):
         raise Refused("malformed")
     strings = [body[f] for f in _TICKET_FIELDS if f not in ("generation", "exp")]
     if (not all(isinstance(s, str) for s in strings)
@@ -197,13 +243,46 @@ def verify_ticket(key: bytes, raw: str, *, now: float) -> Ticket:
     return ticket
 
 
+def mint_close(key: bytes, session_id: str, *, now: float | None = None,
+               ttl: int = CLOSE_TTL_SECONDS) -> str:
+    """A close request as swarm-api mints it (`swarm_api.live.mint_close`
+    restates it; tests/unit/control_plane/test_live_relay_wire.py holds the two
+    to each other)."""
+    issued = int(time.time() if now is None else now)
+    return _signed(key, {"session_id": session_id, "exp": issued + int(ttl),
+                         "nonce": secrets.token_hex(16)}, CLOSE_DOMAIN)
+
+
+@dataclass(frozen=True)
+class CloseRequest:
+    session_id: str
+    exp: int
+    nonce: str
+
+
+def verify_close(key: bytes, raw: str, *, now: float) -> CloseRequest:
+    """A close request's MAC, shape and clock, as `verify_ticket` checks a ticket's."""
+    body = _unsigned(key, raw, CLOSE_DOMAIN)
+    if (set(body) != set(_CLOSE_FIELDS)
+            or not isinstance(body["session_id"], str) or not body["session_id"]
+            or not isinstance(body["nonce"], str) or not body["nonce"]
+            or not isinstance(body["exp"], int) or isinstance(body["exp"], bool)):
+        raise Refused("malformed")
+    request = CloseRequest(**body)
+    if now > request.exp:
+        raise Refused("expired")
+    if request.exp - now > CLOSE_TTL_SECONDS + CLOCK_SKEW_SECONDS:
+        raise Refused("lifetime")
+    return request
+
+
 class TicketLedger:
     """Nonces already presented, kept until their ticket could no longer verify."""
 
     def __init__(self) -> None:
         self._spent: dict[str, int] = {}
 
-    def spend(self, ticket: Ticket, now: float) -> None:
+    def spend(self, ticket: Ticket | CloseRequest, now: float) -> None:
         if len(self._spent) > 1024:
             self._spent = {n: exp for n, exp in self._spent.items() if exp + CLOCK_SKEW_SECONDS >= now}
         if ticket.nonce in self._spent:
@@ -231,51 +310,34 @@ def decode_frame(data: bytes) -> tuple[int, str, bytes]:
     return data[0], conn_id, bytes(data[2 + data[1]:])
 
 
-# ---------------------------------------------------------------- the session document
+# ---------------------------------------------------------------- the session
 
 
 @dataclass(frozen=True)
 class SessionRecord:
-    """The fields of `live_sessions/{session_id}` the relay checks a ticket against."""
+    """A session as its tunnel ticket names it. The relay has no other source."""
 
     session_id: str
     tenant_id: str
     task_id: str
     attempt_id: str
     generation: int
-    open: bool
+
+    @classmethod
+    def of(cls, ticket: Ticket) -> "SessionRecord":
+        return cls(session_id=ticket.session_id, tenant_id=ticket.tenant_id,
+                   task_id=ticket.task_id, attempt_id=ticket.attempt_id,
+                   generation=ticket.generation)
 
 
-class SessionStore(Protocol):
-    def get(self, session_id: str) -> SessionRecord | None: ...
+#: The fields every later ticket must share with the session's tunnel ticket.
+_SESSION_FIELDS = ("tenant_id", "task_id", "attempt_id", "generation")
 
 
-class FirestoreSessionStore:
-    """Reads `live_sessions/{id}`, which swarm-api writes (§3.3, §8.4).
-
-    The relay reads this document and nothing else in Firestore. A session is
-    open while swarm-api's `state` field says `"open"`; any other value, or a
-    missing document, refuses every ticket for it.
-    """
-
-    COLLECTION = "live_sessions"
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    def get(self, session_id: str) -> SessionRecord | None:
-        snap = self._client.collection(self.COLLECTION).document(session_id).get()
-        if not snap.exists:
-            return None
-        doc = snap.to_dict() or {}
-        try:
-            return SessionRecord(
-                session_id=session_id, tenant_id=str(doc["tenant_id"]), task_id=str(doc["task_id"]),
-                attempt_id=str(doc["attempt_id"]), generation=int(doc["generation"]),
-                open=doc.get("state") == "open")
-        except (KeyError, TypeError, ValueError):
-            log.warning("live relay: session=%s document is malformed; treated as closed", session_id)
-            return None
+def _match(ticket: Ticket, session: SessionRecord) -> None:
+    for name in _SESSION_FIELDS:
+        if getattr(ticket, name) != getattr(session, name):
+            raise Refused("wrong_" + name.removesuffix("_id"))
 
 
 # ---------------------------------------------------------------- connections
@@ -382,7 +444,7 @@ class Viewer:
 
 
 class Rendezvous:
-    def __init__(self, key: bytes, store: SessionStore, *, clock: Callable[[], float] = time.time,
+    def __init__(self, key: bytes, *, clock: Callable[[], float] = time.time,
                  recorder_factory: RecorderFactory | None = None,
                  max_viewers_per_task: int = MAX_VIEWERS_PER_TASK,
                  max_viewers_per_tenant: int = MAX_VIEWERS_PER_TENANT,
@@ -390,7 +452,6 @@ class Rendezvous:
         if len(key) < MIN_KEY_BYTES:
             raise ValueError(f"swarm-live-key must be at least {MIN_KEY_BYTES} bytes")
         self._key = key
-        self._store = store
         self._clock = clock
         self._recorder_factory = recorder_factory
         self._max_task = max_viewers_per_task
@@ -398,6 +459,8 @@ class Rendezvous:
         self._queue_size = queue_size
         self._ledger = TicketLedger()
         self._tunnels: dict[str, Tunnel] = {}
+        #: session_id -> when it may be forgotten (CLOSED_MEMORY_SECONDS).
+        self._closed: dict[str, float] = {}
         self._lock = asyncio.Lock()
 
     # -- counts --------------------------------------------------------
@@ -420,12 +483,17 @@ class Rendezvous:
 
     # -- tickets -------------------------------------------------------
 
-    async def _admit(self, raw: str, role: str | tuple[str, ...]) -> tuple[Ticket, SessionRecord]:
-        """Verify, spend, and match a ticket to its session document.
+    def is_closed(self, session_id: str) -> bool:
+        now = self._clock()
+        self._closed = {s: until for s, until in self._closed.items() if until >= now}
+        return session_id in self._closed
 
-        The MAC, the clock and the spend run on the event loop, so two
-        presentations of one ticket cannot both pass the ledger; only the
-        document read goes to a thread.
+    def _admit(self, raw: str, role: str | tuple[str, ...]) -> Ticket:
+        """Verify and spend a ticket, and refuse one for a closed session.
+
+        Synchronous, on the event loop, so two presentations of one ticket
+        cannot both pass the ledger. Matching it to its session is the
+        caller's: a tunnel ticket defines the session, every other names it.
         """
         now = self._clock()
         ticket = verify_ticket(self._key, raw, now=now)
@@ -433,20 +501,14 @@ class Rendezvous:
         roles = (role,) if isinstance(role, str) else role
         if ticket.role not in roles:
             raise Refused("wrong_role")
-        record = await asyncio.to_thread(self._store.get, ticket.session_id)
-        if record is None:
-            raise Refused("unknown_session")
-        if not record.open:
+        if self.is_closed(ticket.session_id):
             raise Refused("session_closed")
-        for name in ("tenant_id", "task_id", "attempt_id", "generation"):
-            if getattr(ticket, name) != getattr(record, name):
-                raise Refused("wrong_" + name.removesuffix("_id"))
-        return ticket, record
+        return ticket
 
     # -- the gate's tunnel ---------------------------------------------
 
     async def open_tunnel(self, raw: str, endpoint: Endpoint) -> Tunnel:
-        ticket, record = await self._admit(raw, "tunnel")
+        record = SessionRecord.of(self._admit(raw, "tunnel"))
         async with self._lock:
             if record.session_id in self._tunnels:
                 raise Refused("tunnel_exists", CLOSE_BUSY)
@@ -545,13 +607,13 @@ class Rendezvous:
     # -- viewers -------------------------------------------------------
 
     async def open_viewer(self, raw: str, endpoint: Endpoint) -> Viewer:
-        ticket, record = await self._admit(raw, "viewer")
+        ticket = self._admit(raw, "viewer")
         async with self._lock:
-            tunnel = self._tunnels.get(record.session_id)
+            tunnel = self._tunnels.get(ticket.session_id)
             if tunnel is None or tunnel.closed:
                 raise Refused("no_tunnel")
-            if tunnel.session.generation != record.generation:
-                raise Refused("wrong_generation")
+            _match(ticket, tunnel.session)
+            record = tunnel.session
             if self.viewer_count(task_id=record.task_id) >= self._max_task:
                 raise Refused("viewers_per_task", CLOSE_FULL)
             if self.viewer_count(tenant_id=record.tenant_id) >= self._max_tenant:
@@ -592,9 +654,10 @@ class Rendezvous:
             viewer.outbox.put(False, json.dumps({"type": "refused", "reason": "malformed"}))
             return
         try:
-            ticket, record = await self._admit(raw, ("control", "release"))
-            if record.session_id != viewer.tunnel.session.session_id:
+            ticket = self._admit(raw, ("control", "release"))
+            if ticket.session_id != viewer.tunnel.session.session_id:
                 raise Refused("wrong_session")
+            _match(ticket, viewer.tunnel.session)
             if ticket.email != viewer.email:
                 raise Refused("wrong_person")
         except Refused as exc:
@@ -639,20 +702,27 @@ class Rendezvous:
 
     # -- keeping the check true while connections are open --------------
 
-    async def sweep(self) -> None:
-        """Drop every session whose document closed or whose generation moved
-        (invariant 5: a stale generation's session is closed, §8.5)."""
-        for tunnel in list(self._tunnels.values()):
-            s = tunnel.session
-            try:
-                current = await asyncio.to_thread(self._store.get, s.session_id)
-            except Exception as exc:  # noqa: BLE001 - keep serving; try again next sweep
-                log.warning("live relay: session=%s sweep read failed: %s", s.session_id, type(exc).__name__)
-                continue
-            if (current is None or not current.open
-                    or (current.tenant_id, current.task_id, current.attempt_id, current.generation)
-                    != (s.tenant_id, s.task_id, s.attempt_id, s.generation)):
-                await self._end_tunnel(tunnel, CLOSE_ENDED, "session_ended")
+    async def close_session(self, session_id: str) -> int:
+        """Drop every connection of `session_id` and refuse every ticket for it
+        still in flight (invariant 5: a stale generation's session is closed,
+        §8.5). The number of connections dropped -- the tunnel and its viewers;
+        0 for a session with no tunnel here, which is still remembered closed."""
+        self._closed[session_id] = self._clock() + CLOSED_MEMORY_SECONDS
+        tunnel = self._tunnels.get(session_id)
+        if tunnel is None:
+            log.info("live relay: session=%s closed with no tunnel open", session_id)
+            return 0
+        dropped = 1 + len(tunnel.viewers)
+        await self._end_tunnel(tunnel, CLOSE_ENDED, "session_ended")
+        return dropped
+
+    async def close_request(self, raw: str) -> tuple[str, int]:
+        """swarm-api's `POST /internal/close`: verified and spent like a
+        ticket, then `close_session`. (session_id, connections dropped)."""
+        now = self._clock()
+        request = verify_close(self._key, raw, now=now)
+        self._ledger.spend(request, now)
+        return request.session_id, await self.close_session(request.session_id)
 
     async def flush(self) -> None:
         """Wait until every open connection's queue has been written. For tests
