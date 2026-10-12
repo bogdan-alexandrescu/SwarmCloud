@@ -64,7 +64,9 @@ WORKER = {"agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer"
 # workspace-apply (#847, lane W4) copies nothing from the repository: the job's
 # code is the checkout Cloud Build hands each step, so only its own directory
 # and the two ignore files reach it.
-ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "workspace-apply"}
+# swarm-live (LB-L8e) is the one recipe under apps/ rather than images/
+# (apps/swarm-live/Dockerfile); find_recipe() accepts both.
+ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -90,6 +92,9 @@ def _sandbox(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     shutil.copytree(REPO / "scripts", root / "scripts")
     shutil.copytree(REPO / "images", root / "images")
+    for recipe in REPO.glob("apps/*/Dockerfile"):
+        (root / recipe.parent.relative_to(REPO)).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(recipe, root / recipe.relative_to(REPO))
     for name in (".gitignore", ".gcloudignore", ".dockerignore"):
         if (REPO / name).exists():
             shutil.copy2(REPO / name, root / name)
@@ -138,7 +143,11 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["terraform/modules/service_account_ids/main.tf"], {"workspace-apply"}),
         (["apps/scheduler/scheduler/dispatch.py"], {"swarm-scheduler", "workspace-apply"}),
         # COPY'd files outside images/.
-        (["apps/common/swarm_common/models.py"], PYTHON_SERVICES | WORKER | {"workspace-apply"}),
+        (["apps/common/swarm_common/models.py"], PYTHON_SERVICES | WORKER | {"swarm-live", "workspace-apply"}),
+        # The live relay: its recipe beside it, and its own lock.
+        (["apps/swarm-live/swarm_live/main.py"], {"swarm-live"}),
+        (["apps/swarm-live/uv.lock"], {"swarm-live"}),
+        (["apps/swarm-live/Dockerfile"], {"swarm-live"}),
         (["apps/redaction/redaction/scan.py"], WORKER | {"swarm-api"}),
         (["apps/agent-worker/worker/main.py"], WORKER),
         (["apps/quota-broker/quota_broker/app.py"], {"swarm-quota-broker", "swarm-scheduler", "workspace-apply"}),

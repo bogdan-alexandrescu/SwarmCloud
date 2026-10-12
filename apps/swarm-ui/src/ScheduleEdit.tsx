@@ -24,7 +24,7 @@
  * `use_merge_switch`); the SD3 switch on the Gate tab is the one way there,
  * because it is audited and needs a second person (§4.2).
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { cloneElement, isValidElement, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import {
   createSchedule,
   loadRepositories,
@@ -114,9 +114,58 @@ function ownParams(type: string, params: Record<string, unknown>): Record<string
   return out
 }
 
-/** The parameters the form draws a field for: a scalar or an enum. Others are shown, not edited. */
-function editable(p: ParamSchema): boolean {
-  return Array.isArray(p.enum) || p.type === 'string' || p.type === 'integer' || p.type === 'number' || p.type === 'boolean'
+/**
+ * The parts of a served JSON-schema property the form reads beyond
+ * `ParamSchema`: a list's items and bounds, a nullable value's `anyOf`, and a
+ * reference to a model the form has no editor for.
+ */
+type Prop = ParamSchema & {
+  items?: { type?: string; enum?: unknown[] }
+  minItems?: number
+  maxItems?: number
+  anyOf?: { type?: string }[]
+  $ref?: string
+}
+
+/** A list of strings, or of one enum's values: `labels_include`, `paths`, `focus`. */
+function isList(p: Prop): boolean {
+  return p.type === 'array' && (p.items?.type === 'string' || Array.isArray(p.items?.enum))
+}
+
+/** `string | null`, served as `anyOf`: `branch`, `post_to_issue`, `file_issues_repo_id`. Blank is null. */
+function isNullableText(p: Prop): boolean {
+  const kinds = (p.anyOf ?? []).map((x) => x.type)
+  return p.type === undefined && kinds.length === 2 && kinds.includes('string') && kinds.includes('null')
+}
+
+/**
+ * The parameters the form draws a field for: a scalar, an enum, a list of
+ * strings and a nullable string. A map (`pr-shepherd`'s `labels`) and a model
+ * (`custom-prompt`'s `spec`) are shown, not edited, and say why.
+ */
+function editable(p: Prop): boolean {
+  return (
+    Array.isArray(p.enum) ||
+    p.type === 'string' ||
+    p.type === 'integer' ||
+    p.type === 'number' ||
+    p.type === 'boolean' ||
+    isList(p) ||
+    isNullableText(p)
+  )
+}
+
+/** Why a parameter is not a field here, in the person's words. */
+function notEditableWhy(p: Prop): string {
+  if (p.$ref !== undefined) return 'A workflow spec, which this form cannot write: it is set through the API (POST /v1/schedules with params.spec) or the MCP schedule tools.'
+  if (p.type === 'object') return 'A map of settings, set through the API; shown here as stored.'
+  return 'Set through the API; unchanged here.'
+}
+
+/** A value the server needs and this form leaves unset: a required key not set, or a list emptier than its minimum. */
+function missingParam(p: Prop, required: boolean, v: unknown): boolean {
+  if (Array.isArray(v)) return (p.minItems ?? 0) > 0 && v.length < (p.minItems ?? 0)
+  return required && (v === undefined || v === null || v === '')
 }
 
 function schemaDefaults(t: ScheduleTypeRow | null): Record<string, unknown> {
@@ -155,7 +204,9 @@ function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoReco
   return {
     type: t?.name ?? '',
     name: '',
-    scopeMode: (scopes[0] as Scope | undefined) ?? 'repos',
+    // Chosen repositories first wherever the type offers them (AUT-2): a
+    // form left at its defaults must not reach every registered repository.
+    scopeMode: scopes.includes('repos') ? 'repos' : ((scopes[0] as Scope | undefined) ?? 'repos'),
     repoIds: repos.length === 1 ? [repos[0]!.repo_id] : [],
     cron: '0 9 * * 1-5',
     timezone: viewerZone(),
@@ -163,7 +214,10 @@ function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoReco
     budget: { per_run_usd: '', per_day_usd: '', max_concurrent: '' },
     policy: {},
     params: schemaDefaults(t),
-    start: 'enabled',
+    // DRY RUN FIRST (AUT-2; the mockup's create variant A): a new schedule
+    // records what it would do and creates nothing until the person turns
+    // dry run off. Enabled is one deliberate click away, never the default.
+    start: 'dry_run',
   }
 }
 
@@ -227,9 +281,37 @@ function inViewer(iso: string): string {
  * THE CRON IN WORDS, AND THE NEXT FIVE (§6.3): in the schedule's zone and in
  * the viewer's. A bad expression is the parser's own reason, said in place.
  */
-function CronPreview({ cron, timezone, type }: { cron: string; timezone: string; type: string }) {
+/**
+ * Why the preview stops a save, or null: the parser's 422 and the type's
+ * minimum-interval refusal alike (AUT-10). A preview that was not read stops
+ * nothing -- the server still checks the expression -- and says so in place.
+ */
+export function previewBlocks(r: Result<{ preview: SchedulePreview }> | null): string | null {
+  if (r === null || r.status === 'loading' || r.status === 'empty') return null
+  if (r.status === 'error') return r.error.kind === 'invalid' ? `Not a schedule: ${r.error.message}` : null
+  const refusal = refusalWords(r.data.preview.refusal)
+  return refusal === null ? null : `This type would refuse it: ${refusal}`
+}
+
+function CronPreview({
+  cron,
+  timezone,
+  type,
+  onBlocks,
+}: {
+  cron: string
+  timezone: string
+  type: string
+  /** What stops a save, as `previewBlocks` reads the last answer. */
+  onBlocks: (why: string | null) => void
+}) {
   const [r, setR] = useState<Result<{ preview: SchedulePreview }> | null>(null)
+  const report = useRef(onBlocks)
+  report.current = onBlocks
   useEffect(() => {
+    // An expression being retyped is not yet refused: the last refusal is
+    // dropped at once, and the next answer decides.
+    report.current(null)
     if (cron.trim() === '' || timezone.trim() === '') {
       setR(null)
       return
@@ -237,7 +319,9 @@ function CronPreview({ cron, timezone, type }: { cron: string; timezone: string;
     let live = true
     const timer = setTimeout(() => {
       void previewSchedule({ cron: cron.trim(), timezone: timezone.trim(), ...(type === '' ? {} : { type }) }).then((next) => {
-        if (live) setR(next)
+        if (!live) return
+        setR(next)
+        report.current(previewBlocks(next))
       })
     }, PREVIEW_DEBOUNCE_MS)
     return () => {
@@ -278,12 +362,46 @@ function CronPreview({ cron, timezone, type }: { cron: string; timezone: string;
   )
 }
 
+/**
+ * A labelled control. The `<label>` wraps the control so a click on the words
+ * reaches it, and the control is NAMED by the words alone and DESCRIBED by the
+ * hint (AUT-16): a wrapped `<select>` otherwise takes every option and the
+ * hint as its accessible name ("Type issue-sweep issue-plan-only …").
+ */
 function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
+  const id = useId()
+  const hinted = hint !== undefined && hint !== ''
+  const control = isValidElement(children)
+    ? cloneElement(children as ReactElement<Record<string, unknown>>, {
+        'aria-labelledby': `${id}-l`,
+        ...(hinted ? { 'aria-describedby': `${id}-h` } : {}),
+      })
+    : children
   return (
     <label className="c-field">
-      <span className="c-lbl">{label}</span>
-      {children}
-      {hint !== undefined && <span className="c-hint">{hint}</span>}
+      <span className="c-lbl" id={`${id}-l`}>{label}</span>
+      {control}
+      {hinted && <span className="c-hint" id={`${id}-h`}>{hint}</span>}
+    </label>
+  )
+}
+
+/** A checkbox named by its words and described by its hint, as `Field` does for the rest. */
+function Check({ label, hint, checked, onChange }: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
+  const id = useId()
+  return (
+    <label className="c-field">
+      <span>
+        <input
+          type="checkbox"
+          checked={checked}
+          aria-labelledby={`${id}-l`}
+          aria-describedby={hint === undefined ? undefined : `${id}-h`}
+          onChange={(e) => onChange(e.target.checked)}
+        />{' '}
+        <span id={`${id}-l`}>{label}</span>
+      </span>
+      {hint !== undefined && <span className="c-hint" id={`${id}-h`}>{hint}</span>}
     </label>
   )
 }
@@ -314,9 +432,83 @@ function Choice<T extends string>({
   )
 }
 
-function ParamField({ name, schema, value, onChange }: { name: string; schema: ParamSchema; value: unknown; onChange: (v: unknown) => void }) {
+/** "security, needs-owner" -- a served list default, in the words a blank field means. */
+function listWords(v: unknown): string {
+  return Array.isArray(v) ? v.map(String).join(', ') : ''
+}
+
+/**
+ * A LIST OF STRINGS, comma-separated as typed (AUT-12). The text is the
+ * field's own, so "a, " is not cut back to "a" while it is being typed; the
+ * list is what goes up. A list of one enum's values is a checkbox each.
+ */
+function ListField({ label, schema, value, onChange }: { label: string; schema: Prop; value: unknown; onChange: (v: string[]) => void }) {
+  const list = Array.isArray(value) ? value.map(String) : []
+  const [text, setText] = useState(list.join(', '))
+  const dflt = Array.isArray(schema.default) ? schema.default : undefined
+  const hint = [
+    schema.description,
+    dflt === undefined ? null : dflt.length === 0 ? 'Default: none.' : `Default: ${listWords(dflt)}.`,
+    schema.minItems !== undefined && schema.minItems > 0 ? `At least ${schema.minItems}.` : null,
+  ]
+    .filter((x): x is string => typeof x === 'string' && x !== '')
+    .join(' ')
+  const options = schema.items?.enum
+  if (Array.isArray(options)) {
+    return (
+      <fieldset className="c-field sc-list-field">
+        <legend className="c-lbl">{label}</legend>
+        {options.map((o) => (
+          <label key={String(o)} className="sc-check">
+            <input
+              type="checkbox"
+              checked={list.includes(String(o))}
+              onChange={(e) => onChange(e.target.checked ? [...list, String(o)] : list.filter((x) => x !== String(o)))}
+            />{' '}
+            {String(o)}
+          </label>
+        ))}
+        {hint !== '' && <span className="c-hint">{hint}</span>}
+      </fieldset>
+    )
+  }
+  return (
+    <Field label={label} hint={(hint === '' ? '' : `${hint} `) + 'Separate them with commas.'}>
+      <input
+        className="c-inp"
+        value={text}
+        spellCheck={false}
+        placeholder={dflt === undefined || dflt.length === 0 ? 'none' : undefined}
+        onChange={(e) => {
+          setText(e.target.value)
+          onChange(
+            e.target.value
+              .split(',')
+              .map((x) => x.trim())
+              .filter((x) => x !== ''),
+          )
+        }}
+      />
+    </Field>
+  )
+}
+
+function ParamField({ name, schema, value, onChange }: { name: string; schema: Prop; value: unknown; onChange: (v: unknown) => void }) {
   const label = schema.title ?? name
   const hint = schema.description
+  if (isList(schema)) return <ListField label={label} schema={schema} value={value} onChange={onChange} />
+  if (isNullableText(schema)) {
+    return (
+      <Field label={label} hint={[hint, 'Blank: not set.'].filter(Boolean).join(' ')}>
+        <input
+          className="c-inp"
+          value={typeof value === 'string' ? value : ''}
+          spellCheck={false}
+          onChange={(e) => onChange(e.target.value.trim() === '' ? null : e.target.value)}
+        />
+      </Field>
+    )
+  }
   if (Array.isArray(schema.enum)) {
     return (
       <Field label={label} hint={hint}>
@@ -330,16 +522,7 @@ function ParamField({ name, schema, value, onChange }: { name: string; schema: P
       </Field>
     )
   }
-  if (schema.type === 'boolean') {
-    return (
-      <label className="c-field">
-        <span>
-          <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} /> {label}
-        </span>
-        {hint !== undefined && <span className="c-hint">{hint}</span>}
-      </label>
-    )
-  }
+  if (schema.type === 'boolean') return <Check label={label} hint={hint} checked={value === true} onChange={onChange} />
   const numeric = schema.type === 'integer' || schema.type === 'number'
   return (
     <Field label={label} hint={hint}>
@@ -365,6 +548,31 @@ const RUN_PLAN: readonly { value: 'auto' | 'approve'; label: string }[] = [
   { value: 'approve', label: 'approve' },
 ]
 
+/**
+ * WHAT THE PARAMETERS STILL NEED (AUT-5). A type whose required parameter
+ * this form cannot write -- custom-prompt's `spec` -- cannot be created here,
+ * and Create says so instead of sending a body the server refuses. A field
+ * the form does draw says which value it is missing.
+ */
+function paramsWhy(t: ScheduleTypeRow | null, d: Draft): string | null {
+  if (t === null) return null
+  const required = t.params_schema.required ?? []
+  for (const [k, p] of Object.entries(t.params_schema.properties ?? {}) as [string, Prop][]) {
+    if (restated(d.type, k) !== undefined) continue
+    const name = p.title ?? k
+    if (!editable(p)) {
+      if (required.includes(k) && d.params[k] === undefined) {
+        return `${t.name} needs ${name}, which this form cannot write. Create it through the API (POST /v1/schedules with params.${k}) or the MCP schedule tools.`
+      }
+      continue
+    }
+    if (missingParam(p, required.includes(k), d.params[k])) {
+      return Array.isArray(d.params[k]) ? `${name} needs at least ${p.minItems ?? 1}.` : `${name} needs a value.`
+    }
+  }
+  return null
+}
+
 /** What the request would send: the create body, or the edit's changes. */
 export function createBody(d: Draft, t: ScheduleTypeRow, requestId: string): ScheduleCreateBody {
   const body: ScheduleCreateBody = {
@@ -379,6 +587,9 @@ export function createBody(d: Draft, t: ScheduleTypeRow, requestId: string): Sch
   const gate = changed(d.gate, t.default_gate)
   if (Object.keys(gate).length > 0) body.gate = gate
   const params = changed(ownParams(d.type, d.params), ownParams(d.type, schemaDefaults(t)))
+  // A list left empty where the catalogue serves no default is not a
+  // choice; the server's own default applies (an older API serves none).
+  for (const [k, v] of Object.entries(params)) if (Array.isArray(v) && v.length === 0 && schemaDefaults(t)[k] === undefined) delete params[k]
   if (Object.keys(params).length > 0) body.params = params
   const budget = budgetOf(d)
   if (Object.keys(budget).length > 0) body.budget = budget
@@ -436,9 +647,10 @@ function ScheduleForm({
 
   const pickType = (name: string) => {
     const next = types.find((x) => x.name === name) ?? null
-    setD((prev) => ({ ...draftFor(next, null, repoList), name: prev.name, cron: prev.cron, timezone: prev.timezone, repoIds: prev.repoIds }))
+    setD((prev) => ({ ...draftFor(next, null, repoList), name: prev.name, cron: prev.cron, timezone: prev.timezone, repoIds: prev.repoIds, start: prev.start }))
   }
 
+  const [previewWhy, setPreviewWhy] = useState<string | null>(null)
   const scopes = t === null ? [d.scopeMode] : scopesOf(t)
   const why =
     d.name.trim() === ''
@@ -449,7 +661,7 @@ function ScheduleForm({
           ? 'Choose at least one repository.'
           : d.cron.trim() === ''
             ? 'Say when it runs.'
-            : undefined
+            : (previewWhy ?? paramsWhy(t, d) ?? (schedule !== null && Object.keys(editBody(d, schedule)).length === 1 ? 'Nothing has changed yet.' : undefined))
 
   const submit = async () => {
     setBusy(true)
@@ -465,16 +677,17 @@ function ScheduleForm({
 
   // With no served type, the stored parameters are shown as they are: `{}` is
   // not `editable`, so each draws read-only.
-  const params: [string, ParamSchema][] =
+  const params: [string, Prop][] =
     t !== null ? Object.entries(t.params_schema.properties ?? {}) : Object.keys(d.params).map((k) => [k, {}])
   return (
+    // ENTER NEVER SUBMITS (AUT-2). Pressing Enter in Name created a live
+    // schedule over every repository in one keystroke. The form has no submit
+    // button, and the browser's implicit submission is swallowed here, so
+    // only a click on Create or Save writes.
     <form
       className="sc-form"
       data-testid="sc-form"
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (why === undefined && !busy) void submit()
-      }}
+      onSubmit={(e) => e.preventDefault()}
     >
       {schedule === null && <TemplateTiles types={types} value={d.type} onPick={pickType} />}
       <div className="sc-edit-cols">
@@ -607,10 +820,12 @@ function ScheduleForm({
                       <input className="c-inp" value={follows(d.gate)} readOnly data-testid={`sc-param-${k}`} />
                     </Field>
                   ) : editable(p) ? (
-                    <ParamField key={k} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
+                    // Keyed by the type too: a list field keeps its own text,
+                    // and two types share a key (`paths`) with different defaults.
+                    <ParamField key={`${d.type}:${k}`} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
                   ) : (
-                    <Field key={k} label={p.title ?? k} hint="Set through the API; unchanged here.">
-                      <input className="c-inp is-mono" value={d.params[k] === undefined ? '' : JSON.stringify(d.params[k])} readOnly />
+                    <Field key={`${d.type}:${k}`} label={p.title ?? k} hint={notEditableWhy(p)}>
+                      <input className="c-inp is-mono" value={d.params[k] === undefined ? '' : JSON.stringify(d.params[k])} readOnly data-testid={`sc-param-${k}`} />
                     </Field>
                   )
                 })}
@@ -641,12 +856,12 @@ function ScheduleForm({
               onChange={(v) => set({ policy: { ...d.policy, catch_up: v } })}
             />
             {schedule !== null && (
-              <label className="c-field">
-                <span>
-                  <input type="checkbox" checked={d.policy.dry_run === true} onChange={(e) => set({ policy: { ...d.policy, dry_run: e.target.checked } })} /> Dry run
-                </span>
-                <span className="c-hint">Fires and records what it would do, and creates nothing.</span>
-              </label>
+              <Check
+                label="Dry run"
+                hint="Fires and records what it would do, and creates nothing."
+                checked={d.policy.dry_run === true}
+                onChange={(v) => set({ policy: { ...d.policy, dry_run: v } })}
+              />
             )}
           </div>
           {schedule === null && <StartChoice value={d.start} onChange={(v) => set({ start: v })} />}
@@ -660,13 +875,13 @@ function ScheduleForm({
           )}
           <div className="c-acts">
             {cancel}
-            <Button kind="primary" type="submit" busy={busy ? 'Saving…' : false} disabledReason={why}>
+            <Button kind="primary" busy={busy ? 'Saving…' : false} disabledReason={why} onClick={() => void (why === undefined && !busy && submit())}>
               {schedule === null ? 'Create schedule' : 'Save changes'}
             </Button>
           </div>
         </div>
         <aside className="sc-edit-side" aria-label="When it fires, and the template">
-          <CronPreview cron={d.cron} timezone={d.timezone} type={d.type} />
+          <CronPreview cron={d.cron} timezone={d.timezone} type={d.type} onBlocks={setPreviewWhy} />
           <TemplateCard type={t} tier={schedule?.tier} />
         </aside>
       </div>

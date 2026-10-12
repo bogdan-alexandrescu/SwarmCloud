@@ -152,7 +152,11 @@ describe('the Checkpoints section tells a reclaimed checkpoint from a real zero'
   /** The honest zero survives: nothing records a checkpoint, the list is whole. */
   it('still calls a complete, empty listing with nothing recorded a real zero', async () => {
     const section = await checkpointsSection(agentRun(), emptyPage())
-    expect(section.querySelector('.ctl-mark.is-zero')?.textContent).toBe('none')
+    // The zero is the mark, not a sentence: `.ctl-mark.is-zero`, whose word is
+    // `none` (owner, 2026-10-11), and never the failed-read mark.
+    expect(section.querySelector('.ctl-mark.is-zero'), 'a complete empty listing is not marked as a zero').not.toBeNull()
+    expect(section.querySelector('.ctl-mark.is-unread')).toBeNull()
+    expect(section.querySelector('.ctl-mark.is-zero')!.getAttribute('aria-label')).not.toMatch(/real zero/i)
     expect(section.textContent).not.toMatch(/reclaimed/i)
   })
 

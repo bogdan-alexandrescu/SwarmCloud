@@ -113,6 +113,7 @@ import {
   tokenKindsCell,
   tokenKindsTotal,
   workflowLabel,
+  listRowName,
   workflowPullRequest,
   mergeCardOf,
   VIEW_LABEL,
@@ -5426,6 +5427,8 @@ function WorkflowListRow({
     if (onSeen !== null && inView) onSeen(workflow)
   }, [onSeen, inView, workflow])
   const why = listRowWhy(workflow, taskById, pending)
+  // A row known to have no label or title is "Untitled workflow", id under it.
+  const named = listRowName(workflow.workflow_id, label, stepsRead(workflow, taskById))
   const roll = rollupLine(workflow, taskById)
   const spend = workflowSpend(workflow.steps, taskById, telemetry)
   const failed = why !== null && (why.kind === 'failed' || why.kind === 'failed-unread')
@@ -5450,10 +5453,10 @@ function WorkflowListRow({
         <WorkflowStateMark workflow={workflow} />
       </td>
       <td className="wfl-name" data-col="workflow">
-        <a href={workflowHref(workflow.workflow_id, query)} title={label ?? workflow.workflow_id}>
-          {label ?? workflow.workflow_id}
+        <a href={workflowHref(workflow.workflow_id, query)} title={named.name}>
+          {named.name}
         </a>
-        {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+        {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
         {/* Drawn at ≤560 only, where the done, failed and age columns are
             off the right edge (#109); the cells say it wide, so hidden from
             assistive technology to keep one reading of each fact. */}
