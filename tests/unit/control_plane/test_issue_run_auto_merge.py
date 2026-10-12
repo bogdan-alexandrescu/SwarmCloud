@@ -24,6 +24,8 @@ from __future__ import annotations
 
 import pytest
 
+from datetime import timedelta
+
 import json
 
 from swarm_api import issueci, issueruns
@@ -124,6 +126,22 @@ def test_green_with_the_keyword_written_submits_one_merge_continuing_the_integra
     writes.pulls[PR]["state"] = "closed"
     done = _read(client, clock, running["id"])
     assert done["state"] == "DONE" and done["green_sha"] == SHA_A
+
+
+def test_a_green_run_whose_merge_is_in_flight_is_not_failed_by_the_checking_deadline(
+    client, db, objects, writes, clock,
+):
+    # RUNS (2026-10-12): the deadline ends a run nobody can move on. A green
+    # `auto_merge` run waits on its merge -- or on a person's merge approval
+    # -- and both end it themselves.
+    running = _checking(client, db, objects, writes)
+    writes.check(SHA_A, "unit", "success")
+    assert _read(client, clock, running["id"])["state"] == "CHECKING"
+    assert len(_merge_workflows(db)) == 1
+
+    clock.at += timedelta(seconds=issueci.CHECKING_DEADLINE_SECONDS) * 2
+    run = _read(client, clock, running["id"])
+    assert run["state"] == "CHECKING" and len(_merge_workflows(db)) == 1
 
 
 def test_no_merge_while_the_keyword_block_is_not_written(client, db, objects, writes, clock):
