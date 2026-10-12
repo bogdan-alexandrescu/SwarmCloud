@@ -34,9 +34,12 @@ scope NOW (`firing.repo_ids`):
   2. SELECT with SWEEP's rules, plus `labels_include` and the NOT_READY
      cooldown of §3.1, oldest-updated first.
   3. START up to the room: the least of `max_new_per_firing`, `max_live_runs`
-     less the TENANT's live runs (SWEEP's count: every live run holds a
-     tenant slot, whoever made it), and `max_concurrent` less this schedule's
-     live work. Each run through `routes.runs.start_run`, the path
+     less THIS SCHEDULE's live runs (`schedule_live`), and `max_concurrent`
+     less this schedule's live work. Another schedule's run, or a person's,
+     holds no place in it: measured 2026-10-11, a stuck run of another
+     schedule's (run_e525710be66e) took a slot from sch_88b97e090beb, whose
+     firings then started nothing (lane SCHED). The tenant's own ceilings
+     are admission's, not this parameter's. Each run through `routes.runs.start_run`, the path
      `POST /v1/runs` takes, carrying `metadata.schedule` and recorded on the
      firing the moment it exists.
 
@@ -58,7 +61,9 @@ listed an issue to start. Now `create` and `dry_run` share `select` and
 was refused, to `firing.explain`, the firing stores it as `selection`, and a
 firing that started nothing carries `skip: NOTHING_STARTED` with
 `describe`'s `reason`: `no_room` (and the `bound`), `repositories_not_read`,
-`no_eligible_issue`, `no_open_issue` or `no_repository`.
+`no_eligible_issue`, `no_open_issue` or `no_repository`, and `own_live`:
+how many of this schedule's runs are live against its own limit, which the
+console's history reads as "N of M running from this schedule".
 
 INVARIANTS. A firing creates issue runs, whose planners are ordinary QUEUED
 tasks admitted like any other (1-3); a waiting run is a document. Every read
@@ -332,11 +337,21 @@ class Selection:
     start_failures: list[dict[str, str]] = field(default_factory=list)
     #: What `pass_over_worked` read, and whether either read was cut.
     in_flight: dict[str, Any] = field(default_factory=dict)
+    #: This schedule's live runs against its own limit: `{running, limit,
+    #: bound}`, the limit's parameter named; None when the type has none.
+    own_live: dict[str, Any] | None = None
 
 
 #: (the tenant's live runs, this firing's adopted runs) -> named upper bounds
 #: on what the firing may start; the room is the least of them.
 Limits = Callable[[list[IssueRun], list[IssueRun]], dict[str, int]]
+#: the tenant's live runs -> this schedule's live runs against its own limit.
+OwnLive = Callable[[list[IssueRun]], dict[str, Any]]
+
+
+def schedule_live(live_rows: Iterable[IssueRun], schedule_id: str) -> list[IssueRun]:
+    """The live runs a firing of `schedule_id` started (`metadata.schedule`)."""
+    return [row for row in live_rows if (row.schedule or {}).get("schedule_id") == schedule_id]
 
 
 def params_of(firing: Any) -> Any:
@@ -347,7 +362,8 @@ def params_of(firing: Any) -> Any:
     return entry.params_model.model_validate(dict(firing.schedule.get("params") or {}))
 
 
-def select(firing: Any, params: Any, *, limits: Limits, max_live_runs: int) -> Selection:
+def select(firing: Any, params: Any, *, limits: Limits, max_live_runs: int,
+           own_live: OwnLive | None = None) -> Selection:
     """Adopt, read and filter. Reads only: nothing is written anywhere."""
     ctx = firing.ctx
     tenant_id = str(firing.schedule["tenant_id"])
@@ -381,17 +397,30 @@ def select(firing: Any, params: Any, *, limits: Limits, max_live_runs: int) -> S
         bounds["live_scan"] = 0
     room = max(0, min(bounds.values())) if bounds else 0
     return Selection(report=report, candidates=candidates, adopted=adopted, room=room, limits=bounds,
-                     in_flight=scan)
+                     in_flight=scan, own_live=own_live(live_rows) if own_live is not None else None)
 
 
 def _limits(firing: Any, params: Any) -> Limits:
+    schedule_id = str(firing.schedule["schedule_id"])
+
     def bounds(live_rows: list[IssueRun], adopted: list[IssueRun]) -> dict[str, int]:
+        # Adopted runs are this schedule's live runs, so `schedule_live`
+        # already counts them against `max_live_runs`.
         return {
             "max_new_per_firing": params.max_new_per_firing - len(adopted),
-            "max_live_runs": params.max_live_runs - len(live_rows),
+            "max_live_runs": params.max_live_runs - len(schedule_live(live_rows, schedule_id)),
             "max_concurrent": firing.room - len(adopted),
         }
     return bounds
+
+
+def _own_live(firing: Any, params: Any) -> OwnLive:
+    schedule_id = str(firing.schedule["schedule_id"])
+
+    def own(live_rows: list[IssueRun]) -> dict[str, Any]:
+        return {"running": len(schedule_live(live_rows, schedule_id)), "limit": params.max_live_runs,
+                "bound": "max_live_runs"}
+    return own
 
 
 # --------------------------------------------------------------------------
@@ -485,6 +514,7 @@ def describe(selection: Selection, options: RunOptions) -> dict[str, Any]:
         "runs": options.as_dict(),
         "bound": bound if selection.limits else None,
         "in_flight": dict(selection.in_flight),
+        "own_live": None if selection.own_live is None else dict(selection.own_live),
     }
     if not chosen and not selection.adopted:
         out["reason"] = nothing_reason(selection)
@@ -524,11 +554,13 @@ def fire(firing: Any, selection: Selection, options: RunOptions) -> list[dict[st
 
 def create(firing: Any) -> list[dict[str, Any]]:
     params = params_of(firing)
-    selection = select(firing, params, limits=_limits(firing, params), max_live_runs=params.max_live_runs)
+    selection = select(firing, params, limits=_limits(firing, params), max_live_runs=params.max_live_runs,
+                       own_live=_own_live(firing, params))
     return fire(firing, selection, run_options(firing.schedule, params.fix_rounds))
 
 
 def dry_run(firing: Any) -> dict[str, Any]:
     params = params_of(firing)
-    selection = select(firing, params, limits=_limits(firing, params), max_live_runs=params.max_live_runs)
+    selection = select(firing, params, limits=_limits(firing, params), max_live_runs=params.max_live_runs,
+                       own_live=_own_live(firing, params))
     return describe(selection, run_options(firing.schedule, params.fix_rounds))
