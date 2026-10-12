@@ -20,6 +20,17 @@
 #   * the relay's manifest, kubernetes/swarm-system/swarm-live.yaml, rendered
 #     with the values above as the `swarm_live_manifest` output.
 #
+# THE WIRE (owner decisions 2026-10-11, live-browser.md §3.3; lane LB-L8e).
+# The relay serves plain ws on TCP 8080 inside the VPC, with no TLS and no
+# certificate anywhere: browsers open wss to swarm-api, and swarm-api proxies
+# them to the relay through the internal load balancer below. It reads
+# swarm-live-key from Secret Manager by the version reference rendered into
+# its SWARM_LIVE_KEY_SECRET. Its manifest carries a NetworkPolicy that admits
+# only swarm-api's egress range and labelled tenant gates; the range is
+# var.subnet_cidr, because swarm-api's Direct VPC egress is
+# module.network.subnetwork_id (main.tf, module "cloud_run") and that is the
+# subnet var.subnet_cidr is the primary range of (modules/network).
+#
 # WHO THE RELAY IS. Its Kubernetes service account, `swarm-live` in
 # `swarm-system`, holds the grants DIRECTLY, as a Workload Identity Federation
 # for GKE principal
@@ -58,9 +69,12 @@
 #
 #   1. `make apply` with it false: swarm-live-key exists, nothing reads it yet;
 #   2. `scripts/create-secrets.sh --live-key`: the first version exists;
-#   3. the swarm-live image is built and its digest is in image_refs;
+#   3. the swarm-live image is built and its digest is in image_refs (the
+#      release builds it: scripts/build-images.sh ALL_TARGETS);
 #   4. `enable_live_browser = true`, apply: the relay's grants and address;
-#   5. apply `terraform output -raw swarm_live_manifest` to swarm-autopilot.
+#   5. `kubernetes/apply.sh --swarm-system --confirm`, which applies
+#      `terraform output -raw swarm_live_manifest` to swarm-autopilot and then
+#      swarm-system's policies, and refuses the shared cluster agents-staging.
 #
 # GKE ONLY (§8.1). The relay is a StatefulSet on the Autopilot cluster, and
 # its principal lives in that cluster's workload pool, so the switch does
@@ -113,6 +127,14 @@ locals {
 
   # What the relay asks Secret Manager for at runtime; a reference, never a value.
   live_key_version_name = "projects/${var.project_id}/secrets/${google_secret_manager_secret.live_key.secret_id}/versions/latest"
+
+  # swarm-api's Direct VPC egress range, admitted to the relay on 8080 by the
+  # manifest's NetworkPolicy. Every Cloud Run service here egresses from
+  # module.network.subnetwork_id, whose primary range is var.subnet_cidr; the
+  # network module has no output for the range, so it is read at its source.
+  # kubernetes/apply.sh compares it with the range it reads from swarm-api's
+  # own service and refuses to apply when they differ.
+  live_swarm_api_egress_cidr = var.subnet_cidr
 }
 
 resource "google_secret_manager_secret" "live_key" {
@@ -230,6 +252,11 @@ output "live_relay" {
     artifact_bucket    = module.storage.artifact_bucket_name
     recording_suffixes = local.live_recording_suffixes
     internal_address   = local.live_relay_enabled ? google_compute_address.live_relay[0].address : null
+    # Plain ws (owner decision 2026-10-11 (b)); swarm_live.main.PORT.
+    port = 8080
+    # What the manifest's NetworkPolicy admits; apply.sh holds it to the range
+    # swarm-api's service actually egresses from.
+    swarm_api_egress_cidr = local.live_swarm_api_egress_cidr
   }
 }
 
@@ -237,14 +264,15 @@ output "live_relay" {
 # while the relay is off or has no image, so there is never a half-rendered
 # manifest to apply. Rendered here, not by kubernetes/render.py, because every
 # value it needs is this root's: the bucket, the key's name, the reserved
-# address and the image digest.
+# address, the image digest and swarm-api's subnet range.
 output "swarm_live_manifest" {
   description = "The relay's Kubernetes objects, rendered. Apply to swarm-autopilot only (never agents-staging). Null while enable_live_browser is off."
-  value = local.live_relay_enabled && local.live_relay_image != "" ? replace(replace(replace(replace(replace(
+  value = local.live_relay_enabled && local.live_relay_image != "" ? replace(replace(replace(replace(replace(replace(
     file("${path.module}/../../kubernetes/swarm-system/swarm-live.yaml"),
     "__SWARM_LIVE_IMAGE__", local.live_relay_image),
     "__PROJECT_ID__", var.project_id),
     "__ARTIFACT_BUCKET__", module.storage.artifact_bucket_name),
     "__LIVE_KEY_VERSION__", local.live_key_version_name),
-  "__SWARM_LIVE_ILB_IP__", google_compute_address.live_relay[0].address) : null
+    "__SWARM_LIVE_ILB_IP__", google_compute_address.live_relay[0].address),
+  "__SWARM_API_EGRESS_CIDR__", local.live_swarm_api_egress_cidr) : null
 }

@@ -130,9 +130,7 @@ describe('the Checkpoints section tells a reclaimed checkpoint from a real zero'
     )
     expect(section.textContent).toMatch(/written, then reclaimed/i)
     expect(section.textContent).toContain('ckpt-00001')
-    expect(section.textContent, 'a reclaimed checkpoint was called a real zero').not.toMatch(
-      /real zero/i,
-    )
+    expect(section.querySelector('.ctl-mark.is-zero'), 'a reclaimed checkpoint was called a real zero').toBeNull()
     expect(section.textContent).not.toMatch(/has written no checkpoint/i)
   })
 
@@ -148,13 +146,17 @@ describe('the Checkpoints section tells a reclaimed checkpoint from a real zero'
     )
     expect(section.textContent).toMatch(/written, then reclaimed/i)
     expect(section.textContent).toContain('ckpt-00002')
-    expect(section.textContent).not.toMatch(/real zero/i)
+    expect(section.querySelector('.ctl-mark.is-zero')).toBeNull()
   })
 
   /** The honest zero survives: nothing records a checkpoint, the list is whole. */
   it('still calls a complete, empty listing with nothing recorded a real zero', async () => {
     const section = await checkpointsSection(agentRun(), emptyPage())
-    expect(section.textContent).toMatch(/real zero/i)
+    // The zero is the mark, not a sentence: `.ctl-mark.is-zero`, whose word is
+    // `none` (owner, 2026-10-11), and never the failed-read mark.
+    expect(section.querySelector('.ctl-mark.is-zero'), 'a complete empty listing is not marked as a zero').not.toBeNull()
+    expect(section.querySelector('.ctl-mark.is-unread')).toBeNull()
+    expect(section.querySelector('.ctl-mark.is-zero')!.getAttribute('aria-label')).not.toMatch(/real zero/i)
     expect(section.textContent).not.toMatch(/reclaimed/i)
   })
 
@@ -178,7 +180,7 @@ describe('the Checkpoints section tells a reclaimed checkpoint from a real zero'
       agentRun(),
       emptyPage({ truncated: true, next_page_token: 'more' }),
     )
-    expect(section.textContent).not.toMatch(/real zero/i)
+    expect(section.querySelector('.ctl-mark.is-zero')).toBeNull()
     expect(section.textContent).not.toMatch(/has written no checkpoint/i)
   })
 
@@ -193,7 +195,7 @@ describe('the Checkpoints section tells a reclaimed checkpoint from a real zero'
       agentRun({ attempts: null, attemptsDetail: 'The attempt read failed.' }),
       emptyPage(),
     )
-    expect(section.textContent).not.toMatch(/real zero/i)
+    expect(section.querySelector('.ctl-mark.is-zero')).toBeNull()
     expect(section.textContent).not.toMatch(/has written no checkpoint/i)
     expect(section.textContent).toMatch(/attempt records could not be read/i)
   })

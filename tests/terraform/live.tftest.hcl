@@ -377,7 +377,7 @@ run "the_rendered_relay_is_one_pod_with_the_grants_identity" {
   }
 
   # A single-replica StatefulSet (§3.3: both ends of a session must meet in
-  # one process), running as the KSA the bucket grant names, on 8443, labelled
+  # one process), running as the KSA the bucket grant names, on 8080, labelled
   # as swarm-system-live.yaml's policy selects it.
   assert {
     condition = length([
@@ -390,10 +390,10 @@ run "the_rendered_relay_is_one_pod_with_the_grants_identity" {
       && d.spec.template.metadata.labels["app.kubernetes.io/name"] == "swarm-live"
       && d.spec.template.spec.serviceAccountName == "swarm-live"
       && endswith(output.live_relay.principal, "/ns/${d.metadata.namespace}/sa/${d.spec.template.spec.serviceAccountName}")
-      && anytrue([for c in d.spec.template.spec.containers : anytrue([for p in try(c.ports, []) : p.containerPort == 8443])])
+      && anytrue([for c in d.spec.template.spec.containers : anytrue([for p in try(c.ports, []) : p.containerPort == 8080])])
       if d.kind == "StatefulSet"
     ])
-    error_message = "swarm-live is a one-replica StatefulSet, as ns/swarm-system/sa/swarm-live, listening on 8443 under the label the swarm-system policy admits"
+    error_message = "swarm-live is a one-replica StatefulSet, as ns/swarm-system/sa/swarm-live, listening on 8080 under the label the swarm-system policy admits"
   }
 
   # Invariant 7, per container, init containers included; and the image by
@@ -425,11 +425,161 @@ run "the_rendered_relay_is_one_pod_with_the_grants_identity" {
       for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] :
       d.metadata.annotations["networking.gke.io/load-balancer-type"] == "Internal"
       && d.spec.loadBalancerIP == "10.10.0.42"
-      && [for p in d.spec.ports : p.port] == [8443]
+      && [for p in d.spec.ports : p.port] == [8080]
       && d.spec.selector["app.kubernetes.io/name"] == "swarm-live"
       if d.kind == "Service" && try(d.spec.type, "ClusterIP") == "LoadBalancer"
     ])
-    error_message = "swarm-api's path to the relay is an internal load balancer on the reserved address, port 8443"
+    error_message = "swarm-api's path to the relay is an internal load balancer on the reserved address, port 8080"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# The relay's wire as deployed (LB-L8e; owner decisions 2026-10-11 (b), (c)):
+# plain ws on 8080, no TLS anywhere, the key by Secret Manager reference, and
+# its own NetworkPolicy admitting only swarm-api's egress range and the
+# labelled tenant gates.
+# ---------------------------------------------------------------------------
+
+run "the_relay_serves_plain_ws_on_8080_behind_its_own_ingress_policy" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # A range no default and no environment uses, so a policy that admits it
+  # can only have read it from this variable.
+  variables {
+    enable_live_browser = true
+    subnet_cidr         = "10.77.16.0/20"
+  }
+
+  # Every port the manifest names is 8080: both Services, their targets and
+  # the container. 8443, the port L6 and L8 were built on, appears nowhere.
+  assert {
+    condition = alltrue(flatten([
+      for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] : concat(
+        d.kind == "Service" ? [for p in d.spec.ports : p.port == 8080 && p.targetPort == 8080] : [],
+        d.kind == "StatefulSet" ? flatten([for c in d.spec.template.spec.containers : [for p in c.ports : p.containerPort == 8080]]) : [],
+      )
+      ])) && length([
+      for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] : d if d.kind == "Service"
+    ]) == 2 && !strcontains(output.swarm_live_manifest, "8443") && output.live_relay.port == 8080
+    error_message = "the relay's Services and container are on 8080 only, and nothing names 8443"
+  }
+
+  # No TLS: the one volume is the memory emptyDir segments are encoded in; no
+  # secret, projected or CSI volume, no certificate or key mount, no TLS
+  # setting and no key file.
+  assert {
+    condition = alltrue(flatten([
+      for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] : [
+        [for v in d.spec.template.spec.volumes : v.name == "tmp" && try(v.emptyDir.medium, "") == "Memory" && length(keys(v)) == 2],
+        flatten([for c in d.spec.template.spec.containers : [for m in c.volumeMounts : m.mountPath == "/tmp"]]),
+        flatten([for c in d.spec.template.spec.containers : [for e in c.env : !strcontains(e.name, "TLS") && !strcontains(e.name, "CERT") && e.name != "SWARM_LIVE_KEY_FILE"]]),
+      ] if d.kind == "StatefulSet"
+    ])) && !strcontains(lower(output.swarm_live_manifest), "tls.crt") && !strcontains(output.swarm_live_manifest, "8443")
+    error_message = "the relay mounts no certificate and no key: its one volume is the memory emptyDir at /tmp"
+  }
+
+  # The environment the relay reads (swarm_live.main, swarm_common.config):
+  # exactly these three, the key by version reference.
+  assert {
+    condition = alltrue([
+      for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] :
+      alltrue([for c in d.spec.template.spec.containers : {
+        for e in c.env : e.name => e.value
+        } == {
+        PROJECT_ID            = "saga-agents-staging"
+        ARTIFACT_BUCKET       = output.live_relay.artifact_bucket
+        SWARM_LIVE_KEY_SECRET = join("/", ["projects", "saga-agents-staging", "secrets", output.live_relay.key_secret, "versions", "latest"])
+      }])
+      if d.kind == "StatefulSet"
+    ])
+    error_message = "the relay is given PROJECT_ID, ARTIFACT_BUCKET and SWARM_LIVE_KEY_SECRET (a version reference), and nothing else"
+  }
+
+  # Invariant 7 per container, and every resource the relay asks for named.
+  assert {
+    condition = alltrue(flatten([
+      for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] : [
+        for c in d.spec.template.spec.containers :
+        c.resources.requests == c.resources.limits
+        && toset(keys(c.resources.limits)) == toset(["cpu", "memory", "ephemeral-storage"])
+      ] if d.kind == "StatefulSet"
+    ]))
+    error_message = "the relay's requests equal its limits for cpu, memory and ephemeral-storage (invariant 7)"
+  }
+
+  # Invariant 6: no Spot selector, toleration or class, in any spelling.
+  assert {
+    condition = !strcontains(lower(output.swarm_live_manifest), "spot") && alltrue([
+      for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] :
+      try(d.spec.template.spec.nodeSelector, null) == null && try(d.spec.template.spec.tolerations, null) == null
+      if d.kind == "StatefulSet"
+    ])
+    error_message = "the relay asks for no Spot capacity (invariant 6)"
+  }
+
+  # The NetworkPolicy's sources: ONE peer carrying both selectors (a tenant
+  # namespace AND a pod the dispatcher labelled), and swarm-api's range read
+  # from var.subnet_cidr; on 8080, nothing else. It selects the relay pod and
+  # sits before the Services and the StatefulSet, so the relay is never
+  # selected by no policy.
+  assert {
+    condition = length([
+      for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] : d
+      if d.kind == "NetworkPolicy"
+      ]) == 1 && alltrue([
+      for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] :
+      d.metadata.name == "swarm-live-ingress"
+      && d.metadata.annotations["swarm.saga.xyz/swarm-api-egress-cidr"] == "10.77.16.0/20"
+      && d.spec.podSelector == { matchLabels = { "app.kubernetes.io/name" = "swarm-live" } }
+      && d.spec.policyTypes == ["Ingress"]
+      && length(d.spec.ingress) == 2
+      && alltrue([for r in d.spec.ingress : r.ports == [{ protocol = "TCP", port = 8080 }] && length(r.from) == 1])
+      && d.spec.ingress[0].from[0] == {
+        namespaceSelector = {
+          matchLabels      = { "app.kubernetes.io/part-of" = "swarm" }
+          matchExpressions = [{ key = "swarm-tenant", operator = "Exists" }]
+        }
+        podSelector = { matchLabels = { "swarm-live" = "enabled" } }
+      }
+      && d.spec.ingress[1].from[0] == { ipBlock = { cidr = "10.77.16.0/20" } }
+      if d.kind == "NetworkPolicy"
+    ]) && output.live_relay.swarm_api_egress_cidr == "10.77.16.0/20"
+    error_message = "swarm-live-ingress admits only labelled tenant gates and swarm-api's subnet range (var.subnet_cidr), on TCP 8080"
+  }
+
+  assert {
+    condition = index([
+      for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] : d.kind
+      ], "NetworkPolicy") < index([
+      for d in [for s in split("\n---\n", output.swarm_live_manifest) : yamldecode(s)] : d.kind
+    ], "StatefulSet")
+    error_message = "the relay's NetworkPolicy is applied before its StatefulSet"
+  }
+
+  # On, the relay is a deployed image: its digest is in the image_refs output
+  # scripts/plan.sh pins a non-deploy plan to.
+  assert {
+    condition     = output.image_refs["swarm-live"] == "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+    error_message = "with the relay on, image_refs carries swarm-live's digest"
+  }
+}
+
+run "off_the_relay_is_not_a_deployed_image" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # A state applied before the release built swarm-live has no digest for it;
+  # with the relay off that must still plan, so it is not in image_refs.
+  assert {
+    condition     = !contains(keys(output.image_refs), "swarm-live")
+    error_message = "with enable_live_browser off, swarm-live is not a deployed image"
   }
 }
 

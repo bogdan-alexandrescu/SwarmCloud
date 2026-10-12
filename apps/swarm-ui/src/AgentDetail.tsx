@@ -869,7 +869,7 @@ function DtFailure({ run, links, lastLine }: { run: AgentRun; links: DetailLinks
           <span className="dt-nf">
             <Mark
               kind="zero"
-              say="No attempt of this task ever started, so no result summary was ever going to be written. This is a real zero, not a missing summary."
+              say="No attempt of this task ever started, so there is no result summary."
             />{' '}
             nothing ran · {stateWord(task.state)}
           </span>
@@ -1347,8 +1347,8 @@ function DtProgress({ run, now, links }: { run: AgentRun; now: number; links: De
                 kind="zero"
                 say={
                   TERMINAL_STATES.has(task.state)
-                    ? 'The attempt query succeeded and returned nothing. This task ended before anything was admitted, so this is a real zero rather than a failed read.'
-                    : 'The attempt query succeeded and returned nothing. Nothing has been admitted for this task yet, so this is a real zero rather than a failed read.'
+                    ? 'This task ended before anything was admitted, so it has no attempts.'
+                    : 'Nothing has been admitted for this task yet, so it has no attempts.'
                 }
               />{' '}
               {TERMINAL_STATES.has(task.state) ? 'no attempt' : 'no attempt yet'} · {stateWord(task.state)}
@@ -2362,7 +2362,7 @@ function Attempts({ run, now }: { run: AgentRun; now: number }) {
           <Absent
             kind="zero"
             heading={`no attempt yet · ${stateWord(task.state)}`}
-            say="The attempt query succeeded and returned nothing. Nothing has been admitted for this task yet, so this is a real zero rather than a failed read."
+            say="Nothing has been admitted for this task yet, so it has no attempts."
             explain="attempt-documents"
           />
         )}
@@ -3549,7 +3549,7 @@ function Output({
         <Absent
           kind="zero"
           heading={`nothing ran · ${stateWord(task.state)}`}
-          say="No attempt of this task ever started, so no result summary was ever going to be written. This is a real zero, not a missing summary."
+          say="No attempt of this task ever started, so there is no result summary."
           explain="attempt-documents"
         />
       ) : summary === null ? (
@@ -3804,7 +3804,7 @@ function GitOutcome({
               <Em />{' '}
               <Mark
                 kind="zero"
-                say="Nothing differed from the clone, so there is no patch. This is a real zero rather than a patch that failed to upload."
+                say="Nothing differed from the clone, so there is no patch."
               />
             </>
           )}
@@ -4658,9 +4658,9 @@ function MaskedMetadataBlock({ served, copy }: { served: TaskInputCopy | null; c
         <p className="att-none">
           <Mark
             kind="zero"
-            say="Submitted with no metadata. The read succeeded and the object is empty, so this is a real zero."
+            say="This task was submitted with no metadata."
           />{' '}
-          submitted with none
+          no metadata submitted
         </p>
       ) : (
         <div className="ctl-table">
