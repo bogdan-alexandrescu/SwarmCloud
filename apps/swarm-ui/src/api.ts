@@ -6428,6 +6428,13 @@ export interface LiveOrigin {
   ip_literal?: boolean
   /** True while the page reports a certificate error; the gate refuses control (§5.4.4). */
   cert_error?: boolean
+  /**
+   * The top frame's path, redacted, no query or fragment (LB-R6): the
+   * caption under the device reads it, the strip never does. Null or absent
+   * when the gate reported none (a gate that predates it, or a path
+   * swarm-api refused).
+   */
+  path?: string | null
 }
 
 /** `Task.human_wait` as the session read serves it (§4.1 step 3). */
