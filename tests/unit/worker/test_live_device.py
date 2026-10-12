@@ -415,8 +415,7 @@ def _touches(cdp: FakeCdp) -> list[tuple[str, list[dict[str, Any]], str | None]]
 
 def test_in_control_with_touch_on_a_press_move_release_arrives_as_touch_start_move_end():
     devices = FixedDevices("iphone-15")
-    d = devices.device
-    top = d.page_top
+    top = 0  # a mobile frame starts at the page's first row (LB-R5)
 
     async def main() -> tuple[FakeCdp, FakeX]:
         cdp, x11 = FakeCdp(), FakeX()
@@ -444,11 +443,12 @@ def test_with_touch_off_the_pointer_is_a_mouse():
         touch = TouchInjector(x11, cdp, devices)
         touch.set_touch(False)
         touch.begin("PAGE")
-        await touch.pointer_event(1, 50, devices.device.page_top + 50)
+        await touch.pointer_event(1, 50, 50)
         return cdp, x11
 
     cdp, x11 = asyncio.run(main())
     assert _touches(cdp) == []
+    # The frame starts at the page (LB-R5); the screen has the browser UI above it.
     assert x11.events == [("pointer", 1, 50, devices.device.page_top + 50)]
 
 
@@ -466,7 +466,8 @@ def test_the_desktop_preset_is_a_mouse_even_with_touch_on():
     assert _touches(cdp) == [] and x11.events == [("pointer", 1, 10, 500)]
 
 
-def test_the_address_bar_is_clicked_not_touched():
+def test_a_mobile_frame_has_no_address_bar_so_a_press_at_its_top_is_a_touch():
+    # LB-R5: a phone is shown as the page alone, so frame row 40 is page row 40.
     devices = FixedDevices("iphone-se")
 
     async def main() -> tuple[FakeCdp, FakeX]:
@@ -477,12 +478,13 @@ def test_the_address_bar_is_clicked_not_touched():
         return cdp, x11
 
     cdp, x11 = asyncio.run(main())
-    assert _touches(cdp) == [] and x11.events == [("pointer", 1, 200, 40)]
+    assert _touches(cdp) == [("touchStart", [{"x": 200.0, "y": 40.0, "id": 0}], "G1")]
+    assert x11.events == []
 
 
 def test_a_wheel_is_a_touch_scroll_and_ctrl_wheel_is_a_pinch():
     devices = FixedDevices("iphone-15")
-    top = devices.device.page_top
+    top = 0  # a mobile frame starts at the page's first row (LB-R5)
 
     async def main() -> FakeCdp:
         cdp = FakeCdp()
@@ -513,9 +515,9 @@ def test_control_ending_mid_touch_lifts_the_finger():
         cdp = FakeCdp()
         touch = TouchInjector(FakeX(), cdp, devices)
         touch.begin("PAGE")
-        await touch.pointer_event(1, 300, devices.device.page_top + 300)
+        await touch.pointer_event(1, 300, 300)
         await touch.end()
-        await touch.pointer_event(0, 300, devices.device.page_top + 300)
+        await touch.pointer_event(0, 300, 300)
         return cdp
 
     assert [t[0] for t in _touches(asyncio.run(main()))] == ["touchStart", "touchCancel"]
@@ -526,7 +528,7 @@ def test_control_ending_mid_touch_lifts_the_finger():
 
 def test_in_view_mode_no_input_is_sent():
     devices = FixedDevices("iphone-15")
-    top = devices.device.page_top
+    top = 0  # a mobile frame starts at the page's first row (LB-R5)
 
     async def drive(touch: TouchInjector) -> None:
         await touch.pointer_event(1, 300, top + 300)

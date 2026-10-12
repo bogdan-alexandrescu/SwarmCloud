@@ -70,7 +70,9 @@ started with but never grows it, so the sidecar starts Xvfb at
 `presets.MAX_DISPLAY_WIDTH` x `MAX_DISPLAY_HEIGHT`. Whether Xvfb rewrites its
 `-fbdir` file's header on a resize is not something this lane could measure,
 so `crop` cuts a captured frame to the device's display either way; on a file
-that already shrank it returns the frame unchanged.
+that already shrank it returns the frame unchanged. `captured` is that cut as
+the viewer is sent it: on a mobile preset it also drops the browser's UI band
+above the page (LB-R5, presets.py), so a phone shows the page alone.
 
 NOTHING HERE IS LOGGED BUT NAMES. A device change records the preset name and
 orientation; a page's URL, a session id or a coordinate is never a log
@@ -338,18 +340,27 @@ async def _x_reply(reader: asyncio.StreamReader, seq: int) -> bytes:
             return head + body
 
 
-def crop(frame: Frame, width: int, height: int) -> Frame:
-    """`frame`'s top-left `width` x `height`, copied; `frame` itself when it is no larger."""
-    if frame.width <= width and frame.height <= height:
+def crop(frame: Frame, width: int, height: int, top: int = 0) -> Frame:
+    """`frame`'s `width` x `height` from row `top` at the left edge, copied; `frame` itself when that is all of it.
+
+    A `top` past the frame (a display caught mid-resize) is held to its last row.
+    """
+    top = max(0, min(top, frame.height - 1))
+    if top == 0 and frame.width <= width and frame.height <= height:
         return frame
-    width, height = min(width, frame.width), min(height, frame.height)
+    width, height = min(width, frame.width), min(height, frame.height - top)
     row = width * BYTES_PER_PIXEL
     pixels = bytearray(row * height)
     for y in range(height):
-        at = y * frame.stride
+        at = (top + y) * frame.stride
         pixels[y * row:(y + 1) * row] = frame.pixels[at:at + row]
     return Frame(width, height, row, pixels, frame.red_mask, frame.green_mask, frame.blue_mask,
                  frame.little_endian)
+
+
+def captured(frame: Frame, device: Device) -> Frame:
+    """What the viewer is sent of a captured screen: `device`'s frame, from `Device.frame_top` down."""
+    return crop(frame, device.display_width, device.frame_height, top=device.frame_top)
 
 
 # ------------------------------------------------------------ the controller

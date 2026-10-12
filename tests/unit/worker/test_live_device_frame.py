@@ -211,3 +211,12 @@ def test_with_touch_off_the_mobile_pointer_reaches_the_screen_below_the_browser_
 def test_the_desktop_pointer_is_where_the_frame_says():
     _, x11 = _drive(Devices("desktop"), [(1, 10, 40), (0, 10, 500)])
     assert x11.events == [("pointer", 1, 10, 40), ("pointer", 0, 10, 500)]
+
+
+def test_a_frame_shorter_than_the_page_top_is_cut_from_its_last_row_not_raised():
+    # A display caught mid-resize: the grab is smaller than the device's display.
+    from agent_worker.livegate.device import captured
+
+    device = resolve("iphone-15")
+    out = captured(Frame.blank(393, 50, PAGE_WHITE), device)
+    assert (out.width, out.height) == (393, 1)
