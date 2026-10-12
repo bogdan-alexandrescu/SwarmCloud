@@ -40,7 +40,7 @@
 .th-pill-live {
   padding: 0 6px; border-radius: var(--r-pill);
   background: var(--s-liveb); color: var(--s-live);
-  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 700; letter-spacing: 0.04em;
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 700;
 }
 .th-pill-live.is-ended { background: var(--surface-2); color: var(--text-dim); }
 .th-chips { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -139,7 +139,7 @@
 }
 .th-h {
   margin: 0 0 6px; color: var(--text-faint);
-  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 700; letter-spacing: 0.06em;
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 700;
 }
 .th-device-now { margin: 0 0 8px; display: flex; align-items: center; gap: 8px; font-size: var(--t-meta); line-height: var(--lh-meta); }
 /* A device outline: the shape of the preset, dashed when nothing reported one. */
