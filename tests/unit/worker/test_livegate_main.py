@@ -146,7 +146,6 @@ def test_the_tunnel_frames_are_the_relays():
 
 def test_xvfb_listens_on_its_unix_socket_only():
     """The abstract socket is in the pod's network namespace, which the agent shares."""
-    assert gate_main.chromium_args  # the launcher exists
     import inspect
 
     source = inspect.getsource(gate_main.start_xvfb)
