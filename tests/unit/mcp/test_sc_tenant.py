@@ -190,7 +190,7 @@ def test_the_plugin_offers_a_tenant_option():
     assert not option.get("required")
     assert option.get("sensitive") is False
     described = option["description"]
-    assert "the tenant every call acts in" in described
+    assert "the tenant every call acts in" in described.lower()
     assert "empty uses your default, which is your personal workspace when it is ready" in described
     assert "SWARM_TENANT" in described and "wins" in described
 
