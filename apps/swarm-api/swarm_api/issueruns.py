@@ -1982,7 +1982,8 @@ def workflow_title(run: "IssueRun") -> str:
     (`issue_read_from_preview`), and the worker scrubs a title before it
     titles anything.
     """
-    read = run.issue_read if isinstance(run.issue_read, Mapping) else {}
+    issue_read = getattr(run, "issue_read", None)  # compile_plan's callers pass stand-ins too
+    read = issue_read if isinstance(issue_read, Mapping) else {}
     words = str(read.get("title") or "").split() or str((run.plan or {}).get("summary") or "").split()
     title = f"{run.issue.short}: {' '.join(words)}".rstrip(": ")
     if len(title) > WORKFLOW_TITLE_MAX_CHARS:
