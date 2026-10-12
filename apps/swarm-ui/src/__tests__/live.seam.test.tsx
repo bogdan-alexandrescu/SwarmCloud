@@ -35,6 +35,7 @@ vi.mock('@novnc/novnc/core/rfb.js', () => ({ default: class {} }))
 // imported after it.
 vi.stubEnv('VITE_LIVE', '1')
 const {
+  loadLiveRecordings,
   loadLiveSession,
   mintLiveTicket,
   openLiveToMembers,
@@ -44,7 +45,7 @@ const {
   takeLiveControl,
 } = await import('../api')
 const { useLiveSession } = await import('../LiveBrowser')
-const { loadRecordings, segmentsOfTenant } = await import('../Theater')
+const { segmentsOfTenant } = await import('../Theater')
 const { loadLiveActions } = await import('../TheaterTimeline')
 const { ownRecording } = await import('../Recordings')
 const { openLiveSocket: openThumbSocket } = await import('../LiveThumb')
@@ -93,7 +94,8 @@ const CALLS: Record<string, (body: unknown) => Promise<Result<unknown>>> = {
   openLiveToMembers: () => openLiveToMembers(TASK),
   setLiveDevice: (body) =>
     setLiveDevice(TASK, (body ?? { preset: 'desktop' }) as Parameters<typeof setLiveDevice>[1]),
-  loadRecordings: () => loadRecordings(TASK),
+  // The Attempts tab's player and the theater's replay share this one loader (LB-UX2a).
+  loadRecordings: () => loadLiveRecordings(TASK),
   loadLiveActions: () => loadLiveActions(TASK),
 }
 
@@ -242,7 +244,7 @@ describe('recordings and the action timeline (§7)', () => {
   it('recordings.json: the theater keeps every segment the relay wrote, and the list keeps every recording', async () => {
     const listing = fixture<{ tenant_id: string; task_id: string; recordings: Parameters<typeof ownRecording>[1][] }>('recordings.json')
     serve(listing)
-    const read = await loadRecordings(TASK)
+    const read = await loadLiveRecordings(TASK)
     expect(read.status).toBe('ok')
     const data = (read as { data: Parameters<typeof segmentsOfTenant>[0] }).data
     // The relay's real names are zero-padded to 13 digits; an unpadded

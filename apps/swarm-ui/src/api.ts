@@ -6562,13 +6562,132 @@ export function liveSocketUrl(sessionId: string): string {
 }
 
 /**
- * Open the live websocket and send the ticket as its FIRST message (§5.2),
- * then hand the open socket to `attach` IN THE SAME 'open' HANDLER. No byte
- * goes before the ticket; swarm-api answers nothing until it has checked it,
- * then proxies the RFB stream (and closes the socket if it refuses).
+ * What swarm-api pushes down the live socket as TEXT frames, between the
+ * relay's binary RFB frames: `{"type": "status", ...}`, sent when it changes
+ * (swarm_api/routes/live.py `_status`). `controller` is the controller's
+ * email, or null in view mode; `cause` says why, once `open` is false.
+ */
+export interface LiveStatus {
+  open: boolean
+  in_control: boolean
+  controller: string | null
+  cause: string | null
+}
+
+/** The members of a WebSocket the live channel drives: the ones a test fake has to carry. */
+export interface RawLiveSocket {
+  binaryType: string
+  readonly readyState: number
+  readonly protocol?: string
+  onopen: ((ev: Event) => void) | null
+  onmessage: ((ev: MessageEvent) => void) | null
+  onclose: ((ev: CloseEvent) => void) | null
+  onerror: ((ev: Event) => void) | null
+  send(data: string | ArrayBufferLike | ArrayBufferView): void
+  close(): void
+}
+
+function liveStatus(text: string): LiveStatus | null {
+  let msg: unknown
+  try {
+    msg = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof msg !== 'object' || msg === null || (msg as { type?: unknown }).type !== 'status') return null
+  const m = msg as Record<string, unknown>
+  return {
+    open: m.open === true,
+    in_control: m.in_control === true,
+    controller: typeof m.controller === 'string' ? m.controller : null,
+    cause: typeof m.cause === 'string' ? m.cause : null,
+  }
+}
+
+/**
+ * THE LIVE SOCKET AS AN RFB CLIENT MAY SEE IT: binary frames only.
+ *
+ * swarm-api interleaves its own `{"type": "status"}` TEXT frames with the
+ * relay's binary RFB stream on one socket. An RFB client reads every frame as
+ * protocol bytes, so a status frame ahead of "RFB 003.008\n" is a handshake
+ * that never completes: the Browser tab sat on "Connecting" forever on
+ * 2026-10-12 (LB-STREAM, #1030). This channel owns the raw socket's handlers,
+ * hands text frames to `onStatus` and forwards binary frames, unchanged and
+ * in order, to its own `onmessage`.
+ *
+ * It is a WebSocket as noVNC 1.4.0 (core/websock.js `attach`) uses one: it
+ * checks that `send`, `close`, `binaryType`, `onerror`, `onmessage`,
+ * `onopen`, `protocol` and `readyState` exist, sets `binaryType` and the four
+ * `on*` handlers, reads `readyState` (WebSocket's numbers), `protocol`, and
+ * calls `send` and `close`. Nothing else. The live thumbnail's RFB client
+ * (LiveThumb.tsx) reads the same channel, so the split lives in one place.
+ *
+ * The ticket goes as the FIRST message, before `onopen` runs (§5.2), so
+ * whatever the consumer sends from its open handler follows it.
+ */
+export class LiveChannel {
+  onopen: ((ev: Event) => void) | null = null
+  onmessage: ((ev: { data: ArrayBuffer | Blob }) => void) | null = null
+  onclose: ((ev: CloseEvent) => void) | null = null
+  onerror: ((ev: Event) => void) | null = null
+
+  constructor(private readonly raw: RawLiveSocket, ticket: string, onStatus?: (status: LiveStatus) => void) {
+    raw.binaryType = 'arraybuffer'
+    raw.onopen = (ev) => {
+      raw.send(JSON.stringify({ ticket }))
+      this.onopen?.(ev)
+    }
+    raw.onmessage = (ev) => {
+      if (typeof ev.data === 'string') {
+        const status = liveStatus(ev.data)
+        if (status !== null) onStatus?.(status)
+        return
+      }
+      this.onmessage?.({ data: ev.data as ArrayBuffer | Blob })
+    }
+    raw.onclose = (ev) => this.onclose?.(ev)
+    raw.onerror = (ev) => this.onerror?.(ev)
+  }
+
+  get binaryType(): string {
+    return this.raw.binaryType
+  }
+
+  set binaryType(value: string) {
+    this.raw.binaryType = value
+  }
+
+  get readyState(): number {
+    return this.raw.readyState
+  }
+
+  get protocol(): string {
+    return this.raw.protocol ?? ''
+  }
+
+  send(data: ArrayBufferLike | ArrayBufferView): void {
+    this.raw.send(data)
+  }
+
+  close(): void {
+    this.raw.close()
+  }
+}
+
+/** Open the session's live socket as a `LiveChannel`: the ticket first, then binary frames only. */
+export function openLiveChannel(sessionId: string, ticket: string, onStatus?: (status: LiveStatus) => void): LiveChannel {
+  return new LiveChannel(new WebSocket(liveSocketUrl(sessionId)), ticket, onStatus)
+}
+
+/**
+ * Open the live channel (`LiveChannel`: the ticket as the FIRST message,
+ * §5.2, then binary frames only) and hand it to `attach` IN THE SAME 'open'
+ * HANDLER. No byte goes before the ticket; swarm-api answers nothing until it
+ * has checked it, then proxies the RFB stream (and closes the socket if it
+ * refuses). Its status frames go to `onStatus`, never to `attach`'s consumer.
  *
  * WHY `attach` RUNS INSIDE THE HANDLER, NOT AFTER THE PROMISE. noVNC only
- * reads frames once it has set the socket's `onmessage`, and an RFB server
+ * reads frames once it has set the channel's `onmessage`, and an RFB server
  * speaks first (its ProtocolVersion). A frame that arrives before that is
  * dropped, and noVNC then waits forever for a handshake that already went
  * past. Constructing noVNC synchronously here, before control returns to the
@@ -6576,21 +6695,26 @@ export function liveSocketUrl(sessionId: string): string {
  * open, so noVNC never sees an already-closed channel. If `attach` throws,
  * the socket is closed and the promise rejects, so the caller retries.
  */
-export function openLiveSocket<T>(sessionId: string, ticket: string, attach: (ws: WebSocket) => T): Promise<T> {
+export function openLiveSocket<T>(
+  sessionId: string,
+  ticket: string,
+  attach: (channel: LiveChannel) => T,
+  onStatus?: (status: LiveStatus) => void,
+): Promise<T> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(liveSocketUrl(sessionId))
-    ws.binaryType = 'arraybuffer'
-    ws.addEventListener('open', () => {
-      ws.send(JSON.stringify({ ticket }))
+    const channel = openLiveChannel(sessionId, ticket, onStatus)
+    channel.onerror = () => reject(new Error('The live connection did not open.'))
+    channel.onclose = () => reject(new Error('The live connection closed before it opened.'))
+    channel.onopen = () => {
+      // The consumer sets its own handlers in `attach`; until it does, none of these is its.
+      channel.onopen = channel.onerror = channel.onclose = null
       try {
-        resolve(attach(ws))
+        resolve(attach(channel))
       } catch (err) {
-        ws.close()
+        channel.close()
         reject(err instanceof Error ? err : new Error('The live viewer could not attach to the connection.'))
       }
-    }, { once: true })
-    ws.addEventListener('error', () => reject(new Error('The live connection did not open.')), { once: true })
-    ws.addEventListener('close', () => reject(new Error('The live connection closed before it opened.')), { once: true })
+    }
   })
 }
 
@@ -6654,6 +6778,66 @@ export async function openLiveToMembers(taskId: string): Promise<Result<unknown>
   const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
   if (USE_FIXTURES) return liveNotServed(target)
   return write(target, 'POST')
+}
+
+/**
+ * One recorded segment of a live session (§7), as `GET .../live/recordings`
+ * serves it: every field both views read (`RecordingSegmentView` in
+ * `swarm_api.live`, held by tests/fixtures/live/recordings.json). The
+ * Attempts tab's player reads `name`, `key`, `bytes` and `created_at`; the
+ * theater's scrubber reads `seq`, `object` and `started_at`.
+ */
+export interface LiveRecording {
+  attempt_id: string
+  seq: number
+  /** `rec-<13-digit seq>.live.webm`. */
+  name: string
+  /** The object's key, from which the tenant and task are checked. */
+  key: string
+  /** The same object name, under the name the theater reads it by. */
+  object: string
+  bytes: number | null
+  created_at: string | null
+  /** The object's write time: the END of the minute it holds (§6.2). */
+  started_at: string | null
+}
+
+/** `GET /v1/tasks/{task_id}/live/recordings`: every attempt's segments, oldest first. */
+export interface LiveRecordings {
+  tenant_id: string
+  task_id: string
+  segments: LiveRecording[]
+  truncated: boolean
+}
+
+/**
+ * THE ONE READ OF THE RECORDINGS ROUTE (lane LB-UX2a). The Attempts tab's
+ * player (Recordings.tsx) and the theater's replay each had their own, against
+ * two shapes, which is how the route came to serve both. The server sends the
+ * same list as `segments` and as `recordings`; this reads `segments`, and
+ * `recordings` only from a server that sends nothing else.
+ *
+ * NO FIXTURE BRANCH, like `loadLiveActions`: the fixture build serves no live
+ * session, so no theater opens there, and the Attempts tab's panel decides
+ * for itself what the fixture build shows. What each view may PLAY is still
+ * its own tenant check (`segmentsOfTenant`, `ownRecording`).
+ */
+export async function loadLiveRecordings(taskId: string): Promise<Result<LiveRecordings>> {
+  const r = await read<{ tenant_id?: unknown; task_id?: unknown; segments?: unknown; recordings?: unknown; truncated?: unknown }>(
+    route('/v1/tasks/{id}/live/recordings', { id: taskId }),
+    () => false,
+  )
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<LiveRecordings>
+  const d = r.data
+  const list = Array.isArray(d.segments) ? d.segments : Array.isArray(d.recordings) ? d.recordings : []
+  const data: LiveRecordings = {
+    tenant_id: typeof d.tenant_id === 'string' ? d.tenant_id : '',
+    task_id: typeof d.task_id === 'string' ? d.task_id : '',
+    segments: list as LiveRecording[],
+    truncated: d.truncated === true,
+  }
+  // An empty list is an answer, not a different state: each view draws its own zero.
+  return { ...r, data }
 }
 
 function liveNotServed<T>(target: ApiRoute): Result<T> {
