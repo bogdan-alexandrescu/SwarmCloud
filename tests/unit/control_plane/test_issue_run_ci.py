@@ -947,6 +947,7 @@ def test_a_read_that_turns_green_at_the_deadline_is_done_not_failed(
     writes.check(SHA_A, "unit", None, status="in_progress")
     entered = _entered_checking(client, clock, running["id"])
 
+    writes.check_runs[SHA_A].clear()  # the in-progress run completed
     writes.check(SHA_A, "unit", "success")
     clock.at = entered + _deadline()
     run = _read(client, clock, running["id"])

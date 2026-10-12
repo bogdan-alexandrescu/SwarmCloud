@@ -716,8 +716,12 @@ def test_every_step_task_of_an_approved_run_carries_the_title_and_label(client, 
     workflow_id = response.json()["run"]["workflow_id"]
     tasks = [d for d in _docs(db, "tasks").values() if d.get("workflow_id") == workflow_id]
     assert tasks
+    title = issueruns.workflow_title(
+        issueruns.IssueRun.from_firestore(db.docs[f"issue_runs/{run['id']}"])
+    )
+    assert title.startswith("saga-xyz/widgets#42: ")
     for task in tasks:
-        assert task["metadata"]["title"] == "saga-xyz/widgets#42: Widgets cannot be sorted"
+        assert task["metadata"]["title"] == title
         assert task["metadata"]["unit"] == "issue-42"
 
 
@@ -886,6 +890,9 @@ def test_a_plan_without_depends_on_compiles_to_the_chain_byte_for_byte():
     dumped = spec.model_dump(mode="json", exclude_defaults=True)
     # The one addition (contract request 47): the run's merge choice, stated.
     assert dumped["metadata"].pop("merge") == "off"
+    # And its title and label (RUNS, 2026-10-12): what the console names it by.
+    assert dumped["metadata"].pop("title") == "saga-xyz/widgets#42: Make the widget list sortable by name."
+    assert dumped["metadata"].pop("unit") == "issue-42"
     assert dumped == CHAIN_AS_BEFORE
 
 
