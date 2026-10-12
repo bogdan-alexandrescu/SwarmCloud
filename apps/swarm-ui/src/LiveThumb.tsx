@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { USE_FIXTURES, loadLiveSession, mintLiveTicket } from './api'
+import { USE_FIXTURES, loadLiveSession, mintLiveTicket, openLiveChannel, type LiveChannel } from './api'
 import { route } from './fetch'
 import { addressToPath } from './paths'
 import type { TaskState } from './types'
@@ -126,14 +126,15 @@ export const openLiveSocket: OpenLive = (taskId) => (USE_FIXTURES ? null : ticke
 
 /**
  * A `LiveSocket` over the ticketed path (§5.2): read the task's session, mint
- * a viewer ticket, open the session's stream and send the ticket FIRST; only
- * then does an RFB byte go. Bytes the card sends before that are held. Text
- * frames are swarm-api's own `{"type": "status"}` messages, not RFB, and are
- * not handed to the RFB client. Any step that fails reads as a close, which
- * the card already counts towards "unavailable".
+ * a viewer ticket and open the session's `LiveChannel` (api.ts), which sends
+ * the ticket FIRST and hands on binary frames only: swarm-api's own
+ * `{"type": "status"}` text frames are not RFB and never reach the RFB client.
+ * Bytes the card sends before the socket is open are held, and go after the
+ * ticket. Any step that fails reads as a close, which the card already counts
+ * towards "unavailable".
  */
 function ticketedSocket(taskId: string): LiveSocket {
-  let ws: WebSocket | null = null
+  let ws: LiveChannel | null = null
   let closed = false
   const held: Uint8Array[] = []
   const sock: LiveSocket = {
@@ -161,19 +162,14 @@ function ticketedSocket(taskId: string): LiveSocket {
     if (session === null || session.state !== 'open') return fail(null)
     const minted = await mintLiveTicket(taskId)
     if (minted.status !== 'ok' || closed) return fail(null)
-    const socket = new WebSocket(liveSocketUrl(minted.data.session_id))
-    ws = socket
-    socket.binaryType = 'arraybuffer'
-    socket.onopen = () => {
-      socket.send(JSON.stringify({ ticket: minted.data.ticket }))
-      for (const b of held.splice(0)) socket.send(b)
+    const channel = openLiveChannel(minted.data.session_id, minted.data.ticket)
+    ws = channel
+    channel.onopen = () => {
+      for (const b of held.splice(0)) channel.send(b)
     }
-    socket.onmessage = (ev) => {
-      if (typeof ev.data === 'string') return
-      sock.onmessage?.({ data: ev.data })
-    }
-    socket.onclose = (ev) => fail(ev)
-    socket.onerror = (ev) => {
+    channel.onmessage = (ev) => sock.onmessage?.({ data: ev.data })
+    channel.onclose = (ev) => fail(ev)
+    channel.onerror = (ev) => {
       if (!closed) sock.onerror?.(ev)
     }
   })().catch(fail)
