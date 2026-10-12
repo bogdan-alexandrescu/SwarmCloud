@@ -89,8 +89,10 @@ describe('the timeline shows what happened', () => {
     expect(lines().map((l) => l.what)).toEqual([
       '36 protocol calls',
       'The agent went to',
-      'Agent input: 12 characters typed, 1 key event, 3 mouse events',
+      // One burst: the frame-tree read came before the first click, so its
+      // group comes first; each is one line however the two interleave.
       '2 protocol calls',
+      'Agent input: 12 characters typed, 1 key event, 3 mouse events',
       'You took control',
       'You switched the device to iPhone 15, portrait, touch on',
       'A navigation was refused: the live gate does not let the agent do that',
@@ -117,11 +119,11 @@ describe('the timeline shows what happened', () => {
     fireEvent.click(toggle)
     expect(screen.getByRole('button', { name: 'Hide protocol' }).getAttribute('aria-pressed')).toBe('true')
     expect(groups().every((d) => d.open)).toBe(true)
-    const first = [...groups()[0].querySelectorAll('li')].map((li) => li.textContent)
+    const first = [...groups()[0]!.querySelectorAll('li')].map((li) => li.textContent)
     expect(first).toContain('Runtime.runIfWaitingForDebugger ×15')
     expect(first).toContain('Browser.getVersion')
     expect(first).toContain('Target.detachFromTarget')
-    expect(groups()[1].textContent).toContain('Page.getFrameTree')
+    expect(groups()[1]!.textContent).toContain('Page.getFrameTree')
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide protocol' }))
     expect(groups().every((d) => !d.open)).toBe(true)
