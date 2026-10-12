@@ -1088,7 +1088,7 @@ export function OutcomeLedger({ data, picked, onPick, onZoom, figureLink }: Outc
 
         <p className="ol-keys" aria-hidden>
           <span>
-            <i className="ol-k is-zero" /> real zero
+            <i className="ol-k is-zero" /> none
           </span>
           <span>
             <i className="ol-k is-so-far" /> so far

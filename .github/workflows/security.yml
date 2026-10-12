@@ -344,7 +344,9 @@ jobs:
           status=0
           # workspace-apply too: it is the toolchain of swarm-workspace-deployer, the
           # one identity here with project-wide account-IAM power (docs/workspaces.md §2.4).
-          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply; do
+          # swarm-live too: the live relay carries a person's keystrokes during a sign-in,
+          # and ffmpeg is the largest third-party surface any control-plane image ships.
+          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live; do
             echo "==> ${image}:dev"
             trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1
