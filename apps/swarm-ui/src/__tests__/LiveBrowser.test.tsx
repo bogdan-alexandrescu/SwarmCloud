@@ -22,6 +22,9 @@
 // anything between the socket's 'open' and noVNC's construction (the server's
 // first frame is then lost); construct noVNC outside the retry.
 
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
+
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -283,6 +286,31 @@ describe('the Browser tab is first for a running browser agent', () => {
     await waitFor(() => expect(label(tabs()[0]!)).toBe('Details'))
     expect(api.loadLiveSession).not.toHaveBeenCalled()
     expect(tabs().map(label)).not.toContain('Browser')
+  })
+})
+
+describe('the session read exactly as swarm-api serves it (tests/fixtures/live, LB-SEAM)', () => {
+  // The shared fixture, not a hand-built session: origin and device are null
+  // there because nothing reports them to swarm-api yet, and the tab must
+  // draw that rather than throw on `session.device.touch`.
+  const served = (file: string): LiveRead =>
+    JSON.parse(readFileSync(join(__dirname, '..', '..', '..', '..', 'tests', 'fixtures', 'live', file), 'utf8')) as LiveRead
+
+  it('opens on a Browser tab, shows the device as not reported, and offers Take control', async () => {
+    api.loadTask.mockResolvedValue(ok(agent()))
+    api.loadLiveSession.mockResolvedValue(ok(served('session.open.json')))
+    api.mintLiveTicket.mockReturnValue(new Promise(() => {}))
+    render(<Routed onGo={() => {}} />)
+    await waitFor(() => expect(label(tabs()[0]!)).toBe('Browser'))
+    await waitFor(() => expect(screen.getAllByRole('option', { name: 'Not reported' }).length).toBeGreaterThan(0))
+    expect(screen.getAllByRole('button', { name: /Take control/ }).length).toBeGreaterThan(0)
+  })
+
+  it('a live-browser task whose tunnel is not up yet still has its Browser tab', async () => {
+    api.loadTask.mockResolvedValue(ok(agent()))
+    api.loadLiveSession.mockResolvedValue(ok(served('session.pending.json')))
+    render(<Routed onGo={() => {}} />)
+    await waitFor(() => expect(tabs().map(label)).toContain('Browser'))
   })
 })
 

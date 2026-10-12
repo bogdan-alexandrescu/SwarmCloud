@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 
-import { USE_FIXTURES } from './api'
+import { USE_FIXTURES, loadLiveSession, mintLiveTicket } from './api'
 import { route } from './fetch'
 import { addressToPath } from './paths'
 import type { TaskState } from './types'
@@ -95,10 +95,18 @@ export function theaterPath(taskId: string, workflowId: string | null): string {
   return `${browserTabPath(taskId)}?${q.toString()}`
 }
 
-/** The console's live socket for a task (§3.3 step 3): same origin, the task id and nothing else. */
-export function liveSocketUrl(taskId: string, loc: Pick<Location, 'protocol' | 'host'> = window.location): string {
+/**
+ * The console's live socket for a SESSION (§3.3 step 3, §5.2): same origin,
+ * `/v1/live/{session_id}/stream`, the session id and nothing else. The one
+ * swarm-api serves; the ticket travels as the socket's first message.
+ *
+ * LB-SEAM (#1030): this card used to open `/v1/tasks/{task_id}/live` with no
+ * ticket. swarm-api serves no such route, and must not: §5.2 refuses every
+ * socket that does not present a one-use viewer ticket first.
+ */
+export function liveSocketUrl(sessionId: string, loc: Pick<Location, 'protocol' | 'host'> = window.location): string {
   const scheme = loc.protocol === 'https:' ? 'wss:' : 'ws:'
-  return `${scheme}//${loc.host}${route('/v1/tasks/{task_id}/live', { task_id: taskId }).url}`
+  return `${scheme}//${loc.host}${route('/v1/live/{id}/stream', { id: sessionId }).url}`
 }
 
 /** The part of a WebSocket this card uses, so a test can hand it a fake. */
@@ -114,8 +122,63 @@ export interface LiveSocket {
 /** Opens the live socket for a task, or null where there is no live path (fixture mode). */
 export type OpenLive = (taskId: string) => LiveSocket | null
 
-export const openLiveSocket: OpenLive = (taskId) =>
-  USE_FIXTURES ? null : (new WebSocket(liveSocketUrl(taskId)) as unknown as LiveSocket)
+export const openLiveSocket: OpenLive = (taskId) => (USE_FIXTURES ? null : ticketedSocket(taskId))
+
+/**
+ * A `LiveSocket` over the ticketed path (§5.2): read the task's session, mint
+ * a viewer ticket, open the session's stream and send the ticket FIRST; only
+ * then does an RFB byte go. Bytes the card sends before that are held. Text
+ * frames are swarm-api's own `{"type": "status"}` messages, not RFB, and are
+ * not handed to the RFB client. Any step that fails reads as a close, which
+ * the card already counts towards "unavailable".
+ */
+function ticketedSocket(taskId: string): LiveSocket {
+  let ws: WebSocket | null = null
+  let closed = false
+  const held: Uint8Array[] = []
+  const sock: LiveSocket = {
+    binaryType: 'arraybuffer',
+    onmessage: null,
+    onclose: null,
+    onerror: null,
+    send(data) {
+      if (ws !== null && ws.readyState === 1) ws.send(data)
+      else held.push(data)
+    },
+    close() {
+      closed = true
+      ws?.close()
+    },
+  }
+  const fail = (ev: unknown) => {
+    if (closed) return
+    closed = true
+    sock.onclose?.(ev)
+  }
+  void (async () => {
+    const read = await loadLiveSession(taskId)
+    const session = read.status === 'ok' || read.status === 'stale' ? read.data.session : null
+    if (session === null || session.state !== 'open') return fail(null)
+    const minted = await mintLiveTicket(taskId)
+    if (minted.status !== 'ok' || closed) return fail(null)
+    const socket = new WebSocket(liveSocketUrl(minted.data.session_id))
+    ws = socket
+    socket.binaryType = 'arraybuffer'
+    socket.onopen = () => {
+      socket.send(JSON.stringify({ ticket: minted.data.ticket }))
+      for (const b of held.splice(0)) socket.send(b)
+    }
+    socket.onmessage = (ev) => {
+      if (typeof ev.data === 'string') return
+      sock.onmessage?.({ data: ev.data })
+    }
+    socket.onclose = (ev) => fail(ev)
+    socket.onerror = (ev) => {
+      if (!closed) sock.onerror?.(ev)
+    }
+  })().catch(fail)
+  return sock
+}
 
 // ---------------------------------------------------------------------------
 // A view-only RFB 3.8 client that asks for at most one frame a second

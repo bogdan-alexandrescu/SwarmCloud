@@ -1,0 +1,29 @@
+{
+  "attempt_id": "att_fafe0d6de50c4ff39de9",
+  "actions": [
+    {
+      "at": "2026-10-11T23:40:10+00:00",
+      "kind": "cdp",
+      "method": "Page.navigate",
+      "url": "https://github.com/login"
+    },
+    {
+      "at": "2026-10-11T23:40:20+00:00",
+      "kind": "cdp",
+      "method": "Input.insertText",
+      "length": 12
+    },
+    {
+      "at": "2026-10-11T23:41:00+00:00",
+      "kind": "control",
+      "event": "control_taken"
+    },
+    {
+      "at": "2026-10-11T23:43:00+00:00",
+      "kind": "control",
+      "event": "control_returned",
+      "cause": "returned"
+    }
+  ],
+  "truncated": false
+}

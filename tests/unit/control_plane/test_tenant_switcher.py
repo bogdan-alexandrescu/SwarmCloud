@@ -377,6 +377,9 @@ def test_the_query_parameter_is_accepted_on_the_browser_fetched_routes_only():
     assert TENANT_QUERY_ROUTES == frozenset({
         ("GET", "/v1/tasks/{task_id}/artifacts/raw"),
         ("GET", "/v1/tasks/{task_id}/checkpoints/{checkpoint_id}/content"),
+        # A live-browser recording, played by a <video src> (LB-SEAM, §7).
+        ("GET", "/v1/tasks/{task_id}/live/recordings/raw"),
+        ("GET", "/v1/tasks/{task_id}/attempts/{attempt_id}/live/recordings/{seq}"),
     })
 
 

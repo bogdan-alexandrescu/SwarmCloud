@@ -69,12 +69,12 @@ import re
 import secrets
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping, Protocol, Sequence
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from pydantic import Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from swarm_common.admission import _snapshot
 from swarm_common.models import Task, TaskEvent, new_id, utcnow
@@ -86,6 +86,7 @@ from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
 from .codec import event_to_firestore
 from .errors import ApiError, NotFound, ValidationFailed
 from .handoff import LIVE_AUDIT, control_owner, resolution_writes
+from .objects import ObjectAbsent, ObjectUnreadable
 from .store import ATTEMPTS, EVENTS, LEASES, TASKS, Store
 
 log = logging.getLogger(__name__)
@@ -392,6 +393,174 @@ class LiveSessionOpen(_AttemptFields):
     task_id: str = Field(min_length=1, max_length=128)
 
 
+#: The longest domain a take's `confirmed_mismatch` may name (RFC 1035: 253).
+MAX_DOMAIN_CHARS = 253
+
+
+class ConfirmedMismatch(BaseModel):
+    """§5.7 item 2: the person was asked twice because the top frame's
+    registrable domain was not the one the hand-off expected, and confirmed
+    past it. Both names go into the `control_taken` audit entry."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    expected: str = Field(min_length=1, max_length=MAX_DOMAIN_CHARS)
+    actual: str = Field(min_length=1, max_length=MAX_DOMAIN_CHARS)
+
+
+class TakeControl(BaseModel):
+    """The body of `POST /v1/tasks/{task_id}/live/control`, as the console
+    sends it (`takeLiveControl` in apps/swarm-ui/src/api.ts)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    preempt: bool = False
+    confirmed_mismatch: ConfirmedMismatch | None = None
+
+
+# --------------------------------------------------------------------------
+# What the console is served (the wire the Browser tab parses)
+# --------------------------------------------------------------------------
+#
+# LANE LB-SEAM (#1030). Lanes L9 (this module) and L11 (the console) were
+# built in parallel against different shapes: this route served
+# `{available, session_id, state, close_cause, you: {may_take, ...}}` while
+# the console reads `{live_browser, session: {..., you: {can_control, ...}}}`,
+# so a working live session drew NO Browser tab. The design names the fields
+# and not their JSON, so the console's types (`LiveRead` in
+# apps/swarm-ui/src/api.ts) are the wire, and these models are the API's
+# statement of it. Every live route's `response_model` is one of them, so a
+# key this module forgets or renames fails the route itself, and
+# tests/fixtures/live/*.json is validated by these models in pytest AND parsed
+# by the console's own loaders in vitest -- the shape seam the path-only
+# check in test_runtimes_screen.py never was.
+
+
+class _Wire(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class LiveOrigin(_Wire):
+    """The top frame's origin as the GATE read it over CDP (§5.7)."""
+
+    origin: str
+    host: str
+    display_host: str | None = None
+    registrable_domain: str
+    scheme: str
+    ip_literal: bool | None = None
+    cert_error: bool | None = None
+
+
+class LiveDevice(_Wire):
+    """The device the gate has applied (§6.1)."""
+
+    preset: str
+    orientation: Literal["portrait", "landscape"]
+    touch: bool
+
+
+class LivePreset(_Wire):
+    """One of the gate's fixed device presets (§6.1)."""
+
+    name: str
+    width: int
+    height: int
+    scale: float
+    mobile: bool
+
+
+class LiveController(_Wire):
+    """The person in control (§4.2). `renew_by` is when control lapses
+    unless renewed; the console does not read it."""
+
+    email: str
+    since: str | None
+    renew_by: str | None = None
+
+
+class LiveHumanWait(_Wire):
+    """`Task.human_wait` as a viewer sees it (§4.1 step 3): no request id,
+    no generation."""
+
+    reason: str | None
+    expect: str | None
+    requested_at: str | None
+    deadline: str | None
+
+
+class LiveYou(_Wire):
+    """What THIS caller may do (§5.1). The server decides; the console draws."""
+
+    email: str
+    #: May take control now: the owner, or any member once control is opened
+    #: while the agent asks for help (§5.1, Q1, Q6).
+    can_control: bool
+    #: May take control from someone else who holds it: the owner only.
+    can_preempt: bool
+    #: May open control to every member: the owner only.
+    can_open: bool
+
+
+class LiveSessionView(_Wire):
+    session_id: str
+    state: Literal["open", "closed"]
+    closed_reason: str | None
+    #: NOT REPORTED SERVER-SIDE YET: the gate reads the origin over CDP but
+    #: nothing carries it to swarm-api (no relay message, no ctl report, no
+    #: field on `live_sessions`), so this is always null rather than invented.
+    origin: LiveOrigin | None
+    human_wait: LiveHumanWait | None
+    controller: LiveController | None
+    open_to_members: bool
+    #: NOT REPORTED SERVER-SIDE YET, as `origin`: the gate applies the device
+    #: (`agent_worker/livegate/device.py`) and nothing reports which one.
+    device: LiveDevice | None
+    presets: list[LivePreset]
+    you: LiveYou
+
+
+class LiveRead(_Wire):
+    """`GET /v1/tasks/{task_id}/live/session`, and the answer of every control
+    route. `live_browser` is the task's profile's catalogue property
+    (`RunnerProfile.live_browser`, contract request 71), true for a
+    live-browser task before, during and after its session; `session` is null
+    until the gate's tunnel has opened one for the task's current attempt."""
+
+    live_browser: bool
+    session: LiveSessionView | None
+
+
+class LiveTicketView(_Wire):
+    """`POST /v1/tasks/{task_id}/live/ticket` (§5.2 step 3)."""
+
+    ticket: str
+    session_id: str
+    expires_in: int
+    socket_path: str
+
+
+#: The gate's fixed device list (§6.1), as the console's switcher lists it.
+#: A RESTATEMENT of `agent_worker.livegate.presets.PRESETS` -- swarm-api does
+#: not import the worker -- held equal to it by
+#: tests/unit/control_plane/test_live_wire_shapes.py. It is a catalogue, not a
+#: reading: which preset is APPLIED is `device`, which is not reported yet.
+LIVE_PRESETS: tuple[dict[str, Any], ...] = (
+    {"name": "desktop", "width": 1440, "height": 900, "scale": 1.0, "mobile": False},
+    {"name": "iphone-15", "width": 393, "height": 852, "scale": 3.0, "mobile": True},
+    {"name": "pixel-8", "width": 412, "height": 915, "scale": 2.625, "mobile": True},
+    {"name": "iphone-se", "width": 375, "height": 667, "scale": 2.0, "mobile": True},
+    {"name": "ipad-7", "width": 810, "height": 1080, "scale": 2.0, "mobile": True},
+)
+
+
+def profile_is_live(runner_profile: Any) -> bool:
+    """`RunnerProfile.live_browser` for this profile name: the catalogue's
+    word, never inferred from the name (contract request 71, invariant 10)."""
+    profile = RUNNER_PROFILES.get(str(runner_profile or ""))
+    return bool(profile is not None and getattr(profile, "live_browser", False))
+
+
 # --------------------------------------------------------------------------
 # One transaction's worth of changes
 # --------------------------------------------------------------------------
@@ -665,11 +834,9 @@ class LiveService:
                     "was requested; no live session was opened"
                 )
             # §8.1: a live-browser profile, on GKE, in this attempt's record.
-            profile = RUNNER_PROFILES.get(str(task.get("runner_profile") or ""))
             backend = (attempt_snap.to_dict() or {}).get("backend") if attempt_snap.exists else None
             if (
-                profile is None
-                or not getattr(profile, "live_browser", False)
+                not profile_is_live(task.get("runner_profile"))
                 or backend != Backend.GKE_AUTOPILOT.value
             ):
                 raise LiveNotAvailable(
@@ -896,7 +1063,9 @@ class LiveService:
 
     # -- who may do what (§5.1) ---------------------------------------------
 
-    def _rights(self, task: Task, plan: _Plan, email: str, owner: str | None) -> dict[str, bool]:
+    def _rights(self, task: Task, plan: _Plan, email: str, owner: str | None) -> dict[str, Any]:
+        """`LiveYou`: what this caller may do. Every member may watch (§5.1);
+        a caller who can see the task is a member, so watching is not a field."""
         email = email.strip().lower()
         is_owner = owner is None or owner == email
         waiting = plan.wait is not None
@@ -905,46 +1074,44 @@ class LiveService:
         open_ = plan.state.get("state") == "open"
         may_take = open_ and (is_owner or (waiting and opened))
         return {
-            "may_view": True,
-            "may_take": bool(may_take),
-            "may_preempt": bool(open_ and owner is not None and owner == email and current
+            "email": email,
+            "can_control": bool(may_take),
+            "can_preempt": bool(open_ and owner is not None and owner == email and current
                                 is not None and current.get("email") != email),
-            "may_open_to_members": bool(open_ and owner is not None and owner == email),
-            "in_control": bool(current is not None and current.get("email") == email),
+            "can_open": bool(open_ and owner is not None and owner == email),
         }
 
     def _view(self, task: Task, plan: _Plan | None, email: str, owner: str | None
               ) -> dict[str, Any]:
+        """`LiveRead`. `session` is null until a session exists for the
+        task's current attempt; a closed one is still served, with its
+        `closed_reason`, so the tab can say why the browser went away."""
+        live_browser = profile_is_live(getattr(task, "runner_profile", None))
         if plan is None or plan.session is None:
-            return {
-                "available": False,
-                "session_id": None,
-                "state": None,
-                "close_cause": None,
-                "controller": None,
-                "open_to_members": False,
-                "human_wait": None,
-                "you": {"may_view": True, "may_take": False, "may_preempt": False,
-                        "may_open_to_members": False, "in_control": False},
-            }
+            return {"live_browser": live_browser, "session": None}
         state = plan.state
         current = plan.controller
         wait = plan.wait
         return {
-            "available": state.get("state") == "open",
-            "session_id": state.get("id"),
-            "state": state.get("state"),
-            "close_cause": state.get("close_cause"),
-            "controller": None if current is None else {
-                "email": current.get("email"),
-                "since": _iso(current.get("since")),
-                "renew_by": _iso(current.get("renew_by")),
+            "live_browser": live_browser,
+            "session": {
+                "session_id": state.get("id"),
+                "state": "open" if state.get("state") == "open" else "closed",
+                "closed_reason": state.get("close_cause"),
+                "origin": None,
+                "human_wait": None if wait is None else {
+                    k: _iso(wait.get(k)) for k in ("reason", "expect", "requested_at", "deadline")
+                },
+                "controller": None if current is None else {
+                    "email": current.get("email"),
+                    "since": _iso(current.get("since")),
+                    "renew_by": _iso(current.get("renew_by")),
+                },
+                "open_to_members": bool(state.get("open_to_members")),
+                "device": None,
+                "presets": [dict(p) for p in LIVE_PRESETS],
+                "you": self._rights(task, plan, email, owner),
             },
-            "open_to_members": bool(state.get("open_to_members")),
-            "human_wait": None if wait is None else {
-                k: _iso(wait.get(k)) for k in ("reason", "expect", "requested_at", "deadline")
-            },
-            "you": self._rights(task, plan, email, owner),
         }
 
     def _task(self, tenant_id: str, task_id: str, submitted_by: str | None) -> Task:
@@ -1013,7 +1180,8 @@ class LiveService:
             )
 
     def take(self, tenant_id: str, task_id: str, *, email: str, submitted_by: str | None,
-             preempt: bool = False) -> dict[str, Any]:
+             preempt: bool = False, confirmed_mismatch: ConfirmedMismatch | None = None,
+             ) -> dict[str, Any]:
         task = self._task(tenant_id, task_id, submitted_by)
         tenant = self._store.get_tenant(tenant_id)
         if tenant is None or not fresh_membership(self._authenticator, email, tenant):
@@ -1032,18 +1200,18 @@ class LiveService:
                 plan.session_update["controller"] = {**current, "renew_by": plan.now
                                                      + timedelta(seconds=renew)}
                 return
-            if not rights["may_take"]:
+            if not rights["can_control"]:
                 raise ControlNotEligible(
                     "you may watch this browser but not control it: control is its "
                     "submitter's, unless they opened it to the tenant while the agent "
                     "asks for help"
                 )
             if current is not None:
-                if not (preempt and rights["may_preempt"]):
+                if not (preempt and rights["can_preempt"]):
                     raise ControlHeld(
                         f"{current.get('email')} is in control; one person at a time",
                         detail={"controller": current.get("email"),
-                                "may_preempt": rights["may_preempt"]},
+                                "may_preempt": rights["can_preempt"]},
                     )
                 plan.end_control("preempted")
             episode = new_id("lc")
@@ -1057,8 +1225,11 @@ class LiveService:
                 "pointers": 0,
             }
             plan.session_update["controller"] = controller
-            plan.audit("control_taken", who, {"episode_id": episode,
-                                              "requested": plan.wait is not None})
+            taken: dict[str, Any] = {"episode_id": episode, "requested": plan.wait is not None}
+            if confirmed_mismatch is not None:
+                # §5.7 item 2: what the person confirmed past, both names.
+                taken["confirmed_mismatch"] = confirmed_mismatch.model_dump()
+            plan.audit("control_taken", who, taken)
             plan.events.append((EventType.HUMAN_CONTROL_TAKEN,
                                 {"email": who, "episode_id": episode,
                                  "requested": plan.wait is not None}))
@@ -1363,3 +1534,230 @@ __all__ = [
     "ticket_seconds",
     "verify_ticket",
 ]
+
+
+# --------------------------------------------------------------------------
+# Recordings and the action timeline (§7), read back for tenant members
+# --------------------------------------------------------------------------
+#
+# LANE LB-SEAM. The console reads `GET .../live/recordings` (Recordings.tsx,
+# Theater.tsx), streams a segment from `.../live/recordings/raw?attempt_id=
+# &name=` (Recordings.tsx) or `.../attempts/{attempt}/live/recordings/{seq}`
+# (Theater.tsx), and reads `.../live/actions` (TheaterTimeline.tsx). No route
+# served any of them, so every recording and timeline read as "unserved".
+#
+# §7: "Members of the task's tenant, through a swarm-api route that checks the
+# tenant as §5.2 does and streams the object." The task is read through the
+# tenant first (another tenant's is the same 404 as a missing one), and every
+# object key is BUILT here from that tenant, that task and a validated attempt
+# id and segment number -- a caller never names an object. The relay writes
+# the names (`swarm_live.recorder.segment_name`): a 13-digit sequence.
+
+#: The relay's segment names (`swarm_live.recorder._LIVE_NAME`), matched on the
+#: part after `.../attempts/`.
+_RECORDING = re.compile(r"(?P<a>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})/live/rec-(?P<seq>[0-9]{13})\.live\.webm")
+_ACTIONS = re.compile(r"(?P<a>[A-Za-z0-9_][A-Za-z0-9_.-]{0,127})/live/actions-(?P<seq>[0-9]{13})\.live\.jsonl")
+_ATTEMPT_ID = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}")
+#: How many objects one listing of a task's attempts reads. A task's attempts
+#: hold logs and outputs as well as recordings; a listing cut short says so
+#: (`truncated`) rather than passing for the whole.
+RECORDING_SCAN_LIMIT = 5000
+#: The action timeline reads at most this many bytes of action logs, newest
+#: segments kept: the relay writes up to 20,000 lines a minute.
+MAX_ACTION_BYTES = 2 * 1024 * 1024
+#: The fields an action line may carry to the console (`swarm_live.recorder.
+#: ACTION_FIELDS`, less nothing): the relay already refuses any other.
+ACTION_FIELDS = ("kind", "method", "url", "length", "event", "cause", "outcome")
+#: One read of a streamed segment.
+SEGMENT_CHUNK_BYTES = 1024 * 1024
+
+
+class RecordingSegmentView(_Wire):
+    """One segment, in both of the console's shapes: Recordings.tsx reads
+    `name`, `key`, `bytes`, `created_at`; Theater.tsx reads `seq`, `object`,
+    `started_at`."""
+
+    attempt_id: str
+    seq: int
+    name: str
+    key: str
+    object: str
+    bytes: int | None
+    created_at: str | None
+    #: The object's write time. The relay writes a segment when it closes, so
+    #: this is the END of the minute it holds; the relay records no start.
+    started_at: str | None
+
+
+class RecordingsView(_Wire):
+    """`GET /v1/tasks/{task_id}/live/recordings`, oldest first."""
+
+    tenant_id: str
+    task_id: str
+    recordings: list[RecordingSegmentView]
+    segments: list[RecordingSegmentView]
+    truncated: bool
+
+
+class LiveActionView(_Wire):
+    at: str
+    kind: str
+    method: str | None = None
+    url: str | None = None
+    length: int | None = None
+    event: str | None = None
+    cause: str | None = None
+    outcome: str | None = None
+
+
+class LiveActionsView(_Wire):
+    """`GET /v1/tasks/{task_id}/live/actions`: one attempt's timeline."""
+
+    attempt_id: str | None
+    actions: list[LiveActionView]
+    truncated: bool
+
+
+def _attempts_prefix(tenant_id: str, task_id: str) -> str:
+    return f"tenants/{tenant_id}/tasks/{task_id}/attempts/"
+
+
+def recording_key(tenant_id: str, task_id: str, attempt_id: str, seq: int) -> str:
+    if not _ATTEMPT_ID.fullmatch(attempt_id) or ".." in attempt_id:
+        raise NotFound("no such recording")
+    if not 0 <= seq < 10**13:
+        raise NotFound("no such recording")
+    return f"{_attempts_prefix(tenant_id, task_id)}{attempt_id}/live/rec-{seq:013d}.live.webm"
+
+
+class LiveRecordings:
+    """§7's read side. Built per request from the app context."""
+
+    def __init__(self, *, store: Store, objects: Any) -> None:
+        self._store = store
+        self._objects = objects
+
+    def _reader(self) -> Any:
+        if self._objects is None:
+            raise LiveUnavailable("this deployment has no artifact bucket to read recordings from")
+        return self._objects
+
+    def _listing(self, tenant_id: str, task_id: str) -> Any:
+        return self._reader().list_objects(_attempts_prefix(tenant_id, task_id),
+                                           limit=RECORDING_SCAN_LIMIT)
+
+    def recordings(self, tenant_id: str, task_id: str, *, submitted_by: str | None
+                   ) -> dict[str, Any]:
+        self._store.get_task(tenant_id, task_id, submitted_by=submitted_by)
+        prefix = _attempts_prefix(tenant_id, task_id)
+        listing = self._listing(tenant_id, task_id)
+        rows = []
+        for info in listing.objects:
+            if not info.key.startswith(prefix):
+                continue
+            match = _RECORDING.fullmatch(info.key[len(prefix):])
+            if match is None:
+                continue
+            written = _iso(info.updated)
+            rows.append({
+                "attempt_id": match.group("a"),
+                "seq": int(match.group("seq")),
+                "name": info.name,
+                "key": info.key,
+                "object": info.key,
+                "bytes": info.size,
+                "created_at": written,
+                "started_at": written,
+            })
+        rows.sort(key=lambda r: (str(r["created_at"] or ""), r["attempt_id"], r["seq"]))
+        return {"tenant_id": tenant_id, "task_id": task_id, "recordings": rows,
+                "segments": [dict(r) for r in rows], "truncated": bool(listing.truncated)}
+
+    def segment(self, tenant_id: str, task_id: str, attempt_id: str, seq: int, *,
+                submitted_by: str | None) -> tuple[Any, int]:
+        """The segment's bytes, as an iterator of chunks, and its size. Every
+        failure before the first byte is the JSON envelope."""
+        self._store.get_task(tenant_id, task_id, submitted_by=submitted_by)
+        key = recording_key(tenant_id, task_id, attempt_id, seq)
+        reader = self._reader()
+        try:
+            first = reader.read_range(key, offset=0, length=SEGMENT_CHUNK_BYTES)
+        except ObjectAbsent:
+            raise NotFound("no such recording (they are kept 7 days)") from None
+        except ObjectUnreadable:
+            raise LiveUnavailable("the recording could not be read") from None
+
+        def chunks() -> Any:
+            yield first.data
+            offset = first.end
+            while offset < first.total_bytes:
+                part = reader.read_range(key, offset=offset, length=SEGMENT_CHUNK_BYTES)
+                if not part.data:
+                    return
+                yield part.data
+                offset = part.end
+
+        return chunks(), first.total_bytes
+
+    def actions(self, tenant_id: str, task_id: str, *, submitted_by: str | None
+                ) -> dict[str, Any]:
+        """The newest attempt's action lines, oldest first. The newest attempt
+        is the one whose action log was written last."""
+        self._store.get_task(tenant_id, task_id, submitted_by=submitted_by)
+        prefix = _attempts_prefix(tenant_id, task_id)
+        listing = self._listing(tenant_id, task_id)
+        found: list[tuple[str, int, Any]] = []
+        for info in listing.objects:
+            if not info.key.startswith(prefix):
+                continue
+            match = _ACTIONS.fullmatch(info.key[len(prefix):])
+            if match is not None:
+                found.append((match.group("a"), int(match.group("seq")), info))
+        if not found:
+            return {"attempt_id": None, "actions": [], "truncated": bool(listing.truncated)}
+        newest = max(found, key=lambda f: (str(_iso(f[2].updated) or ""), f[1]))[0]
+        mine = sorted((f for f in found if f[0] == newest), key=lambda f: f[1])
+        budget = MAX_ACTION_BYTES
+        kept: list[Any] = []
+        for _, _, info in reversed(mine):
+            if info.size > budget:
+                break
+            kept.append(info)
+            budget -= info.size
+        truncated = bool(listing.truncated) or len(kept) < len(mine)
+        lines: list[dict[str, Any]] = []
+        for info in reversed(kept):
+            data = self._reader().read_range(info.key, offset=0, length=max(info.size, 1)).data
+            for raw in data.decode("utf-8", errors="replace").splitlines():
+                line = _action_line(raw)
+                if line is not None:
+                    lines.append(line)
+        return {"attempt_id": newest, "actions": lines, "truncated": truncated}
+
+
+def _action_line(raw: str) -> dict[str, Any] | None:
+    """One relay line (`{"t": <unix seconds>, ...ACTION_FIELDS}`) as the
+    console reads it (`LiveAction`: `at` ISO). A line of any other shape is
+    dropped whole, as the relay drops one."""
+    try:
+        doc = json.loads(raw)
+    except ValueError:
+        return None
+    if not isinstance(doc, dict) or not isinstance(doc.get("t"), (int, float)):
+        return None
+    if not isinstance(doc.get("kind"), str):
+        return None
+    out: dict[str, Any] = {
+        "at": datetime.fromtimestamp(float(doc["t"]), tz=timezone.utc).isoformat(),
+    }
+    for name in ACTION_FIELDS:
+        value = doc.get(name)
+        if value is None:
+            continue
+        if name == "length":
+            if isinstance(value, bool) or not isinstance(value, int):
+                return None
+        elif not isinstance(value, str):
+            return None
+        out[name] = value
+    return out

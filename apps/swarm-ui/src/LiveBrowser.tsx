@@ -469,7 +469,7 @@ export function LiveBrowserPane({
             key={session.session_id}
             taskId={task.id}
             control={mine}
-            touch={mine && session.device.touch}
+            touch={mine && session.device !== null && session.device.touch}
             onScreen={setScreenNode}
           />
           {logs && (
@@ -608,6 +608,19 @@ function deviceWhy(mine: boolean): string {
 /** The preset, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
 function LiveDevice({ session, mine }: { session: LiveSession; mine: boolean }) {
   const device = session.device
+  // NOT REPORTED (LB-SEAM): the gate applies the device but nothing carries
+  // which one to swarm-api yet, so the session serves null. Say so, rather
+  // than draw the first preset as if it were the one applied.
+  if (device === null) {
+    return (
+      <label className="live-device">
+        <span>Device</span>
+        <select value="" disabled title="The gate has not reported which device it applied.">
+          <option value="">Not reported</option>
+        </select>
+      </label>
+    )
+  }
   const names = session.presets.some((p) => p.name === device.preset)
     ? session.presets.map((p) => p.name)
     : [device.preset, ...session.presets.map((p) => p.name)]

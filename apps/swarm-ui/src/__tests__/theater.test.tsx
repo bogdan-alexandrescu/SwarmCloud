@@ -344,7 +344,7 @@ describe('replay', () => {
   const own = (seq: number) => ({
     attempt_id: ATTEMPT,
     seq,
-    object: `tenants/${TENANT}/tasks/${TASK}/attempts/${ATTEMPT}/live/rec-${seq}.live.webm`,
+    object: `tenants/${TENANT}/tasks/${TASK}/attempts/${ATTEMPT}/live/rec-${String(seq).padStart(13, '0')}.live.webm`,
     started_at: `2026-10-11T20:0${seq}:00Z`,
   })
   const foreign = {

@@ -1201,6 +1201,43 @@ for sign-ins that only work on mobile.
 
 ---
 
+### 6.2 The console's wire (LB-SEAM, 2026-10-12)
+
+This design names the fields of a live session, not their JSON, and lanes L9
+(swarm-api) and L11 (the console) filled that gap differently and in parallel.
+Measured on 2026-10-11, the session read answered `{"available": true, ...,
+"you": {"may_take": ...}}` while the console read `live_browser` and
+`session`, so a working live session drew **no Browser tab**. The return
+button sent `DELETE .../live/control` to a route served only as `POST
+.../control/return`, the take's `confirmed_mismatch` was dropped unaudited,
+and recordings, the action timeline and the card thumbnail called routes
+nothing served.
+
+**Where the design is silent, the console's types are the wire**, because
+they are what the screen draws (`LiveRead` in `apps/swarm-ui/src/api.ts`).
+swarm-api states the same wire as `response_model`s (`swarm_api.live`), and
+`tests/fixtures/live/*.json` holds one example per route that **both** suites
+read: pytest validates each against the route's model and compares the real
+routes' answers with it, and vitest feeds it through the console's own loaders
+(`loadLiveSession`, `takeLiveControl`, `loadRecordings`, ...). A route the
+index names that either side does not handle fails both. The path-only check
+in `test_runtimes_screen.py` could never see a shape.
+
+**Not reported yet, so served as null:** the session's `origin` and `device`.
+The gate reads both (section 5.7, section 6.1) but nothing carries them to
+swarm-api — no relay message, no ctl report, no `live_sessions` field — and
+inventing them would show a person an origin strip nobody measured. The
+console draws "not reported" for both. `presets` is the gate's fixed list
+(section 6.1), restated in swarm-api and held equal to
+`agent_worker.livegate.presets` by a test. A recording's `started_at` is its
+object's write time, which is the END of the minute it holds; the relay
+records no start.
+
+**The thumbnail's socket is the session's, ticketed.** The workflow card
+opened `/v1/tasks/{task_id}/live` with no ticket. Section 5.2 refuses that, so
+the console was changed, not swarm-api: the card reads the session, mints a
+viewer ticket and opens `/v1/live/{session_id}/stream` like the tab does.
+
 ## 7. Recording and replay (LB-4)
 
 **What is recorded.** The masked frames, and nothing unmasked, because nothing
