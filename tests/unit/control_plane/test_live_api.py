@@ -11,8 +11,15 @@ names the acceptance rule of the build plan it holds (§9, row L9):
   * membership is re-checked: on the open socket, and freshly on a take;
   * no ticket in a URL.
 
+And LB-L8d's (owner decisions 2026-10-11 (a), (b)): the console's socket is
+`/v1/live/<session>/stream`, proxied to the relay; it refuses another tenant's
+session and a stale generation; and swarm-api calls the relay's close route
+when a session closes and when a stale generation is seen.
+
 The relay (lane L7) is a test double here (`FakeRelay`), never code in apps/:
-the socket route takes its relay connector from `app.state.live_relay`.
+the socket route takes its relay connector from `app.state.live_relay`, and
+the services their closer from `app.state.live_relay_closer`. The real
+relay's side of the same wire is test_live_relay_wire.py's.
 
 Every key, token and ticket below is built at runtime: nothing here is a
 credential.
@@ -23,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import secrets
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -64,7 +72,10 @@ TASK = "task_live"
 ATTEMPT = "att_live_1"
 LEASE = "lease_live_1"
 PROFILE = "claude-code-browser"
-RELAY_URL = "ws://swarm-live.swarm-system.svc:8443/v1/viewer"
+RELAY_URL = "ws://10.10.0.42:8080"
+SESSION = "live_" + ATTEMPT
+SOCKET = f"/v1/live/{SESSION}/stream"
+READY = json.dumps({"type": "ready"})
 
 
 def _b64url(raw: bytes) -> str:
@@ -148,10 +159,13 @@ class CommitLog(FakeFirestore):
 
 
 class FakeLink:
-    def __init__(self, url: str, frames: list[Any]) -> None:
+    def __init__(self, url: str, frames: list[Any], close_code: int | None = None,
+                 refuse: bool = False) -> None:
         self.url = url
         self.sent: list[Any] = []
         self.closed = False
+        self.close_code = close_code
+        self._refuse = refuse
         self._frames = list(frames)
         self._done: asyncio.Event | None = None
 
@@ -161,6 +175,8 @@ class FakeLink:
     async def recv(self) -> str | bytes | None:
         if self._frames:
             return self._frames.pop(0)
+        if self._refuse:
+            return None  # the relay closed the socket, with `close_code`
         if self._done is None:
             self._done = asyncio.Event()
         await self._done.wait()
@@ -172,18 +188,39 @@ class FakeLink:
             self._done.set()
 
     def texts(self) -> list[dict[str, Any]]:
-        return [json.loads(m) for m in self.sent if isinstance(m, str)]
+        """The JSON messages sent; the first message is the bare ticket."""
+        out = []
+        for m in self.sent:
+            if isinstance(m, str) and m.startswith("{"):
+                out.append(json.loads(m))
+        return out
 
 
 class FakeRelay:
-    def __init__(self, frames: list[Any] | None = None) -> None:
+    """The relay's websocket and its close route. By default it accepts every
+    viewer ticket with `{"type": "ready"}`, as the real one does a good one."""
+
+    def __init__(self, frames: list[Any] | None = None, close_code: int | None = None,
+                 refuse: bool = False) -> None:
         self.links: list[FakeLink] = []
-        self._frames = frames or []
+        self.closed: list[str] = []
+        self._frames = [] if refuse else [READY] if frames is None else frames
+        self._close_code = close_code
+        self._refuse = refuse
 
     async def connect(self, url: str) -> FakeLink:
-        link = FakeLink(url, self._frames)
+        link = FakeLink(url, self._frames, self._close_code, self._refuse)
         self.links.append(link)
         return link
+
+    def close_session(self, session_id: str) -> None:
+        self.closed.append(session_id)
+
+
+def claims_of(ticket: str) -> dict[str, Any]:
+    """A ticket's payload, read without verifying (the wire test verifies)."""
+    payload = ticket.split(".")[0]
+    return json.loads(base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4)))
 
 
 # --------------------------------------------------------------------------
@@ -264,6 +301,7 @@ def make_client(db, people, groups, objects, clock, relay, **settings: Any) -> T
     )
     app = create_app(ctx)
     app.state.live_relay = relay
+    app.state.live_relay_closer = relay
     return TestClient(app, raise_server_exceptions=False)
 
 
@@ -474,7 +512,7 @@ def test_another_tenants_member_is_refused_on_the_socket_even_with_a_valid_ticke
     claims = verify_ticket((LIVE_KEY,), ticket_for(client, "alice"), now=time.time())
     forged = mint_ticket(LIVE_KEY, {**claims, "email": "bob@saga.xyz",
                                     "exp": int(time.time()) + 30})
-    with client.websocket_connect(f"/v1/tasks/{TASK}/live", headers=bearer("bob")) as ws:
+    with client.websocket_connect(SOCKET, headers=bearer("bob")) as ws:
         ws.send_text(json.dumps({"ticket": forged}))
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_text()
@@ -705,15 +743,20 @@ def test_the_open_socket_is_re_checked_and_closed_when_membership_lapses(
     assert client.post(f"/v1/tasks/{TASK}/live/open-to-members",
                        headers=bearer("alice")).status_code == 200
     ticket = ticket_for(client, "root")
-    with client.websocket_connect(f"/v1/tasks/{TASK}/live", headers=bearer("root")) as ws:
+    with client.websocket_connect(SOCKET, headers=bearer("root")) as ws:
         ws.send_text(json.dumps({"ticket": ticket}))
         hello = ws.receive_json()
         assert hello["type"] == "status" and hello["in_control"] is False
         assert wait_until(lambda: len(relay.links) == 1)
         link = relay.links[0]
-        assert link.texts()[0] == {"type": "hello", "ticket": ticket}
+        # The relay's protocol: the viewer ticket itself, first, on /v1/view.
+        assert link.url == RELAY_URL + "/v1/view"
+        assert link.sent[0] == ticket
         assert take(client, "root").status_code == 200
-        assert wait_until(lambda: {"type": "control", "controller": True} in link.texts())
+        assert wait_until(lambda: any(m.get("type") == "control" for m in link.texts()))
+        control = claims_of(next(m for m in link.texts() if m["type"] == "control")["ticket"])
+        assert (control["role"], control["email"], control["session_id"], control["generation"]) == (
+            "control", "root@saga.xyz", SESSION, 1)
         ws.send_bytes(bytes([4, 1, 0, 0, 0, 0, 0, 0x61]))  # an RFB KeyEvent
         assert wait_until(lambda: any(isinstance(m, bytes) for m in link.sent))
         groups.mapping["root@saga.xyz"] = ()
@@ -754,9 +797,9 @@ def test_the_ticket_is_minted_in_a_body_and_the_socket_refuses_one_in_a_query(
 ):
     response = client.post(f"/v1/tasks/{TASK}/live/ticket", headers=bearer("alice"))
     body = response.json()
-    assert body["socket_path"] == f"/v1/tasks/{TASK}/live"
+    assert body["socket_path"] == SOCKET
     assert body["ticket"] not in body["socket_path"]
-    with client.websocket_connect(f"/v1/tasks/{TASK}/live?ticket={body['ticket']}",
+    with client.websocket_connect(f"{SOCKET}?ticket={body['ticket']}",
                                   headers=bearer("alice")) as ws:
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_text()
@@ -773,16 +816,16 @@ def test_the_viewer_ticket_is_one_person_thirty_seconds_and_this_session(client,
     with pytest.raises(TicketRefused):
         verify_ticket((LIVE_KEY,), ticket_for(client, "root"), now=time.time() + 31)
     tampered = ticket_for(client, "root")
-    head, payload, mac = tampered.split(".")
+    payload, mac = tampered.split(".")
     with pytest.raises(TicketRefused):
-        verify_ticket((LIVE_KEY,), ".".join((head, payload[:-2] + "AA", mac)), now=time.time())
+        verify_ticket((LIVE_KEY,), ".".join((payload[:-2] + "AA", mac)), now=time.time())
     with pytest.raises(TicketRefused):
         verify_ticket(("x" * 40,), ticket_for(client, "root"), now=time.time())
 
 
 def test_a_ticket_for_someone_else_is_refused_on_the_socket(client, ldb, live, relay):
     ticket = ticket_for(client, "alice")
-    with client.websocket_connect(f"/v1/tasks/{TASK}/live", headers=bearer("root")) as ws:
+    with client.websocket_connect(SOCKET, headers=bearer("root")) as ws:
         ws.send_text(json.dumps({"ticket": ticket}))
         with pytest.raises(WebSocketDisconnect) as closed:
             ws.receive_text()
@@ -805,7 +848,7 @@ def test_the_audit_is_readable_by_the_tenant_only(client, ldb, live):
 
 def test_a_socket_on_an_attempt_that_ended_is_closed(client, ldb, live, relay):
     ticket = ticket_for(client, "alice")
-    with client.websocket_connect(f"/v1/tasks/{TASK}/live", headers=bearer("alice")) as ws:
+    with client.websocket_connect(SOCKET, headers=bearer("alice")) as ws:
         ws.send_text(json.dumps({"ticket": ticket}))
         assert ws.receive_json()["open"] is True
         # A retry: a new lease and generation (invariant 5).
@@ -817,3 +860,124 @@ def test_a_socket_on_an_attempt_that_ended_is_closed(client, ldb, live, relay):
     assert closed.value.code == 4409
     assert session_doc(ldb)["state"] == "closed"
     assert session_doc(ldb)["close_cause"] == "attempt_ended"
+    # The stale generation's session is closed at the relay too (decision (a)).
+    assert SESSION in relay.closed
+
+
+# --------------------------------------------------------------------------
+# The proxy to the relay (LB-L8d, owner decisions 2026-10-11 (a), (b))
+# --------------------------------------------------------------------------
+
+
+def _refused(client, user: str, ticket: str, path: str = SOCKET) -> int:
+    with client.websocket_connect(path, headers=bearer(user)) as ws:
+        ws.send_text(json.dumps({"ticket": ticket}))
+        with pytest.raises(WebSocketDisconnect) as closed:
+            ws.receive_text()
+    return closed.value.code
+
+
+def test_the_proxy_refuses_another_tenants_session(client, ldb, live, relay):
+    claims = verify_ticket((LIVE_KEY,), ticket_for(client, "alice"), now=time.time())
+    # A genuine-looking ticket for bob's OWN tenant, naming eng's session: the
+    # task it names is not research's, so it is the same 404 as no session.
+    theirs = mint_ticket(LIVE_KEY, {**claims, "tenant_id": "research", "email": "bob@saga.xyz",
+                                    "nonce": secrets.token_hex(16), "exp": int(time.time()) + 30})
+    assert _refused(client, "bob", theirs) == 4404
+    # alice's own ticket on another session's address is refused too.
+    mine = ticket_for(client, "alice")
+    assert _refused(client, "alice", mine, "/v1/live/live_att_other/stream") == 4404
+    assert relay.links == []
+
+
+def test_the_proxy_refuses_a_stale_generation_and_closes_it_at_the_relay(client, ldb, live, relay):
+    claims = verify_ticket((LIVE_KEY,), ticket_for(client, "alice"), now=time.time())
+    stale = mint_ticket(LIVE_KEY, {**claims, "generation": 0, "nonce": secrets.token_hex(16),
+                                   "exp": int(time.time()) + 30})
+    assert _refused(client, "alice", stale) == 4404
+    assert relay.links == []
+    assert relay.closed == [SESSION]
+
+
+def test_a_worker_of_a_stale_generation_closes_its_session_at_the_relay(client, ldb, live, relay):
+    relay.closed.clear()
+    ldb.docs[f"tasks/{TASK}"].update({"current_lease_id": "lease_live_2", "current_generation": 2})
+    assert open_session(client, live["attempt"]).status_code == 409
+    assert session_doc(ldb)["state"] == "closed"
+    assert relay.closed == [SESSION]
+
+
+def test_a_session_that_closes_is_closed_at_the_relay(client, ldb, live, relay):
+    assert relay.closed == []
+    ldb.docs[f"tasks/{TASK}"]["cancel_requested"] = True
+    view = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("alice"))
+    assert view.json()["state"] == "closed"
+    assert relay.closed == [SESSION]
+    # Once: a later read of the closed session does not ask again.
+    client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("alice"))
+    assert relay.closed == [SESSION]
+
+
+@pytest.mark.parametrize("relay_code,console_code", [(4404, 4404), (4429, 4429), (None, 4404)])
+def test_a_ticket_the_relay_refuses_closes_the_console_socket(
+    ldb, people, groups, objects, clock, relay_code, console_code
+):
+    # The relay spends each ticket once; one replayed to swarm-api passes our
+    # checks and is refused there, without "ready".
+    refusing = FakeRelay(close_code=relay_code, refuse=True)
+    client = make_client(ldb, people, groups, objects, clock, refusing)
+    attempt = Attempt()
+    seed_running(client, ldb, attempt)
+    assert open_session(client, attempt).status_code == 201
+    assert _refused(client, "alice", ticket_for(client, "alice")) == console_code
+    assert refusing.links and refusing.links[0].closed
+
+
+def test_a_new_attempts_session_closes_the_last_ones_at_the_relay(client, ldb, live, relay):
+    relay.closed.clear()
+    second = Attempt(generation=2)
+    second.tuple = AttemptTuple("eng", TASK, "att_live_2", "lease_live_2", 2)
+    ldb.docs[f"tasks/{TASK}"].update({"current_lease_id": "lease_live_2", "current_generation": 2,
+                                      "state": "STARTING"})
+    now = datetime.now(timezone.utc)
+    ldb.docs["leases/lease_live_2"] = {
+        **ldb.docs[f"leases/{LEASE}"], "lease_id": "lease_live_2", "attempt_id": "att_live_2",
+        "generation": 2, "state": "STARTING", "created_at": now}
+    ldb.docs["attempts/att_live_2"] = {
+        **ldb.docs[f"attempts/{ATTEMPT}"], "attempt_id": "att_live_2", "generation": 2,
+        "lease_id": "lease_live_2"}
+    registered = client.post(
+        "/v1/attempts/att_live_2/child-key",
+        content=json.dumps({
+            "tenant_id": "eng", "task_id": TASK, "lease_id": "lease_live_2", "generation": 2,
+            "nonce": nonce(CHILD_KEY, second.tuple), "public_key": second.public,
+        }).encode(),
+        headers={"Authorization": f"Bearer {WORKER_TOKEN}", "Content-Type": "application/json"},
+    )
+    assert registered.status_code == 201, registered.text
+    ldb.docs[f"tasks/{TASK}"]["state"] = "RUNNING"
+    ldb.docs["leases/lease_live_2"]["state"] = "RUNNING"
+    response = open_session(client, second)
+    assert response.status_code == 201, response.text
+    assert relay.closed == [SESSION]
+    assert session_doc(ldb)["state"] == "closed"
+
+
+def test_the_relay_closer_posts_to_the_internal_close_route_on_the_same_address():
+    from swarm_api.live import HttpRelayCloser, relay_http_url
+
+    assert relay_http_url("ws://10.10.0.42:8080", "/internal/close") == (
+        "http://10.10.0.42:8080/internal/close")
+    assert relay_http_url("ws://10.10.0.42:8080/", "/internal/close") == (
+        "http://10.10.0.42:8080/internal/close")
+    # Unreachable: logged, never raised (a close is best effort).
+    HttpRelayCloser("ws://127.0.0.1:9", LIVE_KEY, timeout=0.2).close_session(SESSION)
+
+
+def test_swarm_api_reads_the_relay_address_from_swarm_live_url(monkeypatch):
+    from swarm_api.settings import ApiSettings
+
+    monkeypatch.setenv("PROJECT_ID", PROJECT)
+    monkeypatch.setenv("SWARM_LIVE_URL", RELAY_URL)
+    monkeypatch.delenv("SWARM_LIVE_RELAY_URL", raising=False)
+    assert ApiSettings.from_env().live_relay_url == RELAY_URL

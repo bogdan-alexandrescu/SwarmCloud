@@ -11,7 +11,7 @@ is the ONE place that decides who may see and drive an agent's browser:
   * `viewer_ticket` is §5.2 step 3: a member of the task's tenant gets a
     one-person, one-session, 30-second VIEWER ticket in a response BODY. The
     console sends it as the first message of the socket; the URL carries only
-    the task id (§5.2, "Nothing secret travels in a URL").
+    the session id (§5.2, "Nothing secret travels in a URL").
   * `take`, `renew`, `return_control` and `open_to_members` are §4.2 and §5.1:
     one controller at a time, preemption by the task's owner only, and every
     change written in ONE transaction together with its `live_audit` entry
@@ -22,17 +22,30 @@ is the ONE place that decides who may see and drive an agent's browser:
 
 THE TICKET. Lane L7's relay verifies what this module mints, against the same
 `swarm-live-key` (held by swarm-api and swarm-live only, created by
-`scripts/create-secrets.sh`, never a Terraform secret version). Its shape is
-fixed here and the relay restates it:
+`scripts/create-secrets.sh`, never a Terraform secret version). The RELAY'S
+format (`swarm_live.rendezvous.mint_ticket`) is the one used, restated here,
+and tests/unit/control_plane/test_live_relay_wire.py holds the two together:
 
-    v1.<b64url(payload)>.<b64url(HMAC-SHA256(key, "swarm-live-ticket/v1\\n" + b64url(payload)))>
+    <b64url(payload)>.<b64url(HMAC-SHA256(key, "swarm-live-ticket/v1\\0" + b64url(payload)))>
 
-`payload` is canonical JSON (sorted keys, no spaces) of `session_id`,
-`tenant_id`, `task_id`, `attempt_id`, `generation`, `role` (`tunnel` or
-`viewer`), `exp` (unix seconds), `jti` (random, the one-use id the relay
-remembers) and, for a viewer, `email`. The key is the UTF-8 bytes of the
-secret's value. Base64url is unpadded. The relay refuses a ticket used twice,
-expired, or naming another session, tenant or generation (§5.11).
+`payload` is canonical JSON (sorted keys, no spaces) of exactly `session_id`,
+`tenant_id`, `task_id`, `attempt_id`, `generation`, `role`, `exp` (unix
+seconds, at most 60 s ahead), `nonce` (random, the one-use id the relay
+remembers) and `email` (the person's; empty for the gate's tunnel). The key is
+the UTF-8 bytes of the secret's value. Base64url is unpadded. The relay
+refuses a ticket used twice, expired, or naming another session, tenant or
+generation (§5.11), and it trusts NOTHING but the ticket: it has no Firestore
+access (owner decision 2026-10-11 (a)).
+
+Roles `tunnel` and `viewer` open a connection. `control` and `release` are
+MESSAGES swarm-api sends on a viewer connection it already holds open, when
+this person takes or loses control (§4.2): the relay grants the gate's input
+to a viewer only on a ticket.
+
+CLOSING. When a session closes, or a stale generation is seen, swarm-api POSTs
+a close request to the relay's `/internal/close` (`mint_close`: the same shape
+under its own domain, `session_id`, `exp`, `nonce`), and the relay drops every
+connection of that session (§5.11, invariant 5).
 
 WHO MAY CONTROL (§5.1, Q1, Q6). The owner is `handoff.control_owner`: the
 submitter, or for a service account's task its workflow's or schedule's human
@@ -57,7 +70,7 @@ import secrets
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
@@ -84,13 +97,29 @@ LIVE_SESSIONS = "live_sessions"
 #: The worker's signing purpose for the tunnel-ticket route (§5.4.1). Lane L4
 #: restates it; a hand-off or child signature never verifies as this one.
 LIVE_SESSION_PURPOSE = "swarm-live-session/v1"
-#: The ticket MAC's domain. Lane L7 restates it.
-TICKET_PURPOSE = b"swarm-live-ticket/v1\n"
-TICKET_VERSION = "v1"
+#: The ticket MAC's domain: the relay's (`swarm_live.rendezvous.TICKET_DOMAIN`).
+TICKET_PURPOSE = b"swarm-live-ticket/v1\0"
+#: A close request's MAC domain (`swarm_live.rendezvous.CLOSE_DOMAIN`), so a
+#: ticket is never a close request and a close request never a ticket.
+CLOSE_PURPOSE = b"swarm-live-close/v1\0"
 ROLE_TUNNEL = "tunnel"
 ROLE_VIEWER = "viewer"
+ROLE_CONTROL = "control"
+ROLE_RELEASE = "release"
+#: The longest life the relay accepts for each role's ticket
+#: (`swarm_live.rendezvous.TICKET_TTL_SECONDS`). A setting above it is clamped,
+#: since the relay would refuse the ticket anyway (decision (a): exp at most
+#: 60 s ahead).
+TICKET_MAX_SECONDS = {ROLE_TUNNEL: 60, ROLE_VIEWER: 30, ROLE_CONTROL: 30, ROLE_RELEASE: 30}
+#: A close request's life (`swarm_live.rendezvous.CLOSE_TTL_SECONDS`).
+CLOSE_SECONDS = 60
+#: The relay's field set; a ticket with any other is refused there.
+TICKET_FIELDS = frozenset({"session_id", "tenant_id", "task_id", "attempt_id", "generation",
+                           "role", "exp", "nonce", "email"})
 #: A ticket is short; anything longer is refused before it is decoded.
 MAX_TICKET_CHARS = 2048
+#: How long swarm-api waits for the relay to answer a close request.
+RELAY_CLOSE_TIMEOUT_SECONDS = 5.0
 
 #: Why control ended without a Return press (§4.2, §5.8). `attempt_ended` is
 #: this lane's addition: the attempt stopped holding its lease for a reason
@@ -175,17 +204,38 @@ def _unb64(text: str) -> bytes:
     return base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
 
 
-def _ticket_mac(key: str, payload: str) -> bytes:
-    return hmac.new(key.encode("utf-8"), TICKET_PURPOSE + payload.encode("ascii"),
+def _ticket_mac(key: str, payload: str, purpose: bytes = TICKET_PURPOSE) -> bytes:
+    return hmac.new(key.encode("utf-8"), purpose + payload.encode("ascii"),
                     hashlib.sha256).digest()
 
 
-def mint_ticket(key: str, claims: Mapping[str, Any]) -> str:
-    """The ticket for `claims`, in the shape the module docstring fixes."""
+def _signed(key: str, body: Mapping[str, Any], purpose: bytes) -> str:
     if not key:
         raise LiveUnavailable("this deployment has no swarm-live-key")
-    payload = _b64(json.dumps(dict(claims), sort_keys=True, separators=(",", ":")).encode())
-    return f"{TICKET_VERSION}.{payload}.{_b64(_ticket_mac(key, payload))}"
+    payload = _b64(json.dumps(dict(body), sort_keys=True, separators=(",", ":")).encode())
+    return f"{payload}.{_b64(_ticket_mac(key, payload, purpose))}"
+
+
+def mint_ticket(key: str, claims: Mapping[str, Any]) -> str:
+    """The ticket for `claims`, in the shape the module docstring fixes: a
+    fresh `nonce` and an empty `email` are filled in when absent, and any
+    field the relay does not know is refused here rather than there."""
+    body = {"email": "", **dict(claims)}
+    body.setdefault("nonce", secrets.token_hex(16))
+    if set(body) != TICKET_FIELDS:
+        raise ValueError(f"a live ticket has exactly the fields {sorted(TICKET_FIELDS)}")
+    return _signed(key, body, TICKET_PURPOSE)
+
+
+def mint_close(key: str, session_id: str, *, now: float) -> str:
+    """A request to the relay to drop every connection of `session_id`."""
+    return _signed(key, {"session_id": session_id, "exp": int(now) + CLOSE_SECONDS,
+                         "nonce": secrets.token_hex(16)}, CLOSE_PURPOSE)
+
+
+def ticket_seconds(role: str, configured: Any) -> int:
+    """`configured`, never longer than the relay accepts for `role`."""
+    return max(1, min(int(configured), TICKET_MAX_SECONDS[role]))
 
 
 def verify_ticket(keys: Sequence[str], ticket: Any, *, now: float) -> dict[str, Any]:
@@ -193,9 +243,9 @@ def verify_ticket(keys: Sequence[str], ticket: Any, *, now: float) -> dict[str, 
     if not isinstance(ticket, str) or not ticket or len(ticket) > MAX_TICKET_CHARS:
         raise TicketRefused("no ticket")
     parts = ticket.split(".")
-    if len(parts) != 3 or parts[0] != TICKET_VERSION:
-        raise TicketRefused("not a ticket of this version")
-    _, payload, mac = parts
+    if len(parts) != 2:
+        raise TicketRefused("not a live ticket")
+    payload, mac = parts
     try:
         presented = _unb64(mac)
     except (binascii.Error, ValueError):
@@ -208,7 +258,7 @@ def verify_ticket(keys: Sequence[str], ticket: Any, *, now: float) -> dict[str, 
         claims = json.loads(_unb64(payload))
     except (binascii.Error, ValueError):
         raise TicketRefused("malformed") from None
-    if not isinstance(claims, dict):
+    if not isinstance(claims, dict) or set(claims) != TICKET_FIELDS:
         raise TicketRefused("malformed")
     exp = claims.get("exp")
     if not isinstance(exp, int) or isinstance(exp, bool) or exp <= now:
@@ -225,9 +275,80 @@ def live_session_message(method: str, path: str, body: bytes, timestamp: str) ->
     return f"{LIVE_SESSION_PURPOSE}\n{method.upper()}\n{path}\n{digest}\n{timestamp}".encode()
 
 
+def socket_path(session_id: str) -> str:
+    """Where the console opens a session's websocket (decision (b)): through
+    IAP to swarm-api, which proxies it to the relay. The session id is not
+    secret; the ticket is the first message, never part of this."""
+    return f"/v1/live/{session_id}/stream"
+
+
 def session_id_for(attempt_id: str) -> str:
     """One session per attempt, so a re-ticket after a dropped tunnel finds it."""
     return f"live_{attempt_id}"
+
+
+# --------------------------------------------------------------------------
+# The relay's close route (owner decision 2026-10-11 (a))
+# --------------------------------------------------------------------------
+
+
+class RelayCloser(Protocol):
+    def close_session(self, session_id: str) -> None: ...
+
+
+def relay_http_url(ws_url: str, path: str) -> str:
+    """`SWARM_LIVE_URL` (`ws://<internal address>:8080`) as the http URL of
+    one of the relay's routes on the same port."""
+    base = ws_url.strip().rstrip("/")
+    if base.startswith("ws://"):
+        base = "http://" + base[len("ws://"):]
+    elif base.startswith("wss://"):
+        base = "https://" + base[len("wss://"):]
+    return base + path
+
+
+class HttpRelayCloser:
+    """POSTs a close request to the relay's `/internal/close`, plain HTTP on the
+    internal load balancer as the viewer sockets are (decision (b)).
+
+    Never raises. A close the relay did not receive is logged; the relay still
+    refuses every ticket for the session once swarm-api stops minting them,
+    and the tunnel ends with the stale worker's pod. What is logged is the
+    session id and the status, never the request (it is MAC'd).
+    """
+
+    def __init__(self, url: str, key: str, *, clock: Callable[[], float] = time.time,
+                 timeout: float = RELAY_CLOSE_TIMEOUT_SECONDS) -> None:
+        self._url = relay_http_url(url, "/internal/close")
+        self._key = key
+        self._clock = clock
+        self._timeout = timeout
+
+    def close_session(self, session_id: str) -> None:
+        import urllib.error
+        import urllib.request
+
+        body = mint_close(self._key, session_id, now=self._clock()).encode("ascii")
+        request = urllib.request.Request(self._url, data=body, method="POST",
+                                         headers={"Content-Type": "text/plain"})
+        try:
+            with urllib.request.urlopen(request, timeout=self._timeout) as response:  # noqa: S310 - our own internal URL
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        except (OSError, ValueError) as exc:
+            log.warning("live relay close for session=%s did not reach the relay (%s)",
+                        session_id, type(exc).__name__)
+            return
+        if status != 200:
+            log.warning("live relay refused the close for session=%s (HTTP %s)", session_id, status)
+
+
+def relay_closer_for(settings: Any) -> RelayCloser | None:
+    """The deployment's closer: none without a relay address or a key."""
+    url = getattr(settings, "live_relay_url", "") or ""
+    key = getattr(settings, "live_key", "") or ""
+    return HttpRelayCloser(url, key) if url and key else None
 
 
 # --------------------------------------------------------------------------
@@ -421,6 +542,7 @@ class Admission:
     tenant_id: str
     task_id: str
     session_id: str
+    attempt_id: str
     generation: int
     ticket: str
 
@@ -440,6 +562,7 @@ class LiveService:
         store: Store,
         authenticator: Any,
         children: ChildService | None = None,
+        relay: RelayCloser | None = None,
         now: Callable[[], datetime] = utcnow,
         clock: Callable[[], float] = time.time,
     ) -> None:
@@ -448,6 +571,7 @@ class LiveService:
         self._store = store
         self._authenticator = authenticator
         self._children = children
+        self._relay = relay
         self._now = now
         self._clock = clock
 
@@ -583,8 +707,19 @@ class LiveService:
                         detail={"profile": task.get("runner_profile")}, now=now)
             return True
 
-        created = _apply(self._db.transaction())
-        seconds = int(self._s("live_tunnel_ticket_seconds", 60))
+        try:
+            created = _apply(self._db.transaction())
+        except LiveFenced:
+            # A stale generation, seen: its session (if it ever opened one)
+            # closes, and the relay drops it (invariant 5, §5.11).
+            self._close_stale(attempt.tenant_id, attempt.task_id, session_id)
+            raise
+        if created:
+            # A new attempt's session makes every earlier one of this task
+            # stale; nobody may be watching them, so nothing else would close
+            # them at the relay.
+            self._close_others(attempt.tenant_id, attempt.task_id, session_id)
+        seconds = ticket_seconds(ROLE_TUNNEL, self._s("live_tunnel_ticket_seconds", 60))
         exp = int(self._clock()) + seconds
         ticket = mint_ticket(key, {
             "session_id": session_id,
@@ -594,9 +729,39 @@ class LiveService:
             "generation": attempt.generation,
             "role": ROLE_TUNNEL,
             "exp": exp,
-            "jti": secrets.token_urlsafe(16),
         })
         return {"session_id": session_id, "ticket": ticket, "expires_in": seconds}, created
+
+    # -- telling the relay (decision (a)) ----------------------------------
+
+    def close_relay(self, session_id: str) -> None:
+        """Ask the relay to drop every connection of `session_id`. Never raises."""
+        if self._relay is None:
+            return
+        try:
+            self._relay.close_session(session_id)
+        except Exception as exc:  # noqa: BLE001 - a close is best effort; the caller's answer stands
+            log.warning("live relay close for session=%s failed (%s)", session_id, type(exc).__name__)
+
+    def _close_stale(self, tenant_id: str, task_id: str, session_id: str) -> None:
+        """Settle `session_id` -- which closes it, with its audit, when its
+        attempt no longer holds the lease -- and tell the relay either way:
+        `_transact` already has when it closed it just now."""
+        try:
+            plan, _ = self._transact(tenant_id, task_id, None, session_id=session_id)
+        except NotFound:
+            plan = None
+        if plan is None or plan.session_update.get("state") != "closed":
+            self.close_relay(session_id)
+
+    def _close_others(self, tenant_id: str, task_id: str, session_id: str) -> None:
+        query = self._db.collection(LIVE_SESSIONS).where(
+            filter=FieldFilter("task_id", "==", task_id))
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            if (doc.get("id") != session_id and doc.get("tenant_id") == tenant_id
+                    and doc.get("state") == "open"):
+                self._close_stale(tenant_id, task_id, str(doc.get("id")))
 
     # -- reading and settling a session -----------------------------------
 
@@ -713,7 +878,12 @@ class LiveService:
             plan.flush(txn)
             return plan, result
 
-        return _apply(self._db.transaction())
+        plan, result = _apply(self._db.transaction())
+        if (plan.session is not None and plan.session.get("state") == "open"
+                and plan.session_update.get("state") == "closed"):
+            # Committed: the session is closed, so the relay drops it (§5.11).
+            self.close_relay(str(plan.session.get("id")))
+        return plan, result
 
     def _needs_settling(self, tenant_id: str, task_id: str, session_id: str) -> bool:
         """A cheap, non-transactional look: is there anything to settle?"""
@@ -796,7 +966,7 @@ class LiveService:
         self._task(tenant_id, task_id, submitted_by)
         plan, _ = self._transact(tenant_id, task_id, None)
         self._require_open(plan)
-        seconds = int(self._s("live_viewer_ticket_seconds", 30))
+        seconds = ticket_seconds(ROLE_VIEWER, self._s("live_viewer_ticket_seconds", 30))
         state = plan.state
         ticket = mint_ticket(key, {
             "session_id": state["id"],
@@ -807,16 +977,31 @@ class LiveService:
             "role": ROLE_VIEWER,
             "email": email.strip().lower(),
             "exp": int(self._clock()) + seconds,
-            "jti": secrets.token_urlsafe(16),
         })
         return {
             "ticket": ticket,
             "session_id": state["id"],
             "expires_in": seconds,
-            # The socket's address carries the task id and nothing else; the
-            # ticket goes in its first message (§5.2).
-            "socket_path": f"/v1/tasks/{task_id}/live",
+            # The socket's address carries the session id and nothing else;
+            # the ticket goes in its first message (§5.2).
+            "socket_path": socket_path(str(state["id"])),
         }
+
+    def control_ticket(self, admission: Admission, granted: bool) -> str:
+        """The relay's word that this viewer now holds control, or no longer
+        does (§4.2): a `control` or `release` ticket for this person, session
+        and generation, sent on the viewer's own connection."""
+        role = ROLE_CONTROL if granted else ROLE_RELEASE
+        return mint_ticket(self._require_key(), {
+            "session_id": admission.session_id,
+            "tenant_id": admission.tenant_id,
+            "task_id": admission.task_id,
+            "attempt_id": admission.attempt_id,
+            "generation": admission.generation,
+            "role": role,
+            "email": admission.email,
+            "exp": int(self._clock()) + TICKET_MAX_SECONDS[role],
+        })
 
     @staticmethod
     def _require_open(plan: _Plan) -> None:
@@ -980,36 +1165,47 @@ class LiveService:
 
     # -- the socket (§5.2) ---------------------------------------------------
 
-    def admit(self, auth: Any, task_id: str, ticket: Any, *, submitted_by: str | None
+    def admit(self, auth: Any, session_id: str, ticket: Any, *, submitted_by: str | None
               ) -> Admission:
-        """Every check of §5.2 for one socket. Any refusal is NotFound, so a
-        foreign task, a foreign ticket and a closed session read the same."""
-        refused = NotFound(f"task {task_id!r} not found")
+        """Every check of §5.2 for one socket on `/v1/live/{session_id}/stream`.
+        Any refusal is NotFound, so a foreign session, a foreign ticket and a
+        closed session read the same.
+
+        The task is the one the VERIFIED ticket names; the caller must reach it
+        exactly as every live route reaches a task (their own tenant, and a
+        personal workspace's member scope through `submitted_by`), and the
+        session must be that task's current one, open, at the ticket's
+        generation (invariant 5)."""
+        refused = NotFound(f"live session {session_id!r} not found")
         try:
             claims = verify_ticket(self._keys, ticket, now=self._clock())
         except TicketRefused:
             raise refused from None
         email = (auth.email or "").strip().lower()
+        task_id = claims.get("task_id")
         if (
             claims.get("role") != ROLE_VIEWER
-            or claims.get("task_id") != task_id
+            or claims.get("session_id") != session_id
+            or not isinstance(task_id, str) or not task_id
             or claims.get("tenant_id") != auth.tenant_id
             or str(claims.get("email") or "") != email
         ):
             raise refused
-        self._task(auth.tenant_id, task_id, submitted_by)
+        try:
+            self._task(auth.tenant_id, task_id, submitted_by)
+        except NotFound:
+            raise refused from None
         plan, _ = self._transact(auth.tenant_id, task_id, None)
         state = plan.state
-        if (
-            plan.session is None
-            or state.get("state") != "open"
-            or state.get("id") != claims.get("session_id")
-            or state.get("generation") != claims.get("generation")
-        ):
+        if plan.session is None or state.get("id") != session_id or state.get("state") != "open":
+            raise refused
+        if state.get("generation") != claims.get("generation"):
+            # A stale generation, seen: the relay must not keep it either.
+            self.close_relay(session_id)
             raise refused
         return Admission(email=email, tenant_id=auth.tenant_id, task_id=task_id,
-                         session_id=str(state["id"]), generation=int(state["generation"]),
-                         ticket=ticket)
+                         session_id=session_id, attempt_id=str(state.get("attempt_id")),
+                         generation=int(state["generation"]), ticket=ticket)
 
     def recheck(self, admission: Admission) -> bool:
         """§5.2: is this person still a member of the task's tenant? Through
@@ -1148,13 +1344,22 @@ __all__ = [
     "LiveLimits",
     "LiveService",
     "NotController",
+    "HttpRelayCloser",
+    "ROLE_CONTROL",
+    "ROLE_RELEASE",
     "ROLE_TUNNEL",
     "ROLE_VIEWER",
+    "RelayCloser",
     "TicketRefused",
     "count_input",
     "fresh_membership",
     "live_session_message",
+    "mint_close",
     "mint_ticket",
+    "relay_closer_for",
+    "relay_http_url",
     "session_id_for",
+    "socket_path",
+    "ticket_seconds",
     "verify_ticket",
 ]

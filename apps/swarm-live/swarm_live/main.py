@@ -1,18 +1,29 @@
-"""swarm-live: the live-browser relay's HTTP surface (LB-L7).
+"""swarm-live: the live-browser relay's HTTP surface (LB-L7, wired by LB-L8d).
 
 docs/design/live-browser.md §3.3. A single-replica StatefulSet in
 `swarm-system` on the GKE cluster -- one process, so a session's two ends always
-meet in it -- listening on TCP 8443 with TLS (the NetworkPolicy of §8.3 admits
-only tenant pods labelled `swarm-live: "enabled"` and swarm-api's subnet).
+meet in it -- listening on plain WS, TCP 8080, inside the VPC (owner decision
+2026-10-11 (b)). Browsers never reach it: swarm-api proxies each viewer here
+over the internal load balancer, and the NetworkPolicy admits only swarm-api's
+egress range and the tenant gates. There is no TLS and no certificate anywhere
+on this hop; §3.3 records why that is acceptable.
 
-Two websocket routes, and a health check:
+Three routes, and a health check:
 
-* `/v1/tunnel` -- the gate dials out to here (§3.3 step 2). First message: the
-  tunnel ticket, as text. Then the framed tunnel protocol of rendezvous.py.
-* `/v1/view`   -- swarm-api proxies one console viewer to here (§3.3 step 3).
-  First message: the viewer ticket swarm-api minted, as text. Then the viewer's
-  RFB bytes as binary, and swarm-api's control messages as text.
-* `/healthz`   -- counts only.
+* `/v1/tunnel`        -- the gate dials out to here (§3.3 step 2). First
+  message: the tunnel ticket, as text. Then the framed tunnel protocol of
+  rendezvous.py.
+* `/v1/view`          -- swarm-api proxies one console viewer to here (§3.3
+  step 3). First message: the viewer ticket swarm-api minted, as text. Then
+  the viewer's RFB bytes as binary, and swarm-api's control messages as text.
+* `POST /internal/close` -- swarm-api ends a session (decision (a)): the body
+  is a close request MAC'd with swarm-live-key (rendezvous.verify_close). Every
+  connection of the session is dropped. 200 when it verified, 404 otherwise.
+* `/healthz`          -- counts only.
+
+THE RELAY READS THE TICKET AND NOTHING ELSE. No Firestore client is built, and
+no session document is read (decision (a)); rendezvous.py says how a session
+is defined by its tunnel ticket instead.
 
 NOTHING SECRET IN A URL (§5.2): tickets travel as each socket's first message,
 and the routes take no path or query parameter at all. A socket that sends no
@@ -20,34 +31,37 @@ ticket within `FIRST_MESSAGE_SECONDS` is closed.
 
 Configuration, read once at start (never at import, so tests import freely):
 
-* `SWARM_LIVE_KEY_FILE` -- path of the mounted `swarm-live-key` secret, whose
-  value `scripts/create-secrets.sh` creates. A file, not an environment
-  variable: a key in the environment is in every `/proc/<pid>/environ` read
-  and every crash dump of it.
-* `PROJECT_ID`, `FIRESTORE_DATABASE`, `ARTIFACT_BUCKET` -- through
-  `swarm_common.config.Settings`, as every service reads them.
+* `SWARM_LIVE_KEY_SECRET` -- the Secret Manager VERSION reference of
+  `swarm-live-key` (`projects/<p>/secrets/swarm-live-key/versions/<v>`), which
+  terraform/infra/live.tf renders into the manifest (decision (c)). The value
+  is fetched once, with the pod's Workload Identity, and held in memory only:
+  never a file, never an environment variable (a key in the environment is in
+  every `/proc/<pid>/environ` read and every crash dump of it).
+* `PROJECT_ID`, `ARTIFACT_BUCKET` -- through `swarm_common.config.Settings`,
+  as every service reads them; the bucket is the recorder's.
 * `SWARM_LIVE_RECORD` -- `true` (default): record every session (Q11, yes).
-* `SWARM_LIVE_TLS_CERT`, `SWARM_LIVE_TLS_KEY` -- the serving certificate.
-  `main()` refuses to start without them: TLS on every hop is what §4.2 and
-  §5.11 rely on for keys in flight.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import logging
 import os
-from pathlib import Path
-from typing import Any, AsyncIterator
+import re
+from typing import Any, AsyncIterator, Callable
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
+from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from .recorder import FfmpegVp8Encoder, GcsSegmentWriter, Recorder
 from .rendezvous import (
     CLOSE_REFUSED,
-    FirestoreSessionStore,
+    MAX_TICKET_CHARS,
+    MIN_KEY_BYTES,
     Refused,
     Rendezvous,
     SessionRecord,
@@ -55,17 +69,20 @@ from .rendezvous import (
 
 log = logging.getLogger(__name__)
 
-PORT = 8443
+#: Fixed for both integration lanes (decision (b)): the manifest's Service, the
+#: NetworkPolicy and swarm-api's SWARM_LIVE_URL all name it.
+PORT = 8080
 #: A socket gets this long to present its ticket. The tunnel ticket lives 60 s
 #: and the viewer's 30 s, so a socket that has not sent one by then holds a
 #: ticket that is about to be useless anyway.
 FIRST_MESSAGE_SECONDS = 10
-#: How often every open session's document is re-read (§8.5 invariant 5: a
-#: stale generation's session is closed). swarm-api moves the document when the
-#: lease's generation moves; this bounds how long the relay keeps splicing after.
-SWEEP_SECONDS = 15
 #: A full raw 1440x900 RGBX update is ~5.2 MB; allow headroom, refuse more.
 MAX_MESSAGE_BYTES = 16 * 1024 * 1024
+
+#: What SWARM_LIVE_KEY_SECRET must look like: a version, never a bare secret
+#: (a bare name is not an API path) and never the value itself.
+SECRET_VERSION = re.compile(r"projects/[^/\s]+/secrets/[^/\s]+/versions/[^/\s]+")
+SECRET_MANAGER = "https://secretmanager.googleapis.com/v1/"
 
 
 class _Socket:
@@ -107,7 +124,7 @@ async def _messages(ws: WebSocket) -> AsyncIterator[tuple[bytes | None, str | No
         yield data, text
 
 
-def create_app(rendezvous: Rendezvous | None = None, *, sweep_seconds: float = SWEEP_SECONDS) -> FastAPI:
+def create_app(rendezvous: Rendezvous | None = None) -> FastAPI:
     """The relay app. Tests pass a `Rendezvous` built over doubles; uvicorn
     calls this with no argument (`--factory`) and the real one is built from
     the environment."""
@@ -117,13 +134,9 @@ def create_app(rendezvous: Rendezvous | None = None, *, sweep_seconds: float = S
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
         if state["rz"] is None:
             state["rz"] = build_rendezvous()
-        sweeper = asyncio.create_task(_sweep(state["rz"], sweep_seconds)) if sweep_seconds > 0 else None
         try:
             yield
         finally:
-            if sweeper is not None:
-                sweeper.cancel()
-                await asyncio.gather(sweeper, return_exceptions=True)
             await state["rz"].shutdown()
 
     app = FastAPI(title="swarm-live", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
@@ -137,6 +150,18 @@ def create_app(rendezvous: Rendezvous | None = None, *, sweep_seconds: float = S
     async def healthz() -> dict[str, Any]:
         r = rz()
         return {"ok": True, "tunnels": r.tunnel_count(), "viewers": r.viewer_count()}
+
+    @app.post("/internal/close")
+    async def close(request: Request) -> JSONResponse:
+        raw = (await request.body())[: MAX_TICKET_CHARS + 1]
+        try:
+            session_id, dropped = await rz().close_request(raw.decode("ascii").strip())
+        except (Refused, UnicodeDecodeError) as exc:
+            log.info("live relay: close refused: %s", getattr(exc, "reason", "malformed"))
+            # Every refusal alike, as a ticket's is.
+            return JSONResponse({"closed": False}, status_code=404)
+        log.info("live relay: session=%s closed by swarm-api (%d connections)", session_id, dropped)
+        return JSONResponse({"closed": True, "session_id": session_id, "dropped": dropped})
 
     @app.websocket("/v1/tunnel")
     async def tunnel(ws: WebSocket) -> None:
@@ -187,40 +212,55 @@ def create_app(rendezvous: Rendezvous | None = None, *, sweep_seconds: float = S
     return app
 
 
-async def _sweep(rendezvous: Rendezvous, every: float) -> None:
-    while True:
-        await asyncio.sleep(every)
-        try:
-            await rendezvous.sweep()
-        except Exception as exc:  # noqa: BLE001 - the sweeper must outlive one bad pass
-            log.warning("live relay: sweep failed: %s", type(exc).__name__)
-
-
 def _truthy(value: str | None, default: bool) -> bool:
     if value is None or value == "":
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-def read_key(path: str | None) -> bytes:
-    if not path:
-        raise RuntimeError("SWARM_LIVE_KEY_FILE is not set; the relay verifies nothing without swarm-live-key")
-    key = Path(path).read_bytes().strip()
-    if len(key) < 32:
+def _access_secret(version: str) -> bytes:
+    """`versions/<v>:access` over REST, with the pod's own credentials (the
+    relay's KSA is the secret's accessor, live.tf). google-auth and requests
+    come with google-cloud-storage, so this adds no dependency."""
+    import google.auth
+    from google.auth.transport.requests import AuthorizedSession
+
+    credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+    response = AuthorizedSession(credentials).get(SECRET_MANAGER + version + ":access", timeout=30)
+    if response.status_code != 200:
+        # The status only: an error body may quote the request.
+        raise RuntimeError(f"swarm-live-key could not be read from Secret Manager (HTTP {response.status_code})")
+    try:
+        return base64.b64decode(response.json()["payload"]["data"])
+    except (KeyError, TypeError, ValueError, binascii.Error):
+        raise RuntimeError("Secret Manager returned no swarm-live-key payload") from None
+
+
+def read_key(version: str | None, access: Callable[[str], bytes] | None = None) -> bytes:
+    """swarm-live-key's value, by its version reference (decision (c)). The
+    bytes swarm-api MACs with are the same secret's value, so both strip it
+    the same way."""
+    if not version:
+        raise RuntimeError("SWARM_LIVE_KEY_SECRET is not set; the relay verifies nothing without swarm-live-key")
+    version = version.strip()
+    if not SECRET_VERSION.fullmatch(version):
+        raise RuntimeError("SWARM_LIVE_KEY_SECRET must be a Secret Manager version reference, "
+                           "projects/<p>/secrets/<name>/versions/<v>")
+    key = (access or _access_secret)(version).strip()
+    if len(key) < MIN_KEY_BYTES:
         raise RuntimeError("swarm-live-key is shorter than 32 bytes")
     return key
 
 
 def build_rendezvous() -> Rendezvous:
-    from google.cloud import firestore, storage
     from swarm_common.config import Settings
 
-    settings = Settings.from_env()
-    key = read_key(os.environ.get("SWARM_LIVE_KEY_FILE"))
-    store = FirestoreSessionStore(
-        firestore.Client(project=settings.project_id, database=settings.firestore_database))
+    key = read_key(os.environ.get("SWARM_LIVE_KEY_SECRET"))
     factory = None
     if _truthy(os.environ.get("SWARM_LIVE_RECORD"), True):
+        from google.cloud import storage
+
+        settings = Settings.from_env()
         writer = GcsSegmentWriter(storage.Client(project=settings.project_id).bucket(settings.artifact_bucket))
         encoder = FfmpegVp8Encoder()
 
@@ -228,7 +268,7 @@ def build_rendezvous() -> Rendezvous:
             return Recorder(tenant_id=session.tenant_id, task_id=session.task_id,
                             attempt_id=session.attempt_id, send=send, writer=writer, encoder=encoder)
 
-    return Rendezvous(key, store, recorder_factory=factory)
+    return Rendezvous(key, recorder_factory=factory)
 
 
 def main() -> None:
@@ -236,17 +276,13 @@ def main() -> None:
     from swarm_common.logging_setup import configure_logging
 
     configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
-    cert, key = os.environ.get("SWARM_LIVE_TLS_CERT"), os.environ.get("SWARM_LIVE_TLS_KEY")
-    if not cert or not key:
-        raise SystemExit("swarm-live: SWARM_LIVE_TLS_CERT and SWARM_LIVE_TLS_KEY are required; "
-                         "keys travel through this relay and every hop is TLS (§4.2)")
+    # Plain WS inside the VPC (decision (b)): no ssl_* argument, by design.
     uvicorn.run("swarm_live.main:create_app", factory=True, host="0.0.0.0", port=PORT,
-                ssl_certfile=cert, ssl_keyfile=key, ws_max_size=MAX_MESSAGE_BYTES,
-                log_config=None, access_log=False)
+                ws_max_size=MAX_MESSAGE_BYTES, log_config=None, access_log=False)
 
 
 if __name__ == "__main__":
     main()
 
 
-__all__ = ["create_app", "build_rendezvous", "main"]
+__all__ = ["create_app", "build_rendezvous", "main", "read_key"]
