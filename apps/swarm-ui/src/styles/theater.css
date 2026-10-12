@@ -103,7 +103,8 @@
 .th-step-mark {
   width: 16px; height: 16px; border: 1px solid var(--line); border-radius: var(--r-xs);
   display: inline-flex; align-items: center; justify-content: center;
-  font-size: var(--t-micro); line-height: 1;
+  /* --lh-flush: the box is the 16px mark above; the glyph centres in it, not in a line. */
+  font-size: var(--t-micro); line-height: var(--lh-flush);
 }
 .th-step.is-done .th-step-mark { border-color: var(--s-live); background: var(--s-liveb); color: var(--s-live); }
 .th-step.is-done .th-step-body { color: var(--text-dim); }
