@@ -63,11 +63,13 @@ import base64
 import binascii
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import re
 import secrets
 import time
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
@@ -506,15 +508,14 @@ class LiveSessionView(_Wire):
     session_id: str
     state: Literal["open", "closed"]
     closed_reason: str | None
-    #: NOT REPORTED SERVER-SIDE YET: the gate reads the origin over CDP but
-    #: nothing carries it to swarm-api (no relay message, no ctl report, no
-    #: field on `live_sessions`), so this is always null rather than invented.
+    #: As the GATE last reported it (LB-DEV-A, `record_report`): null until
+    #: the gate's first report reaches a viewer link, and on a page with no
+    #: web origin (about:blank). Never invented.
     origin: LiveOrigin | None
     human_wait: LiveHumanWait | None
     controller: LiveController | None
     open_to_members: bool
-    #: NOT REPORTED SERVER-SIDE YET, as `origin`: the gate applies the device
-    #: (`agent_worker/livegate/device.py`) and nothing reports which one.
+    #: The device the gate last reported applied; null until it has.
     device: LiveDevice | None
     presets: list[LivePreset]
     you: LiveYou
@@ -544,7 +545,7 @@ class LiveTicketView(_Wire):
 #: A RESTATEMENT of `agent_worker.livegate.presets.PRESETS` -- swarm-api does
 #: not import the worker -- held equal to it by
 #: tests/unit/control_plane/test_live_wire_shapes.py. It is a catalogue, not a
-#: reading: which preset is APPLIED is `device`, which is not reported yet.
+#: reading: which preset is APPLIED is `device`, as the gate reported it.
 LIVE_PRESETS: tuple[dict[str, Any], ...] = (
     {"name": "desktop", "width": 1440, "height": 900, "scale": 1.0, "mobile": False},
     {"name": "iphone-15", "width": 393, "height": 852, "scale": 3.0, "mobile": True},
@@ -552,6 +553,118 @@ LIVE_PRESETS: tuple[dict[str, Any], ...] = (
     {"name": "iphone-se", "width": 375, "height": 667, "scale": 2.0, "mobile": True},
     {"name": "ipad-7", "width": 810, "height": 1080, "scale": 2.0, "mobile": True},
 )
+
+
+# --------------------------------------------------------------------------
+# The gate's report: the top frame's origin and the device (LB-DEV-A)
+# --------------------------------------------------------------------------
+#
+# The gate reads both from Chromium and sends them over its tunnel; the relay
+# keeps the latest and sends it, as `{"type": "report", "origin", "device"}`,
+# to every viewer link -- which is swarm-api's own proxied socket
+# (routes/live.py `_Proxy`). The relay has no Firestore (decision (a)), so
+# swarm-api is the one writer of `live_sessions/{id}`, as for everything else
+# on it. The origin is UNTRUSTED PAGE DATA that the console shows as the
+# anti-phishing strip (§5.7): every field is checked against the others here,
+# before it is stored and again when it is served, and anything that does not
+# hold together is null -- shown as "not reported", never as a site.
+
+REPORT_TYPE = "report"
+#: The relay's limit (`swarm_live.rendezvous.MAX_REPORT_BYTES`); its text is
+#: at most this long for anything the gate can send.
+MAX_REPORT_CHARS = 4096
+_ORIGIN_KEYS = frozenset(LiveOrigin.model_fields)
+_ORIGIN_REQUIRED = frozenset({"origin", "host", "registrable_domain", "scheme"})
+_DEVICE_KEYS = frozenset(LiveDevice.model_fields)
+_SCHEME_PORTS = {"https:": 443, "http:": 80}
+_HOSTNAME = re.compile(r"[a-z0-9_]([a-z0-9_-]{0,62})(\.[a-z0-9_]([a-z0-9_-]{0,62}))*")
+_PORT = re.compile(r"[1-9][0-9]{0,4}")
+
+
+def _host_ip(host: str) -> bool | None:
+    """True for an IP literal (IPv6 in brackets), False for a host name, None for neither."""
+    inner = host[1:-1] if host.startswith("[") and host.endswith("]") else None
+    try:
+        address = ipaddress.ip_address(inner if inner is not None else host)
+    except ValueError:
+        return None if inner is not None or not _HOSTNAME.fullmatch(host) else False
+    return (inner is not None) == (address.version == 6)
+
+
+def _printable(text: str) -> bool:
+    """No control, format (bidi overrides), private-use or unassigned character."""
+    return all(unicodedata.category(c) not in ("Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp") for c in text)
+
+
+def _encoded(display: str) -> str | None:
+    """`display` as its punycode host, or None when it does not encode."""
+    try:
+        return ".".join(label if label.isascii() else label.encode("idna").decode("ascii")
+                        for label in display.split("."))
+    except UnicodeError:
+        return None
+
+
+def clean_origin(raw: Any) -> dict[str, Any] | None:
+    """`raw` as a `LiveOrigin` whose fields agree with each other, else None."""
+    if not isinstance(raw, dict) or not _ORIGIN_REQUIRED <= set(raw) <= _ORIGIN_KEYS:
+        return None
+    origin, host, domain, scheme = (raw[k] for k in ("origin", "host", "registrable_domain", "scheme"))
+    display, ip_flag, cert = (raw.get(k) for k in ("display_host", "ip_literal", "cert_error"))
+    if not all(isinstance(v, str) for v in (origin, host, domain, scheme)):
+        return None
+    if scheme not in _SCHEME_PORTS or not 0 < len(host) <= MAX_DOMAIN_CHARS + 2:
+        return None
+    ip = _host_ip(host)
+    if ip is None or (ip and len(host) > 41) or (not ip and len(host) > MAX_DOMAIN_CHARS):
+        return None
+    if not all(v is None or isinstance(v, bool) for v in (ip_flag, cert)) or (ip_flag is not None and ip_flag != ip):
+        return None
+    base = f"{scheme[:-1]}://{host}"
+    port = origin[len(base) + 1:] if origin.startswith(base + ":") else None
+    if origin != base and (port is None or not _PORT.fullmatch(port) or int(port) > 65535
+                           or int(port) == _SCHEME_PORTS[scheme]):
+        return None
+    if ip:
+        if domain != "":
+            return None
+    elif not (domain == host or (host.endswith("." + domain) and _HOSTNAME.fullmatch(domain))):
+        return None
+    if display is not None:
+        if (not isinstance(display, str) or not 0 < len(display) <= MAX_DOMAIN_CHARS + 2
+                or not _printable(display) or (display if ip else _encoded(display)) != host):
+            return None
+    return {"origin": origin, "host": host, "display_host": display, "registrable_domain": domain,
+            "scheme": scheme, "ip_literal": ip_flag, "cert_error": cert}
+
+
+def clean_device(raw: Any) -> dict[str, Any] | None:
+    """`raw` as a `LiveDevice` naming one of the gate's presets, else None.
+
+    A preset by name only (invariant 10): a size, a scale or an unknown name
+    is refused, and so is a `touch` the named preset does not have."""
+    if not isinstance(raw, dict) or set(raw) != _DEVICE_KEYS:
+        return None
+    preset = next((p for p in LIVE_PRESETS if p["name"] == raw["preset"]), None)
+    if (preset is None or raw["orientation"] not in ("portrait", "landscape")
+            or not isinstance(raw["touch"], bool) or raw["touch"] != preset["mobile"]):
+        return None
+    return {"preset": preset["name"], "orientation": raw["orientation"], "touch": raw["touch"]}
+
+
+def parse_report(text: Any) -> dict[str, Any] | None:
+    """A relay text message as `{"origin", "device"}`, each checked (null when
+    it fails), or None when the message is not a well-formed report at all."""
+    if not isinstance(text, str) or len(text) > MAX_REPORT_CHARS:
+        return None
+    try:
+        message = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(message, dict) or set(message) != {"type", "origin", "device"} \
+            or message["type"] != REPORT_TYPE:
+        return None
+    return {"origin": clean_origin(message["origin"]), "device": clean_device(message["device"])}
 
 
 def profile_is_live(runner_profile: Any) -> bool:
@@ -1098,7 +1211,7 @@ class LiveService:
                 "session_id": state.get("id"),
                 "state": "open" if state.get("state") == "open" else "closed",
                 "closed_reason": state.get("close_cause"),
-                "origin": None,
+                "origin": clean_origin(state.get("origin")),
                 "human_wait": None if wait is None else {
                     k: _iso(wait.get(k)) for k in ("reason", "expect", "requested_at", "deadline")
                 },
@@ -1108,7 +1221,7 @@ class LiveService:
                     "renew_by": _iso(current.get("renew_by")),
                 },
                 "open_to_members": bool(state.get("open_to_members")),
-                "device": None,
+                "device": clean_device(state.get("device")),
                 "presets": [dict(p) for p in LIVE_PRESETS],
                 "you": self._rights(task, plan, email, owner),
             },
@@ -1456,6 +1569,23 @@ class LiveService:
         _, ended = self._transact(admission.tenant_id, admission.task_id, change,
                                   session_id=admission.session_id)
         return bool(ended)
+
+    def record_report(self, admission: Admission, report: Mapping[str, Any]) -> bool:
+        """The gate's report (`parse_report`), on the session this socket was
+        admitted to: written only while that session is open in the socket's
+        generation, and only when it changed. Not audited: it is what the
+        page is, not something a person did (§5.8). True when written."""
+        ref = self._db.collection(LIVE_SESSIONS).document(admission.session_id)
+        snap = ref.get()
+        session = snap.to_dict() if snap.exists else None
+        if (session is None or session.get("state") != "open"
+                or session.get("generation") != admission.generation):
+            return False
+        origin, device = clean_origin(report.get("origin")), clean_device(report.get("device"))
+        if session.get("origin") == origin and session.get("device") == device:
+            return False
+        ref.update({"origin": origin, "device": device, "reported_at": self._now()})
+        return True
 
     def viewer_event(self, admission: Admission, entry: str, detail: Mapping[str, Any]) -> None:
         """`viewer_joined` / `viewer_left`: an entry that records no other

@@ -78,6 +78,7 @@ def test_no_new_plan_while_max_pending_plans_wait(db, ctx, repo_id, github) -> N
     assert second == []
     preview = issue_plan_only.dry_run(firing_for(ctx, schedule, fid="sch_000000000001:peek"))
     assert preview["limits"]["max_pending_plans"] == 0 and preview["would_start"] == []
+    assert preview["own_live"] == {"running": 2, "limit": 2, "bound": "max_pending_plans"}
 
 
 def test_a_decided_plan_frees_its_place(db, ctx, repo_id, github) -> None:

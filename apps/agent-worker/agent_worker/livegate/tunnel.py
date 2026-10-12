@@ -9,8 +9,8 @@ every message is a binary tunnel frame (apps/swarm-live/swarm_live/rendezvous.py
 
     op (1 byte) | len(conn_id) (1 byte) | conn_id (ascii) | payload
 
-`OPEN`, `DATA`, `CLOSE` and `CONTROL` arrive; `DATA`, `CLOSE` and `ACTION`
-leave. Each viewer (or the recorder) is one RFB stream with its own conn_id,
+`OPEN`, `DATA`, `CLOSE` and `CONTROL` arrive; `DATA`, `CLOSE`, `ACTION` and
+`REPORT` (the page's origin and the device, report.py) leave. Each viewer (or the recorder) is one RFB stream with its own conn_id,
 served by `livegate.rfb.RfbSession` over a reader and writer this module
 makes for it (`StreamMux`).
 
@@ -53,8 +53,8 @@ TUNNEL_PATH = "/v1/tunnel"
 
 #: The relay's frame ops (rendezvous.py `OP_*`); test_livegate_main.py holds
 #: these equal to the relay's own.
-OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION = 1, 2, 3, 4, 5
-_OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION})
+OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT = 1, 2, 3, 4, 5, 6
+_OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT})
 MAX_CONN_ID = 64
 
 #: The relay refuses a message over 16 MiB (swarm_live.main MAX_MESSAGE_BYTES).
@@ -274,6 +274,13 @@ class Tunnel:
         """One action-log line for the recording (§7). Names and causes, never content."""
         try:
             await self.send(OP_ACTION, "", json.dumps(dict(entry), separators=(",", ":")).encode())
+        except (ConnectionError, OSError):
+            pass
+
+    async def report(self, payload: bytes) -> None:
+        """The page's origin and the device (report.py `encode_report`), for the relay to keep."""
+        try:
+            await self.send(OP_REPORT, "", payload)
         except (ConnectionError, OSError):
             pass
 
