@@ -46,7 +46,7 @@ from .test_release_reuses_ci_images import _code, _needs, _workflow
 ROOT = Path(__file__).resolve().parents[3]
 ACCEPTANCE = ROOT / "scripts" / "acceptance"
 REPORT_SH = ROOT / "scripts" / "accept-report.sh"
-GROUPS = ("mock", "generic", "claude-code", "workflow", "browser")
+GROUPS = ("mock", "generic", "claude-code", "workflow", "browser", "live-browser")
 #: What is run rather than sourced. lib.sh and the group files are sourced by
 #: run.sh and checked through it (-x); on their own they would report every
 #: variable common.sh and lib.sh set.
@@ -55,11 +55,18 @@ ENTRY_SCRIPTS = ("run.sh", *(f"{g}.sh" for g in GROUPS), "github-cleanup.sh", "g
 #: Each group's peak of tasks in flight at once, read from its group file on
 #: 2026-10-08: mock submits twelve tasks and a two-step workflow before it
 #: waits; generic one task per command row (8); workflow four workflow roots;
-#: claude-code and browser three tasks each. accept.yml's header states the
-#: same numbers; a group that grows past them should move waves.
-PEAK = {"mock": 13, "generic": 8, "workflow": 4, "claude-code": 3, "browser": 3}
+#: claude-code and browser three tasks each; live-browser (LB-L13) one, which it
+#: waits on before it ends. accept.yml's header states the same numbers; a
+#: group that grows past them should move waves.
+PEAK = {"mock": 13, "generic": 8, "workflow": 4, "claude-code": 3, "browser": 3, "live-browser": 1}
 
 ACCEPT_JOBS = ("acceptance", "acceptance-2")
+
+#: Groups the suite has that accept.yml does not run YET, for a lane that cannot
+#: push workflow files. Nothing is pending: live-browser (LB-L13, part of #1030)
+#: now runs in wave 2. A group added here may be missing from accept.yml; any
+#: other missing group is red.
+PENDING_IN_ACCEPT_YML: frozenset[str] = frozenset()
 
 
 def _accept() -> dict:
@@ -319,7 +326,10 @@ def test_every_group_runs_exactly_once_through_verify_remote_with_fail_fast_off(
         assert runs == ['./scripts/verify-remote.sh "acceptance/${GROUP}"'], runs
         assert any(s.get("env", {}).get("GROUP") == "${{ matrix.group }}" for s in job["steps"])
         seen += _groups(job)
-    assert sorted(seen) == sorted(GROUPS), f"accept.yml runs {seen}, the suite has {GROUPS}"
+    assert len(seen) == len(set(seen)), f"accept.yml runs a group twice: {seen}"
+    assert set(seen) <= set(GROUPS), f"accept.yml runs {seen}, the suite has {GROUPS}"
+    missing = set(GROUPS) - set(seen)
+    assert missing <= PENDING_IN_ACCEPT_YML, f"accept.yml does not run {sorted(missing - PENDING_IN_ACCEPT_YML)}"
     for target in seen:
         wrapper = ACCEPTANCE / f"{target}.sh"
         assert wrapper.is_file(), f"verify-remote.sh would run scripts/acceptance/{target}.sh, which does not exist"

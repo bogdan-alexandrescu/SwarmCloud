@@ -1,0 +1,80 @@
+<!doctype html>
+<!--
+  The live-browser acceptance check's sign-in page (docs/acceptance.md,
+  "live-browser"; docs/design/live-browser.md section 9, lane LB-L13).
+
+  The agent serves this directory on 127.0.0.1 inside its own pod and opens
+  the page in the platform's Chromium, which shares the pod's network
+  namespace. Nothing this repository owns serves HTML as HTML on the
+  internet (docs/acceptance.md, "browser"), and a loopback server needs none.
+
+  THE LAYOUT IS THE MEASUREMENT. tests/acceptance/test_live_browser.py finds
+  the cyan marker in a frame, and from it where the password field must be:
+  the same left edge and width, 80 CSS pixels lower, 40 tall. Every pixel of
+  that box must be the mask's paint, and no pixel of the field's own magenta
+  may show anywhere. Change a number here and change it there
+  (MARKER_CSS, FIELD_OFFSET_CSS, FIELD_CSS); a unit test holds them equal.
+
+  THE PASSWORD GOES NOWHERE. The field has no `name`, so a form submission
+  that got past the script would still not carry it; the submit handler
+  cancels the submission, so nothing is requested and the loopback server's
+  log holds only the page's own GET. What the page shows afterwards is the
+  first 12 hex digits of the value's SHA-256: the agent reports that code,
+  which proves the person's typing reached the page, and the check compares
+  it with its own digest without the agent ever holding the value.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Acceptance sign-in</title>
+<style>
+  html, body { margin: 0; padding: 0; }
+  body { background: #008000; color: #ffffff; font: 16px sans-serif; min-height: 100vh; }
+  h1 { position: absolute; left: 40px; top: 16px; margin: 0; font-size: 24px; }
+  #marker { position: absolute; left: 40px; top: 120px; width: 320px; height: 40px; background: #00ffff; }
+  #password {
+    position: absolute; left: 40px; top: 200px; width: 320px; height: 40px;
+    box-sizing: border-box; margin: 0; padding: 0 8px; border: 0; outline: none;
+    background: #ff00ff; color: #ff00ff; caret-color: #ff00ff; font: 20px monospace;
+  }
+  #submit { position: absolute; left: 40px; top: 280px; height: 32px; }
+  #status { position: absolute; left: 40px; top: 340px; margin: 0; }
+  #code { position: absolute; left: 40px; top: 380px; margin: 0; font: 24px monospace; }
+</style>
+</head>
+<body>
+<h1>Acceptance sign-in</h1>
+<div id="marker"></div>
+<form id="signin" autocomplete="off">
+  <input id="password" type="password" autocomplete="current-password" aria-label="Password" autofocus>
+  <button id="submit" type="submit">Sign in</button>
+</form>
+<p id="status">A person signs in here.</p>
+<script>
+  document.getElementById('signin').addEventListener('submit', async function (event) {
+    event.preventDefault();
+    var field = document.getElementById('password');
+    var value = field.value;
+    field.value = '';
+    var code = 'empty';
+    if (value) {
+      code = 'unavailable';
+      if (window.isSecureContext && window.crypto && crypto.subtle) {
+        var digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+        code = Array.from(new Uint8Array(digest)).map(function (b) {
+          return b.toString(16).padStart(2, '0');
+        }).join('').slice(0, 12);
+      }
+    }
+    value = '';
+    document.getElementById('signin').remove();
+    document.getElementById('marker').remove();
+    document.getElementById('status').textContent = 'Signed in. Session code:';
+    var shown = document.createElement('p');
+    shown.id = 'code';
+    shown.textContent = code;
+    document.body.appendChild(shown);
+  });
+</script>
+</body>
+</html>
