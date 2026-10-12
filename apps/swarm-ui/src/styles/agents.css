@@ -1029,3 +1029,21 @@
 .rec-list { list-style: none; margin: 0; padding: 0; }
 .rec-list > li { padding: var(--ctl-s1) 0; border-top: 1px solid var(--line); }
 .rec-player { display: block; width: 100%; max-height: 60vh; margin-top: var(--ctl-s1); background: var(--bg); }
+
+/* A LIVE BROWSER ROW'S DEVICE OUTLINE (live-browser.md §6; LB-UX3): a static
+   phone, tablet or desktop shape in the session's orientation, at the start of
+   line two. Not a stream: see `DeviceThumb`. `unknown` is dashed -- the gate
+   has not reported the device -- rather than a guessed desktop. */
+.ag-device {
+  display: inline-block; vertical-align: -2px; margin-right: 6px; box-sizing: border-box;
+  border: 1.5px solid var(--text-dim); border-radius: 2px;
+}
+.ag-device.is-phone.is-portrait { width: 8px; height: 13px; border-radius: 2px; }
+.ag-device.is-phone.is-landscape { width: 13px; height: 8px; border-radius: 2px; }
+.ag-device.is-tablet.is-portrait { width: 10px; height: 13px; }
+.ag-device.is-tablet.is-landscape { width: 13px; height: 10px; }
+.ag-device.is-desktop { width: 15px; height: 10px; border-bottom-width: 3px; border-radius: 1px; }
+.ag-device.is-desktop.is-portrait { width: 10px; height: 14px; }
+.ag-device.is-unknown { width: 12px; height: 10px; border-style: dashed; }
+
+.ag-theater-all { white-space: nowrap; font-size: var(--t-meta); }

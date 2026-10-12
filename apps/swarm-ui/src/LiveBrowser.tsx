@@ -27,6 +27,7 @@ import {
 import { SaveAsLoginOffer } from './BrowserLogins'
 import { Button } from './components'
 import { HandoffStrip } from './Handoff'
+import { LiveToolMenu } from './LiveToolMenu'
 import { TheaterButton, TheaterHost, useTheater, type TheaterHandoff, type TheaterSession } from './Theater'
 import { TERMINAL_STATES, type Task } from './types'
 import './styles/live.css'
@@ -653,10 +654,12 @@ function LiveToolbar({
   const [error, setError] = useState<string | null>(null)
   return (
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
-      <LiveDevice session={session} mine={mine} />
-      <Button size="sm" aria-pressed={logs} onClick={onLogs} title={logs ? 'Hide the logs' : 'Show the logs beside the browser'}>
-        ◫ logs
-      </Button>
+      <LiveToolMenu>
+        <LiveDevice session={session} mine={mine} />
+        <Button size="sm" aria-pressed={logs} onClick={onLogs} title={logs ? 'Hide the logs' : 'Show the logs beside the browser'}>
+          ◫ logs
+        </Button>
+      </LiveToolMenu>
       {!mine && <span className="live-toolbar-why">{deviceWhy(mine)}</span>}
       <span className="live-toolbar-end">
         <TheaterButton />

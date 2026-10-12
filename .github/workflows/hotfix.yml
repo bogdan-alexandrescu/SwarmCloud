@@ -323,6 +323,22 @@ jobs:
           environment: ${{ env.ENVIRONMENT }}
           apply_tenant_namespaces: ${{ vars.APPLY_TENANT_NAMESPACES }}
 
+      - name: apply the tenant network policies to every tenant namespace
+        # Lane H1-NETPOL (PR 1160). Every namespace labelled swarm-tenant --
+        # terraform's tenants AND workspace tenants, which the step above never
+        # names -- gets the full tenant NetworkPolicy set (kubernetes/render.py
+        # TENANT_FILES' network-policies/), and ONLY that: no quota, account or
+        # RBAC is re-rendered. NOT switched by vars.APPLY_TENANT_NAMESPACES: on
+        # 2026-10-11 swarm-allow-live-egress reached no tenant until the
+        # operator applied it by hand.
+        # continue-on-error: owner decision 2026-10-12 01:35 PDT. Whether the
+        # deployer may list namespaces cluster-wide is unmeasured; warn-only
+        # until one release's log shows a clean apply, then a follow-up PR
+        # removes this line so a missing policy fails the release.
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        run: ./scripts/apply-tenant-network-policies.sh --get-credentials --confirm
+
       - name: smoke test (inside the VPC)
         id: smoke
         if: steps.verify.outputs.superseded != 'true'
