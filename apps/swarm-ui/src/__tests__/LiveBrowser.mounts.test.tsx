@@ -142,7 +142,9 @@ beforeEach(() => {
   api.loadTaskLogs.mockReturnValue(new Promise(() => {}))
   api.loadTranscript.mockReturnValue(new Promise(() => {}))
   // Built at run time: nothing here may look like a credential in the source.
-  api.mintLiveTicket.mockImplementation(async () => ok({ ticket: `vt.${crypto.randomUUID()}`, expires_at: '' }))
+  api.mintLiveTicket.mockImplementation(async () =>
+    ok({ ticket: `vt.${crypto.randomUUID()}`, session_id: 'ls_mounts', expires_in: 30, socket_path: '/v1/live/ls_mounts/stream' }),
+  )
   api.renewLiveControl.mockResolvedValue(ok(null))
 })
 
