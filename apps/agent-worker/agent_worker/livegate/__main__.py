@@ -102,6 +102,11 @@ MAX_TICKET_CHARS = 4096
 DEVICE_FRAME_KEYS = frozenset({"preset", "orientation", "touch"})
 #: A `DEVICE` frame larger than this is not a device choice.
 MAX_DEVICE_FRAME = 256
+#: Agent method lines (cdpproxy `action_line`) waiting for the tunnel. The
+#: proxy never waits on the tunnel -- an agent's command must not stall on a
+#: slow relay -- so lines queue here, and past this many a line is dropped:
+#: the relay keeps at most 20,000 a minute anyway (recorder.py).
+MAX_QUEUED_ACTIONS = 1000
 
 #: A hand-off's `expect`: a host (the worker checked it with `expect_refusal`).
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?")
@@ -568,6 +573,7 @@ class LiveGate:
         self._device_lock = asyncio.Lock()
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._spawned: set[asyncio.Task[Any]] = set()
+        self._actions: asyncio.Queue[dict[str, Any]] = asyncio.Queue(MAX_QUEUED_ACTIONS)
 
     # -- start, in the design's order ---------------------------------------
 
@@ -598,6 +604,7 @@ class LiveGate:
             paths=PolicyPaths(downloads_dir=self.cfg.downloads_dir, uploads_dir=self.cfg.uploads_dir),
             record=self.record,
             on_control_ended=self._control_ended,
+            on_action=self._queue_action,
         )
         pipe = self._tasks["pipe"] = asyncio.create_task(self._read_pipe())
         version = asyncio.create_task(self.proxy.call("Browser.getVersion", {}))
@@ -778,6 +785,10 @@ class LiveGate:
         self.mux = StreamMux(tunnel, self._serve_rfb, self._on_control, self._on_device)
         self._tasks["tunnel"] = asyncio.create_task(self._run_tunnel(tunnel, self.mux))
         self._tasks["report"] = asyncio.create_task(self._reporter(tunnel))
+        previous = self._tasks.get("actions")
+        if previous is not None:
+            previous.cancel()
+        self._tasks["actions"] = asyncio.create_task(self._send_actions(tunnel))
         self.record("tunnel_open", {})
         return {"tunnel": "open"}
 
@@ -843,26 +854,39 @@ class LiveGate:
         touch_on = choice.get("touch") if isinstance(choice, dict) else None
         if (not isinstance(choice, dict) or set(choice) != DEVICE_FRAME_KEYS
                 or not (touch_on is None or isinstance(touch_on, bool))):
-            self.record("device_refused", {"cause": "not_a_preset_name"})
+            await self._device_refused("not_a_preset_name")
             raise ValueError("a device is chosen by preset name only")
         devices = self._need(self.devices)
         touch = self._need(self.touch)
         try:
             wanted = resolve(choice["preset"], choice["orientation"])
         except UnknownPreset:
-            self.record("device_refused", {"cause": "unknown_preset"})
+            await self._device_refused("unknown_preset")
             raise
         if touch_on and not wanted.touch:
-            self.record("device_refused", {"cause": "no_touch"})
+            await self._device_refused("no_touch")
             raise UnknownPreset("this preset has no touch")
         device = devices.device
         if (wanted.name, wanted.orientation) != (device.name, device.orientation):
             # Changes nothing when it fails, the toggle included.
-            device = await devices.select(wanted.name, wanted.orientation)
+            try:
+                device = await devices.select(wanted.name, wanted.orientation)
+            except Exception:
+                # `select` keeps its own record; the timeline is told here.
+                await self._action({"kind": "control", "event": "device_refused",
+                                    "cause": "not_applied"})
+                raise
         if touch_on is not None:
             touch.set_touch(touch_on)
         self._device_changed(device)
         return device
+
+    async def _device_refused(self, cause: str) -> None:
+        """A device the person chose that the gate did not apply: in the
+        gate's record and, by its cause alone, the recording's action log
+        (LB-V3), so the timeline does not show a change that never happened."""
+        self.record("device_refused", {"cause": cause})
+        await self._action({"kind": "control", "event": "device_refused", "cause": cause})
 
     async def _grant(self, conn_id: str) -> None:
         proxy, control, touch = self.proxy, self.control, self.touch
@@ -932,6 +956,23 @@ class LiveGate:
     async def _action(self, entry: Mapping[str, Any]) -> None:
         if self.tunnel is not None and not self.tunnel.closed:
             await self.tunnel.action(entry)
+
+    def _queue_action(self, entry: dict[str, Any]) -> None:
+        """The proxy's agent method line (§7). Kept only while a tunnel is
+        open -- with none, nothing records -- and dropped when the queue is full."""
+        if self.tunnel is None or self.tunnel.closed:
+            return
+        try:
+            self._actions.put_nowait(entry)
+        except asyncio.QueueFull:
+            pass
+
+    async def _send_actions(self, tunnel: Tunnel) -> None:
+        """Send the queued agent method lines, in the order they were forwarded."""
+        while not tunnel.closed:
+            entry = await self._actions.get()
+            if not tunnel.closed:
+                await tunnel.action(entry)
 
     async def _resume_agent(self) -> None:
         assert self.proxy is not None

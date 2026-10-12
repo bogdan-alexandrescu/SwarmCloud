@@ -281,6 +281,9 @@ export function AgentSplit({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return
       if (document.querySelector('[data-focus-return]') !== null) return
+      // An open theater (Theater.tsx) is above the split: its Escape closes it
+      // and only it, back to the Browser tab (LB-V2, visual QA pass 5).
+      if (document.querySelector('[data-theater]') !== null) return
       const t = e.target instanceof Element ? e.target : null
       if (t !== null && panel.current?.contains(t)) return
       if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
@@ -486,9 +489,11 @@ export function AgentSplit({
       // over the list and is NOT a stop Tab lands on afterwards.
       tabIndex={-1}
       onKeyDown={(e) => {
-        if (e.key === 'Escape') {
+        if (e.key === 'Escape' && !e.defaultPrevented) {
           // An open help card inside stops Escape before it reaches here
-          // (see `HelpCard.tsx`), so the innermost open thing closes.
+          // (see `HelpCard.tsx`), so the innermost open thing closes; so does
+          // the theater, portalled out of this panel but still inside it to
+          // React, and a key it already used is not this panel's.
           e.stopPropagation()
           close()
           return

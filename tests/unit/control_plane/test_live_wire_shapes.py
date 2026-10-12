@@ -500,8 +500,10 @@ def test_the_action_timeline_is_served_with_lengths_never_text(client, ldb, live
     served = _served(client, "GET", "/v1/tasks/{task_id}/live/actions", "alice")
     assert fits(served, fixture("actions.json")) == []
     assert served["attempt_id"] == ATTEMPT
+    # The relay's nameless `control_taken` is not served: the audit holds the
+    # same take with the person's name (LB-V3, test_live_timeline.py).
     assert [a.get("method") or a.get("event") for a in served["actions"]] == [
-        "Page.navigate", "Input.insertText", "control_taken"]
+        "Page.navigate", "Input.insertText"]
     assert served["actions"][1]["length"] == 12
     assert served["actions"][0]["at"] == WRITTEN.isoformat()
 
