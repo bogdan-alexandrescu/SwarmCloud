@@ -215,8 +215,12 @@ describe('the theater’s device slot switches the device for the person in cont
   it('is disabled in the theater for a viewer', () => {
     render(<Pane tenant={GROUP} s={session({ controller: held(OTHER) })} />)
     const slot = theaterDevice()
-    expect((slot.querySelector('select') as HTMLSelectElement).disabled).toBe(true)
-    for (const b of Array.from(slot.querySelectorAll('button'))) expect(b.disabled).toBe(true)
+    // The device control is UX1's chip group now (owner decision: chips, not a <select>).
+    const chips = slot.querySelector('[role="group"][aria-label="Device"]')
+    expect(chips).not.toBeNull()
+    const buttons = Array.from(slot.querySelectorAll('button'))
+    expect(buttons.length).toBeGreaterThan(0)
+    for (const b of buttons) expect(b.disabled).toBe(true)
   })
 })
 
