@@ -69,17 +69,21 @@ profile reaches a run: the planner's profile is `issueruns`' (10).
 from __future__ import annotations
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import timedelta
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Iterable, Mapping
+
+from swarm_common.states import TERMINAL_STATES
 
 from .. import issuesweep, scheduletypes
 from ..errors import ApiError
-from ..forge import open_work_without
+from ..forge import ForgeReadError, open_work_without
 from ..issueruns import IssueRun, IssueRuns, refuse_auto_merge
 from ..repositories import Repositories, repo_id_for
 from ..routes.runs import start_run
+from ..validation import workflow_label
 
 log = logging.getLogger(__name__)
 
@@ -127,6 +131,189 @@ def run_options(schedule: Mapping[str, Any], fix_rounds: int, *, plan_required: 
 
 
 # --------------------------------------------------------------------------
+# Work already under way on an issue, outside any issue run
+# --------------------------------------------------------------------------
+
+#: The newest non-terminal workflows a selection reads for `in_flight_workflow`:
+#: one page of `GET /v1/workflows?active=true`'s query (`Store.list_workflows`
+#: on the stored states a live workflow can carry), newest first. A tenant
+#: with more live workflows than this is reported `truncated` in
+#: `in_flight.workflows_truncated`; an older one's issue is not passed over.
+WORKFLOW_SCAN = 50
+
+_TERMINAL = frozenset(s.value for s in TERMINAL_STATES)
+
+#: `#N` bounded by non-digits, optionally `owner/repo#N`: "part of #N" and
+#: "(#N)" are both this. A word character directly before the `#` (`LB#2`) is
+#: not a reference.
+_ISSUE_MENTION = re.compile(
+    r"(?:(?P<repo>[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+)|(?<![A-Za-z0-9_]))#(?P<num>[0-9]+)(?![0-9])"
+)
+
+
+def mentioned_issues(text: str, repository: str) -> set[int]:
+    """The issue numbers of `repository` a workflow's title or label names.
+
+    A bare `#N` is taken to name an issue in EVERY repository in scope (a
+    workflow's title carries no repository): passing an issue over is the
+    safe direction to be wrong in. `owner/repo#N` counts only for that
+    repository, compared case-insensitively.
+    """
+    wanted = repository.lower()
+    found: set[int] = set()
+    for match in _ISSUE_MENTION.finditer(text or ""):
+        named = match.group("repo")
+        if named is not None and named.lower() != wanted:
+            continue
+        found.add(int(match.group("num")))
+    return found
+
+
+@dataclass
+class InFlight:
+    """The tenant's live workflows that name an issue, as (title, issue-run link)."""
+
+    #: (workflow_id, its label or title or "") for each non-terminal workflow read.
+    labels: list[tuple[str, str]] = field(default_factory=list)
+    #: (workflow_id, "owner/repo#N") from a step task's `metadata.issue_run`.
+    links: list[tuple[str, str]] = field(default_factory=list)
+    read: int = 0
+    truncated: bool = False
+
+    def workflow_for(self, repository: str, number: int) -> str | None:
+        short = f"{repository}#{number}".lower()
+        for workflow_id, link in self.links:
+            if link.lower() == short:
+                return workflow_id
+        for workflow_id, label in self.labels:
+            if number in mentioned_issues(label, repository):
+                return workflow_id
+        return None
+
+
+def _issue_run_link(metadata: Mapping[str, Any], live: Mapping[str, IssueRun]) -> str | None:
+    """`owner/repo#N` from a task's `metadata.issue_run`: the dict a compiled
+    run or a CI fix round carries, or the bare run id a planner carries."""
+    link = metadata.get("issue_run")
+    if isinstance(link, Mapping):
+        issue = link.get("issue")
+        if isinstance(issue, str) and "#" in issue:
+            return issue
+        link = link.get("run_id")
+    if isinstance(link, str) and link in live:
+        return live[link].issue.short
+    return None
+
+
+def in_flight(ctx: Any, tenant_id: str, live_rows: Iterable[IssueRun]) -> InFlight:
+    """The tenant's newest `WORKFLOW_SCAN` live workflows, as the workflow
+    list serves them: the stored-state query, then each one's state DERIVED
+    from its steps (`WorkflowRollups`, with `persist=False`: a dry run writes
+    nothing), keeping only those not terminal. Reads only."""
+    found = InFlight()
+    page = ctx.store.list_workflows(
+        tenant_id, limit=WORKFLOW_SCAN, submitted_by=None,
+        stored_states=ctx.store.stored_states_for(active=True, states=None),
+    )
+    found.truncated = page.next_page_token is not None
+    results, _ = ctx.rollups.for_workflows(tenant_id, page.items, persist=False)
+    live = {row.id: row for row in live_rows}
+    for result in results:
+        if result.to_api().get("state") in _TERMINAL:
+            continue
+        found.read += 1
+        workflow_id = result.workflow.workflow_id
+        for task in result.step_tasks.values():
+            metadata = getattr(task, "metadata", None) or {}
+            label = workflow_label(metadata)
+            if label:
+                found.labels.append((workflow_id, label))
+            link = _issue_run_link(metadata, live)
+            if link:
+                found.links.append((workflow_id, link))
+    return found
+
+
+def _recently_merged(ctx: Any, tenant: Any, candidates: list[issuesweep.Candidate],
+                     since: Any) -> dict[str, tuple[dict[int, int] | None, str | None, bool]]:
+    """For each repository a candidate is in: {issue number: the merged pull
+    request whose title says `part of #N`}, or None and the error code when
+    the read failed, and whether the read was cut (`recently_merged_pulls`)."""
+    out: dict[str, tuple[dict[int, int] | None, str | None, bool]] = {}
+    for candidate in candidates:
+        ref = candidate.ref
+        repository = ref.repository
+        if repository in out:
+            continue
+        token = ctx.forge_tokens.token_for(tenant)
+        try:
+            pulls, cut = ctx.forge.recently_merged_pulls(ref.owner, ref.repo, token, since=since)
+        except ForgeReadError as refused:
+            out[repository] = (None, refused.code, False)
+            continue
+        except Exception as exc:  # noqa: BLE001 -- one repository's failure is its own
+            out[repository] = (None, type(exc).__name__, False)
+            continue
+        finally:
+            token = ""
+        worked: dict[int, int] = {}
+        for pull in pulls:
+            for number in issuesweep.claimed_issues(pull.title, repository):
+                worked.setdefault(number, pull.number)
+        out[repository] = (worked, None, cut)
+    return out
+
+
+def pass_over_worked(ctx: Any, tenant: Any, tenant_id: str, candidates: list[issuesweep.Candidate],
+                     report: issuesweep.SweepReport, live_rows: list[IssueRun], *,
+                     cooldown: timedelta) -> tuple[list[issuesweep.Candidate], dict[str, Any]]:
+    """Pass over each candidate somebody is already working on, or just worked on.
+
+    `in_flight_workflow: <workflow_id>`: a non-terminal workflow of the tenant
+    names the issue in its title or label (`part of #N`, `(#N)`, `#N`), or
+    carries an issue-run link to it. `recently_worked: PR <n>`: a pull request
+    whose title says `part of #N` merged within `cooldown`. Without these
+    the sweep took #1030 -- built all day by ~25 dedicated workflows -- for
+    idle in the gap between two of their merges, and planned it a third way
+    (2026-10-12, run_21bcbaba3ba14235832a); and opened PR 1136 beside a
+    lane's PR 1134 for #1133. A repository whose merged pull requests could
+    not be read starts nothing: its candidates are passed over as
+    `recently_worked: not read (<code>)`, as SWEEP passes over a repository
+    whose open pull requests it could not all see.
+    """
+    if not candidates:
+        return candidates, {}
+    flight = in_flight(ctx, tenant_id, live_rows)
+    merged = _recently_merged(ctx, tenant, candidates, ctx.now() - cooldown)
+    kept: list[issuesweep.Candidate] = []
+    for candidate in candidates:
+        repository, number = candidate.ref.repository, candidate.ref.number
+        workflow_id = flight.workflow_for(repository, number)
+        if workflow_id is not None:
+            report.skip(candidate.ref.short, f"in_flight_workflow: {workflow_id}")
+            continue
+        worked, error, _ = merged[repository]
+        if worked is None:
+            report.skip(candidate.ref.short, f"recently_worked: not read ({error})")
+            continue
+        if number in worked:
+            report.skip(candidate.ref.short, f"recently_worked: PR {worked[number]}")
+            continue
+        kept.append(candidate)
+    for repository, (worked, error, _) in sorted(merged.items()):
+        if worked is None:
+            report.failures.append({"repository": repository, "error": f"recent_pulls_not_read: {error}"})
+    scan = {
+        "workflows_read": flight.read,
+        "workflow_scan": WORKFLOW_SCAN,
+        "workflows_truncated": flight.truncated,
+        "merged_since_hours": int(cooldown.total_seconds() // 3600),
+        "merged_truncated": sorted(r for r, (_, _, cut) in merged.items() if cut),
+    }
+    return kept, scan
+
+
+# --------------------------------------------------------------------------
 # Selection: SWEEP's read and filter, bounded by the firing
 # --------------------------------------------------------------------------
 
@@ -143,6 +330,8 @@ class Selection:
     #: What a real firing started and which starts were refused, by `start`.
     started: list[dict[str, str]] = field(default_factory=list)
     start_failures: list[dict[str, str]] = field(default_factory=list)
+    #: What `pass_over_worked` read, and whether either read was cut.
+    in_flight: dict[str, Any] = field(default_factory=dict)
 
 
 #: (the tenant's live runs, this firing's adopted runs) -> named upper bounds
@@ -182,12 +371,17 @@ def select(firing: Any, params: Any, *, limits: Limits, max_live_runs: int) -> S
         labels_include=frozenset(label.lower() for label in params.labels_include),
         not_ready_cooldown=timedelta(hours=params.cooldown_hours),
     )
+    candidates, scan = pass_over_worked(
+        ctx, tenant, tenant_id, candidates, report, live_rows,
+        cooldown=timedelta(hours=params.cooldown_hours),
+    )
     bounds = limits(live_rows, adopted)
     if live_cut:
         # More live runs than one read reaches: past any cap this type allows.
         bounds["live_scan"] = 0
     room = max(0, min(bounds.values())) if bounds else 0
-    return Selection(report=report, candidates=candidates, adopted=adopted, room=room, limits=bounds)
+    return Selection(report=report, candidates=candidates, adopted=adopted, room=room, limits=bounds,
+                     in_flight=scan)
 
 
 def _limits(firing: Any, params: Any) -> Limits:
@@ -290,6 +484,7 @@ def describe(selection: Selection, options: RunOptions) -> dict[str, Any]:
         "truncated": report.truncated,
         "runs": options.as_dict(),
         "bound": bound if selection.limits else None,
+        "in_flight": dict(selection.in_flight),
     }
     if not chosen and not selection.adopted:
         out["reason"] = nothing_reason(selection)

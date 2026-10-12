@@ -6035,6 +6035,19 @@ export interface ScheduleFiring {
   outcome: string | null
   cost: { reported_usd?: number; unreported_attempts?: number } | null
   ended_at: string | null
+  /**
+   * Issue runs refused at planning for what their issue asks
+   * (`issueruns.PLANNING_REFUSALS`): recorded here and not counted in
+   * `outcome`, which stays `succeeded` for them. Absent when there were none.
+   */
+  refused_runs?: FiringRefusedRun[]
+}
+
+/** One `refused_runs` entry: the run, its issue, and the refusal's code. */
+export interface FiringRefusedRun {
+  run_id: string
+  issue: string
+  code: string
 }
 
 /** One `schedule_audit/` entry (§4.8). Never updated after it is written. */

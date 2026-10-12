@@ -641,6 +641,30 @@ describe('one schedule', () => {
     expect(visible(rows[1]!)).toContain('OVERLAP')
   })
 
+  it('says in plain words why a refused run was not started, under a firing that still succeeded', async () => {
+    await mountDetail({
+      '/v1/schedules/sch_a': {
+        status: 200,
+        body: {
+          schedule: schedule('sch_a'),
+          firings: [
+            firing('sch_a:3', {
+              outcome: 'succeeded',
+              refused_runs: [{ run_id: 'run_8f2a', issue: 'acme/example-api#1030', code: 'WORKFLOWS_PATH' }],
+            }),
+          ],
+        },
+      },
+    })
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    const row = document.querySelector<HTMLElement>('tr[data-firing="sch_a:3"]')!
+    const outcome = row.querySelector<HTMLElement>('td[data-label="Outcome"]')!
+    expect(visible(outcome)).toContain('succeeded')
+    expect(visible(outcome)).toContain('acme/example-api#1030 not started')
+    expect(visible(outcome)).toContain('.github/workflows/ files, which SwarmCloud cannot push')
+    expect(outcome.querySelector('[data-refused="WORKFLOWS_PATH"]')).not.toBeNull()
+  })
+
   it('reads the audit when its tab is opened, newest first as served', async () => {
     const { calls } = await mountDetail({
       '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a'), firings: [] } },
