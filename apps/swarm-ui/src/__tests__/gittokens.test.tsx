@@ -244,7 +244,9 @@ describe('Git tokens are cards by scope (pick B)', () => {
     await waitFor(() => expect(tokCards()).toHaveLength(3), WAIT)
     fireEvent.click(within(tokCards()[2]!).getByRole('button', { name: 'Rotate' }))
     const reg = document.querySelector<HTMLElement>('.ur-reg')!
-    expect(within(reg).getByRole('radio', { name: 'Me' }).getAttribute('aria-checked')).toBe('true')
+    // A non-admin may create their own entry only, so there is no choice to show.
+    expect(within(reg).queryByRole('radio')).toBeNull()
+    expect(visible(reg.querySelector('pre.ur-term'))).toBe('$ scripts/create-secrets.sh --tenant eng --provider git-u-89abcdef01234567 --stdin')
     fireEvent.click(within(reg).getByRole('button', { name: 'Create the token entry' }))
     await waitFor(() => expect(calls.some((c) => c.method === 'POST')).toBe(true), WAIT)
     expect(calls.find((c) => c.method === 'POST')!.body).toEqual({ scope: 'user' })
