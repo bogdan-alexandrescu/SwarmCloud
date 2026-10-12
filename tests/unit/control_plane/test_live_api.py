@@ -630,6 +630,21 @@ def test_return_resolves_the_hand_off_and_only_the_controller_returns(client, ld
     assert "human_handoff_resolved" in events
 
 
+def test_control_events_carry_their_attempt_in_the_events_own_fields(client, ldb, live):
+    """LB-V6 (part of #1030): the Attempts tab groups on the event's own
+    `attempt_id`. These rode `detail` only, so visual QA pass 5 found them
+    all under "Before any attempt". Additive: `detail` keeps them too."""
+    _ask_for_help(ldb)
+    assert take(client, "alice").status_code == 200
+    assert client.post(f"/v1/tasks/{TASK}/live/control/return",
+                       headers=bearer("alice")).status_code == 200
+    events = {d["type"]: d for p, d in ldb.docs.items() if p.startswith(f"tasks/{TASK}/events/")}
+    for kind in ("human_control_taken", "human_control_returned", "human_handoff_resolved"):
+        event = events[kind]
+        assert (event["attempt_id"], event["lease_id"], event["generation"]) == (ATTEMPT, LEASE, 1), kind
+    assert events["human_control_taken"]["detail"]["attempt_id"] == ATTEMPT
+
+
 def test_control_lapses_without_renewal_and_when_idle(client, ldb, live, clock):
     assert take(client, "alice").status_code == 200
     clock.advance(61)

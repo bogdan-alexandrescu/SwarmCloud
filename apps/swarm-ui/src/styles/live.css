@@ -30,24 +30,50 @@
 .live-origin-puny { margin-left: 8px; color: var(--bad-ink); font-size: var(--t-meta); }
 .live-strip-who { margin-left: auto; color: var(--text-dim); }
 
+/* The mockup's toolbar: chips, rotate, touch, logs, and ⤢ Theater at the
+   right with "Let any member take control". ONE ROW WHERE IT FITS (LB-V1,
+   visual QA 5 U3): no group breaks inside itself, and the why of a disabled
+   device bar is its tooltip, not a line here, so the toolbar wraps only when
+   its controls are wider than the pane. */
 .live-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: var(--t-meta); }
 .live-device { display: inline-flex; gap: 6px; align-items: center; }
-.live-open { display: inline-flex; gap: 6px; align-items: center; }
-.live-toolbar-why { color: var(--text-dim); }
-/* The mockup's toolbar: chips, rotate, touch, logs, and ⤢ Theater at the right. */
-.live-chips { display: inline-flex; gap: 2px; }
+.live-open { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.live-chips { display: inline-flex; flex-wrap: nowrap; gap: 2px; }
 .live-chip[aria-pressed="true"] { border-color: var(--sk-ac); color: var(--sk-ac); font-weight: 600; }
-.live-toolbar-end { margin-left: auto; display: inline-flex; gap: 8px; align-items: center; }
+.live-toolbar-end { margin-left: auto; display: inline-flex; flex-wrap: nowrap; gap: 8px; align-items: center; }
 .live-caption { color: var(--text-dim); font-size: var(--t-meta); text-align: center; }
 
 /* ◫ logs: the logs on the LEFT, the device on the right (the mockup). */
-.live-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; }
+/* One row the height of the room left, never of its content: the stage is
+   measured from it, and a row sized to the canvas is what drew a phone 1552px
+   tall in a 900px window (LB-V1). */
+.live-body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; }
 .live-tab.with-logs .live-body { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
 .live-logs { min-height: 0; overflow: auto; }
 
+/* THE STAGE (LB-V1, visual QA 5 B3): the device fitted into it both ways
+   and centred, the caption under it. The stage takes the room the tab has
+   and never its content's size (flex-basis 0, min-height 0, overflow hidden),
+   so the canvas cannot grow the stage it is measured from. LiveScreen sizes
+   `.live-frame` to the fit; noVNC scales its canvas to the screen inside. */
 .live-screen-wrap { display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+.live-stage {
+  flex: 1 1 0; min-height: 320px; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+}
+.live-frame { box-sizing: content-box; flex: none; display: flex; width: 100%; height: 100%; }
+/* A phone or a tablet, in its outline (the mockup); a desktop has none. The
+   border width is LiveBrowser.tsx's MOBILE_BEZEL. */
+.live-frame.is-phone, .live-frame.is-tablet {
+  border-style: solid; border-width: 10px; border-color: var(--text); background: var(--text);
+}
+.live-frame.is-phone { border-radius: 36px; }
+.live-frame.is-tablet { border-radius: 22px; }
+.live-frame.is-phone > .live-screen { border-radius: 26px; }
+.live-frame.is-tablet > .live-screen { border-radius: 12px; }
+.live-stage-caption { flex: none; }
 .live-screen {
-  flex: 1; min-height: 320px; border-radius: var(--radius);
+  flex: 1; min-width: 0; min-height: 0; border-radius: var(--radius);
   border: 1px solid var(--line); background: var(--bg); overflow: hidden;
 }
 .live-screen.is-control { border-color: var(--warn); }
@@ -64,6 +90,9 @@
   font-size: var(--t-body);
 }
 .live-ask.is-mismatch { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, var(--surface)); }
+/* No gap under the title (visual QA 5, U4): the ask's own `gap` spaces its
+   lines, and a heading's or paragraph's default margin added a blank band. */
+.live-ask h4, .live-ask p { margin: 0; }
 .live-ask-warn { color: var(--warn-ink); }
 .live-ask-actions { display: flex; gap: 8px; }
 

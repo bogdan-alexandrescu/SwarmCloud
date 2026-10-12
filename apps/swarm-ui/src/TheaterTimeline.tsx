@@ -2,11 +2,14 @@
 // (docs/design/live-browser.md §6, LB-5; lane LB-L11b).
 //
 // WHAT THE TIMELINE IS. One line per CDP **method** the gate's proxy forwarded
-// for the agent, and one per control event from the audit: exactly what the
-// relay writes to `actions-<seq>.live.jsonl` (§7). A method name, a redacted
-// URL with no query, a typed text's LENGTH -- never the text, never a key,
-// never a parameter that could hold one. So this view can render every field
-// it is given; it is the relay, not this file, that keeps typed text out.
+// (or refused) for the agent, as the relay writes it to
+// `actions-<seq>.live.jsonl` (§7), and one per thing a person did, from the
+// task's live audit, merged by swarm-api (LB-V3): who took control, the
+// device they chose, a rotation, the touch toggle, the return, the hand-off.
+// A method name, a redacted URL with no query, a typed text's LENGTH, a
+// preset by name -- never the text, never a key, never a parameter that
+// could hold one. So this view can render every field it is given; it is the
+// gate and the API, not this file, that keep typed text out.
 //
 // WHERE IT READS FROM. `GET /v1/tasks/{id}/live/actions`, the task route, which
 // checks the tenant the way every task route does and answers a foreign task
@@ -18,11 +21,12 @@ import { useEffect, useState, type ReactNode } from 'react'
 
 import { errorHeading, read, route, type Result } from './fetch'
 
-/** One line of `actions-<seq>.live.jsonl`, as the API returns it. */
+/** One line of the timeline, as the API returns it: a line of
+ *  `actions-<seq>.live.jsonl`, or an entry of the task's live audit (LB-V3). */
 export interface LiveAction {
   /** ISO instant the gate forwarded the method, or the audit wrote the event. */
   at: string
-  /** `cdp`: an agent's method through the proxy. `control`: an audit event. */
+  /** `cdp`: an agent's method through the proxy. `control`: a person's act, or the gate's. */
   kind: 'cdp' | 'control'
   /** The CDP method, for `cdp` (`Page.navigate`, `Input.insertText`). */
   method?: string
@@ -30,8 +34,20 @@ export interface LiveAction {
   url?: string
   /** A typed text's length -- the text itself never leaves the gate. */
   length?: number
-  /** The audit entry, for `control` (`control_taken`, `control_returned`). */
+  /** The event, for `control` (`control_taken`, `rotated`, `refused`, ...). */
   event?: string
+  /** Why: a refusal's or an ending's cause, a fixed name. */
+  cause?: string
+  /** `refused`, for an agent method the gate refused; a hand-off's outcome. */
+  outcome?: string
+  /** The person who did it, from the audit. */
+  by?: string
+  /** `by` is the person reading this timeline. */
+  you?: boolean
+  /** A device the person in control chose: a preset by name, its orientation, touch. */
+  preset?: string
+  orientation?: string
+  touch?: boolean
 }
 
 /** `GET /v1/tasks/{id}/live/actions`: the current attempt's actions, oldest first. */
@@ -58,24 +74,129 @@ function clock(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
 
-/** The words for a control event; an event this build does not know is shown by its name. */
-const CONTROL_WORDS: Readonly<Record<string, string>> = {
-  handoff_requested: 'Agent asked for help',
-  control_taken: 'A person took control',
-  control_returned: 'Control returned to the agent',
-  control_ended: 'Control ended',
-  control_opened_to_members: 'Control opened to the tenant',
-  handoff_resolved: 'Hand-off resolved',
+/** The presets' display names. LiveBrowser.tsx's `presetLabel` holds the
+ *  same list, but LiveBrowser imports Theater, which imports this file, so it
+ *  cannot be imported back; a name not here is shown as served. */
+const PRESET_LABEL: Readonly<Record<string, string>> = {
+  desktop: 'Desktop',
+  'iphone-15': 'iPhone 15',
+  'pixel-8': 'Pixel 8',
+  'iphone-se': 'iPhone SE',
+  'ipad-7': 'iPad',
+}
+
+/** Why, in plain words, for every cause the gate, the proxy and swarm-api
+ *  write (cdpproxy.py `take_control` / `REFUSAL_CAUSES`, live.py `END_CAUSES`,
+ *  __main__.py `apply_device`). A cause this build does not know is shown by
+ *  its name, spaced. */
+const CAUSE_WORDS: Readonly<Record<string, string>> = {
+  // Taking control (the gate's `refused`).
+  not_paused: 'the agent was still driving the browser',
+  security_state_unknown: 'the page’s connection could not be checked',
+  insecure_connection: 'the page is not on a secure https connection',
+  browser_closed: 'the browser had closed',
+  no_page: 'no page was open to control',
+  // The agent's methods (the proxy's refusals).
+  method_policy: 'the live gate does not let the agent do that',
+  not_its_session: 'it named a browser session the agent does not own',
+  control_window_request: 'it asked for what was sent while a person was in control',
+  // Control ending.
+  idle: 'nobody used the browser for too long',
+  renew_lapsed: 'the console stopped holding it',
+  preempted: 'the task’s submitter took control',
+  membership_lost: 'the person is no longer a member of the tenant',
+  cancelled: 'the task was cancelled',
+  hold_expired: 'the hand-off’s time ran out',
+  attempt_ended: 'the attempt ended',
+  page_closed: 'the page closed',
+  // A device the gate did not apply.
+  not_a_preset_name: 'it was not a device preset',
+  unknown_preset: 'the browser does not know that device',
+  no_touch: 'that device has no touch screen',
+  not_applied: 'the browser could not apply it',
+}
+
+/** What the agent's refused method was, in words. */
+const METHOD_NOUN: Readonly<Record<string, string>> = {
+  'Page.navigate': 'A navigation',
+  'Target.createTarget': 'Opening a new page',
+  'Input.insertText': 'Typing',
+}
+
+/** How a hand-off ended (`handoff.py` `ResolveHandoff.outcome`). */
+const HANDOFF_OUTCOME: Readonly<Record<string, string>> = {
+  returned: 'Hand-off resolved: control is back with the agent',
+  expired: 'Hand-off ended: nobody finished in time',
+  cancelled: 'Hand-off ended: the task was cancelled',
+  unavailable: 'Hand-off ended: the live browser was unavailable',
+}
+
+function because(cause: string | undefined): string {
+  if (!cause) return 'no reason was recorded'
+  return CAUSE_WORDS[cause] ?? cause.replace(/_/g, ' ')
+}
+
+function presetName(preset: string | undefined): string {
+  return preset ? PRESET_LABEL[preset] ?? preset : 'another device'
+}
+
+/**
+ * One timeline line in plain words (LB-V3). Who did it -- "You" when the
+ * audit names the reader -- what changed, and for a refusal what was refused
+ * and why. MEASURED 2026-10-12: a take, a device switch, a rotation and a
+ * return read "A person took control" and "refused"; every one of those now
+ * has its own line.
+ */
+export function actionWords(a: LiveAction): string {
+  const who = a.you ? 'You' : a.by ? a.by : 'A person'
+  if (a.kind === 'cdp') {
+    const method = a.method ?? 'CDP method'
+    if (a.outcome !== 'refused') return method
+    return `${METHOD_NOUN[method] ?? `The agent’s ${method}`} was refused: ${because(a.cause)}`
+  }
+  switch (a.event) {
+    case 'control_taken':
+      return `${who} took control`
+    case 'control_returned':
+      return `${who} returned control to the agent`
+    case 'control_ended':
+      return `${a.you ? 'Your' : a.by ? `${a.by}’s` : 'The person’s'} control ended: ${because(a.cause)}`
+    case 'control_opened_to_members':
+      return `${who} let any member take control`
+    case 'handoff_requested':
+      return 'The agent asked for help'
+    case 'handoff_resolved':
+      return HANDOFF_OUTCOME[a.outcome ?? ''] ?? 'Hand-off resolved'
+    case 'device_changed': {
+      const shape = a.orientation ? `, ${a.orientation}` : ''
+      const touch = a.touch === true ? ', touch on' : a.touch === false && a.preset !== 'desktop' ? ', touch off' : ''
+      return `${who} switched the device to ${presetName(a.preset)}${shape}${touch}`
+    }
+    case 'rotated':
+      return `${who} rotated the ${presetName(a.preset)} to ${a.orientation ?? 'its other orientation'}`
+    case 'touch_toggled':
+      return `${who} turned touch ${a.touch ? 'on' : 'off'}`
+    case 'device_refused':
+      return `A device change was refused: ${because(a.cause)}`
+    case 'refused':
+      return `Taking control was refused: ${because(a.cause)}`
+    case 'granted':
+      return 'The browser handed control to the person'
+    case 'ended':
+      return `The browser ended control: ${because(a.cause)}`
+    default:
+      return a.event ? a.event.replace(/_/g, ' ') : 'Control event'
+  }
 }
 
 function ActionLine({ a }: { a: LiveAction }) {
-  const what = a.kind === 'control' ? CONTROL_WORDS[a.event ?? ''] ?? a.event ?? 'Control event' : a.method ?? 'CDP method'
+  const refused = a.outcome === 'refused' || a.event === 'refused' || a.event === 'device_refused'
   return (
-    <li className={`th-act is-${a.kind}`}>
+    <li className={`th-act is-${a.kind}${refused ? ' is-refused' : ''}`}>
       <time className="th-act-at" dateTime={a.at}>
         {clock(a.at)}
       </time>
-      <span className="th-act-what">{what}</span>
+      <span className="th-act-what">{actionWords(a)}</span>
       {a.url ? <span className="th-act-url" title={a.url}>{a.url}</span> : null}
       {typeof a.length === 'number' ? <span className="th-act-len">{`${a.length} characters typed`}</span> : null}
     </li>

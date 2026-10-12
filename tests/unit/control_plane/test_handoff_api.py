@@ -246,6 +246,9 @@ def test_a_signed_request_sets_human_wait_and_records_it(live_client, db):
     assert doc["metadata"][HUMAN_HANDOFFS_METADATA_KEY] == {"attempt_id": ATTEMPT, "count": 1}
     types = [e["type"] for e in _events(db)]
     assert types == ["human_handoff_requested"]
+    # LB-V6: on the event's own fields, which the Attempts tab groups on.
+    event = _events(db)[0]
+    assert (event["attempt_id"], event["lease_id"], event["generation"]) == (ATTEMPT, LEASE, 1)
     entries = _audit(db)
     assert [e["entry"] for e in entries] == ["handoff_requested"]
     assert entries[0]["task_id"] == TASK and entries[0]["tenant_id"] == "eng"
@@ -408,6 +411,9 @@ def test_resolving_clears_the_wait_and_records_it(live_client, db):
     assert doc["human_wait"] is None
     types = [e["type"] for e in _events(db)]
     assert "human_handoff_resolved" in types
+    resolved = next(e for e in _events(db) if e["type"] == "human_handoff_resolved")
+    assert (resolved["attempt_id"], resolved["lease_id"], resolved["generation"]) == (
+        ATTEMPT, LEASE, 1)
     assert [e["entry"] for e in _audit(db)] == ["handoff_requested", "handoff_resolved"]
     # A second resolve of the same request is answered, and changes nothing.
     assert resolve_handoff(live_client, attempt, outcome="expired").status_code == 200
@@ -451,6 +457,27 @@ def test_the_submitter_promotes_a_human_park_to_ready(live_client, db):
     assert ready and ready[0]["detail"]["reason"] == "human_ready"
     # Invariant 1: READY holds nothing; no lease was made here.
     assert not any(p.startswith("leases/") for p in db.docs)
+
+
+def test_the_ready_event_names_the_attempt_whose_hand_off_parked_the_task(live_client, db):
+    """LB-V6: a person's `ready` answers the hand-off of the attempt that
+    parked, so it is filed under that attempt, not before any attempt."""
+    seed_tenant(db, "eng")
+    seed_parked(db, metadata={HUMAN_HANDOFFS_METADATA_KEY: {"attempt_id": ATTEMPT, "count": 1}})
+    response = live_client.post(f"/v1/tasks/{TASK}/human-ready", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    ready = next(e for e in _events(db) if e["type"] == "ready")
+    assert ready["attempt_id"] == ATTEMPT
+
+
+def test_a_ready_with_no_recorded_hand_off_names_no_attempt(live_client, db):
+    """The control: nothing to name is named as nothing, never guessed."""
+    seed_tenant(db, "eng")
+    seed_parked(db)
+    response = live_client.post(f"/v1/tasks/{TASK}/human-ready", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    ready = next(e for e in _events(db) if e["type"] == "ready")
+    assert ready["attempt_id"] is None
 
 
 def test_a_tenant_member_who_is_not_the_submitter_may_not(live_client, db):
