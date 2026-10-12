@@ -59,7 +59,11 @@
 #   1. `make apply` with it false: swarm-live-key exists, nothing reads it yet;
 #   2. `scripts/create-secrets.sh --live-key`: the first version exists;
 #   3. the swarm-live image is built and its digest is in image_refs;
-#   4. `enable_live_browser = true`, apply: the relay's grants and address;
+#   4. `enable_live_browser = true`, apply: the relay's grants and address,
+#      swarm-api's SWARM_LIVE_URL and SWARM_LIVE_KEY, and the scheduler's
+#      LIVE_BROWSER_SIDECAR (locals.tf derives it from local.live_relay_enabled,
+#      so a browser pod gets the display sidecar exactly when there is a
+#      relay; LB-Lon);
 #   5. apply `terraform output -raw swarm_live_manifest` to swarm-autopilot.
 #
 # GKE ONLY (§8.1). The relay is a StatefulSet on the Autopilot cluster, and
