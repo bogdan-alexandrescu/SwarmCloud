@@ -676,6 +676,24 @@ def test_a_viewer_sees_rfb_and_control_is_granted_then_released(short_tmp):
     asyncio.run(body())
 
 
+def test_the_agents_mouse_events_move_the_pointer_watchers_see(short_tmp):
+    """LB-CURSOR (part of #1030): the proxy's `on_pointer` is the gate's, and
+    it lands in the hub's frame coordinates for the device on screen."""
+    from agent_worker.livegate.pointer import css_to_frame
+
+    async def body() -> None:
+        rig = Rig(short_tmp)
+        stop, task = await _started(rig)
+        gate = rig.gate
+        assert gate.hub.pointer.position is None
+        gate.proxy._on_pointer(100.0, 50.0)
+        assert gate.hub.pointer.position == css_to_frame(gate.devices.device, 100.0, 50.0)
+        stop.set()
+        assert await task == 0
+
+    asyncio.run(body())
+
+
 def test_one_take_on_about_blank_is_one_granted_line_and_no_refusal(short_tmp):
     """LB-R4 (part of #1030). MEASURED 2026-10-12: one take on the agent's page
     before its first navigation read "You took control" and then "Taking
