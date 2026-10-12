@@ -16,6 +16,8 @@ import {
 } from './OverviewRegions'
 import { addressToPath } from './paths'
 import { HandoffBanner, handoffOf, needsYou } from './Handoff'
+import { LiveControl } from './LiveBrowser'
+import { browserTabPath } from './LiveThumb'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
@@ -27,7 +29,9 @@ import {
   loadTasks,
   loadTasksInState,
   loadWorkflows,
+  loadLiveSession,
   TASK_PAGE_LIMIT,
+  type LiveSession,
   type SpendRollup,
 } from './api'
 import { PHONE_PAGE_LIMIT } from './agentlist'
@@ -934,7 +938,11 @@ function handoffRows(read: OverviewTaskPage): Task[] {
  * read it back, as Back does (`popstate`).
  */
 function openAgentPath(t: Pick<Task, 'id' | 'state'>): void {
-  window.history.pushState(null, '', agentPath(t))
+  openPath(agentPath(t))
+}
+
+function openPath(path: string): void {
+  window.history.pushState(null, '', path)
   window.dispatchEvent(new PopStateEvent('popstate'))
 }
 
@@ -990,10 +998,56 @@ function HandoffCardList({
           <a className="ov-att-go" href={agentPath(t)}>
             {rowLabel(t, null)} &rarr;
           </a>
+          {handoffOf(t)?.phase === 'hold' && <HandoffTakeControl taskId={t.id} />}
         </HandoffBanner>
       ))}
     </div>
   )
+}
+
+/**
+ * TAKE CONTROL ON THE "NEEDS A LOOK" CARD (owner, 2026-10-12; lane LB-UX3).
+ * The agent header's own button (`LiveControl`), so the ask, the second ask
+ * on the wrong site and the audited `confirmed_mismatch` are that one
+ * component's, not a copy. Drawn only on a held hand-off -- a parked one has
+ * no browser to take -- and only once the session read says this person may
+ * take control (`you.can_control`); swarm-api still decides on the take.
+ *
+ * Read once per card, not polled: the Overview's own poll re-mounts nothing,
+ * and a two-second read per waiting agent on a summary page would be the
+ * Browser tab's cost without its canvas. A stale "may" is harmless: the take
+ * is refused and the button says why.
+ *
+ * Once the take has gone through -- `LiveControl` re-reads, and the read says
+ * this person is now in control -- the agent's Browser tab opens, which is
+ * where the canvas they now control is. Its own `LiveControl` takes over the
+ * renewal (§4.2) as this card unmounts.
+ */
+function HandoffTakeControl({ taskId }: { taskId: string }) {
+  const [session, setSession] = useState<LiveSession | null>(null)
+  const readSession = useCallback(
+    (afterTake: boolean) => {
+      let live = true
+      void loadLiveSession(taskId).then((r) => {
+        if (!live || (r.status !== 'ok' && r.status !== 'stale')) return
+        const s = r.data.session ?? null
+        if (afterTake && s !== null && s.controller !== null && s.controller.email === s.you.email) {
+          openPath(browserTabPath(taskId))
+          return
+        }
+        setSession(s)
+      })
+      return () => {
+        live = false
+      }
+    },
+    [taskId],
+  )
+  useEffect(() => readSession(false), [readSession])
+  if (session === null || session.state !== 'open' || !session.you.can_control) return null
+  // Already theirs (taken in another tab): the card has nothing to offer.
+  if (session.controller !== null && session.controller.email === session.you.email) return null
+  return <LiveControl taskId={taskId} session={session} reload={() => void readSession(true)} />
 }
 
 /**
