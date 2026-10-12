@@ -195,7 +195,9 @@ admin group, a near miss in case or spacing — is a `403` with code
 nothing is written. A header naming neither one of your groups nor your own
 `u-` id is refused before even your own workspace is read. A failed read of
 your workspace is a `503`, never a fall-back to the group: that would file a
-headerless submit in a tenant other than the one you act in by default. The refusal is identical for "not yours" and "no such tenant", so the
+headerless submit in a tenant other than the one you act in by default. A
+request that names one of your groups needs no answer about your workspace and
+goes on in that group. The refusal is identical for "not yours" and "no such tenant", so the
 header is not an oracle for enumerating tenant ids.
 
 Why it selects and never grants. The tenant decides the service account, the

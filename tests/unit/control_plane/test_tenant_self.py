@@ -301,6 +301,10 @@ def test_an_unreadable_workspace_is_a_503_never_a_guess(group_map):
                          personal=PersonalTenants(Broken()))
     with pytest.raises(UpstreamUnavailable):
         auth.authenticate("Bearer t-alice")
+    with pytest.raises(UpstreamUnavailable):
+        auth.authenticate("Bearer t-alice", None, tenant="u-alice")
+    # Naming a group needs no answer about the workspace: nothing can be misfiled.
+    assert auth.authenticate("Bearer t-alice", None, tenant="eng").tenant_id == "eng"
 
 
 def test_the_answer_is_cached_briefly_and_then_read_again(group_map, db):

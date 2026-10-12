@@ -501,10 +501,13 @@ class Authenticator:
 
         A header naming neither a group this caller is in nor their own id is
         refused below without reading anything, so a refusal still costs no
-        Firestore read. A failed read is a 503, never a guess: falling back to
-        the group would run work in a different tenant from the one this
-        caller acts in by default -- another secret, another GCS prefix --
-        exactly the misfiling `_from_claims` refuses for a failed group lookup.
+        Firestore read. A failed read is a 503, never a guess, when the request
+        would act in the default or in the personal tenant: falling back to the
+        group would run work in a different tenant from the one this caller
+        acts in by default -- another secret, another GCS prefix -- exactly the
+        misfiling `_from_claims` refuses for a failed group lookup. A request
+        that NAMES one of its groups is unaffected by the answer, so it goes on
+        in that group without the personal entry.
         """
         if self._personal is None or self._special(ctx):
             return ctx
@@ -516,6 +519,8 @@ class Authenticator:
             ready = self._personal.ready(ctx.email)
         except Exception as exc:  # noqa: BLE001 - any Firestore failure
             log.warning("personal workspace unresolved (%s)", type(exc).__name__)
+            if requested and requested != own:
+                return ctx
             raise UpstreamUnavailable(
                 "your personal workspace could not be read; retry shortly"
             ) from None
