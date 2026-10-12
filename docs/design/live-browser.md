@@ -1159,6 +1159,73 @@ Theater", linked from #1030. In summary:
   "Where" list (`tests/unit/scripts/test_issue_forms.py`, reading `SECTIONS` in
   `apps/swarm-ui/src/App.tsx`) does not change.
 
+#### Console decisions, 2026-10-12
+
+A visual QA on 2026-10-11 found the shipped console diverging from the mockup.
+The owner then went through the comparison ("Live Browser: Mockup vs Built",
+2026-10-12 00:30 PDT) item by item. These are the 30 answers. They are
+recorded here so a later lane does not revert one as a "fix". Where this list
+and a bullet above disagree, this list wins.
+
+**Matched to the mockup (26):**
+
+1. The agent header reads "Copy link · Take control · Stop", with Stop capitalised.
+2. The tabs are Details, Browser, Logs, Changes, Attempts, Artifacts. Browser
+   comes second, not first.
+3. The Browser tab carries a small "LIVE" marker while the session is open.
+4. Browser is the default tab while a browser agent runs.
+5. Browser has its own address: `/agents/<tab>/<id>/browser`.
+6. The device switcher is chips, "Desktop | iPhone 15 | Pixel 8 | iPhone SE |
+   iPad", with one selected. It is not a select.
+7. Rotate reads "⟲ rotate".
+8. Touch reads "touch: on" or "touch: off".
+9. "◫ logs" splits the tab: logs on the LEFT, the device on the right.
+10. "⤢ Theater" sits at the right of the toolbar.
+11. Under the device frame there is a caption: "<device> · <W>×<H> · <path>".
+12. The origin strip stays above the canvas.
+13. The theater's top bar holds "LIVE <agent>", the device chips, "⟲ rotate",
+    "‹ prev agent", "next ›" and "Esc · back to tab".
+14. The theater's left column switches between Timeline and Logs.
+15. The theater's right column holds the DEVICE list, then OTHER LIVE agents
+    with device thumbnails.
+16. The theater's bottom bar holds replay over the recording, and the control
+    button.
+17. The theater opens from ⤢, the key T, the graph card, the hand-off banner
+    and the URL `?theater=1`.
+18. A hand-off draws ONE yellow banner across the Browser tab. It shows the
+    reason, the expected site and the time left, with [Take control] and
+    [Open in theater]. Other tabs keep the strip, with the same two buttons.
+19. A parked hand-off reads "I'm ready to sign in". It calls `human-ready`,
+    then opens the Browser tab.
+20. A hand-off is a yellow row in the agent list.
+21. The hand-off banner also appears on Overview's "Needs a look".
+22. In the theater, the left column becomes the hand-off checklist: ✓ opened
+    login, ✓ you took control, the current step, and return control. It ends
+    in a green "I'm done, return control" button.
+23. On the workflow graph, a RUNNING browser step's node expands an inline
+    card. The card has a live thumbnail at about 1 fps, "Open Browser tab" and
+    "⤢ Theater".
+24. A theater opened from a workflow uses prev and next to step through that
+    workflow's live steps.
+25. The Agents list has an "All | Live N" switch, a device thumbnail per row,
+    needs-you first and "⤢ theater all". There is no new nav tab.
+26. On a phone, the two-page layout carries the same Browser tab. Take control
+    works by touch, the device switcher sits under the tab's "⋯" menu, and ⤢
+    goes native full screen, landscape preferred.
+
+**Kept as built (3):**
+
+27. The "Let any member take control" checkbox stays in the Browser tab's
+    toolbar, after ⤢ Theater.
+28. The rail has no needs-you dot. This supersedes the "dot on Agents in the
+    rail" in the hand-off bullet above.
+29. "Save as login" keeps its current offer logic, unchanged
+    (`BrowserLogins.tsx`, §5.5.1).
+
+**Added (1):**
+
+30. The Overview "Needs a look" hand-off card also carries [Take control].
+
 ### 6.1 Mobile devices (LB-6)
 
 The browser can be a phone or a tablet, for visual QA as a mobile browser and
