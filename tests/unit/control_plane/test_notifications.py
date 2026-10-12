@@ -318,11 +318,14 @@ def test_another_tenants_and_another_persons_work_never_appears(client, db):
     _task(db, "task_bob_in_eng", by=BOB)
     _run(db, "run_research", tenant_id="research", by=BOB)
     _approval(db, "fir_research", tenant_id="research")
+    _run(db, "run_bobs_merged", by=BOB, state=RunState.DONE,
+         pull_request={"number": 5, "url": "u", "merged": True, "merged_at": _ago(hours=1).isoformat()})
     body = _feed(client, "alice")
     text = str(body)
     assert "task_research_secret" not in text
     assert "run_research" not in text
     assert "task_bob_in_eng" not in text  # finished work is the submitter's own
+    assert "run_bobs_merged" not in text
     assert body["items"] == []
 
 
