@@ -237,7 +237,7 @@ run "infra_plans_nothing_for_u_bogdan_and_still_plans_eng" {
       contains(output.pool_names, "tenant:eng"),
       contains(output.pool_names, "provider:anthropic:tenant:eng"),
       contains(output.scheduler_jobs, "swarm-workflow-rollup-eng"),
-      contains(output.scheduler_jobs, "swarm-issue-sweep-eng"),
+      contains(output.scheduler_jobs, "swarm-issue-run-advance-eng"),
     ])
     error_message = "terraform/infra no longer plans eng's resources, so the u-bogdan assertion above proves nothing"
   }
