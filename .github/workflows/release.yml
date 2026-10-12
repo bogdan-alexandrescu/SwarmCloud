@@ -837,6 +837,88 @@ jobs:
           environment: ${{ env.ENVIRONMENT }}
           apply_tenant_namespaces: ${{ vars.APPLY_TENANT_NAMESPACES }}
 
+      - name: apply the tenant network policies to every tenant namespace
+        # Lane H1-NETPOL (PR 1160). Every namespace labelled swarm-tenant --
+        # terraform's tenants AND workspace tenants, which the step above never
+        # names -- gets the full tenant NetworkPolicy set (kubernetes/render.py
+        # TENANT_FILES' network-policies/), and ONLY that: no quota, account or
+        # RBAC is re-rendered. NOT switched by vars.APPLY_TENANT_NAMESPACES: on
+        # 2026-10-11 swarm-allow-live-egress reached no tenant until the
+        # operator applied it by hand.
+        # Fails the release (owner decision 2026-10-12 06:45 PDT). It was
+        # warn-only from 01:35 PDT until a release showed a clean apply; three
+        # did (38236837776, 38241799140, 38245452412: 4 of 4 namespaces, every
+        # policy read back, parity 0 differ), so a missing policy now fails it.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        run: ./scripts/apply-tenant-network-policies.sh --get-credentials --confirm
+
+      # LANE OPS-RELAY (part of #1030). The relay -- StatefulSet
+      # swarm-system/swarm-live -- runs the swarm-live digest terraform
+      # rendered into `swarm_live_manifest`, but until this step no release
+      # applied that manifest: on 2026-10-12 the relay ran a pre-change image
+      # twice until the operator ran `kubernetes/apply.sh --swarm-system
+      # --confirm` by hand. scripts/roll-live-relay.sh applies it through that
+      # same apply.sh path (its manifest checks and the live-ingress parity
+      # check), waits for `rollout status`, and fails unless the relay's pods
+      # run the rendered digest. It refuses the shared agents-staging cluster.
+      # With enable_live_browser off it notices and exits 0.
+      #
+      # Its own uv setup and sync, NOT switched by vars.APPLY_TENANT_NAMESPACES:
+      # apply.sh runs render.py and network_parity.py on PYTHON_BIN, and the
+      # relay rolls whether or not tenant namespaces are applied.
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: sync the project's Python for the relay rollout
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        run: uv sync --frozen --all-extras
+
+      - name: roll the live relay to this release's image
+        # Fails the release (owner decision 2026-10-12 06:45 PDT): warn-only
+        # until one release showed a clean roll, which release 38277873760
+        # did (2026-10-12 17:06Z: e9c282f1 -> 7e4d6b6e, parity 0 differ). A
+        # relay left on the old image now fails the release.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        env:
+          PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/roll-live-relay.sh --tf-init --get-credentials --confirm
+
+      # The relay's apply runs render.py and network_parity.py on every
+      # release, so its Python is NOT switched by vars.APPLY_TENANT_NAMESPACES
+      # as the tenant-namespace setup above is (that one stays off until the
+      # owner turns the namespaces on). A second sync is a no-op when the first
+      # ran.
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: sync the project's Python for the relay's apply
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        run: uv sync --frozen --all-extras
+
+      - name: roll the live relay to this release's image
+        # Lane OPS-RELAY (part of #1030). swarm-live, the StatefulSet
+        # swarm-system/swarm-live on swarm-autopilot, was applied only by hand
+        # (`kubernetes/apply.sh --swarm-system --confirm`): measured 2026-10-12,
+        # twice that day the relay ran a pre-change image until the operator
+        # applied it. scripts/roll-live-relay.sh applies through apply.sh (so
+        # the relay manifest checks and the live-ingress parity check run),
+        # waits for the rollout and proves the relay's pods run the digest the
+        # manifest names. No continue-on-error: a relay that did not roll is
+        # the defect this step exists to catch. A relay switched off
+        # (enable_live_browser false) is a notice, not a failure.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        env:
+          # apply.sh runs render.py and network_parity.py on ${PYTHON_BIN}.
+          PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/roll-live-relay.sh --tf-init --get-credentials --confirm
+
       - name: smoke test (inside the VPC)
         # The `mock` profile needs no provider key, so this proves the whole
         # path -- submit, admit, dispatch, run, release -- without depending on

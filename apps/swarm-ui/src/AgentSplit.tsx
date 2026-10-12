@@ -10,7 +10,7 @@ import {
 } from 'react'
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
-import { AgentDetailScreen, DRAWER_POLL_MS, Mark, SplitClock, timesRun } from './AgentDetail'
+import { AgentDetailScreen, DRAWER_POLL_MS, HandoffParkedSince, Mark, SplitClock, timesRun } from './AgentDetail'
 import { AgentLogs, LogLastLine } from './AgentLogs'
 import { agentName, backLabel, rememberAgentName, workflowHref } from './agentlist'
 import { loadAttempts, loadTask } from './api'
@@ -40,6 +40,7 @@ import { useResourceClasses } from './Blockers'
 import { AgentChangesPane, changesCount } from './WorkflowChanges'
 import { HelpCard } from './HelpCard'
 import { HandoffStrip, isLiveBrowser } from './Handoff'
+import { PodStartProblem } from './PodStartProblem'
 import { RecordingsPanel } from './Recordings'
 import { LiveBrowserPane, LiveControl, useLiveSession, type LiveState } from './LiveBrowser'
 import {
@@ -62,10 +63,10 @@ import { Button, CIcon, StateMark, Tabs } from './components'
  * and agent-detail-2.html A, picked 2026-10-02).
  *
  * The list on the left, the selected agent on the right: a header row (state
- * pill, the agent's name, Copy link, Stop), underline tabs with counts --
- * Details, Logs, Changes, Children when the agent has any, Attempts,
- * Artifacts, Checkpoints -- and the open tab, which fills the rest of the
- * column.
+ * pill, the agent's name, Copy link, Take control on a live browser, Stop),
+ * underline tabs with counts -- Details, Browser for a live-browser agent,
+ * Logs, Changes, Children when the agent has any, Attempts, Artifacts,
+ * Checkpoints -- and the open tab, which fills the rest of the column.
  *
  * CHANGES IS A TAB (docs/design/diff-viewer.md §2 variant 2, owner decision
  * 2026-10-08): the agent's patch in the shipped viewer at the pane's full
@@ -76,8 +77,9 @@ import { Button, CIcon, StateMark, Tabs } from './components'
  * THE LOG IS A TAB (owner decision 2026-10-04). It was a dock along the foot
  * of this column, open across every tab, and it lay over the agent's details;
  * it is the Logs tab now (AgentLogs.tsx), full height under the header with
- * nothing beneath it. A running agent opens on Logs, a finished one on
- * Details, whose one-line last log line switches to it.
+ * nothing beneath it. A running agent opens on Logs -- a running browser
+ * agent on Browser -- a finished one on Details, whose one-line last log
+ * line switches to it.
  *
  * MOVED OUT OF App.tsx (lane U1, 2026-10-02). It was `AgentDrawer` there; the
  * shell is another lane's, and this is the Agents section's own screen. App
@@ -125,6 +127,7 @@ export function AgentSplit({
   pane,
   artifact,
   file = null,
+  theater = false,
   closeTo,
   go,
   base,
@@ -135,6 +138,8 @@ export function AgentSplit({
   artifact: string | null
   /** The file the address names in the Changes pane, or null for the patch's first. */
   file?: string | null
+  /** The address asked for the Browser tab in the theater (`/browser?theater=1`, live-browser.md §6). */
+  theater?: boolean
   /**
    * The list address this split was opened from (OV-10), so closing it
    * restores the address the list behind it is showing.
@@ -276,6 +281,9 @@ export function AgentSplit({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return
       if (document.querySelector('[data-focus-return]') !== null) return
+      // An open theater (Theater.tsx) is above the split: its Escape closes it
+      // and only it, back to the Browser tab (LB-V2, visual QA pass 5).
+      if (document.querySelector('[data-theater]') !== null) return
       const t = e.target instanceof Element ? e.target : null
       if (t !== null && panel.current?.contains(t)) return
       if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
@@ -363,18 +371,25 @@ export function AgentSplit({
   // attempt and usually no log yet; its Details say why it waits.
   const inFlight = task !== null && CONCURRENCY_STATES.has(task.state)
   // THE BROWSER TAB (docs/design/live-browser.md §6, LB-5): a running agent
-  // whose profile is a live-browser one opens on its browser, and the tab is
-  // first. Whether it is one is the session read's `live_browser`, the
-  // catalogue's own property, never a guess from the profile's name.
+  // whose profile is a live-browser one opens on its browser. Whether it is
+  // one is the session read's `live_browser`, the catalogue's own property,
+  // never a guess from the profile's name.
   const { live: liveRead, reload: reloadLive } = useLiveSession(taskId, inFlight)
-  const hasBrowser = liveRead.status === 'ok' && liveRead.liveBrowser
-  // THE BROWSER TAB HAS NO ADDRESS SEGMENT YET: `TaskPane` and the route
-  // parser live in App.tsx and paths.ts, outside lane L11's files. It is open
-  // over the `detail` address, for this agent, until another tab is chosen.
-  const [browserFor, setBrowserFor] = useState<string | null>(null)
-  const onBrowser = hasBrowser && browserFor === taskId && pane === 'detail'
+  const liveSession = liveRead.status === 'ok' ? liveRead.session : null
+  const sessionOpen = liveSession !== null && liveSession.state === 'open'
+  // THE TAB STAYS WHILE THE AGENT IS BETWEEN ATTEMPTS (LB-UX1): a parked
+  // hand-off's "I'm ready to sign in" opens it on a READY task, which has no
+  // attempt and so no session read, and the tab says the browser is
+  // starting. A finished agent has none, unless its address names it.
+  const hasBrowser =
+    (liveRead.status === 'ok' && liveRead.liveBrowser) ||
+    (task !== null && !TERMINAL_STATES.has(task.state) && !inFlight && isLiveBrowser(task)) ||
+    pane === 'browser'
   const [decided, setDecided] = useState<string | null>(null)
   const deciding = decided !== taskId && pane === 'detail' && (head.state.status === 'loading' || inFlight)
+  // BROWSER HAS ITS OWN ADDRESS NOW (LB-UX1, owner decision 2026-10-12):
+  // `<agent>/browser`, so a running browser agent is sent there as a
+  // running agent of any other profile is sent to `/logs`.
   useEffect(() => {
     if (decided === taskId) return
     if (pane !== 'detail') {
@@ -384,13 +399,25 @@ export function AgentSplit({
     if (head.state.status === 'loading') return
     if (inFlight && liveRead.status === 'loading') return
     setDecided(taskId)
-    if (inFlight && hasBrowser) setBrowserFor(taskId)
+    if (inFlight && liveRead.status === 'ok' && liveRead.liveBrowser) go(`${base}/browser`)
     else if (inFlight) go(`${base}/logs`)
-  }, [decided, taskId, pane, head.state.status, inFlight, liveRead.status, hasBrowser, go, base])
+  }, [decided, taskId, pane, head.state.status, inFlight, liveRead, go, base])
 
-  const tabs: { id: TaskPane | 'browser'; label: string; count: number | string | null; say: string | null; to: string }[] = [
-    ...(hasBrowser ? [{ id: 'browser' as const, label: 'Browser', count: null, say: null, to: base }] : []),
+  const tabs: { id: TaskPane; label: string; count: number | string | null; say: string | null; to: string }[] = [
     { id: 'detail', label: 'Details', count: null, say: null, to: base },
+    // DETAILS, BROWSER, LOGS (the mockup, owner decision 2026-10-12): Browser
+    // sits second, and says LIVE while its session is open.
+    ...(hasBrowser
+      ? [
+          {
+            id: 'browser' as const,
+            label: 'Browser',
+            count: sessionOpen ? 'LIVE' : null,
+            say: sessionOpen ? 'The agent’s browser session is open.' : null,
+            to: `${base}/browser`,
+          },
+        ]
+      : []),
     { id: 'logs', label: 'Logs', count: null, say: null, to: `${base}/logs` },
     // THE COUNT IS THE FILE COUNT (`git.files`, DIFF4), and a dash with its
     // reason where the summary does not say it -- never a 0 nobody measured.
@@ -433,7 +460,13 @@ export function AgentSplit({
       to: `${base}/checkpoints`,
     },
   ]
-  const selected: TaskPane | 'browser' = onBrowser ? 'browser' : pane
+  const selected: TaskPane = pane
+  // The banner's Open in theater, from a tab that is not Browser: to the Browser tab, in the theater.
+  const openTheater = useCallback(() => go(`${base}/browser?theater=1`), [base, go])
+  const onHandoffReady = useCallback(() => {
+    reload()
+    go(`${base}/browser`)
+  }, [base, go, reload])
   // The file the reader opens is written into the address, so Back moves the viewer and a link names the file.
   const openFile = useCallback((path: string) => go(`${base}/changes/${encodeURIComponent(path)}`), [base, go])
   const links = useMemo(
@@ -456,9 +489,11 @@ export function AgentSplit({
       // over the list and is NOT a stop Tab lands on afterwards.
       tabIndex={-1}
       onKeyDown={(e) => {
-        if (e.key === 'Escape') {
+        if (e.key === 'Escape' && !e.defaultPrevented) {
           // An open help card inside stops Escape before it reaches here
-          // (see `HelpCard.tsx`), so the innermost open thing closes.
+          // (see `HelpCard.tsx`), so the innermost open thing closes; so does
+          // the theater, portalled out of this panel but still inside it to
+          // React, and a key it already used is not this panel's.
           e.stopPropagation()
           close()
           return
@@ -561,20 +596,35 @@ export function AgentSplit({
             tabs={tabs.map((t) => ({
               key: t.id,
               label: t.label,
-              ...(t.id === 'detail' || t.id === 'logs' || t.id === 'browser' ? {} : { count: t.count, why: t.say ?? undefined }),
+              ...(t.id === 'detail' || t.id === 'logs' || (t.id === 'browser' && t.count === null)
+                ? {}
+                : { count: t.count, why: t.say ?? undefined }),
             }))}
-            onSelect={(key) => {
-              setBrowserFor(key === 'browser' ? taskId : null)
-              go(tabs.find((x) => x.id === key)!.to)
-            }}
+            onSelect={(key) => go(tabs.find((x) => x.id === key)!.to)}
           />
         </AgTabsEdge>
 
         {/* THE HAND-OFF BANNER (live-browser.md §6, lane LB-L12): the reason,
-            the expected site and the time left, over whichever pane is open.
-            The Browser tab (lane L11) passes its Take control and theater
-            actions in as children. */}
-        {task !== null && <HandoffStrip task={task} onReady={reload} />}
+            the expected site and the time left, over whichever pane is open,
+            with Take control and Open in theater. ONE BANNER (LB-UX1): the
+            Browser tab draws its own, inside its theater host, so this one
+            steps aside there. "I'm ready to sign in" opens the Browser tab.
+            A parked one says since when here, and the Details tab's two
+            bars that said it again step aside (LB-V4, U1). */}
+        {task !== null && selected !== 'browser' && (
+          <HandoffStrip task={task} onReady={onHandoffReady}>
+            <HandoffParkedSince task={task} />
+            {sessionOpen && (
+              <>
+                <LiveControl taskId={taskId} session={liveSession} reload={reloadLive} takeOnly />
+                <Button size="sm" onClick={openTheater}>
+                  Open in theater
+                </Button>
+              </>
+            )}
+          </HandoffStrip>
+        )}
+        {task !== null && <PodStartProblem task={task} />}
 
         <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}${selected === 'changes' ? ' is-changes' : ''}${selected === 'browser' ? ' is-browser' : ''}`}>
           {deciding ? (
@@ -583,7 +633,14 @@ export function AgentSplit({
               <span className="ctl-pending art-loading-bar" />
             </p>
           ) : selected === 'browser' && task !== null ? (
-            <LiveBrowserPane key={taskId} task={task} live={liveRead} reload={reloadLive} />
+            <LiveBrowserPane
+              key={taskId}
+              task={task}
+              live={liveRead}
+              reload={reloadLive}
+              theater={theater}
+              onHandoffReady={reload}
+            />
           ) : selected === 'logs' && task !== null ? (
             <AgentLogs key={taskId} task={task} />
           ) : selected === 'logs' ? (
@@ -838,7 +895,7 @@ function AgHead({
           )}
           {task !== null && (
             <span className="ag-head-stop">
-              <StopRun task={task} what="this agent" reload={reload} />
+              <StopRun task={task} what="this agent" reload={reload} label="Stop" />
             </span>
           )}
           <Button iconOnly icon={<CIcon name="close" />} className="drawer-close ag-head-close" onClick={onClose}>

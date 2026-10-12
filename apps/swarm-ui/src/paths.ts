@@ -108,8 +108,10 @@ export function helpGroupOf(topic: string): string | null {
  * `changes` is the agent's Changes tab (design docs/design/diff-viewer.md §2
  * variant 2): `/agents/<tab>/<id>/changes`, and `/changes/<file>` with the open
  * file as ONE encoded segment, so a link can name the file it is about.
+ * `browser` is the live browser's tab (live-browser.md §6, LB-UX1):
+ * `/agents/<tab>/<id>/browser`, and `?theater=1` there opens the theater.
  */
-export const TASK_PANES = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes'] as const
+export const TASK_PANES = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser'] as const
 
 function isAgentTab(s: string | undefined): s is AgentTab {
   return (AGENT_TABS as readonly string[]).includes(s ?? '')
@@ -316,7 +318,13 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
       const list = listFromQuery(tab, query)
       if (rest.length > 0) {
         const named = list.state !== null || agentListQuery(list) !== ''
-        return { address: `work/task/${rest.join('/')}`, agentTab: tab, ...(named ? { list } : {}) }
+        // THE THEATER RIDES ON THE BROWSER TAB'S QUERY (live-browser.md §6):
+        // the graph card, the hand-off banner and a shared link open
+        // `/agents/<tab>/<id>/browser?theater=1`. The rest of the query is
+        // the list's, read above.
+        const theater = rest[rest.length - 1] === 'browser' && new URLSearchParams(query).get('theater') === '1'
+        const address = `work/task/${rest.join('/')}`
+        return { address: theater ? `${address}?theater=1` : address, agentTab: tab, ...(named ? { list } : {}) }
       }
       // The state is kept as written, as it always was: a misspelt one lands
       // on the plain list through `parseAgentList`, not here.

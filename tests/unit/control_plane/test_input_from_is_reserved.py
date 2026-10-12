@@ -325,6 +325,8 @@ def test_every_service_written_key_is_reserved_in_one_place():
         "human_wait_resumes",
         "human_ready",
         "human_handoffs",
+        # Why the pod is not starting, the reconciler's record (F1-POD).
+        "start_problem",
     )
 
 

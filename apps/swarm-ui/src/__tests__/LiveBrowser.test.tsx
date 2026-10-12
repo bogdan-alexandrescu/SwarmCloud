@@ -1,10 +1,11 @@
 // THE BROWSER TAB (docs/design/live-browser.md §3.4, §5.2, §5.6, §5.7, §6,
 // §6.1; lane L11's acceptance row).
 //
-//   * the Browser tab is first, and open, for a running browser agent;
+//   * the Browser tab follows Details, and is open, for a running browser agent;
 //   * the viewer ticket goes in the websocket's first message, never its URL;
 //   * no Take control for a viewer the server says is not eligible;
-//   * a viewer's device switcher is disabled;
+//   * a viewer's device switcher is disabled, and the controller's works
+//     (LB-DEV-B): a preset by name, rotate and touch through setLiveDevice;
 //   * a page off the hand-off's named site turns the strip red, and Take
 //     control asks twice;
 //   * keys reach the agent's browser only while its canvas has focus;
@@ -16,11 +17,15 @@
 // sends, the `viewOnly` it sets, the events it lets through to noVNC's canvas.
 //
 // MUTATIONS, one per block: put the ticket in the socket URL's query; drop
-// the `can_control` check in LiveControl; enable the device select for every
-// viewer; skip the second ask on a mismatch; set `viewOnly` from control
+// the `can_control` check in LiveControl; enable the device chips for every
+// viewer (or decide it from `controller` instead of `you.can_switch_device`);
+// send a size instead of a preset name; skip the second ask on a mismatch; set `viewOnly` from control
 // alone, ignoring focus; let touches through whenever in control; await
 // anything between the socket's 'open' and noVNC's construction (the server's
 // first frame is then lost); construct noVNC outside the retry.
+
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useState } from 'react'
@@ -44,6 +49,7 @@ const api = vi.hoisted(() => ({
   returnLiveControl: vi.fn(),
   renewLiveControl: vi.fn(),
   openLiveToMembers: vi.fn(),
+  setLiveDevice: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -62,7 +68,7 @@ const rfb = vi.hoisted(() => {
     readonly canvas: HTMLCanvasElement
     /** Touches that reached noVNC's own canvas listener. */
     touches = 0
-    /** How many frames the socket had carried when noVNC was handed it. */
+    /** How many frames the raw socket had carried when noVNC was handed the channel. */
     readonly sentBeforeAttach: number
     /** Server frames noVNC read: like noVNC's Websock.attach, only through `onmessage`, set here. */
     readonly received: unknown[] = []
@@ -71,14 +77,14 @@ const rfb = vi.hoisted(() => {
     private listeners = new Map<string, ((e: Event) => void)[]>()
     constructor(
       target: HTMLElement,
-      readonly channel: { sent: string[]; readyState: number; onmessage: ((e: MessageEvent) => void) | null },
+      readonly channel: { readyState: number; onmessage: ((e: { data: unknown }) => void) | null },
     ) {
       if (FakeRfb.throwNext || channel.readyState !== 1) {
         FakeRfb.throwNext = false
         throw new Error('Cannot use already closed WebSocket/RTCDataChannel')
       }
       channel.onmessage = (e) => this.received.push(e.data)
-      this.sentBeforeAttach = channel.sent.length
+      this.sentBeforeAttach = FakeSocket.made.at(-1)!.sent.length
       this.canvas = document.createElement('canvas')
       this.canvas.tabIndex = -1
       this.canvas.addEventListener('touchstart', () => {
@@ -103,10 +109,14 @@ vi.mock('@novnc/novnc/core/rfb.js', () => ({ default: rfb.FakeRfb }))
 
 class FakeSocket extends EventTarget {
   static made: FakeSocket[] = []
-  /** The frame the relay sends the moment the socket is open, in the same task: the RFB server speaks first. */
-  static greeting: string | null = null
+  /**
+   * The frames that arrive the moment the socket is open, in the same task: swarm-api's
+   * status (TEXT), then the RFB server's ProtocolVersion (binary), which speaks first.
+   */
+  static greeting: (string | ArrayBuffer)[] = []
   binaryType = 'blob'
   readyState = 0
+  onopen: ((e: Event) => void) | null = null
   onmessage: ((e: MessageEvent) => void) | null = null
   readonly sent: string[] = []
   constructor(readonly url: string) {
@@ -114,9 +124,11 @@ class FakeSocket extends EventTarget {
     FakeSocket.made.push(this)
     queueMicrotask(() => {
       this.readyState = 1
-      this.dispatchEvent(new Event('open'))
-      const greeting = FakeSocket.greeting
-      if (greeting !== null) this.onmessage?.(new MessageEvent('message', { data: greeting }))
+      // A browser WebSocket fires both its `onopen` property and its listeners.
+      const opened = new Event('open')
+      this.onopen?.(opened)
+      this.dispatchEvent(opened)
+      for (const data of FakeSocket.greeting) this.onmessage?.(new MessageEvent('message', { data }))
     })
   }
   send(data: string) {
@@ -166,28 +178,32 @@ function session(over: Partial<LiveSession> = {}): LiveSession {
       { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
       { name: 'iphone-15', width: 393, height: 852, scale: 3, mobile: true },
     ],
-    you: { email: ME, can_control: true, can_preempt: true, can_open: true },
+    you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: false },
     ...over,
   }
 }
 
-/** A session this person is in control of. */
+/** A session this person is in control of: the server lets them switch the device. */
 function mine(over: Partial<LiveSession> = {}): LiveSession {
-  return session({ controller: { email: ME, since: new Date().toISOString() }, ...over })
+  return session({
+    controller: { email: ME, since: new Date().toISOString() },
+    you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: true },
+    ...over,
+  })
 }
 
 /** A session someone else controls, seen by a member who may not take it. */
 function viewer(over: Partial<LiveSession> = {}): LiveSession {
   return session({
     controller: { email: OTHER, since: new Date().toISOString() },
-    you: { email: ME, can_control: false, can_preempt: false, can_open: false },
+    you: { email: ME, can_control: false, can_preempt: false, can_open: false, can_switch_device: false },
     ...over,
   })
 }
 
-function pane(s: LiveSession) {
+function pane(s: LiveSession, reload: () => void = () => {}) {
   return render(
-    <LiveBrowserPane task={agent()} live={{ status: 'ok', liveBrowser: true, session: s }} reload={() => {}} />,
+    <LiveBrowserPane task={agent()} live={{ status: 'ok', liveBrowser: true, session: s }} reload={reload} />,
   )
 }
 
@@ -203,7 +219,7 @@ async function connected(): Promise<InstanceType<typeof rfb.FakeRfb>> {
 }
 
 function Routed({ onGo }: { onGo: (to: string) => void }) {
-  const [p, setP] = useState<'detail' | 'logs'>('detail')
+  const [p, setP] = useState<'detail' | 'logs' | 'browser'>('detail')
   return (
     <div className="app has-inspector">
       <AgentSplit
@@ -213,7 +229,7 @@ function Routed({ onGo }: { onGo: (to: string) => void }) {
         closeTo="work/running/live"
         go={(to) => {
           onGo(to)
-          setP(to.endsWith('/logs') ? 'logs' : 'detail')
+          setP(to.endsWith('/logs') ? 'logs' : to.endsWith('/browser') ? 'browser' : 'detail')
         }}
         base={`work/task/${ID}`}
       />
@@ -235,7 +251,7 @@ beforeEach(() => {
   rfb.FakeRfb.made = []
   rfb.FakeRfb.throwNext = false
   FakeSocket.made = []
-  FakeSocket.greeting = null
+  FakeSocket.greeting = []
   vi.stubGlobal('WebSocket', FakeSocket)
   api.loadAgentRun.mockReturnValue(new Promise(() => {}))
   api.loadAttempts.mockResolvedValue(ok({ attempts: [] }))
@@ -248,21 +264,22 @@ beforeEach(() => {
   api.returnLiveControl.mockResolvedValue(ok(null))
   api.renewLiveControl.mockResolvedValue(ok(null))
   api.openLiveToMembers.mockResolvedValue(ok(null))
+  api.setLiveDevice.mockResolvedValue(ok(null))
 })
 
 afterEach(() => {
   delete document.documentElement.dataset.agentList
 })
 
-describe('the Browser tab is first for a running browser agent', () => {
-  it('opens a running live-browser agent on its Browser tab, the first tab, and does not send it to Logs', async () => {
+describe('the Browser tab follows Details for a running browser agent', () => {
+  it('opens a running live-browser agent on its Browser tab, the second tab, and does not send it to Logs', async () => {
     api.loadTask.mockResolvedValue(ok(agent()))
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
     api.mintLiveTicket.mockReturnValue(new Promise(() => {}))
     const went: string[] = []
     render(<Routed onGo={(to) => went.push(to)} />)
-    await waitFor(() => expect(label(tabs()[0]!)).toBe('Browser'))
-    await waitFor(() => expect(tabs()[0]!.getAttribute('aria-selected')).toBe('true'))
+    await waitFor(() => expect(label(tabs()[1]!)).toBe('Browser'))
+    await waitFor(() => expect(tabs()[1]!.getAttribute('aria-selected')).toBe('true'))
     expect(went.filter((to) => to.endsWith('/logs'))).toEqual([])
     expect(document.querySelector('.live-strip')).not.toBeNull()
   })
@@ -286,6 +303,31 @@ describe('the Browser tab is first for a running browser agent', () => {
   })
 })
 
+describe('the session read exactly as swarm-api serves it (tests/fixtures/live, LB-SEAM)', () => {
+  // The shared fixture, not a hand-built session: origin and device are null
+  // there because nothing reports them to swarm-api yet, and the tab must
+  // draw that rather than throw on `session.device.touch`.
+  const served = (file: string): LiveRead =>
+    JSON.parse(readFileSync(join(__dirname, '..', '..', '..', '..', 'tests', 'fixtures', 'live', file), 'utf8')) as LiveRead
+
+  it('opens on a Browser tab, shows the device as not reported, and offers Take control', async () => {
+    api.loadTask.mockResolvedValue(ok(agent()))
+    api.loadLiveSession.mockResolvedValue(ok(served('session.open.json')))
+    api.mintLiveTicket.mockReturnValue(new Promise(() => {}))
+    render(<Routed onGo={() => {}} />)
+    await waitFor(() => expect(label(tabs()[1]!)).toBe('Browser'))
+    await waitFor(() => expect(document.querySelector('.live-caption')?.textContent).toMatch(/^Device not reported/))
+    expect(screen.getAllByRole('button', { name: /Take control/ }).length).toBeGreaterThan(0)
+  })
+
+  it('a live-browser task whose tunnel is not up yet still has its Browser tab', async () => {
+    api.loadTask.mockResolvedValue(ok(agent()))
+    api.loadLiveSession.mockResolvedValue(ok(served('session.pending.json')))
+    render(<Routed onGo={() => {}} />)
+    await waitFor(() => expect(tabs().map(label)).toContain('Browser'))
+  })
+})
+
 describe('the ticket goes in the first message, never the URL', () => {
   it('opens /v1/live/<session>/stream with nothing else in the URL and sends the ticket as the first frame, before noVNC has the socket', async () => {
     const ticket = `vt.${crypto.randomUUID()}`
@@ -297,14 +339,31 @@ describe('the ticket goes in the first message, never the URL', () => {
     expect(ws.url).not.toContain(ticket)
     expect(ws.sent[0]).toBe(JSON.stringify({ ticket }))
     expect(r.sentBeforeAttach, 'noVNC was handed the socket before the ticket went').toBe(1)
-    expect(r.channel).toBe(ws)
+    expect(r.channel, 'noVNC was handed the raw socket, status text frames and all').not.toBe(ws)
+    expect(r.channel.readyState).toBe(1)
   })
 
   it('has noVNC reading the socket before the relay\'s first frame can arrive', async () => {
-    FakeSocket.greeting = 'RFB 003.008\n'
+    const version = new TextEncoder().encode('RFB 003.008\n').buffer as ArrayBuffer
+    FakeSocket.greeting = [JSON.stringify({ type: 'status', open: true, in_control: false, controller: null }), version]
     pane(session())
     const r = await connected()
-    expect(r.received, 'the RFB server\'s ProtocolVersion went past noVNC').toEqual(['RFB 003.008\n'])
+    expect(r.received, 'noVNC read swarm-api\'s status as RFB, or the ProtocolVersion went past it').toEqual([version])
+  })
+
+  it('re-reads the session when swarm-api\'s status frames say control changed, and only then', async () => {
+    const status = (in_control: boolean, controller: string | null) =>
+      new MessageEvent('message', { data: JSON.stringify({ type: 'status', open: true, in_control, controller }) })
+    const reload = vi.fn()
+    pane(session(), reload)
+    const r = await connected()
+    const ws = FakeSocket.made.at(-1)!
+    act(() => ws.onmessage?.(status(false, null)))
+    act(() => ws.onmessage?.(status(false, null)))
+    expect(reload, 'the first status is the state the session read already drew').not.toHaveBeenCalled()
+    act(() => ws.onmessage?.(status(true, ['ada', 'example.com'].join('@'))))
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(r.received, 'a status frame reached noVNC').toEqual([])
   })
 
   it('retries, with a message, when noVNC refuses the socket', async () => {
@@ -332,7 +391,7 @@ describe('no Take control for a non-eligible viewer', () => {
   it('offers none over someone else’s control to a person who may not preempt', () => {
     const s = session({
       controller: { email: OTHER, since: '' },
-      you: { email: ME, can_control: true, can_preempt: false, can_open: false },
+      you: { email: ME, can_control: true, can_preempt: false, can_open: false, can_switch_device: false },
     })
     render(<LiveControl taskId={ID} session={s} reload={() => {}} />)
     expect(screen.queryByRole('button', { name: /take control/i })).toBeNull()
@@ -349,25 +408,78 @@ describe('no Take control for a non-eligible viewer', () => {
 describe('a viewer’s device switcher is disabled', () => {
   it('shows a viewer the current device, disabled, with rotate and touch disabled too', () => {
     pane(viewer())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
-    expect(select.value).toBe('iphone-15')
-    expect(select.disabled).toBe(true)
+    const chip = screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement
+    expect(chip.getAttribute('aria-pressed')).toBe('true')
+    expect(chip.disabled).toBe(true)
     expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  // swarm-api serves no device route (the gate's device lane, L3b, has not
-  // landed), so the person in control is shown the device and cannot send a
-  // change to a path nothing answers -- test_runtimes_screen.py's seam test
-  // refuses a client call to an unserved /v1 path.
-  it('shows the person in control the device too, disabled, while no device route is served', () => {
-    pane(mine())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
-    expect(select.value).toBe('iphone-15')
-    expect(select.disabled).toBe(true)
-    expect(select.title).toMatch(/no device route/i)
+  // LB-V1 (visual QA 5, U3): the why is the switcher's tooltip and accessible
+  // description, no longer a toolbar line that pushed ⤢ Theater to a second row.
+  it('says why, on the switcher, as its tooltip and its description', () => {
+    pane(viewer())
+    const chip = screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement
+    expect(chip.title).toMatch(/only the person in control/i)
+    expect(document.getElementById(chip.getAttribute('aria-describedby') ?? '')?.textContent).toMatch(/only the person in control/i)
+    expect(document.querySelector('.live-toolbar-why')).toBeNull()
+  })
+
+  it('follows the server, not the controller field: in control but not allowed to switch is disabled', () => {
+    pane(mine({ you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: false } }))
+    expect((screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('the person in control switches the device (LB-DEV-B)', () => {
+  it('enables the switcher, rotate and touch, with nothing said against them', () => {
+    pane(mine())
+    const chip = screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement
+    expect(chip.getAttribute('aria-pressed')).toBe('true')
+    expect(chip.disabled).toBe(false)
+    expect(chip.title).toBe('')
+    expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(false)
+    expect(document.querySelector('.live-toolbar-why')).toBeNull()
+  })
+
+  it('a preset is sent by name, never a size, and the session is read again', async () => {
+    const reload = vi.fn()
+    render(<LiveBrowserPane task={agent()} live={{ status: 'ok', liveBrowser: true, session: mine() }} reload={reload} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Desktop' }))
+    expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'desktop' })
+    await waitFor(() => expect(reload).toHaveBeenCalled())
+  })
+
+  it('rotate asks for the same preset in the other orientation', () => {
+    pane(mine())
+    fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
+    expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'iphone-15', orientation: 'landscape' })
+  })
+
+  it('touch turns the toggle over, on the same preset and orientation', () => {
+    pane(mine())
+    fireEvent.click(screen.getByRole('button', { name: /touch: off/i }))
+    expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'iphone-15', orientation: 'portrait', touch: true })
+  })
+
+  it('a preset with no touch offers no touch toggle', () => {
+    pane(mine({ device: { preset: 'desktop', orientation: 'landscape', touch: false } }))
+    const touch = screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement
+    expect(touch.disabled).toBe(true)
+    expect(touch.title).toMatch(/no touch/i)
+    expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('a refusal is shown, not swallowed', async () => {
+    api.setLiveDevice.mockResolvedValue({
+      status: 'error',
+      error: { kind: 'conflict', httpStatus: 409, code: 'not_controller', message: 'you are not in control of this browser' },
+    })
+    pane(mine())
+    fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
+    expect((await screen.findByRole('alert')).textContent).toContain('not in control')
   })
 })
 
@@ -439,6 +551,24 @@ describe('a mismatched origin turns the strip red and asks twice', () => {
         confirmed_mismatch: { expected: 'github.com', actual: 'github-login.example' },
       }),
     )
+  })
+
+  it('one take is one request: the header opens the ask, the ask posts once, however often it is pressed (LB-R4)', async () => {
+    let settle: (v: unknown) => void = () => {}
+    api.takeLiveControl.mockReturnValue(new Promise((r) => (settle = r)))
+    render(<LiveControl taskId={ID} session={session({ human_wait: wait('github.com') })} reload={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Take control' }))
+    expect(api.takeLiveControl).not.toHaveBeenCalled()
+    const yes = within(screen.getByRole('dialog')).getByRole('button', { name: 'Take control' })
+    fireEvent.click(yes)
+    fireEvent.click(yes)
+    // The header button again while the first request is in flight.
+    fireEvent.click(screen.getByRole('button', { name: /Take control|Taking control/ }))
+    const again = screen.queryByRole('dialog')
+    if (again !== null) fireEvent.click(within(again).getByRole('button', { name: 'Take control' }))
+    expect(api.takeLiveControl).toHaveBeenCalledTimes(1)
+    await act(async () => settle(ok(null)))
+    expect(api.takeLiveControl).toHaveBeenCalledTimes(1)
   })
 
   it('asks once on the named site', async () => {

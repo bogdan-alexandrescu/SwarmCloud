@@ -8,7 +8,8 @@ Two kinds of caller, as the hand-off routes have:
   * A PERSON, through the ordinary `tenant_scope` -- the same authenticator,
     the same per-group membership, the same principal check every route has --
     reads the session, gets a viewer ticket, takes, renews and returns control,
-    opens control to the tenant, and reads the audit. The socket
+    switches the device while in control (LB-DEV-B), opens control to the
+    tenant, and reads the audit. The socket
     (`/v1/live/{session_id}/stream`) authenticates the same identity from the
     upgrade request's headers and selects the tenant the ticket names.
 
@@ -30,7 +31,10 @@ ticket itself as the first text message, which the relay answers
 `{"type": "ready"}` or refuses by closing; then
 `{"type": "control", "ticket": <control or release ticket>}` whenever this
 person takes or loses control, then binary RFB. Relay to console: forwarded
-as is. swarm-api to console: `{"type": "status", ...}` text frames. Close
+as is, except the gate's `{"type": "report", ...}` (the top frame's origin and
+the device, LB-DEV-A), which is checked and recorded on the session
+(`LiveService.record_report`) and never forwarded: the console reads it from
+the session read, checked, like every other viewer. swarm-api to console: `{"type": "status", ...}` text frames. Close
 codes: 4400 a malformed open (a query string, no ticket), 4401 no identity,
 4404 refused (every §5.2 refusal, alike, the relay's included), 4429 the
 relay's viewer cap, 4403 membership lost, 4409 the session closed, 4503 no
@@ -46,22 +50,32 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from typing import Any, Protocol
 
-from fastapi import APIRouter, Body, Depends, Header, Request, Response, WebSocket, status
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, WebSocket, status
+from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
 from starlette.websockets import WebSocketDisconnect, WebSocketState
 
 from ..auth import AuthContext, require_continuation_route
-from ..children import PROOF_HEADER, TIMESTAMP_HEADER, ChildService
+from ..children import PROOF_HEADER, TIMESTAMP_HEADER, ChildService, parse_body
 from ..deps import AppContext, current_auth, get_context, submission_scope, tenant_scope
-from ..errors import ApiError
+from ..errors import ApiError, NotFound, ValidationFailed
 from ..live import (
     Admission,
+    LiveActionsView,
     LiveLimits,
+    LiveRead,
+    LiveRecordings,
+    RecordingsView,
     LiveService,
+    LiveTicketView,
     RelayCloser,
+    REPORT_TYPE,
+    TakeControl,
     count_input,
+    parse_report,
     relay_closer_for,
 )
 from .children import child_service
@@ -229,7 +243,7 @@ async def open_live_session(
 # --------------------------------------------------------------------------
 
 
-@router.get("/tasks/{task_id}/live/session")
+@router.get("/tasks/{task_id}/live/session", response_model=LiveRead)
 def get_live_session(
     task_id: str,
     request: Request,
@@ -244,7 +258,7 @@ def get_live_session(
                                      submitted_by=submitted_by)
 
 
-@router.post("/tasks/{task_id}/live/ticket")
+@router.post("/tasks/{task_id}/live/ticket", response_model=LiveTicketView)
 def mint_viewer_ticket(
     task_id: str,
     request: Request,
@@ -260,25 +274,34 @@ def mint_viewer_ticket(
                                               submitted_by=submitted_by)
 
 
-@router.post("/tasks/{task_id}/live/control")
-def take_control(
+@router.post("/tasks/{task_id}/live/control", response_model=LiveRead)
+async def take_control(
     task_id: str,
     request: Request,
-    payload: dict | None = Body(default=None),
     tenant_id: str = Depends(tenant_scope),
     submitted_by: str | None = Depends(submission_scope),
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Take control (§4.2 step 1). `{"preempt": true}` lets the task's owner
-    take it from whoever holds it; nobody else can preempt."""
+    """Take control (§4.2 step 1). The body is the console's `takeLiveControl`
+    (`TakeControl`): `{"preempt": true}` lets the task's owner take it from
+    whoever holds it, nobody else; `confirmed_mismatch` names the expected and
+    actual domains a person confirmed past (§5.7 item 2), recorded in the
+    `control_taken` audit entry. An empty body is `{}`."""
+    raw = await request.body()
+    if len(raw) > 4096:
+        raise ValidationFailed("a take-control request is at most 4096 bytes")
+    body: TakeControl = parse_body(TakeControl, raw) if raw.strip() else TakeControl()
     _limits(request.app, ctx).take(auth.email, task_id)
-    preempt = bool((payload or {}).get("preempt") is True)
-    return _person_service(ctx, request.app).take(tenant_id, task_id, email=auth.email,
-                                     submitted_by=submitted_by, preempt=preempt)
+    return await run_in_threadpool(
+        lambda: _person_service(ctx, request.app).take(
+            tenant_id, task_id, email=auth.email, submitted_by=submitted_by,
+            preempt=body.preempt, confirmed_mismatch=body.confirmed_mismatch,
+        )
+    )
 
 
-@router.post("/tasks/{task_id}/live/control/renew")
+@router.post("/tasks/{task_id}/live/control/renew", response_model=LiveRead)
 def renew_control(
     task_id: str,
     request: Request,
@@ -292,7 +315,8 @@ def renew_control(
                                       submitted_by=submitted_by)
 
 
-@router.post("/tasks/{task_id}/live/control/return")
+@router.delete("/tasks/{task_id}/live/control", response_model=LiveRead)
+@router.post("/tasks/{task_id}/live/control/return", response_model=LiveRead)
 def return_control(
     task_id: str,
     request: Request,
@@ -301,12 +325,42 @@ def return_control(
     auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
-    """Return control (§4.2 step 3); a waiting hand-off is resolved with it."""
+    """Return control (§4.2 step 3); a waiting hand-off is resolved with it.
+    `DELETE .../live/control` is the console's (`returnLiveControl`); the
+    `POST .../control/return` it was first served as stays, for the
+    acceptance driver and any script written against it."""
     return _person_service(ctx, request.app).return_control(tenant_id, task_id, email=auth.email,
                                                submitted_by=submitted_by)
 
 
-@router.post("/tasks/{task_id}/live/open-to-members")
+@router.post("/tasks/{task_id}/live/device", response_model=LiveRead)
+async def set_device(
+    task_id: str,
+    request: Request,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The person in control switches the device (§6.1, Q13; LB-DEV-B). The
+    body is the console's `setLiveDevice` (`SetDevice`): `{"preset": <a name
+    from the session's presets>, "orientation"?: "portrait"|"landscape",
+    "touch"?: bool}` -- a NAME, never a size (invariant 10): an unknown name or
+    any other key is 422. Anyone not in control is 409 `not_controller`, as
+    renew and return answer. The choice is audited and sent through the relay
+    to the gate, which applies it and reports it; the answer is the session
+    read, whose `device` follows the gate's report."""
+    raw = await request.body()
+    if len(raw) > 1024:
+        raise ValidationFailed("a device request is at most 1024 bytes")
+    return await run_in_threadpool(
+        lambda: _person_service(ctx, request.app).set_device(
+            tenant_id, task_id, email=auth.email, submitted_by=submitted_by, raw=raw,
+        )
+    )
+
+
+@router.post("/tasks/{task_id}/live/open-to-members", response_model=LiveRead)
 def open_to_members(
     task_id: str,
     request: Request,
@@ -332,6 +386,90 @@ def live_audit(
     """The task's live audit (§5.8): members of its tenant, nobody else."""
     return {"entries": _person_service(ctx, request.app).audit_entries(tenant_id, task_id,
                                                           submitted_by=submitted_by)}
+
+
+# --------------------------------------------------------------------------
+# Recordings and the action timeline (§7)
+# --------------------------------------------------------------------------
+
+#: A segment name as the console's Recordings list sends it back.
+_SEGMENT_NAME = re.compile(r"rec-([0-9]{1,13})\.live\.webm")
+
+
+def _recordings(ctx: AppContext) -> LiveRecordings:
+    return LiveRecordings(store=ctx.store, objects=ctx.inspection._objects, db=ctx.db)
+
+
+@router.get("/tasks/{task_id}/live/recordings", response_model=RecordingsView)
+def live_recordings(
+    task_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """Every attempt's recorded segments, for members of the task's tenant
+    (§7). Kept 7 days by the bucket's own rule."""
+    return _recordings(ctx).recordings(tenant_id, task_id, submitted_by=submitted_by)
+
+
+def _segment_response(ctx: AppContext, tenant_id: str, task_id: str, attempt_id: str,
+                      seq: int, submitted_by: str | None) -> StreamingResponse:
+    chunks, total = _recordings(ctx).segment(tenant_id, task_id, attempt_id, seq,
+                                             submitted_by=submitted_by)
+    return StreamingResponse(chunks, media_type="video/webm", headers={
+        "X-Content-Type-Options": "nosniff",
+        "Cache-Control": "private, no-store",
+        "X-Recording-Bytes": str(total),
+    })
+
+
+@router.get("/tasks/{task_id}/live/recordings/raw")
+def live_recording_raw(
+    task_id: str,
+    attempt_id: str = Query(min_length=1, max_length=128),
+    name: str = Query(min_length=1, max_length=64),
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    ctx: AppContext = Depends(get_context),
+) -> StreamingResponse:
+    """One segment's masked frames (Recordings.tsx's player). The object is
+    built from the task, the attempt and the segment number; `name` must be a
+    segment name, never a path. `?tenant=` is accepted (a `<video src>` sends
+    no header), through the same membership check as the header."""
+    match = _SEGMENT_NAME.fullmatch(name)
+    if match is None:
+        raise NotFound("no such recording")
+    return _segment_response(ctx, tenant_id, task_id, attempt_id, int(match.group(1)),
+                             submitted_by)
+
+
+@router.get("/tasks/{task_id}/attempts/{attempt_id}/live/recordings/{seq}")
+def live_recording_segment(
+    task_id: str,
+    attempt_id: str,
+    seq: int,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    ctx: AppContext = Depends(get_context),
+) -> StreamingResponse:
+    """The same segment by attempt and number (Theater.tsx's replay)."""
+    return _segment_response(ctx, tenant_id, task_id, attempt_id, seq, submitted_by)
+
+
+@router.get("/tasks/{task_id}/live/actions", response_model=LiveActionsView,
+            response_model_exclude_none=True)
+def live_actions(
+    task_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The newest attempt's action timeline (§7): CDP methods as the relay
+    recorded them, a typed text as its length, and what people did, from the
+    audit -- each with who, and `you` when it was the reader (LB-V3)."""
+    return _recordings(ctx).actions(tenant_id, task_id, submitted_by=submitted_by,
+                                    viewer=auth.email)
 
 
 # --------------------------------------------------------------------------
@@ -468,6 +606,15 @@ async def _hello(link: RelayLink, admission: Admission) -> int | None:
     return CLOSE_FULL if code == RELAY_CLOSE_FULL else CLOSE_REFUSED
 
 
+def _is_report(text: str) -> bool:
+    """A relay text that is the gate's report, well-formed or not: never forwarded."""
+    try:
+        message = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(message, dict) and message.get("type") == REPORT_TYPE
+
+
 class _Proxy:
     """One viewer's socket and its relay link, and the ticker that keeps
     checking them (§5.2)."""
@@ -488,6 +635,7 @@ class _Proxy:
         self.total_pointers = 0
         self.close_code = 1000
         self.last_sent: dict[str, Any] | None = None
+        self.last_report: dict[str, Any] | None = None
 
     async def run(self) -> None:
         await run_in_threadpool(self.service.viewer_event, self.admission, "viewer_joined", {})
@@ -566,8 +714,21 @@ class _Proxy:
                 return
             if isinstance(data, bytes):
                 await self.ws.send_bytes(data)
+            elif _is_report(data):
+                await self._record_report(data)
             else:
                 await self.ws.send_text(data)
+
+    async def _record_report(self, text: str) -> None:
+        report = parse_report(text)
+        if report is None or report == self.last_report:
+            return
+        try:
+            await run_in_threadpool(self.service.record_report, self.admission, report)
+        except Exception as exc:  # noqa: BLE001 -- the view goes on; the next report retries
+            log.info("live report not recorded (%s)", type(exc).__name__)
+            return
+        self.last_report = report
 
     async def _flush_input(self) -> None:
         # Swapped on the event loop, where the counters are incremented, and

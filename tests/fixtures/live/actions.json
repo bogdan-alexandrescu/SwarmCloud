@@ -1,0 +1,80 @@
+{
+  "attempt_id": "att_fafe0d6de50c4ff39de9",
+  "actions": [
+    {
+      "at": "2026-10-11T23:40:00+00:00",
+      "kind": "control",
+      "event": "handoff_requested"
+    },
+    {
+      "at": "2026-10-11T23:40:10+00:00",
+      "kind": "cdp",
+      "method": "Page.navigate",
+      "url": "https://github.com/login"
+    },
+    {
+      "at": "2026-10-11T23:40:20+00:00",
+      "kind": "cdp",
+      "method": "Input.insertText",
+      "length": 12
+    },
+    {
+      "at": "2026-10-11T23:40:30+00:00",
+      "kind": "cdp",
+      "method": "Page.navigate",
+      "url": "https://example.test/elsewhere",
+      "outcome": "refused",
+      "cause": "method_policy"
+    },
+    {
+      "at": "2026-10-11T23:41:00+00:00",
+      "kind": "control",
+      "event": "control_taken",
+      "by": "alice@saga.xyz",
+      "you": true
+    },
+    {
+      "at": "2026-10-11T23:41:00+00:00",
+      "kind": "control",
+      "event": "refused",
+      "cause": "insecure_connection"
+    },
+    {
+      "at": "2026-10-11T23:41:30+00:00",
+      "kind": "control",
+      "event": "device_changed",
+      "by": "alice@saga.xyz",
+      "you": true,
+      "preset": "iphone-15",
+      "orientation": "portrait",
+      "touch": true
+    },
+    {
+      "at": "2026-10-11T23:42:00+00:00",
+      "kind": "control",
+      "event": "rotated",
+      "by": "alice@saga.xyz",
+      "you": true,
+      "preset": "iphone-15",
+      "orientation": "landscape",
+      "touch": true
+    },
+    {
+      "at": "2026-10-11T23:43:00+00:00",
+      "kind": "control",
+      "event": "control_returned",
+      "by": "alice@saga.xyz",
+      "you": true,
+      "cause": "returned"
+    },
+    {
+      "at": "2026-10-11T23:43:00+00:00",
+      "kind": "control",
+      "event": "handoff_resolved",
+      "by": "alice@saga.xyz",
+      "you": true,
+      "outcome": "returned"
+    }
+  ],
+  "truncated": false
+}

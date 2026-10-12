@@ -197,13 +197,16 @@ class FakeLink:
 
 
 class FakeRelay:
-    """The relay's websocket and its close route. By default it accepts every
-    viewer ticket with `{"type": "ready"}`, as the real one does a good one."""
+    """The relay's websocket, its close route and its device route. By
+    default it accepts every viewer ticket with `{"type": "ready"}`, as the
+    real one does a good one, and every device request (`accept_devices`)."""
 
     def __init__(self, frames: list[Any] | None = None, close_code: int | None = None,
                  refuse: bool = False) -> None:
         self.links: list[FakeLink] = []
         self.closed: list[str] = []
+        self.devices: list[str] = []
+        self.accept_devices = True
         self._frames = [] if refuse else [READY] if frames is None else frames
         self._close_code = close_code
         self._refuse = refuse
@@ -215,6 +218,10 @@ class FakeRelay:
 
     def close_session(self, session_id: str) -> None:
         self.closed.append(session_id)
+
+    def send_device(self, request: str) -> bool:
+        self.devices.append(request)
+        return self.accept_devices
 
 
 def claims_of(ticket: str) -> dict[str, Any]:
@@ -494,7 +501,9 @@ def test_another_tenants_member_gets_404_on_every_route(client, ldb, live):
         ("POST", f"/v1/tasks/{TASK}/live/control"),
         ("POST", f"/v1/tasks/{TASK}/live/control/renew"),
         ("POST", f"/v1/tasks/{TASK}/live/control/return"),
+        ("DELETE", f"/v1/tasks/{TASK}/live/control"),
         ("POST", f"/v1/tasks/{TASK}/live/open-to-members"),
+        ("POST", f"/v1/tasks/{TASK}/live/device"),
         ("GET", f"/v1/tasks/{TASK}/live/audit"),
     ):
         response = client.request(method, path, headers=bearer("bob"), json={})
@@ -528,9 +537,10 @@ def test_another_tenants_member_is_refused_on_the_socket_even_with_a_valid_ticke
 def test_a_non_submitter_can_view_and_cannot_take_until_opened(client, ldb, live):
     view = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("root"))
     assert view.status_code == 200, view.text
-    assert view.json()["you"] == {
-        "may_view": True, "may_take": False, "may_preempt": False,
-        "may_open_to_members": False, "in_control": False,
+    assert view.json()["live_browser"] is True
+    assert view.json()["session"]["you"] == {
+        "email": "root@saga.xyz", "can_control": False, "can_preempt": False,
+        "can_open": False, "can_switch_device": False,
     }
     assert client.post(f"/v1/tasks/{TASK}/live/ticket", headers=bearer("root")).status_code == 200
 
@@ -603,6 +613,17 @@ def test_one_controller_at_a_time_and_only_the_submitter_preempts(client, ldb, l
     assert take(client, "root", preempt=True).status_code == 409
 
 
+def test_one_take_writes_one_control_audit_row_even_posted_twice(client, ldb, live):
+    """LB-R4 (part of #1030): one take is one `control_taken` row, and the
+    only control row -- the timeline draws a line per row. A second POST from
+    the person already in control (a double click, a retry) renews and
+    audits nothing."""
+    assert take(client, "alice").status_code == 200
+    assert take(client, "alice").status_code == 200
+    control = [r for r in audit(ldb) if r["entry"].startswith("control_")]
+    assert [(r["entry"], r["email"]) for r in control] == [("control_taken", "alice@saga.xyz")]
+
+
 def test_return_resolves_the_hand_off_and_only_the_controller_returns(client, ldb, live):
     _ask_for_help(ldb)
     assert take(client, "alice").status_code == 200
@@ -618,6 +639,21 @@ def test_return_resolves_the_hand_off_and_only_the_controller_returns(client, ld
     events = [d["type"] for p, d in ldb.docs.items() if p.startswith(f"tasks/{TASK}/events/")]
     assert "human_control_taken" in events and "human_control_returned" in events
     assert "human_handoff_resolved" in events
+
+
+def test_control_events_carry_their_attempt_in_the_events_own_fields(client, ldb, live):
+    """LB-V6 (part of #1030): the Attempts tab groups on the event's own
+    `attempt_id`. These rode `detail` only, so visual QA pass 5 found them
+    all under "Before any attempt". Additive: `detail` keeps them too."""
+    _ask_for_help(ldb)
+    assert take(client, "alice").status_code == 200
+    assert client.post(f"/v1/tasks/{TASK}/live/control/return",
+                       headers=bearer("alice")).status_code == 200
+    events = {d["type"]: d for p, d in ldb.docs.items() if p.startswith(f"tasks/{TASK}/events/")}
+    for kind in ("human_control_taken", "human_control_returned", "human_handoff_resolved"):
+        event = events[kind]
+        assert (event["attempt_id"], event["lease_id"], event["generation"]) == (ATTEMPT, LEASE, 1), kind
+    assert events["human_control_taken"]["detail"]["attempt_id"] == ATTEMPT
 
 
 def test_control_lapses_without_renewal_and_when_idle(client, ldb, live, clock):
@@ -644,7 +680,8 @@ def test_a_cancel_closes_the_session_and_ends_control(client, ldb, live):
     ldb.docs[f"tasks/{TASK}"]["cancel_requested"] = True
     view = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("alice"))
     assert view.status_code == 200
-    assert view.json()["state"] == "closed" and view.json()["close_cause"] == "cancelled"
+    session = view.json()["session"]
+    assert session["state"] == "closed" and session["closed_reason"] == "cancelled"
     assert [r["detail"]["cause"] for r in audit(ldb, "control_ended")] == ["cancelled"]
     assert len(audit(ldb, "session_closed")) == 1
     assert client.post(f"/v1/tasks/{TASK}/live/ticket", headers=bearer("alice")).status_code == 409
@@ -911,7 +948,7 @@ def test_a_session_that_closes_is_closed_at_the_relay(client, ldb, live, relay):
     assert relay.closed == []
     ldb.docs[f"tasks/{TASK}"]["cancel_requested"] = True
     view = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("alice"))
-    assert view.json()["state"] == "closed"
+    assert view.json()["session"]["state"] == "closed"
     assert relay.closed == [SESSION]
     # Once: a later read of the closed session does not ask again.
     client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("alice"))

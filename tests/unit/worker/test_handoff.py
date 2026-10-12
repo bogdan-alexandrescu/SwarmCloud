@@ -420,6 +420,50 @@ def test_an_unprotected_heap_gets_no_tunnel_and_the_agent_is_refused_with_5(
     assert "SWARM_CDP_ENDPOINT" not in seen["env"]
 
 
+class _WindowClosedRoutes(FakeLiveRoutes):
+    """swarm-api refusing the child key, as it did task_23cc2e82178640709a45 (LB-KEYRACE)."""
+
+    def call(self, method, path, *, body=None, headers=None):
+        if path.endswith("/child-key"):
+            self.calls.append({"path": path, "body": json.loads(body) if body else {}})
+            raise children_mod.ChildApiError(409, "child_key_window_closed", "", retryable=False)
+        return super().call(method, path, body=body, headers=headers)
+
+
+def _live_marks(db) -> list[dict[str, Any]]:
+    return [
+        e["detail"] for e in db.events("task_1")
+        if (e.get("detail") or {}).get("cause") == "live_browser_unavailable"
+    ]
+
+
+def test_a_live_attempt_without_a_key_says_live_browser_unavailable_on_its_events(
+    db, worker_factory, agent, gate, trace, monkeypatch
+):
+    """No silent run without a session: the console's events name why."""
+    seed_attempt(db)
+    routes = _WindowClosedRoutes(db, trace)
+    worker = _live_worker(worker_factory, routes, gate, trace, monkeypatch)
+    assert worker.run() == ExitCode.OK
+    assert worker.handoff.unavailable == handoff_mod.NO_ATTEMPT_KEY
+    assert not any(p.endswith("/live-session") for p in routes.paths())
+    (mark,) = _live_marks(db)
+    assert mark["live_path"] == handoff_mod.NO_ATTEMPT_KEY
+    assert mark["reason"] == "child_key_window_closed"
+    assert mark["message"] == "live browser unavailable: child_key_window_closed"
+
+
+def test_an_open_live_path_writes_no_unavailable_mark(
+    db, worker_factory, agent, gate, trace, monkeypatch
+):
+    seed_attempt(db)
+    routes = FakeLiveRoutes(db, trace)
+    worker = _live_worker(worker_factory, routes, gate, trace, monkeypatch)
+    assert worker.run() == ExitCode.OK
+    assert worker.handoff.offered
+    assert _live_marks(db) == []
+
+
 # --------------------------------------------------------------------------
 # The worker's checks, on HandoffPath directly
 # --------------------------------------------------------------------------

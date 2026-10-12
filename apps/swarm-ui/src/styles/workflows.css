@@ -846,3 +846,43 @@
 /* A Steps-table figure still being read (WF-24): said in the absent ink, so
    it is never taken for a value. */
 .wf-table .wf-cell.is-reading { color: var(--text-dim); font-style: italic; }
+
+/* THE LIVE BROWSER CARD, INLINE IN ITS NODE (LB-UX2b, live-browser.md §6, the
+   owner's chosen mockup). A RUNNING browser step's `.node-slot` carries
+   `has-live` and `--node-live-h` (`LIVE_CARD_H` in dag.ts, which `layoutOf`
+   added to this node's height). The node's button keeps its padding for the
+   stop strip and adds the card's height on top, and `.node-live` -- the
+   button's SIBLING, so its links are not inside a button -- is laid into that
+   room, directly above the strip: 42px from the foot (34px at the names tier,
+   the same strip `.node.zoom-names` reserves).
+
+   A FIXED BOX: the card's height is the reserved height less the one
+   `--ctl-s1` gap above it, and the two text rows are one line each, so the
+   canvas letterboxes into what is left whatever the device's shape.
+   `LIVE_CARD_H` carries the arithmetic; keep the two in step. The `0px`
+   fallback is never drawn (only a slot that sets the property has `has-live`);
+   it keeps the number in one place, dag.ts, rather than restated here. */
+.node-slot.has-live > .node { padding-bottom: calc(42px + var(--node-live-h, 0px)); }
+.node-slot.has-live > .node.zoom-names { padding-bottom: calc(34px + var(--node-live-h, 0px)); }
+.node-slot.has-live > .node-live {
+  position: absolute; left: 15px; right: 12px; bottom: 42px; z-index: 2;
+  height: calc(var(--node-live-h, 0px) - var(--ctl-s1));
+}
+.node-slot.has-live > .node.zoom-names ~ .node-live { bottom: 34px; }
+.node-live > .wf-live {
+  display: flex; flex-direction: column; gap: var(--ctl-s1);
+  height: 100%; min-width: 0;
+}
+.node-live .wf-live-head,
+.node-live .wf-live-links {
+  flex: none; height: 18px; min-width: 0;
+  display: flex; align-items: center; gap: var(--ctl-s2);
+  overflow: hidden; white-space: nowrap;
+  font-size: var(--t-micro); line-height: var(--lh-micro);
+}
+.node-live .wf-live-thumb {
+  flex: 1 1 auto; min-height: 0; width: 100%; display: block;
+  object-fit: contain; background: var(--surface-2);
+  border: 1px solid var(--line); border-radius: var(--ctl-radius-sm);
+  box-sizing: border-box;
+}

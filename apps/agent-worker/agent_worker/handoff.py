@@ -408,7 +408,11 @@ class HandoffPath:
         key = getattr(self._children, "_key", None)
         api = getattr(self._children, "_api", None)
         if key is None or api is None:
-            why = getattr(self._children, "unavailable", None) or "no attempt key registered"
+            why = (
+                getattr(self._children, "unavailable_reason", None)
+                or getattr(self._children, "unavailable", None)
+                or "no attempt key registered"
+            )
             return self._refuse(note, NO_ATTEMPT_KEY, str(why))
         body = json.dumps(
             {
@@ -446,7 +450,7 @@ class HandoffPath:
         self.log.warning("no live path for this attempt", live_path=code, reason=why)
         if note is not None:
             try:
-                note({"phase": "live_session", "live_path": code})
+                note({"phase": "live_session", "live_path": code, "reason": why})
             except Exception:  # a note must never stop the attempt
                 pass
 

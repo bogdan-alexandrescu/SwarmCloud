@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # swarm-live -- the live browser's relay (docs/design/live-browser.md §3.3, §7;
 # lane LB-L8e, part of #1030): where a tenant pod's live gate and swarm-api's
@@ -43,14 +43,23 @@
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
 # The uv the other service images use (images/swarm-api/Dockerfile says why
 # 0.12.15 and not older).
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
+ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
+# Every base is pulled through this project's Artifact Registry mirrors,
+# never from Docker Hub or ghcr.io directly: on 2026-10-12 three release
+# builds failed inside Cloud Build on ghcr.io timeouts and a github.com 504.
+# Remote repositories (terraform/infra/build_mirror.tf) serve the same
+# digests. A pull request's local build, which has no Google identity,
+# passes the upstream registries here instead (scripts/lib/build-mirror.sh).
+# docs/runbooks/build-mirror.md.
+ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
+ARG MIRROR_GHCR=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-ghcr
 
-FROM ${UV_IMAGE} AS uvbin
+FROM ${MIRROR_GHCR}/${UV_IMAGE} AS uvbin
 
 # ---------------------------------------------------------------------------
 # builder: wheels for the frozen contract and the relay, then /opt/venv
 # ---------------------------------------------------------------------------
-FROM ${PYTHON_IMAGE} AS builder
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -96,7 +105,7 @@ RUN uv pip check --python /opt/venv/bin/python
 # ---------------------------------------------------------------------------
 # runtime
 # ---------------------------------------------------------------------------
-FROM ${PYTHON_IMAGE} AS runtime
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS runtime
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \

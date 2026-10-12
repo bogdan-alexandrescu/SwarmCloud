@@ -213,11 +213,13 @@ def resolution_writes(
     outcome: str,
     now: datetime,
     by: str | None = None,
+    lease_id: str | None = None,
 ) -> bool:
     """Clear `human_wait` and record why, inside the caller's transaction.
 
     One shape for both writers: the worker's `resolve` and lane L9's return of
-    control. False, and nothing written, when nothing is waiting.
+    control. False, and nothing written, when nothing is waiting. `lease_id` is
+    the caller's, for the event: the wait does not store one.
     """
     wait = task.get("human_wait")
     if not isinstance(wait, dict):
@@ -238,6 +240,12 @@ def resolution_writes(
         tenant_id=task["tenant_id"],
         type=EventType.HUMAN_HANDOFF_RESOLVED,
         at=now,
+        # The wait's attempt, on the event's own fields too (LB-V6): the
+        # Attempts tab groups on them, and `detail` alone filed this under
+        # "Before any attempt".
+        attempt_id=wait.get("attempt_id"),
+        lease_id=lease_id,
+        generation=wait.get("generation"),
         detail=detail,
     )
     txn.update(task_ref, {"human_wait": None, "updated_at": now})
@@ -453,6 +461,9 @@ class HandoffService:
                 tenant_id=attempt.tenant_id,
                 type=EventType.HUMAN_HANDOFF_REQUESTED,
                 at=now,
+                attempt_id=attempt.attempt_id,
+                lease_id=attempt.lease_id,
+                generation=attempt.generation,
                 detail=detail,
             )
             txn.update(task_ref, {"human_wait": wait, "metadata": metadata, "updated_at": now})
@@ -503,7 +514,8 @@ class HandoffService:
                 or wait.get("attempt_id") != attempt.attempt_id
             ):
                 return False
-            return resolution_writes(txn, self._db, task, outcome=body.outcome, now=now)
+            return resolution_writes(txn, self._db, task, outcome=body.outcome, now=now,
+                                     lease_id=attempt.lease_id)
 
         return _apply(self._db.transaction())
 
@@ -553,6 +565,11 @@ class HandoffService:
                 )
             assert_transition(TaskState.PARKED, TaskState.READY)
             metadata = dict(data.get("metadata") or {})
+            # The attempt whose hand-off parked this task, which this `ready`
+            # answers (LB-V6): the Attempts tab files it there. None when no
+            # hand-off was counted -- named as nothing, never guessed.
+            counted = metadata.get(HUMAN_HANDOFFS_METADATA_KEY)
+            answered = counted.get("attempt_id") if isinstance(counted, dict) else None
             metadata[HUMAN_READY_METADATA_KEY] = {"by": email, "at": now.isoformat()}
             update = {
                 "state": TaskState.READY.value,
@@ -570,6 +587,7 @@ class HandoffService:
                 tenant_id=tenant_id,
                 type=EventType.READY,
                 at=now,
+                attempt_id=answered if isinstance(answered, str) else None,
                 detail={
                     "reason": "human_ready",
                     "park_reason": ParkReason.HUMAN_REQUIRED.value,

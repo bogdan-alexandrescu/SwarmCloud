@@ -8,17 +8,16 @@
    named no site, and every tone says its reason in words beside the colour. */
 
 .ag-split > .ag-split-pane.is-browser { display: flex; flex-direction: column; overflow: auto; }
+/* THE PANE'S HEIGHT REACHES THE STAGE (LB-R1, re-QA 2026-10-12). TheaterHost
+   wraps the tab in `.th-host`, and as a plain block it gave `.live-tab` its
+   content's height: the stage sat at its 320px floor, a 1440×900 desktop
+   was drawn 424×291 and the lower half of the window was empty. Every box
+   from the pane to the stage now takes the room left -- the window less the
+   header, tabs, strip, toolbar and caption -- with no ceiling anywhere. */
+.ag-split-pane.is-browser > .th-host { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .live-tab { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
 .live-note { color: var(--text-dim); font-size: var(--t-body); padding: 12px 0; }
 
-.live-handoff {
-  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
-  padding: 8px 12px; border-radius: var(--radius);
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  font-size: var(--t-body);
-}
-.live-handoff-expect, .live-handoff-left { color: var(--text-dim); font-size: var(--t-meta); }
 
 .live-strip {
   display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
@@ -38,18 +37,50 @@
 .live-origin-puny { margin-left: 8px; color: var(--bad-ink); font-size: var(--t-meta); }
 .live-strip-who { margin-left: auto; color: var(--text-dim); }
 
+/* The mockup's toolbar: chips, rotate, touch, logs, and ⤢ Theater at the
+   right with "Let any member take control". ONE ROW WHERE IT FITS (LB-V1,
+   visual QA 5 U3): no group breaks inside itself, and the why of a disabled
+   device bar is its tooltip, not a line here, so the toolbar wraps only when
+   its controls are wider than the pane. */
 .live-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: var(--t-meta); }
 .live-device { display: inline-flex; gap: 6px; align-items: center; }
-.live-open { display: inline-flex; gap: 6px; align-items: center; }
-.live-toolbar-why { color: var(--text-dim); }
+.live-open { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+.live-chips { display: inline-flex; flex-wrap: nowrap; gap: 2px; }
+.live-chip[aria-pressed="true"] { border-color: var(--sk-ac); color: var(--sk-ac); font-weight: 600; }
+.live-toolbar-end { margin-left: auto; display: inline-flex; flex-wrap: nowrap; gap: 8px; align-items: center; }
+.live-caption { color: var(--text-dim); font-size: var(--t-meta); text-align: center; }
 
-.live-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; }
-.live-tab.with-logs .live-body { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+/* ◫ logs: the logs on the LEFT, the device on the right (the mockup). */
+/* One row the height of the room left, never of its content: the stage is
+   measured from it, and a row sized to the canvas is what drew a phone 1552px
+   tall in a 900px window (LB-V1). */
+.live-body { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; }
+.live-tab.with-logs .live-body { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
 .live-logs { min-height: 0; overflow: auto; }
 
+/* THE STAGE (LB-V1, visual QA 5 B3): the device fitted into it both ways
+   and centred, the caption under it. The stage takes the room the tab has
+   and never its content's size (flex-basis 0, min-height 0, overflow hidden),
+   so the canvas cannot grow the stage it is measured from. LiveScreen sizes
+   `.live-frame` to the fit; noVNC scales its canvas to the screen inside. */
 .live-screen-wrap { display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+.live-stage {
+  flex: 1 1 0; min-height: 320px; overflow: hidden;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
+}
+.live-frame { box-sizing: content-box; flex: none; display: flex; width: 100%; height: 100%; }
+/* A phone or a tablet, in its outline (the mockup); a desktop has none. The
+   border width is LiveBrowser.tsx's MOBILE_BEZEL. */
+.live-frame.is-phone, .live-frame.is-tablet {
+  border-style: solid; border-width: 10px; border-color: var(--text); background: var(--text);
+}
+.live-frame.is-phone { border-radius: 36px; }
+.live-frame.is-tablet { border-radius: 22px; }
+.live-frame.is-phone > .live-screen { border-radius: 26px; }
+.live-frame.is-tablet > .live-screen { border-radius: 12px; }
+.live-stage-caption { flex: none; }
 .live-screen {
-  flex: 1; min-height: 320px; border-radius: var(--radius);
+  flex: 1; min-width: 0; min-height: 0; border-radius: var(--radius);
   border: 1px solid var(--line); background: var(--bg); overflow: hidden;
 }
 .live-screen.is-control { border-color: var(--warn); }
@@ -66,5 +97,19 @@
   font-size: var(--t-body);
 }
 .live-ask.is-mismatch { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, var(--surface)); }
+/* No gap under the title (visual QA 5, U4): the ask's own `gap` spaces its
+   lines, and a heading's or paragraph's default margin added a blank band. */
+.live-ask h4, .live-ask p { margin: 0; }
 .live-ask-warn { color: var(--warn-ink); }
 .live-ask-actions { display: flex; gap: 8px; }
+
+/* THE PHONE'S "⋯" MENU (LB-UX3, LiveToolMenu.tsx): the device switcher,
+   rotate, touch and the logs toggle, folded out of the toolbar at 560px. */
+.live-more { position: relative; display: inline-flex; }
+.live-more-menu {
+  position: absolute; top: calc(100% + 4px); left: 0; z-index: 20;
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  min-width: 200px; padding: 10px;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 6px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 0.16);
+}

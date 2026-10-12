@@ -9,7 +9,7 @@ docs/design/live-browser.md section 6.1. The acceptance test of lane L3b:
 * in control with touch on, a press/move/release arrives as
   touchStart/Move/End;
 * in view mode no input is sent;
-* the mask covers a password field on every preset at its device scale factor.
+* the mask covers a password field on every preset where the page draws it.
 
 The expected sizes below are the design's list (section 6.1), written out
 again here rather than read from presets.py, so a preset that drifts from the
@@ -236,11 +236,13 @@ def test_each_preset_sets_metrics_user_agent_and_touch_on_the_gate_owned_context
         chosen = await device.select(name, orientation)
         assert (chosen.width, chosen.height) == (width, height)
 
-        page_w, page_h = math.ceil(width * scale), math.ceil(height * scale)
-        assert display.sizes[-1] == (page_w, page_h + BROWSER_UI_HEIGHT)
-        assert mask.scales[-1] == scale
+        # The page is drawn at one screen pixel per CSS pixel, whatever the
+        # device scale factor (presets.py, LB-R3), and the window one pixel
+        # past the display (device.py).
+        assert display.sizes[-1] == (width, height + BROWSER_UI_HEIGHT)
+        assert mask.scales[-1] == 1.0
         bounds = chromium.calls("Browser.setWindowBounds")[-1]["params"]["bounds"]
-        assert (bounds["width"], bounds["height"]) == display.sizes[-1]
+        assert (bounds["width"] - 1, bounds["height"] - 1) == display.sizes[-1]
 
         # Every override went over the gate's pipe on the gate's own session
         # on the fresh page -- no agent connection exists to have sent it --
@@ -255,6 +257,7 @@ def test_each_preset_sets_metrics_user_agent_and_touch_on_the_gate_owned_context
         assert metrics["params"]["width"] == width
         assert metrics["params"]["height"] == height
         assert metrics["params"]["deviceScaleFactor"] == scale
+        assert "scale" not in metrics["params"]
         assert metrics["params"]["mobile"] is touch
         agent = chromium.calls("Emulation.setUserAgentOverride")[-1]
         assert agent["sessionId"] == gate_session
@@ -279,7 +282,7 @@ def test_the_preset_list_is_the_designs_and_nothing_more():
 def test_xvfb_is_started_large_enough_for_every_device():
     assert MAX_DISPLAY_WIDTH >= max(d.display_width for d in all_devices())
     assert MAX_DISPLAY_HEIGHT >= max(d.display_height for d in all_devices())
-    assert (MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT) == (852 * 3, 852 * 3 + BROWSER_UI_HEIGHT)  # iPhone 15, both ways
+    assert (MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT) == (1440, 1440 + BROWSER_UI_HEIGHT)  # desktop, both ways
 
 
 def test_a_page_created_later_is_given_the_current_device(tmp_path):
@@ -412,16 +415,15 @@ def _touches(cdp: FakeCdp) -> list[tuple[str, list[dict[str, Any]], str | None]]
 
 def test_in_control_with_touch_on_a_press_move_release_arrives_as_touch_start_move_end():
     devices = FixedDevices("iphone-15")
-    d = devices.device
-    top = d.page_top
+    top = 0  # a mobile frame starts at the page's first row (LB-R5)
 
     async def main() -> tuple[FakeCdp, FakeX]:
         cdp, x11 = FakeCdp(), FakeX()
         touch = TouchInjector(x11, cdp, devices)
         touch.begin("PAGE")
-        await touch.pointer_event(1, 300, top + 600)
-        await touch.pointer_event(1, 300, top + 300)
-        await touch.pointer_event(0, 300, top + 300)
+        await touch.pointer_event(1, 100, top + 200)
+        await touch.pointer_event(1, 100, top + 100)
+        await touch.pointer_event(0, 100, top + 100)
         return cdp, x11
 
     cdp, x11 = asyncio.run(main())
@@ -441,11 +443,12 @@ def test_with_touch_off_the_pointer_is_a_mouse():
         touch = TouchInjector(x11, cdp, devices)
         touch.set_touch(False)
         touch.begin("PAGE")
-        await touch.pointer_event(1, 50, devices.device.page_top + 50)
+        await touch.pointer_event(1, 50, 50)
         return cdp, x11
 
     cdp, x11 = asyncio.run(main())
     assert _touches(cdp) == []
+    # The frame starts at the page (LB-R5); the screen has the browser UI above it.
     assert x11.events == [("pointer", 1, 50, devices.device.page_top + 50)]
 
 
@@ -463,7 +466,8 @@ def test_the_desktop_preset_is_a_mouse_even_with_touch_on():
     assert _touches(cdp) == [] and x11.events == [("pointer", 1, 10, 500)]
 
 
-def test_the_address_bar_is_clicked_not_touched():
+def test_a_mobile_frame_has_no_address_bar_so_a_press_at_its_top_is_a_touch():
+    # LB-R5: a phone is shown as the page alone, so frame row 40 is page row 40.
     devices = FixedDevices("iphone-se")
 
     async def main() -> tuple[FakeCdp, FakeX]:
@@ -474,22 +478,23 @@ def test_the_address_bar_is_clicked_not_touched():
         return cdp, x11
 
     cdp, x11 = asyncio.run(main())
-    assert _touches(cdp) == [] and x11.events == [("pointer", 1, 200, 40)]
+    assert _touches(cdp) == [("touchStart", [{"x": 200.0, "y": 40.0, "id": 0}], "G1")]
+    assert x11.events == []
 
 
 def test_a_wheel_is_a_touch_scroll_and_ctrl_wheel_is_a_pinch():
     devices = FixedDevices("iphone-15")
-    top = devices.device.page_top
+    top = 0  # a mobile frame starts at the page's first row (LB-R5)
 
     async def main() -> FakeCdp:
         cdp = FakeCdp()
         touch = TouchInjector(FakeX(), cdp, devices)
         touch.begin("PAGE")
-        await touch.pointer_event(0x10, 300, top + 900)  # wheel down
-        await touch.pointer_event(0, 300, top + 900)
+        await touch.pointer_event(0x10, 100, top + 300)  # wheel down
+        await touch.pointer_event(0, 100, top + 300)
         await touch.key(0xFFE3, True)  # Control_L: noVNC's two-finger pinch
-        await touch.pointer_event(0x08, 300, top + 900)  # wheel up
-        await touch.pointer_event(0, 300, top + 900)
+        await touch.pointer_event(0x08, 100, top + 300)  # wheel up
+        await touch.pointer_event(0, 100, top + 300)
         await touch.key(0xFFE3, False)
         return cdp
 
@@ -510,9 +515,9 @@ def test_control_ending_mid_touch_lifts_the_finger():
         cdp = FakeCdp()
         touch = TouchInjector(FakeX(), cdp, devices)
         touch.begin("PAGE")
-        await touch.pointer_event(1, 300, devices.device.page_top + 300)
+        await touch.pointer_event(1, 300, 300)
         await touch.end()
-        await touch.pointer_event(0, 300, devices.device.page_top + 300)
+        await touch.pointer_event(0, 300, 300)
         return cdp
 
     assert [t[0] for t in _touches(asyncio.run(main()))] == ["touchStart", "touchCancel"]
@@ -523,7 +528,7 @@ def test_control_ending_mid_touch_lifts_the_finger():
 
 def test_in_view_mode_no_input_is_sent():
     devices = FixedDevices("iphone-15")
-    top = devices.device.page_top
+    top = 0  # a mobile frame starts at the page's first row (LB-R5)
 
     async def drive(touch: TouchInjector) -> None:
         await touch.pointer_event(1, 300, top + 300)
@@ -554,8 +559,9 @@ def test_in_view_mode_no_input_is_sent():
 
 
 @pytest.mark.parametrize(("name", "orientation"), DEVICES)
-def test_the_mask_covers_a_password_field_on_every_preset_at_its_device_scale_factor(name, orientation):
-    width, height, scale, _touch, _ua = _expected(name, orientation)
+def test_the_mask_covers_a_password_field_on_every_preset_where_the_page_draws_it(name, orientation):
+    width, height, _dpr, _touch, _ua = _expected(name, orientation)
+    scale = 1.0  # screen pixels per CSS pixel, on every preset (presets.py, LB-R3)
     state = MaskState()
     state.session_up()
     state.frame_attached("TOP", None)
@@ -582,7 +588,7 @@ def test_the_mask_covers_a_password_field_on_every_preset_at_its_device_scale_fa
         for x in range(x0, x1, 5):
             assert frame.rgb_at(x, y) == MASK_RGB, (name, orientation, x, y)
     assert frame.rgb_at(x1 - 1, y1 - 1) == MASK_RGB
-    # The box is the field at this scale, not the whole page: well past it is untouched.
+    # The box is the field, not the whole page: well past it is untouched.
     assert frame.rgb_at(min(x1 + 40, device.display_width - 1), min(y1 + 40, device.display_height - 1)) == WHITE
 
 
@@ -590,15 +596,116 @@ def test_the_mask_covers_a_password_field_on_every_preset_at_its_device_scale_fa
 
 
 class FakeXServer:
-    """Enough of X11 and RandR to answer `XRandrDisplay`, recording each request."""
+    """X11 and RandR as Xvfb answers them, recording each request.
+
+    MODELLED ON XVFB, NOT ON WHAT device.py SENDS. Xvfb's `vfbRandRInit`
+    (xserver hw/vfb/InitOutput.c) sets the screen-size range to 1x1 ..
+    the size it was started at, and makes ONE CRTC driving ONE output with a
+    mode named "<w>x<h>" as large as the whole screen. RandR's
+    `ProcRRSetScreenSize` (randr/rrscreen.c) refuses with BadMatch any size
+    smaller than an active CRTC's mode, and `ProcRRSetCrtcConfig` refuses
+    with BadValue a mode larger than the screen. That pair is the gate's
+    DisplayError on `desktop` (measured 2026-10-11 on task_8cf26eb6e1f94e85adf8):
+    Xvfb starts at the largest preset, and the screen cannot shrink while the
+    start-up CRTC still covers it.
+    """
 
     ROOT = 0x2A1
     RANDR = 140
+    CRTC = 0x40
+    OUTPUT = 0x41
+    CONFIG_TIME = 7
+    BAD_VALUE, BAD_MATCH, BAD_NAME = 2, 8, 15
 
-    def __init__(self, *, refuse_size: bool = False, randr: bool = True) -> None:
+    def __init__(self, *, refuse_size: bool = False, randr: bool = True,
+                 width: int = MAX_DISPLAY_WIDTH, height: int = MAX_DISPLAY_HEIGHT) -> None:
         self.requests: list[tuple[int, int, bytes]] = []
         self._refuse = refuse_size
         self._randr = randr
+        self.max = (width, height)
+        self.screen = (width, height)
+        first = f"{width}x{height}"
+        self.modes: dict[int, tuple[int, int, str]] = {0x50: (width, height, first)}
+        self.output_modes = {0x50}
+        self.crtc_mode = 0x50
+        self._next_mode = 0x51
+
+    @property
+    def crtc_size(self) -> tuple[int, int] | None:
+        if not self.crtc_mode:
+            return None
+        w, h, _ = self.modes[self.crtc_mode]
+        return w, h
+
+    def _error(self, code: int, seq: int) -> bytes:
+        return struct.pack("<BBHI24x", 0, code, seq, 0)
+
+    def _resources(self, seq: int) -> bytes:
+        names = b"".join(n.encode() for _, _, n in self.modes.values())
+        body = struct.pack("<II", self.CRTC, self.OUTPUT)
+        for mode_id, (w, h, n) in self.modes.items():
+            body += struct.pack("<IHHIHHHHHHHHI", mode_id, w, h, w * h * 60, w, w, w, 0, h, h, h, len(n), 0)
+        body += names + b"\0" * (-len(names) % 4)
+        head = struct.pack("<BxHIIIHHHH8x", 1, seq, len(body) // 4, 1, self.CONFIG_TIME,
+                           1, 1, len(self.modes), len(names))
+        return head + body
+
+    def _answer(self, major: int, minor: int, rest: bytes, seq: int) -> bytes:
+        if major == 98:  # QueryExtension
+            return struct.pack("<BxHIBBBB20x", 1, seq, 0, int(self._randr), self.RANDR, 0, 0)
+        if major == 43:  # GetInputFocus
+            return struct.pack("<BBHII20x", 1, 1, seq, 0, self.ROOT)
+        if major != self.RANDR:
+            return self._error(1, seq)
+        if minor == 0:  # QueryVersion
+            return struct.pack("<BxHIII16x", 1, seq, 0, 1, 6)
+        if minor == 25:  # GetScreenResourcesCurrent
+            return self._resources(seq)
+        if minor == 16:  # CreateMode
+            _window, _id, w, h = struct.unpack_from("<IIHH", rest)
+            (name_len,) = struct.unpack_from("<H", rest, 4 + 26)
+            name = rest[36:36 + name_len].decode()
+            if any(n == name for _, _, n in self.modes.values()):
+                return self._error(self.BAD_NAME, seq)
+            mode_id, self._next_mode = self._next_mode, self._next_mode + 1
+            self.modes[mode_id] = (w, h, name)
+            return struct.pack("<BxHII20x", 1, seq, 0, mode_id)
+        if minor == 18:  # AddOutputMode
+            output, mode = struct.unpack("<II", rest)
+            if output != self.OUTPUT or mode not in self.modes:
+                return self._error(self.BAD_MATCH, seq)
+            self.output_modes.add(mode)
+            return b""
+        if minor == 21:  # SetCrtcConfig
+            crtc, _ts, config_ts, x, y, mode, rotation = struct.unpack_from("<IIIhhIH2x", rest)
+            outputs = list(struct.unpack_from(f"<{(len(rest) - 24) // 4}I", rest, 24))
+            reply = struct.pack("<BBHII20x", 1, 0, seq, 0, 1)
+            if config_ts != self.CONFIG_TIME:
+                return struct.pack("<BBHII20x", 1, 1, seq, 0, 1)  # InvalidConfigTime
+            if crtc != self.CRTC:
+                return self._error(self.BAD_MATCH, seq)
+            if mode == 0:
+                if outputs:
+                    return self._error(self.BAD_MATCH, seq)
+                self.crtc_mode = 0
+                return reply
+            if mode not in self.output_modes or outputs != [self.OUTPUT] or rotation != 1:
+                return self._error(self.BAD_MATCH, seq)
+            w, h, _ = self.modes[mode]
+            if x + w > self.screen[0] or y + h > self.screen[1]:
+                return self._error(self.BAD_VALUE, seq)
+            self.crtc_mode = mode
+            return reply
+        if minor == 7:  # SetScreenSize
+            _root, w, h = struct.unpack_from("<IHH", rest)
+            if self._refuse or not (1 <= w <= self.max[0] and 1 <= h <= self.max[1]):
+                return self._error(self.BAD_VALUE, seq)
+            size = self.crtc_size
+            if size is not None and (size[0] > w or size[1] > h):
+                return self._error(self.BAD_MATCH, seq)
+            self.screen = (w, h)
+            return b""
+        return self._error(1, seq)
 
     async def handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         await reader.readexactly(12)
@@ -614,15 +721,7 @@ class FakeXServer:
                 rest = await reader.readexactly(length * 4 - 4)
                 seq += 1
                 self.requests.append((major, minor, rest))
-                if major == 98:  # QueryExtension
-                    writer.write(struct.pack("<BxHIBBBB20x", 1, seq, 0, int(self._randr), self.RANDR, 0, 0))
-                elif major == self.RANDR and minor == 0:
-                    writer.write(struct.pack("<BxHIII16x", 1, seq, 0, 1, 6))
-                elif major == self.RANDR and minor == 7:
-                    if self._refuse:
-                        writer.write(struct.pack("<BBHI24x", 0, 2, seq, 0))  # BadValue
-                elif major == 43:  # GetInputFocus
-                    writer.write(struct.pack("<BBHII20x", 1, 1, seq, 0, self.ROOT))
+                writer.write(self._answer(major, minor, rest, seq))
                 await writer.drain()
         except asyncio.IncompleteReadError:
             pass
@@ -647,15 +746,90 @@ def test_the_display_is_resized_with_randr_on_the_root_window():
     server = FakeXServer()
 
     async def body(display: XRandrDisplay) -> None:
-        await display.resize(1179, 2644)
+        await display.resize(393, 939)
 
     _with_x(server, body)
     sizes = [r for r in server.requests if r[0] == FakeXServer.RANDR and r[1] == 7]
     assert len(sizes) == 1
     root, width, height, _mm_w, _mm_h = struct.unpack("<IHHII", sizes[0][2])
-    assert (root, width, height) == (FakeXServer.ROOT, 1179, 2644)
+    assert (root, width, height) == (FakeXServer.ROOT, 393, 939)
     version = [r for r in server.requests if r[0] == FakeXServer.RANDR and r[1] == 0]
-    assert struct.unpack("<II", version[0][2]) == (1, 2)
+    assert struct.unpack("<II", version[0][2]) == (1, 3)
+
+
+def test_the_fake_x_server_refuses_what_xvfb_refuses():
+    """The control: the bare `RRSetScreenSize` the gate sent before LB-DEV-A is
+    refused here exactly as Xvfb refused it, so the tests below could fail."""
+    server = FakeXServer()
+
+    async def body(path_display: XRandrDisplay) -> None:
+        reader, writer = await asyncio.open_unix_connection(path_display._path)
+        try:
+            from agent_worker.livegate import device as device_module
+
+            root = await device_module._x_setup(reader, writer)
+            writer.write(struct.pack("<BxHH2x", 98, 4, 5) + b"RANDR\0\0\0")
+            await device_module._x_reply(reader, 1)
+            desktop = resolve("desktop")
+            writer.write(struct.pack("<BBHIHHII", FakeXServer.RANDR, 7, 5, root,
+                                     desktop.display_width, desktop.display_height, 1, 1))
+            writer.write(struct.pack("<BxH", 43, 1))
+            await writer.drain()
+            with pytest.raises(DisplayError, match="code=8"):
+                await device_module._x_reply(reader, 3)
+        finally:
+            writer.close()
+
+    _with_x(server, body)
+    assert server.screen == (MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT)
+
+
+@pytest.mark.parametrize(("name", "orientation"), DEVICES)
+def test_every_preset_in_both_orientations_resizes_an_xvfb_started_at_the_largest_size(name, orientation):
+    """THE DEFECT (LB-DEV-A): `desktop` failed with DisplayError on a real pod.
+    Each device, from Xvfb's start-up state, ends with the screen AND its CRTC
+    at the device's frame."""
+    server = FakeXServer()
+    device = resolve(name, orientation)
+
+    async def body(display: XRandrDisplay) -> None:
+        await display.resize(device.display_width, device.display_height)
+
+    _with_x(server, body)
+    assert server.screen == (device.display_width, device.display_height)
+    assert server.crtc_size == (device.display_width, device.display_height)
+
+
+def test_one_display_goes_through_every_device_and_back_reusing_its_modes():
+    server = FakeXServer()
+    order = [*all_devices(), *reversed(all_devices()), resolve("desktop")]
+
+    async def body(display: XRandrDisplay) -> None:
+        for device in order:
+            await display.resize(device.display_width, device.display_height)
+            assert server.screen == (device.display_width, device.display_height), device
+            assert server.crtc_size == server.screen, device
+
+    _with_x(server, body)
+    # A size seen before is reused by name, never created twice (BadName).
+    names = [n for _, _, n in server.modes.values()]
+    assert len(names) == len(set(names))
+
+
+def test_the_default_device_is_applied_at_start_on_an_xvfb_started_at_the_largest_size():
+    records: list[tuple[str, dict[str, str]]] = []
+    server = FakeXServer()
+
+    async def body(display: XRandrDisplay) -> list[float]:
+        mask = FakeScale()
+        device = DeviceController(FakeCdp(), display, mask, record=lambda k, f: records.append((k, dict(f))))
+        await device.start()
+        return mask.scales
+
+    assert _with_x(server, body) == [1.0]
+    desktop = resolve("desktop")
+    assert server.screen == (desktop.display_width, desktop.display_height)
+    assert records == []
 
 
 @pytest.mark.parametrize("server", [FakeXServer(refuse_size=True), FakeXServer(randr=False)])

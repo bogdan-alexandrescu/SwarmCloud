@@ -7,6 +7,8 @@
 //     theater with the tab's OWN screen node -- the element noVNC draws into
 //     -- in its stage, on the one socket the tab already opened; Esc puts the
 //     node back;
+//   * the theater's device slot is the tab's own bar: it switches the device
+//     for the person in control and is disabled for a viewer (LB-DEV-B);
 //   * Save as login is offered once the person returns control in a personal
 //     (`u-`) workspace, and never in a group one, never before control is
 //     returned, and never when someone else took control over them.
@@ -32,6 +34,7 @@ const api = vi.hoisted(() => ({
   returnLiveControl: vi.fn(),
   renewLiveControl: vi.fn(),
   openLiveToMembers: vi.fn(),
+  setLiveDevice: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -68,13 +71,17 @@ class FakeSocket extends EventTarget {
   static made: FakeSocket[] = []
   binaryType = 'blob'
   readyState = 0
+  onopen: ((e: Event) => void) | null = null
   onmessage: ((e: MessageEvent) => void) | null = null
   constructor(readonly url: string) {
     super()
     FakeSocket.made.push(this)
     queueMicrotask(() => {
       this.readyState = 1
-      this.dispatchEvent(new Event('open'))
+      // A browser WebSocket fires both its `onopen` property and its listeners.
+      const opened = new Event('open')
+      this.onopen?.(opened)
+      this.dispatchEvent(opened)
     })
   }
   send() {}
@@ -119,7 +126,7 @@ function session(over: Partial<LiveSession> = {}): LiveSession {
     open_to_members: false,
     device: { preset: 'desktop', orientation: 'landscape', touch: false },
     presets: [{ name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false }],
-    you: { email: ME, can_control: true, can_preempt: true, can_open: true },
+    you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: false },
     ...over,
   }
 }
@@ -146,6 +153,7 @@ beforeEach(() => {
     ok({ ticket: `vt.${crypto.randomUUID()}`, session_id: 'ls_mounts', expires_in: 30, socket_path: '/v1/live/ls_mounts/stream' }),
   )
   api.renewLiveControl.mockResolvedValue(ok(null))
+  api.setLiveDevice.mockResolvedValue(ok(null))
 })
 
 afterEach(() => {
@@ -180,6 +188,39 @@ describe('the Browser tab opens the theater on its own screen', () => {
     })
     expect(screen.queryByRole('dialog', { name: /^Theater/ })).toBeNull()
     expect(document.querySelector('.live-body')!.contains(node), 'Esc did not put the screen back in the tab').toBe(true)
+  })
+})
+
+describe('the theater’s device slot switches the device for the person in control (LB-DEV-B)', () => {
+  const theaterDevice = () => {
+    fireEvent.click(screen.getByRole('button', { name: 'Open theater (T)' }))
+    const slot = screen.getByRole('dialog', { name: /^Theater/ }).querySelector('.th-device')
+    expect(slot, 'the theater has no device slot').not.toBeNull()
+    return slot as HTMLElement
+  }
+
+  it('rotates through setLiveDevice from the theater', () => {
+    const s = session({
+      controller: held(ME),
+      you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: true },
+    })
+    render(<Pane tenant={GROUP} s={s} />)
+    const slot = theaterDevice()
+    const rotate = Array.from(slot.querySelectorAll('button')).find((b) => /rotate/i.test(b.textContent ?? ''))!
+    expect(rotate.disabled).toBe(false)
+    fireEvent.click(rotate)
+    expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'desktop', orientation: 'portrait' })
+  })
+
+  it('is disabled in the theater for a viewer', () => {
+    render(<Pane tenant={GROUP} s={session({ controller: held(OTHER) })} />)
+    const slot = theaterDevice()
+    // The device control is UX1's chip group now (owner decision: chips, not a <select>).
+    const chips = slot.querySelector('[role="group"][aria-label="Device"]')
+    expect(chips).not.toBeNull()
+    const buttons = Array.from(slot.querySelectorAll('button'))
+    expect(buttons.length).toBeGreaterThan(0)
+    for (const b of buttons) expect(b.disabled).toBe(true)
   })
 })
 

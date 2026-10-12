@@ -10,7 +10,7 @@ WHAT IS HELD HERE
   an issue over through the executor exactly as through the route. SWEEP's
   own file (`test_issue_sweep.py`) passes unchanged against the refactor.
 * §3.1'S PARAMETERS: `labels_include`, `labels_exclude`, `max_new_per_firing`,
-  `max_live_runs` (the TENANT's live runs, SWEEP's count), the NOT_READY
+  `max_live_runs` (THIS SCHEDULE's live runs, not the tenant's), the NOT_READY
   cooldown, and `fix_rounds`.
 * THE GATE DECIDES THE RUN (§4.2): `plan: approve` makes the plan wait,
   `merge: approve` makes the merge wait in the inbox, `merge: off` never
@@ -351,16 +351,36 @@ def test_max_new_per_firing_starts_the_oldest_first(db, ctx, repo_id, github) ->
     assert preview["limits"]["max_new_per_firing"] == 2
 
 
-def test_max_live_runs_counts_every_live_run_of_the_tenant(db, ctx, repo_id, github) -> None:
+def test_max_live_runs_counts_only_this_schedules_live_runs(db, ctx, repo_id, github) -> None:
+    """Measured 2026-10-11: another schedule's stuck run took a slot from
+    sch_88b97e090beb and its firing started nothing. A run another schedule
+    or a person started holds no place in this schedule's limit."""
     github.issues = [issue(n, minutes_ago=100 - n) for n in range(1, 6)]
-    # Another schedule's run holds a tenant slot too, as a person's does.
-    other = sweep(db, repo_id, params={"max_new_per_firing": 1}, schedule_id="sch_000000000002")
+    other = sweep(db, repo_id, params={"max_new_per_firing": 2}, schedule_id="sch_000000000002")
     issue_sweep.create(firing_for(ctx, other))
-    schedule = sweep(db, repo_id, params={"max_live_runs": 3, "max_new_per_firing": 8})
+    schedule = sweep(db, repo_id, params={"max_live_runs": 2, "max_new_per_firing": 8})
 
+    preview = issue_sweep.dry_run(firing_for(ctx, schedule))
     work = issue_sweep.create(firing_for(ctx, schedule))
 
-    assert len(work) == 2 and len(issue_runs(db)) == 3
+    assert started(work, db) == [3, 4] and len(issue_runs(db)) == 4
+    assert preview["limits"]["max_live_runs"] == 2
+    assert preview["own_live"] == {"running": 0, "limit": 2, "bound": "max_live_runs"}
+
+
+def test_a_schedule_at_its_own_limit_says_how_many_of_its_runs_are_live(db, ctx, repo_id, github) -> None:
+    github.issues = [issue(n, minutes_ago=100 - n) for n in range(1, 6)]
+    schedule = sweep(db, repo_id, params={"max_live_runs": 2, "max_new_per_firing": 8})
+    issue_sweep.create(firing_for(ctx, schedule))
+    firing = firing_for(ctx, schedule, fid=f"{SCHEDULE_ID}:next")
+
+    work = issue_sweep.create(firing)
+
+    assert work == []
+    assert firing.explanation["reason"] == "no_room"
+    assert firing.explanation["bound"] == "max_live_runs"
+    assert firing.explanation["own_live"] == {"running": 2, "limit": 2, "bound": "max_live_runs"}
+    assert schedulefire.nothing_started(firing.explanation)["own_live"]["running"] == 2
 
 
 def test_an_ended_run_frees_its_place(db, ctx, repo_id, github) -> None:

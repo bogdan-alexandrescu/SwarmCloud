@@ -1221,8 +1221,11 @@ def wait_for_handoff(api: Api, cfg: Config) -> tuple[dict | None, str | None]:
     while time.monotonic() < deadline:
         state = settled(cfg)
         status, view = api.call("GET", f"/v1/tasks/{cfg.task}/live/session")
-        if status == 200 and isinstance(view, dict) and view.get("available") and view.get("human_wait"):
-            return view, None
+        # The console's wire (LB-SEAM, tests/fixtures/live): the session sits
+        # under `session`, null until the tunnel is up.
+        session = view.get("session") if status == 200 and isinstance(view, dict) else None
+        if isinstance(session, dict) and session.get("state") == "open" and session.get("human_wait"):
+            return session, None
         if state is not None:
             return None, state
         time.sleep(3)
@@ -1259,7 +1262,7 @@ def run(cfg: Config) -> None:
         wait = session["human_wait"]
         results.put("handoff", "PASS", f"the agent asked for help ({wait.get('reason')!r}); session "
                     f"{session.get('session_id')} is open and this submitter may take control: "
-                    f"{bool((session.get('you') or {}).get('may_take'))}")
+                    f"{bool((session.get('you') or {}).get('can_control'))}")
         check_isolation(api, cfg, session, results)
         tally = drive_viewer(api, cfg, session, password, results)
         state = wait_settled(cfg, cfg.timeout + 120)

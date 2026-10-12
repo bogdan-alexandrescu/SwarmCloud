@@ -4,8 +4,10 @@
 //   * Open Browser tab and ⤢ Theater navigate to the same session;
 //   * no thumbnail stream for a finished step.
 //
-// The card is the step inspector a picked node opens (`StepInspector`), and
-// the stream is a fake socket speaking the gate's side of RFB 3.8
+// The card is INLINE in the running browser step's graph node (`StepNode`,
+// drawn here through `WorkflowCard`; LB-UX2b moved it out of the step
+// inspector, as the owner's chosen mockup draws it), and the stream is a fake
+// socket speaking the gate's side of RFB 3.8
 // (`livegate/rfb.py`): this suite is offline, and the gate answers an update
 // request only when asked, which is what the <= 1 fps assertion measures.
 
@@ -22,8 +24,9 @@ import {
   type LiveSocket,
   type OpenLive,
 } from '../src/LiveThumb'
-import { StepInspector, type StepRowModel } from '../src/WorkflowViews'
-import type { TaskState } from '../src/types'
+import { WorkflowCard } from '../src/Workflows'
+import type { Task, TaskState, Workflow } from '../src/types'
+import { fixtureTask } from '../src/__tests__/dagfixture'
 
 const W = 4
 const H = 2
@@ -80,37 +83,43 @@ class FakeGate implements LiveSocket {
   }
 }
 
-function row(state: TaskState, profile = 'claude-code-browser', taskId: string | null = 'task-live-1'): StepRowModel {
-  return {
-    step: { step_id: 'browse', runner_profile: profile, resource_class: 'browser', depends_on: [], input_from: {}, task_id: taskId },
-    taskId,
-    look: { tone: 'live', word: state.toLowerCase(), title: state, mark: 'running', hue: 'live' },
-    attempts: { text: '1' },
-    sort: { attempts: 1 },
-    result: null,
-  } as unknown as StepRowModel
+/** A one-step workflow whose step is the browser step, in `state`. */
+function oneStep(state: TaskState, profile = 'claude-code-browser'): { workflow: Workflow; taskById: Map<string, Task> } {
+  const task = { ...fixtureTask('task-live-1', 'browse', state, 'wf-1', { started_at: null, completed_at: null }), runner_profile: profile }
+  const workflow = {
+    workflow_id: 'wf-1',
+    state: 'RUNNING',
+    tenant_id: 'eng',
+    stored_state: 'RUNNING',
+    state_source: 'stored',
+    created_at: task.created_at,
+    updated_at: task.updated_at,
+    submitted_by: task.submitted_by,
+    priority: 0,
+    on_step_failure: 'FAIL_WORKFLOW',
+    cancel_requested: false,
+    steps: [{ step_id: 'browse', runner_profile: profile, resource_class: 'browser', depends_on: [], input_from: {}, task_id: 'task-live-1' }],
+  } as unknown as Workflow
+  return { workflow, taskById: new Map([[task.id, task]]) }
 }
 
-const SHAPE = { label: '1 step', text: '1', steps: 1 }
-
-function inspect(state: TaskState, open: OpenLive, profile?: string, taskId?: string | null) {
-  return render(
-    <StepInspector
-      workflowId="wf-1"
-      row={row(state, profile, taskId)}
-      taskState={state}
-      siblings={[]}
-      siblingIndex={0}
-      shape={SHAPE as never}
-      onSibling={() => {}}
-      focus={null}
-      onFocused={() => {}}
-      onClose={() => {}}
-      now={Date.now()}
-      load={() => new Promise(() => {})}
+function card(state: TaskState, open: OpenLive, profile?: string) {
+  const { workflow, taskById } = oneStep(state, profile)
+  return (
+    <WorkflowCard
+      workflow={workflow}
+      taskById={taskById}
+      usage={{ kind: 'ready', usage: null }}
+      openStages={{}}
+      onToggleStage={() => {}}
+      reload={() => {}}
       openLive={open}
-    />,
+    />
   )
+}
+
+function inspect(state: TaskState, open: OpenLive, profile?: string) {
+  return render(card(state, open, profile))
 }
 
 let putImageData: ReturnType<typeof vi.fn>
@@ -241,10 +250,11 @@ describe('Open Browser tab and ⤢ Theater navigate to the same session', () => 
     expect(browserTabPath('task-live-1')).toBe(tabUrl.pathname)
     expect(theaterPath('task-live-1', 'wf-1')).toBe(`${tabUrl.pathname}${theaterUrl.search}`)
 
-    // The session is the task's: one live route per task, nothing else in the URL.
-    const ws = new URL(liveSocketUrl('task-live-1', { protocol: 'https:', host: 'console.example' }))
+    // The session's stream (§5.2), the one swarm-api serves: the session id
+    // and nothing else in the URL; the ticket goes as the first message.
+    const ws = new URL(liveSocketUrl('live_att_1', { protocol: 'https:', host: 'console.example' }))
     expect(ws.protocol).toBe('wss:')
-    expect(ws.pathname).toBe('/v1/tasks/task-live-1/live')
+    expect(ws.pathname).toBe('/v1/live/live_att_1/stream')
     expect(ws.search).toBe('')
   })
 })
@@ -281,23 +291,7 @@ describe('no thumbnail stream for a finished step', () => {
     act(() => gate.answer())
     const asked = gate.requestTimes.length
 
-    view.rerender(
-      <StepInspector
-        workflowId="wf-1"
-        row={row('SUCCEEDED')}
-        taskState="SUCCEEDED"
-        siblings={[]}
-        siblingIndex={0}
-        shape={SHAPE as never}
-        onSibling={() => {}}
-        focus={null}
-        onFocused={() => {}}
-        onClose={() => {}}
-        now={Date.now()}
-        load={() => new Promise(() => {})}
-        openLive={open}
-      />,
-    )
+    view.rerender(card('SUCCEEDED', open))
     expect(screen.queryByRole('region', { name: 'Live browser' })).toBeNull()
     expect(gate.closed).toBe(true)
     act(() => vi.advanceTimersByTime(60_000))

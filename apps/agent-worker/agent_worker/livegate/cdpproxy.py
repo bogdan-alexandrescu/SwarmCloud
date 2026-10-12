@@ -52,6 +52,20 @@ page is `secure`, served over https, and not at an IP literal; and control
 ENDS if the state leaves `secure` while held. An unknown state is not secure:
 the check fails closed.
 
+ABOUT:BLANK HAS NO SCHEME TO JUDGE (lane LB-R4). A page that has not made its
+first navigation is `about:blank`: no origin, nothing from any network, and a
+security state Chromium never reports as `secure`. MEASURED 2026-10-12: a
+person who took control of the agent's page before its first navigation read
+"You took control", then "Taking control was refused: the page is not on a
+secure https connection". So control on `about:blank` is granted without
+waiting on the security state, and the certificate rule starts at the first
+navigation: the gate's session also watches `Page.frameNavigated`, and a top
+frame that commits anything but a named https host ends control; a state that
+is not `secure` while held on a page granted blank ends control unless the
+page is, read again, still `about:blank` (or by then secure https). Either
+signal alone ends it, in either order, so the exception never outlives the
+blank page.
+
 THE ORDER ON RETURN (section 4.2, step 3): clear every password input the
 gate's sessions can reach, restore the agent's scripts, hand the context over,
 deliver the held responses, then release the held commands. A cross-origin
@@ -64,6 +78,13 @@ itself. Commands the proxy sends from there are fire-and-forget.
 
 Nothing here is logged. A refusal is recorded through `record` by method name
 only; a page's content, a request body, a key or a parameter never is.
+
+THE ACTION LOG (section 7; lane LB-V3). Every agent method the proxy forwards,
+and every one it refuses, is handed to `on_action` as one line (`action_line`):
+the method's name, a navigation's URL with no query, fragment or user name
+(`action_url`), and `Input.insertText` as a LENGTH. Nothing else of the
+parameters, so a line can never carry typed text, a key or a cookie. The gate
+sends the lines to the relay, which writes the recording's action log.
 """
 
 from __future__ import annotations
@@ -74,6 +95,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -93,6 +115,57 @@ _RELEASING = "releasing"
 
 # CDP's own "server error" code; Playwright surfaces the message verbatim.
 _ERROR_CODE = -32000
+
+#: A CDP method name (`Domain.method`). Anything else is not a method, and is
+#: logged as `unknown` rather than as whatever string the agent sent.
+_METHOD_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{0,63}\.[A-Za-z][A-Za-z0-9]{0,63}")
+#: The methods whose URL the action log shows, and the parameter holding it.
+ACTION_URL_PARAMS: Mapping[str, str] = {"Page.navigate": "url", "Target.createTarget": "url"}
+#: A logged path is cut here: the relay refuses a value over 2,048 characters,
+#: and what a person reads in the timeline is the site and where on it.
+MAX_ACTION_PATH = 256
+#: Why the proxy refused an agent method, as the timeline names it: the method
+#: policy (cdppolicy.py), a session the agent's connection does not own, or a
+#: request body from a request made while a person was in control (§5.4.3).
+REFUSAL_CAUSES = ("method_policy", "not_its_session", "control_window_request")
+
+
+def action_url(raw: Any) -> str | None:
+    """`raw` as the action log may hold it: scheme, host, port and path of an
+    http(s) URL. Never the query, the fragment or a user name or password --
+    the places a token or a typed value rides in a URL. None for anything else."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    host = parts.hostname if ":" not in parts.hostname else f"[{parts.hostname}]"
+    netloc = host if port is None else f"{host}:{port}"
+    return f"{parts.scheme}://{netloc}{(parts.path or '/')[:MAX_ACTION_PATH]}"
+
+
+def action_line(method: Any, params: Any, cause: str | None = None) -> dict[str, Any]:
+    """One agent method as an action-log line: `{"kind": "cdp", "method"}`, a
+    navigation's `url` (`action_url`), `Input.insertText`'s `length`, and,
+    when the gate refused it, `outcome` `refused` with the refusal's `cause`
+    (`REFUSAL_CAUSES`). No other parameter, ever."""
+    name = method if isinstance(method, str) and _METHOD_NAME.fullmatch(method) else "unknown"
+    line: dict[str, Any] = {"kind": "cdp", "method": name}
+    given = params if isinstance(params, Mapping) else {}
+    if name == "Input.insertText" and isinstance(given.get("text"), str):
+        line["length"] = len(given["text"])
+    key = ACTION_URL_PARAMS.get(name)
+    url = action_url(given.get(key)) if key is not None else None
+    if url is not None:
+        line["url"] = url
+    if cause is not None:
+        line["outcome"] = "refused"
+        line["cause"] = cause
+    return line
 
 # Clears every password-shaped input in the document and its same-origin
 # frames. `autocomplete` catches a field a page toggled from `password` to
@@ -157,11 +230,13 @@ class CdpProxy:
         record: Record,
         on_control_ended: Callable[[str], None] | None = None,
         security_wait_seconds: float = 5.0,
+        on_action: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._send = send_to_chromium
         self._paths = paths
         self._record = record
         self._on_control_ended = on_control_ended
+        self._on_action = on_action
         self._security_wait = security_wait_seconds
         self._next_id = 0
         self._pending: dict[int, _Pending] = {}
@@ -178,6 +253,10 @@ class CdpProxy:
         self._security: dict[str, str] = {}
         self._security_seen: dict[str, asyncio.Event] = {}
         self._controlled: str | None = None
+        # Control was granted on about:blank and the page has not navigated
+        # since: a state that is not `secure` is checked against the URL.
+        self._granted_blank = False
+        self._checks: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------ state
 
@@ -256,6 +335,11 @@ class CdpProxy:
             owner.sessions.pop(session, None)
         self._scripts.forget_session(session)
 
+    def _note(self, method: Any, params: Any, refused: str | None = None) -> None:
+        """One action-log line (`action_line`); never awaited."""
+        if self._on_action is not None:
+            self._on_action(action_line(method, params, refused))
+
     async def _reply_error(self, connection: AgentConnection, message: Mapping[str, Any], text: str) -> None:
         reply: dict[str, Any] = {"id": message.get("id"), "error": {"code": _ERROR_CODE, "message": text}}
         if "sessionId" in message:
@@ -274,12 +358,14 @@ class CdpProxy:
         session = message.get("sessionId")
         if session is not None and self._owner.get(session) is not connection:
             self._record("cdp_session_refused", {"method": method})
+            self._note(method, message.get("params"), "not_its_session")
             await self._reply_error(connection, message, "No session with given id")
             return
         params = message.get("params")
         refusal = cdppolicy.check(method, params if isinstance(params, Mapping) else {}, self._paths)
         if refusal is not None:
             self._record("cdp_method_refused", {"method": method})
+            self._note(method, params, "method_policy")
             await self._reply_error(connection, message, refusal.message())
             return
         if self._mode != _OPEN:
@@ -299,6 +385,7 @@ class CdpProxy:
         params: dict[str, Any] = dict(raw) if isinstance(raw, Mapping) else {}
         if method in cdppolicy.REQUEST_BODY_METHODS and params.get("requestId") in self._control_requests:
             self._record("cdp_method_refused", {"method": method})
+            self._note(method, params, "control_window_request")
             await self._reply_error(
                 connection, message, f"refused by the live gate: {method} for a request made while a person was in control"
             )
@@ -309,6 +396,7 @@ class CdpProxy:
             self._scripts.removed_binding(session, params["name"])
         elif method == "Target.setAutoAttach" and session == connection.browser_session:
             connection.auto_attach = bool(params.get("autoAttach"))
+        self._note(method, params)
         pending = _Pending(connection, message["id"], method, session, agent_session, params, None)
         await self._write(self._allocate(pending), method, params, session)
 
@@ -439,6 +527,20 @@ class CdpProxy:
             self._security[target] = state if isinstance(state, str) else "unknown"
             self._security_seen.setdefault(target, asyncio.Event()).set()
             if self._controlled == target and self._security[target] != "secure":
+                if self._granted_blank:
+                    self._check_blank(target)
+                else:
+                    self._end_control("insecure_connection")
+        elif method == "Page.frameNavigated" and session in self._gate_sessions:
+            frame = params.get("frame") or {}
+            target = self._gate_sessions[session]
+            if self._controlled != target or not isinstance(frame, dict) or frame.get("parentId"):
+                return
+            url = str(frame.get("url", ""))
+            if _is_blank(url):
+                return
+            self._granted_blank = False
+            if not _https_host(url):
                 self._end_control("insecure_connection")
         elif method == "Target.attachedToTarget" and session in self._gate_sessions:
             child = params.get("sessionId")
@@ -474,6 +576,9 @@ class CdpProxy:
             "Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True}, session
         )
         await self.call("Security.enable", {}, session)
+        # The top frame's navigations: control granted on about:blank is held
+        # to the certificate rule from the first one (LB-R4).
+        await self._call_quietly("Page.enable", {}, session)
         return session
 
     async def open_fresh_page(self, url: str) -> str:
@@ -507,6 +612,14 @@ class CdpProxy:
         if self._mode != _PAUSED:
             return self._refuse("not_paused")
         await self.watch_page(target_id)
+        if _is_blank(await self._url(target_id)):
+            # No origin yet: nothing to call insecure (LB-R4). The first
+            # navigation is judged as it commits (`_on_gate_event`).
+            if self._mode != _PAUSED:
+                return self._refuse("not_paused")
+            self._controlled = target_id
+            self._granted_blank = True
+            return ControlDecision(True)
         if target_id not in self._security:
             seen = self._security_seen.setdefault(target_id, asyncio.Event())
             try:
@@ -515,14 +628,39 @@ class CdpProxy:
                 return self._refuse("security_state_unknown")
         if self._security.get(target_id) != "secure":
             return self._refuse("insecure_connection")
-        info = (await self.call("Target.getTargetInfo", {"targetId": target_id})).get("targetInfo") or {}
-        parts = urlsplit(str(info.get("url", "")))
-        if parts.scheme != "https" or not parts.hostname or _is_address(parts.hostname):
+        if not _https_host(await self._url(target_id)):
             return self._refuse("insecure_connection")
         if self._mode != _PAUSED:
             return self._refuse("not_paused")
         self._controlled = target_id
+        self._granted_blank = False
         return ControlDecision(True)
+
+    async def _url(self, target_id: str) -> str:
+        info = (await self.call("Target.getTargetInfo", {"targetId": target_id})).get("targetInfo") or {}
+        return str(info.get("url", ""))
+
+    def _check_blank(self, target_id: str) -> None:
+        """A state that is not `secure` on a page granted blank: read its URL
+        again, off the pipe reader (this runs inside `on_chromium_message`)."""
+        task = asyncio.get_running_loop().create_task(self._recheck_blank(target_id))
+        self._checks.add(task)
+        task.add_done_callback(self._checks.discard)
+
+    async def _recheck_blank(self, target_id: str) -> None:
+        try:
+            url = await self._url(target_id)
+        except Exception:  # noqa: BLE001 -- unreadable is not blank: fail closed
+            url = ""
+        if self._controlled != target_id or not self._granted_blank:
+            return
+        if _is_blank(url):
+            return
+        if _https_host(url) and self._security.get(target_id) == "secure":
+            # Navigated on, and the secure state arrived before this read.
+            self._granted_blank = False
+            return
+        self._end_control("insecure_connection")
 
     def end_control(self, cause: str) -> None:
         """Control ends without a return: idle, renew lapsed, preempted, ..."""
@@ -531,6 +669,7 @@ class CdpProxy:
 
     def _end_control(self, cause: str) -> None:
         self._controlled = None
+        self._granted_blank = False
         self._record("control_ended", {"cause": cause})
         if self._on_control_ended is not None:
             self._on_control_ended(cause)
@@ -540,6 +679,7 @@ class CdpProxy:
         if self._mode != _PAUSED:
             return
         self._controlled = None
+        self._granted_blank = False
         self._mode = _RELEASING
         try:
             for session in [*self._gate_sessions, *self._gate_children]:
@@ -596,6 +736,18 @@ class CdpProxy:
                     await self._call_quietly(
                         "Target.attachToTarget", {"targetId": target, "flatten": True}, connection.browser_session
                     )
+
+
+def _is_blank(url: str) -> bool:
+    """`about:blank`: a page before its first navigation, with no origin."""
+    parts = urlsplit(url)
+    return parts.scheme == "about" and parts.path == "blank"
+
+
+def _https_host(url: str) -> bool:
+    """https, at a host name rather than an IP literal (section 5.4.4)."""
+    parts = urlsplit(url)
+    return parts.scheme == "https" and bool(parts.hostname) and not _is_address(parts.hostname or "")
 
 
 def _is_address(host: str) -> bool:

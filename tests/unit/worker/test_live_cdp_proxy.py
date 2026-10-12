@@ -709,6 +709,106 @@ def test_control_is_refused_on_plain_http_or_an_address(tmp_path):
     run(body)
 
 
+def _navigated(url: str) -> dict[str, Any]:
+    return {"frame": {"id": "F-top", "loaderId": "L1", "url": url, "securityOrigin": "", "mimeType": "text/html"}}
+
+
+def test_a_page_still_on_about_blank_is_not_refused_for_its_scheme(tmp_path):
+    """LB-R4 (part of #1030). MEASURED 2026-10-12 on SwarmCloud: a person took
+    control of the agent's page before its first navigation and the timeline
+    read "You took control", then "Taking control was refused: the page is not
+    on a secure https connection" -- for about:blank, which has no origin and
+    so no scheme to be insecure about. Control is granted there, with no wait
+    on a security state about:blank never reports as `secure`, and the
+    certificate rule takes over at the first navigation."""
+
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        await w.proxy.pause()
+        target = "T-blank"
+        w.chromium.urls[target] = "about:blank"
+        w.chromium.targets[target] = "DEFAULT"
+
+        # No security state reported at all: about:blank is still not refused.
+        decision = await w.proxy.take_control(target)
+        assert decision.granted and decision.cause is None
+        assert w.proxy.in_control
+        assert not [r for r in w.records if r[0] == "control_refused"]
+        gate_session = next(s for s, t in w.proxy._gate_sessions.items() if t == target)
+        assert any(m.get("sessionId") == gate_session for m in w.chromium.from_agent("Page.enable"))
+
+        # about:blank's own state (`neutral`) arriving late does not end it.
+        w.chromium.emit("Security.visibleSecurityStateChanged", _security("neutral"), gate_session)
+        await settle()
+        assert w.proxy.in_control and w.ended == []
+
+        # The first navigation goes to a secure https page: control holds, and
+        # from there the page is held to the certificate rule as any other.
+        w.chromium.urls[target] = "https://github.com/login"
+        w.chromium.emit("Page.frameNavigated", _navigated("https://github.com/login"), gate_session)
+        w.chromium.emit("Security.visibleSecurityStateChanged", _security("secure"), gate_session)
+        await settle()
+        assert w.proxy.in_control and w.ended == []
+        w.chromium.emit("Security.visibleSecurityStateChanged", _security("insecure-broken"), gate_session)
+        await settle()
+        assert not w.proxy.in_control
+        assert w.ended == ["insecure_connection"]
+        await w.chromium.stop()
+
+    run(body)
+
+
+@pytest.mark.parametrize("url", ["http://github.com/login", "https://192.0.2.7/login"])
+@pytest.mark.parametrize("order", ["navigated_first", "security_first", "navigated_only", "security_only"])
+def test_control_taken_on_about_blank_ends_when_it_leaves_for_an_insecure_page(tmp_path, url, order):
+    """Granting on about:blank is not a hole in the certificate rule: the
+    first navigation to plain http or an IP literal ends control, whichever of
+    Chromium's two signals arrives first, or if only one ever does."""
+
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        await w.proxy.pause()
+        target = "T-blank"
+        w.chromium.urls[target] = "about:blank"
+        w.chromium.targets[target] = "DEFAULT"
+        assert (await w.proxy.take_control(target)).granted
+        gate_session = next(s for s, t in w.proxy._gate_sessions.items() if t == target)
+        w.chromium.urls[target] = url
+        if order in ("navigated_first", "navigated_only"):
+            w.chromium.emit("Page.frameNavigated", _navigated(url), gate_session)
+        if order != "navigated_only":
+            w.chromium.emit("Security.visibleSecurityStateChanged", _security("insecure"), gate_session)
+        if order == "security_first":
+            w.chromium.emit("Page.frameNavigated", _navigated(url), gate_session)
+        await settle()
+        assert not w.proxy.in_control, (url, order)
+        assert w.ended == ["insecure_connection"]
+        await w.chromium.stop()
+
+    run(body)
+
+
+def test_a_subframe_navigation_does_not_end_control_on_about_blank(tmp_path):
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        await w.proxy.pause()
+        target = "T-blank"
+        w.chromium.urls[target] = "about:blank"
+        w.chromium.targets[target] = "DEFAULT"
+        assert (await w.proxy.take_control(target)).granted
+        gate_session = next(s for s, t in w.proxy._gate_sessions.items() if t == target)
+        frame = {**_navigated("http://ads.example/")["frame"], "id": "F-child", "parentId": "F-top"}
+        w.chromium.emit("Page.frameNavigated", {"frame": frame}, gate_session)
+        await settle()
+        assert w.proxy.in_control and w.ended == []
+        await w.chromium.stop()
+
+    run(body)
+
+
 def test_control_needs_the_agent_paused_first(tmp_path):
     async def body():
         w = World(tmp_path)

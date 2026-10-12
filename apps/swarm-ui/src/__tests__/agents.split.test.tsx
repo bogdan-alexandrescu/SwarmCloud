@@ -131,7 +131,7 @@ describe('the detail has a header row: state pill, name, Copy link, Stop', () =>
     expect(head.querySelector('.ag-head-id .tid-text')?.textContent).toBe(ID)
     expect(head.querySelector<HTMLElement>('.ag-head-id .tid-copy')?.title).toBe(`${ID} (click to copy)`)
     // Stop is in the header, once.
-    expect(within(head).getByRole('button', { name: 'stop' })).toBeTruthy()
+    expect(within(head).getByRole('button', { name: 'Stop' })).toBeTruthy()
   })
 
   it('copies the address of this agent', async () => {

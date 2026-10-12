@@ -1630,7 +1630,7 @@ class Ticker:
 #: The summary fields of an executor's explanation the `NOTHING_STARTED`
 #: skip repeats; the whole explanation is the firing's `selection`.
 _NOTHING_STARTED_FIELDS = ("reason", "bound", "room", "limits", "passed_over_by_reason",
-                           "failures", "truncated", "start_failures")
+                           "failures", "truncated", "start_failures", "own_live")
 
 
 def nothing_started(selection: Mapping[str, Any] | None) -> dict[str, Any]:

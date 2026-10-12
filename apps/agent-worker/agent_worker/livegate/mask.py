@@ -46,9 +46,9 @@ lines from this module carry counts and outcomes only (§5.3.3).
 
 GEOMETRY. The display holds one maximised Chromium window (§3.1), so the page
 area is the bottom-left `innerWidth x innerHeight` CSS pixels times the
-device scale (`scale`; 1 on the desktop preset, the preset's factor when
-lane L3b resizes the display to a device, §6.1) and the browser's own UI is
-the band above it. Page rectangles are layout-viewport client rectangles; the
+screen scale (`scale`: `Device.screen_scale`, one screen pixel per CSS pixel
+on every preset -- headed Chromium draws an emulated device scale factor at
+that size, presets.py, §6.1) and the browser's own UI is the band above it. Page rectangles are layout-viewport client rectangles; the
 top frame's visual viewport (pinch zoom) maps them onto the screen. A child
 frame's rectangles are offset by its owner element's content box, which the
 parent frame's own report carries, linked by `MaskCdp.link`.

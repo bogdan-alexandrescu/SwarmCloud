@@ -642,12 +642,214 @@ def test_a_tunnel_that_drops_closes_its_viewers():
     assert viewer.closed is not None and viewer.closed[0] == CLOSE_ENDED
 
 
+# ---------------------------------------------------------------- the gate's report (LB-DEV-A)
+
+ORIGIN = {"origin": "https://github.com", "host": "github.com", "display_host": "github.com",
+          "registrable_domain": "github.com", "scheme": "https:", "ip_literal": False, "cert_error": None}
+DEVICE = {"preset": "iphone-15", "orientation": "portrait", "touch": True}
+
+
+def _report(**fields) -> bytes:
+    return encode_frame(rz.OP_REPORT, "", json.dumps(fields).encode())
+
+
+def _reports(endpoint: Endpoint) -> list[dict]:
+    return [m for m in (json.loads(t) for t in endpoint.text) if m.get("type") == "report"]
+
+
+def test_the_gates_report_reaches_every_viewer_and_a_late_joiner_gets_the_latest():
+    """The top frame's origin and the device travel gate -> relay -> each
+    viewer link (swarm-api's proxy, which records them). The relay keeps the
+    last one for a viewer that joins later, and it is sent after `ready`."""
+    key, clock, relay = build()
+    gate, a, late = Endpoint(), Endpoint(), Endpoint()
+
+    async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), gate)
+        await relay.open_viewer(ticket(key, clock, "viewer"), a)
+        await relay.from_tunnel(tunnel, _report(origin=None, device=DEVICE))
+        await relay.from_tunnel(tunnel, _report(origin=ORIGIN, device=DEVICE))
+        await relay.open_viewer(ticket(key, clock, "viewer", email="late@example.test"), late)
+        await relay.flush()
+        return relay.report(SESSION)
+
+    stored = run(go())
+    assert stored == {"origin": ORIGIN, "device": DEVICE}
+    assert _reports(a) == [{"type": "report", "origin": None, "device": DEVICE},
+                           {"type": "report", "origin": ORIGIN, "device": DEVICE}]
+    assert json.loads(late.text[0]) == {"type": "ready"}
+    assert _reports(late) == [{"type": "report", "origin": ORIGIN, "device": DEVICE}]
+    # A report is the relay's to keep, never the gate's stream: nothing went back.
+    assert all(op == OP_OPEN for op, _, _ in gate.frames())
+
+
+@pytest.mark.parametrize("payload", [
+    b"not json",
+    b"[1, 2]",
+    json.dumps({"origin": ORIGIN, "device": DEVICE, "url": "https://github.com/login?token=x"}).encode(),
+    json.dumps({"origin": "https://github.com", "device": DEVICE}).encode(),
+    json.dumps({"origin": {**ORIGIN, "host": "h" * rz.MAX_REPORT_BYTES}, "device": DEVICE}).encode(),
+])
+def test_a_report_that_is_not_two_objects_or_is_too_large_is_dropped(payload):
+    """Origin is untrusted page data: the relay keeps a report only when it is
+    a small JSON object of `origin` and `device`, each an object or null.
+    swarm-api validates every field again before it stores one."""
+    key, clock, relay = build()
+    gate, a = Endpoint(), Endpoint()
+
+    async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), gate)
+        await relay.open_viewer(ticket(key, clock, "viewer"), a)
+        await relay.from_tunnel(tunnel, encode_frame(rz.OP_REPORT, "", payload))
+        await relay.flush()
+        return relay.report(SESSION)
+
+    assert run(go()) is None
+    assert _reports(a) == []
+
+
+def test_a_report_ends_with_its_session():
+    key, clock, relay = build()
+
+    async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), Endpoint())
+        await relay.from_tunnel(tunnel, _report(origin=ORIGIN, device=DEVICE))
+        await relay.close_session(SESSION)
+        return relay.report(SESSION)
+
+    assert run(go()) is None
+
+
+# ---------------------------------------------------------------- device requests (LB-DEV-B)
+
+
+def device(key: bytes, clock: Clock, **overrides) -> str:
+    fields = dict(session_id=SESSION, tenant_id=TENANT, task_id=TASK, attempt_id=ATTEMPT,
+                  generation=GEN, preset="iphone-15", orientation="landscape", touch=None,
+                  now=clock())
+    fields.update(overrides)
+    return rz.mint_device(key, **fields)
+
+
+def _devices(endpoint: Endpoint) -> list[tuple[str, dict]]:
+    return [(c, json.loads(p)) for op, c, p in endpoint.frames() if op == rz.OP_DEVICE]
+
+
+def test_a_device_request_reaches_the_sessions_gate_as_one_device_frame():
+    """swarm-api checked the controller and MAC'd the choice; the relay checks
+    the MAC, the clock, single use and the session, and hands the device --
+    and nothing else -- to the gate."""
+    key, clock, relay = build()
+    gate, other_gate = Endpoint(), Endpoint()
+
+    async def go():
+        await relay.open_tunnel(ticket(key, clock), gate)
+        await relay.open_tunnel(ticket(key, clock, session_id="ls_other", task_id="task_b"), other_gate)
+        assert await relay.device_request(device(key, clock)) == SESSION
+        await relay.flush()
+
+    run(go())
+    assert _devices(gate) == [("", {"preset": "iphone-15", "orientation": "landscape", "touch": None})]
+    assert _devices(other_gate) == []
+
+
+@pytest.mark.parametrize("overrides, reason", [
+    ({"tenant_id": "research"}, "wrong_tenant"),
+    ({"task_id": "task_other"}, "wrong_task"),
+    ({"generation": GEN - 1}, "wrong_generation"),
+    ({"session_id": "ls_none"}, "no_tunnel"),
+])
+def test_a_device_request_for_another_session_or_generation_is_refused(overrides, reason):
+    key, clock, relay = build()
+    gate = Endpoint()
+
+    async def go():
+        await relay.open_tunnel(ticket(key, clock), gate)
+        with pytest.raises(Refused) as e:
+            await relay.device_request(device(key, clock, **overrides))
+        await relay.flush()
+        return e.value.reason
+
+    assert run(go()) == reason
+    assert _devices(gate) == []
+
+
+def test_a_device_request_must_be_swarm_apis_fresh_and_used_once():
+    key, clock, relay = build()
+    gate = Endpoint()
+
+    async def go():
+        await relay.open_tunnel(ticket(key, clock), gate)
+        reasons = []
+        for raw in (device(secrets.token_bytes(32), clock),
+                    device(key, clock, now=clock() - 60),
+                    device(key, clock, ttl=600),
+                    ticket(key, clock, "control"),
+                    mint_close(key, SESSION, now=clock())):
+            with pytest.raises(Refused) as e:
+                await relay.device_request(raw)
+            reasons.append(e.value.reason)
+        good = device(key, clock)
+        await relay.device_request(good)
+        with pytest.raises(Refused) as e:
+            await relay.device_request(good)
+        reasons.append(e.value.reason)
+        await relay.close_session(SESSION)
+        with pytest.raises(Refused) as e:
+            await relay.device_request(device(key, clock))
+        reasons.append(e.value.reason)
+        return reasons
+
+    assert run(go()) == ["bad_signature", "expired", "lifetime", "bad_signature", "bad_signature",
+                         "replayed", "session_closed"]
+
+
+@pytest.mark.parametrize("field, value", [
+    ("preset", ""), ("preset", "p" * 64), ("preset", 393), ("orientation", "upside-down"),
+    ("touch", 1), ("touch", "yes"), ("generation", True),
+])
+def test_a_device_request_carries_a_short_name_never_a_size(field, value):
+    key, clock, _ = build()
+    body = {"session_id": SESSION, "tenant_id": TENANT, "task_id": TASK, "attempt_id": ATTEMPT,
+            "generation": GEN, "preset": "desktop", "orientation": None, "touch": None,
+            "exp": int(clock()) + 20, "nonce": secrets.token_hex(16), field: value}
+    with pytest.raises(Refused) as e:
+        rz.verify_device(key, rz._signed(key, body, rz.DEVICE_DOMAIN), now=clock())
+    assert e.value.reason == "malformed"
+    extra = {**body, field: "desktop" if field == "preset" else None, "width": 1920}
+    with pytest.raises(Refused):
+        rz.verify_device(key, rz._signed(key, extra, rz.DEVICE_DOMAIN), now=clock())
+
+
+def test_post_internal_device_sends_the_frame_and_refuses_a_forgery_alike():
+    from fastapi.testclient import TestClient
+
+    from swarm_live.main import create_app
+
+    key, clock, relay = build()
+    with TestClient(create_app(relay)) as client:
+        with client.websocket_connect("/v1/tunnel") as gate:
+            gate.send_text(ticket(key, clock))
+            assert json.loads(gate.receive_text()) == {"type": "ready"}
+            forged = client.post("/internal/device", content=device(secrets.token_bytes(32), clock))
+            assert forged.status_code == 404 and forged.json() == {"sent": False}
+            none = client.post("/internal/device", content=device(key, clock, session_id="ls_none"))
+            assert none.status_code == 404 and none.json() == {"sent": False}
+            sent = client.post("/internal/device", content=device(key, clock, orientation=None, touch=False))
+            assert sent.status_code == 200, sent.text
+            assert sent.json() == {"sent": True, "session_id": SESSION}
+            op, conn, payload = decode_frame(gate.receive_bytes())
+            assert (op, conn, json.loads(payload)) == (
+                rz.OP_DEVICE, "", {"preset": "iphone-15", "orientation": None, "touch": False})
+
+
 # ---------------------------------------------------------------- frames
 
 
 def test_tunnel_frames_round_trip_and_refuse_junk():
     for op, conn, payload in [(OP_DATA, "c1", b"\x00\xff"), (OP_OPEN, "rec-1", b""),
-                              (OP_CONTROL, "", b""), (OP_ACTION, "", b"{}")]:
+                              (OP_CONTROL, "", b""), (OP_ACTION, "", b"{}"), (rz.OP_REPORT, "", b"{}"),
+                              (rz.OP_DEVICE, "", b"{}")]:
         assert decode_frame(encode_frame(op, conn, payload)) == (op, conn, payload)
     for junk in (b"", b"\x02", b"\x09\x00", b"\x02\x05ab"):
         with pytest.raises(ValueError):

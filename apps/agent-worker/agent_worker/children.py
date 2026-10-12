@@ -335,6 +335,10 @@ class ChildPath:
         self._key: AttemptKey | None = None
         #: Why this attempt has no child path, once decided; None while it has one.
         self.unavailable: str | None = "not_registered"
+        #: WHY there is no child path, as swarm-api's code or the worker's own
+        #: sentence (`_note`'s `why`): what the live path's "live browser
+        #: unavailable" event names, since no key means no live session.
+        self.unavailable_reason: str | None = None
 
     @property
     def offered(self) -> bool:
@@ -393,6 +397,7 @@ class ChildPath:
         self.log.info("child path registered for this attempt")
 
     def _note(self, note: Callable[[dict[str, Any]], Any], what: str, why: str) -> None:
+        self.unavailable_reason = why
         self.log.warning("no child path for this attempt", child_path=what, reason=why)
         try:
             note({"phase": "child_key", "child_path": what, "reason": why})

@@ -32,7 +32,20 @@
 // KEYS. Esc closes and `T` opens -- but never while focus is in the screen,
 // where every key is the person's, for the remote browser (L11: "keys
 // captured only with canvas focus"), and never while it is in a field. A
-// person in control leaves with the Back button, which is always on screen.
+// person in control leaves with "Esc · back to tab", which is always on screen.
+//
+// THE MOCKUP (lane LB-UX2a, owner 2026-10-12: "Browser Tab and Theater",
+// matched item by item). The top bar is a "LIVE <agent>" pill, the device
+// chips and ⟲ rotate, then ‹ prev agent, next › and Esc · back to tab. The
+// right column is DEVICE and OTHER LIVE. The bottom bar is a scrubber over
+// the recording with ◀◀ replay and live ●, and the tab's Take control.
+//
+// PREV AND NEXT ARE FED HERE. Measured on SwarmCloud 2026-10-11/12: the
+// Browser tab passed no list, so prev, next and the other live agents were
+// never drawn. With no list passed, the host reads the tenant's live browser
+// agents itself -- the Agents list's Live filter, `liveBrowserRows`, needs-you
+// first -- and goes to the chosen one's `…/browser?theater=1`. A caller with
+// its own list (the workflow graph's live steps) still passes it.
 
 import {
   createContext,
@@ -43,11 +56,17 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
 
-import { errorHeading, read, route, tenantQuery, type ApiError } from './fetch'
+import { loadLiveRecordings, loadTasks, returnLiveControl, type LiveRecording, type LiveSession } from './api'
+import { agentName, useAgentName } from './agentlist'
+import { errorHeading, route, tenantQuery, type ApiError } from './fetch'
+import { liveBrowserRows, needsYou } from './Handoff'
+import { theaterPath } from './LiveThumb'
+import { TASK_PAGE_LIMIT } from './pageLimits'
 import { HandoffChecklist, TheaterTimeline, type TheaterHandoff } from './TheaterTimeline'
 import './styles/theater.css'
 
@@ -64,8 +83,15 @@ export interface TheaterSession {
   screen: HTMLElement | null
   /** True while the task is RUNNING with a session; false for a finished one. */
   live: boolean
-  /** The agent's name, for the theater's head. Defaults to the task id. */
+  /** The agent's name, for the theater's head. Defaults to the list's name for it, then the task id. */
   label?: string
+  /**
+   * The tab's session read, as the tab polled it: the device it reports and
+   * who is in control. Read here, never re-read -- the tab owns that poll.
+   */
+  browser?: LiveSession | null
+  /** The tab's reload, run after the checklist returns control, as its Return control button does. */
+  reload?: () => void
 }
 
 /** One live browser agent, for prev and next (§6: "the other live agents"). */
@@ -74,6 +100,8 @@ export interface LiveAgentRef {
   label: string
   /** `human_wait` is set: the agent is waiting for a person. */
   needsYou: boolean
+  /** The device preset it reports, when its caller knows it; the outline says "not reported" otherwise. */
+  device?: string | null
 }
 
 /**
@@ -91,20 +119,109 @@ function neighbours(ordered: readonly LiveAgentRef[], taskId: string): { prev: L
   return { prev: ordered[i - 1] ?? null, next: ordered[i + 1] ?? null }
 }
 
+/**
+ * How often the self-read list of live agents is read again while the theater
+ * is open: an agent that starts or finishes shows up in OTHER LIVE within
+ * this, and the Agents list idles at the same 30 s.
+ */
+export const LIVE_AGENTS_POLL_MS = 30_000
+
+/**
+ * The tenant's live browser agents, read only while `enabled`: the same page
+ * the Agents list reads (`view=summary`), through the Live filter's own rule
+ * (`liveBrowserRows`: RUNNING browser agents, needs-you first). Null until
+ * the first read answers, and after a failed one -- prev and next then wait,
+ * rather than walk a list nobody read.
+ */
+function useLiveAgents(enabled: boolean): LiveAgentRef[] | null {
+  const [agents, setAgents] = useState<LiveAgentRef[] | null>(null)
+  useEffect(() => {
+    if (!enabled) return
+    let live = true
+    const tick = async (): Promise<void> => {
+      const r = await loadTasks(TASK_PAGE_LIMIT, { view: 'summary' })
+      if (!live) return
+      if (r.status === 'ok' || r.status === 'stale') {
+        setAgents(liveBrowserRows(r.data.tasks).map((t) => ({ taskId: t.id, label: agentName(t), needsYou: needsYou(t) })))
+      } else if (r.status === 'empty') {
+        setAgents([])
+      }
+    }
+    void tick()
+    const id = setInterval(() => void tick(), LIVE_AGENTS_POLL_MS)
+    return () => {
+      live = false
+      clearInterval(id)
+    }
+  }, [enabled])
+  return agents
+}
+
+/**
+ * Go to another agent's theater through the router: write its path and let
+ * App read it back, as Back does (`popstate`, as Overview's `openAgentPath`).
+ * `wf` is kept when the walk is a workflow's steps, so its prev and next stay
+ * that workflow's.
+ */
+function openTheaterOf(taskId: string, keepWorkflow: boolean): void {
+  const wf = keepWorkflow ? new URLSearchParams(window.location.search).get('wf') : null
+  window.history.pushState(null, '', theaterPath(taskId, wf))
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
+// ---------------------------------------------------------------------------
+// Devices (§6.1): the chips, and an agent's outline
+// ---------------------------------------------------------------------------
+
+/** The gate's presets (§6.1), as the mockup's chips name them, in its order. */
+export const DEVICE_CHIPS: ReadonlyArray<readonly [string, string]> = [
+  ['desktop', 'Desktop'],
+  ['iphone-15', 'iPhone 15'],
+  ['pixel-8', 'Pixel 8'],
+  ['iphone-se', 'iPhone SE'],
+  ['ipad-7', 'iPad'],
+]
+
+function chipLabel(preset: string): string {
+  return DEVICE_CHIPS.find(([n]) => n === preset)?.[1] ?? preset
+}
+
+/**
+ * SHOWN, NOT SWITCHED. No route serves a device change yet (lane DEV-B adds
+ * it), so a chip that sent one would send it to a path nothing answers. The
+ * chips mark the device the session reports, and are disabled until then.
+ */
+const DEVICE_WHY = 'Switching the device is not served yet.'
+
+type Outline = 'desktop' | 'phone' | 'tablet' | 'unknown'
+
+function outlineOf(preset: string | null | undefined): Outline {
+  if (preset === 'desktop') return 'desktop'
+  if (preset === 'ipad-7') return 'tablet'
+  if (preset === 'iphone-15' || preset === 'pixel-8' || preset === 'iphone-se') return 'phone'
+  return 'unknown'
+}
+
+function DeviceOutline({ preset }: { preset: string | null | undefined }) {
+  const kind = outlineOf(preset)
+  return (
+    <span
+      className={`th-outline is-${kind}`}
+      data-device-outline={kind}
+      title={kind === 'unknown' ? 'Device not reported' : chipLabel(preset ?? '')}
+      aria-hidden="true"
+    />
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Replay (§7)
 // ---------------------------------------------------------------------------
 
-/** One recorded segment, as `GET /v1/tasks/{id}/live/recordings` lists it. */
-export interface RecordingSegment {
-  attempt_id: string
-  seq: number
-  /** The object name under the artifact bucket, as the relay wrote it. */
-  object: string
-  started_at: string
-}
+/** One recorded segment, as much of it as the theater reads (`LiveRecording`). */
+export type RecordingSegment = Pick<LiveRecording, 'attempt_id' | 'seq' | 'object' | 'started_at'>
 
-/** `GET /v1/tasks/{id}/live/recordings`: every attempt's video segments, oldest first. */
+/** The listing, as much of it as the theater reads (`LiveRecordings`). */
 export interface RecordingListing {
   tenant_id: string
   task_id: string
@@ -112,6 +229,16 @@ export interface RecordingListing {
 }
 
 const SEGMENT_ID = /^[A-Za-z0-9_-]+$/
+
+/**
+ * The relay's name for segment `seq` (`swarm_live.recorder.segment_name`):
+ * the sequence zero-padded to 13 digits. An unpadded `rec-3.live.webm` is not
+ * a name the relay writes, so comparing against it refused every real
+ * segment (LB-SEAM, tests/fixtures/live/recordings.json).
+ */
+export function segmentName(seq: number): string {
+  return `rec-${String(seq).padStart(13, '0')}.live.webm`
+}
 
 /**
  * The segments this view may play: those whose object is EXACTLY
@@ -126,10 +253,10 @@ const SEGMENT_ID = /^[A-Za-z0-9_-]+$/
  * (invariant 9, LB-2). Exact equality, not a prefix test, so `..` in a name,
  * an actions file or an object outside `live/` cannot pass.
  */
-export function segmentsOfTenant(
-  listing: RecordingListing,
+export function segmentsOfTenant<S extends RecordingSegment>(
+  listing: { tenant_id: string; task_id: string; segments: S[] },
   session: Pick<TheaterSession, 'taskId' | 'tenantId'>,
-): { kept: RecordingSegment[]; refused: number } {
+): { kept: S[]; refused: number } {
   const all = Array.isArray(listing.segments) ? listing.segments : []
   if (listing.tenant_id !== session.tenantId || listing.task_id !== session.taskId) return { kept: [], refused: all.length }
   const kept = all.filter(
@@ -137,16 +264,9 @@ export function segmentsOfTenant(
       Number.isInteger(s.seq) &&
       s.seq >= 0 &&
       SEGMENT_ID.test(s.attempt_id) &&
-      s.object === `tenants/${session.tenantId}/tasks/${session.taskId}/attempts/${s.attempt_id}/live/rec-${s.seq}.live.webm`,
+      s.object === `tenants/${session.tenantId}/tasks/${session.taskId}/attempts/${s.attempt_id}/live/${segmentName(s.seq)}`,
   )
   return { kept, refused: all.length - kept.length }
-}
-
-export function loadRecordings(taskId: string) {
-  return read<RecordingListing>(
-    route('/v1/tasks/{id}/live/recordings', { id: taskId }),
-    (d) => !Array.isArray(d.segments) || d.segments.length === 0,
-  )
 }
 
 /**
@@ -163,12 +283,29 @@ export function recordingUrl(taskId: string, attemptId: string, seq: number): st
   ).url
 }
 
-type Replay =
+/**
+ * THE SCRUBBER'S UNIT: one segment is one minute of bar. The relay closes a
+ * segment every minute (§7), and a segment's own length is not known until
+ * its video has been fetched -- which this view does only for the one being
+ * played. So the segments are laid end to end at their nominal minute, and
+ * a position inside one seeks that far into it, clamped to its real length
+ * once its metadata has loaded.
+ */
+export const SEGMENT_SECONDS = 60
+
+type Listing =
   | { status: 'loading' }
   | { status: 'none'; error: ApiError | null; refused: number }
-  | { status: 'ok'; segments: RecordingSegment[]; at: number }
+  | { status: 'ok'; segments: RecordingSegment[] }
 
-function clock(iso: string): string {
+/** Playing segment `at`, from `offset` seconds into it. */
+interface Playing {
+  at: number
+  offset: number
+}
+
+function clock(iso: string | null): string {
+  if (iso === null) return 'unknown time'
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 }
@@ -209,13 +346,25 @@ function scrollPositions(el: Element | null): Array<[Element, number]> {
 }
 
 export interface TheaterSlots {
-  /** The live browser agents prev and next walk; ordered here, needs-you first. */
+  /**
+   * The live browser agents prev and next walk; ordered here, needs-you
+   * first. Passed by a caller with a list of its own (the workflow graph's
+   * live steps); when it is not, the host reads the tenant's live browser
+   * agents itself while the theater is open (`useLiveAgents`).
+   */
   agents?: readonly LiveAgentRef[]
-  /** Go to another live agent with the theater kept open (its tab owns its session). */
+  /**
+   * Go to another live agent with the theater kept open (its tab owns its
+   * session). By default, its `…/browser?theater=1` through the router.
+   */
   onNavigate?: (taskId: string) => void
   /** The tab's log view, the same component its logs toggle shows. */
   logs?: ReactNode
-  /** The tab's device switcher, disabled for a viewer by the tab (§6.1, Q13). */
+  /**
+   * The tab's device switcher (§6.1, Q13): it switches the preset, rotates and
+   * turns touch on or off for the person in control (`you.can_switch_device`,
+   * LB-DEV-B), and is disabled for everyone else -- the tab decides, once.
+   */
   device?: ReactNode
   /** The tab's Take control / Return control, eligibility decided by the tab (§5.1). */
   control?: ReactNode
@@ -234,6 +383,13 @@ export interface TheaterHostProps extends TheaterSlots {
 
 export function TheaterHost({ session, initiallyOpen = false, children, ...slots }: TheaterHostProps) {
   const [open, setOpen] = useState(initiallyOpen)
+  const selfRead = slots.agents === undefined
+  const loaded = useLiveAgents(open && selfRead)
+  const agents = selfRead ? loaded ?? [] : slots.agents
+  const onNavigate = useMemo(
+    () => slots.onNavigate ?? ((taskId: string) => openTheaterOf(taskId, !selfRead)),
+    [slots.onNavigate, selfRead],
+  )
   const hostRef = useRef<HTMLDivElement>(null)
   const saved = useRef<{ scroll: Array<[Element, number]>; focus: Element | null } | null>(null)
 
@@ -246,13 +402,21 @@ export function TheaterHost({ session, initiallyOpen = false, children, ...slots
   const close = useCallback(() => setOpen(false), [])
 
   // Esc returns to the tab AT THE SAME SCROLL (§6): restored after the tab is
-  // back in the layout, before paint, and focus goes back to what opened it.
+  // back in the layout, before paint. FOCUS GOES TO ⤢ (LB-V2, visual QA pass
+  // 5): the button that opens the theater again, also when it was opened by
+  // `T`, the banner or `?theater=1`, where nothing in the tab held focus; only
+  // a tab with no ⤢ gets back what was focused before.
+  const wasOpen = useRef(open)
   useLayoutEffect(() => {
-    if (open || saved.current === null) return
-    const { scroll, focus } = saved.current
+    const closed = wasOpen.current && !open
+    wasOpen.current = open
+    if (!closed) return
+    const { scroll, focus } = saved.current ?? { scroll: [], focus: null }
     saved.current = null
     for (const [el, top] of scroll) el.scrollTop = top
-    if (focus instanceof HTMLElement && focus.isConnected) focus.focus()
+    const button = hostRef.current?.querySelector<HTMLElement>('[data-theater-button]')
+    if (button) button.focus()
+    else if (focus instanceof HTMLElement && focus.isConnected) focus.focus()
   }, [open])
 
   useEffect(() => {
@@ -274,7 +438,7 @@ export function TheaterHost({ session, initiallyOpen = false, children, ...slots
       <div ref={hostRef} className="th-host">
         {children}
       </div>
-      {open ? <Theater session={session} onClose={close} {...slots} /> : null}
+      {open ? <Theater session={session} onClose={close} {...slots} agents={agents} onNavigate={onNavigate} /> : null}
     </TheaterContext.Provider>
   )
 }
@@ -289,6 +453,7 @@ export function TheaterButton({ className }: { className?: string }) {
       className={className ?? 'ctl-btn th-open'}
       aria-label="Open theater (T)"
       title="Theater (T)"
+      data-theater-button=""
       onClick={theater.open}
     >
       <span aria-hidden="true">⤢</span> Theater
@@ -313,8 +478,11 @@ export interface TheaterProps extends TheaterSlots {
 export function Theater({ session, onClose, agents, onNavigate, logs, device, control, strip, handoff }: TheaterProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
+  const videoRef = useRef<HTMLVideoElement>(null)
   const [left, setLeft] = useState<LeftTab>(handoff ? 'handoff' : 'timeline')
-  const [replay, setReplay] = useState<Replay | null>(null)
+  const [listing, setListing] = useState<Listing>({ status: 'loading' })
+  const [playing, setPlaying] = useState<Playing | null>(null)
+  const [played, setPlayed] = useState(0)
   const [seen, setSeen] = useState<ReadonlySet<LeftTab>>(() => new Set([left]))
   useEffect(() => {
     setSeen((was) => (was.has(left) ? was : new Set([...was, left])))
@@ -345,6 +513,23 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
     rootRef.current?.focus()
   }, [])
 
+  // ESC CLOSES THE THEATER AND NOTHING BEHIND IT (LB-V2, visual QA pass 5:
+  // Esc went from /agents/live/<task>/browser to /agents/live). The theater is
+  // portalled to <body>, but React bubbles a key through the portal to the
+  // agent split's own `onKeyDown`, which closed the split too. So the key is
+  // taken here, on the root, and stopped: neither the split's `onKeyDown` nor
+  // its window listener hears it. A key pressed in the screen is the remote
+  // browser's -- the theater does not close, and the split still never hears
+  // it. The window listener below is for a key with no focus inside (the
+  // page body); the split's window listener stands down for that one while
+  // a theater is open (`[data-theater]`, AgentSplit.tsx).
+  const onRootKey = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return
+    e.stopPropagation()
+    if (e.target instanceof Element && e.target.closest('[data-live-screen]')) return
+    e.preventDefault()
+    onClose()
+  }
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape' || e.defaultPrevented) return
@@ -383,21 +568,100 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
     }
   }, [onClose])
 
-  const startReplay = useCallback(async () => {
-    setReplay({ status: 'loading' })
-    const res = await loadRecordings(session.taskId)
-    if (res.status === 'ok' || res.status === 'stale') {
-      const { kept, refused } = segmentsOfTenant(res.data, session)
-      setReplay(kept.length > 0 ? { status: 'ok', segments: kept, at: 0 } : { status: 'none', error: null, refused })
-    } else {
-      setReplay({ status: 'none', error: res.status === 'error' ? res.error : null, refused: 0 })
+  // THE RECORDING'S LISTING, read once per agent when the theater opens, so
+  // the scrubber has its segments to lay out. Only the listing: no segment's
+  // video is fetched until one is played.
+  const { taskId, tenantId } = session
+  useEffect(() => {
+    let live = true
+    setListing({ status: 'loading' })
+    setPlaying(null)
+    void loadLiveRecordings(taskId).then((res) => {
+      if (!live) return
+      if (res.status === 'ok' || res.status === 'stale') {
+        const { kept, refused } = segmentsOfTenant(res.data, { taskId, tenantId })
+        setListing(kept.length > 0 ? { status: 'ok', segments: kept } : { status: 'none', error: null, refused })
+      } else {
+        setListing({ status: 'none', error: res.status === 'error' ? res.error : null, refused: 0 })
+      }
+    })
+    return () => {
+      live = false
     }
-  }, [session])
+  }, [taskId, tenantId])
 
-  const ordered = useMemo(() => orderLiveAgents(agents ?? []), [agents])
+  const segments = listing.status === 'ok' ? listing.segments : []
+  const total = segments.length * SEGMENT_SECONDS
+  const segment = playing !== null ? segments[playing.at] ?? null : null
+
+  /** Play from `seconds` into the recording, the segments laid end to end. */
+  const seek = useCallback(
+    (seconds: number) => {
+      if (segments.length === 0) return
+      const at = Math.min(segments.length - 1, Math.max(0, Math.floor(seconds / SEGMENT_SECONDS)))
+      const offset = Math.max(0, seconds - at * SEGMENT_SECONDS)
+      setPlaying({ at, offset })
+      setPlayed(offset)
+    },
+    [segments.length],
+  )
+
+  // A seek inside the segment already playing moves its video; a seek into
+  // another one mounts that one's video, which seeks on its metadata.
+  useEffect(() => {
+    const v = videoRef.current
+    if (playing === null || !v || v.readyState < 1) return
+    v.currentTime = Math.min(playing.offset, Number.isFinite(v.duration) ? v.duration : playing.offset)
+  }, [playing])
+
+  const listed = useMemo(() => agents ?? [], [agents])
+  const ordered = useMemo(() => {
+    // This agent is walked from even when the list read did not carry it
+    // (a page that ended before it): placed by its own needs-you.
+    const all = listed.some((a) => a.taskId === session.taskId)
+      ? listed
+      : [{ taskId: session.taskId, label: session.label ?? session.taskId, needsYou: handoff != null }, ...listed]
+    return orderLiveAgents(all)
+  }, [listed, session.taskId, session.label, handoff])
   const { prev, next } = neighbours(ordered, session.taskId)
-  const label = session.label ?? session.taskId
-  const playing = replay?.status === 'ok' ? replay.segments[replay.at] : null
+  const others = ordered.filter((a) => a.taskId !== session.taskId)
+  // "LIVE <agent name>" (LB-V2, visual QA pass 5 read "LIVE task_…"): the
+  // tab passes no label, and the self-read list answers after the first paint
+  // (or not at all, past its page), so the name the split recorded when it
+  // read this task comes first. The id is the pill's title.
+  const known = useAgentName(session.taskId)
+  const label = session.label ?? known ?? listed.find((a) => a.taskId === session.taskId)?.label ?? session.taskId
+
+  const browser = session.browser ?? null
+  const current = browser?.device ?? null
+  const youControl = browser !== null && browser.controller !== null && browser.controller.email === browser.you.email
+  const reload = session.reload
+
+  // THE DEVICE COLUMN IS A LIST (LB-V2, visual QA pass 5: the chip row was
+  // clipped at "iPhone SE"). The choices are the tab's own device bar (one
+  // implementation of who may switch, §6.1), stacked by theater.css; each
+  // chip is marked here with its preset's outline, which the stylesheet draws
+  // before the name, as the mockup's list does. The bar names a chip by its
+  // label, so the label is read back to the preset it stands for.
+  const deviceRef = useRef<HTMLDivElement>(null)
+  const presets = browser?.presets
+  useLayoutEffect(() => {
+    const chips = deviceRef.current?.querySelectorAll<HTMLElement>('.live-chip') ?? []
+    for (const chip of chips) {
+      const text = chip.textContent ?? ''
+      const name = DEVICE_CHIPS.find(([, t]) => t === text)?.[0] ?? text
+      const kind = outlineOf(name)
+      const mobile = presets?.find((p) => p.name === name)?.mobile
+      chip.dataset.outline = kind !== 'unknown' || mobile === undefined ? kind : mobile ? 'phone' : 'desktop'
+    }
+  })
+  // The bottom bar's Return control, for the checklist: the same route, then
+  // the tab's reload, so the strip and the bar redraw from the server.
+  const returnControl = useCallback(async (): Promise<string | null> => {
+    const r = await returnLiveControl(taskId)
+    reload?.()
+    return r.status === 'error' ? r.error.message : null
+  }, [taskId, reload])
 
   const leftTabs: Array<[LeftTab, string]> = [
     ...(handoff ? ([['handoff', 'Hand-off']] as Array<[LeftTab, string]>) : []),
@@ -406,12 +670,60 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
   ]
 
   return createPortal(
-    <div ref={rootRef} className="th-root" role="dialog" aria-modal="true" aria-label={`Theater: ${label}`} tabIndex={-1}>
+    <div
+      ref={rootRef}
+      className="th-root"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Theater: ${label}`}
+      tabIndex={-1}
+      data-theater=""
+      onKeyDown={onRootKey}
+    >
       <header className="th-head">
-        <span className="th-title">{label}</span>
+        <span className="th-pill" data-testid="theater-live-pill" title={session.taskId}>
+          <span className={`th-pill-live${session.live ? '' : ' is-ended'}`}>{session.live ? 'LIVE' : 'ENDED'}</span>
+          <span className="th-title">{label}</span>
+        </span>
         {handoff ? <span className="th-flag">Needs you</span> : null}
+        <div className="th-chips" role="group" aria-label="Device">
+          {DEVICE_CHIPS.map(([name, text]) => (
+            <button
+              key={name}
+              type="button"
+              className={`th-chip${current?.preset === name ? ' is-on' : ''}`}
+              aria-pressed={current?.preset === name}
+              disabled
+              title={DEVICE_WHY}
+            >
+              {text}
+            </button>
+          ))}
+          <button type="button" className="th-chip" disabled title={DEVICE_WHY}>
+            ⟲ rotate
+          </button>
+        </div>
+        <span className="th-spacer" />
+        <button
+          type="button"
+          className="ctl-btn"
+          disabled={!prev || !onNavigate}
+          title={prev ? prev.label : 'No live agent before this one'}
+          onClick={() => prev && onNavigate?.(prev.taskId)}
+        >
+          ‹ prev agent
+        </button>
+        <button
+          type="button"
+          className="ctl-btn"
+          disabled={!next || !onNavigate}
+          title={next ? next.label : 'No live agent after this one'}
+          onClick={() => next && onNavigate?.(next.taskId)}
+        >
+          next ›
+        </button>
         <button type="button" className="ctl-btn th-close" onClick={onClose} title="Back to the tab (Esc)">
-          Back to the tab
+          Esc · back to tab
         </button>
       </header>
 
@@ -445,7 +757,9 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
               aria-labelledby={`th-tab-${id}`}
               hidden={left !== id}
             >
-              {id === 'handoff' && handoff ? <HandoffChecklist handoff={handoff} /> : null}
+              {id === 'handoff' && handoff ? (
+                <HandoffChecklist handoff={handoff} youControl={youControl} onReturn={browser ? returnControl : undefined} />
+              ) : null}
               {id === 'timeline' ? <TheaterTimeline taskId={session.taskId} live={session.live} /> : null}
               {id === 'logs' ? logs ?? <p className="th-note">The tab has no log view for this agent.</p> : null}
             </div>
@@ -455,66 +769,60 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
 
       <main className="th-center">
         {strip ? <div className="th-strip">{strip}</div> : null}
-        <div className="th-stage" ref={stageRef} hidden={playing !== null} />
-        {playing ? (
+        <div className="th-stage" ref={stageRef} hidden={segment !== null} />
+        {segment !== null && playing !== null ? (
           <video
-            key={`${playing.attempt_id}/${playing.seq}`}
+            ref={videoRef}
+            key={`${segment.attempt_id}/${segment.seq}`}
             className="th-replay"
             data-testid="theater-replay"
-            src={recordingUrl(session.taskId, playing.attempt_id, playing.seq)}
-            controls
+            src={recordingUrl(session.taskId, segment.attempt_id, segment.seq)}
             autoPlay
             muted
             playsInline
+            onLoadedMetadata={(e) => {
+              const v = e.currentTarget
+              if (playing.offset > 0) v.currentTime = Math.min(playing.offset, Number.isFinite(v.duration) ? v.duration : playing.offset)
+            }}
+            onTimeUpdate={(e) => setPlayed(Math.min(SEGMENT_SECONDS, e.currentTarget.currentTime))}
             onEnded={() =>
-              setReplay((r) => (r?.status === 'ok' && r.at < r.segments.length - 1 ? { ...r, at: r.at + 1 } : r))
+              setPlaying((p) => (p !== null && p.at < segments.length - 1 ? { at: p.at + 1, offset: 0 } : p))
             }
           />
         ) : null}
-        {session.screen === null && playing === null ? <p className="th-note">The browser has not connected yet.</p> : null}
+        {session.screen === null && segment === null ? <p className="th-note">The browser has not connected yet.</p> : null}
       </main>
 
       <aside className="th-right">
-        {device ? (
-          <section className="th-device" aria-label="Device">
+        <section className="th-device" aria-labelledby="th-h-device">
+          <h3 id="th-h-device" className="th-h">
+            DEVICE
+          </h3>
+          <p className="th-device-now">
+            <DeviceOutline preset={current?.preset} />
+            {current === null
+              ? 'Not reported'
+              : `${chipLabel(current.preset)} · ${current.orientation}${current.touch ? ' · touch' : ''}`}
+          </p>
+          <div className="th-device-ctl" ref={deviceRef}>
             {device}
-          </section>
-        ) : null}
-        <section className="th-agents" aria-label="Live agents">
-          <div className="th-walk">
-            <button
-              type="button"
-              className="ctl-btn"
-              aria-label="Previous live agent"
-              disabled={!prev || !onNavigate}
-              onClick={() => prev && onNavigate?.(prev.taskId)}
-            >
-              ‹ Prev
-            </button>
-            <button
-              type="button"
-              className="ctl-btn"
-              aria-label="Next live agent"
-              disabled={!next || !onNavigate}
-              onClick={() => next && onNavigate?.(next.taskId)}
-            >
-              Next ›
-            </button>
           </div>
-          {ordered.length > 0 ? (
+        </section>
+        <section className="th-agents" aria-labelledby="th-h-others">
+          <h3 id="th-h-others" className="th-h">
+            OTHER LIVE
+          </h3>
+          {others.length > 0 ? (
             <ul className="th-agent-list">
-              {ordered.map((a) => (
-                <li
-                  key={a.taskId}
-                  aria-current={a.taskId === session.taskId ? 'true' : undefined}
-                  className={`th-agent${a.taskId === session.taskId ? ' is-on' : ''}${a.needsYou ? ' is-needs' : ''}`}
-                >
-                  {a.taskId === session.taskId || !onNavigate ? (
-                    <span className="th-agent-name">{a.label}</span>
-                  ) : (
+              {others.map((a) => (
+                <li key={a.taskId} className={`th-agent${a.needsYou ? ' is-needs' : ''}`}>
+                  <DeviceOutline preset={a.device} />
+                  {onNavigate ? (
                     <button type="button" className="th-agent-go" onClick={() => onNavigate(a.taskId)}>
                       {a.label}
                     </button>
+                  ) : (
+                    <span className="th-agent-name">{a.label}</span>
                   )}
                   {a.needsYou ? <span className="th-flag">Needs you</span> : null}
                 </li>
@@ -527,43 +835,63 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
       </aside>
 
       <footer className="th-bottom">
-        {replay === null ? (
-          <button type="button" className="ctl-btn" onClick={() => void startReplay()}>
-            Replay
-          </button>
-        ) : (
-          <>
-            <button type="button" className="ctl-btn" onClick={() => setReplay(null)}>
-              Back to live
-            </button>
-            {replay.status === 'loading' ? <span className="th-note">Reading the recording…</span> : null}
-            {replay.status === 'none' ? (
-              <span className="th-note" role="status">
-                {replay.error
-                  ? `No recording to play: ${errorHeading(replay.error)}.`
-                  : replay.refused > 0
-                    ? 'No recording to play: the segments listed are not this tenant’s, and none was opened.'
-                    : 'No recording yet. Segments are kept for seven days.'}
-              </span>
-            ) : null}
-            {replay.status === 'ok' ? (
-              <div className="th-segments" role="group" aria-label="Recording segments">
-                {replay.segments.map((s, i) => (
-                  <button
-                    key={`${s.attempt_id}/${s.seq}`}
-                    type="button"
-                    className={`th-seg${i === replay.at ? ' is-on' : ''}`}
-                    aria-label={`Segment starting ${clock(s.started_at)}`}
-                    aria-pressed={i === replay.at}
-                    onClick={() => setReplay({ ...replay, at: i })}
-                  >
-                    {clock(s.started_at)}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </>
-        )}
+        <button
+          type="button"
+          className={`ctl-btn th-mode${playing !== null ? ' is-on' : ''}`}
+          aria-pressed={playing !== null}
+          disabled={segments.length === 0}
+          title={segments.length === 0 ? 'No recording to replay yet.' : 'Replay the recording from its start'}
+          onClick={() => seek(0)}
+        >
+          ◀◀ replay
+        </button>
+        <div className="th-scrub" data-testid="theater-scrubber">
+          <div className="th-scrub-track" aria-hidden="true">
+            {segments.map((s, i) => (
+              <span
+                key={`${s.attempt_id}/${s.seq}`}
+                data-segment=""
+                className={`th-scrub-seg${playing?.at === i ? ' is-on' : ''}`}
+                title={`Segment written ${clock(s.started_at)}`}
+              />
+            ))}
+          </div>
+          <input
+            type="range"
+            className="th-scrub-input"
+            aria-label="Recording"
+            min={0}
+            max={total}
+            step={1}
+            value={playing === null ? total : Math.min(total, playing.at * SEGMENT_SECONDS + played)}
+            aria-valuetext={
+              playing === null
+                ? 'Live'
+                : `Segment ${playing.at + 1} of ${segments.length}, written ${clock(segments[playing.at]?.started_at ?? null)}`
+            }
+            disabled={segments.length === 0}
+            onChange={(e) => seek(Number(e.currentTarget.value))}
+          />
+        </div>
+        <button
+          type="button"
+          className={`ctl-btn th-mode${playing === null ? ' is-on' : ''}`}
+          aria-pressed={playing === null}
+          title="Back to the live browser"
+          onClick={() => setPlaying(null)}
+        >
+          live <span className="th-live-dot">●</span>
+        </button>
+        {listing.status === 'loading' ? <span className="th-note">Reading the recording…</span> : null}
+        {listing.status === 'none' ? (
+          <span className="th-note" role="status">
+            {listing.error
+              ? `No recording to play: ${errorHeading(listing.error)}.`
+              : listing.refused > 0
+                ? 'No recording to play: the segments listed are not this tenant’s, and none was opened.'
+                : 'No recording yet. Segments are kept for seven days.'}
+          </span>
+        ) : null}
         <span className="th-spacer" />
         {control}
       </footer>

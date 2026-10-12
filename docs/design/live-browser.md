@@ -688,6 +688,22 @@ live-browser attempt. **A worker that cannot protect its heap gets no live
 path**: no tunnel ticket, no hand-off; the console says "live view unavailable
 for this attempt" and the agent's `swarm-handoff` exits 5.
 
+**A slow pod is not a dead lease (LB-KEYRACE, 2026-10-12).** The key is
+registered, and the live session opened, before the worker's first heartbeat.
+A lease is written with `heartbeat_at: None` and `expires_at = created_at +
+lease_timeout_seconds` (120 s), so a GKE pod that took longer than that to
+reach STARTING was refused `child_key_window_closed` on a lease the reconciler
+still judged live by its dispatch deadline: task_23cc2e82178640709a45 took
+154 s, registered no key, and ran with no live browser. swarm-api's
+`_lease_is_live` (`apps/swarm-api/swarm_api/children.py`) now uses the
+reconciler's own clock for a never-beaten lease — live until
+`dispatch_deadline` — and nothing else about the fence moved: the task must be
+STARTING, at this lease and generation, the lease unreleased, the slot unused.
+Whatever still refuses the live path is never silent: the worker writes a
+RUNNING event with `cause: live_browser_unavailable`, the code, the reason and
+`message: "live browser unavailable: <reason>"`, which the console's event list
+shows.
+
 #### 5.4.2 The worker talks to the gate on a channel the agent cannot use
 
 `ctl.sock` sits on a volume both containers mount, so the agent can connect to
@@ -1159,6 +1175,73 @@ Theater", linked from #1030. In summary:
   "Where" list (`tests/unit/scripts/test_issue_forms.py`, reading `SECTIONS` in
   `apps/swarm-ui/src/App.tsx`) does not change.
 
+#### Console decisions, 2026-10-12
+
+A visual QA on 2026-10-11 found the shipped console diverging from the mockup.
+The owner then went through the comparison ("Live Browser: Mockup vs Built",
+2026-10-12 00:30 PDT) item by item. These are the 30 answers. They are
+recorded here so a later lane does not revert one as a "fix". Where this list
+and a bullet above disagree, this list wins.
+
+**Matched to the mockup (26):**
+
+1. The agent header reads "Copy link · Take control · Stop", with Stop capitalised.
+2. The tabs are Details, Browser, Logs, Changes, Attempts, Artifacts. Browser
+   comes second, not first.
+3. The Browser tab carries a small "LIVE" marker while the session is open.
+4. Browser is the default tab while a browser agent runs.
+5. Browser has its own address: `/agents/<tab>/<id>/browser`.
+6. The device switcher is chips, "Desktop | iPhone 15 | Pixel 8 | iPhone SE |
+   iPad", with one selected. It is not a select.
+7. Rotate reads "⟲ rotate".
+8. Touch reads "touch: on" or "touch: off".
+9. "◫ logs" splits the tab: logs on the LEFT, the device on the right.
+10. "⤢ Theater" sits at the right of the toolbar.
+11. Under the device frame there is a caption: "<device> · <W>×<H> · <path>".
+12. The origin strip stays above the canvas.
+13. The theater's top bar holds "LIVE <agent>", the device chips, "⟲ rotate",
+    "‹ prev agent", "next ›" and "Esc · back to tab".
+14. The theater's left column switches between Timeline and Logs.
+15. The theater's right column holds the DEVICE list, then OTHER LIVE agents
+    with device thumbnails.
+16. The theater's bottom bar holds replay over the recording, and the control
+    button.
+17. The theater opens from ⤢, the key T, the graph card, the hand-off banner
+    and the URL `?theater=1`.
+18. A hand-off draws ONE yellow banner across the Browser tab. It shows the
+    reason, the expected site and the time left, with [Take control] and
+    [Open in theater]. Other tabs keep the strip, with the same two buttons.
+19. A parked hand-off reads "I'm ready to sign in". It calls `human-ready`,
+    then opens the Browser tab.
+20. A hand-off is a yellow row in the agent list.
+21. The hand-off banner also appears on Overview's "Needs a look".
+22. In the theater, the left column becomes the hand-off checklist: ✓ opened
+    login, ✓ you took control, the current step, and return control. It ends
+    in a green "I'm done, return control" button.
+23. On the workflow graph, a RUNNING browser step's node expands an inline
+    card. The card has a live thumbnail at about 1 fps, "Open Browser tab" and
+    "⤢ Theater".
+24. A theater opened from a workflow uses prev and next to step through that
+    workflow's live steps.
+25. The Agents list has an "All | Live N" switch, a device thumbnail per row,
+    needs-you first and "⤢ theater all". There is no new nav tab.
+26. On a phone, the two-page layout carries the same Browser tab. Take control
+    works by touch, the device switcher sits under the tab's "⋯" menu, and ⤢
+    goes native full screen, landscape preferred.
+
+**Kept as built (3):**
+
+27. The "Let any member take control" checkbox stays in the Browser tab's
+    toolbar, after ⤢ Theater.
+28. The rail has no needs-you dot. This supersedes the "dot on Agents in the
+    rail" in the hand-off bullet above.
+29. "Save as login" keeps its current offer logic, unchanged
+    (`BrowserLogins.tsx`, §5.5.1).
+
+**Added (1):**
+
+30. The Overview "Needs a look" hand-off card also carries [Take control].
+
 ### 6.1 Mobile devices (LB-6)
 
 The browser can be a phone or a tablet, for visual QA as a mobile browser and
@@ -1200,6 +1283,73 @@ for sign-ins that only work on mobile.
   is disabled.
 
 ---
+
+### 6.2 The console's wire (LB-SEAM, 2026-10-12)
+
+This design names the fields of a live session, not their JSON, and lanes L9
+(swarm-api) and L11 (the console) filled that gap differently and in parallel.
+Measured on 2026-10-11, the session read answered `{"available": true, ...,
+"you": {"may_take": ...}}` while the console read `live_browser` and
+`session`, so a working live session drew **no Browser tab**. The return
+button sent `DELETE .../live/control` to a route served only as `POST
+.../control/return`, the take's `confirmed_mismatch` was dropped unaudited,
+and recordings, the action timeline and the card thumbnail called routes
+nothing served.
+
+**Where the design is silent, the console's types are the wire**, because
+they are what the screen draws (`LiveRead` in `apps/swarm-ui/src/api.ts`).
+swarm-api states the same wire as `response_model`s (`swarm_api.live`), and
+`tests/fixtures/live/*.json` holds one example per route that **both** suites
+read: pytest validates each against the route's model and compares the real
+routes' answers with it, and vitest feeds it through the console's own loaders
+(`loadLiveSession`, `takeLiveControl`, `loadRecordings`, ...). A route the
+index names that either side does not handle fails both. The path-only check
+in `test_runtimes_screen.py` could never see a shape.
+
+**The origin and the device are the gate's report (LB-DEV-A, 2026-10-12).**
+LB-SEAM served both as null because nothing carried them to swarm-api. Now
+the gate reports them over the tunnel it already holds
+(`agent_worker/livegate/report.py`, tunnel op `REPORT`): the top frame's
+origin, built from the URL Chromium committed and the registrable domain
+Chromium computed from its own public suffix list (`domainAndRegistry`),
+whenever the page on screen changes or its top frame commits a navigation,
+and the device -- preset name, orientation, touch, never a size -- once
+applied, at start and on every change. Path, query and any user name or
+password in the URL never leave the gate. The relay keeps the latest report
+per session in memory and passes it as text to every viewer link (after
+`ready` to one that joins later); it may not write Firestore (decision (a)),
+so **swarm-api writes it**: the viewer link is swarm-api's own proxied
+socket, which checks every field against the others (scheme, host, port,
+registrable domain a suffix of the host, punycode that encodes back to the
+host, no control or bidi characters, a preset by name with its own touch)
+and records it on `live_sessions/{id}` as `origin`, `device` and
+`reported_at`. The session read checks the stored value again before serving
+it. What this does not do, stated plainly: the document is written only while
+someone watches (a viewer link is the only path in), so a session nobody has
+opened shows null until the first viewer connects -- the console's own view
+connects at once, and the next read carries it. `cert_error` is served null
+(unknown): the gate's page follower does not watch the security state; the
+gate still refuses control on a page that is not secure (§5.7 item 4).
+`presets` is the gate's fixed list (section 6.1), restated in swarm-api and
+held equal to `agent_worker.livegate.presets` by a test. A recording's
+`started_at` is its object's write time, which is the END of the minute it
+holds; the relay records no start.
+
+**The display could not be resized at all before LB-DEV-A.** Xvfb starts
+with one CRTC driving a mode as large as the whole screen (the largest
+preset's), and RandR refuses (BadMatch) a screen size smaller than an active
+CRTC, so the gate's bare `RRSetScreenSize` failed for every preset -- the
+default `desktop` first, measured 2026-10-11 as `DisplayError` on
+task_8cf26eb6e1f94e85adf8. `XRandrDisplay` now does what `xrandr` does:
+a mode of the frame's size (created once, by Xvfb's own `<w>x<h>` name),
+CRTC off, screen size, CRTC on in the new mode. The unit test drives every
+preset in both orientations against an X server modelled on Xvfb's RandR;
+no real Xvfb ran in that lane.
+
+**The thumbnail's socket is the session's, ticketed.** The workflow card
+opened `/v1/tasks/{task_id}/live` with no ticket. Section 5.2 refuses that, so
+the console was changed, not swarm-api: the card reads the session, mints a
+viewer ticket and opens `/v1/live/{session_id}/stream` like the tab does.
 
 ## 7. Recording and replay (LB-4)
 

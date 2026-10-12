@@ -1,4 +1,16 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type SyntheticEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  type SyntheticEvent,
+} from 'react'
 
 import { AgentLogs } from './AgentLogs'
 import {
@@ -8,14 +20,19 @@ import {
   renewLiveControl,
   returnLiveControl,
   openLiveToMembers,
+  setLiveDevice,
   takeLiveControl,
+  type LiveChannel,
   type LiveOrigin,
   type LiveSession,
+  type LiveStatus,
 } from './api'
 import { SaveAsLoginOffer } from './BrowserLogins'
 import { Button } from './components'
-import { TheaterButton, TheaterHost, type TheaterHandoff, type TheaterSession } from './Theater'
-import type { Task } from './types'
+import { HandoffStrip } from './Handoff'
+import { LiveToolMenu } from './LiveToolMenu'
+import { TheaterButton, TheaterHost, useTheater, type TheaterHandoff, type TheaterSession } from './Theater'
+import { TERMINAL_STATES, type Task } from './types'
 import './styles/live.css'
 
 /**
@@ -26,8 +43,13 @@ import './styles/live.css'
  * would run every page the agent visits in the console's origin), and above
  * it, outside the canvas, a strip the page cannot draw into: the top frame's
  * origin as the gate read it from Chromium, the hand-off's reason, and who is
- * in control. Its toolbar holds the device switcher, rotate, touch and the
- * logs toggle. Take control sits in the agent header beside Stop
+ * in control. Its toolbar is the mockup's (owner decisions 2026-10-12, §6):
+ * device chips, `⟲ rotate`, `touch: on|off`, `◫ logs`, and `⤢ Theater` at the
+ * right, then "Let any member take control" as built. The chips, rotate and
+ * touch work for the person in control, and only for them
+ * (`you.can_switch_device`, LB-DEV-B). Under the device, a
+ * caption: `<device> · <W>×<H> · <path>`. Take control sits in the agent
+ * header beside Stop
  * (`LiveControl`), and the view is read-only until it is pressed.
  *
  * WHAT THE CONSOLE DECIDES, AND WHAT IT ONLY DRAWS. Who may watch, who may
@@ -90,7 +112,9 @@ const PRESET_LABEL: Readonly<Record<string, string>> = {
   'iphone-15': 'iPhone 15',
   'pixel-8': 'Pixel 8',
   'iphone-se': 'iPhone SE',
-  'ipad-7': 'iPad (gen 7)',
+  // `iPad`, as the mockup's chip reads (owner decision 2026-10-12); the
+  // preset is the 7th generation's frame, which its size in the caption says.
+  'ipad-7': 'iPad',
 }
 
 export function presetLabel(name: string): string {
@@ -231,7 +255,22 @@ function isController(s: LiveSession): boolean {
  * red, and only a yes to it takes control; the request says what was
  * confirmed past, so the audit has it.
  */
-export function LiveControl({ taskId, session, reload }: { taskId: string; session: LiveSession | null; reload: () => void }) {
+export function LiveControl({
+  taskId,
+  session,
+  reload,
+  takeOnly = false,
+}: {
+  taskId: string
+  session: LiveSession | null
+  reload: () => void
+  /**
+   * The hand-off banner's copy of the button (LB-UX1): Take control, the same
+   * action as the header's, and nothing at all for anyone who may not take
+   * it now -- no "View only", no Return control, which stay the header's.
+   */
+  takeOnly?: boolean
+}) {
   const [ask, setAsk] = useState<'none' | 'first' | 'mismatch'>('none')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -252,6 +291,7 @@ export function LiveControl({ taskId, session, reload }: { taskId: string; sessi
   const holder = session.controller
 
   if (mine) {
+    if (takeOnly) return null
     return (
       <span className="live-control">
         <Button
@@ -275,6 +315,7 @@ export function LiveControl({ taskId, session, reload }: { taskId: string; sessi
 
   const eligible = session.you.can_control && (holder === null || session.you.can_preempt)
   if (!eligible) {
+    if (takeOnly) return null
     return (
       <span className="live-control live-control-view" title="Only the submitter, or a member they opened control to, can take control.">
         {holder === null ? 'View only' : `${holder.email} is in control`}
@@ -365,10 +406,16 @@ export function LiveBrowserPane({
   task,
   live,
   reload,
+  theater: openTheater = false,
+  onHandoffReady,
 }: {
   task: Task
   live: LiveState
   reload: () => void
+  /** Open in the theater (`/browser?theater=1`): the graph card, the banner and a shared link land here. */
+  theater?: boolean
+  /** "I'm ready to sign in" was accepted: the agent's view reads the task again. */
+  onHandoffReady?: () => void
 }) {
   const [logs, setLogs] = useState(false)
   // The element noVNC draws into, for the theater to borrow; null until LiveScreen has mounted it.
@@ -390,21 +437,42 @@ export function LiveBrowserPane({
     [reason, expect, deadline],
   )
 
-  if (live.status === 'loading' || live.status === 'idle') {
-    return <p className="live-note">Reading the agent’s live browser.</p>
+  // THE ONE HAND-OFF BANNER ON THIS TAB (LB-UX1): the agent view's strip
+  // steps aside here, and this one is drawn whatever the session is -- a
+  // parked hand-off has no session at all, and says "I'm ready to sign in".
+  const banner = (actions?: ReactNode) => (
+    <HandoffStrip task={task} onReady={onHandoffReady}>
+      {actions}
+    </HandoffStrip>
+  )
+  const note = (say: ReactNode) => (
+    <div className="live-tab">
+      {banner()}
+      <p className="live-note">{say}</p>
+    </div>
+  )
+
+  if (live.status === 'idle') {
+    // No attempt in flight: between attempts (a hand-off parked, or READY
+    // after "I'm ready to sign in"), or finished.
+    return note(
+      TERMINAL_STATES.has(task.state)
+        ? 'This agent has finished, and its live browser closed with it. Its recordings are on Attempts.'
+        : 'The agent’s browser is not running. It starts when the agent is admitted again, and appears here.',
+    )
+  }
+  if (live.status === 'loading') {
+    return note('Reading the agent’s live browser.')
   }
   if (live.status === 'error') {
-    return <p className="live-note">The live browser could not be read: {live.message}</p>
+    return note(`The live browser could not be read: ${live.message}`)
   }
   if (session === null) {
-    return <p className="live-note">The agent’s browser is starting. It appears here once its pod is running.</p>
+    return note('The agent’s browser is starting. It appears here once its pod is running.')
   }
   if (session.state === 'closed') {
-    return (
-      <p className="live-note">
-        The live browser has closed{session.closed_reason ? ` (${session.closed_reason})` : ''}. The recording is kept
-        for seven days.
-      </p>
+    return note(
+      `The live browser has closed${session.closed_reason ? ` (${session.closed_reason})` : ''}. The recording is kept for seven days.`,
     )
   }
 
@@ -420,6 +488,7 @@ export function LiveBrowserPane({
     sessionId: session.session_id,
     screen: screenNode,
     live: true,
+    browser: session, reload, // the device, the controller and the return, for the theater (LB-UX2a)
   }
   const strip = (
     <div className={`live-strip is-${verdict.tone}`} data-tone={verdict.tone} role="status">
@@ -446,37 +515,46 @@ export function LiveBrowserPane({
   return (
     <TheaterHost
       session={theater}
+      initiallyOpen={openTheater}
       strip={strip}
       handoff={handoff}
       logs={<AgentLogs task={task} />}
-      device={<LiveDevice session={session} mine={mine} />}
+      device={<LiveDevice taskId={task.id} session={session} reload={reload} />}
       control={<LiveControl taskId={task.id} session={session} reload={reload} />}
     >
       <div className={`live-tab${logs ? ' with-logs' : ''}`}>
-        {session.human_wait !== null && <HandoffBanner wait={session.human_wait} />}
+        {banner(
+          <>
+            <LiveControl taskId={task.id} session={session} reload={reload} takeOnly />
+            <OpenInTheater />
+          </>,
+        )}
         {strip}
         <LiveToolbar
           taskId={task.id}
           session={session}
-          mine={mine}
           logs={logs}
           onLogs={() => setLogs((v) => !v)}
           reload={reload}
         />
         <SaveAsLoginOffer taskId={task.id} tenantId={task.tenant_id} site={o?.origin ?? null} controlReturned={returned} />
+        {/* LOGS ON THE LEFT, THE DEVICE ON THE RIGHT (the mockup's ◫ logs). */}
         <div className="live-body">
-          <LiveScreen
-            key={session.session_id}
-            taskId={task.id}
-            control={mine}
-            touch={mine && session.device.touch}
-            onScreen={setScreenNode}
-          />
           {logs && (
             <div className="live-logs">
               <AgentLogs task={task} />
             </div>
           )}
+          <LiveScreen
+            key={session.session_id}
+            taskId={task.id}
+            control={mine}
+            touch={mine && session.device !== null && session.device.touch}
+            onScreen={setScreenNode}
+            device={deviceSize(session)}
+            caption={<span className="live-caption">{deviceCaption(session)}</span>}
+            onControlChange={reload}
+          />
         </div>
       </div>
     </TheaterHost>
@@ -521,41 +599,100 @@ function OriginHost({ origin }: { origin: LiveOrigin }) {
   )
 }
 
-function HandoffBanner({ wait }: { wait: NonNullable<LiveSession['human_wait']> }) {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [])
-  const left = Math.max(0, Math.round((Date.parse(wait.deadline) - now) / 1000))
-  const time = Number.isFinite(left) ? `${Math.floor(left / 60)}m ${String(left % 60).padStart(2, '0')}s left` : null
+/** The banner's Open in theater: the theater of this tab, which the banner sits inside. */
+function OpenInTheater() {
+  const theater = useTheater()
+  if (theater === null) return null
   return (
-    <div className="live-handoff" role="region" aria-label="The agent is waiting for you">
-      <strong>The agent is waiting for you.</strong> <span className="live-handoff-reason">{wait.reason}</span>
-      <span className="live-handoff-expect">
-        {wait.expect !== null && wait.expect.trim() !== '' ? `Expected site: ${bareHost(wait.expect)}` : 'The agent named no site.'}
-      </span>
-      {time !== null && <span className="live-handoff-left">{time}</span>}
-    </div>
+    <Button size="sm" onClick={theater.open}>
+      Open in theater
+    </Button>
   )
 }
 
 /**
- * THE DEVICE BAR (§6.1, Q13): the preset, rotate and touch. Q13 lets the
- * person in control change them, but swarm-api serves no device route yet, so
- * every switcher shows the current device and is disabled, with why.
+ * THE DEVICE AS DRAWN, IN CSS PIXELS (LB-V1): the preset's size with its
+ * sides in the orientation's order -- the long side across in landscape, down
+ * in portrait. Ordered rather than swapped, because the gate's presets are not
+ * all written portrait: desktop's natural orientation is landscape and its
+ * preset is already 1440×900, so a swap printed "Desktop · 900×1440" for the
+ * desktop the person was looking at (visual QA 5, B2). Null while the gate
+ * has not reported a device, or reports one not in the list.
+ */
+export function deviceSize(
+  session: Pick<LiveSession, 'device' | 'presets'>,
+): { width: number; height: number; scale: number; mobile: boolean } | null {
+  const d = session.device
+  const p = d === null ? undefined : session.presets.find((x) => x.name === d.preset)
+  if (d === null || p === undefined) return null
+  const [long, short] = [Math.max(p.width, p.height), Math.min(p.width, p.height)]
+  return d.orientation === 'landscape'
+    ? { width: long, height: short, scale: p.scale, mobile: p.mobile }
+    : { width: short, height: long, scale: p.scale, mobile: p.mobile }
+}
+
+/**
+ * UNDER THE DEVICE, WHAT IT IS (the mockup's caption): `iPhone 15 · 393×852
+ * · <path>`, width × height as the device is turned (`deviceSize`). The
+ * page's path is not served: the session's origin is scheme, host and port
+ * by design (§5.7), and nothing carries the path to swarm-api, so it says so
+ * rather than print one nobody measured. A device the gate has not reported
+ * is said the same way (LB-SEAM).
+ */
+export function deviceCaption(session: Pick<LiveSession, 'device' | 'presets'>): string {
+  const d = session.device
+  const size = deviceSize(session)
+  const device =
+    d === null
+      ? 'Device not reported'
+      : size === null
+        ? presetLabel(d.preset)
+        : `${presetLabel(d.preset)} · ${size.width}×${size.height}`
+  return `${device} · path not reported`
+}
+
+/**
+ * THE DEVICE, FITTED INTO THE STAGE (LB-V1, visual QA 5 B3): the largest box
+ * of the device's proportions that fits `room` both ways -- CSS `contain`,
+ * whole pixels, never larger than the room. An iPhone 15 frame drawn to the
+ * stage's width alone was 692×1552 in a 900 px window, and only its top 40%
+ * could be seen. Null when there is no room to fit into (not laid out yet).
+ */
+export function fitDevice(
+  room: { width: number; height: number },
+  device: { width: number; height: number },
+): { width: number; height: number } | null {
+  if (room.width <= 0 || room.height <= 0 || device.width <= 0 || device.height <= 0) return null
+  // The bounding side is the room's exactly; the other is cut to whole pixels,
+  // computed in one division so float error never takes a pixel off the first.
+  if (room.width * device.height <= room.height * device.width) {
+    return { width: Math.floor(room.width), height: Math.max(1, Math.floor((device.height * room.width) / device.width)) }
+  }
+  return { width: Math.max(1, Math.floor((device.width * room.height) / device.height)), height: Math.floor(room.height) }
+}
+
+/**
+ * THE TOOLBAR, LEFT TO RIGHT AS THE MOCKUP DRAWS IT (owner decisions
+ * 2026-10-12): the device chips, `⟲ rotate`, `touch: on|off`, `◫ logs`, and
+ * at the right `⤢ Theater`. "Let any member take control" stays in the
+ * toolbar, after Theater, exactly as built (the owner kept it).
+ *
+ * THE DEVICE CONTROLS ARE SWITCHED BY THE PERSON IN CONTROL (§6.1, Q13;
+ * LB-DEV-B): enabled when `you.can_switch_device`, disabled with why for
+ * everyone else. The why is the disabled controls' tooltip and their
+ * accessible description, NOT a line in the toolbar: as a line it pushed
+ * ⤢ Theater to a second row at 1440 with the agent list open, and the
+ * toolbar to three rows at 1024 (visual QA 5, U3; LB-V1).
  */
 function LiveToolbar({
   taskId,
   session,
-  mine,
   logs,
   onLogs,
   reload,
 }: {
   taskId: string
   session: LiveSession
-  mine: boolean
   logs: boolean
   onLogs: () => void
   reload: () => void
@@ -563,29 +700,32 @@ function LiveToolbar({
   const [error, setError] = useState<string | null>(null)
   return (
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
-      <LiveDevice session={session} mine={mine} />
-      <Button size="sm" aria-pressed={logs} onClick={onLogs}>
-        {logs ? 'Hide logs' : 'Logs beside'}
-      </Button>
-      <TheaterButton />
-      {session.you.can_open && (
-        <label className="live-open">
-          <input
-            type="checkbox"
-            checked={session.open_to_members}
-            disabled={session.open_to_members}
-            onChange={(e) => {
-              if (!e.target.checked) return
-              void openLiveToMembers(taskId).then((r) => {
-                setError(r.status === 'error' ? r.error.message : null)
-                reload()
-              })
-            }}
-          />
-          Let any member take control
-        </label>
-      )}
-      {!mine && <span className="live-toolbar-why">{deviceWhy(mine)}</span>}
+      <LiveToolMenu>
+        <LiveDevice taskId={taskId} session={session} reload={reload} />
+        <Button size="sm" aria-pressed={logs} onClick={onLogs} title={logs ? 'Hide the logs' : 'Show the logs beside the browser'}>
+          ◫ logs
+        </Button>
+      </LiveToolMenu>
+      <span className="live-toolbar-end">
+        <TheaterButton />
+        {session.you.can_open && (
+          <label className="live-open">
+            <input
+              type="checkbox"
+              checked={session.open_to_members}
+              disabled={session.open_to_members}
+              onChange={(e) => {
+                if (!e.target.checked) return
+                void openLiveToMembers(taskId).then((r) => {
+                  setError(r.status === 'error' ? r.error.message : null)
+                  reload()
+                })
+              }}
+            />
+            Let any member take control
+          </label>
+        )}
+      </span>
       {error !== null && (
         <span className="live-control-error" role="alert">
           {error}
@@ -595,45 +735,103 @@ function LiveToolbar({
   )
 }
 
-// SHOWN, NOT SWITCHED. swarm-api serves no device route (§6.1 needs the
-// gate's device lane, L3b, which has not landed), so a switcher that sent a
-// change would send it to a path nothing answers. The bar draws the device
-// the session reports, for everyone, and changes nothing.
-function deviceWhy(mine: boolean): string {
-  return mine
-    ? 'Switching the device is not served yet: swarm-api has no device route.'
-    : 'Only the person in control can change the device.'
+// SWITCHED BY THE PERSON IN CONTROL, SHOWN TO EVERYONE ELSE (LB-DEV-B).
+// swarm-api says who may switch (`you.can_switch_device`: the controller
+// only) and refuses anyone else with 409; the console disables the bar for
+// them rather than offer a change that will be refused. A change is a preset
+// BY NAME, an orientation or touch -- never a size (invariant 10). The answer
+// is the session as it stands: the gate applies the change and reports it,
+// so the bar shows the new device from the read that follows, not before.
+const DEVICE_WHY = 'Only the person in control can change the device.'
+
+/** The orientation a rotate asks for. */
+type Orientation = NonNullable<LiveSession['device']>['orientation']
+
+function rotated(orientation: Orientation): Orientation {
+  return orientation === 'portrait' ? 'landscape' : 'portrait'
 }
 
-/** The preset, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
-function LiveDevice({ session, mine }: { session: LiveSession; mine: boolean }) {
+/** The device chips, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
+function LiveDevice({ taskId, session, reload }: { taskId: string; session: LiveSession; reload: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const whyId = useId()
   const device = session.device
-  const names = session.presets.some((p) => p.name === device.preset)
-    ? session.presets.map((p) => p.name)
-    : [device.preset, ...session.presets.map((p) => p.name)]
-  const why = deviceWhy(mine)
+  // NOT REPORTED (LB-SEAM): the gate reports the device it applied over the
+  // viewer link; until a report has reached swarm-api the session serves
+  // null. No chip is pressed then, rather than the first drawn as if it were
+  // the one applied -- and nothing is offered to switch from a device nobody
+  // knows.
+  const names =
+    device === null || session.presets.some((p) => p.name === device.preset)
+      ? session.presets.map((p) => p.name)
+      : [device.preset, ...session.presets.map((p) => p.name)]
+  const can = session.state === 'open' && session.you.can_switch_device && device !== null
+  const why = device === null ? 'The gate has not reported which device it applied.' : can ? undefined : DEVICE_WHY
+  const mobile = device === null ? false : (session.presets.find((p) => p.name === device.preset)?.mobile ?? device.touch)
+  // The why, said to a screen reader as each disabled control's description.
+  const describedBy = why === undefined ? undefined : whyId
+  const send = (body: Parameters<typeof setLiveDevice>[1]) => {
+    setBusy(true)
+    void setLiveDevice(taskId, body).then((r) => {
+      setBusy(false)
+      setError(r.status === 'error' ? r.error.message : null)
+      reload()
+    })
+  }
   return (
     <>
-      <label className="live-device">
-        <span>Device</span>
-        <select
-          value={device.preset}
-          disabled
-          title={why}
-        >
-          {names.map((n) => (
-            <option key={n} value={n}>
-              {presetLabel(n)}
-            </option>
-          ))}
-        </select>
-      </label>
-      <Button size="sm" disabled title={why}>
-        Rotate ({device.orientation})
+      <span className="live-chips" role="group" aria-label="Device">
+        {names.map((n) => (
+          <Button
+            key={n}
+            size="sm"
+            className="live-chip"
+            aria-pressed={device !== null && device.preset === n}
+            disabled={!can || busy}
+            title={why}
+            aria-describedby={describedBy}
+            onClick={() => {
+              if (device !== null && n !== device.preset) send({ preset: n })
+            }}
+          >
+            {presetLabel(n)}
+          </Button>
+        ))}
+      </span>
+      <Button
+        size="sm"
+        disabled={!can || busy}
+        title={why}
+        aria-describedby={describedBy}
+        onClick={() => {
+          if (device !== null) send({ preset: device.preset, orientation: rotated(device.orientation) })
+        }}
+      >
+        ⟲ rotate
       </Button>
-      <Button size="sm" aria-pressed={device.touch} disabled title={why}>
-        Touch {device.touch ? 'on' : 'off'}
+      <Button
+        size="sm"
+        aria-pressed={device?.touch ?? false}
+        disabled={!can || busy || !mobile}
+        title={can && !mobile ? 'This preset has no touch.' : why}
+        aria-describedby={describedBy}
+        onClick={() => {
+          if (device !== null) send({ preset: device.preset, orientation: device.orientation, touch: !device.touch })
+        }}
+      >
+        {device?.touch === true ? 'touch: on' : 'touch: off'}
       </Button>
+      {why !== undefined && (
+        <span id={whyId} className="sk-vh">
+          {why}
+        </span>
+      )}
+      {error !== null && (
+        <span className="live-control-error" role="alert">
+          {error}
+        </span>
+      )}
     </>
   )
 }
@@ -653,7 +851,7 @@ export interface Rfb {
   addEventListener(type: 'connect' | 'disconnect' | 'securityfailure', listener: (e: Event) => void): void
 }
 
-export type RfbConstructor = new (target: HTMLElement, channel: WebSocket, options?: { shared?: boolean }) => Rfb
+export type RfbConstructor = new (target: HTMLElement, channel: LiveChannel, options?: { shared?: boolean }) => Rfb
 
 /** noVNC, loaded with the first Browser tab rather than with the console. */
 async function loadRfb(): Promise<RfbConstructor> {
@@ -664,26 +862,82 @@ async function loadRfb(): Promise<RfbConstructor> {
 
 type Conn = 'connecting' | 'connected' | 'reconnecting' | 'failed'
 
+// The frame's border, in CSS pixels, as live.css draws it (`.live-frame`,
+// content-box, so the fit is the screen's size and the outline is outside
+// it): the fit leaves room for it on every side. A phone or tablet is drawn
+// in an outline; a desktop is not, and keeps only the hairline the screen
+// itself always had, which sits inside the fit.
+const MOBILE_BEZEL = 10
+const DESKTOP_BEZEL = 0
+/** `.live-screen`'s own border, inside the frame: the fit is the box inside it, where noVNC draws. */
+const HAIRLINE = 1
+/** The gap between the device and its caption (`.live-stage`'s `gap`). */
+const STAGE_GAP = 6
+/** A mobile preset this wide on its short side is a tablet (iPad: 810), and gets the tablet's outline. */
+const TABLET_MIN = 600
+
 function LiveScreen({
   taskId,
   control,
   touch,
   onScreen,
+  device = null,
+  caption,
+  onControlChange,
 }: {
   taskId: string
   control: boolean
   touch: boolean
   /** Told the element noVNC draws into, and null when it goes: the theater borrows it. */
   onScreen?: (node: HTMLElement | null) => void
+  /** The device as turned (`deviceSize`): the frame is fitted to its proportions, in an outline when it is mobile. */
+  device?: { width: number; height: number; mobile: boolean } | null
+  /** Under the device frame: what it is, its size and the page's path. */
+  caption?: ReactNode
+  /** Called when swarm-api's status frames say control or the session changed: the pane re-reads the session. */
+  onControlChange?: () => void
 }) {
   const host = useRef<HTMLDivElement>(null)
   const rfb = useRef<Rfb | null>(null)
   const focused = useRef(false)
   const controlRef = useRef(control)
   controlRef.current = control
+  const changedRef = useRef(onControlChange)
+  changedRef.current = onControlChange
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
   const [hasFocus, setHasFocus] = useState(false)
+  const stage = useRef<HTMLDivElement>(null)
+  const below = useRef<HTMLDivElement>(null)
+  const [room, setRoom] = useState<{ width: number; height: number } | null>(null)
+
+  // THE ROOM THE DEVICE HAS: the stage's box, less the caption under the
+  // device and the outline around it. Measured before paint and again
+  // whenever the stage changes size (the logs opening, the agent list
+  // folding, the window), so the device is never drawn bigger than it.
+  useLayoutEffect(() => {
+    const node = stage.current
+    if (node === null) return
+    const measure = () => {
+      const next = { width: node.clientWidth, height: node.clientHeight - (below.current?.offsetHeight ?? 0) - STAGE_GAP }
+      setRoom((was) => (was !== null && was.width === next.width && was.height === next.height ? was : next))
+    }
+    measure()
+    if (typeof ResizeObserver === 'undefined') return
+    const watch = new ResizeObserver(measure)
+    watch.observe(node)
+    return () => watch.disconnect()
+  }, [])
+
+  const bezel = device !== null && device.mobile ? MOBILE_BEZEL : DESKTOP_BEZEL
+  // Fitted is the box noVNC scales its canvas into -- inside the outline AND
+  // the screen's hairline -- so the canvas fills it, edge to edge.
+  const edge = bezel + HAIRLINE
+  const fit =
+    device === null || room === null
+      ? null
+      : fitDevice({ width: room.width - 2 * edge, height: room.height - 2 * edge }, device)
+  const kind = device === null || !device.mobile ? 'desktop' : Math.min(device.width, device.height) >= TABLET_MIN ? 'tablet' : 'phone'
 
   useEffect(() => {
     onScreen?.(host.current)
@@ -704,6 +958,16 @@ function LiveScreen({
     let stopped = false
     let tries = 0
     let timer: ReturnType<typeof setTimeout> | null = null
+    // swarm-api's status frames (LB-STREAM): never noVNC's, which reads only
+    // the binary RFB stream. The first one the tab sees is the state the
+    // session read already drew; a later change of controller, of whether
+    // this viewer holds control, or of the session closing re-reads it.
+    let seen: LiveStatus | null = null
+    const onStatus = (s: LiveStatus) => {
+      const changed = seen !== null && (s.in_control !== seen.in_control || s.controller !== seen.controller || s.open !== seen.open)
+      seen = s
+      if (changed && !stopped) changedRef.current?.()
+    }
     const retry = (message: string) => {
       if (stopped) return
       tries += 1
@@ -752,7 +1016,7 @@ function LiveScreen({
             if (rfb.current === r) rfb.current = null
             retry('The live connection closed. Reconnecting with a new ticket.')
           })
-        })
+        }, onStatus)
       } catch (err) {
         retry(err instanceof Error ? err.message : 'The live connection did not open.')
       }
@@ -795,23 +1059,41 @@ function LiveScreen({
 
   return (
     <div className="live-screen-wrap">
-      <div
-        ref={host}
-        className={`live-screen${control ? ' is-control' : ''}`}
-        data-conn={conn}
-        // Keys here are the remote browser's: the theater's `T` and Esc leave them alone.
-        data-live-screen=""
-        aria-label={control ? 'The agent’s browser. Click it to type into it.' : 'The agent’s browser, view only.'}
-        onFocus={onFocus}
-        onBlur={onBlur}
-        onKeyDown={keepKey}
-        onKeyUp={keepKey}
-        onPaste={onPaste}
-        onTouchStartCapture={gateTouch}
-        onTouchMoveCapture={gateTouch}
-        onTouchEndCapture={gateTouch}
-        onTouchCancelCapture={gateTouch}
-      />
+      {/* THE STAGE: the device fitted into it both ways and centred, in a
+          phone or tablet outline for a mobile preset, the caption under it.
+          The fit sizes the FRAME, and noVNC (scaleViewport) scales its canvas
+          to the screen element that fills it -- never a CSS transform, which
+          would move the pixels away from where noVNC maps a click. The screen
+          element carries no size of its own, so the theater, which borrows
+          it, sizes it to its stage instead. */}
+      <div ref={stage} className="live-stage">
+        <div
+          className={`live-frame is-${kind}`}
+          data-device={kind}
+          style={fit === null ? undefined : { width: `${fit.width + 2 * HAIRLINE}px`, height: `${fit.height + 2 * HAIRLINE}px` }}
+        >
+          <div
+            ref={host}
+            className={`live-screen${control ? ' is-control' : ''}`}
+            data-conn={conn}
+            // Keys here are the remote browser's: the theater's `T` and Esc leave them alone.
+            data-live-screen=""
+            aria-label={control ? 'The agent’s browser. Click it to type into it.' : 'The agent’s browser, view only.'}
+            onFocus={onFocus}
+            onBlur={onBlur}
+            onKeyDown={keepKey}
+            onKeyUp={keepKey}
+            onPaste={onPaste}
+            onTouchStartCapture={gateTouch}
+            onTouchMoveCapture={gateTouch}
+            onTouchEndCapture={gateTouch}
+            onTouchCancelCapture={gateTouch}
+          />
+        </div>
+        <div ref={below} className="live-stage-caption">
+          {caption}
+        </div>
+      </div>
       <p className="live-screen-say" role="status">
         {conn === 'connecting'
           ? 'Connecting to the agent’s browser.'

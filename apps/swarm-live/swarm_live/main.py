@@ -8,7 +8,7 @@ over the internal load balancer, and the NetworkPolicy admits only swarm-api's
 egress range and the tenant gates. There is no TLS and no certificate anywhere
 on this hop; §3.3 records why that is acceptable.
 
-Three routes, and a health check:
+Four routes, and a health check:
 
 * `/v1/tunnel`        -- the gate dials out to here (§3.3 step 2). First
   message: the tunnel ticket, as text. Then the framed tunnel protocol of
@@ -19,6 +19,11 @@ Three routes, and a health check:
 * `POST /internal/close` -- swarm-api ends a session (decision (a)): the body
   is a close request MAC'd with swarm-live-key (rendezvous.verify_close). Every
   connection of the session is dropped. 200 when it verified, 404 otherwise.
+* `POST /internal/device` -- swarm-api passes the controller's device choice
+  to the gate (LB-DEV-B): the body is a device request MAC'd with
+  swarm-live-key (rendezvous.verify_device), sent to the session's gate as a
+  `DEVICE` frame. 200 when it was sent, 404 otherwise -- a forged, replayed
+  or expired request and a session with no tunnel here alike.
 * `/healthz`          -- counts only.
 
 THE RELAY READS THE TICKET AND NOTHING ELSE. No Firestore client is built, and
@@ -162,6 +167,18 @@ def create_app(rendezvous: Rendezvous | None = None) -> FastAPI:
             return JSONResponse({"closed": False}, status_code=404)
         log.info("live relay: session=%s closed by swarm-api (%d connections)", session_id, dropped)
         return JSONResponse({"closed": True, "session_id": session_id, "dropped": dropped})
+
+    @app.post("/internal/device")
+    async def device(request: Request) -> JSONResponse:
+        raw = (await request.body())[: MAX_TICKET_CHARS + 1]
+        try:
+            session_id = await rz().device_request(raw.decode("ascii").strip())
+        except (Refused, UnicodeDecodeError) as exc:
+            log.info("live relay: device request refused: %s", getattr(exc, "reason", "malformed"))
+            return JSONResponse({"sent": False}, status_code=404)
+        # The session only: the device is the person's choice, not a log line's.
+        log.info("live relay: session=%s device request sent to the gate", session_id)
+        return JSONResponse({"sent": True, "session_id": session_id})
 
     @app.websocket("/v1/tunnel")
     async def tunnel(ws: WebSocket) -> None:

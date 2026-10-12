@@ -35,7 +35,12 @@ from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
 from swarm_common.models import ProviderState
 
 from .task_input import TaskMasking, masking_for
-from .validation import DEFAULT_CARRIER, DEFAULT_STRATEGY, DISPATCH_METADATA_KEY
+from .validation import (
+    DEFAULT_CARRIER,
+    DEFAULT_STRATEGY,
+    DISPATCH_METADATA_KEY,
+    START_PROBLEM_METADATA_KEY,
+)
 
 #: A masker over no document: the rules, and no literals. What an attempt is
 #: masked with when its caller had no task to hand (`attempt_to_api`). It only
@@ -293,6 +298,33 @@ def dispatch_of(task: Task) -> dict[str, Any]:
     return out
 
 
+def start_problem_to_api(task: Task, masking: TaskMasking) -> dict[str, Any] | None:
+    """Why the task's pod is not starting, as the reconciler last saw it, or None (F1-POD).
+
+    Stored as `metadata.start_problem` by the reconciler
+    (`reconciler.startproblem`), because the frozen `Task` has no field for
+    it; lifted here so a caller reads one key without knowing the encoding,
+    as `dispatch` is. `message` is kubelet's text about a tenant's pod, so
+    every string is masked by the task's masker, as `last_error` is. A record
+    that is not a map serves None: a document can hold anything.
+    """
+    raw = (task.metadata or {}).get(START_PROBLEM_METADATA_KEY)
+    if not isinstance(raw, dict):
+        return None
+    masked, _ = masking.leaves(
+        {
+            "container": raw.get("container"),
+            "reason": raw.get("reason"),
+            "restarts": raw.get("restarts") if isinstance(raw.get("restarts"), int) else 0,
+            "message": raw.get("message"),
+            "pod_started": raw.get("pod_started") is True,
+            "attempt_id": raw.get("attempt_id"),
+            "seen_at": raw.get("seen_at"),
+        }
+    )
+    return masked
+
+
 def workflow_dispatch(tasks: Any) -> dict[str, Any]:
     """A workflow's dispatch options, read back from the tasks that carry them.
 
@@ -458,6 +490,10 @@ def task_to_api(
         # that predates the feature and has no block -- without knowing the
         # encoding.
         "dispatch": dispatch_of(task),
+        # F1-POD: why the pod is not starting, in the summary view too -- the
+        # list is where a stuck "dispatched" row is first seen. Null when the
+        # reconciler recorded nothing. Also inside `metadata`, masked there too.
+        "start_problem": start_problem_to_api(task, masking),
         "repository_url": repository_url,
         "repository_url_redaction_count": repository_url_count,
         "repository_ref": task.repository_ref,

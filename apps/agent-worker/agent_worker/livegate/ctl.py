@@ -54,6 +54,8 @@ import socket
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
+from .session import OPS as SESSION_OPS
+
 log = logging.getLogger(__name__)
 
 KEY_BYTES = 32
@@ -67,7 +69,10 @@ KEY_BYTES = 32
 #: * `end_control` -- the task was cancelled or the hold expired (§4.3, §4.4).
 #: * `device` -- a preset by name, from `swarm-handoff device` (§6.1, Q13).
 #: * `status` -- what the gate is doing, for `swarm-handoff status`.
-OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status"})
+#: * `session_export` / `session_import` -- a signed-in session carried gate
+#:   to gate (session.py, §5.5.1). Named there, once; the worker sends them
+#:   (browser_login.py), and before L3m this list refused both.
+OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status"}) | SESSION_OPS
 
 #: The first start's marker, in the sidecar's own /tmp (§3.1; the dispatcher
 #: mounts that volume in the sidecar only). Directly in /tmp, not a subdirectory:
