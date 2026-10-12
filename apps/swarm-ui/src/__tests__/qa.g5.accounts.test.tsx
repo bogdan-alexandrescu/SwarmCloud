@@ -219,14 +219,25 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
   })
 
   it('gives Last given out the clock it happened at, with its age under it', async () => {
-    const at = new Date(Date.now() - 3 * 60 * MINUTES).toISOString()
-    await openRow(account({ last_assigned_at: at }))
-    const tile = [...document.querySelectorAll('.acct-tiles > .acct-tile')].find(
-      (t) => t.querySelector('small')?.textContent === 'Last given out',
-    )!
-    // MUTATION: print `timeAgo` as the figure again.
-    expect(tile.querySelector('b')!.textContent).toBe(hhmm(at))
-    expect(tile.querySelector('i')!.textContent).toBe('3h ago')
-    expect(tile.querySelector('b')!.getAttribute('title')).toBe(new Date(at).toLocaleString())
+    // THE CLOCK STANDS AT LOCAL NOON. `givenAt` prints a bare clock only for
+    // a hand-out TODAY; run before 03:00, "3h ago" was yesterday and the tile
+    // rightly drew `Oct 11 21:12`. Only Date is faked: timers stay real.
+    const noon = new Date()
+    noon.setHours(12, 0, 0, 0)
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(noon)
+    try {
+      const at = new Date(Date.now() - 3 * 60 * MINUTES).toISOString()
+      await openRow(account({ last_assigned_at: at }))
+      const tile = [...document.querySelectorAll('.acct-tiles > .acct-tile')].find(
+        (t) => t.querySelector('small')?.textContent === 'Last given out',
+      )!
+      // MUTATION: print `timeAgo` as the figure again.
+      expect(tile.querySelector('b')!.textContent).toBe(hhmm(at))
+      expect(tile.querySelector('i')!.textContent).toBe('3h ago')
+      expect(tile.querySelector('b')!.getAttribute('title')).toBe(new Date(at).toLocaleString())
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
