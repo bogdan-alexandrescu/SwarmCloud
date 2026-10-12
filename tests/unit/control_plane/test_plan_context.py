@@ -29,6 +29,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -429,7 +430,10 @@ def test_an_index_behind_the_head_says_so_first_in_both_sections(
     github.index.compares[(ONE, head)] = {"status": "ahead", "ahead_by": 3,
                                           "files": ["src/widgets/sort.py"]}
     record = db.docs[f"repositories/{repo_id}"]
-    record["index"] = {**record["index"], "head_sha": head}
+    # Built now, not at the fixture's fixed `built_at`: past repoindex.STALE_AGE
+    # that date turns "behind" into "stale" on the calendar alone (it did, 2026-10-12).
+    record["index"] = {**record["index"], "head_sha": head,
+                       "current_built_at": datetime.now(timezone.utc).isoformat()}
     run, prompt, stored = _create_run(client, db)
     rid = run["id"]
     index = _between(prompt, f"=== REPO INDEX {rid} {ONE} ===", f"=== END REPO INDEX {rid} ===")
