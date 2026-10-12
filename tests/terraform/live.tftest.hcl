@@ -446,6 +446,13 @@ run "the_relay_runs_only_on_gke" {
   }
 
   expect_failures = [check.live_browser_needs_gke]
+
+  # The sidecar follows the relay, not the variable: without the cluster there
+  # is no relay, so no browser pod is given a display to stream from.
+  assert {
+    condition     = local.service_env["swarm-scheduler"].LIVE_BROWSER_SIDECAR == "false"
+    error_message = "without enable_gke_autopilot the scheduler renders no display sidecar (LIVE_BROWSER_SIDECAR=false)"
+  }
 }
 
 # ---------------------------------------------------------------------------
@@ -515,5 +522,76 @@ run "on_swarm_api_carries_the_relay_address_and_the_keys_reference_never_the_key
       && !strcontains(file("${var.tf_root}/live.tf"), "google_secret_manager_secret_version")
     )
     error_message = "swarm-live-key reaches swarm-api only as a Secret Manager reference, never as a plain value or a managed version"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# The scheduler's side, and dev switched on (LB-Lon, owner decision
+# 2026-10-11 ~15:00 PDT)
+# ---------------------------------------------------------------------------
+
+# Off, a claude-code-browser pod is the pod it always was: no display sidecar,
+# no live gate (scheduler.settings.SchedulerSettings.live_browser_sidecar).
+run "off_the_scheduler_renders_no_display_sidecar" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  assert {
+    condition     = local.service_env["swarm-scheduler"].LIVE_BROWSER_SIDECAR == "false"
+    error_message = "with enable_live_browser off the scheduler reads LIVE_BROWSER_SIDECAR=false"
+  }
+}
+
+# dev.tfvars as committed turns the live browser on, and the plan those values
+# make carries both halves of the wire: the relay (its grants, address and
+# manifest; swarm-api's SWARM_LIVE_URL) AND the scheduler's display sidecar.
+# Before LB-Lon nothing set LIVE_BROWSER_SIDECAR, so a relay could stand with
+# no browser pod ever streaming to it.
+run "dev_turns_the_live_browser_on_end_to_end" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  # dev's two switches, as committed. Read as text: a terraform test cannot
+  # load a tfvars file into a run, so the run below sets the same values and
+  # these two assertions hold dev.tfvars to them.
+  variables {
+    enable_live_browser  = true
+    enable_gke_autopilot = true
+  }
+
+  assert {
+    condition     = length(regexall("(?m)^enable_live_browser\\s*=\\s*true\\b", file("${var.tf_root}/../environments/dev/dev.tfvars"))) == 1
+    error_message = "terraform/environments/dev/dev.tfvars sets enable_live_browser = true (LB-Lon)"
+  }
+
+  assert {
+    condition     = length(regexall("(?m)^enable_gke_autopilot\\s*=\\s*true\\b", file("${var.tf_root}/../environments/dev/dev.tfvars"))) == 1
+    error_message = "terraform/environments/dev/dev.tfvars sets enable_gke_autopilot = true, without which the live browser grants nothing"
+  }
+
+  assert {
+    condition     = local.service_env["swarm-scheduler"].LIVE_BROWSER_SIDECAR == "true"
+    error_message = "dev renders the scheduler with LIVE_BROWSER_SIDECAR=true, so a claude-code-browser pod carries the display sidecar and the live gate"
+  }
+
+  assert {
+    condition     = output.live_relay.enabled && output.swarm_live_manifest != null
+    error_message = "dev renders the relay enabled, with a manifest to apply"
+  }
+
+  assert {
+    condition     = length(google_storage_bucket_iam_member.live_relay_records) == 1 && length(google_compute_address.live_relay) == 1
+    error_message = "dev plans the relay's one bucket grant and its internal address"
+  }
+
+  assert {
+    condition     = local.service_env["swarm-api"].SWARM_LIVE_URL == "ws://10.10.0.42:8080"
+    error_message = "dev renders swarm-api with the relay's address"
   }
 }
