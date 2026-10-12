@@ -118,7 +118,7 @@ const cards = (): HTMLElement[] => [...document.querySelectorAll<HTMLElement>('.
 const who = (c: HTMLElement): string => c.querySelector('.ov-handoff-who')?.textContent ?? ''
 
 describe("the Overview's hand-off cards say which agent is waiting (LB-V5)", () => {
-  it('name the agent, its short task id and how long it has waited', () => {
+  it('name the agent, its short task id and how long it has waited', async () => {
     quiet()
     render(
       <HandoffCards
@@ -132,6 +132,7 @@ describe("the Overview's hand-off cards say which agent is waiting (LB-V5)", () 
     expect(who(c!)).toBe('login-github · aaaa1111 · waiting 5h')
     // The reason, the site, the time left and the action are kept.
     const banner = c!.querySelector('.c-banner')!
+    await waitFor(() => expect(banner.textContent).toContain('look around the GitHub sign-in page'))
     expect(banner.textContent).toContain('github.com')
     expect(banner.textContent).toMatch(/19h 00m left/)
     expect(screen.getByRole('button', { name: /I'm ready to sign in/ })).toBeTruthy()
