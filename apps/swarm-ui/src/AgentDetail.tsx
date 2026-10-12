@@ -2247,7 +2247,8 @@ function Why({
   classes: ResourceClasses | null
 }) {
   // ONCE, IN THE BANNER (LB-V4, U1): a parked hand-off's sentence is the
-  // banner's, so it is not repeated here. See `Alerts`.
+  // banner's, so it is not repeated here. See `Alerts`. This also skips
+  // `SilentWorker`, which is right: a PARKED task has no live worker.
   if (handoffOf(task)?.phase === 'parked') return null
   const units = classUnits(classes, task.resource_class)
   const why = whyAgent(task, units)
