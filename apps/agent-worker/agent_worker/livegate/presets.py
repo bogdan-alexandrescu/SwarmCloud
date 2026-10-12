@@ -39,6 +39,21 @@ at the bottom-left of the frame with the tab strip and the address bar in the
 band above it, which stay visible because they are part of the anti-phishing
 design (section 5.7). A display sized like this carries no letterbox.
 
+A MOBILE PRESET IS SHOWN AS THE PAGE ALONE (LB-R5). Re-QA on 2026-10-12
+(task_3fda0f52db4640c6a91e) found iPhone 15 laid out correctly but framed
+with Chrome's desktop tab strip and omnibox inside the phone outline, which
+looks nothing like a phone browser. The owner decided a phone or tablet shows
+only the page: the console's origin strip reads the top frame's origin over
+CDP (section 5.7, point 1), so the URL is still on screen, and still outside
+anything a page can draw. The display and the window are NOT changed for it:
+Chromium still draws its UI band above the page, the agent's CDP targets are
+the same, and the mask still places the page from the bottom edge. Only the
+captured frame is cut, from `Device.frame_top` (the page's first row on a
+mobile preset, 0 on the desktop) to the display's bottom, and the person's
+pointer, which arrives in that frame's coordinates, is moved back down by
+`frame_top` before it reaches the screen (touch.py). The desktop preset
+keeps its tab strip and address bar, which section 5.7 point 3 relies on.
+
 `BROWSER_UI_HEIGHT` IS A MEASUREMENT of that Chromium: 87 rows from the top of
 the window to the first page row, with `--disable-infobars` (without it the
 Chrome-for-Testing infobar takes 56 more rows of the page). If a new Chromium
@@ -190,6 +205,20 @@ class Device:
     def page_top(self) -> int:
         """The screen row the page starts on: the page is anchored at the bottom, as the mask places it."""
         return self.display_height - self.page_height
+
+    @property
+    def frame_top(self) -> int:
+        """The screen row the viewer's frame starts on: the page's on a mobile preset, 0 on the desktop.
+
+        A phone or tablet is shown as the page alone (LB-R5, see the module
+        docstring); the desktop keeps its tab strip and address bar.
+        """
+        return self.page_top if self.mobile else 0
+
+    @property
+    def frame_height(self) -> int:
+        """The viewer's frame's height in screen pixels: the display from `frame_top` down."""
+        return self.display_height - self.frame_top
 
     def screen_orientation(self) -> dict[str, Any]:
         """`Emulation.ScreenOrientation` for this orientation."""
