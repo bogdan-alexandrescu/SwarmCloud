@@ -12,7 +12,7 @@
 // Colours are read through `cascade` (marks.ts), not getComputedStyle: jsdom
 // orders rules by source alone and applies no @media block.
 
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 
 import type { Result } from '../fetch'
@@ -158,6 +158,19 @@ describe('G5-17: the chosen row keeps its muted clauses at 4.5:1 in both themes'
 })
 
 describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table', () => {
+  // The screen prints a bare clock only for an event TODAY and adds the date otherwise, and
+  // these fixtures sit minutes to hours before now. Against the real clock they passed only
+  // while now was more than three hours into a local day: from 00:00 to 03:00 the 3-hours-ago
+  // event is yesterday and reads 'Oct 11 21:00', which went red on every PR at 00:00Z 2026-10-12.
+  // Pin local noon; only Date is faked so the render's promises and timers still run.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 9, 11, 12, 0, 0))
+  })
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('names each agent from its task, with its attempt and since', async () => {
     const since = new Date(Date.now() - 21 * MINUTES).toISOString()
     const holders: AccountHolders = {
