@@ -845,11 +845,10 @@ jobs:
         # RBAC is re-rendered. NOT switched by vars.APPLY_TENANT_NAMESPACES: on
         # 2026-10-11 swarm-allow-live-egress reached no tenant until the
         # operator applied it by hand.
-        # continue-on-error: owner decision 2026-10-12 01:35 PDT. Whether the
-        # deployer may list namespaces cluster-wide is unmeasured; warn-only
-        # until one release's log shows a clean apply, then a follow-up PR
-        # removes this line so a missing policy fails the release.
-        continue-on-error: true
+        # Fails the release (owner decision 2026-10-12 06:45 PDT). It was
+        # warn-only from 01:35 PDT until a release showed a clean apply; three
+        # did (38236837776, 38241799140, 38245452412: 4 of 4 namespaces, every
+        # policy read back, parity 0 differ), so a missing policy now fails it.
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         run: ./scripts/apply-tenant-network-policies.sh --get-credentials --confirm
 

@@ -10,7 +10,7 @@ import {
 } from 'react'
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
-import { AgentDetailScreen, DRAWER_POLL_MS, Mark, SplitClock, timesRun } from './AgentDetail'
+import { AgentDetailScreen, DRAWER_POLL_MS, HandoffParkedSince, Mark, SplitClock, timesRun } from './AgentDetail'
 import { AgentLogs, LogLastLine } from './AgentLogs'
 import { agentName, backLabel, rememberAgentName, workflowHref } from './agentlist'
 import { loadAttempts, loadTask } from './api'
@@ -281,6 +281,9 @@ export function AgentSplit({
     const onKey = (e: KeyboardEvent) => {
       if (e.key !== 'Escape' || e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return
       if (document.querySelector('[data-focus-return]') !== null) return
+      // An open theater (Theater.tsx) is above the split: its Escape closes it
+      // and only it, back to the Browser tab (LB-V2, visual QA pass 5).
+      if (document.querySelector('[data-theater]') !== null) return
       const t = e.target instanceof Element ? e.target : null
       if (t !== null && panel.current?.contains(t)) return
       if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return
@@ -486,9 +489,11 @@ export function AgentSplit({
       // over the list and is NOT a stop Tab lands on afterwards.
       tabIndex={-1}
       onKeyDown={(e) => {
-        if (e.key === 'Escape') {
+        if (e.key === 'Escape' && !e.defaultPrevented) {
           // An open help card inside stops Escape before it reaches here
-          // (see `HelpCard.tsx`), so the innermost open thing closes.
+          // (see `HelpCard.tsx`), so the innermost open thing closes; so does
+          // the theater, portalled out of this panel but still inside it to
+          // React, and a key it already used is not this panel's.
           e.stopPropagation()
           close()
           return
@@ -603,9 +608,12 @@ export function AgentSplit({
             the expected site and the time left, over whichever pane is open,
             with Take control and Open in theater. ONE BANNER (LB-UX1): the
             Browser tab draws its own, inside its theater host, so this one
-            steps aside there. "I'm ready to sign in" opens the Browser tab. */}
+            steps aside there. "I'm ready to sign in" opens the Browser tab.
+            A parked one says since when here, and the Details tab's two
+            bars that said it again step aside (LB-V4, U1). */}
         {task !== null && selected !== 'browser' && (
           <HandoffStrip task={task} onReady={onHandoffReady}>
+            <HandoffParkedSince task={task} />
             {sessionOpen && (
               <>
                 <LiveControl taskId={taskId} session={liveSession} reload={reloadLive} takeOnly />

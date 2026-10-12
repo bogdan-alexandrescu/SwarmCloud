@@ -15,7 +15,8 @@ import { REASON_COPY, TERMINAL_STATES, bytesLabel, type AttemptRow, type Task, t
  * interleaves three attempts into one column where only the timestamps separate them --
  * so what was different about the two that failed cannot be read off it. Every event
  * carries `attempt_id` (`_event_to_api`, routes/tasks.py), so the grouping is the API's
- * own, not a guess. The attempt documents are the other half: `result_summary` is
+ * own wherever the writer filled it in; where it did not, `attemptOf` places the event
+ * and says so on its row. The attempt documents are the other half: `result_summary` is
  * written ONCE, by finish(), at terminal state, so a task that failed twice and
  * succeeded on the third carries only attempt three's numbers.
  */
@@ -112,6 +113,55 @@ interface Group {
   attempt: AttemptRow | null
   label: string
   events: TaskEvent[]
+  /** Ids of the events `attemptOf` placed here by time, not by a record. */
+  byTime: ReadonlySet<string>
+}
+
+/**
+ * WHICH ATTEMPT AN EVENT BELONGS TO, AND HOW THAT WAS KNOWN (LB-V6).
+ *
+ * The hand-off and control writers put the attempt in `detail` and left the event's
+ * own `attempt_id` null until LB-V6, so visual QA pass 5 found `human handoff
+ * requested`, `ready`, `human control taken` and the rest under "Before any attempt"
+ * though they happened during attempts 1 and 2. The writers fill the field now; the
+ * events already stored stay as written, so in order of how good a witness it is:
+ *
+ *   1. the event's own `attempt_id` -- the API's grouping, as before;
+ *   2. `detail.attempt_id`, when it names an attempt on this page -- what the old
+ *      writers recorded;
+ *   3. the event's `generation` (own, else `detail`'s), when exactly one attempt has it;
+ *   4. its time: the last attempt created at or before it. An event between one
+ *      attempt's end and the next one's lease -- a person's `ready` for a parked
+ *      attempt -- follows the attempt it came after, and one before the first
+ *      attempt stays before any attempt.
+ *
+ * Only 4 is a placement rather than a record, and its row says so (`by time`).
+ * Never by time for an event that NAMES an attempt this page has no document for:
+ * that one keeps its own group, below.
+ */
+function attemptOf(
+  e: TaskEvent,
+  ordered: readonly AttemptRow[],
+): { id: string; byTime: boolean } | null {
+  if (e.attempt_id !== null) return { id: e.attempt_id, byTime: false }
+  const named = e.detail?.['attempt_id']
+  if (typeof named === 'string' && ordered.some((a) => a.attempt_id === named)) {
+    return { id: named, byTime: false }
+  }
+  const gen = e.generation ?? e.detail?.['generation']
+  if (typeof gen === 'number') {
+    const withGen = ordered.filter((a) => a.generation === gen)
+    const only = withGen.length === 1 ? withGen[0] : undefined
+    if (only !== undefined) return { id: only.attempt_id, byTime: false }
+  }
+  const when = Date.parse(e.at)
+  if (Number.isNaN(when)) return null
+  let found: AttemptRow | null = null
+  for (const a of ordered) {
+    const created = Date.parse(a.created_at)
+    if (!Number.isNaN(created) && created <= when) found = a
+  }
+  return found === null ? null : { id: found.attempt_id, byTime: true }
 }
 
 /**
@@ -123,31 +173,34 @@ interface Group {
 function grouped(t: AttemptTimeline): Group[] {
   const byAttempt = new Map<string, TaskEvent[]>()
   const preface: TaskEvent[] = []
+  const byTime = new Set<string>()
+  const ordered = [...t.attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
   // `?? []` only skips the loop when the event read FAILED. Nothing downstream then
   // claims an attempt had no events -- AttemptCard stays silent, and Body says why.
   for (const e of t.events ?? []) {
-    if (e.attempt_id === null) preface.push(e)
+    const owner = attemptOf(e, ordered)
+    if (owner === null) preface.push(e)
     else {
-      const list = byAttempt.get(e.attempt_id)
+      if (owner.byTime) byTime.add(e.event_id)
+      const list = byAttempt.get(owner.id)
       if (list) list.push(e)
-      else byAttempt.set(e.attempt_id, [e])
+      else byAttempt.set(owner.id, [e])
     }
   }
 
-  const groups: Group[] = [{ key: '@preface', attempt: null, label: 'Before any attempt', events: preface }]
-  const ordered = [...t.attempts].sort((x, y) => x.created_at.localeCompare(y.created_at))
+  const groups: Group[] = [{ key: '@preface', attempt: null, label: 'Before any attempt', events: preface, byTime }]
   ordered.forEach((a, i) => {
     // THE DETAIL PANE'S NAME FOR THE SAME ATTEMPT (AG-21). This was
     // `Attempt · gen N` -- no ordinal -- beside a detail pane that said
     // `Attempt 1` and `Attempt 1 · generation 1` for it.
     const label = attemptLabel(i + 1, a.generation)
-    groups.push({ key: a.attempt_id, attempt: a, label, events: byAttempt.get(a.attempt_id) ?? [] })
+    groups.push({ key: a.attempt_id, attempt: a, label, events: byAttempt.get(a.attempt_id) ?? [], byTime })
     byAttempt.delete(a.attempt_id)
   })
   // What is left names an attempt no document on this page describes. Folding these into
   // the preface would file real attempt events under "before any attempt", a lie.
   for (const [id, events] of byAttempt) {
-    groups.push({ key: id, attempt: null, label: `Attempt ${id} · no document`, events })
+    groups.push({ key: id, attempt: null, label: `Attempt ${id} · no document`, events, byTime })
   }
   return groups
 }
@@ -447,6 +500,17 @@ function AttemptCard({
                 {e.generation !== null && (
                   <span className="ev-gen" title="Fencing generation for this event">
                     gen {e.generation}
+                  </span>
+                )}
+                {/* LB-V6: written without its attempt, so filed here by when it
+                    happened (`attemptOf`) -- a placement, not a record. */}
+                {g.byTime.has(e.event_id) && (
+                  <span
+                    // `ev-gen`'s faint micro type: styles.css is outside this lane.
+                    className="ev-gen ev-placed"
+                    title="Written without its attempt; placed under the attempt it happened in, by time"
+                  >
+                    by time
                   </span>
                 )}
                 {/* Only the reconciler labels itself. THE TEST IS THE VALUE,

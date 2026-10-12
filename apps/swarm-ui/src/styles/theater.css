@@ -149,6 +149,24 @@
 .th-outline.is-tablet { width: 12px; height: 16px; border-radius: 3px; }
 .th-outline.is-phone { width: 9px; height: 16px; border-radius: 3px; }
 .th-outline.is-unknown { width: 14px; height: 14px; border-style: dashed; border-color: var(--text-faint); }
+/* THE DEVICE LIST (LB-V2, visual QA pass 5: the tab's chip row, dropped in
+   a 200-240px column, clipped "iPhone SE"). The tab's own device bar, stacked:
+   one full-width row per device, its outline before its name, the current
+   one marked; rotate and touch wrap under it. Nothing is wider than the
+   column at 1440 or 1024. */
+.th-device-ctl { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.th-device-ctl .live-chips { display: flex; flex-direction: column; align-items: stretch; gap: 2px; width: 100%; }
+.th-device-ctl .live-chip { display: flex; justify-content: flex-start; gap: 8px; width: 100%; min-width: 0; text-align: left; }
+.th-device-ctl .live-chip[aria-pressed="true"] { background: color-mix(in srgb, var(--sk-ac) 12%, transparent); }
+.th-device-ctl .live-chip::before {
+  content: ''; flex: none; display: inline-block; box-sizing: border-box;
+  border: 1.5px solid currentColor; border-radius: 3px;
+  width: 14px; height: 14px; border-style: dashed;
+}
+.th-device-ctl .live-chip[data-outline="desktop"]::before { width: 18px; height: 12px; border-radius: 2px; border-style: solid; }
+.th-device-ctl .live-chip[data-outline="tablet"]::before { width: 12px; height: 16px; border-style: solid; }
+.th-device-ctl .live-chip[data-outline="phone"]::before { width: 9px; height: 16px; border-style: solid; }
+.th-device-ctl .live-control-error { flex-basis: 100%; overflow-wrap: anywhere; }
 .th-agent-list { margin: 8px 0 0; padding: 0; list-style: none; display: grid; gap: 4px; }
 .th-agent {
   display: flex; align-items: center; gap: 8px; min-width: 0;

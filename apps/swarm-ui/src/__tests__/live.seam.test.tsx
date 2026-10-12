@@ -27,6 +27,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { LiveRead, LiveTicket } from '../api'
 import type { Result } from '../fetch'
+import type { LiveActions } from '../TheaterTimeline'
 
 vi.mock('@novnc/novnc/core/rfb.js', () => ({ default: class {} }))
 
@@ -46,7 +47,7 @@ const {
 } = await import('../api')
 const { useLiveSession } = await import('../LiveBrowser')
 const { segmentsOfTenant } = await import('../Theater')
-const { loadLiveActions } = await import('../TheaterTimeline')
+const { actionWords, loadLiveActions } = await import('../TheaterTimeline')
 const { ownRecording } = await import('../Recordings')
 const { openLiveSocket: openThumbSocket } = await import('../LiveThumb')
 
@@ -256,15 +257,23 @@ describe('recordings and the action timeline (§7)', () => {
     expect(listing.recordings.every((r) => ownRecording(task, r))).toBe(true)
   })
 
-  it('actions.json: the timeline reads methods, lengths and control events', async () => {
+  it('actions.json: the timeline reads methods, lengths, refusals and what people did', async () => {
     serve(fixture('actions.json'))
     const read = await loadLiveActions(TASK)
     expect(read.status).toBe('ok')
-    const { actions, attempt_id } = (read as { data: { attempt_id: string; actions: { kind: string; method?: string; length?: number; event?: string }[] } }).data
+    const { actions, attempt_id } = (read as { data: LiveActions }).data
     expect(attempt_id).toMatch(/^att_/)
-    expect(actions.map((a) => a.kind)).toEqual(['cdp', 'cdp', 'control', 'control'])
-    expect(actions[1]!.length).toBe(12)
-    expect(actions[2]!.event).toBe('control_taken')
+    expect(actions.find((a) => a.method === 'Input.insertText')!.length).toBe(12)
+    // LB-V3: who took control, the device and its rotation, and why a refusal.
+    const taken = actions.find((a) => a.event === 'control_taken')!
+    expect(taken.by).toMatch(/@/)
+    expect(taken.you).toBe(true)
+    const device = actions.find((a) => a.event === 'device_changed')!
+    expect([device.preset, device.orientation, device.touch]).toEqual(['iphone-15', 'portrait', true])
+    expect(actions.find((a) => a.event === 'rotated')!.orientation).toBe('landscape')
+    expect(actions.find((a) => a.event === 'refused')!.cause).toBe('insecure_connection')
+    expect(actions.find((a) => a.outcome === 'refused')!.cause).toBe('method_policy')
+    expect(actions.map((a) => actionWords(a))).toContain('You rotated the iPhone 15 to landscape')
   })
 })
 
