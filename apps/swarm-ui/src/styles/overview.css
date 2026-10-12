@@ -352,3 +352,10 @@
 
 /* The hand-off banners under Needs a look (live-browser.md §6, lane LB-L12). */
 .ov-handoffs { display: flex; flex-direction: column; gap: var(--ctl-s2); margin-top: var(--ctl-s2); }
+
+/* WHICH AGENT IS WAITING, above each hand-off banner (visual QA pass 5, U2;
+   lane LB-V5): five identical yellow cards told nobody which was which. One
+   line, cut with an ellipsis; the whole of it is the card's group name. */
+.ov-handoff { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ov-handoff-who { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ov-handoffs-more { align-self: flex-start; font-size: var(--t-meta); }
