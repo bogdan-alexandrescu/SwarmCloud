@@ -6445,10 +6445,9 @@ export interface LiveSession {
   /** Whether the submitter opened control to every member of the tenant (§5.1, Q1). */
   open_to_members: boolean
   /**
-   * The device the gate applied, or null while nothing reports it to
-   * swarm-api (LB-SEAM, #1030): the gate applies it, but no relay message or
-   * ctl report carries it yet, so the API serves null rather than a guess.
-   * `origin` is null for the same reason.
+   * The device the gate last reported applying (LB-DEV-B: its report travels
+   * through the relay to swarm-api), or null until a report has arrived --
+   * never a guessed default. `origin` is still null: nothing reports it yet.
    */
   device: LiveDevice | null
   presets: LivePreset[]
@@ -6461,6 +6460,8 @@ export interface LiveSession {
     can_preempt: boolean
     /** May open control to every member: the submitter only (§5.1). */
     can_open: boolean
+    /** May change the device (preset, rotate, touch): the person in control only (§6.1, Q13). */
+    can_switch_device: boolean
   }
 }
 
@@ -6605,6 +6606,26 @@ export async function openLiveToMembers(taskId: string): Promise<Result<unknown>
   const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
   if (USE_FIXTURES) return liveNotServed(target)
   return write(target, 'POST')
+}
+
+/** What `setLiveDevice` sends: a preset BY NAME from the session's `presets`, never a size (invariant 10). */
+export interface LiveDeviceChange {
+  preset: string
+  orientation?: 'portrait' | 'landscape'
+  touch?: boolean
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/device`: the person in control changes the
+ * device (§6.1, Q13, LB-DEV-B). Refused (409) for anyone not in control and
+ * (422) for a name not on the gate's list. The answer is the session read as
+ * it was; `device` changes once the gate reports what it applied, so the
+ * caller re-reads.
+ */
+export async function setLiveDevice(taskId: string, body: LiveDeviceChange): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/device', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'POST', body)
 }
 
 function liveNotServed<T>(target: ApiRoute): Result<T> {

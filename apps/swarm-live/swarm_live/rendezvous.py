@@ -31,7 +31,11 @@ is already open, never a connection of their own:
 
 * `control` -- swarm-api granting control to that viewer, after its
   transaction on `live_sessions/{id}` (§4.2) (30 s);
-* `release` -- swarm-api ending that viewer's control (30 s).
+* `release` -- swarm-api ending that viewer's control (30 s);
+* `device`  -- swarm-api passing on that viewer's device change (30 s, lane
+  LB-DEV-B). Its body carries one more field, `device`: the change itself
+  (`preset` by name, optional `orientation` and `touch`), so the MAC covers
+  what is applied and a ticket for one preset is never a ticket for another.
 
 A ticket is refused if its MAC is wrong, it has expired, it claims a lifetime
 longer than its role's, it was presented before, its role is not the one the
@@ -57,10 +61,20 @@ relay's `{"type": "ready"}`, every tunnel message is binary:
 * `CONTROL` relay -> gate: the connection that now holds control, or an empty
             id for none. The gate's `ControlState.grant`/`revoke` act on it.
 * `ACTION`  gate -> relay: one action-log line (JSON) for the recording (§7).
+* `DEVICE`  relay -> gate: the controller's device change, JSON
+            `{"preset", "orientation"?, "touch"?}`, with the controller's
+            conn id. gate -> relay: the gate's report, JSON `{"ok", "preset",
+            "orientation", "touch", "cause"?}`; an empty conn id is every
+            viewer (the device as applied), a viewer's id that viewer alone
+            (its change was refused). The relay keeps the last applied report
+            and sends it to each viewer that joins, so swarm-api learns the
+            device without waiting for a change (LB-DEV-B).
 
 A viewer's websocket carries that viewer's RFB bytes as binary messages, and
-swarm-api's control messages as text: `{"type": "control"|"release",
-"ticket": ...}`.
+swarm-api's control messages as text: `{"type": "control", "ticket": ...}`
+(a `control` or `release` ticket) and `{"type": "device", "ticket": ...}` (a
+`device` ticket). The relay sends a viewer the gate's device report as text,
+`{"type": "device", "ok", "preset", "orientation", "touch", "cause"?}`.
 
 NOTHING READ FROM A CONNECTION IS LOGGED. RFB bytes are a person's keystrokes
 (§5.3.3), and a ticket admits whoever holds it. Log lines carry reason codes,
@@ -94,7 +108,7 @@ CLOSE_DOMAIN = b"swarm-live-close/v1\0"
 #: Lifetime of each role's ticket (§3.3: 60 s for the tunnel; §5.2: 30 s for a
 #: viewer). Control tickets are minted by swarm-api the moment its transaction
 #: commits and presented at once, so they get the viewer's 30 s.
-TICKET_TTL_SECONDS = {"tunnel": 60, "viewer": 30, "control": 30, "release": 30}
+TICKET_TTL_SECONDS = {"tunnel": 60, "viewer": 30, "control": 30, "release": 30, "device": 30}
 
 #: Clock skew tolerated between swarm-api's clock and the relay's, on expiry and
 #: on the lifetime check. Both run on Google infrastructure with NTP.
@@ -122,8 +136,8 @@ MIN_KEY_BYTES = 32
 MAX_TICKET_CHARS = 4096
 MAX_CONN_ID = 64
 
-OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION = 1, 2, 3, 4, 5
-_OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION})
+OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_DEVICE = 1, 2, 3, 4, 5, 6
+_OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_DEVICE})
 
 #: Websocket close codes. Every ticket refusal is CLOSE_REFUSED ("404").
 CLOSE_REFUSED = 4404
@@ -135,6 +149,14 @@ CLOSE_SLOW = 4408
 _TICKET_FIELDS = ("session_id", "tenant_id", "task_id", "attempt_id", "generation",
                   "role", "exp", "nonce", "email")
 _CLOSE_FIELDS = ("session_id", "exp", "nonce")
+#: The one field a `device` ticket carries beyond the others: the change.
+DEVICE_FIELD = "device"
+#: What a device change may name. A size, a scale or a user agent is not here:
+#: a preset is chosen by name (invariant 10's spirit, §6.1); the gate checks the
+#: name against its own list.
+DEVICE_KEYS = frozenset({"preset", "orientation", "touch"})
+ORIENTATIONS = ("portrait", "landscape")
+MAX_PRESET_CHARS = 32
 #: The roles that open a connection; the others are messages on one.
 CONNECTION_ROLES = ("tunnel", "viewer")
 
@@ -199,11 +221,26 @@ class Ticket:
     exp: int
     nonce: str
     email: str = ""
+    #: A `device` ticket's change; None on every other role.
+    device: dict[str, Any] | None = None
+
+
+def device_change(value: Any) -> dict[str, Any]:
+    """`value` as a device change -- a preset by name, an orientation, touch on
+    or off -- or `Refused`. The relay checks the shape; the gate checks the name."""
+    if (not isinstance(value, dict) or not set(value) <= DEVICE_KEYS
+            or not isinstance(value.get("preset"), str)
+            or not 0 < len(value["preset"]) <= MAX_PRESET_CHARS
+            or not all(c.isascii() and (c.isalnum() or c == "-") for c in value["preset"])
+            or value.get("orientation", "portrait") not in ORIENTATIONS
+            or not isinstance(value.get("touch", False), bool)):
+        raise Refused("malformed")
+    return {k: v for k, v in value.items() if v is not None}
 
 
 def mint_ticket(key: bytes, *, session_id: str, tenant_id: str, task_id: str, attempt_id: str,
                 generation: int, role: str, email: str = "", now: float | None = None,
-                ttl: int | None = None) -> str:
+                ttl: int | None = None, device: dict[str, Any] | None = None) -> str:
     """A ticket as swarm-api mints it. The relay never mints one in production;
     `swarm_api.live.mint_ticket` restates this format, and
     tests/unit/control_plane/test_live_relay_wire.py holds the two to each
@@ -217,12 +254,19 @@ def mint_ticket(key: bytes, *, session_id: str, tenant_id: str, task_id: str, at
         "exp": issued + (TICKET_TTL_SECONDS[role] if ttl is None else int(ttl)),
         "nonce": secrets.token_hex(16), "email": email,
     }
+    if (role == "device") != (device is not None):
+        raise ValueError("a device ticket, and only a device ticket, carries a device")
+    if device is not None:
+        body[DEVICE_FIELD] = device_change(device)
     return _signed(key, body, TICKET_DOMAIN)
 
 
 def verify_ticket(key: bytes, raw: str, *, now: float) -> Ticket:
     """Check the MAC, the shape and the clock. One-use is the ledger's job."""
     body = _unsigned(key, raw, TICKET_DOMAIN)
+    device = None
+    if body.get("role") == "device":
+        device = device_change(body.pop(DEVICE_FIELD, None))
     if set(body) != set(_TICKET_FIELDS):
         raise Refused("malformed")
     strings = [body[f] for f in _TICKET_FIELDS if f not in ("generation", "exp")]
@@ -230,7 +274,7 @@ def verify_ticket(key: bytes, raw: str, *, now: float) -> Ticket:
             or not all(isinstance(body[f], int) and not isinstance(body[f], bool)
                        for f in ("generation", "exp"))):
         raise Refused("malformed")
-    ticket = Ticket(**body)
+    ticket = Ticket(**body, device=device)
     if ticket.role not in TICKET_TTL_SECONDS or not ticket.nonce:
         raise Refused("malformed")
     if (ticket.role == "tunnel") != (ticket.email == ""):
@@ -432,6 +476,8 @@ class Tunnel:
     recording: Recording | None = None
     recording_task: asyncio.Task[None] | None = None
     closed: bool = False
+    #: The gate's last applied DEVICE report, for each viewer that joins.
+    device: dict[str, Any] | None = None
 
 
 @dataclass(eq=False)
@@ -548,6 +594,9 @@ class Rendezvous:
             log.info("live relay: session=%s dropped a malformed tunnel frame", tunnel.session.session_id)
             return
         rec = tunnel.recording
+        if op == OP_DEVICE:
+            await self._device_report(tunnel, conn_id, payload)
+            return
         if op == OP_ACTION:
             if rec is not None:
                 try:
@@ -574,6 +623,30 @@ class Rendezvous:
             viewer.outbox.put(True, payload)
         elif op == OP_CLOSE:
             await self._drop_viewer(viewer, CLOSE_ENDED, "closed_by_gate", tell_gate=False)
+
+    async def _device_report(self, tunnel: Tunnel, conn_id: str, payload: bytes) -> None:
+        """The gate's DEVICE report, to every viewer (empty id) or one."""
+        try:
+            entry = json.loads(payload)
+        except ValueError:
+            entry = None
+        if not isinstance(entry, dict):
+            log.info("live relay: session=%s dropped a malformed device report", tunnel.session.session_id)
+            return
+        report = {"type": "device", "ok": entry.get("ok") is True,
+                  **{k: entry.get(k) for k in ("preset", "orientation", "touch")}}
+        if isinstance(entry.get("cause"), str):
+            report["cause"] = entry["cause"][:64]
+        text = json.dumps(report)
+        if not conn_id:
+            if report["ok"]:
+                tunnel.device = report
+            for viewer in list(tunnel.viewers.values()):
+                viewer.outbox.put(False, text)
+        else:
+            viewer = tunnel.viewers.get(conn_id)
+            if viewer is not None:
+                viewer.outbox.put(False, text)
 
     async def close_tunnel(self, tunnel: Tunnel) -> None:
         """The gate's socket ended: nothing is left to drain to it."""
@@ -625,6 +698,8 @@ class Rendezvous:
                             tunnel=tunnel, outbox=outbox)
             tunnel.viewers[viewer.conn_id] = viewer
         outbox.put(False, json.dumps({"type": "ready"}))
+        if tunnel.device is not None:
+            outbox.put(False, json.dumps(tunnel.device))
         tunnel.outbox.put(True, encode_frame(OP_OPEN, viewer.conn_id))
         self._viewers_changed(tunnel)
         log.info("live relay: session=%s conn=%s viewer joined (%d on task)",
@@ -650,8 +725,11 @@ class Rendezvous:
             message = None
         kind = message.get("type") if isinstance(message, dict) else None
         raw = message.get("ticket") if isinstance(message, dict) else None
-        if kind != "control" or not isinstance(raw, str):
+        if kind not in ("control", "device") or not isinstance(raw, str):
             viewer.outbox.put(False, json.dumps({"type": "refused", "reason": "malformed"}))
+            return
+        if kind == "device":
+            await self._device_change(viewer, raw)
             return
         try:
             ticket = self._admit(raw, ("control", "release"))
@@ -679,6 +757,30 @@ class Rendezvous:
         log.info("live relay: session=%s conn=%s %s", tunnel.session.session_id, viewer.conn_id, event)
         if tunnel.recording is not None:
             await tunnel.recording.action({"kind": "control", "event": event})
+
+    async def _device_change(self, viewer: Viewer, raw: str) -> None:
+        """swarm-api's `device` ticket: this viewer's device change, passed to
+        the gate only while this connection holds control (§6.1, Q13)."""
+        tunnel = viewer.tunnel
+        try:
+            ticket = self._admit(raw, "device")
+            if ticket.session_id != tunnel.session.session_id:
+                raise Refused("wrong_session")
+            _match(ticket, tunnel.session)
+            if ticket.email != viewer.email:
+                raise Refused("wrong_person")
+            if tunnel.controller != viewer.conn_id:
+                raise Refused("not_controller")
+        except Refused as exc:
+            log.info("live relay: session=%s conn=%s device refused: %s",
+                     tunnel.session.session_id, viewer.conn_id, exc.reason)
+            viewer.outbox.put(False, json.dumps({"type": "refused", "reason": "device"}))
+            return
+        assert ticket.device is not None  # verify_ticket requires it on this role
+        tunnel.outbox.put(True, encode_frame(OP_DEVICE, viewer.conn_id,
+                                             json.dumps(ticket.device, sort_keys=True).encode()))
+        log.info("live relay: session=%s conn=%s device change passed to the gate",
+                 tunnel.session.session_id, viewer.conn_id)
 
     async def close_viewer(self, viewer: Viewer) -> None:
         await self._drop_viewer(viewer, CLOSE_ENDED, "viewer_closed")

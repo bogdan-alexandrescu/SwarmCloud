@@ -40,7 +40,21 @@ access (owner decision 2026-10-11 (a)).
 Roles `tunnel` and `viewer` open a connection. `control` and `release` are
 MESSAGES swarm-api sends on a viewer connection it already holds open, when
 this person takes or loses control (§4.2): the relay grants the gate's input
-to a viewer only on a ticket.
+to a viewer only on a ticket. `device` is one more such message (lane
+LB-DEV-B): the controller's device change, whose ticket carries one extra
+field, `device` (`preset` by name, optional `orientation` and `touch`), so the
+MAC covers exactly what the gate is asked to apply.
+
+THE DEVICE (§6.1, Q13; LB-DEV-B). `set_device` is the controller's
+`POST .../live/device`: a preset by NAME from `LIVE_PRESETS`, never a size
+(invariant 10). Like control, it is a Firestore write, not a call: it records
+`device_request` (numbered) on `live_sessions/{id}` with its audit entry, and
+the controller's own socket proxy (routes/live.py, on its next tick) sends the
+relay a `device` ticket for it on that person's viewer connection. The relay
+passes it to the gate only while that connection holds control; the gate
+applies it through the ctl `device` operation's own path (device.py) and
+reports the device it applied, which comes back to every viewer's proxy, and
+`record_device` writes it as `device` -- what `session.device` serves.
 
 CLOSING. When a session closes, or a stale generation is seen, swarm-api POSTs
 a close request to the relay's `/internal/close` (`mint_close`: the same shape
@@ -107,11 +121,16 @@ ROLE_TUNNEL = "tunnel"
 ROLE_VIEWER = "viewer"
 ROLE_CONTROL = "control"
 ROLE_RELEASE = "release"
+ROLE_DEVICE = "device"
+#: The field a `device` ticket carries beyond `TICKET_FIELDS`
+#: (`swarm_live.rendezvous.DEVICE_FIELD`).
+DEVICE_FIELD = "device"
 #: The longest life the relay accepts for each role's ticket
 #: (`swarm_live.rendezvous.TICKET_TTL_SECONDS`). A setting above it is clamped,
 #: since the relay would refuse the ticket anyway (decision (a): exp at most
 #: 60 s ahead).
-TICKET_MAX_SECONDS = {ROLE_TUNNEL: 60, ROLE_VIEWER: 30, ROLE_CONTROL: 30, ROLE_RELEASE: 30}
+TICKET_MAX_SECONDS = {ROLE_TUNNEL: 60, ROLE_VIEWER: 30, ROLE_CONTROL: 30, ROLE_RELEASE: 30,
+                      ROLE_DEVICE: 30}
 #: A close request's life (`swarm_live.rendezvous.CLOSE_TTL_SECONDS`).
 CLOSE_SECONDS = 60
 #: The relay's field set; a ticket with any other is refused there.
@@ -223,7 +242,9 @@ def mint_ticket(key: str, claims: Mapping[str, Any]) -> str:
     field the relay does not know is refused here rather than there."""
     body = {"email": "", **dict(claims)}
     body.setdefault("nonce", secrets.token_hex(16))
-    if set(body) != TICKET_FIELDS:
+    if (body.get("role") == ROLE_DEVICE) != (DEVICE_FIELD in body):
+        raise ValueError("a device ticket, and only a device ticket, carries a device")
+    if set(body) - {DEVICE_FIELD} != TICKET_FIELDS:
         raise ValueError(f"a live ticket has exactly the fields {sorted(TICKET_FIELDS)}")
     return _signed(key, body, TICKET_PURPOSE)
 
@@ -408,6 +429,19 @@ class ConfirmedMismatch(BaseModel):
     actual: str = Field(min_length=1, max_length=MAX_DOMAIN_CHARS)
 
 
+class DeviceChange(BaseModel):
+    """The body of `POST /v1/tasks/{task_id}/live/device`, as the console sends
+    it (`setLiveDevice` in apps/swarm-ui/src/api.ts): a preset BY NAME from
+    the gate's list, an orientation, touch on or off. Never a width, a height,
+    a scale or a user agent (invariant 10): any other key is refused."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    preset: str = Field(min_length=1, max_length=32)
+    orientation: Literal["portrait", "landscape"] | None = None
+    touch: bool | None = None
+
+
 class TakeControl(BaseModel):
     """The body of `POST /v1/tasks/{task_id}/live/control`, as the console
     sends it (`takeLiveControl` in apps/swarm-ui/src/api.ts)."""
@@ -500,6 +534,9 @@ class LiveYou(_Wire):
     can_preempt: bool
     #: May open control to every member: the owner only.
     can_open: bool
+    #: May change the device (preset, rotate, touch): the person in control
+    #: only (§6.1, Q13). Everyone else sees the switchers disabled.
+    can_switch_device: bool
 
 
 class LiveSessionView(_Wire):
@@ -513,8 +550,9 @@ class LiveSessionView(_Wire):
     human_wait: LiveHumanWait | None
     controller: LiveController | None
     open_to_members: bool
-    #: NOT REPORTED SERVER-SIDE YET, as `origin`: the gate applies the device
-    #: (`agent_worker/livegate/device.py`) and nothing reports which one.
+    #: The device the gate last REPORTED applying (LB-DEV-B: its DEVICE report,
+    #: through the relay to a viewer's proxy, `LiveService.record_device`).
+    #: Null until a report has arrived: never the default preset assumed.
     device: LiveDevice | None
     presets: list[LivePreset]
     you: LiveYou
@@ -544,7 +582,8 @@ class LiveTicketView(_Wire):
 #: A RESTATEMENT of `agent_worker.livegate.presets.PRESETS` -- swarm-api does
 #: not import the worker -- held equal to it by
 #: tests/unit/control_plane/test_live_wire_shapes.py. It is a catalogue, not a
-#: reading: which preset is APPLIED is `device`, which is not reported yet.
+#: reading: which preset is APPLIED is `device`, the gate's report. It is also
+#: the list `POST .../live/device` accepts names from.
 LIVE_PRESETS: tuple[dict[str, Any], ...] = (
     {"name": "desktop", "width": 1440, "height": 900, "scale": 1.0, "mobile": False},
     {"name": "iphone-15", "width": 393, "height": 852, "scale": 3.0, "mobile": True},
@@ -552,6 +591,23 @@ LIVE_PRESETS: tuple[dict[str, Any], ...] = (
     {"name": "iphone-se", "width": 375, "height": 667, "scale": 2.0, "mobile": True},
     {"name": "ipad-7", "width": 810, "height": 1080, "scale": 2.0, "mobile": True},
 )
+
+
+LIVE_PRESET_NAMES = frozenset(p["name"] for p in LIVE_PRESETS)
+LIVE_ORIENTATIONS = ("portrait", "landscape")
+
+
+def device_reading(value: Any) -> dict[str, Any] | None:
+    """`LiveDevice` from a report (the gate's, via the relay) or a stored
+    `device`, or None when it is not one: a preset on the list, an
+    orientation, a yes/no for touch. Anything else is never written or served."""
+    if not isinstance(value, Mapping):
+        return None
+    preset, orientation, touch = value.get("preset"), value.get("orientation"), value.get("touch")
+    if preset not in LIVE_PRESET_NAMES or orientation not in LIVE_ORIENTATIONS \
+            or not isinstance(touch, bool):
+        return None
+    return {"preset": preset, "orientation": orientation, "touch": touch}
 
 
 def profile_is_live(runner_profile: Any) -> bool:
@@ -1079,6 +1135,8 @@ class LiveService:
             "can_preempt": bool(open_ and owner is not None and owner == email and current
                                 is not None and current.get("email") != email),
             "can_open": bool(open_ and owner is not None and owner == email),
+            "can_switch_device": bool(open_ and current is not None
+                                      and current.get("email") == email),
         }
 
     def _view(self, task: Task, plan: _Plan | None, email: str, owner: str | None
@@ -1108,7 +1166,7 @@ class LiveService:
                     "renew_by": _iso(current.get("renew_by")),
                 },
                 "open_to_members": bool(state.get("open_to_members")),
-                "device": None,
+                "device": device_reading(state.get("device")),
                 "presets": [dict(p) for p in LIVE_PRESETS],
                 "you": self._rights(task, plan, email, owner),
             },
@@ -1320,6 +1378,66 @@ class LiveService:
         self._require_open(plan)
         return self._view(task, plan, who, owner)
 
+    def set_device(self, tenant_id: str, task_id: str, *, email: str,
+                   submitted_by: str | None, change: DeviceChange) -> dict[str, Any]:
+        """The controller's device change (§6.1, Q13): refused for anyone not
+        in control (`NotController`, 409, as renew and return are), and for a
+        preset not on the gate's list (422). Recorded as `device_request` with
+        its audit entry; the controller's socket proxy carries it to the relay
+        (module docstring). `device` changes when the gate reports it."""
+        if change.preset not in LIVE_PRESET_NAMES:
+            raise ValidationFailed(
+                f"no device preset {change.preset!r}: choose one of "
+                f"{', '.join(p['name'] for p in LIVE_PRESETS)}"
+            )
+        wanted = change.model_dump(exclude_none=True)
+
+        def apply(plan: _Plan, current: dict) -> None:
+            last = plan.state.get("device_request")
+            seq = int(last.get("seq") or 0) if isinstance(last, dict) else 0
+            plan.session_update["device_request"] = {
+                **wanted, "seq": seq + 1, "email": current.get("email"), "at": plan.now}
+            plan.audit("device_requested", current.get("email"), dict(wanted))
+
+        return self._controller_change(tenant_id, task_id, email, submitted_by, apply)
+
+    def device_ticket(self, admission: Admission, request: Mapping[str, Any]) -> str:
+        """The relay's word to pass this viewer's device change to the gate:
+        a `device` ticket whose MAC covers the change itself."""
+        device = {k: request[k] for k in ("preset", "orientation", "touch")
+                  if request.get(k) is not None}
+        return mint_ticket(self._require_key(), {
+            "session_id": admission.session_id,
+            "tenant_id": admission.tenant_id,
+            "task_id": admission.task_id,
+            "attempt_id": admission.attempt_id,
+            "generation": admission.generation,
+            "role": ROLE_DEVICE,
+            "email": admission.email,
+            "exp": int(self._clock()) + TICKET_MAX_SECONDS[ROLE_DEVICE],
+            DEVICE_FIELD: device,
+        })
+
+    def record_device(self, admission: Admission, report: Mapping[str, Any]) -> bool:
+        """The gate's report of the device it applied, as a viewer's proxy
+        received it: written as `device` on the session when it is a reading
+        (`device_reading`) and differs from what is stored. False when nothing
+        was written."""
+        reading = device_reading(report)
+        if reading is None or report.get("ok") is not True:
+            return False
+
+        def change(plan: _Plan) -> bool:
+            if plan.state.get("id") != admission.session_id or plan.state.get("device") == reading:
+                return False
+            plan.session_update["device"] = reading
+            plan.audit("device_set", None, dict(reading))
+            return True
+
+        _, written = self._transact(admission.tenant_id, admission.task_id, change,
+                                    session_id=admission.session_id)
+        return bool(written)
+
     def audit_entries(self, tenant_id: str, task_id: str, *, submitted_by: str | None,
                       limit: int = 500) -> list[dict[str, Any]]:
         self._task(tenant_id, task_id, submitted_by)
@@ -1406,6 +1524,8 @@ class LiveService:
             "cause": session.get("close_cause"),
             "in_control": bool(current and current.get("email") == admission.email),
             "controller": current.get("email") if current else None,
+            "device_request": session.get("device_request")
+            if isinstance(session.get("device_request"), dict) else None,
         }
 
     def record_input(self, admission: Admission, *, keys: int, pointers: int) -> bool:

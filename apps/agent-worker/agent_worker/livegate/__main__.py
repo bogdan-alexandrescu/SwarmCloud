@@ -22,6 +22,8 @@ this order:
 3. THE WORKER'S CHANNEL. ctl.sock under /run/swarm-gate (ctl.py), answering
    the worker's MAC'd operations with the device presets (device.py,
    presets.py), touch (touch.py) and the session carry (session.py). The
+   controller's device change arrives on the tunnel instead (a DEVICE frame,
+   LB-DEV-B) and takes the ctl `device` operation's own path. The
    dispatcher's startup probe is `test -S <ctl.sock>`, so the worker starts
    only once this socket exists, and its registration is the first (§5.4.2).
 4. THE VIEW. The capture loop (capture.py) paints every frame with the mask
@@ -668,7 +670,11 @@ class LiveGate:
         if op == "end_control":
             return await self.end_control(args)
         if op == "device":
-            return await self._need(self.devices).handle_ctl(args)
+            result = await self._need(self.devices).handle_ctl(args)
+            # The agent's `swarm-handoff device` changed it: every viewer,
+            # and through them session.device, sees the change too.
+            await self._report_device("")
+            return result
         raise ValueError("not an operation of the gate")
 
     def _need(self, component: Any) -> Any:
@@ -710,9 +716,12 @@ class LiveGate:
             await tunnel.close()
             raise
         self.tunnel = tunnel
-        self.mux = StreamMux(tunnel, self._serve_rfb, self._on_control)
+        self.mux = StreamMux(tunnel, self._serve_rfb, self._on_control, self._on_device)
         self._tasks["tunnel"] = asyncio.create_task(self._run_tunnel(tunnel, self.mux))
         self.record("tunnel_open", {})
+        # The relay keeps the last report and gives it to every viewer that
+        # joins, so swarm-api learns the device without anyone changing it.
+        await self._report_device("")
         return {"tunnel": "open"}
 
     async def _run_tunnel(self, tunnel: Tunnel, mux: StreamMux) -> None:
@@ -735,6 +744,67 @@ class LiveGate:
             self.viewers -= 1
             if self.viewers == 0:
                 self._watching.clear()
+
+    # -- the controller's device (§6.1, Q13; lane LB-DEV-B) -----------------
+
+    def device_report(self) -> dict[str, Any]:
+        """The device as applied: the preset, its orientation, and whether the
+        controller's pointer is touch (the preset's touch AND the person's
+        toggle, as `TouchInjector` decides it). Names and a yes/no only."""
+        device = self.devices.device if self.devices is not None else self.desktop
+        touch_on = self.touch.touch_on if self.touch is not None else True
+        return {"preset": device.name, "orientation": device.orientation,
+                "touch": bool(device.touch and touch_on)}
+
+    async def _report_device(self, conn_id: str, *, cause: str | None = None) -> None:
+        """A DEVICE report on the tunnel: to every viewer (`conn_id` empty) when
+        it applied, to the requester alone with `cause` when it was refused."""
+        if self.tunnel is None or self.tunnel.closed:
+            return
+        entry: dict[str, Any] = {"ok": cause is None, **self.device_report()}
+        if cause is not None:
+            entry["cause"] = cause
+        await self.tunnel.device(conn_id, entry)
+
+    async def _on_device(self, conn_id: str, payload: bytes) -> None:
+        """The relay's DEVICE: the controller's change. Applied on its own task,
+        so the tunnel's reader never waits on Chromium or the display."""
+        task = asyncio.get_running_loop().create_task(self._change_device(conn_id, payload))
+        self._spawned.add(task)
+        task.add_done_callback(self._spawned.discard)
+
+    async def _change_device(self, conn_id: str, payload: bytes) -> None:
+        """Only the connection in control may change the device (the relay
+        checked swarm-api's ticket; the gate checks it again against the
+        control it was given), and only by the preset's NAME: `handle_ctl`
+        is the ctl.sock `device` operation's own path, so a size is refused
+        there exactly as it is for the agent."""
+        try:
+            args = json.loads(payload)
+        except ValueError:
+            args = None
+        if not isinstance(args, dict):
+            self.record("device_refused", {"cause": "malformed"})
+            return await self._report_device(conn_id, cause="malformed")
+        if self.control is None or not conn_id or not self.control.holds(conn_id):
+            self.record("device_refused", {"cause": "not_controller"})
+            return await self._report_device(conn_id, cause="not_controller")
+        touch = args.pop("touch", None)
+        if touch is not None and not isinstance(touch, bool):
+            self.record("device_refused", {"cause": "not_a_preset_name"})
+            return await self._report_device(conn_id, cause="not_a_preset_name")
+        try:
+            await self._need(self.devices).handle_ctl(args)
+        except ValueError:  # DeviceRefused, UnknownPreset: nothing was changed
+            return await self._report_device(conn_id, cause="not_a_preset_name")
+        except Exception as exc:  # noqa: BLE001 -- recorded by the controller; the requester is told
+            return await self._report_device(conn_id, cause=type(exc).__name__)
+        if touch is not None and self.touch is not None:
+            self.touch.set_touch(touch)
+        report = self.device_report()
+        await self._action({"kind": "device", "event": "set", "preset": report["preset"],
+                            "orientation": report["orientation"], "touch": report["touch"]})
+        await self._report_device("")
 
     # -- control (§4.2) -------------------------------------------------------
 

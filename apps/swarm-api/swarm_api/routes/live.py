@@ -29,8 +29,11 @@ swarm-api to the relay (lane L7's protocol, `swarm_live.main`): the viewer
 ticket itself as the first text message, which the relay answers
 `{"type": "ready"}` or refuses by closing; then
 `{"type": "control", "ticket": <control or release ticket>}` whenever this
-person takes or loses control, then binary RFB. Relay to console: forwarded
-as is. swarm-api to console: `{"type": "status", ...}` text frames. Close
+person takes or loses control, `{"type": "device", "ticket": <device
+ticket>}` when this person, in control, changed the device (LB-DEV-B), then
+binary RFB. Relay to console: forwarded as is, except the gate's device
+report (`{"type": "device", ...}`), which swarm-api writes to the session
+(`LiveService.record_device`) and does not forward. swarm-api to console: `{"type": "status", ...}` text frames. Close
 codes: 4400 a malformed open (a query string, no ticket), 4401 no identity,
 4404 refused (every §5.2 refusal, alike, the relay's included), 4429 the
 relay's viewer cap, 4403 membership lost, 4409 the session closed, 4503 no
@@ -60,6 +63,7 @@ from ..deps import AppContext, current_auth, get_context, submission_scope, tena
 from ..errors import ApiError, NotFound, ValidationFailed
 from ..live import (
     Admission,
+    DeviceChange,
     LiveActionsView,
     LiveLimits,
     LiveRead,
@@ -342,6 +346,32 @@ def open_to_members(
                                                 submitted_by=submitted_by)
 
 
+@router.post("/tasks/{task_id}/live/device", response_model=LiveRead)
+async def set_live_device(
+    task_id: str,
+    request: Request,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The person in control changes the device (§6.1, Q13): the console's
+    `setLiveDevice`, `{"preset", "orientation"?, "touch"?}`. A preset BY NAME
+    from the session's `presets` (anything else 422, as is any other key: a
+    size is never accepted, invariant 10); anyone not in control 409, as
+    renew and return. The answer is the session read; `device` follows when
+    the gate reports what it applied."""
+    raw = await request.body()
+    if len(raw) > 4096:
+        raise ValidationFailed("a device request is at most 4096 bytes")
+    body: DeviceChange = parse_body(DeviceChange, raw)
+    return await run_in_threadpool(
+        lambda: _person_service(ctx, request.app).set_device(
+            tenant_id, task_id, email=auth.email, submitted_by=submitted_by, change=body,
+        )
+    )
+
+
 @router.get("/tasks/{task_id}/live/audit")
 def live_audit(
     task_id: str,
@@ -590,6 +620,11 @@ class _Proxy:
         self.total_pointers = 0
         self.close_code = 1000
         self.last_sent: dict[str, Any] | None = None
+        #: The newest `device_request` this socket has passed on (or found
+        #: already there when it opened: an old request is never replayed).
+        self.device_seq: int | None = None
+        #: The last device report this socket wrote, so a repeat writes nothing.
+        self.device_written: dict[str, Any] | None = None
 
     async def run(self) -> None:
         await run_in_threadpool(self.service.viewer_event, self.admission, "viewer_joined", {})
@@ -632,9 +667,47 @@ class _Proxy:
             ticket = await run_in_threadpool(self.service.control_ticket, self.admission,
                                              self.in_control)
             await self.link.send(json.dumps({"type": "control", "ticket": ticket}))
+        await self._device_request(status_.get("device_request"))
         await self._send_viewer({"type": "status", "open": True,
                                  "in_control": self.in_control,
                                  "controller": status_.get("controller")})
+        return True
+
+    async def _device_request(self, request: Any) -> None:
+        """Pass the controller's newest device change to the relay, once, on
+        this person's own connection, and only while they are in control. The
+        relay checks the ticket and that this connection holds control; the
+        gate checks both again and the preset's name."""
+        seq = request.get("seq") if isinstance(request, dict) else None
+        seq = seq if isinstance(seq, int) and not isinstance(seq, bool) else 0
+        if self.device_seq is None:
+            self.device_seq = seq
+            return
+        if seq <= self.device_seq:
+            return
+        self.device_seq = seq
+        if not self.in_control or request.get("email") != self.admission.email:
+            return
+        ticket = await run_in_threadpool(self.service.device_ticket, self.admission, request)
+        await self.link.send(json.dumps({"type": "device", "ticket": ticket}))
+
+    async def _device_report(self, text: str) -> bool:
+        """True when `text` is the gate's device report: written to the
+        session (`record_device`) when it changed, and kept from the console."""
+        if '"device"' not in text:
+            return False
+        try:
+            message = json.loads(text)
+        except ValueError:
+            return False
+        if not isinstance(message, dict) or message.get("type") != "device":
+            return False
+        if message.get("ok") is True and message != self.device_written:
+            try:
+                await run_in_threadpool(self.service.record_device, self.admission, message)
+                self.device_written = message
+            except Exception as exc:  # the view goes on; the next report tries again
+                log.info("live device report not recorded (%s)", type(exc).__name__)
         return True
 
     async def _send_viewer(self, message: dict[str, Any]) -> None:
@@ -668,7 +741,7 @@ class _Proxy:
                 return
             if isinstance(data, bytes):
                 await self.ws.send_bytes(data)
-            else:
+            elif not await self._device_report(data):
                 await self.ws.send_text(data)
 
     async def _flush_input(self) -> None:

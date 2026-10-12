@@ -9,8 +9,10 @@ every message is a binary tunnel frame (apps/swarm-live/swarm_live/rendezvous.py
 
     op (1 byte) | len(conn_id) (1 byte) | conn_id (ascii) | payload
 
-`OPEN`, `DATA`, `CLOSE` and `CONTROL` arrive; `DATA`, `CLOSE` and `ACTION`
-leave. Each viewer (or the recorder) is one RFB stream with its own conn_id,
+`OPEN`, `DATA`, `CLOSE`, `CONTROL` and `DEVICE` arrive; `DATA`, `CLOSE`,
+`ACTION` and `DEVICE` leave. A `DEVICE` that arrives is the controller's
+device change (a preset by name, an orientation, touch on or off), and one
+that leaves is the gate's report of the device it applied (lane LB-DEV-B). Each viewer (or the recorder) is one RFB stream with its own conn_id,
 served by `livegate.rfb.RfbSession` over a reader and writer this module
 makes for it (`StreamMux`).
 
@@ -53,8 +55,8 @@ TUNNEL_PATH = "/v1/tunnel"
 
 #: The relay's frame ops (rendezvous.py `OP_*`); test_livegate_main.py holds
 #: these equal to the relay's own.
-OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION = 1, 2, 3, 4, 5
-_OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION})
+OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_DEVICE = 1, 2, 3, 4, 5, 6
+_OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_DEVICE})
 MAX_CONN_ID = 64
 
 #: The relay refuses a message over 16 MiB (swarm_live.main MAX_MESSAGE_BYTES).
@@ -277,6 +279,13 @@ class Tunnel:
         except (ConnectionError, OSError):
             pass
 
+    async def device(self, conn_id: str, entry: Mapping[str, Any]) -> None:
+        """The gate's DEVICE report: what it applied, or why `conn_id`'s change was refused."""
+        try:
+            await self.send(OP_DEVICE, conn_id, json.dumps(dict(entry), separators=(",", ":")).encode())
+        except (ConnectionError, OSError):
+            pass
+
     async def run(self, on_frame: Callable[[int, str, bytes], Awaitable[None]]) -> int | None:
         """Deliver every frame until the relay closes; returns its close code."""
         assert self._ws is not None, "open() first"
@@ -340,10 +349,12 @@ class StreamMux:
     """Routes the relay's frames to one `serve(conn_id, reader, writer)` per stream."""
 
     def __init__(self, tunnel: Tunnel, serve: Callable[[str, asyncio.StreamReader, TunnelWriter], Awaitable[None]],
-                 on_control: Callable[[str], Awaitable[None]]) -> None:
+                 on_control: Callable[[str], Awaitable[None]],
+                 on_device: Callable[[str, bytes], Awaitable[None]] | None = None) -> None:
         self._tunnel = tunnel
         self._serve = serve
         self._on_control = on_control
+        self._on_device = on_device
         self._streams: dict[str, tuple[asyncio.StreamReader, asyncio.Task[None]]] = {}
 
     @property
@@ -368,6 +379,8 @@ class StreamMux:
                 stream[0].feed_eof()
         elif op == OP_CONTROL:
             await self._on_control(conn_id)
+        elif op == OP_DEVICE and self._on_device is not None:
+            await self._on_device(conn_id, payload)
 
     async def _run(self, conn_id: str, reader: asyncio.StreamReader, writer: TunnelWriter) -> None:
         try:
