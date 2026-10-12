@@ -453,7 +453,7 @@ DISPLAY_UID = 10002
 DISPLAY_COMMAND = ("/usr/bin/tini", "--", "python", "-m", "agent_worker.livegate")
 
 #: The label the live egress policy selects (`swarm-allow-live-egress`, §8.3,
-#: lane L6). Only a pod carrying it can reach the relay on TCP 8443; the
+#: lane L6). Only a pod carrying it can reach the relay on TCP 8080; the
 #: dispatcher sets it on live-browser pods and nowhere else.
 LIVE_POD_LABEL = ("swarm-live", "enabled")
 

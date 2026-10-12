@@ -39,6 +39,9 @@ import { TaskIdLine } from './TaskIdLine'
 import { useResourceClasses } from './Blockers'
 import { AgentChangesPane, changesCount } from './WorkflowChanges'
 import { HelpCard } from './HelpCard'
+import { HandoffStrip, isLiveBrowser } from './Handoff'
+import { RecordingsPanel } from './Recordings'
+import { LiveBrowserPane, LiveControl, useLiveSession, type LiveState } from './LiveBrowser'
 import {
   CONCURRENCY_STATES,
   STRATEGY_LABEL,
@@ -359,6 +362,17 @@ export function AgentSplit({
   // (CONTRACT.md invariant 1). A QUEUED, READY or PARKED agent has no
   // attempt and usually no log yet; its Details say why it waits.
   const inFlight = task !== null && CONCURRENCY_STATES.has(task.state)
+  // THE BROWSER TAB (docs/design/live-browser.md §6, LB-5): a running agent
+  // whose profile is a live-browser one opens on its browser, and the tab is
+  // first. Whether it is one is the session read's `live_browser`, the
+  // catalogue's own property, never a guess from the profile's name.
+  const { live: liveRead, reload: reloadLive } = useLiveSession(taskId, inFlight)
+  const hasBrowser = liveRead.status === 'ok' && liveRead.liveBrowser
+  // THE BROWSER TAB HAS NO ADDRESS SEGMENT YET: `TaskPane` and the route
+  // parser live in App.tsx and paths.ts, outside lane L11's files. It is open
+  // over the `detail` address, for this agent, until another tab is chosen.
+  const [browserFor, setBrowserFor] = useState<string | null>(null)
+  const onBrowser = hasBrowser && browserFor === taskId && pane === 'detail'
   const [decided, setDecided] = useState<string | null>(null)
   const deciding = decided !== taskId && pane === 'detail' && (head.state.status === 'loading' || inFlight)
   useEffect(() => {
@@ -368,11 +382,14 @@ export function AgentSplit({
       return
     }
     if (head.state.status === 'loading') return
+    if (inFlight && liveRead.status === 'loading') return
     setDecided(taskId)
-    if (inFlight) go(`${base}/logs`)
-  }, [decided, taskId, pane, head.state.status, inFlight, go, base])
+    if (inFlight && hasBrowser) setBrowserFor(taskId)
+    else if (inFlight) go(`${base}/logs`)
+  }, [decided, taskId, pane, head.state.status, inFlight, liveRead.status, hasBrowser, go, base])
 
-  const tabs: { id: TaskPane; label: string; count: number | string | null; say: string | null; to: string }[] = [
+  const tabs: { id: TaskPane | 'browser'; label: string; count: number | string | null; say: string | null; to: string }[] = [
+    ...(hasBrowser ? [{ id: 'browser' as const, label: 'Browser', count: null, say: null, to: base }] : []),
     { id: 'detail', label: 'Details', count: null, say: null, to: base },
     { id: 'logs', label: 'Logs', count: null, say: null, to: `${base}/logs` },
     // THE COUNT IS THE FILE COUNT (`git.files`, DIFF4), and a dash with its
@@ -416,7 +433,7 @@ export function AgentSplit({
       to: `${base}/checkpoints`,
     },
   ]
-  const selected: TaskPane = pane
+  const selected: TaskPane | 'browser' = onBrowser ? 'browser' : pane
   // The file the reader opens is written into the address, so Back moves the viewer and a link names the file.
   const openFile = useCallback((path: string) => go(`${base}/changes/${encodeURIComponent(path)}`), [base, go])
   const links = useMemo(
@@ -528,6 +545,8 @@ export function AgentSplit({
           read={head.state.status}
           reload={reload}
           onClose={close}
+          live={liveRead}
+          reloadLive={reloadLive}
         />
 
         {/* UNDERLINE TABS WITH COUNTS (agents.html V1; #503 measured a boxed
@@ -542,18 +561,29 @@ export function AgentSplit({
             tabs={tabs.map((t) => ({
               key: t.id,
               label: t.label,
-              ...(t.id === 'detail' || t.id === 'logs' ? {} : { count: t.count, why: t.say ?? undefined }),
+              ...(t.id === 'detail' || t.id === 'logs' || t.id === 'browser' ? {} : { count: t.count, why: t.say ?? undefined }),
             }))}
-            onSelect={(key) => go(tabs.find((x) => x.id === key)!.to)}
+            onSelect={(key) => {
+              setBrowserFor(key === 'browser' ? taskId : null)
+              go(tabs.find((x) => x.id === key)!.to)
+            }}
           />
         </AgTabsEdge>
 
-        <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}${selected === 'changes' ? ' is-changes' : ''}`}>
+        {/* THE HAND-OFF BANNER (live-browser.md §6, lane LB-L12): the reason,
+            the expected site and the time left, over whichever pane is open.
+            The Browser tab (lane L11) passes its Take control and theater
+            actions in as children. */}
+        {task !== null && <HandoffStrip task={task} onReady={reload} />}
+
+        <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}${selected === 'changes' ? ' is-changes' : ''}${selected === 'browser' ? ' is-browser' : ''}`}>
           {deciding ? (
             <p className="art-loading">
               <Mark kind="pending" say="Reading the agent to open it on its log if it is running, or on its details. The read is in flight." />
               <span className="ctl-pending art-loading-bar" />
             </p>
+          ) : selected === 'browser' && task !== null ? (
+            <LiveBrowserPane key={taskId} task={task} live={liveRead} reload={reloadLive} />
           ) : selected === 'logs' && task !== null ? (
             <AgentLogs key={taskId} task={task} />
           ) : selected === 'logs' ? (
@@ -589,7 +619,11 @@ export function AgentSplit({
               lastLine={task !== null ? <LogLastLine key={taskId} task={task} onOpen={links.logs} /> : undefined}
             />
           ) : selected === 'attempts' ? (
-            <AttemptTimelineScreen taskId={taskId} />
+            <>
+              <AttemptTimelineScreen taskId={taskId} />
+              {/* §7: a live-browser task's masked recordings, on its attempts. */}
+              {task !== null && isLiveBrowser(task) && <RecordingsPanel task={task} />}
+            </>
           ) : selected === 'checkpoints' ? null : (
             <ArtifactsScreen taskId={taskId} open={artifact} onOpen={openArtifact} />
           )}
@@ -729,6 +763,8 @@ function AgHead({
   read,
   reload,
   onClose,
+  live,
+  reloadLive,
 }: {
   taskId: string
   task: Task | null
@@ -737,6 +773,9 @@ function AgHead({
   read: string
   reload: () => void
   onClose: () => void
+  /** The live browser's session read; Take control sits beside Stop (live-browser.md §6). */
+  live: LiveState
+  reloadLive: () => void
 }) {
   // THE SPLIT'S ONE INSTANT (`SplitTick`), which the Details tab draws its
   // running figures at too; the bare clock only outside a split.
@@ -794,6 +833,9 @@ function AgHead({
           <span role="status" aria-live="polite" className="ag-head-copied">
             {copied === 'yes' ? 'copied' : copied === 'no' ? 'could not copy' : ''}
           </span>
+          {live.status === 'ok' && live.session !== null && (
+            <LiveControl taskId={taskId} session={live.session} reload={reloadLive} />
+          )}
           {task !== null && (
             <span className="ag-head-stop">
               <StopRun task={task} what="this agent" reload={reload} />

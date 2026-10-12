@@ -32,8 +32,13 @@ THE LIVE BROWSER'S PATH (docs/design/live-browser.md §8.3, lane LB-L6), with
 `--live-ingress`. `kubernetes/apply.sh --swarm-system --confirm` lists the
 NetworkPolicies in `swarm-system` and passes swarm-api's Direct VPC egress
 range, read from the service, as `swarm_api_egress_cidr`. The relay's ingress
-policy must admit exactly that range and labelled tenant pods, on TCP 8443
-only, and the namespace's default deny must be there beside it.
+policy must admit exactly that range and labelled tenant pods, on TCP 8080
+only, and the namespace's default deny must be there beside it. So must the
+relay manifest's own copy of that allow (`swarm-live-ingress`, rendered by
+terraform/infra/live.tf from the subnet terraform gives swarm-api): the same
+shape, judged by the same function, against the same range read from the
+service -- which is how a terraform subnet that is not the one swarm-api
+actually egresses from is caught.
 
 The shape rules for those policies -- `check_live_egress`, `check_live_ingress`
 and `check_system_deny` -- live here, once: tests/unit/scripts/test_live_netpol.py
@@ -72,11 +77,19 @@ DNS = {("UDP", 53), ("TCP", 53)}
 LIVE_EGRESS_POLICY = "swarm-allow-live-egress"
 LIVE_INGRESS_POLICY = "swarm-allow-live-ingress"
 SYSTEM_DENY_POLICY = "swarm-system-default-deny-ingress"
+#: The relay manifest's own ingress policy (kubernetes/swarm-system/swarm-live.yaml,
+#: rendered by terraform/infra/live.tf; lane LB-L8e). The same allow as
+#: LIVE_INGRESS_POLICY, so the relay is ingress-isolated from the moment its
+#: manifest is applied, before apply.sh's policies follow it.
+RELAY_INGRESS_POLICY = "swarm-live-ingress"
 SYSTEM_NAMESPACE = "swarm-system"
 API_CIDR_ANNOTATION = "swarm.saga.xyz/swarm-api-egress-cidr"
 
-#: The relay's one port (§3.3: "gate --(WSS, TCP 8443, in-cluster)--> swarm-live").
-LIVE_PORTS = [{"protocol": "TCP", "port": 8443}]
+#: The relay's one port: plain ws on TCP 8080, fixed for both integration
+#: lanes by owner decision 2026-10-11 (b) (docs/design/live-browser.md §3.3;
+#: swarm_live.main.PORT).
+LIVE_PORT = 8080
+LIVE_PORTS = [{"protocol": "TCP", "port": LIVE_PORT}]
 #: The pods the dispatcher marks live (scheduler.dispatch.LIVE_POD_LABEL; the
 #: test holds the two together -- this file is stdlib-only and cannot import it).
 LIVE_POD_SELECTOR = {"matchLabels": {"swarm-live": "enabled"}}
@@ -125,7 +138,7 @@ def _rules_admit_only(
     for i, rule in enumerate(rules):
         if rule.get("ports") != LIVE_PORTS:
             problems.append(
-                f"{what}: rule {i} allows {rule.get('ports') or 'every port'}, not exactly TCP 8443"
+                f"{what}: rule {i} allows {rule.get('ports') or 'every port'}, not exactly TCP {LIVE_PORT}"
             )
         peers = rule.get(side)
         if not peers:
@@ -138,7 +151,7 @@ def _rules_admit_only(
 
 
 def check_live_egress(policy: dict[str, Any]) -> list[str]:
-    """`swarm-allow-live-egress`: a labelled pod may reach the relay on 8443,
+    """`swarm-allow-live-egress`: a labelled pod may reach the relay on 8080,
     and the policy grants nothing more."""
     what = LIVE_EGRESS_POLICY
     spec = policy.get("spec") or {}
@@ -153,10 +166,10 @@ def check_live_egress(policy: dict[str, Any]) -> list[str]:
     return problems
 
 
-def check_live_ingress(policy: dict[str, Any], api_cidr: str) -> list[str]:
-    """`swarm-allow-live-ingress`: the relay admits labelled tenant pods and
-    swarm-api's range `api_cidr`, on 8443, and nothing else."""
-    what = LIVE_INGRESS_POLICY
+def check_live_ingress(policy: dict[str, Any], api_cidr: str, what: str = LIVE_INGRESS_POLICY) -> list[str]:
+    """`swarm-allow-live-ingress` (or the relay manifest's `swarm-live-ingress`,
+    named by `what`): the relay admits labelled tenant pods and swarm-api's
+    range `api_cidr`, on 8080, and nothing else."""
     metadata = policy.get("metadata") or {}
     spec = policy.get("spec") or {}
     problems: list[str] = []
@@ -303,10 +316,12 @@ def _main_live_ingress(live: dict[str, Any], items: list[dict[str, Any]]) -> int
         if (p.get("metadata") or {}).get("namespace") == SYSTEM_NAMESPACE
     }
     differ = 0
-    for name, check in (
+    checks = (
         (SYSTEM_DENY_POLICY, check_system_deny),
         (LIVE_INGRESS_POLICY, lambda policy: check_live_ingress(policy, api_cidr)),
-    ):
+        (RELAY_INGRESS_POLICY, lambda policy: check_live_ingress(policy, api_cidr, RELAY_INGRESS_POLICY)),
+    )
+    for name, check in checks:
         where = f"{SYSTEM_NAMESPACE}/{name}"
         policy = in_system.get(name)
         # A missing object is a failure, never a pass: an allow without the
@@ -319,7 +334,7 @@ def _main_live_ingress(live: dict[str, Any], items: list[dict[str, Any]]) -> int
                 print(f"       {problem}")
         else:
             print(f"  ok {where} matches {api_cidr} ({source})")
-    print(f"compared 2 policies in {SYSTEM_NAMESPACE} with {source}: {differ} differ")
+    print(f"compared {len(checks)} policies in {SYSTEM_NAMESPACE} with {source}: {differ} differ")
     return 1 if differ else 0
 
 
@@ -332,7 +347,7 @@ def main(argv: list[str] | None = None) -> int:
         "--live-ingress",
         action="store_true",
         help=(
-            f"compare {SYSTEM_NAMESPACE}'s {LIVE_INGRESS_POLICY} and {SYSTEM_DENY_POLICY} with "
+            f"compare {SYSTEM_NAMESPACE}'s {LIVE_INGRESS_POLICY}, {RELAY_INGRESS_POLICY} and {SYSTEM_DENY_POLICY} with "
             "--live's swarm_api_egress_cidr instead of the tenant egress policies"
         ),
     )

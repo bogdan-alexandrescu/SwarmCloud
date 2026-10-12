@@ -28,6 +28,19 @@
 .sc-sub { display: block; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
 .sc-name { font-weight: 600; }
 .sc-state.is-auto_paused, .sc-state.is-disabled { color: var(--s-warn); font-weight: 600; }
+/* A dry-run schedule's chip, beside its state in the list and the head
+   (AUT-3): its firings create nothing, and it must not read as a real one.
+   The words carry it; the dashed edge is a second channel, never colour alone. */
+.sc-dry {
+  display: inline-block; margin-left: 6px; padding: 0 6px;
+  border: 1px dashed var(--line); border-radius: 999px;
+  font-size: var(--t-micro); line-height: var(--lh-micro); font-weight: 600; color: var(--text-dim);
+  white-space: nowrap;
+}
+.sc-gone-h { margin: 8px 0; font-size: var(--t-h2, var(--t-body)); font-weight: 600; }
+.sc-list-field { border: 0; padding: 0; margin: 0; min-width: 0; }
+.ap-filter { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; }
+.ap-linked { margin: 0 0 12px; }
 .sc-spend { white-space: nowrap; }
 .sc-work { display: flex; flex-wrap: wrap; gap: 4px 8px; }
 .sc-h2 { margin: 8px 0 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }

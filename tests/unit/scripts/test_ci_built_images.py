@@ -72,6 +72,7 @@ IMAGES = [
     "swarm-reconciler",
     "swarm-ui",
     "swarm-verify",
+    "swarm-live",
     "workspace-apply",
 ]
 
@@ -627,6 +628,10 @@ def _git_sandbox(tmp_path: Path) -> tuple[Path, str]:
     root = tmp_path / "repo"
     shutil.copytree(REPO / "scripts", root / "scripts")
     shutil.copytree(REPO / "images", root / "images")
+    # A recipe may also sit beside its app (apps/swarm-live/Dockerfile).
+    for recipe in REPO.glob("apps/*/Dockerfile"):
+        (root / recipe.parent.relative_to(REPO)).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(recipe, root / recipe.relative_to(REPO))
     git = ["git", "-C", str(root), "-c", "user.name=t", "-c", "user.email=t@example.invalid",
            "-c", "commit.gpgsign=false"]
     subprocess.run([*git, "init", "-q"], check=True)
