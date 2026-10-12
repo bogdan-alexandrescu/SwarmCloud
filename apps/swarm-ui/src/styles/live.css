@@ -8,6 +8,13 @@
    named no site, and every tone says its reason in words beside the colour. */
 
 .ag-split > .ag-split-pane.is-browser { display: flex; flex-direction: column; overflow: auto; }
+/* THE PANE'S HEIGHT REACHES THE STAGE (LB-R1, re-QA 2026-10-12). TheaterHost
+   wraps the tab in `.th-host`, and as a plain block it gave `.live-tab` its
+   content's height: the stage sat at its 320px floor, a 1440×900 desktop
+   was drawn 424×291 and the lower half of the window was empty. Every box
+   from the pane to the stage now takes the room left -- the window less the
+   header, tabs, strip, toolbar and caption -- with no ceiling anywhere. */
+.ag-split-pane.is-browser > .th-host { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .live-tab { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
 .live-note { color: var(--text-dim); font-size: var(--t-body); padding: 12px 0; }
 
