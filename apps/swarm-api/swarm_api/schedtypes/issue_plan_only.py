@@ -68,7 +68,7 @@ def _select(firing: Any, params: Any) -> issue_sweep.Selection:
 
 def create(firing: Any) -> list[dict[str, Any]]:
     params = issue_sweep.params_of(firing)
-    return issue_sweep.start(firing, _select(firing, params), _options(firing, params))
+    return issue_sweep.fire(firing, _select(firing, params), _options(firing, params))
 
 
 def dry_run(firing: Any) -> dict[str, Any]:

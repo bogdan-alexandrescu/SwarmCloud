@@ -230,14 +230,26 @@ export function addressToPath(address: string, agentTab: AgentTab = 'live'): str
     if (run !== null && run !== '') return `/runs/${encodeURIComponent(run)}`
   }
   // One schedule rides on the list's query as `schedule=<id>`: `/automate/schedules/<id>`.
+  // Its tab rides as `?tab=`, and its editor is a segment, `/edit` (AUT-11).
   if (bare === 'automate/schedules' && query !== '') {
-    const id = new URLSearchParams(query).get('schedule')
-    if (id !== null && id !== '') return `/automate/schedules/${encodeURIComponent(id)}`
+    const q = new URLSearchParams(query)
+    const id = q.get('schedule')
+    if (id !== null && id !== '') {
+      const base = `/automate/schedules/${encodeURIComponent(id)}${q.get('edit') === '1' ? '/edit' : ''}`
+      const tab = q.get('tab')
+      return tab === null || tab === '' ? base : `${base}?${new URLSearchParams({ tab }).toString()}`
+    }
   }
-  // One inbox item rides on the page's query as `approval=<id>`: `/approvals/<id>`.
+  // One inbox item rides on the page's query as `approval=<id>`: `/approvals/<id>`,
+  // keeping the inbox's kind filter as `?kind=` (AUT-15).
   if (bare === 'automate/approvals' && query !== '') {
-    const id = new URLSearchParams(query).get('approval')
-    if (id !== null && id !== '') return `/approvals/${encodeURIComponent(id)}`
+    const q = new URLSearchParams(query)
+    const id = q.get('approval')
+    if (id !== null && id !== '') {
+      const kind = q.get('kind')
+      const base = `/approvals/${encodeURIComponent(id)}`
+      return kind === null || kind === '' ? base : `${base}?${new URLSearchParams({ kind }).toString()}`
+    }
   }
   // Work › Repositories (repositories.html): the page rides on the tab's query.
   if (bare === 'work/repositories' && query !== '') {
@@ -346,12 +358,19 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
     return plain(`work/runs?${params.toString()}`)
   }
 
-  if (seg[0] === 'automate' && seg[1] === 'schedules' && seg.length === 3 && seg[2] !== '') {
-    return plain(`automate/schedules?${new URLSearchParams({ schedule: decodeURIComponent(seg[2]!) }).toString()}`)
+  if (seg[0] === 'automate' && seg[1] === 'schedules' && seg[2] !== undefined && seg[2] !== '' && (seg.length === 3 || (seg.length === 4 && seg[3] === 'edit'))) {
+    const q = new URLSearchParams({ schedule: decodeURIComponent(seg[2]) })
+    const tab = new URLSearchParams(query).get('tab')
+    if (tab !== null && tab !== '') q.set('tab', tab)
+    if (seg.length === 4) q.set('edit', '1')
+    return plain(`automate/schedules?${q.toString()}`)
   }
 
   if (seg[0] === 'approvals' && seg.length === 2 && seg[1] !== '') {
-    return plain(`automate/approvals?${new URLSearchParams({ approval: decodeURIComponent(seg[1]!) }).toString()}`)
+    const q = new URLSearchParams({ approval: decodeURIComponent(seg[1]!) })
+    const kind = new URLSearchParams(query).get('kind')
+    if (kind !== null && kind !== '') q.set('kind', kind)
+    return plain(`automate/approvals?${q.toString()}`)
   }
 
   if (seg[0] === 'repositories' && seg.length >= 2) {

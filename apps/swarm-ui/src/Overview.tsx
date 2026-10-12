@@ -15,6 +15,7 @@ import {
   type StateRead,
 } from './OverviewRegions'
 import { addressToPath } from './paths'
+import { HandoffBanner, handoffOf, needsYou } from './Handoff'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
@@ -273,6 +274,10 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
         <NeedsALook checks={checks} />
+        {/* THE HAND-OFF BANNER (docs/design/live-browser.md §6, lane LB-L12):
+            an agent stopped until a person signs in, one card each, under
+            the checks and in the same lead. Nothing at all when none is. */}
+        {read !== null && <HandoffCards tasks={handoffRows(read)} />}
       </section>
 
       <LifecycleBand stats={stats} tasks={tasks} />
@@ -441,10 +446,10 @@ const STATS_POLL_MS = 60_000
  * task ids and `attempt_count` alone; its figures come from each task's
  * attempts read.
  *
- * 50 on a phone was §2.5's interim rule until `view=summary` existed. It
- * stays: the agent list caps its phone page at the same 50, and this screen
- * counts over the page the list shows (OV-10), so the two move together or
- * not at all.
+ * 50 on a phone was §2.5's interim rule until `view=summary` existed. Since
+ * live QA CH-4 (2026-10-11) the phone page is the full page too
+ * (`PHONE_PAGE_LIMIT` is `TASK_PAGE_LIMIT`, pageLimits.ts), and this screen
+ * still counts over the page the list shows (OV-10): the two moved together.
  */
 async function loadListPage(): Promise<Result<OverviewTaskPage>> {
   const page = await loadTasks(phoneWidth() ? PHONE_PAGE_LIMIT : TASK_PAGE_LIMIT, { view: 'summary' })
@@ -909,6 +914,85 @@ function NeedsALook({ checks }: { checks: Check[] }) {
         />
       )}
     </>
+  )
+}
+
+/**
+ * The rows a hand-off can be on: the page, and the RUNNING state read when
+ * the page is not every task (`loadStateReads`), so an agent created before
+ * the page that is holding for a person now is not missed. A parked hand-off
+ * older than the page is; the Agents list's Waiting tab still has it.
+ */
+function handoffRows(read: OverviewTaskPage): Task[] {
+  const seen = new Set(read.tasks.map((t) => t.id))
+  const running = read.byState?.find((r) => r.state === 'RUNNING')?.tasks ?? []
+  return [...read.tasks, ...running.filter((t) => !seen.has(t.id))]
+}
+
+/**
+ * Open an agent from outside the router's reach: write its path and let App
+ * read it back, as Back does (`popstate`).
+ */
+function openAgentPath(t: Pick<Task, 'id' | 'state'>): void {
+  window.history.pushState(null, '', agentPath(t))
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
+/**
+ * "NEEDS YOU": ONE HAND-OFF BANNER PER AGENT WAITING FOR A PERSON (§6). The
+ * reason, the expected site and the time left, held ones first and the
+ * soonest to park first among them, then the parked. A parked card's
+ * "I'm ready to sign in" calls `human-ready` and opens the agent, which is
+ * where its browser comes back (`onOpen`, by default the agent's own page).
+ *
+ * `now` is for a test; on the screen the cards keep their own 1s clock,
+ * mounted only while there is a card to tick.
+ */
+export function HandoffCards({
+  tasks,
+  now,
+  onOpen,
+}: {
+  tasks: readonly Task[]
+  now?: number
+  onOpen?: (taskId: string) => void
+}) {
+  const waiting = tasks.filter(needsYou).sort((a, b) => {
+    const ha = handoffOf(a)!
+    const hb = handoffOf(b)!
+    if (ha.phase !== hb.phase) return ha.phase === 'hold' ? -1 : 1
+    return (ha.deadline ?? Infinity) - (hb.deadline ?? Infinity)
+  })
+  if (waiting.length === 0) return null
+  return <HandoffCardList waiting={waiting} now={now} onOpen={onOpen} />
+}
+
+function HandoffCardList({
+  waiting,
+  now,
+  onOpen,
+}: {
+  waiting: Task[]
+  now: number | undefined
+  onOpen: ((taskId: string) => void) | undefined
+}) {
+  const tick = useNow()
+  const at = now ?? tick
+  return (
+    <div className="ov-handoffs" aria-label={`${waiting.length} ${waiting.length === 1 ? 'agent is' : 'agents are'} waiting for a person`}>
+      {waiting.map((t) => (
+        <HandoffBanner
+          key={t.id}
+          task={t}
+          now={at}
+          onReady={(id) => (onOpen !== undefined ? onOpen(id) : openAgentPath({ id, state: 'READY' }))}
+        >
+          <a className="ov-att-go" href={agentPath(t)}>
+            {rowLabel(t, null)} &rarr;
+          </a>
+        </HandoffBanner>
+      ))}
+    </div>
   )
 }
 

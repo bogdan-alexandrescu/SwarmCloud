@@ -156,6 +156,8 @@ export interface CheckInputs {
  * Both stay; each figure now says that the other width reads another window.
  */
 export function windowNote(phonePage: boolean, phoneRows: number, wideRows: number): string {
+  // ONE WINDOW AT EVERY WIDTH (live QA CH-4): nothing to say about another.
+  if (phoneRows === wideRows) return ''
   return phonePage
     ? ` · a phone reads the newest ${phoneRows}, a wider screen the newest ${wideRows}`
     : ` · a phone reads only the newest ${phoneRows}`

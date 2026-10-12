@@ -1010,3 +1010,22 @@
 .dt-cancel-note { margin: 0; color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); overflow-wrap: anywhere; }
 .dt-who .is-absent { color: var(--text-faint); }
 .dt-err.is-neu { border-color: var(--line); }
+
+/* --- the live-browser hand-off (live-browser.md §6, lane LB-L12) -------- */
+/* A row waiting for a person is yellow, as the banner is: the warning's own
+   tokens, so light and dark follow the theme. The rule at its left edge says
+   it without the colour. */
+.row.is-compact.is-needs-you {
+  background: var(--s-warnb);
+  box-shadow: inset 3px 0 0 var(--s-warn);
+}
+.ho-strip { padding: var(--ctl-s2) 0; }
+.ho-facts, .ho-starting, .ho-refused { display: block; }
+.ho-refused { color: var(--bad); }
+
+/* --- a live-browser task's recordings (§7) ------------------------------ */
+.rec-panel { margin-top: var(--ctl-s3); }
+.rec-note, .rec-absent, .rec-dropped { color: var(--text-dim); }
+.rec-list { list-style: none; margin: 0; padding: 0; }
+.rec-list > li { padding: var(--ctl-s1) 0; border-top: 1px solid var(--line); }
+.rec-player { display: block; width: 100%; max-height: 60vh; margin-top: var(--ctl-s1); background: var(--bg); }

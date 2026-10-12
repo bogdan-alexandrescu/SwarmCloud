@@ -25,6 +25,7 @@ import type { AttemptRow, AttemptsPage, Task, TaskEvent, TaskEventsPage, TaskPag
 import type { WorkflowRead } from '../api'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
+import { byIdVia } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadAttemptsPage: vi.fn(),
@@ -32,6 +33,7 @@ const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
   loadTask: vi.fn(),
   loadWorkflow: vi.fn(),
+  loadWorkflowsById: vi.fn(),
   loadOutcomes: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
@@ -104,6 +106,7 @@ function eventsPage(events: TaskEvent[], next: string | null = null): TaskEvents
 }
 
 beforeEach(() => {
+  api.loadWorkflowsById.mockImplementation(byIdVia(api.loadWorkflow))
   api.loadAttemptsPage.mockResolvedValue(ok(page(ATTEMPTS)))
   api.loadTaskEventsPage.mockImplementation(async (id: string) => ok(eventsPage(EVENTS[id] ?? [])))
   api.loadTasks.mockResolvedValue(ok({ tasks: TASKS } as TaskPage))

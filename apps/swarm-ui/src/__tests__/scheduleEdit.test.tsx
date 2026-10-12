@@ -26,6 +26,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { Routed } from './screenroute'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
 import { addressToPath, pathToAddress } from '../paths'
@@ -131,7 +132,7 @@ async function mount(view: string, handler: Handler) {
   vi.resetModules()
   const { SchedulesScreen } = await import('../Schedules')
   const go = vi.fn()
-  const utils = render(<SchedulesScreen view={view} go={go} />)
+  const utils = render(<Routed Screen={SchedulesScreen} section="automate/schedules" start={view} spy={go} />)
   return { ...utils, calls, go }
 }
 
@@ -366,7 +367,18 @@ describe('the SD3 merge switch', () => {
 
   const MODE = '/v1/schedules/sch_a:merge-mode'
 
-  it('switches to automatic with the revision, and the page reads the schedule again', async () => {
+  /** Step one, then step two with the name typed, then Switch now. */
+  async function switchTyped(name = 'Weekday sweep') {
+    fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
+    const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to automatic merging…' }))
+    const box = await within(dialog).findByRole('textbox', undefined, WAIT)
+    fireEvent.change(box, { target: { value: name } })
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch now' }))
+    return dialog
+  }
+
+  it('switches to automatic in two steps with the revision, and the page reads the schedule again', async () => {
     const { calls } = await gateTab((m, url) => (m === 'POST' && url === MODE ? { status: 200, body: { schedule: schedule({ revision: 3, gate: { merge: 'auto' } }) } } : null))
     fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
@@ -378,47 +390,85 @@ describe('the SD3 merge switch', () => {
     expect(visible(dialog)).toMatch(/held for a second member to approve \(for the owner, in a platform repository\)/)
     expect(visible(dialog)).toMatch(/frozen contract is held for the owner/)
     expect(visible(dialog)).not.toMatch(/wait for the owner/)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to automatic merging' }))
+    // AUT-4: the first step sends nothing; the second asks for the name typed.
+    // MUTATION: send from the first step and a POST lands with no typed step.
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to automatic merging…' }))
+    expect(sent(calls, 'POST', MODE)).toHaveLength(0)
+    const box = await within(dialog).findByRole('textbox', undefined, WAIT)
+    const now = () => within(dialog).getByRole('button', { name: 'Switch now' }) as HTMLButtonElement
+    expect(now().disabled).toBe(true)
+    fireEvent.change(box, { target: { value: 'Weekday swee' } })
+    expect(now().disabled).toBe(true)
+    fireEvent.change(box, { target: { value: 'Weekday sweep' } })
+    expect(now().disabled).toBe(false)
+    fireEvent.click(now())
     await waitFor(() => expect(sent(calls, 'POST', MODE)).toHaveLength(1), WAIT)
-    expect(sent(calls, 'POST', MODE)[0]!.body).toEqual({ mode: 'auto', revision: 2 })
+    expect(sent(calls, 'POST', MODE)[0]!.body).toEqual({ mode: 'auto', revision: 2, confirm: 'Weekday sweep' })
     await waitFor(() => expect(sent(calls, 'GET', '/v1/schedules/sch_a').length).toBe(2), WAIT)
     // The re-read lands on the Gate tab it came from.
     await screen.findByTestId('sc-gate', undefined, WAIT)
   })
 
-  it('asks for the typed name only when the server says a one-person tenant needs it', async () => {
-    let n = 0
+  it('disables Switch, with the reason beside it, for the member who last changed the gate', async () => {
+    const me = { tenant: { tenant_id: 'eng', kind: 'group' }, principal: { email: 'operator@example.com', domain: 'example.com', groups: [], is_admin: true } }
+    const audit = [{ schedule_id: 'sch_a', action: 'create', by: 'operator@example.com', at: hoursFromNow(-1), detail: {} }]
     const { calls } = await gateTab((m, url) => {
-      if (m !== 'POST' || url !== MODE) return null
-      n += 1
-      return n === 1
-        ? { status: 422, body: { code: 'confirmation_required', message: "type the schedule's name to switch merging to automatic" } }
-        : { status: 200, body: { schedule: schedule({ revision: 3 }) } }
+      if (m === 'GET' && url === '/v1/tenants/me') return { status: 200, body: me }
+      if (m === 'GET' && url.split('?')[0] === '/v1/schedules/sch_a/audit') return { status: 200, body: { audit } }
+      return null
     })
     fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
+    const sw = () => within(dialog).getByRole('button', { name: 'Switch to automatic merging…' }) as HTMLButtonElement
+    // MUTATION: drop `useSwitchBlock` and the button is live for the person the dialog says cannot switch.
+    await waitFor(() => expect(sw().disabled).toBe(true), WAIT)
+    expect(visible(dialog)).toContain('You last changed this schedule’s gate, scope or spec')
+    fireEvent.click(sw())
     expect(within(dialog).queryByRole('textbox')).toBeNull()
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to automatic merging' }))
-    const box = await within(dialog).findByRole('textbox', undefined, WAIT)
-    expect(visible(dialog)).toContain('only person in this tenant')
-    const confirm = () => within(dialog).getByRole('button', { name: 'Switch to automatic merging' }) as HTMLButtonElement
-    // MUTATION: drop the exact-name check and the button is live on an empty field.
-    expect(confirm().disabled).toBe(true)
-    fireEvent.change(box, { target: { value: 'Weekday sweep' } })
-    expect(confirm().disabled).toBe(false)
-    fireEvent.click(confirm())
-    await waitFor(() => expect(sent(calls, 'POST', MODE)).toHaveLength(2), WAIT)
-    expect(sent(calls, 'POST', MODE)[1]!.body).toEqual({ mode: 'auto', revision: 2, confirm: 'Weekday sweep' })
+    expect(sent(calls, 'POST', MODE)).toHaveLength(0)
+  })
+
+  it('leaves Switch open to another member, and to a one-person tenant, who types the name', async () => {
+    const audit = [
+      { schedule_id: 'sch_a', action: 'edit', by: 'operator@example.com', at: hoursFromNow(-1), detail: { changed: { name: 'x' } } },
+      { schedule_id: 'sch_a', action: 'edit', by: 'admin:someone@example.com', at: hoursFromNow(-2), detail: { changed: { gate: {} } } },
+    ]
+    for (const kind of ['group', 'user']) {
+      const me = { tenant: { tenant_id: 'eng', kind }, principal: { email: kind === 'group' ? 'operator@example.com' : 'someone@example.com', domain: 'example.com', groups: [], is_admin: false } }
+      const view = await gateTab((m, url) => {
+        if (m === 'GET' && url === '/v1/tenants/me') return { status: 200, body: me }
+        if (m === 'GET' && url.split('?')[0] === '/v1/schedules/sch_a/audit') return { status: 200, body: { audit } }
+        return null
+      })
+      fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
+      const dialog = await screen.findByRole('dialog', undefined, WAIT)
+      // Let the reads land, then the button is still live: a rename is not a gate edit,
+      // and a personal tenant's one member types the name instead.
+      await waitFor(() => expect(view.calls.some((c) => c.url.startsWith('/v1/schedules/sch_a/audit'))).toBe(true), WAIT)
+      await new Promise((r) => setTimeout(r, 20))
+      expect((within(dialog).getByRole('button', { name: 'Switch to automatic merging…' }) as HTMLButtonElement).disabled).toBe(false)
+      view.unmount()
+    }
   })
 
   it('says which rule refused it', async () => {
     await gateTab((m, url) =>
       m === 'POST' && url === MODE ? { status: 403, body: { code: 'second_person_required', message: 'another member must' } } : null,
     )
-    fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
-    const dialog = await screen.findByRole('dialog', undefined, WAIT)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to automatic merging' }))
+    const dialog = await switchTyped()
     await within(dialog).findByText(/another member must make this switch/, undefined, WAIT)
+  })
+
+  it('returns focus to its trigger when the dialog closes, wherever focus was when it opened (AUT-13)', async () => {
+    await gateTab(() => null)
+    const trigger = await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT)
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    fireEvent.click(trigger)
+    await screen.findByRole('dialog', undefined, WAIT)
+    fireEvent.keyDown(document, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    // MUTATION: drop the focus in `close` and this is <body>.
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Merge automatically…' })), WAIT)
   })
 
   it('is not offered where the type never merges unattended', async () => {
@@ -437,5 +487,321 @@ describe('the SD3 merge switch', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Approve each merge again' }, WAIT))
     await waitFor(() => expect(sent(calls, 'POST', MODE)).toHaveLength(1), WAIT)
     expect(sent(calls, 'POST', MODE)[0]!.body).toEqual({ mode: 'approve', revision: 2 })
+  })
+})
+
+// EDIT A, THE OWNER'S PICK (2026-10-11, docs/schedules.md §6.2, mockup #edit-a):
+//   * the type is template tiles, not a <select>; an unavailable type is a
+//     disabled tile carrying the catalogue's reason;
+//   * a 360px side column on a desktop holds the cron's words, the next five
+//     and the template card (tier, gate, budget defaults, shortest interval),
+//     and folds under the fields below 1024px;
+//   * the head says "tenant eng · N of 25 used", a served limit winning;
+//   * Start is Enabled / Dry run first / Paused;
+//   * a budget field states the type's default instead of "Blank: the type's
+//     default".
+describe('edit A', () => {
+  const CAPS = { per_run_usd: 15, per_day_usd: 120, max_concurrent: 8 }
+  const unbuilt = sweepType({
+    name: 'epic-triage',
+    description: 'Triages epics.',
+    available: false,
+    disabled_reason: 'not built yet: lane S10',
+  })
+  const observer = sweepType({
+    name: 'observer',
+    description: 'A read-only report on the last day of work.',
+    params_schema: { properties: {} },
+    default_gate: { run: 'auto' },
+    min_interval_minutes: 1440,
+    budget_caps: { per_run_usd: 5, per_day_usd: 10, max_concurrent: 1 },
+    tier: 'R0',
+  })
+  const catalogue = [sweepType({ budget_caps: CAPS }), observer, unbuilt]
+  const list = (n: number, extra: Json = {}): Reply => ({
+    status: 200,
+    body: { schedules: Array.from({ length: n }, (_, i) => schedule({ schedule_id: `sch_${i}`, name: `S ${i}` })), tenant_id: 'eng', ...extra },
+  })
+  const createRoutes = (extra: Handler = () => null, listReply: Reply = list(6)) =>
+    routes((m, url, body) => {
+      const hit = extra(m, url, body)
+      if (hit !== null) return hit
+      if (m === 'GET' && url.split('?')[0] === '/v1/schedules') return listReply
+      if (m === 'POST' && url === '/v1/schedules') return { status: 201, body: { schedule: schedule({ schedule_id: 'sch_new' }), created: true } }
+      return null
+    }, catalogue)
+
+  async function openCreate(handler: Handler) {
+    const out = await mount('schedule=new', handler)
+    await screen.findByRole('heading', { name: 'New schedule', level: 1 }, WAIT)
+    await screen.findByTestId('sc-form', undefined, WAIT)
+    return out
+  }
+
+  it('picks the type from tiles, an unavailable type greyed with its reason', async () => {
+    const { calls } = await openCreate(createRoutes())
+    const tiles = screen.getByRole('radiogroup', { name: 'Type' })
+    // MUTATION: put the type <select> back and there is no radiogroup, and a select labelled Type.
+    expect(screen.getByTestId('sc-form').querySelector('select option[value="issue-sweep"]')).toBeNull()
+    const radios = within(tiles).getAllByRole('radio')
+    expect(radios.map((r) => r.querySelector('b')?.textContent)).toEqual(['issue-sweep', 'observer', 'epic-triage'])
+    expect(radios[0]!.getAttribute('aria-checked')).toBe('true')
+    const off = radios[2] as HTMLButtonElement
+    expect(off.disabled).toBe(true)
+    expect(off.className).toContain('is-off')
+    // The reason is drawn on the tile, not only in a tooltip.
+    expect(visible(off)).toContain('Not available: not built yet: lane S10')
+    fireEvent.click(radios[1]!)
+    expect(radios[1]!.getAttribute('aria-checked')).toBe('true')
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules:preview').at(-1)?.body).toMatchObject({ type: 'observer' }), WAIT)
+    fireEvent.change(field('Name'), { target: { value: 'Daily report' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
+    expect((sent(calls, 'POST', '/v1/schedules')[0]!.body as Json).type).toBe('observer')
+  })
+
+  it('puts the words, the next five and the template card in a 360px side column, under the fields below 1024px', async () => {
+    await openCreate(createRoutes())
+    const form = screen.getByTestId('sc-form')
+    const cols = form.querySelector<HTMLElement>('.sc-edit-cols')!
+    const side = cols.querySelector<HTMLElement>('.sc-edit-side')!
+    expect(side.contains(screen.getByTestId('sc-preview'))).toBe(true)
+    expect(side.contains(screen.getByTestId('sc-tpl-card'))).toBe(true)
+    // MUTATION: drop the column rule from the edit-A block of schedules.css.
+    expect(painted(cols, 'grid-template-columns', { width: 1440 })).toBe('minmax(0, 1fr) 360px')
+    // MUTATION: drop the 1023px block and a phone is left a 360px column.
+    expect(painted(cols, 'grid-template-columns', { width: 1000 })).toBe('minmax(0, 1fr)')
+    expect(painted(cols, 'grid-template-columns', PHONE)).toBe('minmax(0, 1fr)')
+  })
+
+  it('shows the template card: tier, gate, budget defaults and shortest interval', async () => {
+    await openCreate(createRoutes())
+    const card = () => screen.getByTestId('sc-tpl-card')
+    const fact = (name: string) =>
+      [...card().querySelectorAll('dt')].find((dt) => dt.textContent === name)?.nextElementSibling?.textContent ?? null
+    expect(visible(card())).toContain('issue-sweep')
+    expect(fact('Gate')).toBe('run auto · plan auto · merge approve · any member approves')
+    expect(fact('Budget')).toBe('$15.00 / run · $120.00 / day · 8 live')
+    expect(fact('Shortest interval')).toBe('15 min')
+    // The catalogue serves no tier for issue-sweep: said, not invented.
+    expect(fact('Tier')).toBe('set from the gate when the schedule is saved')
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Type' })).getAllByRole('radio')[1]!)
+    // MUTATION: read the card off the first type instead of the picked one.
+    await waitFor(() => expect(fact('Tier')).toBe('R0'), WAIT)
+    expect(fact('Shortest interval')).toBe('1 day')
+    expect(fact('Budget')).toBe('$5.00 / run · $10.00 / day · 1 live')
+  })
+
+  it('says how many of the tenant’s 25 schedules are used, a served limit winning', async () => {
+    await openCreate(createRoutes())
+    // MUTATION: drop TenantRoom from the create page and this is gone.
+    await waitFor(() => expect(visible(screen.getByTestId('sc-room'))).toBe('tenant eng · 6 of 25 used'), WAIT)
+  })
+
+  it('counts against a raised limit when the list serves one, and says a full tenant will be refused', async () => {
+    await openCreate(createRoutes(() => null, list(30, { limit: 30 })))
+    await waitFor(() => expect(visible(screen.getByTestId('sc-room'))).toContain('tenant eng · 30 of 30 used'), WAIT)
+    expect(screen.getByTestId('sc-room').getAttribute('data-full')).toBe('true')
+  })
+
+  it('starts Enabled, Dry run first or Paused, Dry run first chosen', async () => {
+    const { calls } = await openCreate(createRoutes())
+    const start = screen.getByRole('radiogroup', { name: 'Start' })
+    const opts = within(start).getAllByRole('radio')
+    expect(opts.map((o) => o.textContent)).toEqual(['Enabled', 'Dry run first', 'Paused'])
+    // AUT-2: a new schedule is a dry run unless the person picks otherwise.
+    // MUTATION: start the draft at 'enabled' and Enabled is the one checked.
+    expect(opts[1]!.getAttribute('aria-checked')).toBe('true')
+    expect(opts[0]!.getAttribute('aria-checked')).toBe('false')
+    // MUTATION: keep the old "Start paused" and "Dry run" checkboxes and these are still here.
+    expect(screen.queryByRole('checkbox', { name: /Start paused/ })).toBeNull()
+    expect(screen.queryByRole('checkbox', { name: /Dry run/ })).toBeNull()
+    fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
+
+    fireEvent.click(opts[1]!)
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
+    const dry = sent(calls, 'POST', '/v1/schedules')[0]!.body as Json
+    // MUTATION: map "Dry run first" to state alone and the policy is missing.
+    expect(dry.state).toBe('enabled')
+    expect(dry.policy).toEqual({ dry_run: true })
+  })
+
+  it('creates a paused schedule with no dry run when Paused is chosen', async () => {
+    const { calls } = await openCreate(createRoutes())
+    fireEvent.click(within(screen.getByRole('radiogroup', { name: 'Start' })).getByRole('radio', { name: 'Paused' }))
+    fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
+    const body = sent(calls, 'POST', '/v1/schedules')[0]!.body as Json
+    expect(body.state).toBe('paused')
+    expect(body).not.toHaveProperty('policy')
+  })
+
+  it('states the type’s budget defaults in the budget fields', async () => {
+    const { calls } = await openCreate(createRoutes())
+    const hintOf = (label: string) => field(label).closest('label')!.querySelector('.c-hint')!.textContent
+    // MUTATION: put back "Blank: the type's default." and none of these name a value.
+    expect(hintOf('Per run (USD)')).toBe('Default $15.00, the most this type allows.')
+    expect(hintOf('Per day (USD)')).toBe('Default $120.00, the most this type allows.')
+    expect(hintOf('Live runs at most')).toBe('Default 8, the most this type allows.')
+    expect(field('Per run (USD)').placeholder).toBe('15')
+    expect(screen.getByTestId('sc-form').textContent).not.toContain('Blank')
+    // A blank field still sends nothing: the server starts the schedule at its caps.
+    fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
+    expect(sent(calls, 'POST', '/v1/schedules')[0]!.body).not.toHaveProperty('budget')
+  })
+
+  it('still never offers automatic merging among the tiles’ types', async () => {
+    await openCreate(createRoutes())
+    const merge = field('Merge') as unknown as HTMLSelectElement
+    expect([...merge.options].map((o) => o.value)).toEqual(['off', 'approve'])
+  })
+
+  it('in an edit, keeps the type fixed, shows the schedule’s own tier and offers no Start', async () => {
+    await mount(
+      'schedule=sch_a',
+      routes((m, url) => (m === 'GET' && url.split('?')[0] === '/v1/schedules/sch_a' ? { status: 200, body: { schedule: schedule(), firings: [] } } : null), catalogue),
+    )
+    await screen.findByRole('heading', { name: 'Weekday sweep', level: 1 }, WAIT)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await screen.findByTestId('sc-form', undefined, WAIT)
+    expect(screen.queryByRole('radiogroup', { name: 'Type' })).toBeNull()
+    expect(screen.queryByRole('radiogroup', { name: 'Start' })).toBeNull()
+    expect(field('Type').readOnly).toBe(true)
+    // MUTATION: ignore the schedule's tier and the card says "set when saved".
+    const tierDt = [...screen.getByTestId('sc-tpl-card').querySelectorAll('dt')].find((dt) => dt.textContent === 'Tier')
+    expect(tierDt?.nextElementSibling?.textContent).toBe('R2')
+    expect(screen.getByTestId('sc-form').querySelector('.sc-edit-side')!.contains(screen.getByTestId('sc-preview'))).toBe(true)
+  })
+})
+
+// LIVE QA, AUTOMATE (2026-10-11): what the create and edit forms did on the
+// live console that they must not do again.
+describe('live QA: automate, the form', () => {
+  const customPrompt = sweepType({
+    name: 'custom-prompt',
+    description: 'Runs a saved, signed workflow spec.',
+    params_schema: {
+      properties: { spec: { $ref: '#/$defs/WorkflowCreate' }, max_steps: { type: 'integer', title: 'Max Steps', default: 5, minimum: 1 } },
+      required: ['spec'],
+    },
+    default_gate: { run: 'auto' },
+  })
+  const listed = sweepType({
+    params_schema: {
+      properties: {
+        labels_include: { type: 'array', title: 'Labels Include', items: { type: 'string' }, default: [] },
+        labels_exclude: { type: 'array', title: 'Labels Exclude', items: { type: 'string' }, default: ['security', 'needs-owner', 'wontfix', 'question'] },
+        branch: { anyOf: [{ type: 'string' }, { type: 'null' }], title: 'Branch', default: null },
+      },
+    },
+  })
+  const created = (m: string, url: string): Reply =>
+    m === 'POST' && url === '/v1/schedules' ? { status: 201, body: { schedule: schedule({ schedule_id: 'sch_new' }), created: true } } : null
+
+  it('never creates on Enter: the form only writes on a click of Create (AUT-2)', async () => {
+    const { calls } = await mount('schedule=new', routes(created))
+    await waitFor(() => expect(field('Name')).toBeTruthy(), WAIT)
+    fireEvent.change(field('Name'), { target: { value: 'qa-enter-probe' } })
+    // Enter in a text field is the browser's implicit submission: a submit event on the form.
+    // MUTATION: make `onSubmit` call `submit()` and this POSTs.
+    fireEvent.submit(screen.getByTestId('sc-form'))
+    await new Promise((r) => setTimeout(r, 30))
+    expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(0)
+    // MUTATION: give Create `type="submit"` and it is the form's default button again.
+    expect(screen.getByRole('button', { name: 'Create schedule' }).getAttribute('type')).toBe('button')
+  })
+
+  it('defaults to chosen repositories wherever the type offers them, never every repository (AUT-2)', async () => {
+    const { calls } = await mount('schedule=new', routes(created, [sweepType({ creatable_scopes: ['all', 'repos'] })]))
+    await waitFor(() => expect(field('Scope')).toBeTruthy(), WAIT)
+    // MUTATION: take the first creatable scope and this is "all".
+    expect((field('Scope') as unknown as HTMLSelectElement).value).toBe('repos')
+    fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
+    expect(sent(calls, 'POST', '/v1/schedules')[0]!.body).toMatchObject({ scope: { mode: 'repos', repo_ids: ['repo_a'] }, state: 'enabled', policy: { dry_run: true } })
+  })
+
+  it('does not create a type whose required parameter the form cannot write, and says why (AUT-5)', async () => {
+    const { calls } = await mount('schedule=new', routes(created, [customPrompt]))
+    await waitFor(() => expect(field('Name')).toBeTruthy(), WAIT)
+    fireEvent.change(field('Name'), { target: { value: 'Nightly prompt' } })
+    const create = screen.getByRole('button', { name: 'Create schedule' }) as HTMLButtonElement
+    // MUTATION: drop `paramsWhy` and Create is live over a body the server refuses.
+    expect(create.disabled).toBe(true)
+    expect(visible(screen.getByTestId('sc-form'))).toContain('custom-prompt needs spec, which this form cannot write')
+    expect(visible(screen.getByTestId('sc-form'))).toContain('params.spec')
+    fireEvent.click(create)
+    expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(0)
+  })
+
+  it('sets labels_include, shows the default labels_exclude, and sends only what changed (AUT-12)', async () => {
+    const { calls } = await mount('schedule=new', routes(created, [listed]))
+    await waitFor(() => expect(field('Labels Include')).toBeTruthy(), WAIT)
+    // MUTATION: draw lists read-only again and these are not inputs you can type in.
+    expect(field('Labels Include').readOnly).toBe(false)
+    expect(field('Labels Exclude').value).toBe('security, needs-owner, wontfix, question')
+    expect(visible(field('Labels Exclude').closest('label'))).toContain('Default: security, needs-owner, wontfix, question.')
+    fireEvent.change(field('Labels Include'), { target: { value: 'swarm, good first issue, ' } })
+    expect(field('Labels Include').value).toBe('swarm, good first issue, ')
+    fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Create schedule' }))
+    await waitFor(() => expect(sent(calls, 'POST', '/v1/schedules')).toHaveLength(1), WAIT)
+    const body = sent(calls, 'POST', '/v1/schedules')[0]!.body as Json
+    // The untouched exclusions and the unset branch are the defaults, so they are not sent.
+    expect(body.params).toEqual({ labels_include: ['swarm', 'good first issue'] })
+  })
+
+  it('does not save an edit that changes nothing (AUT-8)', async () => {
+    const { calls } = await mount(
+      'schedule=sch_a',
+      routes((m, url) => (m === 'GET' && url.split('?')[0] === '/v1/schedules/sch_a' ? { status: 200, body: { schedule: schedule(), firings: [] } } : null)),
+    )
+    await screen.findByRole('heading', { name: 'Weekday sweep', level: 1 }, WAIT)
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await waitFor(() => expect(field('Name')).toBeTruthy(), WAIT)
+    const save = () => screen.getByRole('button', { name: 'Save changes' }) as HTMLButtonElement
+    // MUTATION: drop the "Nothing has changed yet." check and Save sends `{revision}` alone.
+    expect(save().disabled).toBe(true)
+    expect(visible(screen.getByTestId('sc-form'))).toContain('Nothing has changed yet.')
+    fireEvent.click(save())
+    expect(sent(calls, 'PATCH', '/v1/schedules/sch_a')).toHaveLength(0)
+    fireEvent.change(field('Name'), { target: { value: 'Weekday sweep 2' } })
+    expect(save().disabled).toBe(false)
+  })
+
+  it('keeps Create disabled while the preview says the expression is not a schedule (AUT-10)', async () => {
+    let answer: Reply = { status: 200, body: PREVIEW }
+    await mount('schedule=new', routes((m, url) => (m === 'POST' && url === '/v1/schedules:preview' ? answer : null)))
+    await waitFor(() => expect(field('Name')).toBeTruthy(), WAIT)
+    fireEvent.change(field('Name'), { target: { value: 'Weekday sweep' } })
+    const create = () => screen.getByRole('button', { name: 'Create schedule' }) as HTMLButtonElement
+    await screen.findByText(/at least 1440 min apart/, undefined, WAIT)
+    expect(create().disabled).toBe(false)
+    answer = { status: 422, body: { code: 'invalid_cron', message: 'minute: 61 is outside 0-59' } }
+    fireEvent.change(field('Cron expression'), { target: { value: '61 * * * *' } })
+    await waitFor(() => expect(screen.getByTestId('sc-preview').getAttribute('data-refused')).toBe('true'), WAIT)
+    // MUTATION: leave the 422 out of `previewBlocks` and Create stays live.
+    await waitFor(() => expect(create().disabled).toBe(true), WAIT)
+    answer = { status: 200, body: { preview: { ...PREVIEW.preview, refusal: { message: 'issue-sweep fires at most every 15 minutes' } } } }
+    fireEvent.change(field('Cron expression'), { target: { value: '*/5 * * * *' } })
+    await waitFor(() => expect(visible(screen.getByTestId('sc-preview'))).toContain('This type would refuse it'), WAIT)
+    await waitFor(() => expect(create().disabled).toBe(true), WAIT)
+  })
+
+  it('names each control by its label alone and describes it by its hint (AUT-16)', async () => {
+    await mount('schedule=new', routes(() => null))
+    await waitFor(() => expect(field('Name')).toBeTruthy(), WAIT)
+    // MUTATION: drop `aria-labelledby` from `Field` and the name is every option and the hint.
+    const scope = screen.getByRole('combobox', { name: 'Scope' })
+    expect(scope).toBeTruthy()
+    const run = screen.getByRole('combobox', { name: 'Run' })
+    const hint = document.getElementById(run.getAttribute('aria-describedby') ?? '')
+    expect(hint?.textContent).toBe('type default: auto')
+    expect(screen.getByRole('textbox', { name: 'Cron expression' })).toBeTruthy()
   })
 })

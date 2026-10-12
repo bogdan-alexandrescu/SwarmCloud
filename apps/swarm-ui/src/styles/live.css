@@ -1,0 +1,70 @@
+/* THE BROWSER TAB (docs/design/live-browser.md §3.4, §6, §6.1; lane L11).
+   LiveBrowser.tsx draws it: the hand-off banner, the origin strip, the device
+   bar, and noVNC's canvas with the logs beside it when asked.
+
+   THE STRIP IS OUTSIDE THE CANVAS, AND ITS COLOUR IS THE CONSOLE'S. A page
+   cannot draw into it (§5.7 item 1). Red is the hand-off's named site and the
+   page's registrable domain disagreeing (§5.7 item 2), yellow a hand-off that
+   named no site, and every tone says its reason in words beside the colour. */
+
+.ag-split > .ag-split-pane.is-browser { display: flex; flex-direction: column; overflow: auto; }
+.live-tab { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.live-note { color: var(--text-dim); font-size: var(--t-body); padding: 12px 0; }
+
+.live-handoff {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+  padding: 8px 12px; border-radius: var(--radius);
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+  background: color-mix(in srgb, var(--warn) 12%, transparent);
+  font-size: var(--t-body);
+}
+.live-handoff-expect, .live-handoff-left { color: var(--text-dim); font-size: var(--t-meta); }
+
+.live-strip {
+  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
+  padding: 6px 12px; border-radius: var(--radius);
+  border: 1px solid var(--line); border-left-width: 4px;
+  font-size: var(--t-meta);
+}
+.live-strip.is-ok { border-left-color: var(--ok); }
+.live-strip.is-warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.live-strip.is-mismatch, .live-strip.is-refused {
+  border-color: color-mix(in srgb, var(--bad) 45%, var(--line)); border-left-color: var(--bad);
+  background: color-mix(in srgb, var(--bad) 18%, transparent);
+}
+.live-strip.is-mismatch .live-strip-say, .live-strip.is-refused .live-strip-say { color: var(--bad-ink); }
+.live-origin { font-family: var(--mono); font-size: var(--t-body); }
+.live-origin-scheme, .live-origin-sub { color: var(--text-dim); }
+.live-origin-puny { margin-left: 8px; color: var(--bad-ink); font-size: var(--t-meta); }
+.live-strip-who { margin-left: auto; color: var(--text-dim); }
+
+.live-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: var(--t-meta); }
+.live-device { display: inline-flex; gap: 6px; align-items: center; }
+.live-open { display: inline-flex; gap: 6px; align-items: center; }
+.live-toolbar-why { color: var(--text-dim); }
+
+.live-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; }
+.live-tab.with-logs .live-body { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+.live-logs { min-height: 0; overflow: auto; }
+
+.live-screen-wrap { display: flex; flex-direction: column; gap: 4px; min-height: 0; }
+.live-screen {
+  flex: 1; min-height: 320px; border-radius: var(--radius);
+  border: 1px solid var(--line); background: var(--bg); overflow: hidden;
+}
+.live-screen.is-control { border-color: var(--warn); }
+.live-screen.is-control:focus-within { outline: 2px solid var(--warn); outline-offset: 1px; }
+.live-screen-say { color: var(--text-dim); font-size: var(--t-meta); }
+
+.live-control { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; position: relative; }
+.live-control-view { color: var(--text-dim); font-size: var(--t-meta); }
+.live-control-error { color: var(--bad-ink); font-size: var(--t-meta); }
+.live-ask {
+  position: absolute; top: 100%; right: 0; z-index: 5; width: min(420px, 90vw);
+  display: flex; flex-direction: column; gap: 8px; padding: 12px;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+  font-size: var(--t-body);
+}
+.live-ask.is-mismatch { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 14%, var(--surface)); }
+.live-ask-warn { color: var(--warn-ink); }
+.live-ask-actions { display: flex; gap: 8px; }

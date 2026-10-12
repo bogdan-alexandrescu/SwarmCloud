@@ -1,0 +1,36 @@
+# The live-browser relay (docs/design/live-browser.md §3.3, lane LB-L7): where
+# the display gate's outbound tunnel and swarm-api's proxied viewers meet, and
+# the recorder of §7. A single-replica StatefulSet in swarm-system on GKE.
+#
+# Its image must also carry an `ffmpeg` built with libvpx: the recorder encodes
+# VP8 through it (recorder.py, FfmpegVp8Encoder). That is a system binary, not
+# a Python dependency, so it is not listed here.
+#
+# No Firestore client (owner decision 2026-10-11 (a)): the relay trusts only
+# the ticket. Secret Manager is read over REST with google-auth, which
+# google-cloud-storage already brings (main.py, `_access_secret`).
+[project]
+name = "swarm-live"
+version = "0.1.0"
+description = "Live-browser relay: tunnel/viewer rendezvous and masked-frame recorder."
+requires-python = ">=3.11"
+dependencies = [
+    "swarm-common",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "websockets>=13",
+    "google-cloud-storage>=2.18",
+]
+
+[project.scripts]
+swarm-live = "swarm_live.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["swarm_live"]
+
+[tool.uv.sources]
+swarm-common = { path = "../common", editable = true }
