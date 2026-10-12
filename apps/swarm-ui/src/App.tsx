@@ -968,10 +968,12 @@ const AUTOMATE = 'automate'
  */
 function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) return ['pool']
-  // One schedule rides on the list's address (`/automate/schedules/<id>`, paths.ts).
-  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule']
-  // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts).
-  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval']
+  // One schedule rides on the list's address (`/automate/schedules/<id>`,
+  // paths.ts), with its tab and its editor (AUT-11).
+  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit']
+  // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts),
+  // and the inbox's kind filter beside it (AUT-15).
+  if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
   if (sectionId !== CAPACITY) return []
   if (tab === 'pools') return ['pool']
   if (tab === 'holders') return ['pool', 'tenant']
@@ -1262,7 +1264,7 @@ export function App() {
               head with no age of its own; a `Screen` carries its own on its
               refresh control and claims it (#98). */}
           <FrameAge.Provider value={true}>
-          <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} />}>
+          <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} topic={PAGE_TOPIC[`${at.sectionId}/${at.tab}`] ?? null} />}>
           <HeadAgeProvider at={at}>
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
@@ -1685,7 +1687,18 @@ function ScreenAge({ at, reads, now }: { at: Route; reads: ScreenReads; now: num
  * question and nothing to follow. `Help →` goes to the top of the Help page,
  * because the question is about a section and no single topic answers it.
  */
-function SectionQuestion({ section }: { section: SectionQuestionDef }) {
+/**
+ * A PAGE WITH A TOPIC OF ITS OWN (AUT-14). Schedules and Approvals share the
+ * Automate section's question, so their `?` read alike and led to the top of
+ * Help. Each also says its own topic's card text, and `Help →` opens that
+ * topic rather than the index.
+ */
+const PAGE_TOPIC: Readonly<Record<string, TopicId>> = {
+  'automate/schedules': 'schedules',
+  'automate/approvals': 'approvals',
+}
+
+function SectionQuestion({ section, topic = null }: { section: SectionQuestionDef; topic?: TopicId | null }) {
   // THE CARD IS MEASURED THROUGH `cardRef`, and before it existed this card
   // was not measured at all. `useEdgeSafePlacement` used to look for the card
   // under the ANCHOR, and this one is portalled to `document.body` below, so
@@ -1711,12 +1724,13 @@ function SectionQuestion({ section }: { section: SectionQuestionDef }) {
     >
       <strong className="ctl-q-title">{section.label} answers</strong>
       <span className="ctl-q-body">{section.question}</span>
+      {topic !== null && <span className="ctl-q-body" data-topic={topic}>{HELP_TOPICS[topic].short}</span>}
       {/* Inline, from tokens, like the topic cards' own link: styles.css is
           another lane's this pass, and an inline style reaches no other
           element. */}
       <a
         className="ctl-link"
-        href={`#${HELP}`}
+        href={topic === null ? `#${HELP}` : `#${HELP_TOPICS[topic].anchor}`}
         style={{
           display: 'inline-block',
           marginTop: 'var(--ctl-s2)',
@@ -1884,7 +1898,7 @@ function SectionBody({
     case 'admin/people':
       return <PeopleScreen />
     case 'admin/schedules':
-      return <AdminSchedulesScreen />
+      return <AdminSchedulesScreen go={go} />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash

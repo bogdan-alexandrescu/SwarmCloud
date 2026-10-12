@@ -1,9 +1,9 @@
-# The live browser's one extra path out of a tenant namespace: TCP 8443 to the
+# The live browser's one extra path out of a tenant namespace: TCP 8080 to the
 # relay, from a live-browser pod, and nothing else
 # (docs/design/live-browser.md §3.3 and §8.3; lane LB-L6, part of #1030).
 #
 # A `claude-code-browser` pod's live gate DIALS OUT to `swarm-live` -- the
-# single-replica relay StatefulSet in `swarm-system` -- over WSS on 8443. The
+# single-replica relay StatefulSet in `swarm-system` -- over plain ws on 8080. The
 # pod listens on nothing; `default-deny.yaml` still denies all ingress here,
 # and nothing in this file touches that.
 #
@@ -63,4 +63,4 @@ spec:
               app.kubernetes.io/name: swarm-live
       ports:
         - protocol: TCP
-          port: 8443
+          port: 8080

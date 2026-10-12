@@ -387,7 +387,7 @@ describe('Overview draws its empty states through the shared empty state', () =>
     expect(zero!.classList.contains('is-failed')).toBe(false)
     expect(zero!.querySelector('.ctl-mark.is-zero')?.textContent).toBe('none')
     // The sentence is the mark's accessible name, not a paragraph.
-    expect(zero!.querySelector('.ctl-mark')?.getAttribute('aria-label')).toMatch(/returned nothing/i)
+    expect(zero!.querySelector('.ctl-mark')?.getAttribute('aria-label')).toMatch(/read succeeded/i)
     expect(zero!.querySelector('p')).toBeNull()
   })
 })

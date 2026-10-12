@@ -4658,9 +4658,9 @@ function MaskedMetadataBlock({ served, copy }: { served: TaskInputCopy | null; c
         <p className="att-none">
           <Mark
             kind="zero"
-            say="Submitted with no metadata."
+            say="This task was submitted with no metadata."
           />{' '}
-          submitted with none
+          no metadata submitted
         </p>
       ) : (
         <div className="ctl-table">

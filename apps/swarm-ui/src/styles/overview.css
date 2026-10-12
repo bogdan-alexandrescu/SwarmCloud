@@ -349,3 +349,6 @@
     transform: translate(-50%, -50%);
   }
 }
+
+/* The hand-off banners under Needs a look (live-browser.md §6, lane LB-L12). */
+.ov-handoffs { display: flex; flex-direction: column; gap: var(--ctl-s2); margin-top: var(--ctl-s2); }

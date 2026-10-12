@@ -333,7 +333,7 @@ export function PatchChanges({
     )
   }
   if (data.content === '') {
-    return <State mark="zero" heading="empty patch" say="The patch was written and holds no changes." />
+    return <State mark="zero" heading="empty patch" say="The patch was written and is empty." />
   }
 
   const whole = data.offset === 0 && data.next_offset === null && !data.truncated

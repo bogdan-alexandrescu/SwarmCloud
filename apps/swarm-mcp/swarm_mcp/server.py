@@ -867,6 +867,7 @@ TOOLS: list[dict[str, Any]] = [
                         "Merge a pull request NO workflow opened, at the head sha you "
                         "name (#352): submits one `merge` step and nothing else, so it "
                         "takes no `steps`/`spec` and only `repo` and `title` beside it. "
+                        "With no `title` the run is named \"Merge PR <number>\". "
                         "The repository is `repo` when given, which must be one your "
                         "tenant registered, else your tenant's only registered one. The "
                         "API refuses a pull request that is closed, merged, from a fork, "

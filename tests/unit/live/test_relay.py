@@ -4,9 +4,15 @@ Acceptance for the lane: a ticket used twice, expired, or for another tenant,
 session or generation is refused; one tunnel per session; viewer caps; segments
 written only under `.../live/` with the two suffixes.
 
+And for LB-L8d (owner decisions 2026-10-11 (a)-(c)): the relay starts and
+serves with no Firestore client and no certificate, on plain WS port 8080,
+with its key read by Secret Manager version reference; a session is what its
+tunnel ticket names, and every later ticket must match it; a close request
+from swarm-api drops every connection of its session.
+
 Every key and ticket here is built at runtime (`secrets.token_bytes`,
 `mint_ticket`), never written as a literal. Nothing needs a credential, an
-emulator or ffmpeg: the session store, the segment writer and the encoder are
+emulator or ffmpeg: the segment writer, the encoder and Secret Manager are
 in-memory doubles defined in this file.
 """
 
@@ -43,10 +49,11 @@ from swarm_live.rendezvous import (  # noqa: E402
     OP_OPEN,
     Refused,
     Rendezvous,
-    SessionRecord,
     decode_frame,
     encode_frame,
+    mint_close,
     mint_ticket,
+    verify_close,
     verify_ticket,
 )
 
@@ -59,19 +66,6 @@ class Clock:
 
     def __call__(self) -> float:
         return self.now
-
-
-class Store:
-    """`live_sessions/{id}` as swarm-api writes it, in memory."""
-
-    def __init__(self) -> None:
-        self.records: dict[str, SessionRecord] = {}
-
-    def put(self, record: SessionRecord) -> None:
-        self.records[record.session_id] = record
-
-    def get(self, session_id: str) -> SessionRecord | None:
-        return self.records.get(session_id)
 
 
 class Endpoint:
@@ -132,13 +126,6 @@ class Encoder:
 TENANT, TASK, ATTEMPT, SESSION, GEN = "eng", "task_a1", "att_a1", "ls_a1", 3
 
 
-def record(**overrides) -> SessionRecord:
-    fields = dict(session_id=SESSION, tenant_id=TENANT, task_id=TASK,
-                  attempt_id=ATTEMPT, generation=GEN, open=True)
-    fields.update(overrides)
-    return SessionRecord(**fields)
-
-
 def ticket(key: bytes, clock: Clock, role: str = "tunnel", **overrides) -> str:
     fields = dict(session_id=SESSION, tenant_id=TENANT, task_id=TASK, attempt_id=ATTEMPT,
                   generation=GEN, role=role, now=clock())
@@ -151,10 +138,8 @@ def ticket(key: bytes, clock: Clock, role: str = "tunnel", **overrides) -> str:
 def build(**kwargs):
     key = secrets.token_bytes(32)
     clock = Clock()
-    store = Store()
-    store.put(record())
-    relay = Rendezvous(key, store, clock=clock, **kwargs)
-    return key, clock, store, relay
+    relay = Rendezvous(key, clock=clock, **kwargs)
+    return key, clock, relay
 
 
 def run(coro):
@@ -217,14 +202,14 @@ def test_a_persons_ticket_must_name_the_person_and_the_gates_must_not():
 
 def test_a_short_key_is_refused_at_construction():
     with pytest.raises(ValueError):
-        Rendezvous(secrets.token_bytes(8), Store())
+        Rendezvous(secrets.token_bytes(8))
 
 
 # ---------------------------------------------------------------- tunnels
 
 
 def test_a_tunnel_opens_with_its_ticket_and_the_relay_opens_no_viewer_until_one_joins():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
     gate = Endpoint()
 
     async def go():
@@ -238,7 +223,7 @@ def test_a_tunnel_opens_with_its_ticket_and_the_relay_opens_no_viewer_until_one_
 
 
 def test_a_tunnel_ticket_used_twice_is_refused():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
     raw = ticket(key, clock)
 
     async def go():
@@ -252,40 +237,38 @@ def test_a_tunnel_ticket_used_twice_is_refused():
     run(go())
 
 
-@pytest.mark.parametrize("field,value,reason", [
-    ("tenant_id", "other-tenant", "wrong_tenant"),
-    ("task_id", "task_other", "wrong_task"),
-    ("attempt_id", "att_other", "wrong_attempt"),
-    ("generation", GEN + 1, "wrong_generation"),
-    ("session_id", "ls_unknown", "unknown_session"),
-])
-def test_a_tunnel_ticket_that_does_not_match_the_session_document_is_refused(field, value, reason):
-    key, clock, _, relay = build()
+def test_a_tunnel_ticket_defines_its_session_with_no_document_read():
+    # Decision (a): the relay has no Firestore client. What the session IS --
+    # tenant, task, attempt, generation -- is what swarm-api MAC'd into the
+    # tunnel ticket, and nothing else.
+    key, clock, relay = build()
 
     async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), Endpoint())
+        return tunnel.session
+
+    session = run(go())
+    assert (session.session_id, session.tenant_id, session.task_id, session.attempt_id,
+            session.generation) == (SESSION, TENANT, TASK, ATTEMPT, GEN)
+    assert not hasattr(relay, "_store")
+
+
+def test_a_tunnel_for_a_closed_session_is_refused():
+    key, clock, relay = build()
+
+    async def go():
+        await relay.close_session(SESSION)
         with pytest.raises(Refused) as e:
-            await relay.open_tunnel(ticket(key, clock, **{field: value}), Endpoint())
-        assert e.value.reason == reason
+            await relay.open_tunnel(ticket(key, clock), Endpoint())
+        assert e.value.reason == "session_closed"
         assert e.value.code == CLOSE_REFUSED
 
     run(go())
     assert relay.tunnel_count() == 0
 
 
-def test_a_tunnel_for_a_closed_session_is_refused():
-    key, clock, store, relay = build()
-    store.put(record(open=False))
-
-    async def go():
-        with pytest.raises(Refused) as e:
-            await relay.open_tunnel(ticket(key, clock), Endpoint())
-        assert e.value.reason == "session_closed"
-
-    run(go())
-
-
 def test_a_viewer_ticket_cannot_open_a_tunnel():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
 
     async def go():
         with pytest.raises(Refused) as e:
@@ -296,7 +279,7 @@ def test_a_viewer_ticket_cannot_open_a_tunnel():
 
 
 def test_one_tunnel_per_session_and_the_first_wins():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
     first, second = Endpoint(), Endpoint()
 
     async def go():
@@ -318,7 +301,7 @@ def test_one_tunnel_per_session_and_the_first_wins():
 
 
 def test_a_viewer_is_spliced_to_the_tunnel_both_ways_under_its_own_connection_id():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
     gate, a, b = Endpoint(), Endpoint(), Endpoint()
 
     async def go():
@@ -340,7 +323,7 @@ def test_a_viewer_is_spliced_to_the_tunnel_both_ways_under_its_own_connection_id
 
 
 def test_a_viewer_that_leaves_is_closed_at_the_gate_and_one_the_gate_closes_is_closed_here():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
     gate, a, b = Endpoint(), Endpoint(), Endpoint()
 
     async def go():
@@ -359,7 +342,7 @@ def test_a_viewer_that_leaves_is_closed_at_the_gate_and_one_the_gate_closes_is_c
 
 
 def test_a_viewer_ticket_used_twice_is_refused():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
     raw = ticket(key, clock, "viewer")
 
     async def go():
@@ -373,7 +356,7 @@ def test_a_viewer_ticket_used_twice_is_refused():
 
 
 def test_an_expired_viewer_ticket_is_refused():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
 
     async def go():
         await relay.open_tunnel(ticket(key, clock), Endpoint())
@@ -391,17 +374,18 @@ def test_an_expired_viewer_ticket_is_refused():
     ("task_id", "task_other", "wrong_task"),
     ("attempt_id", "att_other", "wrong_attempt"),
     ("generation", GEN - 1, "wrong_generation"),
-    # Session B's id with session A's task: refused against B's own document.
+    # Session B's id with session A's task: refused against B's tunnel ticket.
     ("session_id", "ls_other", "wrong_task"),
 ])
 def test_a_viewer_ticket_for_another_tenant_session_or_generation_is_refused(field, value, reason):
-    key, clock, store, relay = build()
-    # Another session that IS live, so "another session" is refused for naming
-    # a session other than the one it was minted for, not merely an absent one.
-    store.put(record(session_id="ls_other", task_id="task_b"))
+    key, clock, relay = build()
 
     async def go():
         await relay.open_tunnel(ticket(key, clock), Endpoint())
+        # Another session that IS live, so "another session" is refused for
+        # naming a session other than the one it was minted for, not merely an
+        # absent one.
+        await relay.open_tunnel(ticket(key, clock, session_id="ls_other", task_id="task_b"), Endpoint())
         with pytest.raises(Refused) as e:
             await relay.open_viewer(ticket(key, clock, "viewer", **{field: value}), Endpoint())
         assert e.value.code == CLOSE_REFUSED
@@ -412,7 +396,7 @@ def test_a_viewer_ticket_for_another_tenant_session_or_generation_is_refused(fie
 
 
 def test_a_tunnel_ticket_cannot_open_a_viewer():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
 
     async def go():
         await relay.open_tunnel(ticket(key, clock), Endpoint())
@@ -424,7 +408,7 @@ def test_a_tunnel_ticket_cannot_open_a_viewer():
 
 
 def test_a_viewer_with_no_tunnel_is_refused():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
 
     async def go():
         with pytest.raises(Refused) as e:
@@ -435,7 +419,7 @@ def test_a_viewer_with_no_tunnel_is_refused():
 
 
 def test_at_most_ten_viewers_per_task():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
 
     async def go():
         await relay.open_tunnel(ticket(key, clock), Endpoint())
@@ -454,10 +438,8 @@ def test_at_most_ten_viewers_per_task():
 
 
 def test_at_most_fifty_viewers_per_tenant_across_its_tasks():
-    key, clock, store, relay = build()
+    key, clock, relay = build()
     tasks = [f"task_{i}" for i in range(6)]
-    for i, task in enumerate(tasks):
-        store.put(record(session_id=f"ls_{i}", task_id=task))
 
     async def go():
         for i, task in enumerate(tasks):
@@ -474,7 +456,6 @@ def test_at_most_fifty_viewers_per_tenant_across_its_tasks():
         assert e.value.reason == "viewers_per_tenant"
         assert e.value.code == CLOSE_FULL
         # Another tenant is not counted against this one.
-        store.put(record(session_id="ls_x", tenant_id="ops", task_id="task_x"))
         await relay.open_tunnel(ticket(key, clock, session_id="ls_x", tenant_id="ops",
                                        task_id="task_x"), Endpoint())
         await relay.open_viewer(ticket(key, clock, "viewer", session_id="ls_x", tenant_id="ops",
@@ -487,7 +468,7 @@ def test_at_most_fifty_viewers_per_tenant_across_its_tasks():
 
 
 def test_a_slow_viewer_is_dropped_instead_of_stalling_the_tunnel():
-    key, clock, _, relay = build(queue_size=4)
+    key, clock, relay = build(queue_size=4)
 
     class Stuck(Endpoint):
         async def send_bytes(self, data: bytes) -> None:
@@ -515,7 +496,7 @@ def test_a_slow_viewer_is_dropped_instead_of_stalling_the_tunnel():
 
 
 def test_control_needs_a_control_ticket_for_this_viewer_and_reaches_the_gate():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
     gate, a = Endpoint(), Endpoint()
 
     async def go():
@@ -545,7 +526,7 @@ def test_control_needs_a_control_ticket_for_this_viewer_and_reaches_the_gate():
 
 
 def test_a_controller_that_leaves_releases_control():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
     gate = Endpoint()
 
     async def go():
@@ -565,30 +546,91 @@ def test_a_controller_that_leaves_releases_control():
 # ---------------------------------------------------------------- the session moves
 
 
-def test_a_session_whose_generation_moves_or_that_closes_is_dropped_by_the_sweep():
-    key, clock, store, relay = build()
-    store.put(record(session_id="ls_b", task_id="task_b"))
-    gate, viewer, gate_b = Endpoint(), Endpoint(), Endpoint()
+def test_a_close_request_drops_a_connected_viewer_and_its_tunnel_and_nothing_else():
+    key, clock, relay = build()
+    gate, viewer, gate_b, viewer_b = Endpoint(), Endpoint(), Endpoint(), Endpoint()
 
     async def go():
         await relay.open_tunnel(ticket(key, clock), gate)
         await relay.open_viewer(ticket(key, clock, "viewer"), viewer)
         await relay.open_tunnel(ticket(key, clock, session_id="ls_b", task_id="task_b"), gate_b)
-        await relay.sweep()
-        assert gate.closed is None and gate_b.closed is None
-        store.put(record(generation=GEN + 1))
-        store.put(record(session_id="ls_b", task_id="task_b", open=False))
-        await relay.sweep()
+        await relay.open_viewer(ticket(key, clock, "viewer", session_id="ls_b", task_id="task_b"),
+                                viewer_b)
+        return await relay.close_request(mint_close(key, SESSION, now=clock()))
+
+    assert run(go()) == (SESSION, 2)
+    assert viewer.closed == (CLOSE_ENDED, "session_ended")
+    assert gate.closed == (CLOSE_ENDED, "session_ended")
+    # Another session is untouched.
+    assert gate_b.closed is None and viewer_b.closed is None
+    assert relay.tunnel_count() == 1 and relay.viewer_count() == 1
+
+
+def test_a_closed_session_refuses_every_ticket_minted_before_the_close():
+    key, clock, relay = build()
+
+    async def go():
+        await relay.open_tunnel(ticket(key, clock), Endpoint())
+        in_flight = [ticket(key, clock), ticket(key, clock, "viewer")]
+        await relay.close_request(mint_close(key, SESSION, now=clock()))
+        for raw, opener in zip(in_flight, (relay.open_tunnel, relay.open_viewer)):
+            with pytest.raises(Refused) as e:
+                await opener(raw, Endpoint())
+            assert e.value.reason == "session_closed"
+        # Remembered until every ticket minted before the close has expired.
+        clock.now += rz.CLOSED_MEMORY_SECONDS + 1
+        assert not relay.is_closed(SESSION)
 
     run(go())
-    assert gate.closed == (CLOSE_ENDED, "session_ended")
-    assert viewer.closed == (CLOSE_ENDED, "session_ended")
-    assert gate_b.closed == (CLOSE_ENDED, "session_ended")
-    assert relay.tunnel_count() == 0 and relay.viewer_count() == 0
+
+
+def test_a_close_request_must_be_swarm_apis_fresh_and_used_once():
+    key, clock, relay = build()
+    gate = Endpoint()
+
+    async def go():
+        await relay.open_tunnel(ticket(key, clock), gate)
+        for raw, reason in (
+            (mint_close(secrets.token_bytes(32), SESSION, now=clock()), "bad_signature"),
+            # A ticket's MAC is under another domain: a ticket is never a close.
+            (ticket(key, clock), "bad_signature"),
+            (mint_close(key, SESSION, now=clock() - rz.CLOSE_TTL_SECONDS - 1), "expired"),
+            (mint_close(key, SESSION, now=clock(), ttl=3600), "lifetime"),
+            ("not-a-close", "malformed"),
+        ):
+            with pytest.raises(Refused) as e:
+                await relay.close_request(raw)
+            assert e.value.reason == reason, raw
+        assert gate.closed is None
+        raw = mint_close(key, SESSION, now=clock())
+        await relay.close_request(raw)
+        with pytest.raises(Refused) as e:
+            await relay.close_request(raw)
+        assert e.value.reason == "replayed"
+
+    run(go())
+    assert verify_close(key, mint_close(key, "ls_z", now=1000.0), now=1000.0).session_id == "ls_z"
+
+
+def test_a_control_ticket_for_the_session_with_another_generation_is_refused():
+    key, clock, relay = build()
+    gate, a = Endpoint(), Endpoint()
+
+    async def go():
+        await relay.open_tunnel(ticket(key, clock), gate)
+        va = await relay.open_viewer(ticket(key, clock, "viewer"), a)
+        await relay.viewer_text(va, json.dumps({"type": "control", "ticket": ticket(
+            key, clock, "control", generation=GEN + 1)}))
+        await relay.flush()
+        return va
+
+    run(go())
+    assert relay.controller(SESSION) is None
+    assert [json.loads(t) for t in a.text][-1] == {"type": "refused", "reason": "control"}
 
 
 def test_a_tunnel_that_drops_closes_its_viewers():
-    key, clock, _, relay = build()
+    key, clock, relay = build()
     viewer = Endpoint()
 
     async def go():
@@ -873,10 +915,8 @@ def test_an_action_line_keeps_only_the_named_fields_and_bounds_their_size():
 def test_the_relay_opens_a_recording_connection_per_tunnel_that_is_not_a_viewer():
     clock = Clock()
     key = secrets.token_bytes(32)
-    store = Store()
-    store.put(record())
     writer, encoder = Writer(), Encoder()
-    relay = Rendezvous(key, store, clock=clock,
+    relay = Rendezvous(key, clock=clock,
                        recorder_factory=lambda s, send: rec.Recorder(
                            tenant_id=s.tenant_id, task_id=s.task_id, attempt_id=s.attempt_id,
                            send=send, writer=writer, encoder=encoder, clock=clock))
@@ -913,10 +953,10 @@ def test_the_websocket_routes_refuse_a_bad_ticket_and_splice_a_good_one():
 
     from swarm_live.main import create_app
 
-    key, clock, _, relay = build()
+    key, clock, relay = build()
     # `with`: one event loop for every socket, as in the relay process. Without
     # it the test client gives each websocket its own loop thread.
-    with TestClient(create_app(relay, sweep_seconds=0)) as client:
+    with TestClient(create_app(relay)) as client:
         assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0}
         with client.websocket_connect("/v1/tunnel") as ws:
             ws.send_text("not-a-ticket")
@@ -935,3 +975,94 @@ def test_the_websocket_routes_refuse_a_bad_ticket_and_splice_a_good_one():
                 assert decode_frame(gate.receive_bytes()) == (OP_DATA, conn, b"hello")
                 gate.send_bytes(encode_frame(OP_DATA, conn, b"frame"))
                 assert viewer.receive_bytes() == b"frame"
+
+
+def test_post_internal_close_drops_a_connected_viewer():
+    from fastapi.testclient import TestClient
+    from starlette.websockets import WebSocketDisconnect
+
+    from swarm_live.main import create_app
+
+    key, clock, relay = build()
+    with TestClient(create_app(relay)) as client:
+        with client.websocket_connect("/v1/tunnel") as gate:
+            gate.send_text(ticket(key, clock))
+            assert json.loads(gate.receive_text()) == {"type": "ready"}
+            with client.websocket_connect("/v1/view") as viewer:
+                viewer.send_text(ticket(key, clock, "viewer"))
+                assert json.loads(viewer.receive_text()) == {"type": "ready"}
+                # Not swarm-api's: refused, alike, and nothing is dropped.
+                forged = client.post("/internal/close",
+                                     content=mint_close(secrets.token_bytes(32), SESSION, now=clock()))
+                assert forged.status_code == 404 and forged.json() == {"closed": False}
+                assert relay.viewer_count() == 1
+                closed = client.post("/internal/close", content=mint_close(key, SESSION, now=clock()))
+                assert closed.status_code == 200, closed.text
+                assert closed.json() == {"closed": True, "session_id": SESSION, "dropped": 2}
+                with pytest.raises(WebSocketDisconnect) as e:
+                    viewer.receive_bytes()
+                assert e.value.code == CLOSE_ENDED
+        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0}
+
+
+# ---------------------------------------------------------------- start-up (decisions (b), (c))
+
+
+def test_the_relay_starts_and_serves_with_no_firestore_client_and_no_certificate(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from swarm_live import main as relay_main
+
+    key = secrets.token_hex(24).encode()
+    asked: list[str] = []
+
+    def access(version: str) -> bytes:
+        asked.append(version)
+        return key + b"\n"
+
+    version = "projects/p-test/secrets/swarm-live-key/versions/latest"
+    # Any import of the Firestore client now fails, so building the relay
+    # proves it needs none.
+    monkeypatch.setitem(sys.modules, "google.cloud.firestore", None)
+    monkeypatch.setattr(relay_main, "_access_secret", access)
+    monkeypatch.setenv("SWARM_LIVE_KEY_SECRET", version)
+    monkeypatch.setenv("SWARM_LIVE_RECORD", "false")
+    for gone in ("SWARM_LIVE_KEY_FILE", "SWARM_LIVE_TLS_CERT", "SWARM_LIVE_TLS_KEY"):
+        monkeypatch.delenv(gone, raising=False)
+
+    with TestClient(relay_main.create_app()) as client:
+        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0}
+        with client.websocket_connect("/v1/tunnel") as gate:
+            gate.send_text(mint_ticket(key, session_id=SESSION, tenant_id=TENANT, task_id=TASK,
+                                       attempt_id=ATTEMPT, generation=GEN, role="tunnel"))
+            assert json.loads(gate.receive_text()) == {"type": "ready"}
+    assert asked == [version]
+
+    served: dict = {}
+    monkeypatch.setitem(sys.modules, "uvicorn", type(sys)("uvicorn"))
+    sys.modules["uvicorn"].run = lambda *a, **kw: served.update(kw)
+    relay_main.main()
+    assert served["port"] == relay_main.PORT == 8080
+    assert not [k for k in served if k.startswith("ssl")]
+
+
+@pytest.mark.parametrize("version", [
+    None, "", "swarm-live-key", "projects/p/secrets/swarm-live-key",
+    "/var/run/secrets/swarm-live-key/key",
+])
+def test_the_key_is_read_only_by_a_secret_manager_version_reference(version):
+    from swarm_live.main import read_key
+
+    def access(_: str) -> bytes:
+        raise AssertionError("nothing is fetched for a reference that is not a version")
+
+    with pytest.raises(RuntimeError):
+        read_key(version, access)
+
+
+def test_a_short_key_from_secret_manager_is_refused():
+    from swarm_live.main import read_key
+
+    with pytest.raises(RuntimeError, match="shorter"):
+        read_key("projects/p/secrets/swarm-live-key/versions/3", lambda _: b"k" * 8)
+    assert read_key("projects/p/secrets/swarm-live-key/versions/3", lambda _: b"k" * 32 + b"\n") == b"k" * 32

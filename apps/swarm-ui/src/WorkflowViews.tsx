@@ -7,6 +7,7 @@ import { NO_ATTEMPT_YET, durationText, type Absence, type Cell } from './measure
 import type { MarkHue, MarkName } from './marks'
 import { NamedMark, Segmented } from './components'
 import { Id } from './Shell'
+import { LiveThumb, openLiveSocket, showsLiveThumb, type OpenLive } from './LiveThumb'
 import { agentPath } from './OverviewRegions'
 import { addressToPath } from './paths'
 import {
@@ -1197,6 +1198,7 @@ export function StepInspector({
   load = loadAttempts,
   children = null,
   changes = null,
+  openLive = openLiveSocket,
 }: {
   workflowId: string
   /**
@@ -1247,6 +1249,11 @@ export function StepInspector({
    * reason as the title, where nobody counted (`changesCount`). Null: no link.
    */
   changes?: { href: string; count: number | string | null; say: string | null } | null
+  /**
+   * How the live thumbnail opens its socket (LiveThumb.tsx). OPTIONAL: the
+   * real one everywhere but a test, which hands in a fake socket.
+   */
+  openLive?: OpenLive
 }) {
   const taskId = row.taskId
   const [read, setRead] = useState<AttemptsRead>({ kind: 'reading' })
@@ -1379,6 +1386,17 @@ export function StepInspector({
           </a>
         )}
       </div>
+
+      {/* THE LIVE THUMBNAIL (docs/design/live-browser.md §6, L12b): picking
+          a running browser step's node expands this card, and the card
+          carries the step's browser at about 1 fps with Open Browser tab and
+          ⤢ Theater, both onto the one session the task has. Only while the
+          task is RUNNING: a finished step mounts nothing, so it opens no
+          stream, and a step that finishes under the card closes its socket
+          as the thumbnail unmounts. */}
+      {taskId !== null && showsLiveThumb(row.step.runner_profile, taskState, taskId) && (
+        <LiveThumb key={taskId} taskId={taskId} workflowId={workflowId} open={openLive} />
+      )}
 
       {children}
 

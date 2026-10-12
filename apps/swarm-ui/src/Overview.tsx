@@ -15,6 +15,7 @@ import {
   type StateRead,
 } from './OverviewRegions'
 import { addressToPath } from './paths'
+import { HandoffBanner, handoffOf, needsYou } from './Handoff'
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import {
   loadAccountPool,
@@ -273,6 +274,10 @@ export function OverviewScreen({ setup, waitingOnYou }: { setup?: ReactNode; wai
 
       <section className="ov-lead" id="ov-needs" aria-labelledby="ov-needs-h">
         <NeedsALook checks={checks} />
+        {/* THE HAND-OFF BANNER (docs/design/live-browser.md §6, lane LB-L12):
+            an agent stopped until a person signs in, one card each, under
+            the checks and in the same lead. Nothing at all when none is. */}
+        {read !== null && <HandoffCards tasks={handoffRows(read)} />}
       </section>
 
       <LifecycleBand stats={stats} tasks={tasks} />
@@ -913,6 +918,85 @@ function NeedsALook({ checks }: { checks: Check[] }) {
 }
 
 /**
+ * The rows a hand-off can be on: the page, and the RUNNING state read when
+ * the page is not every task (`loadStateReads`), so an agent created before
+ * the page that is holding for a person now is not missed. A parked hand-off
+ * older than the page is; the Agents list's Waiting tab still has it.
+ */
+function handoffRows(read: OverviewTaskPage): Task[] {
+  const seen = new Set(read.tasks.map((t) => t.id))
+  const running = read.byState?.find((r) => r.state === 'RUNNING')?.tasks ?? []
+  return [...read.tasks, ...running.filter((t) => !seen.has(t.id))]
+}
+
+/**
+ * Open an agent from outside the router's reach: write its path and let App
+ * read it back, as Back does (`popstate`).
+ */
+function openAgentPath(t: Pick<Task, 'id' | 'state'>): void {
+  window.history.pushState(null, '', agentPath(t))
+  window.dispatchEvent(new PopStateEvent('popstate'))
+}
+
+/**
+ * "NEEDS YOU": ONE HAND-OFF BANNER PER AGENT WAITING FOR A PERSON (§6). The
+ * reason, the expected site and the time left, held ones first and the
+ * soonest to park first among them, then the parked. A parked card's
+ * "I'm ready to sign in" calls `human-ready` and opens the agent, which is
+ * where its browser comes back (`onOpen`, by default the agent's own page).
+ *
+ * `now` is for a test; on the screen the cards keep their own 1s clock,
+ * mounted only while there is a card to tick.
+ */
+export function HandoffCards({
+  tasks,
+  now,
+  onOpen,
+}: {
+  tasks: readonly Task[]
+  now?: number
+  onOpen?: (taskId: string) => void
+}) {
+  const waiting = tasks.filter(needsYou).sort((a, b) => {
+    const ha = handoffOf(a)!
+    const hb = handoffOf(b)!
+    if (ha.phase !== hb.phase) return ha.phase === 'hold' ? -1 : 1
+    return (ha.deadline ?? Infinity) - (hb.deadline ?? Infinity)
+  })
+  if (waiting.length === 0) return null
+  return <HandoffCardList waiting={waiting} now={now} onOpen={onOpen} />
+}
+
+function HandoffCardList({
+  waiting,
+  now,
+  onOpen,
+}: {
+  waiting: Task[]
+  now: number | undefined
+  onOpen: ((taskId: string) => void) | undefined
+}) {
+  const tick = useNow()
+  const at = now ?? tick
+  return (
+    <div className="ov-handoffs" aria-label={`${waiting.length} ${waiting.length === 1 ? 'agent is' : 'agents are'} waiting for a person`}>
+      {waiting.map((t) => (
+        <HandoffBanner
+          key={t.id}
+          task={t}
+          now={at}
+          onReady={(id) => (onOpen !== undefined ? onOpen(id) : openAgentPath({ id, state: 'READY' }))}
+        >
+          <a className="ov-att-go" href={agentPath(t)}>
+            {rowLabel(t, null)} &rarr;
+          </a>
+        </HandoffBanner>
+      ))}
+    </div>
+  )
+}
+
+/**
  * One problem as O1's check card. The mark repeats the severity as a shape --
  * the amber triangle for a warning, the red diamond for a failure -- because
  * roughly 8% of male viewers cannot separate the two inks. The detail is the
@@ -1063,7 +1147,7 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
       <CardAbsent
         kind="zero"
         heading="No pools exist"
-        say="The read succeeded and returned nothing."
+        say="The read succeeded: no capacity pool exists."
         explain="capacity"
       />
     )
@@ -1131,7 +1215,7 @@ function PoolsBody({ state }: { state: Result<Capacity> }) {
       <CardAbsent
         kind="zero"
         heading="No pools exist"
-        say="The read succeeded and returned nothing."
+        say="The read succeeded: no capacity pool exists."
       />
     )
   }
@@ -1315,7 +1399,7 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
       <CardAbsent
         kind="zero"
         heading="No account registered"
-        say="The read succeeded and returned nothing."
+        say="The read succeeded: no subscription account is registered."
         explain="park-on-missing-credential"
       />
     )
@@ -1495,7 +1579,7 @@ function RunningCard({
         <CardAbsent
           kind="zero"
           heading="No task exists"
-          say="The read succeeded and returned nothing."
+          say="The read succeeded: this tenant has no tasks."
           explain="absent-vs-zero"
         />
       </>
@@ -1818,7 +1902,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         <CardAbsent
           kind="zero"
           heading="No task exists"
-          say="No task exists, so there are no attempts to sum."
+          say="The task read succeeded and found no tasks, so there are no attempts to sum."
           explain="absent-vs-zero"
         />
       )
@@ -1827,7 +1911,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
       <CardAbsent
         kind="zero"
         heading="No task has run"
-        say="Every task on the page has an attempt count of 0."
+        say="Every task on the page has an attempt count of 0: none of them has started."
         explain="attempt-documents"
       />
     )
@@ -2091,7 +2175,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       pct: null,
       best: null,
       sub: 'no account is registered, so the subscription pool supplies nothing',
-      foot: 'read succeeded · none registered',
+      foot: 'read succeeded',
       reading: false,
       absent: 'no accounts',
       usable: 0,

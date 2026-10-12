@@ -170,6 +170,14 @@ class Workspace:
         name, so no declared input or working-folder upload can take it."""
         return self.work / ".swarm-children"
 
+    @property
+    def handoff_dir(self) -> Path:
+        """The live-browser hand-off spool (docs/design/live-browser.md §4.1):
+        the agent's requests, the worker's answers. Under `work/` so a request
+        survives a park; a control name, as `children_dir` is, so no declared
+        input can take it. `handoff.SPOOL_DIR_NAME` is its name."""
+        return self.work / ".swarm-handoff"
+
     def control_file_names(self) -> frozenset[str]:
         """The names of the control files this class places inside `work/`.
 
@@ -272,6 +280,11 @@ class Workspace:
                 "PWD": str(self.work),
             }
         )
+        # NEVER A DISPLAY (docs/design/live-browser.md §3.2). The live browser
+        # is the gate's, on a display in the sidecar the agent cannot open; a
+        # headed Chromium the agent launched itself would draw where nobody
+        # sees it, so its launch must fail loudly instead.
+        env.pop("DISPLAY", None)
         return env
 
 

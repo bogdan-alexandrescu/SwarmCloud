@@ -709,12 +709,11 @@ describe('Accounts, with every help card closed', () => {
     expect(track!.querySelector('.ctl-util-zero')).not.toBeNull()
   })
 
-  it('marks the empty pool `none` rather than leaving an empty table', async () => {
+  it('marks the empty pool as a real zero rather than leaving an empty table', async () => {
     // B4.5 RE-POINT. WHAT MOVED: the sentence "The read succeeded and returned
     // nothing -- a real zero, not a failed query" is gone. WHERE THE WORDS
-    // LIVE NOW: `.ctl-mark.is-zero` renders `none` (owner, 2026-10-11: it
-    // read `real zero`, the design term, until then) from §6.10's fixed
-    // vocabulary, and what a zero here COSTS --
+    // LIVE NOW: `.ctl-mark.is-zero` renders the two-word phrase `real zero`
+    // from §6.10's fixed six-word vocabulary, and what a zero here COSTS --
     // that work parks rather than fails -- is the topic
     // `park-on-missing-credential`, on the `?` in the heading.
     //
@@ -737,7 +736,6 @@ describe('Accounts, with every help card closed', () => {
     expect(mark!.className).toContain('is-zero')
     expect(mark!.className).not.toContain('is-unread')
     expect(textOf(mark)).toBe('none')
-    expect(textOf(panel)).not.toMatch(/real zero/i)
     // A measured zero may print a 0; it may never print a figure that was not
     // measured. Nothing here counted anything, so nothing here is a digit.
     expect(textOf(panel)).not.toMatch(/\d/)

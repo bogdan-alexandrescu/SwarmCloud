@@ -92,10 +92,10 @@ overrule is a question (Q9, Q12).
  |   +---registration wins)------->|    memory emptyDir)       |
  |                                 |  live gate:               |
  |  agent (claude-code +           |   capture -> MASK -> encode|
- |  Playwright, connectOverCDP)    |   input injection (XTEST) |    outbound WSS,
+ |  Playwright, connectOverCDP)    |   input injection (XTEST) |    outbound WS,  
  |   +--- 127.0.0.1:9222 --------->|   CDP proxy  <-pipe-> Chromium   ticket from      +-----------+      +-----------+     +---------+
  |                                 |   tunnel client ---------------- swarm-api ----->| swarm-live|<---->| swarm-api |<--->| console |
- |                                 |                           |    (TCP 8443)        | relay     |      | (IAP, per-|     | noVNC   |
+ |                                 |                           |    (ws, TCP 8080)    | relay     |      | (IAP, per-|     | noVNC   |
  +-------------------------------------------------------------+                      | rendezvous|      | connection|     +---------+
                                                                                       | + recorder|      | tenant    |
                                                                                       +-----------+      | check)    |
@@ -180,7 +180,7 @@ loudly rather than drawing somewhere nobody sees.
 No inbound port on the pod and no public endpoint: the gate **dials out**.
 
 ```
-gate --(WSS, TCP 8443, in-cluster)--> swarm-live <--(WSS, internal)-- swarm-api <--(WSS via IAP LB)-- console
+gate --(WS, TCP 8080, in-cluster)--> swarm-live <--(WS, TCP 8080, internal LB)-- swarm-api <--(WSS via IAP LB)-- console
 ```
 
 1. **The worker asks swarm-api for a tunnel ticket** (`POST
@@ -191,20 +191,86 @@ gate --(WSS, TCP 8443, in-cluster)--> swarm-live <--(WSS, internal)-- swarm-api 
    `live_sessions/{session_id}` and returns a one-use ticket, an HMAC under
    `swarm-live-key` (held by `swarm-api` and `swarm-live` only, value created by
    `scripts/create-secrets.sh`, never a Terraform secret version) over
-   `(session_id, tenant_id, task_id, attempt_id, generation, role=tunnel, exp)`,
-   valid 60 seconds.
+   `(session_id, tenant_id, task_id, attempt_id, generation, role=tunnel, exp,
+   nonce)`, valid 60 seconds. The exact format is the relay's
+   (`apps/swarm-live/swarm_live/rendezvous.py::mint_ticket`), restated by
+   `apps/swarm-api/swarm_api/live.py::mint_ticket`;
+   `tests/unit/control_plane/test_live_relay_wire.py` feeds what swarm-api
+   mints to the real relay.
 2. **The worker hands the ticket to the gate** over `ctl.sock` (section 5.4.2),
    and the gate opens the tunnel to `swarm-live` with the ticket as its first
    message. The ticket never sits in an environment variable, a file or
    `work/`.
-3. **The console never talks to the relay directly.** It opens
-   `wss://<console host>/v1/tasks/{task_id}/live` through the existing IAP
-   load balancer (the same origin the console already uses for `/v1`;
-   `apps/swarm-ui/README.md`: "IAP sits in front"). swarm-api authenticates the
-   connection exactly as every route does (`Authenticator.authenticate`,
-   `apps/swarm-api/swarm_api/auth.py::Authenticator.authenticate`), checks the tenant and the role
-   (section 5.1), mints a viewer ticket for itself, and proxies the websocket
-   to `swarm-live` over the internal path.
+3. **The console never talks to the relay directly.** It asks for a viewer
+   ticket (`POST /v1/tasks/{task_id}/live/ticket`, in the response body) and
+   opens `wss://<console host>/v1/live/{session_id}/stream` through the
+   existing IAP load balancer (the same origin the console already uses for
+   `/v1`; `apps/swarm-ui/README.md`: "IAP sits in front"), sending the ticket
+   as its first message. swarm-api authenticates the connection exactly as
+   every route does (`Authenticator.authenticate`,
+   `apps/swarm-api/swarm_api/auth.py::Authenticator.authenticate`), checks the
+   tenant, the task, the role (section 5.1) and the generation, and proxies the
+   websocket to `swarm-live` as plain ws over the internal load balancer
+   (`SWARM_LIVE_URL`, `ws://<reserved internal address>:8080`, + `/v1/view`),
+   presenting the viewer ticket as the relay's first message.
+
+#### The relay's wire: owner decisions 2026-10-11
+
+Lanes L7 (the relay), L8 (its infrastructure) and L9 (swarm-api's routes) were
+built in parallel and disagreed: L7's relay read `live_sessions` from
+Firestore, which L8 had granted it no access to; L7 served TLS on 8443 with a
+mounted key file, while L8 rendered a Secret Manager version reference; and L7
+and L9 minted different ticket shapes. The owner resolved it on 2026-10-11
+(~14:35 PDT), and lane LB-L8d wired it:
+
+* **(a) Relay auth: a signed ticket, closed by swarm-api.** The relay has **no
+  Firestore access** and never reads `live_sessions`. swarm-api mints every
+  ticket, MAC'd with `swarm-live-key`, carrying `tenant_id`, `task_id`,
+  `attempt_id`, `generation`, `session_id`, `role` (`tunnel` or `viewer`),
+  `exp` (at most 60 s ahead) and a `nonce`. The relay checks the MAC, the
+  expiry and single use, and trusts only the ticket: a tunnel ticket defines
+  the session, and every later ticket for it must name the same tenant, task,
+  attempt and generation. When a session closes or its generation goes stale,
+  swarm-api calls the relay's `POST /internal/close` with the session id,
+  MAC'd with the same key under its own domain (so a ticket is never a close
+  request), and the relay drops every connection of that session and refuses
+  every ticket for it still in flight.
+  *Why:* Firestore IAM cannot name a document or a collection -- the narrowest
+  binding is the database (`terraform/infra/live.tf` records the measurement)
+  -- so "the session document only" is not a grant that exists, and the
+  faithful grant is none. Everything the relay must check already travels
+  under the MAC. The cost is that the relay no longer notices a stale
+  generation on its own: swarm-api must tell it, which is why the close route
+  exists and why swarm-api calls it on every close it commits, on a fenced
+  worker's request, on a new attempt's session, and on a socket that sees the
+  session closed.
+* **(b) Relay transport: proxied through swarm-api, plain ws inside the VPC.**
+  Browsers never reach the relay. They open wss to swarm-api (the existing IAP
+  and HTTPS) at `/v1/live/{session_id}/stream`, and swarm-api proxies that
+  socket to the relay as plain ws over the internal load balancer. The relay
+  listens on plain WS on **port 8080**, with no TLS and no certificate
+  anywhere; a NetworkPolicy admits only swarm-api's egress range and the
+  tenant gates. Port 8080 and plain ws are fixed for both integration lanes
+  (L8d: code and swarm-api's environment; L8e: image and deploy).
+  *Why:* one public surface and one authenticator (R2 below): the tenant check
+  is not restated in a second service. A certificate on the relay would have
+  to be issued, mounted and rotated for a hop that never leaves the VPC and
+  whose every connection is already authenticated by a one-use ticket. The
+  cost, stated plainly: what crosses swarm-api -> relay -> gate is not
+  encrypted by this platform, so a person's keystrokes during control are in
+  clear on those internal hops (section 5.11). TLS ends at the load balancer
+  in front of swarm-api.
+* **(c) Key: read from Secret Manager by version reference.** The relay reads
+  `swarm-live-key` by the version reference in `SWARM_LIVE_KEY_SECRET` (L8's
+  interface, rendered by `live.tf` into the manifest) with its own Workload
+  Identity principal, the secret's only reader besides swarm-api. There is no
+  `SWARM_LIVE_KEY_FILE`. swarm-api reads the same secret as `SWARM_LIVE_KEY`,
+  by Cloud Run secret reference (`terraform/infra/locals.tf`
+  `live_key_secret_env`), never as a value.
+  *Why:* a mounted file needs a secret volume or CSI driver that nothing here
+  provisions, and L8 had already built the reference and the grant; reading
+  it once into memory keeps the key out of every file, environment and crash
+  dump.
 
 #### Why a relay at all, and why this shape
 
@@ -236,9 +302,10 @@ document.
 **What the relay is not.** It is not trusted with authorisation: it verifies
 tickets it did not mint against a key it shares only with swarm-api, and it
 refuses a ticket whose tenant, task, attempt or generation does not match the
-session's. It has no Firestore access except the session document and the
-audit collection (section 5.8), and its only GCS grant is object creation under
-the `live/` key of an attempt (section 7).
+session's tunnel ticket. It has **no Firestore access at all** (decision (a)
+above; the audit of section 5.8 is written by swarm-api in the transaction of
+the change it records), and its only GCS grant is object creation under the
+`live/` key of an attempt (section 7).
 
 ### 3.4 In the console: noVNC on the agent's page
 
@@ -313,14 +380,17 @@ notification" is a new integration, and Q8 asks whether it is wanted.
    runs one Firestore transaction on `live_sessions/{session_id}`: no current
    controller (or the caller may preempt, section 5.1), then sets
    `controller = {email, since, renew_by}` and appends to `live_audit` in the
-   same transaction. It tells the relay, which tells the gate. The gate enters
+   same transaction. It tells the relay with a `control` ticket for that
+   person, session and generation, sent on the person's own proxied viewer
+   connection (a `release` ticket ends it), and the relay tells the gate. The gate enters
    **control mode**: input from that one viewer connection is injected through
    XTEST; every other viewer's input is dropped; the agent's CDP stays paused.
    One controller at a time, always.
 2. **Sign in.** The person sees the address bar and the console's origin strip
    (section 5.7), types, and completes the sign-in. Keys travel console ->
-   swarm-api -> relay -> gate -> Xvfb, inside TLS on every hop, and no hop logs
-   their content (section 5.3.3).
+   swarm-api -> relay -> gate -> Xvfb: inside TLS to swarm-api's load
+   balancer, then as plain ws inside the VPC (decision (b), section 3.3), and
+   no hop logs their content (section 5.3.3).
 3. **Return.** The person presses Return control. Before the gate resumes the
    agent's CDP it **clears every password input** in every frame through its
    own CDP session (a page left on a half-submitted form must not hand the
@@ -488,7 +558,7 @@ alternative offered.
 
 ### 5.2 Every connection is checked, and keeps being checked
 
-On every websocket connection to `/v1/tasks/{task_id}/live`, swarm-api:
+On every websocket connection to `/v1/live/{session_id}/stream`, swarm-api:
 
 1. verifies the IAP assertion and resolves the tenant with the same
    `Authenticator` every route uses, so the Cloud Identity constraint applies
@@ -501,9 +571,14 @@ On every websocket connection to `/v1/tasks/{task_id}/live`, swarm-api:
    `AuthContext.tenant_principal`, `apps/swarm-api/swarm_api/auth.py::AuthContext`). A
    refusal is a 404, the same answer as a task that does not exist, so a
    foreign task id is not confirmed;
-3. mints a one-use viewer ticket (`role = viewer`, the caller's email, the
-   session, the generation, 30-second expiry) and presents it to the relay,
-   which refuses a ticket used twice, expired, or naming another session.
+3. verifies the one-use viewer ticket it minted for this caller (`role =
+   viewer`, the caller's email, the session, the generation, 30-second expiry,
+   sent as the socket's first message), refuses it unless it names this
+   address's session, the session is the task's current one, open, at the
+   ticket's generation, and presents it to the relay, which refuses a ticket
+   used twice, expired, or naming another session, tenant or generation. A
+   refusal by the relay closes the console's socket as a 404 (4404), as every
+   other refusal does; the relay's viewer cap passes through as 4429.
 
 **Membership is re-checked while the socket is open.** swarm-api re-runs step 1
 every 5 minutes for each proxied socket and closes it when the answer changes.
@@ -514,7 +589,19 @@ a fresh check, not the cached one.
 
 **Nothing secret travels in a URL.** Load balancer, IAP and Cloud Run request
 logs record URLs. Tickets travel as the first websocket message; the URL
-carries only the task id.
+carries only the session id, which is not secret (`live_<attempt id>`).
+
+**A session that ends is ended at the relay too** (decision (a)). The relay
+reads no session state, so swarm-api tells it: on every transaction that
+closes a session (a cancel, an expired hold, an attempt that lost its lease),
+when a worker of a stale generation asks for a tunnel ticket, when a new
+attempt's session opens (every earlier one of that task is stale, watched or
+not), and when a proxied socket sees its session closed or its generation
+moved, swarm-api POSTs the relay's `/internal/close`. The relay drops the
+tunnel and every viewer of that session and refuses, until they have expired,
+every ticket for it minted before the close. A close the relay does not
+receive is logged; the session's tunnel still ends with the stale worker's
+pod, and no new ticket for a closed session is minted.
 
 ### 5.3 Masking before anything leaves the pod (LB-3)
 
@@ -785,8 +872,9 @@ tenant that names `input.browser_login` is refused at submission with
   local storage of the signed-in origins. It does this before the `wipe` of
   §5.5, on its own pipe session.
 * The worker stores the jar as one Secret Manager secret,
-  `swarm-tenant-u-<user>-browser-wf-<workflow>`, with a 24-hour TTL. Only that
-  tenant's worker identity can read it.
+  `swarm-tenant-u-<user>-browser-wf-<workflow>`, with a 24-hour TTL. swarm-api
+  creates that secret and grants it (see "Who creates the secret" below). Only
+  that tenant's worker identity can read it.
 * The next browser step of the same workflow imports it before the agent's
   first CDP connection.
 * swarm-api deletes the secret when the workflow reaches a terminal state. The
@@ -796,7 +884,8 @@ tenant that names `input.browser_login` is refused at submission with
 * After the person returns control on a task in their own workspace, the
   Browser tab offers "Save as login", with a name (for example `github-qa`) and
   an expiry (default 14 days, at most 30).
-* The worker stores the jar as `swarm-tenant-u-<user>-browser-login-<name>`.
+* The worker stores the jar as `swarm-tenant-u-<user>-browser-login-<name>`,
+  in a secret swarm-api creates with the login's expiry.
   swarm-api keeps its metadata (site, saved at, expires, last used) in its own
   collection `browser_logins`, keyed by tenant. That collection belongs to
   swarm-api, as `live_sessions` does, not to the frozen models.
@@ -814,12 +903,74 @@ person's judgement, including a personal one. The save dialog states that every
 agent the person runs in their workspace can act as that account on that site
 until the login expires or is revoked.
 
+**Who creates the secret, and who is granted on it (owner decision
+2026-10-11, lane L8c).** swarm-api provisions each browser-session secret and
+grants it per secret. Before the worker writes a session it asks swarm-api for
+the slot: `POST /v1/tasks/<task>/browser-session/slot` with the secret's id,
+signed with the attempt key and carrying the attempt's fencing generation, as
+the other worker routes are. swarm-api:
+
+* refuses any tenant that is not personal (`kind = "user"` and an id starting
+  `u-`, whose principal derives to that id);
+* refuses any name outside that tenant's own
+  `swarm-tenant-<tenant>-browser-wf-<this task's workflow>` or
+  `-browser-login-<name>`, before it calls Secret Manager;
+* refuses a stale generation, and creates nothing;
+* creates the secret (a carry with the 24-hour TTL, a login with its record's
+  expiry, labelled `managed-by=swarm-api` and the tenant);
+* sets that one secret's IAM policy to exactly `secretAccessor` and
+  `secretVersionAdder`, each to `swarm-agent-worker-<tenant>` alone.
+
+A secret that already exists is re-granted only if its `swarm-tenant` label is
+the caller's. The worker then only adds a version. **No worker holds a
+project-level grant for a `-browser-` secret, and no worker holds
+`secrets.create`.** swarm-api holds `swarmBrowserSessionProvisioner`
+(`terraform/bootstrap/browser_logins.tf`).
+
+Why not the alternatives:
+
+* **Terraform cannot name a person.** A person's workspace is made by the
+  workspace job, outside Terraform ([workspaces.md](../workspaces.md) §3.2).
+  L8b's per-worker project grants therefore reached only the `kind = "user"`
+  tenants the release's tfvars names, and none of the people who use the
+  feature.
+* **A project-level create cannot be narrowed by name.** Secret Manager
+  checks `secrets.create` against the project, and the project carries no
+  secret name. L8b's unconditioned worker create let every personal worker
+  create an empty secret anywhere in the shared project.
+* **A `hasOnly()`-bounded project IAM grant on the workspace job would bound
+  roles, not members.** Granting each person's worker at project level would
+  need project `setIamPolicy`. `hasOnly()` limits WHICH roles the job may
+  grant, never TO WHOM or under what condition.
+
+What the provisioner's IAM condition can and cannot narrow. The condition is
+`resource.type == "cloudresourcemanager.googleapis.com/Project" ||` the
+revoker's own name test (`swarm-tenant-u-` and a non-empty tenant before the
+first `-browser-`, by `extract()`). `secrets.get`, `secrets.getIamPolicy` and
+`secrets.setIamPolicy` are checked against the secret, so the name test narrows
+them to personal `-browser-` secrets. `secrets.create` is checked against the
+project, where the name test can never hold. Without the project arm, create
+would always be refused. With it, create is not narrowed: swarm-api can create
+an empty secret with any name. That residual is swarm-api's, where every
+worker used to hold it. swarm-api's own name check before the call is what
+keeps create inside the browser names. Not verified live: that IAM evaluates
+create with that resource type.
+
 **What protects it, and what does not.**
-* IAM. The worker's grant on `swarm-tenant-u-<user>-browser-*` is held by
-  `swarm-agent-worker-u-<user>` alone (lane L8b), and no group tenant's
-  identity holds any `-browser-` grant. Platform admins with project-level
-  Secret Manager roles can still read these secrets. That is the same residual
-  as every other secret in the project.
+* IAM. The only grant on a `swarm-tenant-u-<user>-browser-*` secret that
+  reaches a worker is set on that secret, to `swarm-agent-worker-u-<user>`
+  alone (lane L8c). No worker identity holds any project-level `-browser-`
+  grant. Two residual readers remain. Platform admins with project-level
+  Secret Manager roles can still read these secrets, the same residual as
+  every other secret in the project. And `swarm-api` holds no direct
+  `versions.access`, but its `secretmanager.secrets.setIamPolicy` on personal
+  `-browser-` secrets (the provisioner role, `browser_logins.tf`) lets it
+  grant read to any member, itself included, so it can make itself or anyone a
+  reader of every personal `-browser-` secret. The name condition limits which
+  secrets, not whom it may grant. Detection is deferred to the security epic
+  [#476](https://github.com/bogdan-alexandrescu/SwarmCloud/issues/476#issuecomment-6114767079):
+  an alert on `SetIamPolicy` whose new bindings name anything other than
+  `swarm-agent-worker-u-*`.
 * The agent's CDP cannot read or plant cookies. The method policy of §5.4.4
   refuses:
   - `Network.getCookies`, `Network.getAllCookies` and `Storage.getCookies`;
@@ -944,8 +1095,8 @@ the page there (section 5.4.3).
 | Case | What stops it |
 |---|---|
 | A member of tenant A watches or controls tenant B's agent | §5.2 step 2 on every connection; the relay refuses a ticket whose tenant is not the session's; a refusal is a 404. |
-| Replaying a captured stream or ticket | TLS on every hop; tickets one-use, 30-60 s, bound to session, person, role and generation. A recording is a stored object behind the same tenant check, not a re-stream. |
-| A stale worker (old generation) keeps streaming | The ticket carries the generation; swarm-api closes the session when the lease's generation moves (invariant 5), and the relay drops the tunnel. |
+| Replaying a captured stream or ticket | TLS from the console to swarm-api's load balancer; tickets one-use, 30-60 s, bound to session, person, role and generation, and refused after their session closes. Past the load balancer the hops are plain ws inside the VPC (decision (b), section 3.3): only swarm-api's egress range and the tenant gates may connect to the relay, and a connection without a fresh ticket is closed. Capturing those hops needs a foothold inside the VPC; that is the accepted cost of having no certificate on the relay. A recording is a stored object behind the same tenant check, not a re-stream. |
+| A stale worker (old generation) keeps streaming | The ticket carries the generation; swarm-api closes the session when the lease's generation moves (invariant 5) and POSTs the relay's `/internal/close`, and the relay drops the tunnel and its viewers (section 5.2). |
 | The agent keylogs the person | No display access (§3.1); CDP held and scripts removed during control (§5.4.3); postData stripped after. |
 | The agent sets traffic-routing or trust state before asking for help (a context with its own `proxyServer`, `Security.setIgnoreCertificateErrors`, `Page.setBypassCSP`, extra headers), so the sign-in passes through it | The proxy's method policy refuses those calls from the first command, not only in control (§5.4.4); the fresh page opens in a gate-owned context; the gate refuses or ends control while the page has a certificate error. |
 | The gate restarts mid-attempt and the agent registers on `ctl.sock` first | A restarted gate accepts no registration; the live path ends for that attempt (§5.4.2). |
@@ -1099,6 +1250,68 @@ for a task whose resolved backend is not `GKE_AUTOPILOT`, and
 (`cloud_run_fallback_profiles`, `terraform/infra/locals.tf`), because a fallback would silently run a
 profile whose hand-off cannot work.
 
+### 8.1.1 How the relay ships (lane LB-L8e)
+
+Lanes L7 (the relay), L8 (its infrastructure) and L9 (swarm-api's routes) were
+built in parallel and disagreed on the relay's wire. The owner settled it on
+2026-10-11 (~14:35 PDT), and section 3.3 records the decisions in full
+(lane L8d). The three this deploy is built on, each with its reason:
+
+* **(a) The relay trusts a ticket, never Firestore.** swarm-api mints every
+  ticket under `swarm-live-key` and closes sessions at the relay with a MAC'd
+  `POST /internal/close`. *Why:* Firestore IAM cannot name a document, so the
+  only faithful grant for "the session document only" is none
+  (`terraform/infra/live.tf`). So the relay's manifest grants it no Firestore
+  role, and its image carries no Firestore client.
+* **(b) Plain ws on TCP 8080, proxied through swarm-api.** Browsers never
+  reach the relay; swarm-api proxies them over the internal load balancer.
+  *Why:* one public surface and one authenticator, and no certificate to issue,
+  mount and rotate for a hop that never leaves the VPC. So the manifest mounts
+  nothing but a memory `/tmp`, every port it names is 8080, and two
+  NetworkPolicies admit only swarm-api's egress range and labelled tenant
+  gates to it. The cost -- keystrokes in clear on the internal hops -- is
+  stated in section 3.3.
+* **(c) The key by Secret Manager version reference.** The relay reads
+  `SWARM_LIVE_KEY_SECRET` with its own Workload Identity; there is no key
+  file. *Why:* a mounted file needs a secret volume nothing here provisions,
+  and L8 had already built the reference and the grant.
+
+What ships, and why each piece is the way it is:
+
+* **The image**, `apps/swarm-live/Dockerfile`, built by every release
+  (`swarm-live` in `ALL_TARGETS` of `scripts/build-images.sh` and
+  `scripts/push-images.sh`). Same posture as the control-plane images: bases
+  by digest, third-party packages by hash, our own from the wheelhouse only,
+  uid 10001 -- the uid the manifest runs it as under the `restricted` pod
+  standard. It carries Debian's `ffmpeg`, and the build fails unless that has
+  the `libvpx` encoder, because a relay without it serves every session and
+  records none. swarm-live is not in the root uv project, so it has its own
+  `apps/swarm-live/uv.lock`, resolved at the root lock's versions;
+  `tests/unit/scripts/test_swarm_live_image.py` fails if it falls behind the
+  relay's `pyproject.toml` or leaves those versions.
+* **A deployed image only while the relay is on.** `terraform/infra/locals.tf`
+  adds `swarm-live` to `deployed_images` when `enable_live_browser` is on.
+  On, its digest must be in the `image_refs` output that `scripts/plan.sh`
+  pins a non-deploy plan to. Off, a state applied before any release built it
+  still plans.
+* **Two NetworkPolicies admit the same sources, and nothing lets them differ.**
+  The relay manifest carries `swarm-live-ingress`, rendered from
+  `var.subnet_cidr`: every Cloud Run service here, swarm-api included, egresses
+  from `module.network.subnetwork_id`, whose primary range that is. It sits
+  before the StatefulSet, so the relay is closed from the moment it exists.
+  `swarm-allow-live-ingress` (lane L6) is rendered from the range
+  `kubernetes/apply.sh` reads from swarm-api's own service. apply.sh refuses
+  when terraform's range is not that one, and
+  `kubernetes/network_parity.py --live-ingress` judges both policies with one
+  function after the apply.
+* **One command applies it**, `kubernetes/apply.sh --swarm-system --confirm`.
+  It reads `terraform output -raw swarm_live_manifest` only after the context
+  checks (the deny-list in `scripts/lib/common.sh`, so never `agents-staging`),
+  and applies it ahead of the namespace's policies in the same apply, because
+  it creates the namespace they go into. It refuses when there is no manifest
+  (`enable_live_browser` off), and when the manifest holds an object outside
+  `swarm-system`, an RBAC object, or an unrendered placeholder.
+
 ### 8.2 Resource class
 
 `browser`: 8 vCPU, 16 GiB, 2 units
@@ -1118,17 +1331,22 @@ moved to the sidecar.
   "Pod traffic is never covered by an ipBlock rule"
   (`kubernetes/network-policies/allow-egress.yaml`). A second policy,
   `swarm-allow-live-egress`, selects pods labelled `swarm-live: "enabled"`
-  (which the dispatcher sets only on live-browser pods) and allows TCP 8443 to
+  (which the dispatcher sets only on live-browser pods) and allows TCP 8080 to
   pods `app.kubernetes.io/name=swarm-live` in namespace `swarm-system`.
   NetworkPolicies are unions, so it adds a path and removes nothing. A pod
   missing the label simply has no live path; unlike the trap that comment
   records, nothing else breaks, because DNS and the internet still come from
   the existing policy.
-* **`swarm-system`: default-deny ingress, and allow** TCP 8443 to `swarm-live`
+* **`swarm-system`: default-deny ingress, and allow** TCP 8080 to `swarm-live`
   from tenant namespaces (by the namespace label the tenant template sets) and
   from swarm-api's Direct VPC egress subnet range.
 * The cluster's ranges are read from the live cluster, never written, as
   `kubernetes/apply.sh` and `kubernetes/network_parity.py` already require.
+* **The port is 8080, plain ws, since owner decision (b) of 2026-10-11**
+  (section 3.3). Lane L6 built both policies, and L8 the relay's Service, on
+  TCP 8443; the relay now listens on 8080 and swarm-api dials 8080, and the
+  manifest and policy files under `kubernetes/` move to it with lane LB-L8e
+  (image and deploy). Until that lands, the files there still say 8443.
 
 ### 8.4 Frozen-contract touchpoints, as requests
 
@@ -1191,7 +1409,7 @@ first, red, then the fix (CLAUDE.md, "Red first").
 | 1 | **L4 WORKER-HANDOFF** | `apps/agent-worker/agent_worker/handoff.py`, `lifecycle.py`, `workspace.py`, `images/agent-runtime-browser/swarm-handoff`, `tests/unit/worker/test_handoff.py` | L0, L3 | request -> gate paused -> signed route called; hold expiry -> checkpoint, wipe, park(`HUMAN_REQUIRED`), refund within the bound; cancel during hold -> exit code 4, wipe, cancel path; unprotected heap -> exit 5 and no tunnel |
 | 1 | **L4b WORKER-STATE** | `apps/agent-worker/agent_worker/checkpoint.py`, `artifact_manifest.py`, `tests/unit/worker/test_browser_state_refused.py` | L0 | a storage-state JSON or a `Cookies` database under `work/` is left out of the checkpoint and the outputs, and `browser_state_refused` is recorded |
 | 1 | **L5 DISPATCH** | `apps/scheduler/scheduler/dispatch.py`, `images/agent-runtime-browser/Dockerfile`, `images/agent-runtime-browser/chromium-policy.json`, `tests/unit/control_plane/test_dispatch_live_sidecar.py`, `docs/execution-backends.md` | L0 | a `claude-code-browser` manifest has a native sidecar with its own uid, `requests == limits` per container summing to `browser`, `/dev/shm` on the sidecar, the `swarm-live` label; every other profile's manifest unchanged |
-| 2 | **L6 NETPOL** | `kubernetes/network-policies/allow-live-egress.yaml`, `kubernetes/network-policies/swarm-system-live.yaml`, `kubernetes/render.py`, `kubernetes/apply.sh`, `kubernetes/network_parity.py`, `tests/unit/scripts/test_live_netpol.py` | L5 | the rendered policy allows only TCP 8443 to `swarm-live` pods, only from labelled pods; the existing policy renders byte-identical |
+| 2 | **L6 NETPOL** | `kubernetes/network-policies/allow-live-egress.yaml`, `kubernetes/network-policies/swarm-system-live.yaml`, `kubernetes/render.py`, `kubernetes/apply.sh`, `kubernetes/network_parity.py`, `tests/unit/scripts/test_live_netpol.py` | L5 | the rendered policy allows only TCP 8443 (8080 since owner decision 2026-10-11 (b), lane L8e) to `swarm-live` pods, only from labelled pods; the existing policy renders byte-identical |
 | 2 | **L7 RELAY** | `apps/swarm-live/swarm_live/main.py`, `rendezvous.py`, `recorder.py`, `apps/swarm-live/pyproject.toml`, `tests/unit/live/test_relay.py` | L3 | a ticket used twice, expired, or for another tenant, session or generation is refused; one tunnel per session; viewer caps; segments written only under `.../live/` with the two suffixes |
 | 2 | **L8 INFRA** | `terraform/infra/live.tf`, `terraform/modules/storage/main.tf`, `kubernetes/swarm-system/swarm-live.yaml`, `scripts/create-secrets.sh`, `tests/terraform/live.tftest.hcl` | L7 | `terraform test`: the 7-day suffix rule exists, the relay's grant is create-only and conditioned on `/live/`, every resource carries `managed-by=swarm-terraform`, no secret version |
 | 2 | **L9 API-LIVE** | `apps/swarm-api/swarm_api/live.py`, `apps/swarm-api/swarm_api/routes/live.py`, `apps/swarm-api/swarm_api/settings.py`, `tests/unit/control_plane/test_live_api.py` | L7 | another tenant's member gets 404; a non-submitter can view, cannot take until opened; one controller at a time, preemption by the submitter only; the audit entry is in the control change's transaction; membership re-checked; no ticket in a URL |
@@ -1202,13 +1420,48 @@ first, red, then the fix (CLAUDE.md, "Red first").
 | 3 | **L12 UI-HANDOFF** | `apps/swarm-ui/src/Overview.tsx`, `apps/swarm-ui/src/Agents.tsx` (the banner row, the Live filter), `apps/swarm-ui/src/Recordings.tsx`, `apps/swarm-ui/test/Handoff.test.tsx` | L10, L11 | the tab banner and Overview card show reason, expected site and time left; "I'm ready to sign in" calls `human-ready`; the Live filter lists only running browser agents, needs-you first; recordings list only the caller's tenant's |
 | 3 | **L12b UI-GRAPH** | `apps/swarm-ui/src/WorkflowViews.tsx`, `apps/swarm-ui/src/LiveThumb.tsx`, `apps/swarm-ui/test/LiveThumb.test.tsx` | L11b | a running browser node expands a card with a thumbnail at ≤1 fps; Open Browser tab and ⤢ Theater navigate to the same session; no thumbnail stream for a finished step |
 | 1 | **L4c SESSION-CARRY** | `apps/agent-worker/agent_worker/livegate/session.py`, `apps/agent-worker/agent_worker/browser_login.py`, `apps/agent-worker/agent_worker/livegate/cdppolicy.py`, `tests/unit/worker/test_browser_session.py` | L2, L4 | in a personal tenant a workflow step's jar is exported on the gate's pipe and written to `swarm-tenant-u-<user>-browser-wf-<wf>`, then imported by the next step before the agent connects; in a group tenant nothing is written and no carry happens; a step outside a workflow carries nothing; `input.browser_login` loads the named login, and an unknown or expired name fails before the agent runs; the agent's cookie-reading and cookie-writing CDP methods are refused; no cookie value in any log, event, checkpoint or output (fake jar built at runtime) |
-| 2 | **L8b VAULT-IAM** | `terraform/infra/browser_logins.tf`, `tests/terraform/browser_logins.tftest.hcl` | L8 | only a personal tenant's worker holds a grant, on its own `swarm-tenant-u-<user>-browser-` prefix; no group tenant's worker holds any `-browser-` grant; swarm-api may destroy those secrets; no secret version in Terraform; `managed-by=swarm-terraform` on every resource |
+| 2 | **L8b VAULT-IAM** | `terraform/bootstrap/browser_logins.tf` (built in bootstrap, not infra: see its header), `tests/terraform/browser_logins.tftest.hcl` | L8 | as built: only a personal tenant's worker holds a grant, on its own `swarm-tenant-u-<user>-browser-` prefix; no group tenant's worker holds any `-browser-` grant; swarm-api may destroy those secrets; no secret version in Terraform; `managed-by=swarm-terraform` on every resource. **Superseded by L8c** (owner decision 2026-10-11): the worker's project-level reader, writer and unconditioned creator are removed, because Terraform cannot name a person whose workspace the job made, and a project-level create cannot be narrowed by name |
+| 2 | **L8c SECRET-PROVISION** | `terraform/bootstrap/browser_logins.tf`, `terraform/modules/custom_role_ids/main.tf`, `tests/terraform/browser_logins.tftest.hcl`, `apps/swarm-api/swarm_api/browser_slots.py`, `apps/swarm-api/swarm_api/routes/browser_slots.py`, `apps/agent-worker/agent_worker/browser_login.py`, `tests/unit/control_plane/test_browser_slots.py`, `tests/unit/worker/test_browser_session.py` | L8b, L4c, L9b | a non-personal tenant is refused a slot; a name outside the caller's prefix is refused before Secret Manager is called; a stale generation is refused; a granted slot binds exactly one member on exactly one secret; no worker in Terraform holds any Secret Manager project grant for `-browser-`; swarm-api's provisioner role carries the condition; the worker asks for the slot before every write and never creates a secret |
+| 2 | **L8e SHIP-RELAY** | `apps/swarm-live/Dockerfile`, `apps/swarm-live/uv.lock`, `scripts/build-images.sh`, `scripts/push-images.sh`, `terraform/infra/live.tf`, `terraform/infra/locals.tf`, `kubernetes/swarm-system/swarm-live.yaml`, `kubernetes/apply.sh`, the two live policies and `network_parity.py`, `tests/terraform/live.tftest.hcl`, `tests/unit/scripts/test_swarm_live_image.py`, `tests/unit/scripts/test_live_netpol.py` | L6, L7, L8 | build-images lists `swarm-live`; `terraform test`: the manifest is on 8080 with no TLS volume, `requests == limits`, and its NetworkPolicy admits only labelled tenant gates and `var.subnet_cidr`; `apply.sh --swarm-system` applies the manifest before the policies and refuses `agents-staging` (section 8.1.1) |
 | 2 | **L9b LOGIN-VAULT** | `apps/swarm-api/swarm_api/browser_logins.py`, `apps/swarm-api/swarm_api/routes/browser_logins.py`, `apps/scheduler/scheduler/reconcile.py`, `tests/unit/control_plane/test_browser_logins.py` | L9 | only the workspace's own person can list or revoke its logins; anyone else gets 404; a group-tenant task naming `browser_login` is refused with `browser_login_personal_only`; a value is never returned; save takes a name and an expiry of at most 30 days; revoke destroys every version; a workflow's carry secret is deleted at its terminal state; the audit records names only |
 | 3 | **L12c UI-LOGINS** | `apps/swarm-ui/src/BrowserLogins.tsx`, `apps/swarm-ui/src/Access.tsx`, `apps/swarm-ui/src/LiveBrowser.tsx`, `apps/swarm-ui/test/BrowserLogins.test.tsx` | L9b, L12 | after Return control on a personal-workspace task the tab offers "Save as login" with the account warning, and never on a group-tenant task; Access › Browser logins lists name, site, expiry and last use, never a value; Revoke asks for a typed confirmation |
 | 4 | **L13 ACCEPT** | `.github/workflows/accept.yml`, `tests/acceptance/test_live_browser.py`, `tests/acceptance/fixtures/login.html`, `docs/acceptance.md` | all | on dev: a `claude-code-browser` task asks for help on a fixture sign-in page; a scripted viewer takes control and types a password generated at run time; the recording's frames have the field's pixels painted; the transcript, logs, checkpoint and outputs do not contain the password; control returns and the task succeeds; a member of another tenant is refused |
 
 L1-L3 share `livegate/`, a new directory; they are three lanes because their
 files do not overlap, and L3 waits for L1 because it encodes L1's frames.
+
+### 9.1 Switching it on (LB-Lon)
+
+The owner decided on 2026-10-11 (~15:00 PDT) that, once every lane above had
+merged, ONE pull request turns the live browser on in dev. That pull request
+sets `enable_live_browser = true` in `terraform/environments/dev/dev.tfvars`
+and nothing else switches.
+
+**One switch, both halves.** The relay (`terraform/infra/live.tf`: its grants,
+its internal address, its manifest, swarm-api's `SWARM_LIVE_URL` and
+`SWARM_LIVE_KEY`) and the pod (the scheduler's `LIVE_BROWSER_SIDECAR`, which
+gives a `claude-code-browser` pod its `display` sidecar and live gate) follow
+the same value. Before LB-Lon nothing in Terraform set `LIVE_BROWSER_SIDECAR`,
+so the relay could have been turned on with no pod ever streaming to it.
+`terraform/infra/locals.tf` now derives it from `local.live_relay_enabled`
+rather than taking a second variable, because neither half is useful alone: a
+relay with no sidecar streams nothing, and a sidecar with no relay costs every
+browser pod a display's share of its resource class for a gate no ticket is
+ever issued to. `tests/terraform/live.tftest.hcl` holds dev to both.
+
+**The order is `live.tf`'s.** Steps 1-3 are the operator's and come first:
+`make apply` with the switch false, `scripts/create-secrets.sh --live-key`, and
+a `swarm-live` digest in `image_refs`. The switch is step 4. Step 5 applies
+`terraform output -raw swarm_live_manifest` to swarm-autopilot. Until step 5
+the relay's address answers nothing, and swarm-api's live routes fail closed.
+
+**What stays off.** Saved browser logins (§5.5.1) are
+`terraform/bootstrap`'s `enable_browser_logins` and are not part of this
+switch. No swarm-api refusal switch is involved: every live-browser code
+(`live_*`, `control_*`, `handoff_*`, `browser_*`) is in the not-switchable set
+of `tests/unit/control_plane/test_new_refusals_ship_off.py`, raised only by
+routes these lanes introduced. `claude-code-browser` already names
+`GKE_AUTOPILOT` (§8.1), and `enable_gke_autopilot` is already true in dev.
 
 ---
 

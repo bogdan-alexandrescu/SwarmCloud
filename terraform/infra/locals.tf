@@ -291,7 +291,13 @@ locals {
   # moves rather than the day someone remembers this list.
   platform_images = ["swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler", "swarm-ui", "swarm-verify"]
   runner_images   = sort(distinct([for name, p in local.runner_profiles : p.image]))
-  deployed_images = sort(distinct(concat(local.platform_images, local.runner_images)))
+  # The live relay (live.tf) only while it is on. On, it is deployed, so it
+  # must have a digest and must be in the `image_refs` output: that output is
+  # what scripts/plan.sh pins a non-deploy plan to, and a relay missing from it
+  # would plan with no image. Off, nothing deploys it, and a state applied
+  # before the release built swarm-live must still plan.
+  live_images     = local.live_relay_enabled ? ["swarm-live"] : []
+  deployed_images = sort(distinct(concat(local.platform_images, local.runner_images, local.live_images)))
 
   # Read by the precondition on google_cloud_run_v2_job.verify, which fails the
   # plan while this is non-empty.
@@ -548,6 +554,31 @@ locals {
   # serves nothing yet, so it is not a link either.
   console_url = var.enable_frontend && var.frontend_hostname != "" ? "https://${var.frontend_hostname}" : ""
 
+  # swarm-api's address for the live relay (live.tf, LB-L8d). PLAIN ws on 8080,
+  # on the internal load balancer's reserved address: owner decision
+  # 2026-10-11 (b) proxies every browser through swarm-api, so this hop never
+  # leaves the VPC, and the NetworkPolicy admits only swarm-api's egress range
+  # and the tenant gates to it. Port 8080 is fixed for both integration lanes
+  # (the relay's swarm_live.main.PORT and its manifest name the same one).
+  live_relay_url = local.live_relay_enabled ? "ws://${google_compute_address.live_relay[0].address}:8080" : ""
+
+  # swarm-live-key for swarm-api, BY REFERENCE: Cloud Run resolves the secret
+  # at start, so the value is in no tfvars file, no plan and no state -- only
+  # its name and "latest" are. Only once the relay is on: live.tf's order adds
+  # the first version (`create-secrets.sh --live-key`) before the switch, and
+  # a reference to a secret with no version would stop swarm-api starting.
+  # Off, swarm-api reads SWARM_LIVE_KEY empty and offers no live path (503).
+  live_key_secret_env = local.live_relay_enabled ? {
+    SWARM_LIVE_KEY = {
+      secret  = google_secret_manager_secret.live_key.secret_id
+      version = "latest"
+    }
+  } : {}
+
+  # Every Secret Manager reference swarm-api's environment carries, merged
+  # once so main.tf and tests/terraform/live.tftest.hcl read one value.
+  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env)
+
   # The swarm-api refusal switches (swarm_api.refusals; docs/api-refusals.md).
   # A refusal added to swarm-api ships off; var.api_refusals turns one on.
   # Rendered as a map merged in, not as KEY = lines, because the names come
@@ -777,6 +808,12 @@ locals {
       GITHUB_APP_ID        = var.github_app_id
       GITHUB_APP_CLIENT_ID = var.github_app_client_id
       GITHUB_APP_SLUG      = var.github_app_slug
+
+      # Where swarm-api proxies a console's live-browser socket, and POSTs the
+      # relay's /internal/close (docs/design/live-browser.md §3.3; owner
+      # decision 2026-10-11 (b)). See local.live_relay_url. Empty while the
+      # relay is off, which swarm_api.settings reads as "no relay".
+      SWARM_LIVE_URL = local.live_relay_url
     })
     "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
       # local.spec_worker_env, merged in above: the four step-spec settings
@@ -885,6 +922,21 @@ locals {
       # check holds it to the deployed URL.
       SWARM_API_URL      = var.swarm_api_url
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
+
+      # The live browser's display sidecar (scheduler.settings
+      # `live_browser_sidecar`; docs/design/live-browser.md, LB-Lon). On, a
+      # claude-code-browser GKE pod carries the `display` native sidecar and
+      # the live gate; off, it is the pod it always was. Until LB-Lon nothing
+      # set it, so turning the relay on streamed nothing.
+      #
+      # DERIVED from the relay (`local.live_relay_enabled`, live.tf), not a
+      # second variable, because neither half works alone: a relay with no
+      # sidecar has no browser to stream, and a sidecar with no relay costs
+      # every browser pod a display's share of its resource class
+      # (scheduler.dispatch LIVE_DISPLAY_SHARE) for a gate swarm-api will
+      # never issue a tunnel ticket to (SWARM_LIVE_URL is empty). A second
+      # switch would only add the two states that are always wrong.
+      LIVE_BROWSER_SIDECAR = tostring(local.live_relay_enabled)
     })
     "swarm-quota-broker" = merge(local.common_env, {
       # WITHOUT THIS THE SWEEP HAS NEVER RUN. /v1/quota/sweep requires a
