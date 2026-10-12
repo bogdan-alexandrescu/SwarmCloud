@@ -87,7 +87,10 @@ class GitHub:
         if path.endswith("/issues"):
             data: list[Any] = self.issues
         elif path.endswith("/pulls"):
-            data = self.pulls
+            # An entry with no `state` is open, as every fixture before the
+            # sweep's recently-merged read (`state=closed`) was written.
+            wanted = query.get("state", ["open"])[0]
+            data = [p for p in self.pulls if wanted == "all" or p.get("state", "open") == wanted]
         elif path.endswith("/files"):
             number = int(path.rstrip("/").split("/")[-2])
             # An entry is a name, or `(name, patch)` for a file the forge sends a patch for.
