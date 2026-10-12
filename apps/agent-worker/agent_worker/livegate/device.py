@@ -40,8 +40,9 @@ the window's own metrics: its viewport is wider than the device's page area,
 and the mask treats a viewport larger than the frame as unplaceable and blanks
 the frame (`Outcome.UNAVAILABLE`). It fails closed; it does not leak.
 
-THE DISPLAY. `XRandrDisplay` speaks RandR's `RRSetScreenSize` to Xvfb over
-its unix socket, in the sidecar's own /tmp, as inject.py speaks XTEST: no
+THE DISPLAY. `XRandrDisplay` speaks RandR to Xvfb over its unix socket
+(the CRTC switched to a mode of the frame's size around `RRSetScreenSize`:
+its docstring says why a bare screen-size change is refused), in the sidecar's own /tmp, as inject.py speaks XTEST: no
 `xrandr` binary, no Xlib. RandR shrinks a screen below the size Xvfb was
 started with but never grows it, so the sidecar starts Xvfb at
 `presets.MAX_DISPLAY_WIDTH` x `MAX_DISPLAY_HEIGHT`. Whether Xvfb rewrites its
@@ -81,6 +82,11 @@ _X_QUERY_EXTENSION = 98
 _X_GET_INPUT_FOCUS = 43
 _RR_QUERY_VERSION = 0
 _RR_SET_SCREEN_SIZE = 7
+_RR_CREATE_MODE = 16
+_RR_ADD_OUTPUT_MODE = 18
+_RR_SET_CRTC_CONFIG = 21
+_RR_GET_SCREEN_RESOURCES_CURRENT = 25
+_RR_ROTATE_0 = 1
 
 #: Millimetres are what RandR stores; at 96 dpi, which is what Xvfb assumes.
 _MM_PER_PIXEL = 25.4 / 96
@@ -117,7 +123,20 @@ class DeviceRefused(ValueError):
 
 
 class XRandrDisplay:
-    """Xvfb's screen size, set with RandR 1.2 `RRSetScreenSize` over the X socket."""
+    """Xvfb's screen size, set with RandR 1.3 over the X socket: the CRTC first.
+
+    WHY NOT `RRSetScreenSize` ALONE. Xvfb starts with one CRTC driving one
+    output (`vfbRandRInit`, xserver hw/vfb/InitOutput.c) in a mode as large as
+    the whole screen, and RandR refuses with BadMatch any screen size smaller
+    than an active CRTC's mode (`ProcRRSetScreenSize`, randr/rrscreen.c). The
+    sidecar starts Xvfb at the largest preset, so a bare `RRSetScreenSize` to
+    any smaller frame -- `desktop` at start-up first of all -- was refused:
+    the DisplayError measured on 2026-10-11 (task_8cf26eb6e1f94e85adf8). The
+    order here is what `xrandr` itself does: find (or create, once, by name)
+    a mode the size of the frame and add it to the output, switch the CRTC
+    off, set the screen size, and switch the CRTC back on in the new mode,
+    so Chromium sees one output exactly as large as the screen again.
+    """
 
     def __init__(self, path: str = DEFAULT_DISPLAY_SOCKET, *, timeout: float = 5.0) -> None:
         self._path = path
@@ -134,26 +153,38 @@ class XRandrDisplay:
             reader, writer = await asyncio.open_unix_connection(self._path)
         except OSError as exc:
             raise DisplayError(f"display unreachable: {exc.strerror or type(exc).__name__}") from None
+        x = _XConnection(reader, writer)
         try:
             root = await _x_setup(reader, writer)
             name = b"RANDR"
-            writer.write(struct.pack("<BxHH2x", _X_QUERY_EXTENSION, 2 + len(_pad(name)) // 4, len(name))
+            seq = x.send(struct.pack("<BxHH2x", _X_QUERY_EXTENSION, 2 + len(_pad(name)) // 4, len(name))
                          + _pad(name))
-            reply = await _x_reply(reader, 1)
+            reply = await x.reply(seq)
             if not reply[8]:
                 raise DisplayError("display has no RandR extension")
             randr = reply[9]
-            # RandR answers 1.2 requests only to a client that asked for 1.2.
-            writer.write(struct.pack("<BBHII", randr, _RR_QUERY_VERSION, 3, 1, 2))
-            await _x_reply(reader, 2)
+            # RandR answers 1.3 requests only to a client that asked for 1.3.
+            await x.reply(x.send(struct.pack("<BBHII", randr, _RR_QUERY_VERSION, 3, 1, 3)))
+            resources = _ScreenResources.parse(
+                await x.reply(x.send(struct.pack("<BBHI", randr, _RR_GET_SCREEN_RESOURCES_CURRENT, 2, root))))
             mm_w = max(1, round(width * _MM_PER_PIXEL))
             mm_h = max(1, round(height * _MM_PER_PIXEL))
-            writer.write(struct.pack("<BBHIHHII", randr, _RR_SET_SCREEN_SIZE, 5, root, width, height, mm_w, mm_h))
-            # RRSetScreenSize has no reply: a GetInputFocus after it does, and
-            # an error for request 3 arrives before that reply.
-            writer.write(struct.pack("<BxH", _X_GET_INPUT_FOCUS, 1))
-            await writer.drain()
-            await _x_reply(reader, 4)
+            size = struct.pack("<BBHIHHII", randr, _RR_SET_SCREEN_SIZE, 5, root, width, height, mm_w, mm_h)
+            if not resources.crtcs or not resources.outputs:
+                # No CRTC holds the screen open: the size alone is enough.
+                x.send(size)
+                await x.reply(x.send(struct.pack("<BxH", _X_GET_INPUT_FOCUS, 1)))
+            else:
+                crtc, output = resources.crtcs[0], resources.outputs[0]
+                mode = resources.mode_named(_mode_name(width, height))
+                if mode is None:
+                    mode = await self._create_mode(x, randr, root, width, height)
+                x.send(struct.pack("<BBHII", randr, _RR_ADD_OUTPUT_MODE, 3, output, mode))
+                await self._set_crtc(x, randr, crtc, resources.config_timestamp, 0, [])
+                # RRSetScreenSize has no reply: an error for it arrives before
+                # the next request's reply, which `_set_crtc` waits for.
+                x.send(size)
+                await self._set_crtc(x, randr, crtc, resources.config_timestamp, mode, [output])
         finally:
             writer.close()
             try:
@@ -161,6 +192,86 @@ class XRandrDisplay:
             except ConnectionError:
                 pass
         log.info("live device: display resized")
+
+    @staticmethod
+    async def _create_mode(x: "_XConnection", randr: int, root: int, width: int, height: int) -> int:
+        name = _mode_name(width, height).encode("ascii")
+        # Timings only make the mode well-formed; Xvfb drives no monitor.
+        info = struct.pack("<IHHIHHHHHHHHI", 0, width, height, width * height * 60,
+                           width, width, width, 0, height, height, height, len(name), 0)
+        body = struct.pack("<I", root) + info + _pad(name)
+        reply = await x.reply(x.send(struct.pack("<BBH", randr, _RR_CREATE_MODE, 1 + len(body) // 4) + body))
+        (mode,) = struct.unpack_from("<I", reply, 8)
+        return int(mode)
+
+    @staticmethod
+    async def _set_crtc(x: "_XConnection", randr: int, crtc: int, config_timestamp: int, mode: int,
+                        outputs: list[int]) -> None:
+        request = struct.pack("<BBHIIIhhIH2x", randr, _RR_SET_CRTC_CONFIG, 7 + len(outputs), crtc,
+                              0, config_timestamp, 0, 0, mode, _RR_ROTATE_0)
+        request += b"".join(struct.pack("<I", o) for o in outputs)
+        reply = await x.reply(x.send(request))
+        if reply[1] != 0:
+            raise DisplayError(f"display refused the CRTC change (status={reply[1]})")
+
+
+def _mode_name(width: int, height: int) -> str:
+    """Xvfb's own name for a mode (`vfbRandRInit`), so its start-up mode is reused, not duplicated."""
+    return f"{width}x{height}"
+
+
+class _XConnection:
+    """Numbers each request as the server does, so a reply is read by its sequence."""
+
+    def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        self._reader = reader
+        self._writer = writer
+        self._seq = 0
+
+    def send(self, request: bytes) -> int:
+        self._writer.write(request)
+        self._seq += 1
+        return self._seq
+
+    async def reply(self, seq: int) -> bytes:
+        await self._writer.drain()
+        return await _x_reply(self._reader, seq)
+
+
+class _ScreenResources:
+    """`RRGetScreenResourcesCurrent`'s reply: CRTCs, outputs and modes by name."""
+
+    def __init__(self, config_timestamp: int, crtcs: list[int], outputs: list[int],
+                 modes: dict[str, int]) -> None:
+        self.config_timestamp = config_timestamp
+        self.crtcs = crtcs
+        self.outputs = outputs
+        self.modes = modes
+
+    @classmethod
+    def parse(cls, reply: bytes) -> "_ScreenResources":
+        try:
+            _ts, config, n_crtcs, n_outputs, n_modes, n_names = struct.unpack_from("<IIHHHH", reply, 8)
+            at = 32
+            crtcs = list(struct.unpack_from(f"<{n_crtcs}I", reply, at))
+            at += 4 * n_crtcs
+            outputs = list(struct.unpack_from(f"<{n_outputs}I", reply, at))
+            at += 4 * n_outputs
+            infos = [struct.unpack_from("<IHHIHHHHHHHHI", reply, at + 32 * i) for i in range(n_modes)]
+            at += 32 * n_modes
+            names = reply[at:at + n_names]
+            modes: dict[str, int] = {}
+            offset = 0
+            for info in infos:
+                length = info[11]
+                modes.setdefault(names[offset:offset + length].decode("latin-1"), int(info[0]))
+                offset += length
+        except struct.error:
+            raise DisplayError("display sent malformed screen resources") from None
+        return cls(int(config), [int(c) for c in crtcs], [int(o) for o in outputs], modes)
+
+    def mode_named(self, name: str) -> int | None:
+        return self.modes.get(name)
 
 
 def _pad(data: bytes) -> bytes:
@@ -223,12 +334,16 @@ class DeviceController:
     """Which device the browser is, applied from the gate's own sessions."""
 
     def __init__(self, cdp: GateCdp, display: Display, mask: ScaleSink, *, record: Record,
-                 on_resize: Callable[[Device], None] | None = None) -> None:
+                 on_resize: Callable[[Device], None] | None = None,
+                 on_change: Callable[[Device], None] | None = None) -> None:
         self._cdp = cdp
         self._display = display
         self._mask = mask
         self._record = record
         self._on_resize = on_resize
+        #: Told the device once it is applied -- at start and on every change --
+        #: so the gate can report it (report.py); never told of a failed one.
+        self._on_change = on_change
         self._device = resolve(DEFAULT_PRESET)
         self._pages: dict[str, str] = {}  # targetId -> the gate's session on it
         self._browser: tuple[str, str] | None = None  # (user agent, version)
@@ -252,6 +367,8 @@ class DeviceController:
                 if info.get("type") == "page" and isinstance(info.get("targetId"), str):
                     await self._attach(info["targetId"])
             await self._apply_display(self._device)
+        if self._on_change is not None:
+            self._on_change(self._device)
 
     async def handle_ctl(self, args: Mapping[str, Any]) -> dict[str, Any]:
         """The ctl.sock `device` operation (`swarm-handoff device <preset>`)."""
@@ -278,6 +395,8 @@ class DeviceController:
                                                "cause": type(exc).__name__})
                 raise
             self._device = device
+        if self._on_change is not None:
+            self._on_change(device)
         self._record("device_set", {"preset": device.name, "orientation": device.orientation})
         log.info("live device: preset=%s orientation=%s", device.name, device.orientation)
         return device

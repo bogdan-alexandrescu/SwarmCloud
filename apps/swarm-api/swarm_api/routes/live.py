@@ -30,7 +30,10 @@ ticket itself as the first text message, which the relay answers
 `{"type": "ready"}` or refuses by closing; then
 `{"type": "control", "ticket": <control or release ticket>}` whenever this
 person takes or loses control, then binary RFB. Relay to console: forwarded
-as is. swarm-api to console: `{"type": "status", ...}` text frames. Close
+as is, except the gate's `{"type": "report", ...}` (the top frame's origin and
+the device, LB-DEV-A), which is checked and recorded on the session
+(`LiveService.record_report`) and never forwarded: the console reads it from
+the session read, checked, like every other viewer. swarm-api to console: `{"type": "status", ...}` text frames. Close
 codes: 4400 a malformed open (a query string, no ticket), 4401 no identity,
 4404 refused (every §5.2 refusal, alike, the relay's included), 4429 the
 relay's viewer cap, 4403 membership lost, 4409 the session closed, 4503 no
@@ -68,8 +71,10 @@ from ..live import (
     LiveService,
     LiveTicketView,
     RelayCloser,
+    REPORT_TYPE,
     TakeControl,
     count_input,
+    parse_report,
     relay_closer_for,
 )
 from .children import child_service
@@ -570,6 +575,15 @@ async def _hello(link: RelayLink, admission: Admission) -> int | None:
     return CLOSE_FULL if code == RELAY_CLOSE_FULL else CLOSE_REFUSED
 
 
+def _is_report(text: str) -> bool:
+    """A relay text that is the gate's report, well-formed or not: never forwarded."""
+    try:
+        message = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(message, dict) and message.get("type") == REPORT_TYPE
+
+
 class _Proxy:
     """One viewer's socket and its relay link, and the ticker that keeps
     checking them (§5.2)."""
@@ -590,6 +604,7 @@ class _Proxy:
         self.total_pointers = 0
         self.close_code = 1000
         self.last_sent: dict[str, Any] | None = None
+        self.last_report: dict[str, Any] | None = None
 
     async def run(self) -> None:
         await run_in_threadpool(self.service.viewer_event, self.admission, "viewer_joined", {})
@@ -668,8 +683,21 @@ class _Proxy:
                 return
             if isinstance(data, bytes):
                 await self.ws.send_bytes(data)
+            elif _is_report(data):
+                await self._record_report(data)
             else:
                 await self.ws.send_text(data)
+
+    async def _record_report(self, text: str) -> None:
+        report = parse_report(text)
+        if report is None or report == self.last_report:
+            return
+        try:
+            await run_in_threadpool(self.service.record_report, self.admission, report)
+        except Exception as exc:  # noqa: BLE001 -- the view goes on; the next report retries
+            log.info("live report not recorded (%s)", type(exc).__name__)
+            return
+        self.last_report = report
 
     async def _flush_input(self) -> None:
         # Swapped on the event loop, where the counters are incremented, and

@@ -72,7 +72,8 @@ from .ctl import DEFAULT_MARKER, CtlServer
 from .device import DeviceController, XRandrDisplay, crop
 from .inject import InjectError, XInjector, display_socket
 from .mask import MaskCdp, MaskState
-from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, resolve
+from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, resolve
+from .report import device_report, encode_report, page_origin
 from .rfb import ControlState, FrameHub, RfbSession, masked
 from .session import OPS as SESSION_OPS
 from .session import SessionCarry
@@ -369,11 +370,18 @@ class PageFollower:
     The mask's handlers await replies (`MaskCdp.link`), and the pipe reader
     must never wait on a reply (cdpproxy.py), so its events are queued here
     and handled on a task of their own, in order.
+
+    The page it follows is the page on screen, so its top frame's origin is
+    the one the console's strip shows (§5.7, report.py): `on_origin` is told
+    it when a page is followed and on every navigation the top frame commits,
+    and None when no page is on screen.
     """
 
-    def __init__(self, cdp: CdpProxy, state: MaskState) -> None:
+    def __init__(self, cdp: CdpProxy, state: MaskState,
+                 on_origin: Callable[[dict[str, Any] | None], None] | None = None) -> None:
         self._cdp = cdp
         self._state = state
+        self._on_origin = on_origin
         self.pages: list[str] = []
         self.current: str | None = None
         self._session: str | None = None
@@ -450,6 +458,7 @@ class PageFollower:
                 except Exception:  # noqa: BLE001 -- already gone with its page
                     pass
             self.current = target
+            self._origin(None)
             if target is None:
                 return
             result = await self._cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})
@@ -461,6 +470,17 @@ class PageFollower:
 
             self._mask = MaskCdp(self._state, send)
             await self._mask.install()
+            tree = await send("Page.getFrameTree", {})
+            self._top_frame((tree.get("frameTree") or {}).get("frame") or {})
+
+    def _origin(self, origin: dict[str, Any] | None) -> None:
+        if self._on_origin is not None:
+            self._on_origin(origin)
+
+    def _top_frame(self, frame: Mapping[str, Any]) -> None:
+        """A frame Chromium committed: the origin, when it is the top frame (no parent)."""
+        if not frame.get("parentId"):
+            self._origin(page_origin(frame.get("url"), frame.get("domainAndRegistry")))
 
     async def _drain(self) -> None:
         while True:
@@ -468,6 +488,8 @@ class PageFollower:
             mask = self._mask
             if mask is None or session != self._session:
                 continue
+            if method == "Page.frameNavigated":
+                self._top_frame(params.get("frame") or {})
             try:
                 await mask.on_event(method, params)
             except Exception as exc:  # noqa: BLE001 -- one event; the mask fails closed
@@ -531,6 +553,11 @@ class LiveGate:
         self._self_paused = False
         self._fresh_target: str | None = None
         self._watching = asyncio.Event()
+        #: What the gate reports over the tunnel (report.py): the top frame's
+        #: origin and the applied device, each None until it is known.
+        self.origin: dict[str, Any] | None = None
+        self.device_reported: dict[str, Any] | None = None
+        self._report_due = asyncio.Event()
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._spawned: set[asyncio.Task[Any]] = set()
 
@@ -576,7 +603,8 @@ class LiveGate:
         if version.exception() is not None:
             raise SetupError(f"Chromium refused Browser.getVersion ({type(version.exception()).__name__})")
         self.devices = DeviceController(self.proxy, self.deps.open_display(self.cfg), self.mask_state,
-                                        record=self.record, on_resize=self._on_resize)
+                                        record=self.record, on_resize=self._on_resize,
+                                        on_change=self._device_changed)
         self.touch = TouchInjector(self.injector, self.proxy, self.devices)
         self.control = ControlState(self.touch)
         proxy = self.proxy
@@ -586,7 +614,7 @@ class LiveGate:
         except Exception as exc:  # noqa: BLE001 -- the desktop still works; the mask fails closed
             self.record("device_failed", {"preset": DEFAULT_PRESET, "cause": type(exc).__name__})
             log.warning("live gate: default device not applied (%s)", type(exc).__name__)
-        self.pages = PageFollower(self.proxy, self.mask_state)
+        self.pages = PageFollower(self.proxy, self.mask_state, on_origin=self._origin_changed)
         await self.pages.start()
         self.cdp_server = await self.deps.serve_cdp(self.proxy, self.cfg.cdp_host, self.cfg.cdp_port)
         log.info("live gate: chromium up; CDP proxy on %s:%d", self.cfg.cdp_host, self.cfg.cdp_port)
@@ -652,6 +680,34 @@ class LiveGate:
         if self.touch is not None:
             self.touch.resize(device.display_width, device.display_height)
 
+    # -- the report (report.py) -------------------------------------------------
+
+    def _device_changed(self, device: Device) -> None:
+        self.device_reported = device_report(device)
+        self._report_due.set()
+
+    def _origin_changed(self, origin: dict[str, Any] | None) -> None:
+        if origin != self.origin:
+            self.origin = origin
+            self._report_due.set()
+
+    async def _reporter(self, tunnel: Tunnel) -> None:
+        """Send the latest report whenever it changes, and once as the tunnel opens.
+
+        One task sends, and each send reads the state as it is then, so a
+        burst of navigations ends with the relay holding the last one, never
+        an older one overtaking it.
+        """
+        self._report_due.set()
+        while not tunnel.closed:
+            await self._report_due.wait()
+            self._report_due.clear()
+            try:
+                payload = encode_report(self.origin, self.device_reported)
+            except ValueError:  # cannot happen within report.py's limits; never send a part
+                payload = encode_report(None, self.device_reported)
+            await tunnel.report(payload)
+
     # -- ctl.sock -------------------------------------------------------------
 
     async def handle_ctl(self, op: str, args: dict[str, Any]) -> Mapping[str, Any]:
@@ -712,6 +768,7 @@ class LiveGate:
         self.tunnel = tunnel
         self.mux = StreamMux(tunnel, self._serve_rfb, self._on_control)
         self._tasks["tunnel"] = asyncio.create_task(self._run_tunnel(tunnel, self.mux))
+        self._tasks["report"] = asyncio.create_task(self._reporter(tunnel))
         self.record("tunnel_open", {})
         return {"tunnel": "open"}
 
@@ -720,6 +777,9 @@ class LiveGate:
         try:
             code = await tunnel.run(mux.on_frame)
         finally:
+            reporter = self._tasks.get("report")
+            if reporter is not None:
+                reporter.cancel()
             await mux.close()
             if self._episode is not None:
                 await self._release("tunnel_closed")
@@ -869,6 +929,7 @@ class LiveGate:
         if self.browser is not None:
             await self.browser.stop()
         self.mask_state.session_down()
+        self._origin_changed(None)
         removed = 0
         try:
             for entry in self.cfg.profile_dir.iterdir():

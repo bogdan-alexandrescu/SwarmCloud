@@ -881,6 +881,104 @@ def test_a_move_that_raises_after_a_good_read_keeps_the_reading_and_records_why(
 
 
 # --------------------------------------------------------------------------
+# RUNS (2026-10-12): CHECKING has a deadline
+# --------------------------------------------------------------------------
+
+def _deadline() -> timedelta:
+    return timedelta(seconds=issueci.CHECKING_DEADLINE_SECONDS)
+
+
+def _entered_checking(client, clock, run_id: str) -> datetime:
+    run = _read(client, clock, run_id)
+    assert run["state"] == "CHECKING"
+    return clock.at
+
+
+def test_the_checking_deadline_is_a_bounded_named_constant():
+    assert 3600 <= issueci.CHECKING_DEADLINE_SECONDS <= 24 * 3600
+    assert issueci.CHECKING_DEADLINE_SECONDS > issueci.NO_CHECKS_SECONDS
+
+
+def test_a_run_whose_checks_cannot_be_read_fails_at_the_deadline_saying_why(
+    client, db, objects, writes, clock
+):
+    # run_e525710be66e: its credential could not read the repository's
+    # checks, so every visit recorded `read_error` and the run sat CHECKING
+    # for hours, holding a schedule slot.
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "success")
+    _refuse_statuses(writes)
+    entered = _entered_checking(client, clock, running["id"])
+
+    clock.at = entered + _deadline() - timedelta(minutes=2)
+    assert _read(client, clock, running["id"])["state"] == "CHECKING", "not before the deadline"
+
+    clock.at = entered + _deadline() - timedelta(minutes=1)
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert run["error"].startswith("could not read the repository's checks")
+    assert "statuses: read" in run["error"] and "403" in run["error"]
+    assert [h["to"] for h in run["history"]][-2:] == ["CHECKING", "FAILED"]
+    assert _rounds(db, running["id"]) == [], "a timed-out run spends no round"
+    # FAILED is terminal: the run holds nothing and later reads leave it be.
+    assert _read(client, clock, running["id"])["state"] == "FAILED"
+
+
+def test_ci_that_stays_pending_past_the_deadline_fails_naming_the_head(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", None, status="in_progress")
+    entered = _entered_checking(client, clock, running["id"])
+
+    clock.at = entered + _deadline()
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "FAILED"
+    assert "pending" in run["error"] and SHA_A[:12] in run["error"]
+    assert run["pull_request"]["checks"] == "pending"
+
+
+def test_a_read_that_turns_green_at_the_deadline_is_done_not_failed(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", None, status="in_progress")
+    entered = _entered_checking(client, clock, running["id"])
+
+    writes.check_runs[SHA_A].clear()  # the in-progress run completed
+    writes.check(SHA_A, "unit", "success")
+    clock.at = entered + _deadline()
+    run = _read(client, clock, running["id"])
+
+    assert run["state"] == "DONE" and run["green_sha"] == SHA_A
+
+
+def test_the_deadline_restarts_when_a_fix_round_returns_the_run_to_checking(
+    client, db, objects, writes, clock
+):
+    running = _to_checking(client, db, objects, writes, clock)
+    writes.check(SHA_A, "unit", "failure", output={"summary": "test_a"})
+    first = _read(client, clock, running["id"])
+    assert first["state"] == "FIXING"
+
+    # The round takes most of a deadline; its head's CI is still pending.
+    clock.at += _deadline() - timedelta(minutes=5)
+    _round_ends(db, _rounds(db, running["id"])[0])
+    writes.open_pull(PR, SHA_B)
+    writes.check(SHA_B, "unit", None, status="in_progress")
+    back = _read(client, clock, running["id"])
+    assert back["state"] == "CHECKING"
+    reentered = clock.at
+
+    clock.at = reentered + timedelta(hours=1)
+    assert _read(client, clock, running["id"])["state"] == "CHECKING"
+    clock.at = reentered + _deadline()
+    assert _read(client, clock, running["id"])["state"] == "FAILED"
+
+
+# --------------------------------------------------------------------------
 # RT-7 (2026-10-11): GET /v1/runs?view=summary drops what the list never shows
 # --------------------------------------------------------------------------
 
