@@ -1,4 +1,4 @@
-"""The live browser's network path: only TCP 8443, only to the relay, only from
+"""The live browser's network path: only TCP 8080 (plain ws), only to the relay, only from
 a live-browser pod (docs/design/live-browser.md §8.3; lane LB-L6, part of #1030).
 
 Two NetworkPolicies open the one path the design adds, and a third closes
@@ -7,15 +7,23 @@ everything else in `swarm-system`:
   * `swarm-allow-live-egress`, in every tenant namespace, lets a pod labelled
     `swarm-live: enabled` -- which the dispatcher sets only on a
     `claude-code-browser` pod (`scheduler.dispatch.LIVE_POD_LABEL`) -- open TCP
-    8443 to `app.kubernetes.io/name=swarm-live` pods in `swarm-system`. The
+    8080 to `app.kubernetes.io/name=swarm-live` pods in `swarm-system`. The
     existing tenant policies are untouched: NetworkPolicies are unions, so this
     adds a path and removes nothing, and they must render BYTE-IDENTICAL.
   * `swarm-system-default-deny-ingress` and `swarm-allow-live-ingress`, in
-    `swarm-system`: nothing reaches a pod there except TCP 8443 to the relay,
+    `swarm-system`: nothing reaches a pod there except TCP 8080 to the relay,
     from a labelled pod in a tenant namespace (one peer, both selectors -- two
     peers would be an OR) or from swarm-api's Direct VPC egress range, which
     `kubernetes/apply.sh --swarm-system` READS from swarm-api's service and its
     subnet, never takes from a flag.
+  * `swarm-live-ingress`, the relay manifest's own copy of that allow
+    (kubernetes/swarm-system/swarm-live.yaml, rendered by terraform/infra/live.tf
+    with terraform's subnet range; lane LB-L8e). `apply.sh --swarm-system`
+    applies that manifest FIRST -- it creates the namespace -- and refuses when
+    terraform's range is not the one it read from swarm-api.
+
+The port is 8080, plain ws, since owner decision 2026-10-11 (b)
+(docs/design/live-browser.md §3.3); L6 built it on 8443.
 
 The shape rules live once, in `kubernetes/network_parity.py`, which judges the
 rendered policies here and the applied ones after `apply.sh --swarm-system
@@ -53,6 +61,7 @@ SYSTEM_FILE = "network-policies/swarm-system-live.yaml"
 #: rendered value that matches it can only have been READ.
 FAKE_API_CIDR = "10.123.16.0/20"
 FAKE_SUBNET = "swarm-fake-subnet"
+RELAY_TEMPLATE = KUBERNETES / "swarm-system" / "swarm-live.yaml"
 
 
 def _load(name: str, path: Path) -> Any:
@@ -107,6 +116,30 @@ def system_docs() -> list[dict[str, Any]]:
     )
 
 
+def _relay_manifest(api_cidr: str = FAKE_API_CIDR) -> str:
+    """kubernetes/swarm-system/swarm-live.yaml with its placeholders filled the
+    way terraform/infra/live.tf fills them (tests/terraform/live.tftest.hcl
+    holds that rendering; this one only needs plausible values). The digest is
+    built here, never written out as one literal."""
+    values = {
+        "__SWARM_LIVE_IMAGE__": "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:" + "7" * 64,
+        "__PROJECT_ID__": "saga-agents-staging",
+        "__ARTIFACT_BUCKET__": "saga-agents-staging-swarm-artifacts",
+        "__LIVE_KEY_VERSION__": "projects/saga-agents-staging/secrets/swarm-live-key/versions/latest",
+        "__SWARM_LIVE_ILB_IP__": "10.123.16.42",
+        "__SWARM_API_EGRESS_CIDR__": api_cidr,
+    }
+    text = RELAY_TEMPLATE.read_text()
+    for placeholder, value in values.items():
+        text = text.replace(placeholder, value)
+    return text
+
+
+@pytest.fixture(scope="module")
+def relay_docs() -> list[dict[str, Any]]:
+    return _docs(_relay_manifest())
+
+
 # --- the tenant side ---------------------------------------------------------
 
 
@@ -117,7 +150,7 @@ def test_a_tenant_render_holds_the_live_egress_policy_and_it_passes_the_shape_ch
     assert parity.check_live_egress(policy) == []
 
 
-def test_the_live_egress_policy_is_exactly_tcp_8443_to_the_relay_from_labelled_pods(tenant_docs):
+def test_the_live_egress_policy_is_exactly_tcp_8080_to_the_relay_from_labelled_pods(tenant_docs):
     """Spelled out here as well as in the checker, so the checker cannot drift
     into agreeing with a wrong policy without this test noticing."""
     spec = _one(tenant_docs, parity.LIVE_EGRESS_POLICY)["spec"]
@@ -132,7 +165,7 @@ def test_the_live_egress_policy_is_exactly_tcp_8443_to_the_relay_from_labelled_p
                     "podSelector": {"matchLabels": {"app.kubernetes.io/name": "swarm-live"}},
                 }
             ],
-            "ports": [{"protocol": "TCP", "port": 8443}],
+            "ports": [{"protocol": "TCP", "port": 8080}],
         }
     ]
 
@@ -223,7 +256,7 @@ def test_swarm_system_denies_every_ingress_by_default(system_docs):
     assert parity.check_system_deny(deny) == []
 
 
-def test_the_relay_admits_only_tcp_8443_from_labelled_pods_and_swarm_apis_range(system_docs):
+def test_the_relay_admits_only_tcp_8080_from_labelled_pods_and_swarm_apis_range(system_docs):
     policy = _one(system_docs, parity.LIVE_INGRESS_POLICY)
     assert policy["metadata"]["namespace"] == parity.SYSTEM_NAMESPACE
     assert policy["metadata"]["labels"]["managed-by"] == "swarm-terraform"
@@ -237,7 +270,7 @@ def test_the_relay_admits_only_tcp_8443_from_labelled_pods_and_swarm_apis_range(
     assert {"ipBlock": {"cidr": FAKE_API_CIDR}} in peers
     assert len(peers) == 2
     for rule in spec["ingress"]:
-        assert rule["ports"] == [{"protocol": "TCP", "port": 8443}]
+        assert rule["ports"] == [{"protocol": "TCP", "port": 8080}]
 
 
 def test_the_rendered_range_is_recorded_on_the_policy(system_docs):
@@ -295,7 +328,7 @@ def _mutants_of_ingress(policy: dict[str, Any]) -> dict[str, dict[str, Any]]:
     mutant("egress too")["spec"]["policyTypes"].append("Egress")
     mutant("an annotation that disagrees")["metadata"]["annotations"][parity.API_CIDR_ANNOTATION] = "10.1.0.0/20"
     mutant("another namespace")["metadata"]["namespace"] = "default"
-    mutant("a rule with no source")["spec"]["ingress"].append({"ports": [{"protocol": "TCP", "port": 8443}]})
+    mutant("a rule with no source")["spec"]["ingress"].append({"ports": [{"protocol": "TCP", "port": parity.LIVE_PORT}]})
     return mutants
 
 
@@ -305,6 +338,53 @@ def test_the_ingress_check_refuses_every_widening(system_docs):
     assert len(mutants) == 12
     passed = [name for name, m in mutants.items() if not parity.check_live_ingress(m, FAKE_API_CIDR)]
     assert passed == [], f"check_live_ingress accepted: {passed}"
+
+
+def test_the_relay_manifest_carries_the_same_allow_and_passes_the_same_check(relay_docs, system_docs):
+    """The relay's own policy (LB-L8e) is judged by the function that judges
+    swarm-allow-live-ingress, and admits exactly what it admits."""
+    relay = _one(relay_docs, parity.RELAY_INGRESS_POLICY)
+    assert relay["metadata"]["namespace"] == parity.SYSTEM_NAMESPACE
+    assert relay["metadata"]["labels"]["managed-by"] == "swarm-terraform"
+    assert parity.check_live_ingress(relay, FAKE_API_CIDR, parity.RELAY_INGRESS_POLICY) == []
+    assert relay["spec"] == _one(system_docs, parity.LIVE_INGRESS_POLICY)["spec"]
+    for rule in relay["spec"]["ingress"]:
+        assert rule["ports"] == [{"protocol": "TCP", "port": 8080}]
+
+
+def test_the_relay_manifest_has_no_template_placeholder_left_once_rendered():
+    """Every placeholder the template names is one live.tf fills: a sixth
+    one added to the YAML alone would reach apply.sh unrendered."""
+    import re
+
+    assert re.findall(r"__[A-Z0-9_]+__", _relay_manifest()) == []
+
+
+def test_the_relay_policy_check_refuses_every_widening(relay_docs):
+    policy = _one(relay_docs, parity.RELAY_INGRESS_POLICY)
+    mutants = _mutants_of_ingress(policy)
+    assert len(mutants) == 12
+    passed = [
+        name for name, m in mutants.items()
+        if not parity.check_live_ingress(m, FAKE_API_CIDR, parity.RELAY_INGRESS_POLICY)
+    ]
+    assert passed == [], f"check_live_ingress accepted: {passed}"
+
+
+def test_the_relay_listens_where_the_policies_admit(relay_docs):
+    """The Services, the container and the probes are on the port both
+    policies open; a relay on any other port is closed by them."""
+    ports = set()
+    for doc in relay_docs:
+        if doc["kind"] == "Service":
+            ports |= {p["port"] for p in doc["spec"]["ports"]} | {p["targetPort"] for p in doc["spec"]["ports"]}
+        if doc["kind"] == "StatefulSet":
+            for container in doc["spec"]["template"]["spec"]["containers"]:
+                ports |= {p["containerPort"] for p in container["ports"]}
+                for probe in ("readinessProbe", "livenessProbe"):
+                    handler = container[probe].get("httpGet") or container[probe].get("tcpSocket")
+                    ports.add(handler["port"])
+    assert ports == {parity.LIVE_PORT}
 
 
 def test_the_egress_check_refuses_every_widening(tenant_docs):
@@ -319,7 +399,7 @@ def test_the_egress_check_refuses_every_widening(tenant_docs):
     mutants["ipBlock"]["spec"]["egress"][0]["to"].append({"ipBlock": {"cidr": "0.0.0.0/0"}})
     mutants["all pods"]["spec"]["podSelector"] = {}
     mutants["ingress"]["spec"]["policyTypes"].append("Ingress")
-    mutants["extra rule"]["spec"]["egress"].append({"ports": [{"protocol": "TCP", "port": 8443}]})
+    mutants["extra rule"]["spec"]["egress"].append({"ports": [{"protocol": "TCP", "port": 8080}]})
     passed = [name for name, m in mutants.items() if not parity.check_live_egress(m)]
     assert passed == [], f"check_live_egress accepted: {passed}"
 
@@ -346,11 +426,16 @@ def _parity_main(tmp_path: Path, live: dict[str, str], items: list[dict[str, Any
     return code, out.getvalue()
 
 
-def test_the_live_ingress_comparison_passes_on_the_render_and_fails_on_drift(tmp_path, system_docs):
+def test_the_live_ingress_comparison_passes_on_the_render_and_fails_on_drift(tmp_path, system_docs, relay_docs):
     live = {"swarm_api_egress_cidr": FAKE_API_CIDR, "source": "fake"}
-    code, out = _parity_main(tmp_path, live, system_docs)
+    applied = system_docs + relay_docs
+    code, out = _parity_main(tmp_path, live, applied)
     assert code == 0, out
-    code, out = _parity_main(tmp_path, {**live, "swarm_api_egress_cidr": "10.99.0.0/20"}, system_docs)
+    assert "compared 3 policies" in out, out
+    # The relay manifest's own policy is required: --swarm-system applies it.
+    code, out = _parity_main(tmp_path, live, system_docs)
+    assert code == 1 and parity.RELAY_INGRESS_POLICY in out, out
+    code, out = _parity_main(tmp_path, {**live, "swarm_api_egress_cidr": "10.99.0.0/20"}, applied)
     assert code == 1 and "10.99.0.0/20" in out
     # An empty sweep is nothing compared, never agreement.
     code, out = _parity_main(tmp_path, live, [])
@@ -370,7 +455,8 @@ printf '%s\n' "$*" >>"${d}/kubectl.log"
 case "$*" in
   *"version --client"*) printf 'Client Version: v1.36.3\n' ;;
   *"config current-context"*) printf 'swarm-dev' ;;
-  *"config view"*) printf 'gke_saga-agents-staging_us-central1_swarm-autopilot' ;;
+  *"config view"*)
+    if [[ -f "${d}/cluster-entry" ]]; then cat "${d}/cluster-entry"; else printf 'gke_saga-agents-staging_us-central1_swarm-autopilot'; fi ;;
   *"get namespace swarm-system"*) [[ -f "${d}/no-namespace" ]] && exit 1; printf 'namespace/swarm-system\n' ;;
   *"get networkpolicies"*) cat "${d}/applied.json" ;;
   *"apply --dry-run=client"*) cat >"${d}/applied-dry-run.yaml" ;;
@@ -397,10 +483,29 @@ case "$*" in
 esac
 """
 
+#: terraform, for `output -raw swarm_live_manifest` and `output -json
+#: live_relay`: the relay manifest is served from relay.yaml, and its absence
+#: is what terraform says about a null output.
+FAKE_TERRAFORM = r"""#!/usr/bin/env bash
+set -euo pipefail
+d="${FAKE_CLUSTER_DIR:?}"
+printf '%s\n' "$*" >>"${d}/terraform.log"
+case "$*" in
+  *"output -raw swarm_live_manifest"*)
+    if [[ ! -f "${d}/relay.yaml" ]]; then
+      printf 'Error: Unsupported value for raw output\n\nThe value for output value "swarm_live_manifest" is null, so -raw mode cannot print it.\n' >&2
+      exit 1
+    fi
+    cat "${d}/relay.yaml" ;;
+  *"output -json live_relay"*) cat "${d}/live_relay.json" ;;
+  *) printf 'fake terraform: unexpected call: %s\n' "$*" >&2; exit 3 ;;
+esac
+"""
+
 LEAKY = (
     "PROJECT_ID", "REGION", "ZONE", "ENVIRONMENT", "GKE_CLUSTER", "GKE_LOCATION", "API_SERVICE",
     "KUBECTL", "SWARM_KUBECTL", "KUBECONFIG", "SWARM_ENV_FILE", "GITHUB_ACTIONS",
-    "CLOUDSDK_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS",
+    "CLOUDSDK_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS", "SWARM_TERRAFORM",
 )
 
 
@@ -425,16 +530,19 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
     b = tmp_path / "bin"
     d.mkdir()
     b.mkdir()
-    for name, body in (("kubectl", FAKE_KUBECTL), ("gcloud", FAKE_GCLOUD)):
+    for name, body in (("kubectl", FAKE_KUBECTL), ("gcloud", FAKE_GCLOUD), ("terraform", FAKE_TERRAFORM)):
         (b / name).write_text(body)
         (b / name).chmod(0o755)
     (d / "service.json").write_text(json.dumps(_service(f"projects/saga-agents-staging/regions/us-central1/subnetworks/{FAKE_SUBNET}")))
     (d / "subnet.json").write_text(json.dumps({"name": FAKE_SUBNET, "ipCidrRange": FAKE_API_CIDR}))
+    (d / "relay.yaml").write_text(_relay_manifest())
+    (d / "live_relay.json").write_text(json.dumps({"enabled": True, "port": 8080, "swarm_api_egress_cidr": FAKE_API_CIDR}))
     env = {k: v for k, v in os.environ.items() if k not in LEAKY}
     env.update(
         PATH=f"{b}:{env.get('PATH', '')}",
         FAKE_CLUSTER_DIR=str(d),
         SWARM_KUBECTL=str(b / "kubectl"),
+        SWARM_TERRAFORM=str(b / "terraform"),
         SWARM_ENV_FILE=str(tmp_path / "no.env"),
         HOME=str(tmp_path),
     )
@@ -483,9 +591,110 @@ def test_apply_refuses_when_swarm_api_has_no_direct_vpc_subnet(cluster):
     assert not (cluster["dir"] / "applied.yaml").exists()
 
 
-def test_apply_confirm_refuses_without_the_namespace(cluster):
+# --- apply.sh --swarm-system applies the relay first (LB-L8e) -----------------
+
+
+def _kinds_and_names(text: str) -> list[tuple[str, str]]:
+    return [(d["kind"], d["metadata"]["name"]) for d in _docs(text)]
+
+
+@pytest.mark.parametrize("confirm", [False, True])
+def test_apply_applies_the_relay_manifest_before_the_policies(cluster, confirm):
+    """One apply, in order: the relay's manifest from `terraform output -raw
+    swarm_live_manifest` -- which creates the namespace -- and then
+    swarm-system's policies. A dry run previews the same stream."""
+    (cluster["dir"] / "no-namespace").write_text("")
+    result = _apply(cluster, *(["--confirm"] if confirm else []))
+    assert result.returncode == 0, result.stderr
+    assert "output -raw swarm_live_manifest" in (cluster["dir"] / "terraform.log").read_text()
+    stream = (cluster["dir"] / ("applied.yaml" if confirm else "applied-dry-run.yaml")).read_text()
+    order = _kinds_and_names(stream)
+    assert order[0] == ("Namespace", "swarm-system"), order
+    relay = _kinds_and_names(_relay_manifest())
+    assert order[: len(relay)] == relay, order
+    policies = [o for o in order[len(relay):]]
+    assert policies == [
+        ("NetworkPolicy", parity.SYSTEM_DENY_POLICY),
+        ("NetworkPolicy", parity.LIVE_INGRESS_POLICY),
+    ], order
+    assert order.index(("StatefulSet", "swarm-live")) < order.index(("NetworkPolicy", parity.SYSTEM_DENY_POLICY))
+    if confirm:
+        out = result.stdout + result.stderr
+        assert f"{parity.SYSTEM_NAMESPACE}/{parity.RELAY_INGRESS_POLICY} matches {FAKE_API_CIDR}" in out, out
+        assert "compared 3 policies" in out, out
+    else:
+        assert not (cluster["dir"] / "applied.yaml").exists(), "a dry run applied something"
+
+
+@pytest.mark.parametrize(
+    "how",
+    [
+        ("--context", "gke_saga-agents-staging_us-central1-a_agents-staging"),
+        ("label",),
+    ],
+)
+def test_apply_refuses_the_shared_cluster_before_reading_the_relay(cluster, how):
+    """agents-staging is another team's cluster (CLAUDE.md rule 2). Refused by
+    the deny-list in scripts/lib/common.sh -- whether named as the context or
+    reached through our own label -- before terraform is asked for anything
+    and before anything is applied."""
+    other = "gke_saga-agents-staging_us-central1-a_agents-staging"
+    if how[0] == "label":
+        (cluster["dir"] / "cluster-entry").write_text(other)
+        result = _apply(cluster, "--confirm")
+    else:
+        result = _apply(cluster, "--confirm", *how)
+    assert result.returncode != 0
+    assert "agents-staging" in result.stderr and "deny-list" in result.stderr, result.stderr
+    assert not (cluster["dir"] / "terraform.log").exists(), "the relay manifest was read for a refused cluster"
+    assert not (cluster["dir"] / "applied.yaml").exists()
+    assert not (cluster["dir"] / "applied-dry-run.yaml").exists()
+
+
+def test_apply_confirm_refuses_without_a_relay_manifest(cluster):
+    """enable_live_browser off: the output is null, and the policies alone
+    would select a relay that does not exist in a namespace nothing made."""
+    (cluster["dir"] / "relay.yaml").unlink()
     (cluster["dir"] / "no-namespace").write_text("")
     result = _apply(cluster, "--confirm")
     assert result.returncode != 0
-    assert "swarm-system" in result.stderr
+    assert "no relay manifest" in result.stderr, result.stderr
+    assert not (cluster["dir"] / "applied.yaml").exists()
+
+
+def test_a_dry_run_without_a_relay_manifest_previews_the_policies_alone(cluster):
+    (cluster["dir"] / "relay.yaml").unlink()
+    result = _apply(cluster)
+    assert result.returncode == 0, result.stderr
+    assert "--confirm will refuse" in result.stderr
+    order = _kinds_and_names((cluster["dir"] / "applied-dry-run.yaml").read_text())
+    assert all(kind == "NetworkPolicy" for kind, _ in order), order
+
+
+def test_apply_refuses_when_terraforms_range_is_not_swarm_apis(cluster):
+    """The relay's policy admits terraform's subnet_cidr; the policies after it
+    admit the range read from swarm-api. One fact, two sources: held equal."""
+    (cluster["dir"] / "live_relay.json").write_text(json.dumps({"swarm_api_egress_cidr": "10.40.0.0/20"}))
+    for argv in ((), ("--confirm",)):
+        result = _apply(cluster, *argv)
+        assert result.returncode != 0
+        assert "10.40.0.0/20" in result.stderr and FAKE_API_CIDR in result.stderr, result.stderr
+    assert not (cluster["dir"] / "applied.yaml").exists()
+
+
+@pytest.mark.parametrize(
+    "mutate, said",
+    [
+        (lambda text: text.replace("namespace: swarm-system", "namespace: default", 1), "other than swarm-system"),
+        (lambda text: text + "---\napiVersion: rbac.authorization.k8s.io/v1\nkind: ClusterRole\nmetadata:\n  name: x\n", "RBAC"),
+        (lambda text: text + "---\napiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: x\n  namespace: swarm-system\ndata:\n  a: __UNFILLED__\n", "placeholder"),
+    ],
+    ids=["another-namespace", "rbac", "placeholder"],
+)
+def test_apply_refuses_a_relay_manifest_that_reaches_past_swarm_system(cluster, mutate, said):
+    relay = cluster["dir"] / "relay.yaml"
+    relay.write_text(mutate(relay.read_text()))
+    result = _apply(cluster, "--confirm")
+    assert result.returncode != 0
+    assert said in result.stderr, result.stderr
     assert not (cluster["dir"] / "applied.yaml").exists()

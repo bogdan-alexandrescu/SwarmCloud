@@ -4,10 +4,13 @@
 #   kubernetes/apply.sh --tenant eng                 # dry run, prints a diff
 #   kubernetes/apply.sh --tenant eng --confirm       # actually applies
 #   kubernetes/apply.sh --policies --confirm         # cluster-scoped policies
-#   kubernetes/apply.sh --swarm-system --confirm     # swarm-system's ingress: the
-#                         # live relay's TCP 8443, from labelled tenant pods and
-#                         # swarm-api's Direct VPC egress range, read from the
-#                         # service (docs/design/live-browser.md §8.3)
+#   kubernetes/apply.sh --swarm-system --confirm     # the live relay, then
+#                         # swarm-system's ingress: the relay's manifest from
+#                         # `terraform output -raw swarm_live_manifest` (which
+#                         # creates the namespace), then its TCP 8080 from
+#                         # labelled tenant pods and swarm-api's Direct VPC
+#                         # egress range, read from the service
+#                         # (docs/design/live-browser.md §3.3, §8.3)
 #   kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
 #                         # ... with the step-spec public keys ConfigMap, from
 #                         # `terraform output -json spec_verify_keys_configmap`
@@ -76,11 +79,17 @@
 # ingress admits swarm-api's Direct VPC egress range, and that range is READ:
 # the subnetwork swarm-api's own service names (`gcloud run services describe`,
 # the run.googleapis.com/network-interfaces annotation), then that subnetwork's
-# ipCidrRange. Never typed, never forwarded. --confirm refuses while the
-# swarm-system namespace does not exist (lane L8 creates it with the relay),
-# and afterwards compares the applied policies with the range it read
-# (kubernetes/network_parity.py --live-ingress), exiting non-zero on a
-# difference.
+# ipCidrRange. Never typed, never forwarded. Before those policies it applies
+# the relay itself -- `terraform output -raw swarm_live_manifest`
+# (terraform/infra/live.tf), which creates the swarm-system namespace the
+# policies go into -- in the same apply, first. --confirm refuses when there is
+# no manifest to apply (enable_live_browser off), when it carries an object
+# outside swarm-system, an RBAC object or an unrendered placeholder, and when
+# the range terraform rendered into the relay's own NetworkPolicy is not the
+# range read from swarm-api. Afterwards it compares the applied policies with
+# that range (kubernetes/network_parity.py --live-ingress), exiting non-zero
+# on a difference. The relay is applied through the same context checks as
+# everything here: never to `agents-staging`.
 set -euo pipefail
 
 HERE="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -477,21 +486,99 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
   SWARM_API_EGRESS_SOURCE="run/${PROJECT_ID}/${SUBNET_REGION}/${API_SERVICE}/${SUBNET}"
   info "swarm-api egress  ${SWARM_API_EGRESS_CIDR}  (${SWARM_API_EGRESS_SOURCE})"
 
-  # The namespace is lane L8's, created with the relay. A NetworkPolicy
-  # applied into a namespace that does not exist fails mid-apply; refuse
-  # first, under --confirm, and say whose it is. A dry run previews anyway.
-  if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" get namespace swarm-system -o name >/dev/null 2>&1; then
+  # THE RELAY, FROM TERRAFORM, APPLIED FIRST (lane LB-L8e). Its manifest is
+  # terraform/infra/live.tf's `swarm_live_manifest`: kubernetes/swarm-system/
+  # swarm-live.yaml with this root's image digest, bucket, key reference,
+  # reserved address and swarm-api's subnet range filled in. It creates the
+  # swarm-system namespace, so it goes ahead of the policies in ONE apply
+  # (kubectl applies a stream in order): a NetworkPolicy applied into a
+  # namespace that does not exist fails mid-apply.
+  #
+  # Read here, AFTER the context checks above, and applied only through them:
+  # nothing below can send it to agents-staging. To files, not $(...): the
+  # exit status and the error are both kept (CLAUDE.md).
+  RELAY_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-live-relay.XXXXXX")"
+  RELAY_MANIFEST=""
+  TF_DIR="$(tf_root)"
+  if tf -chdir="${TF_DIR}" output -raw swarm_live_manifest >"${RELAY_WORK}/relay.yaml" 2>"${RELAY_WORK}/relay.err" \
+      && [[ -s "${RELAY_WORK}/relay.yaml" ]]; then
+    RELAY_MANIFEST="$(cat "${RELAY_WORK}/relay.yaml")"
+  else
+    # Null while enable_live_browser is off or swarm-live has no digest, and
+    # `output -raw` refuses a null; or terraform is not initialised here.
+    err "terraform has no relay manifest to apply (terraform -chdir=${TF_DIR} output -raw swarm_live_manifest):"
+    redact <"${RELAY_WORK}/relay.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    dim "  It is null until enable_live_browser is set and image_refs has a swarm-live digest"
+    dim "  (terraform/infra/live.tf, the order in its header); run 'make tf-init' if terraform"
+    dim "  is not initialised for ${ENVIRONMENT}."
     if [[ "${CONFIRM}" -eq 1 ]]; then
-      die "namespace swarm-system does not exist on ${CLUSTER}; it is created with the live relay
-       (kubernetes/swarm-system/, lane L8). Nothing was applied."
+      rm -rf "${RELAY_WORK}"
+      die "no relay manifest: swarm-system's policies would select a relay that does not exist,
+       in a namespace nothing created. Nothing was applied."
     fi
-    warn "namespace swarm-system does not exist yet; --confirm will refuse until it does."
+    warn "previewing swarm-system's policies alone; --confirm will refuse."
   fi
 
-  MANIFEST="$("${PYTHON}" "${HERE}/render.py" swarm-system \
+  if [[ -n "${RELAY_MANIFEST}" ]]; then
+    # What the relay manifest may hold, checked before anything sees a
+    # cluster: every object in swarm-system (the namespace itself aside),
+    # no Kubernetes RBAC -- the relay calls no Kubernetes API -- and no
+    # placeholder terraform left unfilled.
+    if grep -Eo '__[A-Z0-9_]+__' "${RELAY_WORK}/relay.yaml" >"${RELAY_WORK}/placeholders"; then
+      PLACEHOLDER="$(head -n 1 "${RELAY_WORK}/placeholders")"
+      rm -rf "${RELAY_WORK}"
+      die "the relay manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
+    fi
+    if grep -Eq '^kind:[[:space:]]*(Cluster)?Role(Binding)?[[:space:]]*$' "${RELAY_WORK}/relay.yaml"; then
+      rm -rf "${RELAY_WORK}"
+      die "the relay manifest carries Kubernetes RBAC; the relay holds none. Nothing was applied."
+    fi
+    if grep -E '^[[:space:]]+namespace:[[:space:]]' "${RELAY_WORK}/relay.yaml" \
+        | grep -Ev '^[[:space:]]+namespace:[[:space:]]+swarm-system[[:space:]]*$' >"${RELAY_WORK}/foreign"; then
+      redact <"${RELAY_WORK}/foreign" | sed -n '1,5p' | sed 's/^/     /' >&2
+      rm -rf "${RELAY_WORK}"
+      die "the relay manifest names a namespace other than swarm-system (above); nothing was applied."
+    fi
+
+    # TERRAFORM'S RANGE MUST BE SWARM-API'S. The relay's own NetworkPolicy
+    # admits var.subnet_cidr, the range terraform gives every Cloud Run
+    # service's Direct VPC egress; the policies below admit the range just
+    # READ from swarm-api's service. Two values for one fact are held equal
+    # here, before either reaches the cluster.
+    if ! tf -chdir="${TF_DIR}" output -json live_relay >"${RELAY_WORK}/live_relay.json" 2>"${RELAY_WORK}/live_relay.err"; then
+      redact <"${RELAY_WORK}/live_relay.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+      rm -rf "${RELAY_WORK}"
+      die "could not read terraform's live_relay output (above); nothing was applied."
+    fi
+    TF_EGRESS_CIDR="$(jq -r '.swarm_api_egress_cidr // empty' "${RELAY_WORK}/live_relay.json")"
+    if [[ "${TF_EGRESS_CIDR}" != "${SWARM_API_EGRESS_CIDR}" ]]; then
+      rm -rf "${RELAY_WORK}"
+      die "the relay manifest admits swarm-api's range as '${TF_EGRESS_CIDR:-nothing}' (terraform's var.subnet_cidr),
+       but ${API_SERVICE} egresses from ${SWARM_API_EGRESS_CIDR} (${SWARM_API_EGRESS_SOURCE}).
+       One of them is stale; nothing was applied."
+    fi
+    info "relay manifest  terraform output swarm_live_manifest (admits ${TF_EGRESS_CIDR})"
+  fi
+  rm -rf "${RELAY_WORK}"
+
+  if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" get namespace swarm-system -o name >/dev/null 2>&1; then
+    if [[ -n "${RELAY_MANIFEST}" ]]; then
+      info "namespace swarm-system does not exist yet; the relay manifest creates it, ahead of the policies."
+    else
+      warn "namespace swarm-system does not exist yet, and there is no relay manifest to create it."
+    fi
+  fi
+
+  POLICIES="$("${PYTHON}" "${HERE}/render.py" swarm-system \
     --swarm-api-egress-cidr "${SWARM_API_EGRESS_CIDR}" \
     --swarm-api-egress-source "${SWARM_API_EGRESS_SOURCE}")"
-  info "rendering swarm-system's ingress policies"
+  if [[ -n "${RELAY_MANIFEST}" ]]; then
+    MANIFEST="${RELAY_MANIFEST}"$'\n---\n'"${POLICIES}"
+    info "rendering the live relay, then swarm-system's ingress policies"
+  else
+    MANIFEST="${POLICIES}"
+    info "rendering swarm-system's ingress policies"
+  fi
 else
   [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies)"
 
