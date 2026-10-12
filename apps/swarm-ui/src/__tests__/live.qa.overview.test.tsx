@@ -140,7 +140,6 @@ describe('OV-1/OV-2: a phone counts the failures its 200 newest do not hold', ()
     expect(api.loadTasks.mock.calls.every((c) => c[0] === 200)).toBe(true)
     const card = el.querySelector('#ov-failures')!
     expect(text(card)).toMatch(/last 24h · 11 failed/)
-    expect(text(card)).not.toMatch(/real zero/i)
     expect(card.querySelector('.ctl-mark.is-zero')).toBeNull()
     // All eleven listed: six rows and "5 more".
     expect(card.querySelectorAll('.ov-name').length).toBe(11)
@@ -165,7 +164,7 @@ describe('OV-1/OV-2: a phone counts the failures its 200 newest do not hold', ()
     serve(tenant(), () => ({ status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } }) as Result<TaskPage>)
     const el = await mount()
     const card = el.querySelector('#ov-failures')!
-    expect(text(card)).not.toMatch(/real zero/i)
+    expect(card.querySelector('.ctl-mark.is-zero')).toBeNull()
     expect(text(card)).toMatch(/≥0 failed/)
     expect(text(card)).toMatch(/partial/)
     // And the check is not "clear": the state counts say 11 FAILED.

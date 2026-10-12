@@ -1147,7 +1147,7 @@ function CapacityStacks({ state }: { state: Result<Capacity> }) {
       <CardAbsent
         kind="zero"
         heading="No pools exist"
-        say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+        say="The read succeeded: no capacity pool exists."
         explain="capacity"
       />
     )
@@ -1215,7 +1215,7 @@ function PoolsBody({ state }: { state: Result<Capacity> }) {
       <CardAbsent
         kind="zero"
         heading="No pools exist"
-        say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+        say="The read succeeded: no capacity pool exists."
       />
     )
   }
@@ -1399,7 +1399,7 @@ function AccountLine({ state }: { state: Result<AccountsPage> }) {
       <CardAbsent
         kind="zero"
         heading="No account registered"
-        say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+        say="The read succeeded: no subscription account is registered."
         explain="park-on-missing-credential"
       />
     )
@@ -1579,7 +1579,7 @@ function RunningCard({
         <CardAbsent
           kind="zero"
           heading="No task exists"
-          say="The read succeeded and returned nothing. This is a real zero, not a failure to read."
+          say="The read succeeded: this tenant has no tasks."
           explain="absent-vs-zero"
         />
       </>
@@ -1902,7 +1902,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
         <CardAbsent
           kind="zero"
           heading="No task exists"
-          say="The task read succeeded and returned nothing — a real zero, so there are no attempts to sum."
+          say="The task read succeeded and found no tasks, so there are no attempts to sum."
           explain="absent-vs-zero"
         />
       )
@@ -1911,7 +1911,7 @@ function SpendBody({ state, tasks }: { state: Result<SpendRollup>; tasks: Result
       <CardAbsent
         kind="zero"
         heading="No task has run"
-        say="Every task on the page has an attempt count of 0 — a real zero."
+        say="Every task on the page has an attempt count of 0: none of them has started."
         explain="attempt-documents"
       />
     )
@@ -2175,7 +2175,7 @@ export function accountHeadroom(state: Result<AccountsPage>): {
       pct: null,
       best: null,
       sub: 'no account is registered, so the subscription pool supplies nothing',
-      foot: 'read succeeded · a real zero',
+      foot: 'read succeeded',
       reading: false,
       absent: 'no accounts',
       usable: 0,

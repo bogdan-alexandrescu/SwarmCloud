@@ -108,7 +108,7 @@ function emptyAccounts(): AccountsBoard {
 
 /** Every `real zero` drawn is an image with a non-empty name; return them. */
 function realZeros(scope: HTMLElement): HTMLElement[] {
-  const marks = within(scope).getAllByRole('img', { name: /\S/ }).filter((m) => m.textContent === 'real zero')
+  const marks = within(scope).getAllByRole('img', { name: /\S/ }).filter((m) => m.textContent === 'none')
   for (const m of marks) expect(m.getAttribute('aria-label')?.trim().length ?? 0).toBeGreaterThan(20)
   return marks
 }

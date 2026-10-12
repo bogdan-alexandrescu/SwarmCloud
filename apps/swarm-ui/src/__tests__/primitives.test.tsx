@@ -135,7 +135,7 @@ describe('Metric', () => {
 describe('Absent', () => {
   it('names each kind of nothing with its own mark, inside the heading', () => {
     const cases = [
-      ['zero', 'real zero', ''],
+      ['zero', 'none', ''],
       ['failed', 'not read', 'is-failed'],
       ['partial', 'partial', 'is-partial'],
       ['admin', 'admin only', 'is-admin'],

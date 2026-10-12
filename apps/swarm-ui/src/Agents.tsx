@@ -840,7 +840,7 @@ function AgentsBody({
                 needle !== ''
                   ? `No ${stateFilter !== null ? `${RECENT_STATE_OF[stateFilter]} ` : ''}agent in the loaded page of ${shown} matches “${query.trim()}”.`
                   : shown === 'live'
-                  ? 'No agent is holding a pool slot right now. This is a real zero from a successful read, not a failed one.'
+                  ? 'No agent is holding a pool slot right now.'
                   : shown === 'waiting'
                     ? 'Nothing is waiting. Waiting work costs nothing, so an empty tab here is normal.'
                       : stateFilter !== null
