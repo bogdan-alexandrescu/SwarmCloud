@@ -52,6 +52,10 @@ resource "google_artifact_registry_repository" "mirror_ghcr" {
     }
   }
 
+  # CKV_GCP_84: same wiring as modules/artifact_registry -- a CMEK when one is
+  # configured, Google-managed encryption otherwise.
+  kms_key_name = var.mirror_kms_key_name == "" ? null : var.mirror_kms_key_name
+
   labels = local.labels
 
   depends_on = [module.project_services]
@@ -72,6 +76,10 @@ resource "google_artifact_registry_repository" "mirror_dockerhub" {
       public_repository = "DOCKER_HUB"
     }
   }
+
+  # CKV_GCP_84: same wiring as modules/artifact_registry -- a CMEK when one is
+  # configured, Google-managed encryption otherwise.
+  kms_key_name = var.mirror_kms_key_name == "" ? null : var.mirror_kms_key_name
 
   labels = local.labels
 
