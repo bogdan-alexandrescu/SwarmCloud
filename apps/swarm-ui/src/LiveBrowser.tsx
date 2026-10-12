@@ -422,6 +422,7 @@ export function LiveBrowserPane({
     sessionId: session.session_id,
     screen: screenNode,
     live: true,
+    browser: session, reload, // the device, the controller and the return, for the theater (LB-UX2a)
   }
   const strip = (
     <div className={`live-strip is-${verdict.tone}`} data-tone={verdict.tone} role="status">
