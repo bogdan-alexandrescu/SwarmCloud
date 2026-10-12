@@ -12,6 +12,8 @@
     CHECKING  --red, rounds left---------------------------->   FIXING (one continuation)
     CHECKING  --red, `fix_rounds` spent--------------------->   FAILED (failure_excerpt)
     CHECKING  --pending------------------------------------->   CHECKING
+    CHECKING  --still CHECKING past CHECKING_DEADLINE_SECONDS->  FAILED (why: unread,
+              (not a green `auto_merge` run awaiting merge)      or the checks' state)
     FIXING    --the continuation SUCCEEDED------------------>   CHECKING
     FIXING    --the continuation FAILED / was cancelled----->   FAILED / CANCELLED
 
@@ -221,6 +223,15 @@ CI_READ_SECONDS = 30
 #: a repository with no CI: DONE, `checks: none`. Long enough for a CI that
 #: is merely slow to register its first check.
 NO_CHECKS_SECONDS = 600
+#: The longest a run stays CHECKING, from its latest entry into it, before it
+#: is FAILED saying why (RUNS, 2026-10-12). run_e525710be66e sat CHECKING for
+#: hours because its credential could not read the repository's checks, and
+#: held a schedule slot all that time. 12 hours is twice GitHub Actions' 6-hour
+#: ceiling on one hosted job, so CI that is only slow ends first; a run still
+#: unread or pending after that is one nobody is moving on, and its slot goes
+#: back the same day. A green `auto_merge` run is not timed out: it waits on its
+#: merge, or a person's merge approval, and both end it (`_awaiting_merge`).
+CHECKING_DEADLINE_SECONDS = 12 * 3600
 #: A round claimed (FIXING) whose workflow id was never recorded -- the
 #: submission died between the claim and the record -- is FAILED after this.
 LOST_ROUND_SECONDS = 600
@@ -847,8 +858,73 @@ def _read_ci(
     return pull, reading
 
 
+def checking_since(run: IssueRun) -> datetime | None:
+    """When the run last entered CHECKING: its newest history move there.
+
+    A fix round's return (FIXING -> CHECKING) restarts the deadline -- the
+    round pushed a new head, and its CI deserves the whole of it. None for a
+    run whose history records no such move (a document written before
+    history); `updated_at` stands in, since a patch never moves it.
+    """
+    for entry in reversed(run.history or []):
+        if isinstance(entry, Mapping) and entry.get("to") == RunState.CHECKING.value:
+            return _aware(entry.get("at"))
+    return _aware(run.updated_at) if run.state == RunState.CHECKING else None
+
+
+def _awaiting_merge(run: IssueRun) -> bool:
+    """A green `auto_merge` run with nothing failing to read: it waits on its
+    merge continuation or on a merge approval, which a person gives."""
+    pull = run.pull_request or {}
+    return bool(run.auto_merge) and pull.get("checks") == GREEN and not pull.get("read_error")
+
+
+def checking_expired(run: IssueRun, now: datetime) -> str | None:
+    """The plain reason a CHECKING run past CHECKING_DEADLINE_SECONDS ends
+    FAILED, or None: not CHECKING, not past it, or waiting on a merge."""
+    if run.state != RunState.CHECKING or _awaiting_merge(run):
+        return None
+    since = checking_since(run)
+    if since is None or now - since < timedelta(seconds=CHECKING_DEADLINE_SECONDS):
+        return None
+    hours = CHECKING_DEADLINE_SECONDS // 3600
+    pull = run.pull_request or {}
+    number = pull.get("number")
+    error = pull.get("read_error")
+    if error:
+        return failure_text(f"could not read the repository's checks for {hours} hours: {error}")
+    checks = pull.get("checks")
+    head = pull.get("head_sha")
+    if checks and isinstance(head, str) and head:
+        return failure_text(
+            f"CI on pull request #{number} was still {checks} at {head[:12]} after {hours} hours "
+            "in CHECKING"
+        )
+    return failure_text(f"pull request #{number} had no CI reading after {hours} hours in CHECKING")
+
+
 def from_checks(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAuth) -> IssueRun:
-    """One visit to a CHECKING run: read CI at the head and move on what it says."""
+    """One visit to a CHECKING run: read CI at the head and move on what it says.
+
+    THE DEADLINE IS APPLIED AFTER THE VISIT, so a run whose CI turns green on
+    its last visit is DONE, not FAILED; one the visit leaves CHECKING past
+    CHECKING_DEADLINE_SECONDS is FAILED with `checking_expired`'s reason. CHECKING
+    holds nothing but the run's place in its schedule (invariant 1), and FAILED
+    is terminal, so that move is what gives the slot back.
+    """
+    after = _visit_checking(ctx, tenant_id, run, owner_auth)
+    reason = checking_expired(after, ctx.now())
+    if reason is None:
+        return after
+    log.warning("issue run %s tenant=%s: CHECKING past its deadline", after.id, after.tenant_id)
+    return _runs(ctx).transition(
+        tenant_id, after.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
+        patch={"error": reason},
+    )
+
+
+def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAuth) -> IssueRun:
+    """`from_checks` before its deadline: read CI and move on what it says."""
     runs = _runs(ctx)
     now = ctx.now()
     recorded = dict(run.pull_request or {})

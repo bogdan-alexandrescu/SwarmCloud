@@ -1290,15 +1290,45 @@ routes' answers with it, and vitest feeds it through the console's own loaders
 index names that either side does not handle fails both. The path-only check
 in `test_runtimes_screen.py` could never see a shape.
 
-**Not reported yet, so served as null:** the session's `origin` and `device`.
-The gate reads both (section 5.7, section 6.1) but nothing carries them to
-swarm-api — no relay message, no ctl report, no `live_sessions` field — and
-inventing them would show a person an origin strip nobody measured. The
-console draws "not reported" for both. `presets` is the gate's fixed list
-(section 6.1), restated in swarm-api and held equal to
-`agent_worker.livegate.presets` by a test. A recording's `started_at` is its
-object's write time, which is the END of the minute it holds; the relay
-records no start.
+**The origin and the device are the gate's report (LB-DEV-A, 2026-10-12).**
+LB-SEAM served both as null because nothing carried them to swarm-api. Now
+the gate reports them over the tunnel it already holds
+(`agent_worker/livegate/report.py`, tunnel op `REPORT`): the top frame's
+origin, built from the URL Chromium committed and the registrable domain
+Chromium computed from its own public suffix list (`domainAndRegistry`),
+whenever the page on screen changes or its top frame commits a navigation,
+and the device -- preset name, orientation, touch, never a size -- once
+applied, at start and on every change. Path, query and any user name or
+password in the URL never leave the gate. The relay keeps the latest report
+per session in memory and passes it as text to every viewer link (after
+`ready` to one that joins later); it may not write Firestore (decision (a)),
+so **swarm-api writes it**: the viewer link is swarm-api's own proxied
+socket, which checks every field against the others (scheme, host, port,
+registrable domain a suffix of the host, punycode that encodes back to the
+host, no control or bidi characters, a preset by name with its own touch)
+and records it on `live_sessions/{id}` as `origin`, `device` and
+`reported_at`. The session read checks the stored value again before serving
+it. What this does not do, stated plainly: the document is written only while
+someone watches (a viewer link is the only path in), so a session nobody has
+opened shows null until the first viewer connects -- the console's own view
+connects at once, and the next read carries it. `cert_error` is served null
+(unknown): the gate's page follower does not watch the security state; the
+gate still refuses control on a page that is not secure (§5.7 item 4).
+`presets` is the gate's fixed list (section 6.1), restated in swarm-api and
+held equal to `agent_worker.livegate.presets` by a test. A recording's
+`started_at` is its object's write time, which is the END of the minute it
+holds; the relay records no start.
+
+**The display could not be resized at all before LB-DEV-A.** Xvfb starts
+with one CRTC driving a mode as large as the whole screen (the largest
+preset's), and RandR refuses (BadMatch) a screen size smaller than an active
+CRTC, so the gate's bare `RRSetScreenSize` failed for every preset -- the
+default `desktop` first, measured 2026-10-11 as `DisplayError` on
+task_8cf26eb6e1f94e85adf8. `XRandrDisplay` now does what `xrandr` does:
+a mode of the frame's size (created once, by Xvfb's own `<w>x<h>` name),
+CRTC off, screen size, CRTC on in the new mode. The unit test drives every
+preset in both orientations against an X server modelled on Xvfb's RandR;
+no real Xvfb ran in that lane.
 
 **The thumbnail's socket is the session's, ticketed.** The workflow card
 opened `/v1/tasks/{task_id}/live` with no ticket. Section 5.2 refuses that, so

@@ -19,8 +19,10 @@ import {
   returnLiveControl,
   openLiveToMembers,
   takeLiveControl,
+  type LiveChannel,
   type LiveOrigin,
   type LiveSession,
+  type LiveStatus,
 } from './api'
 import { SaveAsLoginOffer } from './BrowserLogins'
 import { Button } from './components'
@@ -480,6 +482,7 @@ export function LiveBrowserPane({
     sessionId: session.session_id,
     screen: screenNode,
     live: true,
+    browser: session, reload, // the device, the controller and the return, for the theater (LB-UX2a)
   }
   const strip = (
     <div className={`live-strip is-${verdict.tone}`} data-tone={verdict.tone} role="status">
@@ -544,6 +547,7 @@ export function LiveBrowserPane({
             touch={mine && session.device !== null && session.device.touch}
             onScreen={setScreenNode}
             caption={<span className="live-caption">{deviceCaption(session)}</span>}
+            onControlChange={reload}
           />
         </div>
       </div>
@@ -747,7 +751,7 @@ export interface Rfb {
   addEventListener(type: 'connect' | 'disconnect' | 'securityfailure', listener: (e: Event) => void): void
 }
 
-export type RfbConstructor = new (target: HTMLElement, channel: WebSocket, options?: { shared?: boolean }) => Rfb
+export type RfbConstructor = new (target: HTMLElement, channel: LiveChannel, options?: { shared?: boolean }) => Rfb
 
 /** noVNC, loaded with the first Browser tab rather than with the console. */
 async function loadRfb(): Promise<RfbConstructor> {
@@ -764,6 +768,7 @@ function LiveScreen({
   touch,
   onScreen,
   caption,
+  onControlChange,
 }: {
   taskId: string
   control: boolean
@@ -772,12 +777,16 @@ function LiveScreen({
   onScreen?: (node: HTMLElement | null) => void
   /** Under the device frame: what it is, its size and the page's path. */
   caption?: ReactNode
+  /** Called when swarm-api's status frames say control or the session changed: the pane re-reads the session. */
+  onControlChange?: () => void
 }) {
   const host = useRef<HTMLDivElement>(null)
   const rfb = useRef<Rfb | null>(null)
   const focused = useRef(false)
   const controlRef = useRef(control)
   controlRef.current = control
+  const changedRef = useRef(onControlChange)
+  changedRef.current = onControlChange
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
   const [hasFocus, setHasFocus] = useState(false)
@@ -801,6 +810,16 @@ function LiveScreen({
     let stopped = false
     let tries = 0
     let timer: ReturnType<typeof setTimeout> | null = null
+    // swarm-api's status frames (LB-STREAM): never noVNC's, which reads only
+    // the binary RFB stream. The first one the tab sees is the state the
+    // session read already drew; a later change of controller, of whether
+    // this viewer holds control, or of the session closing re-reads it.
+    let seen: LiveStatus | null = null
+    const onStatus = (s: LiveStatus) => {
+      const changed = seen !== null && (s.in_control !== seen.in_control || s.controller !== seen.controller || s.open !== seen.open)
+      seen = s
+      if (changed && !stopped) changedRef.current?.()
+    }
     const retry = (message: string) => {
       if (stopped) return
       tries += 1
@@ -849,7 +868,7 @@ function LiveScreen({
             if (rfb.current === r) rfb.current = null
             retry('The live connection closed. Reconnecting with a new ticket.')
           })
-        })
+        }, onStatus)
       } catch (err) {
         retry(err instanceof Error ? err.message : 'The live connection did not open.')
       }

@@ -65,7 +65,7 @@ const rfb = vi.hoisted(() => {
     readonly canvas: HTMLCanvasElement
     /** Touches that reached noVNC's own canvas listener. */
     touches = 0
-    /** How many frames the socket had carried when noVNC was handed it. */
+    /** How many frames the raw socket had carried when noVNC was handed the channel. */
     readonly sentBeforeAttach: number
     /** Server frames noVNC read: like noVNC's Websock.attach, only through `onmessage`, set here. */
     readonly received: unknown[] = []
@@ -74,14 +74,14 @@ const rfb = vi.hoisted(() => {
     private listeners = new Map<string, ((e: Event) => void)[]>()
     constructor(
       target: HTMLElement,
-      readonly channel: { sent: string[]; readyState: number; onmessage: ((e: MessageEvent) => void) | null },
+      readonly channel: { readyState: number; onmessage: ((e: { data: unknown }) => void) | null },
     ) {
       if (FakeRfb.throwNext || channel.readyState !== 1) {
         FakeRfb.throwNext = false
         throw new Error('Cannot use already closed WebSocket/RTCDataChannel')
       }
       channel.onmessage = (e) => this.received.push(e.data)
-      this.sentBeforeAttach = channel.sent.length
+      this.sentBeforeAttach = FakeSocket.made.at(-1)!.sent.length
       this.canvas = document.createElement('canvas')
       this.canvas.tabIndex = -1
       this.canvas.addEventListener('touchstart', () => {
@@ -106,10 +106,14 @@ vi.mock('@novnc/novnc/core/rfb.js', () => ({ default: rfb.FakeRfb }))
 
 class FakeSocket extends EventTarget {
   static made: FakeSocket[] = []
-  /** The frame the relay sends the moment the socket is open, in the same task: the RFB server speaks first. */
-  static greeting: string | null = null
+  /**
+   * The frames that arrive the moment the socket is open, in the same task: swarm-api's
+   * status (TEXT), then the RFB server's ProtocolVersion (binary), which speaks first.
+   */
+  static greeting: (string | ArrayBuffer)[] = []
   binaryType = 'blob'
   readyState = 0
+  onopen: ((e: Event) => void) | null = null
   onmessage: ((e: MessageEvent) => void) | null = null
   readonly sent: string[] = []
   constructor(readonly url: string) {
@@ -117,9 +121,11 @@ class FakeSocket extends EventTarget {
     FakeSocket.made.push(this)
     queueMicrotask(() => {
       this.readyState = 1
-      this.dispatchEvent(new Event('open'))
-      const greeting = FakeSocket.greeting
-      if (greeting !== null) this.onmessage?.(new MessageEvent('message', { data: greeting }))
+      // A browser WebSocket fires both its `onopen` property and its listeners.
+      const opened = new Event('open')
+      this.onopen?.(opened)
+      this.dispatchEvent(opened)
+      for (const data of FakeSocket.greeting) this.onmessage?.(new MessageEvent('message', { data }))
     })
   }
   send(data: string) {
@@ -188,9 +194,9 @@ function viewer(over: Partial<LiveSession> = {}): LiveSession {
   })
 }
 
-function pane(s: LiveSession) {
+function pane(s: LiveSession, reload: () => void = () => {}) {
   return render(
-    <LiveBrowserPane task={agent()} live={{ status: 'ok', liveBrowser: true, session: s }} reload={() => {}} />,
+    <LiveBrowserPane task={agent()} live={{ status: 'ok', liveBrowser: true, session: s }} reload={reload} />,
   )
 }
 
@@ -238,7 +244,7 @@ beforeEach(() => {
   rfb.FakeRfb.made = []
   rfb.FakeRfb.throwNext = false
   FakeSocket.made = []
-  FakeSocket.greeting = null
+  FakeSocket.greeting = []
   vi.stubGlobal('WebSocket', FakeSocket)
   api.loadAgentRun.mockReturnValue(new Promise(() => {}))
   api.loadAttempts.mockResolvedValue(ok({ attempts: [] }))
@@ -325,14 +331,31 @@ describe('the ticket goes in the first message, never the URL', () => {
     expect(ws.url).not.toContain(ticket)
     expect(ws.sent[0]).toBe(JSON.stringify({ ticket }))
     expect(r.sentBeforeAttach, 'noVNC was handed the socket before the ticket went').toBe(1)
-    expect(r.channel).toBe(ws)
+    expect(r.channel, 'noVNC was handed the raw socket, status text frames and all').not.toBe(ws)
+    expect(r.channel.readyState).toBe(1)
   })
 
   it('has noVNC reading the socket before the relay\'s first frame can arrive', async () => {
-    FakeSocket.greeting = 'RFB 003.008\n'
+    const version = new TextEncoder().encode('RFB 003.008\n').buffer as ArrayBuffer
+    FakeSocket.greeting = [JSON.stringify({ type: 'status', open: true, in_control: false, controller: null }), version]
     pane(session())
     const r = await connected()
-    expect(r.received, 'the RFB server\'s ProtocolVersion went past noVNC').toEqual(['RFB 003.008\n'])
+    expect(r.received, 'noVNC read swarm-api\'s status as RFB, or the ProtocolVersion went past it').toEqual([version])
+  })
+
+  it('re-reads the session when swarm-api\'s status frames say control changed, and only then', async () => {
+    const status = (in_control: boolean, controller: string | null) =>
+      new MessageEvent('message', { data: JSON.stringify({ type: 'status', open: true, in_control, controller }) })
+    const reload = vi.fn()
+    pane(session(), reload)
+    const r = await connected()
+    const ws = FakeSocket.made.at(-1)!
+    act(() => ws.onmessage?.(status(false, null)))
+    act(() => ws.onmessage?.(status(false, null)))
+    expect(reload, 'the first status is the state the session read already drew').not.toHaveBeenCalled()
+    act(() => ws.onmessage?.(status(true, ['ada', 'example.com'].join('@'))))
+    expect(reload).toHaveBeenCalledTimes(1)
+    expect(r.received, 'a status frame reached noVNC').toEqual([])
   })
 
   it('retries, with a message, when noVNC refuses the socket', async () => {

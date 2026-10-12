@@ -7,6 +7,7 @@ import {
   useRef,
   useState,
   useSyncExternalStore,
+  type CSSProperties,
   type ReactNode,
 } from 'react'
 
@@ -25,6 +26,7 @@ import {
 } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import {
+  LIVE_CARD_H,
   autoTier,
   censusWord,
   criticalPath,
@@ -127,6 +129,7 @@ import { STATE_MARK, StateMark } from './marks'
 import { Button, Chip, NamedMark, ProgressBar, Segmented, Tabs, TypedConfirm, type ChipTone } from './components'
 import { offerNewestWorkflows, recentName, rememberWorkflow, RECENT_WORKFLOWS_EVENT } from './Spine'
 import { StopRun } from './StopRun'
+import { LiveThumb, showsLiveThumb, type OpenLive } from './LiveThumb'
 import { AGE_TICK_MS, useNow as useSharedClock } from './useNow'
 import { useInView } from './useInView'
 import {
@@ -1185,6 +1188,7 @@ export function WorkflowCard({
   tableFilter = null,
   onStageTable,
   onClearFilter,
+  openLive,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
@@ -1245,6 +1249,11 @@ export function WorkflowCard({
   tableFilter?: StageFilter | null
   onStageTable?: (level: number, word: string) => void
   onClearFilter?: () => void
+  /**
+   * How a running browser node's live card opens its socket (LiveThumb.tsx).
+   * OPTIONAL: the real one everywhere but a test, which hands in a fake.
+   */
+  openLive?: OpenLive
 }) {
   const roll = rollupLine(workflow, taskById)
   // WHEN IT STARTED (#376): the earliest step task's `started_at` -- the
@@ -1384,6 +1393,7 @@ export function WorkflowCard({
                 onPick={pickStep}
                 reload={reload}
                 onStageTable={page ? onStageTable : undefined}
+                openLive={openLive}
               />
               {page && <WfPhoneStages workflow={workflow} taskById={taskById} picked={picked} onPick={pickStep} />}
             </div>
@@ -3060,6 +3070,7 @@ function WorkflowGraph({
   onPick,
   reload,
   onStageTable,
+  openLive,
 }: {
   workflow: Workflow
   taskById: ReadonlyMap<string, Task> | null
@@ -3080,6 +3091,8 @@ function WorkflowGraph({
    * elsewhere the counts are words, not controls.
    */
   onStageTable?: (level: number, word: string) => void
+  /** The live card's socket (`WorkflowCard`'s `openLive`). */
+  openLive?: OpenLive
 }) {
   const now = useNow()
   const enteredAt = useEnteredAt(workflow.steps, taskById)
@@ -3126,6 +3139,18 @@ function WorkflowGraph({
       })
       .map((s) => s.step_id),
   )
+  // THE STEPS WHOSE NODE CARRIES THE LIVE BROWSER CARD (LB-UX2b, live-browser.md
+  // §6): a RUNNING task on a live-browser profile. The layout reserves the
+  // card's height (`LIVE_CARD_H`) on exactly these, so the card overlaps
+  // nothing, and `autoTier` counts it when it asks whether the graph fits.
+  const live = new Set(
+    workflow.steps
+      .filter((s) => {
+        const st = stepState(s, taskById)
+        return st.kind === 'state' && showsLiveThumb(s.runner_profile, st.state, st.task.id)
+      })
+      .map((s) => s.step_id),
+  )
   // THE DETAILS PANEL TAKES ITS COLUMN FROM THE GRAPH (#330 item 5). While a
   // step is picked the panel stands on the right, so under Auto the graph is
   // laid out for what is left beside it rather than scrolling sideways under
@@ -3133,13 +3158,13 @@ function WorkflowGraph({
   // keeps its full-width layout, and one without is laid out with `band`
   // false, so no stage -- the picked step's included -- vanishes into a band
   // because the panel opened. A tier the reader chose is left as chosen.
-  const fullAuto = autoTier(workflow.steps, CANVAS_COLUMN, noted, true, settled)
+  const fullAuto = autoTier(workflow.steps, CANVAS_COLUMN, noted, true, settled, live)
   const beside =
     picked !== null &&
     zoom === 'auto' &&
-    !layoutOf(workflow.steps, undefined, fullAuto, noted, CANVAS_COLUMN, settled).wide.some(Boolean)
+    !layoutOf(workflow.steps, undefined, fullAuto, noted, CANVAS_COLUMN, settled, live).wide.some(Boolean)
   const column = beside ? CANVAS_COLUMN - PANEL_COLUMN : CANVAS_COLUMN
-  const auto = beside ? autoTier(workflow.steps, column, noted, false, settled) : fullAuto
+  const auto = beside ? autoTier(workflow.steps, column, noted, false, settled, live) : fullAuto
   const tier: ZoomTier = zoom === 'auto' ? auto : zoom
   // A STAGE BAND HOLDING THE PICKED STEP OPENS TO IT (WF-10, epic #83). When
   // the scrubber carries a step into this workflow, or a step picked in the
@@ -3162,7 +3187,7 @@ function WorkflowGraph({
   const arrived = useRef<string | null>(null)
   const opensOnArrival = arrived.current !== arrival && pickedLevel >= 0 && !expandedStages.has(pickedLevel)
   const shownStages = opensOnArrival ? new Set([...expandedStages, pickedLevel]) : expandedStages
-  const layout = layoutOf(workflow.steps, shownStages, tier, noted, column, settled)
+  const layout = layoutOf(workflow.steps, shownStages, tier, noted, column, settled, live)
   // HOW EACH EDGE IS PAINTED. Not always the pair's own kind: every edge into
   // or out of a COLLAPSED stage shares one path, so those are painted as one
   // edge with the weakest claim any of them can support -- see `edgeKinds`.
@@ -3523,6 +3548,8 @@ function WorkflowGraph({
                     y={n.y}
                     w={layout.nodeW}
                     h={n.h}
+                    live={live.has(n.step.step_id)}
+                    openLive={openLive}
                     reload={reload}
                     onHover={setHovered}
                   />
@@ -3987,6 +4014,8 @@ function StepNode({
   y,
   w,
   h,
+  live = false,
+  openLive,
   reload,
   onHover,
 }: {
@@ -4030,6 +4059,13 @@ function StepNode({
   reload: () => void
   /** The pointer or focus is on this card (null: it left), so the graph lights its edges. */
   onHover?: (stepId: string | null) => void
+  /**
+   * The node carries the inline live browser card (LB-UX2b). `layoutOf` was
+   * told (`live`), so `h` already counts `LIVE_CARD_H`.
+   */
+  live?: boolean
+  /** The live card's socket (`WorkflowCard`'s `openLive`); undefined is the real one. */
+  openLive?: OpenLive
 }) {
   const p = present(state)
   // THE BRAND LOOK (rebrand 2026-10-01): the node's mark and its tint, from
@@ -4262,8 +4298,16 @@ function StepNode({
     </>
   )
 
+  const liveTask = live && state.kind === 'state' ? state.task.id : null
   return (
-    <div className="node-slot" style={{ left: x, top: y, width: w, height: h }}>
+    <div
+      className={`node-slot${liveTask !== null ? ' has-live' : ''}`}
+      style={
+        liveTask !== null
+          ? ({ left: x, top: y, width: w, height: h, '--node-live-h': `${LIVE_CARD_H}px` } as CSSProperties)
+          : { left: x, top: y, width: w, height: h }
+      }
+    >
       <button
         type="button"
         className={`node ${p.tone} ${lookClass(look)} zoom-${tier}${picked ? ' is-picked' : ''}${skipped ? ' is-skipped' : ''}${state.kind === 'state' && TERMINAL_STATES.has(state.task.state) ? ' is-settled' : ''}`}
@@ -4302,6 +4346,18 @@ function StepNode({
           (WF-7) and a button may not live inside one. It sits in the strip `.node`
           reserves at its foot, so it overlaps nothing -- `NODE_H` counts that
           strip. */}
+      {/* THE LIVE BROWSER CARD, INLINE IN THE NODE (LB-UX2b, live-browser.md
+          §6, the owner's chosen mockup): the step's browser at about 1 fps,
+          Open Browser tab and ⤢ Theater. A SIBLING OF THE CARD, NOT A CHILD,
+          for the stop control's reason: its links may not sit inside the
+          node's `<button>`. It is laid into the room `.node` reserves above
+          the stop strip (styles/workflows.css), so it overlaps nothing.
+          `key` is the task: a retried step's new task is a new stream. */}
+      {liveTask !== null && (
+        <div className="node-live">
+          <LiveThumb key={liveTask} taskId={liveTask} workflowId={workflow.workflow_id} open={openLive} />
+        </div>
+      )}
       {state.kind === 'state' && (
         <div className="node-stop">
           <StopRun
