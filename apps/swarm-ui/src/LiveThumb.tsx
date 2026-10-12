@@ -3,16 +3,19 @@ import { useEffect, useRef, useState } from 'react'
 import { USE_FIXTURES, loadLiveSession, mintLiveTicket, openLiveChannel, type LiveChannel } from './api'
 import { route } from './fetch'
 import { addressToPath } from './paths'
-import type { TaskState } from './types'
+import type { LiveAgentRef } from './Theater'
+import { stepState, type Task, type TaskState, type Workflow } from './types'
 
 /**
- * THE WORKFLOW GRAPH'S LIVE THUMBNAIL (docs/design/live-browser.md §6, lane
- * L12b). A running browser step's node, picked, expands the step's card (the
- * inspector, `StepInspector` in WorkflowViews.tsx), and that card carries a
- * low-rate live thumbnail of the agent's browser with two ways into the full
- * view: Open Browser tab and ⤢ Theater. Both are addresses of the SAME agent,
- * and the live session is the task's (`/v1/tasks/{task_id}/live`, one per
- * task), so both land on the one session this thumbnail is watching.
+ * THE WORKFLOW GRAPH'S LIVE THUMBNAIL (docs/design/live-browser.md §6, lanes
+ * L12b and LB-UX2b). A running browser step's NODE carries the card inline
+ * (`StepNode` in Workflows.tsx, the height reserved by `LIVE_CARD_H` in
+ * dag.ts): a low-rate live thumbnail of the agent's browser with two ways into
+ * the full view, Open Browser tab and ⤢ Theater. It sat in the step details
+ * panel until LB-UX2b; the owner's chosen mockup ("Browser Tab and Theater")
+ * draws it in the node, and the panel no longer carries a second one. Both
+ * links are addresses of the SAME agent, and the live session is the task's
+ * (one per task), so both land on the one session this thumbnail is watching.
  *
  * AT MOST ONE FRAME A SECOND, BY CONSTRUCTION. RFB is pull-based: the gate
  * (`livegate/rfb.py`) sends a FramebufferUpdate only in answer to a
@@ -62,6 +65,23 @@ export const THUMB_RECONNECT_MS = 5000
 export const THUMB_MAX_FAILURES = 3
 
 /**
+ * NO SESSION IS NOT A DROPPED CONNECTION (LB-UX2b). The session read answers
+ * `session: null` for a live-browser task whose tunnel is not up (or is down
+ * for good), and a closed session for one that ended. The card said
+ * "reconnecting" over both and spent a viewer ticket every 5 s doing it, for a
+ * stream that did not exist. Now `ticketedSocket` closes with this value, the
+ * card says "no live view", mints nothing, and only RE-READS the session --
+ * a GET, no ticket, nothing against the 30-a-minute ticket limit (§5.10) --
+ * every `THUMB_SESSION_RECHECK_MS`, so a browser that starts later still
+ * appears on the node without a reload. Only a session that exists is
+ * reconnected to on the 5 s cadence.
+ */
+export const NO_LIVE_SESSION: { readonly reason: 'no-session' } = Object.freeze({ reason: 'no-session' as const })
+
+/** How often a card with no session re-reads the session (a GET only). */
+export const THUMB_SESSION_RECHECK_MS = 30_000
+
+/**
  * THE LIVE-BROWSER PROFILES, BY NAME. The authority is `RunnerProfile.live_browser`
  * in `apps/common/swarm_common/profiles.py` (contract request 71: only
  * `claude-code-browser`). `GET /v1/runtimes` does not serve that flag yet, so
@@ -75,6 +95,28 @@ export const LIVE_BROWSER_PROFILES: ReadonlySet<string> = new Set(['claude-code-
 /** Whether a step's card carries the live thumbnail: a RUNNING task on a live-browser profile. */
 export function showsLiveThumb(runnerProfile: string, taskState: TaskState | null, taskId: string | null): boolean {
   return taskId !== null && taskState === 'RUNNING' && LIVE_BROWSER_PROFILES.has(runnerProfile)
+}
+
+/**
+ * THE WORKFLOW'S LIVE STEPS, for the theater's prev and next (§6: "In the
+ * theater, prev and next step through that workflow's live steps"): every
+ * step whose card is drawn (`showsLiveThumb`), in step order, labelled by step
+ * id and marked needs-you where its task's `human_wait` is set. The theater
+ * orders them needs-you first itself (`orderLiveAgents`).
+ *
+ * The ⤢ link carries the WORKFLOW (`theaterPath`'s `wf=`), not this list:
+ * the router pushes a bare path and no history state, and a list in the query
+ * would be stale the moment a step finished. A theater that reads `wf=` loads
+ * the workflow and calls this, so the graph and the theater agree on the list.
+ */
+export function workflowLiveAgents(workflow: Pick<Workflow, 'steps'>, taskById: ReadonlyMap<string, Task> | null): LiveAgentRef[] {
+  const out: LiveAgentRef[] = []
+  for (const s of workflow.steps) {
+    const st = stepState(s, taskById)
+    if (st.kind !== 'state' || !showsLiveThumb(s.runner_profile, st.state, st.task.id)) continue
+    out.push({ taskId: st.task.id, label: s.step_id, needsYou: st.task.human_wait != null })
+  }
+  return out
 }
 
 /** The agent's Browser tab (§6): a pane of the agent's own address, as Logs is. */
@@ -158,8 +200,10 @@ function ticketedSocket(taskId: string): LiveSocket {
   }
   void (async () => {
     const read = await loadLiveSession(taskId)
+    if (read.status === 'error' || read.status === 'loading') return fail(null)
     const session = read.status === 'ok' || read.status === 'stale' ? read.data.session : null
-    if (session === null || session.state !== 'open') return fail(null)
+    // No session, or one that has ended: there is nothing to reconnect to.
+    if (session === null || session.state !== 'open') return fail(NO_LIVE_SESSION)
     const minted = await mintLiveTicket(taskId)
     if (minted.status !== 'ok' || closed) return fail(null)
     const channel = openLiveChannel(minted.data.session_id, minted.data.ticket)
@@ -513,12 +557,13 @@ function bytesOf(data: unknown): Uint8Array | null {
 // The card
 // ---------------------------------------------------------------------------
 
-type Status = 'connecting' | 'live' | 'reconnecting' | 'unavailable'
+type Status = 'connecting' | 'live' | 'reconnecting' | 'none' | 'unavailable'
 
 const STATUS_WORD: Record<Status, string> = {
   connecting: 'connecting',
   live: 'live · ≤1 fps',
   reconnecting: 'reconnecting',
+  none: 'no live view',
   unavailable: 'live view unavailable',
 }
 
@@ -526,6 +571,7 @@ const STATUS_NOTE: Record<Status, string> = {
   connecting: 'Opening the live view of this step’s browser.',
   live: 'The masked live view of this step’s browser, at most one frame a second. Open the Browser tab for the full view.',
   reconnecting: 'The live view closed; it reconnects on its own.',
+  none: 'This step has no live browser session right now. The card checks again on its own.',
   unavailable: 'The live view could not be opened. The task may have stopped, or this view may not be allowed.',
 }
 
@@ -579,7 +625,7 @@ export function LiveThumb({
         return () => clearTimeout(t)
       },
     })
-    const finish = () => {
+    const finish = (why?: unknown) => {
       if (ended) return
       ended = true
       client.stop()
@@ -587,6 +633,14 @@ export function LiveThumb({
       sock.onclose = null
       sock.onerror = null
       sock.close()
+      if (why === NO_LIVE_SESSION) {
+        // Not a failure of the stream: there is none. Said as such, and only
+        // the session is read again, slowly (`NO_LIVE_SESSION`).
+        failures.current = 0
+        setStatus('none')
+        reconnect = setTimeout(() => setGeneration((g) => g + 1), THUMB_SESSION_RECHECK_MS)
+        return
+      }
       if (!sawFrame) failures.current += 1
       if (failures.current >= THUMB_MAX_FAILURES) {
         setStatus('unavailable')
@@ -605,8 +659,8 @@ export function LiveThumb({
         finish()
       }
     }
-    sock.onclose = finish
-    sock.onerror = finish
+    sock.onclose = (ev) => finish(ev)
+    sock.onerror = () => finish()
     return () => {
       // Unmount (the step finished, the card closed, another step was picked):
       // the stream ends here and does not reconnect.
@@ -622,10 +676,16 @@ export function LiveThumb({
   }, [taskId, open, generation])
 
   return (
+    // A FIXED BOX: `.wf-live` fills the node's `.node-live` slot, whose height
+    // is `LIVE_CARD_H` (dag.ts) less the gap; the canvas letterboxes into what
+    // the head and link rows leave (styles/workflows.css).
     <section className="wf-live" aria-label="Live browser" data-status={status}>
       <div className="wf-live-head">
         <span className="ctl-eyebrow">live browser</span>{' '}
-        <span className={`ctl-mark ${status === 'live' ? 'is-live' : status === 'unavailable' ? 'is-unread' : 'is-pending'}`} title={STATUS_NOTE[status]}>
+        <span
+          className={`ctl-mark ${
+            status === 'live' ? 'is-live' : status === 'unavailable' ? 'is-unread' : status === 'none' ? 'is-absent' : 'is-pending'
+          }`} title={STATUS_NOTE[status]}>
           {STATUS_WORD[status]}
         </span>
         {status === 'unavailable' && (
@@ -651,7 +711,6 @@ export function LiveThumb({
         role="img"
         aria-label={`${STATUS_NOTE[status]} Frames shown: ${frames}.`}
         data-frames={frames}
-        style={{ display: 'block', width: '100%', maxWidth: 320, height: 'auto' }}
       />
       <div className="wf-live-links">
         <a className="ctl-link" href={browserTabPath(taskId)}>
