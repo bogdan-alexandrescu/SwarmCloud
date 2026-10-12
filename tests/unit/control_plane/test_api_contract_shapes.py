@@ -106,6 +106,17 @@ def _distinct(annotation: str, name: str, index: int, default: Any) -> Any:
         return "git-u-" + "0123456789abcdef"
     if name == "forge_access":
         return "read"
+    # Contract request 70: served as its public projection
+    # (`codec.HUMAN_WAIT_PUBLIC_KEYS`), so a value holding exactly those keys
+    # is served unchanged and the value comparison below still bites.
+    if name == "human_wait":
+        return {
+            "reason": "Sign in to the fixture site",
+            "expect": "example.com",
+            "requested_at": MOMENT,
+            "deadline": MOMENT + timedelta(minutes=10),
+            "controller": None,
+        }
 
     if base == "str":
         return f"{name}-value"
@@ -246,9 +257,6 @@ CODECS: tuple[Codec, ...] = (
             # submission that writes them.
             "forge_credential": "worker-only: the secret suffix swarm-api resolved, not served",
             "forge_access": "worker-only: the forge mode swarm-api resolved, not served",
-            # Contract request 70 (LB-C). The live-browser hand-off is attempt
-            # state; lane L10, which writes it, decides its public shape.
-            "human_wait": "attempt state, served by lane L10",
         },
         # The input and metadata are served MASKED (owner decision,
         # 2026-09-26), and these say how many masks each took; so, since the
@@ -554,6 +562,29 @@ def test_every_served_value_is_the_value_that_was_modelled(codec: Codec):
 # --------------------------------------------------------------------------
 # 4. The nested shape the generic pass cannot reach
 # --------------------------------------------------------------------------
+
+def test_the_served_hand_off_is_the_designs_five_fields_and_no_worker_key():
+    """Contract request 70: the console reads `human_wait` off the task row
+    (lane LB-L12), and the stored document also carries the worker's
+    `request_id`, `attempt_id` and `generation` (swarm_api.handoff). Those are
+    compared only by the worker routes, so they are not served."""
+    populated = _populated(Task)
+    stored = {
+        "reason": "Sign in to the fixture site",
+        "expect": "example.com",
+        "requested_at": MOMENT,
+        "deadline": MOMENT + timedelta(minutes=10),
+        "controller": {"email": "ada@acme.test"},
+        "request_id": "req-1",
+        "attempt_id": "att_1",
+        "generation": 3,
+    }
+    served = task_to_api(dataclasses.replace(populated, human_wait=stored))["human_wait"]
+    assert served == {k: stored[k] for k in ("reason", "expect", "requested_at", "deadline", "controller")}
+    assert task_to_api(dataclasses.replace(populated, human_wait=None))["human_wait"] is None
+    # The summary view the list and the Overview read carries it too.
+    assert task_to_api(dataclasses.replace(populated, human_wait=stored), summary=True)["human_wait"] == served
+
 
 def test_every_workflow_step_field_survives_and_is_served():
     """`WorkflowStep` is nested inside Workflow, so the table above skips it.
