@@ -361,9 +361,7 @@ def test_the_deploy_job_rolls_the_relay(workflow):
     assert "steps.verify.outcome == 'success'" in when and "superseded == 'true') != 'true'" in when, when
     assert "!cancelled()" in when, when
     # A relay that did not roll fails the release: that is the defect this fixes.
-    # Owner decision 2026-10-12 06:45 PDT: warn-only until one release shows a clean roll. The follow-up that
-    # removes continue-on-error restores: assert not step.get("continue-on-error").
-    assert step.get("continue-on-error") is True, f"{workflow}: the relay step is warn-only by decision until a clean roll"
+    assert not step.get("continue-on-error"), f"{workflow}: a relay that did not roll would pass the release"
 
 
 @pytest.mark.parametrize("workflow", ["release.yml", "hotfix.yml"])

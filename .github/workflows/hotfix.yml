@@ -363,12 +363,10 @@ jobs:
         run: uv sync --frozen --all-extras
 
       - name: roll the live relay to this release's image
-        # continue-on-error: owner decision 2026-10-12 06:45 PDT. Whether the
-        # deployer may write StatefulSets in swarm-system is unmeasured (its
-        # tenant-namespace writes are measured clean). Warn-only until one
-        # release log shows a clean roll; then a follow-up removes this line so
-        # a relay left on the old image fails the release.
-        continue-on-error: true
+        # Fails the release (owner decision 2026-10-12 06:45 PDT): warn-only
+        # until one release showed a clean roll, which release 38277873760
+        # did (2026-10-12 17:06Z: e9c282f1 -> 7e4d6b6e, parity 0 differ). A
+        # relay left on the old image now fails the release.
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         timeout-minutes: 20
         env:
