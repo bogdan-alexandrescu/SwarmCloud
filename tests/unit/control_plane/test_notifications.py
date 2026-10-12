@@ -155,11 +155,13 @@ def test_admin_requests_list_pending_workspaces_and_loans_for_an_admin(db):
     assert len(items) == 2  # bob's ready workspace waits on nobody
 
 
-def test_admin_requests_are_empty_for_a_non_admin_without_a_read(db):
+def test_admin_requests_are_empty_for_a_non_admin_without_a_read(db, monkeypatch):
     _workspace(db, CAROL)
-    before = db.touched
+    read: list[str] = []
+    real = db.collection
+    monkeypatch.setattr(db, "collection", lambda path: read.append(path) or real(path))
     assert notif.admin_requests(_reading(db, _viewer(ALICE))) == []
-    assert db.touched == before
+    assert read == []
 
 
 def test_approvals_list_the_tenants_pending_records_and_planned_runs(db):
