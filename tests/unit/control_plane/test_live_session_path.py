@@ -74,3 +74,11 @@ def test_a_secret_in_a_stored_path_is_redacted_again():
 def test_the_served_origin_model_carries_the_path():
     assert "path" in live_module.LiveOrigin.model_fields
     live_module.LiveOrigin.model_validate({**ORIGIN, "path": "/login"})
+
+
+def test_the_gate_and_swarm_api_agree_on_the_longest_path():
+    """The gate cuts at its limit; swarm-api refuses past its own. Two limits
+    that drift apart turn every long path into "path not reported"."""
+    from agent_worker.livegate import report
+
+    assert report.MAX_PATH_CHARS == live_module.MAX_PATH_CHARS
