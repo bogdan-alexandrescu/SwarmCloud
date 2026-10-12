@@ -418,7 +418,8 @@ def test_another_tenants_repository_is_a_404_on_every_index_route(
 # --------------------------------------------------------------------------
 
 def test_the_renderer_lays_out_a_fixture_index():
-    text = repoindex.render_markdown(fixture_index(ONE), repository=REPOSITORY)
+    text = repoindex.render_markdown(
+        fixture_index(ONE, built_at="2026-10-05T09:00:00Z"), repository=REPOSITORY)
     lines = text.splitlines()
     assert lines[0] == "# Repository index: saga-xyz/widgets"
     assert f"Describes `{ONE}` on `main`, built 2026-10-05T09:00:00Z (full)." in lines

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -70,13 +71,20 @@ class IndexGitHub(GitHubRepos):
         return super().__call__(url, headers, timeout)
 
 
+# Built at session start, not on a fixed date: freshness() calls an index older
+# than STALE_AGE (7 days) stale, so a literal date turned every "behind"
+# assertion into "stale" a week after it was written (run 38227565990). One
+# value per session, so two fixture documents for one sha still share a digest.
+BUILT_AT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
 def fixture_index(commit_sha: str, **overrides: Any) -> dict[str, Any]:
     """A small, complete `swarm.repo-index/v1` document describing `commit_sha`."""
     document: dict[str, Any] = {
         "schema": "swarm.repo-index/v1",
         "commit_sha": commit_sha,
         "branch": "main",
-        "built_at": "2026-10-05T09:00:00Z",
+        "built_at": BUILT_AT,
         "kind": "full",
         "extractor": {"ran": True, "command": "swarm-repo-extract", "version": "1"},
         "modules": [
