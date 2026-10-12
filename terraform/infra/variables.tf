@@ -915,3 +915,9 @@ variable "api_refusals" {
     error_message = "api_refusals keys are swarm-api error codes: letters, digits and underscores."
   }
 }
+
+variable "mirror_kms_key_name" {
+  description = "Customer-managed key for the pull-through mirror repositories (build_mirror.tf); empty keeps Google-managed encryption, as modules/artifact_registry does for kms_key_name."
+  type        = string
+  default     = ""
+}
