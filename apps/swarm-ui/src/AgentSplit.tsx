@@ -40,6 +40,7 @@ import { useResourceClasses } from './Blockers'
 import { AgentChangesPane, changesCount } from './WorkflowChanges'
 import { HelpCard } from './HelpCard'
 import { HandoffStrip, isLiveBrowser } from './Handoff'
+import { PodStartProblem } from './PodStartProblem'
 import { RecordingsPanel } from './Recordings'
 import { LiveBrowserPane, LiveControl, useLiveSession, type LiveState } from './LiveBrowser'
 import {
@@ -575,6 +576,7 @@ export function AgentSplit({
             The Browser tab (lane L11) passes its Take control and theater
             actions in as children. */}
         {task !== null && <HandoffStrip task={task} onReady={reload} />}
+        {task !== null && <PodStartProblem task={task} />}
 
         <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}${selected === 'changes' ? ' is-changes' : ''}${selected === 'browser' ? ' is-browser' : ''}`}>
           {deciding ? (

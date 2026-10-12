@@ -139,6 +139,8 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: live-browser hand-off's three (docs/design/live-browser.md §4.3, lane
 #: LB-L10): the park-refund counter, the "a person is ready" mark and the
 #: per-attempt hand-off count, each written during or between attempts.
+#: And the reconciler's `start_problem` (F1-POD), written while a pod fails to
+#: start and read only by swarm-api.
 UNSIGNED_PLATFORM_KEYS = {
     "schedule",
     "human_wait_resumes",
@@ -150,6 +152,7 @@ UNSIGNED_PLATFORM_KEYS = {
     "child_cascade",
     "child_request_id",
     "merge_wait",
+    "start_problem",
 }
 
 
@@ -166,6 +169,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         HUMAN_HANDOFFS_METADATA_KEY,
         HUMAN_READY_METADATA_KEY,
         HUMAN_WAIT_RESUMES_METADATA_KEY,
+        START_PROBLEM_METADATA_KEY,
     )
 
     assert set(SIGNED_METADATA_KEYS) == set(RESERVED_METADATA_KEYS) - UNSIGNED_PLATFORM_KEYS
@@ -180,6 +184,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         MERGE_WAIT_METADATA_KEY,
         DISK_EVICTIONS_METADATA_KEY,
         SCHEDULE_METADATA_KEY,
+        START_PROBLEM_METADATA_KEY,
     } == UNSIGNED_PLATFORM_KEYS
 
 
