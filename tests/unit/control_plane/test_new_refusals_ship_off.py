@@ -158,6 +158,12 @@ NOT_SWITCHABLE_CODES = frozenset({
     "browser_login_unauthenticated",
     "browser_login_unproven",
     "browser_login_fenced",
+    # The browser-session slot (LB-L8c), raised only by the new worker-only
+    # POST /v1/tasks/{id}/browser-session/slot. Continuing past either is the
+    # breach itself: swarm-api creating a secret outside the caller's own
+    # browser prefix, or rewriting another workspace's secret's policy.
+    "browser_slot_outside_prefix",
+    "browser_slot_taken",
     # The live browser (LB-L9, docs/design/live-browser.md §3.3, §4.2, §5.1),
     # as the hand-off codes above: raised only by the routes that change
     # introduces (POST /attempts/{id}/live-session and /tasks/{id}/live/...),

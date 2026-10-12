@@ -3,9 +3,11 @@
 # infra_tenants_tfvars. Never applied.
 #
 # Two personal tenants (kind = "user" and a `u-` id, the shape
-# identity.tenant_id_for_user mints), and three that must get NO browser grant:
-# a group, a group whose id happens to start `u-`, and a `kind = "user"`
-# service tenant whose id does not.
+# identity.tenant_id_for_user mints), and three that are not personal: a
+# group, a group whose id happens to start `u-`, and a `kind = "user"`
+# service tenant whose id does not. Since lane L8c NO worker, personal or
+# not, holds a project-level browser grant: swarm-api grants each worker on
+# its own secret, so the personal ones here show the grant is absent anyway.
 
 project_id = "saga-agents-staging"
 

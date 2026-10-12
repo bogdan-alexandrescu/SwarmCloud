@@ -67,8 +67,9 @@ locals {
     # tenants/<t>/tasks/ and tenants/<t>/checkpoints/ (owner decision 2026-10-11).
     history_purge_deleter = "swarmHistoryPurgeDeleter${local.role_suffix}"
     # Defined and granted by terraform/bootstrap/browser_logins.tf alone (live
-    # browser LB-7, lane L8b of #1030); terraform/infra never names them.
-    browser_session_creator = "swarmBrowserSessionCreator${local.role_suffix}"
-    browser_login_revoker   = "swarmBrowserLoginRevoker${local.role_suffix}"
+    # browser LB-7, lanes L8b and L8c of #1030); terraform/infra never names
+    # them. Both are swarm-api's: no worker holds a browser-session role (L8c).
+    browser_session_provisioner = "swarmBrowserSessionProvisioner${local.role_suffix}"
+    browser_login_revoker       = "swarmBrowserLoginRevoker${local.role_suffix}"
   }
 }

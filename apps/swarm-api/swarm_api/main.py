@@ -31,6 +31,7 @@ from .routes import (
     approvals,
     attempts,
     browser_logins,
+    browser_slots,
     checkpoints,
     children,
     forgeapp,
@@ -187,6 +188,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
     # routes that authenticate as the child routes do.
     app.include_router(browser_logins.router)
+    # The browser-session slot (lane LB-L8c): swarm-api creates each personal
+    # tenant's -browser- secret and grants its worker on that secret alone;
+    # worker-only, authenticated as the routes above.
+    app.include_router(browser_slots.router)
     # The live browser (docs/design/live-browser.md, lane LB-L9): the worker's
     # tunnel ticket, a member's view and control, and the socket proxied to
     # swarm-live. Tenant-scoped through the same authenticator as every route.
