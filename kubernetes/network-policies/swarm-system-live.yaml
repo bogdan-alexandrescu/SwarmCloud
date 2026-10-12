@@ -1,4 +1,4 @@
-# `swarm-system`: nothing gets in, except TCP 8443 to the live-browser relay
+# `swarm-system`: nothing gets in, except TCP 8080 to the live-browser relay
 # (docs/design/live-browser.md §3.3 and §8.3; lane LB-L6, part of #1030).
 #
 # Rendered by `kubernetes/render.py swarm-system` and applied by
@@ -6,7 +6,7 @@
 # the platform's own relay, `swarm-live` (a single-replica StatefulSet, lane
 # L8's `kubernetes/swarm-system/swarm-live.yaml`), which carries frames, input
 # and the person's keystrokes during a sign-in. Two sources may open a socket
-# to it, both on 8443, and nothing may open one to anything else here:
+# to it, both on 8080, and nothing may open one to anything else here:
 #
 #   * the live gate in a tenant's live-browser pod, which dials out with a
 #     tunnel ticket (§3.3 step 2). Admitted by ONE peer carrying both
@@ -31,13 +31,25 @@
 # WHAT THAT RANGE ALSO HOLDS, stated plainly. terraform gives swarm-api no
 # subnet of its own: every Cloud Run service and job here uses
 # `module.network.subnetwork_id`, the cluster's primary subnet (the GKE nodes'
-# range). So the ipBlock admits, on 8443, anything that egresses from that
+# range). So the ipBlock admits, on 8080, anything that egresses from that
 # subnet -- the scheduler, the reconciler, the broker, Cloud Run worker jobs,
 # and the nodes. None of them holds a ticket, and the relay authorises nothing
 # without one (§3.3: it "verifies tickets it did not mint against a key it
 # shares only with swarm-api"). A swarm-api-only subnet would narrow this to
 # exactly swarm-api, with no change here: apply.sh reads whichever subnet the
 # service names.
+#
+# TCP 8080, PLAIN WS, since owner decision 2026-10-11 (b) (live-browser.md
+# §3.3): browsers never reach the relay, swarm-api proxies them to it, and the
+# relay serves no TLS. Built on 8443 by L6; moved with the relay (LB-L8e).
+#
+# THE RELAY MANIFEST CARRIES THE SAME ALLOW, as `swarm-live-ingress`
+# (kubernetes/swarm-system/swarm-live.yaml, rendered by terraform/infra/live.tf
+# with terraform's subnet range), so the relay is ingress-isolated from the
+# moment it exists, before this file follows it in the same apply. Two copies
+# on purpose, and held together: apply.sh refuses when terraform's range is not
+# the one it read from swarm-api, and network_parity.py judges both with one
+# function. NetworkPolicies are unions, so the copy widens nothing.
 #
 # Egress from swarm-system is not restricted by this file. The relay writes
 # segments to GCS and reads its session document (§3.3, §7); its egress is
@@ -106,11 +118,11 @@ spec:
               swarm-live: "enabled"
       ports:
         - protocol: TCP
-          port: 8443
+          port: 8080
     # swarm-api's Direct VPC egress subnet, RENDERED (see the header).
     - from:
         - ipBlock:
             cidr: __SWARM_API_EGRESS_CIDR__
       ports:
         - protocol: TCP
-          port: 8443
+          port: 8080
