@@ -188,3 +188,28 @@ def test_a_device_choice_reads_as_a_change_a_rotation_or_a_toggle():
         "device_changed", "rotated", "touch_toggled", "device_changed", "device_changed"]
     assert lines[2]["orientation"] == "landscape"
     assert all(x["you"] is True for x in lines)
+
+
+def test_the_device_steps_are_read_in_time_order_not_the_order_firestore_streams(
+        client, ldb, live, clock, objects):
+    """Firestore streams an equality query in document-ID order, and a
+    `live_audit` ID is random, so the stream need not be the writing order.
+    The control: the same B6 sequence, with the audit stored newest first, so
+    the fake streams the landscape choice before the portrait one."""
+    _b6(client, ldb, clock, objects)
+    entries = [(k, v) for k, v in ldb.docs.items() if k.startswith("live_audit/")]
+    assert [v["entry"] for _, v in entries].count("device_requested") == 3
+    for key, _ in entries:
+        del ldb.docs[key]
+    ldb.docs.update(reversed(entries))
+    served = _timeline(client, "alice")
+    events = [a.get("event") for a in served["actions"]]
+    assert events == [
+        "handoff_requested", "control_taken", "refused", "device_changed", "rotated",
+        "touch_toggled", "control_returned", "handoff_resolved",
+    ]
+    by_event = {a["event"]: a for a in served["actions"]}
+    assert by_event["device_changed"]["orientation"] == "portrait"
+    assert by_event["rotated"]["orientation"] == "landscape"
+    assert by_event["touch_toggled"]["orientation"] == "landscape"
+    assert by_event["touch_toggled"]["touch"] is False

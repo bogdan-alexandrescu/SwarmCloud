@@ -2027,12 +2027,20 @@ class LiveRecordings:
 
     def _audited(self, tenant_id: str, task_id: str) -> list[dict[str, Any]]:
         """The task's `live_audit` entries in the tenant, in the order they
-        were written. A deployment built without Firestore reads none."""
+        were written. A deployment built without Firestore reads none.
+
+        Sorted here, by (`at`, `id`) as `audit_entries` sorts: Firestore
+        streams an equality query in document-ID order, and `new_id("la")` is
+        random, so the stream's order is not the writing order -- and
+        `audit_lines` tells `device_changed` from `rotated` and
+        `touch_toggled` by the entry before each one."""
         if self._db is None:
             return []
         query = self._db.collection(LIVE_AUDIT).where(filter=FieldFilter("task_id", "==", task_id))
         rows = [snap.to_dict() or {} for snap in query.stream()]
-        return [r for r in rows if r.get("tenant_id") == tenant_id]
+        rows = [r for r in rows if r.get("tenant_id") == tenant_id]
+        rows.sort(key=lambda r: (_moment(_iso(r.get("at"))), str(r.get("id"))))
+        return rows
 
 
 #: The relay's and the gate's lines for a take and a return the audit already
