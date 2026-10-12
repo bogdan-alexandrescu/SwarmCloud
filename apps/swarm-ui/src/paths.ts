@@ -323,7 +323,8 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
         // `/agents/<tab>/<id>/browser?theater=1`. The rest of the query is
         // the list's, read above.
         const theater = rest[rest.length - 1] === 'browser' && new URLSearchParams(query).get('theater') === '1'
-        return { address: `work/task/${rest.join('/')}${theater ? '?theater=1' : ''}`, agentTab: tab, ...(named ? { list } : {}) }
+        const address = `work/task/${rest.join('/')}`
+        return { address: theater ? `${address}?theater=1` : address, agentTab: tab, ...(named ? { list } : {}) }
       }
       // The state is kept as written, as it always was: a misspelt one lands
       // on the plain list through `parseAgentList`, not here.
