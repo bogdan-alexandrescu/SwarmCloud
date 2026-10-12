@@ -1,7 +1,7 @@
 // THE BROWSER TAB (docs/design/live-browser.md §3.4, §5.2, §5.6, §5.7, §6,
 // §6.1; lane L11's acceptance row).
 //
-//   * the Browser tab is first, and open, for a running browser agent;
+//   * the Browser tab follows Details, and is open, for a running browser agent;
 //   * the viewer ticket goes in the websocket's first message, never its URL;
 //   * no Take control for a viewer the server says is not eligible;
 //   * a viewer's device switcher is disabled, and the controller's works
@@ -17,7 +17,7 @@
 // sends, the `viewOnly` it sets, the events it lets through to noVNC's canvas.
 //
 // MUTATIONS, one per block: put the ticket in the socket URL's query; drop
-// the `can_control` check in LiveControl; enable the device select for every
+// the `can_control` check in LiveControl; enable the device chips for every
 // viewer (or decide it from `controller` instead of `you.can_switch_device`);
 // send a size instead of a preset name; skip the second ask on a mismatch; set `viewOnly` from control
 // alone, ignoring focus; let touches through whenever in control; await
@@ -219,7 +219,7 @@ async function connected(): Promise<InstanceType<typeof rfb.FakeRfb>> {
 }
 
 function Routed({ onGo }: { onGo: (to: string) => void }) {
-  const [p, setP] = useState<'detail' | 'logs'>('detail')
+  const [p, setP] = useState<'detail' | 'logs' | 'browser'>('detail')
   return (
     <div className="app has-inspector">
       <AgentSplit
@@ -229,7 +229,7 @@ function Routed({ onGo }: { onGo: (to: string) => void }) {
         closeTo="work/running/live"
         go={(to) => {
           onGo(to)
-          setP(to.endsWith('/logs') ? 'logs' : 'detail')
+          setP(to.endsWith('/logs') ? 'logs' : to.endsWith('/browser') ? 'browser' : 'detail')
         }}
         base={`work/task/${ID}`}
       />
@@ -271,15 +271,15 @@ afterEach(() => {
   delete document.documentElement.dataset.agentList
 })
 
-describe('the Browser tab is first for a running browser agent', () => {
-  it('opens a running live-browser agent on its Browser tab, the first tab, and does not send it to Logs', async () => {
+describe('the Browser tab follows Details for a running browser agent', () => {
+  it('opens a running live-browser agent on its Browser tab, the second tab, and does not send it to Logs', async () => {
     api.loadTask.mockResolvedValue(ok(agent()))
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
     api.mintLiveTicket.mockReturnValue(new Promise(() => {}))
     const went: string[] = []
     render(<Routed onGo={(to) => went.push(to)} />)
-    await waitFor(() => expect(label(tabs()[0]!)).toBe('Browser'))
-    await waitFor(() => expect(tabs()[0]!.getAttribute('aria-selected')).toBe('true'))
+    await waitFor(() => expect(label(tabs()[1]!)).toBe('Browser'))
+    await waitFor(() => expect(tabs()[1]!.getAttribute('aria-selected')).toBe('true'))
     expect(went.filter((to) => to.endsWith('/logs'))).toEqual([])
     expect(document.querySelector('.live-strip')).not.toBeNull()
   })
@@ -315,8 +315,8 @@ describe('the session read exactly as swarm-api serves it (tests/fixtures/live, 
     api.loadLiveSession.mockResolvedValue(ok(served('session.open.json')))
     api.mintLiveTicket.mockReturnValue(new Promise(() => {}))
     render(<Routed onGo={() => {}} />)
-    await waitFor(() => expect(label(tabs()[0]!)).toBe('Browser'))
-    await waitFor(() => expect(screen.getAllByRole('option', { name: 'Not reported' }).length).toBeGreaterThan(0))
+    await waitFor(() => expect(label(tabs()[1]!)).toBe('Browser'))
+    await waitFor(() => expect(document.querySelector('.live-caption')?.textContent).toMatch(/^Device not reported/))
     expect(screen.getAllByRole('button', { name: /Take control/ }).length).toBeGreaterThan(0)
   })
 
@@ -408,23 +408,22 @@ describe('no Take control for a non-eligible viewer', () => {
 describe('a viewer’s device switcher is disabled', () => {
   it('shows a viewer the current device, disabled, with rotate and touch disabled too', () => {
     pane(viewer())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
-    expect(select.value).toBe('iphone-15')
-    expect(select.disabled).toBe(true)
+    const chip = screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement
+    expect(chip.getAttribute('aria-pressed')).toBe('true')
+    expect(chip.disabled).toBe(true)
     expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(true)
   })
 
   it('says why, on the switcher and in the toolbar', () => {
     pane(viewer())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
-    expect(select.title).toMatch(/only the person in control/i)
+    expect((screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement).title).toMatch(/only the person in control/i)
     expect(document.querySelector('.live-toolbar-why')?.textContent).toMatch(/only the person in control/i)
   })
 
   it('follows the server, not the controller field: in control but not allowed to switch is disabled', () => {
     pane(mine({ you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: false } }))
-    expect((screen.getByRole('combobox') as HTMLSelectElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(true)
   })
 })
@@ -432,10 +431,10 @@ describe('a viewer’s device switcher is disabled', () => {
 describe('the person in control switches the device (LB-DEV-B)', () => {
   it('enables the switcher, rotate and touch, with nothing said against them', () => {
     pane(mine())
-    const select = screen.getByRole('combobox') as HTMLSelectElement
-    expect(select.value).toBe('iphone-15')
-    expect(select.disabled).toBe(false)
-    expect(select.title).toBe('')
+    const chip = screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement
+    expect(chip.getAttribute('aria-pressed')).toBe('true')
+    expect(chip.disabled).toBe(false)
+    expect(chip.title).toBe('')
     expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(false)
     expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(false)
     expect(document.querySelector('.live-toolbar-why')).toBeNull()
@@ -444,7 +443,7 @@ describe('the person in control switches the device (LB-DEV-B)', () => {
   it('a preset is sent by name, never a size, and the session is read again', async () => {
     const reload = vi.fn()
     render(<LiveBrowserPane task={agent()} live={{ status: 'ok', liveBrowser: true, session: mine() }} reload={reload} />)
-    fireEvent.change(screen.getByRole('combobox'), { target: { value: 'desktop' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Desktop' }))
     expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'desktop' })
     await waitFor(() => expect(reload).toHaveBeenCalled())
   })
@@ -457,7 +456,7 @@ describe('the person in control switches the device (LB-DEV-B)', () => {
 
   it('touch turns the toggle over, on the same preset and orientation', () => {
     pane(mine())
-    fireEvent.click(screen.getByRole('button', { name: /touch off/i }))
+    fireEvent.click(screen.getByRole('button', { name: /touch: off/i }))
     expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'iphone-15', orientation: 'portrait', touch: true })
   })
 

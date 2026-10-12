@@ -11,14 +11,6 @@
 .live-tab { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
 .live-note { color: var(--text-dim); font-size: var(--t-body); padding: 12px 0; }
 
-.live-handoff {
-  display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
-  padding: 8px 12px; border-radius: var(--radius);
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
-  background: color-mix(in srgb, var(--warn) 12%, transparent);
-  font-size: var(--t-body);
-}
-.live-handoff-expect, .live-handoff-left { color: var(--text-dim); font-size: var(--t-meta); }
 
 .live-strip {
   display: flex; flex-wrap: wrap; gap: 4px 12px; align-items: baseline;
@@ -42,9 +34,15 @@
 .live-device { display: inline-flex; gap: 6px; align-items: center; }
 .live-open { display: inline-flex; gap: 6px; align-items: center; }
 .live-toolbar-why { color: var(--text-dim); }
+/* The mockup's toolbar: chips, rotate, touch, logs, and ⤢ Theater at the right. */
+.live-chips { display: inline-flex; gap: 2px; }
+.live-chip[aria-pressed="true"] { border-color: var(--sk-ac); color: var(--sk-ac); font-weight: 600; }
+.live-toolbar-end { margin-left: auto; display: inline-flex; gap: 8px; align-items: center; }
+.live-caption { color: var(--text-dim); font-size: var(--t-meta); text-align: center; }
 
+/* ◫ logs: the logs on the LEFT, the device on the right (the mockup). */
 .live-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; flex: 1; min-height: 0; }
-.live-tab.with-logs .live-body { grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); }
+.live-tab.with-logs .live-body { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); }
 .live-logs { min-height: 0; overflow: auto; }
 
 .live-screen-wrap { display: flex; flex-direction: column; gap: 4px; min-height: 0; }

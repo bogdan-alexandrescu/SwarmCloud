@@ -418,11 +418,13 @@ def test_another_tenants_repository_is_a_404_on_every_index_route(
 # --------------------------------------------------------------------------
 
 def test_the_renderer_lays_out_a_fixture_index():
+    # The renderer is pure, so the pinned `built_at` it is handed is what it
+    # prints; `BUILT_AT` is the session-relative default this override replaces.
     text = repoindex.render_markdown(
-        fixture_index(ONE, built_at="2026-10-05T09:00:00Z"), repository=REPOSITORY)
+        fixture_index(ONE, built_at="2026-10-05T09:00:00Z"), repository=REPOSITORY
+    )
     lines = text.splitlines()
     assert lines[0] == "# Repository index: saga-xyz/widgets"
-    # The renderer is pure and is handed a pinned built_at, so it prints that date.
     assert f"Describes `{ONE}` on `main`, built 2026-10-05T09:00:00Z (full)." in lines
     assert "Mechanical fields from `swarm-repo-extract` 1." in lines
     assert "## Modules" in lines

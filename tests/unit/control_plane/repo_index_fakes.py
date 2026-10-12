@@ -75,15 +75,19 @@ class IndexGitHub(GitHubRepos):
         return super().__call__(url, headers, timeout)
 
 
-# Built at session start, not on a fixed date: freshness() calls an index older
-# than STALE_AGE (7 days) stale, so a literal date turned every "behind"
-# assertion into "stale" a week after it was written (run 38227565990). One
-# value per session, so two fixture documents for one sha still share a digest.
-BUILT_AT = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+# An hour before the session started, not a fixed date: freshness calls an
+# index built more than `STALE_AGE` (7 days) ago `stale`, so a literal date
+# turned every route test expecting `behind` red a week after it was written
+# (2026-10-12, PR #1169). Read once, not per call, so two fixtures built in one
+# test are byte-identical and their digests agree.
+BUILT_AT = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def fixture_index(commit_sha: str, **overrides: Any) -> dict[str, Any]:
-    """A small, complete `swarm.repo-index/v1` document describing `commit_sha`."""
+    """A small, complete `swarm.repo-index/v1` document describing `commit_sha`.
+
+    `built_at` is `BUILT_AT`, read once per session (see there).
+    """
     document: dict[str, Any] = {
         "schema": "swarm.repo-index/v1",
         "commit_sha": commit_sha,
