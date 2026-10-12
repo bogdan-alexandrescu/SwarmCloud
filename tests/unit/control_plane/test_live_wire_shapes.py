@@ -32,12 +32,15 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
+from starlette.websockets import WebSocketDisconnect
 
 from swarm_api import live as live_module
 from swarm_api.main import create_app  # noqa: F401  (the routes' module graph loads)
 
 from .test_live_api import (  # noqa: F401  (pytest fixtures, used by name)
     ATTEMPT,
+    READY,
+    SOCKET,
     TASK,
     _ask_for_help,
     audit,
@@ -50,7 +53,10 @@ from .test_live_api import (  # noqa: F401  (pytest fixtures, used by name)
     people,
     relay,
     session_doc,
+    ticket_for,
+    wait_until,
 )
+from .test_live_relay_wire import relay_report_text
 
 FIXTURES = Path(__file__).resolve().parents[2] / "fixtures" / "live"
 INDEX = json.loads((FIXTURES / "index.json").read_text())["fixtures"]
@@ -180,7 +186,7 @@ def test_the_session_read_serves_live_browser_and_a_session(client, ldb, live):
     assert session["you"] == {"email": "alice@saga.xyz", "can_control": True,
                               "can_preempt": False, "can_open": True}
     assert session["human_wait"]["expect"] == "github.com"
-    # Not reported to swarm-api yet: null, never invented.
+    # Nothing reported by the gate yet: null, never invented.
     assert session["origin"] is None and session["device"] is None
     assert [p["name"] for p in session["presets"]] == [
         "desktop", "iphone-15", "pixel-8", "iphone-se", "ipad-7"]
@@ -261,6 +267,121 @@ def test_delete_control_is_the_consoles_return(client, ldb, live):
     assert session_doc(ldb)["controller"] is None
     assert ldb.docs[f"tasks/{TASK}"]["human_wait"] is None
     assert [r["detail"]["cause"] for r in audit(ldb, "control_returned")] == ["returned"]
+
+
+# --------------------------------------------------------------------------
+# The origin and the device, as the gate reported them (LB-DEV-A)
+# --------------------------------------------------------------------------
+
+GITHUB = ("https://github.com/login", "github.com", "iphone-15", "portrait")
+
+
+def _watch(client, relay, user: str, *texts: str) -> list[Any]:
+    """Open `user`'s console socket with the relay double answering `ready`,
+    then `texts`, then going away; everything the console received before
+    swarm-api closed the socket (1012, "the relay went away")."""
+    relay._frames, relay._refuse = [READY, *texts], True
+    ticket = ticket_for(client, user)
+    received: list[Any] = []
+    with client.websocket_connect(SOCKET, headers=bearer(user)) as ws:
+        ws.send_text(json.dumps({"ticket": ticket}))
+        with pytest.raises(WebSocketDisconnect) as closed:
+            while True:
+                received.append(ws.receive_json())
+    assert closed.value.code == 1012
+    return received
+
+
+def test_a_reported_origin_and_device_are_stored_and_served_as_the_fixture_shows(client, ldb, live, relay):
+    """THE GAP (LB-SEAM stated it): origin and device were always null. The
+    gate's report, through the real relay's text, reaches swarm-api on the
+    viewer link it already proxies; swarm-api validates it, records it on
+    `live_sessions/{id}`, and the session read serves it."""
+    _ask_for_help(ldb)
+    assert _served(client, "GET", "/v1/tasks/{task_id}/live/session", "alice")["session"]["origin"] is None
+    _watch(client, relay, "alice", relay_report_text(*GITHUB))
+    session = _served(client, "GET", "/v1/tasks/{task_id}/live/session", "alice")["session"]
+    reported = fixture("session.reported.json")["session"]
+    assert session["origin"] == reported["origin"]
+    assert session["device"] == reported["device"]
+    assert fits(session, reported) == []
+    # Served to another member too: it is the session's, not the viewer's.
+    assert _served(client, "GET", "/v1/tasks/{task_id}/live/session", "root")["session"]["device"] == {
+        "preset": "iphone-15", "orientation": "portrait", "touch": True}
+
+
+def test_the_report_is_recorded_not_forwarded_to_the_console(client, ldb, live, relay):
+    received = _watch(client, relay, "alice", relay_report_text(*GITHUB))
+    assert all(m.get("type") != "report" for m in received)
+
+
+def _report(origin: Any = None, device: Any = None, **extra: Any) -> str:
+    return json.dumps({"type": "report", "origin": origin, "device": device, **extra})
+
+
+ORIGIN = {"origin": "https://github.com", "host": "github.com", "display_host": "github.com",
+          "registrable_domain": "github.com", "scheme": "https:", "ip_literal": False, "cert_error": None}
+DEVICE = {"preset": "iphone-15", "orientation": "portrait", "touch": True}
+
+
+@pytest.mark.parametrize("origin", [
+    {**ORIGIN, "scheme": "javascript:"},
+    {**ORIGIN, "origin": "https://evil.example", "host": "github.com"},
+    {**ORIGIN, "host": "git hub.com", "origin": "https://git hub.com"},
+    {**ORIGIN, "registrable_domain": "evil.example"},
+    {**ORIGIN, "registrable_domain": "hub.com"},
+    {**ORIGIN, "display_host": "github.com\u202egnp.exe"},
+    {**ORIGIN, "display_host": "x" * 300},
+    {**ORIGIN, "ip_literal": "no"},
+    {**ORIGIN, "path": "/login"},
+    {**ORIGIN, "host": "h" * 254 + ".com", "origin": "https://" + "h" * 254 + ".com"},
+    "https://github.com",
+])
+def test_an_origin_that_does_not_hold_together_is_not_stored(origin):
+    """Origin is untrusted page data, and a strip that shows a forged one is
+    the phishing defence failing (§5.7): every field is checked against the
+    others before anything is stored, and a report that fails is null."""
+    assert live_module.parse_report(_report(origin, DEVICE)) == {"origin": None, "device": DEVICE}
+
+
+@pytest.mark.parametrize("device", [
+    {**DEVICE, "preset": "galaxy-fold"},
+    {**DEVICE, "orientation": "upside-down"},
+    {**DEVICE, "touch": False},
+    {**DEVICE, "width": 393},
+    "iphone-15",
+])
+def test_a_device_that_is_not_a_preset_by_name_is_not_stored(device):
+    """Invariant 10: a device is a preset NAME; a report carrying dimensions,
+    an unknown name or a touch the preset does not have is refused."""
+    assert live_module.parse_report(_report(ORIGIN, device)) == {"origin": ORIGIN, "device": None}
+
+
+@pytest.mark.parametrize("text", [
+    "not json", json.dumps({"type": "ready"}), json.dumps([1]),
+    _report(ORIGIN, DEVICE, url="https://github.com/login"),
+    _report({**ORIGIN, "display_host": "x" * 5000}, DEVICE),
+])
+def test_a_message_that_is_not_a_report_or_is_too_large_is_none(text):
+    assert live_module.parse_report(text) is None
+
+
+def test_an_ip_literal_and_punycode_are_accepted_as_the_gate_reports_them():
+    ip = {"origin": "https://[2001:db8::1]:8443", "host": "[2001:db8::1]", "display_host": "[2001:db8::1]",
+          "registrable_domain": "", "scheme": "https:", "ip_literal": True, "cert_error": None}
+    puny = {**ORIGIN, "origin": "https://www.xn--bcher-kva.example", "host": "www.xn--bcher-kva.example",
+            "display_host": "www.b\u00fccher.example", "registrable_domain": "xn--bcher-kva.example"}
+    for origin in (ip, puny):
+        assert live_module.parse_report(_report(origin, None)) == {"origin": origin, "device": None}
+
+
+def test_a_stored_value_that_fails_the_check_is_served_as_null(client, ldb, live):
+    """Read back through the same check: a document written by anything but
+    this path still never reaches the strip unchecked."""
+    session_doc(ldb).update({"origin": {**ORIGIN, "registrable_domain": "evil.example"},
+                             "device": {**DEVICE, "preset": "galaxy-fold"}})
+    session = _served(client, "GET", "/v1/tasks/{task_id}/live/session", "alice")["session"]
+    assert session["origin"] is None and session["device"] is None
 
 
 # --------------------------------------------------------------------------

@@ -642,12 +642,90 @@ def test_a_tunnel_that_drops_closes_its_viewers():
     assert viewer.closed is not None and viewer.closed[0] == CLOSE_ENDED
 
 
+# ---------------------------------------------------------------- the gate's report (LB-DEV-A)
+
+ORIGIN = {"origin": "https://github.com", "host": "github.com", "display_host": "github.com",
+          "registrable_domain": "github.com", "scheme": "https:", "ip_literal": False, "cert_error": None}
+DEVICE = {"preset": "iphone-15", "orientation": "portrait", "touch": True}
+
+
+def _report(**fields) -> bytes:
+    return encode_frame(rz.OP_REPORT, "", json.dumps(fields).encode())
+
+
+def _reports(endpoint: Endpoint) -> list[dict]:
+    return [m for m in (json.loads(t) for t in endpoint.text) if m.get("type") == "report"]
+
+
+def test_the_gates_report_reaches_every_viewer_and_a_late_joiner_gets_the_latest():
+    """The top frame's origin and the device travel gate -> relay -> each
+    viewer link (swarm-api's proxy, which records them). The relay keeps the
+    last one for a viewer that joins later, and it is sent after `ready`."""
+    key, clock, relay = build()
+    gate, a, late = Endpoint(), Endpoint(), Endpoint()
+
+    async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), gate)
+        await relay.open_viewer(ticket(key, clock, "viewer"), a)
+        await relay.from_tunnel(tunnel, _report(origin=None, device=DEVICE))
+        await relay.from_tunnel(tunnel, _report(origin=ORIGIN, device=DEVICE))
+        await relay.open_viewer(ticket(key, clock, "viewer", email="late@example.test"), late)
+        await relay.flush()
+        return relay.report(SESSION)
+
+    stored = run(go())
+    assert stored == {"origin": ORIGIN, "device": DEVICE}
+    assert _reports(a) == [{"type": "report", "origin": None, "device": DEVICE},
+                           {"type": "report", "origin": ORIGIN, "device": DEVICE}]
+    assert json.loads(late.text[0]) == {"type": "ready"}
+    assert _reports(late) == [{"type": "report", "origin": ORIGIN, "device": DEVICE}]
+    # A report is the relay's to keep, never the gate's stream: nothing went back.
+    assert all(op == OP_OPEN for op, _, _ in gate.frames())
+
+
+@pytest.mark.parametrize("payload", [
+    b"not json",
+    b"[1, 2]",
+    json.dumps({"origin": ORIGIN, "device": DEVICE, "url": "https://github.com/login?token=x"}).encode(),
+    json.dumps({"origin": "https://github.com", "device": DEVICE}).encode(),
+    json.dumps({"origin": {**ORIGIN, "host": "h" * rz.MAX_REPORT_BYTES}, "device": DEVICE}).encode(),
+])
+def test_a_report_that_is_not_two_objects_or_is_too_large_is_dropped(payload):
+    """Origin is untrusted page data: the relay keeps a report only when it is
+    a small JSON object of `origin` and `device`, each an object or null.
+    swarm-api validates every field again before it stores one."""
+    key, clock, relay = build()
+    gate, a = Endpoint(), Endpoint()
+
+    async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), gate)
+        await relay.open_viewer(ticket(key, clock, "viewer"), a)
+        await relay.from_tunnel(tunnel, encode_frame(rz.OP_REPORT, "", payload))
+        await relay.flush()
+        return relay.report(SESSION)
+
+    assert run(go()) is None
+    assert _reports(a) == []
+
+
+def test_a_report_ends_with_its_session():
+    key, clock, relay = build()
+
+    async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), Endpoint())
+        await relay.from_tunnel(tunnel, _report(origin=ORIGIN, device=DEVICE))
+        await relay.close_session(SESSION)
+        return relay.report(SESSION)
+
+    assert run(go()) is None
+
+
 # ---------------------------------------------------------------- frames
 
 
 def test_tunnel_frames_round_trip_and_refuse_junk():
     for op, conn, payload in [(OP_DATA, "c1", b"\x00\xff"), (OP_OPEN, "rec-1", b""),
-                              (OP_CONTROL, "", b""), (OP_ACTION, "", b"{}")]:
+                              (OP_CONTROL, "", b""), (OP_ACTION, "", b"{}"), (rz.OP_REPORT, "", b"{}")]:
         assert decode_frame(encode_frame(op, conn, payload)) == (op, conn, payload)
     for junk in (b"", b"\x02", b"\x09\x00", b"\x02\x05ab"):
         with pytest.raises(ValueError):
