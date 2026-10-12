@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ClipboardEvent, type KeyboardEvent, type SyntheticEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type SyntheticEvent } from 'react'
 
 import { AgentLogs } from './AgentLogs'
 import {
@@ -12,7 +12,9 @@ import {
   type LiveOrigin,
   type LiveSession,
 } from './api'
+import { SaveAsLoginOffer } from './BrowserLogins'
 import { Button } from './components'
+import { TheaterButton, TheaterHost, type TheaterHandoff, type TheaterSession } from './Theater'
 import type { Task } from './types'
 import './styles/live.css'
 
@@ -50,6 +52,19 @@ import './styles/live.css'
  * noVNC, which turns it into the pointer events the gate makes touch events
  * of, only while this person holds control and has touch on. Otherwise it is
  * stopped before noVNC sees it, and the page scrolls as it would anywhere.
+ *
+ * THEATER IS THIS TAB, FULL SCREEN (§6, lane L11b). The tab's body sits in
+ * a <TheaterHost>, and ⤢ in the toolbar (or `T`) opens it. The theater opens
+ * no connection of its own: it borrows the node LiveScreen gave noVNC and
+ * moves it into its stage, and the strip, the logs, the device bar and the
+ * control button it shows are this file's own components, so who may do what
+ * is decided in one place.
+ *
+ * SAVE AS LOGIN FOLLOWS RETURN CONTROL (§5.5.1, lane L12c). The pane notes
+ * when this person's control ends with nobody in control -- they returned it,
+ * or let it lapse -- and draws `SaveAsLoginOffer`, which itself draws nothing
+ * outside a personal (`u-`) workspace. A takeover by someone else is not a
+ * return: the session in the browser is no longer only theirs to keep.
  *
  * NOTHING TYPED IS LOGGED OR KEPT (§5.3.3). This file has no console call and
  * stores no key, paste or pointer position; a paste in control goes straight
@@ -356,7 +371,24 @@ export function LiveBrowserPane({
   reload: () => void
 }) {
   const [logs, setLogs] = useState(false)
+  // The element noVNC draws into, for the theater to borrow; null until LiveScreen has mounted it.
+  const [screenNode, setScreenNode] = useState<HTMLElement | null>(null)
   const session = live.status === 'ok' ? live.session : null
+  const open = session !== null && session.state === 'open' ? session : null
+  const returned = useControlReturned(open?.session_id ?? null, open !== null && isController(open), open?.controller ?? null)
+
+  // One object per hand-off, not per poll: the theater turns its left column
+  // to the checklist whenever this changes, and a fresh object every
+  // `LIVE_POLL_MS` would take the column back from someone reading the logs.
+  const wait = open?.human_wait ?? null
+  const [reason, expect, deadline] = [wait?.reason ?? null, wait?.expect ?? null, wait?.deadline ?? null]
+  const handoff = useMemo<TheaterHandoff | null>(
+    () =>
+      reason === null || deadline === null
+        ? null
+        : { reason, expect: expect !== null && expect.trim() !== '' ? bareHost(expect) : 'no site named', deadline },
+    [reason, expect, deadline],
+  )
 
   if (live.status === 'loading' || live.status === 'idle') {
     return <p className="live-note">Reading the agent’s live browser.</p>
@@ -379,10 +411,18 @@ export function LiveBrowserPane({
   const mine = isController(session)
   const verdict = stripVerdict(session)
   const o = session.origin
-  return (
-    <div className={`live-tab${logs ? ' with-logs' : ''}`}>
-      {session.human_wait !== null && <HandoffBanner wait={session.human_wait} />}
-      <div className={`live-strip is-${verdict.tone}`} data-tone={verdict.tone} role="status">
+  const theater: TheaterSession = {
+    taskId: task.id,
+    tenantId: task.tenant_id,
+    // The session read serves no attempt id, and the theater reads none from
+    // here: each recording segment it replays names its own attempt.
+    attemptId: '',
+    sessionId: session.session_id,
+    screen: screenNode,
+    live: true,
+  }
+  const strip = (
+    <div className={`live-strip is-${verdict.tone}`} data-tone={verdict.tone} role="status">
         <span className="live-origin">
           {o === null ? (
             '—'
@@ -402,24 +442,64 @@ export function LiveBrowserPane({
               : `${session.controller.email} is in control.`}
         </span>
       </div>
-      <LiveToolbar
-        taskId={task.id}
-        session={session}
-        mine={mine}
-        logs={logs}
-        onLogs={() => setLogs((v) => !v)}
-        reload={reload}
-      />
-      <div className="live-body">
-        <LiveScreen key={session.session_id} taskId={task.id} control={mine} touch={mine && session.device.touch} />
-        {logs && (
-          <div className="live-logs">
-            <AgentLogs task={task} />
-          </div>
-        )}
-      </div>
-    </div>
   )
+  return (
+    <TheaterHost
+      session={theater}
+      strip={strip}
+      handoff={handoff}
+      logs={<AgentLogs task={task} />}
+      device={<LiveDevice session={session} mine={mine} />}
+      control={<LiveControl taskId={task.id} session={session} reload={reload} />}
+    >
+      <div className={`live-tab${logs ? ' with-logs' : ''}`}>
+        {session.human_wait !== null && <HandoffBanner wait={session.human_wait} />}
+        {strip}
+        <LiveToolbar
+          taskId={task.id}
+          session={session}
+          mine={mine}
+          logs={logs}
+          onLogs={() => setLogs((v) => !v)}
+          reload={reload}
+        />
+        <SaveAsLoginOffer taskId={task.id} tenantId={task.tenant_id} site={o?.origin ?? null} controlReturned={returned} />
+        <div className="live-body">
+          <LiveScreen
+            key={session.session_id}
+            taskId={task.id}
+            control={mine}
+            touch={mine && session.device.touch}
+            onScreen={setScreenNode}
+          />
+          {logs && (
+            <div className="live-logs">
+              <AgentLogs task={task} />
+            </div>
+          )}
+        </div>
+      </div>
+    </TheaterHost>
+  )
+}
+
+/**
+ * True once this person's control of the session ends with nobody in control
+ * (Return control, or a lapsed renewal), until they take it again. Read from
+ * the polled session: the console has no other word of a return, and a
+ * takeover by someone else, or a new session, is not one.
+ */
+function useControlReturned(sessionId: string | null, mine: boolean, controller: LiveSession['controller']): boolean {
+  const was = useRef<{ sessionId: string | null; mine: boolean }>({ sessionId, mine })
+  const [returned, setReturned] = useState(false)
+  const nobody = controller === null
+  useEffect(() => {
+    const before = was.current
+    was.current = { sessionId, mine }
+    if (before.sessionId !== sessionId || mine || !nobody) setReturned(false)
+    else if (before.mine) setReturned(true)
+  }, [sessionId, mine, nobody])
+  return returned
 }
 
 /** The host with its registrable domain emphasised, and a punycode host shown decoded and flagged (§5.7 item 1). */
@@ -481,19 +561,59 @@ function LiveToolbar({
   reload: () => void
 }) {
   const [error, setError] = useState<string | null>(null)
+  return (
+    <div className="live-toolbar" role="toolbar" aria-label="Browser view">
+      <LiveDevice session={session} mine={mine} />
+      <Button size="sm" aria-pressed={logs} onClick={onLogs}>
+        {logs ? 'Hide logs' : 'Logs beside'}
+      </Button>
+      <TheaterButton />
+      {session.you.can_open && (
+        <label className="live-open">
+          <input
+            type="checkbox"
+            checked={session.open_to_members}
+            disabled={session.open_to_members}
+            onChange={(e) => {
+              if (!e.target.checked) return
+              void openLiveToMembers(taskId).then((r) => {
+                setError(r.status === 'error' ? r.error.message : null)
+                reload()
+              })
+            }}
+          />
+          Let any member take control
+        </label>
+      )}
+      {!mine && <span className="live-toolbar-why">{deviceWhy(mine)}</span>}
+      {error !== null && (
+        <span className="live-control-error" role="alert">
+          {error}
+        </span>
+      )}
+    </div>
+  )
+}
+
+// SHOWN, NOT SWITCHED. swarm-api serves no device route (§6.1 needs the
+// gate's device lane, L3b, which has not landed), so a switcher that sent a
+// change would send it to a path nothing answers. The bar draws the device
+// the session reports, for everyone, and changes nothing.
+function deviceWhy(mine: boolean): string {
+  return mine
+    ? 'Switching the device is not served yet: swarm-api has no device route.'
+    : 'Only the person in control can change the device.'
+}
+
+/** The preset, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
+function LiveDevice({ session, mine }: { session: LiveSession; mine: boolean }) {
   const device = session.device
   const names = session.presets.some((p) => p.name === device.preset)
     ? session.presets.map((p) => p.name)
     : [device.preset, ...session.presets.map((p) => p.name)]
-  // SHOWN, NOT SWITCHED. swarm-api serves no device route (§6.1 needs the
-  // gate's device lane, L3b, which has not landed), so a switcher that sent a
-  // change would send it to a path nothing answers. The bar draws the device
-  // the session reports, for everyone, and changes nothing.
-  const why = mine
-    ? 'Switching the device is not served yet: swarm-api has no device route.'
-    : 'Only the person in control can change the device.'
+  const why = deviceWhy(mine)
   return (
-    <div className="live-toolbar" role="toolbar" aria-label="Browser view">
+    <>
       <label className="live-device">
         <span>Device</span>
         <select
@@ -514,33 +634,7 @@ function LiveToolbar({
       <Button size="sm" aria-pressed={device.touch} disabled title={why}>
         Touch {device.touch ? 'on' : 'off'}
       </Button>
-      <Button size="sm" aria-pressed={logs} onClick={onLogs}>
-        {logs ? 'Hide logs' : 'Logs beside'}
-      </Button>
-      {session.you.can_open && (
-        <label className="live-open">
-          <input
-            type="checkbox"
-            checked={session.open_to_members}
-            disabled={session.open_to_members}
-            onChange={(e) => {
-              if (!e.target.checked) return
-              void openLiveToMembers(taskId).then((r) => {
-                setError(r.status === 'error' ? r.error.message : null)
-                reload()
-              })
-            }}
-          />
-          Let any member take control
-        </label>
-      )}
-      {!mine && <span className="live-toolbar-why">{why}</span>}
-      {error !== null && (
-        <span className="live-control-error" role="alert">
-          {error}
-        </span>
-      )}
-    </div>
+    </>
   )
 }
 
@@ -570,7 +664,18 @@ async function loadRfb(): Promise<RfbConstructor> {
 
 type Conn = 'connecting' | 'connected' | 'reconnecting' | 'failed'
 
-function LiveScreen({ taskId, control, touch }: { taskId: string; control: boolean; touch: boolean }) {
+function LiveScreen({
+  taskId,
+  control,
+  touch,
+  onScreen,
+}: {
+  taskId: string
+  control: boolean
+  touch: boolean
+  /** Told the element noVNC draws into, and null when it goes: the theater borrows it. */
+  onScreen?: (node: HTMLElement | null) => void
+}) {
   const host = useRef<HTMLDivElement>(null)
   const rfb = useRef<Rfb | null>(null)
   const focused = useRef(false)
@@ -579,6 +684,11 @@ function LiveScreen({ taskId, control, touch }: { taskId: string; control: boole
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
   const [hasFocus, setHasFocus] = useState(false)
+
+  useEffect(() => {
+    onScreen?.(host.current)
+    return () => onScreen?.(null)
+  }, [onScreen])
 
   // VIEW-ONLY UNLESS IN CONTROL WITH THE CANVAS FOCUSED. Set on the RFB
   // object directly, not through a render: noVNC focuses its canvas on
@@ -689,6 +799,8 @@ function LiveScreen({ taskId, control, touch }: { taskId: string; control: boole
         ref={host}
         className={`live-screen${control ? ' is-control' : ''}`}
         data-conn={conn}
+        // Keys here are the remote browser's: the theater's `T` and Esc leave them alone.
+        data-live-screen=""
         aria-label={control ? 'The agent’s browser. Click it to type into it.' : 'The agent’s browser, view only.'}
         onFocus={onFocus}
         onBlur={onBlur}

@@ -475,6 +475,22 @@ github_app_slug      = "swarmcloud-saga"
 # (e983d06e, run 37672097489; revision swarm-api-00176). Runbook step 7.
 enable_forge_refresh = true
 
+# --- the live browser (docs/design/live-browser.md, #1030) ------------------
+# ON in dev: owner decision 2026-10-11 ~15:00 PDT, once every live-browser lane
+# had merged (LB-Lon). This is step 4 of terraform/infra/live.tf's rollout
+# order; the operator does steps 1-3 BEFORE this applies -- `make apply` with
+# it false, `scripts/create-secrets.sh --live-key`, and a swarm-live digest in
+# image_refs -- and step 5 after: apply `terraform output -raw
+# swarm_live_manifest` to swarm-autopilot. One switch turns on both halves: the
+# relay's grants, address and swarm-api's SWARM_LIVE_URL/SWARM_LIVE_KEY, and the
+# scheduler's LIVE_BROWSER_SIDECAR, which locals.tf derives from it so a
+# claude-code-browser pod gets the display sidecar exactly when there is a
+# relay to stream to. Needs enable_gke_autopilot (true above): the relay is a
+# StatefulSet on swarm-autopilot and claude-code-browser runs on GKE.
+# Saved browser logins stay OFF: that is terraform/bootstrap's
+# enable_browser_logins, which this does not touch.
+enable_live_browser = true
+
 # D4's refusal is ON in dev (#780 OB10, the migration step). A PERSON's task on
 # a GitHub repository they have not chosen under Access is refused with 403
 # REPOSITORY_NOT_GRANTED ("choose it under Access") instead of running with the

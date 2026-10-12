@@ -922,6 +922,21 @@ locals {
       # check holds it to the deployed URL.
       SWARM_API_URL      = var.swarm_api_url
       SWARM_API_AUDIENCE = local.push_audiences["swarm-api"]
+
+      # The live browser's display sidecar (scheduler.settings
+      # `live_browser_sidecar`; docs/design/live-browser.md, LB-Lon). On, a
+      # claude-code-browser GKE pod carries the `display` native sidecar and
+      # the live gate; off, it is the pod it always was. Until LB-Lon nothing
+      # set it, so turning the relay on streamed nothing.
+      #
+      # DERIVED from the relay (`local.live_relay_enabled`, live.tf), not a
+      # second variable, because neither half works alone: a relay with no
+      # sidecar has no browser to stream, and a sidecar with no relay costs
+      # every browser pod a display's share of its resource class
+      # (scheduler.dispatch LIVE_DISPLAY_SHARE) for a gate swarm-api will
+      # never issue a tunnel ticket to (SWARM_LIVE_URL is empty). A second
+      # switch would only add the two states that are always wrong.
+      LIVE_BROWSER_SIDECAR = tostring(local.live_relay_enabled)
     })
     "swarm-quota-broker" = merge(local.common_env, {
       # WITHOUT THIS THE SWEEP HAS NEVER RUN. /v1/quota/sweep requires a
