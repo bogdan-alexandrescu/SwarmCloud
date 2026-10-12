@@ -254,7 +254,7 @@ describe("the Overview's hand-off cards", () => {
 // The Live filter
 // ---------------------------------------------------------------------------
 
-describe('the Live browsers filter', () => {
+describe('the Live browsers filter (the All | Live N switch)', () => {
   const rows = (): Task[] => [
     // Newest first, as the list reads them; the needs-you row is the OLDEST,
     // so only the needs-you rule can put it first.
@@ -278,7 +278,8 @@ describe('the Live browsers filter', () => {
     } satisfies Result<TaskPage>)
     const { container } = render(<AgentsScreen onOpen={() => {}} />)
     await waitFor(() => expect(container.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
-    fireEvent.click(screen.getByRole('checkbox', { name: /live browsers/i }))
+    // The "All | Live N" switch (LB-UX3; it was a "Live browsers" checkbox).
+    fireEvent.click(within(screen.getByRole('group', { name: /live browser agents/i })).getByRole('button', { name: /^Live/ }))
     await waitFor(() =>
       expect([...container.querySelectorAll('.rows .row.clickable')].map((r) => r.getAttribute('data-task-id'))).toEqual([
         'task_needsyou00000000001',

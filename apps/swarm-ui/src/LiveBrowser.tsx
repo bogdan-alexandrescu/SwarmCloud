@@ -14,6 +14,7 @@ import {
 } from './api'
 import { SaveAsLoginOffer } from './BrowserLogins'
 import { Button } from './components'
+import { LiveToolMenu } from './LiveToolMenu'
 import { TheaterButton, TheaterHost, type TheaterHandoff, type TheaterSession } from './Theater'
 import type { Task } from './types'
 import './styles/live.css'
@@ -563,10 +564,12 @@ function LiveToolbar({
   const [error, setError] = useState<string | null>(null)
   return (
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
-      <LiveDevice session={session} mine={mine} />
-      <Button size="sm" aria-pressed={logs} onClick={onLogs}>
-        {logs ? 'Hide logs' : 'Logs beside'}
-      </Button>
+      <LiveToolMenu>
+        <LiveDevice session={session} mine={mine} />
+        <Button size="sm" aria-pressed={logs} onClick={onLogs}>
+          {logs ? 'Hide logs' : 'Logs beside'}
+        </Button>
+      </LiveToolMenu>
       <TheaterButton />
       {session.you.can_open && (
         <label className="live-open">
