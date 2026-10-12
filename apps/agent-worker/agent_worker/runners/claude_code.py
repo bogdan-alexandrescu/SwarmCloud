@@ -33,6 +33,10 @@ workspace that is deleted afterwards and a NetworkPolicy that denies egress to
 every other tenant's namespace. Within that box the agent is allowed to work
 without asking, and the deployment can turn that off by setting
 CLAUDE_CODE_ARGS.
+The checkout is marked trusted in `work/.claude.json` before launch
+(`trust_workspace`, WK-TRUST, 2026-10-12), so the repository's own
+`.claude/settings.json` applies as it does in a local lane -- its deny rules
+included. Nothing beyond what that file grants is added.
 
 WHY stream-json (#184, 2026-09-25). With `--output-format json` the CLI prints
 ONE object when it ends and nothing before, so a running claude-code attempt
@@ -114,7 +118,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import RunnerContext, run_runner
-from .cliagent import CliAgentSpec, run_cli_agent
+from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
 
 #: The CLI's documented switch for every background-task feature: the Bash and
 #: subagent `run_in_background` parameter, auto-backgrounding and Ctrl+B.
@@ -247,6 +251,43 @@ def write_headless_settings(directory: Path) -> Path:
     _write_private(path, json.dumps(settings, indent=2) + "\n")
     return path
 
+
+def trust_workspace(home: Path, workspace: Path) -> Path:
+    """Mark `workspace` trusted in `home/.claude.json`, the config the CLI reads; return it.
+
+    WK-TRUST (part of #1194, owner-approved 2026-10-12). An untrusted
+    workspace makes the CLI ignore the repository's `.claude/settings.json`
+    allow list, and it said so at the top of every claude-code attempt's
+    stderr. The CLI's own remedy is `projects[<path>].hasTrustDialogAccepted`,
+    keyed by the exact directory it starts in -- `work/repo` of THIS attempt,
+    so a resumed attempt on a new directory writes its own entry.
+
+    MERGED, not overwritten: the CLI keeps its state in this file and `work/`
+    travels in checkpoints. Only the flag is added -- trust lets the
+    repository's own settings apply, its deny rules with them, and grants
+    nothing they do not. A file that is not a JSON object is the CLI's broken
+    state, not something to keep, and is replaced. A link at the name is
+    replaced, never followed (see `_write_private`).
+    """
+    path = home / ".claude.json"
+    config: Any = None
+    if path.is_file() and not path.is_symlink():
+        try:
+            config = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            config = None
+    if not isinstance(config, dict):
+        config = {}
+    projects = config.get("projects")
+    if not isinstance(projects, dict):
+        projects = config["projects"] = {}
+    entry = projects.get(str(workspace))
+    if not isinstance(entry, dict):
+        entry = projects[str(workspace)] = {}
+    entry["hasTrustDialogAccepted"] = True
+    _write_private(path, json.dumps(config, indent=2) + "\n")
+    return path
+
 SPEC = CliAgentSpec(
     name="claude-code",
     provider="anthropic",
@@ -287,8 +328,10 @@ SPEC = CliAgentSpec(
     # with --dangerously-skip-permissions -- and was recorded as the error of a
     # run SIGTERM killed (owner decision 2026-10-06). Matched by its stable
     # prefix, with the entry count as a number, plus the advice should the CLI
-    # wrap it onto a line of its own. The workspace is NOT marked trusted: the
-    # owner chose filtering only.
+    # wrap it onto a line of its own. Since WK-TRUST (2026-10-12) the checkout
+    # IS marked trusted before launch (`trust_workspace`), so the warning
+    # should no longer appear; the filter stays for a run with no checkout and
+    # for a CLI release that keys trust differently.
     benign_stderr=(
         re.compile(
             r"\s*Ignoring \d+ permissions\.allow entries from \S*: "
@@ -308,6 +351,11 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     # leave background commands switched on by replacing the flag set.
     settings = write_headless_settings(Path(ctx.work_dir) / SETTINGS_DIR_NAME)
     extra += ["--settings", str(settings)]
+    # HOME is `work/` (cliagent), so `work/.claude.json` is the config the CLI
+    # reads. Only a checkout is trusted: with none the agent starts in HOME,
+    # where there are no repository settings to apply.
+    if ctx.repo_dir is not None:
+        trust_workspace(Path(ctx.work_dir), agent_working_directory(ctx))
     env = {NO_BACKGROUND_ENV: "1"}
     browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
     prompt = ctx.payload.get("prompt")
