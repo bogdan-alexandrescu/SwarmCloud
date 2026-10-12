@@ -20,25 +20,19 @@
  * segment from `GET /v1/tasks/{id}/live/recordings/raw?attempt_id=&name=`;
  * until a deployment serves them it says so, and shows nothing.
  *
- * Theater's replay (lane L11b) reads the same segments.
+ * Theater's replay (lane L11b) reads the same segments, THROUGH THE SAME
+ * LOADER (`loadLiveRecordings` in api.ts, lane LB-UX2a): two private reads of
+ * one route are how the route came to serve two shapes.
  */
 import { useEffect, useState } from 'react'
-import { USE_FIXTURES } from './api'
+import { USE_FIXTURES, loadLiveRecordings, type LiveRecording } from './api'
 import { Button } from './components'
-import { errorHeading, read, route, tenantQuery, type ApiError } from './fetch'
+import { errorHeading, route, tenantQuery, type ApiError } from './fetch'
 import { Mark } from './primitives'
 import { bytesLabel, type Task } from './types'
 
-/** One recorded segment, as the recordings route lists it. */
-export interface Recording {
-  attempt_id: string
-  /** `rec-<seq>.live.webm`. */
-  name: string
-  /** The object's key, from which the tenant and task are checked. */
-  key: string
-  bytes: number | null
-  created_at: string | null
-}
+/** One recorded segment, as much of it as this panel reads (`LiveRecording`). */
+export type Recording = Pick<LiveRecording, 'attempt_id' | 'name' | 'key' | 'bytes' | 'created_at'>
 
 /** §7: how long a recording is kept, by the bucket's own suffix rule. */
 export const RECORDING_DAYS = 7
@@ -73,14 +67,13 @@ type Listing =
   | { kind: 'failed'; error: ApiError }
   | { kind: 'listed'; shown: Recording[]; dropped: number }
 
-async function loadRecordings(taskId: string): Promise<Listing> {
+async function loadListing(taskId: string): Promise<Listing> {
   if (USE_FIXTURES) return { kind: 'unserved' }
-  const r = await read<{ recordings?: unknown }>(route('/v1/tasks/{id}/live/recordings', { id: taskId }), () => false)
+  const r = await loadLiveRecordings(taskId)
   if (r.status === 'error') return r.error.kind === 'not_found' ? { kind: 'unserved' } : { kind: 'failed', error: r.error }
   if (r.status === 'loading') return { kind: 'reading' }
   if (r.status === 'empty') return { kind: 'listed', shown: [], dropped: 0 }
-  const raw = Array.isArray(r.data.recordings) ? (r.data.recordings as Recording[]) : []
-  return { kind: 'listed', shown: raw, dropped: 0 }
+  return { kind: 'listed', shown: r.data.segments, dropped: 0 }
 }
 
 /**
@@ -97,7 +90,7 @@ export function RecordingsPanel({ task }: { task: Pick<Task, 'id' | 'tenant_id'>
   useEffect(() => {
     let live = true
     setListing({ kind: 'reading' })
-    void loadRecordings(id).then((l) => {
+    void loadListing(id).then((l) => {
       if (!live) return
       if (l.kind !== 'listed') {
         setListing(l)
