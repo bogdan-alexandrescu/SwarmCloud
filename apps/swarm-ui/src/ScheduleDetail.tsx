@@ -12,9 +12,10 @@
  * (§6.2): no firing is a fact about the schedule, and a zero would read as a
  * count of something that ran.
  */
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import {
   loadMe,
+  loadPeople,
   loadSchedule,
   loadScheduleAudit,
   loadScheduleTypes,
@@ -26,11 +27,13 @@ import {
   type ScheduleFiring,
   type ScheduleTypeRow,
 } from './api'
-import { Button, Dialog, Tabs } from './components'
+import { Button, CIcon, Dialog, Tabs } from './components'
+import { WarnGlyph } from './components/glyphs'
 import { errorHeading, type ApiError, type Result } from './fetch'
 import { usd } from './measure'
 import { pluralise } from './types'
 import { Absent, Mark } from './primitives'
+import { addressToPath } from './paths'
 import { EditSchedule } from './ScheduleEdit'
 import {
   DryRunChip,
@@ -331,32 +334,124 @@ export function lastGateEditor(audit: readonly ScheduleAuditEntry[], s: Pick<Sch
 }
 
 /**
- * Whether this viewer is the one the second-person rule refuses (AUT-4), or
- * null while that is not known. A personal tenant types the name instead, and
- * a platform scope is an admin's rule, so neither is blocked here.
+ * WHY THIS VIEWER CANNOT SWITCH, AND WHO CAN, or null while that is not known
+ * or the viewer can. Two rules refuse before the server is asked:
+ *
+ *   * `second_person`: in a group tenant, the member who last changed the
+ *     gate, scope or spec (AUT-4). A personal tenant types the name instead.
+ *   * `platform_admin`: a schedule scoped to the platform, for a viewer who is
+ *     not a platform admin (`merge_mode`'s "only admins in the platform
+ *     repos"). A repos scope that happens to reach a platform repository is
+ *     not knowable here; the server still refuses that, said in place.
+ *
+ * WHO CAN is the platform admins by name when this viewer can read them --
+ * Admin › People's `admins`, which only an admin may read -- and otherwise a
+ * pointer to that page. No member list is readable from the console, so the
+ * other members are named by their tenant. No new route is asked for.
  */
-function useSwitchBlock(s: Schedule, ask: boolean): string | null {
-  const [why, setWhy] = useState<string | null>(null)
+export interface SwitchBlock {
+  rule: 'second_person' | 'platform_admin'
+  /** The tenant's display name, its group, or its id. */
+  tenant: string
+  /** The platform admins other than this viewer, or null when not readable here. */
+  admins: string[] | null
+}
+
+function useSwitchBlock(s: Schedule, ask: boolean): SwitchBlock | null {
+  const [block, setBlock] = useState<SwitchBlock | null>(null)
   useEffect(() => {
     if (!ask) return
     let live = true
-    void Promise.all([loadMe({ frame: true }), loadScheduleAudit(s.schedule_id)]).then(([me, audit]) => {
+    void Promise.all([loadMe({ frame: true }), loadScheduleAudit(s.schedule_id)]).then(async ([me, audit]) => {
       if (!live || (me.status !== 'ok' && me.status !== 'stale')) return
-      if (me.data.tenant.kind !== 'group' || s.scope.mode === 'platform') return setWhy(null)
-      const entries = audit.status === 'ok' || audit.status === 'stale' ? audit.data.audit : audit.status === 'empty' ? [] : null
-      if (entries === null) return
-      const editor = lastGateEditor(entries, s)
-      setWhy(
-        editor !== null && editor === me.data.principal.email.trim().toLowerCase()
-          ? 'You last changed this schedule’s gate, scope or spec, so another member of this tenant must make this switch.'
-          : null,
-      )
+      const { tenant, principal } = me.data
+      const self = principal.email.trim().toLowerCase()
+      let rule: SwitchBlock['rule'] | null = null
+      if (s.scope.mode === 'platform') {
+        rule = principal.is_admin ? null : 'platform_admin'
+      } else if (tenant.kind === 'group') {
+        const entries = audit.status === 'ok' || audit.status === 'stale' ? audit.data.audit : audit.status === 'empty' ? [] : null
+        if (entries === null) return
+        const editor = lastGateEditor(entries, s)
+        rule = editor !== null && editor === self ? 'second_person' : null
+      }
+      if (rule === null) return setBlock(null)
+      const name = tenant.display_name || tenant.principal || tenant.tenant_id || 'this tenant'
+      setBlock({ rule, tenant: name, admins: null })
+      if (!principal.is_admin) return
+      const people = await loadPeople()
+      if (!live || (people.status !== 'ok' && people.status !== 'stale') || !Array.isArray(people.data.admins)) return
+      const admins = people.data.admins.map((a) => a.email).filter((e) => e.trim().toLowerCase() !== self)
+      if (admins.length > 0) setBlock({ rule, tenant: name, admins })
     })
     return () => {
       live = false
     }
   }, [ask, s])
-  return why
+  return block
+}
+
+const BLOCK_REASON: Record<SwitchBlock['rule'], string> = {
+  second_person: 'You last changed this schedule’s gate, scope or spec, so another member of this tenant must make this switch.',
+  platform_admin: 'This schedule reaches a platform repository, where only a platform admin may switch merging to automatic.',
+}
+
+/** This schedule's Gate tab as a full URL, for sending to whoever can switch it. */
+function gateLink(s: Schedule): string {
+  const path = addressToPath(scheduleAddress(s.schedule_id, { tab: 'gate' }))
+  return typeof window === 'undefined' ? path : `${window.location.origin}${path}`
+}
+
+/**
+ * THE BLOCKED STATE, UP FRONT (owner review 2026-10-11). The dialog used to
+ * open on two paragraphs of rules and say the one thing that mattered -- this
+ * viewer cannot switch -- in grey under a button, with no word on who could.
+ * Now it opens with that: the warning, the reason in one sentence, who can,
+ * and a Copy link to send them.
+ */
+function BlockedSwitch({ id, s, block, go }: { id: string; s: Schedule; block: SwitchBlock; go?: (to: string) => void }) {
+  const [said, setSaid] = useState('')
+  const people =
+    go === undefined ? (
+      <a className="ctl-link" href={addressToPath('admin/people')}>Admin › People</a>
+    ) : (
+      <InApp go={go} to="admin/people" className="ctl-link">Admin › People</InApp>
+    )
+  const admins = block.admins !== null && block.admins.length > 0 ? block.admins.join(', ') : null
+  const copy = () => {
+    const clip = typeof navigator === 'undefined' ? undefined : navigator.clipboard
+    if (clip === undefined || typeof clip.writeText !== 'function') return setSaid(`Copy refused: the link is ${gateLink(s)}`)
+    clip.writeText(gateLink(s)).then(
+      () => setSaid('Link copied'),
+      () => setSaid(`Copy refused: the link is ${gateLink(s)}`),
+    )
+  }
+  return (
+    <div className="c-banner is-warn sc-blocked" id={id} data-testid="sc-switch-blocked">
+      <WarnGlyph />
+      <div className="c-banner-body">
+        <h3>You can’t make this switch</h3>
+        <p>{BLOCK_REASON[block.rule]}</p>
+        {block.rule === 'second_person' ? (
+          admins !== null ? (
+            <p>Another member of {block.tenant} can switch it, or a platform admin: {admins}.</p>
+          ) : (
+            <p>Another member of {block.tenant} can switch it, or a platform admin of this tenant ({people} lists them).</p>
+          )
+        ) : admins !== null ? (
+          <p>A platform admin must switch it: {admins}.</p>
+        ) : (
+          <p>A platform admin of this tenant must switch it ({people} lists them).</p>
+        )}
+        {said !== '' && <p role="status">{said}</p>}
+      </div>
+      <div className="c-banner-acts">
+        <Button size="sm" icon={<CIcon name="copy" />} onClick={copy}>
+          Copy link
+        </Button>
+      </div>
+    </div>
+  )
 }
 
 /**
@@ -364,9 +459,15 @@ function useSwitchBlock(s: Schedule, ask: boolean): string | null {
  * is the one way a schedule merges unattended: never the create or edit form,
  * always this audited route, and never by the member who last changed the
  * gate, scope or spec. The server holds every rule and says which refused;
- * the dialog also reads who last changed the gate and disables Switch for
- * that member, with the reason beside it (AUT-4), rather than offering a
- * button the server will refuse.
+ * the dialog also reads who may not switch and opens on that (AUT-4, owner
+ * review 2026-10-11), rather than offering a button the server will refuse.
+ *
+ * ONE SHAPE, BLOCKED OR NOT: the warning when blocked, then a short "What
+ * changes", the full rules behind Details, and one action row -- Close, then
+ * the primary. Blocked, the primary is disabled (aria-disabled too), grey,
+ * and reads "Switch to automatic" with no ellipsis: nothing follows a click.
+ * Its reason is the warning above, said once, not again beside the button,
+ * where the wrapped reason is what pushed Close and Switch onto two rows.
  *
  * TWO STEPS (AUT-4). The first says what changes and what still holds; the
  * second asks for the schedule's name typed, and only then sends. The typed
@@ -375,7 +476,7 @@ function useSwitchBlock(s: Schedule, ask: boolean): string | null {
  * elsewhere. Back to `approve` is a tightening, open to any member, and needs
  * no dialog. Closing the dialog returns focus to its trigger (AUT-13).
  */
-export function MergeSwitch({ s, onChanged }: { s: Schedule; onChanged: () => void }) {
+export function MergeSwitch({ s, onChanged, go }: { s: Schedule; onChanged: () => void; go?: (to: string) => void }) {
   const floor = useMergeFloor(s.type)
   const [open, setOpen] = useState(false)
   const [step, setStep] = useState<'explain' | 'type'>('explain')
@@ -383,6 +484,8 @@ export function MergeSwitch({ s, onChanged }: { s: Schedule; onChanged: () => vo
   const [busy, setBusy] = useState(false)
   const [refused, setRefused] = useState<ApiError | null>(null)
   const trigger = useRef<HTMLSpanElement | null>(null)
+  const blockId = useId()
+  const typedHint = useId()
   const merge = s.gate.merge
   const blocked = useSwitchBlock(s, merge === 'approve' && floor !== 'never')
 
@@ -451,22 +554,27 @@ export function MergeSwitch({ s, onChanged }: { s: Schedule; onChanged: () => vo
           actions={
             step === 'explain' ? (
               <>
-                <Button kind="ghost" onClick={close}>
-                  Keep approving each merge
-                </Button>
-                <Button kind="primary" disabledReason={blocked ?? undefined} onClick={() => { setStep('type'); setRefused(null) }}>
-                  Switch to automatic merging…
-                </Button>
+                <Button onClick={close}>Close</Button>
+                {blocked !== null ? (
+                  <Button kind="primary" className="sc-switch-go" disabled aria-disabled="true" aria-describedby={blockId}>
+                    Switch to automatic
+                  </Button>
+                ) : (
+                  <Button kind="primary" className="sc-switch-go" onClick={() => { setStep('type'); setRefused(null) }}>
+                    Switch to automatic merging
+                  </Button>
+                )}
               </>
             ) : (
               <>
-                <Button kind="ghost" onClick={() => setStep('explain')}>
-                  Back
-                </Button>
+                <Button onClick={() => setStep('explain')}>Back</Button>
                 <Button
                   kind="primary"
+                  className="sc-switch-go"
                   busy={busy ? 'Switching…' : false}
-                  disabledReason={blocked ?? (typedOk ? undefined : 'Type the schedule’s name exactly.')}
+                  disabled={blocked !== null || !typedOk}
+                  aria-disabled={blocked !== null || !typedOk ? 'true' : undefined}
+                  aria-describedby={typedHint}
                   onClick={() => void send('auto', typed.trim())}
                 >
                   Switch now
@@ -477,16 +585,26 @@ export function MergeSwitch({ s, onChanged }: { s: Schedule; onChanged: () => vo
         >
           {step === 'explain' ? (
             <>
-              <p>
-                A pull request this schedule makes will merge once it is green and reviewed, without a person approving it. The hard stops
-                still hold whatever this says: a plan naming workflow files is refused; IAM, terraform/bootstrap, CODEOWNERS and the
-                repository’s protected paths are held for a second member to approve (for the owner, in a platform repository); and in a
-                platform repository the frozen contract is held for the owner.
-              </p>
-              <p>
-                The member who last changed this schedule’s gate, scope or spec cannot make this switch; in a platform repository only a
-                platform admin can. The switch is written to the schedule’s audit.
-              </p>
+              {blocked !== null && <BlockedSwitch id={blockId} s={s} block={blocked} go={go} />}
+              <h3 className="sc-h3">What changes</h3>
+              <ul className="sc-changes">
+                <li>A pull request this schedule makes merges once it is green and reviewed, with no person approving it.</li>
+                <li>
+                  Still held: workflow files; IAM, terraform/bootstrap, CODEOWNERS and protected paths; and the frozen contract.
+                </li>
+              </ul>
+              <details className="sc-rules">
+                <summary>Details</summary>
+                <p>
+                  The hard stops still hold whatever this says: a plan naming workflow files is refused; IAM, terraform/bootstrap,
+                  CODEOWNERS and the repository’s protected paths are held for a second member to approve (for the owner, in a platform
+                  repository); and in a platform repository the frozen contract is held for the owner.
+                </p>
+                <p>
+                  The member who last changed this schedule’s gate, scope or spec cannot make this switch; in a platform repository only a
+                  platform admin can. The switch is written to the schedule’s audit.
+                </p>
+              </details>
             </>
           ) : (
             <label className="c-field">
@@ -502,6 +620,9 @@ export function MergeSwitch({ s, onChanged }: { s: Schedule; onChanged: () => vo
                 spellCheck={false}
                 onChange={(e) => setTyped(e.target.value)}
               />
+              <span className="c-hint" id={typedHint}>
+                {typedOk ? 'The name matches.' : 'Type the schedule’s name exactly.'}
+              </span>
             </label>
           )}
           {refused !== null && (
@@ -519,7 +640,7 @@ function failuresToPause(s: Schedule): number {
   return Number.isFinite(n) ? Math.min(10, Math.max(1, Math.trunc(n))) : 3
 }
 
-function Gate({ s, onChanged }: { s: Schedule; onChanged: () => void }) {
+function Gate({ s, onChanged, go }: { s: Schedule; onChanged: () => void; go: (to: string) => void }) {
   const g = s.gate
   const failures = failuresToPause(s)
   return (
@@ -547,7 +668,7 @@ function Gate({ s, onChanged }: { s: Schedule; onChanged: () => void }) {
         </li>
       </ul>
       <h3 className="sc-h3">Merging</h3>
-      <MergeSwitch s={s} onChanged={onChanged} />
+      <MergeSwitch s={s} onChanged={onChanged} go={go} />
     </div>
   )
 }
@@ -648,7 +769,7 @@ function DetailBody({
   }
   return (
     <>
-      <div className="sc-head-row">
+      <div className="sc-head-row" data-testid="sc-head-row">
         <ScheduleActions
           s={s}
           where="head"
@@ -701,7 +822,7 @@ function DetailBody({
             <FiringRows firings={firings} go={go} />
           ))}
         {tab === 'budget' && <Budget s={s} />}
-        {tab === 'gate' && <Gate s={s} onChanged={reread} />}
+        {tab === 'gate' && <Gate s={s} onChanged={reread} go={go} />}
         {tab === 'settings' && <Settings s={s} />}
         {tab === 'audit' && <Audit scheduleId={s.schedule_id} />}
       </div>

@@ -51,8 +51,16 @@
    Resume, Delete and Edit. What an action said sits under them. */
 .sc-table th[data-col='acts'] { width: 172px; }
 .sc-row-acts { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
-.sc-head-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; }
-.sc-head-row > .sc-head-acts { margin: 0; }
+/* THE HEAD'S ACTIONS ARE ONE WRAPPING ROW (owner review 2026-10-11): Edit was
+   cut off at the right edge at 1440-1500px. Run now ... Delete... are a `.c-acts`
+   of their own, and Edit sat beside it as a second flex item, so the row was two
+   rows nested. `display: contents` makes every button a sibling of this one
+   row, which wraps them one by one; `min-width: 0` and `max-width: 100%` keep
+   the row, and a button wearing its disabled reason, inside the column. */
+.sc-head-row { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; align-items: center; min-width: 0; max-width: 100%; }
+.sc-head-row > .sc-head-acts { display: contents; }
+.sc-head-row .c-btn-wrap { min-width: 0; max-width: 100%; }
+.sc-head-row .c-why { min-width: 0; overflow-wrap: anywhere; }
 .sc-said { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); overflow-wrap: anywhere; }
 .sc-said.is-bad { color: var(--s-bad); }
 .sc-vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -214,6 +222,23 @@
 .sc-next { margin: 4px 0 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); }
 .sc-next .sc-sub { display: inline; }
 .sc-switch { display: grid; gap: 6px; justify-items: start; }
+/* THE SWITCH DIALOG (owner review 2026-10-11, "blocked state up front"): the
+   warning that this viewer cannot switch comes first, in the warn banner's
+   colours with a heading of its own; then a short "What changes"; the full
+   rules wait behind Details. */
+.sc-blocked h3 { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; color: var(--text); }
+.sc-blocked .c-banner-body > p { color: var(--text-dim); }
+.c-dlg .sc-h3 { margin: 0; }
+.sc-changes { margin: 0; padding-left: 18px; font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sc-rules { font-size: var(--t-meta); line-height: var(--lh-meta); }
+.sc-rules > summary { cursor: pointer; color: var(--sk-ac); }
+.sc-rules > p { margin-top: 6px; color: var(--text-dim); }
+/* A SWITCH THIS VIEWER CANNOT MAKE IS GREY, not the pale accent every other
+   disabled primary wears (components.css, V138): beside a pale-blue fill and
+   a label ending in "...", the owner read the refused switch as live. Grey
+   on the raised surface, its words in `--text-dim`, the not-allowed cursor. */
+.c-btn.is-primary.sc-switch-go:disabled,
+.c-btn.is-primary.sc-switch-go[aria-disabled='true'] { opacity: 1; background: var(--surface-2); border-color: var(--line); color: var(--text-dim); cursor: not-allowed; }
 
 /* ==== EDIT A: TEMPLATE TILES AND THE SIDE COLUMN (owner decisions 2026-10-11) ====
    Owned by the create-and-edit lane; the rest of this sheet is another lane's.

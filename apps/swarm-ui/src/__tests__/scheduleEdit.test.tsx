@@ -371,7 +371,7 @@ describe('the SD3 merge switch', () => {
   async function switchTyped(name = 'Weekday sweep') {
     fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to automatic merging…' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to automatic merging' }))
     const box = await within(dialog).findByRole('textbox', undefined, WAIT)
     fireEvent.change(box, { target: { value: name } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Switch now' }))
@@ -382,17 +382,19 @@ describe('the SD3 merge switch', () => {
     const { calls } = await gateTab((m, url) => (m === 'POST' && url === MODE ? { status: 200, body: { schedule: schedule({ revision: 3, gate: { merge: 'auto' } }) } } : null))
     fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
-    expect(visible(dialog)).toContain('hard stops')
-    // §4.4, said where the decision is made: workflow files are refused, and
-    // outside a platform repository the holds are a second member's.
+    // §4.4, said where the decision is made, behind Details (owner review
+    // 2026-10-11): workflow files are refused, and outside a platform
+    // repository the holds are a second member's.
     // MUTATION: say they "wait for the owner" and this fails.
-    expect(visible(dialog)).toMatch(/a plan naming workflow files is refused/)
-    expect(visible(dialog)).toMatch(/held for a second member to approve \(for the owner, in a platform repository\)/)
-    expect(visible(dialog)).toMatch(/frozen contract is held for the owner/)
+    const rules = dialog.querySelector('details')!
+    expect(visible(rules)).toContain('hard stops')
+    expect(visible(rules)).toMatch(/a plan naming workflow files is refused/)
+    expect(visible(rules)).toMatch(/held for a second member to approve \(for the owner, in a platform repository\)/)
+    expect(visible(rules)).toMatch(/frozen contract is held for the owner/)
     expect(visible(dialog)).not.toMatch(/wait for the owner/)
     // AUT-4: the first step sends nothing; the second asks for the name typed.
     // MUTATION: send from the first step and a POST lands with no typed step.
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to automatic merging…' }))
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch to automatic merging' }))
     expect(sent(calls, 'POST', MODE)).toHaveLength(0)
     const box = await within(dialog).findByRole('textbox', undefined, WAIT)
     const now = () => within(dialog).getByRole('button', { name: 'Switch now' }) as HTMLButtonElement
@@ -409,7 +411,7 @@ describe('the SD3 merge switch', () => {
     await screen.findByTestId('sc-gate', undefined, WAIT)
   })
 
-  it('disables Switch, with the reason beside it, for the member who last changed the gate', async () => {
+  it('disables Switch, with the reason above it, for the member who last changed the gate', async () => {
     const me = { tenant: { tenant_id: 'eng', kind: 'group' }, principal: { email: 'operator@example.com', domain: 'example.com', groups: [], is_admin: true } }
     const audit = [{ schedule_id: 'sch_a', action: 'create', by: 'operator@example.com', at: hoursFromNow(-1), detail: {} }]
     const { calls } = await gateTab((m, url) => {
@@ -419,9 +421,11 @@ describe('the SD3 merge switch', () => {
     })
     fireEvent.click(await screen.findByRole('button', { name: 'Merge automatically…' }, WAIT))
     const dialog = await screen.findByRole('dialog', undefined, WAIT)
-    const sw = () => within(dialog).getByRole('button', { name: 'Switch to automatic merging…' }) as HTMLButtonElement
+    // Blocked, the primary reads "Switch to automatic", with no ellipsis: nothing follows a click.
+    const sw = () => within(dialog).getByRole('button', { name: 'Switch to automatic' }) as HTMLButtonElement
     // MUTATION: drop `useSwitchBlock` and the button is live for the person the dialog says cannot switch.
     await waitFor(() => expect(sw().disabled).toBe(true), WAIT)
+    expect(sw().getAttribute('aria-disabled')).toBe('true')
     expect(visible(dialog)).toContain('You last changed this schedule’s gate, scope or spec')
     fireEvent.click(sw())
     expect(within(dialog).queryByRole('textbox')).toBeNull()
@@ -446,7 +450,7 @@ describe('the SD3 merge switch', () => {
       // and a personal tenant's one member types the name instead.
       await waitFor(() => expect(view.calls.some((c) => c.url.startsWith('/v1/schedules/sch_a/audit'))).toBe(true), WAIT)
       await new Promise((r) => setTimeout(r, 20))
-      expect((within(dialog).getByRole('button', { name: 'Switch to automatic merging…' }) as HTMLButtonElement).disabled).toBe(false)
+      expect((within(dialog).getByRole('button', { name: 'Switch to automatic merging' }) as HTMLButtonElement).disabled).toBe(false)
       view.unmount()
     }
   })
