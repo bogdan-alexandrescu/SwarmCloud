@@ -34,6 +34,7 @@ from swarm_api import repoindex
 from .conftest import auth_header
 from .repo_fakes import TenantTokens, make_client
 from .repo_index_fakes import (
+    BUILT_AT,
     REPOSITORY,
     IndexGitHub,
     finish_index_task,
@@ -421,7 +422,7 @@ def test_the_renderer_lays_out_a_fixture_index():
     text = repoindex.render_markdown(fixture_index(ONE), repository=REPOSITORY)
     lines = text.splitlines()
     assert lines[0] == "# Repository index: saga-xyz/widgets"
-    assert f"Describes `{ONE}` on `main`, built 2026-10-05T09:00:00Z (full)." in lines
+    assert f"Describes `{ONE}` on `main`, built {BUILT_AT} (full)." in lines
     assert "Mechanical fields from `swarm-repo-extract` 1." in lines
     assert "## Modules" in lines
     assert "- `src/api` (python, 12 files, 2400 lines): the HTTP API" in lines
