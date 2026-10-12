@@ -6607,6 +6607,66 @@ export async function openLiveToMembers(taskId: string): Promise<Result<unknown>
   return write(target, 'POST')
 }
 
+/**
+ * One recorded segment of a live session (§7), as `GET .../live/recordings`
+ * serves it: every field both views read (`RecordingSegmentView` in
+ * `swarm_api.live`, held by tests/fixtures/live/recordings.json). The
+ * Attempts tab's player reads `name`, `key`, `bytes` and `created_at`; the
+ * theater's scrubber reads `seq`, `object` and `started_at`.
+ */
+export interface LiveRecording {
+  attempt_id: string
+  seq: number
+  /** `rec-<13-digit seq>.live.webm`. */
+  name: string
+  /** The object's key, from which the tenant and task are checked. */
+  key: string
+  /** The same object name, under the name the theater reads it by. */
+  object: string
+  bytes: number | null
+  created_at: string | null
+  /** The object's write time: the END of the minute it holds (§6.2). */
+  started_at: string | null
+}
+
+/** `GET /v1/tasks/{task_id}/live/recordings`: every attempt's segments, oldest first. */
+export interface LiveRecordings {
+  tenant_id: string
+  task_id: string
+  segments: LiveRecording[]
+  truncated: boolean
+}
+
+/**
+ * THE ONE READ OF THE RECORDINGS ROUTE (lane LB-UX2a). The Attempts tab's
+ * player (Recordings.tsx) and the theater's replay each had their own, against
+ * two shapes, which is how the route came to serve both. The server sends the
+ * same list as `segments` and as `recordings`; this reads `segments`, and
+ * `recordings` only from a server that sends nothing else.
+ *
+ * NO FIXTURE BRANCH, like `loadLiveActions`: the fixture build serves no live
+ * session, so no theater opens there, and the Attempts tab's panel decides
+ * for itself what the fixture build shows. What each view may PLAY is still
+ * its own tenant check (`segmentsOfTenant`, `ownRecording`).
+ */
+export async function loadLiveRecordings(taskId: string): Promise<Result<LiveRecordings>> {
+  const r = await read<{ tenant_id?: unknown; task_id?: unknown; segments?: unknown; recordings?: unknown; truncated?: unknown }>(
+    route('/v1/tasks/{id}/live/recordings', { id: taskId }),
+    () => false,
+  )
+  if (r.status !== 'ok' && r.status !== 'stale') return r as Result<LiveRecordings>
+  const d = r.data
+  const list = Array.isArray(d.segments) ? d.segments : Array.isArray(d.recordings) ? d.recordings : []
+  const data: LiveRecordings = {
+    tenant_id: typeof d.tenant_id === 'string' ? d.tenant_id : '',
+    task_id: typeof d.task_id === 'string' ? d.task_id : '',
+    segments: list as LiveRecording[],
+    truncated: d.truncated === true,
+  }
+  // An empty list is an answer, not a different state: each view draws its own zero.
+  return { ...r, data }
+}
+
 function liveNotServed<T>(target: ApiRoute): Result<T> {
   noteFixtureProbe(target, 0, false)
   return {
