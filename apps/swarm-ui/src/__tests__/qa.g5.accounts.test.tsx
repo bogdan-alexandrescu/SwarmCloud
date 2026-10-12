@@ -224,8 +224,12 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
     const tile = [...document.querySelectorAll('.acct-tiles > .acct-tile')].find(
       (t) => t.querySelector('small')?.textContent === 'Last given out',
     )!
+    // Three hours ago is yesterday when the suite runs before 03:00, and then
+    // the clock carries its date (CAP-13) -- CI met exactly that at 00:02.
+    const sameDay = new Date(at).toDateString() === new Date().toDateString()
+    const day = new Date(at).toLocaleDateString([], { month: 'short', day: 'numeric' })
     // MUTATION: print `timeAgo` as the figure again.
-    expect(tile.querySelector('b')!.textContent).toBe(hhmm(at))
+    expect(tile.querySelector('b')!.textContent).toBe(sameDay ? hhmm(at) : `${day} ${hhmm(at)}`)
     expect(tile.querySelector('i')!.textContent).toBe('3h ago')
     expect(tile.querySelector('b')!.getAttribute('title')).toBe(new Date(at).toLocaleString())
   })
