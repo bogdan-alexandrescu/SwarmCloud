@@ -138,7 +138,7 @@ describe('the callback finishes the connection', () => {
     expect(everything()).not.toContain(STATE)
   })
 
-  it('says the orgs are not read yet rather than drawing none, while the new token is unverified', async () => {
+  it('says the orgs are not read yet rather than drawing none, and that they are enabled on Work › Access (GT-GUIDE)', async () => {
     at(`?code=${CODE}&state=${STATE}`)
     serve((m, url) => {
       if (m === 'POST' && url === '/v1/onboarding/github/exchange') return { status: 200, body: { connection: CONNECTION } }
@@ -147,7 +147,11 @@ describe('the callback finishes the connection', () => {
     })
     await mount()
     expect(await screen.findByText('Connected as @octo-dev')).toBeTruthy()
-    expect(await screen.findByText(/appear here once it has/)).toBeTruthy()
+    // Never "they appear here once it has": the step completes only once the
+    // person enables an org on Work › Access, so the line says so and links there.
+    expect(await screen.findByText(/then enable the ones SwarmCloud may work in on Work › Access/)).toBeTruthy()
+    expect(screen.queryByText(/appear here once it has/)).toBeNull()
+    expect(screen.getByRole('link', { name: 'Choose orgs in Access' }).getAttribute('href')).toBe('/access')
     expect(screen.queryByRole('list', { name: 'Accounts and orgs this connection reaches' })).toBeNull()
   })
 })
