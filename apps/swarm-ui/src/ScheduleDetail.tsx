@@ -20,7 +20,9 @@ import {
   loadScheduleAudit,
   loadScheduleTypes,
   setMergeMode,
+  type FiringOwnLive,
   type FiringWork,
+  type NothingStartedDetail,
   type Schedule,
   type ScheduleAuditEntry,
   type ScheduleBudgetUse,
@@ -72,8 +74,95 @@ function workAddress(w: FiringWork): string | null {
 
 /** What a firing came to: its outcome once ended, its state while it is not. */
 function firingWord(f: ScheduleFiring): string {
+  if (f.skip?.code === 'NOTHING_STARTED') return `nothing started: ${nothingStartedWords(nothingDetail(f))}`
   if (f.skip !== null) return `skipped: ${f.skip.code}`
   return f.outcome ?? f.state.replace(/_/g, ' ')
+}
+
+/**
+ * WHY A FIRING STARTED NOTHING (lane SCHED). Measured 2026-10-11 on
+ * sch_6ecbe1307511 and sch_88b97e090beb: rows that started nothing showed only
+ * a state while the firing held its reason (`skip.detail`, #1133). Each
+ * `issue_sweep.nothing_reason` code in words; an unknown one is shown as served.
+ */
+const NOTHING_REASON_WORDS: Record<string, string> = {
+  no_repository: 'no repository is in its scope',
+  no_open_issue: 'its repositories have no open issue',
+  no_eligible_issue: 'every open issue was passed over',
+  repositories_not_read: 'its repositories could not be read',
+  executor_created_nothing: 'its type created nothing and gave no reason',
+}
+
+/** A limit's parameter in words, for "its … limit is reached". */
+const BOUND_WORDS: Record<string, string> = {
+  max_live_runs: 'live-runs',
+  max_pending_plans: 'pending-plans',
+  max_new_per_firing: 'new-per-firing',
+  max_concurrent: 'concurrent-work',
+  live_scan: 'live-run scan',
+}
+
+/** A passed-over kind (`SweepReport.skip`'s prefix) as "N <words>". */
+const PASSED_WORDS: Record<string, [string, string]> = {
+  author: ['was opened by someone outside the repository', 'were opened by someone outside the repository'],
+  label: ['carries a label never swept', 'carry a label never swept'],
+  excluded: ['is excluded', 'are excluded'],
+  not_included: ['carries none of the listed labels', 'carry none of the listed labels'],
+  live_run: ['already has a live run', 'already have a live run'],
+  open_pull_request: ['is claimed by an open pull request', 'are claimed by an open pull request'],
+  in_flight_workflow: ['in flight in a workflow', 'in flight in a workflow'],
+  not_ready_unchanged: ['was not ready and has not changed', 'were not ready and have not changed'],
+  unchanged_since_run: ['has not changed since its last run', 'have not changed since their last run'],
+  room: ['waits for room', 'wait for room'],
+}
+
+function nothingDetail(f: ScheduleFiring): NothingStartedDetail {
+  const d = f.skip?.detail
+  return d !== null && typeof d === 'object' ? (d as NothingStartedDetail) : {}
+}
+
+/** The firing's own-limit count: its selection's, or the skip's when the selection was not served. */
+function ownLive(f: ScheduleFiring): FiringOwnLive | null {
+  return f.selection?.own_live ?? nothingDetail(f).own_live ?? null
+}
+
+export function nothingStartedWords(d: NothingStartedDetail): string {
+  if (d.reason === 'no_room') {
+    const bound = d.bound ?? d.own_live?.bound
+    return bound ? `its ${BOUND_WORDS[bound] ?? bound.replace(/_/g, ' ')} limit is reached` : 'it had no room'
+  }
+  if (d.reason === undefined) return 'no reason was recorded'
+  return NOTHING_REASON_WORDS[d.reason] ?? d.reason.replace(/_/g, ' ')
+}
+
+/** "N of M running from this schedule": its own runs, never the tenant's. */
+export function ownLiveWords(o: FiringOwnLive): string {
+  const what = o.bound === 'max_pending_plans' ? 'plans waiting' : 'running'
+  return `${o.running} of ${o.limit} ${what} from this schedule`
+}
+
+/** The lines under a firing that started nothing: what was passed over, what could not be read. */
+function nothingStartedLines(d: NothingStartedDetail): string[] {
+  const lines: string[] = []
+  const passed = Object.entries(d.passed_over_by_reason ?? {}).filter(([kind]) => kind !== 'room' || d.reason !== 'no_room')
+  if (passed.length > 0) {
+    lines.push(
+      `passed over: ${passed
+        .map(([kind, n]) => {
+          const words = PASSED_WORDS[kind]
+          return `${n} ${words ? words[n === 1 ? 0 : 1] : kind.replace(/_/g, ' ')}`
+        })
+        .join(', ')}`,
+    )
+  }
+  for (const failure of d.failures ?? []) {
+    lines.push(`could not read ${failure.repository ?? 'a repository'}: ${(failure.error ?? 'unknown error').replace(/_/g, ' ')}`)
+  }
+  for (const failure of d.start_failures ?? []) {
+    lines.push(`${failure.issue ?? 'an issue'} not started: ${(failure.error ?? 'unknown error').replace(/_/g, ' ')}`)
+  }
+  if (d.truncated) lines.push('more work than one firing reads: some was not looked at')
+  return lines
 }
 
 /**
@@ -115,6 +204,17 @@ function FiringRows({ firings, go }: { firings: ScheduleFiring[]; go: (to: strin
                 <td data-label="Outcome">
                   <span className="sc-cut" title={firingWord(f)}>{firingWord(f)}</span>
                   {f.approval_id !== null && f.state === 'awaiting_approval' && <span className="sc-sub">waiting for approval, holding nothing</span>}
+                  {f.skip?.code === 'NOTHING_STARTED' &&
+                    nothingStartedLines(nothingDetail(f)).map((line) => (
+                      <span key={line} className="sc-sub" data-nothing-started={nothingDetail(f).reason ?? ''}>
+                        {line}
+                      </span>
+                    ))}
+                  {ownLive(f) !== null && (
+                    <span className="sc-sub" data-own-live>
+                      {ownLiveWords(ownLive(f)!)}
+                    </span>
+                  )}
                   {(f.refused_runs ?? []).map((r) => (
                     <span key={r.run_id} className="sc-sub" data-refused={r.code}>
                       {r.issue} not started: {refusalWords(r.code)}

@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import tempfile
 import time
@@ -120,14 +121,32 @@ def template() -> str:
     return path.read_text(encoding="utf-8")
 
 
+#: What `_js_string` escapes beyond JSON: the line and paragraph separators
+#: and every surrogate code point.
+_UNSAFE_IN_SOURCE = re.compile("[\u2028\u2029\ud800-\udfff]")
+
+
 def _clip(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _js_string(text: str) -> str:
+    """`text` as a JavaScript string literal (H3-ROWS, measured 2026-10-11).
+    JSON escapes every quote, backslash and control character, so no title
+    can end the literal early or add code. Two more are escaped by hand and
+    the rest of the title stays readable in the copy: U+2028/U+2029, which
+    JSON leaves raw but every line-based reader of the copy takes for a line
+    break, and a lone surrogate -- which a title can arrive as through JSON --
+    which cannot be written as UTF-8 at all, so the launch raised instead of
+    titling the run. `\\uXXXX` is the same character to JavaScript."""
+    return _UNSAFE_IN_SOURCE.sub(lambda m: "\\u%04x" % ord(m.group()), json.dumps(text, ensure_ascii=False))
+
+
 def write_script(title: str, description: str) -> Path:
     """A copy of run.js with `meta.name` = `title` and `meta.description` =
-    `description`, as JSON string literals -- which are JavaScript string
-    literals, so no title can end the literal early or add code."""
+    `description`, as `_js_string` literals. A title reaches the copy only
+    here; everything else about a run travels in its `args`, a JSON value the
+    session hands the Workflow tool, never spliced into source."""
     lines = template().split("\n")
     if len(lines) < 3 or lines[0] != META_OPEN or lines[1] != NAME_LINE or not lines[2].startswith(DESCRIPTION_OPEN):
         raise SwarmError(
@@ -135,8 +154,8 @@ def write_script(title: str, description: str) -> Path:
             "bridge replaces, so no titled copy was written; the plugin and this bridge are "
             "from different releases"
         )
-    lines[1] = "  name: " + json.dumps(title, ensure_ascii=False) + ","
-    lines[2] = "  description: " + json.dumps(_clip(description, DESCRIPTION_CHARS), ensure_ascii=False) + ","
+    lines[1] = "  name: " + _js_string(title) + ","
+    lines[2] = "  description: " + _js_string(_clip(description, DESCRIPTION_CHARS)) + ","
     folder = _run_folder()
     _prune(folder)
     target = folder / f"swarmcloud-{secrets.token_hex(6)}.js"
