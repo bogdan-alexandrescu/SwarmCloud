@@ -39,6 +39,8 @@ import { TaskIdLine } from './TaskIdLine'
 import { useResourceClasses } from './Blockers'
 import { AgentChangesPane, changesCount } from './WorkflowChanges'
 import { HelpCard } from './HelpCard'
+import { HandoffStrip, isLiveBrowser } from './Handoff'
+import { RecordingsPanel } from './Recordings'
 import { LiveBrowserPane, LiveControl, useLiveSession, type LiveState } from './LiveBrowser'
 import {
   CONCURRENCY_STATES,
@@ -568,6 +570,12 @@ export function AgentSplit({
           />
         </AgTabsEdge>
 
+        {/* THE HAND-OFF BANNER (live-browser.md §6, lane LB-L12): the reason,
+            the expected site and the time left, over whichever pane is open.
+            The Browser tab (lane L11) passes its Take control and theater
+            actions in as children. */}
+        {task !== null && <HandoffStrip task={task} onReady={reload} />}
+
         <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}${selected === 'changes' ? ' is-changes' : ''}${selected === 'browser' ? ' is-browser' : ''}`}>
           {deciding ? (
             <p className="art-loading">
@@ -611,7 +619,11 @@ export function AgentSplit({
               lastLine={task !== null ? <LogLastLine key={taskId} task={task} onOpen={links.logs} /> : undefined}
             />
           ) : selected === 'attempts' ? (
-            <AttemptTimelineScreen taskId={taskId} />
+            <>
+              <AttemptTimelineScreen taskId={taskId} />
+              {/* §7: a live-browser task's masked recordings, on its attempts. */}
+              {task !== null && isLiveBrowser(task) && <RecordingsPanel task={task} />}
+            </>
           ) : selected === 'checkpoints' ? null : (
             <ArtifactsScreen taskId={taskId} open={artifact} onOpen={openArtifact} />
           )}
