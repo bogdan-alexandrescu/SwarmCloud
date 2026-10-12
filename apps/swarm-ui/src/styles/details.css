@@ -363,3 +363,8 @@
   .dt-sc:nth-child(even) { border-left: 1px solid var(--line); }
   .dt-sc:last-child { grid-column: 1 / -1; }
 }
+
+/* `parked since <time>` beside "I'm ready to sign in" (LB-V4, U1): the park
+   instant the Details tab's `eligible` bar used to print, as a fact, not an
+   action. */
+.ho-since { color: var(--text-dim); font-size: var(--t-micro); }

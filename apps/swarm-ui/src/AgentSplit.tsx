@@ -10,7 +10,7 @@ import {
 } from 'react'
 
 import { AgChildrenPane, AgParentLink, offersChildren, useChildCount } from './AgentChildren'
-import { AgentDetailScreen, DRAWER_POLL_MS, Mark, SplitClock, timesRun } from './AgentDetail'
+import { AgentDetailScreen, DRAWER_POLL_MS, HandoffParkedSince, Mark, SplitClock, timesRun } from './AgentDetail'
 import { AgentLogs, LogLastLine } from './AgentLogs'
 import { agentName, backLabel, rememberAgentName, workflowHref } from './agentlist'
 import { loadAttempts, loadTask } from './api'
@@ -608,9 +608,12 @@ export function AgentSplit({
             the expected site and the time left, over whichever pane is open,
             with Take control and Open in theater. ONE BANNER (LB-UX1): the
             Browser tab draws its own, inside its theater host, so this one
-            steps aside there. "I'm ready to sign in" opens the Browser tab. */}
+            steps aside there. "I'm ready to sign in" opens the Browser tab.
+            A parked one says since when here, and the Details tab's two
+            bars that said it again step aside (LB-V4, U1). */}
         {task !== null && selected !== 'browser' && (
           <HandoffStrip task={task} onReady={onHandoffReady}>
+            <HandoffParkedSince task={task} />
             {sessionOpen && (
               <>
                 <LiveControl taskId={taskId} session={liveSession} reload={reloadLive} takeOnly />

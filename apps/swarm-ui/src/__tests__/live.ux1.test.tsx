@@ -481,6 +481,28 @@ describe('item 6: one hand-off banner, with Take control and Open in theater', (
     await waitFor(() => expect(browserTab().getAttribute('aria-selected')).toBe('true'), SPLIT)
     expect(strips(), 'the Browser tab drew a second banner').toHaveLength(1)
   })
+
+  // LB-V4, U1: the Details tab's `eligible <time>` bar steps aside for a
+  // parked hand-off, so the banner is the only place its park instant is
+  // printed. Without `HandoffParkedSince` in the strip it is printed nowhere.
+  it('on a parked hand-off, the banner says since when it is parked', async () => {
+    api.loadTask.mockResolvedValue(ok(parked()))
+    render(<Routed onGo={() => {}} />)
+    await screen.findByRole('button', { name: /I'm ready to sign in/ }, SPLIT)
+    expect(strips()).toHaveLength(1)
+    const since = strips()[0]!.querySelector('.ho-since')
+    expect(since, 'the banner dropped the park instant').not.toBeNull()
+    expect(since!.textContent).toBe(`parked since ${new Date(NOW - 60_000).toLocaleString()}`)
+  })
+
+  it('on a held hand-off, the banner says nothing about being parked', async () => {
+    api.loadTask.mockResolvedValue(ok(holding()))
+    api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session({ human_wait: WAIT }) }))
+    render(<Routed start="logs" onGo={() => {}} />)
+    await waitFor(() => expect(strips()).toHaveLength(1), SPLIT)
+    expect(strips()[0]!.textContent).toContain(WAIT.reason)
+    expect(strips()[0]!.textContent).not.toMatch(/parked since/)
+  })
 })
 
 // ---------------------------------------------------------------------------
