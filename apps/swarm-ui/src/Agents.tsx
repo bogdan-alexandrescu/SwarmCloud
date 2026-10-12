@@ -13,6 +13,7 @@ import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList,
 import { TASK_PAGE_LIMIT, loadTask, loadTasks, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import type { Result } from './fetch'
+import { liveBrowserRows, needsYou } from './Handoff'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
 import './styles/agents.css'
@@ -512,13 +513,24 @@ function AgentsBody({
   // THE STARTED SORT (#376), on every tab: newest start, oldest start, then
   // back to the list's own order. A reader's scratch, so not in the address.
   const [startedSort, setStartedSort] = useState<StartedSort>(null)
+  // THE LIVE BROWSERS FILTER (docs/design/live-browser.md §6, lane LB-L12):
+  // on the Live tab, only RUNNING browser agents, the ones waiting for a
+  // person first (`liveBrowserRows`). A reader's scratch, like the sort.
+  const [browsersOnly, setBrowsersOnly] = useState(false)
+  const browsers = shown === 'live' && browsersOnly
   const sort: SortControl = {
     started: startedSort,
     onStarted: () => setStartedSort((s) => (s === null ? 'desc' : s === 'desc' ? 'asc' : null)),
   }
   const rows = useMemo(
     () =>
-      page.tasks
+      browsers
+        ? // Needs-you first IS this filter's order, so the started sort does
+          // not reorder it; the profile and the search still narrow it.
+          liveBrowserRows(page.tasks)
+            .filter((t) => profile === '' || t.runner_profile === profile)
+            .filter((t) => needle === '' || matchesQuery(t, needle))
+        : page.tasks
         .filter((t) => tabOf(t) === shown)
         .filter((t) => stateFilter === null || t.state === RECENT_STATE_OF[stateFilter])
         .filter((t) => profile === '' || t.runner_profile === profile)
@@ -531,7 +543,7 @@ function AgentsBody({
           if (startedSort !== null) return compareStarted(a, b, startedSort === 'asc')
           return listOrder(a, b, shown)
         }),
-    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort],
+    [page.tasks, shown, stateFilter, profile, needle, failFirst, startedSort, browsers],
   )
 
   // The segment's counts, from the loaded Recent rows, like the tab badges --
@@ -737,6 +749,13 @@ function AgentsBody({
             )}
             onChange={(s) => chooseState(s === 'all' ? null : s)}
           />
+        )}
+
+        {shown === 'live' && (
+          <label className="ag-filter check">
+            <input type="checkbox" checked={browsersOnly} onChange={(e) => setBrowsersOnly(e.target.checked)} />
+            Live browsers
+          </label>
         )}
 
         {shown === 'recent' && (
@@ -1505,6 +1524,9 @@ function CompactRow({
   // THE ONE FACT THAT CONTRADICTS THE STATE WORD: a stop is requested and the
   // lease is still held (invariant 3), so the row still reads RUNNING.
   const cancelling = task.cancel_requested && !TERMINAL_STATES.has(task.state)
+  // A LIVE-BROWSER AGENT WAITING FOR A PERSON (live-browser.md §6): the row
+  // is yellow and says so, held or parked, on whichever tab it is on.
+  const waitsForYou = needsYou(task)
   const cardId = `ag-card-${task.id}`
 
   const show = (row: HTMLElement) => {
@@ -1524,7 +1546,7 @@ function CompactRow({
 
   return (
     <div
-      className="row clickable is-compact"
+      className={`row clickable is-compact${waitsForYou ? ' is-needs-you' : ''}`}
       role="button"
       tabIndex={0}
       data-task-id={task.id}
@@ -1589,6 +1611,12 @@ function CompactRow({
           <>
             {' · '}
             <ToneMark tone="wait">cancelling</ToneMark>
+          </>
+        )}
+        {waitsForYou && (
+          <>
+            {' · '}
+            <ToneMark tone="wait">needs you</ToneMark>
           </>
         )}
         {/* WHAT A CANCELLED RUN'S FIGURE SPANS (#163), as a short mark on
