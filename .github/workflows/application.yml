@@ -790,7 +790,10 @@ jobs:
     # pull requests arrive together. The matrix is the only place the count is
     # written; the step reads `strategy.job-total`.
     name: unit tests (${{ matrix.shard }}/${{ strategy.job-total }})
-    runs-on: ubuntu-24.04
+    # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
+    # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
+    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
+    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
     if: needs.changes.outputs.python != 'none'
     strategy:
@@ -1063,7 +1066,10 @@ jobs:
     # each: the typecheck, the node:test runners and the production build. It
     # runs beside the vitest shards rather than in front of them.
     name: swarm-ui typecheck / build
-    runs-on: ubuntu-24.04
+    # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
+    # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
+    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
+    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
     if: needs.changes.outputs.ui == 'true'
     steps:
@@ -1175,7 +1181,10 @@ jobs:
     # that throws, so a test that forgets to stub a response fails by name
     # instead of reaching a machine.
     name: swarm-ui component tests (${{ matrix.shard }}/${{ strategy.job-total }})
-    runs-on: ubuntu-24.04
+    # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
+    # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
+    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
+    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
     if: needs.changes.outputs.ui == 'true'
     strategy:
@@ -1289,7 +1298,10 @@ jobs:
 
   integration:
     name: integration tests (emulator)
-    runs-on: ubuntu-24.04
+    # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
+    # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
+    # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
+    runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
     if: needs.changes.outputs.app == 'true'
