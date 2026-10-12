@@ -243,8 +243,9 @@ describe('the left column', () => {
     // The panel shown is the one role queries find: a hidden panel is not.
     const shown = () => screen.getByRole('tabpanel')
     expect(timeline.getAttribute('aria-selected')).toBe('true')
-    expect(await screen.findByText('Page.navigate')).toBeTruthy()
-    expect(shown().textContent).toContain('Page.navigate')
+    // LB-R2: the timeline says what the method did, not its protocol name.
+    expect(await screen.findByText('The agent went to')).toBeTruthy()
+    expect(shown().textContent).toContain('The agent went to')
     expect(shown().textContent).toContain('https://example.com/login')
     expect(shown().textContent).toContain('12 characters typed')
     expect(screen.queryByTestId('tab-logs')).toBeNull()
@@ -253,10 +254,10 @@ describe('the left column', () => {
     expect(logs.getAttribute('aria-selected')).toBe('true')
     expect(timeline.getAttribute('aria-selected')).toBe('false')
     expect(shown().contains(screen.getByTestId('tab-logs'))).toBe(true)
-    expect(shown().textContent).not.toContain('Page.navigate')
+    expect(shown().textContent).not.toContain('The agent went to')
 
     fireEvent.click(timeline)
-    expect(shown().textContent).toContain('Page.navigate')
+    expect(shown().textContent).toContain('The agent went to')
     expect(shown().textContent).not.toContain('log line from the tab')
   })
 

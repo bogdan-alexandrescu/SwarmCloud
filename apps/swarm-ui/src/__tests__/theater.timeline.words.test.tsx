@@ -39,8 +39,8 @@ describe('the timeline in words', () => {
     const items = [...list.querySelectorAll('li')].map((li) => li.querySelector('.th-act-what')!.textContent)
     expect(items).toEqual([
       'The agent asked for help',
-      'Page.navigate',
-      'Input.insertText',
+      'The agent went to',
+      'Agent input: 12 characters typed',
       'A navigation was refused: the live gate does not let the agent do that',
       'You took control',
       'Taking control was refused: the page is not on a secure https connection',
@@ -87,6 +87,7 @@ describe('the timeline in words', () => {
     expect(actionWords({ at: AT, kind: 'cdp', method: 'Runtime.evaluate', outcome: 'refused', cause: 'not_its_session' })).toBe(
       'The agent’s Runtime.evaluate was refused: it named a browser session the agent does not own',
     )
-    expect(actionWords({ at: AT, kind: 'cdp', method: 'Page.navigate' })).toBe('Page.navigate')
+    // LB-R2: a navigation says what it is; its URL is the line under it.
+    expect(actionWords({ at: AT, kind: 'cdp', method: 'Page.navigate' })).toBe('The agent went to')
   })
 })
