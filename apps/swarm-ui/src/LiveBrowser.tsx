@@ -1,4 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ClipboardEvent, type KeyboardEvent, type SyntheticEvent } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ClipboardEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  type SyntheticEvent,
+} from 'react'
 
 import { AgentLogs } from './AgentLogs'
 import {
@@ -16,9 +26,10 @@ import {
 } from './api'
 import { SaveAsLoginOffer } from './BrowserLogins'
 import { Button } from './components'
+import { HandoffStrip } from './Handoff'
 import { LiveToolMenu } from './LiveToolMenu'
-import { TheaterButton, TheaterHost, type TheaterHandoff, type TheaterSession } from './Theater'
-import type { Task } from './types'
+import { TheaterButton, TheaterHost, useTheater, type TheaterHandoff, type TheaterSession } from './Theater'
+import { TERMINAL_STATES, type Task } from './types'
 import './styles/live.css'
 
 /**
@@ -29,8 +40,11 @@ import './styles/live.css'
  * would run every page the agent visits in the console's origin), and above
  * it, outside the canvas, a strip the page cannot draw into: the top frame's
  * origin as the gate read it from Chromium, the hand-off's reason, and who is
- * in control. Its toolbar holds the device switcher, rotate, touch and the
- * logs toggle. Take control sits in the agent header beside Stop
+ * in control. Its toolbar is the mockup's (owner decisions 2026-10-12, §6):
+ * device chips, `⟲ rotate`, `touch: on|off`, `◫ logs`, and `⤢ Theater` at the
+ * right, then "Let any member take control" as built. Under the device, a
+ * caption: `<device> · <W>×<H> · <path>`. Take control sits in the agent
+ * header beside Stop
  * (`LiveControl`), and the view is read-only until it is pressed.
  *
  * WHAT THE CONSOLE DECIDES, AND WHAT IT ONLY DRAWS. Who may watch, who may
@@ -93,7 +107,9 @@ const PRESET_LABEL: Readonly<Record<string, string>> = {
   'iphone-15': 'iPhone 15',
   'pixel-8': 'Pixel 8',
   'iphone-se': 'iPhone SE',
-  'ipad-7': 'iPad (gen 7)',
+  // `iPad`, as the mockup's chip reads (owner decision 2026-10-12); the
+  // preset is the 7th generation's frame, which its size in the caption says.
+  'ipad-7': 'iPad',
 }
 
 export function presetLabel(name: string): string {
@@ -234,7 +250,22 @@ function isController(s: LiveSession): boolean {
  * red, and only a yes to it takes control; the request says what was
  * confirmed past, so the audit has it.
  */
-export function LiveControl({ taskId, session, reload }: { taskId: string; session: LiveSession | null; reload: () => void }) {
+export function LiveControl({
+  taskId,
+  session,
+  reload,
+  takeOnly = false,
+}: {
+  taskId: string
+  session: LiveSession | null
+  reload: () => void
+  /**
+   * The hand-off banner's copy of the button (LB-UX1): Take control, the same
+   * action as the header's, and nothing at all for anyone who may not take
+   * it now -- no "View only", no Return control, which stay the header's.
+   */
+  takeOnly?: boolean
+}) {
   const [ask, setAsk] = useState<'none' | 'first' | 'mismatch'>('none')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -255,6 +286,7 @@ export function LiveControl({ taskId, session, reload }: { taskId: string; sessi
   const holder = session.controller
 
   if (mine) {
+    if (takeOnly) return null
     return (
       <span className="live-control">
         <Button
@@ -278,6 +310,7 @@ export function LiveControl({ taskId, session, reload }: { taskId: string; sessi
 
   const eligible = session.you.can_control && (holder === null || session.you.can_preempt)
   if (!eligible) {
+    if (takeOnly) return null
     return (
       <span className="live-control live-control-view" title="Only the submitter, or a member they opened control to, can take control.">
         {holder === null ? 'View only' : `${holder.email} is in control`}
@@ -368,10 +401,16 @@ export function LiveBrowserPane({
   task,
   live,
   reload,
+  theater: openTheater = false,
+  onHandoffReady,
 }: {
   task: Task
   live: LiveState
   reload: () => void
+  /** Open in the theater (`/browser?theater=1`): the graph card, the banner and a shared link land here. */
+  theater?: boolean
+  /** "I'm ready to sign in" was accepted: the agent's view reads the task again. */
+  onHandoffReady?: () => void
 }) {
   const [logs, setLogs] = useState(false)
   // The element noVNC draws into, for the theater to borrow; null until LiveScreen has mounted it.
@@ -393,21 +432,42 @@ export function LiveBrowserPane({
     [reason, expect, deadline],
   )
 
-  if (live.status === 'loading' || live.status === 'idle') {
-    return <p className="live-note">Reading the agent’s live browser.</p>
+  // THE ONE HAND-OFF BANNER ON THIS TAB (LB-UX1): the agent view's strip
+  // steps aside here, and this one is drawn whatever the session is -- a
+  // parked hand-off has no session at all, and says "I'm ready to sign in".
+  const banner = (actions?: ReactNode) => (
+    <HandoffStrip task={task} onReady={onHandoffReady}>
+      {actions}
+    </HandoffStrip>
+  )
+  const note = (say: ReactNode) => (
+    <div className="live-tab">
+      {banner()}
+      <p className="live-note">{say}</p>
+    </div>
+  )
+
+  if (live.status === 'idle') {
+    // No attempt in flight: between attempts (a hand-off parked, or READY
+    // after "I'm ready to sign in"), or finished.
+    return note(
+      TERMINAL_STATES.has(task.state)
+        ? 'This agent has finished, and its live browser closed with it. Its recordings are on Attempts.'
+        : 'The agent’s browser is not running. It starts when the agent is admitted again, and appears here.',
+    )
+  }
+  if (live.status === 'loading') {
+    return note('Reading the agent’s live browser.')
   }
   if (live.status === 'error') {
-    return <p className="live-note">The live browser could not be read: {live.message}</p>
+    return note(`The live browser could not be read: ${live.message}`)
   }
   if (session === null) {
-    return <p className="live-note">The agent’s browser is starting. It appears here once its pod is running.</p>
+    return note('The agent’s browser is starting. It appears here once its pod is running.')
   }
   if (session.state === 'closed') {
-    return (
-      <p className="live-note">
-        The live browser has closed{session.closed_reason ? ` (${session.closed_reason})` : ''}. The recording is kept
-        for seven days.
-      </p>
+    return note(
+      `The live browser has closed${session.closed_reason ? ` (${session.closed_reason})` : ''}. The recording is kept for seven days.`,
     )
   }
 
@@ -450,6 +510,7 @@ export function LiveBrowserPane({
   return (
     <TheaterHost
       session={theater}
+      initiallyOpen={openTheater}
       strip={strip}
       handoff={handoff}
       logs={<AgentLogs task={task} />}
@@ -457,7 +518,12 @@ export function LiveBrowserPane({
       control={<LiveControl taskId={task.id} session={session} reload={reload} />}
     >
       <div className={`live-tab${logs ? ' with-logs' : ''}`}>
-        {session.human_wait !== null && <HandoffBanner wait={session.human_wait} />}
+        {banner(
+          <>
+            <LiveControl taskId={task.id} session={session} reload={reload} takeOnly />
+            <OpenInTheater />
+          </>,
+        )}
         {strip}
         <LiveToolbar
           taskId={task.id}
@@ -468,20 +534,22 @@ export function LiveBrowserPane({
           reload={reload}
         />
         <SaveAsLoginOffer taskId={task.id} tenantId={task.tenant_id} site={o?.origin ?? null} controlReturned={returned} />
+        {/* LOGS ON THE LEFT, THE DEVICE ON THE RIGHT (the mockup's ◫ logs). */}
         <div className="live-body">
+          {logs && (
+            <div className="live-logs">
+              <AgentLogs task={task} />
+            </div>
+          )}
           <LiveScreen
             key={session.session_id}
             taskId={task.id}
             control={mine}
             touch={mine && session.device !== null && session.device.touch}
             onScreen={setScreenNode}
+            caption={<span className="live-caption">{deviceCaption(session)}</span>}
             onControlChange={reload}
           />
-          {logs && (
-            <div className="live-logs">
-              <AgentLogs task={task} />
-            </div>
-          )}
         </div>
       </div>
     </TheaterHost>
@@ -526,29 +594,47 @@ function OriginHost({ origin }: { origin: LiveOrigin }) {
   )
 }
 
-function HandoffBanner({ wait }: { wait: NonNullable<LiveSession['human_wait']> }) {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), 1000)
-    return () => clearInterval(id)
-  }, [])
-  const left = Math.max(0, Math.round((Date.parse(wait.deadline) - now) / 1000))
-  const time = Number.isFinite(left) ? `${Math.floor(left / 60)}m ${String(left % 60).padStart(2, '0')}s left` : null
+/** The banner's Open in theater: the theater of this tab, which the banner sits inside. */
+function OpenInTheater() {
+  const theater = useTheater()
+  if (theater === null) return null
   return (
-    <div className="live-handoff" role="region" aria-label="The agent is waiting for you">
-      <strong>The agent is waiting for you.</strong> <span className="live-handoff-reason">{wait.reason}</span>
-      <span className="live-handoff-expect">
-        {wait.expect !== null && wait.expect.trim() !== '' ? `Expected site: ${bareHost(wait.expect)}` : 'The agent named no site.'}
-      </span>
-      {time !== null && <span className="live-handoff-left">{time}</span>}
-    </div>
+    <Button size="sm" onClick={theater.open}>
+      Open in theater
+    </Button>
   )
 }
 
 /**
- * THE DEVICE BAR (§6.1, Q13): the preset, rotate and touch. Q13 lets the
- * person in control change them, but swarm-api serves no device route yet, so
- * every switcher shows the current device and is disabled, with why.
+ * UNDER THE DEVICE, WHAT IT IS (the mockup's caption): `iPhone 15 · 393×852
+ * · <path>`. The size is the preset's, its sides swapped in landscape. The
+ * page's path is not served: the session's origin is scheme, host and port
+ * by design (§5.7), and nothing carries the path to swarm-api, so it says so
+ * rather than print one nobody measured. A device the gate has not reported
+ * is said the same way (LB-SEAM).
+ */
+export function deviceCaption(session: Pick<LiveSession, 'device' | 'presets'>): string {
+  const d = session.device
+  const p = d === null ? undefined : session.presets.find((x) => x.name === d.preset)
+  const device =
+    d === null
+      ? 'Device not reported'
+      : p === undefined
+        ? presetLabel(d.preset)
+        : `${presetLabel(d.preset)} · ${d.orientation === 'landscape' ? `${p.height}×${p.width}` : `${p.width}×${p.height}`}`
+  return `${device} · path not reported`
+}
+
+/**
+ * THE TOOLBAR, LEFT TO RIGHT AS THE MOCKUP DRAWS IT (owner decisions
+ * 2026-10-12): the device chips, `⟲ rotate`, `touch: on|off`, `◫ logs`, and
+ * at the right `⤢ Theater`. "Let any member take control" stays in the
+ * toolbar, after Theater, exactly as built (the owner kept it).
+ *
+ * THE DEVICE CONTROLS ARE SHOWN, NOT SWITCHED (§6.1, Q13): Q13 lets the
+ * person in control change them, but the session read says nothing of
+ * device switching and swarm-api serves no device route, so every chip is
+ * disabled, with why.
  */
 function LiveToolbar({
   taskId,
@@ -570,29 +656,31 @@ function LiveToolbar({
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
       <LiveToolMenu>
         <LiveDevice session={session} mine={mine} />
-        <Button size="sm" aria-pressed={logs} onClick={onLogs}>
-          {logs ? 'Hide logs' : 'Logs beside'}
+        <Button size="sm" aria-pressed={logs} onClick={onLogs} title={logs ? 'Hide the logs' : 'Show the logs beside the browser'}>
+          ◫ logs
         </Button>
       </LiveToolMenu>
-      <TheaterButton />
-      {session.you.can_open && (
-        <label className="live-open">
-          <input
-            type="checkbox"
-            checked={session.open_to_members}
-            disabled={session.open_to_members}
-            onChange={(e) => {
-              if (!e.target.checked) return
-              void openLiveToMembers(taskId).then((r) => {
-                setError(r.status === 'error' ? r.error.message : null)
-                reload()
-              })
-            }}
-          />
-          Let any member take control
-        </label>
-      )}
       {!mine && <span className="live-toolbar-why">{deviceWhy(mine)}</span>}
+      <span className="live-toolbar-end">
+        <TheaterButton />
+        {session.you.can_open && (
+          <label className="live-open">
+            <input
+              type="checkbox"
+              checked={session.open_to_members}
+              disabled={session.open_to_members}
+              onChange={(e) => {
+                if (!e.target.checked) return
+                void openLiveToMembers(taskId).then((r) => {
+                  setError(r.status === 'error' ? r.error.message : null)
+                  reload()
+                })
+              }}
+            />
+            Let any member take control
+          </label>
+        )}
+      </span>
       {error !== null && (
         <span className="live-control-error" role="alert">
           {error}
@@ -603,7 +691,8 @@ function LiveToolbar({
 }
 
 // SHOWN, NOT SWITCHED. swarm-api serves no device route (§6.1 needs the
-// gate's device lane, L3b, which has not landed), so a switcher that sent a
+// gate's device lane, L3b, which has not landed), and the session read
+// carries no word that switching is available, so a switcher that sent a
 // change would send it to a path nothing answers. The bar draws the device
 // the session reports, for everyone, and changes nothing.
 function deviceWhy(mine: boolean): string {
@@ -612,47 +701,39 @@ function deviceWhy(mine: boolean): string {
     : 'Only the person in control can change the device.'
 }
 
-/** The preset, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
+/** The device chips, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
 function LiveDevice({ session, mine }: { session: LiveSession; mine: boolean }) {
   const device = session.device
   // NOT REPORTED (LB-SEAM): the gate applies the device but nothing carries
-  // which one to swarm-api yet, so the session serves null. Say so, rather
-  // than draw the first preset as if it were the one applied.
-  if (device === null) {
-    return (
-      <label className="live-device">
-        <span>Device</span>
-        <select value="" disabled title="The gate has not reported which device it applied.">
-          <option value="">Not reported</option>
-        </select>
-      </label>
-    )
-  }
-  const names = session.presets.some((p) => p.name === device.preset)
-    ? session.presets.map((p) => p.name)
-    : [device.preset, ...session.presets.map((p) => p.name)]
-  const why = deviceWhy(mine)
+  // which one to swarm-api yet, so the session serves null. No chip is
+  // pressed then, rather than the first drawn as if it were the one applied.
+  const names =
+    device === null || session.presets.some((p) => p.name === device.preset)
+      ? session.presets.map((p) => p.name)
+      : [device.preset, ...session.presets.map((p) => p.name)]
+  const why = device === null ? 'The gate has not reported which device it applied.' : deviceWhy(mine)
+  const chipWhy = deviceWhy(mine)
   return (
     <>
-      <label className="live-device">
-        <span>Device</span>
-        <select
-          value={device.preset}
-          disabled
-          title={why}
-        >
-          {names.map((n) => (
-            <option key={n} value={n}>
-              {presetLabel(n)}
-            </option>
-          ))}
-        </select>
-      </label>
+      <span className="live-chips" role="group" aria-label="Device">
+        {names.map((n) => (
+          <Button
+            key={n}
+            size="sm"
+            className="live-chip"
+            aria-pressed={device !== null && device.preset === n}
+            disabled
+            title={chipWhy}
+          >
+            {presetLabel(n)}
+          </Button>
+        ))}
+      </span>
       <Button size="sm" disabled title={why}>
-        Rotate ({device.orientation})
+        ⟲ rotate
       </Button>
-      <Button size="sm" aria-pressed={device.touch} disabled title={why}>
-        Touch {device.touch ? 'on' : 'off'}
+      <Button size="sm" aria-pressed={device?.touch ?? false} disabled title={why}>
+        {device?.touch === true ? 'touch: on' : 'touch: off'}
       </Button>
     </>
   )
@@ -689,6 +770,7 @@ function LiveScreen({
   control,
   touch,
   onScreen,
+  caption,
   onControlChange,
 }: {
   taskId: string
@@ -696,6 +778,8 @@ function LiveScreen({
   touch: boolean
   /** Told the element noVNC draws into, and null when it goes: the theater borrows it. */
   onScreen?: (node: HTMLElement | null) => void
+  /** Under the device frame: what it is, its size and the page's path. */
+  caption?: ReactNode
   /** Called when swarm-api's status frames say control or the session changed: the pane re-reads the session. */
   onControlChange?: () => void
 }) {
@@ -847,6 +931,7 @@ function LiveScreen({
         onTouchEndCapture={gateTouch}
         onTouchCancelCapture={gateTouch}
       />
+      {caption}
       <p className="live-screen-say" role="status">
         {conn === 'connecting'
           ? 'Connecting to the agent’s browser.'

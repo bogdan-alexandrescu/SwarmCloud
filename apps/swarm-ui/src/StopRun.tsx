@@ -243,6 +243,12 @@ export interface StopRunProps {
    * detail have the width, so they keep the in-place dialog.
    */
   overlay?: boolean
+  /**
+   * The button's word. `stop` in a row and on a graph node; the agent header
+   * says `Stop`, as the live-browser mockup's "Copy link · Take control ·
+   * Stop" does (owner decision 2026-10-12, LB-UX1).
+   */
+  label?: string
 }
 
 export function StopRun({
@@ -254,6 +260,7 @@ export function StopRun({
   reload,
   variant = 'panel',
   overlay = false,
+  label = 'stop',
 }: StopRunProps) {
   const [open, setOpen] = useState(false)
   const buttonId = useId()
@@ -390,7 +397,7 @@ export function StopRun({
       aria-expanded={overlay ? open : undefined}
       onClick={() => setOpen(true)}
     >
-      stop
+      {label}
     </Button>
   )
   if (!open) return stopButton

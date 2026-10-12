@@ -123,7 +123,7 @@ describe('item 2: the agent header\'s actions never overlap, at every split widt
         const s = await split(snap.pref)
         const actions = s.querySelector<HTMLElement>('.ag-head-actions')!
         const controls = [...actions.querySelectorAll<HTMLElement>(':scope > button, :scope > span > button')]
-        expect(controls.map(label), 'the header does not draw Copy link, Stop and ✕').toEqual(['Copy link', 'stop', 'Close'])
+        expect(controls.map(label), 'the header does not draw Copy link, Stop and ✕').toEqual(['Copy link', 'Stop', 'Close'])
         for (const c of controls) {
           expect(painted(c, 'position', env) ?? 'static', `${label(c)} is positioned over the row`).toBe('static')
           expect(painted(c, ['flex', 'flex-shrink'], env) ?? '', `${label(c)} may be squeezed`).toMatch(/^(none|0)\b/)

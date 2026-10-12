@@ -709,10 +709,10 @@ export const LEGACY_HEADS: readonly string[] = [
  * and transcript, live while it runs. Its address is
  * `#work/task/<id>/artifacts`, as `attempts` is `#work/task/<id>/attempts`.
  */
-export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints' | 'changes'
+export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts' | 'checkpoints' | 'changes' | 'browser'
 
 /** The address segment each non-default pane is written with. `detail` has none. */
-const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes']
+const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser']
 
 export interface Route {
   /** A section id, or REFERENCE. */
@@ -755,6 +755,12 @@ export interface Route {
   page?: 'outcomes' | null
   /** A path this console has no page for: drawn as not-found, kept in the bar (NotFound.tsx). */
   missing?: string | null
+  /**
+   * The Browser tab opens in the theater (`/agents/<tab>/<id>/browser?theater=1`,
+   * live-browser.md §6). Read on arrival only: the bar is rewritten without it,
+   * so Esc out of the theater and a reload land on the tab, not back in it.
+   */
+  theater?: boolean
 }
 
 /** What `SectionQuestion` reads off a section: its name and its question. */
@@ -892,6 +898,7 @@ export function fromAddress(full: string): Route {
         tab: 'running',
         taskId: decodeURIComponent(id),
         taskPane: pane ?? 'detail',
+        ...(pane === 'browser' && new URLSearchParams(query).get('theater') === '1' ? { theater: true } : {}),
         ...(artifact !== null && artifact !== '' ? { artifact } : {}),
         ...(file !== null && file !== '' ? { file } : {}),
       }
@@ -1311,6 +1318,7 @@ export function App() {
                 pane={at.taskPane}
                 artifact={at.artifact ?? null}
                 file={at.file ?? null}
+                theater={at.theater === true}
                 closeTo={listAddress}
                 go={go}
                 base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
