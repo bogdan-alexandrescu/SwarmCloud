@@ -444,8 +444,11 @@ class ApiSettings:
     #: during a rotation; never used to mint. Empty outside one.
     live_key_previous: str = field(default="", repr=False)
     #: Where swarm-api dials the relay for a viewer's socket (§3.3 step 3, R2):
-    #: `swarm-live` in swarm-system, over the internal path lane L8 builds.
-    #: Empty means no relay, and a socket closes with "live view unavailable".
+    #: `swarm-live` in swarm-system, as plain `ws://<internal LB address>:8080`
+    #: (owner decision 2026-10-11 (b)), from SWARM_LIVE_URL, which
+    #: terraform/infra/locals.tf sets from live.tf's reserved address. The
+    #: relay's `/internal/close` is the same address over http. Empty means no
+    #: relay, and a socket closes with "live view unavailable".
     live_relay_url: str = ""
     #: A tunnel ticket's life (§3.3 step 1): long enough for the worker to hand
     #: it to the gate and the gate to dial, short enough that a copy is useless.
@@ -660,7 +663,7 @@ class ApiSettings:
             child_proof_skew_seconds=_int("CHILD_PROOF_SKEW_SECONDS", 120),
             live_key=os.environ.get("SWARM_LIVE_KEY", "").strip(),
             live_key_previous=os.environ.get("SWARM_LIVE_KEY_PREVIOUS", "").strip(),
-            live_relay_url=os.environ.get("SWARM_LIVE_RELAY_URL", "").strip(),
+            live_relay_url=os.environ.get("SWARM_LIVE_URL", "").strip(),
             live_tunnel_ticket_seconds=_int("LIVE_TUNNEL_TICKET_SECONDS", 60),
             live_viewer_ticket_seconds=_int("LIVE_VIEWER_TICKET_SECONDS", 30),
             live_control_renew_seconds=_int("LIVE_CONTROL_RENEW_SECONDS", 60),

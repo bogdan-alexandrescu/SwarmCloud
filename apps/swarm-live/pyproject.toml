@@ -5,6 +5,10 @@
 # Its image must also carry an `ffmpeg` built with libvpx: the recorder encodes
 # VP8 through it (recorder.py, FfmpegVp8Encoder). That is a system binary, not
 # a Python dependency, so it is not listed here.
+#
+# No Firestore client (owner decision 2026-10-11 (a)): the relay trusts only
+# the ticket. Secret Manager is read over REST with google-auth, which
+# google-cloud-storage already brings (main.py, `_access_secret`).
 [project]
 name = "swarm-live"
 version = "0.1.0"
@@ -15,7 +19,6 @@ dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
     "websockets>=13",
-    "google-cloud-firestore>=2.16",
     "google-cloud-storage>=2.18",
 ]
 
