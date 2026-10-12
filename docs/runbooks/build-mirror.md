@@ -53,29 +53,20 @@ digest or file enters the mirror, not on every build.
   The pull request's build therefore never exercises the mirrors: the first
   build that does is main's, in Cloud Build.
 
-## Fill the mirrors (once, BEFORE the switch merges)
+## Fill the mirrors (once, BEFORE the change that introduced them merges)
 
-The change shipped in two pull requests so that the mirrors exist before any
-build reads them. Part A adds `terraform/infra/build_mirror.tf`, the refresh
-script and this runbook; nothing reads the mirrors yet. Part B points the
-Dockerfiles and `scripts/build-images.sh` at them. `application.yml` builds
-every changed image on a push to main, and `release.yml` runs `build` before
-`infrastructure`: part B merged before the repositories exist and the bucket is
-filled fails main's image builds, because every `FROM` names a repository that
-is not there and the `tool-mirror` step names the first missing object. So:
-
-1. Merge part A. The release applies Terraform and creates the two
-   repositories and the bucket.
-2. From a checkout of part B's branch (the Dockerfiles that name the mirrors
-   are there; on part A alone `--images-only` finds none and refuses), run:
+The order matters. `application.yml` builds every changed image on a push to
+main, and `release.yml` runs `build` before `infrastructure`. A merge that
+lands before the repositories exist and the bucket is filled therefore fails
+main's image builds: every `FROM` names a repository that is not there, and
+the `tool-mirror` step names the first missing object. So, from the branch
+that adds `terraform/infra/build_mirror.tf`, before merging it:
 
 ```bash
+make infra                                  # creates the two repositories and the bucket
 scripts/refresh-build-mirror.sh             # uploads every release file, pulls every pinned image through
 scripts/refresh-build-mirror.sh --check     # changes nothing; exit 0 means every build input is mirrored
 ```
-
-3. Merge part B only once `--check` exits 0. (`--tools-only` runs from part A
-   alone.)
 
 Each upload is checked against its sha256 first. A file whose upstream
 download does not match is refused and named. Every other file still goes up,

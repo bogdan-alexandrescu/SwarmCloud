@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # agent-runtime-base -- the image every non-browser runner profile runs in.
 #
@@ -46,18 +46,27 @@ ARG NODE_IMAGE=node:24-bookworm-slim@sha256:2fe369e969550cde8e867afc3fe370b26014
 # (GHSA-4w2j-m93h-cj5j, GHSA-82j2-j2ch-gfr8) that failed the promote scan
 # on /usr/local/bin/uv and /usr/local/bin/uvx. Nothing else in the image
 # carries a Rust binary, which is why these two were the last to appear.
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
+ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
+# Every base is pulled through this project's Artifact Registry mirrors,
+# never from Docker Hub or ghcr.io directly: on 2026-10-12 three release
+# builds failed inside Cloud Build on ghcr.io timeouts and a github.com 504.
+# Remote repositories (terraform/infra/build_mirror.tf) serve the same
+# digests. A pull request's local build, which has no Google identity,
+# passes the upstream registries here instead (scripts/lib/build-mirror.sh).
+# docs/runbooks/build-mirror.md.
+ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
+ARG MIRROR_GHCR=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-ghcr
 
 # ---------------------------------------------------------------------------
 # uv and Node arrive as pinned images rather than as curl | sh
 # ---------------------------------------------------------------------------
-FROM ${UV_IMAGE} AS uvbin
-FROM ${NODE_IMAGE} AS nodebin
+FROM ${MIRROR_GHCR}/${UV_IMAGE} AS uvbin
+FROM ${MIRROR_DOCKER_HUB}/library/${NODE_IMAGE} AS nodebin
 
 # ---------------------------------------------------------------------------
 # builder: compile wheels, produce /opt/venv
 # ---------------------------------------------------------------------------
-FROM ${PYTHON_IMAGE} AS builder
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -164,7 +173,7 @@ RUN uv pip check --python /opt/venv/bin/python
 # ---------------------------------------------------------------------------
 # runtime
 # ---------------------------------------------------------------------------
-FROM ${PYTHON_IMAGE} AS runtime
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS runtime
 
 # Re-declared: an ARG is scoped to the stage that declares it, so the builder's
 # copies above are not visible here.
@@ -546,6 +555,20 @@ RUN mkdir -p /tmp/toolbox \
  && install -o root -g root -m 0755 /tmp/toolbox/kubectl /usr/local/bin/kubectl \
  && rm -rf /tmp/toolbox
 
+# THE TOOL MIRROR. gh here, and terraform, tofu, tflint, shellcheck and trivy
+# below, are read from build/tool-mirror, bind-mounted at /tmp/tool-mirror for
+# the RUN that installs them and never copied into a layer. Each file sits at
+# its upstream URL without `https://` and is checked against the same sha256
+# as when it was downloaded from upstream. Cloud Build copies them in from
+# gs://swarm-build-mirror-<project> before this build (scripts/lib/
+# build-mirror.sh), and a missing object fails that step by name; a pull
+# request's local build reads them from upstream against the same list,
+# tool-mirror.sha256 beside this file, which a test holds equal to the pins
+# here (tests/unit/scripts/test_build_mirror.py). Why: on 2026-10-12 a
+# release build failed on a github.com 504 fetching shellcheck. Bumping a pin
+# here means a new line there and `scripts/refresh-build-mirror.sh`
+# (docs/runbooks/build-mirror.md).
+#
 # GitHub and Docker CLIs.
 #
 # gh 2.102.0: the newest release (https://api.github.com/repos/cli/cli/releases/latest,
@@ -562,9 +585,10 @@ ARG GH_SHA256=bb766f710eef8ede859c18578c72c327597cd4c8a85b06001b1f3843c6019386
 # (buildx, compose), and with no daemon. Scan: clean.
 ARG DOCKER_CLI_VERSION=29.8.2
 ARG DOCKER_CLI_SHA256=ff99352d3b95ebaaf94bcdf65026714a1a72a44a999a9fc83f1386c3f30f33d6
-RUN mkdir -p /tmp/toolbox \
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    mkdir -p /tmp/toolbox \
  && curl -fsSL -o /tmp/toolbox/gh.tar.gz \
-      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
+      "file:///tmp/tool-mirror/github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
  && curl -fsSL -o /tmp/toolbox/docker-ce-cli.deb \
       "https://download.docker.com/linux/debian/dists/bookworm/pool/stable/amd64/docker-ce-cli_${DOCKER_CLI_VERSION}-1~debian.12~bookworm_amd64.deb" \
  && echo "${GH_SHA256}  /tmp/toolbox/gh.tar.gz" | sha256sum -c - \
@@ -637,22 +661,23 @@ ARG TOFU_VERSION=1.13.1
 ARG TOFU_SHA256=378ada19d4bc70c43732004e8159be771b23b9a5afdf059e5f8a2b3fa2c70a69
 ARG TFLINT_VERSION=0.64.0
 ARG TFLINT_SHA256=cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
-RUN mkdir -p /tmp/toolbox \
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    mkdir -p /tmp/toolbox \
  && curl -fsSL -o /tmp/toolbox/terraform.zip \
-      "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
+      "file:///tmp/tool-mirror/releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
  && echo "${TERRAFORM_SHA256}  /tmp/toolbox/terraform.zip" | sha256sum -c - \
  && unzip -q /tmp/toolbox/terraform.zip terraform -d /tmp/toolbox \
  && install -o root -g root -m 0755 /tmp/toolbox/terraform /usr/local/bin/terraform \
  && if [ "${INSTALL_TOFU}" = "1" ]; then \
       curl -fsSL -o /tmp/toolbox/tofu.tar.gz \
-        "https://github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.tar.gz" \
+        "file:///tmp/tool-mirror/github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.tar.gz" \
       && echo "${TOFU_SHA256}  /tmp/toolbox/tofu.tar.gz" | sha256sum -c - \
       && tar -xzf /tmp/toolbox/tofu.tar.gz -C /tmp/toolbox tofu \
       && install -o root -g root -m 0755 /tmp/toolbox/tofu /usr/local/bin/tofu ; \
     fi \
  && if [ "${INSTALL_TFLINT}" = "1" ]; then \
       curl -fsSL -o /tmp/toolbox/tflint.zip \
-        "https://github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip" \
+        "file:///tmp/tool-mirror/github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip" \
       && echo "${TFLINT_SHA256}  /tmp/toolbox/tflint.zip" | sha256sum -c - \
       && unzip -q /tmp/toolbox/tflint.zip tflint -d /tmp/toolbox \
       && install -o root -g root -m 0755 /tmp/toolbox/tflint /usr/local/bin/tflint ; \
@@ -680,15 +705,16 @@ ARG SHELLCHECK_VERSION=0.11.0
 ARG SHELLCHECK_SHA256=b7af85e41cc99489dcc21d66c6d5f3685138f06d34651e6d34b42ec6d54fe6f6
 ARG TRIVY_VERSION=0.75.0
 ARG TRIVY_SHA256=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
-RUN mkdir -p /tmp/toolbox \
+RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
+    mkdir -p /tmp/toolbox \
  && curl -fsSL -o /tmp/toolbox/shellcheck.tar.gz \
-      "https://github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz" \
+      "file:///tmp/tool-mirror/github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz" \
  && echo "${SHELLCHECK_SHA256}  /tmp/toolbox/shellcheck.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/toolbox/shellcheck.tar.gz -C /tmp/toolbox --strip-components=1 \
       "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
  && install -o root -g root -m 0755 /tmp/toolbox/shellcheck /usr/local/bin/shellcheck \
  && curl -fsSL -o /tmp/toolbox/trivy.tar.gz \
-      "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
+      "file:///tmp/tool-mirror/github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
  && echo "${TRIVY_SHA256}  /tmp/toolbox/trivy.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/toolbox/trivy.tar.gz -C /tmp/toolbox trivy \
  && install -o root -g root -m 0755 /tmp/toolbox/trivy /usr/local/bin/trivy \
