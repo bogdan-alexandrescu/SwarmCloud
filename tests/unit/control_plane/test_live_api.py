@@ -494,6 +494,7 @@ def test_another_tenants_member_gets_404_on_every_route(client, ldb, live):
         ("POST", f"/v1/tasks/{TASK}/live/control"),
         ("POST", f"/v1/tasks/{TASK}/live/control/renew"),
         ("POST", f"/v1/tasks/{TASK}/live/control/return"),
+        ("DELETE", f"/v1/tasks/{TASK}/live/control"),
         ("POST", f"/v1/tasks/{TASK}/live/open-to-members"),
         ("GET", f"/v1/tasks/{TASK}/live/audit"),
     ):
@@ -528,9 +529,10 @@ def test_another_tenants_member_is_refused_on_the_socket_even_with_a_valid_ticke
 def test_a_non_submitter_can_view_and_cannot_take_until_opened(client, ldb, live):
     view = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("root"))
     assert view.status_code == 200, view.text
-    assert view.json()["you"] == {
-        "may_view": True, "may_take": False, "may_preempt": False,
-        "may_open_to_members": False, "in_control": False,
+    assert view.json()["live_browser"] is True
+    assert view.json()["session"]["you"] == {
+        "email": "root@saga.xyz", "can_control": False, "can_preempt": False,
+        "can_open": False,
     }
     assert client.post(f"/v1/tasks/{TASK}/live/ticket", headers=bearer("root")).status_code == 200
 
@@ -644,7 +646,8 @@ def test_a_cancel_closes_the_session_and_ends_control(client, ldb, live):
     ldb.docs[f"tasks/{TASK}"]["cancel_requested"] = True
     view = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("alice"))
     assert view.status_code == 200
-    assert view.json()["state"] == "closed" and view.json()["close_cause"] == "cancelled"
+    session = view.json()["session"]
+    assert session["state"] == "closed" and session["closed_reason"] == "cancelled"
     assert [r["detail"]["cause"] for r in audit(ldb, "control_ended")] == ["cancelled"]
     assert len(audit(ldb, "session_closed")) == 1
     assert client.post(f"/v1/tasks/{TASK}/live/ticket", headers=bearer("alice")).status_code == 409
@@ -911,7 +914,7 @@ def test_a_session_that_closes_is_closed_at_the_relay(client, ldb, live, relay):
     assert relay.closed == []
     ldb.docs[f"tasks/{TASK}"]["cancel_requested"] = True
     view = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("alice"))
-    assert view.json()["state"] == "closed"
+    assert view.json()["session"]["state"] == "closed"
     assert relay.closed == [SESSION]
     # Once: a later read of the closed session does not ask again.
     client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("alice"))

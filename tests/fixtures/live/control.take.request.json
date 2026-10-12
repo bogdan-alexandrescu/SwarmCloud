@@ -1,0 +1,7 @@
+{
+  "preempt": true,
+  "confirmed_mismatch": {
+    "expected": "github.com",
+    "actual": "github-signin.example"
+  }
+}

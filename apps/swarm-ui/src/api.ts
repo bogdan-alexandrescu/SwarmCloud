@@ -6444,7 +6444,13 @@ export interface LiveSession {
   controller: { email: string; since: string } | null
   /** Whether the submitter opened control to every member of the tenant (§5.1, Q1). */
   open_to_members: boolean
-  device: LiveDevice
+  /**
+   * The device the gate applied, or null while nothing reports it to
+   * swarm-api (LB-SEAM, #1030): the gate applies it, but no relay message or
+   * ctl report carries it yet, so the API serves null rather than a guess.
+   * `origin` is null for the same reason.
+   */
+  device: LiveDevice | null
   presets: LivePreset[]
   /** What THIS caller may do (§5.1). The server decides; the console only draws it. */
   you: {

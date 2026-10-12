@@ -241,10 +241,11 @@ describe('Open Browser tab and ⤢ Theater navigate to the same session', () => 
     expect(browserTabPath('task-live-1')).toBe(tabUrl.pathname)
     expect(theaterPath('task-live-1', 'wf-1')).toBe(`${tabUrl.pathname}${theaterUrl.search}`)
 
-    // The session is the task's: one live route per task, nothing else in the URL.
-    const ws = new URL(liveSocketUrl('task-live-1', { protocol: 'https:', host: 'console.example' }))
+    // The session's stream (§5.2), the one swarm-api serves: the session id
+    // and nothing else in the URL; the ticket goes as the first message.
+    const ws = new URL(liveSocketUrl('live_att_1', { protocol: 'https:', host: 'console.example' }))
     expect(ws.protocol).toBe('wss:')
-    expect(ws.pathname).toBe('/v1/tasks/task-live-1/live')
+    expect(ws.pathname).toBe('/v1/live/live_att_1/stream')
     expect(ws.search).toBe('')
   })
 })

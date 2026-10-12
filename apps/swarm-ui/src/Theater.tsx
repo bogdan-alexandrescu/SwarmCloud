@@ -114,6 +114,16 @@ export interface RecordingListing {
 const SEGMENT_ID = /^[A-Za-z0-9_-]+$/
 
 /**
+ * The relay's name for segment `seq` (`swarm_live.recorder.segment_name`):
+ * the sequence zero-padded to 13 digits. An unpadded `rec-3.live.webm` is not
+ * a name the relay writes, so comparing against it refused every real
+ * segment (LB-SEAM, tests/fixtures/live/recordings.json).
+ */
+export function segmentName(seq: number): string {
+  return `rec-${String(seq).padStart(13, '0')}.live.webm`
+}
+
+/**
  * The segments this view may play: those whose object is EXACTLY
  * `tenants/<the task's tenant>/tasks/<task>/attempts/<a>/live/rec-<seq>.live.webm`,
  * from a listing that names this task and this tenant.
@@ -137,7 +147,7 @@ export function segmentsOfTenant(
       Number.isInteger(s.seq) &&
       s.seq >= 0 &&
       SEGMENT_ID.test(s.attempt_id) &&
-      s.object === `tenants/${session.tenantId}/tasks/${session.taskId}/attempts/${s.attempt_id}/live/rec-${s.seq}.live.webm`,
+      s.object === `tenants/${session.tenantId}/tasks/${session.taskId}/attempts/${s.attempt_id}/live/${segmentName(s.seq)}`,
   )
   return { kept, refused: all.length - kept.length }
 }
