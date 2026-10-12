@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import unquote, urlparse
 
@@ -19,6 +19,10 @@ from .repo_fakes import GitHubRepos, repo_entry
 
 BUCKET = "swarm-artifacts-saga-agents-staging"
 REPOSITORY = "saga-xyz/widgets"
+# Relative to the clock the route reads, not a fixed date: freshness() calls an
+# index older than STALE_AGE (7 days) `stale`, so a pinned 2026-10-05 build
+# turned every "behind" assertion red on 2026-10-12 (PR #1170).
+BUILT_AT = (datetime.now(timezone.utc) - timedelta(hours=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def sha(word: str) -> str:

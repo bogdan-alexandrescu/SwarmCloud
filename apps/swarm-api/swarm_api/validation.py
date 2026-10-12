@@ -835,6 +835,14 @@ STARTUP_REFUNDS_METADATA_KEY = "startup_refunds"
 #: tests/unit/worker/test_worker_evicted.py holds them equal.
 DISK_EVICTIONS_METADATA_KEY = "disk_evictions"
 
+#: Why the current attempt's GKE pod is not starting (F1-POD,
+#: `reconciler.startproblem.START_PROBLEM_KEY`): the container, kubelet's
+#: reason, its restarts and message. Written and cleared only by the
+#: reconciler; a caller who set it would put a false "Pod not starting" on its
+#: task's page. Restated for the reason STARTUP_REFUNDS_METADATA_KEY is;
+#: tests/unit/reconciler/test_pod_start_problem.py holds them equal.
+START_PROBLEM_METADATA_KEY = "start_problem"
+
 #: Child tasks (contract request 14, docs/design/child-tasks.md §6.4). The
 #: agent's `request_id` on a child, written once by the children route and read
 #: by its dedupe; the awaits refunded so far on a parent, written by the
@@ -895,6 +903,7 @@ RESERVED_METADATA_KEYS = (
     HUMAN_WAIT_RESUMES_METADATA_KEY,
     HUMAN_READY_METADATA_KEY,
     HUMAN_HANDOFFS_METADATA_KEY,
+    START_PROBLEM_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -1562,6 +1571,11 @@ _RESERVED_BECAUSE = {
         f"metadata.{DISK_EVICTIONS_METADATA_KEY} is reserved: it is set only by "
         "the reconciler, to count attempts lost to the pod passing its own disk "
         "limit (#893). Drop the key from metadata."
+    ),
+    START_PROBLEM_METADATA_KEY: (
+        f"metadata.{START_PROBLEM_METADATA_KEY} is reserved: it is set only by "
+        "the reconciler, to say why the task's pod is not starting. Drop the key "
+        "from metadata."
     ),
     HUMAN_WAIT_RESUMES_METADATA_KEY: (
         f"metadata.{HUMAN_WAIT_RESUMES_METADATA_KEY} is reserved: it is set only by "

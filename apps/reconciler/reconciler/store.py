@@ -57,6 +57,7 @@ from .model import (
     startup_refunds_used,
 )
 from .model import as_datetime as _as_datetime
+from .startproblem import START_PROBLEM_KEY, START_PROBLEM_STATES
 
 
 class FirestoreTransactionRunner:
@@ -420,6 +421,56 @@ class ControlStore:
                     "tenant_id": attempt.get("tenant_id") or task.get("tenant_id"),
                 },
             )
+            return True
+
+        return bool(self._txn.run(_apply))
+
+    def record_start_problem(
+        self,
+        task_id: str,
+        *,
+        lease_id: str | None,
+        record: dict[str, Any] | None,
+    ) -> bool:
+        """Write, or clear, a task's `metadata.start_problem` (F1-POD). True if written.
+
+        In a transaction that re-reads the task, because `metadata` is one map
+        other writers also touch (the worker's refund counters, swarm-api's
+        hand-off marks) and is written back whole, as the eviction counter is.
+
+        A record is written only while the task is still DISPATCHED or
+        STARTING on the lease the pass read it under: a pod read for an
+        attempt the task has since moved past is not this attempt's problem.
+        A clear (`record=None`) is written only when there is something to
+        clear and the task is not terminal -- a cancelled task keeps the
+        record, which is how the console says "started, did not reach
+        running" rather than "never ran".
+
+        Only `metadata` is written. Never the state, `updated_at`, a lease or
+        a pool: this is a record, not a transition (invariants 1-3).
+        """
+        task_ref = self._db.collection("tasks").document(task_id)
+
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(task_ref))
+            if not snap.exists:
+                return False
+            data = snap.to_dict() or {}
+            try:
+                state = TaskState(data.get("state"))
+            except ValueError:
+                return False
+            metadata = data.get("metadata")
+            metadata = dict(metadata) if isinstance(metadata, dict) else {}
+            if record is None:
+                if START_PROBLEM_KEY not in metadata or state in TERMINAL_STATES:
+                    return False
+                metadata.pop(START_PROBLEM_KEY)
+            else:
+                if state not in START_PROBLEM_STATES or data.get("current_lease_id") != lease_id:
+                    return False
+                metadata[START_PROBLEM_KEY] = dict(record)
+            txn.update(task_ref, {"metadata": metadata})
             return True
 
         return bool(self._txn.run(_apply))

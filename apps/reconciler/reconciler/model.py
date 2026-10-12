@@ -17,6 +17,7 @@ from typing import Any
 
 from swarm_common.models import EndCause, WorkflowStep, retries_exhausted, utcnow
 from swarm_common.states import CONCURRENCY_STATES, TERMINAL_STATES, TaskState
+from .startproblem import start_problem_of
 
 
 def as_datetime(value: Any) -> datetime | None:
@@ -275,6 +276,10 @@ class TaskView:
     #: `metadata.disk_evictions`: attempts already lost to the pod passing its
     #: own disk limit (#893, `count_disk_eviction`).
     disk_evictions: int = 0
+    #: `metadata.start_problem`: why the current attempt's GKE pod was last
+    #: seen not starting (`startproblem`, F1-POD), or None. A record for the
+    #: console; no rule decides anything from it.
+    start_problem: dict[str, Any] | None = None
 
     @property
     def holds_capacity(self) -> bool:
@@ -304,6 +309,7 @@ class TaskView:
             completed_at=as_datetime(doc.get("completed_at")),
             startup_refunds=startup_refunds_used(doc.get("metadata")),
             disk_evictions=disk_evictions_used(doc.get("metadata")),
+            start_problem=start_problem_of(doc.get("metadata")),
         )
 
 
