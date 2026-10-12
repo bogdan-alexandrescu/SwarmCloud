@@ -847,7 +847,7 @@ class _Plan:
             txn.update(self.session_ref, {**self.session_update, "updated_at": self.now})
         if self.resolve:
             resolution_writes(txn, self.db, self.task, outcome="returned", now=self.now,
-                              by=self.resolve_by)
+                              by=self.resolve_by, lease_id=session.get("lease_id"))
         elif self.task_update:
             txn.update(task_ref, {**self.task_update, "updated_at": self.now})
         for event_type, detail in self.events:
@@ -857,6 +857,11 @@ class _Plan:
                 tenant_id=self.task["tenant_id"],
                 type=event_type,
                 at=self.now,
+                # The session's attempt on the event's own fields as well as in
+                # `detail` (LB-V6): the Attempts tab groups on these.
+                attempt_id=session.get("attempt_id"),
+                lease_id=session.get("lease_id"),
+                generation=session.get("generation"),
                 detail={**detail, "session_id": session.get("id"),
                         "attempt_id": session.get("attempt_id"),
                         "generation": session.get("generation")},
