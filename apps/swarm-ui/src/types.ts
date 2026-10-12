@@ -534,6 +534,20 @@ export function limitedBy(pool: Pool): 'adaptive' | 'quota' | null {
 // Tasks and workflows
 // --------------------------------------------------------------------------
 
+/**
+ * `Task.human_wait` as `codec.human_wait_to_api` serves it (§4.1, §4.2): the
+ * agent's reason (redacted before it was stored), the host it expects, when it
+ * asked, when the hold ends, and who holds control. Instants are ISO strings.
+ */
+export interface HumanWait {
+  reason: string | null
+  expect: string | null
+  requested_at: string | null
+  deadline: string | null
+  /** The person in control (lane L9 writes it), or null while nobody is. */
+  controller: { email: string; since?: string | null; renew_by?: string | null } | null
+}
+
 /** `task_to_api` in codec.py. Trimmed to what the UI actually renders. */
 export interface Task {
   id: string
@@ -618,6 +632,14 @@ export interface Task {
   /** Userinfo that could carry a credential is masked whole; submission refuses it now. */
   repository_url_redaction_count?: number | null
   latest_checkpoint: string | null
+  /**
+   * Contract request 70 (LB-C), docs/design/live-browser.md §4.1: set while a
+   * RUNNING browser task holds its pod for a person, null otherwise. Cleared
+   * when the hold parks, so a PARKED(HUMAN_REQUIRED) task carries none.
+   * OPTIONAL: an API older than LB-L12 does not send it. Read through
+   * `handoffOf` (Handoff.tsx), never raw.
+   */
+  human_wait?: HumanWait | null
   /**
    * Contract request 23 (#217). Written by every terminal writer beside
    * `completed_at`. Null on SUCCEEDED and on a task that ended before this

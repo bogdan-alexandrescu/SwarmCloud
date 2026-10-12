@@ -206,6 +206,10 @@ def _sandbox(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     shutil.copytree(REPO / "scripts", root / "scripts")
     shutil.copytree(REPO / "images", root / "images")
+    # A recipe may also sit beside its app (apps/swarm-live/Dockerfile).
+    for recipe in REPO.glob("apps/*/Dockerfile"):
+        (root / recipe.parent.relative_to(REPO)).mkdir(parents=True, exist_ok=True)
+        shutil.copy2(recipe, root / recipe.relative_to(REPO))
     for name in (".gitignore", ".gcloudignore"):
         if (REPO / name).exists():
             shutil.copy2(REPO / name, root / name)
