@@ -549,6 +549,22 @@ export interface HumanWait {
 }
 
 /** `task_to_api` in codec.py. Trimmed to what the UI actually renders. */
+/**
+ * `Task.start_problem` as `codec.start_problem_to_api` serves it (F1-POD):
+ * the worst container of a pod that is not starting. `message` is kubelet's,
+ * one line of at most 300 characters, masked by the API. `pod_started` is
+ * whether kubelet acknowledged the pod or any container in it ran.
+ */
+export interface StartProblem {
+  container: string | null
+  reason: string | null
+  restarts: number
+  message: string | null
+  pod_started: boolean
+  attempt_id?: string | null
+  seen_at: string | null
+}
+
 export interface Task {
   id: string
   tenant_id: string
@@ -640,6 +656,14 @@ export interface Task {
    * `handoffOf` (Handoff.tsx), never raw.
    */
   human_wait?: HumanWait | null
+  /**
+   * F1-POD: why the current attempt's GKE pod is not starting, as the
+   * reconciler last read it (`reconciler.startproblem`); null when nothing is
+   * recorded. Kept on a cancelled task, which is how `elapsed()` tells "started,
+   * did not reach running" from "never ran". OPTIONAL: an older API does not
+   * send it. Drawn by `PodStartProblem`.
+   */
+  start_problem?: StartProblem | null
   /**
    * Contract request 23 (#217). Written by every terminal writer beside
    * `completed_at`. Null on SUCCEEDED and on a task that ended before this
@@ -3037,6 +3061,15 @@ const RUN_STATES: ReadonlySet<TaskState> = new Set<TaskState>(['STARTING', 'RUNN
  * the park reason -- but the task is the only read the Agents list makes, so
  * the list labels that figure instead (`CANCEL_SPAN` in Agents.tsx).
  */
+/**
+ * F1-POD: a terminal task with no recorded start whose pod DID start -- a
+ * sidecar crash-looped, the worker never ran, and it was cancelled. "never
+ * ran" said the pod never existed, and on 2026-10-11 nobody could tell why the
+ * task had been stuck. There is still no run to time, so the phase stays
+ * `never-ran`; only the words change.
+ */
+export const STARTED_NOT_RUNNING = 'started, did not reach running'
+
 export function elapsed(
   task: Task,
   now: number,
@@ -3047,7 +3080,10 @@ export function elapsed(
   const completed = ms(task.completed_at)
 
   if (TERMINAL_STATES.has(task.state)) {
-    if (!Number.isFinite(started)) return { text: 'never ran', ticking: false, phase: 'never-ran' }
+    if (!Number.isFinite(started)) {
+      const text = task.start_problem?.pod_started === true ? STARTED_NOT_RUNNING : 'never ran'
+      return { text, ticking: false, phase: 'never-ran' }
+    }
     // A finished task with no recorded end has no run length, and counting on
     // to `now` would put a growing figure on a task that is over. Every
     // terminal write sets `completed_at` with the state, so this is an older
