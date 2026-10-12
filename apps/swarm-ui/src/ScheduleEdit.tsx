@@ -1,9 +1,10 @@
 /**
  * CREATE AND EDIT A SCHEDULE (docs/schedules.md §6.2, create variant A: one
- * page from a type template). Every field starts at the type's default, so
- * most schedules are a type, a repository and a time; the cron's words and
- * its next five firings sit under the field, so the whole decision is on one
- * page.
+ * page from a type template, owner-picked 2026-10-11). Every field starts at
+ * the type's default, so most schedules are a type, a repository and a time.
+ * A new schedule picks its type from template tiles; the cron's words, its
+ * next five firings and the template card sit in a side column beside the
+ * fields, so the whole decision is on one page (ScheduleTemplates.tsx).
  *
  * THE BROWSER PARSES NO CRON. The words, the next five and the type's
  * minimum-interval refusal all come from `POST /v1/schedules:preview`, which
@@ -23,7 +24,7 @@
  * `use_merge_switch`); the SD3 switch on the Gate tab is the one way there,
  * because it is audited and needs a second person (§4.2).
  */
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { cloneElement, isValidElement, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import {
   createSchedule,
   loadRepositories,
@@ -42,6 +43,7 @@ import { errorHeading, type ApiError, type Result } from './fetch'
 import { Absent } from './primitives'
 import type { RepoRecord } from './RepositoriesData'
 import { InApp, SCHEDULES_ADDRESS, scheduleAddress } from './Schedules'
+import { budgetDefaultWords, StartChoice, TemplateCard, TemplateTiles, TenantRoom, type Start } from './ScheduleTemplates'
 import { Screen } from './Shell'
 
 /** §6.3's presets. The raw field takes anything the tick's parser accepts. */
@@ -78,11 +80,12 @@ interface Draft {
   cron: string
   timezone: string
   gate: Gate
-  /** Text as typed; blank is "the type's default", never 0. */
+  /** Text as typed; blank is the type's default (its `budget_caps`), never 0. */
   budget: { per_run_usd: string; per_day_usd: string; max_concurrent: string }
   policy: Schedule['policy']
   params: Record<string, unknown>
-  startPaused: boolean
+  /** A create's Start choice. "Dry run first" is enabled with `policy.dry_run`. */
+  start: Start
 }
 
 /**
@@ -111,9 +114,58 @@ function ownParams(type: string, params: Record<string, unknown>): Record<string
   return out
 }
 
-/** The parameters the form draws a field for: a scalar or an enum. Others are shown, not edited. */
-function editable(p: ParamSchema): boolean {
-  return Array.isArray(p.enum) || p.type === 'string' || p.type === 'integer' || p.type === 'number' || p.type === 'boolean'
+/**
+ * The parts of a served JSON-schema property the form reads beyond
+ * `ParamSchema`: a list's items and bounds, a nullable value's `anyOf`, and a
+ * reference to a model the form has no editor for.
+ */
+type Prop = ParamSchema & {
+  items?: { type?: string; enum?: unknown[] }
+  minItems?: number
+  maxItems?: number
+  anyOf?: { type?: string }[]
+  $ref?: string
+}
+
+/** A list of strings, or of one enum's values: `labels_include`, `paths`, `focus`. */
+function isList(p: Prop): boolean {
+  return p.type === 'array' && (p.items?.type === 'string' || Array.isArray(p.items?.enum))
+}
+
+/** `string | null`, served as `anyOf`: `branch`, `post_to_issue`, `file_issues_repo_id`. Blank is null. */
+function isNullableText(p: Prop): boolean {
+  const kinds = (p.anyOf ?? []).map((x) => x.type)
+  return p.type === undefined && kinds.length === 2 && kinds.includes('string') && kinds.includes('null')
+}
+
+/**
+ * The parameters the form draws a field for: a scalar, an enum, a list of
+ * strings and a nullable string. A map (`pr-shepherd`'s `labels`) and a model
+ * (`custom-prompt`'s `spec`) are shown, not edited, and say why.
+ */
+function editable(p: Prop): boolean {
+  return (
+    Array.isArray(p.enum) ||
+    p.type === 'string' ||
+    p.type === 'integer' ||
+    p.type === 'number' ||
+    p.type === 'boolean' ||
+    isList(p) ||
+    isNullableText(p)
+  )
+}
+
+/** Why a parameter is not a field here, in the person's words. */
+function notEditableWhy(p: Prop): string {
+  if (p.$ref !== undefined) return 'A workflow spec, which this form cannot write: it is set through the API (POST /v1/schedules with params.spec) or the MCP schedule tools.'
+  if (p.type === 'object') return 'A map of settings, set through the API; shown here as stored.'
+  return 'Set through the API; unchanged here.'
+}
+
+/** A value the server needs and this form leaves unset: a required key not set, or a list emptier than its minimum. */
+function missingParam(p: Prop, required: boolean, v: unknown): boolean {
+  if (Array.isArray(v)) return (p.minItems ?? 0) > 0 && v.length < (p.minItems ?? 0)
+  return required && (v === undefined || v === null || v === '')
 }
 
 function schemaDefaults(t: ScheduleTypeRow | null): Record<string, unknown> {
@@ -124,6 +176,12 @@ function schemaDefaults(t: ScheduleTypeRow | null): Record<string, unknown> {
 
 function budgetText(v: number | undefined): string {
   return v === undefined ? '' : String(v)
+}
+
+/** The type's default in the empty field, so a blank field shows what it means. */
+function placeholderOf(t: ScheduleTypeRow | null, key: keyof Schedule['budget']): string | undefined {
+  const v = t?.budget_caps?.[key]
+  return v === undefined || v === null ? undefined : String(v)
 }
 
 function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoRecord[]): Draft {
@@ -139,14 +197,16 @@ function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoReco
       budget: { per_run_usd: budgetText(s.budget.per_run_usd), per_day_usd: budgetText(s.budget.per_day_usd), max_concurrent: budgetText(s.budget.max_concurrent) },
       policy: { ...s.policy },
       params: { ...s.params },
-      startPaused: false,
+      start: 'enabled',
     }
   }
   const scopes = t === null ? [] : scopesOf(t)
   return {
     type: t?.name ?? '',
     name: '',
-    scopeMode: (scopes[0] as Scope | undefined) ?? 'repos',
+    // Chosen repositories first wherever the type offers them (AUT-2): a
+    // form left at its defaults must not reach every registered repository.
+    scopeMode: scopes.includes('repos') ? 'repos' : ((scopes[0] as Scope | undefined) ?? 'repos'),
     repoIds: repos.length === 1 ? [repos[0]!.repo_id] : [],
     cron: '0 9 * * 1-5',
     timezone: viewerZone(),
@@ -154,7 +214,10 @@ function draftFor(t: ScheduleTypeRow | null, s: Schedule | null, repos: RepoReco
     budget: { per_run_usd: '', per_day_usd: '', max_concurrent: '' },
     policy: {},
     params: schemaDefaults(t),
-    startPaused: false,
+    // DRY RUN FIRST (AUT-2; the mockup's create variant A): a new schedule
+    // records what it would do and creates nothing until the person turns
+    // dry run off. Enabled is one deliberate click away, never the default.
+    start: 'dry_run',
   }
 }
 
@@ -218,9 +281,37 @@ function inViewer(iso: string): string {
  * THE CRON IN WORDS, AND THE NEXT FIVE (§6.3): in the schedule's zone and in
  * the viewer's. A bad expression is the parser's own reason, said in place.
  */
-function CronPreview({ cron, timezone, type }: { cron: string; timezone: string; type: string }) {
+/**
+ * Why the preview stops a save, or null: the parser's 422 and the type's
+ * minimum-interval refusal alike (AUT-10). A preview that was not read stops
+ * nothing -- the server still checks the expression -- and says so in place.
+ */
+export function previewBlocks(r: Result<{ preview: SchedulePreview }> | null): string | null {
+  if (r === null || r.status === 'loading' || r.status === 'empty') return null
+  if (r.status === 'error') return r.error.kind === 'invalid' ? `Not a schedule: ${r.error.message}` : null
+  const refusal = refusalWords(r.data.preview.refusal)
+  return refusal === null ? null : `This type would refuse it: ${refusal}`
+}
+
+function CronPreview({
+  cron,
+  timezone,
+  type,
+  onBlocks,
+}: {
+  cron: string
+  timezone: string
+  type: string
+  /** What stops a save, as `previewBlocks` reads the last answer. */
+  onBlocks: (why: string | null) => void
+}) {
   const [r, setR] = useState<Result<{ preview: SchedulePreview }> | null>(null)
+  const report = useRef(onBlocks)
+  report.current = onBlocks
   useEffect(() => {
+    // An expression being retyped is not yet refused: the last refusal is
+    // dropped at once, and the next answer decides.
+    report.current(null)
     if (cron.trim() === '' || timezone.trim() === '') {
       setR(null)
       return
@@ -228,7 +319,9 @@ function CronPreview({ cron, timezone, type }: { cron: string; timezone: string;
     let live = true
     const timer = setTimeout(() => {
       void previewSchedule({ cron: cron.trim(), timezone: timezone.trim(), ...(type === '' ? {} : { type }) }).then((next) => {
-        if (live) setR(next)
+        if (!live) return
+        setR(next)
+        report.current(previewBlocks(next))
       })
     }, PREVIEW_DEBOUNCE_MS)
     return () => {
@@ -269,12 +362,46 @@ function CronPreview({ cron, timezone, type }: { cron: string; timezone: string;
   )
 }
 
+/**
+ * A labelled control. The `<label>` wraps the control so a click on the words
+ * reaches it, and the control is NAMED by the words alone and DESCRIBED by the
+ * hint (AUT-16): a wrapped `<select>` otherwise takes every option and the
+ * hint as its accessible name ("Type issue-sweep issue-plan-only …").
+ */
 function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
+  const id = useId()
+  const hinted = hint !== undefined && hint !== ''
+  const control = isValidElement(children)
+    ? cloneElement(children as ReactElement<Record<string, unknown>>, {
+        'aria-labelledby': `${id}-l`,
+        ...(hinted ? { 'aria-describedby': `${id}-h` } : {}),
+      })
+    : children
   return (
     <label className="c-field">
-      <span className="c-lbl">{label}</span>
-      {children}
-      {hint !== undefined && <span className="c-hint">{hint}</span>}
+      <span className="c-lbl" id={`${id}-l`}>{label}</span>
+      {control}
+      {hinted && <span className="c-hint" id={`${id}-h`}>{hint}</span>}
+    </label>
+  )
+}
+
+/** A checkbox named by its words and described by its hint, as `Field` does for the rest. */
+function Check({ label, hint, checked, onChange }: { label: string; hint?: string; checked: boolean; onChange: (v: boolean) => void }) {
+  const id = useId()
+  return (
+    <label className="c-field">
+      <span>
+        <input
+          type="checkbox"
+          checked={checked}
+          aria-labelledby={`${id}-l`}
+          aria-describedby={hint === undefined ? undefined : `${id}-h`}
+          onChange={(e) => onChange(e.target.checked)}
+        />{' '}
+        <span id={`${id}-l`}>{label}</span>
+      </span>
+      {hint !== undefined && <span className="c-hint" id={`${id}-h`}>{hint}</span>}
     </label>
   )
 }
@@ -305,9 +432,83 @@ function Choice<T extends string>({
   )
 }
 
-function ParamField({ name, schema, value, onChange }: { name: string; schema: ParamSchema; value: unknown; onChange: (v: unknown) => void }) {
+/** "security, needs-owner" -- a served list default, in the words a blank field means. */
+function listWords(v: unknown): string {
+  return Array.isArray(v) ? v.map(String).join(', ') : ''
+}
+
+/**
+ * A LIST OF STRINGS, comma-separated as typed (AUT-12). The text is the
+ * field's own, so "a, " is not cut back to "a" while it is being typed; the
+ * list is what goes up. A list of one enum's values is a checkbox each.
+ */
+function ListField({ label, schema, value, onChange }: { label: string; schema: Prop; value: unknown; onChange: (v: string[]) => void }) {
+  const list = Array.isArray(value) ? value.map(String) : []
+  const [text, setText] = useState(list.join(', '))
+  const dflt = Array.isArray(schema.default) ? schema.default : undefined
+  const hint = [
+    schema.description,
+    dflt === undefined ? null : dflt.length === 0 ? 'Default: none.' : `Default: ${listWords(dflt)}.`,
+    schema.minItems !== undefined && schema.minItems > 0 ? `At least ${schema.minItems}.` : null,
+  ]
+    .filter((x): x is string => typeof x === 'string' && x !== '')
+    .join(' ')
+  const options = schema.items?.enum
+  if (Array.isArray(options)) {
+    return (
+      <fieldset className="c-field sc-list-field">
+        <legend className="c-lbl">{label}</legend>
+        {options.map((o) => (
+          <label key={String(o)} className="sc-check">
+            <input
+              type="checkbox"
+              checked={list.includes(String(o))}
+              onChange={(e) => onChange(e.target.checked ? [...list, String(o)] : list.filter((x) => x !== String(o)))}
+            />{' '}
+            {String(o)}
+          </label>
+        ))}
+        {hint !== '' && <span className="c-hint">{hint}</span>}
+      </fieldset>
+    )
+  }
+  return (
+    <Field label={label} hint={(hint === '' ? '' : `${hint} `) + 'Separate them with commas.'}>
+      <input
+        className="c-inp"
+        value={text}
+        spellCheck={false}
+        placeholder={dflt === undefined || dflt.length === 0 ? 'none' : undefined}
+        onChange={(e) => {
+          setText(e.target.value)
+          onChange(
+            e.target.value
+              .split(',')
+              .map((x) => x.trim())
+              .filter((x) => x !== ''),
+          )
+        }}
+      />
+    </Field>
+  )
+}
+
+function ParamField({ name, schema, value, onChange }: { name: string; schema: Prop; value: unknown; onChange: (v: unknown) => void }) {
   const label = schema.title ?? name
   const hint = schema.description
+  if (isList(schema)) return <ListField label={label} schema={schema} value={value} onChange={onChange} />
+  if (isNullableText(schema)) {
+    return (
+      <Field label={label} hint={[hint, 'Blank: not set.'].filter(Boolean).join(' ')}>
+        <input
+          className="c-inp"
+          value={typeof value === 'string' ? value : ''}
+          spellCheck={false}
+          onChange={(e) => onChange(e.target.value.trim() === '' ? null : e.target.value)}
+        />
+      </Field>
+    )
+  }
   if (Array.isArray(schema.enum)) {
     return (
       <Field label={label} hint={hint}>
@@ -321,16 +522,7 @@ function ParamField({ name, schema, value, onChange }: { name: string; schema: P
       </Field>
     )
   }
-  if (schema.type === 'boolean') {
-    return (
-      <label className="c-field">
-        <span>
-          <input type="checkbox" checked={value === true} onChange={(e) => onChange(e.target.checked)} /> {label}
-        </span>
-        {hint !== undefined && <span className="c-hint">{hint}</span>}
-      </label>
-    )
-  }
+  if (schema.type === 'boolean') return <Check label={label} hint={hint} checked={value === true} onChange={onChange} />
   const numeric = schema.type === 'integer' || schema.type === 'number'
   return (
     <Field label={label} hint={hint}>
@@ -356,6 +548,31 @@ const RUN_PLAN: readonly { value: 'auto' | 'approve'; label: string }[] = [
   { value: 'approve', label: 'approve' },
 ]
 
+/**
+ * WHAT THE PARAMETERS STILL NEED (AUT-5). A type whose required parameter
+ * this form cannot write -- custom-prompt's `spec` -- cannot be created here,
+ * and Create says so instead of sending a body the server refuses. A field
+ * the form does draw says which value it is missing.
+ */
+function paramsWhy(t: ScheduleTypeRow | null, d: Draft): string | null {
+  if (t === null) return null
+  const required = t.params_schema.required ?? []
+  for (const [k, p] of Object.entries(t.params_schema.properties ?? {}) as [string, Prop][]) {
+    if (restated(d.type, k) !== undefined) continue
+    const name = p.title ?? k
+    if (!editable(p)) {
+      if (required.includes(k) && d.params[k] === undefined) {
+        return `${t.name} needs ${name}, which this form cannot write. Create it through the API (POST /v1/schedules with params.${k}) or the MCP schedule tools.`
+      }
+      continue
+    }
+    if (missingParam(p, required.includes(k), d.params[k])) {
+      return Array.isArray(d.params[k]) ? `${name} needs at least ${p.minItems ?? 1}.` : `${name} needs a value.`
+    }
+  }
+  return null
+}
+
 /** What the request would send: the create body, or the edit's changes. */
 export function createBody(d: Draft, t: ScheduleTypeRow, requestId: string): ScheduleCreateBody {
   const body: ScheduleCreateBody = {
@@ -364,16 +581,21 @@ export function createBody(d: Draft, t: ScheduleTypeRow, requestId: string): Sch
     scope: d.scopeMode === 'repos' ? { mode: 'repos', repo_ids: d.repoIds } : { mode: d.scopeMode },
     cron: d.cron.trim(),
     timezone: d.timezone.trim(),
-    state: d.startPaused ? 'paused' : 'enabled',
+    state: d.start === 'paused' ? 'paused' : 'enabled',
     client_request_id: requestId,
   }
   const gate = changed(d.gate, t.default_gate)
   if (Object.keys(gate).length > 0) body.gate = gate
   const params = changed(ownParams(d.type, d.params), ownParams(d.type, schemaDefaults(t)))
+  // A list left empty where the catalogue serves no default is not a
+  // choice; the server's own default applies (an older API serves none).
+  for (const [k, v] of Object.entries(params)) if (Array.isArray(v) && v.length === 0 && schemaDefaults(t)[k] === undefined) delete params[k]
   if (Object.keys(params).length > 0) body.params = params
   const budget = budgetOf(d)
   if (Object.keys(budget).length > 0) body.budget = budget
-  const policy = changed(d.policy, {})
+  // The Start choice owns dry run on a create: the form draws no second
+  // control for it there, so the two can never disagree.
+  const policy = changed({ ...d.policy, dry_run: d.start === 'dry_run' ? true : undefined }, {})
   if (Object.keys(policy).length > 0) body.policy = policy
   return body
 }
@@ -425,9 +647,10 @@ function ScheduleForm({
 
   const pickType = (name: string) => {
     const next = types.find((x) => x.name === name) ?? null
-    setD((prev) => ({ ...draftFor(next, null, repoList), name: prev.name, cron: prev.cron, timezone: prev.timezone, repoIds: prev.repoIds }))
+    setD((prev) => ({ ...draftFor(next, null, repoList), name: prev.name, cron: prev.cron, timezone: prev.timezone, repoIds: prev.repoIds, start: prev.start }))
   }
 
+  const [previewWhy, setPreviewWhy] = useState<string | null>(null)
   const scopes = t === null ? [d.scopeMode] : scopesOf(t)
   const why =
     d.name.trim() === ''
@@ -438,7 +661,7 @@ function ScheduleForm({
           ? 'Choose at least one repository.'
           : d.cron.trim() === ''
             ? 'Say when it runs.'
-            : undefined
+            : (previewWhy ?? paramsWhy(t, d) ?? (schedule !== null && Object.keys(editBody(d, schedule)).length === 1 ? 'Nothing has changed yet.' : undefined))
 
   const submit = async () => {
     setBusy(true)
@@ -454,216 +677,213 @@ function ScheduleForm({
 
   // With no served type, the stored parameters are shown as they are: `{}` is
   // not `editable`, so each draws read-only.
-  const params: [string, ParamSchema][] =
+  const params: [string, Prop][] =
     t !== null ? Object.entries(t.params_schema.properties ?? {}) : Object.keys(d.params).map((k) => [k, {}])
   return (
+    // ENTER NEVER SUBMITS (AUT-2). Pressing Enter in Name created a live
+    // schedule over every repository in one keystroke. The form has no submit
+    // button, and the browser's implicit submission is swallowed here, so
+    // only a click on Create or Save writes.
     <form
       className="sc-form"
       data-testid="sc-form"
-      onSubmit={(e) => {
-        e.preventDefault()
-        if (why === undefined && !busy) void submit()
-      }}
+      onSubmit={(e) => e.preventDefault()}
     >
-      <div className="sc-facts">
-        {schedule === null ? (
-          <Field label="Type" hint={t === null ? undefined : t.description}>
-            <select className="c-inp" value={d.type} onChange={(e) => pickType(e.target.value)}>
-              {types.map((x) => (
-                <option key={x.name} value={x.name} disabled={!x.available}>
-                  {x.available ? x.name : `${x.name} (not available: ${x.disabled_reason ?? 'no reason served'})`}
-                </option>
-              ))}
-            </select>
-          </Field>
-        ) : (
-          <Field label="Type" hint="A different type is a different schedule.">
-            <input className="c-inp" value={schedule.type} readOnly />
-          </Field>
-        )}
-        <Field label="Name">
-          <input className="c-inp" value={d.name} maxLength={80} onChange={(e) => set({ name: e.target.value })} />
-        </Field>
-        <Choice<Scope>
-          label="Scope"
-          value={d.scopeMode}
-          options={scopes.map((m) => ({ value: m as Scope, label: SCOPE_WORD[m as Scope] }))}
-          onChange={(v) => set({ scopeMode: v ?? 'repos' })}
-        />
-      </div>
-
-      {d.scopeMode === 'repos' && (
-        <fieldset className="c-field">
-          <legend className="c-lbl">Repositories</legend>
-          {repos.status === 'loading' && <p className="c-hint">Reading the registered repositories…</p>}
-          {repos.status === 'error' && <p className="c-hint" role="alert">Repositories not read: {errorHeading(repos.error)}</p>}
-          {(repos.status === 'empty' || ((repos.status === 'ok' || repos.status === 'stale') && repoList.length === 0)) && (
-            <p className="c-hint">No repository is registered. Register one under Work › Repositories first.</p>
-          )}
-          {repoList.map((r) => (
-            <label key={r.repo_id} className="sc-check">
-              <input
-                type="checkbox"
-                checked={d.repoIds.includes(r.repo_id)}
-                onChange={(e) => set({ repoIds: e.target.checked ? [...d.repoIds, r.repo_id] : d.repoIds.filter((x) => x !== r.repo_id) })}
-              />{' '}
-              {r.owner}/{r.repo}
-            </label>
-          ))}
-        </fieldset>
-      )}
-
-      <h3 className="sc-h3">When</h3>
-      <div className="sc-presets" role="group" aria-label="Presets">
-        {CRON_PRESETS.map((p) => (
-          <Button key={p.cron} size="sm" kind={d.cron.trim() === p.cron ? 'primary' : 'secondary'} aria-pressed={d.cron.trim() === p.cron} onClick={() => set({ cron: p.cron })}>
-            {p.label}
-          </Button>
-        ))}
-      </div>
-      <div className="sc-facts">
-        <Field label="Cron expression" hint="Minute, hour, day of month, month, day of week.">
-          <input className="c-inp is-mono" value={d.cron} spellCheck={false} onChange={(e) => set({ cron: e.target.value })} />
-        </Field>
-        <Field label="Timezone" hint="An IANA zone, such as Europe/London.">
-          <input className="c-inp is-mono" value={d.timezone} spellCheck={false} onChange={(e) => set({ timezone: e.target.value })} />
-        </Field>
-      </div>
-      <CronPreview cron={d.cron} timezone={d.timezone} type={d.type} />
-
-      <h3 className="sc-h3">Gate</h3>
-      <div className="sc-facts">
-        <Choice label="Run" value={d.gate.run as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, run: v } })}
-          hint={t?.default_gate.run === undefined ? undefined : `type default: ${t.default_gate.run}`} />
-        <Choice label="Plan" value={d.gate.plan as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, plan: v } })}
-          hint={t?.default_gate.plan === undefined ? undefined : `type default: ${t.default_gate.plan}`} />
-        {d.gate.merge === 'auto' ? (
-          <Field label="Merge" hint="Automatic, set by the merge switch on the Gate tab; it is changed back there.">
-            <input className="c-inp" value="auto" readOnly />
-          </Field>
-        ) : (
-          <Choice<'off' | 'approve'>
-            label="Merge"
-            value={d.gate.merge as 'off' | 'approve' | undefined}
-            options={[
-              { value: 'off', label: 'off' },
-              { value: 'approve', label: 'approve' },
-            ]}
-            onChange={(v) => set({ gate: { ...d.gate, merge: v } })}
-            hint="Automatic merging is only ever the audited switch on the Gate tab, never this form."
-          />
-        )}
-        {typeof d.gate.approvers === 'string' || d.gate.approvers === undefined ? (
-          <Choice<'members' | 'owner_only'>
-            label="Approvers"
-            value={d.gate.approvers as 'members' | 'owner_only' | undefined}
-            options={[
-              { value: 'members', label: 'any member' },
-              { value: 'owner_only', label: 'the owner only' },
-            ]}
-            onChange={(v) => set({ gate: { ...d.gate, approvers: v } })}
-          />
-        ) : (
-          <Field label="Approvers" hint="A named list, set through the API; unchanged here.">
-            <input className="c-inp" value={(d.gate.approvers as unknown as string[]).join(', ')} readOnly />
-          </Field>
-        )}
-        <Field label="Approval expires after (hours)">
-          <input
-            className="c-inp"
-            type="number"
-            min={1}
-            value={d.gate.approval_ttl_hours ?? ''}
-            onChange={(e) => set({ gate: { ...d.gate, approval_ttl_hours: e.target.value === '' ? undefined : Math.trunc(Number(e.target.value)) } })}
-          />
-        </Field>
-      </div>
-      <p className="c-hint">A gate below the type's default needs a platform admin; the hard stops hold whatever the gate.</p>
-
-      <h3 className="sc-h3">Budget</h3>
-      <div className="sc-facts">
-        <Field label="Per run (USD)" hint="Blank: the type's default.">
-          <input className="c-inp" type="number" min={0} step="0.01" value={d.budget.per_run_usd} onChange={(e) => set({ budget: { ...d.budget, per_run_usd: e.target.value } })} />
-        </Field>
-        <Field label="Per day (USD)" hint="Blank: the type's default.">
-          <input className="c-inp" type="number" min={0} step="0.01" value={d.budget.per_day_usd} onChange={(e) => set({ budget: { ...d.budget, per_day_usd: e.target.value } })} />
-        </Field>
-        <Field label="Live runs at most" hint="Blank: the type's default.">
-          <input className="c-inp" type="number" min={1} value={d.budget.max_concurrent} onChange={(e) => set({ budget: { ...d.budget, max_concurrent: e.target.value } })} />
-        </Field>
-      </div>
-
-      {params.length > 0 && (
-        <>
-          <h3 className="sc-h3">Parameters</h3>
+      {schedule === null && <TemplateTiles types={types} value={d.type} onPick={pickType} />}
+      <div className="sc-edit-cols">
+        <div className="sc-edit-main">
           <div className="sc-facts">
-            {params.map(([k, p]) => {
-              const follows = restated(d.type, k)
-              return follows !== undefined ? (
-                <Field key={k} label={p.title ?? k} hint="Follows the gate above; it is changed there, never here.">
-                  <input className="c-inp" value={follows(d.gate)} readOnly data-testid={`sc-param-${k}`} />
-                </Field>
-              ) : editable(p) ? (
-                <ParamField key={k} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
-              ) : (
-                <Field key={k} label={p.title ?? k} hint="Set through the API; unchanged here.">
-                  <input className="c-inp is-mono" value={d.params[k] === undefined ? '' : JSON.stringify(d.params[k])} readOnly />
-                </Field>
-              )
-            })}
+            {schedule !== null && (
+              <Field label="Type" hint="A different type is a different schedule.">
+                <input className="c-inp" value={schedule.type} readOnly />
+              </Field>
+            )}
+            <Field label="Name">
+              <input className="c-inp" value={d.name} maxLength={80} onChange={(e) => set({ name: e.target.value })} />
+            </Field>
+            <Choice<Scope>
+              label="Scope"
+              value={d.scopeMode}
+              options={scopes.map((m) => ({ value: m as Scope, label: SCOPE_WORD[m as Scope] }))}
+              onChange={(v) => set({ scopeMode: v ?? 'repos' })}
+            />
           </div>
-        </>
-      )}
 
-      <h3 className="sc-h3">Policy</h3>
-      <div className="sc-facts">
-        <Choice<'skip' | 'queue_one'>
-          label="If the last firing is still running"
-          value={d.policy.overlap as 'skip' | 'queue_one' | undefined}
-          options={[
-            { value: '', label: "the type's default" },
-            { value: 'skip', label: 'skip this one' },
-            { value: 'queue_one', label: 'queue one' },
-          ]}
-          onChange={(v) => set({ policy: { ...d.policy, overlap: v } })}
-        />
-        <Choice<'skip' | 'run_once'>
-          label="After an outage"
-          value={d.policy.catch_up as 'skip' | 'run_once' | undefined}
-          options={[
-            { value: '', label: "the type's default" },
-            { value: 'skip', label: 'skip what was missed' },
-            { value: 'run_once', label: 'run once' },
-          ]}
-          onChange={(v) => set({ policy: { ...d.policy, catch_up: v } })}
-        />
-        <label className="c-field">
-          <span>
-            <input type="checkbox" checked={d.policy.dry_run === true} onChange={(e) => set({ policy: { ...d.policy, dry_run: e.target.checked } })} /> Dry run
-          </span>
-          <span className="c-hint">Fires and records what it would do, and creates nothing.</span>
-        </label>
-        {schedule === null && (
-          <label className="c-field">
-            <span>
-              <input type="checkbox" checked={d.startPaused} onChange={(e) => set({ startPaused: e.target.checked })} /> Start paused
-            </span>
-          </label>
-        )}
-      </div>
+          {d.scopeMode === 'repos' && (
+            <fieldset className="c-field">
+              <legend className="c-lbl">Repositories</legend>
+              {repos.status === 'loading' && <p className="c-hint">Reading the registered repositories…</p>}
+              {repos.status === 'error' && <p className="c-hint" role="alert">Repositories not read: {errorHeading(repos.error)}</p>}
+              {(repos.status === 'empty' || ((repos.status === 'ok' || repos.status === 'stale') && repoList.length === 0)) && (
+                <p className="c-hint">No repository is registered. Register one under Work › Repositories first.</p>
+              )}
+              {repoList.map((r) => (
+                <label key={r.repo_id} className="sc-check">
+                  <input
+                    type="checkbox"
+                    checked={d.repoIds.includes(r.repo_id)}
+                    onChange={(e) => set({ repoIds: e.target.checked ? [...d.repoIds, r.repo_id] : d.repoIds.filter((x) => x !== r.repo_id) })}
+                  />{' '}
+                  {r.owner}/{r.repo}
+                </label>
+              ))}
+            </fieldset>
+          )}
 
-      {refused !== null && (
-        <p className="c-hint" role="alert" data-code={refused.code ?? ''}>
-          {refused.code === 'schedule_changed'
-            ? 'Someone changed this schedule since you opened it. Close the editor to read it again, then edit.'
-            : `Not saved: ${refused.message}`}
-        </p>
-      )}
-      <div className="c-acts">
-        {cancel}
-        <Button kind="primary" type="submit" busy={busy ? 'Saving…' : false} disabledReason={why}>
-          {schedule === null ? 'Create schedule' : 'Save changes'}
-        </Button>
+          <h3 className="sc-h3">When</h3>
+          <div className="sc-presets" role="group" aria-label="Presets">
+            {CRON_PRESETS.map((p) => (
+              <Button key={p.cron} size="sm" kind={d.cron.trim() === p.cron ? 'primary' : 'secondary'} aria-pressed={d.cron.trim() === p.cron} onClick={() => set({ cron: p.cron })}>
+                {p.label}
+              </Button>
+            ))}
+          </div>
+          <div className="sc-facts">
+            <Field label="Cron expression" hint="Minute, hour, day of month, month, day of week.">
+              <input className="c-inp is-mono" value={d.cron} spellCheck={false} onChange={(e) => set({ cron: e.target.value })} />
+            </Field>
+            <Field label="Timezone" hint="An IANA zone, such as Europe/London.">
+              <input className="c-inp is-mono" value={d.timezone} spellCheck={false} onChange={(e) => set({ timezone: e.target.value })} />
+            </Field>
+          </div>
+
+          <h3 className="sc-h3">Gate</h3>
+          <div className="sc-facts">
+            <Choice label="Run" value={d.gate.run as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, run: v } })}
+              hint={t?.default_gate.run === undefined ? undefined : `type default: ${t.default_gate.run}`} />
+            <Choice label="Plan" value={d.gate.plan as 'auto' | 'approve' | undefined} options={RUN_PLAN} onChange={(v) => set({ gate: { ...d.gate, plan: v } })}
+              hint={t?.default_gate.plan === undefined ? undefined : `type default: ${t.default_gate.plan}`} />
+            {d.gate.merge === 'auto' ? (
+              <Field label="Merge" hint="Automatic, set by the merge switch on the Gate tab; it is changed back there.">
+                <input className="c-inp" value="auto" readOnly />
+              </Field>
+            ) : (
+              <Choice<'off' | 'approve'>
+                label="Merge"
+                value={d.gate.merge as 'off' | 'approve' | undefined}
+                options={[
+                  { value: 'off', label: 'off' },
+                  { value: 'approve', label: 'approve' },
+                ]}
+                onChange={(v) => set({ gate: { ...d.gate, merge: v } })}
+                hint="Automatic merging is only ever the audited switch on the Gate tab, never this form."
+              />
+            )}
+            {typeof d.gate.approvers === 'string' || d.gate.approvers === undefined ? (
+              <Choice<'members' | 'owner_only'>
+                label="Approvers"
+                value={d.gate.approvers as 'members' | 'owner_only' | undefined}
+                options={[
+                  { value: 'members', label: 'any member' },
+                  { value: 'owner_only', label: 'the owner only' },
+                ]}
+                onChange={(v) => set({ gate: { ...d.gate, approvers: v } })}
+              />
+            ) : (
+              <Field label="Approvers" hint="A named list, set through the API; unchanged here.">
+                <input className="c-inp" value={(d.gate.approvers as unknown as string[]).join(', ')} readOnly />
+              </Field>
+            )}
+            <Field label="Approval expires after (hours)">
+              <input
+                className="c-inp"
+                type="number"
+                min={1}
+                value={d.gate.approval_ttl_hours ?? ''}
+                onChange={(e) => set({ gate: { ...d.gate, approval_ttl_hours: e.target.value === '' ? undefined : Math.trunc(Number(e.target.value)) } })}
+              />
+            </Field>
+          </div>
+          <p className="c-hint">A gate below the type's default needs a platform admin; the hard stops hold whatever the gate.</p>
+
+          <h3 className="sc-h3">Budget</h3>
+          <div className="sc-facts">
+            <Field label="Per run (USD)" hint={budgetDefaultWords(t, 'per_run_usd')}>
+              <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_run_usd')} value={d.budget.per_run_usd} onChange={(e) => set({ budget: { ...d.budget, per_run_usd: e.target.value } })} />
+            </Field>
+            <Field label="Per day (USD)" hint={budgetDefaultWords(t, 'per_day_usd')}>
+              <input className="c-inp" type="number" min={0} step="0.01" placeholder={placeholderOf(t, 'per_day_usd')} value={d.budget.per_day_usd} onChange={(e) => set({ budget: { ...d.budget, per_day_usd: e.target.value } })} />
+            </Field>
+            <Field label="Live runs at most" hint={budgetDefaultWords(t, 'max_concurrent')}>
+              <input className="c-inp" type="number" min={1} placeholder={placeholderOf(t, 'max_concurrent')} value={d.budget.max_concurrent} onChange={(e) => set({ budget: { ...d.budget, max_concurrent: e.target.value } })} />
+            </Field>
+          </div>
+
+          {params.length > 0 && (
+            <>
+              <h3 className="sc-h3">Parameters</h3>
+              <div className="sc-facts">
+                {params.map(([k, p]) => {
+                  const follows = restated(d.type, k)
+                  return follows !== undefined ? (
+                    <Field key={k} label={p.title ?? k} hint="Follows the gate above; it is changed there, never here.">
+                      <input className="c-inp" value={follows(d.gate)} readOnly data-testid={`sc-param-${k}`} />
+                    </Field>
+                  ) : editable(p) ? (
+                    // Keyed by the type too: a list field keeps its own text,
+                    // and two types share a key (`paths`) with different defaults.
+                    <ParamField key={`${d.type}:${k}`} name={k} schema={p} value={d.params[k]} onChange={(v) => set({ params: { ...d.params, [k]: v } })} />
+                  ) : (
+                    <Field key={`${d.type}:${k}`} label={p.title ?? k} hint={notEditableWhy(p)}>
+                      <input className="c-inp is-mono" value={d.params[k] === undefined ? '' : JSON.stringify(d.params[k])} readOnly data-testid={`sc-param-${k}`} />
+                    </Field>
+                  )
+                })}
+              </div>
+            </>
+          )}
+
+          <h3 className="sc-h3">Policy</h3>
+          <div className="sc-facts">
+            <Choice<'skip' | 'queue_one'>
+              label="If the last firing is still running"
+              value={d.policy.overlap as 'skip' | 'queue_one' | undefined}
+              options={[
+                { value: '', label: "the type's default" },
+                { value: 'skip', label: 'skip this one' },
+                { value: 'queue_one', label: 'queue one' },
+              ]}
+              onChange={(v) => set({ policy: { ...d.policy, overlap: v } })}
+            />
+            <Choice<'skip' | 'run_once'>
+              label="After an outage"
+              value={d.policy.catch_up as 'skip' | 'run_once' | undefined}
+              options={[
+                { value: '', label: "the type's default" },
+                { value: 'skip', label: 'skip what was missed' },
+                { value: 'run_once', label: 'run once' },
+              ]}
+              onChange={(v) => set({ policy: { ...d.policy, catch_up: v } })}
+            />
+            {schedule !== null && (
+              <Check
+                label="Dry run"
+                hint="Fires and records what it would do, and creates nothing."
+                checked={d.policy.dry_run === true}
+                onChange={(v) => set({ policy: { ...d.policy, dry_run: v } })}
+              />
+            )}
+          </div>
+          {schedule === null && <StartChoice value={d.start} onChange={(v) => set({ start: v })} />}
+
+          {refused !== null && (
+            <p className="c-hint" role="alert" data-code={refused.code ?? ''}>
+              {refused.code === 'schedule_changed'
+                ? 'Someone changed this schedule since you opened it. Close the editor to read it again, then edit.'
+                : `Not saved: ${refused.message}`}
+            </p>
+          )}
+          <div className="c-acts">
+            {cancel}
+            <Button kind="primary" busy={busy ? 'Saving…' : false} disabledReason={why} onClick={() => void (why === undefined && !busy && submit())}>
+              {schedule === null ? 'Create schedule' : 'Save changes'}
+            </Button>
+          </div>
+        </div>
+        <aside className="sc-edit-side" aria-label="When it fires, and the template">
+          <CronPreview cron={d.cron} timezone={d.timezone} type={d.type} onBlocks={setPreviewWhy} />
+          <TemplateCard type={t} tier={schedule?.tier} />
+        </aside>
       </div>
     </form>
   )
@@ -692,17 +912,20 @@ function NewScheduleBody({ types, go }: { types: ScheduleTypeRow[]; go: (to: str
   // preselected), so it is drawn once that read has answered.
   if (repos.status === 'loading') return <p className="sb-note">Reading the registered repositories…</p>
   return (
-    <ScheduleForm
-      types={types}
-      repos={repos}
-      schedule={null}
-      onSaved={(s) => go(s === null ? SCHEDULES_ADDRESS : scheduleAddress(s.schedule_id))}
-      cancel={
-        <InApp go={go} to={SCHEDULES_ADDRESS} className="c-btn is-ghost">
-          Cancel
-        </InApp>
-      }
-    />
+    <>
+      <TenantRoom />
+      <ScheduleForm
+        types={types}
+        repos={repos}
+        schedule={null}
+        onSaved={(s) => go(s === null ? SCHEDULES_ADDRESS : scheduleAddress(s.schedule_id))}
+        cancel={
+          <InApp go={go} to={SCHEDULES_ADDRESS} className="c-btn is-ghost">
+            Cancel
+          </InApp>
+        }
+      />
+    </>
   )
 }
 

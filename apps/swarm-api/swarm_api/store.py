@@ -1599,6 +1599,34 @@ class Store:
             raise NotFound(f"workflow {workflow_id!r} not found")
         return workflow
 
+    def workflows_by_id(
+        self, tenant_id: str, workflow_ids: Sequence[str], *, submitted_by: str | None
+    ) -> list[Workflow]:
+        """This tenant's workflows among `workflow_ids`, in the order asked.
+
+        `get_all` in chunks of 100, as `tasks_by_id` reads, for
+        `GET /v1/workflows?ids=` (live QA CH-6): the Timeline asked for 52
+        workflows one request each. Tenant- and `submitted_by`-checked exactly
+        as `get_workflow`: one that is missing, another tenant's or not the
+        caller's is simply not in the answer, and the three are not told apart.
+        """
+        wanted = list(dict.fromkeys(i for i in workflow_ids if i))
+        collection = self._db.collection(WORKFLOWS)
+        found: dict[str, Workflow] = {}
+        for start in range(0, len(wanted), 100):
+            chunk = wanted[start : start + 100]
+            for snap in self._db.get_all([collection.document(i) for i in chunk]):
+                if not snap.exists:
+                    continue
+                data = snap.to_dict()
+                if data.get("tenant_id") != tenant_id:
+                    continue
+                workflow = workflow_from_dict(data)
+                if submitted_by is not None and workflow.submitted_by != submitted_by:
+                    continue
+                found[workflow.workflow_id] = workflow
+        return [found[i] for i in wanted if i in found]
+
     @staticmethod
     def stored_states_for(
         *, active: bool, states: Sequence[str] | None
@@ -1724,10 +1752,21 @@ class Store:
         tasks: dict[str, Task] = {}
         absent: list[str] = []
         reads = 0
+        # ONE ROUND TRIP PER HUNDRED STEPS, NOT ONE PER STEP (live QA CH-21,
+        # 2026-10-11): `GET /v1/workflows?limit=100` took 3.1-4.0 s, the
+        # slowest read in the console, because every step of every workflow on
+        # the page was a sequential point read. `get_all` in chunks of 100, as
+        # `tasks_by_id` reads; the documents read, and `reads`, are the same.
+        collection = self._db.collection(TASKS)
+        snaps: dict[str, Any] = {}
+        for start in range(0, len(wanted), 100):
+            chunk = wanted[start : start + 100]
+            for snap in self._db.get_all([collection.document(task_id) for task_id in chunk]):
+                snaps[snap.id] = snap
         for task_id in wanted:
-            snap = self._db.collection(TASKS).document(task_id).get()
+            snap = snaps.get(task_id)
             reads += 1
-            if not snap.exists:
+            if snap is None or not snap.exists:
                 absent.append(task_id)
                 continue
             data = snap.to_dict()

@@ -1612,17 +1612,46 @@ export function nodeNote(
  * metadata, like everything on a task: a label the masker caught reads as its
  * mask, never as the literal.
  *
- * Null when no step task was joined or none carries a non-blank `unit`; the row
- * then leads with the id alone, which is what it always did.
+ * THEN ITS `title`. The plugin sends a spec's `title` as `metadata.title`
+ * beside the label's `unit`; a workflow that carries only a title is named,
+ * not untitled. The order is swarm-api's (`WORKFLOW_LABEL_KEYS`): unit, title.
+ *
+ * Null when no step task was joined or none carries a non-blank `unit` or
+ * `title`; the list row then reads `listRowName`.
  */
 export function workflowLabel(workflow: Workflow, taskById: ReadonlyMap<string, Task> | null): string | null {
   if (taskById === null) return null
-  for (const s of workflow.steps) {
-    const t = s.task_id ? taskById.get(s.task_id) : undefined
-    const unit = t?.metadata?.unit
-    if (typeof unit === 'string' && unit.trim() !== '') return unit.trim()
+  for (const key of ['unit', 'title'] as const) {
+    for (const s of workflow.steps) {
+      const t = s.task_id ? taskById.get(s.task_id) : undefined
+      const value = t?.metadata?.[key]
+      if (typeof value === 'string' && value.trim() !== '') return value.trim()
+    }
   }
   return null
+}
+
+/** What a list row with neither a label nor a title is called. */
+export const UNTITLED_WORKFLOW = 'Untitled workflow'
+
+/**
+ * The name a workflow list row leads with, and whether the id goes on the
+ * line under it.
+ *
+ * NEVER THE ID ALONE FOR A ROW KNOWN TO BE NAMELESS (owner report 2026-10-11:
+ * a merge workflow listed as "wf_02381158..."). A row whose steps were read
+ * and carry no label or title is "Untitled workflow", with the id under it. A
+ * row whose steps are not read yet does not know its name -- "Untitled" would
+ * be a guess -- so it keeps the id alone, as the note above the table says.
+ */
+export function listRowName(
+  workflowId: string,
+  label: string | null,
+  stepsKnown: boolean,
+): { readonly name: string; readonly showId: boolean } {
+  if (label !== null) return { name: label, showId: true }
+  if (stepsKnown) return { name: UNTITLED_WORKFLOW, showId: true }
+  return { name: workflowId, showId: false }
 }
 
 /** The pull request a workflow opened, as the row prints it. */
