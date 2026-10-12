@@ -32,7 +32,7 @@ import stat
 import subprocess
 import sys
 import tempfile
-from importlib.util import find_spec
+from importlib.util import find_spec, module_from_spec, spec_from_file_location
 from pathlib import Path
 from typing import Any
 
@@ -121,8 +121,21 @@ def test_every_operation_the_worker_sends_is_one_ctl_sock_accepts():
     assert handoff.GATE_OPS <= ctl.OPS
 
 
+def _relay_rendezvous() -> Any:
+    """The relay's own module, by path: swarm-live is not a member of the root
+    workspace (tests/unit/live/test_relay.py says why), and rendezvous.py is
+    standard library only."""
+    path = REPO / "apps" / "swarm-live" / "swarm_live" / "rendezvous.py"
+    spec = spec_from_file_location("_swarm_live_rendezvous_for_the_gate", path)
+    assert spec is not None and spec.loader is not None, path
+    module = module_from_spec(spec)
+    sys.modules[spec.name] = module  # dataclasses resolves annotations through it
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_the_tunnel_frames_are_the_relays():
-    rendezvous = pytest.importorskip("swarm_live.rendezvous")
+    rendezvous = _relay_rendezvous()
     for name in ("OP_OPEN", "OP_DATA", "OP_CLOSE", "OP_CONTROL", "OP_ACTION", "MAX_CONN_ID"):
         assert getattr(tunnel, name) == getattr(rendezvous, name), name
     assert gate_main.MAX_TICKET_CHARS == rendezvous.MAX_TICKET_CHARS
@@ -200,6 +213,10 @@ class FakePipe:
         elif method == "Target.getTargetInfo":
             result = {"targetInfo": {"targetId": message["params"]["targetId"], "type": "page",
                                      "url": "https://example.test/signin", "title": "Sign in"}}
+        elif method == "Target.createBrowserContext":
+            result = {"browserContextId": "CTX1"}
+        elif method == "Target.createTarget":
+            result = {"targetId": "PAGE2"}
         elif method == "Storage.getCookies":
             result = {"cookies": []}
         elif method == "Target.getBrowserContexts":
@@ -674,5 +691,74 @@ def test_the_wipe_closes_chromium_and_empties_the_profile(short_tmp):
         client.close()
         stop.set()
         assert await task == 0
+
+    asyncio.run(body())
+
+
+# --------------------------------------------------------------------------
+# The tunnel against the REAL relay app, on loopback
+# --------------------------------------------------------------------------
+
+
+def test_the_gates_tunnel_speaks_to_the_real_relay(short_tmp):
+    """tunnel.py's websocket client and frames, against swarm_live.main's app under
+    uvicorn: the ticket is admitted, a viewer's stream is OPENed on the gate, and
+    bytes cross both ways. A forged ticket is refused."""
+    uvicorn = pytest.importorskip("uvicorn")
+    websockets = pytest.importorskip("websockets")
+    app_dir = str(REPO / "apps" / "swarm-live")
+    if app_dir not in sys.path:
+        sys.path.insert(0, app_dir)
+    from swarm_live.main import create_app
+    from swarm_live.rendezvous import Rendezvous, mint_ticket
+
+    key = secrets.token_bytes(32)
+    ids = {"session_id": "ls_" + secrets.token_hex(4), "tenant_id": "t1", "task_id": "task_1",
+           "attempt_id": "att_1", "generation": 3}
+
+    async def body() -> None:
+        server = uvicorn.Server(uvicorn.Config(create_app(Rendezvous(key)), host="127.0.0.1", port=0,
+                                               log_level="warning", lifespan="off"))
+        serving = asyncio.create_task(server.serve())
+        await _until(lambda: server.started)
+        port = server.servers[0].sockets[0].getsockname()[1]
+        url = f"ws://127.0.0.1:{port}/v1/tunnel"
+        try:
+            forged = tunnel.Tunnel(url)
+            with pytest.raises(tunnel.TunnelError):
+                await forged.open(mint_ticket(secrets.token_bytes(32), role="tunnel", **ids))
+
+            gate_side = tunnel.Tunnel(url)
+            await gate_side.open(mint_ticket(key, role="tunnel", **ids))
+            received: list[bytes] = []
+            opened = asyncio.Event()
+
+            async def serve(conn_id: str, reader: asyncio.StreamReader, writer: tunnel.TunnelWriter) -> None:
+                opened.set()
+                writer.write(b"hello from the gate " + b"x" * 70_000)  # a 64-bit length frame
+                await writer.drain()
+                received.append(await reader.readexactly(5))
+
+            async def no_control(conn_id: str) -> None:
+                pass
+
+            mux = tunnel.StreamMux(gate_side, serve, no_control)
+            running = asyncio.create_task(gate_side.run(mux.on_frame))
+
+            async with websockets.connect(f"ws://127.0.0.1:{port}/v1/view") as viewer:
+                await viewer.send(mint_ticket(key, role="viewer", email="p@example.test", **ids))
+                assert json.loads(await viewer.recv()) == {"type": "ready"}
+                await asyncio.wait_for(opened.wait(), 5)
+                got = await asyncio.wait_for(viewer.recv(), 5)
+                assert got.startswith(b"hello from the gate") and len(got) == 20 + 70_000
+                await viewer.send(b"hello")
+                await _until(lambda: received == [b"hello"])
+
+            await gate_side.close()
+            await asyncio.wait_for(running, 5)
+            await mux.close()
+        finally:
+            server.should_exit = True
+            await serving
 
     asyncio.run(body())
