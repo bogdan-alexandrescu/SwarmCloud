@@ -23,7 +23,11 @@
 # (scripts/lib/ci-built-images.sh, and docs/ci.md for the decision):
 #
 #   --reuse-ci only       use what CI built for this commit, waiting for it if
-#                         it is still building; fail if CI never built it
+#                         it is still building; fail if CI never built it.
+#                         A digest CI's record reused from an earlier commit
+#                         whose image inputs this commit has changed is built
+#                         here (both modes): what is promoted is compared with
+#                         the commit that built each digest, never HEAD~1
 #   --reuse-ci or-build   the same, but build here when CI never built this
 #                         commit for this environment -- a release dispatched
 #                         by hand, or any prod release (swarm-ui bakes its
@@ -283,6 +287,8 @@ AFFECTED_BY=""
 LIST_INPUTS=0
 INCREMENTAL=""
 FULL_BUILD_REASON=""
+# 1 when --incremental was set by --reuse-ci, to check the record CI made.
+REUSE_CHECK=0
 
 # HOW MANY BUILDS AT ONCE, and why the default is 4 rather than "all of them".
 #
@@ -418,31 +424,6 @@ BUILD_MACHINE="${BUILD_MACHINE:-E2_HIGHCPU_8}"
 # Empty outside a git checkout, which a reuse then refuses.
 COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
 
-# ---------------------------------------------------------------------------
-# Reuse what CI built for this commit, rather than build it a second time.
-# ---------------------------------------------------------------------------
-if [[ -n "${REUSE_CI}" ]]; then
-  [[ "${COMMIT}" =~ ^[0-9a-f]{40}$ ]] \
-    || die "--reuse-ci needs a git checkout: CI's build is found by the commit it was made from"
-  if_absent=fail
-  if [[ "${REUSE_CI}" == or-build ]]; then if_absent=build; fi
-  reuse_rc=0
-  "${SWARM_LIB_DIR}/ci-built-images.sh" --sha "${COMMIT}" --environment "${ENVIRONMENT}" \
-    --out "${BUILD_DIR}/images-${ENVIRONMENT}.json" --if-absent "${if_absent}" || reuse_rc=$?
-  case "${reuse_rc}" in
-    0)
-      hr
-      ok "reused CI's build of ${COMMIT}: no Cloud Build submitted"
-      info "manifest: ${BUILD_DIR}/images-${ENVIRONMENT}.json"
-      exit 0 ;;
-    3)
-      # The same build CI would have made: same targets, same tag, same
-      # manifest. Nothing below knows it was reached this way.
-      info "building ${COMMIT} here, as CI would have: every image, tag ${TAG}" ;;
-    *)
-      exit "${reuse_rc}" ;;
-  esac
-fi
 
 # ---------------------------------------------------------------------------
 # --incremental: which images this commit changed, offline (git and jq only).
@@ -697,6 +678,66 @@ plan_incremental() {
   done
 }
 
+# ---------------------------------------------------------------------------
+# Reuse what CI built for this commit, rather than build it a second time.
+# ---------------------------------------------------------------------------
+# Below plan_incremental, because a reused record is checked with it.
+#
+# A RECORD IS PROMOTED ONLY IF EVERY DIGEST IN IT WAS BUILT FROM THIS COMMIT'S
+# INPUTS (lane REL-SKIP, part of #1194; owner-approved 2026-10-12). CI's
+# record of an incremental build names some digests it re-tagged rather than
+# built, each with the `built_from` commit that made it. Those are checked
+# here against THIS commit, image by image, by the same plan main's build
+# uses: `git diff <built_from> <this commit>` over each image's inputs. So
+# what a release promotes is compared with what made each digest -- never
+# with HEAD~1, the previous release, or which releases were cancelled,
+# superseded or failed in between. Release 38273482069 (f816e09b, 2026-10-12)
+# failed, and nothing at the release side asked whether the digests on offer
+# matched the commit. A digest whose inputs this commit has changed is built
+# here, by --incremental with CI's record as the previous build: exactly the
+# stale images and the ones built FROM them, every other digest kept. That
+# is a build CI got wrong, not the duplicate --reuse-ci exists to avoid, so
+# it is made under `only` too. A record whose every image was built from this
+# commit (a full build, or one written before records named `built_from`)
+# needs no git at all.
+if [[ -n "${REUSE_CI}" ]]; then
+  [[ "${COMMIT}" =~ ^[0-9a-f]{40}$ ]] \
+    || die "--reuse-ci needs a git checkout: CI's build is found by the commit it was made from"
+  if_absent=fail
+  if [[ "${REUSE_CI}" == or-build ]]; then if_absent=build; fi
+  reuse_rc=0
+  "${SWARM_LIB_DIR}/ci-built-images.sh" --sha "${COMMIT}" --environment "${ENVIRONMENT}" \
+    --out "${BUILD_DIR}/images-${ENVIRONMENT}.json" --if-absent "${if_absent}" || reuse_rc=$?
+  case "${reuse_rc}" in
+    0)
+      if jq -e --arg c "${COMMIT}" 'all(.images[]; (.built_from // $c) == $c)' \
+           "${BUILD_DIR}/images-${ENVIRONMENT}.json" >/dev/null; then
+        hr
+        ok "reused CI's build of ${COMMIT}: every image was built from it, no Cloud Build submitted"
+        info "manifest: ${BUILD_DIR}/images-${ENVIRONMENT}.json"
+        exit 0
+      fi
+      # The check needs the history back to each `built_from`; a release's
+      # checkout is one commit deep. Without it plan_incremental cannot tell
+      # an ancestor and rebuilds everything, which is correct, only slower.
+      if [[ "$(git -C "${REPO_ROOT}" rev-parse --is-shallow-repository 2>/dev/null || true)" == true ]]; then
+        info "this checkout is shallow; fetching the history each reused digest is checked against"
+        git -C "${REPO_ROOT}" fetch --quiet --unshallow </dev/null 2>&1 | redact >&2 \
+          || warn "could not fetch the history, so every image is rebuilt"
+      fi
+      cp -f "${BUILD_DIR}/images-${ENVIRONMENT}.json" "${BUILD_DIR}/ci-images-${ENVIRONMENT}.json"
+      INCREMENTAL="${BUILD_DIR}/ci-images-${ENVIRONMENT}.json"
+      REUSE_CHECK=1
+      info "CI's build of ${COMMIT} reuses digests built from earlier commits; checking each against this commit's inputs" ;;
+    3)
+      # The same build CI would have made: same targets, same tag, same
+      # manifest. Nothing below knows it was reached this way.
+      info "building ${COMMIT} here, as CI would have: every image, tag ${TAG}" ;;
+    *)
+      exit "${reuse_rc}" ;;
+  esac
+fi
+
 if [[ -n "${INCREMENTAL}" ]]; then
   require_cmd git
   step "Incremental build"
@@ -715,6 +756,21 @@ if [[ -n "${INCREMENTAL}" ]]; then
     printf '  %-22s %-7s %s\n' "${P_NAME[$i]}" "${P_ACTION[$i]}" "${P_WHY[$i]}" >&2
     [[ "${P_ACTION[$i]}" == reuse ]] || TARGETS+=("${P_NAME[$i]}")
   done
+  if [[ "${REUSE_CHECK}" -eq 1 ]]; then
+    if [[ "${#TARGETS[@]}" -eq 0 ]]; then
+      # CI's record is promoted exactly as fetched: nothing below runs.
+      rm -f "${INCREMENTAL}"
+      hr
+      ok "reused CI's build of ${COMMIT}: every reused digest was built from inputs this commit still has, no Cloud Build submitted"
+      info "manifest: ${BUILD_DIR}/images-${ENVIRONMENT}.json"
+      exit 0
+    fi
+    warn "CI's record of ${COMMIT} offers ${#TARGETS[@]} digest(s) built from inputs this commit has changed: ${TARGETS[*]}. Building them here; nothing stale is promoted."
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      echo "**Images:** CI's record of \`${COMMIT:0:12}\` reused digests built before this commit changed their inputs; this run rebuilt ${TARGETS[*]}." \
+        >>"${GITHUB_STEP_SUMMARY}"
+    fi
+  fi
 fi
 
 # Advisory only. The check that can actually stop a bad image is the one made

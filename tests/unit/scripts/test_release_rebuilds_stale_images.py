@@ -213,6 +213,26 @@ def test_the_release_images_stage_has_uv_for_the_check():
     export`; without uv the release would rebuild it."""
     action = (Path(__file__).resolve().parents[3] / ".github" / "actions" / "release-images" / "action.yml").read_text()
     uv = action.find("astral-sh/setup-uv@")
-    build = action.find("build-images.sh --reuse-ci")
+    build = action.find("./scripts/build-images.sh --reuse-ci")
     assert 0 <= uv < build, "release-images installs no uv before build-images.sh --reuse-ci"
 
+
+
+def test_a_one_commit_checkout_fetches_the_history_it_checks_against(box):
+    """release.yml checks out one commit. The check fetches the rest, and so
+    builds the stale image alone rather than every image."""
+    deployed = box.first
+    box.commit("N: the ui", box.append("apps/swarm-ui/src/App.tsx", "export const n = 1;\n"))
+    head = box.commit("N+1: docs only", {"docs/ci.md": "words\n"})
+    record = json.loads(box.record(head).read_text())
+    for entry in record["images"]:
+        entry.update(box.reused_from(entry["name"], deployed))
+    shallow = box.tmp / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", f"file://{box.root}", str(shallow)], check=True)
+    assert box.git("-C", str(shallow), "rev-parse", "--is-shallow-repository") == "true"
+    box.root = shallow
+
+    proc, manifest, events = box.release(record)
+    assert proc.returncode == 0, proc.stderr[-4000:]
+    assert _submitted(events) == {"swarm-ui"}, f"submitted {_submitted(events)}"
+    assert box.git("-C", str(shallow), "rev-parse", "--is-shallow-repository") == "false"

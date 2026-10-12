@@ -324,6 +324,24 @@ and ages from `built_at`, never from the record's own commit. Otherwise a
 change made two builds ago could hide behind a build that reused its image.
 The job's summary lists every image as rebuilt or reused.
 
+**The release checks the record before it promotes it** (lane REL-SKIP, part
+of #1194, owner-approved 2026-10-12). Release run 38273482069 on `f816e09b`
+built nothing and failed, and nothing on the release side checked whether the
+digests it was offered matched the commit. So `build-images.sh --reuse-ci` now
+runs the same plan over CI's record of this commit. Each reused digest is
+diffed from its own `built_from` to this commit, over that image's inputs, so
+a stale one is caught whatever HEAD~1 or the last good release was. A digest
+this commit changed is built in the release, under `only` too. Only those
+images are built, plus the ones built FROM them; every other digest is kept.
+The release never compares with HEAD~1 or with the last release. A release
+that failed, was cancelled or was superseded therefore cannot make a later one
+skip an image. A record whose every digest was built from this commit needs no
+check. A docs-only push builds nothing. The release checks out one commit, so
+the check first fetches the history it diffs against. `release-images` sets up
+uv so that a digest kept across a `uv.lock` change is judged by its own
+`uv export`, as it was in CI
+(`tests/unit/scripts/test_release_rebuilds_stale_images.py`).
+
 **A reused image reports the commit that built it, not the release.** The
 `GIT_SHA` and `BUILD_TIME` build args are baked in when a digest is built, and
 re-tagging does not change a digest. So on a reused image, swarm-api's
