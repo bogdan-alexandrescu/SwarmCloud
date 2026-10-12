@@ -298,7 +298,7 @@ class FakeFramebuffer:
 
     def grab(self) -> Frame:
         self.grabs += 1
-        return Frame.blank(1440, 988, (255, 255, 255))
+        return Frame.blank(1440, 987, (255, 255, 255))
 
     def close(self) -> None:
         self.calls.append(("framebuffer.close",))
@@ -485,7 +485,7 @@ def test_main_starts_the_components_in_the_designs_order(short_tmp):
         assert "Page.addScriptToEvaluateOnNewDocument" in methods
         assert rig.gate.pages.current == "PAGE1"
         # The default device was applied to the display.
-        assert rig.display.sizes and rig.display.sizes[-1] == (1440, 988)
+        assert rig.display.sizes and rig.display.sizes[-1] == (1440, 987)
         stop.set()
         assert await task == 0
 
