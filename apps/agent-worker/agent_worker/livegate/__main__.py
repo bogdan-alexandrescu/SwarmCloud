@@ -69,7 +69,7 @@ from .capture import CaptureError, XvfbFramebuffer
 from .cdppolicy import PolicyPaths
 from .cdpproxy import AgentConnection, AgentLink, CdpProxy, PipeTransport, serve_agents
 from .ctl import DEFAULT_MARKER, CtlServer
-from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, crop
+from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
 from .inject import InjectError, XInjector, display_socket
 from .mask import MaskCdp, MaskState
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
@@ -692,7 +692,7 @@ class LiveGate:
                 continue
             failing = False
             device = self.devices.device if self.devices is not None else self.desktop
-            frame = crop(frame, device.display_width, device.display_height)
+            frame = captured(frame, device)
             self.hub.publish(masked(frame, self.mask_state))
             await asyncio.sleep(interval)
 

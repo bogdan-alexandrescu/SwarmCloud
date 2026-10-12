@@ -247,8 +247,10 @@ def test_a_touch_maps_one_screen_pixel_to_one_css_pixel():
     async def main() -> None:
         touch = TouchInjector(X(), cdp, Devices())
         touch.begin("PAGE")
-        await touch.pointer_event(1, 840, UI_ROWS + 380)  # near the page's bottom-right corner
-        await touch.pointer_event(0, 840, UI_ROWS + 380)
+        # Near the page's bottom-right corner. The frame is the page alone on a
+        # phone (LB-R5), so its coordinates are the page's.
+        await touch.pointer_event(1, 840, 380)
+        await touch.pointer_event(0, 840, 380)
 
     asyncio.run(main())
     starts = [p for m, p, _ in cdp.calls if m == "Input.dispatchTouchEvent" and p["type"] == "touchStart"]
