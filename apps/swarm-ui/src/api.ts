@@ -6041,6 +6041,32 @@ export interface ScheduleFiring {
    * `outcome`, which stays `succeeded` for them. Absent when there were none.
    */
   refused_runs?: FiringRefusedRun[]
+  /**
+   * What the executor selected and why (`Firing.explain`, #1133): for the
+   * issue types, `describe`'s answer. Read here only for `own_live`.
+   */
+  selection?: { own_live?: FiringOwnLive | null } & Record<string, unknown>
+}
+
+/**
+ * A schedule's live runs against its OWN limit, never the tenant's (lane
+ * SCHED): `bound` names the parameter, `max_live_runs` or `max_pending_plans`.
+ */
+export interface FiringOwnLive {
+  running: number
+  limit: number
+  bound: string
+}
+
+/** The `NOTHING_STARTED` skip's detail (`schedulefire.nothing_started`): every field optional. */
+export interface NothingStartedDetail {
+  reason?: string
+  bound?: string | null
+  own_live?: FiringOwnLive | null
+  passed_over_by_reason?: Record<string, number>
+  failures?: { repository?: string; error?: string }[]
+  start_failures?: { issue?: string; error?: string }[]
+  truncated?: boolean
 }
 
 /** One `refused_runs` entry: the run, its issue, and the refusal's code. */

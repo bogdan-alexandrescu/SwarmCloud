@@ -149,8 +149,9 @@ class _Selection(Params):
 
 
 class IssueSweepParams(_Selection):
-    #: Lane SWEEP's cap of 8 is the upper bound: one firing holds at most 8
-    #: tenant slots of work at once.
+    #: Lane SWEEP's cap of 8 is the upper bound. It counts THIS schedule's
+    #: live runs only (`issue_sweep.schedule_live`, lane SCHED): another
+    #: schedule's or a person's run takes no place in it.
     max_live_runs: int = Field(default=8, ge=1, le=8)
     #: These two restate the schedule's gate for the runs it creates; the gate
     #: is the authority and `schedules.resolve_params` keeps them equal to it.
