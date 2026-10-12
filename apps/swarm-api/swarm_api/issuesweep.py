@@ -91,7 +91,9 @@ from swarm_common.models import Tenant
 
 from .errors import ApiError, NotFound
 from .forge import ForgeReadError, SweepIssue, SweepListing, open_work_from_listing, open_work_without
-from .issueruns import TERMINAL_RUN_STATES, IssueRun, IssueRuns, RunState, refuse_auto_merge
+from .issueruns import (
+    TERMINAL_RUN_STATES, IssueRun, IssueRuns, RunState, planning_refusal, refuse_auto_merge,
+)
 from .repositories import Repositories
 from .validation import IssueRef
 
@@ -354,6 +356,11 @@ def skip_reason(
                         and now - _last_write(previous) >= not_ready_cooldown):
                     return None
                 return f"not_ready_unchanged: {previous.id}"
+            refused = planning_refusal(previous)
+            if refused is not None:
+                # Refused at planning for what the issue asks: the same plan
+                # would be refused again, so it waits for the issue to change.
+                return f"unchanged_since_run: {previous.id} (REFUSED: {refused})"
             return f"unchanged_since_run: {previous.id} ({previous.state.value})"
     return None
 

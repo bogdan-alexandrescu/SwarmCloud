@@ -116,6 +116,11 @@ MAX_SWEEP_PULLS = 300
 MAX_SWEEP_PAGES = 3
 #: The most of a pull request's body kept for the closing-reference match.
 MAX_SWEEP_PULL_BODY_CHARS = 20_000
+#: The recently-closed pull requests the `issue-sweep` schedule reads for
+#: work that just landed on an issue (`recently_merged_pulls`): ONE page, the
+#: newest-updated PAGE_SIZE. A repository that closed more than that within
+#: the window says so (`truncated`) rather than paging on.
+MAX_RECENT_PULL_PAGES = 1
 
 
 # --------------------------------------------------------------------------
@@ -882,6 +887,40 @@ class GitHubIssues:
             pulls=tuple(listed),
             pulls_truncated=pulls_cut,
         )
+
+    def recently_merged_pulls(
+        self, owner: str, repo: str, token: str, *, since: datetime,
+    ) -> tuple[tuple[SweepPull, ...], bool]:
+        """Pull requests of `owner/repo` merged at or after `since`, and
+        whether the read was cut.
+
+        The closed pull requests, newest-updated first, one page
+        (`MAX_RECENT_PULL_PAGES`); a merge sets `updated_at`, so a pull
+        request merged inside the window is on that page unless more than a
+        page of closed pull requests were updated since. `truncated` is True
+        when the page was full and its last entry is still inside the window.
+        Title and body only: no files are read. Failures map as `open_work`'s.
+        """
+        ref = IssueRef(owner=owner, repo=repo, number=1)  # names the repository only
+        entries, cut = self._paged(
+            self._repo_url(ref, "pulls?state=closed&sort=updated&direction=desc"), token,
+            f"the recently closed pull requests of {ref.repository}",
+            keep=lambda entry: isinstance(entry, dict) and _is_int(entry.get("number")),
+            cap=PAGE_SIZE * MAX_RECENT_PULL_PAGES, max_pages=MAX_RECENT_PULL_PAGES,
+        )
+        merged: list[SweepPull] = []
+        for entry in entries:
+            at = _github_time(entry.get("merged_at"))
+            if at is None or at < since:
+                continue
+            body = entry.get("body")
+            merged.append(SweepPull(
+                number=int(entry["number"]), title=str(entry.get("title") or ""),
+                body=(body if isinstance(body, str) else "")[:MAX_SWEEP_PULL_BODY_CHARS],
+            ))
+        last = _github_time(entries[-1].get("updated_at")) if entries else None
+        truncated = cut and (last is None or last >= since)
+        return tuple(merged), truncated
 
     def _pull_files(
         self, ref: IssueRef, number: int, token: str, cap: int

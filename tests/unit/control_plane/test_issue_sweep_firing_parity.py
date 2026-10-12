@@ -31,14 +31,19 @@ transport under the real client, as `test_schedtypes_issue_sweep.py`.
 from __future__ import annotations
 
 import random
+from datetime import timedelta
 from typing import Any
 
 import pytest
 
 from swarm_api import schedulefire
+from swarm_api.issueruns import IssueRuns, RunState
+from swarm_api.schedtypes import issue_sweep
+from swarm_api.schemas import WorkflowCreate
 
 from .test_schedtypes_issue_sweep import (  # noqa: F401 -- fixtures
     ALICE,
+    NOW,
     REPOSITORY,
     ctx,
     firings,
@@ -215,3 +220,205 @@ def test_the_real_firing_starts_exactly_the_dry_runs_set(db, ctx, repo_id, githu
         )
     else:
         assert firing["skip"] is None
+
+
+# ---------------------------------------------------------------------------
+# (d) work already under way on an issue passes it over (2026-10-12)
+# ---------------------------------------------------------------------------
+#
+# Firing sch_6ecbe1307511:29862877 took #1030 for idle -- no open pull request
+# at that moment -- while ~25 workflows titled "... (LB-Lx; part of #1030)"
+# were building it, and its run was refused at planning (WORKFLOWS_PATH),
+# which made the FIRING `failed`. The same day it opened PR 1136 beside a
+# lane's PR 1134 for #1133.
+
+
+def _workflow(ctx, schedule: dict[str, Any], *, title: str | None = None,
+              metadata: dict[str, Any] | None = None) -> str:
+    """A live (QUEUED) workflow of the tenant, submitted as a member would."""
+    meta = dict(metadata or {})
+    if title is not None:
+        meta["title"] = title
+    owner = schedulefire.schedule_owner_auth(ctx, schedule)
+    result = ctx.submissions.submit_workflow(owner, WorkflowCreate(
+        steps=[{"step_id": "only", "runner_profile": "mock", "input": {"prompt": "build"}}],
+        metadata=meta,
+    ))
+    return result.workflow.workflow_id
+
+
+def _reasons(selection: dict[str, Any]) -> dict[str, str]:
+    return {row["issue"]: row["reason"] for row in selection["passed_over"]}
+
+
+@pytest.mark.parametrize("title", [
+    "A viewer signs in on the live browser (LB-L13; part of #7)",
+    "Live browser slot leases (#7)",
+    "Wire #7 into acceptance",
+])
+def test_an_issue_a_running_workflow_names_is_passed_over_as_in_flight(
+    db, ctx, repo_id, github, title,
+) -> None:
+    github.issues = [issue(7), issue(70)]
+    schedule = sweep(db, repo_id)
+    workflow_id = _workflow(ctx, schedule, title=title)
+
+    preview = _dry_run(ctx, schedule)
+    firing = _real(ctx, db)
+
+    reason = f"in_flight_workflow: {workflow_id}"
+    assert _reasons(preview)[f"{REPOSITORY}#7"] == reason
+    assert _reasons(firing["selection"])[f"{REPOSITORY}#7"] == reason
+    # #70 is not #7: a mention is bounded by non-digits.
+    assert [row["issue"] for row in preview["would_start"]] == [f"{REPOSITORY}#70"]
+    assert _started(firing, db) == [f"{REPOSITORY}#70"]
+    assert preview["in_flight"]["workflows_read"] == 1
+    assert preview["in_flight"]["workflow_scan"] == issue_sweep.WORKFLOW_SCAN
+
+
+def test_an_issue_run_link_on_a_live_workflow_passes_the_issue_over(db, ctx, repo_id, github) -> None:
+    github.issues = [issue(8)]
+    schedule = sweep(db, repo_id)
+    workflow_id = _workflow(ctx, schedule, metadata={
+        "issue_run": {"run_id": "run_elsewhere", "issue": f"{REPOSITORY}#8"},
+    })
+
+    firing = _real(ctx, db)
+
+    assert issue_runs(db) == []
+    assert _reasons(firing["selection"]) == {f"{REPOSITORY}#8": f"in_flight_workflow: {workflow_id}"}
+    assert firing["skip"]["detail"]["passed_over_by_reason"] == {"in_flight_workflow": 1}
+
+
+def test_a_finished_workflow_does_not_hold_its_issue(db, ctx, repo_id, github) -> None:
+    github.issues = [issue(9)]
+    schedule = sweep(db, repo_id)
+    workflow_id = _workflow(ctx, schedule, title="Done already (part of #9)")
+    for path, doc in list(db.docs.items()):
+        if path.startswith("tasks/") and doc.get("workflow_id") == workflow_id:
+            doc["state"] = "SUCCEEDED"
+    db.docs[f"workflows/{workflow_id}"]["state"] = "SUCCEEDED"
+
+    firing = _real(ctx, db)
+
+    assert _started(firing, db) == [f"{REPOSITORY}#9"]
+
+
+def test_a_pull_request_merged_within_the_cooldown_passes_its_issue_over(db, ctx, repo_id, github) -> None:
+    github.issues = [issue(11), issue(12)]
+    merged = (NOW - timedelta(hours=2)).isoformat().replace("+00:00", "Z")
+    stale = (NOW - timedelta(hours=200)).isoformat().replace("+00:00", "Z")
+    github.pulls = [
+        {"number": 1148, "state": "closed", "title": "A viewer signs in (LB-L13; part of #11)",
+         "body": "", "merged_at": merged, "updated_at": merged, "head": {"ref": "a"}},
+        {"number": 900, "state": "closed", "title": "Older work (part of #12)",
+         "body": "", "merged_at": stale, "updated_at": stale, "head": {"ref": "b"}},
+    ]
+    schedule = sweep(db, repo_id, params={"cooldown_hours": 72})
+
+    preview = _dry_run(ctx, schedule)
+    firing = _real(ctx, db)
+
+    assert _reasons(preview) == {f"{REPOSITORY}#11": "recently_worked: PR 1148"}
+    assert _reasons(firing["selection"]) == _reasons(preview)
+    assert _started(firing, db) == [f"{REPOSITORY}#12"]
+
+
+# ---------------------------------------------------------------------------
+# (e) a run refused at planning for what its issue asks does not fail the firing
+# ---------------------------------------------------------------------------
+
+
+def _end_run(db, ctx, run_id: str, error: str) -> None:
+    IssueRuns(db, now=ctx.now).transition("eng", run_id, RunState.FAILED, by="system",
+                                          patch={"error": error})
+
+
+def _advanced(ctx, db) -> dict[str, Any]:
+    schedulefire.Ticker(ctx).tick()
+    (firing,) = [f for f in firings(db).values() if f["trigger"] != "run_now"]
+    return firing
+
+
+def test_a_workflows_path_refusal_leaves_the_firing_succeeded_with_a_refused_run(
+    db, ctx, repo_id, github,
+) -> None:
+    github.issues = [issue(1030)]
+    sweep(db, repo_id)
+    firing = _real(ctx, db)
+    (run,) = issue_runs(db)
+    assert firing["state"] == "created"
+
+    _end_run(db, ctx, run["id"], "WORKFLOWS_PATH: the plan changes .github/workflows/accept.yml. "
+                                 "SwarmCloud's forge credential cannot push workflow files")
+    firing = _advanced(ctx, db)
+
+    assert firing["state"] == "done" and firing["outcome"] == "succeeded", firing
+    assert firing["refused_runs"] == [
+        {"run_id": run["id"], "issue": f"{REPOSITORY}#1030", "code": "WORKFLOWS_PATH"},
+    ]
+    schedule = db.docs[f"schedules/{firing['schedule_id']}"]
+    assert schedule["consecutive_failures"] == 0
+    assert schedule["last_firing"]["outcome"] == "succeeded"
+
+
+def test_a_refused_issue_is_passed_over_as_refused_until_it_changes(db, ctx, repo_id, github) -> None:
+    github.issues = [issue(1030, minutes_ago=600)]
+    schedule = sweep(db, repo_id)
+    _real(ctx, db)
+    (run,) = issue_runs(db)
+    _end_run(db, ctx, run["id"], "WORKFLOWS_PATH: the plan changes .github/workflows/accept.yml")
+
+    preview = _dry_run(ctx, schedule)
+
+    assert _reasons(preview) == {
+        f"{REPOSITORY}#1030": f"unchanged_since_run: {run['id']} (REFUSED: WORKFLOWS_PATH)",
+    }
+
+
+def test_a_run_that_really_failed_still_fails_the_firing(db, ctx, repo_id, github) -> None:
+    github.issues = [issue(5)]
+    sweep(db, repo_id)
+    _real(ctx, db)
+    (run,) = issue_runs(db)
+
+    _end_run(db, ctx, run["id"], "the planner task t_1 ended FAILED: RuntimeError")
+    firing = _advanced(ctx, db)
+
+    assert firing["outcome"] == "failed"
+    assert "refused_runs" not in firing
+
+
+def test_a_workflows_path_error_after_planning_is_not_a_refusal(db, ctx, repo_id, github) -> None:
+    """Only a run that never left PLANNING is refused for its issue."""
+    github.issues = [issue(6)]
+    sweep(db, repo_id)
+    _real(ctx, db)
+    (run,) = issue_runs(db)
+    db.docs[f"issue_runs/{run['id']}"]["history"].append(
+        {"at": NOW, "from": "PLANNING", "to": "PLANNED", "by": "system"})
+    db.docs[f"issue_runs/{run['id']}"]["history"].append(
+        {"at": NOW, "from": "PLANNED", "to": "FAILED", "by": "system"})
+    db.docs[f"issue_runs/{run['id']}"].update({"state": "FAILED", "error": "WORKFLOWS_PATH: late"})
+
+    firing = _advanced(ctx, db)
+
+    assert firing["outcome"] == "failed"
+
+
+def test_an_executor_exception_still_ends_the_firing_unsucceeded(db, ctx, repo_id) -> None:
+    class Broken:
+        @staticmethod
+        def create(firing: Any) -> list[dict[str, Any]]:
+            raise RuntimeError("the forge fell over")
+
+        @staticmethod
+        def dry_run(firing: Any) -> dict[str, Any]:
+            return {}
+
+    sweep(db, repo_id)
+    report = schedulefire.Ticker(ctx, executors={"issue-sweep": Broken}).tick()
+
+    assert report.errors == 1
+    (firing,) = firings(db).values()
+    assert firing.get("outcome") != "succeeded"

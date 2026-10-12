@@ -435,6 +435,7 @@ document already there is the duplicate that never happens twice.
 | `selection` | on a real firing whose executor explains itself (`issue-sweep`, `issue-plan-only`): the dry run's answer for the selection it actually made, plus `started` and `start_failures`, so a firing can be compared with its dry run after the fact |
 | `approval_id` | set while a run approval is pending |
 | `outcome` | `succeeded`, `failed`, `cancelled`, `refused`, `skipped`, `expired`, `rejected` or `partial`, derived from its work (§2.9) |
+| `refused_runs` | `[{run_id, issue, code}]`, present only when an issue run was refused at planning for what its issue asks (`WORKFLOWS_PATH`). Those runs are not counted in `outcome` (§2.9) |
 | `cost` | `{reported_usd, unreported_attempts}`, summed over the work's attempts (§4.3) |
 | `history` | each move, with time and actor |
 
@@ -722,6 +723,19 @@ derived from its steps:
   things (a sweep that started five runs, of which one failed);
 * a run that ended `NOT_READY` (§3.1) counts as succeeded, because "this issue
   is not ready" is an answer.
+* a run **refused at planning for what its issue asks** is not counted at all:
+  it is listed under the firing's `refused_runs` as `{run_id, issue, code}`,
+  and the firing's outcome comes from its other runs, `succeeded` when there
+  are none. Today the one such code is `WORKFLOWS_PATH`
+  (`issueruns.PLANNING_REFUSALS`): the plan changes `.github/workflows/`,
+  which SwarmCloud's forge credential cannot push. The refusal is correct, but
+  counted as a failure it made the firing `failed` (#1030's
+  `run_21bcbaba3ba14235832a`, 2026-10-12), which reads as the schedule being
+  broken and counts toward `CONSECUTIVE_FAILURES`. A run that failed for any
+  other reason (a planner task that failed, an invalid plan, a submission
+  refused after approval) still fails the firing, and an exception or API
+  error in the firing itself is handled as before. The console's History
+  shows each refused run under the outcome, in plain words.
 
 The tick advances live firings: up to one page, oldest first, after it has
 fired due slots. For an issue run it calls
@@ -815,6 +829,36 @@ every tenant's data within one approval's reach.
     labels have not changed since.
   - It creates an issue run for each of up to `max_new_per_firing` remaining
     issues, oldest first, subject to `max_live_runs`.
+  - **It drops issues somebody is already working on outside an issue run**
+    (2026-10-12). Firing `sch_6ecbe1307511:29862877` took #1030 for idle
+    because it had no open pull request at that moment, while ~25 dedicated
+    workflows titled "... (LB-Lx; part of #1030)" were building it and
+    merging one after another; the same day the sweep opened PR 1136 beside
+    a lane's PR 1134 for #1133. "No open pull request" is not "nobody is on
+    it": between two merges of a multi-lane feature there is none. So:
+    - `in_flight_workflow: <workflow_id>` — a **non-terminal** workflow of
+      the tenant names the issue in its label or title (`part of #N`,
+      `(#N)`, or any `#N` bounded by non-digits; `owner/repo#N` only for
+      that repository, a bare `#N` for every repository in scope), or a step
+      carries an issue-run link to it (`metadata.issue_run`). The read is the
+      one `GET /v1/workflows?active=true` makes, **bounded to the newest 50**
+      (`issue_sweep.WORKFLOW_SCAN`), its state derived from the steps without
+      writing the cache back; the firing's `selection.in_flight` says how many
+      were read and whether the page was cut. A tenant with more than 50 live
+      workflows can have an older one's issue swept.
+    - `recently_worked: PR <n>` — a pull request whose title says `part of
+      #N` (or closes it) was **merged within `cooldown_hours`**: work just
+      landed, and the next lane may be about to start. One page of the
+      newest-updated closed pull requests (`forge.recently_merged_pulls`, 100);
+      `selection.in_flight.merged_truncated` names a repository that closed
+      more than that in the window. A repository whose closed pull requests
+      cannot be read starts nothing (`recently_worked: not read (<code>)`),
+      as one whose open pull requests could not all be read does not.
+    Dry run and real firing share this rule: both go through `select`.
+  - An issue whose last run was **refused at planning** for what the issue
+    asks (§2.9) is passed over as `unchanged_since_run: <run> (REFUSED:
+    <code>)` until the issue is edited or commented on: the same plan would
+    be refused again.
   - The planner decides readiness. Lane SWEEP's `NOT_READY` verdict ends the
     run with no workflow and a comment that says what is missing.
   - The **territory guard** holds an approved plan whose `files` overlap a live

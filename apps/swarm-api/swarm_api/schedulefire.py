@@ -75,7 +75,7 @@ from . import cronexpr, refusals, schedaudit, scheduletypes, schedules
 from .attempt_totals import totals_for
 from .auth import AuthContext
 from .errors import ApiError, Conflict, Forbidden, NotFound, UpstreamUnavailable
-from .issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState
+from .issueruns import TERMINAL_RUN_STATES, IssueRuns, RunState, planning_refusal
 from .repoindex import POLL_BUDGET_SECONDS
 from .repositories import Repositories
 from .schemas import TaskCreate, WorkflowCreate
@@ -1368,7 +1368,16 @@ class Ticker:
     def advance(self, firing: Mapping[str, Any], now: datetime, report: TickReport, *,
                 release_queued: bool = True) -> str | None:
         """End a `created` firing whose work has all ended. Returns its outcome,
-        or None while any of its work is live."""
+        or None while any of its work is live.
+
+        An issue run that FAILED AT PLANNING with a refusal that is a property
+        of its issue (`issueruns.PLANNING_REFUSALS`: a plan that changes
+        `.github/workflows/`) is listed under the firing's `refused_runs` with
+        its code and left out of the outcome: the refusal was correct, and a
+        `failed` firing read as the schedule being broken (2026-10-12, #1030's
+        run_21bcbaba3ba14235832a). A firing whose only runs were refused ends
+        `succeeded`; one where every other run failed still ends `failed`.
+        """
         if firing.get("state") != CREATED:
             return firing.get("outcome")
         tenant_id = firing["tenant_id"]
@@ -1381,6 +1390,7 @@ class Ticker:
                 by_workflow.setdefault(task["workflow_id"], []).append(task)
         outcomes: list[str] = []
         per_item_tasks: list[list[str]] = []
+        refused_runs: list[dict[str, Any]] = []
         for item in work:
             kind = item.get("kind")
             if kind == "api_action":
@@ -1388,9 +1398,15 @@ class Ticker:
                 per_item_tasks.append([])
                 continue
             if kind == "issue_run":
-                outcome = self._issue_run_outcome(tenant_id, str(item.get("id")))
+                outcome, refused = self._issue_run_end(tenant_id, str(item.get("id")))
                 if outcome is None:
                     return None
+                if refused is not None:
+                    # Refused at planning for what the issue asks (#1030's
+                    # `.github/workflows/` plan): an answer about the issue,
+                    # not a failure of the schedule. Recorded, not counted.
+                    refused_runs.append(refused)
+                    continue
                 outcomes.append(outcome)
                 per_item_tasks.append([])
                 continue
@@ -1423,7 +1439,7 @@ class Ticker:
             except RunOverBudget:
                 over = True
                 outcome, code = "failed", RUN_OVER_BUDGET
-        if not self._done(firing["firing_id"], now, outcome, cost, code):
+        if not self._done(firing["firing_id"], now, outcome, cost, code, refused_runs=refused_runs):
             return outcome
         report.advanced += 1
         if schedule is not None:
@@ -1435,17 +1451,23 @@ class Ticker:
                 self._release_queued(schedule["schedule_id"], now, report)
         return outcome
 
-    def _issue_run_outcome(self, tenant_id: str, run_id: str) -> str | None:
-        """Advances the run first (§2.9: the tick reaches every tenant's runs)."""
+    def _issue_run_end(self, tenant_id: str, run_id: str) -> tuple[str | None, dict[str, Any] | None]:
+        """The run's outcome, and its `refused_runs` entry when it failed at
+        planning with a `PLANNING_REFUSALS` code (None otherwise). Advances
+        the run first (§2.9: the tick reaches every tenant's runs)."""
         from .routes.runs import advance_run  # the route module imports this one's deps
 
         try:
             run = IssueRuns(self.db, now=self.ctx.now).get(tenant_id, run_id)
         except NotFound:
-            return "failed"
+            return "failed", None
         if run.state not in TERMINAL_RUN_STATES:
             run = advance_run(self.ctx, tenant_id, run)
-        return run_outcome(run.state.value if hasattr(run.state, "value") else str(run.state))
+        outcome = run_outcome(run.state.value if hasattr(run.state, "value") else str(run.state))
+        code = planning_refusal(run)
+        if outcome is None or code is None:
+            return outcome, None
+        return outcome, {"run_id": run.id, "issue": run.issue.short, "code": code}
 
     def _cost(self, tenant_id: str, per_item_tasks: list[list[str]]) -> dict[str, Any]:
         """§4.3: reported cost summed; an attempt with no cost is counted, not zero."""
@@ -1470,7 +1492,8 @@ class Ticker:
             per_item.append(round(item_cost, 6) if known else None)
         return {"reported_usd": round(reported, 6), "unreported_attempts": unreported, "per_item": per_item}
 
-    def _done(self, fid: str, now: datetime, outcome: str, cost: Mapping[str, Any], code: str | None) -> bool:
+    def _done(self, fid: str, now: datetime, outcome: str, cost: Mapping[str, Any], code: str | None,
+              *, refused_runs: Sequence[Mapping[str, Any]] = ()) -> bool:
         ref = self._firing_ref(fid)
 
         @firestore.transactional
@@ -1489,6 +1512,8 @@ class Ticker:
             }
             if code:
                 patch["skip"] = {"code": code, "detail": {"per_item_usd": list(cost["per_item"])}}
+            if refused_runs:
+                patch["refused_runs"] = [dict(r) for r in refused_runs]
             txn.update(ref, patch)
             return True
 
