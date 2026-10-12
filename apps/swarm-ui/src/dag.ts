@@ -756,6 +756,27 @@ export const NODE_H = nodeHeightAt('figures')
  */
 const NOTE_H = Math.ceil(ROW_MICRO_H + GAP)
 
+/**
+ * THE INLINE LIVE BROWSER CARD (docs/design/live-browser.md §6, LB-UX2b): a
+ * RUNNING step on a live-browser profile carries its ~1 fps thumbnail, Open
+ * Browser tab and ⤢ Theater INSIDE its node, above the stop strip, as the
+ * owner's chosen mockup draws it. It sat in the step details panel, a column
+ * away from the node it showed.
+ *
+ * A FIXED BOX, SO THIS NUMBER IS TRUE BY CONSTRUCTION. The card is given
+ * exactly `LIVE_CARD_H - GAP` as its CSS height (`.node-live`, from this
+ * constant through `--node-live-h`), and the thumbnail is letterboxed into
+ * what is left (`object-fit: contain`), so a phone-shaped frame and a desktop
+ * one cost the node the same height. The `GAP` is the `--ctl-s1` between the
+ * card and the node's last row. Head row 18 + 4 + thumbnail 96 + 4 + links
+ * row 18 = 140, plus the gap: 144.
+ *
+ * HEIGHT ONLY, and only while the step draws the card, which `layoutOf` is
+ * told through `live`. A step that finishes gives the height back on the next
+ * render, as a note line does.
+ */
+export const LIVE_CARD_H = 144
+
 /** One wrapped line of the `↑ depends on` list, at --t-micro/--lh-micro:
  *  12 x 1.45 = 17.4, rounded up. It was 16, which under-counted every
  *  wrapped line by 1.4px. */
@@ -876,11 +897,14 @@ export function heightOf(
   noted: boolean = false,
   /** The step is terminal: its card reserves no stop strip (`stripSavingAt`). */
   settled: boolean = false,
+  /** The step draws the inline live browser card (`LIVE_CARD_H`). */
+  live: boolean = false,
 ): number {
   // THE NOTE LINE (#105, #106): a failed step's first error line, or a waiting
   // step's reason. One line at every tier, ellipsed, so it costs a fixed
   // NOTE_H and nothing in width -- see `NOTE_H`.
-  const base = nodeHeightAt(tier) + (noted ? NOTE_H : 0) - (settled ? stripSavingAt(tier) : 0)
+  const base =
+    nodeHeightAt(tier) + (noted ? NOTE_H : 0) - (settled ? stripSavingAt(tier) : 0) + (live ? LIVE_CARD_H : 0)
   if (step.depends_on.length === 0) return base
   // `+ GAP`: the dependency list is ONE MORE flex child, so it costs one more
   // `--ctl-s1` between itself and the row above as well as its own lines. The
@@ -1637,6 +1661,8 @@ export function autoTier(
   noted: ReadonlySet<string> = NO_NOTES,
   band: boolean = true,
   settled: ReadonlySet<string> = NO_NOTES,
+  /** Steps drawing the inline live card, which a screen of graph has to hold too. */
+  live: ReadonlySet<string> = NO_NOTES,
 ): ZoomTier {
   const levels = levelsOf(steps)
   if (levels.length === 0) return 'figures'
@@ -1645,7 +1671,7 @@ export function autoTier(
     const w = nodeWidthAt(tier, steps)
     return PAD * 2 + widest * w + (widest - 1) * SIB_GAP <= column
   }
-  const tall = (tier: ZoomTier) => layoutOf(steps, NO_STAGES_OPEN, tier, noted, column, settled).height
+  const tall = (tier: ZoomTier) => layoutOf(steps, NO_STAGES_OPEN, tier, noted, column, settled, live).height
   // THE WHOLE GRAPH ON ONE SCREEN FIRST (#330 item 4). The widest tier whose
   // widest stage fits the column on one row AND whose graph fits
   // `CANVAS_HEIGHT`: a three-step chain is one node wide at every tier, and it
@@ -2099,6 +2125,8 @@ export function layoutOf(
   column: number = CANVAS_COLUMN,
   /** Terminal steps, whose cards reserve no stop strip (D29). */
   settled: ReadonlySet<string> = NO_NOTES,
+  /** Steps whose node carries the inline live browser card (`LIVE_CARD_H`). */
+  live: ReadonlySet<string> = NO_NOTES,
 ): DagLayout {
   // ORDERED WITHIN EACH LEVEL TO CUT CROSSINGS (`orderLevels`, GR1). The
   // levels themselves -- which step is in which stage -- are `levelsOf`'s,
@@ -2168,7 +2196,7 @@ export function layoutOf(
   const wide = levels.map((l) => l.length > fits)
   const open = (lvl: number) => wide[lvl] === true && expandedStages.has(lvl)
   const nodesH = (l: readonly WorkflowStep[]) =>
-    Math.max(...l.map((s) => heightOf(s, tier, nodeW, noted.has(s.step_id), settled.has(s.step_id))))
+    Math.max(...l.map((s) => heightOf(s, tier, nodeW, noted.has(s.step_id), settled.has(s.step_id), live.has(s.step_id))))
   const levelH = levels.map((l, i) => {
     if (!wide[i]) return nodesH(l)
     return open(i) ? BAND_H + BAND_GAP + nodesH(l) : BAND_H
