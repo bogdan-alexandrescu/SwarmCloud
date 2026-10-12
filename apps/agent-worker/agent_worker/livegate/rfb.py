@@ -333,8 +333,15 @@ class RfbSession:
         chosen = (await self._reader.readexactly(1))[0]
         if chosen != _SECURITY_NONE:
             self._writer.write(struct.pack(">I", 1))
+            await self._writer.drain()
             raise RfbError("unsupported security type")
         self._writer.write(struct.pack(">I", 0))
+        # DRAIN BEFORE THE NEXT READ. The tunnel's writer sends nothing on
+        # write(), only on drain(), and the viewer sends ClientInit only after
+        # it has read this SecurityResult: without the drain both sides wait
+        # and the Browser tab stays on "Connecting" (measured on SwarmCloud
+        # 2026-10-12, test_live_rfb_tunnel_flush.py).
+        await self._writer.drain()
         await self._reader.readexactly(1)  # ClientInit: shared or not, it is shared
         frame = self._hub.current.frame
         native = _frame_format(frame)
