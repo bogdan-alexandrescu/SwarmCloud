@@ -35,10 +35,6 @@ from pathlib import Path
 
 import pytest
 
-from agent_worker.livegate import rfb
-from agent_worker.livegate.capture import Frame
-from agent_worker.livegate.mask import MASK_RGB, Outcome
-
 ROOT = Path(__file__).resolve().parents[3]
 MODULE_PATH = ROOT / "tests" / "acceptance" / "test_live_browser.py"
 FIXTURE = ROOT / "tests" / "acceptance" / "fixtures" / "login.html"
@@ -88,12 +84,16 @@ def _page(scale=1, top=120, left=40, bpp=4, painted=True, width=1280, height=800
     field = (fx, fy, fx + 320 * scale, fy + 40 * scale)
     _fill(pixels, width, field, lb.FIELD_RGB, bpp)
     if painted:
+        from agent_worker.livegate.mask import MASK_RGB
+
         d = 8
         _fill(pixels, width, (field[0] - d, field[1] - d, field[2] + d, field[3] + d), MASK_RGB, bpp)
     return pixels, field
 
 
 def test_the_judge_s_mask_colour_is_the_gate_s():
+    from agent_worker.livegate.mask import MASK_RGB
+
     assert lb.MASK_RGB == MASK_RGB
 
 
@@ -128,6 +128,8 @@ def test_a_field_coloured_pixel_anywhere_is_a_leak():
 
 
 def test_a_frame_without_the_page_is_not_judged():
+    from agent_worker.livegate.mask import MASK_RGB
+
     blanked = _frame()
     _fill(blanked, 1280, (0, 120, 1280, 800), MASK_RGB)  # the mask blanked the page area
     assert lb.judge(bytes(blanked), 1280, 800).kind == "no_page"
@@ -221,10 +223,15 @@ class _Injector:
 
 class _Mask:
     def apply(self, frame):
+        from agent_worker.livegate.mask import Outcome
+
         return Outcome.MASKED
 
 
 def _gate_frame(width=320, height=200):
+    from agent_worker.livegate.capture import Frame
+    from agent_worker.livegate.mask import MASK_RGB
+
     frame = Frame.blank(width, height, GREEN)
     frame.fill(10, 20, 130, 40, lb.MARKER_RGB)
     frame.fill(10, 60, 110, 80, MASK_RGB)
@@ -232,6 +239,8 @@ def _gate_frame(width=320, height=200):
 
 
 async def _session(handler):
+    from agent_worker.livegate import rfb
+
     hub = rfb.FrameHub(320, 200)
     hub.publish(rfb.masked(_gate_frame(), _Mask()))
     injector = _Injector()
@@ -312,6 +321,8 @@ def test_the_viewer_keeps_the_gate_s_frame_and_types_only_in_control():
         changed = _gate_frame()
         changed.fill(200, 150, 210, 160, (0xAA, 0xBB, 0xCC))
         before = client.updates
+        from agent_worker.livegate import rfb
+
         hub.publish(rfb.masked(changed, _Mask()))
         await pump(lambda: client.updates > before)
         at = (155 * 320 + 205) * 4
