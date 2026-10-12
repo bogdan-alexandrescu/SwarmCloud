@@ -224,8 +224,13 @@ describe('G5-16: Holding now is the mock-up’s Agent · Attempt · Since table'
     const tile = [...document.querySelectorAll('.acct-tiles > .acct-tile')].find(
       (t) => t.querySelector('small')?.textContent === 'Last given out',
     )!
+    // Three hours ago is yesterday when this runs between 00:00 and 03:00, and
+    // then the tile rightly puts the date before the clock (CAP-13). Expect
+    // whichever day `at` actually fell on, or the test is red after midnight.
+    const today = new Date(at).toDateString() === new Date().toDateString()
+    const day = new Date(at).toLocaleDateString([], { month: 'short', day: 'numeric' })
     // MUTATION: print `timeAgo` as the figure again.
-    expect(tile.querySelector('b')!.textContent).toBe(hhmm(at))
+    expect(tile.querySelector('b')!.textContent).toBe(today ? hhmm(at) : `${day} ${hhmm(at)}`)
     expect(tile.querySelector('i')!.textContent).toBe('3h ago')
     expect(tile.querySelector('b')!.getAttribute('title')).toBe(new Date(at).toLocaleString())
   })
