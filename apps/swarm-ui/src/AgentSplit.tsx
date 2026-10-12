@@ -40,6 +40,7 @@ import { useResourceClasses } from './Blockers'
 import { AgentChangesPane, changesCount } from './WorkflowChanges'
 import { HelpCard } from './HelpCard'
 import { HandoffStrip, isLiveBrowser } from './Handoff'
+import { PodStartProblem } from './PodStartProblem'
 import { RecordingsPanel } from './Recordings'
 import { LiveBrowserPane, LiveControl, useLiveSession, type LiveState } from './LiveBrowser'
 import {
@@ -615,6 +616,7 @@ export function AgentSplit({
             )}
           </HandoffStrip>
         )}
+        {task !== null && <PodStartProblem task={task} />}
 
         <div className={`ag-split-pane${selected === 'logs' ? ' is-logs' : ''}${selected === 'changes' ? ' is-changes' : ''}${selected === 'browser' ? ' is-browser' : ''}`}>
           {deciding ? (

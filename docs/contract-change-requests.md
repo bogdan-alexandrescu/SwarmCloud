@@ -11142,3 +11142,63 @@ are history.
 
 None touched: a comment change in the catalogue alters no admission, lease,
 fencing, checkpoint or isolation behaviour.
+
+---
+
+## 73. `models.py`: `Task.start_problem`, why the current attempt's pod is not starting (F1-POD)
+
+**Status:** REQUESTED 2026-10-12 by lane F1-POD. Not applied: the record
+lives in `metadata.start_problem` until this is decided, which works today
+and changes no frozen type.
+
+### What is true today
+
+On 2026-10-11 between 20:58 and 21:05 PDT every claude-code-browser pod's
+`livegate` sidecar crash-looped for about three minutes while the task read
+only "dispatched". The reconciler now reads the pod of a DISPATCHED or
+STARTING task and records the worst container -- `{container, reason,
+restarts, message (<= 300 chars), pod_started, attempt_id, seen_at}` -- as
+`metadata.start_problem` (`reconciler.startproblem`,
+`ControlStore.record_start_problem`). swarm-api reserves the key
+(`validation.START_PROBLEM_METADATA_KEY`), masks every string in it in both
+copies it serves, and lifts it to a top-level `start_problem` on the task
+read (`codec.start_problem_to_api`), as `dispatch` is lifted from
+`metadata.dispatch`.
+
+### Why a field would be better
+
+`metadata` is a map several writers rewrite whole (the worker's refund
+counters, swarm-api's hand-off marks, the reconciler's eviction counter), so
+each of them has to carry this key through untouched, inside a transaction;
+a writer that rebuilt `metadata` from a decoded copy taken before the
+reconciler's write would drop it. A field is not in that map.
+
+### The requested change
+
+```python
+@dataclass
+class Task:
+    ...
+    start_problem: dict[str, Any] | None = None
+```
+
+Same keys as above. Written ONLY by the reconciler; never accepted from a
+caller; not in the spec signature (attempt state, written during the
+attempt). Not validated in `__post_init__`, as `human_wait` is not.
+
+### What it would break if accepted
+
+Nothing: an optional field with a None default. The reconciler and swarm-api
+would read the field first and `metadata.start_problem` second for one
+release, then the metadata key would be retired from
+`RESERVED_METADATA_KEYS`.
+
+### If it is declined
+
+The record stays in `metadata.start_problem`, which is what ships.
+
+### Invariants
+
+**1-3** unchanged: it is a record, not a state; nothing that writes it moves
+a state, a lease or a pool. **9**: it is on the tenant's own task and served
+only through the tenant-scoped task routes, masked. 4-8 and 10 unchanged.
