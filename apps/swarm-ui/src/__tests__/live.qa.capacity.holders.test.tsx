@@ -99,7 +99,7 @@ describe('CAP-5: a pool that does not exist is not a zero', () => {
       return r!
     }, WAIT)
     expect(row.textContent).toContain('No pool is named nope:x')
-    expect([...row.querySelectorAll('.ctl-mark')].map((m) => m.textContent), 'a zero claimed for an unmeasured pool').not.toContain('real zero')
+    expect([...row.querySelectorAll('.ctl-mark')].map((m) => m.textContent), 'a zero claimed for an unmeasured pool').not.toContain('none')
   })
 
   it('still says real zero for a pool that exists and nobody holds', async () => {
@@ -110,7 +110,7 @@ describe('CAP-5: a pool that does not exist is not a zero', () => {
       return r!
     }, WAIT)
     expect(row.textContent).toContain('No lease holds runner:mock')
-    expect([...row.querySelectorAll('.ctl-mark')].map((m) => m.textContent)).toContain('real zero')
+    expect([...row.querySelectorAll('.ctl-mark')].map((m) => m.textContent)).toContain('none')
   })
 })
 

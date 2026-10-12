@@ -87,7 +87,7 @@ const NEEDS_A_PERSON: ReadonlySet<ApiErrorKind> = new Set<ApiErrorKind>([
 ])
 
 /** The accessible name of an empty state's mark when the screen gives none. */
-const EMPTY_SAY = 'A real zero: the read succeeded and returned nothing.'
+const EMPTY_SAY = 'The read succeeded and returned nothing.'
 
 /**
  * The wait before the next read, given the base cadence and how many reads in

@@ -424,12 +424,24 @@ test('absent-vs-zero teaches the encoding the screens actually draw', () => {
   const t = HELP['absent-vs-zero']
   assert.ok(!t.short.includes('dashed tile'), 'the card still says the dashed tile is the encoding')
   const all = [t.short, ...t.long].join(' ')
-  for (const mark of ['not measured', 'not read', 'real zero', '—', '~']) {
+  for (const mark of ['not measured', 'not read', '“none”', '—', '~']) {
     assert.ok(all.includes(mark), `the topic never names the ${mark} encoding`)
   }
   assert.ok(!/in the warning colour, because/.test(all), 'colour is still taught as the distinction')
   assert.ok(t.long.some((p) => /second channel/.test(p)), 'the dashed rule is not described as secondary')
   assert.ok(t.long.some((p) => /Timeline/.test(p)), 'the Timeline tiles are not covered')
+})
+
+/**
+ * "REAL ZERO" IS THE DESIGN TERM, NOT A WORD FOR USERS (owner, 2026-10-11).
+ * The mark reads `none`; help says in plain words what was read and what it
+ * found. MUTATION: put "a real zero" back into any topic.
+ */
+test('no help topic says "real zero" to a user', () => {
+  for (const [id, t] of Object.entries(HELP)) {
+    const all = [t.title, t.short, ...t.long].join(' ')
+    assert.ok(!/real zero/i.test(all), `help topic ${id} says "real zero"`)
+  }
 })
 
 /**

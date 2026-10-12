@@ -115,7 +115,7 @@ describe('API reads with nothing read draws its real zero with the Mark primitiv
     expect(marks).toHaveLength(1)
     const mark = marks[0] as HTMLElement
     expect(mark.classList.contains('is-zero')).toBe(true)
-    expect(mark.textContent).toBe('real zero')
+    expect(mark.textContent).toBe('none')
     expect(mark.getAttribute('role')).toBe('img')
     expect(mark.getAttribute('aria-label') ?? '').toMatch(/nothing has been read/i)
   })

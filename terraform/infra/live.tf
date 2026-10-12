@@ -71,7 +71,11 @@
 #   2. `scripts/create-secrets.sh --live-key`: the first version exists;
 #   3. the swarm-live image is built and its digest is in image_refs (the
 #      release builds it: scripts/build-images.sh ALL_TARGETS);
-#   4. `enable_live_browser = true`, apply: the relay's grants and address;
+#   4. `enable_live_browser = true`, apply: the relay's grants and address,
+#      swarm-api's SWARM_LIVE_URL and SWARM_LIVE_KEY, and the scheduler's
+#      LIVE_BROWSER_SIDECAR (locals.tf derives it from local.live_relay_enabled,
+#      so a browser pod gets the display sidecar exactly when there is a
+#      relay; LB-Lon);
 #   5. `kubernetes/apply.sh --swarm-system --confirm`, which applies
 #      `terraform output -raw swarm_live_manifest` to swarm-autopilot and then
 #      swarm-system's policies, and refuses the shared cluster agents-staging.
