@@ -165,6 +165,11 @@ function tabs(): HTMLElement[] {
 function label(t: HTMLElement): string {
   return t.querySelector('.c-tab-label')?.textContent ?? t.textContent ?? ''
 }
+
+function browserTab(): HTMLElement {
+  return tabs().find((t) => label(t) === 'Browser')!
+}
+
 const theaterOpen = () => screen.queryByRole('dialog', { name: /^Theater/ })
 const SPLIT = { timeout: 8000 }
 
