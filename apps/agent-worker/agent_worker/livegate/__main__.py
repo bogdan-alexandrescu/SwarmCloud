@@ -81,8 +81,6 @@ from .tunnel import StreamMux, Tunnel, TunnelError, TunnelWriter, relay_url
 
 log = logging.getLogger("agent_worker.livegate")
 
-#: Where the image puts Playwright's Chromium (images/agent-runtime-browser/Dockerfile).
-DEFAULT_BROWSERS_PATH = "/opt/playwright"
 XVFB = "/usr/bin/Xvfb"
 
 #: How long each piece of setup may take before it is a fatal error. Xvfb and
@@ -131,7 +129,10 @@ class GateConfig:
     #: Xvfb's `-fbdir`: the sidecar's own /tmp (capture.py).
     fbdir: Path = Path("/tmp")
     xvfb: str = XVFB
-    browsers_path: str = DEFAULT_BROWSERS_PATH
+    #: Where the image puts Playwright's Chromium: the image's own
+    #: PLAYWRIGHT_BROWSERS_PATH (images/agent-runtime-browser/Dockerfile), read
+    #: rather than copied here so the path is written down once.
+    browsers_path: str = ""
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "GateConfig":
@@ -156,7 +157,7 @@ class GateConfig:
             cdp_port=int(port),
             relay_url=url,
             display=env.get("DISPLAY") or ":0",
-            browsers_path=env.get("PLAYWRIGHT_BROWSERS_PATH") or DEFAULT_BROWSERS_PATH,
+            browsers_path=env.get("PLAYWRIGHT_BROWSERS_PATH") or "",
         )
 
 
@@ -232,6 +233,8 @@ async def start_xvfb(cfg: GateConfig) -> Child:
 
 def find_chromium(browsers_path: str) -> str:
     """Playwright's headed Chromium (not its headless shell), the newest installed."""
+    if not browsers_path:
+        raise SetupError("PLAYWRIGHT_BROWSERS_PATH is not set; the browser image sets it")
     found = sorted(glob.glob(os.path.join(browsers_path, "chromium-*", "chrome-linux*", "chrome")))
     if not found:
         raise SetupError(f"no Chromium under {browsers_path}")
@@ -956,7 +959,7 @@ async def run(cfg: GateConfig, deps: Deps | None = None, *, stop: asyncio.Event 
         try:
             loop.add_signal_handler(sig, stop.set)
             handled.append(sig)
-        except (NotImplementedError, RuntimeError, ValueError):
+        except (RuntimeError, ValueError):  # a loop without signal support raises a RuntimeError subclass
             pass
     try:
         try:
