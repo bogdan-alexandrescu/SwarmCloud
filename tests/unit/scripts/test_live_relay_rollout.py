@@ -356,7 +356,9 @@ def test_the_deploy_job_rolls_the_relay(workflow):
     assert at > _index(steps, "apply the tenant network policies to every tenant namespace")
     assert at < _index(steps, "smoke test (inside the VPC)")
     when = str(step.get("if", ""))
-    assert "steps.verify.outcome == 'success'" in when and "superseded != 'true'" in when, when
+    # `_workflow` flattens release-verify, so `steps.verify.outputs.superseded`
+    # reads as the expression the action declares for it.
+    assert "steps.verify.outcome == 'success'" in when and "superseded == 'true') != 'true'" in when, when
     assert "!cancelled()" in when, when
     # A relay that did not roll fails the release: that is the defect this fixes.
     assert not step.get("continue-on-error"), f"{workflow}: a relay that did not roll would pass the release"

@@ -22,6 +22,7 @@ Once per deployment, roughly in the order they are done.
 ## Day-to-day
 
 - [Re-apply the tenant network policies to every tenant namespace](tenant-network-policies.md): a tenant namespace lacks one of the tenant NetworkPolicies (the live browser cannot reach its relay), or a policy file was added and the release that applies it has not run.
+- [Roll the live relay to the release's image](live-relay-rollout.md): the live browser reports origin/device "Not reported" after a release that changed `apps/swarm-live`, or the release's relay rollout step is red.
 - [Offboard a tenant](tenant-offboarding.md): a tenant (a Google group, or a personal `u-<user>` tenant) is leaving the platform and everything provisioned for it has to go.
 
 ## Incidents
