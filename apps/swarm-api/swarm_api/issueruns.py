@@ -911,6 +911,32 @@ ENFORCED_STOPS = frozenset({STOP_SECURITY})
 WORKFLOWS_PATH = "WORKFLOWS_PATH"
 WORKFLOWS_PATTERN = ".github/workflows/**"
 
+#: The codes a run FAILS AT PLANNING with because of what the issue asks for,
+#: not because anything broke: planning it again answers the same until the
+#: issue changes. A schedule firing records such a run under `refused_runs`
+#: and does not count it failed (`planning_refusal`, `schedulefire.advance`).
+#: WORKFLOWS_PATH is the only one today: an invalid plan is the planner's
+#: fault and a departed run owner is the schedule's, so neither is listed.
+PLANNING_REFUSALS: frozenset[str] = frozenset({WORKFLOWS_PATH})
+
+
+def planning_refusal(run: "IssueRun") -> str | None:
+    """The `PLANNING_REFUSALS` code `run` failed at planning with, or None.
+
+    A FAILED run whose `error` starts `<CODE>:` and that never left PLANNING:
+    its history moved PLANNING -> FAILED, or (a run stored without history)
+    it holds no plan and no workflow.
+    """
+    if run.state != RunState.FAILED or not run.error:
+        return None
+    code = run.error.split(":", 1)[0].strip()
+    if code not in PLANNING_REFUSALS:
+        return None
+    moves = [h for h in run.history if isinstance(h, Mapping) and h.get("to") == RunState.FAILED.value]
+    if moves:
+        return code if moves[-1].get("from") == RunState.PLANNING.value else None
+    return code if run.plan is None and run.workflow_id is None else None
+
 #: IAM and Terraform bootstrap, held in EVERY repository whatever its
 #: registration says: a repository nobody registered has no
 #: `hard_stop_paths`, and these are not a tenant's to waive.

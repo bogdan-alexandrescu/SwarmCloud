@@ -73,6 +73,19 @@ function firingWord(f: ScheduleFiring): string {
   return f.outcome ?? f.state.replace(/_/g, ' ')
 }
 
+/**
+ * A planning refusal's code in plain words. A refused run is an answer about
+ * its issue, not a failure of the schedule: the firing stays `succeeded`, and
+ * this line says what the issue asked for that could not be done.
+ */
+const REFUSAL_WORDS: Record<string, string> = {
+  WORKFLOWS_PATH: 'its plan changes .github/workflows/ files, which SwarmCloud cannot push; a person must make that change',
+}
+
+export function refusalWords(code: string): string {
+  return REFUSAL_WORDS[code] ?? `refused at planning (${code})`
+}
+
 function FiringRows({ firings, go }: { firings: ScheduleFiring[]; go: (to: string) => void }) {
   const now = useNow()
   return (
@@ -99,6 +112,11 @@ function FiringRows({ firings, go }: { firings: ScheduleFiring[]; go: (to: strin
                 <td data-label="Outcome">
                   <span className="sc-cut" title={firingWord(f)}>{firingWord(f)}</span>
                   {f.approval_id !== null && f.state === 'awaiting_approval' && <span className="sc-sub">waiting for approval, holding nothing</span>}
+                  {(f.refused_runs ?? []).map((r) => (
+                    <span key={r.run_id} className="sc-sub" data-refused={r.code}>
+                      {r.issue} not started: {refusalWords(r.code)}
+                    </span>
+                  ))}
                 </td>
                 <td data-label="Work">
                   {f.work.length === 0 ? (
