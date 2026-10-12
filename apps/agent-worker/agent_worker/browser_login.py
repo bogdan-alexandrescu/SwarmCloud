@@ -7,7 +7,8 @@ WHETHER a session moves, and moves it between the gate and Secret Manager:
 * WORKFLOW CARRY, personal tenants only. When a browser step of a workflow in
   `u-<user>` ends with a session a hand-off produced, the worker asks the gate
   for the jar (`session_export`) and stores it as one secret,
-  `swarm-tenant-u-<user>-browser-wf-<workflow>`, with a 24-hour TTL. The next
+  `swarm-tenant-u-<user>-browser-wf-<workflow>`, with a 24-hour TTL that
+  swarm-api sets when it creates the secret. The next
   browser step of that workflow reads it and hands it to its gate
   (`session_import`) before the agent exists. swarm-api deletes the secret
   when the workflow ends (lane L9b); the TTL is the backstop.
@@ -28,11 +29,16 @@ with `browser_login_personal_only` -- swarm-api refuses it at submission
 (L9b); this is the worker's own copy of that rule, because a task document is
 not proof that the API ran.
 
-IAM IS THE BOUNDARY; THIS MODULE IS NOT. The worker's grant on
-`swarm-tenant-u-<user>-browser-*` is held by `swarm-agent-worker-u-<user>` alone
-(lane L8b). The names here come from the worker's admitted tenant and the task
-document, never from the agent, and every name is checked against the tenant's
-own prefix before it is used.
+IAM IS THE BOUNDARY; THIS MODULE IS NOT. The worker holds NO project-level grant
+on any `-browser-` secret and never `secrets.create` (owner decision 2026-10-11,
+lane L8c). Before it writes a session it asks swarm-api for the SLOT
+(`SlotApi`, `POST /v1/tasks/<task>/browser-session/slot`, signed with the
+attempt key and fenced on the generation): swarm-api creates the secret with
+its TTL or expiry and labels, and binds `swarm-agent-worker-u-<user>` -- alone
+-- to secretAccessor and secretVersionAdder on that one secret. The worker
+then only adds a version. The names here come from the worker's admitted
+tenant and the task document, never from the agent, and every name is checked
+against the tenant's own prefix before it is used; swarm-api checks again.
 
 A CARRY FAILS OPEN, A LOGIN FAILS CLOSED. A carry the gate cannot import costs
 one sign-in prompt; it is recorded and the step goes on. A login the task named
@@ -48,23 +54,37 @@ and outputs like any other secret.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
+from urllib.parse import quote
 
 from swarm_common.models import utcnow
 
+from .children import PROOF_HEADER, TIMESTAMP_HEADER, ChildApiError
 from .livegate.session import EXPORT_OP, IMPORT_OP, valid_jar
 
 #: A personal tenant's id (`swarm_common.identity.tenant_id_for_user`).
 PERSONAL_PREFIX = "u-"
 
 #: The workflow carry's lifetime, past which Secret Manager deletes it even if
-#: swarm-api's terminal-state delete never ran (section 5.5.1).
+#: swarm-api's terminal-state delete never ran (section 5.5.1). swarm-api sets
+#: it when it creates the secret (`swarm_api.browser_slots.CARRY_TTL_SECONDS`);
+#: restated here only for the record of what a carry is.
 CARRY_TTL_SECONDS = 24 * 3600
+
+#: The signing purpose of swarm-api's browser-session worker routes,
+#: `swarm_api.browser_logins.BROWSER_LOGIN_PURPOSE`, restated: this image does
+#: not carry swarm_api. tests/unit/worker/test_browser_session.py holds the two
+#: equal.
+SLOT_PURPOSE = "swarm-browser-login/v1"
+SLOT_PATH = "/v1/tasks/{task_id}/browser-session/slot"
 
 #: A named login's expiry: 14 days unless the person picks another, never more
 #: than 30 (section 5.5.1, the save dialog).
@@ -102,19 +122,77 @@ class GateChannel(Protocol):
 
 
 class Vault(Protocol):
-    """Secret Manager, as far as a session needs it."""
+    """Secret Manager, as far as a session needs it: read a version, add one.
+    Never create: swarm-api creates the secret (`Slots`)."""
 
     def read(self, name: str) -> str | None: ...
 
-    def write(
+    def write(self, name: str, payload: str) -> None: ...
+
+
+class SlotRefused(RuntimeError):
+    """swarm-api would not provision the secret. `code` is its refusal; no value."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class Slots(Protocol):
+    """swarm-api's slot route (`SlotApi`): create `name` and grant this worker on it."""
+
+    def provision(self, name: str) -> None: ...
+
+
+def slot_message(method: str, path: str, body: bytes, timestamp: str) -> bytes:
+    """What the attempt key signs for the slot route: swarm-api's
+    `browser_login_message`, restated."""
+    digest = hashlib.sha256(body).hexdigest()
+    return f"{SLOT_PURPOSE}\n{method.upper()}\n{path}\n{digest}\n{timestamp}".encode("utf-8")
+
+
+class SlotApi:
+    """`Slots` over swarm-api, signed with the attempt key.
+
+    `api` is the worker's `children.ChildApi` (it mints the ID token and
+    never logs it); `sign` is the attempt key's Ed25519 signer, raw message in,
+    raw signature out. Nothing this sends or raises carries a value: the body
+    is the attempt tuple and a secret id.
+    """
+
+    def __init__(
         self,
-        name: str,
-        payload: str,
+        api: Any,
         *,
-        ttl_seconds: int | None = None,
-        expire_time: datetime | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> None: ...
+        tenant_id: str,
+        task_id: str,
+        attempt_id: str,
+        lease_id: str,
+        generation: int,
+        sign: Callable[[bytes], bytes],
+        clock: Callable[[], float] = time.time,
+    ) -> None:
+        self._api = api
+        self._fields = {"tenant_id": tenant_id, "attempt_id": attempt_id,
+                        "lease_id": lease_id, "generation": int(generation)}
+        self._path = SLOT_PATH.format(task_id=quote(task_id, safe=""))
+        self._sign = sign
+        self._clock = clock
+
+    def provision(self, name: str) -> None:
+        body = json.dumps({**self._fields, "secret_id": name}, separators=(",", ":")).encode("utf-8")
+        timestamp = str(int(self._clock()))
+        signature = self._sign(slot_message("POST", self._path, body, timestamp))
+        headers = {
+            PROOF_HEADER: base64.urlsafe_b64encode(signature).decode("ascii").rstrip("="),
+            TIMESTAMP_HEADER: timestamp,
+        }
+        try:
+            _, payload = self._api.call("POST", self._path, body=body, headers=headers)
+        except ChildApiError as exc:
+            raise SlotRefused(exc.code) from None
+        if payload.get("secret_id") != name:
+            raise SlotRefused("slot_mismatch")
 
 
 def is_personal(tenant_id: str) -> bool:
@@ -231,11 +309,13 @@ class SessionCarrier:
         vault: Vault,
         gate: GateChannel,
         *,
+        slots: Slots,
         record: Record,
         register_secret: Callable[[str], None] | None = None,
         now: Callable[[], datetime] = utcnow,
     ) -> None:
         self._vault = vault
+        self._slots = slots
         self._gate = gate
         self._record = record
         self._register = register_secret
@@ -257,18 +337,17 @@ class SessionCarrier:
         for value in _values(jar):
             self._register(value)
 
-    def _write(self, plan: SessionPlan, name: str, envelope: Mapping[str, Any], *, kind: str,
-               ttl_seconds: int | None = None, expire_time: datetime | None = None) -> None:
+    def _write(self, plan: SessionPlan, name: str, envelope: Mapping[str, Any]) -> None:
+        """Ask swarm-api for the slot, then add the version. Raises `SlotRefused`.
+
+        The slot first, every time: it is what creates the secret (with its
+        TTL or expiry and labels) and what grants this worker on it, and it is
+        idempotent for a secret that exists. A worker never creates one."""
         # Belt and braces under IAM: never a name outside this tenant's own prefix.
         if not name.startswith(_prefix(plan.tenant_id)):
             raise ValueError("refusing a browser-session secret outside the tenant's prefix")
-        self._vault.write(
-            name,
-            json.dumps(envelope, separators=(",", ":"), ensure_ascii=True),
-            ttl_seconds=ttl_seconds,
-            expire_time=expire_time,
-            labels={"managed-by": "swarm-worker", "swarm-tenant": plan.tenant_id, "swarm-browser": kind},
-        )
+        self._slots.provision(name)
+        self._vault.write(name, json.dumps(envelope, separators=(",", ":"), ensure_ascii=True))
 
     def _export(self) -> dict[str, Any] | None:
         jar = self._gate_call(EXPORT_OP, {}).get("jar")
@@ -350,9 +429,14 @@ class SessionCarrier:
         saved_at = _iso(self._now())
         if plan.carry_secret is not None:
             envelope = {"v": ENVELOPE_VERSION, "kind": "carry", "saved_at": saved_at, "jar": jar}
-            self._write(plan, plan.carry_secret, envelope, kind="carry", ttl_seconds=CARRY_TTL_SECONDS)
-            written.append(plan.carry_secret)
-            self._record("browser_session_stored", {"workflow_id": plan.workflow_id or ""})
+            try:
+                self._write(plan, plan.carry_secret, envelope)
+            except SlotRefused as exc:
+                # A carry fails open: the next step signs in again.
+                self._record("browser_session_carry_failed", {"cause": exc.code})
+            else:
+                written.append(plan.carry_secret)
+                self._record("browser_session_stored", {"workflow_id": plan.workflow_id or ""})
         if plan.login_secret is not None and self._login_expires is not None:
             # The login's site asked for a sign-in anyway and the person signed
             # in again: a new version, the same expiry.
@@ -363,9 +447,14 @@ class SessionCarrier:
                 "expires_at": self._login_expires,
                 "jar": jar,
             }
-            self._write(plan, plan.login_secret, envelope, kind="login")
-            written.append(plan.login_secret)
-            self._record("browser_login_refreshed", {"name": plan.login_name or ""})
+            try:
+                self._write(plan, plan.login_secret, envelope)
+            except SlotRefused as exc:
+                # The stored login stays as it was; it expires or prompts again.
+                self._record("browser_login_refresh_failed", {"name": plan.login_name or "", "cause": exc.code})
+            else:
+                written.append(plan.login_secret)
+                self._record("browser_login_refreshed", {"name": plan.login_name or ""})
         return written
 
     # ----------------------------------------------------------- save
@@ -399,7 +488,10 @@ class SessionCarrier:
             "site": site if isinstance(site, str) else None,
             "jar": jar,
         }
-        self._write(plan, secret, envelope, kind="login", expire_time=expires)
+        try:
+            self._write(plan, secret, envelope)
+        except SlotRefused as exc:
+            raise BrowserLoginRefused("browser_login_slot_refused", exc.code) from None
         self._record("browser_login_saved", {"name": name})
         return secret
 
@@ -435,27 +527,10 @@ class SecretManagerVault:
             return None
         return response.payload.data.decode("utf-8")
 
-    def write(
-        self,
-        name: str,
-        payload: str,
-        *,
-        ttl_seconds: int | None = None,
-        expire_time: datetime | None = None,
-        labels: Mapping[str, str] | None = None,
-    ) -> None:
-        from google.api_core import exceptions  # lazy import
-
-        client = self._get()
-        secret: dict[str, Any] = {"replication": {"automatic": {}}, "labels": dict(labels or {})}
-        if ttl_seconds is not None:
-            secret["ttl"] = {"seconds": int(ttl_seconds)}
-        elif expire_time is not None:
-            secret["expire_time"] = expire_time
-        try:
-            client.create_secret(
-                request={"parent": f"projects/{self._project_id}", "secret_id": name, "secret": secret}
-            )
-        except exceptions.AlreadyExists:
-            pass
-        client.add_secret_version(request={"parent": self._secret(name), "payload": {"data": payload.encode("utf-8")}})
+    def write(self, name: str, payload: str) -> None:
+        """A new version of a secret swarm-api provisioned. No create: this
+        worker holds no `secrets.create`, only secretVersionAdder on the one
+        secret swarm-api granted it (lane L8c)."""
+        self._get().add_secret_version(
+            request={"parent": self._secret(name), "payload": {"data": payload.encode("utf-8")}}
+        )
