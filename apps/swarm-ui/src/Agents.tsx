@@ -10,10 +10,12 @@ import { createPortal } from 'react-dom'
 import { Em, Mark, type ChipTone } from './AgentDetail'
 import { TaskIdLine } from './TaskIdLine'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
-import { TASK_PAGE_LIMIT, loadTask, loadTasks, type ResourceClasses } from './api'
+import { TASK_PAGE_LIMIT, loadLiveSession, loadTask, loadTasks, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import type { Result } from './fetch'
-import { liveBrowserRows, needsYou } from './Handoff'
+import { isLiveBrowser, liveBrowserRows, needsYou } from './Handoff'
+import { presetLabel } from './LiveBrowser'
+import { theaterPath } from './LiveThumb'
 import { HelpCard, phoneWidth } from './HelpCard'
 import { toggleListSnap, useListSnap } from './listSnap'
 import './styles/agents.css'
@@ -513,11 +515,15 @@ function AgentsBody({
   // THE STARTED SORT (#376), on every tab: newest start, oldest start, then
   // back to the list's own order. A reader's scratch, so not in the address.
   const [startedSort, setStartedSort] = useState<StartedSort>(null)
-  // THE LIVE BROWSERS FILTER (docs/design/live-browser.md §6, lane LB-L12):
-  // on the Live tab, only RUNNING browser agents, the ones waiting for a
-  // person first (`liveBrowserRows`). A reader's scratch, like the sort.
+  // THE "ALL | LIVE N" SWITCH (docs/design/live-browser.md §6, "All live
+  // browsers"; lanes LB-L12, LB-UX3): on the Live tab, Live lists only
+  // RUNNING browser agents, the ones waiting for a person first
+  // (`liveBrowserRows`), and N counts them. It was a "Live browsers"
+  // checkbox; the chosen design draws a switch. A reader's scratch, like the
+  // sort.
   const [browsersOnly, setBrowsersOnly] = useState(false)
   const browsers = shown === 'live' && browsersOnly
+  const liveBrowsers = useMemo(() => liveBrowserRows(page.tasks).length, [page.tasks])
   const sort: SortControl = {
     started: startedSort,
     onStarted: () => setStartedSort((s) => (s === null ? 'desc' : s === 'desc' ? 'asc' : null)),
@@ -751,11 +757,35 @@ function AgentsBody({
           />
         )}
 
-        {shown === 'live' && (
-          <label className="ag-filter check">
-            <input type="checkbox" checked={browsersOnly} onChange={(e) => setBrowsersOnly(e.target.checked)} />
-            Live browsers
-          </label>
+        {/* OFFERED ONLY WHEN THERE IS A LIVE BROWSER TO SHOW (#139 at 390). With
+            none, `Live 0` can only empty the list, and on a phone the switch
+            is a 44px row of its own that put the first Agents row past the
+            screen's midpoint. Kept while it is on, so the way back to All
+            never disappears under the reader. */}
+        {shown === 'live' && (liveBrowsers > 0 || browsersOnly) && (
+          <Segmented
+            label="All agents or live browser agents"
+            value={browsersOnly ? 'browsers' : 'all'}
+            options={[
+              { key: 'all', label: 'All', title: 'Every agent holding a pool slot' },
+              {
+                key: 'browsers',
+                label: 'Live',
+                count: liveBrowsers,
+                title: 'Running browser agents only, the ones waiting for you first',
+              },
+            ]}
+            onChange={(k) => setBrowsersOnly(k === 'browsers')}
+          />
+        )}
+
+        {/* ⤢ THEATER ALL (§6): the first row's Browser tab in the theater,
+            whose prev and next walk the live browsers from there. The first
+            row is the one waiting for a person, when one is. */}
+        {browsers && rows.length > 0 && (
+          <a className="ag-theater-all" href={theaterPath(rows[0]!.id, null)}>
+            ⤢ theater all
+          </a>
         )}
 
         {shown === 'recent' && (
@@ -1591,6 +1621,7 @@ function CompactRow({
         {el.text}
       </span>
       <span className="cr-sub">
+        {task.state === 'RUNNING' && isLiveBrowser(task) && <DeviceThumb taskId={task.id} />}
         <span className="cr-profile">{profile}</span>
         {' · '}
         <span className="cr-owner" title={task.submitted_by ?? undefined}>
@@ -1671,5 +1702,70 @@ function CompactRow({
           document.body,
         )}
     </div>
+  )
+}
+
+/** The outline a live browser row draws: what shape of screen its browser is. */
+export type DeviceShape = 'phone' | 'tablet' | 'desktop' | 'unknown'
+
+/**
+ * Which outline a session's device is drawn as. The preset's own served
+ * size decides (§6.1: a fixed, named list in the gate), so a preset added
+ * there is drawn by its size rather than missed by a name list here: not
+ * mobile is a desktop, mobile with a short side of 600px or more a tablet,
+ * other mobile a phone. A preset the read did not list falls back to its
+ * name. Null -- the gate has not reported the device (LB-SEAM, §6.2) -- is
+ * `unknown`, never a guessed desktop.
+ */
+export function deviceShape(session: Pick<LiveSession, 'device' | 'presets'> | null): DeviceShape {
+  const device = session?.device ?? null
+  if (device === null) return 'unknown'
+  const p = session!.presets.find((x) => x.name === device.preset)
+  if (p !== undefined) return !p.mobile ? 'desktop' : Math.min(p.width, p.height) >= 600 ? 'tablet' : 'phone'
+  if (/ipad|tab/i.test(device.preset)) return 'tablet'
+  if (/iphone|pixel|phone|android/i.test(device.preset)) return 'phone'
+  return /desktop/i.test(device.preset) ? 'desktop' : 'unknown'
+}
+
+/**
+ * A LIVE BROWSER ROW'S DEVICE OUTLINE (§6, "a device thumbnail per row"; lane
+ * LB-UX3): a static phone, tablet or desktop outline in the session's
+ * orientation -- not a stream. The workflow card's ~1 fps picture is a socket
+ * per card (LiveThumb.tsx); forty rows of sockets on a list that re-reads
+ * every 5s would be the cost of forty Browser tabs.
+ *
+ * READ ONCE PER ROW: the session read is per task, so it is made when the row
+ * first draws and not on the list's poll. The device moves only when someone
+ * switches it, and the open agent's Browser tab shows the live one.
+ */
+function DeviceThumb({ taskId }: { taskId: string }) {
+  const [got, setGot] = useState<{ taskId: string; session: LiveSession | null } | null>(null)
+  useEffect(() => {
+    let live = true
+    void loadLiveSession(taskId).then((r) => {
+      if (live && (r.status === 'ok' || r.status === 'stale')) setGot({ taskId, session: r.data.session ?? null })
+    })
+    return () => {
+      live = false
+    }
+  }, [taskId])
+  const session = got !== null && got.taskId === taskId ? got.session : null
+  const shape = deviceShape(session)
+  const device = session?.device ?? null
+  // A desktop is landscape and a phone portrait unless the session says otherwise.
+  const orientation = device?.orientation ?? (shape === 'phone' || shape === 'tablet' ? 'portrait' : 'landscape')
+  const say =
+    device === null
+      ? 'Browser device not reported'
+      : `Browser device: ${presetLabel(device.preset)}, ${device.orientation}`
+  return (
+    <span
+      className={`ag-device is-${shape} is-${orientation}`}
+      data-device={shape}
+      data-orientation={orientation}
+      role="img"
+      aria-label={say}
+      title={say}
+    />
   )
 }
