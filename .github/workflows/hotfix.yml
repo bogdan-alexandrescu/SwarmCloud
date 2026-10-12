@@ -339,6 +339,43 @@ jobs:
         if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
         run: ./scripts/apply-tenant-network-policies.sh --get-credentials --confirm
 
+      # LANE OPS-RELAY (part of #1030). The relay -- StatefulSet
+      # swarm-system/swarm-live -- runs the swarm-live digest terraform
+      # rendered into `swarm_live_manifest`, but until this step no release
+      # applied that manifest: on 2026-10-12 the relay ran a pre-change image
+      # twice until the operator ran `kubernetes/apply.sh --swarm-system
+      # --confirm` by hand. scripts/roll-live-relay.sh applies it through that
+      # same apply.sh path (its manifest checks and the live-ingress parity
+      # check), waits for `rollout status`, and fails unless the relay's pods
+      # run the rendered digest. It refuses the shared agents-staging cluster.
+      # With enable_live_browser off it notices and exits 0.
+      #
+      # Its own uv setup and sync, NOT switched by vars.APPLY_TENANT_NAMESPACES:
+      # apply.sh runs render.py and network_parity.py on PYTHON_BIN, and the
+      # relay rolls whether or not tenant namespaces are applied.
+      - uses: astral-sh/setup-uv@v7
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        with:
+          enable-cache: true
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: sync the project's Python for the relay rollout
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        run: uv sync --frozen --all-extras
+
+      - name: roll the live relay to this release's image
+        # continue-on-error: owner decision 2026-10-12 06:45 PDT. Whether the
+        # deployer may write StatefulSets in swarm-system is unmeasured (its
+        # tenant-namespace writes are measured clean). Warn-only until one
+        # release log shows a clean roll; then a follow-up removes this line so
+        # a relay left on the old image fails the release.
+        continue-on-error: true
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        env:
+          PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/roll-live-relay.sh --tf-init --get-credentials --confirm
+
       # The relay's apply runs render.py and network_parity.py on every
       # release, so its Python is NOT switched by vars.APPLY_TENANT_NAMESPACES
       # as the tenant-namespace setup above is (that one stays off until the
