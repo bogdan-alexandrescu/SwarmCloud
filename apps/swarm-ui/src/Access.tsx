@@ -3,6 +3,7 @@ import {
   disableAccessOwner, disconnectGitHub, enableAccessOwner, loadAccess, loadAccessMembers, loadAccessOwners,
   loadAccessRepositories, putAccessGrant, requestAccessInstall, revokeAccessGrant, typedRepoId, verifyAccessGrant,
 } from './api'
+import { BrowserLoginsPane } from './BrowserLogins'
 import { Banner, Button, ButtonLink, Card, Chip, Dash, EmptyState, ToneMark } from './components'
 import type { ApiError, Result } from './fetch'
 import { ConnectButton, Refusal } from './GitHubConnect'
@@ -76,21 +77,28 @@ import './styles/onboarding.css'
  * window regains focus.
  */
 
-type View = 'mine' | 'members'
+type View = 'mine' | 'members' | 'logins'
 
 /**
  * WHOSE ACCESS IS IN THE ADDRESS (live QA RSA-28, 2026-10-11). Mine / Members
  * was component state, so a reload or a shared link returned to Mine. It is
  * `?view=members` now; Mine is the bare path.
+ *
+ * BROWSER LOGINS (LB-7, docs/design/live-browser.md §5.5.1) are a third view,
+ * `?view=logins`: the person's own saved live-browser sessions, by name, with
+ * a typed Revoke (BrowserLogins.tsx). A view of Access rather than a nav tab,
+ * because the design adds no tab (§6), so the issue forms' "Where" list
+ * stays as it is.
  */
 function viewFromUrl(): View {
   if (typeof window === 'undefined') return 'mine'
-  return new URLSearchParams(window.location.search).get('view') === 'members' ? 'members' : 'mine'
+  const v = new URLSearchParams(window.location.search).get('view')
+  return v === 'members' || v === 'logins' ? v : 'mine'
 }
 
 function writeViewToUrl(v: View): void {
   const url = new URL(window.location.href)
-  if (v === 'members') url.searchParams.set('view', 'members')
+  if (v !== 'mine') url.searchParams.set('view', v)
   else url.searchParams.delete('view')
   window.history.replaceState(window.history.state, '', `${url.pathname}${url.search}${url.hash}`)
 }
@@ -1535,6 +1543,7 @@ export function AccessScreen() {
           options={[
             { key: 'mine', label: 'Mine' },
             { key: 'members', label: 'Members', title: 'Every member of the tenant: for an admin' },
+            { key: 'logins', label: 'Browser logins', title: 'Sessions you saved from a live browser in your workspace' },
           ]}
         />
         <span className="ur-acts">
@@ -1550,6 +1559,8 @@ export function AccessScreen() {
       {view === 'mine' && <AccessPolicy />}
       {view === 'members' ? (
         <Members />
+      ) : view === 'logins' ? (
+        <BrowserLoginsPane tenantId={tenant} />
       ) : (
         <UrRegion state={overview.state} route="GET /v1/access" what="Your access" onRetry={overview.reload} lines={4}>
           {(o) => <Mine overview={o} reloadOverview={overview.reload} />}
