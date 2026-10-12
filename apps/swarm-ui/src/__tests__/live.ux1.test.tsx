@@ -208,6 +208,13 @@ function browserTab(): HTMLElement {
 
 const theaterOpen = () => screen.queryByRole('dialog', { name: /^Theater/ })
 
+/**
+ * The split's waits: two reads (the task, then the session) and a redirect
+ * before the tab is chosen, which under a loaded parallel run takes longer
+ * than waitFor's default second.
+ */
+const SPLIT = { timeout: 8000 }
+
 beforeEach(() => {
   localStorage.clear()
   resetListSnap()
@@ -241,7 +248,7 @@ describe('item 1: Details, Browser, Logs, and Browser opens while the agent runs
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
     const went: string[] = []
     render(<Routed onGo={(to) => went.push(to)} />)
-    await waitFor(() => expect(browserTab().getAttribute('aria-selected')).toBe('true'))
+    await waitFor(() => expect(browserTab().getAttribute('aria-selected')).toBe('true'), SPLIT)
     expect(tabs().map(label).slice(0, 3)).toEqual(['Details', 'Browser', 'Logs'])
     expect(went).toContain(`work/task/${ID}/browser`)
     expect(went.filter((to) => to.endsWith('/logs'))).toEqual([])
@@ -251,12 +258,12 @@ describe('item 1: Details, Browser, Logs, and Browser opens while the agent runs
     api.loadTask.mockResolvedValue(ok(agent()))
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
     const { unmount } = render(<Routed onGo={() => {}} />)
-    await waitFor(() => expect(browserTab().textContent).toContain('LIVE'))
+    await waitFor(() => expect(browserTab().textContent).toContain('LIVE'), SPLIT)
     unmount()
 
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: null }))
     render(<Routed onGo={() => {}} />)
-    await waitFor(() => expect(browserTab().getAttribute('aria-selected')).toBe('true'))
+    await waitFor(() => expect(browserTab().getAttribute('aria-selected')).toBe('true'), SPLIT)
     expect(browserTab().textContent).not.toContain('LIVE')
   })
 })
@@ -286,14 +293,14 @@ describe('item 2: `browser` is a routed pane, and ?theater=1 opens the theater',
     api.loadTask.mockResolvedValue(ok(agent()))
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
     render(<Routed start="browser" theater onGo={() => {}} />)
-    await waitFor(() => expect(theaterOpen()).not.toBeNull())
+    await waitFor(() => expect(theaterOpen()).not.toBeNull(), SPLIT)
   })
 
   it('opens the Browser tab, not the theater, without it', async () => {
     api.loadTask.mockResolvedValue(ok(agent()))
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session() }))
     render(<Routed start="browser" onGo={() => {}} />)
-    await waitFor(() => expect(document.querySelector('.live-toolbar')).not.toBeNull())
+    await waitFor(() => expect(document.querySelector('.live-toolbar')).not.toBeNull(), SPLIT)
     expect(browserTab().getAttribute('aria-selected')).toBe('true')
     expect(theaterOpen()).toBeNull()
   })
@@ -412,8 +419,8 @@ describe('item 6: one hand-off banner, with Take control and Open in theater', (
     api.loadTask.mockResolvedValue(ok(holding()))
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: s }))
     render(<Routed start="browser" onGo={() => {}} />)
-    await waitFor(() => expect(document.querySelector('.live-toolbar')).not.toBeNull())
-    await waitFor(() => expect(strips()).toHaveLength(1))
+    await waitFor(() => expect(document.querySelector('.live-toolbar')).not.toBeNull(), SPLIT)
+    await waitFor(() => expect(strips()).toHaveLength(1), SPLIT)
   }
 
   it('draws exactly one banner on the Browser tab, with the reason, the site and the time left', async () => {
@@ -431,7 +438,7 @@ describe('item 6: one hand-off banner, with Take control and Open in theater', (
     fireEvent.click(within(banner).getByRole('button', { name: 'Take control' }))
     expect(within(banner).getByRole('dialog', { name: /take control/i })).toBeTruthy()
     fireEvent.click(within(banner).getByRole('button', { name: 'Open in theater' }))
-    await waitFor(() => expect(theaterOpen()).not.toBeNull())
+    await waitFor(() => expect(theaterOpen()).not.toBeNull(), SPLIT)
   })
 
   it('hides Take control from a person who may not take it', async () => {
@@ -447,12 +454,12 @@ describe('item 6: one hand-off banner, with Take control and Open in theater', (
     api.loadLiveSession.mockResolvedValue(ok<LiveRead>({ live_browser: true, session: session({ human_wait: WAIT }) }))
     const went: string[] = []
     render(<Routed start="logs" onGo={(to) => went.push(to)} />)
-    await waitFor(() => expect(strips()).toHaveLength(1))
+    await waitFor(() => expect(strips()).toHaveLength(1), SPLIT)
     const banner = strips()[0] as HTMLElement
-    await waitFor(() => expect(within(banner).getByRole('button', { name: 'Take control' })).toBeTruthy())
+    await waitFor(() => expect(within(banner).getByRole('button', { name: 'Take control' })).toBeTruthy(), SPLIT)
     fireEvent.click(within(banner).getByRole('button', { name: 'Open in theater' }))
     expect(went).toContain(`work/task/${ID}/browser?theater=1`)
-    await waitFor(() => expect(theaterOpen()).not.toBeNull())
+    await waitFor(() => expect(theaterOpen()).not.toBeNull(), SPLIT)
   })
 
   it('on a parked hand-off, "I\'m ready to sign in" calls human-ready and then opens the Browser tab', async () => {
@@ -461,15 +468,15 @@ describe('item 6: one hand-off banner, with Take control and Open in theater', (
     api.loadTask.mockResolvedValue(ok(parked()))
     const went: string[] = []
     render(<Routed onGo={(to) => went.push(to)} />)
-    const ready = await screen.findByRole('button', { name: /I'm ready to sign in/ })
+    const ready = await screen.findByRole('button', { name: /I'm ready to sign in/ }, SPLIT)
     expect(strips()).toHaveLength(1)
     await act(async () => {
       fireEvent.click(ready)
     })
-    await waitFor(() => expect(went).toContain(`work/task/${ID}/browser`))
+    await waitFor(() => expect(went).toContain(`work/task/${ID}/browser`), SPLIT)
     const posts = fetchMock.mock.calls.filter((c) => (c as unknown[])[1] !== undefined)
     expect(String((posts[0] as unknown[])[0])).toBe(`/v1/tasks/${ID}/human-ready`)
-    await waitFor(() => expect(browserTab().getAttribute('aria-selected')).toBe('true'))
+    await waitFor(() => expect(browserTab().getAttribute('aria-selected')).toBe('true'), SPLIT)
     expect(strips(), 'the Browser tab drew a second banner').toHaveLength(1)
   })
 })
@@ -487,7 +494,7 @@ describe('item 7: the header reads Copy link · Take control · Stop', () => {
       const a = document.querySelector<HTMLElement>('.ag-head-actions')!
       expect(within(a).getByRole('button', { name: 'Take control' })).toBeTruthy()
       return a
-    })
+    }, SPLIT)
     const names = within(actions)
       .getAllByRole('button')
       .map((b) => b.getAttribute('aria-label') ?? (b.textContent ?? '').trim())
