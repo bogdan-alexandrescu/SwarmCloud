@@ -34,8 +34,16 @@ vi.mock('@novnc/novnc/core/rfb.js', () => ({ default: class {} }))
 // api.ts is imported, so the environment is set first and the modules are
 // imported after it.
 vi.stubEnv('VITE_LIVE', '1')
-const { loadLiveRecordings, loadLiveSession, mintLiveTicket, openLiveToMembers, renewLiveControl, returnLiveControl, takeLiveControl } =
-  await import('../api')
+const {
+  loadLiveRecordings,
+  loadLiveSession,
+  mintLiveTicket,
+  openLiveToMembers,
+  renewLiveControl,
+  returnLiveControl,
+  setLiveDevice,
+  takeLiveControl,
+} = await import('../api')
 const { useLiveSession } = await import('../LiveBrowser')
 const { segmentsOfTenant } = await import('../Theater')
 const { loadLiveActions } = await import('../TheaterTimeline')
@@ -84,6 +92,8 @@ const CALLS: Record<string, (body: unknown) => Promise<Result<unknown>>> = {
   renewLiveControl: () => renewLiveControl(TASK),
   returnLiveControl: () => returnLiveControl(TASK),
   openLiveToMembers: () => openLiveToMembers(TASK),
+  setLiveDevice: (body) =>
+    setLiveDevice(TASK, (body ?? { preset: 'desktop' }) as Parameters<typeof setLiveDevice>[1]),
   // The Attempts tab's player and the theater's replay share this one loader (LB-UX2a).
   loadRecordings: () => loadLiveRecordings(TASK),
   loadLiveActions: () => loadLiveActions(TASK),
@@ -112,6 +122,8 @@ describe('the session read, as the API serves it, draws a Browser tab', () => {
     expect(s.you.can_control).toBe(true)
     expect(s.you.can_preempt).toBe(false)
     expect(s.you.can_open).toBe(true)
+    // Nobody is in control, so nobody switches the device (LB-DEV-B).
+    expect(s.you.can_switch_device).toBe(false)
     expect(s.you.email).toBe('alice@saga.xyz')
     expect(s.controller).toBeNull()
     expect(s.human_wait?.expect).toBe('github.com')
@@ -135,6 +147,8 @@ describe('the session read, as the API serves it, draws a Browser tab', () => {
     expect(s.device).toEqual({ preset: 'iphone-15', orientation: 'portrait', touch: true })
     expect(s.controller?.email).toBe('dave@saga.xyz')
     expect(s.you.can_preempt).toBe(true)
+    // dave holds control, not alice: her device bar stays disabled.
+    expect(s.you.can_switch_device).toBe(false)
     expect(s.open_to_members).toBe(true)
   })
 
@@ -187,6 +201,34 @@ describe('the control and ticket routes', () => {
     expect(JSON.parse(String(init.body))).toEqual(fixture('control.take.request.json'))
     const taken = data(r) as LiveRead
     expect(taken.session?.controller?.email).toBe('alice@saga.xyz')
+  })
+
+  it('device.request.json: setLiveDevice sends exactly the body the API model accepts, a preset by name', async () => {
+    const fetchMock = serve(fixture('device.switched.json'))
+    const body = fixture<Parameters<typeof setLiveDevice>[1]>('device.request.json')
+    const r = await setLiveDevice(TASK, body)
+    expect(r.status).toBe('ok')
+    const [url, init] = fetchMock.mock.calls[0]!
+    expect(String(url).split('?')[0]).toBe(`/v1/tasks/${TASK}/live/device`)
+    expect(init?.method).toBe('POST')
+    const sent = JSON.parse(String(init!.body)) as Record<string, unknown>
+    expect(sent).toEqual(fixture('device.request.json'))
+    // Invariant 10: a name, never a size.
+    expect(Object.keys(sent).sort()).toEqual(['orientation', 'preset', 'touch'])
+  })
+
+  it('device.switched.json: the controller may switch, and the device is what the gate reported', async () => {
+    serve(fixture('device.switched.json'))
+    const s = data(await loadLiveSession(TASK)).session!
+    expect(s.controller?.email).toBe('alice@saga.xyz')
+    expect(s.you.can_switch_device).toBe(true)
+    expect(s.device).toEqual({ preset: 'iphone-15', orientation: 'landscape', touch: false })
+  })
+
+  it('control.taken.json: the person who took control may switch the device', async () => {
+    serve(fixture('control.taken.json'))
+    const s = data(await loadLiveSession(TASK)).session!
+    expect(s.you.can_switch_device).toBe(true)
   })
 
   it('returnLiveControl is DELETE on .../live/control, which the API now serves', async () => {

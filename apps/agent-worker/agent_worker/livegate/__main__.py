@@ -72,7 +72,7 @@ from .ctl import DEFAULT_MARKER, CtlServer
 from .device import DeviceController, XRandrDisplay, crop
 from .inject import InjectError, XInjector, display_socket
 from .mask import MaskCdp, MaskState
-from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, resolve
+from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
 from .report import device_report, encode_report, page_origin
 from .rfb import ControlState, FrameHub, RfbSession, masked
 from .session import OPS as SESSION_OPS
@@ -96,6 +96,12 @@ TUNNEL_OPEN_SECONDS = 8.0
 CAPTURE_FPS = 10
 #: The longest ticket the relay accepts (swarm_live.rendezvous MAX_TICKET_CHARS).
 MAX_TICKET_CHARS = 4096
+#: The keys of the relay's `DEVICE` frame (rendezvous.DeviceRequest.payload):
+#: a preset by name, an orientation and the person's touch toggle. Anything
+#: else -- a width, a scale -- is refused, as the ctl `device` operation is.
+DEVICE_FRAME_KEYS = frozenset({"preset", "orientation", "touch"})
+#: A `DEVICE` frame larger than this is not a device choice.
+MAX_DEVICE_FRAME = 256
 
 #: A hand-off's `expect`: a host (the worker checked it with `expect_refusal`).
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?")
@@ -558,6 +564,8 @@ class LiveGate:
         self.origin: dict[str, Any] | None = None
         self.device_reported: dict[str, Any] | None = None
         self._report_due = asyncio.Event()
+        #: One relay device choice applied at a time, in the order they came.
+        self._device_lock = asyncio.Lock()
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._spawned: set[asyncio.Task[Any]] = set()
 
@@ -683,7 +691,8 @@ class LiveGate:
     # -- the report (report.py) -------------------------------------------------
 
     def _device_changed(self, device: Device) -> None:
-        self.device_reported = device_report(device)
+        touch_on = self.touch.touch_on if self.touch is not None else True
+        self.device_reported = device_report(device, touch_on)
         self._report_due.set()
 
     def _origin_changed(self, origin: dict[str, Any] | None) -> None:
@@ -766,7 +775,7 @@ class LiveGate:
             await tunnel.close()
             raise
         self.tunnel = tunnel
-        self.mux = StreamMux(tunnel, self._serve_rfb, self._on_control)
+        self.mux = StreamMux(tunnel, self._serve_rfb, self._on_control, self._on_device)
         self._tasks["tunnel"] = asyncio.create_task(self._run_tunnel(tunnel, self.mux))
         self._tasks["report"] = asyncio.create_task(self._reporter(tunnel))
         self.record("tunnel_open", {})
@@ -804,6 +813,56 @@ class LiveGate:
             await self._grant(conn_id)
         else:
             await self._release("released")
+
+    # -- the controller's device (§6.1, Q13; LB-DEV-B) -------------------------
+
+    async def _on_device(self, payload: bytes) -> None:
+        """The relay's DEVICE: swarm-api checked that the person asking holds
+        control and MAC'd their choice. Applied on its own task -- a resize and
+        a CDP round per page must not hold up the tunnel's RFB frames -- one at
+        a time, in order."""
+        task = asyncio.get_running_loop().create_task(self._apply_device_frame(payload))
+        self._spawned.add(task)
+        task.add_done_callback(self._spawned.discard)
+
+    async def _apply_device_frame(self, payload: bytes) -> None:
+        async with self._device_lock:
+            try:
+                await self.apply_device(payload)
+            except Exception as exc:  # noqa: BLE001 -- refused or failed: recorded, the view goes on
+                log.info("live device: relay request not applied (%s)", type(exc).__name__)
+
+    async def apply_device(self, payload: bytes) -> Device:
+        """A `DEVICE` frame's choice, through the same `DeviceController.select`
+        the ctl `device` operation uses, plus the person's touch toggle. The
+        result reaches swarm-api as the next report (`_device_changed`)."""
+        try:
+            choice = json.loads(payload) if len(payload) <= MAX_DEVICE_FRAME else None
+        except ValueError:
+            choice = None
+        touch_on = choice.get("touch") if isinstance(choice, dict) else None
+        if (not isinstance(choice, dict) or set(choice) != DEVICE_FRAME_KEYS
+                or not (touch_on is None or isinstance(touch_on, bool))):
+            self.record("device_refused", {"cause": "not_a_preset_name"})
+            raise ValueError("a device is chosen by preset name only")
+        devices = self._need(self.devices)
+        touch = self._need(self.touch)
+        try:
+            wanted = resolve(choice["preset"], choice["orientation"])
+        except UnknownPreset:
+            self.record("device_refused", {"cause": "unknown_preset"})
+            raise
+        if touch_on and not wanted.touch:
+            self.record("device_refused", {"cause": "no_touch"})
+            raise UnknownPreset("this preset has no touch")
+        device = devices.device
+        if (wanted.name, wanted.orientation) != (device.name, device.orientation):
+            # Changes nothing when it fails, the toggle included.
+            device = await devices.select(wanted.name, wanted.orientation)
+        if touch_on is not None:
+            touch.set_touch(touch_on)
+        self._device_changed(device)
+        return device
 
     async def _grant(self, conn_id: str) -> None:
         proxy, control, touch = self.proxy, self.control, self.touch

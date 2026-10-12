@@ -6449,7 +6449,11 @@ export interface LivePreset {
 export interface LiveDevice {
   preset: string
   orientation: 'portrait' | 'landscape'
-  /** The person in control works it by touch (§6.1): pointer events become touch events at the gate. */
+  /**
+   * The person in control works it by touch (§6.1): pointer events become
+   * touch events at the gate. The preset's touch AND the controller's toggle
+   * (LB-DEV-B), so a phone with touch turned off reports false.
+   */
   touch: boolean
 }
 
@@ -6487,6 +6491,8 @@ export interface LiveSession {
     can_preempt: boolean
     /** May open control to every member: the submitter only (§5.1). */
     can_open: boolean
+    /** May switch the device, rotate it and turn touch on or off: the person in control only (§6.1, Q13; LB-DEV-B). */
+    can_switch_device: boolean
   }
 }
 
@@ -6744,6 +6750,23 @@ export async function renewLiveControl(taskId: string): Promise<Result<unknown>>
   const target = route('/v1/tasks/{id}/live/control/renew', { id: taskId })
   if (USE_FIXTURES) return liveNotServed(target)
   return write(target, 'POST')
+}
+
+/**
+ * `POST /v1/tasks/{task_id}/live/device`: the person in control switches the
+ * device (§6.1, Q13; LB-DEV-B). A preset BY NAME from `session.presets`, an
+ * orientation (the preset's natural one when absent) and touch (left as it is
+ * when absent) -- never a size (invariant 10). swarm-api answers the session
+ * as it stands: the gate applies the choice and reports it, so the NEXT read
+ * carries the new `device`. Anyone not in control gets 409 `not_controller`.
+ */
+export async function setLiveDevice(
+  taskId: string,
+  body: { preset: string; orientation?: LiveDevice['orientation']; touch?: boolean },
+): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/device', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'POST', body)
 }
 
 /**

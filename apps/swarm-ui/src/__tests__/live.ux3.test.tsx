@@ -134,7 +134,7 @@ function session(over: Partial<LiveSession> = {}): LiveSession {
     open_to_members: false,
     device: { preset: 'desktop', orientation: 'landscape', touch: false },
     presets: PRESETS,
-    you: { email: ME, can_control: true, can_preempt: true, can_open: true },
+    you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: true },
     ...over,
   }
 }
@@ -285,7 +285,7 @@ describe("the Overview's hand-off card: Take control", () => {
   })
 
   it('is not offered when the session says you may not', async () => {
-    api.loadLiveSession.mockResolvedValue(read(session({ you: { email: ME, can_control: false, can_preempt: false, can_open: false } })))
+    api.loadLiveSession.mockResolvedValue(read(session({ you: { email: ME, can_control: false, can_preempt: false, can_open: false, can_switch_device: false } })))
     render(<HandoffCards tasks={[holding(ID)]} now={NOW} onOpen={() => {}} />)
     await waitFor(() => expect(api.loadLiveSession).toHaveBeenCalledWith(ID))
     await act(async () => {})

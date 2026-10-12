@@ -8,7 +8,8 @@ Two kinds of caller, as the hand-off routes have:
   * A PERSON, through the ordinary `tenant_scope` -- the same authenticator,
     the same per-group membership, the same principal check every route has --
     reads the session, gets a viewer ticket, takes, renews and returns control,
-    opens control to the tenant, and reads the audit. The socket
+    switches the device while in control (LB-DEV-B), opens control to the
+    tenant, and reads the audit. The socket
     (`/v1/live/{session_id}/stream`) authenticates the same identity from the
     upgrade request's headers and selects the tenant the ticket names.
 
@@ -330,6 +331,33 @@ def return_control(
     acceptance driver and any script written against it."""
     return _person_service(ctx, request.app).return_control(tenant_id, task_id, email=auth.email,
                                                submitted_by=submitted_by)
+
+
+@router.post("/tasks/{task_id}/live/device", response_model=LiveRead)
+async def set_device(
+    task_id: str,
+    request: Request,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The person in control switches the device (§6.1, Q13; LB-DEV-B). The
+    body is the console's `setLiveDevice` (`SetDevice`): `{"preset": <a name
+    from the session's presets>, "orientation"?: "portrait"|"landscape",
+    "touch"?: bool}` -- a NAME, never a size (invariant 10): an unknown name or
+    any other key is 422. Anyone not in control is 409 `not_controller`, as
+    renew and return answer. The choice is audited and sent through the relay
+    to the gate, which applies it and reports it; the answer is the session
+    read, whose `device` follows the gate's report."""
+    raw = await request.body()
+    if len(raw) > 1024:
+        raise ValidationFailed("a device request is at most 1024 bytes")
+    return await run_in_threadpool(
+        lambda: _person_service(ctx, request.app).set_device(
+            tenant_id, task_id, email=auth.email, submitted_by=submitted_by, raw=raw,
+        )
+    )
 
 
 @router.post("/tasks/{task_id}/live/open-to-members", response_model=LiveRead)

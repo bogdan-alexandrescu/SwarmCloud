@@ -18,6 +18,7 @@ import {
   renewLiveControl,
   returnLiveControl,
   openLiveToMembers,
+  setLiveDevice,
   takeLiveControl,
   type LiveChannel,
   type LiveOrigin,
@@ -42,7 +43,9 @@ import './styles/live.css'
  * origin as the gate read it from Chromium, the hand-off's reason, and who is
  * in control. Its toolbar is the mockup's (owner decisions 2026-10-12, §6):
  * device chips, `⟲ rotate`, `touch: on|off`, `◫ logs`, and `⤢ Theater` at the
- * right, then "Let any member take control" as built. Under the device, a
+ * right, then "Let any member take control" as built. The chips, rotate and
+ * touch work for the person in control, and only for them
+ * (`you.can_switch_device`, LB-DEV-B). Under the device, a
  * caption: `<device> · <W>×<H> · <path>`. Take control sits in the agent
  * header beside Stop
  * (`LiveControl`), and the view is read-only until it is pressed.
@@ -514,7 +517,7 @@ export function LiveBrowserPane({
       strip={strip}
       handoff={handoff}
       logs={<AgentLogs task={task} />}
-      device={<LiveDevice session={session} mine={mine} />}
+      device={<LiveDevice taskId={task.id} session={session} reload={reload} />}
       control={<LiveControl taskId={task.id} session={session} reload={reload} />}
     >
       <div className={`live-tab${logs ? ' with-logs' : ''}`}>
@@ -528,7 +531,6 @@ export function LiveBrowserPane({
         <LiveToolbar
           taskId={task.id}
           session={session}
-          mine={mine}
           logs={logs}
           onLogs={() => setLogs((v) => !v)}
           reload={reload}
@@ -631,22 +633,19 @@ export function deviceCaption(session: Pick<LiveSession, 'device' | 'presets'>):
  * at the right `⤢ Theater`. "Let any member take control" stays in the
  * toolbar, after Theater, exactly as built (the owner kept it).
  *
- * THE DEVICE CONTROLS ARE SHOWN, NOT SWITCHED (§6.1, Q13): Q13 lets the
- * person in control change them, but the session read says nothing of
- * device switching and swarm-api serves no device route, so every chip is
- * disabled, with why.
+ * THE DEVICE CONTROLS ARE SWITCHED BY THE PERSON IN CONTROL (§6.1, Q13;
+ * LB-DEV-B): enabled when `you.can_switch_device`, disabled with why for
+ * everyone else.
  */
 function LiveToolbar({
   taskId,
   session,
-  mine,
   logs,
   onLogs,
   reload,
 }: {
   taskId: string
   session: LiveSession
-  mine: boolean
   logs: boolean
   onLogs: () => void
   reload: () => void
@@ -655,12 +654,12 @@ function LiveToolbar({
   return (
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
       <LiveToolMenu>
-        <LiveDevice session={session} mine={mine} />
+        <LiveDevice taskId={taskId} session={session} reload={reload} />
         <Button size="sm" aria-pressed={logs} onClick={onLogs} title={logs ? 'Hide the logs' : 'Show the logs beside the browser'}>
           ◫ logs
         </Button>
       </LiveToolMenu>
-      {!mine && <span className="live-toolbar-why">{deviceWhy(mine)}</span>}
+      {!session.you.can_switch_device && <span className="live-toolbar-why">{DEVICE_WHY}</span>}
       <span className="live-toolbar-end">
         <TheaterButton />
         {session.you.can_open && (
@@ -690,29 +689,47 @@ function LiveToolbar({
   )
 }
 
-// SHOWN, NOT SWITCHED. swarm-api serves no device route (§6.1 needs the
-// gate's device lane, L3b, which has not landed), and the session read
-// carries no word that switching is available, so a switcher that sent a
-// change would send it to a path nothing answers. The bar draws the device
-// the session reports, for everyone, and changes nothing.
-function deviceWhy(mine: boolean): string {
-  return mine
-    ? 'Switching the device is not served yet: swarm-api has no device route.'
-    : 'Only the person in control can change the device.'
+// SWITCHED BY THE PERSON IN CONTROL, SHOWN TO EVERYONE ELSE (LB-DEV-B).
+// swarm-api says who may switch (`you.can_switch_device`: the controller
+// only) and refuses anyone else with 409; the console disables the bar for
+// them rather than offer a change that will be refused. A change is a preset
+// BY NAME, an orientation or touch -- never a size (invariant 10). The answer
+// is the session as it stands: the gate applies the change and reports it,
+// so the bar shows the new device from the read that follows, not before.
+const DEVICE_WHY = 'Only the person in control can change the device.'
+
+/** The orientation a rotate asks for. */
+type Orientation = NonNullable<LiveSession['device']>['orientation']
+
+function rotated(orientation: Orientation): Orientation {
+  return orientation === 'portrait' ? 'landscape' : 'portrait'
 }
 
 /** The device chips, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
-function LiveDevice({ session, mine }: { session: LiveSession; mine: boolean }) {
+function LiveDevice({ taskId, session, reload }: { taskId: string; session: LiveSession; reload: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const device = session.device
-  // NOT REPORTED (LB-SEAM): the gate applies the device but nothing carries
-  // which one to swarm-api yet, so the session serves null. No chip is
-  // pressed then, rather than the first drawn as if it were the one applied.
+  // NOT REPORTED (LB-SEAM): the gate reports the device it applied over the
+  // viewer link; until a report has reached swarm-api the session serves
+  // null. No chip is pressed then, rather than the first drawn as if it were
+  // the one applied -- and nothing is offered to switch from a device nobody
+  // knows.
   const names =
     device === null || session.presets.some((p) => p.name === device.preset)
       ? session.presets.map((p) => p.name)
       : [device.preset, ...session.presets.map((p) => p.name)]
-  const why = device === null ? 'The gate has not reported which device it applied.' : deviceWhy(mine)
-  const chipWhy = deviceWhy(mine)
+  const can = session.state === 'open' && session.you.can_switch_device && device !== null
+  const why = device === null ? 'The gate has not reported which device it applied.' : can ? undefined : DEVICE_WHY
+  const mobile = device === null ? false : (session.presets.find((p) => p.name === device.preset)?.mobile ?? device.touch)
+  const send = (body: Parameters<typeof setLiveDevice>[1]) => {
+    setBusy(true)
+    void setLiveDevice(taskId, body).then((r) => {
+      setBusy(false)
+      setError(r.status === 'error' ? r.error.message : null)
+      reload()
+    })
+  }
   return (
     <>
       <span className="live-chips" role="group" aria-label="Device">
@@ -722,19 +739,42 @@ function LiveDevice({ session, mine }: { session: LiveSession; mine: boolean }) 
             size="sm"
             className="live-chip"
             aria-pressed={device !== null && device.preset === n}
-            disabled
-            title={chipWhy}
+            disabled={!can || busy}
+            title={why}
+            onClick={() => {
+              if (device !== null && n !== device.preset) send({ preset: n })
+            }}
           >
             {presetLabel(n)}
           </Button>
         ))}
       </span>
-      <Button size="sm" disabled title={why}>
+      <Button
+        size="sm"
+        disabled={!can || busy}
+        title={why}
+        onClick={() => {
+          if (device !== null) send({ preset: device.preset, orientation: rotated(device.orientation) })
+        }}
+      >
         ⟲ rotate
       </Button>
-      <Button size="sm" aria-pressed={device?.touch ?? false} disabled title={why}>
+      <Button
+        size="sm"
+        aria-pressed={device?.touch ?? false}
+        disabled={!can || busy || !mobile}
+        title={can && !mobile ? 'This preset has no touch.' : why}
+        onClick={() => {
+          if (device !== null) send({ preset: device.preset, orientation: device.orientation, touch: !device.touch })
+        }}
+      >
         {device?.touch === true ? 'touch: on' : 'touch: off'}
       </Button>
+      {error !== null && (
+        <span className="live-control-error" role="alert">
+          {error}
+        </span>
+      )}
     </>
   )
 }

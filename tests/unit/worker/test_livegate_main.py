@@ -136,7 +136,8 @@ def _relay_rendezvous() -> Any:
 
 def test_the_tunnel_frames_are_the_relays():
     rendezvous = _relay_rendezvous()
-    for name in ("OP_OPEN", "OP_DATA", "OP_CLOSE", "OP_CONTROL", "OP_ACTION", "OP_REPORT", "MAX_CONN_ID"):
+    for name in ("OP_OPEN", "OP_DATA", "OP_CLOSE", "OP_CONTROL", "OP_ACTION", "OP_REPORT", "OP_DEVICE",
+                 "MAX_CONN_ID"):
         assert getattr(tunnel, name) == getattr(rendezvous, name), name
     assert gate_main.MAX_TICKET_CHARS == rendezvous.MAX_TICKET_CHARS
     assert report.MAX_REPORT_BYTES == rendezvous.MAX_REPORT_BYTES
@@ -721,6 +722,76 @@ def test_the_gate_reports_the_top_frames_origin_and_the_device_over_its_tunnel(s
             "origin": _reports(rig)[count - 1]["origin"],
             "device": {"preset": "iphone-15", "orientation": "landscape", "touch": True}}
         client.close()
+        stop.set()
+        assert await task == 0
+
+    asyncio.run(body())
+
+
+def _device_frame(**choice: Any) -> bytes:
+    return json.dumps({"preset": None, "orientation": None, "touch": None, **choice}).encode()
+
+
+def test_the_relays_device_frame_is_applied_and_reported_back(short_tmp):
+    """LB-DEV-B: the person in control chose a device in the console; swarm-api
+    checked their control and the relay handed the gate a `DEVICE` frame. The
+    gate applies it through the same `DeviceController.select` as the ctl
+    `device` operation -- the display is resized -- and reports the device it
+    applied, which is how the session read learns it. Touch is the person's
+    toggle: off is reported off; a rotate keeps it."""
+    async def body() -> None:
+        rig = Rig(short_tmp)
+        stop, task = await _started(rig)
+        await rig.gate.open_tunnel({"ticket": "t." + secrets.token_urlsafe(8)})
+        await _until(lambda: len(_reports(rig)) >= 1)
+        sizes = len(rig.display.sizes)
+
+        rig.relay.push(tunnel.OP_DEVICE, "", _device_frame(preset="pixel-8", orientation="landscape"))
+        await _until(lambda: _reports(rig)[-1]["device"]["preset"] == "pixel-8")
+        assert _reports(rig)[-1]["device"] == {"preset": "pixel-8", "orientation": "landscape", "touch": True}
+        assert len(rig.display.sizes) == sizes + 1, "the display follows the device"
+        assert rig.gate.devices.device.name == "pixel-8"
+
+        rig.relay.push(tunnel.OP_DEVICE, "", _device_frame(preset="pixel-8", orientation="landscape", touch=False))
+        await _until(lambda: _reports(rig)[-1]["device"]["touch"] is False)
+        assert rig.gate.touch.touch_on is False
+        assert len(rig.display.sizes) == sizes + 1, "a touch toggle resizes nothing"
+
+        rig.relay.push(tunnel.OP_DEVICE, "", _device_frame(preset="pixel-8", orientation="portrait"))
+        await _until(lambda: _reports(rig)[-1]["device"]["orientation"] == "portrait")
+        assert _reports(rig)[-1]["device"] == {"preset": "pixel-8", "orientation": "portrait", "touch": False}
+
+        stop.set()
+        assert await task == 0
+
+    asyncio.run(body())
+
+
+@pytest.mark.parametrize("payload", [
+    _device_frame(preset="galaxy-fold"),
+    _device_frame(preset="iphone-15", orientation="upside-down"),
+    _device_frame(preset="desktop", touch=True),
+    _device_frame(preset="iphone-15", touch="yes"),
+    json.dumps({"preset": "iphone-15", "width": 1920, "height": 1080}).encode(),
+    json.dumps({"preset": "iphone-15", "orientation": None, "touch": None, "scale": 3}).encode(),
+    b"not json",
+    pytest.param(b"x" * 4096, id="too-large"),
+])
+def test_a_device_frame_that_is_not_a_preset_by_name_changes_nothing(short_tmp, payload):
+    async def body() -> None:
+        rig = Rig(short_tmp)
+        stop, task = await _started(rig)
+        await rig.gate.open_tunnel({"ticket": "t." + secrets.token_urlsafe(8)})
+        await _until(lambda: len(_reports(rig)) >= 1)
+        sizes, reports = list(rig.display.sizes), len(_reports(rig))
+        with pytest.raises((ValueError, RuntimeError)):
+            await rig.gate.apply_device(payload)
+        rig.relay.push(tunnel.OP_DEVICE, "", payload)
+        await asyncio.sleep(0.1)
+        assert rig.gate.devices.device.name == "desktop"
+        assert rig.gate.touch.touch_on is True
+        assert rig.display.sizes == sizes
+        assert len(_reports(rig)) == reports, "nothing changed, so nothing is reported"
         stop.set()
         assert await task == 0
 

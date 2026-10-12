@@ -152,7 +152,7 @@ function session(over: Partial<LiveSession> = {}): LiveSession {
     open_to_members: false,
     device: { preset: 'iphone-15', orientation: 'portrait', touch: false },
     presets: PRESETS,
-    you: { email: ME, can_control: true, can_preempt: true, can_open: true },
+    you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: true },
     ...over,
   }
 }
@@ -162,7 +162,7 @@ const mine = (over: Partial<LiveSession> = {}) =>
 const viewer = (over: Partial<LiveSession> = {}) =>
   session({
     controller: { email: OTHER, since: iso(NOW) },
-    you: { email: ME, can_control: false, can_preempt: false, can_open: false },
+    you: { email: ME, can_control: false, can_preempt: false, can_open: false, can_switch_device: false },
     ...over,
   })
 
@@ -348,11 +348,13 @@ describe('item 3: the toolbar is the mockup’s, left to right', () => {
     }
   })
 
-  it('keeps them disabled for the person in control while swarm-api serves no device route, saying so', () => {
+  it('enables them for the person in control (LB-DEV-B), with nothing said against them', () => {
     pane(mine())
-    const b = within(toolbar()).getByRole('button', { name: 'Pixel 8' }) as HTMLButtonElement
-    expect(b.disabled).toBe(true)
-    expect(b.title).toMatch(/no device route/i)
+    for (const name of ['Pixel 8', '⟲ rotate']) {
+      const b = within(toolbar()).getByRole('button', { name }) as HTMLButtonElement
+      expect(b.disabled, `${name} is disabled for the controller`).toBe(false)
+      expect(b.title).toBe('')
+    }
   })
 
   it('draws the chips unpressed when the gate has not reported the device', () => {

@@ -4,7 +4,8 @@
 //   * the Browser tab follows Details, and is open, for a running browser agent;
 //   * the viewer ticket goes in the websocket's first message, never its URL;
 //   * no Take control for a viewer the server says is not eligible;
-//   * a viewer's device switcher is disabled;
+//   * a viewer's device switcher is disabled, and the controller's works
+//     (LB-DEV-B): a preset by name, rotate and touch through setLiveDevice;
 //   * a page off the hand-off's named site turns the strip red, and Take
 //     control asks twice;
 //   * keys reach the agent's browser only while its canvas has focus;
@@ -17,7 +18,8 @@
 //
 // MUTATIONS, one per block: put the ticket in the socket URL's query; drop
 // the `can_control` check in LiveControl; enable the device chips for every
-// viewer; skip the second ask on a mismatch; set `viewOnly` from control
+// viewer (or decide it from `controller` instead of `you.can_switch_device`);
+// send a size instead of a preset name; skip the second ask on a mismatch; set `viewOnly` from control
 // alone, ignoring focus; let touches through whenever in control; await
 // anything between the socket's 'open' and noVNC's construction (the server's
 // first frame is then lost); construct noVNC outside the retry.
@@ -47,6 +49,7 @@ const api = vi.hoisted(() => ({
   returnLiveControl: vi.fn(),
   renewLiveControl: vi.fn(),
   openLiveToMembers: vi.fn(),
+  setLiveDevice: vi.fn(),
 }))
 
 vi.mock('../api', async (importOriginal) => {
@@ -175,21 +178,25 @@ function session(over: Partial<LiveSession> = {}): LiveSession {
       { name: 'desktop', width: 1440, height: 900, scale: 1, mobile: false },
       { name: 'iphone-15', width: 393, height: 852, scale: 3, mobile: true },
     ],
-    you: { email: ME, can_control: true, can_preempt: true, can_open: true },
+    you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: false },
     ...over,
   }
 }
 
-/** A session this person is in control of. */
+/** A session this person is in control of: the server lets them switch the device. */
 function mine(over: Partial<LiveSession> = {}): LiveSession {
-  return session({ controller: { email: ME, since: new Date().toISOString() }, ...over })
+  return session({
+    controller: { email: ME, since: new Date().toISOString() },
+    you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: true },
+    ...over,
+  })
 }
 
 /** A session someone else controls, seen by a member who may not take it. */
 function viewer(over: Partial<LiveSession> = {}): LiveSession {
   return session({
     controller: { email: OTHER, since: new Date().toISOString() },
-    you: { email: ME, can_control: false, can_preempt: false, can_open: false },
+    you: { email: ME, can_control: false, can_preempt: false, can_open: false, can_switch_device: false },
     ...over,
   })
 }
@@ -257,6 +264,7 @@ beforeEach(() => {
   api.returnLiveControl.mockResolvedValue(ok(null))
   api.renewLiveControl.mockResolvedValue(ok(null))
   api.openLiveToMembers.mockResolvedValue(ok(null))
+  api.setLiveDevice.mockResolvedValue(ok(null))
 })
 
 afterEach(() => {
@@ -383,7 +391,7 @@ describe('no Take control for a non-eligible viewer', () => {
   it('offers none over someone else’s control to a person who may not preempt', () => {
     const s = session({
       controller: { email: OTHER, since: '' },
-      you: { email: ME, can_control: true, can_preempt: false, can_open: false },
+      you: { email: ME, can_control: true, can_preempt: false, can_open: false, can_switch_device: false },
     })
     render(<LiveControl taskId={ID} session={s} reload={() => {}} />)
     expect(screen.queryByRole('button', { name: /take control/i })).toBeNull()
@@ -407,18 +415,67 @@ describe('a viewer’s device switcher is disabled', () => {
     expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  // swarm-api serves no device route (the gate's device lane, L3b, has not
-  // landed), so the person in control is shown the device and cannot send a
-  // change to a path nothing answers -- test_runtimes_screen.py's seam test
-  // refuses a client call to an unserved /v1 path.
-  it('shows the person in control the device too, disabled, while no device route is served', () => {
+  it('says why, on the switcher and in the toolbar', () => {
+    pane(viewer())
+    expect((screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement).title).toMatch(/only the person in control/i)
+    expect(document.querySelector('.live-toolbar-why')?.textContent).toMatch(/only the person in control/i)
+  })
+
+  it('follows the server, not the controller field: in control but not allowed to switch is disabled', () => {
+    pane(mine({ you: { email: ME, can_control: true, can_preempt: true, can_open: true, can_switch_device: false } }))
+    expect((screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(true)
+  })
+})
+
+describe('the person in control switches the device (LB-DEV-B)', () => {
+  it('enables the switcher, rotate and touch, with nothing said against them', () => {
     pane(mine())
     const chip = screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement
     expect(chip.getAttribute('aria-pressed')).toBe('true')
-    expect(chip.disabled).toBe(true)
-    expect(chip.title).toMatch(/no device route/i)
-    expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(true)
-    expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(true)
+    expect(chip.disabled).toBe(false)
+    expect(chip.title).toBe('')
+    expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(false)
+    expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(false)
+    expect(document.querySelector('.live-toolbar-why')).toBeNull()
+  })
+
+  it('a preset is sent by name, never a size, and the session is read again', async () => {
+    const reload = vi.fn()
+    render(<LiveBrowserPane task={agent()} live={{ status: 'ok', liveBrowser: true, session: mine() }} reload={reload} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Desktop' }))
+    expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'desktop' })
+    await waitFor(() => expect(reload).toHaveBeenCalled())
+  })
+
+  it('rotate asks for the same preset in the other orientation', () => {
+    pane(mine())
+    fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
+    expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'iphone-15', orientation: 'landscape' })
+  })
+
+  it('touch turns the toggle over, on the same preset and orientation', () => {
+    pane(mine())
+    fireEvent.click(screen.getByRole('button', { name: /touch: off/i }))
+    expect(api.setLiveDevice).toHaveBeenCalledWith(ID, { preset: 'iphone-15', orientation: 'portrait', touch: true })
+  })
+
+  it('a preset with no touch offers no touch toggle', () => {
+    pane(mine({ device: { preset: 'desktop', orientation: 'landscape', touch: false } }))
+    const touch = screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement
+    expect(touch.disabled).toBe(true)
+    expect(touch.title).toMatch(/no touch/i)
+    expect((screen.getByRole('button', { name: /rotate/i }) as HTMLButtonElement).disabled).toBe(false)
+  })
+
+  it('a refusal is shown, not swallowed', async () => {
+    api.setLiveDevice.mockResolvedValue({
+      status: 'error',
+      error: { kind: 'conflict', httpStatus: 409, code: 'not_controller', message: 'you are not in control of this browser' },
+    })
+    pane(mine())
+    fireEvent.click(screen.getByRole('button', { name: /rotate/i }))
+    expect((await screen.findByRole('alert')).textContent).toContain('not in control')
   })
 })
 

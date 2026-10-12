@@ -87,3 +87,12 @@ def test_the_largest_report_fits_the_relays_limit():
     raw = encode_report(origin, device_report(resolve("iphone-15", "landscape")))
     assert len(raw) <= MAX_REPORT_BYTES
     assert json.loads(raw)["origin"] == origin
+
+
+def test_touch_is_reported_off_when_the_person_turned_it_off_and_never_on_a_desktop():
+    """LB-DEV-B: the controller's touch toggle (`TouchInjector.set_touch`) is
+    what the console's Touch button shows, so it is what the gate reports. A
+    preset with no touch never reports touch, whatever the toggle says."""
+    assert device_report(resolve("iphone-15"), touch_on=False)["touch"] is False
+    assert device_report(resolve("iphone-15"), touch_on=True)["touch"] is True
+    assert device_report(resolve("desktop"), touch_on=True)["touch"] is False

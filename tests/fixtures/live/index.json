@@ -82,6 +82,22 @@
       "ui": "returnLiveControl"
     },
     {
+      "file": "device.request.json",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/live/device",
+      "direction": "request",
+      "model": "SetDevice",
+      "ui": "setLiveDevice"
+    },
+    {
+      "file": "device.switched.json",
+      "method": "POST",
+      "path": "/v1/tasks/{task_id}/live/device",
+      "direction": "response",
+      "model": "LiveRead",
+      "ui": "setLiveDevice"
+    },
+    {
       "file": "session.open.json",
       "method": "POST",
       "path": "/v1/tasks/{task_id}/live/open-to-members",

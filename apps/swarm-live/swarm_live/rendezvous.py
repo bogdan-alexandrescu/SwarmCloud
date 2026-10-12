@@ -46,6 +46,18 @@ in the ticket's shape under its OWN domain tag, so no ticket is ever a close
 request and no close request is ever a ticket. The body names `session_id`,
 `exp` (at most 60 s ahead) and a one-use `nonce`.
 
+DEVICE REQUESTS (LB-DEV-B). `POST /internal/device`, the same shape under a
+third domain tag: swarm-api's word that the person in control of a session
+chose a device, after it checked that they hold control (§6.1, Q13). The body
+names the session as a ticket does (`session_id, tenant_id, task_id,
+attempt_id, generation`, matched against the tunnel ticket like every later
+ticket), the device (`preset`, `orientation`, `touch`: a NAME, an
+orientation or null, a bool or null -- never a size, invariant 10), `exp`
+(at most 30 s ahead) and a one-use `nonce`. The relay checks the MAC, the
+clock, single use and the session, and passes the device to the gate as a
+`DEVICE` frame; it does not know the preset list -- the gate refuses a name
+that is not on it, changing nothing.
+
 THE TUNNEL'S FRAMES. After the ticket (the first message, text) and the
 relay's `{"type": "ready"}`, every tunnel message is binary:
 `op (1 byte) | len(conn_id) (1 byte) | conn_id (ascii) | payload`.
@@ -57,6 +69,10 @@ relay's `{"type": "ready"}`, every tunnel message is binary:
 * `CONTROL` relay -> gate: the connection that now holds control, or an empty
             id for none. The gate's `ControlState.grant`/`revoke` act on it.
 * `ACTION`  gate -> relay: one action-log line (JSON) for the recording (§7).
+* `DEVICE`  relay -> gate: a device request swarm-api MAC'd, as JSON
+            `{"preset", "orientation", "touch"}`, with an empty id. The gate
+            applies it through its device controller and reports the result
+            with `REPORT`, which is how the session read learns it.
 * `REPORT`  gate -> relay: the top frame's origin and the device, as JSON
             `{"origin": {...} | null, "device": {...} | null}` (LB-DEV-A,
             agent_worker/livegate/report.py). The relay keeps the latest per
@@ -100,6 +116,8 @@ log = logging.getLogger(__name__)
 TICKET_DOMAIN = b"swarm-live-ticket/v1\0"
 #: A close request's MAC domain: never a ticket's.
 CLOSE_DOMAIN = b"swarm-live-close/v1\0"
+#: A device request's MAC domain (LB-DEV-B): never a ticket's or a close's.
+DEVICE_DOMAIN = b"swarm-live-device/v1\0"
 
 #: Lifetime of each role's ticket (§3.3: 60 s for the tunnel; §5.2: 30 s for a
 #: viewer). Control tickets are minted by swarm-api the moment its transaction
@@ -112,6 +130,10 @@ CLOCK_SKEW_SECONDS = 5
 
 #: A close request's lifetime: the decision's 60 s, as the tunnel ticket's.
 CLOSE_TTL_SECONDS = 60
+
+#: A device request's lifetime: minted the moment swarm-api has checked the
+#: controller and posted at once, so the control ticket's 30 s.
+DEVICE_TTL_SECONDS = 30
 
 #: How long a closed session's id is remembered. Every ticket minted before
 #: the close has expired by then -- the longest lives 60 s, plus skew either
@@ -132,8 +154,8 @@ MIN_KEY_BYTES = 32
 MAX_TICKET_CHARS = 4096
 MAX_CONN_ID = 64
 
-OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT = 1, 2, 3, 4, 5, 6
-_OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT})
+OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT, OP_DEVICE = 1, 2, 3, 4, 5, 6, 7
+_OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT, OP_DEVICE})
 #: The largest REPORT kept (the gate's `report.MAX_REPORT_BYTES`): a
 #: 253-character host and a device fit in well under half of it.
 MAX_REPORT_BYTES = 4096
@@ -149,6 +171,11 @@ CLOSE_SLOW = 4408
 _TICKET_FIELDS = ("session_id", "tenant_id", "task_id", "attempt_id", "generation",
                   "role", "exp", "nonce", "email")
 _CLOSE_FIELDS = ("session_id", "exp", "nonce")
+_DEVICE_FIELDS = ("session_id", "tenant_id", "task_id", "attempt_id", "generation",
+                  "preset", "orientation", "touch", "exp", "nonce")
+#: A preset name is short; the gate holds the list (presets.py).
+MAX_PRESET_CHARS = 32
+_ORIENTATIONS = ("portrait", "landscape")
 #: The roles that open a connection; the others are messages on one.
 CONNECTION_ROLES = ("tunnel", "viewer")
 
@@ -290,13 +317,70 @@ def verify_close(key: bytes, raw: str, *, now: float) -> CloseRequest:
     return request
 
 
+def mint_device(key: bytes, *, session_id: str, tenant_id: str, task_id: str, attempt_id: str,
+                generation: int, preset: str, orientation: str | None = None,
+                touch: bool | None = None, now: float | None = None,
+                ttl: int = DEVICE_TTL_SECONDS) -> str:
+    """A device request as swarm-api mints it (`swarm_api.live.mint_device`
+    restates it; tests/unit/control_plane/test_live_relay_wire.py holds the two
+    to each other)."""
+    issued = int(time.time() if now is None else now)
+    return _signed(key, {
+        "session_id": session_id, "tenant_id": tenant_id, "task_id": task_id,
+        "attempt_id": attempt_id, "generation": int(generation), "preset": preset,
+        "orientation": orientation, "touch": touch, "exp": issued + int(ttl),
+        "nonce": secrets.token_hex(16),
+    }, DEVICE_DOMAIN)
+
+
+@dataclass(frozen=True)
+class DeviceRequest:
+    session_id: str
+    tenant_id: str
+    task_id: str
+    attempt_id: str
+    generation: int
+    preset: str
+    orientation: str | None
+    touch: bool | None
+    exp: int
+    nonce: str
+
+    def payload(self) -> bytes:
+        """The `DEVICE` frame's payload: the device and nothing else."""
+        return json.dumps({"preset": self.preset, "orientation": self.orientation,
+                           "touch": self.touch}, separators=(",", ":")).encode()
+
+
+def verify_device(key: bytes, raw: str, *, now: float) -> DeviceRequest:
+    """A device request's MAC, shape and clock. A preset is a short string,
+    never a size; whether it is ON the list is the gate's check."""
+    body = _unsigned(key, raw, DEVICE_DOMAIN)
+    if set(body) != set(_DEVICE_FIELDS):
+        raise Refused("malformed")
+    strings = ("session_id", "tenant_id", "task_id", "attempt_id", "preset", "nonce")
+    if (not all(isinstance(body[f], str) and body[f] for f in strings)
+            or len(body["preset"]) > MAX_PRESET_CHARS
+            or body["orientation"] not in (None, *_ORIENTATIONS)
+            or not (body["touch"] is None or isinstance(body["touch"], bool))
+            or not all(isinstance(body[f], int) and not isinstance(body[f], bool)
+                       for f in ("generation", "exp"))):
+        raise Refused("malformed")
+    request = DeviceRequest(**body)
+    if now > request.exp:
+        raise Refused("expired")
+    if request.exp - now > DEVICE_TTL_SECONDS + CLOCK_SKEW_SECONDS:
+        raise Refused("lifetime")
+    return request
+
+
 class TicketLedger:
     """Nonces already presented, kept until their ticket could no longer verify."""
 
     def __init__(self) -> None:
         self._spent: dict[str, int] = {}
 
-    def spend(self, ticket: Ticket | CloseRequest, now: float) -> None:
+    def spend(self, ticket: Ticket | CloseRequest | DeviceRequest, now: float) -> None:
         if len(self._spent) > 1024:
             self._spent = {n: exp for n, exp in self._spent.items() if exp + CLOCK_SKEW_SECONDS >= now}
         if ticket.nonce in self._spent:
@@ -348,7 +432,7 @@ class SessionRecord:
 _SESSION_FIELDS = ("tenant_id", "task_id", "attempt_id", "generation")
 
 
-def _match(ticket: Ticket, session: SessionRecord) -> None:
+def _match(ticket: Ticket | DeviceRequest, session: SessionRecord) -> None:
     for name in _SESSION_FIELDS:
         if getattr(ticket, name) != getattr(session, name):
             raise Refused("wrong_" + name.removesuffix("_id"))
@@ -772,6 +856,23 @@ class Rendezvous:
         request = verify_close(self._key, raw, now=now)
         self._ledger.spend(request, now)
         return request.session_id, await self.close_session(request.session_id)
+
+    async def device_request(self, raw: str) -> str:
+        """swarm-api's `POST /internal/device`: verified and spent like a
+        ticket, matched to its session's tunnel ticket, then sent to the gate
+        as a `DEVICE` frame. The session id, or `Refused` -- for a session with
+        no tunnel here too, since the gate is the only thing that can apply it."""
+        now = self._clock()
+        request = verify_device(self._key, raw, now=now)
+        self._ledger.spend(request, now)
+        if self.is_closed(request.session_id):
+            raise Refused("session_closed")
+        tunnel = self._tunnels.get(request.session_id)
+        if tunnel is None or tunnel.closed:
+            raise Refused("no_tunnel")
+        _match(request, tunnel.session)
+        tunnel.outbox.put(True, encode_frame(OP_DEVICE, "", request.payload()))
+        return request.session_id
 
     async def flush(self) -> None:
         """Wait until every open connection's queue has been written. For tests
