@@ -191,6 +191,9 @@ class FakePipe:
         self.methods: list[str] = []
         self.closed = False
         self._sessions = 0
+        # What `Target.getTargetInfo` and `Security.enable` report for a page.
+        self.page_url = "https://example.test/signin"
+        self.security = "secure"
 
     def _session(self) -> str:
         self._sessions += 1
@@ -213,7 +216,7 @@ class FakePipe:
             result = {"frameTree": {"frame": {"id": "PAGE1", "url": "about:blank", "domainAndRegistry": ""}}}
         elif method == "Target.getTargetInfo":
             result = {"targetInfo": {"targetId": message["params"]["targetId"], "type": "page",
-                                     "url": "https://example.test/signin", "title": "Sign in"}}
+                                     "url": self.page_url, "title": "Sign in"}}
         elif method == "Target.createBrowserContext":
             result = {"browserContextId": "CTX1"}
         elif method == "Target.createTarget":
@@ -225,7 +228,7 @@ class FakePipe:
         self.queue.put_nowait({"id": message["id"], "result": result})
         if method == "Security.enable":
             self.queue.put_nowait({"method": "Security.visibleSecurityStateChanged", "sessionId": session,
-                                   "params": {"visibleSecurityState": {"securityState": "secure"}}})
+                                   "params": {"visibleSecurityState": {"securityState": self.security}}})
 
     async def run(self, sink: Any) -> None:
         while True:
@@ -667,6 +670,37 @@ def test_a_viewer_sees_rfb_and_control_is_granted_then_released(short_tmp):
 
         rig.relay.push(tunnel.OP_CLOSE, "v1")
         await _until(lambda: gate.viewers == 0)
+        stop.set()
+        assert await task == 0
+
+    asyncio.run(body())
+
+
+def test_one_take_on_about_blank_is_one_granted_line_and_no_refusal(short_tmp):
+    """LB-R4 (part of #1030). MEASURED 2026-10-12: one take on the agent's page
+    before its first navigation read "You took control" and then "Taking
+    control was refused: the page is not on a secure https connection". The
+    gate now grants it: one control line, `granted`, which the timeline folds
+    into the audit's "You took control" (live.py `_DUPLICATED`)."""
+    async def body() -> None:
+        rig = Rig(short_tmp)
+        stop, task = await _started(rig)
+        rig.browser.transport.page_url = "about:blank"
+        rig.browser.transport.security = "neutral"
+        gate = rig.gate
+        await gate.open_tunnel({"ticket": "t." + secrets.token_urlsafe(8)})
+        rig.relay.push(tunnel.OP_OPEN, "v1")
+        await _until(lambda: gate.viewers == 1)
+
+        rig.relay.push(tunnel.OP_CONTROL, "v1")
+        await _until(lambda: gate.control.controller == "v1")
+        assert gate.proxy.in_control
+        actions = [json.loads(f[2]) for f in rig.relay.frames if f[0] == tunnel.OP_ACTION]
+        control = [a for a in actions if a.get("kind") == "control"]
+        assert [(a["event"], a.get("cause")) for a in control] == [("granted", None)]
+
+        rig.relay.push(tunnel.OP_CONTROL, "")
+        await _until(lambda: gate.control.controller is None and not gate.proxy.paused)
         stop.set()
         assert await task == 0
 

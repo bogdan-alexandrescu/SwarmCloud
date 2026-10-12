@@ -613,6 +613,17 @@ def test_one_controller_at_a_time_and_only_the_submitter_preempts(client, ldb, l
     assert take(client, "root", preempt=True).status_code == 409
 
 
+def test_one_take_writes_one_control_audit_row_even_posted_twice(client, ldb, live):
+    """LB-R4 (part of #1030): one take is one `control_taken` row, and the
+    only control row -- the timeline draws a line per row. A second POST from
+    the person already in control (a double click, a retry) renews and
+    audits nothing."""
+    assert take(client, "alice").status_code == 200
+    assert take(client, "alice").status_code == 200
+    control = [r for r in audit(ldb) if r["entry"].startswith("control_")]
+    assert [(r["entry"], r["email"]) for r in control] == [("control_taken", "alice@saga.xyz")]
+
+
 def test_return_resolves_the_hand_off_and_only_the_controller_returns(client, ldb, live):
     _ask_for_help(ldb)
     assert take(client, "alice").status_code == 200

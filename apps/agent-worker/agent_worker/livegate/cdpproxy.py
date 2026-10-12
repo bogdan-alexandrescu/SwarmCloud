@@ -52,6 +52,20 @@ page is `secure`, served over https, and not at an IP literal; and control
 ENDS if the state leaves `secure` while held. An unknown state is not secure:
 the check fails closed.
 
+ABOUT:BLANK HAS NO SCHEME TO JUDGE (lane LB-R4). A page that has not made its
+first navigation is `about:blank`: no origin, nothing from any network, and a
+security state Chromium never reports as `secure`. MEASURED 2026-10-12: a
+person who took control of the agent's page before its first navigation read
+"You took control", then "Taking control was refused: the page is not on a
+secure https connection". So control on `about:blank` is granted without
+waiting on the security state, and the certificate rule starts at the first
+navigation: the gate's session also watches `Page.frameNavigated`, and a top
+frame that commits anything but a named https host ends control; a state that
+is not `secure` while held on a page granted blank ends control unless the
+page is, read again, still `about:blank` (or by then secure https). Either
+signal alone ends it, in either order, so the exception never outlives the
+blank page.
+
 THE ORDER ON RETURN (section 4.2, step 3): clear every password input the
 gate's sessions can reach, restore the agent's scripts, hand the context over,
 deliver the held responses, then release the held commands. A cross-origin
@@ -239,6 +253,10 @@ class CdpProxy:
         self._security: dict[str, str] = {}
         self._security_seen: dict[str, asyncio.Event] = {}
         self._controlled: str | None = None
+        # Control was granted on about:blank and the page has not navigated
+        # since: a state that is not `secure` is checked against the URL.
+        self._granted_blank = False
+        self._checks: set[asyncio.Task[None]] = set()
 
     # ------------------------------------------------------------------ state
 
@@ -509,6 +527,20 @@ class CdpProxy:
             self._security[target] = state if isinstance(state, str) else "unknown"
             self._security_seen.setdefault(target, asyncio.Event()).set()
             if self._controlled == target and self._security[target] != "secure":
+                if self._granted_blank:
+                    self._check_blank(target)
+                else:
+                    self._end_control("insecure_connection")
+        elif method == "Page.frameNavigated" and session in self._gate_sessions:
+            frame = params.get("frame") or {}
+            target = self._gate_sessions[session]
+            if self._controlled != target or not isinstance(frame, dict) or frame.get("parentId"):
+                return
+            url = str(frame.get("url", ""))
+            if _is_blank(url):
+                return
+            self._granted_blank = False
+            if not _https_host(url):
                 self._end_control("insecure_connection")
         elif method == "Target.attachedToTarget" and session in self._gate_sessions:
             child = params.get("sessionId")
@@ -544,6 +576,9 @@ class CdpProxy:
             "Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": False, "flatten": True}, session
         )
         await self.call("Security.enable", {}, session)
+        # The top frame's navigations: control granted on about:blank is held
+        # to the certificate rule from the first one (LB-R4).
+        await self._call_quietly("Page.enable", {}, session)
         return session
 
     async def open_fresh_page(self, url: str) -> str:
@@ -577,6 +612,14 @@ class CdpProxy:
         if self._mode != _PAUSED:
             return self._refuse("not_paused")
         await self.watch_page(target_id)
+        if _is_blank(await self._url(target_id)):
+            # No origin yet: nothing to call insecure (LB-R4). The first
+            # navigation is judged as it commits (`_on_gate_event`).
+            if self._mode != _PAUSED:
+                return self._refuse("not_paused")
+            self._controlled = target_id
+            self._granted_blank = True
+            return ControlDecision(True)
         if target_id not in self._security:
             seen = self._security_seen.setdefault(target_id, asyncio.Event())
             try:
@@ -585,14 +628,39 @@ class CdpProxy:
                 return self._refuse("security_state_unknown")
         if self._security.get(target_id) != "secure":
             return self._refuse("insecure_connection")
-        info = (await self.call("Target.getTargetInfo", {"targetId": target_id})).get("targetInfo") or {}
-        parts = urlsplit(str(info.get("url", "")))
-        if parts.scheme != "https" or not parts.hostname or _is_address(parts.hostname):
+        if not _https_host(await self._url(target_id)):
             return self._refuse("insecure_connection")
         if self._mode != _PAUSED:
             return self._refuse("not_paused")
         self._controlled = target_id
+        self._granted_blank = False
         return ControlDecision(True)
+
+    async def _url(self, target_id: str) -> str:
+        info = (await self.call("Target.getTargetInfo", {"targetId": target_id})).get("targetInfo") or {}
+        return str(info.get("url", ""))
+
+    def _check_blank(self, target_id: str) -> None:
+        """A state that is not `secure` on a page granted blank: read its URL
+        again, off the pipe reader (this runs inside `on_chromium_message`)."""
+        task = asyncio.get_running_loop().create_task(self._recheck_blank(target_id))
+        self._checks.add(task)
+        task.add_done_callback(self._checks.discard)
+
+    async def _recheck_blank(self, target_id: str) -> None:
+        try:
+            url = await self._url(target_id)
+        except Exception:  # noqa: BLE001 -- unreadable is not blank: fail closed
+            url = ""
+        if self._controlled != target_id or not self._granted_blank:
+            return
+        if _is_blank(url):
+            return
+        if _https_host(url) and self._security.get(target_id) == "secure":
+            # Navigated on, and the secure state arrived before this read.
+            self._granted_blank = False
+            return
+        self._end_control("insecure_connection")
 
     def end_control(self, cause: str) -> None:
         """Control ends without a return: idle, renew lapsed, preempted, ..."""
@@ -601,6 +669,7 @@ class CdpProxy:
 
     def _end_control(self, cause: str) -> None:
         self._controlled = None
+        self._granted_blank = False
         self._record("control_ended", {"cause": cause})
         if self._on_control_ended is not None:
             self._on_control_ended(cause)
@@ -610,6 +679,7 @@ class CdpProxy:
         if self._mode != _PAUSED:
             return
         self._controlled = None
+        self._granted_blank = False
         self._mode = _RELEASING
         try:
             for session in [*self._gate_sessions, *self._gate_children]:
@@ -666,6 +736,18 @@ class CdpProxy:
                     await self._call_quietly(
                         "Target.attachToTarget", {"targetId": target, "flatten": True}, connection.browser_session
                     )
+
+
+def _is_blank(url: str) -> bool:
+    """`about:blank`: a page before its first navigation, with no origin."""
+    parts = urlsplit(url)
+    return parts.scheme == "about" and parts.path == "blank"
+
+
+def _https_host(url: str) -> bool:
+    """https, at a host name rather than an IP literal (section 5.4.4)."""
+    parts = urlsplit(url)
+    return parts.scheme == "https" and bool(parts.hostname) and not _is_address(parts.hostname or "")
 
 
 def _is_address(host: str) -> bool:
