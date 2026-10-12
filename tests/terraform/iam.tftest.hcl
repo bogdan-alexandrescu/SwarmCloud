@@ -274,8 +274,8 @@ run "custom_role_ids_are_legal_and_named_in_this_project" {
   assert {
     # 10 platform and forge roles, the five swarmWorkspace* roles (#847) and
     # swarmHistoryPurgeDeleter (terraform/bootstrap/history_purge.tf), and
-    # swarmBrowserSessionCreator and swarmBrowserLoginRevoker
-    # (terraform/bootstrap/browser_logins.tf, lane L8b of #1030).
+    # swarmBrowserSessionProvisioner and swarmBrowserLoginRevoker
+    # (terraform/bootstrap/browser_logins.tf, lanes L8b and L8c of #1030).
     condition = length(output.ids) == 18 && alltrue([
       for id in values(output.ids) : can(regex("^[a-zA-Z0-9_.]{3,64}$", id))
     ])

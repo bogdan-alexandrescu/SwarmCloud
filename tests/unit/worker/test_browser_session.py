@@ -11,7 +11,10 @@ plant cookies.
 
 Every test drives the real modules against scripted fakes: a Chromium that
 answers the gate's CDP calls, a gate channel that forwards the worker's ctl
-ops to the real `SessionCarry`, and a vault standing in for Secret Manager.
+ops to the real `SessionCarry`, a vault standing in for Secret Manager, and
+swarm-api's slot route standing in for the one place a browser-session secret
+is created (lane L8c: the worker holds no `secrets.create` and no
+project-level `-browser-` grant, so it asks for the slot before every write).
 No test runs Chromium, a network or a cloud credential. Every cookie value is
 built at run time.
 """
@@ -166,11 +169,12 @@ class Gate:
 
 
 class FakeVault:
-    """Secret Manager, as far as the carrier sees it."""
+    """Secret Manager, as far as the carrier sees it: a version may be added
+    only to a secret swarm-api provisioned, as IAM would have it."""
 
     def __init__(self) -> None:
         self.secrets: dict[str, list[str]] = {}
-        self.meta: dict[str, dict[str, Any]] = {}
+        self.provisioned: list[str] = []
         self.reads: list[str] = []
 
     def read(self, name: str) -> str | None:
@@ -178,10 +182,26 @@ class FakeVault:
         versions = self.secrets.get(name)
         return versions[-1] if versions else None
 
-    def write(self, name: str, payload: str, *, ttl_seconds: int | None = None,
-              expire_time: datetime | None = None, labels: dict[str, str] | None = None) -> None:
+    def write(self, name: str, payload: str) -> None:
+        # The worker's per-secret grant exists only once the slot was given.
+        assert name in self.provisioned, f"{name} written before swarm-api provisioned it"
         self.secrets.setdefault(name, []).append(payload)
-        self.meta.setdefault(name, {"ttl_seconds": ttl_seconds, "expire_time": expire_time, "labels": dict(labels or {})})
+
+
+class FakeSlots:
+    """swarm-api's slot route: provisions a name, or refuses with a code."""
+
+    def __init__(self, vault: FakeVault, refuse: str | None = None) -> None:
+        self.vault = vault
+        self.refuse = refuse
+        self.asked: list[str] = []
+
+    def provision(self, name: str) -> None:
+        self.asked.append(name)
+        if self.refuse is not None:
+            raise browser_login.SlotRefused(self.refuse)
+        if name not in self.vault.provisioned:
+            self.vault.provisioned.append(name)
 
 
 def task(tenant: str = PERSONAL, workflow: str | None = WORKFLOW, login: str | None = None) -> dict[str, Any]:
@@ -192,7 +212,9 @@ def task(tenant: str = PERSONAL, workflow: str | None = WORKFLOW, login: str | N
 
 
 def carrier(vault: FakeVault, gate: Gate, records: Records | None = None, **kw: Any) -> SessionCarrier:
-    return SessionCarrier(vault, gate, record=records if records is not None else Records(), now=lambda: NOW, **kw)
+    slots = kw.pop("slots", None) or FakeSlots(vault)
+    return SessionCarrier(vault, gate, slots=slots, record=records if records is not None else Records(),
+                          now=lambda: NOW, **kw)
 
 
 def signed_in(gate: Gate, *cookies: dict[str, Any], origin: str | None = None) -> None:
@@ -230,7 +252,8 @@ def test_a_personal_workflow_step_carries_its_jar_to_the_next_step_before_the_ag
     assert "Storage.getCookies" in first.browser.methods()
     assert written == [plan.carry_secret]
     assert list(vault.secrets) == [plan.carry_secret]
-    assert vault.meta[plan.carry_secret]["ttl_seconds"] == 24 * 3600
+    # swarm-api provisioned it (with the 24-hour TTL, its half) before the write.
+    assert vault.provisioned == [plan.carry_secret]
 
     # Step 2: the next pod's gate gets it before any agent connection.
     assert second.agent_connected is False
@@ -413,7 +436,7 @@ def test_save_login_bounds_the_expiry_and_a_new_sign_in_refreshes_it():
     secret = browser_login.login_secret_name(PERSONAL, "github-qa")
     first = json.loads(vault.secrets[secret][-1])
     assert first["expires_at"] == (NOW + timedelta(days=14)).isoformat()
-    assert vault.meta[secret]["expire_time"] == NOW + timedelta(days=14)
+    assert vault.provisioned == [secret]
 
     # A later task uses it, the site asks for a sign-in anyway, the person
     # signs in: a new version, same expiry.
@@ -589,3 +612,105 @@ def test_a_carry_the_gate_cannot_import_fails_open_and_a_login_it_cannot_import_
     with pytest.raises(BrowserLoginRefused) as caught:
         carrier(vault, Broken(), records).before_agent(plan_for(PERSONAL, task(workflow=None, login="github-qa")))
     assert caught.value.cause == "browser_login_unavailable"
+
+
+# --------------------------------------------------------------------------
+# The slot: swarm-api creates the secret, the worker only adds a version (L8c)
+# --------------------------------------------------------------------------
+
+
+class RecordingSecretClient:
+    """A Secret Manager client that records every method the worker calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __getattr__(self, method: str) -> Any:
+        def call(*_args: Any, **_kwargs: Any) -> Any:
+            self.calls.append(method)
+            return None
+
+        return call
+
+
+def test_the_worker_asks_for_the_slot_before_every_write_and_never_creates_a_secret():
+    vault = FakeVault()
+    slots = FakeSlots(vault)
+    gate = Gate()
+    plan = plan_for(PERSONAL, task())
+    c = carrier(vault, gate, slots=slots)
+    signed_in(gate, fake_cookie("sid", ".github.com"))
+    c.after_agent(plan)
+    c.save_login(plan, "github-qa", site="github.com")
+    login = browser_login.login_secret_name(PERSONAL, "github-qa")
+    # Every write was preceded by its slot (FakeVault.write asserts the order).
+    assert slots.asked == [plan.carry_secret, login]
+    assert sorted(vault.secrets) == sorted([plan.carry_secret, login])
+
+    # And the real vault only adds a version: the worker holds no secrets.create.
+    client = RecordingSecretClient()
+    browser_login.SecretManagerVault("p", client=client).write(plan.carry_secret, "{}")
+    assert client.calls == ["add_secret_version"]
+
+
+def test_a_refused_slot_writes_nothing_a_carry_fails_open_and_a_save_is_refused():
+    vault = FakeVault()
+    records = Records()
+    gate = Gate()
+    plan = plan_for(PERSONAL, task())
+    c = carrier(vault, gate, records, slots=FakeSlots(vault, refuse="browser_login_fenced"))
+    signed_in(gate, fake_cookie("sid", ".github.com"))
+
+    assert c.after_agent(plan) == []
+    assert ("browser_session_carry_failed", {"cause": "browser_login_fenced"}) in records.items
+    with pytest.raises(BrowserLoginRefused) as caught:
+        c.save_login(plan, "github-qa")
+    assert caught.value.cause == "browser_login_slot_refused"
+    assert vault.secrets == {}
+
+
+def test_the_slot_request_is_signed_as_swarm_api_verifies_it():
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+    from swarm_api.browser_logins import BROWSER_LOGIN_PURPOSE, browser_login_message
+    from swarm_api.childkey import verify_proof
+
+    from agent_worker.children import ChildApiError
+
+    assert browser_login.SLOT_PURPOSE == BROWSER_LOGIN_PURPOSE
+    key = Ed25519PrivateKey.generate()
+    public = browser_login.base64.urlsafe_b64encode(
+        key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
+    ).decode("ascii").rstrip("=")
+
+    class Api:
+        def __init__(self, answer: Any) -> None:
+            self.answer = answer
+            self.sent: list[tuple[str, str, bytes, dict[str, str]]] = []
+
+        def call(self, method: str, path: str, *, body: bytes, headers: dict[str, str]):
+            self.sent.append((method, path, body, headers))
+            if isinstance(self.answer, Exception):
+                raise self.answer
+            return 200, self.answer
+
+    secret = f"swarm-tenant-{PERSONAL}-browser-wf-{WORKFLOW}"
+    api = Api({"secret_id": secret})
+    slots = browser_login.SlotApi(api, tenant_id=PERSONAL, task_id="t-1", attempt_id="a-1",
+                                  lease_id="l-1", generation=3, sign=key.sign, clock=lambda: 1_700_000_000)
+    slots.provision(secret)
+
+    [(method, path, body, headers)] = api.sent
+    assert (method, path) == ("POST", "/v1/tasks/t-1/browser-session/slot")
+    assert json.loads(body) == {"tenant_id": PERSONAL, "attempt_id": "a-1", "lease_id": "l-1",
+                                "generation": 3, "secret_id": secret}
+    timestamp = headers["X-Swarm-Attempt-Timestamp"]
+    assert verify_proof(public, headers["X-Swarm-Attempt-Proof"],
+                        browser_login_message("POST", path, body, timestamp))
+
+    stale = browser_login.SlotApi(
+        Api(ChildApiError(409, "browser_login_fenced", "stale", retryable=False)), tenant_id=PERSONAL,
+        task_id="t-1", attempt_id="a-1", lease_id="l-1", generation=2, sign=key.sign)
+    with pytest.raises(browser_login.SlotRefused) as caught:
+        stale.provision(secret)
+    assert caught.value.code == "browser_login_fenced"
