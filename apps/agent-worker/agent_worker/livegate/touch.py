@@ -25,10 +25,11 @@ pointer, until the gate has said which page is under control (`begin`), and
 nothing after `end`. In view mode no input is sent at all, even if a caller
 upstream got the controller wrong.
 
-COORDINATES. The display is the page at its device scale plus the browser's
-UI band above it (presets.py), and the page is anchored at the bottom-left, as
+COORDINATES. The display is the page at `Device.screen_scale` (one screen
+pixel per CSS pixel, NOT the device scale factor: presets.py) plus the
+browser's UI band above it, and the page is anchored at the bottom-left, as
 the mask places it. A screen point in the page area is
-`((x - 0) / scale, (y - page_top) / scale)` CSS pixels, which is what
+`((x - 0) / screen_scale, (y - page_top) / screen_scale)` CSS pixels, which is what
 `dispatchTouchEvent` takes. A drag that leaves the page area is clamped to its
 edge rather than turned into a mouse event half-way through.
 
@@ -183,8 +184,8 @@ class TouchInjector:
 
     @staticmethod
     def _css(device: Device, x: int, y: int) -> tuple[float, float]:
-        cx = min(max(x, 0), device.page_width - 1) / device.scale
-        cy = min(max(y - device.page_top, 0), device.page_height - 1) / device.scale
+        cx = min(max(x, 0), device.page_width - 1) / device.screen_scale
+        cy = min(max(y - device.page_top, 0), device.page_height - 1) / device.screen_scale
         return (cx, cy)
 
     async def _send(self, session: str, kind: str, points: list[dict[str, Any]]) -> None:
