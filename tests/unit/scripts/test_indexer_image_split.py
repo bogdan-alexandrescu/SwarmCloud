@@ -137,7 +137,10 @@ def test_every_from_is_the_base_by_digest_or_a_digest_pinned_arg():
     froms = re.findall(r"^FROM (\S+)(?: AS (\S+))?$", code, re.M)
     assert froms, "no FROM in the indexer Dockerfile"
     for ref, _ in froms:
-        name = re.fullmatch(r"\$\{(\w+)\}", ref)
+        # A public base is named through the build mirror (`${MIRROR_DOCKER_HUB}/
+        # library/${PYTHON_IMAGE}`, docs/runbooks/build-mirror.md); the image
+        # itself, and so its digest, is still the ARG.
+        name = re.fullmatch(r"(?:\$\{MIRROR_[A-Z_]+\}/(?:library/)?)?\$\{(\w+)\}", ref)
         assert name, f"FROM {ref} is not an ARG, so nothing pins it"
         if name.group(1) == "BASE_IMAGE":
             continue

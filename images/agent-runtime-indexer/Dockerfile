@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # agent-runtime-indexer -- agent-runtime-base plus the repository index's
 # toolchain: the tree-sitter extractor (`swarm-repo-index`), the graph shard
@@ -39,6 +39,14 @@
 # another Debian from the image its output lands in. A test holds the two
 # equal (tests/unit/scripts/test_indexer_image_split.py).
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
+# Every base is pulled through this project's Artifact Registry mirrors,
+# never from Docker Hub or ghcr.io directly: on 2026-10-12 three release
+# builds failed inside Cloud Build on ghcr.io timeouts and a github.com 504.
+# Remote repositories (terraform/infra/build_mirror.tf) serve the same
+# digests. A pull request's local build, which has no Google identity,
+# passes the upstream registries here instead (scripts/lib/build-mirror.sh).
+# docs/runbooks/build-mirror.md.
+ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
 ARG BASE_IMAGE
 
 # ---------------------------------------------------------------------------
@@ -47,7 +55,7 @@ ARG BASE_IMAGE
 # npm servers (pyright, typescript-language-server) are installed in the
 # runtime stage below from images/agent-runtime-indexer/repo-index/lsp/package-lock.json.
 # ---------------------------------------------------------------------------
-FROM ${PYTHON_IMAGE} AS languageservers
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS languageservers
 
 # Go 1.27.1 (2026-10-05, the newest stable on https://go.dev/dl/?mode=json,
 # whose sha256 for go1.27.1.linux-amd64.tar.gz this is). gopls needs the

@@ -203,7 +203,9 @@ def test_every_base_is_pulled_from_a_mirror_by_digest(dockerfile: Path) -> None:
     stages: set[str] = set()
     froms = 0
     for line in _code_lines(text):
-        m = re.match(r"FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?", line, re.I)
+        # Upper case only: a heredoc's Python (`from playwright.sync_api
+        # import ...`) is not an instruction, and every FROM here is upper case.
+        m = re.match(r"FROM\s+(?:--platform=\S+\s+)?(\S+)(?:\s+AS\s+(\S+))?", line)
         if not m:
             continue
         froms += 1
@@ -677,15 +679,18 @@ def test_the_refresh_check_names_every_missing_object_and_changes_nothing(tmp_pa
 def test_the_refresh_check_names_a_mirror_image_that_is_not_cached(tmp_path: Path) -> None:
     api = _global_args((REPO / "images/swarm-api/Dockerfile").read_text())
     uv = f"{api['MIRROR_GHCR']}/{api['UV_IMAGE']}"
-    _, _, proc, calls, _ = _refresh(tmp_path, "--check", "--images-only", missing_images=uv)
+    # gcloud takes a tag or a digest, not both: the digest is what is pinned.
+    name, digest = uv.split("@")
+    by_digest = f"{name.rsplit(':', 1)[0]}@{digest}"
+    _, _, proc, calls, _ = _refresh(tmp_path, "--check", "--images-only", missing_images=by_digest)
     assert proc.returncode != 0
     assert uv in proc.stderr, proc.stderr[-2000:]
     described = {c[4] for c in calls if c[:4] == ["artifacts", "docker", "images", "describe"]}
-    assert uv in described
+    assert by_digest in described
     # Every mirror reference in every Dockerfile, the frontend included.
     hub = MIRRORS["MIRROR_DOCKER_HUB"][0]
-    assert any(d.startswith(f"{hub}/docker/dockerfile:") for d in described), sorted(described)
-    assert any(d.startswith(f"{hub}/library/python:") for d in described), sorted(described)
+    assert any(d.startswith(f"{hub}/docker/dockerfile@sha256:") for d in described), sorted(described)
+    assert any(d.startswith(f"{hub}/library/python@sha256:") for d in described), sorted(described)
 
 
 def test_the_runbook_is_indexed_and_names_the_script() -> None:
