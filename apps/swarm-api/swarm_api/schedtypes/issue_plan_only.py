@@ -61,9 +61,18 @@ def _options(firing: Any, params: Any) -> issue_sweep.RunOptions:
     return issue_sweep.run_options(firing.schedule, params.fix_rounds, plan_required=True)
 
 
+def _own_live(firing: Any, params: Any) -> issue_sweep.OwnLive:
+    schedule_id = str(firing.schedule["schedule_id"])
+
+    def own(live_rows: list[IssueRun]) -> dict[str, Any]:
+        return {"running": waiting_plans(live_rows, schedule_id), "limit": params.max_pending_plans,
+                "bound": "max_pending_plans"}
+    return own
+
+
 def _select(firing: Any, params: Any) -> issue_sweep.Selection:
     return issue_sweep.select(firing, params, limits=_limits(firing, params),
-                              max_live_runs=params.max_pending_plans)
+                              max_live_runs=params.max_pending_plans, own_live=_own_live(firing, params))
 
 
 def create(firing: Any) -> list[dict[str, Any]]:

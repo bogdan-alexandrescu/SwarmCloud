@@ -57,6 +57,16 @@ relay's `{"type": "ready"}`, every tunnel message is binary:
 * `CONTROL` relay -> gate: the connection that now holds control, or an empty
             id for none. The gate's `ControlState.grant`/`revoke` act on it.
 * `ACTION`  gate -> relay: one action-log line (JSON) for the recording (§7).
+* `REPORT`  gate -> relay: the top frame's origin and the device, as JSON
+            `{"origin": {...} | null, "device": {...} | null}` (LB-DEV-A,
+            agent_worker/livegate/report.py). The relay keeps the latest per
+            session -- in memory, it has no Firestore (decision (a)) -- and
+            sends it to every viewer link as text, `{"type": "report", ...}`,
+            on each change and after `ready` to a viewer that joins later.
+            swarm-api, which proxies every viewer link, validates it field by
+            field and records it on `live_sessions/{id}`; the relay checks
+            only that it is a small object of those two keys. It is page data:
+            never logged, and dropped with its session.
 
 A viewer's websocket carries that viewer's RFB bytes as binary messages, and
 swarm-api's control messages as text: `{"type": "control"|"release",
@@ -122,8 +132,12 @@ MIN_KEY_BYTES = 32
 MAX_TICKET_CHARS = 4096
 MAX_CONN_ID = 64
 
-OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION = 1, 2, 3, 4, 5
-_OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION})
+OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT = 1, 2, 3, 4, 5, 6
+_OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT})
+#: The largest REPORT kept (the gate's `report.MAX_REPORT_BYTES`): a
+#: 253-character host and a device fit in well under half of it.
+MAX_REPORT_BYTES = 4096
+_REPORT_KEYS = frozenset({"origin", "device"})
 
 #: Websocket close codes. Every ticket refusal is CLOSE_REFUSED ("404").
 CLOSE_REFUSED = 4404
@@ -431,6 +445,8 @@ class Tunnel:
     controller: str | None = None
     recording: Recording | None = None
     recording_task: asyncio.Task[None] | None = None
+    #: The gate's latest REPORT, as the text every viewer link is sent.
+    report: str | None = None
     closed: bool = False
 
 
@@ -476,6 +492,14 @@ class Rendezvous:
     def controller(self, session_id: str) -> str | None:
         tunnel = self._tunnels.get(session_id)
         return tunnel.controller if tunnel else None
+
+    def report(self, session_id: str) -> dict[str, Any] | None:
+        """The gate's latest report for `session_id`: `{"origin", "device"}`, or None."""
+        tunnel = self._tunnels.get(session_id)
+        if tunnel is None or tunnel.report is None:
+            return None
+        message = json.loads(tunnel.report)
+        return {key: message[key] for key in _REPORT_KEYS}
 
     def recorder(self, session_id: str) -> Recording | None:
         tunnel = self._tunnels.get(session_id)
@@ -548,6 +572,9 @@ class Rendezvous:
             log.info("live relay: session=%s dropped a malformed tunnel frame", tunnel.session.session_id)
             return
         rec = tunnel.recording
+        if op == OP_REPORT:
+            self._take_report(tunnel, payload)
+            return
         if op == OP_ACTION:
             if rec is not None:
                 try:
@@ -574,6 +601,26 @@ class Rendezvous:
             viewer.outbox.put(True, payload)
         elif op == OP_CLOSE:
             await self._drop_viewer(viewer, CLOSE_ENDED, "closed_by_gate", tell_gate=False)
+
+    def _take_report(self, tunnel: Tunnel, payload: bytes) -> None:
+        """Keep the gate's report and pass it to every viewer link. Anything
+        that is not a small object of `origin` and `device`, each an object or
+        null, is dropped: the report is page data (swarm-api checks it again)."""
+        report: Any = None
+        if len(payload) <= MAX_REPORT_BYTES:
+            try:
+                report = json.loads(payload)
+            except ValueError:
+                report = None
+        if (not isinstance(report, dict) or set(report) != _REPORT_KEYS
+                or not all(v is None or isinstance(v, dict) for v in report.values())):
+            log.info("live relay: session=%s dropped a malformed report", tunnel.session.session_id)
+            return
+        text = json.dumps({"type": "report", **{k: report[k] for k in sorted(_REPORT_KEYS)}},
+                          separators=(",", ":"))
+        tunnel.report = text
+        for viewer in tunnel.viewers.values():
+            viewer.outbox.put(False, text)
 
     async def close_tunnel(self, tunnel: Tunnel) -> None:
         """The gate's socket ended: nothing is left to drain to it."""
@@ -625,6 +672,8 @@ class Rendezvous:
                             tunnel=tunnel, outbox=outbox)
             tunnel.viewers[viewer.conn_id] = viewer
         outbox.put(False, json.dumps({"type": "ready"}))
+        if tunnel.report is not None:
+            outbox.put(False, tunnel.report)
         tunnel.outbox.put(True, encode_frame(OP_OPEN, viewer.conn_id))
         self._viewers_changed(tunnel)
         log.info("live relay: session=%s conn=%s viewer joined (%d on task)",

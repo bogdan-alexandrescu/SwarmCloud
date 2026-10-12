@@ -14,7 +14,7 @@
 // talks to swarm-api only (§3.3). The route is lane L9's (`routes/live.py`);
 // this lane was built before it, against the shape stated on `LiveActions`.
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 
 import { errorHeading, read, route, type Result } from './fetch'
 
@@ -162,13 +162,51 @@ function timeLeft(deadline: string, now: number): string {
  * person (§6). The steps are the protocol's (§4.2), in its order, with the one
  * check a phishing page cannot fake first: the origin strip, drawn by the
  * console from what Chromium reports, against the site the agent named (§5.7).
+ *
+ * THE TICKS ARE WHAT IS KNOWN, NOT WHAT IS HOPED (lane LB-UX2a, the chosen
+ * mockup). "The agent opened the sign-in page" is done the moment a hand-off
+ * exists: the agent asks from the page it could not get past (§4.1), and the
+ * request is what put this checklist on screen. "You took control" is done
+ * while the session names THIS person as its controller -- the server's
+ * answer, polled by the tab, never a click remembered here. Checking the
+ * strip and signing in are the person's own acts, which nothing reports, so
+ * they are never ticked.
+ *
+ * "I'M DONE, RETURN CONTROL" IS THE BOTTOM BAR'S RETURN, not a second one:
+ * `onReturn` is the theater's call of `returnLiveControl` followed by the
+ * tab's reload, the action the tab's Return control button performs. It waits
+ * until the person is in control, since there is nothing to return before.
  */
-export function HandoffChecklist({ handoff }: { handoff: TheaterHandoff }) {
+export function HandoffChecklist({
+  handoff,
+  youControl = false,
+  onReturn,
+}: {
+  handoff: TheaterHandoff
+  /** The session names this person as its controller. */
+  youControl?: boolean
+  /** Return control; resolves to an error message, or null when it was returned. */
+  onReturn?: () => Promise<string | null>
+}) {
   const [now, setNow] = useState(() => Date.now())
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1_000)
     return () => clearInterval(t)
   }, [])
+  const step = (done: boolean, body: ReactNode) => (
+    <li className={`th-step${done ? ' is-done' : ''}`} data-done={done ? 'true' : 'false'}>
+      <span className="th-step-mark" aria-hidden="true">
+        {done ? '✓' : ''}
+      </span>
+      <span className="th-step-body">
+        {body}
+        {done ? <span className="sk-vh"> (done)</span> : null}
+      </span>
+    </li>
+  )
+  const returnWhy = !youControl ? 'Take control first: there is nothing to return yet.' : !onReturn ? 'The tab has no session to return control on.' : undefined
   return (
     <section className="th-handoff" aria-label="Hand-off checklist">
       <p className="th-handoff-reason">{handoff.reason}</p>
@@ -179,14 +217,39 @@ export function HandoffChecklist({ handoff }: { handoff: TheaterHandoff }) {
         <time dateTime={handoff.deadline}>{timeLeft(handoff.deadline, now)}</time>
       </p>
       <ol className="th-steps">
-        <li>
-          Check the strip above the browser reads <span className="mono">{handoff.expect}</span>. If it does not, do
-          not type anything.
-        </li>
-        <li>Take control.</li>
-        <li>Sign in. Passwords are masked before they leave the agent’s pod.</li>
-        <li>Return control. The agent carries on from the signed-in page.</li>
+        {step(true, <>The agent opened the sign-in page and asked for you.</>)}
+        {step(
+          false,
+          <>
+            Check the strip above the browser reads <span className="mono">{handoff.expect}</span>. If it does not, do
+            not type anything.
+          </>,
+        )}
+        {step(youControl, <>You took control.</>)}
+        {step(false, <>Sign in. Passwords are masked before they leave the agent’s pod.</>)}
       </ol>
+      <button
+        type="button"
+        className="th-done"
+        disabled={returnWhy !== undefined || busy}
+        title={returnWhy}
+        onClick={() => {
+          if (!onReturn) return
+          setBusy(true)
+          void onReturn().then((err) => {
+            setBusy(false)
+            setError(err)
+          })
+        }}
+      >
+        {busy ? 'Returning…' : "I'm done, return control"}
+      </button>
+      <p className="th-note">The agent carries on from the signed-in page.</p>
+      {error !== null ? (
+        <p className="th-note is-bad" role="alert">
+          {error}
+        </p>
+      ) : null}
     </section>
   )
 }

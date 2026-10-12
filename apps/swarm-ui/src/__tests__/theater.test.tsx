@@ -20,7 +20,7 @@
 // node runner's `*.test.mjs`, so a file there would never run. A test that
 // never runs is a pass by construction, so it lives where the runner looks.
 
-import { act, fireEvent, render, screen } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { useEffect, useRef, useState } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -316,16 +316,18 @@ describe('prev and next', () => {
     render(<Tab taskId="task_a" agents={agents} onNavigate={onNavigate} initiallyOpen />)
     await flush()
 
-    fireEvent.click(screen.getByRole('button', { name: /previous live agent/i }))
+    fireEvent.click(screen.getByRole('button', { name: '‹ prev agent' }))
     expect(onNavigate).toHaveBeenLastCalledWith('task_d')
-    fireEvent.click(screen.getByRole('button', { name: /next live agent/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'next ›' }))
     expect(onNavigate).toHaveBeenLastCalledWith('task_c')
 
-    // The right column lists them in the same order, the current one marked.
-    const items = screen.getAllByRole('listitem').map((li) => li.textContent ?? '')
-    expect(items.map((t) => t.replace(/needs you/i, '').trim())).toEqual(['bravo', 'delta', 'alpha', 'charlie'])
-    const current = screen.getAllByRole('listitem').find((li) => li.getAttribute('aria-current') === 'true')
-    expect(current?.textContent).toContain('alpha')
+    // OTHER LIVE lists the others in the same order; this agent is the
+    // theater's own, named in its LIVE pill, not a row of the list.
+    const items = within(screen.getByRole('region', { name: 'OTHER LIVE' }))
+      .getAllByRole('listitem')
+      .map((li) => li.textContent ?? '')
+    expect(items.map((t) => t.replace(/needs you/i, '').trim())).toEqual(['bravo', 'delta', 'charlie'])
+    expect(screen.getByTestId('theater-live-pill').textContent).toContain('alpha')
   })
 
   it('stops at the ends rather than wrapping', async () => {
@@ -333,7 +335,7 @@ describe('prev and next', () => {
     const onNavigate = vi.fn()
     render(<Tab taskId="task_b" agents={agents} onNavigate={onNavigate} initiallyOpen />)
     await flush()
-    const prev = screen.getByRole('button', { name: /previous live agent/i }) as HTMLButtonElement
+    const prev = screen.getByRole('button', { name: '‹ prev agent' }) as HTMLButtonElement
     expect(prev.disabled).toBe(true)
     fireEvent.click(prev)
     expect(onNavigate).not.toHaveBeenCalled()
@@ -387,7 +389,7 @@ describe('replay', () => {
     render(<Tab initiallyOpen />)
     await flush()
 
-    fireEvent.click(screen.getByRole('button', { name: /^replay$/i }))
+    fireEvent.click(screen.getByRole('button', { name: '◀◀ replay' }))
     await flush()
 
     const listingRead = calls.find((c) => c.url.startsWith(`/v1/tasks/${TASK}/live/recordings`))
@@ -401,11 +403,11 @@ describe('replay', () => {
     const dialog = screen.getByRole('dialog')
     expect(dialog.innerHTML).not.toContain('tenants/other')
     expect(dialog.innerHTML).not.toContain('recordings/7')
-    // The segment picker offers exactly the two that are the tenant's.
-    expect(screen.getAllByRole('button', { name: /^segment /i }).length).toBe(2)
+    // The scrubber lays out exactly the two that are the tenant's.
+    expect(screen.getByTestId('theater-scrubber').querySelectorAll('[data-segment]').length).toBe(2)
 
     // Leaving replay puts the live screen back in view.
-    fireEvent.click(screen.getByRole('button', { name: /back to live/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'live ●' }))
     expect(screen.queryByTestId('theater-replay')).toBeNull()
   })
 
@@ -417,7 +419,7 @@ describe('replay', () => {
     )
     render(<Tab initiallyOpen />)
     await flush()
-    fireEvent.click(screen.getByRole('button', { name: /^replay$/i }))
+    fireEvent.click(screen.getByRole('button', { name: '◀◀ replay' }))
     await flush()
     expect(screen.queryByTestId('theater-replay')).toBeNull()
     expect(screen.getByText(/no recording/i)).toBeTruthy()
