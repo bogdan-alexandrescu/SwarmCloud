@@ -665,6 +665,52 @@ describe('one schedule', () => {
     expect(outcome.querySelector('[data-refused="WORKFLOWS_PATH"]')).not.toBeNull()
   })
 
+  it('says in plain words why a firing started nothing, on each row (SCHED)', async () => {
+    await mountDetail({
+      '/v1/schedules/sch_a': {
+        status: 200,
+        body: {
+          schedule: schedule('sch_a'),
+          firings: [
+            firing('sch_a:3', {
+              work: [], cost: null,
+              skip: {
+                code: 'NOTHING_STARTED',
+                detail: { reason: 'no_room', bound: 'max_live_runs', own_live: { running: 8, limit: 8, bound: 'max_live_runs' } },
+              },
+            }),
+            firing('sch_a:2', {
+              work: [], cost: null,
+              skip: {
+                code: 'NOTHING_STARTED',
+                detail: { reason: 'repositories_not_read', failures: [{ repository: 'example-org/example-api', error: 'credential_missing' }] },
+              },
+            }),
+            firing('sch_a:1', {
+              work: [], cost: null,
+              skip: { code: 'NOTHING_STARTED', detail: { reason: 'no_eligible_issue', passed_over_by_reason: { live_run: 2, in_flight_workflow: 1 } } },
+            }),
+            firing('sch_a:0', {
+              selection: { own_live: { running: 3, limit: 8, bound: 'max_live_runs' } },
+            }),
+          ],
+        },
+      },
+    })
+    await screen.findByRole('heading', { name: 'Schedule sch_a', level: 1 }, WAIT)
+    const outcome = (id: string) => visible(document.querySelector<HTMLElement>(`tr[data-firing="${id}"] td[data-label="Outcome"]`)!)
+    expect(outcome('sch_a:3')).toContain('nothing started')
+    expect(outcome('sch_a:3')).toContain('its live-runs limit is reached')
+    expect(outcome('sch_a:3')).toContain('8 of 8 running from this schedule')
+    expect(outcome('sch_a:3')).not.toContain('NOTHING_STARTED')
+    expect(outcome('sch_a:2')).toContain('its repositories could not be read')
+    expect(outcome('sch_a:2')).toContain('example-org/example-api: credential missing')
+    expect(outcome('sch_a:1')).toContain('every open issue was passed over')
+    expect(outcome('sch_a:1')).toContain('2 already have a live run')
+    expect(outcome('sch_a:1')).toContain('1 in flight in a workflow')
+    expect(outcome('sch_a:0')).toContain('3 of 8 running from this schedule')
+  })
+
   it('reads the audit when its tab is opened, newest first as served', async () => {
     const { calls } = await mountDetail({
       '/v1/schedules/sch_a': { status: 200, body: { schedule: schedule('sch_a'), firings: [] } },

@@ -1966,6 +1966,37 @@ def _compile_staged(run: "IssueRun", plan: Mapping[str, Any],
     return steps
 
 
+#: The most characters a compiled workflow's `title` keeps. A list row and a
+#: Claude Code row show one line; GitHub's own title holds 256, so 150 leaves
+#: the row readable and the issue reference always whole.
+WORKFLOW_TITLE_MAX_CHARS = 150
+
+
+def workflow_title(run: "IssueRun") -> str:
+    """`<owner>/<repo>#<n>: <issue title>` -- the plan's summary when the
+    issue's title was not read -- on one line, at most WORKFLOW_TITLE_MAX_CHARS.
+
+    RUNS (2026-10-12): the compiled workflow was stored with no title, so the
+    console and the Claude Code rows showed only its id. The issue's title is
+    what the run's creator recognises; it was masked when it was read
+    (`issue_read_from_preview`), and the worker scrubs a title before it
+    titles anything.
+    """
+    issue_read = getattr(run, "issue_read", None)  # compile_plan's callers pass stand-ins too
+    read = issue_read if isinstance(issue_read, Mapping) else {}
+    words = str(read.get("title") or "").split() or str((run.plan or {}).get("summary") or "").split()
+    title = f"{run.issue.short}: {' '.join(words)}".rstrip(": ")
+    if len(title) > WORKFLOW_TITLE_MAX_CHARS:
+        title = title[: WORKFLOW_TITLE_MAX_CHARS - 1].rstrip() + "…"
+    return title
+
+
+def workflow_unit(run: "IssueRun") -> str:
+    """The compiled workflow's label, `issue-<n>`: stored as `metadata.unit`,
+    the key the console and the MCP bridge read a label from."""
+    return f"issue-{run.issue.number}"
+
+
 def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
     """The signed workflow around compiled steps: the same for a chain and for stages."""
     ref = run.issue
@@ -1974,6 +2005,8 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
         "repository_url": ref.repository_url,
         "steps": steps,
         "metadata": {
+            "title": workflow_title(run),
+            "unit": workflow_unit(run),
             # Always "off", stated, so the platform default cannot append a
             # merge here: an `auto_merge` run merges from the CI loop, once CI
             # is green and its keyword block is written (`issueci._merge`).

@@ -171,6 +171,42 @@ def test_the_whole_session_over_the_real_relay_and_its_close(monkeypatch):
     assert gate.closed == (rz.CLOSE_ENDED, "session_ended")
 
 
+def relay_report_text(url: str, registrable: str, preset: str, orientation: str) -> str:
+    """What swarm-api's viewer link receives when the gate reports `url` and a
+    device: the GATE's own report, framed by the gate's tunnel module and
+    passed through the REAL relay. LB-DEV-A, part of #1030."""
+    from agent_worker.livegate import report, tunnel
+    from agent_worker.livegate.presets import resolve
+
+    key = _key()
+    relay = rz.Rendezvous(key.encode())
+    gate, viewer = Endpoint(), Endpoint()
+    payload = report.encode_report(report.page_origin(url, registrable),
+                                   report.device_report(resolve(preset, orientation)))
+
+    async def go() -> None:
+        tunnel_ = await relay.open_tunnel(api.mint_ticket(key, _claims(api.ROLE_TUNNEL)), gate)
+        await relay.open_viewer(api.mint_ticket(key, _claims(api.ROLE_VIEWER)), viewer)
+        await relay.from_tunnel(tunnel_, tunnel.encode_frame(tunnel.OP_REPORT, "", payload))
+        await relay.flush()
+
+    asyncio.run(go())
+    reports = [t for t in viewer.text if json.loads(t).get("type") == api.REPORT_TYPE]
+    assert len(reports) == 1, viewer.text
+    return reports[0]
+
+
+def test_the_gates_report_crosses_the_real_relay_into_what_swarm_api_accepts():
+    """The gate's report op, the relay's text to a viewer link and swarm-api's
+    reading of it are one wire: what the gate measured is what swarm-api stores,
+    and it is exactly the console's seam fixture (tests/fixtures/live)."""
+    fixture = json.loads((Path(__file__).resolve().parents[2] / "fixtures" / "live"
+                          / "session.reported.json").read_text())["session"]
+    text = relay_report_text("https://github.com/login", "github.com", "iphone-15", "portrait")
+    assert api.parse_report(text) == {"origin": fixture["origin"], "device": fixture["device"]}
+    assert api.REPORT_TYPE == "report"
+
+
 def test_a_ticket_from_another_key_or_tenant_or_generation_is_refused_at_the_relay():
     key = _key()
     relay = rz.Rendezvous(key.encode())

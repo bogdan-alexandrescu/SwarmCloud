@@ -39,7 +39,7 @@ from typing import Any
 import pytest
 
 from agent_worker.livegate import __main__ as gate_main
-from agent_worker.livegate import ctl, session, tunnel
+from agent_worker.livegate import ctl, report, session, tunnel
 from agent_worker.livegate.capture import Frame
 from agent_worker.livegate.ctl import CtlClient, CtlRefused
 from agent_worker.livegate.rfb import PROTOCOL_VERSION
@@ -136,9 +136,10 @@ def _relay_rendezvous() -> Any:
 
 def test_the_tunnel_frames_are_the_relays():
     rendezvous = _relay_rendezvous()
-    for name in ("OP_OPEN", "OP_DATA", "OP_CLOSE", "OP_CONTROL", "OP_ACTION", "MAX_CONN_ID"):
+    for name in ("OP_OPEN", "OP_DATA", "OP_CLOSE", "OP_CONTROL", "OP_ACTION", "OP_REPORT", "MAX_CONN_ID"):
         assert getattr(tunnel, name) == getattr(rendezvous, name), name
     assert gate_main.MAX_TICKET_CHARS == rendezvous.MAX_TICKET_CHARS
+    assert report.MAX_REPORT_BYTES == rendezvous.MAX_REPORT_BYTES
     frame = rendezvous.encode_frame(rendezvous.OP_DATA, "v1", b"abc")
     assert tunnel.decode_frame(frame) == (tunnel.OP_DATA, "v1", b"abc")
     assert tunnel.encode_frame(tunnel.OP_CLOSE, "v1") == rendezvous.encode_frame(rendezvous.OP_CLOSE, "v1")
@@ -208,7 +209,7 @@ class FakePipe:
         elif method == "Browser.getWindowForTarget":
             result = {"windowId": 1}
         elif method == "Page.getFrameTree":
-            result = {"frameTree": {"frame": {"id": "PAGE1", "url": "about:blank"}}}
+            result = {"frameTree": {"frame": {"id": "PAGE1", "url": "about:blank", "domainAndRegistry": ""}}}
         elif method == "Target.getTargetInfo":
             result = {"targetInfo": {"targetId": message["params"]["targetId"], "type": "page",
                                      "url": "https://example.test/signin", "title": "Sign in"}}
@@ -665,6 +666,61 @@ def test_a_viewer_sees_rfb_and_control_is_granted_then_released(short_tmp):
 
         rig.relay.push(tunnel.OP_CLOSE, "v1")
         await _until(lambda: gate.viewers == 0)
+        stop.set()
+        assert await task == 0
+
+    asyncio.run(body())
+
+
+def _reports(rig: Rig) -> list[dict[str, Any]]:
+    return [json.loads(f[2]) for f in rig.relay.frames if f[0] == tunnel.OP_REPORT]
+
+
+def _navigated(rig: Rig, url: str, registrable: str, *, parent: str | None = None) -> None:
+    frame: dict[str, Any] = {"id": "SUB1" if parent else "PAGE1", "url": url, "domainAndRegistry": registrable}
+    if parent:
+        frame["parentId"] = parent
+    rig.browser.transport.queue.put_nowait({"method": "Page.frameNavigated", "sessionId": rig.gate.pages._session,
+                                            "params": {"frame": frame, "type": "Navigation"}})
+
+
+def test_the_gate_reports_the_top_frames_origin_and_the_device_over_its_tunnel(short_tmp):
+    """LB-DEV-A: what the console's origin strip and device bar draw is what
+    the gate read from Chromium -- the origin on every committed navigation of
+    the top frame, the device on the tunnel's open and on every change --
+    carried over the tunnel the gate already holds (`OP_REPORT`)."""
+    async def body() -> None:
+        rig = Rig(short_tmp)
+        stop, task = await _started(rig)
+        client = CtlClient(rig.cfg.ctl_path)
+        await asyncio.to_thread(client.register)
+        await asyncio.to_thread(client.call, "tunnel_ticket", {"ticket": "t." + secrets.token_urlsafe(8)})
+
+        await _until(lambda: len(_reports(rig)) >= 1)
+        assert _reports(rig)[-1] == {"origin": None,
+                                     "device": {"preset": "desktop", "orientation": "landscape", "touch": False}}
+
+        _navigated(rig, "https://accounts.github.com/login?return_to=%2Fsettings", "github.com")
+        await _until(lambda: _reports(rig)[-1]["origin"] is not None)
+        assert _reports(rig)[-1]["origin"] == {
+            "origin": "https://accounts.github.com", "host": "accounts.github.com",
+            "display_host": "accounts.github.com", "registrable_domain": "github.com",
+            "scheme": "https:", "ip_literal": False, "cert_error": None}
+        sent = json.dumps(_reports(rig))
+        assert "login" not in sent and "return_to" not in sent, "an origin, never a path or a query"
+
+        # A child frame navigating is not the top frame's origin.
+        count = len(_reports(rig))
+        _navigated(rig, "https://evil.example/frame", "evil.example", parent="PAGE1")
+        await asyncio.sleep(0.1)
+        assert len(_reports(rig)) == count
+
+        await asyncio.to_thread(client.call, "device", {"preset": "iphone-15", "orientation": "landscape"})
+        await _until(lambda: _reports(rig)[-1]["device"]["preset"] == "iphone-15")
+        assert _reports(rig)[-1] == {
+            "origin": _reports(rig)[count - 1]["origin"],
+            "device": {"preset": "iphone-15", "orientation": "landscape", "touch": True}}
+        client.close()
         stop.set()
         assert await task == 0
 
