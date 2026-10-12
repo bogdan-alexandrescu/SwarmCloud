@@ -18,8 +18,9 @@ import { DiffstatChart } from './charts/Diffstat'
 import { PeakMemoryChart } from './charts/PeakMemory'
 import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
-import { resultIsNewest } from './dag'
+import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
 import { DecisionCard } from './DecisionCard'
+import { handoffOf } from './Handoff'
 import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
 import { eventKind, isTerminalEvent } from './events'
@@ -1152,11 +1153,19 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   cells.push(cpuCell(latest, open !== null, events, cls))
 
   // COST, with tokens as its sub-line (#322: every kind summed on its own).
-  const reports = reportsSpend(task.runner_profile)
   const spent = attempts.filter((a) => a.cost_usd !== null)
   const cost = spent.length === 0 ? null : spent.reduce((t, a) => t + (a.cost_usd ?? 0), 0)
   const kinds = tokenKinds(task, attempts)
   const kindTotal = tokenTotal(kinds)
+  // THE GRAPH'S RULE WHEN THE DOCUMENTS CARRY NO COST (LB-V4, B8): the API's
+  // served total over every attempt, then the finished result's figure --
+  // `stepCostOf` with no telemetry of its own, because the attempt documents
+  // above ARE this page's telemetry. One rule, so the node and this card
+  // cannot print two figures for one task.
+  const served = cost === null ? stepCostOf(task, undefined) : null
+  // NO MODEL CALL ONLY WHEN THERE TRULY IS NONE: a profile outside the list
+  // that reported a figure is drawn with it, as the graph draws it.
+  const reports = reportsSpend(task.runner_profile) || cost !== null || kindTotal !== null || served !== null
   const withTokens = attempts.filter((a) => reportedTokens(a) || a.attempt_id === kinds.fromSummary).length
   // THE HEADLINE IS ALL FOUR KINDS, THE CAPTION EACH ONE (#322, owner
   // decision 2026-09-29): `1.41M tokens`, then `in 52 · out 9,955 · cache
@@ -1172,6 +1181,23 @@ function DtStrip({ run, now }: { run: AgentRun; now: number }) {
   if (!reports) {
     // NO MODEL CALL IS A FACT, NOT A GAP (owner decision, 2026-09-29).
     cells.push({ label: 'Cost', value: 'no model call', tone: 'absent', sub: 'this profile reports no spend', help: 'token-cost' })
+  } else if (served !== null) {
+    // WHERE IT CAME FROM, said as the graph says it: the API's sum over every
+    // attempt, or the last attempt's result alone.
+    const floor = served.from === 'total' && totalCostOf(task)?.incomplete === true
+    cells.push({
+      label: 'Cost',
+      value: floor ? <>at least {usd(served.usd)}</> : usd(served.usd),
+      sub: (
+        <>
+          {served.from === 'total' ? 'summed by the API' : 'from result'}
+          {' · '}
+          {tokenLine ?? 'tokens not reported'}
+        </>
+      ),
+      tone: open !== null ? 'reading' : undefined,
+      help: 'token-cost',
+    })
   } else if (cost === null && open !== null) {
     cells.push({ label: 'Cost', value: 'at exit', tone: 'reading', sub: tokenLine ?? 'with tokens, when the attempt ends', help: 'token-cost' })
   } else if (cost === null && latest === null) {
@@ -1771,13 +1797,32 @@ function anythingRan(task: Task, attempts: AttemptRow[] | null): boolean {
 }
 
 /**
- * Only the CLI agents parse a usage block out of the runner's output
- * (`cliagent.run_cli_agent`); the others report no tokens and no cost by
- * construction. One predicate for the run tiles and the attempt cards, so the
- * two cannot disagree about whether a figure is coming.
+ * Every profile whose runner is a CLI agent (`agent_worker.runners.claude_code`
+ * or `.codex`, swarm_common/profiles.py), which is what parses a usage block
+ * out of the runner's output (`cliagent.run_cli_agent`); the others report no
+ * tokens and no cost by construction.
+ *
+ * IT NAMED TWO OF FIVE (LB-V4, B8, QA pass 5 2026-10-12): `claude-code` and
+ * `codex` only, so a `claude-code-browser` step the workflow graph drew at
+ * `cost $0.712 · tokens 1.06M` read `no model call` here. `claude-code-review`
+ * and `indexer` run the same runner and read the same. A profile added later
+ * is still covered by `Run`'s cost cell, which reads any figure that was
+ * reported whatever this list says.
+ */
+const SPEND_PROFILES: ReadonlySet<string> = new Set([
+  'claude-code',
+  'claude-code-browser',
+  'claude-code-review',
+  'codex',
+  'indexer',
+])
+
+/**
+ * One predicate for the run tiles and the attempt cards, so the two cannot
+ * disagree about whether a figure is coming.
  */
 function reportsSpend(profile: string): boolean {
-  return profile === 'claude-code' || profile === 'codex'
+  return SPEND_PROFILES.has(profile)
 }
 
 /**
@@ -2031,6 +2076,14 @@ function elapsedNote(task: Task, phase: ElapsedPhase, now: number): string {
 
 function Alerts({ task }: { task: Task }) {
   const live = !TERMINAL_STATES.has(task.state)
+  // THE HAND-OFF BANNER IS THE ONE STATEMENT (LB-V4, U1, QA pass 5
+  // 2026-10-12). A PARKED(HUMAN_REQUIRED) task said it three times on this
+  // tab: the banner `AgentSplit` draws over every pane but the Browser tab,
+  // this bar (`waiting for you to sign in · eligible <the park instant>`) and
+  // the scheduler-pass bar with `HUMAN_REQUIRED` in it. The banner carries the
+  // park instant now (`HandoffParkedSince`), so both bars step aside -- for
+  // this reason only: for every other park they are the only explanation.
+  const handedOff = handoffOf(task)?.phase === 'parked'
 
   return (
     <>
@@ -2046,7 +2099,7 @@ function Alerts({ task }: { task: Task }) {
           on a step`. `reasonText` remains the fallback for a reason this screen does not
           recognise, because "we have no copy for that" is a fact about THIS
           SCREEN and cannot live in a help topic keyed on the reason. */}
-      {task.park_reason && (
+      {task.park_reason && !handedOff && (
         <div className="bar amber">
           <strong title={task.park_reason}>{parkWord(task.park_reason)}</strong>
           {task.next_eligible_at && (
@@ -2080,7 +2133,7 @@ function Alerts({ task }: { task: Task }) {
           being busy is not a durable condition -- so READY with blockers and
           no park reason is the commonest "why is nothing happening", and it
           would otherwise show as a bare READY chip with no explanation. */}
-      {task.blocked_by && task.blocked_by.length > 0 && (
+      {task.blocked_by && task.blocked_by.length > 0 && !handedOff && (
         <div className="bar amber" data-blocked-by="">
           <span className="blocker-copy">last scheduler pass</span>
           {task.blocked_by.map((b, i) => (
@@ -2116,6 +2169,33 @@ function Alerts({ task }: { task: Task }) {
       )}
     </>
   )
+}
+
+/**
+ * When a PARKED(HUMAN_REQUIRED) task parked, epoch ms, or null for any other
+ * task. The worker's park writes `next_eligible_at` as the park instant
+ * (agent_worker/handoff.py), and the scheduler's 24-hour dead-letter reads it
+ * the same way, `updated_at` standing in when it is absent (scheduler/loop.py)
+ * -- the rule `handoffOf` counts its deadline from.
+ */
+export function parkedSince(task: Task): number | null {
+  if (handoffOf(task)?.phase !== 'parked') return null
+  for (const iso of [task.next_eligible_at, task.updated_at]) {
+    const v = typeof iso === 'string' ? Date.parse(iso) : NaN
+    if (Number.isFinite(v)) return v
+  }
+  return null
+}
+
+/**
+ * `parked since <time>`, folded into the hand-off banner (LB-V4, U1) in place
+ * of the Details tab's `eligible <time>` bar, which printed the same instant
+ * under a word that read as a future one. Nothing for any other task.
+ */
+export function HandoffParkedSince({ task }: { task: Task }) {
+  const since = parkedSince(task)
+  if (since === null) return null
+  return <span className="ho-since">parked since {new Date(since).toLocaleString()}</span>
 }
 
 /**
@@ -2166,6 +2246,9 @@ function Why({
    */
   classes: ResourceClasses | null
 }) {
+  // ONCE, IN THE BANNER (LB-V4, U1): a parked hand-off's sentence is the
+  // banner's, so it is not repeated here. See `Alerts`.
+  if (handoffOf(task)?.phase === 'parked') return null
   const units = classUnits(classes, task.resource_class)
   const why = whyAgent(task, units)
   if (!why) return <SilentWorker task={task} events={events} now={now} />
