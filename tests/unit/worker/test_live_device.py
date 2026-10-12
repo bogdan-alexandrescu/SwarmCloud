@@ -9,7 +9,7 @@ docs/design/live-browser.md section 6.1. The acceptance test of lane L3b:
 * in control with touch on, a press/move/release arrives as
   touchStart/Move/End;
 * in view mode no input is sent;
-* the mask covers a password field on every preset at its device scale factor.
+* the mask covers a password field on every preset where the page draws it.
 
 The expected sizes below are the design's list (section 6.1), written out
 again here rather than read from presets.py, so a preset that drifts from the
@@ -236,11 +236,13 @@ def test_each_preset_sets_metrics_user_agent_and_touch_on_the_gate_owned_context
         chosen = await device.select(name, orientation)
         assert (chosen.width, chosen.height) == (width, height)
 
-        page_w, page_h = math.ceil(width * scale), math.ceil(height * scale)
-        assert display.sizes[-1] == (page_w, page_h + BROWSER_UI_HEIGHT)
-        assert mask.scales[-1] == scale
+        # The page is drawn at one screen pixel per CSS pixel, whatever the
+        # device scale factor (presets.py, LB-R3), and the window one pixel
+        # past the display (device.py).
+        assert display.sizes[-1] == (width, height + BROWSER_UI_HEIGHT)
+        assert mask.scales[-1] == 1.0
         bounds = chromium.calls("Browser.setWindowBounds")[-1]["params"]["bounds"]
-        assert (bounds["width"], bounds["height"]) == display.sizes[-1]
+        assert (bounds["width"] - 1, bounds["height"] - 1) == display.sizes[-1]
 
         # Every override went over the gate's pipe on the gate's own session
         # on the fresh page -- no agent connection exists to have sent it --
@@ -255,6 +257,7 @@ def test_each_preset_sets_metrics_user_agent_and_touch_on_the_gate_owned_context
         assert metrics["params"]["width"] == width
         assert metrics["params"]["height"] == height
         assert metrics["params"]["deviceScaleFactor"] == scale
+        assert "scale" not in metrics["params"]
         assert metrics["params"]["mobile"] is touch
         agent = chromium.calls("Emulation.setUserAgentOverride")[-1]
         assert agent["sessionId"] == gate_session
@@ -279,7 +282,7 @@ def test_the_preset_list_is_the_designs_and_nothing_more():
 def test_xvfb_is_started_large_enough_for_every_device():
     assert MAX_DISPLAY_WIDTH >= max(d.display_width for d in all_devices())
     assert MAX_DISPLAY_HEIGHT >= max(d.display_height for d in all_devices())
-    assert (MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT) == (852 * 3, 852 * 3 + BROWSER_UI_HEIGHT)  # iPhone 15, both ways
+    assert (MAX_DISPLAY_WIDTH, MAX_DISPLAY_HEIGHT) == (1440, 1440 + BROWSER_UI_HEIGHT)  # desktop, both ways
 
 
 def test_a_page_created_later_is_given_the_current_device(tmp_path):
@@ -419,9 +422,9 @@ def test_in_control_with_touch_on_a_press_move_release_arrives_as_touch_start_mo
         cdp, x11 = FakeCdp(), FakeX()
         touch = TouchInjector(x11, cdp, devices)
         touch.begin("PAGE")
-        await touch.pointer_event(1, 300, top + 600)
-        await touch.pointer_event(1, 300, top + 300)
-        await touch.pointer_event(0, 300, top + 300)
+        await touch.pointer_event(1, 100, top + 200)
+        await touch.pointer_event(1, 100, top + 100)
+        await touch.pointer_event(0, 100, top + 100)
         return cdp, x11
 
     cdp, x11 = asyncio.run(main())
@@ -485,11 +488,11 @@ def test_a_wheel_is_a_touch_scroll_and_ctrl_wheel_is_a_pinch():
         cdp = FakeCdp()
         touch = TouchInjector(FakeX(), cdp, devices)
         touch.begin("PAGE")
-        await touch.pointer_event(0x10, 300, top + 900)  # wheel down
-        await touch.pointer_event(0, 300, top + 900)
+        await touch.pointer_event(0x10, 100, top + 300)  # wheel down
+        await touch.pointer_event(0, 100, top + 300)
         await touch.key(0xFFE3, True)  # Control_L: noVNC's two-finger pinch
-        await touch.pointer_event(0x08, 300, top + 900)  # wheel up
-        await touch.pointer_event(0, 300, top + 900)
+        await touch.pointer_event(0x08, 100, top + 300)  # wheel up
+        await touch.pointer_event(0, 100, top + 300)
         await touch.key(0xFFE3, False)
         return cdp
 
@@ -554,8 +557,9 @@ def test_in_view_mode_no_input_is_sent():
 
 
 @pytest.mark.parametrize(("name", "orientation"), DEVICES)
-def test_the_mask_covers_a_password_field_on_every_preset_at_its_device_scale_factor(name, orientation):
-    width, height, scale, _touch, _ua = _expected(name, orientation)
+def test_the_mask_covers_a_password_field_on_every_preset_where_the_page_draws_it(name, orientation):
+    width, height, _dpr, _touch, _ua = _expected(name, orientation)
+    scale = 1.0  # screen pixels per CSS pixel, on every preset (presets.py, LB-R3)
     state = MaskState()
     state.session_up()
     state.frame_attached("TOP", None)
@@ -582,7 +586,7 @@ def test_the_mask_covers_a_password_field_on_every_preset_at_its_device_scale_fa
         for x in range(x0, x1, 5):
             assert frame.rgb_at(x, y) == MASK_RGB, (name, orientation, x, y)
     assert frame.rgb_at(x1 - 1, y1 - 1) == MASK_RGB
-    # The box is the field at this scale, not the whole page: well past it is untouched.
+    # The box is the field, not the whole page: well past it is untouched.
     assert frame.rgb_at(min(x1 + 40, device.display_width - 1), min(y1 + 40, device.display_height - 1)) == WHITE
 
 
@@ -740,13 +744,13 @@ def test_the_display_is_resized_with_randr_on_the_root_window():
     server = FakeXServer()
 
     async def body(display: XRandrDisplay) -> None:
-        await display.resize(1179, 2644)
+        await display.resize(393, 939)
 
     _with_x(server, body)
     sizes = [r for r in server.requests if r[0] == FakeXServer.RANDR and r[1] == 7]
     assert len(sizes) == 1
     root, width, height, _mm_w, _mm_h = struct.unpack("<IHHII", sizes[0][2])
-    assert (root, width, height) == (FakeXServer.ROOT, 1179, 2644)
+    assert (root, width, height) == (FakeXServer.ROOT, 393, 939)
     version = [r for r in server.requests if r[0] == FakeXServer.RANDR and r[1] == 0]
     assert struct.unpack("<II", version[0][2]) == (1, 3)
 
