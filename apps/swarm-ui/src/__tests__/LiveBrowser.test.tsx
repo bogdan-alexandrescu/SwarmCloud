@@ -415,10 +415,14 @@ describe('a viewer’s device switcher is disabled', () => {
     expect((screen.getByRole('button', { name: /touch/i }) as HTMLButtonElement).disabled).toBe(true)
   })
 
-  it('says why, on the switcher and in the toolbar', () => {
+  // LB-V1 (visual QA 5, U3): the why is the switcher's tooltip and accessible
+  // description, no longer a toolbar line that pushed ⤢ Theater to a second row.
+  it('says why, on the switcher, as its tooltip and its description', () => {
     pane(viewer())
-    expect((screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement).title).toMatch(/only the person in control/i)
-    expect(document.querySelector('.live-toolbar-why')?.textContent).toMatch(/only the person in control/i)
+    const chip = screen.getByRole('button', { name: 'iPhone 15' }) as HTMLButtonElement
+    expect(chip.title).toMatch(/only the person in control/i)
+    expect(document.getElementById(chip.getAttribute('aria-describedby') ?? '')?.textContent).toMatch(/only the person in control/i)
+    expect(document.querySelector('.live-toolbar-why')).toBeNull()
   })
 
   it('follows the server, not the controller field: in control but not allowed to switch is disabled', () => {

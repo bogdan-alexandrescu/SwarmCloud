@@ -56,12 +56,13 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
 
 import { loadLiveRecordings, loadTasks, returnLiveControl, type LiveRecording, type LiveSession } from './api'
-import { agentName } from './agentlist'
+import { agentName, useAgentName } from './agentlist'
 import { errorHeading, route, tenantQuery, type ApiError } from './fetch'
 import { liveBrowserRows, needsYou } from './Handoff'
 import { theaterPath } from './LiveThumb'
@@ -401,13 +402,21 @@ export function TheaterHost({ session, initiallyOpen = false, children, ...slots
   const close = useCallback(() => setOpen(false), [])
 
   // Esc returns to the tab AT THE SAME SCROLL (§6): restored after the tab is
-  // back in the layout, before paint, and focus goes back to what opened it.
+  // back in the layout, before paint. FOCUS GOES TO ⤢ (LB-V2, visual QA pass
+  // 5): the button that opens the theater again, also when it was opened by
+  // `T`, the banner or `?theater=1`, where nothing in the tab held focus; only
+  // a tab with no ⤢ gets back what was focused before.
+  const wasOpen = useRef(open)
   useLayoutEffect(() => {
-    if (open || saved.current === null) return
-    const { scroll, focus } = saved.current
+    const closed = wasOpen.current && !open
+    wasOpen.current = open
+    if (!closed) return
+    const { scroll, focus } = saved.current ?? { scroll: [], focus: null }
     saved.current = null
     for (const [el, top] of scroll) el.scrollTop = top
-    if (focus instanceof HTMLElement && focus.isConnected) focus.focus()
+    const button = hostRef.current?.querySelector<HTMLElement>('[data-theater-button]')
+    if (button) button.focus()
+    else if (focus instanceof HTMLElement && focus.isConnected) focus.focus()
   }, [open])
 
   useEffect(() => {
@@ -444,6 +453,7 @@ export function TheaterButton({ className }: { className?: string }) {
       className={className ?? 'ctl-btn th-open'}
       aria-label="Open theater (T)"
       title="Theater (T)"
+      data-theater-button=""
       onClick={theater.open}
     >
       <span aria-hidden="true">⤢</span> Theater
@@ -503,6 +513,23 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
     rootRef.current?.focus()
   }, [])
 
+  // ESC CLOSES THE THEATER AND NOTHING BEHIND IT (LB-V2, visual QA pass 5:
+  // Esc went from /agents/live/<task>/browser to /agents/live). The theater is
+  // portalled to <body>, but React bubbles a key through the portal to the
+  // agent split's own `onKeyDown`, which closed the split too. So the key is
+  // taken here, on the root, and stopped: neither the split's `onKeyDown` nor
+  // its window listener hears it. A key pressed in the screen is the remote
+  // browser's -- the theater does not close, and the split still never hears
+  // it. The window listener below is for a key with no focus inside (the
+  // page body); the split's window listener stands down for that one while
+  // a theater is open (`[data-theater]`, AgentSplit.tsx).
+  const onRootKey = (e: ReactKeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== 'Escape' || e.defaultPrevented) return
+    e.stopPropagation()
+    if (e.target instanceof Element && e.target.closest('[data-live-screen]')) return
+    e.preventDefault()
+    onClose()
+  }
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key !== 'Escape' || e.defaultPrevented) return
@@ -598,12 +625,36 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
   }, [listed, session.taskId, session.label, handoff])
   const { prev, next } = neighbours(ordered, session.taskId)
   const others = ordered.filter((a) => a.taskId !== session.taskId)
-  const label = session.label ?? listed.find((a) => a.taskId === session.taskId)?.label ?? session.taskId
+  // "LIVE <agent name>" (LB-V2, visual QA pass 5 read "LIVE task_…"): the
+  // tab passes no label, and the self-read list answers after the first paint
+  // (or not at all, past its page), so the name the split recorded when it
+  // read this task comes first. The id is the pill's title.
+  const known = useAgentName(session.taskId)
+  const label = session.label ?? known ?? listed.find((a) => a.taskId === session.taskId)?.label ?? session.taskId
 
   const browser = session.browser ?? null
   const current = browser?.device ?? null
   const youControl = browser !== null && browser.controller !== null && browser.controller.email === browser.you.email
   const reload = session.reload
+
+  // THE DEVICE COLUMN IS A LIST (LB-V2, visual QA pass 5: the chip row was
+  // clipped at "iPhone SE"). The choices are the tab's own device bar (one
+  // implementation of who may switch, §6.1), stacked by theater.css; each
+  // chip is marked here with its preset's outline, which the stylesheet draws
+  // before the name, as the mockup's list does. The bar names a chip by its
+  // label, so the label is read back to the preset it stands for.
+  const deviceRef = useRef<HTMLDivElement>(null)
+  const presets = browser?.presets
+  useLayoutEffect(() => {
+    const chips = deviceRef.current?.querySelectorAll<HTMLElement>('.live-chip') ?? []
+    for (const chip of chips) {
+      const text = chip.textContent ?? ''
+      const name = DEVICE_CHIPS.find(([, t]) => t === text)?.[0] ?? text
+      const kind = outlineOf(name)
+      const mobile = presets?.find((p) => p.name === name)?.mobile
+      chip.dataset.outline = kind !== 'unknown' || mobile === undefined ? kind : mobile ? 'phone' : 'desktop'
+    }
+  })
   // The bottom bar's Return control, for the checklist: the same route, then
   // the tab's reload, so the strip and the bar redraw from the server.
   const returnControl = useCallback(async (): Promise<string | null> => {
@@ -619,9 +670,18 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
   ]
 
   return createPortal(
-    <div ref={rootRef} className="th-root" role="dialog" aria-modal="true" aria-label={`Theater: ${label}`} tabIndex={-1}>
+    <div
+      ref={rootRef}
+      className="th-root"
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Theater: ${label}`}
+      tabIndex={-1}
+      data-theater=""
+      onKeyDown={onRootKey}
+    >
       <header className="th-head">
-        <span className="th-pill" data-testid="theater-live-pill">
+        <span className="th-pill" data-testid="theater-live-pill" title={session.taskId}>
           <span className={`th-pill-live${session.live ? '' : ' is-ended'}`}>{session.live ? 'LIVE' : 'ENDED'}</span>
           <span className="th-title">{label}</span>
         </span>
@@ -744,7 +804,9 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
               ? 'Not reported'
               : `${chipLabel(current.preset)} · ${current.orientation}${current.touch ? ' · touch' : ''}`}
           </p>
-          {device}
+          <div className="th-device-ctl" ref={deviceRef}>
+            {device}
+          </div>
         </section>
         <section className="th-agents" aria-labelledby="th-h-others">
           <h3 id="th-h-others" className="th-h">
