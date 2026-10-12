@@ -613,6 +613,11 @@ def test_freshness_states():
 
 def test_get_index_compares_a_moved_head_once(client, db, objects, repo_id, github):
     _promoted(client, db, objects, repo_id)
+    # Built an hour ago BY THE RUN'S CLOCK. The fixture index says "built 2026-10-05",
+    # and an index older than repoindex.STALE_AGE (7 days) reads "stale", not
+    # "behind": from 2026-10-12 09:00 UTC this test failed on every pull request.
+    built = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    _registration(db, repo_id)["index"]["current_built_at"] = built
     _registration(db, repo_id)["index"]["head_sha"] = TWO
     github.compares[(ONE, TWO)] = {"status": "ahead", "ahead_by": 2, "files": ["src/api/x.py"]}
     body = _get_index(client, repo_id).json()
