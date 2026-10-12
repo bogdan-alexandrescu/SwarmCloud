@@ -6475,26 +6475,39 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
 }
 
 /**
+ * The viewer ticket's answer. `session_id` names the session the ticket is
+ * bound to; the socket is opened on it (`liveSocketUrl`), not on the task.
+ * `socket_path` is the server's own statement of that address.
+ */
+export interface LiveTicket {
+  ticket: string
+  session_id: string
+  expires_in: number
+  socket_path: string
+}
+
+/**
  * `POST /v1/tasks/{task_id}/live/ticket`: a one-use viewer ticket, 30 seconds
  * (§5.2 step 3), rate limited per person (§5.10). It travels ONLY as the
  * websocket's first message (`openLiveSocket`), never in a URL: load
  * balancer, IAP and Cloud Run request logs record URLs (§5.2).
  */
-export async function mintLiveTicket(taskId: string): Promise<Result<{ ticket: string; expires_at: string }>> {
+export async function mintLiveTicket(taskId: string): Promise<Result<LiveTicket>> {
   const target = route('/v1/tasks/{id}/live/ticket', { id: taskId })
   if (USE_FIXTURES) return liveNotServed(target)
-  return (await write(target, 'POST')) as Result<{ ticket: string; expires_at: string }>
+  return (await write(target, 'POST')) as Result<LiveTicket>
 }
 
 /**
- * The live websocket's address: `wss://<console host>/v1/tasks/{task_id}/live`
- * through the same IAP load balancer as every `/v1` read (§3.3 step 3). It
- * carries the task id AND NOTHING ELSE -- no ticket, no tenant, no query.
+ * The live websocket's address: `wss://<console host>/v1/live/{session_id}/stream`
+ * through the same IAP load balancer as every `/v1` read (§3.3 step 3);
+ * swarm-api proxies it to the relay. It carries the session id AND NOTHING
+ * ELSE -- no ticket, no tenant, no query.
  */
-export function liveSocketUrl(taskId: string): string {
+export function liveSocketUrl(sessionId: string): string {
   const loc = typeof window === 'undefined' ? null : window.location
   const scheme = loc !== null && loc.protocol === 'http:' ? 'ws' : 'wss'
-  return `${scheme}://${loc?.host ?? ''}${route('/v1/tasks/{id}/live', { id: taskId }).url}`
+  return `${scheme}://${loc?.host ?? ''}${route('/v1/live/{id}/stream', { id: sessionId }).url}`
 }
 
 /**
@@ -6512,9 +6525,9 @@ export function liveSocketUrl(taskId: string): string {
  * open, so noVNC never sees an already-closed channel. If `attach` throws,
  * the socket is closed and the promise rejects, so the caller retries.
  */
-export function openLiveSocket<T>(taskId: string, ticket: string, attach: (ws: WebSocket) => T): Promise<T> {
+export function openLiveSocket<T>(sessionId: string, ticket: string, attach: (ws: WebSocket) => T): Promise<T> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(liveSocketUrl(taskId))
+    const ws = new WebSocket(liveSocketUrl(sessionId))
     ws.binaryType = 'arraybuffer'
     ws.addEventListener('open', () => {
       ws.send(JSON.stringify({ ticket }))

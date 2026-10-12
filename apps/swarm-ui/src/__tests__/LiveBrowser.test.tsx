@@ -243,7 +243,7 @@ beforeEach(() => {
   api.loadTranscript.mockReturnValue(new Promise(() => {}))
   api.loadTaskLogs.mockReturnValue(new Promise(() => {}))
   // Built at run time: nothing here may look like a credential in the source.
-  api.mintLiveTicket.mockImplementation(async () => ok({ ticket: `vt.${crypto.randomUUID()}`, expires_at: '' }))
+  api.mintLiveTicket.mockImplementation(async () => ok({ ticket: `vt.${crypto.randomUUID()}`, session_id: 'ls_one', expires_in: 30, socket_path: '/v1/live/ls_one/stream' }))
   api.takeLiveControl.mockResolvedValue(ok(null))
   api.returnLiveControl.mockResolvedValue(ok(null))
   api.renewLiveControl.mockResolvedValue(ok(null))
@@ -287,13 +287,13 @@ describe('the Browser tab is first for a running browser agent', () => {
 })
 
 describe('the ticket goes in the first message, never the URL', () => {
-  it('opens /v1/tasks/<id>/live with nothing else in the URL and sends the ticket as the first frame, before noVNC has the socket', async () => {
+  it('opens /v1/live/<session>/stream with nothing else in the URL and sends the ticket as the first frame, before noVNC has the socket', async () => {
     const ticket = `vt.${crypto.randomUUID()}`
-    api.mintLiveTicket.mockResolvedValue(ok({ ticket, expires_at: '' }))
+    api.mintLiveTicket.mockResolvedValue(ok({ ticket, session_id: 'ls_one', expires_in: 30, socket_path: '/v1/live/ls_one/stream' }))
     pane(session())
     const r = await connected()
     const ws = FakeSocket.made.at(-1)!
-    expect(ws.url).toMatch(new RegExp(`^wss?://[^/?#]*/v1/tasks/${ID}/live$`))
+    expect(ws.url).toMatch(new RegExp(`^wss?://[^/?#]*/v1/live/ls_one/stream$`))
     expect(ws.url).not.toContain(ticket)
     expect(ws.sent[0]).toBe(JSON.stringify({ ticket }))
     expect(r.sentBeforeAttach, 'noVNC was handed the socket before the ticket went').toBe(1)
