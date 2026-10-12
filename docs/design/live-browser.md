@@ -1430,6 +1430,39 @@ first, red, then the fix (CLAUDE.md, "Red first").
 L1-L3 share `livegate/`, a new directory; they are three lanes because their
 files do not overlap, and L3 waits for L1 because it encodes L1's frames.
 
+### 9.1 Switching it on (LB-Lon)
+
+The owner decided on 2026-10-11 (~15:00 PDT) that, once every lane above had
+merged, ONE pull request turns the live browser on in dev. That pull request
+sets `enable_live_browser = true` in `terraform/environments/dev/dev.tfvars`
+and nothing else switches.
+
+**One switch, both halves.** The relay (`terraform/infra/live.tf`: its grants,
+its internal address, its manifest, swarm-api's `SWARM_LIVE_URL` and
+`SWARM_LIVE_KEY`) and the pod (the scheduler's `LIVE_BROWSER_SIDECAR`, which
+gives a `claude-code-browser` pod its `display` sidecar and live gate) follow
+the same value. Before LB-Lon nothing in Terraform set `LIVE_BROWSER_SIDECAR`,
+so the relay could have been turned on with no pod ever streaming to it.
+`terraform/infra/locals.tf` now derives it from `local.live_relay_enabled`
+rather than taking a second variable, because neither half is useful alone: a
+relay with no sidecar streams nothing, and a sidecar with no relay costs every
+browser pod a display's share of its resource class for a gate no ticket is
+ever issued to. `tests/terraform/live.tftest.hcl` holds dev to both.
+
+**The order is `live.tf`'s.** Steps 1-3 are the operator's and come first:
+`make apply` with the switch false, `scripts/create-secrets.sh --live-key`, and
+a `swarm-live` digest in `image_refs`. The switch is step 4. Step 5 applies
+`terraform output -raw swarm_live_manifest` to swarm-autopilot. Until step 5
+the relay's address answers nothing, and swarm-api's live routes fail closed.
+
+**What stays off.** Saved browser logins (§5.5.1) are
+`terraform/bootstrap`'s `enable_browser_logins` and are not part of this
+switch. No swarm-api refusal switch is involved: every live-browser code
+(`live_*`, `control_*`, `handoff_*`, `browser_*`) is in the not-switchable set
+of `tests/unit/control_plane/test_new_refusals_ship_off.py`, raised only by
+routes these lanes introduced. `claude-code-browser` already names
+`GKE_AUTOPILOT` (§8.1), and `enable_gke_autopilot` is already true in dev.
+
 ---
 
 ## 10. Questions for the owner
