@@ -757,7 +757,12 @@ function AgentsBody({
           />
         )}
 
-        {shown === 'live' && (
+        {/* OFFERED ONLY WHEN THERE IS A LIVE BROWSER TO SHOW (#139 at 390). With
+            none, `Live 0` can only empty the list, and on a phone the switch
+            is a 44px row of its own that put the first Agents row past the
+            screen's midpoint. Kept while it is on, so the way back to All
+            never disappears under the reader. */}
+        {shown === 'live' && (liveBrowsers > 0 || browsersOnly) && (
           <Segmented
             label="All agents or live browser agents"
             value={browsersOnly ? 'browsers' : 'all'}
