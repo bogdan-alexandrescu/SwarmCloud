@@ -64,6 +64,13 @@ itself. Commands the proxy sends from there are fire-and-forget.
 
 Nothing here is logged. A refusal is recorded through `record` by method name
 only; a page's content, a request body, a key or a parameter never is.
+
+THE ACTION LOG (section 7; lane LB-V3). Every agent method the proxy forwards,
+and every one it refuses, is handed to `on_action` as one line (`action_line`):
+the method's name, a navigation's URL with no query, fragment or user name
+(`action_url`), and `Input.insertText` as a LENGTH. Nothing else of the
+parameters, so a line can never carry typed text, a key or a cookie. The gate
+sends the lines to the relay, which writes the recording's action log.
 """
 
 from __future__ import annotations
@@ -74,6 +81,7 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -93,6 +101,57 @@ _RELEASING = "releasing"
 
 # CDP's own "server error" code; Playwright surfaces the message verbatim.
 _ERROR_CODE = -32000
+
+#: A CDP method name (`Domain.method`). Anything else is not a method, and is
+#: logged as `unknown` rather than as whatever string the agent sent.
+_METHOD_NAME = re.compile(r"[A-Za-z][A-Za-z0-9]{0,63}\.[A-Za-z][A-Za-z0-9]{0,63}")
+#: The methods whose URL the action log shows, and the parameter holding it.
+ACTION_URL_PARAMS: Mapping[str, str] = {"Page.navigate": "url", "Target.createTarget": "url"}
+#: A logged path is cut here: the relay refuses a value over 2,048 characters,
+#: and what a person reads in the timeline is the site and where on it.
+MAX_ACTION_PATH = 256
+#: Why the proxy refused an agent method, as the timeline names it: the method
+#: policy (cdppolicy.py), a session the agent's connection does not own, or a
+#: request body from a request made while a person was in control (§5.4.3).
+REFUSAL_CAUSES = ("method_policy", "not_its_session", "control_window_request")
+
+
+def action_url(raw: Any) -> str | None:
+    """`raw` as the action log may hold it: scheme, host, port and path of an
+    http(s) URL. Never the query, the fragment or a user name or password --
+    the places a token or a typed value rides in a URL. None for anything else."""
+    if not isinstance(raw, str):
+        return None
+    try:
+        parts = urlsplit(raw)
+        port = parts.port
+    except ValueError:
+        return None
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        return None
+    host = parts.hostname if ":" not in parts.hostname else f"[{parts.hostname}]"
+    netloc = host if port is None else f"{host}:{port}"
+    return f"{parts.scheme}://{netloc}{(parts.path or '/')[:MAX_ACTION_PATH]}"
+
+
+def action_line(method: Any, params: Any, cause: str | None = None) -> dict[str, Any]:
+    """One agent method as an action-log line: `{"kind": "cdp", "method"}`, a
+    navigation's `url` (`action_url`), `Input.insertText`'s `length`, and,
+    when the gate refused it, `outcome` `refused` with the refusal's `cause`
+    (`REFUSAL_CAUSES`). No other parameter, ever."""
+    name = method if isinstance(method, str) and _METHOD_NAME.fullmatch(method) else "unknown"
+    line: dict[str, Any] = {"kind": "cdp", "method": name}
+    given = params if isinstance(params, Mapping) else {}
+    if name == "Input.insertText" and isinstance(given.get("text"), str):
+        line["length"] = len(given["text"])
+    key = ACTION_URL_PARAMS.get(name)
+    url = action_url(given.get(key)) if key is not None else None
+    if url is not None:
+        line["url"] = url
+    if cause is not None:
+        line["outcome"] = "refused"
+        line["cause"] = cause
+    return line
 
 # Clears every password-shaped input in the document and its same-origin
 # frames. `autocomplete` catches a field a page toggled from `password` to
@@ -157,11 +216,13 @@ class CdpProxy:
         record: Record,
         on_control_ended: Callable[[str], None] | None = None,
         security_wait_seconds: float = 5.0,
+        on_action: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._send = send_to_chromium
         self._paths = paths
         self._record = record
         self._on_control_ended = on_control_ended
+        self._on_action = on_action
         self._security_wait = security_wait_seconds
         self._next_id = 0
         self._pending: dict[int, _Pending] = {}
@@ -256,6 +317,11 @@ class CdpProxy:
             owner.sessions.pop(session, None)
         self._scripts.forget_session(session)
 
+    def _note(self, method: Any, params: Any, refused: str | None = None) -> None:
+        """One action-log line (`action_line`); never awaited."""
+        if self._on_action is not None:
+            self._on_action(action_line(method, params, refused))
+
     async def _reply_error(self, connection: AgentConnection, message: Mapping[str, Any], text: str) -> None:
         reply: dict[str, Any] = {"id": message.get("id"), "error": {"code": _ERROR_CODE, "message": text}}
         if "sessionId" in message:
@@ -274,12 +340,14 @@ class CdpProxy:
         session = message.get("sessionId")
         if session is not None and self._owner.get(session) is not connection:
             self._record("cdp_session_refused", {"method": method})
+            self._note(method, message.get("params"), "not_its_session")
             await self._reply_error(connection, message, "No session with given id")
             return
         params = message.get("params")
         refusal = cdppolicy.check(method, params if isinstance(params, Mapping) else {}, self._paths)
         if refusal is not None:
             self._record("cdp_method_refused", {"method": method})
+            self._note(method, params, "method_policy")
             await self._reply_error(connection, message, refusal.message())
             return
         if self._mode != _OPEN:
@@ -299,6 +367,7 @@ class CdpProxy:
         params: dict[str, Any] = dict(raw) if isinstance(raw, Mapping) else {}
         if method in cdppolicy.REQUEST_BODY_METHODS and params.get("requestId") in self._control_requests:
             self._record("cdp_method_refused", {"method": method})
+            self._note(method, params, "control_window_request")
             await self._reply_error(
                 connection, message, f"refused by the live gate: {method} for a request made while a person was in control"
             )
@@ -309,6 +378,7 @@ class CdpProxy:
             self._scripts.removed_binding(session, params["name"])
         elif method == "Target.setAutoAttach" and session == connection.browser_session:
             connection.auto_attach = bool(params.get("autoAttach"))
+        self._note(method, params)
         pending = _Pending(connection, message["id"], method, session, agent_session, params, None)
         await self._write(self._allocate(pending), method, params, session)
 
