@@ -512,3 +512,17 @@ def test_seen_at_is_utc():
     assert set(record) == {
         "container", "reason", "restarts", "message", "pod_started", "attempt_id", "seen_at",
     }
+
+
+def test_an_earlier_attempts_record_is_cleared(db, config):
+    seed_attempt(
+        db,
+        state=TaskState.DISPATCHED,
+        metadata={START_PROBLEM_KEY: {"container": "livegate", "reason": "CrashLoopBackOff",
+                                      "restarts": 4, "message": "m", "pod_started": True,
+                                      "attempt_id": "att_earlier"}},
+    )
+
+    reconcile(db, config, None)
+
+    assert START_PROBLEM_KEY not in db.doc(f"tasks/{TASK}")["metadata"]
