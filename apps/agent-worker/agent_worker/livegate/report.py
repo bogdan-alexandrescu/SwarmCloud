@@ -22,6 +22,9 @@ security state; the gate still refuses control on a page that is not secure
 
 The device is the preset's NAME, its orientation and whether it is touch:
 invariant 10's spirit, as presets.py keeps it -- a name, never a size.
+`touch` is what the person in control gets: the preset's touch AND their
+touch toggle (touch.py `TouchInjector.set_touch`, LB-DEV-B), so a phone with
+touch turned off reports false and a desktop never reports true.
 
 THE PAGE IS UNTRUSTED. Every field is length-limited here, and the relay and
 swarm-api check the report again; nothing in it is logged.
@@ -91,9 +94,11 @@ def page_origin(url: Any, registrable: Any = None) -> dict[str, Any] | None:
     }
 
 
-def device_report(device: Device) -> dict[str, Any]:
-    """The console's `LiveDevice`: the preset by name, its orientation, and touch."""
-    return {"preset": device.name, "orientation": device.orientation, "touch": device.touch}
+def device_report(device: Device, touch_on: bool = True) -> dict[str, Any]:
+    """The console's `LiveDevice`: the preset by name, its orientation, and
+    touch -- the preset's, while the person's toggle (`touch_on`) is on."""
+    return {"preset": device.name, "orientation": device.orientation,
+            "touch": bool(device.touch and touch_on)}
 
 
 def encode_report(origin: dict[str, Any] | None, device: dict[str, Any] | None) -> bytes:

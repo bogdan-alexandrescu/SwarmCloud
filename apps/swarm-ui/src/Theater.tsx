@@ -225,7 +225,11 @@ export interface TheaterSlots {
   onNavigate?: (taskId: string) => void
   /** The tab's log view, the same component its logs toggle shows. */
   logs?: ReactNode
-  /** The tab's device switcher, disabled for a viewer by the tab (§6.1, Q13). */
+  /**
+   * The tab's device switcher (§6.1, Q13): it switches the preset, rotates and
+   * turns touch on or off for the person in control (`you.can_switch_device`,
+   * LB-DEV-B), and is disabled for everyone else -- the tab decides, once.
+   */
   device?: ReactNode
   /** The tab's Take control / Return control, eligibility decided by the tab (§5.1). */
   control?: ReactNode

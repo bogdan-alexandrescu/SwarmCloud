@@ -42,6 +42,14 @@ MESSAGES swarm-api sends on a viewer connection it already holds open, when
 this person takes or loses control (§4.2): the relay grants the gate's input
 to a viewer only on a ticket.
 
+THE DEVICE (LB-DEV-B, §6.1, Q13). The person in control chooses a preset by
+NAME, an orientation and touch (`set_device`); never a size (invariant 10).
+swarm-api checks that they hold control, audits the choice, and POSTs it to
+the relay's `/internal/device` (`mint_device`: the ticket's shape under its
+own domain, naming the session as a ticket does), which hands it to the gate.
+The gate applies it and REPORTS the device it applied, so `session.device`
+changes when the gate says so, never when the request is sent.
+
 CLOSING. When a session closes, or a stale generation is seen, swarm-api POSTs
 a close request to the relay's `/internal/close` (`mint_close`: the same shape
 under its own domain, `session_id`, `exp`, `nonce`), and the relay drops every
@@ -76,7 +84,7 @@ from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictStr
 
 from swarm_common.admission import _snapshot
 from swarm_common.models import Task, TaskEvent, new_id, utcnow
@@ -105,6 +113,9 @@ TICKET_PURPOSE = b"swarm-live-ticket/v1\0"
 #: A close request's MAC domain (`swarm_live.rendezvous.CLOSE_DOMAIN`), so a
 #: ticket is never a close request and a close request never a ticket.
 CLOSE_PURPOSE = b"swarm-live-close/v1\0"
+#: A device request's MAC domain (`swarm_live.rendezvous.DEVICE_DOMAIN`):
+#: never a ticket and never a close request.
+DEVICE_PURPOSE = b"swarm-live-device/v1\0"
 ROLE_TUNNEL = "tunnel"
 ROLE_VIEWER = "viewer"
 ROLE_CONTROL = "control"
@@ -116,6 +127,11 @@ ROLE_RELEASE = "release"
 TICKET_MAX_SECONDS = {ROLE_TUNNEL: 60, ROLE_VIEWER: 30, ROLE_CONTROL: 30, ROLE_RELEASE: 30}
 #: A close request's life (`swarm_live.rendezvous.CLOSE_TTL_SECONDS`).
 CLOSE_SECONDS = 60
+#: A device request's life (`swarm_live.rendezvous.DEVICE_TTL_SECONDS`).
+DEVICE_SECONDS = 30
+#: The relay's device-request field set (`swarm_live.rendezvous._DEVICE_FIELDS`).
+DEVICE_FIELDS = frozenset({"session_id", "tenant_id", "task_id", "attempt_id", "generation",
+                           "preset", "orientation", "touch", "exp", "nonce"})
 #: The relay's field set; a ticket with any other is refused there.
 TICKET_FIELDS = frozenset({"session_id", "tenant_id", "task_id", "attempt_id", "generation",
                            "role", "exp", "nonce", "email"})
@@ -236,6 +252,15 @@ def mint_close(key: str, session_id: str, *, now: float) -> str:
                          "nonce": secrets.token_hex(16)}, CLOSE_PURPOSE)
 
 
+def mint_device(key: str, claims: Mapping[str, Any], *, now: float) -> str:
+    """A request to the relay to hand the session's gate a device choice:
+    the session's five names and `preset`, `orientation`, `touch`."""
+    body = {**dict(claims), "exp": int(now) + DEVICE_SECONDS, "nonce": secrets.token_hex(16)}
+    if set(body) != DEVICE_FIELDS:
+        raise ValueError(f"a device request has exactly the fields {sorted(DEVICE_FIELDS)}")
+    return _signed(key, body, DEVICE_PURPOSE)
+
+
 def ticket_seconds(role: str, configured: Any) -> int:
     """`configured`, never longer than the relay accepts for `role`."""
     return max(1, min(int(configured), TICKET_MAX_SECONDS[role]))
@@ -299,6 +324,13 @@ class RelayCloser(Protocol):
     def close_session(self, session_id: str) -> None: ...
 
 
+class RelayDevice(Protocol):
+    """The relay's `/internal/device`. `HttpRelayCloser` is the real one;
+    a closer without `send_device` (a test's) means no device route."""
+
+    def send_device(self, request: str) -> bool: ...
+
+
 def relay_http_url(ws_url: str, path: str) -> str:
     """`SWARM_LIVE_URL` (`ws://<internal address>:8080`) as the http URL of
     one of the relay's routes on the same port."""
@@ -323,6 +355,7 @@ class HttpRelayCloser:
     def __init__(self, url: str, key: str, *, clock: Callable[[], float] = time.time,
                  timeout: float = RELAY_CLOSE_TIMEOUT_SECONDS) -> None:
         self._url = relay_http_url(url, "/internal/close")
+        self._device_url = relay_http_url(url, "/internal/device")
         self._key = key
         self._clock = clock
         self._timeout = timeout
@@ -345,6 +378,28 @@ class HttpRelayCloser:
             return
         if status != 200:
             log.warning("live relay refused the close for session=%s (HTTP %s)", session_id, status)
+
+    def send_device(self, request: str) -> bool:
+        """POST a device request (`mint_device`) to `/internal/device`. True
+        when the relay sent it to the gate; False when it refused it (no
+        tunnel there, or the request did not verify) or could not be reached.
+        Never raises; the status is logged, never the request."""
+        import urllib.error
+        import urllib.request
+
+        req = urllib.request.Request(self._device_url, data=request.encode("ascii"), method="POST",
+                                     headers={"Content-Type": "text/plain"})
+        try:
+            with urllib.request.urlopen(req, timeout=self._timeout) as response:  # noqa: S310 - our own internal URL
+                status = response.status
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+        except (OSError, ValueError) as exc:
+            log.warning("live relay device request did not reach the relay (%s)", type(exc).__name__)
+            return False
+        if status != 200:
+            log.info("live relay refused a device request (HTTP %s)", status)
+        return status == 200
 
 
 def relay_closer_for(settings: Any) -> RelayCloser | None:
@@ -408,6 +463,25 @@ class ConfirmedMismatch(BaseModel):
 
     expected: str = Field(min_length=1, max_length=MAX_DOMAIN_CHARS)
     actual: str = Field(min_length=1, max_length=MAX_DOMAIN_CHARS)
+
+
+#: The longest preset name accepted before it is looked up (the relay's
+#: `MAX_PRESET_CHARS`).
+MAX_PRESET_CHARS = 32
+
+
+class SetDevice(BaseModel):
+    """The body of `POST /v1/tasks/{task_id}/live/device`, as the console
+    sends it (`setLiveDevice` in apps/swarm-ui/src/api.ts): a preset by NAME
+    from `presets`, an orientation (the preset's natural one when absent) and
+    the person's touch toggle (left as it is when absent). A width, a scale or
+    a user agent is an unknown key, refused (invariant 10)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    preset: StrictStr = Field(min_length=1, max_length=MAX_PRESET_CHARS)
+    orientation: Literal["portrait", "landscape"] | None = None
+    touch: StrictBool | None = None
 
 
 class TakeControl(BaseModel):
@@ -502,6 +576,9 @@ class LiveYou(_Wire):
     can_preempt: bool
     #: May open control to every member: the owner only.
     can_open: bool
+    #: May switch the device, rotate it and turn touch on or off: the person
+    #: in control, nobody else (§6.1, Q13; LB-DEV-B).
+    can_switch_device: bool
 
 
 class LiveSessionView(_Wire):
@@ -638,16 +715,22 @@ def clean_origin(raw: Any) -> dict[str, Any] | None:
             "scheme": scheme, "ip_literal": ip_flag, "cert_error": cert}
 
 
+def live_preset(name: Any) -> dict[str, Any] | None:
+    """The gate's preset called `name`, or None."""
+    return next((p for p in LIVE_PRESETS if p["name"] == name), None)
+
+
 def clean_device(raw: Any) -> dict[str, Any] | None:
     """`raw` as a `LiveDevice` naming one of the gate's presets, else None.
 
     A preset by name only (invariant 10): a size, a scale or an unknown name
-    is refused, and so is a `touch` the named preset does not have."""
+    is refused, and so is a `touch` the named preset does not have. A touch
+    preset may report touch off: that is the person's toggle (LB-DEV-B)."""
     if not isinstance(raw, dict) or set(raw) != _DEVICE_KEYS:
         return None
-    preset = next((p for p in LIVE_PRESETS if p["name"] == raw["preset"]), None)
+    preset = live_preset(raw["preset"])
     if (preset is None or raw["orientation"] not in ("portrait", "landscape")
-            or not isinstance(raw["touch"], bool) or raw["touch"] != preset["mobile"]):
+            or not isinstance(raw["touch"], bool) or (raw["touch"] and not preset["mobile"])):
         return None
     return {"preset": preset["name"], "orientation": raw["orientation"], "touch": raw["touch"]}
 
@@ -1192,6 +1275,8 @@ class LiveService:
             "can_preempt": bool(open_ and owner is not None and owner == email and current
                                 is not None and current.get("email") != email),
             "can_open": bool(open_ and owner is not None and owner == email),
+            "can_switch_device": bool(open_ and current is not None
+                                      and current.get("email") == email),
         }
 
     def _view(self, task: Task, plan: _Plan | None, email: str, owner: str | None
@@ -1411,6 +1496,54 @@ class LiveService:
                 plan.resolve_by = email.strip().lower()
 
         return self._controller_change(tenant_id, task_id, email, submitted_by, change)
+
+    def set_device(self, tenant_id: str, task_id: str, *, email: str,
+                   submitted_by: str | None, raw: bytes) -> dict[str, Any]:
+        """The person in control chooses the device (§6.1, Q13; LB-DEV-B).
+
+        Their control is checked, and the choice audited, in one transaction
+        (`_controller_change`: 409 `not_controller` for anyone else, as renew
+        and return answer); then the choice goes to the relay, which hands it
+        to the session's gate. The answer is the session as it is: `device`
+        is what the gate last REPORTED, and changes when the gate reports the
+        new one, which the console's next read shows.
+
+        The task is read before the body is: another tenant's member gets the
+        same 404 on this route as on every other, whatever they sent."""
+        self._task(tenant_id, task_id, submitted_by)
+        request: SetDevice = parse_body(SetDevice, raw)
+        preset = live_preset(request.preset)
+        if preset is None:
+            raise ValidationFailed(
+                f"{request.preset!r} is not a device preset; choose one of "
+                f"{[p['name'] for p in LIVE_PRESETS]}")
+        if request.touch and not preset["mobile"]:
+            raise ValidationFailed(f"the {preset['name']} preset has no touch")
+        key = self._require_key()
+        sender = getattr(self._relay, "send_device", None)
+        if sender is None:
+            raise LiveUnavailable("this deployment has no live relay to send the device to")
+        choice = {"preset": preset["name"], "orientation": request.orientation,
+                  "touch": request.touch}
+
+        def change(plan: _Plan, current: dict) -> None:
+            plan.audit("device_requested", email.strip().lower(), dict(choice))
+
+        view = self._controller_change(tenant_id, task_id, email, submitted_by, change)
+        snap = self._db.collection(LIVE_SESSIONS).document(str(view["session"]["session_id"])).get()
+        state = snap.to_dict() if snap.exists else {}
+        sent = sender(mint_device(key, {
+            "session_id": state.get("id"),
+            "tenant_id": tenant_id,
+            "task_id": task_id,
+            "attempt_id": state.get("attempt_id"),
+            "generation": state.get("generation"),
+            **choice,
+        }, now=self._clock()))
+        if not sent:
+            raise LiveUnavailable(
+                "the browser's gate could not be reached to change the device; try again")
+        return view
 
     def open_to_members(self, tenant_id: str, task_id: str, *, email: str,
                         submitted_by: str | None) -> dict[str, Any]:

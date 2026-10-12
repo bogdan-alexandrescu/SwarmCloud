@@ -775,7 +775,7 @@ def test_the_relays_device_frame_is_applied_and_reported_back(short_tmp):
     json.dumps({"preset": "iphone-15", "width": 1920, "height": 1080}).encode(),
     json.dumps({"preset": "iphone-15", "orientation": None, "touch": None, "scale": 3}).encode(),
     b"not json",
-    b"x" * 4096,
+    pytest.param(b"x" * 4096, id="too-large"),
 ])
 def test_a_device_frame_that_is_not_a_preset_by_name_changes_nothing(short_tmp, payload):
     async def body() -> None:

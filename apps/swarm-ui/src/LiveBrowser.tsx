@@ -8,6 +8,7 @@ import {
   renewLiveControl,
   returnLiveControl,
   openLiveToMembers,
+  setLiveDevice,
   takeLiveControl,
   type LiveOrigin,
   type LiveSession,
@@ -27,7 +28,8 @@ import './styles/live.css'
  * it, outside the canvas, a strip the page cannot draw into: the top frame's
  * origin as the gate read it from Chromium, the hand-off's reason, and who is
  * in control. Its toolbar holds the device switcher, rotate, touch and the
- * logs toggle. Take control sits in the agent header beside Stop
+ * logs toggle; the first three work for the person in control, and only for
+ * them (`you.can_switch_device`, LB-DEV-B). Take control sits in the agent header beside Stop
  * (`LiveControl`), and the view is read-only until it is pressed.
  *
  * WHAT THE CONSOLE DECIDES, AND WHAT IT ONLY DRAWS. Who may watch, who may
@@ -449,7 +451,7 @@ export function LiveBrowserPane({
       strip={strip}
       handoff={handoff}
       logs={<AgentLogs task={task} />}
-      device={<LiveDevice session={session} mine={mine} />}
+      device={<LiveDevice taskId={task.id} session={session} reload={reload} />}
       control={<LiveControl taskId={task.id} session={session} reload={reload} />}
     >
       <div className={`live-tab${logs ? ' with-logs' : ''}`}>
@@ -458,7 +460,6 @@ export function LiveBrowserPane({
         <LiveToolbar
           taskId={task.id}
           session={session}
-          mine={mine}
           logs={logs}
           onLogs={() => setLogs((v) => !v)}
           reload={reload}
@@ -541,21 +542,19 @@ function HandoffBanner({ wait }: { wait: NonNullable<LiveSession['human_wait']> 
 }
 
 /**
- * THE DEVICE BAR (§6.1, Q13): the preset, rotate and touch. Q13 lets the
- * person in control change them, but swarm-api serves no device route yet, so
- * every switcher shows the current device and is disabled, with why.
+ * THE DEVICE BAR (§6.1, Q13): the preset, rotate and touch. The person in
+ * control changes them (`setLiveDevice`, LB-DEV-B); everyone else sees the
+ * current device, disabled, with why.
  */
 function LiveToolbar({
   taskId,
   session,
-  mine,
   logs,
   onLogs,
   reload,
 }: {
   taskId: string
   session: LiveSession
-  mine: boolean
   logs: boolean
   onLogs: () => void
   reload: () => void
@@ -563,7 +562,7 @@ function LiveToolbar({
   const [error, setError] = useState<string | null>(null)
   return (
     <div className="live-toolbar" role="toolbar" aria-label="Browser view">
-      <LiveDevice session={session} mine={mine} />
+      <LiveDevice taskId={taskId} session={session} reload={reload} />
       <Button size="sm" aria-pressed={logs} onClick={onLogs}>
         {logs ? 'Hide logs' : 'Logs beside'}
       </Button>
@@ -585,7 +584,7 @@ function LiveToolbar({
           Let any member take control
         </label>
       )}
-      {!mine && <span className="live-toolbar-why">{deviceWhy(mine)}</span>}
+      {!session.you.can_switch_device && <span className="live-toolbar-why">{DEVICE_WHY}</span>}
       {error !== null && (
         <span className="live-control-error" role="alert">
           {error}
@@ -595,22 +594,31 @@ function LiveToolbar({
   )
 }
 
-// SHOWN, NOT SWITCHED. swarm-api serves no device route (§6.1 needs the
-// gate's device lane, L3b, which has not landed), so a switcher that sent a
-// change would send it to a path nothing answers. The bar draws the device
-// the session reports, for everyone, and changes nothing.
-function deviceWhy(mine: boolean): string {
-  return mine
-    ? 'Switching the device is not served yet: swarm-api has no device route.'
-    : 'Only the person in control can change the device.'
+// SWITCHED BY THE PERSON IN CONTROL, SHOWN TO EVERYONE ELSE (LB-DEV-B).
+// swarm-api says who may switch (`you.can_switch_device`: the controller
+// only) and refuses anyone else with 409; the console disables the bar for
+// them rather than offer a change that will be refused. A change is a preset
+// BY NAME, an orientation or touch -- never a size (invariant 10). The answer
+// is the session as it stands: the gate applies the change and reports it,
+// so the bar shows the new device from the read that follows, not before.
+const DEVICE_WHY = 'Only the person in control can change the device.'
+
+/** The orientation a rotate asks for. */
+type Orientation = NonNullable<LiveSession['device']>['orientation']
+
+function rotated(orientation: Orientation): Orientation {
+  return orientation === 'portrait' ? 'landscape' : 'portrait'
 }
 
 /** The preset, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
-function LiveDevice({ session, mine }: { session: LiveSession; mine: boolean }) {
+function LiveDevice({ taskId, session, reload }: { taskId: string; session: LiveSession; reload: () => void }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const device = session.device
-  // NOT REPORTED (LB-SEAM): the gate applies the device but nothing carries
-  // which one to swarm-api yet, so the session serves null. Say so, rather
-  // than draw the first preset as if it were the one applied.
+  // NOT REPORTED: the gate reports the device it applied over the viewer
+  // link; until a report has reached swarm-api the session serves null. Say
+  // so, rather than draw the first preset as if it were the one applied --
+  // and offer no switch from a device nobody knows.
   if (device === null) {
     return (
       <label className="live-device">
@@ -624,15 +632,28 @@ function LiveDevice({ session, mine }: { session: LiveSession; mine: boolean }) 
   const names = session.presets.some((p) => p.name === device.preset)
     ? session.presets.map((p) => p.name)
     : [device.preset, ...session.presets.map((p) => p.name)]
-  const why = deviceWhy(mine)
+  const can = session.state === 'open' && session.you.can_switch_device
+  const why = can ? undefined : DEVICE_WHY
+  const mobile = session.presets.find((p) => p.name === device.preset)?.mobile ?? device.touch
+  const send = (body: Parameters<typeof setLiveDevice>[1]) => {
+    setBusy(true)
+    void setLiveDevice(taskId, body).then((r) => {
+      setBusy(false)
+      setError(r.status === 'error' ? r.error.message : null)
+      reload()
+    })
+  }
   return (
     <>
       <label className="live-device">
         <span>Device</span>
         <select
           value={device.preset}
-          disabled
+          disabled={!can || busy}
           title={why}
+          onChange={(e) => {
+            if (e.target.value !== device.preset) send({ preset: e.target.value })
+          }}
         >
           {names.map((n) => (
             <option key={n} value={n}>
@@ -641,12 +662,28 @@ function LiveDevice({ session, mine }: { session: LiveSession; mine: boolean }) 
           ))}
         </select>
       </label>
-      <Button size="sm" disabled title={why}>
+      <Button
+        size="sm"
+        disabled={!can || busy}
+        title={why}
+        onClick={() => send({ preset: device.preset, orientation: rotated(device.orientation) })}
+      >
         Rotate ({device.orientation})
       </Button>
-      <Button size="sm" aria-pressed={device.touch} disabled title={why}>
+      <Button
+        size="sm"
+        aria-pressed={device.touch}
+        disabled={!can || busy || !mobile}
+        title={can && !mobile ? 'This preset has no touch.' : why}
+        onClick={() => send({ preset: device.preset, orientation: device.orientation, touch: !device.touch })}
+      >
         Touch {device.touch ? 'on' : 'off'}
       </Button>
+      {error !== null && (
+        <span className="live-control-error" role="alert">
+          {error}
+        </span>
+      )}
     </>
   )
 }
