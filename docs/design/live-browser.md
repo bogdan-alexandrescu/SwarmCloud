@@ -688,6 +688,22 @@ live-browser attempt. **A worker that cannot protect its heap gets no live
 path**: no tunnel ticket, no hand-off; the console says "live view unavailable
 for this attempt" and the agent's `swarm-handoff` exits 5.
 
+**A slow pod is not a dead lease (LB-KEYRACE, 2026-10-12).** The key is
+registered, and the live session opened, before the worker's first heartbeat.
+A lease is written with `heartbeat_at: None` and `expires_at = created_at +
+lease_timeout_seconds` (120 s), so a GKE pod that took longer than that to
+reach STARTING was refused `child_key_window_closed` on a lease the reconciler
+still judged live by its dispatch deadline: task_23cc2e82178640709a45 took
+154 s, registered no key, and ran with no live browser. swarm-api's
+`_lease_is_live` (`apps/swarm-api/swarm_api/children.py`) now uses the
+reconciler's own clock for a never-beaten lease — live until
+`dispatch_deadline` — and nothing else about the fence moved: the task must be
+STARTING, at this lease and generation, the lease unreleased, the slot unused.
+Whatever still refuses the live path is never silent: the worker writes a
+RUNNING event with `cause: live_browser_unavailable`, the code, the reason and
+`message: "live browser unavailable: <reason>"`, which the console's event list
+shows.
+
 #### 5.4.2 The worker talks to the gate on a channel the agent cannot use
 
 `ctl.sock` sits on a volume both containers mount, so the agent can connect to
