@@ -84,6 +84,10 @@ COPY Makefile /swarm/Makefile
 # cannot be read from there; sandbox-sync.sh puts this same commit's copy on
 # the sandbox's main before the suite runs, so the two are the same bytes.
 COPY tests/acceptance/fixtures/ /swarm/tests/acceptance/fixtures/
+# The live-browser group's scripted viewer (scripts/acceptance/groups/
+# live-browser.sh runs it with python3): standard library only, so it needs
+# nothing the image does not already carry.
+COPY tests/acceptance/test_live_browser.py /swarm/tests/acceptance/test_live_browser.py
 
 # Fail loudly at build time rather than at 3am if a script lost its bit.
 RUN chmod +x /swarm/scripts/*.sh /swarm/scripts/lib/*.sh 2>/dev/null || true

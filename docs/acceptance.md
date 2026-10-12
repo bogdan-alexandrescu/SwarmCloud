@@ -24,12 +24,13 @@ scripts/acceptance/run.sh --only generic,browser  # several
 ./scripts/verify-remote.sh acceptance/claude-code
 ./scripts/verify-remote.sh acceptance/workflow
 ./scripts/verify-remote.sh acceptance/browser
+./scripts/verify-remote.sh acceptance/live-browser
 ```
 
 `verify-remote.sh` runs `scripts/<target>.sh` in the `swarm-verify` job and
 passes no arguments, so each group has a wrapper, `scripts/acceptance/<group>.sh`.
 That also gives each group its own execution and its own 30-minute timeout
-(`terraform/infra/verify.tf`); the five together would not fit in one.
+(`terraform/infra/verify.tf`); the six together would not fit in one.
 
 Each check prints `PASS`, `FAIL` or `SKIP` with a one-line reason and the task
 id, and the run exits non-zero when any check failed. `accept.yml` runs every
@@ -245,6 +246,63 @@ suite runs without `python3`, the pixel checks SKIP saying so. It decodes at
 most the top 4000 rows (`--max-rows`): a real site's full-page screenshot can
 be tens of thousands of rows, which pure Python unfilters in minutes, and
 whether a page rendered is decided at its top.
+
+### live-browser
+
+One `claude-code-browser` task, and a scripted person who signs in on its
+browser (docs/design/live-browser.md, section 9, lane LB-L13). The shell half
+is `scripts/acceptance/groups/live-browser.sh`: it submits the task and waits
+on it with the suite's own settle, so a closed pool or a missing credential is
+the same SKIP as everywhere else. The person is
+`tests/acceptance/test_live_browser.py`, standard library only (the
+swarm-verify image has `python3` and no pip): a websocket client, an RFB 3.8
+viewer and a GCS reader, written out. It runs beside the settle wait and is
+told the settled state through a file. It reports one verdict per check.
+
+**The page is served inside the agent's own pod.** Nothing this repository
+owns serves HTML as HTML on the internet (see browser, above), so
+the agent runs `python3 -m http.server` on `127.0.0.1:8765` over
+`tests/acceptance/fixtures/` and opens `login.html` in the platform's
+Chromium through `$SWARM_CDP_ENDPOINT`. The sidecar's Chromium shares the
+pod's network namespace, so it reaches loopback; nothing leaves the pod.
+
+**The password is made at run time, inside the viewer process, and never
+leaves it.** It is not in this shell, an argv, the environment, a log or the
+results file. It is typed as RFB key events, lower-case letters and digits
+only, each its own unshifted keysym. The page has no `name` on the field and
+cancels the submission, so nothing is requested with it. What the page shows
+after the sign-in is 12 hex digits of its SHA-256. The agent reports that
+code, which proves the typing reached the page without the agent ever
+holding the value.
+
+| check | asserts | why that and not less |
+|---|---|---|
+| hand-off | `GET /v1/tasks/{id}/live/session` shows the session `available` with a `human_wait` (Q2: the field, not a state) | a hand-off the console cannot see is a hand-off nobody answers |
+| another tenant | as a member of another tenant (the identity's other membership from `GET /v1/tenants/mine`, or `SWARM_ACCEPTANCE_OTHER_TENANT`), the task, `live/session`, `live/ticket`, `live/control` and `live/audit` are each a 404; a real viewer ticket whose `tenant_id` is rewritten to that tenant is closed `4404` on the socket | LB-2 and invariant 9. A 403 would confirm the task exists, and a ticket that could be pointed at a tenant the caller also belongs to would select it |
+| frames painted | the viewer opens `wss://.../v1/live/{session}/stream` with the ticket as its first message (never in the URL), takes control, clicks the field and types. In every frame that shows the page, the field's box -- found from the cyan marker 80 CSS px above it -- is entirely the mask's `#222222`, and no pixel of the field's own magenta is on screen. At least one such frame arrived while the person typed | LB-3: masked before anything leaves the pod. The marker shows the page is on screen, so a frame the mask blanked whole (a stale report, section 5.3) is not counted as a pass |
+| recording painted | segments `rec-<13 digits>.live.webm` exist under the task's `attempts/<a>/live/`, nothing else under `live/` but `actions-*.live.jsonl`; decoded with `ffmpeg` at 5 fps, every recorded frame that shows the page has the same box painted (VP8 is lossy: within 24 per channel, 95% of the box) | LB-4 records the masked stream; a recorder that took frames from anywhere else would show it here |
+| returned | after Return control, the task `SUCCEEDED`, its answer and its `session-code.txt` output carry the code only the typed password makes, and `human_handoff_requested`, `human_control_taken`, `human_control_returned` and `human_handoff_resolved` are among its events | control came back and the agent carried on from the signed-in page, rather than the task ending some other way |
+| no password | the password is in no object under `tenants/<t>/tasks/<task>/`, read from the bucket itself (not through the API, which redacts on the way out), gzip members decompressed: the transcript (`logs/agent_stdout.log`), every other log, every checkpoint archive, every output and the recording. Nor in the task document, its events, its live audit and session, or its answer. Each of transcript, logs, checkpoints and outputs must have at least one object read, and an object that could not be read FAILS the check | section 5.4: the agent's CDP is paused while a person types and the fields are cleared before it resumes. An unread category is not a clean one |
+
+**SKIP, not PASS:** a task the platform holds (closed pool, no credential);
+a deployment that dispatches the profile with no live path, recognised by the
+agent's own report of `swarm-handoff`'s refusal code `no_live_path`
+(`enable_live_browser` or `LIVE_BROWSER_SIDECAR` off); an identity that is a
+member of no tenant but smoke; and the recording's frames where there is no
+`ffmpeg`. Any other refusal from `swarm-handoff` (`gate_unavailable`,
+`no_live_session`, ...) is a FAIL: the path was on and did not work.
+
+**The swarm-verify image carries no `ffmpeg`, so in the release the recording
+check SKIPs after confirming the segments exist, and says so.** The frames
+the viewer judges are the stream the relay records: the relay's recorder is
+one more RFB client of the same gate (`swarm_live/recorder.py`). Decoding the
+VP8 itself needs a decoder this image does not have, and adding one is a
+question for the owner (its CVE surface is the reason the image has no Cloud
+SDK either). A local run with `ffmpeg` on `PATH` judges them.
+
+It needs a second `swarm-verify` execution of its own (`scripts/acceptance/
+live-browser.sh`) and runs in wave 2 of `accept.yml`, because wave 1 is at
+the smoke tenant's ceiling. Its one task peaks the group at 1.
 
 ## Pull requests on the sandbox
 
