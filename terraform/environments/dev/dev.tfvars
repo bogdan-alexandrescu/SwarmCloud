@@ -563,6 +563,26 @@ frontend_iap_audiences = [
 # makes that visible at plan time; this is what makes it unnecessary.
 quota_broker_url = "https://swarm-quota-broker-tonstldhta-uc.a.run.app"
 
+# CHILD TASKS ON (owner decision 2026-10-11 ~22:35 PDT), in terraform/infra/child_tasks.tf's
+# order: the swarm-child-key secret existed, `scripts/create-secrets.sh --child-key`
+# added version 1 (22:33 PDT), then this switch. The live browser needs it: a
+# live session is signed with the attempt key the worker registers only with a
+# SWARM_CHILD_NONCE, so with this off no claude-code-browser attempt gets a
+# live path ("no live path for this attempt", no_attempt_key/not_registered,
+# task_97f89a31527a464e98f2).
+# The measurement child_tasks.tf asks for first (design §9 item 2, deferred to
+# #476) was taken 2026-10-11 ~22:30 PDT and PASSES: the tenant pod identity
+# (KSA swarm-agent-worker in swarm-tenant-eng) cannot get/list/watch pods,
+# pods/log, jobs, events, secrets or configmaps, and the pod mounts no k8s
+# token; the tenant worker GSA holds no container.* or run.* role at project
+# level and nothing on its Cloud Run jobs. So no other container of the tenant
+# can read the nonce from a pod spec or an execution's overrides.
+# Side effect, accepted: a running agent may submit depth-1 child tasks.
+enable_child_tasks = true
+# Read from Cloud Run (gcloud run services describe swarm-api), the value
+# `terraform output swarm_api_url` gives; swarm_api_url_is_wired checks it.
+swarm_api_url = "https://swarm-api-tonstldhta-uc.a.run.app"
+
 
 # Admin by email, because admin-by-group is unreachable here: swarm-api cannot
 # read Cloud Identity groups, so the admin set is empty and every operator
