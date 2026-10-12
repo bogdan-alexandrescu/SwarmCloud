@@ -35,11 +35,13 @@ import type { AttemptRow, Task, TaskState, Workflow, WorkflowStep } from '../typ
 import { elapsed, whyAgent } from '../types'
 import { cascade } from './cssgate'
 import { colour, resolveSheet, resolveVars, tokenTables, type RGBA } from './spaceprobe'
+import { ownFromBoard } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadWorkflowBoard: vi.fn(),
   loadWorkflowUsage: vi.fn(),
   loadAttempts: vi.fn(),
+  loadWorkflow: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
   const real = await importOriginal<typeof import('../api')>()
@@ -264,6 +266,8 @@ beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(T0)
   const { board: b, usage } = board()
   api.loadWorkflowBoard.mockResolvedValue({ status: 'ok', data: b, fetchedAt: T0 } satisfies Result<WorkflowBoard>)
+  // The page reads its own workflow first (live QA CH-21), as the API serves it.
+  api.loadWorkflow.mockImplementation(ownFromBoard(api.loadWorkflowBoard))
   api.loadWorkflowUsage.mockResolvedValue({ status: 'ok', data: usage, fetchedAt: T0 } satisfies Result<WorkflowUsage>)
   api.loadAttempts.mockImplementation(async (taskId: string) =>
     taskId === 't_plan'

@@ -25,16 +25,26 @@ import { approveApproval, loadApproval, loadApprovals, rejectApproval, type Appr
 import { usePhoneTables } from './capacityPoll'
 import { Button } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
+import { Absent } from './primitives'
 import { InApp, scheduleAddress, untilWords } from './Schedules'
 import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
 import './styles/schedules.css'
 
-/** The page's address, and one item's (`/approvals/<id>`, paths.ts). */
+/**
+ * The page's address, and one item's (`/approvals/<id>`, paths.ts). The
+ * inbox's kind filter rides on both as `kind=` (`/approvals?kind=merge`), so
+ * opening an item keeps the list it was opened from (AUT-15).
+ */
 export const APPROVALS_ADDRESS = 'automate/approvals'
-export function approvalAddress(id: string): string {
-  return `${APPROVALS_ADDRESS}?${new URLSearchParams({ approval: id }).toString()}`
+export function approvalAddress(id: string, kind: string | null = null): string {
+  const q = new URLSearchParams({ approval: id })
+  if (kind !== null) q.set('kind', kind)
+  return `${APPROVALS_ADDRESS}?${q.toString()}`
+}
+export function approvalsAddress(kind: string | null = null): string {
+  return kind === null ? APPROVALS_ADDRESS : `${APPROVALS_ADDRESS}?${new URLSearchParams({ kind }).toString()}`
 }
 
 /** The item an Approvals address names (`approval=<id>`), or null for none. */
@@ -42,6 +52,13 @@ function approvalOf(view: string | null): string | null {
   if (view === null || view === '') return null
   const id = new URLSearchParams(view).get('approval')
   return id === null || id === '' ? null : id
+}
+
+/** The kind an address filters to, or null for every kind; a kind the route does not know is none. */
+function kindOf(view: string | null): string | null {
+  if (view === null || view === '') return null
+  const kind = new URLSearchParams(view).get('kind')
+  return kind !== null && Object.prototype.hasOwnProperty.call(APPROVAL_KIND, kind) ? kind : null
 }
 
 /** §4.5's kinds, as the person reads them. */
@@ -287,6 +304,27 @@ function Evidence({ d }: { d: ApprovalDetail }) {
   )
 }
 
+/**
+ * What became of an item that is no longer waiting (AUT-6): a link from a
+ * notification to an item someone else decided, or one that expired, says so.
+ */
+function decidedWords(a: ApprovalDetail['approval']): string {
+  const by = a.decided_by ? ` by ${a.decided_by}` : ''
+  const at = a.decided_at ? ` ${new Date(a.decided_at).toLocaleString()}` : ''
+  switch (a.state) {
+    case 'approved':
+      return `Approved${by}${at}.`
+    case 'rejected':
+      return `Rejected${by}${at}${a.reason ? `: ${a.reason}` : ''}.`
+    case 'expired':
+      return `Expired${a.expires_at ? ` ${new Date(a.expires_at).toLocaleString()}` : ''}: nobody decided it in time, so it did not go ahead.`
+    case 'superseded':
+      return 'Superseded: a newer request replaced it.'
+    default:
+      return `${a.state}${by}${a.reason ? `: ${a.reason}` : ''}.`
+  }
+}
+
 /** Approve and reject, with the server's refusal said in place. */
 function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string) => void }) {
   const a = d.approval
@@ -318,10 +356,8 @@ function Decide({ d, onDecided }: { d: ApprovalDetail; onDecided: (word: string)
 
   if (a.state !== 'pending') {
     return (
-      <p className="sb-note" data-testid="ap-decided">
-        {a.state}
-        {a.decided_by ? ` by ${a.decided_by}` : ''}
-        {a.reason ? `: ${a.reason}` : ''}. Nothing is left to decide.
+      <p className="sb-note" data-testid="ap-decided" data-state={a.state}>
+        {decidedWords(a)} Nothing is left to decide.
       </p>
     )
   }
@@ -392,7 +428,9 @@ function ItemDetail({ itemId, go, onDecided }: { itemId: string; go: (to: string
   if (r.status === 'error') {
     return (
       <p className="c-hint" role="alert" data-testid="ap-detail">
-        {r.error.kind === 'not_found' ? 'This item is no longer in the inbox: it was decided, expired or superseded.' : `Not read: ${errorHeading(r.error)}`}
+        {r.error.kind === 'not_found'
+          ? `No approval ${itemId} in this tenant: the link names an item that does not exist here, or a plan whose run has since moved on.`
+          : `Not read: ${errorHeading(r.error)}`}
       </p>
     )
   }
@@ -407,9 +445,14 @@ function ItemDetail({ itemId, go, onDecided }: { itemId: string; go: (to: string
       </h2>
       <dl className="sc-facts">
         <Fact name="Asked">{a.requested_at === null ? <i className="ctl-em">&mdash; not served</i> : <span title={a.requested_at}>{timeAgo(a.requested_at, now)}</span>}</Fact>
-        <Fact name="Expires">
-          {a.expires_at === null ? <i className="ctl-em">&mdash; never: a run made by hand waits as it always has</i> : <span title={a.expires_at}>{untilWords(a.expires_at, now)}</span>}
+        <Fact name="State">
+          <span data-testid="ap-state">{a.state}</span>
         </Fact>
+        {a.state === 'pending' && (
+          <Fact name="Expires">
+            {a.expires_at === null ? <i className="ctl-em">&mdash; never: a run made by hand waits as it always has</i> : <span title={a.expires_at}>{untilWords(a.expires_at, now)}</span>}
+          </Fact>
+        )}
         <Fact name="Who may approve">{approversWords(a.approvers) ?? <i className="ctl-em">&mdash; not served</i>}</Fact>
         {links.length > 0 && <Fact name="Read in full">{links.reduce<ReactNode[]>((acc, l, i) => (i === 0 ? [l] : [...acc, ' · ', l]), [])}</Fact>}
       </dl>
@@ -419,7 +462,19 @@ function ItemDetail({ itemId, go, onDecided }: { itemId: string; go: (to: string
   )
 }
 
-function Inbox({ items, selected, go, onDecided }: { items: ApprovalItem[]; selected: string | null; go: (to: string) => void; onDecided: (word: string) => void }) {
+function Inbox({
+  items,
+  selected,
+  kind,
+  go,
+  onDecided,
+}: {
+  items: ApprovalItem[]
+  selected: string | null
+  kind: string | null
+  go: (to: string) => void
+  onDecided: (word: string) => void
+}) {
   const now = useNow()
   const phone = usePhoneTables()
   const detail = selected === null ? null : <ItemDetail key={selected} itemId={selected} go={go} onDecided={onDecided} />
@@ -430,7 +485,7 @@ function Inbox({ items, selected, go, onDecided }: { items: ApprovalItem[]; sele
           const on = item.approval_id === selected
           return (
             <li key={item.approval_id} className={on ? 'ap-item is-on' : 'ap-item'} data-approval={item.approval_id}>
-              <InApp go={go} to={on ? APPROVALS_ADDRESS : approvalAddress(item.approval_id)} className="ap-pick">
+              <InApp go={go} to={on ? approvalsAddress(kind) : approvalAddress(item.approval_id, kind)} className="ap-pick">
                 <span className="sc-kind">{APPROVAL_KIND[item.kind] ?? item.kind}</span>
                 <span className="sc-cut" title={item.summary}>{item.summary}</span>
                 {item.requested_at !== null && <span className="sc-sub" title={item.requested_at}>{timeAgo(item.requested_at, now)}</span>}
@@ -450,13 +505,74 @@ function Inbox({ items, selected, go, onDecided }: { items: ApprovalItem[]; sele
   )
 }
 
+/** The inbox's kind filter: every kind, or one (`?kind=`, the route's own filter). */
+function KindFilter({ kind, go }: { kind: string | null; go: (to: string) => void }) {
+  const kinds: [string | null, string][] = [[null, 'Every kind'], ...Object.entries(APPROVAL_KIND)]
+  return (
+    <div className="ap-filter" role="group" aria-label="Kind">
+      {kinds.map(([k, word]) => (
+        <Button key={k ?? 'all'} size="sm" kind={k === kind ? 'primary' : 'secondary'} aria-pressed={k === kind} onClick={() => go(approvalsAddress(k))}>
+          {word}
+        </Button>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * THE INBOX, AND THE ITEM A LINK NAMED (AUT-6). An item the address names
+ * that is not in the list read -- decided by someone else, expired, or not
+ * of the kind filtered to -- is read on its own (`GET /v1/approvals/{id}`)
+ * and drawn above the inbox with what became of it, so a link from a
+ * notification never lands on what looks like an empty inbox.
+ */
+function ApprovalsBody({
+  items,
+  selected,
+  kind,
+  go,
+  onDecided,
+}: {
+  items: ApprovalItem[]
+  selected: string | null
+  kind: string | null
+  go: (to: string) => void
+  onDecided: (word: string) => void
+}) {
+  const listed = selected !== null && items.some((i) => i.approval_id === selected)
+  return (
+    <>
+      <KindFilter kind={kind} go={go} />
+      {selected !== null && !listed && (
+        <section className="ap-linked" data-testid="ap-linked" aria-label="The item the link names">
+          <ItemDetail key={selected} itemId={selected} go={go} onDecided={onDecided} />
+        </section>
+      )}
+      {items.length === 0 ? (
+        <Absent
+          kind="zero"
+          heading="Nothing waiting"
+          say={kind === null ? 'The inbox was read and nothing is waiting' : `The inbox was read and no ${APPROVAL_KIND[kind] ?? kind} item is waiting`}
+        >
+          {kind === null
+            ? 'No firing, plan, merge, proposal or spec in this tenant is waiting for a person: the inbox was read and is empty.'
+            : `Nothing of this kind is waiting for a person. Choose Every kind to read the whole inbox.`}
+        </Absent>
+      ) : (
+        <Inbox items={items} selected={listed ? selected : null} kind={kind} go={go} onDecided={onDecided} />
+      )}
+    </>
+  )
+}
+
 export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: string) => void }) {
   const selected = approvalOf(view)
+  const kind = kindOf(view)
   const [round, setRound] = useState(0)
   const [said, setSaid] = useState<string | null>(null)
   const decided = (word: string) => {
     setSaid(`${word}. The inbox was read again.`)
-    go(APPROVALS_ADDRESS)
+    go(approvalsAddress(kind))
     setRound((n) => n + 1)
   }
   return (
@@ -467,17 +583,17 @@ export function ApprovalsScreen({ view, go }: { view: string | null; go: (to: st
         </p>
       )}
       <Screen
-        key={`approvals:${round}`}
+        key={`approvals:${kind ?? ''}:${round}`}
         title="Approvals"
-        load={() => loadApprovals()}
-        summary={(d) => `${pluralise(d.approvals.length, 'item')} waiting, oldest first · waiting items hold no capacity`}
-        empty={{
-          heading: 'Nothing waiting',
-          body: 'No firing, plan, merge, proposal or spec in this tenant is waiting for a person: the inbox was read and is empty.',
-          say: 'The inbox was read and nothing is waiting',
+        // An empty inbox is drawn by the body, not the Screen, so the item a
+        // link names is still read and shown beside it (AUT-6).
+        load={async () => {
+          const r = await loadApprovals(kind === null ? {} : { kind })
+          return r.status === 'empty' ? { status: 'ok' as const, data: { approvals: [] }, fetchedAt: r.fetchedAt } : r
         }}
+        summary={(d) => `${pluralise(d.approvals.length, 'item')} waiting, oldest first · waiting items hold no capacity`}
       >
-        {(d) => <Inbox items={d.approvals} selected={selected} go={go} onDecided={decided} />}
+        {(d) => <ApprovalsBody items={d.approvals} selected={selected} kind={kind} go={go} onDecided={decided} />}
       </Screen>
     </>
   )

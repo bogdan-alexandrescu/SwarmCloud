@@ -113,6 +113,7 @@ import {
   tokenKindsCell,
   tokenKindsTotal,
   workflowLabel,
+  listRowName,
   workflowPullRequest,
   mergeCardOf,
   VIEW_LABEL,
@@ -530,12 +531,46 @@ export function listSummary(d: Pick<WorkflowBoard, 'workflows' | 'nextPageToken'
 }
 
 /**
- * ONE WORKFLOW'S READ: the board, so the page can scrub the same step across
- * other workflows and its states join through the same task read. A workflow
- * past the board's 100 is read on its own (`GET /v1/workflows/{id}`) and
- * joined in, so a pasted link to an old workflow still opens it.
+ * ONE WORKFLOW'S READ: `GET /v1/workflows/{id}`, ITS OWN, AND NOTHING ELSE
+ * (live QA CH-21, 2026-10-11). The page waited on the board -- `GET
+ * /v1/workflows?limit=100`, the slowest read in the console at 3.1-4.0 s --
+ * before it drew the one workflow it is about. It now draws from its own read,
+ * which carries the workflow and its step tasks, and the board the same-step
+ * scrubber needs is read beside it once the page is up (`useBoardAround`).
+ *
+ * A 404 is said as one (WF-18c). Any other failure of the page's own read
+ * falls back to the board, which may still hold the row, exactly as before.
  */
 export async function loadWorkflowPage(id: string): Promise<Result<WorkflowBoard>> {
+  const one = await loadWorkflow(id)
+  if (one.status === 'ok' || one.status === 'stale') {
+    const data: WorkflowBoard = {
+      workflows: [one.data.workflow],
+      taskById: new Map(one.data.tasks.map((t) => [t.id, t])),
+      statesDetail: null,
+    }
+    return one.status === 'ok'
+      ? { status: 'ok', fetchedAt: one.fetchedAt, serverAt: one.serverAt, data }
+      : { status: 'stale', data, fetchedAt: one.fetchedAt, error: one.error }
+  }
+  if (one.status === 'error' && one.error.kind === 'not_found') {
+    const data: PageBoard = { workflows: [], taskById: new Map(), statesDetail: null, pageMiss: one.error }
+    return { status: 'ok', fetchedAt: Date.now(), data }
+  }
+  return joinWorkflowPage(await loadWorkflowBoard(), one, id)
+}
+
+/**
+ * The board, with one workflow's own read joined in: the page's fallback when
+ * its own read failed, and the shape `useBoardAround` draws once the board has
+ * landed. A workflow past the board's 100 is joined in from its own read, so a
+ * pasted link to an old workflow still opens it.
+ */
+export function joinWorkflowPage(
+  b: Result<WorkflowBoard>,
+  one: Result<{ workflow: Workflow; tasks: Task[] }>,
+  id: string,
+): Result<WorkflowBoard> {
   // THE PAGE'S OWN STEPS ARE READ BY ID, EVERY TIME (owner QA R8,
   // 2026-10-04). The board joins states through `GET /v1/tasks?limit=200`, a
   // window of the tenant's newest tasks, so an older workflow's steps fell
@@ -544,7 +579,6 @@ export async function loadWorkflowPage(id: string): Promise<Result<WorkflowBoard
   // exit 0, 2m 56s and $0.89 for the same step. `GET /v1/workflows/{id}`
   // returns the workflow's own step tasks, so they are joined whether or not
   // the window reached them.
-  const [b, one] = await Promise.all([loadWorkflowBoard(), loadWorkflow(id)])
   if (b.status === 'loading' || b.status === 'error') {
     // No board: the page is still its own workflow, if that read answered.
     if (one.status !== 'ok' && one.status !== 'stale') return b
@@ -571,13 +605,17 @@ export async function loadWorkflowPage(id: string): Promise<Result<WorkflowBoard
   // absent from it -- still read as unread, never "not started".
   const taskById = new Map(base.taskById ?? [])
   for (const t of one.data.tasks) taskById.set(t.id, t)
+  // THE PAGE'S OWN ROW IS ITS OWN READ, in the board's place for it: the
+  // list row carries no step input (`view=summary`), and the two may have
+  // been read seconds apart.
   const inBoard = base.workflows.some((w) => w.workflow_id === id)
+  const own = one.data.workflow
   return {
     status: 'ok',
     fetchedAt: b.status === 'ok' || b.status === 'stale' ? b.fetchedAt : one.fetchedAt,
     data: {
       ...base,
-      workflows: inBoard ? base.workflows : [...base.workflows, one.data.workflow],
+      workflows: inBoard ? base.workflows.map((w) => (w.workflow_id === id ? own : w)) : [...base.workflows, own],
       taskById: base.taskById === null && one.data.tasks.length === 0 ? null : taskById,
     },
   }
@@ -5389,6 +5427,8 @@ function WorkflowListRow({
     if (onSeen !== null && inView) onSeen(workflow)
   }, [onSeen, inView, workflow])
   const why = listRowWhy(workflow, taskById, pending)
+  // A row known to have no label or title is "Untitled workflow", id under it.
+  const named = listRowName(workflow.workflow_id, label, stepsRead(workflow, taskById))
   const roll = rollupLine(workflow, taskById)
   const spend = workflowSpend(workflow.steps, taskById, telemetry)
   const failed = why !== null && (why.kind === 'failed' || why.kind === 'failed-unread')
@@ -5413,10 +5453,10 @@ function WorkflowListRow({
         <WorkflowStateMark workflow={workflow} />
       </td>
       <td className="wfl-name" data-col="workflow">
-        <a href={workflowHref(workflow.workflow_id, query)} title={label ?? workflow.workflow_id}>
-          {label ?? workflow.workflow_id}
+        <a href={workflowHref(workflow.workflow_id, query)} title={named.name}>
+          {named.name}
         </a>
-        {label !== null && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
+        {named.showId && <Id title={workflow.workflow_id}>{workflow.workflow_id}</Id>}
         {/* Drawn at ≤560 only, where the done, failed and age columns are
             off the right edge (#109); the cells say it wide, so hidden from
             assistive technology to keep one reading of each fact. */}
@@ -5600,8 +5640,40 @@ function StepsDone({ workflow, roll }: { workflow: Workflow; roll: Rollup }) {
  * under them, or the Table, or the Timeline -- the board machinery focused on
  * this one workflow, so every node, row and inspector reads exactly as it did.
  */
+/**
+ * THE BOARD AROUND ONE WORKFLOW'S PAGE, read once the page is up (live QA
+ * CH-21). The page draws from its own read (`loadWorkflowPage`); the same-step
+ * scrubber and the attempt read's sample need the other workflows, which come
+ * from the board -- the slow list read -- and are joined in when it lands.
+ * Until then, or if it fails, the page is its own workflow alone. Read once
+ * per page open: the page's poll re-reads its own workflow, not the list.
+ */
+function useBoardAround(own: WorkflowBoard, id: string): WorkflowBoard {
+  const [around, setAround] = useState<Result<WorkflowBoard> | null>(null)
+  // A page whose own read failed already holds the board, or says why not.
+  const missed = (own as PageBoard).pageMiss !== undefined
+  useEffect(() => {
+    let live = true
+    setAround(null)
+    if (missed) return
+    void loadWorkflowBoard().then((r) => {
+      if (live) setAround(r)
+    })
+    return () => {
+      live = false
+    }
+  }, [id, missed])
+  return useMemo(() => {
+    if (missed) return own
+    const row = own.workflows.find((w) => w.workflow_id === id)
+    if (around === null || row === undefined) return own
+    const joined = joinWorkflowPage(around, { status: 'ok', fetchedAt: Date.now(), data: { workflow: row, tasks: Array.from(own.taskById?.values() ?? []) } }, id)
+    return joined.status === 'ok' || joined.status === 'stale' ? joined.data : own
+  }, [own, around, id, missed])
+}
+
 function WorkflowPage({
-  board,
+  board: own,
   id,
   query,
   choose,
@@ -5621,6 +5693,7 @@ function WorkflowPage({
   changesAt: ChangesAt
   onChangesAt: (at: ChangesAt) => void
 }) {
+  const board = useBoardAround(own, id)
   const workflow = board.workflows.find((w) => w.workflow_id === id) ?? null
   const found = workflow !== null
   const derived = workflow === null ? null : derivedStateOf(workflow)

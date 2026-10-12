@@ -36,7 +36,7 @@ vi.mock('../api', async (importOriginal) => {
   return { ...actual, ...api }
 })
 
-const { loadWorkflowPage, startedPhrase, WorkflowsScreen } = await import('../Workflows')
+const { joinWorkflowPage, loadWorkflowPage, startedPhrase, WorkflowsScreen } = await import('../Workflows')
 const { usd } = await import('../measure')
 const { workflowStartText } = await import('../types')
 
@@ -99,16 +99,40 @@ describe('R8: the page joins its own steps\' tasks', () => {
     const data = (r as { data: WorkflowBoard }).data
     expect(api.loadWorkflow).toHaveBeenCalledWith(WF)
     for (const t of OWN) expect(data.taskById?.get(t.id)?.state, t.id).toBe('SUCCEEDED')
-    // The window is still joined for the other workflows the page scrubs.
-    expect(data.taskById?.get('task_other_0')).toBeDefined()
-    expect(data.workflows.filter((w) => w.workflow_id === WF)).toHaveLength(1)
+    // The window is joined for the other workflows the page scrubs, once the
+    // board lands beside the page (live QA CH-21: the page does not wait on it).
+    const joined = joinWorkflowPage(await api.loadWorkflowBoard(), await api.loadWorkflow(WF), WF)
+    const all = (joined as { data: WorkflowBoard }).data
+    expect(all.taskById?.get('task_other_0')).toBeDefined()
+    for (const t of OWN) expect(all.taskById?.get(t.id)?.state, t.id).toBe('SUCCEEDED')
+    expect(all.workflows.filter((w) => w.workflow_id === WF)).toHaveLength(1)
   })
 
   it('joins them even when the board\'s task read failed', async () => {
     api.loadWorkflowBoard.mockResolvedValue(ok(board(null)))
-    const r = await loadWorkflowPage(WF)
+    const r = joinWorkflowPage(await api.loadWorkflowBoard(), await api.loadWorkflow(WF), WF)
     const data = (r as { data: WorkflowBoard }).data
     for (const t of OWN) expect(data.taskById?.get(t.id)?.state).toBe('SUCCEEDED')
+  })
+
+  it('does not wait on the board to draw its own workflow (live QA CH-21)', async () => {
+    // The board never answers: the page's own read is the page.
+    api.loadWorkflowBoard.mockReturnValue(new Promise(() => {}))
+    const r = await loadWorkflowPage(WF)
+    expect(r.status).toBe('ok')
+    const data = (r as { data: WorkflowBoard }).data
+    expect(data.workflows.map((w) => w.workflow_id)).toEqual([WF])
+    expect(api.loadWorkflowBoard).not.toHaveBeenCalled()
+    const { container } = render(<WorkflowsScreen view={`wf=${WF}`} />)
+    await waitFor(() => expect(container.querySelector('.wfp:not(.is-loading) > .wfp-head')).not.toBeNull())
+    expect(container.textContent).toMatch(/succeeded/i)
+  })
+
+  it('falls back to the board when its own read failed for any reason but a 404', async () => {
+    api.loadWorkflow.mockResolvedValue({ status: 'error', error: { kind: 'server_error', httpStatus: 500, code: null, message: 'boom' } })
+    const r = await loadWorkflowPage(WF)
+    expect(api.loadWorkflowBoard).toHaveBeenCalledTimes(1)
+    expect((r as { data: WorkflowBoard }).data.workflows.map((w) => w.workflow_id)).toEqual([WF])
   })
 
   it('draws no step of a finished workflow as unread', async () => {

@@ -849,9 +849,12 @@ describe('OV-10: the failures figure and the failed-agents list count one popula
    * `drawer.reread.test.tsx` pins it at 50), while the Overview kept counting
    * over 200 -- so "7 failed among the 200 most recent" could open a list
    * reading "nothing failed in recent". The Overview's task read is the list's
-   * page at every width now, and the headline's N says which.
+   * page at every width now, and the headline's N says which. Since live QA
+   * CH-4 (2026-10-11) that page is 200 rows on a phone too
+   * (`PHONE_PAGE_LIMIT` is `TASK_PAGE_LIMIT`; `drawer.reread.test.tsx` pins
+   * the list at 200), so both still read one page.
    *
-   * MUTATION: read the full page on a phone again.
+   * MUTATION: read a page other than the list's on a phone.
    */
   it('reads the phone page at phone width, the page the agent list reads', async () => {
     media(true)
@@ -859,7 +862,7 @@ describe('OV-10: the failures figure and the failed-agents list count one popula
     await mountWith()
     const limits = api.loadTasks.mock.calls.map((c) => c[0] as unknown)
     expect(limits.length, 'the Overview made no task read').toBeGreaterThan(0)
-    expect(limits.filter((l) => l !== 50), 'a phone Overview counted over a page the list does not read').toEqual([])
+    expect(limits.filter((l) => l !== 200), 'a phone Overview counted over a page the list does not read').toEqual([])
   })
 
   /**

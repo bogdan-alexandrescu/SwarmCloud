@@ -29,6 +29,7 @@ import type { Result } from '../fetch'
 import { ledgerFixture } from '../outcomes.fixture'
 import type { AttemptRow, AttemptsPage, Task, TaskPage } from '../types'
 import type { WorkflowRead } from '../api'
+import { byIdVia } from './workflowsById'
 
 const api = vi.hoisted(() => ({
   loadAttemptsPage: vi.fn(),
@@ -36,6 +37,7 @@ const api = vi.hoisted(() => ({
   loadTasks: vi.fn(),
   loadTask: vi.fn(),
   loadWorkflow: vi.fn(),
+  loadWorkflowsById: vi.fn(),
   loadOutcomes: vi.fn(),
 }))
 vi.mock('../api', async (importOriginal) => {
@@ -90,6 +92,7 @@ const WF_READ = {
 } as unknown as WorkflowRead
 
 beforeEach(() => {
+  api.loadWorkflowsById.mockImplementation(byIdVia(api.loadWorkflow))
   api.loadAttemptsPage.mockImplementation(async (o: { pageToken?: string | null }) => ok(PAGES[o.pageToken ?? 'first']!))
   api.loadTaskEventsPage.mockResolvedValue(ok({ events: [], next_page_token: null }))
   api.loadTasks.mockResolvedValue(ok({ tasks: TASKS } as TaskPage))

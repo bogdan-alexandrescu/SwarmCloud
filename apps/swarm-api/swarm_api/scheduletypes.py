@@ -45,6 +45,7 @@ from pathlib import Path
 from typing import Any, Callable, Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, field_validator, model_validator
+from pydantic_core import to_jsonable_python
 
 from .schemas import WorkflowCreate
 
@@ -642,6 +643,26 @@ def creator_role(
     return max(needed, key=ROLE_ORDER.index)
 
 
+def params_schema(model: type[Params]) -> dict[str, Any]:
+    """A type's parameter schema, with every default the server would store.
+
+    Pydantic leaves a `default_factory` out of the JSON schema, so a list
+    default -- issue-sweep's `labels_exclude`, observer's `focus`, the drift
+    types' `paths` -- reached the console as an empty field while create
+    stored the list (live QA AUT-12, 2026-10-11). The factory is called here
+    and its value served as the property's `default`, so the form shows what
+    a blank field means.
+    """
+    schema = model.model_json_schema()
+    props = schema.get("properties") or {}
+    for name, info in model.model_fields.items():
+        prop = props.get(name)
+        if info.default_factory is None or prop is None or "default" in prop:
+            continue
+        prop["default"] = to_jsonable_python(info.get_default(call_default_factory=True, validated_data={}))
+    return schema
+
+
 def describe(entry: ScheduleType, root: Path = EXECUTOR_DIR) -> dict[str, Any]:
     """One row of `GET /v1/schedule-types` (§7.1)."""
     available, reason = availability(entry, root)
@@ -650,7 +671,7 @@ def describe(entry: ScheduleType, root: Path = EXECUTOR_DIR) -> dict[str, Any]:
         "name": entry.name,
         "description": entry.description,
         "executor": entry.executor,
-        "params_schema": entry.params_model.model_json_schema(),
+        "params_schema": params_schema(entry.params_model),
         "default_gate": entry.default_gate.as_dict(),
         "floor_gate": entry.floor_gate.as_dict(),
         "min_interval_minutes": int(entry.min_interval.total_seconds() // 60),

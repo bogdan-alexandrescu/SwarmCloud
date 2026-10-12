@@ -546,7 +546,7 @@ ALLOWED_CONTROLS = [
     ("Network.enable", {}),
     ("DOM.setFileInputFiles", {"files": ["{uploads}/report.pdf"], "nodeId": 1}),
     ("Runtime.evaluate", {"expression": "1"}),
-    ("Storage.getCookies", {}),
+    ("Storage.getStorageKeyForFrame", {"frameId": "f1"}),
 ]
 
 
