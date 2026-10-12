@@ -68,13 +68,17 @@ class FakeSocket extends EventTarget {
   static made: FakeSocket[] = []
   binaryType = 'blob'
   readyState = 0
+  onopen: ((e: Event) => void) | null = null
   onmessage: ((e: MessageEvent) => void) | null = null
   constructor(readonly url: string) {
     super()
     FakeSocket.made.push(this)
     queueMicrotask(() => {
       this.readyState = 1
-      this.dispatchEvent(new Event('open'))
+      // A browser WebSocket fires both its `onopen` property and its listeners.
+      const opened = new Event('open')
+      this.onopen?.(opened)
+      this.dispatchEvent(opened)
     })
   }
   send() {}
