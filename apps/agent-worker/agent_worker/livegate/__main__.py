@@ -72,6 +72,7 @@ from .ctl import DEFAULT_MARKER, CtlServer
 from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
 from .inject import InjectError, XInjector, display_socket
 from .mask import MaskCdp, MaskState
+from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
 from .report import device_report, encode_report, page_origin
 from .rfb import ControlState, FrameHub, RfbSession, masked
@@ -610,6 +611,7 @@ class LiveGate:
             record=self.record,
             on_control_ended=self._control_ended,
             on_action=self._queue_action,
+            on_pointer=self._agent_pointer,
         )
         pipe = self._tasks["pipe"] = asyncio.create_task(self._read_pipe())
         version = asyncio.create_task(self.proxy.call("Browser.getVersion", {}))
@@ -695,6 +697,13 @@ class LiveGate:
             frame = captured(frame, device)
             self.hub.publish(masked(frame, self.mask_state))
             await asyncio.sleep(interval)
+
+    def _agent_pointer(self, x: float, y: float) -> None:
+        """The agent's `Input.dispatchMouseEvent`, in CSS pixels: where watchers see the pointer (pointer.py)."""
+        device = self.devices.device if self.devices is not None else self.desktop
+        at = css_to_frame(device, x, y)
+        if at is not None:
+            self.hub.pointer.move(*at)
 
     def _on_resize(self, device: Any) -> None:
         if self.touch is not None:
