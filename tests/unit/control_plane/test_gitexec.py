@@ -84,10 +84,12 @@ class Recorder:
     def __init__(self, *, raise_on: str | None = None) -> None:
         self.calls: list[list[str]] = []
         self.credential_seen: list[tuple[Path, int, str]] = []
+        self.credential_present: list[bool] = []
         self.raise_on = raise_on
 
     def __call__(self, argv, *, cwd, env, timeout):  # noqa: ANN001
         self.calls.append(list(argv))
+        self.credential_present.append((Path(cwd) / "credentials").exists())
         for item in argv:
             if item.startswith("credential.helper=store --file="):
                 path = Path(item.split("--file=", 1)[1])
@@ -294,6 +296,19 @@ def test_the_credential_file_is_gone_after_an_exception(world) -> None:
     assert _remote_tip(world) == world["b"]
 
 
+def test_the_credential_file_is_removed_as_soon_as_the_last_remote_command_ran(world) -> None:
+    """Not merely with the scratch directory at the end: `bundle create` runs
+    after the fetches and must find no credential beside it."""
+    _commit(world["work"], "c")
+    _git(world["work"], "push", "-q", str(world["remote"]), "HEAD:refs/heads/main")
+    rec = Recorder()
+    _exec(world, rec).fetch_bundle(url=world["url"], token=_token(), ref="main",
+                                   haves=[world["b"]])
+    [(present)] = [p for argv, p in zip(rec.calls, rec.credential_present) if "bundle" in argv]
+    assert present is False
+    assert any(rec.credential_present)
+
+
 def test_the_fence_recheck_runs_before_the_push_and_its_refusal_pushes_nothing(world) -> None:
     """§1.4: the fence is checked again after the bundle is unpacked and
     before `git push`. Its exception reaches the caller; nothing is pushed and
@@ -495,3 +510,21 @@ def test_a_bundle_whose_base_the_remote_lacks_is_bad_bundle(world) -> None:
     assert caught.value.code == "bad_bundle"
     assert _remote_tip(world) == world["b"]
     assert _scratch_is_empty(world)
+
+
+def test_a_bundle_carrying_a_malformed_object_is_refused_by_fsck(world) -> None:
+    """The unbundle is the one step that reads objects the agent built, so it
+    runs with `fetch.fsckObjects`: a commit with no committer never reaches a
+    push."""
+    work = world["work"]
+    tree = _git(work, "rev-parse", "HEAD^{tree}")
+    raw = f"tree {tree}\nparent {world['b']}\nauthor t <t@example.invalid> 1 +0000\n\nbad\n"
+    bad = subprocess.run(["git", "hash-object", "-t", "commit", "-w", "--literally", "--stdin"],
+                         cwd=work, env=_ENV, input=raw, capture_output=True, text=True,
+                         check=True).stdout.strip()
+    _git(work, "update-ref", "HEAD", bad)
+    data = _bundle(work, world["tmp"] / "bad.bundle", bad, world["b"])
+    with pytest.raises(GitExecError) as caught:
+        _exec(world).push_bundle(url=world["url"], token=_token(), bundle=data, branch="swarm/x")
+    assert caught.value.code == "bad_bundle"
+    assert _remote_tip(world) == world["b"]
