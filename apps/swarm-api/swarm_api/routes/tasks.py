@@ -25,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 
 from swarm_common.states import TaskState
 
+from .. import agent_questions
 from ..agent_output import AgentOutputService
 from ..attempt_totals import totals_for, with_totals
 from ..children import (
@@ -878,6 +879,27 @@ def read_answer(
     """
     return service.read_answer(
         tenant_id, task_id, attempt_id=attempt_id, submitted_by=submitted_by
+    )
+
+
+@router.get("/{task_id}/questions")
+def read_questions(
+    task_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    ctx: AppContext = Depends(get_context),
+    service: AgentOutputService = Depends(agent_output_service),
+) -> dict:
+    """What the task's agent asked its owner, from its `questions.json`, redacted.
+
+    Only a file the worker validated and counted (`result_summary.questions`)
+    is served, read through the artifact read's tenant check and redaction.
+    `status` is `ok`, `none` (it asked none; `questions: []`, never a 404) or
+    `unavailable` (counted, not readable, with `unavailable_because`). See
+    `swarm_api.agent_questions`.
+    """
+    return agent_questions.read_questions(
+        ctx.store, service, tenant_id, task_id, submitted_by=submitted_by
     )
 
 

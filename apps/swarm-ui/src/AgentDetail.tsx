@@ -20,6 +20,7 @@ import { TokenSpendChart } from './charts/TokenSpend'
 import { agentName, workflowHref } from './agentlist'
 import { resultIsNewest, stepCostOf, totalCostOf } from './dag'
 import { DecisionCard } from './DecisionCard'
+import { QuestionsCard } from './QuestionsCard'
 import { handoffOf } from './Handoff'
 import { pullRequestOf } from './decision'
 import { PHASE_LABEL, attemptEnd, instant, phasesFor, spanText, type AttemptEnd, type AttemptPhases, type Segment } from './duration'
@@ -435,6 +436,10 @@ export function Run({
           a verdict gate, or the review that gated one, leads with the rule,
           the verdict, what the review weighed and what happened instead.
           Nothing on any other step. */}
+      {/* THE AGENT'S QUESTIONS FOR ITS OWNER (owner report 2026-10-13, part
+          of #1206): where the bell's "Your agent asked N question(s)" lands,
+          at `#questions`. Nothing, and no read, when it asked none. */}
+      <QuestionsCard task={task} />
       <DecisionCard task={task} readAt={readAt} />
       {lead === 'failed' ? (
         <DtFailure run={run} links={links} lastLine={lastLine} />
