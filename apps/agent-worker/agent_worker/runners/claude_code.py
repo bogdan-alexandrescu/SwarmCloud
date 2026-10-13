@@ -212,8 +212,15 @@ LIVE_BROWSER_NOTE = (
     "browser_take_screenshot), which are already connected to it. From Python, "
     "`from swarm_browser import live; playwright, browser, context = live()` "
     "connects over CDP to $SWARM_CDP_ENDPOINT; call `playwright.stop()` when "
-    "done, never `browser.close()`. Save screenshots and other captures under "
-    "$SWARM_ARTIFACTS_DIR so they are uploaded."
+    "done, never `browser.close()`. Open each new page in its own tab so the "
+    "person sees it. When a site shows a CAPTCHA, a bot check, a consent wall "
+    "or a sign-in, do not try to get around it and do not switch to a "
+    "different site than the one asked for: run `swarm-handoff request "
+    "--reason \"<what the person should do>\" --expect <domain>`, then "
+    "`swarm-handoff wait`, and carry on once control comes back. Only if "
+    "nobody comes, say so in your answer and then use an alternative, naming "
+    "it. Save screenshots and other captures under $SWARM_ARTIFACTS_DIR so "
+    "they are uploaded."
 )
 
 #: The PreToolUse hook. Standard library only, run by this runner's own

@@ -238,6 +238,19 @@ def test_the_agents_own_launch_finds_only_the_stub(monkeypatch, tmp_path):
     assert "headless=True" not in note
 
 
+def test_a_blocked_site_is_handed_to_a_person_not_swapped():
+    """task_9d2890cce74147f985ff (2026-10-13): Google answered a CAPTCHA and the
+    agent switched to Bing without asking, because the BROWSER-BRIEF hand-off
+    rule was lost when BROWSER-ENFORCE replaced the note."""
+    from agent_worker.runners import claude_code
+
+    note = claude_code.LIVE_BROWSER_NOTE
+    assert "CAPTCHA" in note and "sign-in" in note
+    assert "swarm-handoff request" in note and "swarm-handoff wait" in note
+    assert "--expect" in note
+    assert "do not switch to a different site" in note
+
+
 def test_the_agents_python_is_the_venv_with_playwright(monkeypatch, tmp_path):
     from agent_worker.runners import claude_code
 
