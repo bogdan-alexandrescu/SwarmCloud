@@ -90,6 +90,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.models import Task, TaskEvent, new_id, utcnow
 from swarm_common.profiles import RUNNER_PROFILES, Backend
 from swarm_common.states import EventType, ParkReason, TaskState
+from swarm_redaction import redact as redact_text
 
 from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
@@ -526,6 +527,11 @@ class LiveOrigin(_Wire):
     scheme: str
     ip_literal: bool | None = None
     cert_error: bool | None = None
+    #: The top frame's path, redacted, for the caption under the device
+    #: (LB-R6): not part of the origin -- the strip never shows it -- but
+    #: read from the same committed URL, so it travels with it. Null when the
+    #: gate reported none or it did not hold together (`clean_path`).
+    path: str | None = None
 
 
 class LiveDevice(_Wire):
@@ -645,6 +651,9 @@ LIVE_PRESETS: tuple[dict[str, Any], ...] = (
 # anti-phishing strip (§5.7): every field is checked against the others here,
 # before it is stored and again when it is served, and anything that does not
 # hold together is null -- shown as "not reported", never as a site.
+# The origin carries the top frame's PATH beside it (LB-R6), for the caption
+# under the device: checked and redacted again by `clean_path`, and null on
+# its own when it fails, so a bad path never blanks the strip.
 
 REPORT_TYPE = "report"
 #: The relay's limit (`swarm_live.rendezvous.MAX_REPORT_BYTES`); its text is
@@ -682,6 +691,22 @@ def _encoded(display: str) -> str | None:
         return None
 
 
+#: The gate's limit (`agent_worker.livegate.report.MAX_PATH_CHARS`).
+MAX_PATH_CHARS = 256
+
+
+def clean_path(raw: Any) -> str | None:
+    """`raw` as the caption's path -- `/...`, no query, no fragment, printable,
+    at most `MAX_PATH_CHARS`, redacted again -- else None.
+
+    A path that fails is null and never takes its origin with it: the strip
+    is the anti-phishing defence (§5.7) and does not depend on the path."""
+    if (not isinstance(raw, str) or not raw.startswith("/") or len(raw) > MAX_PATH_CHARS
+            or "?" in raw or "#" in raw or not _printable(raw)):
+        return None
+    return redact_text(raw).text
+
+
 def clean_origin(raw: Any) -> dict[str, Any] | None:
     """`raw` as a `LiveOrigin` whose fields agree with each other, else None."""
     if not isinstance(raw, dict) or not _ORIGIN_REQUIRED <= set(raw) <= _ORIGIN_KEYS:
@@ -712,7 +737,8 @@ def clean_origin(raw: Any) -> dict[str, Any] | None:
                 or not _printable(display) or (display if ip else _encoded(display)) != host):
             return None
     return {"origin": origin, "host": host, "display_host": display, "registrable_domain": domain,
-            "scheme": scheme, "ip_literal": ip_flag, "cert_error": cert}
+            "scheme": scheme, "ip_literal": ip_flag, "cert_error": cert,
+            "path": clean_path(raw.get("path"))}
 
 
 def live_preset(name: Any) -> dict[str, Any] | None:

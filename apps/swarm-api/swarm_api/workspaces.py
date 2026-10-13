@@ -976,7 +976,10 @@ class Workspaces:
                     return
                 self._touched[tenant_id] = clock
             now = self._now()
-            teams = sorted({tid for tid, _ in (getattr(ctx, "tenant_choices", ()) or ())})
+            # The groups only: the person's own workspace is listed among
+            # `tenant_choices` too (#1200), and it is not a team.
+            teams = sorted({tid for tid, _ in (getattr(ctx, "tenant_choices", ()) or ())
+                            if tid != tenant_id})
             ref = self._db.collection(PEOPLE).document(tenant_id)
             fields: dict[str, Any] = {"principal": email, "last_seen": now, "teams": teams}
             if not ref.get().exists:

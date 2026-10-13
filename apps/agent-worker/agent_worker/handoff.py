@@ -122,6 +122,19 @@ EXPIRY_NOTES_SECONDS = 30
 #: §4.4: how long the agent's `wait` gets to read "cancelled" before the
 #: ordinary cancel path stops it.
 CANCEL_ANSWER_SECONDS = 3
+#: §3.3: "A relay restart drops every live session for the seconds it takes
+#: to come back; both ends reconnect." The gate's end reconnects through the
+#: worker, the only holder of the attempt key that proves a tunnel ticket:
+#: when the gate's `status` says its tunnel closed, the worker asks swarm-api
+#: for a fresh ticket and hands it over (LB-R6). A refused ask is tried again
+#: after TUNNEL_RETRY_SECONDS, doubling to TUNNEL_RETRY_MAX_SECONDS, so a relay
+#: that stays down costs a route call a minute rather than one every poll.
+TUNNEL_RETRY_SECONDS = 5
+TUNNEL_RETRY_MAX_SECONDS = 60
+#: swarm-api's answers that end the live path for this attempt for good (a
+#: closed session, a stale generation, a profile with no live browser): no
+#: later ticket will come, so the worker stops asking.
+TUNNEL_ENDED_CODES = frozenset({"live_session_closed", "live_fenced", "live_not_available"})
 
 #: `swarm-handoff`'s exit codes (§4.1). The command restates them.
 EXIT_RETURNED = 0
@@ -184,6 +197,14 @@ preset by name (desktop, iphone-15, pixel-8, iphone-se, ipad-7).
 
 Never copy cookies or a storage state into your files: they are refused.
 """
+
+
+class NoTunnelTicket(Exception):
+    """swarm-api gave no tunnel ticket. `code` is its error code, or why there was none."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class GateLost(Exception):
@@ -369,6 +390,13 @@ class HandoffPath:
         self.max_handoffs = int(getattr(cfg, "max_handoffs_per_attempt", MAX_HANDOFFS_PER_ATTEMPT))
         self.max_resumes = int(getattr(cfg, "max_human_resumes", MAX_HUMAN_RESUMES))
         self._wiped = False
+        #: The tunnel's upkeep (§3.3, LB-R6): reopened how often, when it may
+        #: next be asked for, the wait after the next refusal, and whether
+        #: swarm-api has said the session is over.
+        self.tunnel_reopens = 0
+        self._tunnel_retry_at = 0.0
+        self._tunnel_backoff = float(TUNNEL_RETRY_SECONDS)
+        self._tunnel_ended = False
 
     # -- what the lifecycle asks ---------------------------------------------
 
@@ -414,6 +442,23 @@ class HandoffPath:
                 or "no attempt key registered"
             )
             return self._refuse(note, NO_ATTEMPT_KEY, str(why))
+        try:
+            self._open_tunnel(gate, key, api)
+        except NoTunnelTicket as exc:
+            return self._refuse(note, NO_LIVE_SESSION, exc.code)
+        except GateLost as exc:
+            return self._refuse(note, GATE_UNAVAILABLE, type(exc).__name__)
+        self.unavailable = None
+        self.log.info("live path open for this attempt")
+
+    def _open_tunnel(self, gate: Gate, key: Any, api: Any) -> None:
+        """§3.3 steps 1-2: a tunnel ticket from swarm-api, handed to the gate.
+
+        The route checks the fence (RUNNING under this lease and generation,
+        no cancel) each time, and answers an attempt's open session with a
+        fresh one-use ticket for it -- which is what a reopen needs. Raises
+        `NoTunnelTicket` (the route's code) or `GateLost`.
+        """
         body = json.dumps(
             {
                 "tenant_id": self.cfg.tenant_id,
@@ -428,22 +473,58 @@ class HandoffPath:
             headers = sign_headers(key, LIVE_SESSION_PURPOSE, "POST", path, body, now=self._wall())
             _, payload = api.call("POST", path, body=body, headers=headers)
         except Exception as exc:
-            code = getattr(exc, "code", None) or type(exc).__name__
-            return self._refuse(note, NO_LIVE_SESSION, str(code))
+            raise NoTunnelTicket(str(getattr(exc, "code", None) or type(exc).__name__)) from None
         ticket = payload.get("ticket") if isinstance(payload, dict) else None
         session_id = payload.get("session_id") if isinstance(payload, dict) else None
         if not isinstance(ticket, str) or not ticket:
-            return self._refuse(note, NO_LIVE_SESSION, "no ticket in the answer")
+            raise NoTunnelTicket("no ticket in the answer")
         try:
             # The ticket goes to the gate and nowhere else: not a log line,
             # not the environment, not a file (§3.3 step 2).
             gate.call("tunnel_ticket", {"ticket": ticket, "session_id": session_id})
-        except GateLost as exc:
-            return self._refuse(note, GATE_UNAVAILABLE, type(exc).__name__)
         finally:
             ticket = None
-        self.unavailable = None
-        self.log.info("live path open for this attempt")
+
+    def _keep_tunnel(self, status: Mapping[str, Any]) -> None:
+        """Reopen the gate's tunnel when its `status` says it closed (§3.3, LB-R6). Never raises.
+
+        The relay restarting, a rollout, or a link the relay dropped ends the
+        tunnel while the session stays open: swarm-api still serves its last
+        origin and device, the console draws LIVE over them, and every viewer
+        the relay is asked to admit has no tunnel to meet (re-QA pass 8,
+        2026-10-12). Reads the status the poll already made; at most one route
+        call, and only past the backoff.
+        """
+        if (not self.offered or self.gate is None or self._wiped or self._tunnel_ended
+                or status.get("tunnel") != "closed" or status.get("browser") != "running"
+                or self._wall() < self._tunnel_retry_at):
+            return
+        key = getattr(self._children, "_key", None)
+        api = getattr(self._children, "_api", None)
+        if key is None or api is None:
+            return
+        try:
+            self._open_tunnel(self.gate, key, api)
+        except NoTunnelTicket as exc:
+            if exc.code in TUNNEL_ENDED_CODES:
+                self._tunnel_ended = True
+                self.log.info("live tunnel not reopened: the session has ended", code=exc.code)
+                return
+            self._tunnel_backoff_after(exc.code)
+            return
+        except GateLost as exc:
+            self._tunnel_backoff_after(type(exc).__name__)
+            return
+        self._tunnel_retry_at = 0.0
+        self._tunnel_backoff = float(TUNNEL_RETRY_SECONDS)
+        self.tunnel_reopens += 1
+        self.log.info("live tunnel reopened", reopened=self.tunnel_reopens)
+
+    def _tunnel_backoff_after(self, code: str) -> None:
+        self._tunnel_retry_at = self._wall() + self._tunnel_backoff
+        self.log.warning("live tunnel not reopened; trying again", code=code,
+                         retry_seconds=int(self._tunnel_backoff))
+        self._tunnel_backoff = min(self._tunnel_backoff * 2, float(TUNNEL_RETRY_MAX_SECONDS))
 
     def _refuse(self, note: Callable[[dict[str, Any]], Any] | None, code: str, why: str) -> None:
         self.unavailable = code
@@ -618,8 +699,9 @@ class HandoffPath:
     def _watch(self, root: Path, fetch_task: Callable[[], Mapping[str, Any]]) -> str | None:
         active = self.active
         assert active is not None and self.gate is not None
+        status: Mapping[str, Any] = {}
         try:
-            self.gate.call("status", {})
+            status = self.gate.call("status", {})
         except GateRefused:
             pass
         except GateLost:
@@ -628,6 +710,8 @@ class HandoffPath:
             # hold had expired.
             self.unavailable = GATE_UNAVAILABLE
             return GATE_LOST
+        # A person is being waited for: exactly when the view must be there.
+        self._keep_tunnel(status)
         task = fetch_task() or {}
         wait = task.get("human_wait")
         if not isinstance(wait, dict) or wait.get("request_id") != active["request_id"]:
@@ -675,6 +759,7 @@ class HandoffPath:
             result = self.gate.call("status", {})
         except GateLost:
             return
+        self._keep_tunnel(result)
         episode = result.get("last_episode")
         if not isinstance(episode, dict):
             return

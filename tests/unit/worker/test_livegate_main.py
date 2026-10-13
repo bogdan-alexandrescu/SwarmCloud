@@ -740,9 +740,9 @@ def test_the_gate_reports_the_top_frames_origin_and_the_device_over_its_tunnel(s
         assert _reports(rig)[-1]["origin"] == {
             "origin": "https://accounts.github.com", "host": "accounts.github.com",
             "display_host": "accounts.github.com", "registrable_domain": "github.com",
-            "scheme": "https:", "ip_literal": False, "cert_error": None}
+            "scheme": "https:", "ip_literal": False, "cert_error": None, "path": "/login"}
         sent = json.dumps(_reports(rig))
-        assert "login" not in sent and "return_to" not in sent, "an origin, never a path or a query"
+        assert "return_to" not in sent, "an origin and its path (LB-R6), never a query"
 
         # A child frame navigating is not the top frame's origin.
         count = len(_reports(rig))
