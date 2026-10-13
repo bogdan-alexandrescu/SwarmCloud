@@ -235,11 +235,12 @@ describe('live QA: automate, admin schedules', () => {
       return a!
     }, WAIT)
     expect(link.getAttribute('href')).toBe('/automate/schedules/sch_a')
-    fireEvent.click(link)
-    expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
     // Another tenant's schedule: its page would read as the working tenant and 404.
     expect(rowOf('sch_b')!.querySelector('td[data-label="Name · type"] a')).toBeNull()
     expect(rowOf('sch_b')!.querySelector('.sc-name')!.getAttribute('title')).toContain('switch the console to tenant research')
+    // Last: the page is one route now, so the click opens the schedule's page.
+    fireEvent.click(link)
+    expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
   })
 
   it('links nothing while the working tenant is not read', async () => {

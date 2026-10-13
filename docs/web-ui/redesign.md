@@ -81,7 +81,7 @@ label did not name.
 | **Work** | `work` | What is running, what has already run, what did it produce — and why has mine not moved? | Agents · Workflows · Timeline · Submit a task · Submit a workflow |
 | **Automate** | `automate` | What runs here by itself, on a schedule, and what is waiting on me to approve? | Schedules · Approvals |
 | **Capacity** | `capacity` | What kinds of agent can run here, is there room for another, which ceiling is the binding one, and what is holding what there is? | Pools · Runtimes · Profile headroom · Holders · Accounts · Provider quota |
-| **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, who is waiting for a workspace, and what is every tenant scheduled to run? | Pool limits · Tenants · Platform counts · People · Schedules |
+| **Admin** | `admin` | What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, and who is waiting for a workspace? | Pool limits · Tenants · Platform counts · People |
 
 **Automate** was added on 2026-10-08 by the owner's decision SD1
 ([schedules.md §6.1](../schedules.md#61-placement-sd1)): a different question
@@ -93,6 +93,14 @@ passes the membership test the collapse below set.
 when Admin › Schedules joined it ([schedules.md §5.3](../schedules.md#53-the-admin-view)):
 every tenant's schedules are a platform-wide read like Platform counts, and
 an admin's, so they sit beside Tenants rather than in a section of their own.
+
+**And narrowed again on 2026-10-13** (owner decision, SCHED-ONE-PAGE,
+[schedules.md §6.1](../schedules.md#61-placement-sd1)). The owner asked why
+schedules were in Admin and in Automate, and chose one page with an admin
+toggle: every tenant's schedules are Automate › Schedules switched to "All
+tenants" (`?scope=all`, admins only), and `/admin/schedules` redirects there.
+The schedules clause left Admin's question; the platform's own ticks moved to
+Platform counts, and the clause after its count asks for them.
 
 It was six on 2026-09-24 — the same fifteen panes under Overview, Work,
 **Runtimes**, Capacity, **History** and Admin.

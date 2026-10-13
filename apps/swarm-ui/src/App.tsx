@@ -54,9 +54,8 @@ import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
-import { NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
+import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
 import { ApprovalsScreen } from './Approvals'
-import { AdminSchedulesScreen } from './AdminSchedules'
 import { RepositoriesScreen } from './Repositories'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
@@ -344,7 +343,9 @@ export const SECTIONS: SectionDef[] = [
     // that holds what runs by itself. A LITERAL id for the reason given on
     // Work: test_nav_headings_agree.py reads this array with a regex.
     // Approvals is its second page, `/approvals` (§6.1), and the question's
-    // last clause is its.
+    // last clause is its. ONE SCHEDULES PAGE (SCHED-ONE-PAGE, owner decision
+    // 2026-10-13, §6.1): an admin's every-tenant view is Schedules' "All
+    // tenants" switch (`?scope=all`), not a second Schedules tab under Admin.
     id: 'automate',
     label: 'Automate',
     question: 'What runs here by itself, on a schedule, and what is waiting on me to approve?',
@@ -469,10 +470,13 @@ export const SECTIONS: SectionDef[] = [
     // arrives wanting to know. It asks what each tab answers, in tab order.
     // docs/web-ui/redesign.md §2 carries the same words, and
     // tests/sections.test.ts holds the two together.
-    // docs/schedules.md §5.3 and §6.1 put the cross-tenant schedules view here,
-    // beside Tenants, and the question's last clause is its.
+    // The cross-tenant schedules view sat here from 2026-10-11 until the owner
+    // asked why schedules were in Admin and in Automate (SCHED-ONE-PAGE,
+    // 2026-10-13, docs/schedules.md §6.1): it is Automate › Schedules' "All
+    // tenants" now, and its clause went with it. The platform's own ticks
+    // moved to Platform counts, and the clause after its count asks for them.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, who is waiting for a workspace, and what is every tenant scheduled to run?',
+      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, and who is waiting for a workspace?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
@@ -483,9 +487,6 @@ export const SECTIONS: SectionDef[] = [
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
       { id: 'people', label: 'People', admin: true },
-      // docs/schedules.md §5.3: every tenant's schedules, the schedule tick's
-      // last hour and the platform's own ticks (§8.4). Admin only.
-      { id: 'schedules', label: 'Schedules', admin: true },
     ],
   },
 ]
@@ -854,6 +855,10 @@ export function fromAddress(full: string): Route {
   // opening an agent inspector for an agent called "counts".
   const moved = MOVED_PANES[seg.join('/')]
   if (moved) return { sectionId: moved.section, tab: moved.tab, ...blank }
+  // ADMIN › SCHEDULES FOLDED INTO AUTOMATE › SCHEDULES (SCHED-ONE-PAGE, owner
+  // decision 2026-10-13): its old address opens the All tenants view, which a
+  // MOVED_PANES entry cannot say -- the destination carries a query.
+  if (hash === 'admin/schedules') return fromAddress(ALL_TENANTS_SCHEDULES)
 
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
   if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
@@ -978,7 +983,8 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) return ['pool']
   // One schedule rides on the list's address (`/automate/schedules/<id>`,
   // paths.ts), with its tab and its editor (AUT-11).
-  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit']
+  // `scope=all` is the admin's All tenants view (SCHED-ONE-PAGE), linkable.
+  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope']
   // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
   if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
@@ -1912,8 +1918,6 @@ function SectionBody({
       return <PlatformCountsScreen />
     case 'admin/people':
       return <PeopleScreen />
-    case 'admin/schedules':
-      return <AdminSchedulesScreen go={go} />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash

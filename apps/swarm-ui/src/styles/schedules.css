@@ -161,7 +161,7 @@
 .ap-check.is-unmet > .ap-mark { color: var(--bad-ink); }
 .ap-check.is-unread > .ap-mark { color: var(--text-faint); }
 
-/* ---- Admin › Schedules (§5.3) ---------------------------------------------- */
+/* ---- Automate › Schedules, All tenants (§5.3; was Admin › Schedules) ------ */
 .sc-table.is-admin th[data-col='tenant'] { width: 96px; }
 .sc-table.is-admin th[data-col='actions'] { width: 168px; }
 .as-acts { display: flex; flex-wrap: wrap; gap: 4px; }
