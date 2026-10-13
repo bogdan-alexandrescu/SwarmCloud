@@ -771,7 +771,8 @@ def test_a_loan_to_a_ready_workspace_is_granted_at_once(client, db, pool) -> Non
 
 
 def test_a_failed_grant_on_a_ready_workspace_names_the_member_and_the_reason(
-        client, db) -> None:
+        client, db, monkeypatch) -> None:
+    monkeypatch.setenv("REFUSAL_LOAN_GRANT_FAILED", "on")
     seed_tenant(db, "eng")
     refusing = RefusingPool(_pool_account("acct-eng", "eng"), reason=INVALID_ARGUMENT)
     client.app.state.account_pool = refusing
@@ -786,6 +787,20 @@ def test_a_failed_grant_on_a_ready_workspace_names_the_member_and_the_reason(
     # All or nothing: no loan, no pending loan, no audit entry.
     assert refusing.accounts["acct-eng"]["lend_to"] == []
     assert "pending_loans/u-carol" not in db.docs
+    assert _audit(db) == []
+
+
+def test_a_failed_grant_is_the_brokers_own_refusal_until_its_switch_is_on(
+        client, db, monkeypatch) -> None:
+    """Ships off (swarm_api.refusals): the code LOAN_GRANT_FAILED is not served."""
+    monkeypatch.delenv("REFUSAL_LOAN_GRANT_FAILED", raising=False)
+    seed_tenant(db, "eng")
+    client.app.state.account_pool = RefusingPool(_pool_account("acct-eng", "eng"),
+                                                 reason=INVALID_ARGUMENT)
+    _record(db, state="ready")
+    response = _loan(client, "acct-eng", True)
+    assert response.status_code == 422, response.text
+    assert response.json()["code"] != "LOAN_GRANT_FAILED"
     assert _audit(db) == []
 
 
