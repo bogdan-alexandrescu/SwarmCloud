@@ -66,9 +66,15 @@
 .pp-deny { flex: 1 1 100%; }
 .pp-deny > .c-field { flex: 1 1 100%; }
 .pp-deny textarea { display: block; width: 100%; min-width: 0; padding: 6px 10px; resize: vertical; }
-.pp-loan { flex: 1 1 14rem; }
-.pp-loan > .c-field { flex: 1 1 9rem; min-width: 0; }
-.pp-loan select { width: 100%; min-width: 0; min-height: var(--h-ctl); }
+/* A NORMAL-SIZED PICKER (owner, 2026-10-13: "the dropdown is huge"). It was
+   `width: 100%` in a field that grew to fill the drawer, so it took the
+   section's whole width. Now the select is as wide as its longest option up to
+   320px, one control high and one line, with the button inline after it; the
+   group starts at the section's left edge instead of stretching across it. */
+.pp-loan { flex: 0 1 auto; justify-self: start; max-width: 100%; }
+.pp-loan > .c-field { flex: 0 1 auto; min-width: 0; }
+.pp-loan select { width: auto; max-width: 320px; min-width: 0; height: var(--h-ctl); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pp-loan-one { min-width: 0; align-self: center; overflow-wrap: anywhere; }
 .pp-loan .ur-hint, .pp-loan [role='status'], .pp-loan [role='alert'] { flex-basis: 100%; margin: 0; }
 
 /* THE MANAGE DRAWER: from the right, a full sheet on a phone. */

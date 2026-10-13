@@ -500,3 +500,37 @@ The owner answered §8 on 2026-10-13. Lane names refer to §7.
    - gcloud, terraform, checkov, trivy and the rest stay in the browser image.
    - The owner made no separate choice on this; it is the recommended default kept by the slimming decision in 4.
 6. **Smaller `browser` class: measure first** (lane MEASURE). Any change is a contract request.
+
+## 10. How to measure (lane MEASURE)
+
+`scripts/startup-measure.sh` is the measurement decisions 3 and 6 wait for.
+It is read-only. It reads every start in the window through the API's
+`startup_progress` events, never Firestore, in the caller's tenant (or
+`SWARM_API_TENANT`'s). For each runner_profile and resource class, split into
+all, cold and warm starts, it prints n, the cold share and p50/p95 of four
+segments: node wait (`dispatched -> pod_scheduled`), pull (`image_pulling ->
+image_pulled`), browser (`container_started -> first_frame`) and total
+(`dispatched -> first_frame`). A start is cold when its node wait is over
+10 s (§7). It then takes `kubectl top` samples of the `browser` pods on
+`swarm-autopilot` through `kubectl_bin`, after `assert_kube_context` has
+refused any other context, so it never reaches `agents-staging`. It compares
+the largest sampled pod (display plus worker) with the catalogue's `standard`
+class, 4 vCPU / 8 GiB, at 80 % headroom, because requests == limits leaves no
+burst. Run it after the IMG-STREAM release, while browser agents are running,
+because a sample with no browser pod is reported as NOT_MEASURED, never as a
+fit:
+
+```bash
+scripts/configure-kubectl.sh            # the swarm cluster's own kubeconfig
+scripts/startup-measure.sh --since 7d --samples 8 --interval 15 \
+  --save scratchpad/startup-measure/$(date -u +%Y%m%d)
+```
+
+Record the table, the verdict, the time it was read and the release it
+measured here. Compare the pull row with §1's 42 s for STREAM's effect, and
+the cold share and the cold node wait for decision 3. `--save` keeps what was
+read, so the recorded numbers can be re-derived offline with
+`scripts/startup_measure.py report --top <dir>/top.txt <<dir>/events.json`.
+`kubectl top` samples miss any peak that falls between two samples. A FITS
+verdict is therefore evidence for the contract request decision 6 asks for,
+not the decision itself.
