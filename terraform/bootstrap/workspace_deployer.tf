@@ -218,16 +218,28 @@ resource "google_service_account_iam_policy" "workspace_deployer" {
 locals {
   workspace_custom_roles = {
     workspace_account_admin = {
-      title       = "Swarm Workspace Account Admin"
+      title = "Swarm Workspace Account Admin"
+      # It also lists the account's key ids (iam.serviceAccountKeys.list, A2/A9's
+      # squat check, #334). The description below is unchanged: GCP caps a role
+      # description at 300 characters and this one is at the limit.
       description = "managed-by=swarm-terraform; create a person's worker account and write its own Workload Identity and act-as bindings. No delete, disable, key, token, signBlob or actAs. Project-wide because IAM cannot condition it (docs/workspaces.md §2.4); bounded by the call guard and the alert."
-      # Exactly §2.3's five. getIamPolicy and setIamPolicy are what
+      # §2.3's six. getIamPolicy and setIamPolicy are what
       # `gcloud iam service-accounts add-iam-policy-binding` reads and writes.
+      # tests/unit/scripts/test_workspace_deployer_walk.py holds every call of
+      # the workspace job to a grant here or below.
       permissions = [
         "iam.serviceAccounts.create",
         "iam.serviceAccounts.get",
         "iam.serviceAccounts.getIamPolicy",
         "iam.serviceAccounts.list",
         "iam.serviceAccounts.setIamPolicy",
+        # `gcloud iam service-accounts keys list --managed-by=user`: the squat
+        # inspection (#334) that refuses to adopt an account carrying a
+        # user-managed key, in A2 on an account that already exists and in A9
+        # on every run. Key ids and validity dates only -- never key material,
+        # and no create, upload, disable or delete. Missing until WS-WALK
+        # (2026-10-13), so no create could have reached `ready`.
+        "iam.serviceAccountKeys.list",
       ]
     }
 
