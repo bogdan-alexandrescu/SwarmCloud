@@ -818,6 +818,12 @@ export interface GitToken {
   yours: boolean
   /** A user token's email: served on the caller's own records, and to an admin. */
   owner: string | null
+  /**
+   * The exact line that stores this entry's value from stdin, as the API
+   * serves it (`gittokens.store_command`). Only a line of that one shape is
+   * kept: it is printed for a person to run.
+   */
+  store_command: string | null
 }
 
 function scopeOf(v: unknown): TokenScope | null {
@@ -858,7 +864,24 @@ export function normToken(v: unknown): GitToken | null {
     last_error: str(v.last_error) ?? str(v.probe_error),
     yours: v.yours === true,
     owner: str(v.owner),
+    store_command: storeCommand(v.store_command),
   }
+}
+
+/** `scripts/create-secrets.sh --tenant <t> --provider <suffix> --stdin`, or nothing. */
+export function storeCommand(v: unknown): string | null {
+  return typeof v === 'string' && /^scripts\/create-secrets\.sh --tenant [a-z0-9][a-z0-9-]{0,62} --provider [a-z0-9][a-z0-9-]{0,254} --stdin$/.test(v) ? v : null
+}
+
+/**
+ * A token GitHub's App renews by itself (`app_user`, the user-to-server token
+ * a Connect GitHub stores; forgeapp.py refreshes it before it lapses). Its
+ * `expires_at` is hours away by design, so "Expires today" on it was an alarm
+ * about the normal case. A renewal that failed marks the record `expired`
+ * (`forgeapp._mark_failed`), which is the case worth saying.
+ */
+export function renewsItself(t: Pick<GitToken, 'kind'>): boolean {
+  return t.kind === 'app_user'
 }
 
 /**
@@ -1036,11 +1059,11 @@ export function normResolved(v: unknown): ResolvedToken {
   }
 }
 
-/** "fine-grained PAT", "classic PAT", "App installation", or the served word. */
+/** "fine-grained PAT", "classic PAT", "App installation", "GitHub App (user)", or the served word. */
 export function kindWords(kind: string | null): string | null {
   if (kind === null) return null
   return (
-    { fine_grained_pat: 'fine-grained PAT', classic_pat: 'classic PAT', app_installation: 'App installation' } as Record<string, string>
+    { fine_grained_pat: 'fine-grained PAT', classic_pat: 'classic PAT', app_installation: 'App installation', app_user: 'GitHub App (user)' } as Record<string, string>
   )[kind] ?? kind.replace(/_/g, ' ')
 }
 
