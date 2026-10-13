@@ -121,8 +121,9 @@ class NoVncViewer:
                 return False
             x, y, w, h, enc = struct.unpack(">HHHHi", bytes(b[at:at + 12]))
             at += 12
-            assert enc in (0, -223), f"the gate sent encoding {enc}, which noVNC 1.4.0 did not ask for"
-            length = w * h * 4 if enc == 0 else 0
+            assert enc in (0, -223, -239), f"the gate sent encoding {enc}, which noVNC 1.4.0 did not ask for"
+            # Cursor (-239, RFC 6143 §7.8.1): the shape's pixels, then a 1-bit mask padded to whole bytes per row.
+            length = w * h * 4 if enc == 0 else (w * h * 4 + (w + 7) // 8 * h if enc == -239 else 0)
             if len(b) < at + length:
                 return False
             rects.append((x, y, w, h, enc))
@@ -132,7 +133,7 @@ class NoVncViewer:
             if enc == -223:
                 self.size = (w, h)
                 self.sizes.append(self.size)
-            elif w and h:
+            elif enc == 0 and w and h:
                 self.painted.append((x, y, w, h))
         self._send(struct.pack(">BBHHHH", 3, 1, 0, 0, *self.size))
         return True
