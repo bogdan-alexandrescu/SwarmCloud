@@ -64,7 +64,10 @@ class _Response:
 @pytest.fixture()
 def wire(monkeypatch):
     """Every request `sc` sends through the real client, headers lowercased."""
-    monkeypatch.setenv("SWARM_URL", "https://api.invalid")
+    # A *.run.app address, never an invented host: any other host is read as an
+    # IAP front door, whose credential is an access token minted by shelling
+    # out to gcloud. CI has no gcloud account, so the request was never sent.
+    monkeypatch.setenv("SWARM_URL", "https://swarm-api-test.a.run.app")
     # An explicit token, built at runtime: the tier needs one and no test here
     # is about which.
     monkeypatch.setenv("SWARM_ID_TOKEN", ".".join(["test", "id", "tok"]))
