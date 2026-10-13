@@ -92,6 +92,7 @@ from .codec import (
     workflow_from_dict,
     workflow_to_firestore,
 )
+from . import refusals
 from .errors import Conflict, NotFound, Unpageable, ValidationFailed
 from .executioncancel import ExecutionTarget
 
@@ -1616,12 +1617,18 @@ class Store:
             raise NotFound(f"workflow {workflow_id!r} not found")
         data = snap.to_dict()
         if data.get("tenant_id") != tenant_id:
-            raise WorkflowNotInTenant(
-                f"workflow {workflow_id!r} is not in tenant {tenant_id!r}, the tenant "
-                "this call resolved to; read it with X-Swarm-Tenant naming the tenant "
-                "it was launched in",
-                detail={"workflow_id": workflow_id, "tenant_id": tenant_id},
+            # Switched (observer proposal I): a NEW refusal ships report-only.
+            # Off, `refuse` logs and returns, and the answer is the bare
+            # not-found this branch gave before the code existed.
+            refusals.refuse(
+                WorkflowNotInTenant(
+                    f"workflow {workflow_id!r} is not in tenant {tenant_id!r}, the tenant "
+                    "this call resolved to; read it with X-Swarm-Tenant naming the tenant "
+                    "it was launched in",
+                    detail={"workflow_id": workflow_id, "tenant_id": tenant_id},
+                )
             )
+            raise NotFound(f"workflow {workflow_id!r} not found")
         workflow = workflow_from_dict(data)
         if submitted_by is not None and workflow.submitted_by != submitted_by:
             raise NotFound(f"workflow {workflow_id!r} not found")

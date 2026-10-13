@@ -80,7 +80,44 @@ def stored(db, *, workflow_id: str = "wf_elsewhere", tenant_id: str = "research"
 # swarm-api: Store.get_workflow and the route
 # --------------------------------------------------------------------------
 
-def test_another_tenants_workflow_answers_workflow_not_in_tenant_naming_the_resolved_one(db):
+SWITCH = "REFUSAL_WORKFLOW_NOT_IN_TENANT"
+
+
+def test_the_refusal_is_switched_and_ships_off():
+    from swarm_api import refusals
+
+    switch = refusals.SWITCHES["workflow_not_in_tenant"]
+    assert switch.env == SWITCH
+    assert switch.default is False
+
+
+def test_switch_off_another_tenants_workflow_is_the_old_bare_not_found(db, monkeypatch, caplog):
+    monkeypatch.delenv(SWITCH, raising=False)
+    stored(db, tenant_id="research")
+
+    with pytest.raises(NotFound) as caught:
+        Store(db).get_workflow("eng", "wf_elsewhere", submitted_by=None)
+
+    assert caught.value.status_code == 404
+    assert caught.value.code == "not_found"
+    assert caught.value.message == "workflow 'wf_elsewhere' not found"
+    assert "workflow_not_in_tenant" in caplog.text  # report-only: logged, not served
+
+
+def test_switch_off_the_route_serves_the_old_bare_404(client: TestClient, db, monkeypatch):
+    monkeypatch.setenv(SWITCH, "off")
+    seed_tenant(db, "eng")
+    seed_tenant(db, "research")
+    stored(db, tenant_id="research")
+
+    response = client.get("/v1/workflows/wf_elsewhere", headers=auth_header("dave"))
+    assert response.status_code == 404
+    assert response.json()["code"] == "not_found"
+    assert "workflow 'wf_elsewhere' not found" in response.text
+
+
+def test_another_tenants_workflow_answers_workflow_not_in_tenant_naming_the_resolved_one(db, monkeypatch):
+    monkeypatch.setenv(SWITCH, "on")
     stored(db, tenant_id="research")
 
     with pytest.raises(NotFound) as caught:
@@ -111,7 +148,8 @@ def test_another_submitters_workflow_is_still_a_bare_not_found(db):
     assert caught.value.code == "not_found"
 
 
-def test_the_route_serves_the_code_and_the_resolved_tenant(client: TestClient, db):
+def test_the_route_serves_the_code_and_the_resolved_tenant(client: TestClient, db, monkeypatch):
+    monkeypatch.setenv(SWITCH, "on")
     seed_tenant(db, "eng")
     seed_tenant(db, "research")
     stored(db, tenant_id="research")
@@ -182,7 +220,11 @@ def bridge(api_context, db, monkeypatch):
     return _make
 
 
-def test_the_bridge_rereads_a_workflow_it_launched_with_the_launch_tenant(bridge):
+@pytest.mark.parametrize("switch", ["on", "off"])
+def test_the_bridge_rereads_a_workflow_it_launched_with_the_launch_tenant(bridge, monkeypatch, switch):
+    # The re-read keys on the 404 and the launch record, not on the code, so it
+    # works with the refusal switched either way.
+    monkeypatch.setenv(SWITCH, switch)
     launched = workflows.submit(
         bridge("research"),
         steps=[{"step_id": "build", "runner_profile": "mock", "input": {"prompt": "go"}}],
@@ -203,7 +245,8 @@ def test_the_bridge_rereads_a_workflow_it_launched_with_the_launch_tenant(bridge
     assert reader.tenant is None
 
 
-def test_a_workflow_the_bridge_did_not_launch_is_not_reread(bridge, db):
+def test_a_workflow_the_bridge_did_not_launch_is_not_reread(bridge, db, monkeypatch):
+    monkeypatch.setenv(SWITCH, "on")
     stored(db, workflow_id="wf_not_ours", tenant_id="research")
 
     with pytest.raises(SwarmError) as caught:
