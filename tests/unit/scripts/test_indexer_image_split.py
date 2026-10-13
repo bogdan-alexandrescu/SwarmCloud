@@ -114,11 +114,12 @@ def test_every_build_arg_the_config_passes_is_declared():
 def test_the_indexer_proves_every_tool_runs_as_the_agent_user():
     code = _code(INDEXER)
     user = code.rindex("USER swarm:swarm")
-    for check in ("RUN swarm-repo-index --self-test",
-                  "RUN swarm-repo-index --lsp-self-test",
-                  "RUN swarm-repo-graph --self-test"):
+    # One RUN for the three (test_image_streaming.py says why), after USER.
+    run = code.index("RUN swarm-repo-index --self-test \\\n")
+    assert run > user, "the self-tests run before USER swarm:swarm"
+    for check in (" && swarm-repo-index --lsp-self-test", " && swarm-repo-graph --self-test"):
         assert check in code, check
-        assert code.index(check) > user, f"{check} runs before USER swarm:swarm"
+        assert code.index(check) > run, f"{check} is not part of the self-test RUN"
 
 
 def test_the_indexer_never_runs_as_root():
