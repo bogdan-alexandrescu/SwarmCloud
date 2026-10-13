@@ -458,3 +458,21 @@ The same questions are filed as `questions.json` with this PR's artifacts.
 6. **Measure a smaller `browser` class (4 vCPU / 8 GiB)?** (a) measure, then
    decide; (b) leave 8/16. Recommended: (a). It is a contract change either
    way.
+
+## 9. Decisions (owner, 2026-10-13 ~05:00 PDT)
+
+The owner answered §8 on 2026-10-13. Lane names refer to §7.
+
+1. **STREAM: yes.**
+   - Remove the redundant `WORKDIR` so the browser image has no duplicate layer.
+   - Add a release check that fails on duplicate layers.
+   - Read on 2026-10-13 at 12:00 UTC: `containerfilesystem.googleapis.com` is **already enabled** in `saga-agents-staging`, so the shared project needs no change.
+   - In the same reading, `agents-staging` (the other team's cluster) is a Standard cluster, not Autopilot.
+2. **Enabling the API:** not needed, because it is already on (see 1).
+3. **Warm placeholder slots: decide after lane MEASURE.** Invariant 1 stays as written until then.
+4. **Slim the image: yes, after STREAM.**
+   - Remove the headless shell, the second Node and codex (about 283 MB).
+5. **Toolbox: keep.**
+   - gcloud, terraform, checkov, trivy and the rest stay in the browser image.
+   - The owner made no separate choice on this; it is the recommended default kept by the slimming decision in 4.
+6. **Smaller `browser` class: measure first** (lane MEASURE). Any change is a contract request.
