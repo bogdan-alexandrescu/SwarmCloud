@@ -171,7 +171,7 @@ async def settle() -> None:
 
 
 class World:
-    def __init__(self, tmp_path: Path) -> None:
+    def __init__(self, tmp_path: Path, **proxy_options: Any) -> None:
         self.downloads = tmp_path / "downloads"
         self.uploads = tmp_path / "uploads"
         self.downloads.mkdir()
@@ -185,6 +185,7 @@ class World:
             record=lambda event, fields: self.records.append((event, dict(fields))),
             on_control_ended=self.ended.append,
             security_wait_seconds=0.05,
+            **proxy_options,
         )
         self.chromium.start(self.proxy)
         self.agent = FakeAgent()
@@ -566,6 +567,26 @@ def test_the_method_policy_forwards_what_playwright_needs(tmp_path, method, para
         assert "error" not in w.agent.response(request)
         assert w.chromium.received[-1]["method"] == method
         assert w.refused() == []
+        await w.chromium.stop()
+
+    run(body)
+
+
+def test_the_agents_mouse_position_is_told_to_the_gate_and_nothing_else_of_its_input(tmp_path):
+    """LB-CURSOR: the gate paints the pointer where the agent's last mouse event was."""
+    async def body():
+        moved: list[tuple[float, float]] = []
+        w = World(tmp_path, on_pointer=lambda x, y: moved.append((x, y)))
+        await w.connect()
+        page = await w.attach_page()
+        await w.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": 120.5, "y": 44}, page)
+        await w.send("Input.dispatchMouseEvent", {"type": "mousePressed", "x": 121, "y": 45,
+                                                  "button": "left", "clickCount": 1}, page)
+        await w.send("Input.dispatchKeyEvent", {"type": "keyDown", "key": "a"}, page)
+        await w.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": "12", "y": None}, page)
+        await w.send("Input.dispatchMouseEvent", {"type": "mouseMoved", "x": True, "y": 3}, page)
+        assert moved == [(120.5, 44.0), (121.0, 45.0)]
+        assert len(ids_at_chromium(w, "Input.dispatchMouseEvent")) == 4
         await w.chromium.stop()
 
     run(body)
