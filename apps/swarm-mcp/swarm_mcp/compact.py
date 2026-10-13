@@ -383,6 +383,9 @@ def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
         # The agent's questions for the owner, whole: they are the reason a
         # person reads this step's result (`progress.owner_questions`).
         "questions": list(full.get("questions") or []),
+        # And the owner's answers to them, stored on the task in the console
+        # (TASK-ANSWERS, `progress.owner_answers`).
+        "owner_answers": list(full.get("owner_answers") or []),
     }
     if full.get("questions_unavailable_because"):
         out["questions_unavailable_because"] = clip(full["questions_unavailable_because"], 300)

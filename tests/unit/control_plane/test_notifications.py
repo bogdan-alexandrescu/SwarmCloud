@@ -225,6 +225,24 @@ def test_an_agents_questions_are_a_needs_you_item(db):
     assert items[0]["href"] == "/agents/recent/task_q#questions"
 
 
+def test_a_task_whose_every_question_is_answered_is_no_longer_listed(db):
+    """TASK-ANSWERS (part of #1206): an answer is stored on the task as
+    `metadata.owner_answers`; the bell asks only while a question is open."""
+    from swarm_api.validation import OWNER_ANSWERS_METADATA_KEY as KEY
+
+    def answer(index: int) -> dict[str, Any]:
+        return {"question_index": index, "question": "q", "choice": "a", "text": None,
+                "by": ALICE, "at": _now().isoformat(), "history": []}
+
+    _task(db, "task_all", result_summary={"questions": 2},
+          metadata={KEY: [answer(0), answer(1)]})
+    _task(db, "task_half", result_summary={"questions": 2}, metadata={KEY: [answer(1)]})
+    # An answer to an index beyond the count does not close a real question.
+    _task(db, "task_odd", result_summary={"questions": 1}, metadata={KEY: [answer(3)]})
+    items = notif.agent_questions(_reading(db, _viewer()))
+    assert sorted(_ids(items)) == ["task:questions:task_half", "task:questions:task_odd"]
+
+
 def test_github_needing_reconnect_and_an_expired_token_are_account_items(db):
     conn = connection_id_for("eng", ALICE)
     db.docs[f"{CONNECTIONS}/{conn}"] = {

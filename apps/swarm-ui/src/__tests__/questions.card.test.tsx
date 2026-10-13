@@ -9,7 +9,7 @@
 // the bell's item unread; draw the Details tab with no count; point the
 // notification back at Artifacts.
 
-import { render, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TaskQuestions } from '../api'
@@ -19,6 +19,7 @@ import { task as runTask } from './runfixture'
 
 const api = vi.hoisted(() => ({
   loadQuestions: vi.fn(),
+  answerQuestion: vi.fn(),
   loadTask: vi.fn(),
   loadChildren: vi.fn(),
   loadAttempts: vi.fn(),
@@ -134,15 +135,14 @@ describe('the Questions for you card', () => {
     expect(api.loadQuestions).toHaveBeenCalledWith(ID)
   })
 
-  it('says who asked and that the answer goes back through whoever launched it, with no answer box', async () => {
+  it('says who asked and that the answer is stored on the task for whoever launched it', async () => {
     api.loadQuestions.mockResolvedValue(ok(QUESTIONS))
     render(<QuestionsCard task={asked()} />)
 
     const card = await screen.findByRole('region', { name: 'Questions for you' })
     expect(card.textContent).toContain('This agent (step design) asked you this')
     expect(card.textContent).toContain('whoever launched workflow wf_studio (owner@example.com)')
-    expect(card.textContent).toContain('no answer box here yet')
-    expect(card.querySelector('textarea, input, button')).toBeNull()
+    expect(card.textContent).not.toContain('no answer box')
   })
 
   it('draws nothing, and reads nothing, for a task that asked none', () => {
@@ -161,6 +161,110 @@ describe('the Questions for you card', () => {
     render(<QuestionsCard task={asked()} />)
     const card = await screen.findByRole('region', { name: 'Questions for you' })
     await waitFor(() => expect(card.textContent).toContain('the file served is not JSON'))
+  })
+})
+
+// TASK-ANSWERS (owner decision 2026-10-13, "Yes, pick an option on the task").
+// MUTATIONS: post the recommended option instead of the one picked; drop the
+// free text; draw the saved answer without who answered; leave the buttons
+// live for a viewer the API says may not answer.
+describe('answering a question on the card', () => {
+  const SAVED = {
+    question_index: 0,
+    question: 'Per task or per workflow?',
+    choice: 'per workflow',
+    text: null,
+    by: 'owner@example.com',
+    at: '2026-10-13T12:30:00Z',
+    history: [],
+  }
+
+  function answered(over: Record<string, unknown> = {}): TaskQuestions {
+    return { ...QUESTIONS, questions: [{ ...QUESTIONS.questions[0]!, answer: { ...SAVED, ...over } }] }
+  }
+
+  it('posts the option picked, and shows the saved answer with who and when', async () => {
+    api.loadQuestions.mockResolvedValue(ok({ ...QUESTIONS, may_answer: true }))
+    api.answerQuestion.mockResolvedValue(ok({ ...answered(), may_answer: true }))
+    render(<QuestionsCard task={asked()} />)
+    const card = await screen.findByRole('region', { name: 'Questions for you' })
+    const group = await within(card).findByRole('radiogroup', { name: 'Answer question 1' })
+
+    const pick = within(group).getByRole('radio', { name: /per workflow/ })
+    fireEvent.click(pick)
+    expect(pick.getAttribute('aria-checked')).toBe('true')
+    fireEvent.click(within(card).getByRole('button', { name: 'Answer' }))
+
+    await waitFor(() =>
+      expect(api.answerQuestion).toHaveBeenCalledWith(ID, { question_index: 0, choice: 'per workflow', text: null }),
+    )
+    const saved = await within(card).findByLabelText('Your answer to question 1')
+    expect(saved.textContent).toContain('per workflow')
+    expect(saved.textContent).toContain('owner@example.com')
+    expect(within(saved).getByRole('button', { name: 'Change' })).toBeTruthy()
+  })
+
+  it('posts an "Other…" free-text answer', async () => {
+    api.loadQuestions.mockResolvedValue(ok({ ...QUESTIONS, may_answer: true }))
+    api.answerQuestion.mockResolvedValue(ok({ ...answered({ choice: null, text: 'both, behind a flag' }), may_answer: true }))
+    render(<QuestionsCard task={asked()} />)
+    const card = await screen.findByRole('region', { name: 'Questions for you' })
+    const group = await within(card).findByRole('radiogroup', { name: 'Answer question 1' })
+
+    fireEvent.click(within(group).getByRole('radio', { name: /Other/ }))
+    fireEvent.change(within(card).getByRole('textbox', { name: 'Your own answer to question 1' }), {
+      target: { value: 'both, behind a flag' },
+    })
+    fireEvent.click(within(card).getByRole('button', { name: 'Answer' }))
+
+    await waitFor(() =>
+      expect(api.answerQuestion).toHaveBeenCalledWith(ID, { question_index: 0, choice: null, text: 'both, behind a flag' }),
+    )
+    const saved = await within(card).findByLabelText('Your answer to question 1')
+    expect(saved.textContent).toContain('both, behind a flag')
+  })
+
+  it('draws a saved answer, and Change reopens the options with it picked', async () => {
+    api.loadQuestions.mockResolvedValue(ok({ ...answered(), may_answer: true }))
+    render(<QuestionsCard task={asked()} />)
+    const card = await screen.findByRole('region', { name: 'Questions for you' })
+    const saved = await within(card).findByLabelText('Your answer to question 1')
+    expect(saved.textContent).toContain('per workflow')
+    expect(within(card).queryByRole('radiogroup')).toBeNull()
+
+    fireEvent.click(within(saved).getByRole('button', { name: 'Change' }))
+
+    const group = within(card).getByRole('radiogroup', { name: 'Answer question 1' })
+    expect(within(group).getByRole('radio', { name: /per workflow/ }).getAttribute('aria-checked')).toBe('true')
+  })
+
+  it('is disabled, with the reason, for a viewer who may not answer', async () => {
+    api.loadQuestions.mockResolvedValue(
+      ok({ ...QUESTIONS, may_answer: false, may_answer_because: 'only owner@example.com, who launched this task, or an admin may answer' }),
+    )
+    render(<QuestionsCard task={asked()} />)
+    const card = await screen.findByRole('region', { name: 'Questions for you' })
+    const group = await within(card).findByRole('radiogroup', { name: 'Answer question 1' })
+
+    for (const r of within(group).getAllByRole('radio')) expect((r as HTMLButtonElement).disabled).toBe(true)
+    expect((within(card).getByRole('button', { name: 'Answer' }) as HTMLButtonElement).disabled).toBe(true)
+    expect(card.textContent).toContain('only owner@example.com, who launched this task, or an admin may answer')
+  })
+
+  it('says why when the answer was refused, and keeps the pick', async () => {
+    api.loadQuestions.mockResolvedValue(ok({ ...QUESTIONS, may_answer: true }))
+    api.answerQuestion.mockResolvedValue({
+      status: 'error',
+      error: { kind: 'invalid', httpStatus: 422, code: null, message: 'choice is not one of the options' },
+    })
+    render(<QuestionsCard task={asked()} />)
+    const card = await screen.findByRole('region', { name: 'Questions for you' })
+    const group = await within(card).findByRole('radiogroup', { name: 'Answer question 1' })
+    fireEvent.click(within(group).getByRole('radio', { name: /per task/ }))
+    fireEvent.click(within(card).getByRole('button', { name: 'Answer' }))
+
+    await waitFor(() => expect(card.textContent).toContain('The answer was not saved'))
+    expect(within(group).getByRole('radio', { name: /per task/ }).getAttribute('aria-checked')).toBe('true')
   })
 })
 

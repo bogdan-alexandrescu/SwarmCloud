@@ -57,6 +57,7 @@ from swarm_common.admission import _snapshot
 from swarm_common.states import ParkReason, TaskState
 
 from . import approvals, schedulefire
+from .agent_questions import unanswered
 from . import workspaces as ws
 from .forgeapp import CONNECTIONS, REFRESH_FAILED, connection_id_for, user_hash
 from .gittokens import COLLECTION as GIT_TOKENS
@@ -343,8 +344,10 @@ def _question_count(task: Any) -> int:
 def agent_questions(reading: Reading) -> list[dict[str, Any]]:
     """The caller's tasks of the last `WINDOW` whose agent asked the owner
     questions (`questions.json`, counted by the worker in
-    `result_summary.questions`). No record says a question was answered, so
-    the item stays for `WINDOW` after the task ended; reading it clears it
+    `result_summary.questions`) and has not answered them all. An answer is
+    stored on the task (`metadata.owner_answers`, `POST /v1/tasks/{id}/answers`,
+    TASK-ANSWERS); once every question has one the item is gone, and until
+    then it stays for `WINDOW` after the task ended, reading it clearing it
     from the bell's count. It opens the task's Details at `#questions`, where
     the "Questions for you" card shows them (`GET /v1/tasks/{id}/questions`);
     it opened Artifacts, which showed a file, not the questions (owner report
@@ -353,6 +356,8 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
     for task in reading.own_tasks():
         count = _question_count(task)
         if count <= 0 or task.state not in _ENDED:
+            continue
+        if unanswered(count, task.metadata) == 0:
             continue
         ended = task.completed_at or task.updated_at
         if not _recent(reading, ended):
