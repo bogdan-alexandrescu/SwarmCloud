@@ -134,7 +134,8 @@ describe('beside an open agent, a row is two lines as drawn', () => {
     const text = sub!.textContent ?? ''
     expect(text).toContain('claude-code · sonnet')
     expect(text).toContain('alex')
-    expect(text).toContain('try 1/3')
+    // The header's words (live-browser QA p12, QA12-12).
+    expect(text).toContain('attempt 1 of 3')
     // The whole task id is printed under the name (#94), not on line two.
     expect(sub!.querySelector('.id')).toBeNull()
     expect(rowOf(c, 'fix-heartbeat').querySelector('.cr-name .tid-text')?.textContent).toBe(STEP.id)

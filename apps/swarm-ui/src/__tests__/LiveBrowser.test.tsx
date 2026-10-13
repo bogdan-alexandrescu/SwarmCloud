@@ -51,6 +51,7 @@ const api = vi.hoisted(() => ({
   returnLiveControl: vi.fn(),
   renewLiveControl: vi.fn(),
   openLiveToMembers: vi.fn(),
+  closeLiveToMembers: vi.fn(),
   setLiveDevice: vi.fn(),
 }))
 
@@ -515,19 +516,22 @@ describe('the person in control switches the device (LB-DEV-B)', () => {
 })
 
 describe('the submitter opens control to members through the served route', () => {
-  it('posts open-to-members when the box is ticked, and offers no uncheck once open', () => {
+  // Both ways since the owner's decision of 2026-10-13 (QA12-11): the confirm
+  // and the carry-over are held by live.tab.test.tsx.
+  it('posts open-to-members once the box is ticked and the confirm said yes', () => {
     pane(mine())
     const box = screen.getByRole('checkbox', { name: /let any member take control/i }) as HTMLInputElement
     expect(box.disabled).toBe(false)
     fireEvent.click(box)
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Let any member take control' }))
     expect(api.openLiveToMembers).toHaveBeenCalledWith(ID)
   })
 
-  it('disables the box once control is open to members', () => {
+  it('keeps the box enabled once control is open to members, so it can be turned off', () => {
     pane(mine({ open_to_members: true }))
     const box = screen.getByRole('checkbox', { name: /let any member take control/i }) as HTMLInputElement
     expect(box.checked).toBe(true)
-    expect(box.disabled).toBe(true)
+    expect(box.disabled).toBe(false)
   })
 })
 

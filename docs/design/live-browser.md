@@ -569,6 +569,19 @@ open control to any member of the tenant for this task with one toggle,
 audited. "Any member may control" as the default is simpler and is the
 alternative offered.
 
+**The toggle is the task's, and it goes both ways (owner decision 2026-10-13,
+"Carry over, with a confirm"; QA12-11).** QA pass p12 found it one way, with no
+word of what it did, and back off on a resumed attempt, because it lived on one
+attempt's `live_sessions` document. swarm-api now keeps it on the task document
+as well (`live_open_to_members`, `live_opened_to_members_by`; swarm-api's own
+fields, which the frozen `Task` model does not read) and copies it into each new
+attempt's session when the session opens, saying so in that session's
+`session_opened` audit entry. Turning it on asks once, explaining that it
+carries over; `DELETE /v1/tasks/{task_id}/live/open-to-members` turns it off,
+submitter only, audited as `control_closed_to_members`. Turning it off takes no
+control away: whoever holds it keeps it until they return it or it lapses, and
+the submitter can take it over.
+
 ### 5.2 Every connection is checked, and keeps being checked
 
 On every websocket connection to `/v1/live/{session_id}/stream`, swarm-api:
@@ -1262,7 +1275,8 @@ and a bullet above disagree, this list wins.
 **Kept as built (3):**
 
 27. The "Let any member take control" checkbox stays in the Browser tab's
-    toolbar, after ⤢ Theater.
+    toolbar, after ⤢ Theater. (Since 2026-10-13 it can be unticked, and
+    ticking it asks first: §5.1.)
 28. The rail has no needs-you dot. This supersedes the "dot on Agents in the
     rail" in the hand-off bullet above.
 29. "Save as login" keeps its current offer logic, unchanged

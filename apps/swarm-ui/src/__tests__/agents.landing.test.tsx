@@ -166,7 +166,8 @@ describe('the list is the compact list, and its figures say what they are', () =
    * AG-16 asked that `1/3`, `1u` and `4m 12s` not be read off their values.
    * The ten-column table it headed is gone (agents.html V1, #503: its Agent
    * column measured 26px at 1440), so the list carries no column heads; each
-   * figure carries its own word instead -- `try 1/3`, and the elapsed time
+   * figure carries its own word instead -- `attempt 1 of 3`, the task header's
+   * words since QA12-12 (it was `try 1/3`), and the elapsed time
    * beside the name it belongs to.
    *
    * BREAK IT: draw `RowHead` again, or print the try without its word.
@@ -177,8 +178,8 @@ describe('the list is the compact list, and its figures say what they are', () =
     expect(rows.querySelector('.row.is-head'), 'the compact list grew a head row').toBeNull()
     const agent = rows.querySelector('.row.clickable')!
     expect(agent.classList.contains('is-compact')).toBe(true)
-    expect(agent.querySelector('.cr-try')?.textContent).toBe('try 1/3')
-    expect(agent.querySelector('.cr-try')?.getAttribute('aria-label')).toBe('1 of 3 attempts used')
+    expect(agent.querySelector('.cr-try')?.textContent).toBe('attempt 1 of 3')
+    expect(agent.querySelector('.cr-try')?.getAttribute('aria-label')).toBe('attempt 1 of 3')
   })
 
   it('draws no head in a workflow group either', async () => {
@@ -214,7 +215,7 @@ describe('an attempt count over its cap looks like one', () => {
     const cells = [...container.querySelectorAll('.row.clickable .cr-try')]
     expect(cells).toHaveLength(1)
     const over = cells[0]!
-    expect(over.textContent).toBe('try 4/3')
+    expect(over.textContent).toBe('attempt 4 of 3')
     expect(over.classList.contains('is-over'), '4/3 is drawn like any other count').toBe(true)
     expect(over.getAttribute('aria-label') ?? '').toMatch(/1 over the ceiling/)
     const spent = [...container.querySelectorAll<HTMLElement>('.row.clickable')].find((r) => r.dataset.taskId === 'task_bbbbbbbb00000000000b')!
@@ -224,8 +225,11 @@ describe('an attempt count over its cap looks like one', () => {
   it('computes over from the two numbers, strictly', () => {
     expect(attemptsUsed({ attempt_count: 83, max_attempts: 3 })).toEqual({
       over: true,
+      text: 'attempt 83 of 3',
       say: '83 attempts against a cap of 3: 80 over the ceiling',
     })
+    // Over is judged on the charged counter, whatever the documents say (QA12-12).
+    expect(attemptsUsed({ attempt_count: 3, max_attempts: 3 }, 4)).toMatchObject({ over: false, text: 'attempt 4 of 3' })
     expect(attemptsUsed({ attempt_count: 3, max_attempts: 3 }).over).toBe(false)
     expect(attemptsUsed({ attempt_count: 0, max_attempts: 3 }).over).toBe(false)
   })

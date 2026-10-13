@@ -431,7 +431,7 @@ describe('item 6: one hand-off banner, with Take control and Open in theater', (
     const text = strips()[0]!.textContent ?? ''
     expect(text).toContain(WAIT.reason)
     expect(text).toContain('github.com')
-    expect(text).toMatch(/\dm \d\ds left/)
+    expect(text).toMatch(/\d:\d\d left/)
   })
 
   it('carries Take control, which asks as the header’s does, and Open in theater, which opens it', async () => {
@@ -470,7 +470,7 @@ describe('item 6: one hand-off banner, with Take control and Open in theater', (
     api.loadTask.mockResolvedValue(ok(parked()))
     const went: string[] = []
     render(<Routed onGo={(to) => went.push(to)} />)
-    const ready = await screen.findByRole('button', { name: /I'm ready to sign in/ }, SPLIT)
+    const ready = await screen.findByRole('button', { name: /I'm ready/ }, SPLIT)
     expect(strips()).toHaveLength(1)
     await act(async () => {
       fireEvent.click(ready)
@@ -488,7 +488,7 @@ describe('item 6: one hand-off banner, with Take control and Open in theater', (
   it('on a parked hand-off, the banner says since when it is parked', async () => {
     api.loadTask.mockResolvedValue(ok(parked()))
     render(<Routed onGo={() => {}} />)
-    await screen.findByRole('button', { name: /I'm ready to sign in/ }, SPLIT)
+    await screen.findByRole('button', { name: /I'm ready/ }, SPLIT)
     expect(strips()).toHaveLength(1)
     const since = strips()[0]!.querySelector('.ho-since')
     expect(since, 'the banner dropped the park instant').not.toBeNull()
