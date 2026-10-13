@@ -159,7 +159,7 @@ enable_forge_user_slots = true
 # 2026-10-10) is switched on, pinned to the workspace-apply image the release
 # promoted to :dev after W6b (PR 1015) merged.
 enable_workspace_deployer = true
-workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:dbb3db54bcd62b7df5af3e6f74b31ac471320435e8708b2bab3890f3092b213c"
+workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:037252446c942f86e02887069a9544cb8e1d88825a3925c0037e24bf640af96c"
 
 # L8c (2026-10-12, owner): saved browser logins on. swarm-api provisions each
 # personal tenant's -browser- secret and grants it to that tenant's worker
