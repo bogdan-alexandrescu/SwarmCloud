@@ -68,6 +68,11 @@ def _check_url(url: Any) -> str:
 def _launch(playwright: Any, payload: dict[str, Any]) -> Any:
     return playwright.chromium.launch(
         headless=True,
+        # The full Chromium in its new headless mode. The browser image no
+        # longer installs chromium-headless-shell, which is what a headless
+        # launch without a channel looks for (BROWSER-ENFORCE, owner decision
+        # 2026-10-13: docs/browser-startup-speed.md §2.3, §9).
+        channel="chromium",
         chromium_sandbox=False,  # see module docstring: the pod is the sandbox
         args=[
             "--disable-dev-shm-usage",

@@ -169,11 +169,50 @@ Four reasons, each a requirement elsewhere in this document:
 
 What the agent loses is the choice of browser flags. `claude-code-browser`
 does not need them; the profile's agent instructions point Playwright at the
-CDP endpoint. **A Chromium the agent starts itself, headless, is not shown and
-cannot be prevented**: the live view shows the platform's browser. The worker
-sets no `DISPLAY` in the agent's environment (`Workspace.child_env`,
+CDP endpoint. The worker sets no `DISPLAY` in the agent's environment
+(`Workspace.child_env`,
 `apps/agent-worker/agent_worker/workspace.py::Workspace.child_env`), so a headed launch fails
 loudly rather than drawing somewhere nobody sees.
+
+**The agent's own Chromium is refused, not merely unshown** (BROWSER-ENFORCE,
+owner decision 2026-10-13, part of #1030). This section used to accept that a
+headless Chromium the agent started itself was not shown and could not be
+prevented, and task_7cda0d5335f049b4b442 showed what that costs: the agent launched one with
+Playwright, did its work there, and the person watching the live browser saw
+nothing. Now, whenever the live browser exists (`SWARM_CDP_ENDPOINT` is set),
+the claude-code runner (`runners/claude_code.py::body`):
+
+* points the **agent's** `PLAYWRIGHT_BROWSERS_PATH` at
+  `/opt/swarm/live-browser-only`, a directory in which every Chromium
+  Playwright would launch is the stub `images/agent-runtime-browser/live-browser-only`.
+  `chromium.launch()` and `launch_persistent_context()`, headless or not,
+  fail at once with *"This agent's browser is the live browser the person
+  watches: connect with
+  chromium.connect_over_cdp(os.environ['SWARM_CDP_ENDPOINT'])"*. Only the
+  agent's variable changes: the image's ENV, which the gate
+  (`livegate/__main__.py::find_chromium`) and the `browser` runner read, is
+  still `/opt/playwright`, so the stub cannot reach the platform's own
+  Chromium. A `sitecustomize` wrapping `BrowserType.launch` was the
+  alternative; the stub directory was chosen because it also holds for
+  Node's Playwright and for any interpreter, and needs no code in the
+  agent's process. The image's build-time self-test (`selftest.py`) proves
+  each launch form ends in that message;
+* registers the Playwright MCP server (`@playwright/mcp`, pinned in the
+  Dockerfile) through `--mcp-config` with `--cdp-endpoint
+  $SWARM_CDP_ENDPOINT`, so `browser_navigate`, `browser_tabs` and the rest
+  act on the live browser, and the tabs they open are the ones the console
+  shows. It connects; it launches nothing;
+* tells the agent so, and names `from swarm_browser import live`, which
+  returns `(playwright, browser, context)` connected over CDP to the
+  browser's existing context.
+
+On the browser image the CLI's PATH also puts `/opt/venv/bin` first, so the
+agent's `python` is the venv that has Playwright and `swarm_browser`.
+
+What this does **not** stop: an agent that names a binary itself
+(`executable_path=` pointing into `/opt/playwright`) still gets a hidden
+browser. The stub turns the default path, the one an agent reaches for, into
+an instruction; it is not a sandbox, and the pod remains the boundary.
 
 ### 3.3 The path to the console: outbound only, through a relay
 
