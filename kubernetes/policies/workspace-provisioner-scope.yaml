@@ -261,7 +261,7 @@ spec:
     # refused (w-7f9285, 2026-10-13 04:52Z). Null and absent both mean no rules.
     - name: actual
       expression: >-
-        has(object.rules) && object.rules != null ? object.rules.map(r, [r.apiGroups, r.resources, r.verbs]) : []
+        has(object.rules) && type(object.rules) == list ? object.rules.map(r, [r.apiGroups, r.resources, r.verbs]) : []
   validations:
     - expression: "object.metadata.name in variables.expected"
       message: >-
@@ -280,7 +280,7 @@ spec:
       reason: Forbidden
 
     - expression: >-
-        !has(object.rules) || object.rules == null ||
+        !has(object.rules) || type(object.rules) != list ||
         object.rules.all(r, !has(r.resourceNames) && !has(r.nonResourceURLs))
       message: "the rendered Roles name no resourceNames and no nonResourceURLs."
       reason: Forbidden
