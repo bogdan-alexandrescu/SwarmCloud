@@ -156,6 +156,8 @@
 .startup-step.is-current { font-weight: 600; }
 .startup-mark { width: 1em; text-align: center; }
 .startup-step.is-done .startup-mark { color: var(--ok-ink); }
+.startup-step.is-skipped .startup-mark { color: var(--ok-ink); }
+.startup-skipped { color: var(--text-dim); }
 .startup-step.is-current .startup-mark { color: var(--sk-ac); }
 .startup-time { margin-left: auto; font-family: var(--mono); color: var(--text-dim); }
 .startup-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
@@ -164,3 +166,8 @@
 /* The overlays' anchors: the tab's stage and the theater's centre column. */
 .live-stage, .th-center { position: relative; }
 @media (prefers-reduced-motion: reduce) { .startup-fill { transition: none; } }
+
+/* LIVE-UNUSED (#1030): a RUNNING agent that has not connected to this browser
+   a minute after its first frame. Its own line in the strip, never the verdict's. */
+.live-strip-unused { flex-basis: 100%; color: var(--text); }
+.live-strip-unused strong { color: var(--warn-ink); }

@@ -6678,6 +6678,16 @@ export interface LiveSession {
     /** May switch the device, rotate it and turn touch on or off: the person in control only (§6.1, Q13; LB-DEV-B). */
     can_switch_device: boolean
   }
+  /**
+   * WHETHER THE AGENT IS USING THIS BROWSER (LIVE-UNUSED, #1030), as the
+   * gate's CDP proxy reported it: when the agent first connected (null until
+   * it has), how many connections it holds now (null while no gate has
+   * reported it -- never read as "none"), and when the gate published its
+   * first frame. Optional: an older API serves none of them.
+   */
+  agent_connected_at?: string | null
+  agent_connections?: number | null
+  first_frame_at?: string | null
 }
 
 /**

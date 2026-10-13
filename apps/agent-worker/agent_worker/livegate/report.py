@@ -34,6 +34,15 @@ invariant 10's spirit, as presets.py keeps it -- a name, never a size.
 touch toggle (touch.py `TouchInjector.set_touch`, LB-DEV-B), so a phone with
 touch turned off reports false and a desktop never reports true.
 
+WHETHER THE AGENT IS USING THIS BROWSER (LIVE-UNUSED; part of #1030), as
+`agent`: `connected_at`, the epoch seconds the CDP proxy accepted the agent's
+first connection (null until it has); `connections`, how many it holds now;
+and `first_frame_at`, when the gate first published a frame (null until it
+has), which the console times its "the agent isn't using this browser yet"
+from. Numbers only, read off the proxy and the capture, never off the page.
+The key is left out when the caller gives no `agent`, so a report reads as it
+did before for anything that does not send one.
+
 THE PAGE IS UNTRUSTED. Every field is length-limited here, and the relay and
 swarm-api check the report again; nothing in it is logged.
 """
@@ -124,10 +133,20 @@ def device_report(device: Device, touch_on: bool = True) -> dict[str, Any]:
             "touch": bool(device.touch and touch_on)}
 
 
-def encode_report(origin: dict[str, Any] | None, device: dict[str, Any] | None) -> bytes:
-    """One `OP_REPORT` payload: the latest of both, never a delta."""
-    raw = json.dumps({"origin": origin, "device": device}, separators=(",", ":"),
-                     ensure_ascii=False).encode("utf-8")
+def agent_report(*, connected_at: float | None, connections: int,
+                 first_frame_at: float | None) -> dict[str, Any]:
+    """The report's `agent`: whether the agent is driving this browser (LIVE-UNUSED)."""
+    return {"connected_at": connected_at, "connections": max(0, int(connections)),
+            "first_frame_at": first_frame_at}
+
+
+def encode_report(origin: dict[str, Any] | None, device: dict[str, Any] | None,
+                  agent: dict[str, Any] | None = None) -> bytes:
+    """One `OP_REPORT` payload: the latest of all of them, never a delta."""
+    message: dict[str, Any] = {"origin": origin, "device": device}
+    if agent is not None:
+        message["agent"] = agent
+    raw = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(raw) > MAX_REPORT_BYTES:
         raise ValueError("report too large")
     return raw

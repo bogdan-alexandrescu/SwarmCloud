@@ -52,6 +52,9 @@
       "can_preempt": false,
       "can_open": false,
       "can_switch_device": false
-    }
+    },
+    "agent_connected_at": null,
+    "agent_connections": null,
+    "first_frame_at": null
   }
 }

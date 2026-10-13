@@ -22,6 +22,15 @@ import './styles/live.css'
  * none of the pod's, so it shows only the stages those four can fill. Any
  * other failure falls back the same way rather than freezing the bar.
  *
+ * A WARM START SKIPS STEPS, AND THE BAR SAYS SO (LIVE-UNUSED, #1030).
+ * MEASURED 2026-10-13 13:3x UTC on task_84cb2038aa704c829d48: the node was
+ * warm and the image cached, and no `pod_scheduled`, `image_pulling`,
+ * `image_pulled` or `container_started` reached the task. A stage none of
+ * whose steps was ever seen, with a later stage reached, is `skipped`
+ * ("already ready"), drawn with a check and counted as done in the fill, so
+ * the bar fills by the latest step reached and nothing waits forever on a
+ * step that is not coming.
+ *
  * THE ESTIMATE NEVER COUNTS BELOW ZERO. Past the median it says "taking longer
  * than usual"; with no history (`sample_size` 0) it says nothing at all,
  * because a guess drawn as a number is read as a promise.
@@ -55,7 +64,8 @@ export interface StartupData {
 export interface StageView {
   key: string
   label: string
-  status: 'done' | 'current' | 'todo'
+  /** `skipped`: none of its steps was reported, and a later stage was reached -- it was already ready. */
+  status: 'done' | 'skipped' | 'current' | 'todo'
   /** Seconds the stage took (done) or has taken so far (current); null when no step of it was seen. */
   seconds: number | null
 }
@@ -98,7 +108,9 @@ export function startupView(data: StartupData, now: number): StartupView {
     // Done: its last step was seen, a later stage has begun, or the whole start-up is.
     const done = data.done || i < lastSeen || at.has(g.steps[g.steps.length - 1]!)
     const start = prevEnd ?? (times.length > 0 ? Math.min(...times) : null)
-    if (done) {
+    if (times.length === 0 && i < lastSeen) {
+      out.push({ key: g.key, label: g.label, status: 'skipped', seconds: null })
+    } else if (done) {
       const end = times.length > 0 ? Math.max(...times) : null
       out.push({ key: g.key, label: g.label, status: 'done', seconds: start !== null && end !== null ? (end - start) / 1000 : null })
       if (end !== null) prevEnd = end
@@ -110,7 +122,7 @@ export function startupView(data: StartupData, now: number): StartupView {
     }
   }
 
-  const doneCount = out.filter((s) => s.status === 'done').length
+  const doneCount = out.filter((s) => s.status === 'done' || s.status === 'skipped').length
   let remaining: string | null = null
   const target = data.estimate.first_frame
   if (!data.done && data.sampleSize > 0 && typeof target === 'number') {
@@ -251,8 +263,13 @@ function useConnected(screen: HTMLElement | null | undefined): boolean {
   return connected
 }
 
-const MARK: Record<StageView['status'], string> = { done: '✓', current: '●', todo: '○' }
-const SAY: Record<StageView['status'], string> = { done: 'done', current: 'in progress', todo: 'to come' }
+const MARK: Record<StageView['status'], string> = { done: '✓', skipped: '✓', current: '●', todo: '○' }
+const SAY: Record<StageView['status'], string> = {
+  done: 'done',
+  skipped: 'done',
+  current: 'in progress',
+  todo: 'to come',
+}
 
 /**
  * The full bar and step list: the Browser tab while the agent's browser is
@@ -316,6 +333,7 @@ export function StartupProgress({
                 {MARK[s.status]}
               </span>
               <span className="startup-label">{s.label}</span>
+              {s.status === 'skipped' && <span className="startup-skipped"> skipped (already ready)</span>}
               <span className="startup-sr"> ({SAY[s.status]})</span>
               {s.seconds !== null && s.status !== 'todo' && <span className="startup-time">{clock(s.seconds)}</span>}
             </li>

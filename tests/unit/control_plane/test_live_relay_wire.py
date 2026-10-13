@@ -171,10 +171,12 @@ def test_the_whole_session_over_the_real_relay_and_its_close(monkeypatch):
     assert gate.closed == (rz.CLOSE_ENDED, "session_ended")
 
 
-def relay_report_text(url: str, registrable: str, preset: str, orientation: str) -> str:
+def relay_report_text(url: str, registrable: str, preset: str, orientation: str,
+                      agent: dict | None = None) -> str:
     """What swarm-api's viewer link receives when the gate reports `url` and a
-    device: the GATE's own report, framed by the gate's tunnel module and
-    passed through the REAL relay. LB-DEV-A, part of #1030."""
+    device (and, from a LIVE-UNUSED gate, `agent`): the GATE's own report,
+    framed by the gate's tunnel module and passed through the REAL relay.
+    LB-DEV-A, part of #1030."""
     from agent_worker.livegate import report, tunnel
     from agent_worker.livegate.presets import resolve
 
@@ -182,7 +184,7 @@ def relay_report_text(url: str, registrable: str, preset: str, orientation: str)
     relay = rz.Rendezvous(key.encode())
     gate, viewer = Endpoint(), Endpoint()
     payload = report.encode_report(report.page_origin(url, registrable),
-                                   report.device_report(resolve(preset, orientation)))
+                                   report.device_report(resolve(preset, orientation)), agent)
 
     async def go() -> None:
         tunnel_ = await relay.open_tunnel(api.mint_ticket(key, _claims(api.ROLE_TUNNEL)), gate)

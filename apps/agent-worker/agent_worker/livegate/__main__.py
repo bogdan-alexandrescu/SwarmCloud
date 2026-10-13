@@ -91,7 +91,7 @@ from .inject import InjectError, XInjector, display_socket
 from .mask import MaskCdp, MaskState
 from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
-from .report import device_report, encode_report, page_origin
+from .report import agent_report, device_report, encode_report, page_origin
 from .rfb import ControlState, FrameHub, RfbSession, masked
 from .session import OPS as SESSION_OPS
 from .session import SessionCarry
@@ -887,6 +887,13 @@ class LiveGate:
         self.origin: dict[str, Any] | None = None
         self.device_reported: dict[str, Any] | None = None
         self._report_due = asyncio.Event()
+        #: Whether the agent is using THIS browser (LIVE-UNUSED; part of
+        #: #1030): the wall time its first CDP connection was accepted, by any
+        #: proxy this gate has run -- a relaunch makes a new proxy, and the
+        #: agent having connected to the old one still counts -- and whether
+        #: `agent_connected` has been put on the timeline, which happens once.
+        self.agent_connected_at: float | None = None
+        self._agent_connected_told = False
         #: One relay device choice applied at a time. Latest wins: a choice
         #: still waiting when a newer one arrives is dropped (`_device_seq`),
         #: so a burst of switches cannot apply one after another in turn.
@@ -932,6 +939,40 @@ class LiveGate:
     def _agent_connected(self) -> bool:
         return self._agent_seen_before or bool(self.proxy is not None and self.proxy.agent_seen)
 
+    def _agents_changed(self, count: int) -> None:
+        """The proxy accepted or closed an agent connection (LIVE-UNUSED).
+
+        The first accepted one dates `agent_connected_at` and goes on the
+        timeline as `agent_connected`, once; every change is reported, so the
+        console's "the agent isn't using this browser" goes the moment it
+        connects rather than on a later report.
+        """
+        if count > 0 and self.agent_connected_at is None:
+            proxy = self.proxy
+            at = proxy.agent_connected_at if proxy is not None else None
+            self.agent_connected_at = at if at is not None else self._wall()
+            self._tell_agent_connected()
+        self._report_due.set()
+
+    def _tell_agent_connected(self) -> None:
+        """`agent_connected` on the timeline, once: now if a tunnel is open,
+        else when one opens (`open_tunnel`), since with none nothing records."""
+        if self._agent_connected_told or self.agent_connected_at is None:
+            return
+        if self.tunnel is None or self.tunnel.closed:
+            return
+        self._agent_connected_told = True
+        self._queue_action({"kind": "control", "event": "agent_connected"})
+
+    def agent_report(self) -> dict[str, Any]:
+        """The report's `agent` (report.py `agent_report`)."""
+        proxy = self.proxy
+        return agent_report(
+            connected_at=self.agent_connected_at,
+            connections=proxy.agent_connections if proxy is not None and not self.browser_closed else 0,
+            first_frame_at=self.startup.get("first_frame"),
+        )
+
     async def _launch(self, previous: Device | None = None, touch_on: bool | None = None,
                       held_by: CdpProxy | None = None) -> None:
         """Chromium, its proxy, its devices and its page follower; the CDP proxy served last.
@@ -950,6 +991,8 @@ class LiveGate:
             on_control_ended=self._control_ended,
             on_action=self._queue_action,
             on_pointer=self._agent_pointer,
+            on_agents=self._agents_changed,
+            wall=self._wall,
         )
         if held_by is not None and held_by.paused and not self._self_paused:
             # Decided here, as the proxy is made: a resume before it let the
@@ -1182,7 +1225,10 @@ class LiveGate:
             # The first frame the stream is given: the capture runs only while
             # an RFB stream (a viewer, or the relay's recorder) is open, and
             # every stream sends from the hub this was published to.
-            self.startup.setdefault("first_frame", self._wall())
+            if "first_frame" not in self.startup:
+                self.startup["first_frame"] = self._wall()
+                # The console times "the agent isn't using this browser" from it.
+                self._report_due.set()
             await self._pace(started + 1.0 / fps)
 
     def _grab(self, device: Any) -> Frame:
@@ -1268,9 +1314,9 @@ class LiveGate:
             await self._report_due.wait()
             self._report_due.clear()
             try:
-                payload = encode_report(self.origin, self.device_reported)
+                payload = encode_report(self.origin, self.device_reported, self.agent_report())
             except ValueError:  # cannot happen within report.py's limits; never send a part
-                payload = encode_report(None, self.device_reported)
+                payload = encode_report(None, self.device_reported, self.agent_report())
             await tunnel.report(payload)
 
     # -- ctl.sock -------------------------------------------------------------
@@ -1317,6 +1363,11 @@ class LiveGate:
             "last_episode": self.last_episode,
             "startup": dict(self.startup),
             "page": self.page_state,
+            # LIVE-UNUSED: when the agent first drove this browser (epoch
+            # seconds, null until it has) and how many CDP connections it
+            # holds now.
+            "agent_connected_at": self.agent_connected_at,
+            "agent_connections": self.agent_report()["connections"],
         }
 
     async def open_tunnel(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -1342,6 +1393,8 @@ class LiveGate:
         if previous is not None:
             previous.cancel()
         self._tasks["actions"] = asyncio.create_task(self._send_actions(tunnel))
+        # An agent that connected before the tunnel opened is said now.
+        self._tell_agent_connected()
         self.record("tunnel_open", {})
         return {"tunnel": "open"}
 

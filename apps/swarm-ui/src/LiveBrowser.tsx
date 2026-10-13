@@ -34,9 +34,10 @@ import { SaveAsLoginOffer } from './BrowserLogins'
 import { Button } from './components'
 import { HandoffStrip } from './Handoff'
 import { LiveToolMenu } from './LiveToolMenu'
+import { agentPath } from './OverviewRegions'
 import { StartupProgress } from './StartupProgress'
 import { TheaterButton, TheaterHost, useTheater, type TheaterHandoff, type TheaterSession } from './Theater'
-import { TERMINAL_STATES, type Task } from './types'
+import { TERMINAL_STATES, type Task, type TaskState } from './types'
 import './styles/live.css'
 
 /**
@@ -272,6 +273,65 @@ export function stripVerdict(s: LiveSession): { tone: StripTone; say: string } {
     }
   }
   return { tone: 'ok', say: `The page is on ${bareHost(wait.expect)}, the site the agent named.` }
+}
+
+// ---------------------------------------------------------------------------
+// Whether the agent is using this browser (LIVE-UNUSED, #1030)
+// ---------------------------------------------------------------------------
+
+/**
+ * How long after the first frame a RUNNING agent may go without connecting
+ * before the strip says so. MEASURED 2026-10-13 (task_7cda0d5335f049b4b442):
+ * the agent worked in a browser of its own while this one stayed blank, and
+ * nothing on the tab said so. A minute is well past the seconds Playwright
+ * takes to connect once the agent decides to, and short enough that a person
+ * watching a blank page is told before they give up on it.
+ */
+export const AGENT_UNUSED_AFTER_MS = 60_000
+
+/**
+ * When the "isn't using this browser yet" note is due (ms since epoch), or
+ * null when it never is for this reading: the task is not RUNNING, the agent
+ * has connected (now or ever), the gate has not reported its connections
+ * (an older gate: unknown is never shown as "not using"), or no first frame
+ * has been reported to time it from.
+ */
+export function agentUnusedDue(
+  session: Pick<LiveSession, 'state' | 'agent_connected_at' | 'agent_connections' | 'first_frame_at'>,
+  taskState: TaskState,
+): number | null {
+  if (taskState !== 'RUNNING' || session.state !== 'open') return null
+  if (typeof session.agent_connections !== 'number' || session.agent_connections > 0) return null
+  if (session.agent_connected_at != null) return null
+  const frame = session.first_frame_at != null ? Date.parse(session.first_frame_at) : NaN
+  return Number.isFinite(frame) ? frame + AGENT_UNUSED_AFTER_MS : null
+}
+
+/** True once the note is due; re-rendered by a timer at the due time, and false the moment the agent connects. */
+export function useAgentUnused(session: LiveSession | null, taskState: TaskState): boolean {
+  const due = session === null ? null : agentUnusedDue(session, taskState)
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (due === null) return
+    const wait = due - Date.now()
+    if (wait <= 0) {
+      setNow(Date.now())
+      return
+    }
+    const t = setTimeout(() => setNow(Date.now()), wait)
+    return () => clearTimeout(t)
+  }, [due])
+  return due !== null && Math.max(now, Date.now()) >= due
+}
+
+function AgentUnused({ task }: { task: Task }) {
+  return (
+    <span className="live-strip-unused" data-testid="agent-unused">
+      <strong>The agent isn’t using this browser yet.</strong>{' '}
+      It may be working in another tool; its log shows what it is doing.{' '}
+      <a href={`${agentPath(task)}/logs`}>Open the logs</a>
+    </span>
+  )
 }
 
 function isController(s: LiveSession): boolean {
@@ -527,6 +587,7 @@ export function LiveBrowserPane({
   const session = live.status === 'ok' ? live.session : null
   const open = session !== null && session.state === 'open' ? session : null
   const returned = useControlReturned(open?.session_id ?? null, open !== null && isController(open), open?.controller ?? null)
+  const unused = useAgentUnused(open, task.state)
 
   // One object per hand-off, not per poll: the theater turns its left column
   // to the checklist whenever this changes, and a fresh object every
@@ -621,6 +682,7 @@ export function LiveBrowserPane({
               ? 'You are in control.'
               : `${session.controller.email} is in control.`}
         </span>
+        {unused && <AgentUnused task={task} />}
       </div>
   )
   return (
