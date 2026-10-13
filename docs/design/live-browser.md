@@ -819,7 +819,17 @@ browser trusts or routes traffic:
 | every `Security.*` method (`setIgnoreCertificateErrors`, `handleCertificateError`, `setOverrideCertificateErrors`) | lets a man-in-the-middle certificate pass, so TLS no longer protects what the person types |
 | `Page.setBypassCSP` | turns off the site's own script defences on the page the person will type into |
 | `Network.setExtraHTTPHeaders` | adds headers the agent chose to every request, the person's included |
-| `Browser.setDownloadBehavior` / `Page.setDownloadBehavior` with a path outside `downloads/` | writes files where the gate, not the worker, reads them |
+| `Browser.setDownloadBehavior` / `Page.setDownloadBehavior` with a behaviour other than `deny`, `default`, `allow` or `allowAndName` | a behaviour Chromium does not name; with a path outside `downloads/` it would write files where the gate, not the worker, reads them |
+
+**A download path outside `downloads/` is confined, not refused** (LB-POLISH,
+part of #1030). Playwright's `connect_over_cdp` sends
+`Browser.setDownloadBehavior` with its own artifacts directory, a mkdtemp on
+the client's side, for the default context; refusing it refused the whole
+connection, and the QA agent on 2026-10-13 (task_1f28d5bfa5a14f618f83) fell
+back to raw CDP. The gate now rewrites the path of an `allow` or
+`allowAndName` to `downloads/` before the command is held or forwarded
+(`cdppolicy.confine`), so Chromium still writes only where the worker reads,
+and the agent's path never reaches Chromium.
 
 The allowlist is the control and the denylist is its documentation: a method
 Chromium adds next year is refused because it is not on the list, not because

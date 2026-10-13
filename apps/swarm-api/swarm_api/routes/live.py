@@ -629,6 +629,9 @@ class _Proxy:
         self.recheck = float(getattr(settings, "live_membership_recheck_seconds", 300.0))
         self.flush = float(getattr(settings, "live_input_flush_seconds", 15.0))
         self.in_control = False
+        #: The episode `keys` and `pointers` belong to: counted while it was
+        #: held, written to it even when it ends before they are flushed.
+        self.episode: str | None = None
         self.keys = 0
         self.pointers = 0
         self.total_keys = 0
@@ -648,7 +651,7 @@ class _Proxy:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            if self.in_control and (self.keys or self.pointers):
+            if self.keys or self.pointers:
                 await self._flush_input()
             try:
                 await self.link.close()
@@ -671,9 +674,14 @@ class _Proxy:
             # connection of it, not only this one (decision (a)).
             await run_in_threadpool(self.service.close_relay, self.admission.session_id)
             return False
+        episode = status_.get("episode_id") if status_["in_control"] else None
+        if self.in_control and episode != self.episode and (self.keys or self.pointers):
+            # The episode ended (a Return press, a lapse, a preemption) with
+            # input this socket had not flushed: it is that episode's, and goes
+            # on its entries, never into the next one's (LB-POLISH).
+            await self._flush_input()
+        self.episode = episode
         if status_["in_control"] != self.in_control:
-            if not status_["in_control"] and (self.keys or self.pointers):
-                self.keys = self.pointers = 0  # the episode ended; its counts are its own
             self.in_control = status_["in_control"]
             ticket = await run_in_threadpool(self.service.control_ticket, self.admission,
                                              self.in_control)
@@ -732,12 +740,19 @@ class _Proxy:
 
     async def _flush_input(self) -> None:
         # Swapped on the event loop, where the counters are incremented, and
-        # written from a worker thread.
-        keys, pointers = self.keys, self.pointers
+        # written from a worker thread. To the episode they were counted in:
+        # still held, onto the controller record; ended, onto its entries.
+        keys, pointers, episode = self.keys, self.pointers, self.episode
         self.keys = self.pointers = 0
-        await run_in_threadpool(
-            lambda: self.service.record_input(self.admission, keys=keys, pointers=pointers)
+        held = await run_in_threadpool(
+            lambda: self.service.record_input(self.admission, keys=keys, pointers=pointers,
+                                              episode_id=episode)
         )
+        if not held and episode is not None:
+            await run_in_threadpool(
+                lambda: self.service.record_episode_tail(self.admission, episode, keys=keys,
+                                                         pointers=pointers)
+            )
 
     async def _tick(self) -> None:
         loop = asyncio.get_running_loop()

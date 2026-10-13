@@ -496,10 +496,8 @@ REFUSED_OUTSIDE_CONTROL = [
     ("Security.disable", {}),
     ("Page.setBypassCSP", {"enabled": True}),
     ("Network.setExtraHTTPHeaders", {"headers": {"X-Agent": "1"}}),
-    ("Browser.setDownloadBehavior", {"behavior": "allow", "downloadPath": "/tmp/elsewhere"}),
-    ("Browser.setDownloadBehavior", {"behavior": "allowAndName", "downloadPath": "{downloads}/../profile"}),
-    ("Browser.setDownloadBehavior", {"behavior": "allow"}),
-    ("Page.setDownloadBehavior", {"behavior": "allow", "downloadPath": "/home"}),
+    ("Browser.setDownloadBehavior", {"behavior": "allowEverywhere", "downloadPath": "{downloads}"}),
+    ("Page.setDownloadBehavior", {"downloadPath": "/home"}),
     ("Debugger.enable", {}),
     ("Target.exposeDevToolsProtocol", {"targetId": "T1"}),
     ("Target.sendMessageToTarget", {"message": "{}", "sessionId": "S1"}),
@@ -567,6 +565,100 @@ def test_the_method_policy_forwards_what_playwright_needs(tmp_path, method, para
         assert "error" not in w.agent.response(request)
         assert w.chromium.received[-1]["method"] == method
         assert w.refused() == []
+        await w.chromium.stop()
+
+    run(body)
+
+
+# LB-POLISH (part of #1030). MEASURED 2026-10-13 on task_1f28d5bfa5a14f618f83:
+# the QA agent's `connect_over_cdp` was refused on Browser.setDownloadBehavior,
+# because Playwright names ITS OWN artifacts directory (a mkdtemp under the
+# client's tmpdir) as the download path, and the agent fell back to raw CDP.
+# A path outside downloads/ is now confined to downloads/, never forwarded.
+CONFINED_DOWNLOADS = [
+    ("Browser.setDownloadBehavior", {"behavior": "allowAndName", "downloadPath": "/tmp/playwright-artifacts-Xy12Ab", "eventsEnabled": True}),
+    ("Browser.setDownloadBehavior", {"behavior": "allow", "downloadPath": "/tmp/elsewhere"}),
+    ("Browser.setDownloadBehavior", {"behavior": "allowAndName", "downloadPath": "{downloads}/../profile"}),
+    ("Browser.setDownloadBehavior", {"behavior": "allow"}),
+    ("Browser.setDownloadBehavior", {"behavior": "allow", "downloadPath": "relative/dir"}),
+    ("Page.setDownloadBehavior", {"behavior": "allow", "downloadPath": "/home"}),
+]
+
+
+@pytest.mark.parametrize(("method", "params"), CONFINED_DOWNLOADS, ids=lambda v: v if isinstance(v, str) else "")
+def test_a_download_path_outside_downloads_reaches_chromium_as_downloads(tmp_path, method, params):
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        page = await w.attach_page()
+        filled = json.loads(json.dumps(params).replace("{downloads}", str(w.downloads)))
+        browser_level = method.startswith("Browser.")
+        request = await w.send(method, filled, None if browser_level else page)
+        assert "error" not in w.agent.response(request)
+        assert w.refused() == []
+        sent = w.chromium.received[-1]
+        assert sent["method"] == method
+        # Only the path changes: Chromium writes into downloads/ and nowhere else.
+        assert sent["params"] == {**filled, "downloadPath": str(w.downloads)}
+        await w.chromium.stop()
+
+    run(body)
+
+
+def test_a_download_path_inside_downloads_and_deny_reach_chromium_unchanged(tmp_path):
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        inside = {"behavior": "allowAndName", "downloadPath": str(w.downloads / "sub"), "eventsEnabled": True}
+        for params in (inside, {"behavior": "deny"}, {"behavior": "default"}):
+            await w.send("Browser.setDownloadBehavior", params)
+            assert w.chromium.received[-1]["params"] == params
+        assert w.refused() == []
+        await w.chromium.stop()
+
+    run(body)
+
+
+def test_playwright_connect_over_cdp_handshake_passes_the_policy(tmp_path):
+    """What Playwright's `chromium.connect_over_cdp` sends (crBrowser.connect,
+    CRBrowserContext._initialize, FrameSession._initialize), in order, with
+    the parameters it sends them with: every one reaches Chromium, and the
+    default context's downloads land in downloads/."""
+
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        artifacts = "/tmp/playwright-artifacts-" + secrets.token_hex(3)
+        browser = [
+            ("Browser.getVersion", {}),
+            ("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True}),
+            ("Browser.setDownloadBehavior", {"behavior": "allowAndName", "downloadPath": artifacts, "eventsEnabled": True}),
+        ]
+        for method, params in browser:
+            request = await w.send(method, params)
+            assert "error" not in (w.agent.response(request) or {}), method
+        page = await w.attach_page()
+        frame = [
+            ("Page.enable", {}),
+            ("Page.getFrameTree", {}),
+            ("Log.enable", {}),
+            ("Page.setLifecycleEventsEnabled", {"enabled": True}),
+            ("Runtime.enable", {}),
+            ("Page.addScriptToEvaluateOnNewDocument", {"source": "", "worldName": "__playwright_utility_world__"}),
+            ("Runtime.addBinding", {"name": "__playwright__binding__"}),
+            ("Network.enable", {}),
+            ("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True}),
+            ("Emulation.setFocusEmulationEnabled", {"enabled": True}),
+            ("Emulation.setEmulatedMedia", {"media": "", "features": []}),
+            ("Page.createIsolatedWorld", {"frameId": "F1", "grantUniveralAccess": True, "worldName": "__playwright_utility_world__"}),
+            ("Runtime.runIfWaitingForDebugger", {}),
+        ]
+        for method, params in frame:
+            request = await w.send(method, params, page)
+            assert "error" not in (w.agent.response(request) or {}), method
+        assert w.refused() == []
+        downloads = ids_at_chromium(w, "Browser.setDownloadBehavior")
+        assert [d["downloadPath"] for d in downloads] == [str(w.downloads)]
         await w.chromium.stop()
 
     run(body)
