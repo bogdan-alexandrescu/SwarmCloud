@@ -76,6 +76,7 @@ What it settles, one line each:
   `u-bogdan` moves out of state with a plan that destroys nothing (§3.3).
 * **The database and bucket-metadata roles are granted once**, to the set of
   all personal worker identities, if W0 confirms IAM supports it (WD9, §2.3).
+  **W0 found IAM does not support it, so the WD9 fallback is ON** (owner decision 2026-10-12, PR 1217): the job grants each person's worker its database, telemetry and bucket-metadata roles at A5 (`wd9_fallback: true` in `scripts/lib/workspace-calls.json`).
 * **A ready workspace runs nothing until the person adds a Claude account or
   an admin lends one** (§5, WD6).
 * **One gate, in the two submission methods every create path goes through**,
@@ -757,11 +758,11 @@ re-decision it is the runtime identity of one Cloud Run job,
 
 | role | on | why | bound by |
 |---|---|---|---|
-| custom `swarmWorkspaceAccountAdmin` (`iam.serviceAccounts.create`, `.get`, `.list`, `.getIamPolicy`, `.setIamPolicy`) | **the project** | create a person's worker account and write its Workload Identity and act-as bindings, before any per-account grant can exist | **nothing in IAM** (§2.4). It has no `delete`, `disable`, `keys.create`, `getAccessToken`, `signBlob` or `actAs`. Its use is bounded by the call guard and watched by the alert (§2.4). **Accepted by the owner, 2026-10-08** |
-| custom `swarmWorkspaceProjectReader` (`resourcemanager.projects.getIamPolicy`, `iam.roles.get`) | project | the script's reads of the project policy and of the two custom roles | read only |
+| custom `swarmWorkspaceAccountAdmin` (`iam.serviceAccounts.create`, `.get`, `.list`, `.getIamPolicy`, `.setIamPolicy`, and `iam.serviceAccountKeys.list`) | **the project** | create a person's worker account and write its Workload Identity and act-as bindings, before any per-account grant can exist; list an account's user-managed key ids, which the squat inspection (#334) does in A2 on an existing account and in A9 on every run | **nothing in IAM** (§2.4). It has no `delete`, `disable`, `keys.create`, `keys.upload`, `getAccessToken`, `signBlob` or `actAs`; the key listing returns ids and dates, never key material. Its use is bounded by the call guard and watched by the alert (§2.4). **Accepted by the owner, 2026-10-08** |
+| custom `swarmWorkspaceProjectReader` (`resourcemanager.projects.getIamPolicy`, `iam.roles.get`) | project | the WD9 fallback's read of the project policy before it adds the worker's three roles. `iam.roles.get` is held and no call of the job uses it (the operator path's); it stays, as the grants change adds-only | read only |
 | `roles/resourcemanager.projectIamAdmin`, **conditioned** | project | **fallback only** (WD9): add the worker's database and telemetry roles per person | `hasOnly([...])` over exactly the worker Firestore custom role, `roles/logging.logWriter` and `roles/monitoring.metricWriter`, the pattern `terraform/bootstrap/deployer_conditions.tf` uses. **Not granted** when W0 confirms the principal-set grant |
 | custom `swarmWorkspaceBucketIam` (`storage.buckets.get`, `.getIamPolicy`, `.setIamPolicy`) | **the artifact bucket only** | the worker's two prefix-conditioned object grants (and, on the fallback, the bucket-metadata role) | the bucket. Not `roles/storage.legacyBucketReader`, which carries `storage.objects.list` |
-| `roles/storage.objectCreator`, **conditioned** | the artifact bucket, to `tenants/` | the `.tenant` marker object the script writes | the prefix; no read, no delete |
+| `roles/storage.objectCreator`, **conditioned** | the artifact bucket, to `tenants/` | the `.tenant` marker object A5 writes, with ONE Storage JSON API upload carrying `ifGenerationMatch=0`, a create that can never replace. Not `gcloud storage cp`, which reads the destination object first (below) | the prefix; no read, no delete |
 | custom `swarmWorkspaceSecretBinder` (`secretmanager.secrets.get`, `.getIamPolicy`, `.setIamPolicy`) | project, **conditioned** | bind the worker to its forge slot | `resource.name.startsWith("projects/<number>/secrets/swarm-tenant-u-")`, the full-name form `terraform/bootstrap/forge_user_slots.tf` writes |
 | custom `swarmForgeSlotCreator` (exists) | project | create the empty slot and its twin | the project; creation is checked there. The same role swarm-api holds |
 | custom `swarmWorkspaceFirestore` (`datastore.entities.get`, `.list`, `.create`, `.update`, `datastore.databases.get`) | project | read the record and `admin_roles/`, write progress, the tenant and pool documents; `databases.get` is what Firestore checks for the A1 claim's `beginTransaction` and its `rollback` | **the project**; Firestore ignores conditions on the data plane (`scripts/register-tenant.sh` §3). No `delete`. Exactly the permissions the job's calls need, held there by `tests/unit/scripts/test_workspace_firestore_permissions.py` (below) |
@@ -781,6 +782,28 @@ Firestore grants had never been exercised. `test_workspace_firestore_permissions
 now walks every Firestore call `register-tenant.sh --workspace` makes and every
 Firestore shape `scripts/lib/workspace-calls.json` admits, maps each to its
 permission, and fails when the role lacks one or holds one no call needs.
+
+**Every other call is walked the same way** (WS-WALK, 2026-10-13). With A1
+fixed, w-7f9285's next execution (`swarm-workspace-apply-trhmh`, 01:40Z) got
+through A2-A4 and died at A5: `gcloud storage cp - gs://<bucket>/tenants/u-devops/.tenant`
+→ 403, no `storage.objects.get`. The deployer holds a create on `tenants/` and,
+on purpose, no object read, and `gcloud storage cp` reads the destination before
+it uploads; no flag of it skips that read. So A5 writes the marker with one JSON
+API upload, `ifGenerationMatch=0`, which needs `storage.objects.create` alone.
+An existing marker answers **412**, and A5 treats that as done: comparing its
+content would need the read this avoids, and nothing reads the marker (it only
+materialises the prefix; offboarding deletes it with the rest, B6).
+`tests/unit/scripts/test_workspace_deployer_walk.py` then walks every gcloud and
+raw curl call in the code the job runs (the script to its `workspace_main; exit 0`,
+`scripts/lib/forge-slot.sh`, and the `kubernetes/` scripts A7 runs) and every
+shape the guard admits, the WD9 fallback's included; maps each to the
+permissions Google checks and the resource it is checked on; and fails unless a
+grant above carries the permission and reaches the resource, by its scope or its
+condition. It found one more gap no execution had reached: the squat
+inspection's `keys list` needs `iam.serviceAccountKeys.list`, so A9 would have
+failed every create. The same walk fails on a guard shape that reaches a cloud
+API and that no call of the job makes (§2.5). Kubernetes RBAC is held by
+`test_register_tenant_workspace.py` against a full run's calls.
 
 The image pull grant on the builder image's repository (`swarmImagePuller`,
 `workspace_deployer_pull` in `terraform/bootstrap/workspace_deployer.tf`) goes
@@ -1008,15 +1031,24 @@ call shapes. A call is allowed only if one rule matches it whole:
 | rule | allows | refused example |
 |---|---|---|
 | C0 | nothing by default: a call matching no rule stops the run | `gcloud compute instances list` |
-| C1 | reads (`describe`, `get-iam-policy`, `list` filtered to this account, `kubectl get`, Firestore `GET`) of this workspace's resources, and of the fixed shared resources the script reads: the project's policy, the two custom roles, the artifact bucket, the swarm cluster's credentials, `kube-system`'s two DNS objects. Before A1 has written the expectation file, the only calls allowed are A1's own: the `runQuery` on `workspaces` for the given workspace id, reads of `admin_roles/`, and the claim's transaction on that one record | `gcloud iam service-accounts get-iam-policy` on another tenant's account |
+| C1 | reads (`describe`, `get-iam-policy`, `list` filtered to this account, `kubectl get`, Firestore `GET`) of this workspace's resources, and of the fixed shared resources the script reads: the project's policy (WD9 fallback), the artifact bucket's policy, the swarm cluster's credentials, `kube-system`'s two DNS objects. Before A1 has written the expectation file, the only calls allowed are A1's own: the `runQuery` on `workspaces` for the given workspace id, reads of `admin_roles/`, and the claim's transaction on that one record | `gcloud iam service-accounts get-iam-policy` on another tenant's account |
 | C2 | `gcloud iam service-accounts create <id>` where `<id>` is the expected worker account id, and nothing else on accounts: no `delete`, `disable`, `update`, `keys …` or `set-iam-policy` | creating `swarm-agent-worker-u-bob` |
 | C3 | `gcloud iam service-accounts add-iam-policy-binding <the expected worker email>` with role `workloadIdentityUser` and a member that is one of the two expected Kubernetes service accounts in `swarm-tenant-<tenant>`, or role `serviceAccountUser` and a member that is the scheduler or the reconciler | a binding on any other account, or `serviceAccountTokenCreator` |
-| C4 | `gcloud storage buckets add-iam-policy-binding gs://<artifact bucket>` with member the expected worker, role `objectViewer` or `objectUser`, and a condition **string-equal** to the expected expression for `tenants/<tenant>/` (these are the fixed shared resource's prefix-conditioned per-person bindings); `gcloud storage cp - gs://<bucket>/tenants/<tenant>/.tenant`. On the WD9 fallback only: the bucket-metadata role for the expected worker | a condition naming another prefix, or any other member |
+| C4 | `gcloud storage buckets add-iam-policy-binding gs://<artifact bucket>` with member the expected worker, role `objectViewer` or `objectUser`, and a condition **string-equal** to the expected expression for `tenants/<tenant>/` (these are the fixed shared resource's prefix-conditioned per-person bindings); the `.tenant` marker as one `curl` `POST` to the Storage JSON API's upload URL for `tenants/<tenant>/.tenant` with `ifGenerationMatch=0`, its body naming the expected tenant and workspace, its bearer header on stdin. `gcloud storage cp` is not allowed: it reads the object first. On the WD9 fallback only: the bucket-metadata role for the expected worker | a condition naming another prefix, any other member, or a marker upload without `ifGenerationMatch=0` |
 | C5 | **WD9 fallback only:** `gcloud projects add-iam-policy-binding` with member the expected worker and a role among the worker Firestore role, `logWriter`, `metricWriter`. Under the principal-set grant this rule is off, and any project IAM call stops the run | `roles/editor` |
 | C6 | `gcloud secrets create` of the expected forge slot names, and `add-iam-policy-binding` on them with member the expected worker and role `secretAccessor` | a binding on `swarm-tenant-eng-git` |
-| C7 | `kubectl apply`, `create` or `patch` whose every object (the guard reads the `-f` file or stdin) is the `Namespace` `swarm-tenant-<tenant>` or is in that namespace, plus the server dry-run that precedes it; the admission policy of §2.3 checks the same server-side | an object in `swarm-system` |
+| C7 | `kubectl apply` whose every object (the guard reads the `-f` file or stdin) is the `Namespace` `swarm-tenant-<tenant>` or is in that namespace, plus the server dry-run that precedes it; the admission policy of §2.3 checks the same server-side | an object in `swarm-system` |
 | C8 | `curl` `PATCH` or `commit` to the Firestore REST API on exactly `tenants/<tenant>`, `pools/tenant:<tenant>` and `workspaces/<tenant>`, and the metadata server's token endpoint | a write to another tenant's pool |
 | C9 | never: any `remove-iam-policy-binding`, `set-iam-policy`, `delete`, `disable`, `keys create` or Firestore `DELETE`, whatever its target | the script's legacy repair path that removes an unconditioned bucket binding |
+
+**The rules admit what the job makes and nothing more.** Until WS-WALK
+(2026-10-13) C1 also allowed `iam service-accounts list`, `iam roles describe`,
+`storage buckets describe` and `secrets versions list`, and C7 `kubectl create`,
+`diff` and `patch`, none of which the job runs (the operator path makes the
+gcloud reads; `kubernetes/apply.sh` diffs only without `--confirm`). They are
+C0 `known_unused` entries now, saying why, and two tests keep it so:
+`test_workspace_deployer_walk.py` for the gcloud and curl shapes, and
+`test_register_tenant_workspace.py` for kubectl's verbs against a full run.
 
 **Stopping.** On a refusal the guard prints the rule it fell through to and the
 call, through `redact`, to the job's private log; exits non-zero before the

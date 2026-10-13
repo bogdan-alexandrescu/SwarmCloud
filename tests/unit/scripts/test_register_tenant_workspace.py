@@ -317,12 +317,19 @@ def test_create_runs_every_step_and_ends_ready(job: Job, created: dict) -> None:
     assert _members(account["policy"], ACT_AS) == {f"serviceAccount:{SCHEDULER}", f"serviceAccount:{RECONCILER}"}
     assert {b["role"] for b in account["policy"]["bindings"]} == {WORKLOAD, ACT_AS}
 
-    # A5: the two prefix-conditioned grants, exactly the expressions C4 accepts.
+    # A5: the two prefix-conditioned grants, exactly the expressions C4 accepts,
+    # and, because W0 found the principal-set grant impossible and the WD9
+    # fallback is on (wd9_fallback in workspace-calls.json, docs/workspaces.md
+    # §2.3), the unconditioned bucket-metadata role and the three project roles.
     grants = {(b["role"], (b.get("condition") or {}).get("expression"))
               for b in world["bucket_policy"]["bindings"] if f"serviceAccount:{WORKER}" in b["members"]}
-    assert grants == {("roles/storage.objectViewer", READ_EXPR), ("roles/storage.objectUser", WRITE_EXPR)}
+    assert grants == {("roles/storage.objectViewer", READ_EXPR), ("roles/storage.objectUser", WRITE_EXPR),
+                      (f"projects/{PROJECT}/roles/swarmBucketMetadataReader", None)}
     assert f"gs://{BUCKET}/tenants/{TENANT}/.tenant" in world["objects"]
-    assert world["project_policy"]["bindings"] == [], "WD9 is a principal-set grant: no project IAM per person"
+    project_grants = {(b["role"], (b.get("condition") or {}).get("expression"))
+                      for b in world["project_policy"]["bindings"] if f"serviceAccount:{WORKER}" in b["members"]}
+    assert project_grants == {(f"projects/{PROJECT}/roles/swarmTenantWorkerFirestore", None),
+                              ("roles/logging.logWriter", None), ("roles/monitoring.metricWriter", None)}
 
     # A6: the slot and its twin, labelled as swarm-api labels its own; the
     # worker reads the slot and never the twin.
@@ -516,7 +523,7 @@ def test_a_rerun_after_a_failure_makes_only_what_is_missing(job: Job) -> None:
     assert _field(job.record(), "run", "attempt") == "2"
     changed = _changes(job.calls("gcloud", since=before))
     assert all(c[:2] == ["secrets", "create"] or (c[:2] == ["secrets", "add-iam-policy-binding"])
-               or c[:2] == ["storage", "cp"] for c in changed), (
+               for c in changed), (
         f"the re-run remade what the first run had made: {changed}")
     assert not any(c[:3] == ["iam", "service-accounts", "create"] for c in changed)
     assert not any("add-iam-policy-binding" in c and c[0] in ("iam", "storage") for c in changed)
@@ -530,7 +537,7 @@ def test_a_full_rerun_on_a_complete_workspace_changes_nothing(job: Job, ready_wo
     proc = job.create()
     out = _out(proc)
     assert proc.returncode == 0, out
-    changed = [c for c in _changes(job.calls("gcloud")) if c[:2] != ["storage", "cp"]]
+    changed = _changes(job.calls("gcloud"))
     assert changed == [], f"every object existed, yet the re-run changed: {changed}"
     assert _field(job.record(), "state") == "ready"
 
@@ -611,6 +618,75 @@ def test_a_stale_bucket_binding_goes_to_the_owner_and_is_never_removed(job: Job)
     assert _field(record, "state") == "needs_owner"
     assert _field(record, "steps", "A5", "code") == "STALE_BUCKET_BINDING"
     assert not any("remove-iam-policy-binding" in c for c in job.calls("gcloud"))
+
+
+MARKER = f"gs://{BUCKET}/tenants/{TENANT}/.tenant"
+UPLOAD = f"https://storage.googleapis.com/upload/storage/v1/b/{BUCKET}/o"
+
+
+def _marker_uploads(calls: list[list[str]]) -> list[list[str]]:
+    return [argv for argv in calls if any(a.startswith(UPLOAD) for a in argv)]
+
+
+def test_the_marker_is_one_create_only_upload(created: dict) -> None:
+    """A5's .tenant marker needs storage.objects.create and nothing else.
+
+    `gcloud storage cp` read the destination first, and the deployer holds no
+    object read: w-7f9285's A5 died on storage.objects.get, 2026-10-13 01:40Z.
+    One JSON API upload with ifGenerationMatch=0 can never replace an object,
+    so the create on tenants/ the deployer holds is the whole of it."""
+    assert created["returncode"] == 0, created["stderr"][-6000:]
+    calls = created["world"]["calls"]
+    assert not [c["argv"] for c in calls if c["tool"] == "gcloud" and c["argv"][:2] == ["storage", "cp"]]
+    uploads = _marker_uploads([c["argv"] for c in calls if c["tool"] == "curl"])
+    assert len(uploads) == 1, uploads
+    url = next(a for a in uploads[0] if a.startswith(UPLOAD))
+    assert "ifGenerationMatch=0" in url.split("?", 1)[1].split("&"), url
+    assert f"name=tenants%2F{TENANT}%2F.tenant" in url, url
+    assert json.loads(created["world"]["objects"][MARKER]) == {"tenant_id": TENANT, "workspace_id": WORKSPACE}
+
+
+def test_an_existing_marker_is_left_as_it_is(job: Job, ready_world: dict) -> None:
+    """A re-run meets its own marker: the upload answers 412, which is "already
+    there", and A5 is done without reading or replacing it."""
+    _from_ready(job, ready_world)
+    job.edit(lambda w: w["objects"].update({MARKER: "written by an earlier run"}))
+    job.edit(lambda w: w["firestore"][f"workspaces/{TENANT}"]["fields"].update(
+        state=_s("failed"),
+        retry={"mapValue": {"fields": {"by": _s(ADMIN), "at": {"timestampValue": "2099-01-01T00:00:00Z"}}}}))
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 0, out
+    assert _steps(job.record())["A5"] == "done", out
+    assert job.read()["objects"][MARKER] == "written by an earlier run"
+    assert len(_marker_uploads(job.calls("curl"))) == 1, out
+
+
+def test_a_refused_marker_upload_fails_a5_retryable(job: Job) -> None:
+    job.edit(lambda w: w["fail"].append(
+        {"tool": "curl", "words": ["POST", f"/upload/storage/v1/b/{BUCKET}/o"], "times": 1, "status": 403}))
+    proc = job.create()
+    out = _out(proc)
+    assert proc.returncode == 1, out
+    record = job.record()
+    assert _field(record, "failure", "step") == "A5", out
+    assert _field(record, "failure", "code") == "GRANT_FAILED"
+    assert _field(record, "failure", "retryable") is True
+    assert "HTTP 403" in proc.stderr, out
+    assert MARKER not in job.read()["objects"]
+
+
+def test_the_guard_admits_no_kubectl_verb_a_run_does_not_use(created: dict) -> None:
+    """The guard's cluster shapes against a real run's kubectl calls: a verb the
+    guard admits and no step makes is a door left open (WS-WALK).
+    kubernetes/apply.sh runs `diff` only without --confirm, which A7 always
+    passes."""
+    assert created["returncode"] == 0, created["stderr"][-6000:]
+    used = {_kube_parse(c["argv"])[0][0] for c in created["world"]["calls"] if c["tool"] == "kubectl"}
+    rules = json.loads((REPO / "scripts" / "lib" / "workspace-calls.json").read_text())["rules"]
+    admitted = {s["command"][0] for r in rules for s in r.get("shapes", [])
+                if s["tool"] == "kubectl" and not s.get("local")}
+    assert admitted <= used, f"the guard admits kubectl {sorted(admitted - used)}, which no step runs"
 
 
 def test_a_needs_owner_record_runs_again_only_after_an_admin_retry(job: Job, ready_world: dict) -> None:
