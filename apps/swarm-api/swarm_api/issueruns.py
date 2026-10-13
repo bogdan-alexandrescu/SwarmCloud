@@ -2094,7 +2094,9 @@ class IssueRun:
     #: the CI loop adds `checks` ("pending" | "green" | "red" | "none"),
     #: `merged` (bool), `checked_at` (its last CI read), `head_since` (when
     #: it first saw this head) and `read_error` (its last failed read,
-    #: redacted); the status comment shows `checks` and `merged`.
+    #: redacted), with `read_attempts`, `read_failing_since`, `read_retry_at`
+    #: and `read_transient` while reads keep failing (WRITEBACK, 2026-10-12);
+    #: the status comment shows `checks` and `merged`.
     pull_request: dict[str, Any] | None = None
     #: The CI fix round in progress or last spent, 0 before the first. Shown
     #: as "n of fix_rounds"; the CI loop advances it.
@@ -2430,6 +2432,13 @@ class IssueRun:
                     # yet", for as long as the failure lasted.
                     "checked_at": _iso(self.pull_request.get("checked_at")),
                     "read_error": _opt_str(self.pull_request.get("read_error")),
+                    # WRITEBACK (2026-10-12): how many reads in a row have
+                    # failed, since when, and when a transient failure is
+                    # tried again (`issueci._read_failure`). Null once a read
+                    # works. `read_error` already says the first two in words.
+                    "read_attempts": _opt_int(self.pull_request.get("read_attempts")),
+                    "read_failing_since": _iso(self.pull_request.get("read_failing_since")),
+                    "read_retry_at": _iso(self.pull_request.get("read_retry_at")),
                 }
             ),
             # The CI loop: the rounds spent and their workflows, the sha CI

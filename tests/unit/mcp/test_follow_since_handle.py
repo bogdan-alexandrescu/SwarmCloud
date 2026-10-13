@@ -291,7 +291,11 @@ def test_run_js_asks_the_row_for_state_and_result():
     start = source.index("const STEP_RESULT = {")
     block = source[start:source.index("\n}\n", start)]
     assert "result: STEP_FIELDS" in block, block
-    assert "required: ['state', 'result']" in block, block
+    # The row is still asked for both; only `result` is REQUIRED (ROW-SKIP,
+    # 2026-10-12): a skipped step's relay that left the root `state` out ran
+    # out of its five attempts, and run.js reads `result.state` first anyway.
+    assert "state: { type: ['string', 'null'] }" in block, block
+    assert "required: ['result']" in block, block
 
 
 def test_run_js_reads_a_rows_state_and_result_as_the_flat_step_result(tmp_path):

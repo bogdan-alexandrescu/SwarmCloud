@@ -28,6 +28,17 @@ import './styles/forgeperms.css'
  *     server already withholds the URL from everyone else, and this draws the
  *     button only when BOTH say admin, so neither alone can show it.
  *
+ * WHAT A GREEN CARD SAYS (FP-DETAIL, owner report 2026-10-12: a card reading
+ * only "all granted" told nobody anything). Collapsed, its header carries the
+ * count of what SwarmCloud needs and the capabilities that buys ("6 of 6
+ * needed · Push, Pull requests, ..."); opened, every org card -- green or not
+ * -- shows the table of each permission SwarmCloud needs against what GitHub
+ * granted and what it is for, the grants SwarmCloud does not use folded under
+ * "Also granted" (an over-grant is a choice the owner should see), which
+ * registered repositories the installation covers, the installation itself
+ * with "Manage on GitHub", and when it was read. All of it is the one read
+ * the card already makes; nothing new is fetched.
+ *
  * RE-CHECK. "↻ Re-check" reads with `refresh=true`, past the server's 60 s
  * cache. A fix button arms a re-check that runs when the person comes back to
  * this tab (window focus, or the page becoming visible again): that is the
@@ -48,6 +59,35 @@ export const CAPABILITY_WORD: Readonly<Record<string, string>> = {
 }
 
 const CAPABILITY_ORDER = Object.keys(CAPABILITY_WORD)
+
+/**
+ * GitHub's permission names in plain words, for the ones SwarmCloud needs
+ * (forgeperms.py's `REQUIRED`) and the ones an installation commonly carries
+ * besides. Anything else is GitHub's own name with its underscores opened.
+ */
+const PERMISSION_WORD: Readonly<Record<string, string>> = {
+  contents: 'Repository contents',
+  pull_requests: 'Pull requests',
+  statuses: 'Commit statuses',
+  checks: 'Checks',
+  issues: 'Issues',
+  actions: 'Actions',
+  metadata: 'Metadata',
+  workflows: 'Workflows',
+  administration: 'Administration',
+}
+
+function permissionWord(name: string): string {
+  const plain = name.replace(/_/g, ' ')
+  return PERMISSION_WORD[name] ?? plain.charAt(0).toUpperCase() + plain.slice(1)
+}
+
+/** GitHub's access levels, least first: forgeperms.py's `_RANK`, so the table and the server agree on "enough". */
+const LEVEL_RANK: Readonly<Record<string, number>> = { read: 1, write: 2, admin: 3 }
+
+function levelRank(level: string | null | undefined): number {
+  return level == null ? 0 : (LEVEL_RANK[level] ?? 0)
+}
 
 /** The one read every surface shares, with Re-check and the focus re-check after a fix. */
 export interface ForgePermsRead extends UrRead<ForgePermissionsDoc> {
@@ -184,8 +224,10 @@ function PermCard({
   hint,
   fix,
   sig,
+  summary,
+  detail,
 }: {
-  kind: 'app' | 'org' | 'token'
+  kind: 'app' | 'org' | 'account' | 'token'
   name: string
   tone: 'ok' | 'bad' | 'warn' | 'unknown'
   chip: string
@@ -195,6 +237,10 @@ function PermCard({
   fix?: ReactNode
   /** What the answer says, so a changed answer resets a person's fold. */
   sig: string
+  /** The header's one line, read while the card is folded ("6 of 6 needed · Push, ..."). */
+  summary?: string
+  /** The open card's detail: the grants table, what it covers, where it came from. */
+  detail?: ReactNode
 }) {
   const healthy = tone === 'ok'
   const [open, setOpen] = useState(!healthy)
@@ -204,7 +250,7 @@ function PermCard({
     setOpen(!healthy)
   }
   const bodyId = useId()
-  const kindWord = kind === 'app' ? 'GitHub App' : kind === 'org' ? 'org' : 'tenant token'
+  const kindWord = kind === 'app' ? 'GitHub App' : kind === 'token' ? 'tenant token' : kind
   return (
     <Card
       level={3}
@@ -214,6 +260,7 @@ function PermCard({
           <ToneMark tone={tone} hidden />
           <b>{name}</b>
           <small>{kindWord}</small>
+          {summary !== undefined && <span className="fp-summary">{summary}</span>}
         </span>
       }
       action={
@@ -243,7 +290,8 @@ function PermCard({
               ))}
             </ul>
           )}
-          {lines.length === 0 && error === null && <p className="ur-hint fp-ok">GitHub grants everything SwarmCloud needs here.</p>}
+          {lines.length === 0 && error === null && detail === undefined && <p className="ur-hint fp-ok">GitHub grants everything SwarmCloud needs here.</p>}
+          {detail}
           {hint !== undefined && <p className="ur-hint">{hint}</p>}
           {fix !== undefined && <div className="fp-fix">{fix}</div>}
         </div>
@@ -261,22 +309,194 @@ function FixLink({ href, label, onFix }: { href: string; label: string; onFix: (
   )
 }
 
-export function OrgCard({ org, required, onFix }: { org: ForgeOrgCard; required: readonly ForgeGap[]; onFix: () => void }) {
+/** One permission SwarmCloud needs, against what an installation granted. */
+interface GrantRow {
+  permission: string
+  needs: string | null
+  has: string | null
+  ok: boolean
+  neededFor: string
+  capabilities: string[]
+}
+
+/**
+ * The table's rows, in `required`'s order, or null when the installation's
+ * grants were not read. Met-or-not is the server's `missing` where it was
+ * read (so the table, the chip and the dot agree) and the level rank otherwise.
+ */
+function grantRows(org: ForgeOrgCard, required: readonly ForgeGap[]): GrantRow[] | null {
+  const granted = org.granted
+  if (granted === null) return null
+  const short = org.missing === null ? null : new Set(org.missing.map((g) => g.permission))
+  return required.flatMap((r) => {
+    if (r.permission === null) return []
+    const has = granted[r.permission] ?? null
+    const ok = short !== null ? !short.has(r.permission) : levelRank(has) >= Math.max(1, levelRank(r.access))
+    return [{ permission: r.permission, needs: r.access, has, ok, neededFor: r.needed_for, capabilities: r.capabilities }]
+  })
+}
+
+/** The capabilities, in `CAPABILITY_WORD` order, that the rows grant and that they block. */
+function capabilitySplit(rows: readonly GrantRow[]): { enabled: string[]; blocked: string[] } {
+  const named = new Set(rows.flatMap((r) => r.capabilities))
+  const blockedSet = new Set(rows.filter((r) => !r.ok).flatMap((r) => r.capabilities))
+  const order = [...CAPABILITY_ORDER, ...[...named].filter((c) => !CAPABILITY_ORDER.includes(c))]
+  const words = (keep: (c: string) => boolean) => order.filter((c) => named.has(c) && keep(c)).map((c) => CAPABILITY_WORD[c] ?? c)
+  return { enabled: words((c) => !blockedSet.has(c)), blocked: words((c) => blockedSet.has(c)) }
+}
+
+/** The header's line: "6 of 6 needed · Push, Pull requests, ...", and what is blocked when anything is. */
+function grantSummary(rows: readonly GrantRow[]): string {
+  const met = rows.filter((r) => r.ok).length
+  const { enabled, blocked } = capabilitySplit(rows)
+  const parts = [`${met} of ${rows.length} needed`, enabled.length > 0 ? enabled.join(', ') : 'nothing enabled']
+  if (blocked.length > 0) parts.push(`blocked: ${blocked.join(', ')}`)
+  return parts.join(' · ')
+}
+
+/**
+ * The installation's own settings page, where its owner sees and changes
+ * everything it grants: `review_url` is that page's `/permissions/update`
+ * child (forgeperms.py's `review_url()`), so the parent is the page itself.
+ */
+function installationUrl(org: ForgeOrgCard): string | null {
+  if (org.review_url === null) return null
+  const suffix = '/permissions/update'
+  return org.review_url.endsWith(suffix) ? org.review_url.slice(0, -suffix.length) : org.review_url
+}
+
+function checkedWords(checkedAt: string | null): string {
+  return `Checked ${checkedAt === null ? 'at an unknown time' : timeAgo(checkedAt)}`
+}
+
+/** The grants table, then the extras, then what the installation covers and where it came from. */
+function OrgDetail({
+  org,
+  rows,
+  repositories,
+  checkedAt,
+  onFix,
+}: {
+  org: ForgeOrgCard
+  rows: GrantRow[] | null
+  repositories: readonly ForgeRepoStatus[] | undefined
+  checkedAt: string | null | undefined
+  onFix: () => void
+}) {
+  const needed = new Set((rows ?? []).map((r) => r.permission))
+  const extra = Object.entries(org.granted ?? {})
+    .filter(([k]) => !needed.has(k))
+    .sort(([a], [b]) => a.localeCompare(b))
+  const covered = repositories?.filter((r) => r.installation_id === org.installation_id).map((r) => r.repo)
+  const manage = installationUrl(org)
+  return (
+    <div className="fp-detail">
+      {rows !== null && rows.length > 0 && (
+        <div className="fp-grants-wrap">
+          <table className="fp-grants">
+            <thead>
+              <tr>
+                <th scope="col">GitHub permission</th>
+                <th scope="col">Needs</th>
+                <th scope="col">Granted</th>
+                <th scope="col" aria-label="Enough" />
+                <th scope="col">For</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r) => (
+                <tr key={r.permission} data-permission={r.permission} data-ok={r.ok ? 'true' : 'false'} className={r.ok ? undefined : 'is-short'}>
+                  <td>
+                    <span className="fp-perm">{permissionWord(r.permission)}</span> <code className="fp-jargon">{r.permission}</code>
+                  </td>
+                  <td>{r.needs ?? '?'}</td>
+                  <td>{r.has ?? 'none'}</td>
+                  <td className="fp-mark">
+                    <ToneMark tone={r.ok ? 'ok' : 'bad'} hidden />
+                    <span className="fp-sr">{r.ok ? 'enough' : 'not enough'}</span>
+                  </td>
+                  <td className="fp-for">
+                    <span className="fp-words">{r.neededFor}</span>
+                    {r.capabilities.length > 0 && (
+                      <small className="fp-caps">{r.capabilities.map((c) => CAPABILITY_WORD[c] ?? c).join(', ')}</small>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {extra.length > 0 && (
+        <details className="fp-extra">
+          <summary>Also granted (not used by SwarmCloud): {extra.length}</summary>
+          <ul className="fp-extra-list">
+            {extra.map(([k, level]) => (
+              <li key={k}>
+                {permissionWord(k)} <code className="fp-jargon">{`${k}: ${level}`}</code>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      {covered !== undefined && (
+        <p className="ur-small fp-covers">
+          {covered.length === 0
+            ? 'Covers: no registered repository yet'
+            : `Covers: ${covered.length} registered ${covered.length === 1 ? 'repository' : 'repositories'} (${covered.join(', ')})`}
+        </p>
+      )}
+      <p className="ur-small fp-via">
+        <span>Via: SwarmCloud GitHub App installation {org.installation_id}</span>
+        {manage !== null && (
+          <ButtonLink kind="ghost" size="sm" href={manage} target="_blank" rel="noreferrer" onClick={onFix}>
+            Manage on GitHub
+          </ButtonLink>
+        )}
+      </p>
+      {checkedAt !== undefined && <p className="ur-hint fp-when">{checkedWords(checkedAt)}</p>}
+    </div>
+  )
+}
+
+export function OrgCard({
+  org,
+  required,
+  onFix,
+  repositories,
+  checkedAt,
+}: {
+  org: ForgeOrgCard
+  required: readonly ForgeGap[]
+  onFix: () => void
+  /** The read's repositories, for "Covers": the ones this installation reaches. */
+  repositories?: readonly ForgeRepoStatus[]
+  /** The read's `checked_at`, for "Checked 3m ago". */
+  checkedAt?: string | null
+}) {
   const lines = orgLines(org, required)
   const missing = org.missing?.length ?? 0
   const pending = lines.length - missing
   const unread = org.error !== null || org.missing === null
   const tone = lines.length > 0 ? 'bad' : unread ? 'unknown' : 'ok'
-  const chip = unread && lines.length === 0 ? 'not read' : countWords(missing, pending)
+  const rows = unread ? null : grantRows(org, required)
+  const chip =
+    unread && lines.length === 0
+      ? 'not read'
+      : tone === 'ok' && rows !== null && rows.length > 0
+        ? `${rows.filter((r) => r.ok).length}/${rows.length} granted`
+        : countWords(missing, pending)
   return (
     <PermCard
-      kind="org"
+      kind={org.account_type === 'User' ? 'account' : 'org'}
       name={org.org}
       tone={tone}
       chip={chip}
       lines={lines}
       error={org.error ?? (org.missing === null ? 'The installation was not read.' : null)}
       sig={`${tone}:${lines.map((l) => l.key).join(',')}:${org.error ?? ''}`}
+      summary={rows !== null && rows.length > 0 ? grantSummary(rows) : undefined}
+      detail={unread ? undefined : <OrgDetail org={org} rows={rows} repositories={repositories} checkedAt={checkedAt} onFix={onFix} />}
       hint={lines.length > 0 ? `Only an owner of ${org.org} can accept on GitHub.` : undefined}
       fix={lines.length > 0 && org.review_url !== null ? <FixLink href={org.review_url} label="Review on GitHub" onFix={onFix} /> : undefined}
     />
@@ -400,6 +620,9 @@ export function GitHubPermissions() {
       <div className="c-card-h fp-head">
         <h2 id="fp-github-h">GitHub</h2>
         <span className="ur-acts">
+          {(perms.state.status === 'ok' || perms.state.status === 'stale') && (
+            <small className="ur-hint fp-when">{checkedWords(perms.state.data.checked_at)}</small>
+          )}
           <RecheckButton perms={perms} />
         </span>
       </div>
@@ -414,7 +637,9 @@ export function GitHubPermissions() {
                 where your repositories are, then register one.
               </EmptyState>
             ) : (
-              doc.orgs.map((o) => <OrgCard key={o.installation_id} org={o} required={doc.required} onFix={perms.armRecheck} />)
+              doc.orgs.map((o) => (
+                <OrgCard key={o.installation_id} org={o} required={doc.required} onFix={perms.armRecheck} repositories={doc.repositories} checkedAt={doc.checked_at} />
+              ))
             )}
           </div>
         )}
@@ -442,7 +667,7 @@ export function RepoPermissions({ repoId }: { repoId: string }) {
               {row === undefined ? (
                 <p className="ur-hint">This repository is not in the permissions read yet; re-check once it is registered.</p>
               ) : org !== undefined ? (
-                <OrgCard org={org} required={doc.required} onFix={perms.armRecheck} />
+                <OrgCard org={org} required={doc.required} onFix={perms.armRecheck} repositories={doc.repositories} />
               ) : row.credential === 'token' ? (
                 <TokenCard row={row} />
               ) : (

@@ -221,8 +221,11 @@ No measurement backs these numbers; they are the owner's caps.
   worst case is `per_day_usd + max_concurrent × (actual run cost − per_run_usd)`.
 
 Since 2026-10-11 (Schedules S9) the issue sweep runs under this carve-out. Lane
-SWEEP's Cloud Scheduler job is paused and the `issue-sweep` schedule replaces it
-([operations.md §13](operations.md#13-schedules-the-s9-migration-sweep-paused-deletion-pending)).
+SWEEP's Cloud Scheduler job was paused that day, when the `issue-sweep`
+schedule replaced it, and deleted with its route and `SWEEP_ENABLED` on
+2026-10-12 (the owner waived the planned 7-day watch), so no unbudgeted
+trigger of the sweep is left
+([operations.md §13](operations.md#13-schedules-the-s9-migration-sweep-removed-2026-10-12)).
 The sweep is therefore the first recurring work with a dollar bound. Under SWEEP
 it had only the cap of 8 live runs, which still applies.
 

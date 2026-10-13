@@ -19,6 +19,11 @@ its `task_id`, `step_id`, `workflow_id`, the steps it depends on and its
 tool is the sc plugin's SwarmCloud `swarm_follow` (and `StructuredOutput`, for
 your answer). You never dispatch, cancel or retry anything.
 
+Every way this row ends is a `StructuredOutput` call: a finished step, a
+skipped one, a merge parked on CI, a turn cap, an error. Ending your turn
+without one throws the row away ("subagent completed without calling
+StructuredOutput") while the task runs on.
+
 If you have no `swarm_follow` tool, the sc plugin's SwarmCloud server is not
 connected in this session: go straight to section 3's UNKNOWN answer with
 `last_error` `the sc plugin's SwarmCloud MCP server is not connected in this
@@ -100,7 +105,10 @@ reply's `progress` line, and any `transitions` before it on the same line,
 ending with `· console: <link>` exactly as "The link on every line" says.
 If `changed` is `false`, write nothing at all, not even a word: an unchanged
 row costs nothing to watch, and a written line is re-read on every turn
-after it. Never quote anything else from a reply. Stop when the reply's
+after it. A reply with no new events -- `changed: false`, `progress` empty
+-- is not the end of this row: unless its `stop` is `true`, make the next
+call at once, with that reply's `since`. Never quote anything else from a
+reply. Stop when the reply's
 `stop` is `true`. The reply that stops carries the step's final line, which
 ends with the same `· console: <link>` as every line before it.
 
@@ -157,6 +165,24 @@ Nothing was cancelled and nothing failed. Call `StructuredOutput` with
 of the last reply (else the `console` line in your prompt; `""` when that says
 `none`) -- a progress report, not the step's result.
 
+## 2b. A merge parked on CI -- answer PARKED and stop
+
+When a reply's `tasks[0].state` is `PARKED` and `tasks[0].park_reason` is
+`CI_PENDING`, the step is a merge waiting on its pull request's checks. It
+is woken and parked again for as long as CI runs -- hours, on a slow
+pipeline -- holds no capacity meanwhile, and resumes on its own. Never wait
+it out: following it hold after hold is what ran these rows out of turns.
+The bridge ends such a reply with `stop: true` and a ready `result` whose
+`state` is `PARKED` and whose `last_error` names the park reason and how to
+resume: answer with it exactly as section 3 says, `state: "PARKED"`.
+
+If that reply has no `result` (a bridge older than this row), write it
+yourself and stop: `{state: "PARKED", result: {state: "PARKED",
+answer_excerpt: "", pr_url: "", artifacts: [], questions: [], last_error:
+"PARKED on CI_PENDING: waiting for the pull request's checks. Resume with:
+swarm follow <task_id>", console: <tasks[0].console of that reply, else the
+`console` line in your prompt, else "">}}`.
+
 ## 3. Answer
 
 When a reply says `stop: true`, it carries `result`: the step's answer, built
@@ -179,6 +205,12 @@ Call `StructuredOutput` with `{state, result}`:
   it. Its `answer_excerpt` is copied VERBATIM, character for character: the
   bridge already made it JSON-safe, with no newline, backslash, double quote
   or backtick, and `********` masks and paths in it are meant to be there
+
+**A skipped step.** A step whose agent was skipped -- a re-review or a merge
+with nothing to do -- finishes with no answer and nothing produced: its
+`result` carries `answer_excerpt: ""` and `artifacts: []`. That IS its
+answer. Copy it as given, every field, empty ones included: an empty field
+is never a reason to leave it out, to write `null`, or to keep following.
 
 The bridge's `result` holds no null anywhere, and you add none: a text it has
 no value for is `""`, and a cost or duration that was not recorded is LEFT
