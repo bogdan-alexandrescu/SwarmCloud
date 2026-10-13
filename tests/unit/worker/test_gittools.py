@@ -21,6 +21,7 @@ What each test holds, from the design's §7 row G3:
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import os
@@ -126,8 +127,6 @@ class FakeApi:
         _git(self.origin, "bundle", "create", str(bundle), "refs/swarm/out",
              *(f"^{h}" for h in body["haves"]))
         raw = bundle.read_bytes()
-        import hashlib
-
         return {"resolved_sha": sha, "bundle": base64.b64encode(raw).decode(),
                 "bundle_sha256": hashlib.sha256(raw).hexdigest()}
 
