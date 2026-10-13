@@ -767,14 +767,22 @@ WORKDIR /workspace
 # nothing about the patch level, so the build asserts it rather than a resume
 # discovering it. `agent_worker.checkpoint` refuses to import without the
 # filter too; this line names the cause in the build log.
+#
+# And a worker that cannot import its own runners is broken in a way that must
+# not reach production, so the build proves it can.
+#
+# ONE RUN, not two. A check-only RUN leaves a ~100-byte layer holding only the
+# etc/ directory entry, and two that finish in the same second write the SAME
+# layer: 2 of the 30 newest digests of this image repeated one here (read
+# 2026-10-13), and so did every browser and indexer image built on them. GKE
+# does not stream an image with a duplicate layer (docs/browser-startup-
+# speed.md §2.4), and the release refuses one (scripts/image-sizes.sh
+# --duplicate-layers; tests/unit/scripts/test_image_streaming.py).
 RUN python -c "import sys, tarfile; \
 assert sys.version_info >= (3, 11, 4), 'Python %s: the checkpoint restore needs 3.11.4 or later' % sys.version.split()[0]; \
 assert hasattr(tarfile, 'data_filter'), 'tarfile.data_filter is missing'; \
-print('python', sys.version.split()[0])"
-
-# A worker that cannot import its own runners is broken in a way that must not
-# reach production, so the build proves it can.
-RUN python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"
+print('python', sys.version.split()[0])" \
+ && python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"
 
 # Every program the generic runner's catalogue names must exist in this image,
 # or the first tenant to submit the documented use case discovers it instead of

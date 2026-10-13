@@ -7,13 +7,19 @@
    page's registrable domain disagreeing (§5.7 item 2), yellow a hand-off that
    named no site, and every tone says its reason in words beside the colour. */
 
-.ag-split > .ag-split-pane.is-browser { display: flex; flex-direction: column; overflow: auto; }
+.ag-split > .ag-split-pane.is-browser { display: flex; flex-direction: column; overflow: auto; scrollbar-gutter: stable; }
 /* THE PANE'S HEIGHT REACHES THE STAGE (LB-R1, re-QA 2026-10-12). TheaterHost
    wraps the tab in `.th-host`, and as a plain block it gave `.live-tab` its
    content's height: the stage sat at its 320px floor, a 1440×900 desktop
    was drawn 424×291 and the lower half of the window was empty. Every box
    from the pane to the stage now takes the room left -- the window less the
-   header, tabs, strip, toolbar and caption -- with no ceiling anywhere. */
+   header, tabs, strip, toolbar and caption -- with no ceiling anywhere.
+   AND THE WIDTH TOO (QA12-19, QA p12): under a hand-off banner the room
+   left was the stage's floor again, and the device 424×291 beside an empty
+   width. LiveScreen gives the stage a min-height (`stageFloor`) that lets
+   the device fill the pane's width; the pane scrolls when that is more than
+   it has. The gutter is kept, so a scrollbar appearing does not narrow the
+   pane, change the floor and take the scrollbar away again. */
 .ag-split-pane.is-browser > .th-host { display: flex; flex-direction: column; flex: 1 1 auto; min-height: 0; }
 .live-tab { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
 .live-note { color: var(--text-dim); font-size: var(--t-body); padding: 12px 0; }
@@ -45,6 +51,8 @@
 .live-toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; font-size: var(--t-meta); }
 .live-device { display: inline-flex; gap: 6px; align-items: center; }
 .live-open { display: inline-flex; gap: 6px; align-items: center; white-space: nowrap; }
+/* The member-control confirm (QA12-11) opens under its checkbox, as Take control's does under its button. */
+.live-open-wrap { position: relative; display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; }
 .live-chips { display: inline-flex; flex-wrap: nowrap; gap: 2px; }
 .live-chip[aria-pressed="true"] { border-color: var(--sk-ac); color: var(--sk-ac); font-weight: 600; }
 .live-toolbar-end { margin-left: auto; display: inline-flex; flex-wrap: nowrap; gap: 8px; align-items: center; }
@@ -101,6 +109,10 @@
    lines, and a heading's or paragraph's default margin added a blank band. */
 .live-ask h4, .live-ask p { margin: 0; }
 .live-ask-warn { color: var(--warn-ink); }
+/* The agent's own reason, first in the take-control ask (QA12-09): the ask
+   opens over the hand-off banner, and the reason is what the person decides on. */
+.live-ask-reason { color: var(--text-dim); font-size: var(--t-meta); }
+.live-ask-reason b { color: var(--text); font-weight: 600; }
 .live-ask-actions { display: flex; gap: 8px; }
 
 /* THE PHONE'S "⋯" MENU (LB-UX3, LiveToolMenu.tsx): the device switcher,
