@@ -3204,8 +3204,8 @@ def cmd_login(_client, args, out) -> int:
 #: Said when no SWARM_TENANT is set: the API picks, and since #1204 its pick is
 #: the caller's personal workspace when that is ready.
 _DEFAULT_TENANT_SOURCE = (
-    "your default: SWARM_TENANT is not set, so the API chose "
-    "(your personal workspace when it is ready)"
+    "SWARM_TENANT is not set, so the API chose your default: "
+    "your personal workspace when it is ready"
 )
 
 
