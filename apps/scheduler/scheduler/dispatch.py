@@ -827,6 +827,25 @@ def spec_job_env(settings: Any) -> dict[str, str]:
     return {name: str(value) for name, value in values.items() if value}
 
 
+#: The runners the `swarm-git` MCP shim is named in (docs/runner-git-tools.md
+#: §7, lane G6: claude-code's `--mcp-config`, codex's MCP configuration).
+GIT_TOOL_RUNNERS = ("agent_worker.runners.claude_code", "agent_worker.runners.codex")
+
+
+def offers_git_tools(profile_name: str) -> bool:
+    """Whether a task on this profile is offered the git tools, so needs an attempt key.
+
+    Read from the frozen catalogue rather than kept as a list of profile names,
+    so a new profile on one of these runners is covered without a second edit
+    here. A worker action (merge, post-verdict) runs no agent at all; the mock
+    and browser runners have no MCP configuration to name the shim in.
+    """
+    profile = RUNNER_PROFILES.get(profile_name)
+    if profile is None or profile.worker_action is not None:
+        return False
+    return any(part in GIT_TOOL_RUNNERS for part in profile.runner_argv)
+
+
 def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> dict[str, str]:
     """The ONLY thing the environment carries is identifiers and endpoints.
 
@@ -912,17 +931,26 @@ def worker_env(*, task: Task, lease: Lease, tenant: Tenant, settings: Any) -> di
         env["SWARM_CONSOLE_URL"] = console_url
     if getattr(settings, "pr_console_links", False) is True:
         env["SWARM_PR_CONSOLE_LINKS"] = "true"
-    # THE CHILD PATH (docs/design/child-tasks.md §3.2). A one-use registration
+    # THE ATTEMPT KEY (docs/design/child-tasks.md §3.2). A one-use registration
     # nonce bound to this exact attempt, which its worker spends registering
     # the attempt key it generates BEFORE its agent exists; the agent can read
-    # it later from /proc/1/environ, by which time it is worthless. Only for a
-    # task that is not itself a child (depth 1), and only when this deployment
-    # has the key -- omitted otherwise, so the worker offers no child path.
-    # The nonce and the API's address travel together: a nonce the worker
-    # had nowhere to spend would sit unspent in an environment its agent reads.
+    # it later from /proc/1/environ, by which time it is worthless. Only when
+    # this deployment has the key -- omitted otherwise, so the worker registers
+    # nothing. The nonce and the API's address travel together: a nonce the
+    # worker had nowhere to spend would sit unspent in an environment its
+    # agent reads.
+    #
+    # A CHILD GETS ONE ONLY WHEN ITS PROFILE OFFERS GIT TOOLS
+    # (docs/runner-git-tools.md §1.4, lane G2). The key was the child path's
+    # alone, and a child may not have children, so a child got none. The git
+    # tools are signed with the same key, and a fan-out lane runs as a child,
+    # so it needs one too. Having a key does not lift the depth limit:
+    # swarm-api refuses a child's `submit` as `child_depth_exceeded` from the
+    # task document, whatever its worker registered.
     child_key = str(getattr(settings, "child_key", "") or "")
     api_url = str(getattr(settings, "swarm_api_url", "") or "").strip()
-    if child_key and api_url and not task.parent_task_id:
+    keyed = not task.parent_task_id or offers_git_tools(task.runner_profile)
+    if child_key and api_url and keyed:
         from .children import registration_nonce
 
         env["SWARM_CHILD_NONCE"] = registration_nonce(
