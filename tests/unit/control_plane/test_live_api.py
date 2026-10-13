@@ -1050,8 +1050,8 @@ def test_a_ticket_the_relay_refuses_closes_the_console_socket(
     assert refusing.links and refusing.links[0].closed
 
 
-def test_a_new_attempts_session_closes_the_last_ones_at_the_relay(client, ldb, live, relay):
-    relay.closed.clear()
+def _second_attempt(client, ldb):
+    """The task's attempt 2 registered and RUNNING, its session not yet open."""
     second = Attempt(generation=2)
     second.tuple = AttemptTuple("eng", TASK, "att_live_2", "lease_live_2", 2)
     ldb.docs[f"tasks/{TASK}"].update({"current_lease_id": "lease_live_2", "current_generation": 2,
@@ -1074,10 +1074,79 @@ def test_a_new_attempts_session_closes_the_last_ones_at_the_relay(client, ldb, l
     assert registered.status_code == 201, registered.text
     ldb.docs[f"tasks/{TASK}"]["state"] = "RUNNING"
     ldb.docs["leases/lease_live_2"]["state"] = "RUNNING"
+    return second
+
+
+def test_a_new_attempts_session_closes_the_last_ones_at_the_relay(client, ldb, live, relay):
+    relay.closed.clear()
+    second = _second_attempt(client, ldb)
     response = open_session(client, second)
     assert response.status_code == 201, response.text
     assert relay.closed == [SESSION]
     assert session_doc(ldb)["state"] == "closed"
+
+
+# --------------------------------------------------------------------------
+# Member control is the task's: it carries over, and it can be turned off
+# (owner decision 2026-10-13, QA12-11; lane LIVE-TAB, part of #1030)
+# --------------------------------------------------------------------------
+
+
+def test_member_control_carries_over_to_the_next_attempts_session(client, ldb, live):
+    """MEASURED in QA p12 on task_4defa61c5eea4a5c87f5: "Let any member take
+    control" reset on the resumed attempt, because it lived on attempt 1's
+    session alone. It is the task's setting now."""
+    assert client.post(f"/v1/tasks/{TASK}/live/open-to-members",
+                       headers=bearer("alice")).status_code == 200
+    assert ldb.docs[f"tasks/{TASK}"]["live_open_to_members"] is True
+    second = _second_attempt(client, ldb)
+    assert open_session(client, second).status_code == 201
+    fresh = ldb.docs[f"{LIVE_SESSIONS}/{session_id_for('att_live_2')}"]
+    assert fresh["open_to_members"] is True
+    assert fresh["opened_to_members_by"] == "alice@saga.xyz"
+    view = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("root")).json()
+    assert view["session"]["open_to_members"] is True
+    # Carried, not re-chosen: the session's opening says so, and no second
+    # "let any member" line is written for a choice nobody made again.
+    opened = [r for r in audit(ldb, "session_opened") if r["attempt_id"] == "att_live_2"]
+    assert opened[0]["detail"]["open_to_members"] is True
+    assert len(audit(ldb, "control_opened_to_members")) == 1
+    _ask_for_help(ldb)
+    assert take(client, "root").status_code == 200
+
+
+def test_the_submitter_turns_member_control_off_and_it_stays_off(client, ldb, live):
+    assert client.post(f"/v1/tasks/{TASK}/live/open-to-members",
+                       headers=bearer("alice")).status_code == 200
+    # Only the submitter may turn it off, as only they may turn it on.
+    refused = client.delete(f"/v1/tasks/{TASK}/live/open-to-members", headers=bearer("root"))
+    assert refused.status_code == 403
+    assert refused.json()["code"] == "control_not_eligible"
+    closed = client.delete(f"/v1/tasks/{TASK}/live/open-to-members", headers=bearer("alice"))
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["session"]["open_to_members"] is False
+    assert session_doc(ldb)["open_to_members"] is False
+    assert ldb.docs[f"tasks/{TASK}"]["live_open_to_members"] is False
+    assert [r["email"] for r in audit(ldb, "control_closed_to_members")] == ["alice@saga.xyz"]
+    # Twice is once: no second audit row.
+    assert client.delete(f"/v1/tasks/{TASK}/live/open-to-members",
+                         headers=bearer("alice")).status_code == 200
+    assert len(audit(ldb, "control_closed_to_members")) == 1
+    _ask_for_help(ldb)
+    assert take(client, "root").status_code == 403
+    # Off is carried over as well as on.
+    second = _second_attempt(client, ldb)
+    assert open_session(client, second).status_code == 201
+    assert ldb.docs[f"{LIVE_SESSIONS}/{session_id_for('att_live_2')}"]["open_to_members"] is False
+
+
+def test_turning_member_control_off_is_on_the_timeline(client, ldb, live):
+    from swarm_api.live import audit_lines
+
+    client.post(f"/v1/tasks/{TASK}/live/open-to-members", headers=bearer("alice"))
+    client.delete(f"/v1/tasks/{TASK}/live/open-to-members", headers=bearer("alice"))
+    events = [line["event"] for line in audit_lines(audit(ldb), None)]
+    assert events == ["control_opened_to_members", "control_closed_to_members"]
 
 
 def test_the_relay_closer_posts_to_the_internal_close_route_on_the_same_address():
