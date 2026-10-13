@@ -77,20 +77,19 @@ jobs:
           sarif_file: trivy-fs.sarif
           category: trivy-fs
 
-      - name: fail on fixable HIGH/CRITICAL
-        # --ignore-unfixed on purpose: failing a build for a vulnerability with
-        # no available fix teaches people to ignore the build, and the finding is
-        # still recorded in the Security tab above.
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          format: table
-          exit-code: "1"
-          version: v${{ env.TRIVY_VERSION }}
+      - name: fail on fixable HIGH/CRITICAL new against the base branch
+        # Only findings the base branch's scan of the same target does not
+        # have, compared by rule id + package + target, never by line (PR 1186
+        # had main's alerts re-attributed to its edited FROM lines; #1194).
+        # No base (push, schedule): every finding fails. Every finding is still
+        # in the Security tab above. scripts/trivy-new-findings.sh says why.
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b /usr/local/bin "v${TRIVY_VERSION}"
+          scripts/trivy-new-findings.sh gate --base "${BASE_SHA}"
 
   secrets:
     name: secret scan

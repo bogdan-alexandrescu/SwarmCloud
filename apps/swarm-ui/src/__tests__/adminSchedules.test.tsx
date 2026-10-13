@@ -163,9 +163,11 @@ describe('Admin › Schedules', () => {
   it('ADM-6: lists every Cloud Scheduler job in jobs.tf, by resource and job name, and nothing else', async () => {
     const { PLATFORM_TICKS } = await import('../AdminSchedules')
     const declared = jobsTf()
-    // A control: the parse found the jobs the live QA counted, so an empty
-    // or broken read cannot pass as agreement.
-    expect(declared.length).toBeGreaterThanOrEqual(12)
+    // A control: the parse found the jobs the live QA counted (12), less the
+    // issue_sweep job deleted on 2026-10-12 (Schedules S9, second change), so
+    // an empty or broken read cannot pass as agreement.
+    expect(declared.length).toBeGreaterThanOrEqual(11)
+    expect(declared.map((j) => j.name)).not.toContain('issue_sweep')
     expect(declared.map((j) => j.name)).toContain('schedule_tick')
     // MUTATION: drop any entry from PLATFORM_TICKS.
     expect(PLATFORM_TICKS.map((t) => ({ name: t.name, job: t.job }))).toEqual(declared)
