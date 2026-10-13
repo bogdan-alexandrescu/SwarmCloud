@@ -177,8 +177,15 @@ def test_every_call_the_guard_admits_has_its_permission() -> None:
     assert not missing, f"swarmWorkspaceFirestore lacks what workspace-calls.json admits: {missing}"
 
 
+#: Granted but needed by no call. Owner decision 2026-10-12: the fix for the
+#: A1 beginTransaction 403 was applied adds-only, so databases.getMetadata
+#: stays until a separate change removes it. Nothing else may be added here
+#: without the same kind of decision.
+KEPT_UNUSED = frozenset({"datastore.databases.getMetadata"})
+
+
 def test_the_role_holds_nothing_no_call_needs() -> None:
     need = set(required(script_calls())) | set(required(guard_calls()))
-    extra = sorted(firestore_role() - need)
+    extra = sorted(firestore_role() - need - KEPT_UNUSED)
     assert not extra, f"swarmWorkspaceFirestore grants {extra}, which no call of the workspace job needs"
     assert "datastore.entities.delete" not in firestore_role()

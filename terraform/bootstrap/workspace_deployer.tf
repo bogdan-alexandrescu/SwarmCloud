@@ -269,11 +269,16 @@ locals {
       # script's calls and the guard's (workspace-calls.json) and holds this
       # list to exactly what they need.
       #
-      # databases.getMetadata was here until 2026-10-13 and databases.get was
-      # not: getMetadata is projects.databases.get, which the job never calls
-      # (its guard refuses it), and the A1 claim's beginTransaction 403'd on
-      # every execution for w-7f9285.
+      # databases.get was missing until 2026-10-13, so the A1 claim's
+      # beginTransaction 403'd on every execution for w-7f9285.
+      # databases.getMetadata is projects.databases.get, which the job never
+      # calls (its guard refuses it). It STAYS by owner decision 2026-10-12
+      # (adds-only IAM change; removing it is a separate change), and
+      # tests/unit/scripts/test_workspace_firestore_permissions.py allows
+      # exactly that one unused extra.
       permissions = [
+        # Unused (see above); kept by owner decision 2026-10-12.
+        "datastore.databases.getMetadata",
         # beginTransaction (A1 claim) and rollback (a claim that re-admits
         # nothing). The transaction permission, not the metadata one.
         "datastore.databases.get",
