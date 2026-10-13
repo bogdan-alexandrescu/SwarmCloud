@@ -92,9 +92,9 @@ Some notes on what each group deliberately leaves out:
   reply. So a question item stays for 7 days after its task ended, and marking
   it read clears it from the bell's count.
 * **A declined loan request does not count as needing you either.** Nothing
-  the person does resolves it. It
-  carries the admin's optional reason and never who declined. Asking again
-  re-opens the request, and the item no longer derives.
+  the person does resolves it. It carries the admin's optional reason and
+  never who declined. Asking again re-opens the request, and the item no
+  longer derives.
 * **A workspace becoming ready, or being denied, does not count as needing
   you.** Nothing the person does resolves it, so as a needs-you item it would
   sit in the bell until marked read. It is an update in the `account` group,
