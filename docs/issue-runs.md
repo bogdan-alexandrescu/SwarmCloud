@@ -430,9 +430,11 @@ frozen-contract change.)
 
 A round is spent **only on a red reading at a new head**. Pending CI submits
 nothing; a round that pushed nothing (the head did not move) is `FAILED` rather
-than a second round on the same commit; a CI read that fails (GitHub down, a
-token without `Checks: read`) is not a red reading -- the run stays `CHECKING`
-with `pull_request.read_error` set. CI is read at most every 30 s per run, and a
+than a second round on the same commit; a CI read that fails is not a red
+reading. GitHub down, a timeout, a 5xx or a rate limit leaves the run `CHECKING`
+with `pull_request.read_error` set and the read retried with backoff; a
+credential GitHub refuses (a token without `Checks: read`) fails the run at
+once (below). CI is read at most every 30 s per run, and a
 head with nothing required and nothing reported for 10 minutes is read as a
 repository with no CI (`DONE`, `checks: none`).
 
@@ -446,6 +448,44 @@ reads, the merge, a round's submission). Before, that exception discarded the
 reading and left `checked_at` unmoved, and the list route only logged it. Now
 the reading is stored, `read_error` says the move failed, and the next visit
 tries again.
+
+**A read GitHub cannot answer is retried with backoff and says why it is
+stuck (WRITEBACK, 2026-10-12).** `run_0d784c412dbc421a98ec` (#1151) ended
+`FAILED` after 12 hours in `CHECKING` saying only "could not read the
+repository's checks for 12 hours: writeback_failed: the check runs at
+...@8d98e0c66243 could not be sent to GitHub (URLError)". Nothing in that told
+a GitHub that was briefly unreachable from a credential that would never work,
+and it had been read every 30 s the whole time. So the CI read's failures are
+now told apart (`forgewrite.is_transient`, `is_credential_refusal`):
+
+| failure | what the run does |
+|---|---|
+| GitHub unreachable, a timeout (`URLError`, `TimeoutError`, a reset connection), HTTP 5xx, HTTP 429, a 403 that is GitHub's rate limit | stays `CHECKING`; the read is tried again `CI_READ_SECONDS` (30 s) later, then twice as long after each further failure, up to `READ_BACKOFF_MAX_SECONDS` (15 min) |
+| HTTP 401, a 403 that is not a rate limit, no forge credential stored | `FAILED` at once: `could not read the repository's checks: <code>: <why>`, naming the permission or the expired credential |
+| anything else (a 404, an answer that is not JSON) | stays `CHECKING`, read again at the normal cadence |
+
+While reads keep failing, `pull_request` records `read_attempts`,
+`read_failing_since` (the FIRST failure in the run of them) and
+`read_retry_at`, and `read_error` says it in one line, which the run page
+shows:
+
+    GitHub writeback failing since 2026-10-12T05:30Z: writeback_failed: the check runs at o/r@8d98e0c66243 could not be sent to GitHub (URLError: TimeoutError) (37 attempts)
+
+The transport failure is named by its type and, when urllib wraps one, its
+cause's type -- never its text, which can quote the request. A read that works
+clears all of them. A run still failing at `CHECKING_DEADLINE_SECONDS` (12 h)
+fails with that same line: `could not read the repository's checks for 12
+hours: GitHub writeback failing since ...`.
+
+**Why a credential refusal fails at once.** It does not change until a person
+changes the credential, and twelve hours of `CHECKING` only hid the cause and
+held a schedule slot; the run's error now says what to fix the first time the
+read is refused. **Why a green `auto_merge` run is not failed by a transient
+read.** Its checks were green on GitHub and it is waiting on its merge; the
+wire being down is not a reason to throw that decision away, so
+`_awaiting_merge` still holds it past the deadline while the read retries. A
+failing status-comment write never holds a green run back either: the comment
+is the run's report, not its gate.
 
 **The list has a summary view (RT-7, 2026-10-11).** `GET /v1/runs` was 1.5 MB
 for 50 rows, nearly all of it plans, open work, history and per-check lists the
