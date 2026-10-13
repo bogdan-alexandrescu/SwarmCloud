@@ -5340,7 +5340,12 @@ export interface PersonRow {
   github: 'connected' | 'expired' | 'none'
   workspace: AdminWorkspaceView
   claude_account: PersonClaudeAccount
-  loan_request: { state: string | null; requested_at: string | null } | null
+  /**
+   * `state` is `requested`, `lent` or `declined` (LOAN-DECLINE). A decided
+   * request carries when, and a declined one the reason the person is shown;
+   * never who decided (the audit says).
+   */
+  loan_request: { state: string | null; requested_at: string | null; decided_at?: string | null; reason?: string | null } | null
   first_seen: string | null
   last_seen: string | null
   last_submitted: string | null
@@ -5419,6 +5424,13 @@ export interface WorkspaceLoanAnswer {
   owner_tenant: string
   lent: boolean
   changed: boolean
+}
+
+/** `POST /v1/admin/people/{workspace_id}/loan/decline` (`people.People.decline_loan`). */
+export interface LoanDeclineAnswer {
+  workspace_id: string
+  state: 'declined'
+  reason: string | null
 }
 
 /** `PUT /v1/admin/admins/{email}` (`admins._to_api`). */

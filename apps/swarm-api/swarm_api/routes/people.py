@@ -21,6 +21,9 @@ Lane W7 (docs/workspaces.md §6.3-§6.4):
     PUT  /v1/admin/workspaces/{workspace_id}/limits      the ceiling; body {max_active}
     PUT  /v1/admin/people/{workspace_id}/loan            lend or reclaim; body
                                                          {account_id, lend}
+    POST /v1/admin/people/{workspace_id}/loan/decline    decline the open loan
+                                                         request; body {reason?}
+                                                         (LOAN-DECLINE)
     POST /v1/admin/workspaces/sweep                      the dispatch sweep: an
                                                          admin, or the swarm-tick
                                                          scheduler identity
@@ -43,7 +46,7 @@ from ..admins import AdminRoles, build_admin_roles
 from ..auth import AuthContext
 from ..brokerclient import AccountPool
 from ..deps import AppContext, admin_auth, get_context
-from ..people import MAX_CEILING, MAX_REASON, MIN_CEILING, People
+from ..people import MAX_CEILING, MAX_LOAN_REASON, MAX_REASON, MIN_CEILING, People
 from ..publish_workspace import WorkspacePublisher, publisher_for
 from ..schemas import StrictModel
 from .accounts import account_pool
@@ -104,6 +107,11 @@ class LoanRequest(StrictModel):
     account_id: str = Field(min_length=1, max_length=200)
     #: True lends the account to the person; False reclaims it.
     lend: bool
+
+
+class LoanDeclineRequest(StrictModel):
+    #: Optional, and shown to the person in their notification feed.
+    reason: str | None = Field(default=None, max_length=MAX_LOAN_REASON)
 
 
 def workspace_publisher(request: Request,
@@ -236,3 +244,17 @@ def set_workspace_loan(
 ) -> dict:
     return people.set_loan(workspace_id, by=auth.email, account_id=body.account_id,
                            lend=body.lend, pool=pool, store=ctx.store)
+
+
+@router.post("/people/{workspace_id}/loan/decline")
+def decline_workspace_loan(
+    workspace_id: str,
+    body: LoanDeclineRequest | None = None,
+    auth: AuthContext = Depends(admin_auth),
+    people: People = Depends(people_service),
+) -> dict:
+    """Close the person's open loan request without lending (LOAN-DECLINE).
+    The body may be omitted; 409 `LOAN_REQUEST_NOT_OPEN` when no request is
+    open. No broker call: nothing was lent, so there is nothing to undo."""
+    return people.decline_loan(workspace_id, by=auth.email,
+                               reason=body.reason if body is not None else None)

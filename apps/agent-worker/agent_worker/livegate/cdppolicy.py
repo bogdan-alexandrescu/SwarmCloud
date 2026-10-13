@@ -22,9 +22,17 @@ needed and only one shape of it is dangerous:
 * `Target.createBrowserContext` without `proxyServer`, `proxyBypassList` or
   `originsWithUniversalNetworkAccess` (Playwright's `newContext()` sends
   none of them unless asked for a proxy);
-* `Browser.setDownloadBehavior` / `Page.setDownloadBehavior` that allows a
-  download only into `downloads/`, the one volume the worker reads and the gate
-  does not (section 3.1); `deny` and `default` carry no path and are allowed;
+* `Browser.setDownloadBehavior` / `Page.setDownloadBehavior` with one of
+  Chromium's four behaviours. `deny` and `default` carry no path and pass as
+  sent. `allow` and `allowAndName` download only into `downloads/`, the one
+  volume the worker reads and the gate does not (section 3.1): a path outside
+  it, or none, is CONFINED -- `confine` rewrites it to `downloads/` before the
+  command is held or forwarded -- rather than refused. MEASURED 2026-10-13
+  (task_1f28d5bfa5a14f618f83, LB-POLISH): Playwright's `connect_over_cdp`
+  names its own artifacts directory (a mkdtemp under the CLIENT's tmpdir) for
+  the default context, so refusing it refused the whole connection and the
+  agent fell back to raw CDP. Chromium writes where the gate says, never
+  where the agent said; a path the agent names is never forwarded;
 * `DOM.setFileInputFiles` only from `uploads/`. Not in the design's table, and
   added here for the same reason as the download rule from the other side: the
   path is opened by Chromium, in the sidecar, so a path outside `uploads/`
@@ -103,8 +111,8 @@ DENIED: Mapping[str, str] = {
     "Security.setOverrideCertificateErrors": "lets a man-in-the-middle certificate pass",
     "Page.setBypassCSP": "turns off the site's own script defences",
     "Network.setExtraHTTPHeaders": "adds headers the agent chose to every request",
-    "Browser.setDownloadBehavior": "writes files outside downloads/",
-    "Page.setDownloadBehavior": "writes files outside downloads/",
+    "Browser.setDownloadBehavior": "a download behavior Chromium does not name",
+    "Page.setDownloadBehavior": "a download behavior Chromium does not name",
     "DOM.setFileInputFiles": "uploads a file from outside uploads/",
     "Target.attachToTarget": "a non-flat session tunnels CDP past this policy",
     "Target.setAutoAttach": "a non-flat session tunnels CDP past this policy",
@@ -146,6 +154,12 @@ _PARAMETER_RULED = frozenset(
 )
 
 _PROXY_PARAMETERS = ("proxyServer", "proxyBypassList", "originsWithUniversalNetworkAccess")
+
+_DOWNLOAD_METHODS = ("Browser.setDownloadBehavior", "Page.setDownloadBehavior")
+#: Chromium's download behaviours: the two that write nowhere, and the two
+#: that write into `downloadPath`, which `confine` makes `downloads/`.
+_DOWNLOAD_PATHLESS = ("deny", "default")
+_DOWNLOAD_WRITING = ("allow", "allowAndName")
 
 # What Playwright's Chromium driver sends over `connectOverCDP` for page work
 # (crBrowser, crPage, crNetworkManager, crExecutionContext, crInput,
@@ -337,16 +351,31 @@ def _inside(path: Any, root: Path) -> bool:
 def _parameter_refusal(method: str, params: Mapping[str, Any], paths: PolicyPaths) -> bool:
     if method == "Target.createBrowserContext":
         return any(key in params for key in _PROXY_PARAMETERS)
-    if method in ("Browser.setDownloadBehavior", "Page.setDownloadBehavior"):
-        if params.get("behavior") in ("deny", "default"):
+    if method in _DOWNLOAD_METHODS:
+        if params.get("behavior") in _DOWNLOAD_PATHLESS:
             return False
-        return not _inside(params.get("downloadPath"), paths.downloads_dir)
+        return params.get("behavior") not in _DOWNLOAD_WRITING or not _inside(
+            params.get("downloadPath"), paths.downloads_dir
+        )
     if method == "DOM.setFileInputFiles":
         files = params.get("files", [])
         return not isinstance(files, list) or not all(_inside(f, paths.uploads_dir) for f in files)
     if method in ("Target.attachToTarget", "Target.setAutoAttach"):
         return params.get("flatten") is not True
     return False
+
+
+def confine(method: str, params: Mapping[str, Any], paths: PolicyPaths) -> Mapping[str, Any]:
+    """`params` as Chromium may receive them: a download that writes is
+    pointed into `downloads/` when it named anywhere else (module docstring).
+    Every other command is returned as it came; `check` still runs after."""
+    if (
+        method in _DOWNLOAD_METHODS
+        and params.get("behavior") in _DOWNLOAD_WRITING
+        and not _inside(params.get("downloadPath"), paths.downloads_dir)
+    ):
+        return {**params, "downloadPath": str(paths.downloads_dir)}
+    return params
 
 
 def check(method: str, params: Mapping[str, Any] | None, paths: PolicyPaths) -> Refusal | None:

@@ -123,6 +123,13 @@ NOT_SWITCHABLE_CODES = frozenset({
     "WORKSPACE_WRONG_STATE",
     "ACCOUNT_NOT_LENDABLE",
     "ACCOUNT_IS_THEIRS",
+    # The loan decline (LOAN-DECLINE, docs/workspaces.md §6.4), as the
+    # workspace codes above: raised only by the POST
+    # /v1/admin/people/{workspace_id}/loan/decline that change introduces, so
+    # no existing caller can be refused by it. Continuing past it is the
+    # breach itself: a request already lent against, or never made, written
+    # as `declined` out of its state machine.
+    "LOAN_REQUEST_NOT_OPEN",
     # The live-browser hand-off (LB-L10, docs/design/live-browser.md §4), as
     # the workspace codes above: raised only by the three routes that change
     # introduces (POST /tasks/{id}/handoff, /handoff/resolve, /human-ready),

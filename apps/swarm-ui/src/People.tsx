@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } fr
 import { createPortal } from 'react-dom'
 import {
   approveWorkspace,
+  declineLoanRequest,
   denyWorkspace,
   grantAdmin,
   loadPeople,
@@ -301,6 +302,59 @@ function Deny({ row, reload, onSaid }: { row: PersonRow; reload: () => void; onS
         </Button>
         <Button size="sm" kind="primary" disabled={blank || busy} onClick={() => void go()}>
           {busy ? 'Denying…' : 'Deny'}
+        </Button>
+      </span>
+      <SaidLine said={said} />
+    </span>
+  )
+}
+
+/**
+ * DECLINE A LOAN REQUEST (LOAN-DECLINE). The reason is optional and shown to
+ * the person, so a blank one sends none; the confirm is small and inline,
+ * like Deny's, and nothing is sent until it is confirmed. A declined request
+ * leaves the card on the next read, so the outcome is said under the card.
+ */
+function DeclineLoan({ row, reload, onSaid }: { row: PersonRow; reload: () => void; onSaid?: (s: Said) => void }) {
+  const id = row.workspace.workspace_id ?? ''
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [said, say] = useSaid(onSaid)
+  const go = async () => {
+    if (busy) return
+    setBusy(true)
+    const r = await declineLoanRequest(id, reason)
+    setBusy(false)
+    if (r.status !== 'error') {
+      setOpen(false)
+      setReason('')
+    }
+    say(outcome(r, () => `Declined ${row.email}'s request to borrow a Claude account. They are told.`))
+    reload()
+  }
+  if (!open) {
+    return (
+      <>
+        <Button size="sm" onClick={() => setOpen(true)}>
+          Decline
+        </Button>
+        <SaidLine said={said} />
+      </>
+    )
+  }
+  return (
+    <span className="pp-deny">
+      <label className="c-field">
+        <span className="c-lbl">Reason, shown to {row.email} (optional)</span>
+        <input className="c-inp" value={reason} maxLength={200} autoFocus onChange={(e) => setReason(e.target.value)} />
+      </label>
+      <span className="ob-acts">
+        <Button size="sm" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+        <Button size="sm" kind="primary" disabled={busy} onClick={() => void go()}>
+          {busy ? 'Declining…' : 'Decline'}
         </Button>
       </span>
       <SaidLine said={said} />
@@ -624,13 +678,7 @@ function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc; rows: PersonRow[];
                     {doc.lendable_accounts !== null && doc.lendable_accounts.length > 0 && (
                       <LoanPicker row={row} accounts={doc.lendable_accounts} lend reload={reload} onSaid={setSaid} />
                     )}
-                    {/* NO DEAD DECLINE. The API closes a loan request only by
-                        lending (`people._record_loan`); there is no route that
-                        declines one, and this lane adds no API. So the card says
-                        so rather than drawing a button that does nothing. */}
-                    <p className="ur-hint" data-testid="pp-no-decline">
-                      There is no route to decline a loan request yet; it stays open until an account is lent.
-                    </p>
+                    <DeclineLoan row={row} reload={reload} onSaid={setSaid} />
                   </div>
                 </>
               )}
@@ -718,6 +766,7 @@ function ClaudeCell({ row }: { row: PersonRow }) {
     <span className="pp-claude">
       {claudeText(row.claude_account)}
       {row.loan_request?.state === 'requested' && <Chip className="pp-borrow">borrow requested</Chip>}
+      {row.loan_request?.state === 'declined' && <Chip className="pp-borrow">loan declined</Chip>}
     </span>
   )
 }
@@ -811,6 +860,15 @@ function ClaudeSection({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; r
             {' '}
             <Chip className="pp-borrow">
               borrow requested{row.loan_request.requested_at !== null ? ` ${timeAgo(row.loan_request.requested_at)}` : ''}
+            </Chip>
+          </>
+        )}
+        {/* Until they ask again (LOAN-DECLINE): a new request re-opens it. */}
+        {row.loan_request?.state === 'declined' && (
+          <>
+            {' '}
+            <Chip className="pp-borrow">
+              loan declined{row.loan_request.decided_at != null ? ` ${timeAgo(row.loan_request.decided_at)}` : ''}
             </Chip>
           </>
         )}

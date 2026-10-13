@@ -813,6 +813,86 @@ def test_the_open_socket_is_re_checked_and_closed_when_membership_lapses(
     assert "0x61" not in json.dumps(audit(ldb), default=str)
 
 
+def _key_event(down: int, keysym: int) -> bytes:
+    """One RFB KeyEvent (RFC 6143 §7.5.4): type 4, down-flag, padding, keysym."""
+    return bytes([4, down, 0, 0]) + keysym.to_bytes(4, "big")
+
+
+def _pointer_event(buttons: int, x: int, y: int) -> bytes:
+    return bytes([5, buttons]) + x.to_bytes(2, "big") + y.to_bytes(2, "big")
+
+
+@pytest.mark.parametrize("returned_by", ["delete", "post"])
+def test_every_key_event_of_an_episode_is_on_its_returned_event(
+    ldb, people, groups, objects, clock, relay, returned_by
+):
+    """LB-POLISH (part of #1030). MEASURED 2026-10-13 on
+    task_1f28d5bfa5a14f618f83: `human_control_returned` said `keys: 0` on two
+    episodes in which a person visibly typed ("qa-first"; "example.com" and
+    Enter), while `pointer_events` said 17 and 22. The socket batches its
+    counts into the controller record every `live_input_flush_seconds` (15 s);
+    input after the last batch was thrown away when the Return press ended
+    the episode -- and typing is what a person does last, right before Return.
+
+    The rule, the same for both counts: every RFB message is one event. A
+    KeyEvent is sent on the press AND on the release, so typing "qa-first"
+    is 16 key events; a PointerEvent is sent on a move, a press and a release.
+    Here nothing is flushed before Return (a minute's batch), and the episode
+    still reports keys == N."""
+    client = make_client(ldb, people, groups, objects, clock, relay,
+                         live_input_flush_seconds=60.0)
+    attempt = Attempt()
+    seed_running(client, ldb, attempt)
+    assert open_session(client, attempt).status_code == 201
+    _ask_for_help(ldb)
+    ticket = ticket_for(client, "alice")
+    with client.websocket_connect(SOCKET, headers=bearer("alice")) as ws:
+        ws.send_text(json.dumps({"ticket": ticket}))
+        assert ws.receive_json()["type"] == "status"
+        assert wait_until(lambda: len(relay.links) == 1)
+        link = relay.links[0]
+        assert take(client, "alice").status_code == 200
+        assert wait_until(lambda: any(m.get("type") == "control" for m in link.texts()))
+        frames = [_pointer_event(0, 10, 10), _pointer_event(1, 10, 10), _pointer_event(0, 10, 10)]
+        for char in "qa-first":
+            frames += [_key_event(1, ord(char)), _key_event(0, ord(char))]
+        frames += [_key_event(1, 0xFF0D), _key_event(0, 0xFF0D)]  # Enter
+        for frame in frames:
+            ws.send_bytes(frame)
+        assert wait_until(lambda: sum(isinstance(m, bytes) for m in link.sent) == len(frames))
+        if returned_by == "delete":
+            returned = client.delete(f"/v1/tasks/{TASK}/live/control", headers=bearer("alice"))
+        else:
+            returned = client.post(f"/v1/tasks/{TASK}/live/control/return", headers=bearer("alice"))
+        assert returned.status_code == 200, returned.text
+
+        def returned_event() -> dict[str, Any]:
+            return next(d for p, d in ldb.docs.items()
+                        if p.startswith(f"tasks/{TASK}/events/")
+                        and d["type"] == "human_control_returned")
+
+        assert wait_until(lambda: returned_event()["detail"]["keys"] == 18), returned_event()
+        assert returned_event()["detail"]["pointer_events"] == 3
+        (row,) = audit(ldb, "control_returned")
+        assert (row["detail"]["keys"], row["detail"]["pointer_events"]) == (18, 3)
+        # After the episode, nothing more is its: a key typed with no control is not counted.
+        ws.send_bytes(_key_event(1, ord("x")))
+        time.sleep(0.1)
+        # The server ends the socket (a retry's new generation), as the other
+        # socket tests do: a client-side close cancels the app mid-flush.
+        ldb.docs[f"tasks/{TASK}"].update(
+            {"current_lease_id": "lease_live_2", "current_generation": 2})
+        with pytest.raises(WebSocketDisconnect):
+            while True:
+                ws.receive_json()
+    assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
+    assert returned_event()["detail"]["keys"] == 18
+    (row,) = audit(ldb, "control_returned")
+    assert row["detail"]["keys"] == 18
+    # Counts, never content.
+    assert '"qa-first"' not in json.dumps(audit(ldb), default=str)
+
+
 # --------------------------------------------------------------------------
 # No ticket in a URL (§5.2)
 # --------------------------------------------------------------------------

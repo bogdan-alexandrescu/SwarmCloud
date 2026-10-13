@@ -61,6 +61,7 @@ from . import workspaces as ws
 from .forgeapp import CONNECTIONS, REFRESH_FAILED, connection_id_for, user_hash
 from .gittokens import COLLECTION as GIT_TOKENS
 from .issueruns import IssueRuns, RunState
+from .people import LOAN_DECLINED
 from .redaction import redact_detail
 
 log = logging.getLogger(__name__)
@@ -423,6 +424,26 @@ def workspace_items(reading: Reading) -> list[dict[str, Any]]:
     return []
 
 
+def loan_items(reading: Reading) -> list[dict[str, Any]]:
+    """The person's own Claude-account loan request was declined within
+    `WINDOW` (LOAN-DECLINE). The reason is theirs to read; who declined is
+    not. An open request is the admins' item, and a lent one shows as the
+    account itself, so neither is an item here. Asking again re-opens the
+    request, and the item goes with the declined state."""
+    snap = reading.db.collection(ws.LOAN_REQUESTS).document(
+        ws.personal_tenant_id(reading.email)).get()
+    loan = snap.to_dict() if snap.exists else None
+    if not loan or str(loan.get("principal") or "").lower() != reading.email:
+        return []
+    decision = loan.get("decision") or {}
+    if loan.get("state") != LOAN_DECLINED or not _recent(reading, decision.get("at")):
+        return []
+    return [_item(f"account:loan:{loan.get('workspace_id') or snap.id}:declined:"
+                  f"{loan.get('request_id') or ''}", ACCOUNT, False,
+                  "Your request to borrow a Claude account was declined", decision.get("reason"),
+                  "/setup#claude-account", decision.get("at"))]
+
+
 # --------------------------------------------------------------------------
 # finished: updates, never "needs you"
 # --------------------------------------------------------------------------
@@ -478,6 +499,7 @@ SOURCES: tuple[tuple[str, Source], ...] = (
     ("questions", agent_questions),
     ("github", github_items),
     ("workspace", workspace_items),
+    ("loan", loan_items),
     ("finished", finished_items),
 )
 

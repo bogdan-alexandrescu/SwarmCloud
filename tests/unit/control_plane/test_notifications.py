@@ -259,6 +259,50 @@ def test_the_workspace_becoming_ready_or_denied_is_an_account_item(db):
     assert ROOT not in str(items)  # decision.by never leaves Firestore
 
 
+def test_a_declined_loan_request_is_an_account_item_for_the_requester(db):
+    # LOAN-DECLINE: the person is told, with the reason, never who declined.
+    _loan(db, CAROL, state="declined")
+    db.docs[f"{ws.LOAN_REQUESTS}/u-carol"]["decision"] = {
+        "verdict": "declined", "by": ROOT, "at": _ago(hours=1), "reason": "use the team's"}
+    [item] = notif.loan_items(_reading(db, _viewer(CAROL, "u-carol")))
+    assert item["group"] == "account" and item["needs_you"] is False
+    assert item["title"] == "Your request to borrow a Claude account was declined"
+    assert item["detail"] == "use the team's"
+    assert item["id"] == "account:loan:w-c0ffee:declined:loan-w-c0ffee"
+    assert item["href"] == "/setup#claude-account"
+    assert ROOT not in str(item)
+    # Only the requester sees it, and only within the window.
+    assert notif.loan_items(_reading(db, _viewer(ALICE))) == []
+    db.docs[f"{ws.LOAN_REQUESTS}/u-carol"]["decision"]["at"] = _ago(days=8)
+    assert notif.loan_items(_reading(db, _viewer(CAROL, "u-carol"))) == []
+
+
+def test_an_open_or_lent_loan_request_is_no_account_item(db):
+    _loan(db, CAROL)
+    assert notif.loan_items(_reading(db, _viewer(CAROL, "u-carol"))) == []
+    _loan(db, CAROL, state="lent")
+    assert notif.loan_items(_reading(db, _viewer(CAROL, "u-carol"))) == []
+
+
+def test_declining_a_loan_request_replaces_the_admin_item_with_the_requesters(client, db):
+    _workspace(db, CAROL, state=ws.READY, ready_at=_ago(days=9))
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    root = _feed(client, "root")
+    assert [i["title"] for i in root["items"] if i["group"] == "admin"] == [
+        "carol@saga.xyz asks for a Claude account"]
+    response = client.post("/v1/admin/people/w-c0ffee/loan/decline",
+                           headers=auth_header("root"), json={"reason": "not this week"})
+    assert response.status_code == 200, response.text
+    root = _feed(client, "root")
+    assert [i for i in root["items"] if i["group"] == "admin"] == []
+    assert root["admin_pending"] == 0
+    carol = _feed(client, "carol")
+    [item] = [i for i in carol["items"] if i["group"] == "account"]
+    assert item["title"] == "Your request to borrow a Claude account was declined"
+    assert item["detail"] == "not this week"
+    assert carol["unread_updates"] >= 1
+
+
 def test_finished_lists_own_tasks_workflows_and_merged_prs_from_the_last_7_days(db):
     _task(db, "task_ok")
     _task(db, "task_bad", state="FAILED")

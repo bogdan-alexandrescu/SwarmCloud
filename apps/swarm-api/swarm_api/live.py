@@ -154,6 +154,11 @@ END_CAUSES = (
 RFB_KEY_EVENT = 4
 RFB_POINTER_EVENT = 5
 
+#: How many ended episodes a session remembers for `record_episode_tail`: the
+#: last few, so a socket that sees two episodes end inside one poll can still
+#: put each one's tail on its own entry.
+ENDED_EPISODES_KEPT = 4
+
 
 # --------------------------------------------------------------------------
 # Errors
@@ -800,8 +805,8 @@ class _Plan:
     now: datetime
     session_update: dict[str, Any] = field(default_factory=dict)
     task_update: dict[str, Any] = field(default_factory=dict)
-    audits: list[tuple[str, str | None, dict[str, Any]]] = field(default_factory=list)
-    events: list[tuple[EventType, dict[str, Any]]] = field(default_factory=list)
+    audits: list[tuple[str, str | None, dict[str, Any], str | None]] = field(default_factory=list)
+    events: list[tuple[EventType, dict[str, Any], str | None]] = field(default_factory=list)
     resolve_by: str | None = None
     resolve: bool = False
 
@@ -823,8 +828,9 @@ class _Plan:
 
     # -- writes -------------------------------------------------------------
 
-    def audit(self, entry: str, email: str | None, detail: dict[str, Any]) -> None:
-        self.audits.append((entry, email, detail))
+    def audit(self, entry: str, email: str | None, detail: dict[str, Any],
+              entry_id: str | None = None) -> None:
+        self.audits.append((entry, email, detail, entry_id))
 
     def set_wait_controller(self, value: dict[str, Any] | None, deadline: datetime | None) -> None:
         wait = self.wait
@@ -851,11 +857,22 @@ class _Plan:
             "pointer_events": int(current.get("pointers") or 0) + pointers,
             "held_seconds": int(held) if held is not None else None,
         }
+        # The entries' ids are kept on the session, so input a socket had not
+        # flushed when the episode ended is added to them (`record_episode_tail`).
+        audit_id, event_id = new_id("la"), new_id("ev")
+        ended = self.state.get("ended_episodes")
+        ended = [e for e in ended if isinstance(e, dict)] if isinstance(ended, list) else []
+        self.session_update["ended_episodes"] = [*ended, {
+            "episode_id": current.get("episode_id"),
+            "email": current.get("email"),
+            "audit_id": audit_id,
+            "event_id": event_id,
+        }][-ENDED_EPISODES_KEPT:]
         self.session_update["controller"] = None
         self.audit("control_returned" if cause == "returned" else "control_ended",
-                   current.get("email"), detail)
+                   current.get("email"), detail, audit_id)
         self.events.append((EventType.HUMAN_CONTROL_RETURNED,
-                            {**detail, "email": current.get("email")}))
+                            {**detail, "email": current.get("email")}, event_id))
         self.set_wait_controller(None, None)
 
     def close(self, cause: str) -> None:
@@ -876,9 +893,9 @@ class _Plan:
                               by=self.resolve_by, lease_id=session.get("lease_id"))
         elif self.task_update:
             txn.update(task_ref, {**self.task_update, "updated_at": self.now})
-        for event_type, detail in self.events:
+        for event_type, detail, event_id in self.events:
             event = TaskEvent(
-                event_id=new_id("ev"),
+                event_id=event_id or new_id("ev"),
                 task_id=self.task["id"],
                 tenant_id=self.task["tenant_id"],
                 type=event_type,
@@ -894,18 +911,19 @@ class _Plan:
             )
             txn.set(task_ref.collection(EVENTS).document(event.event_id),
                     event_to_firestore(event))
-        for entry, email, detail in self.audits:
-            write_audit(txn, self.db, session, entry, email=email, detail=detail, now=self.now)
+        for entry, email, detail, entry_id in self.audits:
+            write_audit(txn, self.db, session, entry, email=email, detail=detail, now=self.now,
+                        entry_id=entry_id)
 
 
 def write_audit(
     writer: Any, db: Any, session: Mapping[str, Any], entry: str, *, email: str | None,
-    detail: Mapping[str, Any], now: datetime,
+    detail: Mapping[str, Any], now: datetime, entry_id: str | None = None,
 ) -> None:
     """One `live_audit` entry, in the shape `handoff._audit` writes, through
     `writer` (the caller's transaction, or the collection for an entry that
     records no other change: a viewer joining or leaving)."""
-    entry_id = new_id("la")
+    entry_id = entry_id or new_id("la")
     doc = {
         "id": entry_id,
         "entry": entry,
@@ -1461,7 +1479,7 @@ class LiveService:
             plan.audit("control_taken", who, taken)
             plan.events.append((EventType.HUMAN_CONTROL_TAKEN,
                                 {"email": who, "episode_id": episode,
-                                 "requested": plan.wait is not None}))
+                                 "requested": plan.wait is not None}, None))
             plan.set_wait_controller({"email": who, "since": plan.now},
                                      self._extended_deadline(plan, idle))
 
@@ -1683,12 +1701,16 @@ class LiveService:
             "cause": session.get("close_cause"),
             "in_control": bool(current and current.get("email") == admission.email),
             "controller": current.get("email") if current else None,
+            "episode_id": current.get("episode_id") if current else None,
         }
 
-    def record_input(self, admission: Admission, *, keys: int, pointers: int) -> bool:
+    def record_input(self, admission: Admission, *, keys: int, pointers: int,
+                     episode_id: str | None = None) -> bool:
         """The controller's input since the last flush: counts for the audit,
         and the hold's deadline moved (§4.3). False when they no longer hold
-        control, and nothing is written."""
+        control -- or, given `episode_id`, no longer hold THAT episode -- and
+        nothing is written: the counts are the ended episode's
+        (`record_episode_tail`)."""
         idle = int(self._s("control_idle_seconds", 300))
 
         def change(plan: _Plan) -> bool:
@@ -1697,6 +1719,7 @@ class LiveService:
                 plan.state.get("id") != admission.session_id
                 or current is None
                 or current.get("email") != admission.email
+                or (episode_id is not None and current.get("episode_id") != episode_id)
             ):
                 return False
             plan.session_update["controller"] = {
@@ -1714,6 +1737,59 @@ class LiveService:
         _, held = self._transact(admission.tenant_id, admission.task_id, change,
                                  session_id=admission.session_id)
         return bool(held)
+
+    def record_episode_tail(self, admission: Admission, episode_id: str, *, keys: int,
+                            pointers: int) -> bool:
+        """Input this socket counted in an episode that has since ENDED, added
+        to that episode's `control_returned`/`control_ended` entry and its
+        `human_control_returned` event (LB-POLISH, part of #1030).
+
+        A Return press is an HTTP request; the counts are on the socket, which
+        flushes them in batches (`live_input_flush_seconds`). MEASURED
+        2026-10-13 on task_1f28d5bfa5a14f618f83: two episodes in which a
+        person typed and then pressed Return reported `keys: 0`, because the
+        last batch -- the typing -- was dropped when the socket saw control
+        end. The ended episode's entry ids are on the session
+        (`ended_episodes`, written by `_Plan.end_control`), so the tail lands
+        on exactly that episode's entries. Only this person's episode, on this
+        socket's session; False, and nothing written, otherwise. Counts only,
+        as everywhere: no keysym is read."""
+        if keys <= 0 and pointers <= 0:
+            return False
+        session_ref = self._db.collection(LIVE_SESSIONS).document(admission.session_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(session_ref))
+            session = snap.to_dict() if snap.exists else None
+            ended = (session or {}).get("ended_episodes")
+            match = next(
+                (e for e in (ended if isinstance(ended, list) else [])
+                 if isinstance(e, dict) and e.get("episode_id") == episode_id
+                 and e.get("email") == admission.email),
+                None,
+            )
+            if match is None or (session or {}).get("task_id") not in (None, admission.task_id):
+                return False
+            refs = []
+            if match.get("event_id"):
+                refs.append(self._db.collection(TASKS).document(admission.task_id)
+                            .collection(EVENTS).document(str(match["event_id"])))
+            if match.get("audit_id"):
+                refs.append(self._db.collection(LIVE_AUDIT).document(str(match["audit_id"])))
+            docs = []
+            for ref in refs:  # every read before any write, as a transaction requires
+                found = _snapshot(txn.get(ref))
+                if found.exists:
+                    docs.append((ref, found.to_dict() or {}))
+            for ref, doc in docs:
+                detail = dict(doc.get("detail") or {})
+                detail["keys"] = int(detail.get("keys") or 0) + keys
+                detail["pointer_events"] = int(detail.get("pointer_events") or 0) + pointers
+                txn.update(ref, {"detail": detail})
+            return bool(docs)
+
+        return bool(_apply(self._db.transaction()))
 
     def end_control(self, admission: Admission, cause: str, *, keys: int = 0,
                     pointers: int = 0) -> bool:

@@ -32,7 +32,7 @@ import type {
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, IssueRunSummaryPage, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
   OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
-  AdminGrantAnswer, AdminRemoveAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
+  AdminGrantAnswer, AdminRemoveAnswer, LoanDeclineAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
 } from './types'
@@ -5909,6 +5909,17 @@ export async function setWorkspaceCeiling(workspaceId: string, maxActive: number
 export async function setWorkspaceLoan(workspaceId: string, accountId: string, lend: boolean): Promise<Result<WorkspaceLoanAnswer>> {
   return writeTo(route('/v1/admin/people/{workspace_id}/loan', { workspace_id: workspaceId }), 'PUT', { account_id: accountId, lend }) as Promise<
     Result<WorkspaceLoanAnswer>
+  >
+}
+
+/**
+ * `POST /v1/admin/people/{workspace_id}/loan/decline` (admin): close the person's open loan
+ * request without lending. The reason is optional and shown to them; none sends `{}`.
+ */
+export async function declineLoanRequest(workspaceId: string, reason: string): Promise<Result<LoanDeclineAnswer>> {
+  const text = reason.trim()
+  return writeTo(route('/v1/admin/people/{workspace_id}/loan/decline', { workspace_id: workspaceId }), 'POST', text === '' ? {} : { reason: text }) as Promise<
+    Result<LoanDeclineAnswer>
   >
 }
 
