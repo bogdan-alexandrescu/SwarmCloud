@@ -1,8 +1,17 @@
 # syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
-# agent-runtime-browser -- agent-runtime-base plus Playwright and Chromium.
+# agent-runtime-browser -- agent-runtime-base, built WITHOUT codex, plus
+# Playwright and Chromium.
 #
-# Build the base first, then:
+# The base is `agent-runtime-base-nocodex`: images/agent-runtime-base/Dockerfile
+# built with `--build-arg INSTALL_CODEX=0` (scripts/build-images.sh;
+# BROWSER-NO-CODEX, owner decision 2026-10-13, docs/browser-startup-speed.md
+# §2.3). codex is 129.7 MB of the base's npm layer and `claude-code-browser`
+# never runs it; deleting it here would only add a whiteout over an inherited
+# layer, so the base this is built FROM never has it. The self-test below
+# fails if it is on PATH.
+#
+# Build that base first, then:
 #
 #     docker build -f images/agent-runtime-browser/Dockerfile \
 #         --build-arg BASE_IMAGE=<base image ref, ideally by digest> \
@@ -12,7 +21,7 @@
 # `images/agent-runtime-browser/cloudbuild.yaml`, which derives the base ref
 # from the image being built, pulls it, and reads the digest back. The default
 # below is a LOCAL convenience only -- in a Cloud Build worker there is no local
-# `agent-runtime-base:latest`, so a build that falls through to it fails with a
+# `agent-runtime-base-nocodex:latest`, so a build that falls through to it fails with a
 # manifest-unknown pull error rather than silently using something else.
 #
 # This profile is the only one that does not run on Cloud Run Jobs. Chromium
@@ -27,7 +36,7 @@
 # non-root, no privilege escalation, seccomp RuntimeDefault, every capability
 # dropped, a per-tenant namespace with default-deny egress -- and handing back a
 # capability to gain Chromium's inner sandbox would be a bad trade.
-ARG BASE_IMAGE=agent-runtime-base:latest
+ARG BASE_IMAGE=agent-runtime-base-nocodex:latest
 FROM ${BASE_IMAGE} AS runtime
 
 # Pinned on 2026-09-15 against PyPI.
@@ -158,7 +167,8 @@ USER swarm:swarm
 # Prove, as the agent's uid and in ONE RUN (two check-only RUNs can write the
 # same layer -- the duplicate above), that the full Chromium launches headless,
 # that the agent's own launch is refused toward the live browser, that the
-# helper and the MCP server are there, and that the display sidecar's pieces
+# helper and the MCP server are there, that codex is not and every other tool
+# of the base is, and that the display sidecar's pieces
 # are where the dispatcher expects them, rather than discovering any of it at
 # 3am in a tenant's attempt. selftest.py lists each check; it is
 # bind-mounted, not shipped.

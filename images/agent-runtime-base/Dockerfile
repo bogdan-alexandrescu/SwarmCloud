@@ -2,6 +2,10 @@
 #
 # agent-runtime-base -- the image every non-browser runner profile runs in.
 #
+# It is built twice. `--build-arg INSTALL_CODEX=0` makes
+# agent-runtime-base-nocodex, the base agent-runtime-browser is built FROM
+# (scripts/build-images.sh; BROWSER-NO-CODEX, owner decision 2026-10-13).
+#
 # Build from the REPOSITORY ROOT, because the worker and the frozen contract
 # package are both part of the image:
 #
@@ -185,6 +189,14 @@ ARG INSTALL_AGENT_CLIS=1
 # as unrecognized_model, so every claude-code task failed (task_2ad43c35a18448fca83b).
 ARG CLAUDE_CODE_VERSION=2.1.283
 ARG CODEX_VERSION=0.154.0
+# 1 (the default, and every runner profile but the browser's): codex is
+# installed beside Claude Code. 0: the same image without it -- the build
+# `agent-runtime-base-nocodex` that agent-runtime-browser is built FROM
+# (BROWSER-NO-CODEX, owner decision 2026-10-13, docs/browser-startup-speed.md
+# §2.3). codex is 129.7 MB as a layer and `claude-code-browser` never runs it;
+# a derived image cannot drop an inherited layer (deleting adds a whiteout and
+# the bytes are still pulled), so it has to be left out HERE, by this argument.
+ARG INSTALL_CODEX=1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -742,11 +754,18 @@ RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS
 # The coding-agent CLIs the claude-code and codex runner profiles start. Both
 # are optional at build time so the base image can be rebuilt in an environment
 # with no npm registry access; the runners fail with a clear message if absent.
+#
+# codex is left out IN THIS RUN when INSTALL_CODEX=0, never removed by a later
+# one: a later RUN would only white it out, and a check-only RUN can write a
+# duplicate layer (PR 1239). With the default the command is the one it always
+# was: one `npm install -g` of both CLIs.
 RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
-      mkdir -p "${NPM_CONFIG_PREFIX}" \
+      codex="" \
+      && if [ "${INSTALL_CODEX}" = "1" ]; then codex="@openai/codex@${CODEX_VERSION}"; fi \
+      && mkdir -p "${NPM_CONFIG_PREFIX}" \
       && npm install -g --no-audit --no-fund \
            "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-           "@openai/codex@${CODEX_VERSION}" \
+           ${codex:+"${codex}"} \
       && npm cache clean --force ; \
     fi
 

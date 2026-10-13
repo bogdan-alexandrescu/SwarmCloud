@@ -64,6 +64,7 @@ SHA = "c0ffee" * 6 + "abcd"
 OTHER_SHA = "0badc0de" * 5
 IMAGES = [
     "agent-runtime-base",
+    "agent-runtime-base-nocodex",
     "agent-runtime-browser",
     "agent-runtime-indexer",
     "swarm-api",

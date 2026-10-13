@@ -42,8 +42,10 @@ takes 8 s, and none of the options below is worth building to shorten that 8 s.
 ### 2.1 What builds it
 
 `images/agent-runtime-browser/Dockerfile`, built by
-`images/agent-runtime-browser/cloudbuild.yaml` `FROM agent-runtime-base`
-(passed by digest). The base is `images/agent-runtime-base/Dockerfile`:
+`images/agent-runtime-browser/cloudbuild.yaml` `FROM agent-runtime-base-nocodex`
+(passed by digest). That base is `images/agent-runtime-base/Dockerfile` built
+with `INSTALL_CODEX=0` (BROWSER-NO-CODEX, §2.3); until 2026-10-13 it was
+`agent-runtime-base` itself. The base Dockerfile is:
 `python:3.11-slim-bookworm`, Node 24, the worker venv, the agent toolbox and
 the two agent CLIs. The browser image then adds, in **one** `RUN`:
 `pip install playwright==1.63.0` and `playwright install --with-deps chromium`.
@@ -150,11 +152,52 @@ should then be replaced by it.
 | no **chromium-headless-shell** | **−108.5 MB** | `playwright install --with-deps --no-shell chromium`; the `browser` runner and the self-test launch the full build headless with `channel="chromium"` |
 | no **second Node** | **−44.6 MB** | the wheel's `driver/node` is deleted in the same `RUN` and replaced by a link to the base's `/usr/local/bin/node` (a link, not `PLAYWRIGHT_NODEJS_PATH`: the runner's environment is built by exact name) |
 | **+ Playwright MCP** `@playwright/mcp@0.0.83` | **+4.1 MB** | measured 2026-10-13: `npm install` of the pinned version into an empty prefix, 19 MB unpacked, 4,126,409 bytes as `tar \| gzip -6` |
-| **codex** | 0 so far (129.7 MB remains) | **not removed**: it is in base layer 18, and a derived image cannot drop an inherited layer -- deleting it in the browser Dockerfile only adds a whiteout. Removing it needs a codex-less base for the browser image (a build-pipeline change) or codex out of the base altogether; put to the owner as a question with the BROWSER-ENFORCE PR |
+| **codex** | 0 in BROWSER-ENFORCE (129.7 MB remained) | **not removed there**: it is in base layer 18, and a derived image cannot drop an inherited layer -- deleting it in the browser Dockerfile only adds a whiteout. Put to the owner with the BROWSER-ENFORCE PR (1248); removed by BROWSER-NO-CODEX, below |
 
 Net, estimated: layer 25 goes from 472.6 MB to about 319.5 MB, and the image
 from 1,253.3 MB to about **1,104 MB, −149 MB**, against the ~283 MB that §9
-named. The other 130 MB is codex, above. The toolbox stays (§9, decision 5),
+named. The other 130 MB is codex, below.
+
+#### After BROWSER-NO-CODEX (owner decision 2026-10-13 ~07:15 PDT): the browser's base has no codex
+
+The owner's answer to the codex question was **a codex-less base for the
+browser**. `images/agent-runtime-base/Dockerfile` takes `ARG INSTALL_CODEX=1`,
+and its one `npm install -g` `RUN` installs `@openai/codex` only when it is 1.
+Left out in that `RUN`, not deleted in a later one: a later one would only
+white it out, and a check-only `RUN` can write a duplicate layer (§2.4,
+PR 1239). With the default the command is the one it always was, so
+`agent-runtime-base`, and every profile but the browser's, keeps codex.
+
+`scripts/build-images.sh` builds the same Dockerfile a second time with
+`--build-arg INSTALL_CODEX=0` as **its own image, `agent-runtime-base-nocodex`**
+(same tag as every other image of the build), and
+`images/agent-runtime-browser/cloudbuild.yaml` resolves that one to a digest
+and builds the browser `FROM` it; `build_after()` holds the browser back until
+it is pushed. A pull request's `--build-only` chain builds the same pair, the
+codex-less base and then the browser on it; `agent-runtime-indexer`'s chain
+builds the default base. A separate image name rather than a second tag
+(`agent-runtime-base:<sha>-nocodex`) because everything after the build is keyed
+by image name: the build record, `push-images.sh`'s promotion and scan,
+`scripts/image-sizes.sh --duplicate-layers` (the release gate) and `--manifest`
+(an `agent-runtime-*` image, so its size is recorded), and terraform's
+`image_refs`, whose keys must be the image's own name. So the new base is
+pinned, scanned, promoted and gated like every other image without a special
+case. The browser image's self-test (`selftest.py`, `no_codex()`) fails the
+build if `codex` is on its `PATH` or its package is installed, and if any
+other tool of the base is missing.
+
+| image | before | after, **ESTIMATED** |
+|---|---|---|
+| base layer 18 (`npm install -g`) in the browser's base | 240.2 MB | **~110.5 MB** (Claude Code's 108.5 MB platform package and its wrapper) |
+| `agent-runtime-browser` | ~1,104 MB (after BROWSER-ENFORCE, estimated) | **~974 MB, −129.7 MB** |
+| `agent-runtime-base` (claude-code, codex, indexer) | 780.6 MB | unchanged |
+
+**ESTIMATED, not measured**: −129.7 MB is the measured size of the
+`@openai/codex@0.154.0-linux-x64` tarball npm installs (above), subtracted
+from the BROWSER-ENFORCE estimate. No image was built in the lane (builds run
+in CI). `scripts/image-sizes.sh --manifest` on the first release that
+promotes `agent-runtime-base-nocodex` measures both images; replace these
+rows with its figures. The toolbox stays (§9, decision 5),
 and so does the Chromium the gate runs (`chromium-*/chrome-linux*/chrome`,
 `livegate/__main__.py::find_chromium`).
 
@@ -496,6 +539,12 @@ The owner answered §8 on 2026-10-13. Lane names refer to §7.
 3. **Warm placeholder slots: decide after lane MEASURE.** Invariant 1 stays as written until then.
 4. **Slim the image: yes, after STREAM.**
    - Remove the headless shell, the second Node and codex (about 283 MB).
+   - codex, which BROWSER-ENFORCE could not remove from a derived image, was
+     answered at ~07:15 PDT: **a codex-less base for the browser** (lane
+     BROWSER-NO-CODEX, §2.3). The browser image is built FROM
+     `agent-runtime-base-nocodex`, the base Dockerfile built with
+     `INSTALL_CODEX=0`; every other image is unchanged. About 130 MB,
+     estimated.
 5. **Toolbox: keep.**
    - gcloud, terraform, checkov, trivy and the rest stay in the browser image.
    - The owner made no separate choice on this; it is the recommended default kept by the slimming decision in 4.

@@ -20,7 +20,10 @@ attempt at 3am:
   4. the helper imports and Playwright has the CDP connect it uses;
   5. the Playwright MCP server the claude-code runner registers runs, and
      takes `--cdp-endpoint`;
-  6. the display sidecar's pieces: uid 10002, Xvfb, a policy Chromium parses.
+  6. the display sidecar's pieces: uid 10002, Xvfb, a policy Chromium parses;
+  7. codex is NOT in the image -- it is built FROM agent-runtime-base-nocodex
+     (BROWSER-NO-CODEX, owner decision 2026-10-13) -- and every other tool the
+     base carries is.
 """
 
 from __future__ import annotations
@@ -29,6 +32,7 @@ import glob
 import json
 import os
 import pwd
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -39,6 +43,16 @@ MESSAGE = (
 )
 REAL = os.environ["PLAYWRIGHT_BROWSERS_PATH"]
 MCP = "/usr/local/share/npm-global/bin/playwright-mcp"
+# What the base gives every agent, with codex left out: the agent CLI this
+# image's profile runs, the runtimes, and every tool of the base's own toolbox
+# smoke (images/agent-runtime-base/Dockerfile; a unit test holds the two lists
+# together). Leaving codex out must take nothing else with it.
+TOOLS = (
+    "claude", "node", "npm", "python", "uv", "git",
+    "gh", "gcloud", "gke-gcloud-auth-plugin", "kubectl", "terraform", "checkov",
+    "trivy", "shellcheck", "make", "docker",
+)
+CODEX_PACKAGE = "/usr/local/share/npm-global/lib/node_modules/@openai/codex"
 POLICIES = ("/etc/opt/chrome/policies/managed/swarm.json", "/etc/chromium/policies/managed/swarm.json")
 
 
@@ -131,9 +145,18 @@ def display_pieces() -> None:
     check(True, "both Chromium policies parse")
 
 
+def no_codex() -> None:
+    found = shutil.which("codex")
+    check(found is None and not os.path.exists(CODEX_PACKAGE),
+          f"codex is absent (on PATH: {found}; package: {os.path.exists(CODEX_PACKAGE)})")
+    missing = [tool for tool in TOOLS if shutil.which(tool) is None]
+    check(not missing, f"{len(TOOLS)} tools of the base are present (missing: {missing})")
+
+
 if __name__ == "__main__":
     real_browser()
     stub_launches(sys.argv[1])
     helper_and_mcp()
     display_pieces()
+    no_codex()
     print("browser image self-test passed")
