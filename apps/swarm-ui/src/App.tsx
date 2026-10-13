@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList } from './agentlist'
+import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -716,6 +716,15 @@ export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts'
 /** The address segment each non-default pane is written with. `detail` has none. */
 const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser']
 
+/**
+ * THE DETAILS TAB'S OWN NAME IS AN ADDRESS TOO (QA12-17, live-browser QA p12):
+ * `/agents/live/<id>/details` read as a task called `<id>/details` and drew a
+ * 404. Every other tab is reached at its lower-cased name; Details is written
+ * with no segment, and these two spellings of it are read as that and written
+ * back without it.
+ */
+const DETAIL_SEGMENTS: readonly string[] = ['details', 'detail']
+
 export interface Route {
   /** A section id, or REFERENCE. */
   sectionId: string
@@ -893,7 +902,8 @@ export function fromAddress(full: string): Route {
       rest = rest.slice(0, -1)
     }
     const last = rest[rest.length - 1]
-    const pane = PANE_SEGMENTS.find((p) => p === last) ?? null
+    // A pane needs an id before it: a lone `details` is still read as it was.
+    const pane = PANE_SEGMENTS.find((p) => p === last) ?? (rest.length > 1 && DETAIL_SEGMENTS.includes(last ?? '') ? 'detail' : null)
     // Task ids are opaque and may contain characters that were encoded on the
     // way in, so the remaining segments are rejoined rather than assumed to
     // be one.
@@ -1082,6 +1092,9 @@ export function App() {
   // closed to bare `/agents` while the list behind it still showed, say,
   // Recent · failed. Written during render, so the close address is never one
   // route behind; the write is idempotent, so a double render is harmless.
+  // The fragment the page was opened at, read before the normalise effect
+  // rewrites the bar to its path: `useState(fromLocation)` already applied it.
+  const mountHash = useRef(typeof window === 'undefined' ? '' : window.location.hash)
   const lastList = useRef<AgentList | null>(at.list ?? null)
   if (at.taskId === null) lastList.current = at.list ?? null
 
@@ -1121,9 +1134,38 @@ export function App() {
   )
 
   useEffect(() => {
+    // A hashchange for the fragment this mount already read is the echo of
+    // that same assignment (a script sets the hash, then renders; the event is
+    // queued and lands after). Replayed from its newURL it would undo whatever
+    // the reader did in between -- an agent closed by its breadcrumb opened
+    // again. It is swallowed once, and only for a moment, so a fragment typed
+    // later is still a navigation.
+    let echo: string | null = mountHash.current === '' ? null : mountHash.current
+    const echoTimer = setTimeout(() => {
+      echo = null
+    }, 250)
     const onPop = () => setAt(fromLocation())
-    const onHash = () => {
-      if (isLegacyHash(window.location.hash, LEGACY_HEADS, window.location.pathname)) setAt(fromHash())
+    // The fragment the event names, not the one the bar holds now: the
+    // normalise effect (or the list following an agent's group) may already
+    // have rewritten the address to its path, which drops the fragment, and a
+    // hashchange read from the bar then found nothing and the navigation was
+    // lost -- an agent closed by hash stayed open (CH-2).
+    const onHash = (e?: Event) => {
+      let hash = window.location.hash
+      const next = (e as HashChangeEvent | undefined)?.newURL
+      if (typeof next === 'string') {
+        try {
+          hash = new URL(next).hash
+        } catch {
+          /* keep the bar's own */
+        }
+      }
+      if (echo !== null && hash === echo) {
+        echo = null
+        return
+      }
+      echo = null
+      if (isLegacyHash(hash, LEGACY_HEADS, window.location.pathname)) setAt(fromAddress(hash.replace(/^#/, '')))
     }
     // A click on an old-style `href="#work/..."` link, or on a same-origin
     // path, is a navigation: pushed, so Back returns to where it was made.
@@ -1145,6 +1187,7 @@ export function App() {
     window.addEventListener('hashchange', onHash)
     document.addEventListener('click', onClick)
     return () => {
+      clearTimeout(echoTimer)
       window.removeEventListener('popstate', onPop)
       window.removeEventListener('hashchange', onHash)
       document.removeEventListener('click', onClick)
@@ -1178,6 +1221,18 @@ export function App() {
     lastList.current = list
     setAt((r) => ({ ...r, list }))
   }, [])
+
+  // THE LIST FOLLOWS THE OPEN AGENT'S GROUP (QA12-26, live-browser QA p12):
+  // a task opened under Live that parks belongs to Waiting, and the back link
+  // said `‹ Live` beside a list that no longer held it. The split reports the
+  // group its state puts it in; the list's tab, the back link and the address
+  // move there, written in place like a tab click. The toggles are kept; the
+  // Recent state filter is dropped, so the row is not hidden by it.
+  const onGroup = useCallback((tab: AgentTab) => {
+    const was = lastList.current
+    if (was?.tab === tab) return
+    onList(agentList(tab, null, { grouped: was?.grouped === true, failedFirst: was?.failedFirst === true }))
+  }, [onList])
 
   // THE TIMELINE'S AND THE WORKFLOWS LIST'S FILTERS ARE A ROUTE CHANGE TOO
   // (#185), written the same way.
@@ -1334,6 +1389,7 @@ export function App() {
                 theater={at.theater === true}
                 closeTo={listAddress}
                 go={go}
+                onGroup={onGroup}
                 base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
               />
             )}

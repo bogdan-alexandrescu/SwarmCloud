@@ -1600,16 +1600,18 @@ describe('the address names the open output and never the open file of a patch',
   })
 
   it('opening change.diff gives exactly /agents/<tab>/<id>/artifacts/change.diff; n and a click leave it alone', async () => {
+    // The task is SUCCEEDED, so it sits under Recent (QA12-26): the list, the
+    // back link and the address follow the task's group, whatever list opened it.
     await openPane(patchRoutes())
     const out = await sectionReady('Outputs', /change\.diff/)
-    await waitFor(() => expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts`))
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/recent/${REF}/artifacts`))
     fireEvent.click(row(out, 'change.diff').querySelector('button.art-open')!)
     const scroller = await waitFor(() => {
       const s = drawer().querySelector<HTMLElement>('section.diff .diff-scroll')
       expect(s, 'change.diff did not open in the diff viewer').not.toBeNull()
       return s!
     })
-    const named = `/agents/live/${REF}/artifacts/change.diff`
+    const named = `/agents/recent/${REF}/artifacts/change.diff`
     expect(window.location.pathname).toBe(named)
     expect(scroller.getAttribute('data-open-file')).toBe('src/one.ts')
     fireEvent.keyDown(scroller, { key: 'n' })
@@ -1621,7 +1623,7 @@ describe('the address names the open output and never the open file of a patch',
     expect(window.location.hash).toBe('')
     // Back to the list takes the name out of the address again.
     fireEvent.click(drawer().querySelector<HTMLElement>('.diff-bar .diff-back')!)
-    await waitFor(() => expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts`))
+    await waitFor(() => expect(window.location.pathname).toBe(`/agents/recent/${REF}/artifacts`))
     expect(drawer().querySelector('section.diff')).toBeNull()
   })
 
@@ -1633,7 +1635,7 @@ describe('the address names the open output and never the open file of a patch',
       return s!
     })
     expect(scroller.getAttribute('data-open-file')).toBe('src/one.ts')
-    expect(window.location.pathname).toBe(`/agents/live/${REF}/artifacts/change.diff`)
+    expect(window.location.pathname).toBe(`/agents/recent/${REF}/artifacts/change.diff`)
   })
 
   it('round-trips a name, slashes and all, as one segment', async () => {
