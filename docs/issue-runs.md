@@ -18,7 +18,7 @@ the module docstrings, which are the reference:
 | the write-back to the issue and the pull request | `apps/swarm-api/swarm_api/issuesync.py`, `issuecomments.py`, `forgewrite.py` |
 | the open-work read the planner is shown | `apps/swarm-api/swarm_api/forge.py` (`read_open_work`) |
 | the tick | `POST /v1/admin/runs/advance`, `terraform/modules/scheduler/jobs.tf` (`issue_run_advance`) |
-| the sweeper, and the territory guard | `apps/swarm-api/swarm_api/issuesweep.py`, fired by the `issue-sweep` schedule (`swarm_api/schedtypes/issue_sweep.py`) since 2026-10-11; `POST /v1/admin/issues/sweep` and `jobs.tf` (`issue_sweep`, **paused**) until their deletion; `routes/runs.py` `territory_conflict` |
+| the sweeper, and the territory guard | `apps/swarm-api/swarm_api/issuesweep.py` (the selection), fired by the `issue-sweep` schedule (`swarm_api/schedtypes/issue_sweep.py`) since 2026-10-11; `routes/runs.py` `territory_conflict`. The old Cloud Scheduler job and `POST /v1/admin/issues/sweep` were removed on 2026-10-12 ("Sweeper" below) |
 | the surfaces | console `Work › Submit from a GitHub issue` and `Work › Runs` (`apps/swarm-ui/src/IssueSubmit.tsx`, `Runs.tsx`); `sc run --issue`, `sc plan approve\|edit\|reject` and the MCP tools ([plugin/README.md](../plugin/README.md#planning-and-running-a-github-issue)) |
 
 ```
@@ -230,43 +230,28 @@ for someone to look.
 
 ## Sweeper: SwarmCloud finds the issues to work on
 
-> **Since 2026-10-11 the sweep is a schedule, and SWEEP's job is paused**
-> (Schedules S9, [schedules.md §8.1](schedules.md#81-lane-sweeps-issue_sweep-becomes-the-issue-sweep-type)).
-> What fires it now is tenant `eng`'s `issue-sweep` schedule: the same
-> module's selection, at the same `:07`/`:37`, over every registered
-> repository, as the schedule's owner. Its gate is plan `auto` and merge
-> `approve`, so a swept pull request waits in Automate › Approvals. Unattended
-> merge is the audited SD3 switch. The schedule is created **paused**, and is
-> resumed after one dry firing has been compared with SWEEP's last sweep
-> ([operations.md §13](operations.md#13-schedules-the-s9-migration-sweep-paused-deletion-pending)).
+> **The sweep is a schedule.** Since 2026-10-11 tenant `eng`'s `issue-sweep`
+> schedule fires it ([schedules.md §3.1](schedules.md#31-issue-sweep),
+> [§8.1](schedules.md#81-lane-sweeps-issue_sweep-becomes-the-issue-sweep-type)):
+> this module's selection, at `:07`/`:37`, over every registered repository,
+> as the schedule's owner. Its gate is plan `auto` and merge `approve`, so a
+> swept pull request waits in Automate › Approvals; unattended merge is the
+> audited SD3 switch. Its parameters (`max_live_runs`, `labels_exclude`,
+> `cooldown_hours`, `fix_rounds`, ...) are the schedule's, set through
+> `PATCH /v1/schedules/<id>` or `sc schedules`, not the tenant document.
 >
-> `google_cloud_scheduler_job.issue_sweep` is **paused** (`paused = true` in
-> `jobs.tf`), not deleted. The job, the route below, `SWEEP_ENABLED` and the
-> tenant document's `issue_sweep` settings all stay until the owner has watched
-> the schedule fire for 7 days without an auto-pause. A second change then
-> deletes them and this section is cut down to the rules the schedule still
-> applies. Until then everything below describes SWEEP as built, and as it
-> would run again if the job were un-paused. The skip rules, the planner's
-> readiness verdict, the territory guard and the cap are the schedule's too.
-> The cap is now `max_live_runs`, at most 8.
+> **The old job, its route and its switch were removed on 2026-10-12**
+> (Schedules S9, second change; [below](#removed-2026-10-12-the-job-the-route-and-the-switch)).
 
 Owner decisions, 2026-10-08: readiness is decided by the **planner**, not by a
 label; the sweeper runs **inside the platform on a schedule**; at most **8 live
 issue runs per tenant**; plans **auto-approve** and pull requests
-**auto-merge** through the merge step.
+**auto-merge** through the merge step. The schedule keeps the first three and
+asks before it merges unless the audited switch says otherwise.
 
-Until 2026-10-11, `google_cloud_scheduler_job.issue_sweep` (one per registered tenant, named
-`swarm-issue-sweep-<tenant>`, at `:07` and `:37` -- every 30 minutes, never on
-the hour or the half hour) called `POST /v1/admin/issues/sweep?tenant_id=<t>` as
-the same `swarm-rollup-sweeper` identity and OIDC audience as the tick above.
-swarm-api admits that identity to the route by name
-(`auth.ROLLUP_SWEEPER_ROUTES`) and, like the repository poll, admits **nobody
-else** -- not an admin. An operator who wants a sweep now fires the schedule
-(`sc schedules run <name>`, or `--dry-run` to list what it would start). Running
-the paused job by hand (`gcloud scheduler jobs run swarm-issue-sweep-eng
---location <region>`) still works, and is a second trigger of the same sweep. The
-job adds no IAM binding: its one grant, `run.invoker` on swarm-api, is the
-rollup's.
+An operator who wants a sweep now fires the schedule (`sc schedules run
+<name>`, or `--dry-run` to list what it would start). There is no second
+trigger any more.
 
 ### What it picks
 
@@ -276,14 +261,16 @@ tenant's forge credential -- the token the planner's open-work read already
 uses -- oldest-updated first, and the open pull requests with their text. Every
 issue that survives the skips below is a candidate. Candidates from every
 repository are ordered **oldest-updated first** (the issue nobody has touched
-longest is the one most likely waiting on nobody), and a run is started for
-each until the tenant has `max_live_runs` live runs. Each run is created with
-`plan_approval: auto`, `auto_merge: true` and `fix_rounds: 2`, records
-`created_by: issue-sweep`, and its planner is shown the repository's open work
-in the same snapshot shape a console-created run's is -- built from the
-sweep's one listing of the repository, so its issues are the oldest-updated
-hundred rather than the newest. The route returns -- and logs -- what it
-started and what it skipped, each with its reason.
+longest is the one most likely waiting on nobody), and the schedule starts a
+run for each, up to its `max_new_per_firing` and until the tenant has
+`max_live_runs` live runs. Each run is created with the schedule's gate and
+`fix_rounds`, records `created_by: schedule:<id>`, and its planner is shown the
+repository's open work in the same snapshot shape a console-created run's is
+-- built from the sweep's one listing of the repository, so its issues are the
+oldest-updated hundred rather than the newest. The firing records -- and its
+dry run lists -- what it started and what it passed over, each with its reason
+(schedules.md §3.1). Runs the removed job started still read `created_by:
+issue-sweep`.
 
 ### What it skips
 
@@ -292,15 +279,12 @@ started and what it skipped, each with its reason.
 | (never listed) | pull requests: GitHub's issue list includes them, marked, and the read drops them |
 | `author: <association>` | opened by someone GitHub does not call the repository's `OWNER`, a `MEMBER` of its organisation or a `COLLABORATOR` (`unknown` when GitHub did not say). Every swept run is auto-approved and auto-merged with the tenant's credential, so on a public repository an outsider's issue would otherwise become a merged change no person approved ([security review 2026-10-09](security/review-2026-10-09.md), item 1). A person can still start a run for that issue from the console |
 | `label: <l>` | labelled `epic`, `blocked` or `security` |
-| `excluded: issue` / `excluded: label <l>` | named in the tenant's exclusion list, by number or by label |
+| `excluded: label <l>` | carries a label in the schedule's `labels_exclude` |
 | `live_run: run_<id>` | the issue already has a live (non-terminal) run |
 | `open_pull_request: #<n>` | an open pull request's title or body says `Closes`, `Fixes` or `Resolves #N` (or `owner/repo#N`, or the issue's URL), or `part of #N` |
 | `not_ready_unchanged: run_<id>` | its last run ended `NOT_READY` and the issue has not been edited or commented on since |
 | `unchanged_since_run: run_<id> (<STATE>)` | its last run ended any other way -- done, failed, rejected, cancelled -- and nothing changed on the issue since |
-| `cap: <n> live runs` | the tenant already has its cap of live runs |
-
-(A tenant-level skip is not a row here: with `submit_as` unset or not a member
-the whole tenant is skipped -- see "Turning it on", item 3.)
+| (the schedule's own) | `not_included`, `in_flight_workflow`, `recently_worked`, and the room left under `max_live_runs` and `max_new_per_firing`: [schedules.md §3.1](schedules.md#31-issue-sweep) |
 
 A repository whose open pull requests number more than one sweep reads (300) is
 not swept at all (`too_many_pull_requests`): an unread pull request could claim
@@ -315,7 +299,8 @@ is later than that by more than a minute (GitHub's clock against ours). The
 same rule holds for a run that ended any other way, so an issue whose run
 failed, or was found already on main without every requirement met, is not
 re-planned -- at the cost of a planner and a workflow -- every 30 minutes until
-someone touches it.
+someone touches it. (The schedule's `cooldown_hours` lets an unchanged
+`NOT_READY` issue be planned again once that long has passed.)
 
 ### Why the planner decides readiness
 
@@ -361,61 +346,51 @@ be compared and is not held.
 
 ### The cap
 
-`max_live_runs` per tenant, default 8 (1-50). A run is live from `PLANNING`
-until it ends; `NOT_READY` is an end. Runs a person started count too: the cap
-is the tenant's concurrent issue-run work, not the sweeper's share of it.
-
-### Turning it on, for tenant `eng`
-
-Off by default, twice over (the new-refusals-ship-off rule of PR 873):
-
-1. **The platform switch**, swarm-api's `SWEEP_ENABLED`. Set
-   `enable_issue_sweep = true` in `terraform/environments/<env>/<env>.tfvars`
-   and let the release apply it. With it off every sweep answers
-   `"disabled_by": "SWEEP_ENABLED"` and starts nothing.
-2. **The tenant's switch**, on the tenant document: an admin sends
-   `PUT /v1/admin/tenants/eng/issue-sweep`, authenticated as for any other
-   admin route, with the body
-
-   ```json
-   {"enabled": true, "max_live_runs": 8, "exclude_issues": [], "exclude_labels": [],
-    "submit_as": "alice@saga.xyz"}
-   ```
-
-   `GET` on the same path reads it back with `platform_enabled`. The `PUT`
-   replaces the settings whole. With it off a sweep answers
-   `"disabled_by": "tenant"`.
-
-3. **`submit_as`, the member the work is submitted as** (owner decision
-   2026-10-08). Every swept run is submitted as this address, set per tenant in
-   the same `PUT` body, and is **independent of who registered each
-   repository**. It is explicit because the alternative -- the repository poll's
-   rule, the registrant -- made the attribution of eight concurrent merging
-   runs an accident of who once clicked "register", and left it changing
-   whenever someone re-registered a repository. The run keeps the member as
-   `on_behalf_of`, and every later submission (the auto approval, CI fix
-   rounds, the merge) is made as them and only while they are still a member.
-
-   The sweep **refuses to start runs for a tenant whose `submit_as` is unset
-   or is not a current member**: it skips that tenant, reads nothing, logs the
-   reason and returns it as `"tenant_skipped": "submit_as_unset"` or
-   `"submit_as_not_member: <address>"`. It never falls back to the registrant
-   silently. Membership is asked of the directory again on **every**
-   submission, so a member removed mid-sweep stops the rest of that sweep
-   (`start_failed: submit_as_not_member`). To fix a skipped tenant, `PUT` a
-   `submit_as` that is a current member.
+The schedule's `max_live_runs`, default 8 (1-8). A run is live from
+`PLANNING` until it ends; `NOT_READY` is an end. Runs a person started count
+too: the cap is the tenant's concurrent issue-run work, not the sweeper's share
+of it.
 
 Owner confirmations, 2026-10-08, of two behaviours as built: **any ended run
 waits for the issue to change** (not only `NOT_READY`), and **unapproved
 `PLANNED` runs do not hold the territory guard**.
 
-### Excluding issues
+### Removed 2026-10-12: the job, the route and the switch
 
-`exclude_issues` takes issue numbers and `exclude_labels` labels
-(case-insensitive). The owner's deferred security set -- epic #476's children
--- goes in `exclude_issues` by number, or gets a label that goes in
-`exclude_labels`. `epic`, `blocked` and `security` are skipped whatever the
-list says.
+Until 2026-10-11 lane SWEEP's per-tenant Cloud Scheduler job,
+`google_cloud_scheduler_job.issue_sweep` (`swarm-issue-sweep-<tenant>`, at
+`:07` and `:37`), called `POST /v1/admin/issues/sweep?tenant_id=<t>` as the
+`swarm-rollup-sweeper` identity. The route was off twice over -- swarm-api's
+`SWEEP_ENABLED` (`var.enable_issue_sweep`, on in dev from 2026-10-09) and the
+tenant document's `issue_sweep.enabled`, set with `PUT
+/v1/admin/tenants/<id>/issue-sweep` -- and submitted every run as the tenant's
+`issue_sweep.submit_as` member, with `plan_approval: auto`, `auto_merge: true`
+and `fix_rounds: 2`.
+
+Schedules S9 paused the job on 2026-10-11, when the `issue-sweep` schedule
+took over. The plan was to delete the rest after the owner had watched the
+schedule fire for 7 days without an auto-pause. **On 2026-10-12 the owner
+waived the watch and approved the deletion (lane SWEEP-RM)**, so these went
+together:
+
+* the job, and its `issue_sweep_schedule` variable and output
+  (`terraform/modules/scheduler`);
+* the route, and its entry in `auth.ROLLUP_SWEEPER_ROUTES`;
+* `GET`/`PUT /v1/admin/tenants/{tenant_id}/issue-sweep`, which read and wrote
+  settings only the route used;
+* `SWEEP_ENABLED` (`ApiSettings.sweep_enabled`), `var.enable_issue_sweep` and
+  dev's `enable_issue_sweep = true`;
+* `issuesweep.sweep_tenant`, `get_config`/`set_config` and the
+  `submit_as` check.
+
+Why delete rather than keep a paused fallback: two triggers of one sweep would
+start runs side by side, and a route that auto-merges with no person's gate is
+exactly what the schedule's default gate (`merge: approve`) replaced. The
+schedule maps each setting: `submit_as` became the schedule's `owner`
+(schedules.md §2.7), the cap became `max_live_runs`, `exclude_labels` became
+`labels_exclude`. A tenant document may still carry an `issue_sweep` map from
+before; nothing reads it. The selection that both used -- the read, the skip
+rules, the readiness verdict and the territory guard -- is unchanged.
 
 ## The fix-round cap is the only guardrail, and one round is one continuation
 
@@ -455,9 +430,11 @@ frozen-contract change.)
 
 A round is spent **only on a red reading at a new head**. Pending CI submits
 nothing; a round that pushed nothing (the head did not move) is `FAILED` rather
-than a second round on the same commit; a CI read that fails (GitHub down, a
-token without `Checks: read`) is not a red reading -- the run stays `CHECKING`
-with `pull_request.read_error` set. CI is read at most every 30 s per run, and a
+than a second round on the same commit; a CI read that fails is not a red
+reading. GitHub down, a timeout, a 5xx or a rate limit leaves the run `CHECKING`
+with `pull_request.read_error` set and the read retried with backoff; a
+credential GitHub refuses (a token without `Checks: read`) fails the run at
+once (below). CI is read at most every 30 s per run, and a
 head with nothing required and nothing reported for 10 minutes is read as a
 repository with no CI (`DONE`, `checks: none`).
 
@@ -471,6 +448,44 @@ reads, the merge, a round's submission). Before, that exception discarded the
 reading and left `checked_at` unmoved, and the list route only logged it. Now
 the reading is stored, `read_error` says the move failed, and the next visit
 tries again.
+
+**A read GitHub cannot answer is retried with backoff and says why it is
+stuck (WRITEBACK, 2026-10-12).** `run_0d784c412dbc421a98ec` (#1151) ended
+`FAILED` after 12 hours in `CHECKING` saying only "could not read the
+repository's checks for 12 hours: writeback_failed: the check runs at
+...@8d98e0c66243 could not be sent to GitHub (URLError)". Nothing in that told
+a GitHub that was briefly unreachable from a credential that would never work,
+and it had been read every 30 s the whole time. So the CI read's failures are
+now told apart (`forgewrite.is_transient`, `is_credential_refusal`):
+
+| failure | what the run does |
+|---|---|
+| GitHub unreachable, a timeout (`URLError`, `TimeoutError`, a reset connection), HTTP 5xx, HTTP 429, a 403 that is GitHub's rate limit | stays `CHECKING`; the read is tried again `CI_READ_SECONDS` (30 s) later, then twice as long after each further failure, up to `READ_BACKOFF_MAX_SECONDS` (15 min) |
+| HTTP 401, a 403 that is not a rate limit, no forge credential stored | `FAILED` at once: `could not read the repository's checks: <code>: <why>`, naming the permission or the expired credential |
+| anything else (a 404, an answer that is not JSON) | stays `CHECKING`, read again at the normal cadence |
+
+While reads keep failing, `pull_request` records `read_attempts`,
+`read_failing_since` (the FIRST failure in the run of them) and
+`read_retry_at`, and `read_error` says it in one line, which the run page
+shows:
+
+    GitHub writeback failing since 2026-10-12T05:30Z: writeback_failed: the check runs at o/r@8d98e0c66243 could not be sent to GitHub (URLError: TimeoutError) (37 attempts)
+
+The transport failure is named by its type and, when urllib wraps one, its
+cause's type -- never its text, which can quote the request. A read that works
+clears all of them. A run still failing at `CHECKING_DEADLINE_SECONDS` (12 h)
+fails with that same line: `could not read the repository's checks for 12
+hours: GitHub writeback failing since ...`.
+
+**Why a credential refusal fails at once.** It does not change until a person
+changes the credential, and twelve hours of `CHECKING` only hid the cause and
+held a schedule slot; the run's error now says what to fix the first time the
+read is refused. **Why a green `auto_merge` run is not failed by a transient
+read.** Its checks were green on GitHub and it is waiting on its merge; the
+wire being down is not a reason to throw that decision away, so
+`_awaiting_merge` still holds it past the deadline while the read retries. A
+failing status-comment write never holds a green run back either: the comment
+is the run's report, not its gate.
 
 **The list has a summary view (RT-7, 2026-10-11).** `GET /v1/runs` was 1.5 MB
 for 50 rows, nearly all of it plans, open work, history and per-check lists the

@@ -56,6 +56,12 @@ Since #748 it also OPENS a pull request from a branch that is already pushed
 a MERGE verdict's integrator, published by swarm-api without a worker
 (`verdictpublish`).
 
+WHICH FAILURE IS WORTH RETRYING (WRITEBACK, 2026-10-12): GitHub unreachable,
+a timeout, a 5xx or a rate limit is `ForgeUnreachable` (`is_transient`); a 401
+or a 403 that is not a rate limit is the credential itself
+(`is_credential_refusal`). The CI loop backs off on the first and fails the run
+at once on the second.
+
 WHAT THIS DOES NOT DO: decide anything. Which comment to write, when, and what
 it says is `issuesync` and `issuecomments`; this is the wire.
 """
@@ -122,6 +128,44 @@ class ChecksForbidden(ForgeWriteForbidden):
     """A CI read refused: the credential cannot read checks, statuses or rules."""
 
     code = "checks_forbidden"
+
+
+class ForgeUnreachable(ForgeWriteError):
+    """GitHub could not be reached, timed out, answered 5xx or rate-limited.
+
+    WRITEBACK (2026-10-12): the one failure worth retrying. Its code stays
+    `writeback_failed`, which every reader already knows; the type is what
+    says a later attempt may work (`is_transient`). run_0d784c412dbc421a98ec
+    sat CHECKING 12 hours on "could not be sent to GitHub (URLError)" with
+    nothing telling that apart from a credential that would never work.
+    """
+
+
+def is_transient(error: BaseException) -> bool:
+    """Whether a later attempt of the same request may work."""
+    return isinstance(error, ForgeUnreachable)
+
+
+def is_credential_refusal(error: BaseException) -> bool:
+    """Whether GitHub refused the credential itself (401, or a 403 that is not
+    a rate limit): nothing changes until a person changes the credential."""
+    return isinstance(error, (ForgeWriteUnauthorized, ForgeWriteForbidden))
+
+
+def _transport_name(exc: BaseException) -> str:
+    """The type of a transport failure, and of its cause when urllib wraps one
+    ("URLError: TimeoutError"). Types only: a message can quote the request."""
+    name = type(exc).__name__
+    reason = getattr(exc, "reason", None)
+    if isinstance(exc, urllib.error.URLError) and isinstance(reason, BaseException):
+        return f"{name}: {type(reason).__name__}"
+    return name
+
+
+def _rate_limited(raw: bytes) -> bool:
+    """A 403 GitHub sends for its primary or secondary rate limit, read from its
+    answer's text. Only tested, never quoted."""
+    return b"rate limit" in raw[:MAX_RESPONSE_BYTES].lower()
 
 
 #: What each write needs, named in the 403's sentence.
@@ -363,8 +407,8 @@ class GitHubWriter:
             raise
         except Exception as exc:
             # The type only: a transport's message can quote the request.
-            raise ForgeWriteError(
-                f"{what} could not be sent to GitHub ({type(exc).__name__})"
+            raise ForgeUnreachable(
+                f"{what} could not be sent to GitHub ({_transport_name(exc)})"
             ) from None
         if status == 401:
             raise ForgeWriteUnauthorized(
@@ -372,6 +416,12 @@ class GitHubWriter:
                 "it is invalid or has expired; store a new one with "
                 "scripts/create-secrets.sh --stdin"
             )
+        if status == 429 or (status == 403 and _rate_limited(raw)):
+            raise ForgeUnreachable(
+                f"GitHub's rate limit held back {what} for now (HTTP {status})"
+            )
+        if status >= 500:
+            raise ForgeUnreachable(f"GitHub answered HTTP {status} for {what}")
         if status == 403:
             raise forbidden(
                 f"GitHub refused the tenant's forge credential for {what} (HTTP 403): "

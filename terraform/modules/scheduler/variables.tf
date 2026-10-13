@@ -255,34 +255,6 @@ variable "issue_run_advance_schedule" {
   default     = "* * * * *"
 }
 
-variable "issue_sweep_schedule" {
-  description = <<-EOT
-    How often each tenant's registered repositories are swept for open issues
-    to start issue runs on (POST /v1/admin/issues/sweep, docs/issue-runs.md
-    "Sweeper").
-
-    Every 30 minutes, at :07 and :37 -- never on :00 or :30, where other
-    schedules bunch. A planner runs for minutes and a run for hours, so a new
-    candidate waiting up to half an hour costs nothing anyone sees; each sweep
-    reads every registered repository's open issues and pull requests with
-    the tenant's token, so a tighter schedule spends that token's rate limit
-    for no gain. The sweep itself is off until SWEEP_ENABLED and the tenant's
-    own switch are on.
-  EOT
-  type        = string
-  default     = "7,37 * * * *"
-
-  # The minute field must list explicit minutes, none of them :00 or :30: a
-  # step like "*/30" or a wildcard would land on both.
-  validation {
-    condition = try(alltrue([
-      for m in split(",", split(" ", trimspace(var.issue_sweep_schedule))[0]) :
-      can(regex("^[0-9]{1,2}$", m)) && !contains([0, 30], tonumber(m)) && tonumber(m) < 60
-    ]), false)
-    error_message = "issue_sweep_schedule's minute field lists explicit minutes, none of them :00 or :30 (owner decision 2026-10-08), e.g. \"7,37 * * * *\"."
-  }
-}
-
 variable "stranded_pr_sweep_schedule" {
   description = <<-EOT
     How often each tenant's SwarmCloud-opened pull requests are swept for ones
@@ -290,7 +262,7 @@ variable "stranded_pr_sweep_schedule" {
     swarm_api.strandedprs, part of #295).
 
     Every 30 minutes, at :19 and :49 -- never on :00 or :30, where other
-    schedules bunch, and off the issue sweep's :07 and :37, so the two reads
+    schedules bunch, and off eng's `issue-sweep` schedule at :07 and :37, so the two reads
     of every registered repository with one tenant's token do not share a
     minute. A pull request counts as stranded only after two hours, so a
     tighter schedule tells nobody sooner in any way that matters, and spends
@@ -299,8 +271,8 @@ variable "stranded_pr_sweep_schedule" {
   type        = string
   default     = "19,49 * * * *"
 
-  # The minute field must list explicit minutes, none of them :00 or :30, as
-  # for the issue sweep: a step like "*/30" or a wildcard would land on both.
+  # The minute field must list explicit minutes, none of them :00 or :30: a
+  # step like "*/30" or a wildcard would land on both.
   validation {
     condition = try(alltrue([
       for m in split(",", split(" ", trimspace(var.stranded_pr_sweep_schedule))[0]) :

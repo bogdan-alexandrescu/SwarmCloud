@@ -645,14 +645,6 @@ groups_impersonate_user = "bogdan@saga.xyz"
 # bootstrap output github_deployer_service_account.
 deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
 
-# The in-platform issue sweeper (swarm-api SWEEP_ENABLED), on in dev from
-# 2026-10-09. Owner decision 2026-10-08: switch it on once PR 898 is deployed
-# (it was, 2026-10-09 02:28Z). This is the platform switch only; the tenant's
-# own switch, its cap of 8 live runs and submit_as are set per tenant through
-# PUT /v1/admin/tenants/eng/issue-sweep, not here (docs/issue-runs.md "Turning
-# it on, for tenant eng"). Left off in prod.
-enable_issue_sweep = true
-
 # Personal-workspace publishing (swarm-api WORKSPACE_APPLY_PUBLISH, #847).
 # ON in dev from 2026-10-11 (owner): the swarm-workspace-apply topic exists, and
 # an approval now reaches the Cloud Run job swarm-workspace-apply through

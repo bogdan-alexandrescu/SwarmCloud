@@ -2316,6 +2316,71 @@ export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
 }
 
 /**
+ * ONE ENTRY OF THE NOTIFICATION FEED (#1206, proposal A). `id` is stable: the
+ * same underlying thing has the same id on every read, so "read" survives a
+ * re-read. A `needs_you` item is DERIVED from live state, not stored, and
+ * leaves the feed once that state is resolved -- a handled request clears
+ * itself without anyone marking it.
+ */
+export interface NotificationItem {
+  id: string
+  group: 'admin' | 'approval' | 'task' | 'account' | 'finished'
+  needs_you: boolean
+  title: string
+  detail: string | null
+  /** A console path, `/admin/people` or `/agents/live/<task>/browser`. */
+  href: string
+  at: string
+  read: boolean
+}
+
+/** `GET /v1/notifications`: needs-you items, then at most 50 updates from the last 7 days. */
+export interface NotificationFeed {
+  items: NotificationItem[]
+  unread_needs_you: number
+  unread_updates: number
+  /** Requests waiting on any admin; 0 for a non-admin. */
+  admin_pending: number
+  read_at: string
+}
+
+/**
+ * `GET /v1/notifications`, read by the frame on every page. A FRAME read: the
+ * header's data age is the page's, and the bell's poll is not the page's data.
+ *
+ * The fixture build serves no feed, so it answers the 404 an API without the
+ * route would, and the bell hides exactly as it does there. It records NO
+ * probe: the fixture build makes no request, and a failing row for it on API
+ * reads -- on every page of every fixture session -- would be a failure that
+ * never happened, pushed above the ones being demonstrated.
+ */
+export async function loadNotifications(): Promise<Result<NotificationFeed>> {
+  const target = route('/v1/notifications')
+  if (USE_FIXTURES) return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no notification feed.' } }
+  const r = await read<NotificationFeed>(target, () => false, { frame: true })
+  // A 200 with no list is not an empty feed, and drawing "Nothing needs you"
+  // over an answer nobody could read would be a claim; it is a failure.
+  if ((r.status === 'ok' || r.status === 'stale') && !Array.isArray(r.data.items)) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message: 'The notifications answer carried no list of items.' } }
+  }
+  return r
+}
+
+/** `POST /v1/notifications/read {"ids": [...]}`. */
+export async function markNotificationsRead(ids: readonly string[]): Promise<Result<unknown>> {
+  const target = route('/v1/notifications/read')
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', { ids })
+}
+
+/** `POST /v1/notifications/read-all`. */
+export async function markAllNotificationsRead(): Promise<Result<unknown>> {
+  const target = route('/v1/notifications/read-all')
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST')
+}
+
+/**
  * A row-bounded window, assembled by following page tokens.
  *
  * NEVER LET A CLAMP READ AS AN END OF DATA. `paged_limit` silently takes
@@ -5644,6 +5709,11 @@ export interface ForgeOrgCard {
   org: string
   account_type: string | null
   installation_id: number
+  /**
+   * GitHub's permission map for the installation (`contents: write`), the
+   * ones SwarmCloud does not use included; null when it was not read.
+   */
+  granted: Record<string, string> | null
   missing: ForgeGap[] | null
   pending: ForgePending[] | null
   review_url: string | null
@@ -5693,6 +5763,15 @@ function fpGitHubUrl(v: unknown): string | null {
   return s !== null && s.startsWith('https://github.com/') ? s : null
 }
 
+/** A permission map, keeping only string levels; not an object at all is null (not read), never `{}` (nothing granted). */
+function fpPermMap(v: unknown): Record<string, string> | null {
+  const o = fpObj(v)
+  if (o === null) return null
+  const out: Record<string, string> = {}
+  for (const [k, level] of Object.entries(o)) if (typeof level === 'string' && level !== '') out[k] = level
+  return out
+}
+
 function fpGap(o: Record<string, unknown>): ForgeGap | null {
   const why = fpStr(o.needed_for)
   if (why === null) return null
@@ -5721,6 +5800,7 @@ export function normForgePermissions(raw: unknown): ForgePermissionsDoc {
       org,
       account_type: fpStr(o.account_type),
       installation_id: o.installation_id,
+      granted: fpPermMap(o.granted),
       missing: fpGaps(o.missing),
       pending: Array.isArray(o.pending)
         ? fpList(o.pending).flatMap((p) => {

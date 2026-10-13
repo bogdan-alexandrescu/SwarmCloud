@@ -358,28 +358,40 @@ const TERMINAL = ['SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED']
 // with a swarm_workflow_status call -- was not taken: that read names each
 // step's state but not its answer, cost, duration or pull request, and it is
 // one more relay row returning StructuredOutput, the very thing that failed.
+//
+// Only `state` is required, and every other field also takes a null
+// (ROW-SKIP, part of #1194; measured 2026-10-12). Re-review and merge rows
+// whose agent was SKIPPED -- no answer, no artifacts -- ran out of their five
+// StructuredOutput attempts on "must have required property 'answer_excerpt',
+// 'pr_url', 'artifacts', 'last_error', 'console'" and on a missing root
+// `state`, and the row ended in row_error over a step that had finished. The
+// empty fields carry nothing stepAnswer() needs: it reads a missing or null
+// text back as null, a missing or null list as [], and the root `state` only
+// when `result.state` is absent. The step's state is the one field the row
+// exists to return, so that one stays required.
 const STEP_FIELDS = {
   type: 'object',
   properties: {
     state: { type: 'string' },
-    answer_excerpt: { type: 'string' },
-    cost_usd: { type: 'number' },
-    duration_s: { type: 'number' },
-    pr_url: { type: 'string' },
-    artifacts: { type: 'array', items: { type: 'string' } },
-    last_error: { type: 'string' },
-    console: { type: 'string' },
+    answer_excerpt: { type: ['string', 'null'] },
+    cost_usd: { type: ['number', 'null'] },
+    duration_s: { type: ['number', 'null'] },
+    pr_url: { type: ['string', 'null'] },
+    artifacts: { type: ['array', 'null'], items: { type: 'string' } },
+    last_error: { type: ['string', 'null'] },
+    console: { type: ['string', 'null'] },
+    questions: { type: ['array', 'null'] },
   },
-  required: ['state', 'answer_excerpt', 'pr_url', 'artifacts', 'last_error', 'console'],
+  required: ['state'],
 }
 
 const STEP_RESULT = {
   type: 'object',
   properties: {
-    state: { type: 'string' },
+    state: { type: ['string', 'null'] },
     result: STEP_FIELDS,
   },
-  required: ['state', 'result'],
+  required: ['result'],
 }
 
 // A row's `{state, result}` as the flat step result: an empty text is null, a

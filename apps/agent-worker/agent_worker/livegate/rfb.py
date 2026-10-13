@@ -46,6 +46,19 @@ stream per connection. Each update carries the band of rows that changed since
 the last one sent to that viewer; a resize is announced with the DesktopSize
 pseudo-encoding, and a viewer that cannot take one is disconnected (noVNC
 reconnects).
+
+THE POINTER (LB-CURSOR; part of #1030). Xvfb's framebuffer never holds the X
+pointer, and noVNC hides its own over the canvas, so without this the person
+in control clicks blind. A viewer that lists the Cursor pseudo-encoding (-239,
+RFC 6143 §7.8.1) is sent `pointer.ARROW` with its bitmask in its first update
+and again after every DesktopSize, and noVNC draws it as its local pointer.
+Every other viewer -- a watcher, the relay's recorder, a controller with no
+local cursor -- gets the arrow painted where the pointer last was
+(`FrameHub.pointer`: the controller's last PointerEvent, or the agent's last
+mouse event, which the gate passes on from the CDP proxy), into its own copy
+of the frame after the mask has painted it: never into the published frame,
+never into Xvfb's mapping, and never under the mask. The controller with a
+local cursor is not painted one too: it would trail its own pointer.
 """
 
 from __future__ import annotations
@@ -61,6 +74,10 @@ from typing import Callable
 from .capture import Frame
 from .inject import MAX_TYPED_CHARS, Injector
 from .mask import UNAVAILABLE_RGB, MaskState, Outcome
+from .pointer import HEIGHT as CURSOR_HEIGHT
+from .pointer import HOTSPOT as CURSOR_HOTSPOT
+from .pointer import WIDTH as CURSOR_WIDTH
+from .pointer import PointerTracker, bitmask, paint, shape
 
 log = logging.getLogger(__name__)
 
@@ -70,6 +87,7 @@ _SECURITY_NONE = 1
 ENCODING_RAW = 0
 ENCODING_ZLIB = 6
 ENCODING_DESKTOP_SIZE = -223
+ENCODING_CURSOR = -239
 
 #: §5.10: controller input events per second, dropped above.
 MAX_INPUT_EVENTS_PER_SECOND = 200
@@ -129,6 +147,8 @@ class FrameHub:
         self._current = MaskedFrame(blank, Outcome.UNAVAILABLE, _token=_MASKED)
         self.version = 0
         self._waiters: set[asyncio.Event] = set()
+        #: Where the pointer last was, in this frame's coordinates (module docstring).
+        self.pointer = PointerTracker(on_move=self._pointer_moved)
 
     @property
     def current(self) -> MaskedFrame:
@@ -138,6 +158,13 @@ class FrameHub:
         if not isinstance(frame, MaskedFrame):
             raise TypeError("only a MaskedFrame may be published: apply the mask with rfb.masked()")
         self._current = frame
+        self._wake_all()
+
+    def _pointer_moved(self) -> None:
+        # A move is news to a viewer even with no new capture: its mark moved.
+        self._wake_all()
+
+    def _wake_all(self) -> None:
         self.version += 1
         for event in self._waiters:
             event.set()
@@ -240,6 +267,12 @@ class _Format:
         r, g, b = self.shifts
         return _PIXEL_FORMAT.pack(32, 24, int(self.big_endian), 1, 255, 255, 255, r, g, b)
 
+    def frame(self, width: int, height: int, pixels: bytearray) -> Frame:
+        """`pixels`, rows packed, as a Frame in this format, so it can be painted on."""
+        r, g, b = self.shifts
+        return Frame(width, height, width * 4, pixels, 0xFF << r, 0xFF << g, 0xFF << b,
+                     little_endian=not self.big_endian)
+
 
 def _shift(mask: int) -> int:
     return (mask & -mask).bit_length() - 1
@@ -283,6 +316,7 @@ class RfbSession:
         self.counts = SessionCounts()
         self._format: _Format | None = None  # the viewer's; None until ServerInit
         self._encodings: tuple[int, ...] = (ENCODING_RAW,)
+        self._cursor_due = False  # send the cursor shape with the next update
         self._zlib: zlib._Compress | None = None
         self._size = (0, 0)
         self._last: bytes | None = None  # what this viewer has, in its format
@@ -367,6 +401,7 @@ class RfbSession:
                     raise RfbError("too many encodings")
                 self._encodings = struct.unpack(f">{count}i", await read(4 * count))
                 self._zlib = None
+                self._cursor_due = ENCODING_CURSOR in self._encodings
             elif kind == _FRAMEBUFFER_UPDATE_REQUEST:
                 incremental = (await read(9))[0] != 0
                 # A full request wins over an incremental one still pending.
@@ -382,7 +417,9 @@ class RfbSession:
                 if self._admit(1):
                     self.counts.pointer_events += 1
                     w, h = self._hub.current.frame.width, self._hub.current.frame.height
-                    await self._injector.pointer_event(buttons, min(x, w - 1), min(y, h - 1))
+                    x, y = min(x, w - 1), min(y, h - 1)
+                    self._hub.pointer.move(x, y)
+                    await self._injector.pointer_event(buttons, x, y)
             elif kind == _CLIENT_CUT_TEXT:
                 (length,) = struct.unpack(">xxxI", await read(7))
                 if length > MAX_CUT_TEXT_BYTES:
@@ -418,6 +455,8 @@ class RfbSession:
             raise RfbError("unsupported pixel format")
         self._format = _Format(bool(big), shifts)
         self._last = None
+        # The shape was in the old format: send it again in the new one.
+        self._cursor_due = ENCODING_CURSOR in self._encodings
 
     # -- server messages --------------------------------------------------
 
@@ -442,6 +481,9 @@ class RfbSession:
                 raise RfbError("display resized and the viewer cannot take DesktopSize")
             self._size = (frame.width, frame.height)
             self._last = None
+            # §7.8.1 leaves the cursor to the client across a resize; noVNC
+            # keeps it, but a viewer that drops it would be blind again.
+            self._cursor_due = ENCODING_CURSOR in self._encodings
             self._writer.write(struct.pack(">BxH", _FRAMEBUFFER_UPDATE, 1)
                                + struct.pack(">HHHHi", 0, 0, frame.width, frame.height,
                                              ENCODING_DESKTOP_SIZE))
@@ -450,7 +492,16 @@ class RfbSession:
             # The viewer requests again at the new size.
             return
         assert self._format is not None
-        pixels = _convert(frame, _frame_format(frame), self._format)
+        pixels: bytes | bytearray = _convert(frame, _frame_format(frame), self._format)
+        at = self._hub.pointer.position
+        if at is not None and not self._local_pointer():
+            # This viewer's own copy, after the mask (module docstring).
+            pixels = bytearray(pixels)
+            paint(self._format.frame(frame.width, frame.height, pixels), *at)
+        rects: list[bytes] = []
+        if self._cursor_due:
+            self._cursor_due = False
+            rects.append(self._cursor_rect())
         row = frame.width * 4
         top, bottom = 0, frame.height
         if incremental and self._last is not None and len(self._last) == len(pixels):
@@ -459,25 +510,38 @@ class RfbSession:
             while bottom > top and (pixels[(bottom - 1) * row:bottom * row]
                                     == self._last[(bottom - 1) * row:bottom * row]):
                 bottom -= 1
-            if top == bottom:
+            if top == bottom and not rects:
                 # Published but identical (a static page): nothing to send,
                 # so the request stays pending for the next frame.
                 self._pending = True
                 return
-        self._last = pixels
-        band = pixels[top * row:bottom * row]
-        encoding = self._encoding()
-        header = struct.pack(">BxH", _FRAMEBUFFER_UPDATE, 1) + struct.pack(
-            ">HHHHi", 0, top, frame.width, bottom - top, encoding)
-        if encoding == ENCODING_ZLIB:
-            if self._zlib is None:
-                self._zlib = zlib.compressobj()
-            data = self._zlib.compress(band) + self._zlib.flush(zlib.Z_SYNC_FLUSH)
-            self._writer.write(header + struct.pack(">I", len(data)) + data)
-        else:
-            self._writer.write(header + band)
+        self._last = bytes(pixels)
+        if top < bottom:
+            band = pixels[top * row:bottom * row]
+            encoding = self._encoding()
+            header = struct.pack(">HHHHi", 0, top, frame.width, bottom - top, encoding)
+            if encoding == ENCODING_ZLIB:
+                if self._zlib is None:
+                    self._zlib = zlib.compressobj()
+                data = self._zlib.compress(band) + self._zlib.flush(zlib.Z_SYNC_FLUSH)
+                rects.append(header + struct.pack(">I", len(data)) + data)
+            else:
+                rects.append(header + band)
+        self._writer.write(struct.pack(">BxH", _FRAMEBUFFER_UPDATE, len(rects)) + b"".join(rects))
         self.counts.updates += 1
         await self._writer.drain()
+
+    def _local_pointer(self) -> bool:
+        """Does this viewer draw the pointer itself? The controller with a cursor shape does."""
+        return ENCODING_CURSOR in self._encodings and self._control.holds(self.conn_id)
+
+    def _cursor_rect(self) -> bytes:
+        """The arrow as a Cursor pseudo-rectangle (RFC 6143 §7.8.1), in this viewer's format."""
+        assert self._format is not None
+        fmt = self._format
+        encode = fmt.frame(1, 1, bytearray(4)).encode
+        return (struct.pack(">HHHHi", *CURSOR_HOTSPOT, CURSOR_WIDTH, CURSOR_HEIGHT, ENCODING_CURSOR)
+                + shape(encode) + bitmask())
 
     def _encoding(self) -> int:
         for encoding in self._encodings:
