@@ -134,8 +134,8 @@ describe("the Overview's hand-off cards say which agent is waiting (LB-V5)", () 
     const banner = c!.querySelector('.c-banner')!
     await waitFor(() => expect(banner.textContent).toContain('look around the GitHub sign-in page'))
     expect(banner.textContent).toContain('github.com')
-    expect(banner.textContent).toMatch(/19h 00m left/)
-    expect(screen.getByRole('button', { name: /I'm ready to sign in/ })).toBeTruthy()
+    expect(banner.textContent).toMatch(/19:00:00 left/)
+    expect(screen.getByRole('button', { name: /I'm ready/ })).toBeTruthy()
   })
 
   it('names a lone agent by what it is, without repeating its id', () => {

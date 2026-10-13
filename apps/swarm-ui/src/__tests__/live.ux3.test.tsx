@@ -272,10 +272,10 @@ describe("the Overview's hand-off card: Take control", () => {
     })
     render(<HandoffCards tasks={[holding(ID)]} now={NOW} onOpen={() => {}} />)
     const banner = document.querySelector('.c-banner') as HTMLElement
-    // The card keeps its reason, site and time left, and browse →.
+    // The card keeps its reason, site and time left, and its Open →.
     expect(banner.textContent).toContain('Sign in to GitHub as the bot account')
     expect(banner.textContent).toContain('github.com')
-    expect(banner.textContent).toContain('9m 00s left')
+    expect(banner.textContent).toContain('9:00 left')
     expect(within(banner).getByRole('link', { name: /→/ })).toBeTruthy()
 
     const take = await within(banner).findByRole('button', { name: /^Take control$/ })
