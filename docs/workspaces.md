@@ -1653,6 +1653,7 @@ $ /sc:run "fix the flaky test"
 | `POST /v1/admin/workspaces/{workspace_id}/retry` | admin | from `failed` or `needs_owner`: publishes again |
 | `PUT /v1/admin/workspaces/{workspace_id}/limits` | admin | §6.4's ceiling; body `{max_active}` only |
 | `PUT /v1/admin/people/{workspace_id}/loan` | admin | lend or reclaim an account (§6.4); a lend to a workspace not yet `ready` answers `state: "pending"` and is applied by the sweep |
+| `POST /v1/admin/people/{workspace_id}/loan/decline` | admin | decline the person's open loan request (§6.4); body `{reason?}`, at most 200 characters; 409 `LOAN_REQUEST_NOT_OPEN` when none is open |
 | `PUT /v1/admin/admins/{email}` and `DELETE` | admin | grant or remove admin (§6.5) |
 | `POST /v1/admin/workspaces/sweep` | the rollup sweeper (`swarm-workspace-sweep`, every 10 minutes) | §2.2's dispatch sweep, then the pending loans of every workspace now `ready` (§6.4) |
 | `GET /v1/onboarding` | (exists) | gains the `workspace` and `claude_account` steps |
@@ -1743,6 +1744,25 @@ the platform owner" with the step the guard stopped at; a `failed` row has **Ret
   once as before (`state: "applied"`), and if the broker refuses it the answer
   is 422 `LOAN_GRANT_FAILED`, naming the member it asked IAM to grant and the
   broker's reason: there, that service account should exist.
+
+  **A loan request may be declined** (LOAN-DECLINE, owner 2026-10-12, part
+  of #1206). Until then a request closed only when an account was lent
+  against it, so one an admin would not grant stayed in "Waiting for you"
+  with no way to answer it. **Decline** (`POST
+  /v1/admin/people/{workspace_id}/loan/decline`) moves an open request to
+  `declined` with the admin, the time and an optional short reason in its
+  decision, and writes a `loan_declined` audit entry (the reason's length,
+  not a second copy of it) in the same transaction. With no open request,
+  because none was made or it was already lent or declined, it is 409
+  `LOAN_REQUEST_NOT_OPEN`. The person is told in their notification feed
+  (`account`: "Your request to borrow a Claude account was declined", with
+  the reason, never who declined; docs/notifications.md), and the admins'
+  "asks for a Claude account" item is gone because the request is no longer
+  `requested`. People's row reads "loan declined" until the person asks
+  again: a new `POST /v1/workspace/loan-request` re-opens it as `requested`
+  and keeps the declined one in `history`. Declining calls no broker and
+  does not touch `pending_loans`. A pending loan is a lending an admin has
+  already decided, and only **Reclaim** cancels it.
 
 **4. Admins.** §6.5.
 

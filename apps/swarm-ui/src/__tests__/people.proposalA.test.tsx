@@ -9,7 +9,8 @@
 // WHAT EACH CASE HOLDS:
 //   * the amber "Waiting for you" card lists each open request on top, a
 //     workspace request with the limits it would get and Approve / Deny, a
-//     loan request with the pool's lendable count, a picker and Lend; each
+//     loan request with the pool's lendable count, a picker, Lend and
+//     Decline (an optional reason, LOAN-DECLINE); each
 //     calls its existing route by WORKSPACE ID; the card is absent when
 //     nothing is open;
 //   * the table has no Actions column: Person, Teams, Workspace, Claude
@@ -218,11 +219,43 @@ describe('Waiting for you', () => {
     expect(writesOf(calls)[0]).toEqual({ method: 'PUT', url: '/v1/admin/people/w-fa1000/loan', body: { account_id: 'acct-ops-1', lend: true } })
   })
 
-  it('a loan request says why it cannot be declined here, rather than offering a dead button', async () => {
-    await mount(people(ROWS))
+  it('Decline asks for an optional reason, posts it to the decline route, and the request leaves the card', async () => {
+    // LOAN-DECLINE: the route exists now, so the card draws a real button.
+    // MUTATION: post without the reason, or keep the request on the card after the read.
+    const body = people(ROWS)
+    const { calls } = await mount(body, {
+      'POST /v1/admin/people/w-fa1000/loan/decline': (b) => {
+        const declined = { state: 'declined', requested_at: ago(10), decided_at: ago(0), reason: (b as Json).reason ?? null }
+        body.people = (body.people as Json[]).map((r) => (r.email === 'fay@example.com' ? { ...r, loan_request: declined } : r))
+        return { status: 200, body: { workspace_id: 'w-fa1000', state: 'declined', reason: (b as Json).reason ?? null } }
+      },
+    })
     const item = reqOf('loan', 'fay@example.com')
-    expect(within(item).queryByRole('button', { name: 'Decline' })).toBeNull()
-    expect(item.querySelector('[data-testid="pp-no-decline"]')?.textContent).toMatch(/no route to decline/)
+    expect(item.querySelector('[data-testid="pp-no-decline"]'), 'the "no route" line is still drawn').toBeNull()
+    fireEvent.click(within(item).getByRole('button', { name: 'Decline' }))
+    // A small confirm: nothing is sent until it is confirmed.
+    expect(writesOf(calls)).toHaveLength(0)
+    const send = within(item).getAllByRole('button', { name: 'Decline' }).at(-1)! as HTMLButtonElement
+    expect(send.disabled, 'a reason is optional, so Decline is live without one').toBe(false)
+    fireEvent.change(within(item).getByLabelText('Reason, shown to fay@example.com (optional)'), { target: { value: 'Use the eng account.' } })
+    fireEvent.click(within(item).getAllByRole('button', { name: 'Decline' }).at(-1)!)
+    await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
+    expect(writesOf(calls)[0]).toEqual({ method: 'POST', url: '/v1/admin/people/w-fa1000/loan/decline', body: { reason: 'Use the eng account.' } })
+    await waitFor(() => expect(document.querySelector('.pp-waiting li[data-kind="loan"]')).toBeNull(), WAIT)
+    expect(visible(document.querySelector('.pp-waiting'))).toContain('Declined fay@example.com')
+    // The person's row says so until they ask again.
+    expect(visible(rowOf('fay@example.com'))).toContain('loan declined')
+  })
+
+  it('Decline with no reason posts an empty body', async () => {
+    const { calls } = await mount(people(ROWS), {
+      'POST /v1/admin/people/w-fa1000/loan/decline': () => ({ status: 200, body: { workspace_id: 'w-fa1000', state: 'declined', reason: null } }),
+    })
+    const item = reqOf('loan', 'fay@example.com')
+    fireEvent.click(within(item).getByRole('button', { name: 'Decline' }))
+    fireEvent.click(within(item).getAllByRole('button', { name: 'Decline' }).at(-1)!)
+    await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
+    expect(writesOf(calls)[0]).toEqual({ method: 'POST', url: '/v1/admin/people/w-fa1000/loan/decline', body: {} })
   })
 
   it('is not drawn when nothing is waiting, and a held request is not waiting on an admin', async () => {
