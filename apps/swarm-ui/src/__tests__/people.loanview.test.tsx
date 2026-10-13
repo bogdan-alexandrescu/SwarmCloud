@@ -239,7 +239,8 @@ describe('the account picker is a normal-sized control', () => {
       // MUTATION: `.pp-loan select { width: 100% }` or `.pp-loan > .c-field { flex: 1 1 9rem }` back.
       expect(painted(select, 'width', env) ?? 'auto', `select width at ${env.width}`).toBe('auto')
       expect(painted(select, 'max-width', env), `select max-width at ${env.width}`).toBe('320px')
-      expect(painted(select, 'height', env), `select height at ${env.width}`).toBe('32px')
+      // The console's control height (32px), the one Admin › Schedules' tenant select has.
+      expect(painted(select, 'height', env), `select height at ${env.width}`).toBe('var(--h-ctl)')
       expect(painted(select, 'white-space', env), `select wraps at ${env.width}`).toBe('nowrap')
       for (const el of [field, loan]) {
         const flex = painted(el, 'flex', env) ?? '0 1 auto'
