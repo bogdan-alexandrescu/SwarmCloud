@@ -260,6 +260,10 @@ in the code, so they are measured here:
 | territory guard `routes/runs.py` `territory_conflict` | the same, with `_territory_hold` writing the hold `territory_overlap: <run id>`, and `issueruns.territory_overlap` |
 | job `google_cloud_scheduler_job.issue_sweep` | the same: one per tenant in `var.rollup_tenant_ids`, named `<prefix>-issue-sweep-<t>`, at `var.issue_sweep_schedule` (default `7,37 * * * *`), as the rollup sweeper's OIDC identity |
 
+(This table is the 2026-10-08 measurement. Every SWEEP-only name in it --
+the route, `SWEEP_ENABLED`, the tenant settings and their routes, the job --
+was deleted on 2026-10-12: §8.1 step 4.)
+
 Where the code differs from §8.1, S6 and S9 follow the code (§8.1's rule):
 
 * **The submitter is the tenant's `issue_sweep.submit_as`, not a
@@ -1750,6 +1754,25 @@ The migration keeps SWEEP's logic and moves its trigger and configuration:
    S9 change deletes `google_cloud_scheduler_job.issue_sweep`, its route's
    entry in `ROLLUP_SWEEPER_ROUTES`, `SWEEP_ENABLED` and the tenant document's
    `issue_sweep` settings, and points SWEEP's docs here.
+
+   **Done on 2026-10-12, early (lane SWEEP-RM).** The owner approved the
+   deletion that day, the day after `sch_6ecbe1307511` first fired
+   (2026-10-11 19:40Z), and waived the 7-day watch. Deleted together: the job with its
+   `issue_sweep_schedule` variable and output; `POST /v1/admin/issues/sweep`
+   and its `ROLLUP_SWEEPER_ROUTES` entry; `GET`/`PUT
+   /v1/admin/tenants/{tenant_id}/issue-sweep`; `SWEEP_ENABLED`
+   (`ApiSettings.sweep_enabled`, `var.enable_issue_sweep`, dev's `true`); and
+   `issuesweep.sweep_tenant`, `get_config`/`set_config` and the `submit_as`
+   check, which only the route used. Kept: everything the schedule types call
+   -- `issuesweep.collect_candidates`, `skip_reason`, `claimed_issues`,
+   `SweepConfig`, `SweepReport`, `TRUSTED_AUTHORS` -- unchanged in
+   behaviour. Why not keep the paused job as a fallback: un-pausing it would
+   be a second trigger of the same sweep, and the route auto-merged with no
+   person's gate, which is what the schedule's default `merge: approve`
+   replaced. `test_issue_sweep.py`, `test_schedules_migration_seed.py` and
+   `tests/terraform/scheduler.tftest.hcl` hold the absence;
+   [issue-runs.md](issue-runs.md#removed-2026-10-12-the-job-the-route-and-the-switch)
+   records what each setting became.
 
 If SWEEP's merged names differ from the above, S6 follows SWEEP's code and
 records the difference in this document. That is the rule for when another

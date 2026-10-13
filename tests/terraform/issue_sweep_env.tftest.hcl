@@ -1,10 +1,11 @@
-# swarm-api's issue-sweep switch reaches its environment (owner decisions
-# 2026-10-08, docs/issue-runs.md "Sweeper").
+# swarm-api no longer carries the issue sweeper's switch (Schedules S9, second
+# change, 2026-10-12; docs/schedules.md §8.1 step 4).
 #
-# POST /v1/admin/issues/sweep starts nothing unless SWEEP_ENABLED is on
-# (swarm_api.settings.sweep_enabled); var.enable_issue_sweep renders it. Off
-# by default, by the new-refusals-ship-off rule: a swept run auto-approves its
-# plan and auto-merges its pull request.
+# SWEEP_ENABLED gated POST /v1/admin/issues/sweep, the route the per-tenant
+# issue_sweep Cloud Scheduler job called. The tenant's `issue-sweep` schedule
+# replaced the job, and the job, the route, the switch and var.enable_issue_sweep
+# were deleted together. A switch left rendered would gate nothing and read as
+# though the old sweep could still be turned on.
 
 
 mock_provider "google" {
@@ -28,7 +29,7 @@ variables {
   }
 }
 
-run "the_issue_sweep_ships_off" {
+run "swarm_api_renders_no_sweep_switch" {
   command = plan
 
   module {
@@ -36,28 +37,14 @@ run "the_issue_sweep_ships_off" {
   }
 
   assert {
-    condition     = local.service_env["swarm-api"].SWEEP_ENABLED == "false"
-    error_message = "with enable_issue_sweep unset swarm-api's SWEEP_ENABLED is false: the sweep starts nothing until an operator turns it on"
+    condition     = !contains(keys(local.service_env["swarm-api"]), "SWEEP_ENABLED")
+    error_message = "swarm-api's environment carries no SWEEP_ENABLED: the switch and the route it gated were removed on 2026-10-12"
   }
+
+  # The control: swarm-api's environment is rendered at all, so the absence
+  # above is not an empty map's.
   assert {
-    condition     = !contains(keys(local.service_env["swarm-scheduler"]), "SWEEP_ENABLED")
-    error_message = "the switch is swarm-api's alone"
-  }
-}
-
-run "enable_issue_sweep_turns_it_on" {
-  command = plan
-
-  module {
-    source = "../../terraform/infra"
-  }
-
-  variables {
-    enable_issue_sweep = true
-  }
-
-  assert {
-    condition     = local.service_env["swarm-api"].SWEEP_ENABLED == "true"
-    error_message = "enable_issue_sweep = true renders SWEEP_ENABLED=true, the value swarm_api.settings reads as on"
+    condition     = contains(keys(local.service_env["swarm-api"]), "ROLLUP_SWEEPER_USERS")
+    error_message = "swarm-api's environment still names the sweeper identity its remaining admin routes admit"
   }
 }

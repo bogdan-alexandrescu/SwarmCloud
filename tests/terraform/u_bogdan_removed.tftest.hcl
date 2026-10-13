@@ -237,7 +237,7 @@ run "infra_plans_nothing_for_u_bogdan_and_still_plans_eng" {
       contains(output.pool_names, "tenant:eng"),
       contains(output.pool_names, "provider:anthropic:tenant:eng"),
       contains(output.scheduler_jobs, "swarm-workflow-rollup-eng"),
-      contains(output.scheduler_jobs, "swarm-issue-sweep-eng"),
+      contains(output.scheduler_jobs, "swarm-issue-run-advance-eng"),
     ])
     error_message = "terraform/infra no longer plans eng's resources, so the u-bogdan assertion above proves nothing"
   }
@@ -309,9 +309,14 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
   # stranded_pr_sweep (part of #295, 2026-10-10). Add such a job to the
   # `contains([...], n)` lists below, never a `moved` for an instance that was
   # never created.
+  # A per-tenant instance DELETED after u-bogdan left is not counted either,
+  # but its `moved` and `removed` stay in removed.tf: the instance did exist
+  # for u-bogdan, and state may still hold it. issue_sweep (the issue
+  # sweeper's job, deleted 2026-10-12, Schedules S9 second change) is the one
+  # so far, which is why 13 of the 14 instances W9 counted are still made.
   # A test cannot address a child module's resources, so the instances are
   # read through the root's outputs: the account, the tenant document, the
-  # pools, the secrets, the jobs and the scheduler jobs -- 14 of the 33. Each
+  # pools, the secrets, the jobs and the scheduler jobs -- 13 of the 33. Each
   # must be the `from` of a `moved`, or the release would DESTROY it. The other
   # 19 (grants and bindings, keyed the same way) were read from a verbose mock
   # plan of dev.tfvars with and without u-bogdan on 2026-10-09; the release
@@ -324,8 +329,8 @@ run "infra_forgets_every_instance_it_made_for_u_bogdan" {
       [for id in values(output.tenant_secret_ids["w9-stand-in"]) : "module.secret_manager.google_secret_manager_secret.this[\"${replace(id, "w9-stand-in", "u-bogdan")}\"]"],
       [for j in output.job_names : "module.cloud_run_jobs.google_cloud_run_v2_job.this[\"${replace(j, "w9-stand-in", "u-bogdan")}\"]" if strcontains(j, "w9-stand-in")],
       [for n in output.scheduler_jobs : "module.scheduler.google_cloud_scheduler_job.${replace(trimsuffix(trimprefix(n, "swarm-"), "-w9-stand-in"), "-", "_")}[\"u-bogdan\"]" if strcontains(n, "w9-stand-in") && !contains(["swarm-stranded-pr-sweep-w9-stand-in"], n)],
-    )) == 14
-    error_message = "a tenant shaped like u-bogdan no longer gets the 14 output-visible instances (account, tenant document, 2 pools, 1 secret, 4 jobs, 5 scheduler jobs); a per-tenant resource changed, so re-read the set and terraform/infra/removed.tf together"
+    )) == 13
+    error_message = "a tenant shaped like u-bogdan no longer gets the 13 output-visible instances (account, tenant document, 2 pools, 1 secret, 4 jobs, 4 scheduler jobs); a per-tenant resource changed, so re-read the set and terraform/infra/removed.tf together"
   }
 
   assert {
