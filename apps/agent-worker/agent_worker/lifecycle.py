@@ -1002,7 +1002,11 @@ class Worker:
         # unless the profile is a live-browser one; signs with the child
         # path's attempt key, so it needs that registered.
         self.handoff = handoff_mod.HandoffPath(
-            config, logger=deps.logger, memory=deps.memory, children=self.children
+            config,
+            logger=deps.logger,
+            memory=deps.memory,
+            children=self.children,
+            progress=self._emit_startup_progress,
         )
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
@@ -7687,6 +7691,27 @@ class Worker:
                 "message": f"live browser unavailable: {reason}",
             },
         )
+
+    def _emit_startup_progress(self, step: str, at: datetime) -> bool:
+        """`startup_progress`: one of the browser's start-up steps, at the gate's time (STARTUP-API).
+
+        Called by `handoff.HandoffPath.note_startup` once per step and
+        attempt, for the console's progress bar (contract request 74). Never
+        on a fenced exit or a tenant mismatch (invariant 5: the stream is not
+        this attempt's to write then), which settles the step unwritten; a
+        control-plane outage leaves it for a later tick. A write that fails
+        raises, and the caller tries it again. Holds and moves nothing.
+        """
+        if self._fenced_exit or self._writes_forbidden:
+            return True
+        if self._control_plane_down:
+            return False
+        self.control.emit(
+            EventType.STARTUP_PROGRESS,
+            {"step": step, "attempt_id": self.cfg.attempt_id, "generation": self.cfg.generation},
+            at=at,
+        )
+        return True
 
     def _emit_startup_mark(self, cause: str, detail: dict[str, Any]) -> None:
         """One startup mark on the task's events: RUNNING, with `cause`.

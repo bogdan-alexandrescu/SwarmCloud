@@ -545,10 +545,19 @@ class _Episode:
 
 class LiveGate:
     def __init__(self, cfg: GateConfig, deps: Deps | None = None, *,
-                 record: Callable[[str, Mapping[str, Any]], None] = _record) -> None:
+                 record: Callable[[str, Mapping[str, Any]], None] = _record,
+                 wall: Callable[[], float] = time.time) -> None:
         self.cfg = cfg
         self.deps = deps or Deps()
         self.record = record
+        self._wall = wall
+        #: When each of the browser's start-up steps happened, in epoch
+        #: seconds: `browser_launching`, `browser_ready`, `first_frame`
+        #: (STARTUP-API). Served in `status`, where the worker reads them and
+        #: writes each once as a `startup_progress` event; the gate itself
+        #: holds no credential to write anything. Empty on a restarted gate,
+        #: which launches no browser.
+        self.startup: dict[str, float] = {}
         self.desktop = resolve(DEFAULT_PRESET)
         self.mask_state = MaskState()
         self.hub = FrameHub(self.desktop.display_width, self.desktop.display_height)
@@ -613,6 +622,7 @@ class LiveGate:
 
     async def start_browser(self) -> None:
         """2. Headed Chromium on the pipe, and the CDP proxy on 127.0.0.1:9222."""
+        self.startup.setdefault("browser_launching", self._wall())
         self.browser = await self.deps.start_chromium(self.cfg)
         self.proxy = GateProxy(
             self.browser.transport.send,
@@ -633,6 +643,8 @@ class LiveGate:
             raise SetupError(f"Chromium did not answer on its pipe within {CHROMIUM_READY_SECONDS:.0f}s")
         if version.exception() is not None:
             raise SetupError(f"Chromium refused Browser.getVersion ({type(version.exception()).__name__})")
+        # CDP answered: the browser is up, whatever is applied to it next.
+        self.startup.setdefault("browser_ready", self._wall())
         self.devices = DeviceController(self.proxy, self.deps.open_display(self.cfg), self.mask_state,
                                         record=self.record, on_resize=self._on_resize,
                                         on_change=self._device_changed)
@@ -705,6 +717,10 @@ class LiveGate:
             device = self.devices.device if self.devices is not None else self.desktop
             frame = captured(frame, device)
             self.hub.publish(masked(frame, self.mask_state))
+            # The first frame the stream is given: the capture runs only while
+            # an RFB stream (a viewer, or the relay's recorder) is open, and
+            # every stream sends from the hub this was published to.
+            self.startup.setdefault("first_frame", self._wall())
             await asyncio.sleep(interval)
 
     def _agent_pointer(self, x: float, y: float) -> None:
@@ -787,6 +803,7 @@ class LiveGate:
             "device": device.name,
             "orientation": device.orientation,
             "last_episode": self.last_episode,
+            "startup": dict(self.startup),
         }
 
     async def open_tunnel(self, args: Mapping[str, Any]) -> dict[str, Any]:

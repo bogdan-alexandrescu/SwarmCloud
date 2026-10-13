@@ -527,6 +527,24 @@ def event_type(event: dict[str, Any]) -> Any:
     return kind
 
 
+def event_label(event: dict[str, Any]) -> str:
+    """What one printed event line names: its type, and for a start-up step the step.
+
+    `startup_progress` (contract request 74) is one type for seven steps --
+    `pod_scheduled` through `first_frame`, its `detail.step` -- so a line that
+    printed the type alone would print the same words seven times. Each step
+    is one line, `startup_progress pod_scheduled`. Every other type prints as
+    `event_type` reads it.
+    """
+    kind = event_type(event) or "?"
+    detail = event.get("detail")
+    if kind == "startup_progress" and isinstance(detail, dict):
+        step = detail.get("step")
+        if isinstance(step, str) and step:
+            return f"{kind} {step}"
+    return str(kind)
+
+
 def _event_row(event: dict[str, Any]) -> dict[str, Any]:
     row = {
         "at": event.get("at"),
@@ -1327,7 +1345,7 @@ def render(
             seen.add("console")
             lines.append(f"[{labels[task['task_id']]}] console: {link}")
     for _, label, event in events:
-        lines.append(f"[{label}] {clock(event.get('at'))} · {event['type']}")
+        lines.append(f"[{label}] {clock(event.get('at'))} · {event_label(event)}")
     for task in report["tasks"]:
         task_id = task["task_id"]
         label = labels[task_id]
