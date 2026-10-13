@@ -1043,21 +1043,11 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # finished task's own tenant's token, for that tenant's gated
         # integrator, and moves only a step it claimed (`verdictpublish`).
         ("POST", "/v1/admin/tasks/finished"),
-        # The issue sweeper (owner decisions 2026-10-08, jobs.tf
-        # `issue_sweep`): lists one tenant's registered repositories' open
-        # issues with that tenant's token and starts issue runs for the
-        # candidates, each as the tenant's `issue_sweep.submit_as` member
-        # (`issuesweep.sweep_tenant`), never as the sweeper.
-        # Off unless SWEEP_ENABLED and the tenant's own switch say otherwise.
-        # Like the repository poll, the sweeper alone may call it.
-        #
-        # PAUSED, NOT REMOVED (Schedules S9, 2026-10-11): the `issue-sweep`
-        # schedule (docs/schedules.md §8.1) replaces the job that calls this,
-        # and the job is paused in jobs.tf. The entry stays until the owner has
-        # watched the schedule fire for 7 days without an auto-pause; the
-        # second S9 change then removes it with the job, SWEEP_ENABLED and the
-        # tenant's `issue_sweep` settings.
-        ("POST", "/v1/admin/issues/sweep"),
+        # NOT the issue sweeper's route: it, its Cloud Scheduler job and
+        # SWEEP_ENABLED were removed on 2026-10-12 (Schedules S9, second
+        # change; docs/schedules.md §8.1 step 4). The tenant's `issue-sweep`
+        # schedule replaced them, and the schedule tick, not this identity,
+        # fires it.
         # The stranded-PR sweep (part of #295, jobs.tf `stranded_pr_sweep`):
         # reads one tenant's registered repositories' open pull requests with
         # that tenant's token, stores the rows and logs `pr_stranded`. It
