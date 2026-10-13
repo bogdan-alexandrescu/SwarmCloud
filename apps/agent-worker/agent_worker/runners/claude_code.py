@@ -22,7 +22,10 @@ variables -- `SWARM_HANDOFF`, `SWARM_CDP_ENDPOINT`, `SWARM_BROWSER_UPLOADS`
 loopback address and a directory, never a credential). The CLI's environment
 is what its Bash tool inherits, so without them `swarm-handoff` found no spool
 and the agent had to export `SWARM_HANDOFF` itself (MEASURED 2026-10-13,
-task_1f28d5bfa5a14f618f83; LB-POLISH, part of #1030). Nothing else crosses. The credential is the tenant's secret, or a pool
+task_1f28d5bfa5a14f618f83; LB-POLISH, part of #1030). On an attempt resumed
+after a hand-off park, the worker's summary of the earlier attempts'
+hand-offs, `$SWARM_HANDOFF/resumed.md`, follows the caller's prompt
+(`resume_summary`; RESUME-PROGRESS). Nothing else crosses. The credential is the tenant's secret, or a pool
 account's OAuth token when the attempt holds an account, and it is passed in
 exactly one variable: `ANTHROPIC_API_KEY` (metered API access) or
 `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token from
@@ -123,7 +126,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV
+from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV, RESUME_NAME
 from .base import RunnerContext, run_runner
 from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
 
@@ -197,6 +200,33 @@ def _write_private(path: Path, text: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
+
+
+#: The most of the worker's resume summary a prompt carries. The worker
+#: bounds what it writes well under this; a larger file is not its.
+MAX_RESUME_BYTES = 16 * 1024
+
+
+def resume_summary(spool: str) -> str | None:
+    """The worker's summary for a resumed live-browser attempt, or None.
+
+    RESUME-PROGRESS (QA12-14, part of #1030): the CLI has no conversation to
+    continue across a hand-off park, so the next attempt's agent learns which
+    hand-offs were done, and reads its own notes, from its prompt.
+    `handoff.HandoffPath.prepare` writes the file on every attempt that has an
+    earlier one's hand-offs to tell and removes it on every other, before this
+    runner starts, so a file here is this attempt's.
+    """
+    if not spool:
+        return None
+    path = Path(spool) / RESUME_NAME
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_RESUME_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text or None
 
 
 def write_headless_settings(directory: Path) -> Path:
@@ -373,6 +403,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             env[name] = value
     browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
     prompt = ctx.payload.get("prompt")
+    # A resumed live-browser attempt: what the earlier one did, after the
+    # caller's prompt (RESUME-PROGRESS; `resume_summary`). A new dict, as below.
+    resumed = resume_summary(env.get(HANDOFF_ENV, ""))
+    if resumed and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{resumed}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
     if browsers:
         env[BROWSERS_PATH_ENV] = browsers
         # A new dict on the same context: `run_runner` holds this object.
