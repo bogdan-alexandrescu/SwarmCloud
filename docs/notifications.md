@@ -71,7 +71,7 @@ revised, a second hand-off in a later attempt.
 | `admin` | yes, admins only | `workspaces` in `requested`, `loan_requests` in `requested`: what Admin › People lists first | `/admin/people` |
 | `approval` | yes | the tenant's pending `approvals` records (an expired one, or a merge whose run has moved on, is skipped); `schedule_firings` held for approval before the inbox made their record; `issue_runs` in `PLANNED` | `/approvals/<id>` |
 | `task` | yes | the caller's RUNNING tasks with a live-browser hand-off (`Task.human_wait`) and their PARKED `HUMAN_REQUIRED` tasks; the caller's tasks of the last 7 days whose agent wrote `questions.json` (`result_summary.questions`) | the task's Browser tab; its Artifacts tab |
-| `account` | yes for GitHub, no for the workspace | the caller's `forge_connections` document in `refresh_failed` (only reconnecting renews it); their own expired user-scope `git_tokens`; their own workspace becoming `ready` or `denied` in the last 7 days | `/access`; `/setup#workspace` |
+| `account` | yes for GitHub, no for the workspace | the caller's `forge_connections` document in `refresh_failed` (only reconnecting renews it); their own expired user-scope `git_tokens`; their own workspace becoming `ready` or `denied` in the last 7 days; their own Claude-account loan request `declined` in the last 7 days (LOAN-DECLINE) | `/access`; `/setup#workspace`; `/setup#claude-account` |
 | `finished` | no | the caller's own tasks submitted alone, their workflows (stored state), and their issue runs whose pull request merged, all ended in the last 7 days | the agent, workflow or run |
 
 Some notes on what each group deliberately leaves out:
@@ -91,6 +91,10 @@ Some notes on what each group deliberately leaves out:
   data for a person (`agent_worker/questions.py`), and nothing records the
   reply. So a question item stays for 7 days after its task ended, and marking
   it read clears it from the bell's count.
+* **A declined loan request does not count as needing you either.** Nothing
+  the person does resolves it. It
+  carries the admin's optional reason and never who declined. Asking again
+  re-opens the request, and the item no longer derives.
 * **A workspace becoming ready, or being denied, does not count as needing
   you.** Nothing the person does resolves it, so as a needs-you item it would
   sit in the bell until marked read. It is an update in the `account` group,
