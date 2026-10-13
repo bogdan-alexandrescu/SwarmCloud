@@ -616,6 +616,16 @@ class LiveSessionView(_Wire):
     device: LiveDevice | None
     presets: list[LivePreset]
     you: LiveYou
+    #: WHETHER THE AGENT IS USING THIS BROWSER (LIVE-UNUSED; part of #1030),
+    #: as the gate's CDP proxy last reported it: when the agent's first CDP
+    #: connection was accepted (null until it has been), how many it holds
+    #: now (null while no gate has reported it: an older gate, or no report
+    #: yet -- never read as "none"), and when the gate published its first
+    #: frame, which the console times "the agent isn't using this browser
+    #: yet" from.
+    agent_connected_at: str | None = None
+    agent_connections: int | None = None
+    first_frame_at: str | None = None
 
 
 class LiveRead(_Wire):
@@ -775,19 +785,59 @@ def clean_device(raw: Any) -> dict[str, Any] | None:
     return {"preset": preset["name"], "orientation": raw["orientation"], "touch": raw["touch"]}
 
 
+#: The most agent connections believed: Playwright opens one, a tool a few.
+MAX_AGENT_CONNECTIONS = 64
+
+
+def _epoch(raw: Any) -> datetime | None:
+    """Epoch seconds the gate reported, as a UTC datetime, or None. An aware
+    datetime -- one `clean_agent` already read -- is itself, so a report is
+    checked again unchanged (`record_report`)."""
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo is not None else None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 < raw < 1e11:
+        return None
+    try:
+        return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def clean_agent(raw: Any) -> dict[str, Any] | None:
+    """The report's `agent` (the gate's report.py `agent_report`, LIVE-UNUSED)
+    as `{connected_at, connections, first_frame_at}` -- the times as UTC
+    datetimes or None -- or None when it does not hold together."""
+    if not isinstance(raw, dict) or set(raw) != {"connected_at", "connections", "first_frame_at"}:
+        return None
+    count = raw["connections"]
+    if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= MAX_AGENT_CONNECTIONS:
+        return None
+    connected, frame = _epoch(raw["connected_at"]), _epoch(raw["first_frame_at"])
+    if (raw["connected_at"] is not None and connected is None) or (raw["first_frame_at"] is not None and frame is None):
+        return None
+    if count > 0 and connected is None:
+        return None  # connected now, but never connected: not a reading
+    return {"connected_at": connected, "connections": count, "first_frame_at": frame}
+
+
 def parse_report(text: Any) -> dict[str, Any] | None:
     """A relay text message as `{"origin", "device"}`, each checked (null when
-    it fails), or None when the message is not a well-formed report at all."""
+    it fails), or None when the message is not a well-formed report at all.
+    A report that carries `agent` (LIVE-UNUSED) has it too, checked by
+    `clean_agent`; one that does not is read exactly as before."""
     if not isinstance(text, str) or len(text) > MAX_REPORT_CHARS:
         return None
     try:
         message = json.loads(text)
     except ValueError:
         return None
-    if not isinstance(message, dict) or set(message) != {"type", "origin", "device"} \
+    if not isinstance(message, dict) or set(message) - {"agent"} != {"type", "origin", "device"} \
             or message["type"] != REPORT_TYPE:
         return None
-    return {"origin": clean_origin(message["origin"]), "device": clean_device(message["device"])}
+    report = {"origin": clean_origin(message["origin"]), "device": clean_device(message["device"])}
+    if "agent" in message:
+        report["agent"] = clean_agent(message["agent"])
+    return report
 
 
 def profile_is_live(runner_profile: Any) -> bool:
@@ -972,6 +1022,17 @@ class Admission:
 
 def _iso(value: Any) -> Any:
     return value.isoformat() if isinstance(value, datetime) else value
+
+
+def _stored_time(value: Any) -> datetime | None:
+    """A time `record_report` stored, or None: anything else is not served."""
+    return value if isinstance(value, datetime) else None
+
+
+def _stored_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_AGENT_CONNECTIONS:
+        return None
+    return value
 
 
 class LiveService:
@@ -1374,6 +1435,9 @@ class LiveService:
                 "device": clean_device(state.get("device")),
                 "presets": [dict(p) for p in LIVE_PRESETS],
                 "you": self._rights(task, plan, email, owner),
+                "agent_connected_at": _iso(_stored_time(state.get("agent_connected_at"))),
+                "agent_connections": _stored_count(state.get("agent_connections")),
+                "first_frame_at": _iso(_stored_time(state.get("first_frame_at"))),
             },
         }
 
@@ -1870,9 +1934,22 @@ class LiveService:
                 or session.get("generation") != admission.generation):
             return False
         origin, device = clean_origin(report.get("origin")), clean_device(report.get("device"))
-        if session.get("origin") == origin and session.get("device") == device:
+        update: dict[str, Any] = {}
+        if session.get("origin") != origin or session.get("device") != device:
+            update.update({"origin": origin, "device": device})
+        agent = clean_agent(report.get("agent"))
+        if agent is not None:
+            # The FIRST connection is kept: a relaunched gate that has not
+            # seen the agent again does not make it a stranger.
+            first = session.get("agent_connected_at") or agent["connected_at"]
+            frame = session.get("first_frame_at") or agent["first_frame_at"]
+            for key, value in (("agent_connected_at", first), ("agent_connections", agent["connections"]),
+                               ("first_frame_at", frame)):
+                if session.get(key) != value:
+                    update[key] = value
+        if not update:
             return False
-        ref.update({"origin": origin, "device": device, "reported_at": self._now()})
+        ref.update({**update, "reported_at": self._now()})
         return True
 
     def viewer_event(self, admission: Admission, entry: str, detail: Mapping[str, Any]) -> None:

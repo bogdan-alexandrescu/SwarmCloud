@@ -90,6 +90,16 @@ THE AGENT'S POINTER (LB-CURSOR; part of #1030). The x and y of every
 `Input.dispatchMouseEvent` the proxy forwards are handed to `on_pointer`, so
 the gate can paint the pointer where the agent left it (pointer.py). They go
 nowhere else: not into the action log, not into a log line.
+
+WHETHER THE AGENT IS USING THIS BROWSER (LIVE-UNUSED; part of #1030). On
+task_7cda0d5335f049b4b442 (2026-10-13) the agent did its work in a browser of
+its own while the live view, which nobody had told it to use, stayed blank,
+and the console said nothing. An agent drives this browser only through this
+proxy, so the proxy is the one place that knows: `agent_connected_at` is the
+wall time the FIRST agent connection was accepted (None until one is), and
+`agent_connections` how many are open now. `on_agents` is told the count on
+every accept and close, so the gate can report it to the console the moment
+it changes rather than on a poll.
 """
 
 from __future__ import annotations
@@ -101,6 +111,7 @@ import ipaddress
 import json
 import os
 import re
+import time
 import uuid
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field
@@ -237,6 +248,8 @@ class CdpProxy:
         security_wait_seconds: float = 5.0,
         on_action: Callable[[dict[str, Any]], None] | None = None,
         on_pointer: Callable[[float, float], None] | None = None,
+        on_agents: Callable[[int], None] | None = None,
+        wall: Callable[[], float] = time.time,
     ) -> None:
         self._send = send_to_chromium
         self._paths = paths
@@ -244,6 +257,12 @@ class CdpProxy:
         self._on_control_ended = on_control_ended
         self._on_action = on_action
         self._on_pointer = on_pointer
+        self._on_agents = on_agents
+        self._wall = wall
+        #: Wall time (epoch seconds) the first agent connection was accepted;
+        #: None until one is. Never cleared: an agent that connected and left
+        #: did use this browser.
+        self.agent_connected_at: float | None = None
         self._security_wait = security_wait_seconds
         self._next_id = 0
         self._pending: dict[int, _Pending] = {}
@@ -276,6 +295,15 @@ class CdpProxy:
     @property
     def in_control(self) -> bool:
         return self._controlled is not None
+
+    @property
+    def agent_connections(self) -> int:
+        """The agent connections open now."""
+        return sum(1 for c in self._connections if not c.closed)
+
+    def _agents_changed(self) -> None:
+        if self._on_agents is not None:
+            self._on_agents(self.agent_connections)
 
     # ------------------------------------------------------- the gate's calls
 
@@ -329,6 +357,9 @@ class CdpProxy:
         connection = AgentConnection(link=link, browser_session=session)
         self._owner[session] = connection
         self._connections.append(connection)
+        if self.agent_connected_at is None:
+            self.agent_connected_at = self._wall()
+        self._agents_changed()
         return connection
 
     async def disconnect_agent(self, connection: AgentConnection) -> None:
@@ -340,6 +371,7 @@ class CdpProxy:
         self._owner.pop(connection.browser_session, None)
         if connection in self._connections:
             self._connections.remove(connection)
+        self._agents_changed()
         await self._post("Target.detachFromTarget", {"sessionId": connection.browser_session}, None)
 
     async def chromium_closed(self) -> None:
@@ -357,6 +389,8 @@ class CdpProxy:
                 entry.future.set_exception(CdpError("the browser closed"))
         connections, self._connections = self._connections, []
         self._owner.clear()
+        if connections:
+            self._agents_changed()
         for connection in connections:
             connection.closed = True
             try:

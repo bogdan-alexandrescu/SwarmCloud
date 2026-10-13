@@ -29,7 +29,15 @@ pass that runs a minute late still records when the step happened.
     startup probe has passed.
 
 A later step implies the earlier ones happened, but a step is reported only
-with a time the pod gave for it; one the status cannot date is left out.
+with a time the pod gave for it; one the status cannot date is left out --
+and ONLY that one (LIVE-UNUSED, #1030): a `PodScheduled` condition with no
+transition time used to end the read, so a pod that had started all its
+containers reported no step at all. A pod placed on a node that is already
+up, with its image already there, reads exactly like any other: the
+scheduler still sets `PodScheduled`, and kubelet still dates every
+container's start, so `image_pulled` is the first start even though nothing
+was pulled. On the console a step that never arrives before a later one is
+drawn "skipped (already ready)" (StartupProgress.tsx).
 
 IT IS A RECORD, NEVER A DECISION: nothing here changes a task's state, a lease
 or a pool (CONTRACT invariants 1-3).
@@ -93,6 +101,12 @@ def _condition_time(status: Any, kind: str) -> datetime | None:
     return None
 
 
+def _scheduled(status: Any) -> bool:
+    """Whether the pod is on a node: its `PodScheduled` condition is True, dated or not."""
+    return any(_get(c, "type") == "PodScheduled" and str(_get(c, "status")) == "True"
+               for c in list(_get(status, "conditions") or []))
+
+
 def _started_at(container_status: Any) -> datetime | None:
     """When a container started, from whichever state records it."""
     state = _get(container_status, "state")
@@ -107,10 +121,11 @@ def pod_start_steps(pod: Any) -> dict[str, datetime]:
     """The steps one pod has reached, each with the pod's own time for it."""
     status = _get(pod, "status")
     steps: dict[str, datetime] = {}
-    scheduled = _condition_time(status, "PodScheduled")
-    if scheduled is None:
+    if not _scheduled(status):
         return steps
-    steps["pod_scheduled"] = scheduled
+    scheduled = _condition_time(status, "PodScheduled")
+    if scheduled is not None:
+        steps["pod_scheduled"] = scheduled
     preparing = _condition_time(status, "PodReadyToStartContainers") or _utc(_get(status, "start_time"))
     if preparing is not None:
         steps["image_pulling"] = preparing
