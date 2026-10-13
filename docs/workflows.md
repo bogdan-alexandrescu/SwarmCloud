@@ -531,11 +531,29 @@ line of a `format: "progress"` row says `? N question(s) for the owner`, and a
 carries `questions` with `""` for a missing text, keeping its no-null rule, and
 `plugin/agents/step.md` tells the row to put them in its result as given.
 
-**Data for the operator, never a channel to the platform.** Nothing executes,
-answers or acts on the file. No state, retry, dispatch, merge or verdict reads
-it, and no part of the platform takes an instruction from it. The agent asks,
-and a person decides. If the answer changes the work, that is a new task,
-dispatched by a person.
+**The owner answers on the task** (owner decision 2026-10-13, "Yes, pick an
+option on the task"; TASK-ANSWERS). The console's "Questions for you" card
+offers each question's options, with the recommended one marked, and an
+"Other…" box for the person's own words. Answering posts
+`POST /v1/tasks/{id}/answers` with `{question_index, choice, text}`. Only the
+task's submitter or an admin may answer. Another member of the tenant gets a
+403, and the card says why. Another tenant's task is a 404. `choice` must be one
+of that question's option labels, and `text` is at most 2,000 characters,
+redacted before it is stored. The answer is stored on the task as
+`metadata.owner_answers`. It is a reserved platform key, as `start_problem` is,
+so it needs no change to the frozen `Task`. Each question has one answer.
+Answering again replaces it and moves the replaced answer, with who gave it and
+when, into that answer's `history`. A question can change at most 20 times;
+after that a change is refused rather than dropping history. The task read
+serves the answers as `owner_answers`. `GET /questions` puts each one beside
+its question, and `swarm_result`, the follow outcome and `sc task` show them.
+That is how whoever launched the work reads the decision.
+
+**Data for the operator, never a channel to the platform.** Nothing executes or
+acts on the file or on the answers. No state, retry, dispatch, merge or verdict
+reads them, and no part of the platform takes an instruction from them. The
+agent asks, and a person decides. If the answer changes the work, that is a new
+task, dispatched by whoever reads the answer.
 
 ## Dependencies and state
 

@@ -315,6 +315,49 @@ every fine-grained PAT (§5.2).
   the App key behind it has none either, and the page says that rather than
   a date.
 
+### 3.5 Server-side reads: the slot swarm-api reads with
+
+swarm-api reads GitHub itself for "Index now" and every index run, the
+index's relation refresh, issue previews and the open work a run is shown,
+the merge preflight of a `merge_pr` workflow, registration, the impact
+query, and every scheduled read (issue sweep, PR shepherd, CI fix, release
+health, ...). **All of them resolve their slot in one place,
+`forge.resolve_forge_slot`** (read through `SecretManagerForgeTokens.token_for`);
+nothing else in `apps/swarm-api` names the `-git` slot to read it, and
+`tests/unit/control_plane/test_forge_slot_resolution.py` fails if something
+does. The order, the same rule a task's `forge_credential` follows
+(`SubmissionService._resolve_forge`):
+
+1. **the person's own user slot in this tenant**, `git-u-<hex>` of their
+   email, when the read is made on behalf of a person (the route's
+   authenticated caller) and their slot's `git_tokens` record exists and is
+   neither `expired` nor `revoked` — the credential their own task would run
+   with;
+2. **the tenant's `-git` slot**, when the tenant document lists `git` among
+   its `credentials` or its tenant-default record exists — what a service
+   task uses, and what every read used before INDEX-USER-SLOT;
+3. **a personal tenant's owner's user slot** (`u-<user>`, `kind: user`, its
+   `principal`'s `git-u-<hex>`), when its record exists — the slot the guided
+   onboarding's "Connect GitHub" makes, and normally the only GitHub
+   credential a personal tenant has;
+4. otherwise the tenant's `-git` slot, **not known to exist**.
+
+**Absent is not "not granted".** swarm-api holds no project-wide
+`secrets.get`, so Secret Manager answers a secret that does not exist with
+PermissionDenied, exactly as it answers one swarm-api may not read. Existence
+is therefore read from the slot index swarm-api keeps (`git_tokens`, written
+by the GitHub connection's exchange, `sc setup token` and the tenant default),
+never inferred from the refusal. A refused read of a slot the index knows
+names the missing grant (`forge.grant_hint`); a refused or missing read of a
+slot nobody recorded says "No GitHub credential for `<tenant>`: connect
+GitHub under Setup › Git tokens (or store `swarm-tenant-<tenant>-git`)". The
+owner's report of 2026-10-13 is why: u-bogdan had only its owner's
+connection slot, and the read of the absent `-git` blamed a grant.
+
+Not resolved here: a person's per-owner fallback slot (D5, `owner_suffix`) —
+server-side reads use the person's base user slot — and repository slots
+(`git-r-`), which no Terraform yet lets swarm-api read (§2).
+
 ---
 
 ## 4. Registering a token

@@ -1,0 +1,23 @@
+#!/bin/sh
+# The "browser" an agent's own Playwright finds on claude-code-browser
+# (BROWSER-ENFORCE, part of #1030; docs/design/live-browser.md §3.2).
+#
+# install-browser-stub.py puts a copy of this file at every path Playwright
+# launches Chromium from under the agent's PLAYWRIGHT_BROWSERS_PATH, which the
+# claude-code runner points at a stub directory whenever the live browser
+# exists. So `p.chromium.launch()` and `launch_persistent_context()`, headless
+# or not, start this instead: it says where the real browser is, on stderr --
+# which Playwright puts in the launch error the agent reads -- and exits
+# non-zero before Playwright can connect. A Chromium the agent started itself
+# would be hidden from the person watching: task_7cda0d5335f049b4b442 did
+# exactly that, and its work never appeared on the console.
+#
+# The gate's Chromium and the `browser` runner's keep /opt/playwright, the
+# image's ENV; nothing here touches them.
+cat >&2 <<'EOF'
+This agent's browser is the live browser the person watches: connect with chromium.connect_over_cdp(os.environ['SWARM_CDP_ENDPOINT'])
+In Python, `from swarm_browser import live; playwright, browser, context = live()` does that for you,
+and the browser_navigate / browser_snapshot / browser_tabs tools already drive the same browser.
+Starting a separate Chromium is refused here: nobody could see it.
+EOF
+exit 1

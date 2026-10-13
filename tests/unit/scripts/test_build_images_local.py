@@ -291,7 +291,18 @@ def test_browser_report_carries_the_chromium_smoke_check(tmp_path):
     root, proc, _ = _local(tmp_path, "--build-only", "--local", "--tag", TAG, "agent-runtime-browser")
     assert proc.returncode == 0, proc.stderr[-3000:]
     report = (root / "build" / "build-only" / "local-report.md").read_text()
-    assert "RUN python - <<'PY'" in report and "agent-runtime-browser" in report, report
+    # The smoke check is selftest.py, run from a bind-mounted RUN whose first
+    # line (the only one the report quotes) is shared with the install step,
+    # so the report is held to that RUN's file:line rather than its text.
+    lines = (root / "images" / "agent-runtime-browser" / "Dockerfile").read_text().splitlines()
+    def run_text(start: int) -> str:
+        end = start
+        while lines[end].rstrip().endswith("\\"):
+            end += 1
+        return "\n".join(lines[start : end + 1])
+
+    (smoke,) = [i for i, line in enumerate(lines) if line.startswith("RUN ") and "selftest.py" in run_text(i)]
+    assert f"`images/agent-runtime-browser/Dockerfile:{smoke + 1}` `RUN " in report, report
 
 
 def test_a_checked_in_recipe_is_replayed_without_its_push(tmp_path):

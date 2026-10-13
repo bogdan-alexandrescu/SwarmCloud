@@ -198,7 +198,12 @@ from .redaction import (
     _leaf_texts,
     _masks_whole,
 )
-from .validation import RESERVED_METADATA_KEYS, START_PROBLEM_METADATA_KEY, repository_userinfo
+from .validation import (
+    OWNER_ANSWERS_METADATA_KEY,
+    RESERVED_METADATA_KEYS,
+    START_PROBLEM_METADATA_KEY,
+    repository_userinfo,
+)
 
 #: The metadata keys served as stored: only the platform can write them,
 #: because submission refuses each from every caller. See the module docstring
@@ -213,8 +218,12 @@ NAME_METADATA_KEYS: frozenset[str] = frozenset({"input_from", "expected_outputs"
 #: The platform keys whose values carry text the platform COLLECTED about a
 #: tenant's pod rather than wrote itself: the reconciler's `start_problem`
 #: (F1-POD) holds kubelet's message, which can quote a container's
-#: environment. Every string in it is masked, as `last_error` is.
-COLLECTED_METADATA_KEYS: frozenset[str] = frozenset({START_PROBLEM_METADATA_KEY})
+#: environment. Every string in it is masked, as `last_error` is. And the
+#: owner's `owner_answers` (TASK-ANSWERS): free text a person typed, redacted
+#: before it is stored and masked again on the way out, as task text is.
+COLLECTED_METADATA_KEYS: frozenset[str] = frozenset(
+    {START_PROBLEM_METADATA_KEY, OWNER_ANSWERS_METADATA_KEY}
+)
 
 #: ONE LOOSE FAMILY (`TaskMasking.name`, #227 review, third round -- fourth on
 #: this specific pattern): `sk-` is a short, common prefix that turns up
