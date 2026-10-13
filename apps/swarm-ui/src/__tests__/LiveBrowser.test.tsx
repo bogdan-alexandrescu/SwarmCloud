@@ -65,6 +65,7 @@ const rfb = vi.hoisted(() => {
     scaleViewport = false
     resizeSession = true
     focusOnClick = false
+    showDotCursor = false
     readonly canvas: HTMLCanvasElement
     /** Touches that reached noVNC's own canvas listener. */
     touches = 0
@@ -341,6 +342,13 @@ describe('the ticket goes in the first message, never the URL', () => {
     expect(r.sentBeforeAttach, 'noVNC was handed the socket before the ticket went').toBe(1)
     expect(r.channel, 'noVNC was handed the raw socket, status text frames and all').not.toBe(ws)
     expect(r.channel.readyState).toBe(1)
+  })
+
+  it('turns on noVNC\'s dot cursor, so a pointer shows even when the gate sends no cursor shape (LB-CURSOR)', async () => {
+    // Measured 2026-10-12: the canvas had `cursor: none`, so the person in control clicked blind.
+    pane(session())
+    const r = await connected()
+    expect(r.showDotCursor).toBe(true)
   })
 
   it('has noVNC reading the socket before the relay\'s first frame can arrive', async () => {

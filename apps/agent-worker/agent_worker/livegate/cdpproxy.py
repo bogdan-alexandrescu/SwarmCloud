@@ -85,6 +85,11 @@ the method's name, a navigation's URL with no query, fragment or user name
 (`action_url`), and `Input.insertText` as a LENGTH. Nothing else of the
 parameters, so a line can never carry typed text, a key or a cookie. The gate
 sends the lines to the relay, which writes the recording's action log.
+
+THE AGENT'S POINTER (LB-CURSOR; part of #1030). The x and y of every
+`Input.dispatchMouseEvent` the proxy forwards are handed to `on_pointer`, so
+the gate can paint the pointer where the agent left it (pointer.py). They go
+nowhere else: not into the action log, not into a log line.
 """
 
 from __future__ import annotations
@@ -231,12 +236,14 @@ class CdpProxy:
         on_control_ended: Callable[[str], None] | None = None,
         security_wait_seconds: float = 5.0,
         on_action: Callable[[dict[str, Any]], None] | None = None,
+        on_pointer: Callable[[float, float], None] | None = None,
     ) -> None:
         self._send = send_to_chromium
         self._paths = paths
         self._record = record
         self._on_control_ended = on_control_ended
         self._on_action = on_action
+        self._on_pointer = on_pointer
         self._security_wait = security_wait_seconds
         self._next_id = 0
         self._pending: dict[int, _Pending] = {}
@@ -340,6 +347,14 @@ class CdpProxy:
         if self._on_action is not None:
             self._on_action(action_line(method, params, refused))
 
+    def _pointer(self, params: Mapping[str, Any]) -> None:
+        """The agent's mouse position, to the gate (module docstring); a non-number is ignored."""
+        x, y = params.get("x"), params.get("y")
+        if self._on_pointer is None or not all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) for v in (x, y)):
+            return
+        self._on_pointer(float(x), float(y))
+
     async def _reply_error(self, connection: AgentConnection, message: Mapping[str, Any], text: str) -> None:
         reply: dict[str, Any] = {"id": message.get("id"), "error": {"code": _ERROR_CODE, "message": text}}
         if "sessionId" in message:
@@ -397,6 +412,8 @@ class CdpProxy:
         elif method == "Target.setAutoAttach" and session == connection.browser_session:
             connection.auto_attach = bool(params.get("autoAttach"))
         self._note(method, params)
+        if method == "Input.dispatchMouseEvent":
+            self._pointer(params)
         pending = _Pending(connection, message["id"], method, session, agent_session, params, None)
         await self._write(self._allocate(pending), method, params, session)
 
