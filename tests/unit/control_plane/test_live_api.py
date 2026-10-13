@@ -878,6 +878,13 @@ def test_every_key_event_of_an_episode_is_on_its_returned_event(
         # After the episode, nothing more is its: a key typed with no control is not counted.
         ws.send_bytes(_key_event(1, ord("x")))
         time.sleep(0.1)
+        # The server ends the socket (a retry's new generation), as the other
+        # socket tests do: a client-side close cancels the app mid-flush.
+        ldb.docs[f"tasks/{TASK}"].update(
+            {"current_lease_id": "lease_live_2", "current_generation": 2})
+        with pytest.raises(WebSocketDisconnect):
+            while True:
+                ws.receive_json()
     assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
     assert returned_event()["detail"]["keys"] == 18
     (row,) = audit(ldb, "control_returned")
