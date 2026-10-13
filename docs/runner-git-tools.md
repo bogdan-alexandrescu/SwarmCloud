@@ -759,6 +759,22 @@ branch that a lane fixes.
 
 ---
 
+### Decisions (owner, 2026-10-13 ~15:45 PDT)
+
+Answered in one sitting; every recommendation was taken.
+
+| # | question | answer |
+|---|---|---|
+| Q1 | A rebased branch that is already pushed | **A.** Lease-guarded rewrite of the task's own branch, against the tip swarm-api recorded; blind force refused; audited as a rewrite. |
+| Q2 | The fallback token | **A.** Do not build it. G8 is not built. |
+| Q3 | Where the private-read allowlist lives | **A.** Per tenant, on the repository record (`readable_by_tasks`), set by a tenant admin and audited. |
+| Q4 | Which service executes | **A.** swarm-api, which gains the git binary. |
+| Q5 | Branches outside `swarm/` | **A.** Not now. Only task-derived `swarm/` branches. |
+| Q6 | Limits | **A.** As written in §1.2. |
+| Q7 | The end-of-task publish | **A.** Later, as its own design. |
+
+The build therefore runs G1–G7 and G9 (§7), and no G8.
+
 ## 9. The frozen contract
 
 **No change is needed, and none is requested.**
