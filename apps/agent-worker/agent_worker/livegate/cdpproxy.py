@@ -377,6 +377,11 @@ class CdpProxy:
             await self._reply_error(connection, message, "No session with given id")
             return
         params = message.get("params")
+        if isinstance(params, Mapping):
+            confined = cdppolicy.confine(method, params, self._paths)
+            if confined is not params:
+                params = confined
+                message = {**message, "params": dict(confined)}
         refusal = cdppolicy.check(method, params if isinstance(params, Mapping) else {}, self._paths)
         if refusal is not None:
             self._record("cdp_method_refused", {"method": method})

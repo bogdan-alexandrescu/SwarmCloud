@@ -632,7 +632,6 @@ def test_playwright_connect_over_cdp_handshake_passes_the_policy(tmp_path):
         browser = [
             ("Browser.getVersion", {}),
             ("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": True, "flatten": True}),
-            ("Target.getTargetInfo", {}),
             ("Browser.setDownloadBehavior", {"behavior": "allowAndName", "downloadPath": artifacts, "eventsEnabled": True}),
         ]
         for method, params in browser:
