@@ -431,7 +431,9 @@ is ordinary tenant work, under every isolation mechanism above:
 Another tenant's schedule id answers 404 on every route, as a task's does. When
 one tenant's schedules crowd the platform, an admin uses what they use today:
 the tenant's ceiling (`PUT /admin/tenants/<t>/limits`), plus pausing the
-schedule from Admin › Schedules.
+schedule from Automate › Schedules, switched to All tenants
+(`/automate/schedules?scope=all`, admins only; it was Admin › Schedules until
+the owner folded the two pages into one on 2026-10-13).
 
 ---
 

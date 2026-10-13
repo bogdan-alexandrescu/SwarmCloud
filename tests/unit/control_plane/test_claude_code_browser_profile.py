@@ -288,6 +288,30 @@ def test_the_launch_env_built_by_the_cli_runner_carries_swarm_handoff(monkeypatc
     assert launched.get("SWARM_HANDOFF") == str(spool)
 
 
+def test_a_resumed_attempt_is_told_in_its_prompt_what_the_earlier_one_did(monkeypatch, tmp_path):
+    """RESUME-PROGRESS (QA12-14, part of #1030). The CLI has no conversation
+    to resume across a park, so the worker's summary of the earlier attempts'
+    hand-offs (`handoff.HandoffPath.prepare`, written into the spool) is the
+    resumed agent's prompt: after the caller's, before the platform's notes."""
+    from agent_worker import handoff
+    from agent_worker.runners.claude_code import BROWSER_NOTE
+
+    spool = tmp_path / handoff.SPOOL_DIR_NAME
+    spool.mkdir()
+    summary = f"{handoff.RESUME_HEADLINE}\n\n1. \"QA1\": {handoff.MARK_DONE}"
+    (spool / handoff.RESUME_NAME).write_text(summary)
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["prompt"].startswith("Screenshot the settings page.")
+    assert summary in seen["prompt"]
+    assert seen["prompt"].index(summary) < seen["prompt"].index(BROWSER_NOTE)
+
+    # No summary in the spool: a first attempt's prompt is the caller's.
+    (spool / handoff.RESUME_NAME).unlink()
+    seen = _run_body(monkeypatch, tmp_path, None)
+    assert seen["prompt"] == "Screenshot the settings page."
+
+
 def test_the_browser_image_sets_the_path_the_runner_reads():
     text = DOCKERFILE.read_text(encoding="utf-8")
     assert re.search(r"^ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright", text, re.M)

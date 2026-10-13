@@ -378,9 +378,10 @@ describe('live QA admin: nothing writes on the first click', () => {
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
     const row = await manage('bob@example.com')
     const reclaim = () => within(row).getByRole('button', { name: 'Reclaim' }) as HTMLButtonElement
-    // MUTATION: list every lendable account under Reclaim.
-    const offered = [...within(row).getByLabelText('Account to reclaim from bob@example.com').querySelectorAll('option')].map((o) => o.getAttribute('value'))
-    expect(offered, 'Reclaim offers an account ops never lent them').toEqual(['', 'acct-eng-1'])
+    // MUTATION: list every lendable account under Reclaim. One lent account
+    // is said as text beside Reclaim, not an empty select (PEOPLE-LOAN-VIEW).
+    expect(row.querySelector('select'), 'Reclaim offers an account ops never lent them').toBeNull()
+    expect(row.querySelector('[data-testid="pp-loan-one"]')?.textContent).toContain('acct-eng-1 (eng shared)')
     expect(reclaim().disabled).toBe(false)
     fireEvent.click(reclaim())
     const dialog = await screen.findByRole('dialog', { name: 'Reclaim this account' }, WAIT)
