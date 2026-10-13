@@ -1126,8 +1126,22 @@ export function App() {
 
   useEffect(() => {
     const onPop = () => setAt(fromLocation())
-    const onHash = () => {
-      if (isLegacyHash(window.location.hash, LEGACY_HEADS, window.location.pathname)) setAt(fromHash())
+    // The fragment the event names, not the one the bar holds now: the
+    // normalise effect (or the list following an agent's group) may already
+    // have rewritten the address to its path, which drops the fragment, and a
+    // hashchange read from the bar then found nothing and the navigation was
+    // lost -- an agent closed by hash stayed open (CH-2).
+    const onHash = (e?: Event) => {
+      let hash = window.location.hash
+      const next = (e as HashChangeEvent | undefined)?.newURL
+      if (typeof next === 'string') {
+        try {
+          hash = new URL(next).hash
+        } catch {
+          /* keep the bar's own */
+        }
+      }
+      if (isLegacyHash(hash, LEGACY_HEADS, window.location.pathname)) setAt(fromAddress(hash.replace(/^#/, '')))
     }
     // A click on an old-style `href="#work/..."` link, or on a same-origin
     // path, is a navigation: pushed, so Back returns to where it was made.
