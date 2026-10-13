@@ -1018,3 +1018,28 @@ def test_swarm_api_reads_the_relay_address_from_swarm_live_url(monkeypatch):
     monkeypatch.setenv("SWARM_LIVE_URL", RELAY_URL)
     monkeypatch.delenv("SWARM_LIVE_RELAY_URL", raising=False)
     assert ApiSettings.from_env().live_relay_url == RELAY_URL
+
+
+def test_return_on_a_resumed_attempt_ends_the_episode_with_no_input(client, ldb):
+    """LB-CURSOR2 (part of #1030). MEASURED 2026-10-13 on
+    task_50f0b9841b9f46db871a: attempt 2 (generation 2) resumed from a
+    HUMAN_REQUIRED park, the owner took control and pressed Return, and no
+    `human_control_returned` was written. Return always ends the episode --
+    on a resumed attempt, under a hand-off its earlier attempt asked for, with
+    no key or pointer counted -- and the event carries the zero counts."""
+    attempt = Attempt(generation=2)
+    seed_running(client, ldb, attempt, attempt_count=2)
+    assert open_session(client, attempt).status_code == 201
+    _ask_for_help(ldb)
+    ldb.docs[f"tasks/{TASK}"]["human_wait"].update({"attempt_id": "att_parked", "generation": 1})
+    taken = take(client, "alice")
+    assert taken.status_code == 200, taken.text
+    returned = client.delete(f"/v1/tasks/{TASK}/live/control", headers=bearer("alice"))
+    assert returned.status_code == 200, returned.text
+    events = {d["type"]: d for p, d in ldb.docs.items() if p.startswith(f"tasks/{TASK}/events/")}
+    back = events["human_control_returned"]
+    assert back["generation"] == 2
+    assert (back["detail"]["cause"], back["detail"]["keys"], back["detail"]["pointer_events"]) == (
+        "returned", 0, 0)
+    assert session_doc(ldb)["controller"] is None
+    assert ldb.docs[f"tasks/{TASK}"]["human_wait"] is None
