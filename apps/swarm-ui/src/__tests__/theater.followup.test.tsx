@@ -227,13 +227,15 @@ function phoneBlock(sheet: string): string {
 function rule(sheet: string, selector: string): string | null {
   const esc = selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   const m = new RegExp(`(?:^|[}\\s])${esc} \\{([^}]*)\\}`).exec(sheet)
-  return m ? m[1] : null
+  return m ? m[1] ?? null : null
 }
 
 function px(value: string | undefined, vw: number, vh: number): number {
   if (value === undefined) return NaN
   const v = value.trim()
   const min = /^min\((.+),(.+)\)$/.exec(v)
+  const calc = /^calc\((\S+) - (\S+)\)$/.exec(v)
+  if (calc) return px(calc[1], vw, vh) - px(calc[2], vw, vh)
   if (min) return Math.min(px(min[1], vw, vh), px(min[2], vw, vh))
   if (v.endsWith('vw')) return (parseFloat(v) * vw) / 100
   if (v.endsWith('vh')) return (parseFloat(v) * vh) / 100
@@ -245,7 +247,7 @@ function px(value: string | undefined, vw: number, vh: number): number {
 function decl(body: string | null, prop: string): string | undefined {
   if (body === null) return undefined
   const m = new RegExp(`(?:^|;)\\s*${prop}:\\s*([^;]+)`).exec(body)
-  return m ? m[1].trim() : undefined
+  return m?.[1]?.trim()
 }
 
 describe('QA12-02: at phone width the screen has room', () => {
@@ -307,7 +309,7 @@ describe('QA12-08 / QA12-24: one set of device chips, the working one', () => {
     await flush()
     const groups = within(dialog()).getAllByRole('group', { name: 'Device' })
     expect(groups.length).toBe(1)
-    expect(screen.getByRole('region', { name: 'DEVICE' }).contains(groups[0])).toBe(true)
+    expect(screen.getByRole('region', { name: 'DEVICE' }).contains(groups[0] ?? null)).toBe(true)
     expect(within(head()).queryByRole('button', { name: /rotate|Desktop|iPhone/ })).toBeNull()
     expect(dialog().querySelector('[title="Switching the device is not served yet."]')).toBeNull()
   })
@@ -322,8 +324,8 @@ describe('QA12-10: focus stays inside the theater, and goes back on close', () =
     const focusable = [...root.querySelectorAll<HTMLElement>('button:not([disabled]), a[href], input:not([disabled])')].filter(
       (el) => el.closest('[hidden]') === null,
     )
-    const first = focusable[0]
-    const last = focusable[focusable.length - 1]
+    const first = focusable[0]!
+    const last = focusable[focusable.length - 1]!
     last.focus()
     fireEvent.keyDown(last, { key: 'Tab' })
     expect(document.activeElement).toBe(first)
@@ -415,8 +417,8 @@ describe('QA12-15: the theater’s buttons are styled', () => {
   })
 
   it('in both themes: every colour token the rules use is defined for dark (:root) and light', () => {
-    const body = [...sheet.matchAll(/\.ctl-btn[^{]*\{([^}]*)\}/g)].map((m) => m[1]).join(';')
-    const tokens = [...new Set([...body.matchAll(/var\((--[\w-]+)\)/g)].map((m) => m[1]))].filter(
+    const body = [...sheet.matchAll(/\.ctl-btn[^{]*\{([^}]*)\}/g)].map((m) => m[1] ?? '').join(';')
+    const tokens = [...new Set([...body.matchAll(/var\((--[\w-]+)\)/g)].map((m) => m[1] ?? ''))].filter(
       (t) => !/^--(h|r|t|lh|font)(-|$)/.test(t),
     )
     expect(tokens.length).toBeGreaterThan(2)
@@ -548,7 +550,7 @@ describe('QA12-24: the outline follows rotate, and OTHER LIVE names the task', (
     await flush()
     const rows = within(screen.getByRole('region', { name: 'OTHER LIVE' })).getAllByRole('listitem')
     expect(rows.length).toBe(1)
-    expect(rows[0].textContent).toContain('plain-browser')
-    expect(rows[0].querySelector('.th-agent-id')?.textContent).toBe('plain_br')
+    expect(rows[0]!.textContent).toContain('plain-browser')
+    expect(rows[0]!.querySelector('.th-agent-id')?.textContent).toBe('plain_br')
   })
 })
