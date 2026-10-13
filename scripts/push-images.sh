@@ -60,13 +60,14 @@ set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 
-# The same eleven build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e). This list had six -- no swarm-ui, no
+# The same twelve build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e,
+# agent-runtime-base-nocodex -- the codex-less base agent-runtime-browser is built FROM -- since BROWSER-NO-CODEX). This list had six -- no swarm-ui, no
 # swarm-verify -- and it is the fallback whenever build/images-<env>.json is
 # absent. That used to cost only an unpromoted image; now terraform deploys
 # every image by digest from the manifest this writes and refuses to plan one
 # with no digest, so a promotion that silently skips two images is a deploy
 # that fails naming them. Better to promote them.
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live workspace-apply)
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live workspace-apply)
 TARGETS=()
 TAG=""
 CHANNEL="${ENVIRONMENT}"

@@ -60,7 +60,9 @@ pytestmark = pytest.mark.skipif(
 )
 
 PYTHON_SERVICES = {"swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"}
-WORKER = {"agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer"}
+# agent-runtime-base-nocodex (BROWSER-NO-CODEX) is the base's Dockerfile built
+# without codex, so it takes exactly the base's inputs.
+WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer"}
 # workspace-apply (#847, lane W4) copies nothing from the repository: the job's
 # code is the checkout Cloud Build hands each step, so only its own directory
 # and the two ignore files reach it.
@@ -380,8 +382,9 @@ def test_build_only_builds_and_pushes_nothing(tmp_path):
     assert not others, f"a build-only run called gcloud for more than a build: {others}"
 
     submits = {e["target"]: e for e in events}
-    # The base is built INSIDE the browser's build, so it is not submitted twice.
-    assert set(submits) == {"swarm-api", "swarm-verify", "agent-runtime-browser"}, sorted(submits)
+    # The browser's chain builds agent-runtime-base-nocodex (BROWSER-NO-CODEX),
+    # not the base asked for here, so the base is its own build.
+    assert set(submits) == {"swarm-api", "swarm-verify", "agent-runtime-base", "agent-runtime-browser"}, sorted(submits)
 
     registry = "docker.pkg.dev"
     for target, event in submits.items():

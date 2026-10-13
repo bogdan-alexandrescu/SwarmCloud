@@ -347,19 +347,20 @@ def test_independent_images_are_in_flight_together_up_to_the_bound(tmp_path, par
 def test_the_browser_image_waits_for_the_base_it_is_built_from(tmp_path):
     # Given in the WRONG order on purpose: the old script relied on ALL_TARGETS
     # listing the base first, so a targeted call in any other order broke it.
+    # Its base is agent-runtime-base-nocodex since BROWSER-NO-CODEX.
     _, proc, events = _run(
         tmp_path,
-        ["agent-runtime-browser", "swarm-api", "agent-runtime-base"],
+        ["agent-runtime-browser", "swarm-api", "agent-runtime-base-nocodex"],
         parallel=3,
     )
     assert proc.returncode == 0, proc.stderr[-3000:]
     windows = _windows(events)
 
-    base_start, base_end = windows["agent-runtime-base"]
+    base_start, base_end = windows["agent-runtime-base-nocodex"]
     browser_start, _ = windows["agent-runtime-browser"]
     assert browser_start >= base_end, (
-        "agent-runtime-browser was submitted before agent-runtime-base finished; "
-        "its cloudbuild.yaml pulls agent-runtime-base:<tag> in its first step, "
+        "agent-runtime-browser was submitted before agent-runtime-base-nocodex finished; "
+        "its cloudbuild.yaml pulls agent-runtime-base-nocodex:<tag> in its first step, "
         "so it fails with manifest-unknown"
     )
     api_start, _ = windows["swarm-api"]
@@ -384,13 +385,16 @@ def test_the_indexer_image_waits_for_the_base_it_is_built_from(tmp_path):
     assert indexer_start >= base_end, "agent-runtime-indexer was submitted before agent-runtime-base finished"
 
 
-@pytest.mark.parametrize("derived", ["agent-runtime-browser", "agent-runtime-indexer"])
-def test_async_warns_for_every_image_built_from_a_base_in_the_same_run(tmp_path, derived):
+@pytest.mark.parametrize(
+    "base, derived",
+    [("agent-runtime-base-nocodex", "agent-runtime-browser"), ("agent-runtime-base", "agent-runtime-indexer")],
+)
+def test_async_warns_for_every_image_built_from_a_base_in_the_same_run(tmp_path, base, derived):
     """--async returns once a build is QUEUED, so an image built FROM another
     in the same run cannot wait for it; the run says so up front, naming the
     image, rather than leaving it to the derived build's log."""
-    _, proc, _ = _run(tmp_path, ["--async", "agent-runtime-base", derived], parallel=2)
-    warning = f"--async: {derived} is submitted once agent-runtime-base is QUEUED"
+    _, proc, _ = _run(tmp_path, ["--async", base, derived], parallel=2)
+    warning = f"--async: {derived} is submitted once {base} is QUEUED"
     assert warning in proc.stderr, proc.stderr[-3000:]
 
 
@@ -422,9 +426,9 @@ def test_every_failed_image_is_named_and_the_rest_are_still_built(tmp_path):
 def test_an_image_whose_base_failed_is_not_submitted_and_is_named(tmp_path):
     _, proc, events = _run(
         tmp_path,
-        ["agent-runtime-base", "agent-runtime-browser", "swarm-api"],
+        ["agent-runtime-base-nocodex", "agent-runtime-browser", "swarm-api"],
         parallel=3,
-        fail=("agent-runtime-base",),
+        fail=("agent-runtime-base-nocodex",),
     )
     assert proc.returncode != 0
     submitted = _windows(events)
@@ -436,7 +440,7 @@ def test_an_image_whose_base_failed_is_not_submitted_and_is_named(tmp_path):
         "swarm-api does not depend on agent-runtime-base and should still build"
     )
     summary = _failure_summary(proc)
-    assert "agent-runtime-base" in summary, summary
+    assert "agent-runtime-base-nocodex" in summary, summary
     assert "agent-runtime-browser" in summary, (
         f"the browser image was never built, and the summary does not say so: {summary!r}"
     )
@@ -486,12 +490,16 @@ def test_every_image_a_recipe_is_built_from_is_declared_as_its_prerequisite():
     in the recipes. So the recipes are read to find which image each one pulls,
     and build_after() must agree -- a new `FROM <other target>` that nobody
     declared is the race this test exists to catch before a release does."""
-    targets = sorted(p.parent.name for p in (REPO / "images").glob("*/Dockerfile"))
+    # agent-runtime-base-nocodex is built from agent-runtime-base's recipe
+    # (BROWSER-NO-CODEX), so that is the recipe read for it.
+    recipe_of = {p.parent.name: p.parent.name for p in (REPO / "images").glob("*/Dockerfile")}
+    recipe_of["agent-runtime-base-nocodex"] = "agent-runtime-base"
+    targets = sorted(recipe_of)
     assert len(targets) >= 8, targets
     found = 0
     for target in targets:
-        recipe = _uncommented(REPO / "images" / target / "Dockerfile") + _uncommented(
-            REPO / "images" / target / "cloudbuild.yaml"
+        recipe = _uncommented(REPO / "images" / recipe_of[target] / "Dockerfile") + _uncommented(
+            REPO / "images" / recipe_of[target] / "cloudbuild.yaml"
         )
         pulls = {
             other
