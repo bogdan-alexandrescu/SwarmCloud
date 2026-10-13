@@ -123,8 +123,10 @@ class TouchInjector:
 
     async def end(self) -> None:
         """Control ended: lift a finger still down, release what is held, send nothing more."""
-        await self.release_all()
-        self._target = None
+        try:
+            await self.release_all()
+        finally:
+            self._target = None
         log.info("live touch: control ended touch_events=%d gestures=%d dropped=%d",
                  self.touch_events, self.gestures, self.dropped)
 
@@ -211,7 +213,10 @@ class TouchInjector:
             return
         session = self._touching[0]
         self._touching = None
-        await self._send(session, kind, [])
+        try:
+            await self._send(session, kind, [])
+        except Exception as exc:  # noqa: BLE001 -- the finger's session went with its page: nothing to lift
+            log.info("live touch: lift not sent (%s)", type(exc).__name__)
 
     async def _wheel(self, session: str, device: Device, wheel: int, point: tuple[float, float]) -> None:
         if self._control_down:
