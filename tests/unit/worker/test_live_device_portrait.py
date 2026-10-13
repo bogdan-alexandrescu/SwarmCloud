@@ -198,9 +198,14 @@ def test_a_pinch_zoomed_phone_masks_a_field_across_the_whole_page():
     assert frame.rgb_at(100, 100) == WHITE
 
 
-@pytest.mark.parametrize("name", ["iphone-15", "pixel-8", "iphone-se", "ipad-7"])
+@pytest.mark.parametrize("name", ["iphone-15", "pixel-8", "iphone-se"])
 def test_a_page_still_at_the_windows_metrics_is_unavailable(name: str):
-    """Before the override lands the page has the window's size at scale 1: it fails closed, as before."""
+    """Before the override lands the page has the window's size at scale 1: it fails closed, as before.
+
+    A portrait phone's window is held at Chromium's 500 px minimum, wider than
+    its display. (A window that fits is one pixel past its display, which the
+    mask's one-pixel tolerance places, as it always has.)
+    """
     controller, _cdp, _display, state = _selected(name, "portrait")
     device = controller.device
     window_w, window_h = max(device.display_width + 1, 500), device.display_height + 1 - 87
