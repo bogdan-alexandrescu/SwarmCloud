@@ -273,9 +273,11 @@ CODECS: tuple[Codec, ...] = (
         # `forge_credential`, `codec.forge_credential_source`.
         # `start_problem` (F1-POD) is lifted out of `metadata.start_problem`,
         # where the reconciler stores it, as `dispatch` is lifted out of
-        # `metadata.dispatch`: `codec.start_problem_to_api`.
+        # `metadata.dispatch`: `codec.start_problem_to_api`. `owner_answers`
+        # (TASK-ANSWERS) is lifted out of `metadata.owner_answers` the same
+        # way: `codec.owner_answers_to_api`.
         api_computed=(
-            "dispatch", "start_problem", "input_redaction_count", "metadata_redaction_count",
+            "dispatch", "start_problem", "owner_answers", "input_redaction_count", "metadata_redaction_count",
             "last_error_redaction_count", "result_summary_redaction_count",
             "repository_url_redaction_count", "waiting_for", "account", "links",
             "heartbeat_at", "heartbeat_grace_seconds", "heartbeat",

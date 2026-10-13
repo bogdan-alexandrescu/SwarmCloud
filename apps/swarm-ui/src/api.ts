@@ -20,7 +20,7 @@ import {
   type CallGraph, type ImpactPlan, type ModuleGraph, type SymbolSearch, type SymbolTests,
 } from './RepoGraphData'
 import type {
-  ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
+  ArtifactContent, ArtifactListing, LogStream, LogStreamName, OwnerAnswer, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
@@ -43,6 +43,7 @@ import type {
 // task page with no tasks are both non-empty objects.
 
 export type { Result, ApiError } from './fetch'
+export type { OwnerAnswer, OwnerAnswerVersion } from './types'
 
 /** Fixtures, so the UI can be worked on before DNS resolves. Exported so a
  *  component that keeps its own loaders (CheckpointBrowser.tsx) reads this one
@@ -1052,6 +1053,8 @@ export interface AgentQuestion {
   /** One of the options' labels, or null when the agent recommended none. */
   recommended: string | null
   context: string | null
+  /** The owner's stored answer; null or absent when unanswered (or from an API older than answers). */
+  answer?: OwnerAnswer | null
 }
 
 /**
@@ -1068,6 +1071,17 @@ export interface TaskQuestions {
   unavailable_because?: string
   redacted: boolean
   redaction_count: number
+  /** Whether this viewer may answer: the task's submitter or an admin. Absent from an API older than answers. */
+  may_answer?: boolean
+  /** Why not, when `may_answer` is false. */
+  may_answer_because?: string | null
+}
+
+/** `POST /v1/tasks/{id}/answers`: an option label, free text, or both. */
+export interface AnswerChoice {
+  question_index: number
+  choice: string | null
+  text: string | null
 }
 
 /**
@@ -1084,6 +1098,24 @@ export async function loadQuestions(taskId: string): Promise<Result<TaskQuestion
     }
   }
   return read<TaskQuestions>(route('/v1/tasks/{id}/questions', { id: taskId }), () => false)
+}
+
+/**
+ * The owner answers one of the agent's questions: `POST /v1/tasks/{id}/answers`
+ * (TASK-ANSWERS, owner decision 2026-10-13). Stored on the task, where whoever
+ * launched the work reads it; answers with the questions as they now read.
+ * Re-answering replaces the answer, and the API keeps the replaced one.
+ */
+export async function answerQuestion(taskId: string, answer: AnswerChoice): Promise<Result<TaskQuestions>> {
+  const target = route('/v1/tasks/{id}/answers', { id: taskId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, false)
+    return {
+      status: 'error',
+      error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build stores no answers.' },
+    }
+  }
+  return (await write(target, 'POST', answer)) as Result<TaskQuestions>
 }
 
 /**

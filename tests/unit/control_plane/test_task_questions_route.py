@@ -80,7 +80,8 @@ def test_the_validated_questions_are_served_with_their_options_and_recommendatio
     assert body["status"] == "ok"
     assert body["count"] == 1
     assert body["attempt_id"] == "att_1"
-    assert body["questions"] == _questions()
+    # Each question also carries the owner's answer: none yet (TASK-ANSWERS).
+    assert body["questions"] == [{**q, "answer": None} for q in _questions()]
     assert body["redacted"] is False
 
 
@@ -162,7 +163,8 @@ def test_keys_beyond_the_shape_are_not_served(client, db, objects) -> None:
     body = _get(client).json()
 
     assert body["status"] == "ok"
-    assert set(body["questions"][0]) == {"question", "options", "recommended", "context"}
+    # The four keys, and the owner's `answer` beside them (TASK-ANSWERS).
+    assert set(body["questions"][0]) == {"question", "options", "recommended", "context", "answer"}
     assert set(body["questions"][0]["options"][0]) == {"label", "description"}
     assert "not part of the shape" not in json.dumps(body)
 

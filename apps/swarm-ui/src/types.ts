@@ -549,6 +549,26 @@ export interface HumanWait {
 }
 
 /** `task_to_api` in codec.py. Trimmed to what the UI actually renders. */
+/** One answer the owner gave to an agent's question, as stored on the task (TASK-ANSWERS). */
+export interface OwnerAnswerVersion {
+  /** One of the question's option labels, or null for a free-text answer. */
+  choice: string | null
+  /** The owner's own words ("Other…"), redacted, or null. */
+  text: string | null
+  by: string | null
+  at: string | null
+}
+
+/**
+ * The owner's answer to one question (`codec.owner_answer_to_api`), with the
+ * answers it replaced, oldest first.
+ */
+export interface OwnerAnswer extends OwnerAnswerVersion {
+  question_index: number
+  question: string | null
+  history: OwnerAnswerVersion[]
+}
+
 /**
  * `Task.start_problem` as `codec.start_problem_to_api` serves it (F1-POD):
  * the worst container of a pod that is not starting. `message` is kubelet's,
@@ -664,6 +684,14 @@ export interface Task {
    * send it. Drawn by `PodStartProblem`.
    */
   start_problem?: StartProblem | null
+  /**
+   * TASK-ANSWERS (part of #1206): the owner's answers to the agent's
+   * questions, in question order, lifted by the API out of
+   * `metadata.owner_answers`; `[]` when none is answered. OPTIONAL: an older
+   * API does not send it. The card reads them from `GET /questions` instead,
+   * beside each question.
+   */
+  owner_answers?: OwnerAnswer[]
   /**
    * Contract request 23 (#217). Written by every terminal writer beside
    * `completed_at`. Null on SUCCEEDED and on a task that ended before this
