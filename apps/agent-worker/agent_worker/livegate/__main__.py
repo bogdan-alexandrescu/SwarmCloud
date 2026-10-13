@@ -634,6 +634,12 @@ class PageFollower:
             except Exception as exc:  # noqa: BLE001 -- one event; the mask fails closed
                 log.info("live gate: mask event failed (%s)", type(exc).__name__)
 
+    def halt(self) -> None:
+        """Chromium's pipe closed: there is no page to reconnect to, ever."""
+        self._closing = True
+        if self._reconnecting is not None:
+            self._reconnecting.cancel()
+
     async def close(self) -> None:
         self._closing = True
         tasks = [*self._tasks, *([self._worker] if self._worker else []),
@@ -808,6 +814,8 @@ class LiveGate:
             log.warning("live gate: chromium closed its pipe")
         self.browser_closed = True
         self.mask_state.session_down()
+        if self.pages is not None:
+            self.pages.halt()
         if not self.wiped:
             # The timeline says why the screen went grey, rather than nothing.
             self.record("browser_closed", {})

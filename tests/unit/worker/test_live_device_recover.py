@@ -445,6 +445,9 @@ def test_a_resume_after_the_browser_closed_lets_the_agent_go_instead_of_refusing
         assert page == {}
         assert gate.proxy is not None and not gate.proxy.paused
         assert "browser_closed" in rig.events()
+        # Nothing keeps knocking on a pipe that is gone.
+        reconnecting = gate.pages._reconnecting
+        assert reconnecting is None or reconnecting.done()
 
     _run(body, tmp_path)
 
