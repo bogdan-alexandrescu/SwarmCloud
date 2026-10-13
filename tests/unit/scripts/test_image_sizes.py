@@ -547,3 +547,134 @@ def test_set_euo_pipefail_is_the_first_effective_line():
             assert line.strip() == "set -euo pipefail"
             break
     assert os.access(SCRIPT, os.X_OK)
+
+
+# --- a repeated layer: GKE does not stream the image ---------------------------
+#
+# GKE image streaming, which Autopilot uses for every eligible image, does not
+# support an image with a duplicate layer (docs/browser-startup-speed.md §2.4,
+# from GKE's image-streaming page). Measured 2026-10-13: agent-runtime-browser
+# listed the empty layer sha256:4f4fb700ef54... twice (the base's
+# `WORKDIR /workspace` and its own), and its cold pull took 42 s while
+# claude-code, on the base alone, started in about 23 s. So `--manifest` names a
+# repeated layer and exits 1, and `--duplicate-layers` is the same check on its
+# own: the release's gate before anything is promoted
+# (.github/actions/release-images), over every image the record names.
+
+EMPTY_LAYER = ("empty", 32, "WORKDIR /workspace")
+BROWSER_REPEATED = {
+    "b1": ("2026-09-30T10:00:00Z", ["aaa111"], [("chromium", 300 * MB, "RUN apt-get chromium")], False),
+    "b2": ("2026-10-05T10:00:00Z", ["ccc333", "dev"],
+           [("chromium", 300 * MB, "RUN apt-get chromium"), EMPTY_LAYER,
+            ("policy", 1000, "COPY chromium-policy.json # buildkit"), EMPTY_LAYER], False),
+}
+API_RELEASES = {
+    "a1": ("2026-10-05T10:00:00Z", ["ccc333", "dev"], [("api", 40 * MB, "COPY /app /app")], False),
+}
+
+
+def test_manifest_names_a_repeated_layer_and_fails_after_every_row(world):
+    browser = _add_image(world, "agent-runtime-browser", BROWSER_REPEATED)
+    record = _deployed(world, [("agent-runtime-base", world["digests"]["r3"]),
+                               ("agent-runtime-browser", browser["b2"])])
+    done = _run(world, "--manifest", str(record))
+    assert done.returncode != 0, done.stdout
+    rows = _table(done.stdout)
+    # The size is still measured and recorded: the repeat is a second finding,
+    # not a reason to lose the first.
+    assert rows["agent-runtime-browser"]["compressed_mb"] == "300.0", done.stdout
+    assert rows["agent-runtime-base"]["compressed_mb"] == "412.0", done.stdout
+    repeated = _digest("empty")
+    # The image, its digest and the layer, in the summary and in the log.
+    for text in (done.stdout, done.stderr):
+        line = next((l for l in text.splitlines() if repeated in l), "")
+        assert "agent-runtime-browser" in line and browser["b2"] in line, text
+        assert "1, 3" in line, line
+    assert "image streaming" in done.stderr
+    assert "agent-runtime-base" not in [l for l in done.stderr.splitlines() if repeated in l][0]
+    assert "1 of 2 runner images repeat a layer" in done.stderr
+
+
+def test_manifest_with_no_repeated_layer_says_nothing_about_one(world):
+    browser = _add_image(world, "agent-runtime-browser", BROWSER_RELEASES)
+    record = _deployed(world, [("agent-runtime-browser", browser["b2"])])
+    done = _run(world, "--manifest", str(record))
+    assert done.returncode == 0, done.stderr
+    assert "repeat" not in done.stdout + done.stderr
+
+
+def _gate(world: dict, images: list[tuple[str, str]], **override: str) -> subprocess.CompletedProcess:
+    return _run(world, "--duplicate-layers", str(_deployed(world, images, **override)))
+
+
+def test_the_gate_passes_a_record_with_no_repeated_layer_and_counts_every_image(world):
+    browser = _add_image(world, "agent-runtime-browser", BROWSER_RELEASES)
+    api = _add_image(world, "swarm-api", API_RELEASES)
+    done = _gate(world, [("agent-runtime-base", world["digests"]["r3"]),
+                         ("agent-runtime-browser", browser["b2"]), ("swarm-api", api["a1"])])
+    assert done.returncode == 0, done.stderr
+    # Every image, not only the runners: "any image with a duplicate layer".
+    assert "3 of 3 images" in done.stderr, done.stderr
+    for name in ("agent-runtime-base", "agent-runtime-browser", "swarm-api"):
+        assert name in done.stderr
+    # A multi-platform index is checked by its linux/amd64 manifest (r3).
+    assert not [e for e in _events(world) if e["tool"] == "gcloud" and e["args"][:1] == ["artifacts"]], \
+        "the gate reads manifests by digest; it needs no registry listing"
+
+
+def test_the_gate_refuses_a_repeated_layer_naming_the_image_and_the_layer(world):
+    browser = _add_image(world, "agent-runtime-browser", BROWSER_REPEATED)
+    api = _add_image(world, "swarm-api", API_RELEASES)
+    done = _gate(world, [("agent-runtime-browser", browser["b2"]), ("swarm-api", api["a1"]),
+                         ("agent-runtime-base", world["digests"]["r3"])])
+    assert done.returncode != 0
+    line = next((l for l in done.stderr.splitlines() if _digest("empty") in l), "")
+    assert "agent-runtime-browser" in line and browser["b2"] in line and "1, 3" in line, done.stderr
+    assert "image streaming" in done.stderr
+    # The images after the refused one are still checked: one run names them all.
+    assert "1 of 3 images repeat a layer: agent-runtime-browser" in done.stderr, done.stderr
+    assert "swarm-api" in done.stderr and "agent-runtime-base" in done.stderr
+
+
+def test_the_gate_fails_closed_on_an_image_it_cannot_read(world):
+    done = _gate(world, [("agent-runtime-base", world["digests"]["r3"]),
+                         ("agent-runtime-indexer", _digest("never-pushed"))])
+    assert done.returncode != 0
+    assert "agent-runtime-indexer" in done.stderr and "404" in done.stderr
+    assert "not checked" in done.stderr
+    assert "of 2 images" in done.stderr
+
+
+def test_the_gate_refuses_an_empty_or_malformed_record(world):
+    empty = world["tmp"] / "images-dev.json"
+    empty.write_text(json.dumps({"tag": "ccc333", "environment": "dev", "images": []}))
+    done = _run(world, "--duplicate-layers", str(empty))
+    assert done.returncode != 0 and "no image" in done.stderr
+    empty.write_text('{"images": "nope"}')
+    assert _run(world, "--duplicate-layers", str(empty)).returncode != 0
+    assert not [e for e in _events(world) if e["tool"] == "curl"]
+
+
+def test_the_gate_refuses_a_record_from_another_repository_without_a_read(world):
+    other = f"{HOST}/another-project/swarm-images/agent-runtime-base"
+    done = _gate(world, [("agent-runtime-base", world["digests"]["r3"])], **{"agent-runtime-base": other})
+    assert done.returncode != 0
+    assert "another-project" in done.stderr
+    assert not [e for e in _events(world) if e["tool"] == "curl"]
+
+
+def test_the_gate_only_reads_and_never_exposes_the_token(world):
+    browser = _add_image(world, "agent-runtime-browser", BROWSER_REPEATED)
+    done = _gate(world, [("agent-runtime-base", world["digests"]["r3"]),
+                         ("agent-runtime-browser", browser["b2"])])
+    assert done.returncode != 0
+    _assert_only_read(world)
+    _assert_token_hidden(world, done)
+
+
+@pytest.mark.parametrize("extra", [("--manifest", "x.json"), ("--image", "agent-runtime-base"), ("--layers",)])
+def test_the_gate_takes_no_other_mode(world, extra):
+    record = _deployed(world, [("agent-runtime-base", world["digests"]["r3"])])
+    done = _run(world, "--duplicate-layers", str(record), *extra)
+    assert done.returncode != 0
+    assert not _events(world)

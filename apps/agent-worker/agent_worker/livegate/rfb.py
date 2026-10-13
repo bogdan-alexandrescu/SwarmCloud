@@ -223,9 +223,13 @@ class ControlState:
         async with self._lock:
             if self._controller is None:
                 return
-            await self._injector.release_all()
-            log.info("live rfb: control revoked conn=%s", self._controller)
-            self._controller = None
+            try:
+                await self._injector.release_all()
+            finally:
+                # Revoked even when a release could not be sent (the page's
+                # session went with it): no input reaches the display from here.
+                log.info("live rfb: control revoked conn=%s", self._controller)
+                self._controller = None
 
     async def connection_closed(self, conn_id: str) -> None:
         """The controller's stream ended: let go of what it held.

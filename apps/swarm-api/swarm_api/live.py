@@ -106,6 +106,15 @@ log = logging.getLogger(__name__)
 #: live path. Not a frozen model, as `admin_roles` is not.
 LIVE_SESSIONS = "live_sessions"
 
+#: "Let any member take control" is the TASK's setting, kept on the task
+#: document and copied into each new attempt's session when it opens (owner
+#: decision 2026-10-13, QA12-11: it reset on a resumed attempt when it lived
+#: on the session alone). swarm-api's own fields, written only here; the
+#: frozen `Task` model does not read them (`codec.task_from_dict` names the
+#: fields it reads), so they cost no contract change.
+TASK_OPEN_TO_MEMBERS = "live_open_to_members"
+TASK_OPENED_BY = "live_opened_to_members_by"
+
 #: The worker's signing purpose for the tunnel-ticket route (§5.4.1). Lane L4
 #: restates it; a hand-off or child signature never verifies as this one.
 LIVE_SESSION_PURPOSE = "swarm-live-session/v1"
@@ -1097,6 +1106,7 @@ class LiveService:
                 txn.update(session_ref, {"tunnel_tickets": int(existing.get("tunnel_tickets")
                                                                or 0) + 1, "updated_at": now})
                 return False
+            carried = bool(task.get(TASK_OPEN_TO_MEMBERS))
             session = {
                 "id": session_id,
                 "tenant_id": attempt.tenant_id,
@@ -1110,13 +1120,19 @@ class LiveService:
                 "closed_at": None,
                 "close_cause": None,
                 "controller": None,
-                "open_to_members": False,
-                "opened_to_members_by": None,
+                # MEMBER CONTROL BELONGS TO THE TASK (owner decision
+                # 2026-10-13, QA12-11): a resumed attempt's session starts as
+                # the submitter last left it, not closed again behind them.
+                "open_to_members": carried,
+                "opened_to_members_by": task.get(TASK_OPENED_BY) if carried else None,
                 "tunnel_tickets": 1,
             }
             txn.set(session_ref, session)
+            opened = {"profile": task.get("runner_profile")}
+            if carried:
+                opened["open_to_members"] = True
             write_audit(txn, self._db, session, "session_opened", email=None,
-                        detail={"profile": task.get("runner_profile")}, now=now)
+                        detail=opened, now=now)
             return True
 
         try:
@@ -1605,11 +1621,43 @@ class LiveService:
                 raise ControlNotEligible(
                     "only the task's submitter may open control to the tenant"
                 )
+            if not plan.task.get(TASK_OPEN_TO_MEMBERS):
+                # On the task too, so every later attempt's session starts
+                # open (QA12-11): the setting is the task's, not one attempt's.
+                plan.task_update.update({TASK_OPEN_TO_MEMBERS: True, TASK_OPENED_BY: who})
             if plan.state.get("open_to_members"):
                 return
             plan.session_update.update({"open_to_members": True,
                                         "opened_to_members_by": who})
             plan.audit("control_opened_to_members", who, {})
+
+        plan, _ = self._transact(tenant_id, task_id, change)
+        self._require_open(plan)
+        return self._view(task, plan, who, owner)
+
+    def close_to_members(self, tenant_id: str, task_id: str, *, email: str,
+                         submitted_by: str | None) -> dict[str, Any]:
+        """The submitter turns "Let any member take control" off again, for
+        this attempt and every later one (owner decision 2026-10-13, QA12-11).
+        Audited. A member who holds control now keeps it until they return
+        it or it lapses -- the submitter can take it over (`can_preempt`) --
+        so turning it off never yanks the screen from someone mid-sign-in."""
+        task = self._task(tenant_id, task_id, submitted_by)
+        owner = control_owner(task, self._db)
+        who = email.strip().lower()
+
+        def change(plan: _Plan) -> None:
+            if owner is None or owner != who:
+                raise ControlNotEligible(
+                    "only the task's submitter may close control to the tenant"
+                )
+            if plan.task.get(TASK_OPEN_TO_MEMBERS):
+                plan.task_update.update({TASK_OPEN_TO_MEMBERS: False, TASK_OPENED_BY: None})
+            if not plan.state.get("open_to_members"):
+                return
+            plan.session_update.update({"open_to_members": False,
+                                        "opened_to_members_by": None})
+            plan.audit("control_closed_to_members", who, {})
 
         plan, _ = self._transact(tenant_id, task_id, change)
         self._require_open(plan)
@@ -2175,7 +2223,7 @@ _EVENT_RANK: Mapping[str, int] = {
 #: opening and closing -- who watched is the audit's business, not what was done.
 _AUDIT_EVENTS = frozenset({
     "control_taken", "control_returned", "control_ended", "control_opened_to_members",
-    "handoff_requested", "handoff_resolved", "device_requested",
+    "control_closed_to_members", "handoff_requested", "handoff_resolved", "device_requested",
 })
 
 #: A word the audit's detail may carry to the timeline as `cause` or `outcome`:
