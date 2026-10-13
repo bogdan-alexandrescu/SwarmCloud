@@ -219,7 +219,10 @@ locals {
   workspace_custom_roles = {
     workspace_account_admin = {
       title       = "Swarm Workspace Account Admin"
-      description = "managed-by=swarm-terraform; create a person's worker account and write its own Workload Identity and act-as bindings, and list its key ids to refuse an account that has a key. No delete, disable, key creation, token, signBlob or actAs. Project-wide because IAM cannot condition it (docs/workspaces.md §2.4); bounded by the call guard and the alert."
+      # It also lists the account's key ids (iam.serviceAccountKeys.list, A2/A9's
+      # squat check, #334). The description below is unchanged: GCP caps a role
+      # description at 300 characters and this one is at the limit.
+      description = "managed-by=swarm-terraform; create a person's worker account and write its own Workload Identity and act-as bindings. No delete, disable, key, token, signBlob or actAs. Project-wide because IAM cannot condition it (docs/workspaces.md §2.4); bounded by the call guard and the alert."
       # §2.3's six. getIamPolicy and setIamPolicy are what
       # `gcloud iam service-accounts add-iam-policy-binding` reads and writes.
       # tests/unit/scripts/test_workspace_deployer_walk.py holds every call of
