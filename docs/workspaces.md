@@ -1652,9 +1652,9 @@ $ /sc:run "fix the flaky test"
 | `POST /v1/admin/workspaces/{workspace_id}/deny` | admin | §1.3; body `{reason}` |
 | `POST /v1/admin/workspaces/{workspace_id}/retry` | admin | from `failed` or `needs_owner`: publishes again |
 | `PUT /v1/admin/workspaces/{workspace_id}/limits` | admin | §6.4's ceiling; body `{max_active}` only |
-| `PUT /v1/admin/people/{workspace_id}/loan` | admin | lend or reclaim an account (§6.4) |
+| `PUT /v1/admin/people/{workspace_id}/loan` | admin | lend or reclaim an account (§6.4); a lend to a workspace not yet `ready` answers `state: "pending"` and is applied by the sweep |
 | `PUT /v1/admin/admins/{email}` and `DELETE` | admin | grant or remove admin (§6.5) |
-| `POST /v1/admin/workspaces/sweep` | the rollup sweeper (`swarm-workspace-sweep`, every 10 minutes) | §2.2's dispatch sweep |
+| `POST /v1/admin/workspaces/sweep` | the rollup sweeper (`swarm-workspace-sweep`, every 10 minutes) | §2.2's dispatch sweep, then the pending loans of every workspace now `ready` (§6.4) |
 | `GET /v1/onboarding` | (exists) | gains the `workspace` and `claude_account` steps |
 
 Admin routes address a person by **workspace id**, so a URL in a browser
@@ -1717,6 +1717,32 @@ the platform owner" with the step the guard stopped at; a `failed` row has **Ret
   submission, the gate's account check applies (§5.4). A person's *own*
   account is never lendable or reclaimable here; its owner keeps the existing
   `PUT /v1/accounts/{id}/lending`.
+
+  **A lend to a workspace that is not `ready` is pending, not refused**
+  (LOAN-NEW, part of #1194). The quota broker grants the borrower's worker
+  account, `swarm-agent-worker-<tenant>`, read access to the account's secret
+  *before* it adds the borrower to `lend_to`, so the pool never assigns an
+  account its worker cannot read (the 2026-10-06 failure). That worker account
+  is created by the workspace job, and IAM refuses a grant to a member that
+  does not exist: on 2026-10-13 a lend to a workspace approved an hour earlier
+  and still provisioning answered 422 `could not grant the borrowers of … read
+  access to its secret: InvalidArgument`. So while the record is anything but
+  `ready`, a lend calls no IAM and writes `pending_loans/{tenant_id}` and a
+  `lend_pending` audit entry in one transaction, read against the record's
+  state in that transaction, and answers `200` with `state: "pending"` and
+  "the loan will apply when the workspace is ready". The dispatch sweep
+  (§2.2, every 10 minutes) then lends each pending loan of a `ready`
+  workspace through the same broker call, and only after the broker answered
+  removes it, closes the loan request and writes `lend` (with
+  `pending_since`): a loan is pending or lent, never half of each. A grant
+  the broker refuses stays pending with the reason in `last_error`, which
+  the person's People row shows under `pending_loans`, and is tried again on
+  the next sweep; a pending loan whose account is gone is dropped
+  (`lend_pending_dropped`). **Reclaim** cancels a pending loan
+  (`reclaim_pending`). A lend to a workspace that *is* `ready` is granted at
+  once as before (`state: "applied"`), and if the broker refuses it the answer
+  is 422 `LOAN_GRANT_FAILED`, naming the member it asked IAM to grant and the
+  broker's reason: there, that service account should exist.
 
 **4. Admins.** §6.5.
 

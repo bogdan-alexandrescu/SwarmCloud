@@ -202,6 +202,15 @@ SWITCHES: dict[str, Switch] = {
         "is refused instead of submitted (docs/schedules.md §3.12, blast radius). On once the "
         "log shows no stored custom-prompt schedule whose spec names a repository it does not scope",
     ),
+    # LOAN-NEW (docs/workspaces.md §3.3): a lend to a READY workspace whose
+    # IAM grant the quota broker refused. Off, the broker's own 422 is served
+    # unchanged, as it was before this code existed; nothing was changed either way.
+    "LOAN_GRANT_FAILED": Switch(
+        code="LOAN_GRANT_FAILED",
+        why="a lend to a ready workspace is answered 422 LOAN_GRANT_FAILED naming the member "
+        "and the broker's reason, instead of the broker's bare refusal. On once People shows "
+        "the loan pane's error and the log shows the named members really are missing service accounts",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "
