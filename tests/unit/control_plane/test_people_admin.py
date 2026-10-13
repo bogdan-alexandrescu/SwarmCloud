@@ -727,7 +727,9 @@ def test_the_sweep_applies_a_pending_loan_once_the_workspace_is_ready(client, db
 
 
 def test_a_pending_loan_whose_grant_fails_on_ready_stays_pending_with_the_reason(
-        client, db) -> None:
+        client, db, monkeypatch) -> None:
+    # The member-naming reason is LOAN_GRANT_FAILED's message, which ships off.
+    monkeypatch.setenv("REFUSAL_LOAN_GRANT_FAILED", "on")
     seed_tenant(db, "eng")
     refusing = RefusingPool(_pool_account("acct-eng", "eng"), reason=INVALID_ARGUMENT)
     client.app.state.account_pool = refusing
