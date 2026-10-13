@@ -4,8 +4,9 @@
      ends FAILED, its error naming the cause and the patch's uri so the work
      can be recovered with `swarm_apply`. Measured on task_6a0c9afdbaea449eb53d:
      "push failed with exit 1", state SUCCEEDED, the workflow green. A step that
-     publishes nothing by design (a review, an `integrate` contributor) is
-     unaffected.
+     publishes nothing by design (a review, a `collect` step) is unaffected.
+     An `integrate` contributor is no longer exempt: its branch is its
+     deliverable (G1, part of #1225; test_publish_deliverable_branch.py).
   2. Proposal J. No change AND `verification.md` is the `no_change` result,
      whatever `allow_empty_diff` says, with the verification as the reason.
      No change and no verification fails as before.
@@ -149,12 +150,13 @@ def test_without_an_uploaded_patch_the_error_says_where_the_work_is(db, worker_f
 @pytest.mark.parametrize(
     "dispatch",
     [
-        {"strategy": "integrate", "carrier": "checkpoints", "role": "contributor"},
+        # Not an `integrate` contributor since G1 (#1225): its branch is its
+        # deliverable, and test_publish_deliverable_branch.py fails it.
         {"strategy": "collect"},
     ],
-    ids=["integrate-contributor", "collect-review"],
+    ids=["collect-review"],
 )
-def test_a_step_that_opens_no_pull_request_is_unaffected_by_a_failed_push(
+def test_a_step_that_delivers_no_branch_is_unaffected_by_a_failed_push(
     db, worker_factory, dispatch
 ):
     _seed(db, dispatch=dispatch)

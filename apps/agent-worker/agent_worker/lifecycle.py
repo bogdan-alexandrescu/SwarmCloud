@@ -6295,7 +6295,9 @@ class Worker:
         `single-pr` author. NOT an `integrate` contributor (its branch is its
         deliverable), a `single-pr` reader or amender, a `collect` task or a
         worker action: for those, changing nothing is a correct outcome -- a
-        review that edits no file is a review that did its job.
+        review that edits no file is a review that did its job. A contributor,
+        an amender and a `carrier: branches` step still owe their BRANCH when
+        they changed something: `_deliverable_branch` (G1, #1225).
 
         The strategy is read raw, not through `_dispatch_strategy`, which
         reads `single-pr` as `collect` (`_publish_git` reads its role through
@@ -6313,6 +6315,47 @@ class Worker:
             role = block.get("pr_role")
             return isinstance(role, str) and role.strip().lower() == "author"
         return False
+
+    def _deliverable_branch(self) -> str:
+        """Why this step's PUSHED BRANCH is what it delivers, or "" (G1, #1225).
+
+        Wider than `_opens_pull_request`, which stays what it says: a step
+        that owes a pull request. A branch is also the deliverable of
+
+          * an `integrate` contributor: the integrator merges `swarm/<its id>`
+            and a review that `builds_on` it clones that branch;
+          * a `carrier: branches` step, under any strategy but a `single-pr`
+            reader's: the branch is where the next step finds the work;
+          * a `single-pr` amender: its fast-forward push IS the pull
+            request's update.
+
+        A step another step `builds_on` is one of these already: swarm-api
+        accepts `builds_on` only under `direct-pr` and `integrate`
+        (`validation._EVERY_STEP_PUSHES_STRATEGIES`), where every step that
+        runs an agent opens a pull request or is a contributor. Measured
+        (#1225, wf_e55610ded71c4d9d9fae, wf_0260c920acf8414395b2): a review
+        failed cloning "Remote branch swarm/task_... not found" behind a build
+        step that ended SUCCEEDED having pushed nothing.
+        """
+        if self._opens_pull_request():
+            return "the step was to open a pull request"
+        pr_role = self._pr_role()
+        if pr_role == "amender":
+            return (
+                "the step is the 'single-pr' amender, whose push to the author's "
+                "branch is its update of the pull request"
+            )
+        if pr_role in ("reader", "none"):
+            # `_publish_git` pushes nothing for these, whatever the carrier.
+            return ""
+        if self._dispatch_carrier() == "branches":
+            return "the step carries its work on its branch (carrier: branches)"
+        if self._dispatch_strategy() == "integrate" and self._dispatch_role() == "contributor":
+            return (
+                "the step is an 'integrate' contributor, whose branch the integrator "
+                "merges and a step that builds on it clones"
+            )
+        return ""
 
     def _published_nothing(self, summary: dict[str, Any]) -> str | None:
         """Why a pull-request step that ran clean delivered nothing, or None.
@@ -6361,25 +6404,53 @@ class Worker:
         return None
 
     def _publish_failed(self, summary: dict[str, Any]) -> str | None:
-        """Why a pull-request step's push failed, naming the patch, or None (#872).
+        """Why a step whose branch is its deliverable ended without pushing it,
+        naming where the work is, or None (#872; G1, #1225).
 
         `_publish_git` sets `publish_failed` when git failed the publish --
         the push itself, or the commit, fold or authorship check before it.
         Measured 2026-10-08 (task_6a0c9afdbaea449eb53d): the push failed with
         exit 1, the agent had exited 0, and the step and its workflow read
-        SUCCEEDED with the work only in `swarm-work.patch`. A step whose job is
-        to open a pull request (`_opens_pull_request`) has not delivered, so
-        it ends FAILED, and the error says where the work is so it can be
-        recovered with `swarm_apply`. A step that publishes nothing by design
-        -- a review, an `integrate` contributor, a `collect` step, a step with
-        no repository -- never reaches here: it is not a pull-request step.
+        SUCCEEDED with the work only in `swarm-work.patch`.
+
+        #872 covered only a step that opens a pull request. G1 (#1225) widens
+        it to every step whose branch is its deliverable
+        (`_deliverable_branch`), and to every way such a step can end with
+        work and no pushed branch, not only a git failure: a publish that
+        declined for a token that cannot push (`can_push` false), a refused
+        git token, a forge this worker cannot publish to, publishing
+        disabled, a harvest that failed or met survivors of the reap, or the
+        catch-all in `_publish_checked`. Each read SUCCEEDED, and the step
+        that builds on it then failed cloning a branch that was never there.
+
+        Not here: a step that changed nothing (`published_nothing`, and the
+        allowed empty diff), which had no branch to push and whose dependants
+        already step past it; a shut verdict gate's step, which
+        `_skipped_publish_missing` answers; a forge outage, which
+        `_publish_unreachable` fails retryably. The forge-write refusal and
+        the final-tree leak are answered before this is asked. A `collect`
+        step without a carrier, a `single-pr` reader and a step with no
+        repository deliver no branch and never reach here.
         """
-        if not self._opens_pull_request():
+        why = self._deliverable_branch()
+        if not why:
             return None
         git = summary.get("git")
-        if not isinstance(git, dict) or git.get(PUBLISH_FAILED_FIELD) is not True:
+        if not isinstance(git, dict):
             return None
-        cause = str(git.get("publish_reason") or "the push failed")
+        # `_publish_git` says `published: true` only once the push returned.
+        if git.get("published") is True:
+            return None
+        if git.get(PUBLISH_FAILED_FIELD) is not True:
+            if summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True:
+                return None
+            if published_nothing(summary):
+                return None
+            if self._verdict is not None and not self._verdict.get("agent_ran", True):
+                return None
+            if isinstance(git.get(PUBLISH_UNREACHABLE_FIELD), dict):
+                return None
+        cause = str(git.get("publish_reason") or git.get("error") or "the push failed")
         patch = next(
             (
                 entry.get("uri")
@@ -6399,10 +6470,7 @@ class Worker:
                 + (f" ({git['patch_note']})" if git.get("patch_note") else "")
                 + "; the work is in the attempt's final checkpoint."
             )
-        return (
-            f"publish_failed: the step was to open a pull request and its branch "
-            f"was not pushed: {cause}. {where}"
-        )
+        return f"publish_failed: {why} and its branch was not pushed: {cause}. {where}"
 
     def _skipped_publish_missing(self, summary: dict[str, Any]) -> str | None:
         """Why a step whose verdict gate skipped its agent pushed no branch, or None (PUB-SKIP).
@@ -6482,14 +6550,19 @@ class Worker:
         rate-limit 403 at the probe or at `open_pull_request`. A forge that
         ANSWERED (a 422 refusal, a 404, a plain 403) is not here: the refusal
         is `_published_nothing`'s, and the rest stay the publish's recorded
-        reason. Only a step that owes a pull request (`_opens_pull_request`)
-        is failed for it; any other step's deliverable is its branch or its
-        artifacts, which an outage at the forge's API does not touch.
+        reason. Only a step whose branch is its deliverable
+        (`_deliverable_branch`, widened from `_opens_pull_request` by G1,
+        #1225) is failed for it: one that owes a pull request, or one whose
+        outage at the probe kept its branch from being pushed. Any other
+        step's deliverable is its artifacts, which an outage at the forge's
+        API does not touch.
         """
-        if not self._opens_pull_request():
+        if not self._deliverable_branch():
             return None
         git = summary.get("git")
         if not isinstance(git, dict):
+            return None
+        if not self._opens_pull_request() and git.get("published") is True:
             return None
         marker = git.get(PUBLISH_UNREACHABLE_FIELD)
         return marker if isinstance(marker, dict) else None
@@ -9958,7 +10031,13 @@ class Worker:
             )
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.exception("the publish raised; continuing without it", exc)
-            result = {"published": False, "publish_reason": "the publish failed unexpectedly"}
+            # Marked failed (G1, #1225): a step whose branch is its deliverable
+            # did not push it, and `_publish_failed` ends it FAILED for that.
+            result = {
+                "published": False,
+                "publish_reason": "the publish failed unexpectedly",
+                PUBLISH_FAILED_FIELD: True,
+            }
         git.update(self._scrub(result))
 
     def _integration_is_pending(self) -> bool:
