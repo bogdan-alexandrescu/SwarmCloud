@@ -210,6 +210,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# --- 0. --swarm-system's preconditions, before anything is contacted -----------
+# Measured 2026-10-12: from a checkout whose terraform/infra was never
+# initialised, --swarm-system got through kubectl and gcloud and then failed on
+# terraform's own error -- or, from a checkout older than --swarm-system, with
+# "--tenant is required". Each precondition this mode has is checked here, on
+# the filesystem and the command line alone, and named in one line with what to
+# do. It never asks for a tenant. (Its terraform OUTPUT is read below, after the
+# context checks: nothing is asked of terraform for a refused cluster.)
+if [[ "${MODE}" == "swarm-system" ]]; then
+  [[ -z "${TENANT}" ]] || die "--swarm-system renders swarm-system's policies, not a tenant's; drop --tenant"
+  [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
+  [[ -z "${RENDER_ARGS[*]+x}" ]] \
+    || die "--swarm-system takes no render arguments (got: ${RENDER_ARGS[*]}); its one value is read"
+  tf_initialised \
+    || die "terraform/infra is not initialised for ${ENVIRONMENT} (no $(tf_data_dir)); run: $(tf_init_command)"
+fi
+
 # --- 1. the right kubectl ----------------------------------------------------
 # `kubectl_bin` from common.sh, not a second copy of the same search: it already
 # knows that 1.22 (EKS) and 1.25 (Docker Desktop) win $PATH on this machine and
@@ -421,10 +438,45 @@ if [[ "${MODE}" == "policies" ]]; then
     --workspace-deployer-uid "${DEPLOYER_UID}")"
   info "rendering cluster-scoped admission policies and the workspace deployer's RBAC"
 elif [[ "${MODE}" == "swarm-system" ]]; then
-  [[ -z "${SPEC_VERIFY_KEYS_FILE}" ]] || die "--spec-verify-keys belongs to a tenant's namespace, not to swarm-system"
-  [[ -z "${TENANT}" ]] || die "--swarm-system renders swarm-system's policies, not a tenant's; drop --tenant"
-  [[ -z "${RENDER_ARGS[*]+x}" ]] \
-    || die "--swarm-system takes no render arguments (got: ${RENDER_ARGS[*]}); its one value is read"
+  # --tenant, --spec-verify-keys and render arguments were refused at 0.
+
+  # THE RELAY, FROM TERRAFORM, APPLIED FIRST (lane LB-L8e). Its manifest is
+  # terraform/infra/live.tf's `swarm_live_manifest`: kubernetes/swarm-system/
+  # swarm-live.yaml with this root's image digest, bucket, key reference,
+  # reserved address and swarm-api's subnet range filled in. It creates the
+  # swarm-system namespace, so it goes ahead of the policies in ONE apply
+  # (kubectl applies a stream in order): a NetworkPolicy applied into a
+  # namespace that does not exist fails mid-apply.
+  #
+  # Read here, AFTER the context checks above, and applied only through them:
+  # nothing below can send it to agents-staging. Read FIRST in this mode,
+  # before swarm-api is described, so a missing output is a precondition
+  # reported up front rather than a late failure. To files, not $(...): the
+  # exit status and the error are both kept (CLAUDE.md).
+  RELAY_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-live-relay.XXXXXX")"
+  # Held across swarm-api's reads below, any of which may die.
+  trap 'rm -rf "${RELAY_WORK}"' EXIT
+  RELAY_MANIFEST=""
+  TF_DIR="$(tf_root)"
+  if tf -chdir="${TF_DIR}" output -raw swarm_live_manifest >"${RELAY_WORK}/relay.yaml" 2>"${RELAY_WORK}/relay.err" \
+      && [[ -s "${RELAY_WORK}/relay.yaml" ]]; then
+    RELAY_MANIFEST="$(cat "${RELAY_WORK}/relay.yaml")"
+  else
+    # Null while enable_live_browser is off or swarm-live has no digest, and
+    # `output -raw` refuses a null. (An uninitialised root was refused at 0.)
+    # One actionable line, then terraform's own words, before swarm-api is
+    # described: a run that cannot apply the relay stops here.
+    MISSING="terraform output swarm_live_manifest is missing for ${ENVIRONMENT}: set enable_live_browser and a swarm-live digest in image_refs (terraform/infra/live.tf), then make tf-plan tf-apply"
+    redact <"${RELAY_WORK}/relay.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    if [[ "${CONFIRM}" -eq 1 ]]; then
+      rm -rf "${RELAY_WORK}"
+      err "${MISSING}"
+      die "no relay manifest: swarm-system's policies would select a relay that does not exist,
+       in a namespace nothing created. Nothing was applied."
+    fi
+    warn "${MISSING}"
+    warn "previewing swarm-system's policies alone; --confirm will refuse."
+  fi
 
   # SWARM-API'S DIRECT VPC EGRESS SUBNET, READ FROM THE SERVICE. To files and
   # read in THIS shell (CLAUDE.md: a command substitution throws away what the
@@ -486,38 +538,6 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
   SWARM_API_EGRESS_SOURCE="run/${PROJECT_ID}/${SUBNET_REGION}/${API_SERVICE}/${SUBNET}"
   info "swarm-api egress  ${SWARM_API_EGRESS_CIDR}  (${SWARM_API_EGRESS_SOURCE})"
 
-  # THE RELAY, FROM TERRAFORM, APPLIED FIRST (lane LB-L8e). Its manifest is
-  # terraform/infra/live.tf's `swarm_live_manifest`: kubernetes/swarm-system/
-  # swarm-live.yaml with this root's image digest, bucket, key reference,
-  # reserved address and swarm-api's subnet range filled in. It creates the
-  # swarm-system namespace, so it goes ahead of the policies in ONE apply
-  # (kubectl applies a stream in order): a NetworkPolicy applied into a
-  # namespace that does not exist fails mid-apply.
-  #
-  # Read here, AFTER the context checks above, and applied only through them:
-  # nothing below can send it to agents-staging. To files, not $(...): the
-  # exit status and the error are both kept (CLAUDE.md).
-  RELAY_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-live-relay.XXXXXX")"
-  RELAY_MANIFEST=""
-  TF_DIR="$(tf_root)"
-  if tf -chdir="${TF_DIR}" output -raw swarm_live_manifest >"${RELAY_WORK}/relay.yaml" 2>"${RELAY_WORK}/relay.err" \
-      && [[ -s "${RELAY_WORK}/relay.yaml" ]]; then
-    RELAY_MANIFEST="$(cat "${RELAY_WORK}/relay.yaml")"
-  else
-    # Null while enable_live_browser is off or swarm-live has no digest, and
-    # `output -raw` refuses a null; or terraform is not initialised here.
-    err "terraform has no relay manifest to apply (terraform -chdir=${TF_DIR} output -raw swarm_live_manifest):"
-    redact <"${RELAY_WORK}/relay.err" | sed -n '1,5p' | sed 's/^/     /' >&2
-    dim "  It is null until enable_live_browser is set and image_refs has a swarm-live digest"
-    dim "  (terraform/infra/live.tf, the order in its header); run 'make tf-init' if terraform"
-    dim "  is not initialised for ${ENVIRONMENT}."
-    if [[ "${CONFIRM}" -eq 1 ]]; then
-      rm -rf "${RELAY_WORK}"
-      die "no relay manifest: swarm-system's policies would select a relay that does not exist,
-       in a namespace nothing created. Nothing was applied."
-    fi
-    warn "previewing swarm-system's policies alone; --confirm will refuse."
-  fi
 
   if [[ -n "${RELAY_MANIFEST}" ]]; then
     # What the relay manifest may hold, checked before anything sees a
@@ -580,7 +600,7 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
     info "rendering swarm-system's ingress policies"
   fi
 else
-  [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies)"
+  [[ -n "${TENANT}" ]] || die "--tenant is required (or pass --policies, or --swarm-system)"
 
   SCHEDULER_UID="$(uid_of "swarm-scheduler@${PROJECT_ID}.iam.gserviceaccount.com")"
   RECONCILER_UID="$(uid_of "swarm-reconciler@${PROJECT_ID}.iam.gserviceaccount.com")"
