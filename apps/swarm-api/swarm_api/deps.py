@@ -8,7 +8,7 @@ patching a single import.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import logging
@@ -50,6 +50,7 @@ from .ratelimit import TokenBucketLimiter
 from .rollup import WorkflowRollups
 from .service import SubmissionService
 from .specsigning import SpecSigner, signer_from_settings
+from .startup import StartupEstimates
 from .settings import ApiSettings
 from .store import Store
 from .waker import SchedulerWaker, waker_for
@@ -104,6 +105,9 @@ class AppContext:
     #: and nothing else (purge.py); `inspection` keeps the read-only reader.
     #: None when no bucket is configured. Builds no client until used.
     artifact_purger: ArtifactPurger | None = None
+    #: `GET /v1/tasks/{id}/startup`'s per-tenant, per-profile estimate, held
+    #: for a few minutes (`swarm_api.startup`). Per app, never at import.
+    startup_estimates: StartupEstimates = field(default_factory=StartupEstimates)
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:

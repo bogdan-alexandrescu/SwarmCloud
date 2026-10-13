@@ -496,17 +496,37 @@ function timeLeft(deadline: string, now: number): string {
  *
  * "I'M DONE, RETURN CONTROL" IS THE BOTTOM BAR'S RETURN, not a second one:
  * `onReturn` is the theater's call of `returnLiveControl` followed by the
- * tab's reload, the action the tab's Return control button performs. It waits
- * until the person is in control, since there is nothing to return before.
+ * tab's reload, the action the tab's Return control button performs.
+ *
+ * BEFORE THAT, THE BUTTON IS TAKE CONTROL (lane THEATER-TAKE, owner report
+ * 2026-10-13: the checklist said "You took control." and offered nothing that
+ * took it). `take` is the tab's own `<LiveControl takeOnly />`, so the route,
+ * the first ask and the wrong-site second ask are the tab's, not rebuilt
+ * here. It is drawn only for a person the server says may take control now
+ * (`canTake`: the eligibility LiveControl itself applies); anyone else is
+ * told who holds control, and gets no button. With no `take` or no session
+ * read, the waiting return button stays, with its reason.
  */
 export function HandoffChecklist({
   handoff,
   youControl = false,
   onReturn,
+  take,
+  canTake,
+  holder = null,
 }: {
   handoff: TheaterHandoff
   /** The session names this person as its controller. */
   youControl?: boolean
+  /** The tab's Take control, with its asks (`<LiveControl takeOnly />`). */
+  take?: ReactNode
+  /**
+   * The server says this person may take control now (`you.can_control`, and
+   * nobody holds it or `you.can_preempt`); undefined while there is no session read.
+   */
+  canTake?: boolean
+  /** Who holds control when it is not this person, for the not-eligible line. */
+  holder?: string | null
   /** Return control; resolves to an error message, or null when it was returned. */
   onReturn?: () => Promise<string | null>
 }) {
@@ -550,22 +570,28 @@ export function HandoffChecklist({
         {step(youControl, <>You took control.</>)}
         {step(false, <>Sign in. Passwords are masked before they leave the agent’s pod.</>)}
       </ol>
-      <button
-        type="button"
-        className="th-done"
-        disabled={returnWhy !== undefined || busy}
-        title={returnWhy}
-        onClick={() => {
-          if (!onReturn) return
-          setBusy(true)
-          void onReturn().then((err) => {
-            setBusy(false)
-            setError(err)
-          })
-        }}
-      >
-        {busy ? 'Returning…' : "I'm done, return control"}
-      </button>
+      {!youControl && canTake && take ? (
+        <div className="th-take">{take}</div>
+      ) : !youControl && canTake === false ? (
+        <p className="th-note th-view-only">{holder === null ? 'View only' : `${holder} is in control`}</p>
+      ) : (
+        <button
+          type="button"
+          className="th-done"
+          disabled={returnWhy !== undefined || busy}
+          title={returnWhy}
+          onClick={() => {
+            if (!onReturn) return
+            setBusy(true)
+            void onReturn().then((err) => {
+              setBusy(false)
+              setError(err)
+            })
+          }}
+        >
+          {busy ? 'Returning…' : "I'm done, return control"}
+        </button>
+      )}
       <p className="th-note">The agent carries on from the signed-in page.</p>
       {error !== null ? (
         <p className="th-note is-bad" role="alert">

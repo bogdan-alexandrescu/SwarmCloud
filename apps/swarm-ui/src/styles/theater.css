@@ -132,6 +132,11 @@
   font: inherit; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600;
 }
 .th-done:disabled { background: none; color: var(--text-faint); border-color: var(--line); cursor: not-allowed; }
+/* The checklist's Take control (THEATER-TAKE) is the tab's, asks and all.
+   Its ask is drawn in the column's flow: absolute, it would hang off the
+   column's left edge and be clipped by the column's scroll box. */
+.th-take { justify-self: start; }
+.th-handoff .live-ask { position: static; width: auto; }
 
 /* ---- the canvas ---------------------------------------------------------- */
 .th-center {
@@ -204,6 +209,9 @@
   padding: 8px 16px; border-top: 1px solid var(--line); background: var(--surface);
 }
 .th-spacer { flex: 1; }
+/* The bar's Take control asks upward (THEATER-TAKE): the tab's rule opens the
+   ask below its button, which for the bar is below the screen's edge. */
+.th-bottom .live-ask { top: auto; bottom: 100%; margin-bottom: 6px; }
 .th-mode.is-on { border-color: var(--sk-ac); color: var(--text); }
 .th-live-dot { color: var(--s-live); }
 /* The scrubber: the segments laid end to end under a range input that owns
