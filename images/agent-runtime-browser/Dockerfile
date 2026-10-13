@@ -88,7 +88,13 @@ COPY --chmod=0444 images/agent-runtime-browser/chromium-policy.json /etc/chromiu
 COPY --chmod=0555 images/agent-runtime-browser/swarm-handoff /usr/local/bin/swarm-handoff
 
 USER swarm:swarm
-WORKDIR /workspace
+# NO `WORKDIR /workspace` HERE: the base sets it and this image inherits it.
+# Restating it wrote BuildKit's empty layer (sha256:4f4fb700ef54...) a second
+# time, and GKE does not stream an image with a duplicate layer, so every cold
+# browser pod pulled all 1.25 GB first: 42 s of an 88 s start, measured
+# 2026-10-13 (docs/browser-startup-speed.md §2.4). The release refuses such an
+# image (scripts/image-sizes.sh --duplicate-layers);
+# tests/unit/scripts/test_image_streaming.py holds this file to it.
 
 # Prove the browser actually launches in this image rather than discovering it
 # at 3am in a tenant's attempt.
