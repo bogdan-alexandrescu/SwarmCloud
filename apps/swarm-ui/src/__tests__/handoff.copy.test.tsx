@@ -130,8 +130,15 @@ function sessionRead(you: string, controller: string | null) {
     data: {
       live_browser: true,
       session: {
+        session_id: 'ls_copy',
         state: 'open',
+        closed_reason: null,
+        origin: { origin: 'https://bank.example', host: 'bank.example', registrable_domain: 'bank.example', scheme: 'https:' },
+        human_wait: null,
         controller: controller === null ? null : { email: controller, since: iso(NOW - 30_000) },
+        open_to_members: false,
+        device: { preset: 'desktop', orientation: 'landscape', touch: false },
+        presets: [],
         you: { email: you, can_control: true, can_preempt: false, can_open: true, can_switch_device: false },
       },
     },

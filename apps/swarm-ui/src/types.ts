@@ -2638,7 +2638,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   CI_PENDING: 'Waiting for the pull request checks to finish. Holds no capacity.',
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
-  HUMAN_REQUIRED: 'The agent asked a person to sign in and nobody came in time. Holds no capacity until someone is ready.',
+  HUMAN_REQUIRED: 'The agent asked for a person and nobody came in time. Holds no capacity until someone says they are ready.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 
