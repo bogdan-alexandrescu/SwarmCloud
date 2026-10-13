@@ -412,22 +412,44 @@ function ResumingBanner({ children }: { children?: ReactNode }) {
  * nothing at all for a task nobody is waited for, so the clock is held only
  * while there is a figure to tick. `onReady` re-reads the agent, which is
  * READY after `human-ready` and is admitted from there; the strip then stays
- * up, saying the browser is starting again, until it is RUNNING.
+ * up, saying the browser is starting again, until it is RUNNING. `you` is
+ * passed through to the banner (a tab that has read its session already
+ * knows it, and saves the banner its own read).
  */
-export function HandoffStrip({ task, onReady, children }: { task: Task; onReady?: () => void; children?: ReactNode }) {
+export function HandoffStrip({
+  task,
+  onReady,
+  you,
+  children,
+}: {
+  task: Task
+  onReady?: () => void
+  you?: string | null
+  children?: ReactNode
+}) {
   if (handoffOf(task) === null && !resumingAfterHandoff(task)) return null
   return (
-    <TickingBanner task={task} onReady={onReady}>
+    <TickingBanner task={task} onReady={onReady} you={you}>
       {children}
     </TickingBanner>
   )
 }
 
-function TickingBanner({ task, onReady, children }: { task: Task; onReady: (() => void) | undefined; children?: ReactNode }) {
+function TickingBanner({
+  task,
+  onReady,
+  you,
+  children,
+}: {
+  task: Task
+  onReady: (() => void) | undefined
+  you: string | null | undefined
+  children?: ReactNode
+}) {
   const now = useNow(1000)
   return (
     <div className="ho-strip">
-      <HandoffBanner task={task} now={now} onReady={onReady === undefined ? undefined : () => onReady()}>
+      <HandoffBanner task={task} now={now} you={you} onReady={onReady === undefined ? undefined : () => onReady()}>
         {children}
       </HandoffBanner>
     </div>

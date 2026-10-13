@@ -263,3 +263,11 @@ describe('QA12-28: the Overview card runs Take control, Open, then the rest', ()
     expect(ready.compareDocumentPosition(open) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 })
+
+describe('the strip passes who you are through to its banner', () => {
+  it('says "You are in control" without a session read of its own', () => {
+    render(<HandoffStrip task={holding('task_hold00000000000000006', ME)} you={ME} />)
+    expect(screen.getByRole('status').textContent).toContain('You are in control · return control when done')
+    expect(api.loadLiveSession).not.toHaveBeenCalled()
+  })
+})
