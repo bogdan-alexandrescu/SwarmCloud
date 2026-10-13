@@ -118,6 +118,13 @@ CONTROL_GRANT_SECONDS = 15.0
 #: How long reading a page's URL and title may take when control ends.
 PAGE_INFO_SECONDS = 2.0
 
+#: Between the page follower's attempts to attach to the agent's page again
+#: (`PageFollower._reconnect`), the last repeated: fast at first, because the
+#: usual cause -- a session Chromium dropped in a device switch -- is over in
+#: milliseconds; then every two seconds, one `Target.getTargets` each, for as
+#: long as the page is there and will not take a session (a crashed renderer).
+RECONNECT_DELAYS = (0.05, 0.25, 0.5, 1.0, 2.0)
+
 #: A hand-off's `expect`: a host (the worker checked it with `expect_refusal`).
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?")
 
@@ -401,21 +408,48 @@ class PageFollower:
     the one the console's strip shows (§5.7, report.py): `on_origin` is told
     it when a page is followed and on every navigation the top frame commits,
     and None when no page is on screen.
+
+    IT NEVER STAYS DETACHED FROM A LIVE PAGE (DEVICE-RECOVER; part of #1030).
+    MEASURED 2026-10-13 (task_3458d6bfc7d14db79af1): after eight device
+    switches in two and a half minutes the canvas was the "unavailable" grey
+    and the strip "has not reported the page's address yet", for good. The
+    follower used to give up on its page in three ways, each silent and each
+    permanent: its session detached (`Target.detachedFromTarget`) and nothing
+    attached again; an attach answered but the mask's install then failed,
+    which left `_session` set on a dead session, so every later `follow` of
+    that page returned early as if all were well; and a crashed renderer kept
+    a session whose observer was gone. Now each of those -- and a follow that
+    raised -- starts ONE reconnect loop (`_reconnect`): it re-reads the pages
+    Chromium has, attaches to the current one (or the newest), re-injects the
+    observer, and retries on `RECONNECT_DELAYS` until one holds. With no page
+    left it says so (`closed`) and the next page Chromium creates is followed.
+    `state` is what the gate tells the timeline: `following`, `reconnecting`
+    (the mask is down while it does), or `closed` (the agent has no page).
     """
 
     def __init__(self, cdp: CdpProxy, state: MaskState,
-                 on_origin: Callable[[dict[str, Any] | None], None] | None = None) -> None:
+                 on_origin: Callable[[dict[str, Any] | None], None] | None = None,
+                 on_state: Callable[[str, str | None, str | None], None] | None = None,
+                 delays: tuple[float, ...] = RECONNECT_DELAYS) -> None:
         self._cdp = cdp
         self._state = state
         self._on_origin = on_origin
+        #: Told (state, cause, target) when `state` changes.
+        self._on_state = on_state
+        self._delays = delays
         self.pages: list[str] = []
         self.current: str | None = None
+        self.state = "none"
         self._session: str | None = None
+        #: The session is attached but what the mask installed on it is gone (a crash).
+        self._stale = False
         self._mask: MaskCdp | None = None
         self._queue: asyncio.Queue[tuple[str, str, dict[str, Any]]] = asyncio.Queue()
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
         self._worker: asyncio.Task[None] | None = None
+        self._reconnecting: asyncio.Task[None] | None = None
+        self._closing = False
 
     async def start(self) -> None:
         self._worker = asyncio.create_task(self._drain())
@@ -424,8 +458,10 @@ class PageFollower:
             if info.get("type") == "page" and isinstance(info.get("targetId"), str):
                 if info["targetId"] not in self.pages:
                     self.pages.append(info["targetId"])
-        if self.pages:
-            await self.follow(self.pages[-1])
+        try:
+            await self.follow(self.pages[-1] if self.pages else None)
+        except Exception as exc:  # noqa: BLE001 -- the reconnect loop takes it from here
+            self.recover("attach_failed", exc)
 
     def on_event(self, message: Mapping[str, Any]) -> None:
         """A message from Chromium's pipe. Never waits."""
@@ -437,7 +473,10 @@ class PageFollower:
             return
         if session is not None:
             if session == self._session:
-                self._queue.put_nowait((session, method, params))
+                if method == "Inspector.targetCrashed":
+                    self._crashed()
+                else:
+                    self._queue.put_nowait((session, method, params))
             return
         if method == "Target.targetCreated":
             info = params.get("targetInfo") or {}
@@ -451,10 +490,64 @@ class PageFollower:
                 self.pages.remove(target)
                 if target == self.current:
                     self._spawn(self.follow(self.pages[-1] if self.pages else None))
-        elif method == "Target.detachedFromTarget" and params.get("sessionId") == self._session:
+        elif method == "Target.targetCrashed":
+            if params.get("targetId") == self.current and self._session is not None:
+                self._crashed()
+        elif method == "Target.detachedFromTarget" and session is None \
+                and self._session is not None and params.get("sessionId") == self._session:
             self._session = None
             self._mask = None
             self._state.session_down()
+            if self.current is not None:
+                # Its page may well still be there (a renderer swap, a session
+                # Chromium dropped): attach again rather than stay grey.
+                self.recover("detached")
+
+    def _crashed(self) -> None:
+        """The page's renderer is gone, and with it the observer: fail closed and re-attach."""
+        self._stale = True
+        self._mask = None
+        self._state.session_down()
+        self.recover("crashed")
+
+    def recover(self, cause: str, exc: BaseException | None = None) -> None:
+        """Start the reconnect loop, unless one is running. Never waits."""
+        if exc is not None:
+            log.info("live gate: mask follow failed (%s)", type(exc).__name__)
+        if self._closing:
+            return
+        if self._reconnecting is not None and not self._reconnecting.done():
+            return
+        self._set_state("reconnecting", cause)
+        self._reconnecting = asyncio.get_running_loop().create_task(self._reconnect())
+
+    async def _reconnect(self) -> None:
+        attempt = 0
+        while not self._closing:
+            try:
+                infos = (await self._cdp.call("Target.getTargets", {})).get("targetInfos") or []
+                live = [i["targetId"] for i in infos
+                        if i.get("type") == "page" and isinstance(i.get("targetId"), str)]
+                self.pages = [p for p in self.pages if p in live] + [p for p in live if p not in self.pages]
+                target = self.current if self.current in self.pages else (self.pages[-1] if self.pages else None)
+                await self.follow(target)
+                if target is None:
+                    return
+                if self._session is not None and not self._stale:
+                    # Followed here, or by a `follow` that ran meanwhile.
+                    self._set_state("following")
+                    return
+            except Exception as exc:  # noqa: BLE001 -- tried again below
+                log.info("live gate: reconnect to the page failed (%s)", type(exc).__name__)
+            await asyncio.sleep(self._delays[min(attempt, len(self._delays) - 1)])
+            attempt += 1
+
+    def _set_state(self, state: str, cause: str | None = None) -> None:
+        if state == self.state:
+            return
+        self.state = state
+        if self._on_state is not None:
+            self._on_state(state, cause, self.current)
 
     def _spawn(self, work: Awaitable[None]) -> None:
         task = asyncio.get_running_loop().create_task(self._quietly(work))
@@ -464,16 +557,18 @@ class PageFollower:
     async def _quietly(self, work: Awaitable[None]) -> None:
         try:
             await work
-        except Exception as exc:  # a page that closed before the attach answered
-            log.info("live gate: mask follow failed (%s)", type(exc).__name__)
+        except Exception as exc:  # a page that closed before the attach answered, a session that went
+            self.recover("attach_failed", exc)
 
     async def follow(self, target: str | None) -> None:
         async with self._lock:
-            if target is not None and target == self.current and self._session is not None:
+            if target is not None and target == self.current and self._session is not None \
+                    and not self._stale:
                 return
             old, old_session = self.current, self._session
             self._state.session_down()
             self._session = None
+            self._stale = False
             self._mask = None
             if old is not None:
                 # A page's main frame id is its target id.
@@ -486,6 +581,7 @@ class PageFollower:
             self.current = target
             self._origin(None)
             if target is None:
+                self._set_state("closed", "page_closed")
                 return
             result = await self._cdp.call("Target.attachToTarget", {"targetId": target, "flatten": True})
             session = str(result["sessionId"])
@@ -494,10 +590,27 @@ class PageFollower:
             async def send(method: str, params: dict[str, Any]) -> dict[str, Any]:
                 return await self._cdp.call(method, params, session)
 
-            self._mask = MaskCdp(self._state, send)
-            await self._mask.install()
-            tree = await send("Page.getFrameTree", {})
+            try:
+                mask = MaskCdp(self._state, send)
+                self._mask = mask
+                await mask.install()
+                tree = await send("Page.getFrameTree", {})
+            except BaseException:
+                # Never leave a session the mask is not installed on looking
+                # followed: the next `follow` of this page would return early.
+                self._state.session_down()
+                if self._session == session:
+                    self._session = None
+                    self._mask = None
+                try:
+                    await self._cdp.call("Target.detachFromTarget", {"sessionId": session})
+                except Exception:  # noqa: BLE001 -- already gone
+                    pass
+                raise
+            if self._session != session:
+                return  # it detached while the mask installed; the reconnect loop has it
             self._top_frame((tree.get("frameTree") or {}).get("frame") or {})
+            self._set_state("following")
 
     def _origin(self, origin: dict[str, Any] | None) -> None:
         if self._on_origin is not None:
@@ -522,7 +635,9 @@ class PageFollower:
                 log.info("live gate: mask event failed (%s)", type(exc).__name__)
 
     async def close(self) -> None:
-        tasks = [*self._tasks, *([self._worker] if self._worker else [])]
+        self._closing = True
+        tasks = [*self._tasks, *([self._worker] if self._worker else []),
+                 *([self._reconnecting] if self._reconnecting else [])]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -593,8 +708,13 @@ class LiveGate:
         self.origin: dict[str, Any] | None = None
         self.device_reported: dict[str, Any] | None = None
         self._report_due = asyncio.Event()
-        #: One relay device choice applied at a time, in the order they came.
+        #: One relay device choice applied at a time. Latest wins: a choice
+        #: still waiting when a newer one arrives is dropped (`_device_seq`),
+        #: so a burst of switches cannot apply one after another in turn.
         self._device_lock = asyncio.Lock()
+        self._device_seq = 0
+        #: The page follower's state (`PageFollower.state`), in `status`.
+        self.page_state = "none"
         self._tasks: dict[str, asyncio.Task[Any]] = {}
         self._spawned: set[asyncio.Task[Any]] = set()
         self._actions: asyncio.Queue[dict[str, Any]] = asyncio.Queue(MAX_QUEUED_ACTIONS)
@@ -657,7 +777,8 @@ class LiveGate:
         except Exception as exc:  # noqa: BLE001 -- the desktop still works; the mask fails closed
             self.record("device_failed", {"preset": DEFAULT_PRESET, "cause": type(exc).__name__})
             log.warning("live gate: default device not applied (%s)", type(exc).__name__)
-        self.pages = PageFollower(self.proxy, self.mask_state, on_origin=self._origin_changed)
+        self.pages = PageFollower(self.proxy, self.mask_state, on_origin=self._origin_changed,
+                                  on_state=self._page_state)
         await self.pages.start()
         self.cdp_server = await self.deps.serve_cdp(self.proxy, self.cfg.cdp_host, self.cfg.cdp_port)
         log.info("live gate: chromium up; CDP proxy on %s:%d", self.cfg.cdp_host, self.cfg.cdp_port)
@@ -687,6 +808,15 @@ class LiveGate:
             log.warning("live gate: chromium closed its pipe")
         self.browser_closed = True
         self.mask_state.session_down()
+        if not self.wiped:
+            # The timeline says why the screen went grey, rather than nothing.
+            self.record("browser_closed", {})
+            self._spawn(self._action({"kind": "control", "event": "browser_closed"}))
+
+    def _spawn(self, work: Awaitable[Any]) -> None:
+        task = asyncio.get_running_loop().create_task(work)
+        self._spawned.add(task)
+        task.add_done_callback(self._spawned.discard)
 
     async def on_chromium_message(self, message: Mapping[str, Any]) -> None:
         """PipeTransport's sink: the proxy first, then the gate's own listeners."""
@@ -740,6 +870,36 @@ class LiveGate:
         touch_on = self.touch.touch_on if self.touch is not None else True
         self.device_reported = device_report(device, touch_on)
         self._report_due.set()
+
+    def _page_state(self, state: str, cause: str | None, target: str | None) -> None:
+        """The page follower lost the agent's page, or has it again (DEVICE-RECOVER).
+
+        Said on the timeline, so a grey screen is never silent: the gate's
+        report has only `origin` and `device` (swarm-api's `parse_report`
+        takes exactly those), so the strip cannot be told until the console
+        and swarm-api read a page state too. When the page is back after a
+        loss the current device is applied to it again: an emulation override
+        lives on the session that set it, and that session may be the one
+        that went.
+        """
+        previous, self.page_state = self.page_state, state
+        self.record("page_" + state, {"cause": cause} if cause else {})
+        if state == "reconnecting":
+            self._spawn(self._action({"kind": "control", "event": "reconnecting_to_page",
+                                      "cause": cause or "detached"}))
+        elif state == "closed" and not self.browser_closed and not self.wiped:
+            self._spawn(self._action({"kind": "control", "event": "agent_page_closed"}))
+        elif state == "following" and previous in ("reconnecting", "closed"):
+            self._spawn(self._action({"kind": "control", "event": "page_reconnected"}))
+            if target is not None and self.devices is not None:
+                self._spawn(self._reapply_device(target))
+
+    async def _reapply_device(self, target: str) -> None:
+        assert self.devices is not None
+        try:
+            await self.devices.attach_page(target)
+        except Exception as exc:  # noqa: BLE001 -- the page went again; its next follow tries again
+            self.record("device_failed", {"preset": self.devices.device.name, "cause": type(exc).__name__})
 
     def _origin_changed(self, origin: dict[str, Any] | None) -> None:
         if origin != self.origin:
@@ -804,6 +964,7 @@ class LiveGate:
             "orientation": device.orientation,
             "last_episode": self.last_episode,
             "startup": dict(self.startup),
+            "page": self.page_state,
         }
 
     async def open_tunnel(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -875,12 +1036,16 @@ class LiveGate:
         control and MAC'd their choice. Applied on its own task -- a resize and
         a CDP round per page must not hold up the tunnel's RFB frames -- one at
         a time, in order."""
-        task = asyncio.get_running_loop().create_task(self._apply_device_frame(payload))
-        self._spawned.add(task)
-        task.add_done_callback(self._spawned.discard)
+        self._device_seq += 1
+        self._spawn(self._apply_device_frame(payload, self._device_seq))
 
-    async def _apply_device_frame(self, payload: bytes) -> None:
+    async def _apply_device_frame(self, payload: bytes, seq: int | None = None) -> None:
         async with self._device_lock:
+            if seq is not None and seq != self._device_seq:
+                # A newer choice is queued behind this one: only the latest is
+                # applied (eight switches in 2.5 minutes, 2026-10-13).
+                self.record("device_superseded", {})
+                return
             try:
                 await self.apply_device(payload)
             except Exception as exc:  # noqa: BLE001 -- refused or failed: recorded, the view goes on
@@ -974,11 +1139,25 @@ class LiveGate:
             await self.proxy.resume()
 
     async def _release(self, cause: str) -> None:
-        """Control ends: no input reaches the display from here."""
+        """Control ends: no input reaches the display from here.
+
+        Lifting a finger is a CDP command on the gate's session on the page,
+        and that session may be gone with the page (or the browser): MEASURED
+        2026-10-13, a lift on a lost session raised out of here, so the
+        episode never ended and the resume came back `GateRefused`. The
+        controller is cleared either way; a lift that cannot be sent has
+        nothing left to lift (`TouchInjector._lift`, `ControlState.revoke`).
+        """
         if self.control is not None:
-            await self.control.revoke()
+            try:
+                await asyncio.wait_for(self.control.revoke(), PAGE_INFO_SECONDS)
+            except Exception as exc:  # noqa: BLE001 -- see above
+                self.record("release_degraded", {"step": "revoke", "cause": type(exc).__name__})
         if self.touch is not None:
-            await self.touch.end()
+            try:
+                await asyncio.wait_for(self.touch.end(), PAGE_INFO_SECONDS)
+            except Exception as exc:  # noqa: BLE001 -- see above
+                self.record("release_degraded", {"step": "touch", "cause": type(exc).__name__})
         if self.proxy is not None and self.proxy.in_control:
             self.proxy.end_control(cause)
         episode, self._episode = self._episode, None
@@ -994,12 +1173,10 @@ class LiveGate:
 
     def _control_ended(self, cause: str) -> None:
         """The proxy ended control itself (an insecure page, the page closed)."""
-        task = asyncio.get_running_loop().create_task(self._release(cause))
-        self._spawned.add(task)
-        task.add_done_callback(self._spawned.discard)
+        self._spawn(self._release(cause))
 
     async def _page_info(self, target: str) -> dict[str, Any]:
-        if self.proxy is None or self.wiped:
+        if self.proxy is None or self.wiped or self.browser_closed:
             return {}
         try:
             # Bounded: on shutdown the pipe's reader may already be gone, and an
@@ -1035,7 +1212,15 @@ class LiveGate:
 
     async def _resume_agent(self) -> None:
         assert self.proxy is not None
-        await self.proxy.resume()
+        try:
+            if self.browser_closed:
+                # Nothing answers on a closed pipe: bounded, and the proxy
+                # leaves its hold however `resume` ends (its `finally`).
+                await asyncio.wait_for(self.proxy.resume(), PAGE_INFO_SECONDS)
+            else:
+                await self.proxy.resume()
+        except Exception as exc:  # noqa: BLE001 -- the agent is let go either way
+            self.record("resume_degraded", {"cause": type(exc).__name__})
         if self._had_control and self.carry is not None:
             self.carry.note_returned()
         self._had_control = False
@@ -1070,8 +1255,18 @@ class LiveGate:
         return {"paused": True, "fresh_page": self._fresh_target is not None}
 
     async def resume(self) -> dict[str, Any]:
-        """§4.2 step 3: clear, restore, release the agent; what page it is on."""
-        proxy = self._need(self.proxy)
+        """§4.2 step 3: clear, restore, release the agent; what page it is on.
+
+        Never refused for a lost page or a closed browser (DEVICE-RECOVER):
+        MEASURED 2026-10-13 (att_59f378aac5c340ca9507), after the browser went
+        during device switches the worker's resume came back `GateRefused`
+        ("the gate did not confirm the resume"). The agent is held by the
+        proxy, and only this lets it go; with no browser there is nothing to
+        restore and no page to name, so the answer is `{}`.
+        """
+        proxy = self.proxy
+        if proxy is None or self.wiped:
+            raise RuntimeError("the browser is not running")
         target = self._episode.target if self._episode is not None else (
             self._fresh_target or (self.pages.current if self.pages else None))
         await self._release("returned")
