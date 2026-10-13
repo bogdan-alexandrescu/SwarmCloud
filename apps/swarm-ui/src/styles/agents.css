@@ -855,7 +855,8 @@
      open tab is scrolled into view, so no tab is ever chosen and unseen. */
   .c-tabs.ag-split-tabs { flex-wrap: nowrap; overflow-x: auto; gap: 0; }
   .c-tabs.ag-split-tabs > a,
-  .c-tabs.ag-split-tabs > button { padding-inline: 8px; gap: 4px; }
+  .c-tabs.ag-split-tabs > button,
+  .ag-tabs-more { padding-inline: 8px; gap: 4px; }
   /* THE HEADER SCROLLS AWAY ON A PHONE (G2-01, QA 2026-10-07). At 390x844
      the header -- state, title, id, facts, chips -- and the two rows of
      tabs held y 0-373 and never moved, so with the stat strip stuck under
@@ -873,7 +874,21 @@
    nothing to say it scrolls. AgentSplit `AgTabsEdge` marks which end has more
    beyond it; that edge fades into the page with a chevron. Not a control: the
    strip itself scrolls, and a pointer passes through. */
-.ag-tabs-edge { position: relative; min-width: 0; }
+.ag-tabs-edge { position: relative; min-width: 0; display: flex; align-items: stretch; }
+.ag-tabs-edge > .ag-split-tabs { flex: 1 1 auto; min-width: 0; }
+
+/* THE BAR FITS (QA12-18, live-browser QA p12): at 1440 with the list open
+   the strip was cut at `C ›`. AgentSplit `AgTabsEdge` keeps the tabs that fit
+   on the bar and puts the rest under More, at its end, on the bar's own
+   underline; More opens the shared `.c-menu` under it. */
+.ag-tabs-more-host { flex: none; margin: var(--ctl-s2) 0 var(--ctl-s3); border-bottom: 1px solid var(--line); }
+.ag-tabs-more { display: flex; gap: 6px; align-items: center; padding: 8px 12px; border: 0; border-bottom: 2px solid transparent; margin-bottom: -1px; background: none; color: var(--text-dim); font: var(--t-meta)/var(--lh-meta) var(--font); white-space: nowrap; cursor: pointer; }
+.ag-tabs-more em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
+.ag-tabs-more[aria-expanded='true'] { color: var(--text); }
+.ag-tabs-more:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.ag-tabs-menu { min-width: 180px; }
+.ag-tabs-menu > .c-menu-item { justify-content: space-between; flex-wrap: nowrap; }
+.ag-tabs-menu > .c-menu-item em { font: normal 500 var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-dim); }
 .ag-tabs-edge[data-more~='end']::after,
 .ag-tabs-edge[data-more~='start']::before {
   position: absolute;
