@@ -844,6 +844,10 @@ function AgTabsEdge({
   // count so a count that lands is measured again; and More's own.
   const widths = useRef(new Map<string, number>())
   const moreWidth = useRef(0)
+  // The strip's gap, read once: it is the stylesheet's, and `getComputedStyle`
+  // on every fit -- which every strip mutation now runs -- held the panes'
+  // first reads back by seconds in jsdom (walk.agent, reads.dedup).
+  const gapPx = useRef<number | null>(null)
   const onBar = shownKeys === null ? null : new Set(shownKeys.split('\n'))
   const barTabs = onBar === null ? tabs : tabs.filter((t) => onBar.has(t.key))
   const moreTabs = onBar === null ? [] : tabs.filter((t) => !onBar.has(t.key))
@@ -863,7 +867,11 @@ function AgTabsEdge({
       for (const k of [...widths.current.keys()]) if (k.startsWith(`${t.key}\t`)) widths.current.delete(k)
       widths.current.set(sizeKey(t), w)
     })
-    const gap = strip === null ? 0 : parseFloat(getComputedStyle(strip).columnGap) || 0
+    // Nothing laid out (\`clientWidth\` 0) fits everything, so the gap is only read once there is a width to fit.
+    if (gapPx.current === null && strip !== null && b.clientWidth > 0) {
+      gapPx.current = parseFloat(getComputedStyle(strip).columnGap) || 0
+    }
+    const gap = gapPx.current ?? 0
     const m = b.querySelector<HTMLElement>(':scope > .ag-tabs-more-host')
     if (m !== null) moreWidth.current = m.offsetWidth
     // A tab not drawn since its count changed keeps its last width (or its
