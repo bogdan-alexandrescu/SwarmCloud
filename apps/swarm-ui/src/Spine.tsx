@@ -34,6 +34,7 @@ import { shortcut, typedIntoField } from './shortcuts'
 import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
+import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 
 export type SpineSection = 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
 
@@ -139,7 +140,7 @@ const SUBMIT_PAGES: readonly { tab: string; label: string; icon: string; to: str
 ]
 
 /** Each panel's heading: its spine section's label. */
-const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
+export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
 
 /** Which panel row a route's tab belongs to: a child's tab belongs to its parent. */
 function rowFor(section: PanelSection, tab: string): string {
@@ -906,6 +907,14 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   swap: <path d="m7 9 5-5 5 5M7 15l5 5 5-5" />,
+  // #1206: the header bar's bell, and the tick its empty state and a finished update draw.
+  bell: (
+    <>
+      <path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z" />
+      <path d="M10 20.5a2 2 0 0 0 4 0" />
+    </>
+  ),
+  check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
   search: (
     <>
       <circle cx="11" cy="11" r="6.5" />
@@ -1020,6 +1029,10 @@ export function SkyShell({
   // Once a minute: the inbox route syncs the tenant's held firings as it reads.
   const [inbox] = useFrameRead(loadFrameApprovals, 60_000, tenant ?? '')
   const waiting = approvalsBadge(inbox)
+  // #1206: the notification feed's admin count, from the store the header's
+  // bell reads too (notificationFeed.ts), so the two never disagree.
+  const notes = useSyncExternalStore(subscribeNotifications, notificationsSnapshot, notificationsSnapshot)
+  const adminPending = feedData(notes)?.admin_pending ?? 0
   const who = dataOf(me)
   const admin = who?.principal.is_admin === true
   const env = classifyEnvironment(
@@ -1466,6 +1479,14 @@ export function SkyShell({
             {s.key === 'automate' && waiting !== null && (
               <i className={waiting.n === null ? 'sk-badge is-unread' : 'sk-badge'} title={waiting.why} aria-label={waiting.why}>
                 {waiting.n === null ? '—' : waiting.n}
+              </i>
+            )}
+            {/* #1206: requests waiting on ANY admin, as a pill at the item's
+                top-right. Gated on the session read as well as the count: a
+                pill is never drawn over a locked Admin. */}
+            {s.key === 'admin' && admin && adminPending > 0 && (
+              <i className="sk-badge sk-apill" title={`${adminPending} waiting for an admin`} aria-label={`${adminPending} waiting for an admin`}>
+                {adminPending}
               </i>
             )}
             {locked && <Icon name="lock" className="sk-ic sk-lkd" />}
