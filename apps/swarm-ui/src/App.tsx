@@ -1092,6 +1092,9 @@ export function App() {
   // closed to bare `/agents` while the list behind it still showed, say,
   // Recent · failed. Written during render, so the close address is never one
   // route behind; the write is idempotent, so a double render is harmless.
+  // The fragment the page was opened at, read before the normalise effect
+  // rewrites the bar to its path: `useState(fromLocation)` already applied it.
+  const mountHash = useRef(typeof window === 'undefined' ? '' : window.location.hash)
   const lastList = useRef<AgentList | null>(at.list ?? null)
   if (at.taskId === null) lastList.current = at.list ?? null
 
@@ -1131,6 +1134,16 @@ export function App() {
   )
 
   useEffect(() => {
+    // A hashchange for the fragment this mount already read is the echo of
+    // that same assignment (a script sets the hash, then renders; the event is
+    // queued and lands after). Replayed from its newURL it would undo whatever
+    // the reader did in between -- an agent closed by its breadcrumb opened
+    // again. It is swallowed once, and only for a moment, so a fragment typed
+    // later is still a navigation.
+    let echo: string | null = mountHash.current === '' ? null : mountHash.current
+    const echoTimer = setTimeout(() => {
+      echo = null
+    }, 250)
     const onPop = () => setAt(fromLocation())
     // The fragment the event names, not the one the bar holds now: the
     // normalise effect (or the list following an agent's group) may already
@@ -1147,6 +1160,11 @@ export function App() {
           /* keep the bar's own */
         }
       }
+      if (echo !== null && hash === echo) {
+        echo = null
+        return
+      }
+      echo = null
       if (isLegacyHash(hash, LEGACY_HEADS, window.location.pathname)) setAt(fromAddress(hash.replace(/^#/, '')))
     }
     // A click on an old-style `href="#work/..."` link, or on a same-origin
@@ -1169,6 +1187,7 @@ export function App() {
     window.addEventListener('hashchange', onHash)
     document.addEventListener('click', onClick)
     return () => {
+      clearTimeout(echoTimer)
       window.removeEventListener('popstate', onPop)
       window.removeEventListener('hashchange', onHash)
       document.removeEventListener('click', onClick)
