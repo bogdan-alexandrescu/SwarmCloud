@@ -295,7 +295,20 @@ most one pod; a Cloud Run service with `max_instances = 1` does not (two
 revisions overlap during a rollout, and the two ends can land on different
 revisions). A relay restart drops every live session for the seconds it takes
 to come back; both ends reconnect, and nothing about the task changes because
-the relay holds no task state. Scale-out, when measured to be needed, is sharding by
+the relay holds no task state. The console reconnects with a new viewer
+ticket. The gate cannot mint its own -- only the worker holds the attempt key
+that proves one -- so the WORKER reconnects it: when the gate's `status` says
+its tunnel closed, the worker asks the live-session route again (an open
+session is answered with a fresh one-use ticket, counted in `tunnel_tickets`)
+and hands it over, backing off to one try a minute and stopping when swarm-api
+says the session is over (`agent_worker.handoff.HandoffPath._keep_tunnel`).
+The gate closes a link the relay has been silent on for 75 s, its pings
+included, so a relay pod that vanished without a FIN is noticed rather than
+waited on (`livegate.tunnel.SILENT_SECONDS`). Until LB-R6 neither existed, and
+a dropped tunnel stayed dropped for the rest of the attempt: its session stayed
+open, still serving the last origin and device, so the console drew LIVE, the
+strip and the device chips over a frame no viewer could be painted into --
+what re-QA pass 8 (2026-10-12) saw on a resumed attempt. Scale-out, when measured to be needed, is sharding by
 `session_id` across named replicas with the shard written on the session
 document.
 

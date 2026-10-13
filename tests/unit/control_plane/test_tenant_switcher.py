@@ -63,10 +63,12 @@ class CountingFirestore(FakeFirestore):
     def __init__(self) -> None:
         super().__init__()
         self.touched = 0
+        self.collections: list[str] = []
 
     def collection(self, path: str):  # type: ignore[override]
         if path.split("/", 1)[0] not in CALLER_ROLE_COLLECTIONS:
             self.touched += 1
+            self.collections.append(path)
         return super().collection(path)
 
     def document(self, path: str):  # type: ignore[override]
@@ -303,15 +305,15 @@ def test_mine_lists_exactly_the_verified_memberships_in_admin_order(client):
         assert response.status_code == 200, response.text
         return response.json()
 
-    assert mine("dave") == [
-        {"tenant_id": "eng", "display_name": ENG_GROUP},
-        {"tenant_id": "research", "display_name": RESEARCH_GROUP},
-    ]
-    assert mine("alice") == [{"tenant_id": "eng", "display_name": ENG_GROUP}]
-    assert mine("bob") == [{"tenant_id": "research", "display_name": RESEARCH_GROUP}]
+    eng = {"tenant_id": "eng", "display_name": ENG_GROUP, "kind": "group"}
+    research = {"tenant_id": "research", "display_name": RESEARCH_GROUP, "kind": "group"}
+    assert mine("dave") == [eng, research]
+    assert mine("alice") == [eng]
+    assert mine("bob") == [research]
     # The admin group is not a tenant group, so it is never listed.
-    assert mine("root") == [{"tenant_id": "eng", "display_name": ENG_GROUP}]
-    # A personal tenant is not a membership; the list is empty, not an error.
+    assert mine("root") == [eng]
+    # No group and no ready personal workspace (test_tenant_self.py has the
+    # ready one): the list is empty, not an error.
     assert mine("carol") == []
 
 
@@ -329,11 +331,13 @@ def test_mine_follows_the_admin_order_not_the_directorys(db, tokens):
     assert submit(client, "dave").json()["task"]["tenant_id"] == "research"
 
 
-def test_mine_reads_and_writes_nothing(client, db):
+def test_mine_reads_only_the_callers_own_workspace_and_writes_nothing(client, db):
+    """Nothing is read for the groups; the one read is whether the caller's
+    OWN personal workspace is ready (#1200), `tenants/u-dave` first."""
     touched = db.touched
     before = dict(db.docs)
     assert client.get("/v1/tenants/mine", headers=as_("dave")).status_code == 200
-    assert db.touched == touched
+    assert set(db.collections[touched:]) <= {"tenants", "workspaces"}
     assert db.docs == before
 
 

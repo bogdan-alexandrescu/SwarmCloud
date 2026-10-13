@@ -2291,15 +2291,19 @@ export async function loadMe(options: { frame?: boolean } = {}): Promise<Result<
 /** One tenant the caller may select: an entry of `GET /v1/tenants/mine`. */
 export interface TenantChoice {
   tenant_id: string
-  /** The registered group's email -- unique where the tenant id is not. */
+  /** The registered group's email -- unique where the tenant id is not; "Your workspace (u-…)" for your own. */
   display_name: string
+  /** `user` for the caller's own personal workspace, `group` for a tenant group (#1200). Absent from an older API. */
+  kind?: 'user' | 'group'
 }
 
 /**
- * `GET /v1/tenants/mine`: every registered tenant group the caller is a
- * VERIFIED member of, in the admin order -- the only values `X-Swarm-Tenant`
- * can select. A frame read, like `loadMe`. An empty list is a caller in no
- * tenant group (a personal tenant), which is an answer, not a failure.
+ * `GET /v1/tenants/mine`: the caller's own ready personal workspace FIRST
+ * (#1200: it is the default), then every registered tenant group the caller
+ * is a VERIFIED member of, in the admin order -- the only values
+ * `X-Swarm-Tenant` can select. A frame read, like `loadMe`. An empty list is
+ * a caller in no tenant group without a ready workspace, which is an answer,
+ * not a failure.
  */
 export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
   if (USE_FIXTURES) {
@@ -6424,6 +6428,13 @@ export interface LiveOrigin {
   ip_literal?: boolean
   /** True while the page reports a certificate error; the gate refuses control (§5.4.4). */
   cert_error?: boolean
+  /**
+   * The top frame's path, redacted, no query or fragment (LB-R6): the
+   * caption under the device reads it, the strip never does. Null or absent
+   * when the gate reported none (a gate that predates it, or a path
+   * swarm-api refused).
+   */
+  path?: string | null
 }
 
 /** `Task.human_wait` as the session read serves it (§4.1 step 3). */

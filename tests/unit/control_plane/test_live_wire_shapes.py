@@ -336,7 +336,8 @@ def _report(origin: Any = None, device: Any = None, **extra: Any) -> str:
 
 
 ORIGIN = {"origin": "https://github.com", "host": "github.com", "display_host": "github.com",
-          "registrable_domain": "github.com", "scheme": "https:", "ip_literal": False, "cert_error": None}
+          "registrable_domain": "github.com", "scheme": "https:", "ip_literal": False, "cert_error": None,
+          "path": "/"}
 DEVICE = {"preset": "iphone-15", "orientation": "portrait", "touch": True}
 
 
@@ -349,7 +350,6 @@ DEVICE = {"preset": "iphone-15", "orientation": "portrait", "touch": True}
     {**ORIGIN, "display_host": "github.com\u202egnp.exe"},
     {**ORIGIN, "display_host": "x" * 300},
     {**ORIGIN, "ip_literal": "no"},
-    {**ORIGIN, "path": "/login"},
     {**ORIGIN, "host": "h" * 254 + ".com", "origin": "https://" + "h" * 254 + ".com"},
     "https://github.com",
 ])
@@ -392,7 +392,8 @@ def test_a_message_that_is_not_a_report_or_is_too_large_is_none(text):
 
 def test_an_ip_literal_and_punycode_are_accepted_as_the_gate_reports_them():
     ip = {"origin": "https://[2001:db8::1]:8443", "host": "[2001:db8::1]", "display_host": "[2001:db8::1]",
-          "registrable_domain": "", "scheme": "https:", "ip_literal": True, "cert_error": None}
+          "registrable_domain": "", "scheme": "https:", "ip_literal": True, "cert_error": None,
+          "path": "/"}
     puny = {**ORIGIN, "origin": "https://www.xn--bcher-kva.example", "host": "www.xn--bcher-kva.example",
             "display_host": "www.b\u00fccher.example", "registrable_domain": "xn--bcher-kva.example"}
     for origin in (ip, puny):
