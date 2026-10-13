@@ -4,8 +4,9 @@ docs/design/live-browser.md section 5.7 (the origin strip) and 6.1 (the
 device). The gate is the one component that reads the top frame from Chromium,
 so it builds the origin it reports here: the scheme, host and port of the URL
 Chromium committed and the registrable domain Chromium computed
-(`Page.Frame.domainAndRegistry`), never the path, the query or a user's
-credentials in the URL. A page that is not on the web (about:blank, chrome://,
+(`Page.Frame.domainAndRegistry`), with the top frame's path beside it,
+redacted, for the caption under the device (LB-R6) -- never the query, the
+fragment or a user's credentials in the URL. A page that is not on the web (about:blank, chrome://,
 data:, file:) has no origin to show and is reported as null.
 
 Every URL below is built from parts; nothing is a credential.
@@ -25,7 +26,7 @@ def test_an_https_page_is_reported_as_its_origin_and_chromiums_registrable_domai
     assert page_origin("https://accounts.github.com/login?return_to=%2F#top", "github.com") == {
         "origin": "https://accounts.github.com", "host": "accounts.github.com",
         "display_host": "accounts.github.com", "registrable_domain": "github.com",
-        "scheme": "https:", "ip_literal": False, "cert_error": None,
+        "scheme": "https:", "ip_literal": False, "cert_error": None, "path": "/login",
     }
 
 
