@@ -218,7 +218,7 @@ resource "google_service_account_iam_policy" "workspace_deployer" {
 locals {
   workspace_custom_roles = {
     workspace_account_admin = {
-      title       = "Swarm Workspace Account Admin"
+      title = "Swarm Workspace Account Admin"
       # It also lists the account's key ids (iam.serviceAccountKeys.list, A2/A9's
       # squat check, #334). The description below is unchanged: GCP caps a role
       # description at 300 characters and this one is at the limit.
