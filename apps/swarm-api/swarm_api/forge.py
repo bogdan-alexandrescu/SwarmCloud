@@ -147,10 +147,12 @@ class IssueIsPullRequest(ForgeReadError):
 
 
 class NoForgeCredential(ForgeReadError):
-    """The tenant has no `-git` secret, or it holds no usable version.
+    """The tenant has no forge credential swarm-api knows of, or the one it
+    resolved holds no usable version.
 
-    409: the request is right and the tenant is not set up for it; an operator
-    stores the token with `scripts/create-secrets.sh --stdin`.
+    409: the request is right and the tenant is not set up for it; a person
+    connects GitHub under Setup › Git tokens, or an operator stores the
+    tenant token with `scripts/create-secrets.sh --stdin`.
     """
 
     status_code = 409
@@ -167,11 +169,127 @@ class IssueReadFailed(ForgeReadError):
 # --------------------------------------------------------------------------
 
 class ForgeTokens(Protocol):
-    def token_for(self, tenant: Tenant) -> str: ...
+    def token_for(self, tenant: Tenant, *, person: str | None = None) -> str: ...
+
+
+# --------------------------------------------------------------------------
+# which slot: the one rule every server-side forge read resolves through
+# --------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class ForgeSlot:
+    """The slot a server-side forge read uses, resolved by `resolve_forge_slot`.
+
+    `known` is True when the slot index (`git_tokens`, or the tenant
+    document's `credentials`) says the slot exists. Only then is a refused
+    read a missing GRANT; otherwise swarm-api, which has no project-wide
+    `secrets.get`, cannot tell a secret that does not exist from one it may
+    not read, and says the tenant has no GitHub credential.
+    """
+
+    provider: str
+    known: bool
+    #: "person" (the caller's own user slot), "tenant" (`-git`) or "owner"
+    #: (a personal tenant's owner's user slot).
+    source: str
+
+
+class SlotIndex(Protocol):
+    """Which slots exist, from the records swarm-api keeps, never Secret Manager."""
+
+    def user_slot(self, tenant_id: str, email: str) -> bool: ...
+
+    def tenant_slot(self, tenant_id: str) -> bool: ...
+
+
+class FirestoreSlotIndex:
+    """`git_tokens/{token_id}` (docs/git-tokens.md §1): the record the GitHub
+    connection's exchange (`forgeapp.ForgeApp._store`), `sc setup token` and
+    the tenant default write for each slot, read by its id. A slot is usable
+    when its record exists in this tenant and is neither expired nor revoked
+    (`gittokens.UNUSABLE`, the states R2 passes over)."""
+
+    def __init__(self, db: Any) -> None:
+        self._db = db
+
+    def _usable(self, tenant_id: str, scope: str, key: str) -> bool:
+        from .gittokens import COLLECTION, UNUSABLE, TokenState, token_id_for
+
+        snap = self._db.collection(COLLECTION).document(
+            token_id_for(tenant_id, scope, key)).get()
+        data = snap.to_dict() if snap.exists else None
+        if not data or data.get("tenant_id") != tenant_id:
+            return False
+        try:
+            state = TokenState(data.get("state") or TokenState.UNVERIFIED.value)
+        except ValueError:
+            return False
+        return state not in UNUSABLE
+
+    def user_slot(self, tenant_id: str, email: str) -> bool:
+        from .gittokens import Scope, slot_key
+
+        key = slot_key(Scope.USER, user=email)
+        return bool(key) and self._usable(tenant_id, Scope.USER.value, key)
+
+    def tenant_slot(self, tenant_id: str) -> bool:
+        from .gittokens import Scope
+
+        return self._usable(tenant_id, Scope.TENANT.value, "")
+
+
+def resolve_forge_slot(tenant: Tenant, *, person: str | None = None,
+                       index: SlotIndex | None = None) -> ForgeSlot:
+    """The slot a server-side read for `tenant` (on behalf of `person`, when
+    one asked) uses: the rule a task's `forge_credential` follows
+    (`service.SubmissionService._resolve_forge`; docs/git-tokens.md §3.5).
+
+    1. the person's own user slot in this tenant, `git-u-<hex>`, when its
+       record exists -- what their task would run with;
+    2. the tenant's `-git` slot, when the tenant lists it or has its record
+       -- what a service task, and every read before this, used;
+    3. a personal tenant's owner's user slot -- the slot the guided
+       onboarding's "Connect GitHub" makes, which is the only one a personal
+       tenant normally has;
+    4. otherwise the tenant's `-git` slot, NOT known to exist, so a refusal
+       says "no GitHub credential" rather than blaming a grant.
+    """
+    from .gittokens import Scope, provider_suffix
+
+    if person and index is not None and index.user_slot(tenant.tenant_id, person):
+        return ForgeSlot(provider_suffix(Scope.USER, user=person), True, "person")
+    if GIT_PROVIDER in (tenant.credentials or []) or (
+            index is not None and index.tenant_slot(tenant.tenant_id)):
+        return ForgeSlot(GIT_PROVIDER, True, "tenant")
+    owner = tenant.principal if tenant.kind == "user" else ""
+    if owner and index is not None and index.user_slot(tenant.tenant_id, owner):
+        return ForgeSlot(provider_suffix(Scope.USER, user=owner), True, "owner")
+    return ForgeSlot(GIT_PROVIDER, False, "tenant")
+
+
+def read_resolved(tokens: Any, tenant: Tenant, *,
+                  person: str | None = None) -> "tuple[ForgeSlot, str]":
+    """(slot, value): the resolved slot and its token, resolved ONCE, for a
+    caller that must also name the slot it read. A reader with no `resolve`
+    (a test's fake) is the tenant `-git` slot, as every read was before."""
+    resolve = getattr(tokens, "resolve", None)
+    if resolve is None:
+        slot = ForgeSlot(GIT_PROVIDER, GIT_PROVIDER in (tenant.credentials or []), "tenant")
+        return slot, tokens.token_for(tenant, person=person)
+    slot = resolve(tenant, person=person)
+    return slot, tokens.read_slot(tenant, slot.provider, known=slot.known).value
+
+
+def no_github_credential(tenant: Tenant) -> str:
+    """The sentence for a tenant with no forge credential swarm-api knows of."""
+    return (f"No GitHub credential for {tenant.tenant_id}: connect GitHub under "
+            f"Setup \u203a Git tokens (or store {tenant.secret_name(GIT_PROVIDER)} with "
+            "scripts/create-secrets.sh --stdin)")
 
 
 class SecretManagerForgeTokens:
-    """Reads `swarm-tenant-<tenant>-git`'s latest version, and only that.
+    """Reads the latest version of the slot `resolve_forge_slot` picks:
+    `swarm-tenant-<tenant>-git`, or a `-git-u-` user slot (docs/git-tokens.md §3.5).
 
     swarm-api's service account holds `secretAccessor` on each tenant's `-git`
     secret by a per-secret binding (terraform/modules/secret_manager), and on
@@ -185,9 +303,13 @@ class SecretManagerForgeTokens:
     `create_app()` builds no client.
     """
 
-    def __init__(self, project_id: str, *, client: Any | None = None) -> None:
+    def __init__(self, project_id: str, *, client: Any | None = None,
+                 index: SlotIndex | None = None) -> None:
         self._project_id = project_id
         self._client = client
+        #: Which slots exist (`FirestoreSlotIndex`); None reads the tenant's
+        #: `-git` slot only, as every read did before INDEX-USER-SLOT.
+        self._index = index
 
     def _secret_client(self) -> Any:
         if self._client is None:
@@ -196,10 +318,15 @@ class SecretManagerForgeTokens:
             self._client = secretmanager.SecretManagerServiceClient()
         return self._client
 
-    def token_for(self, tenant: Tenant) -> str:
-        return self.read_slot(tenant, GIT_PROVIDER).value
+    def resolve(self, tenant: Tenant, *, person: str | None = None) -> ForgeSlot:
+        return resolve_forge_slot(tenant, person=person, index=self._index)
 
-    def read_slot(self, tenant: Tenant, provider: str) -> "SlotValue":
+    def token_for(self, tenant: Tenant, *, person: str | None = None) -> str:
+        """The token of the slot `resolve_forge_slot` picks: the one place a
+        server-side read names its slot (INDEX-USER-SLOT)."""
+        return read_resolved(self, tenant, person=person)[1]
+
+    def read_slot(self, tenant: Tenant, provider: str, *, known: bool = True) -> "SlotValue":
         """One git-token slot's latest version: `swarm-tenant-<tenant>-<provider>`.
 
         The git token probe's read (docs/git-tokens.md §5.4). The name is built
@@ -221,11 +348,19 @@ class SecretManagerForgeTokens:
             version = self._secret_client().access_secret_version(request={"name": name})
         except (gexc.NotFound, gexc.FailedPrecondition):
             # No secret, or no enabled version: the tenant is not set up.
+            if provider == GIT_PROVIDER:
+                raise NoForgeCredential(no_github_credential(tenant)) from None
             raise NoForgeCredential(
                 f"tenant {tenant.tenant_id!r} has no forge credential: store one as "
                 f"{secret_id} with scripts/create-secrets.sh --stdin"
             ) from None
         except gexc.PermissionDenied:
+            if not known:
+                # swarm-api has no project-wide secrets.get, so a secret that
+                # does not exist ALSO answers PermissionDenied. Nothing says
+                # this one exists: blaming a grant would send the reader to
+                # Terraform for a token nobody stored (2026-10-13, u-bogdan).
+                raise NoForgeCredential(no_github_credential(tenant)) from None
             raise IssueReadFailed(
                 f"swarm-api may not read {secret_id}: {grant_hint(tenant.tenant_id, provider)}"
             ) from None
@@ -991,15 +1126,16 @@ def neutral_line(text: str, limit: int, *, literals: tuple[str, ...] = ()) -> st
 
 def read_open_work(
     ref: IssueRef, tenant: Tenant, *, tokens: ForgeTokens, issues: GitHubIssues,
-    read_at: Any = None,
+    read_at: Any = None, person: str | None = None,
 ) -> dict[str, Any]:
     """The open-work snapshot an issue run stores and its planner is shown.
 
     Read with the run's own tenant's token (invariant 9), which lives in this
     frame only. Everything stored is masked and bounded: titles and paths go
-    through `neutral_line`.
+    through `neutral_line`. `person`: who asked, whose own slot is preferred
+    (`resolve_forge_slot`).
     """
-    token = tokens.token_for(tenant)
+    token = tokens.token_for(tenant, person=person)
     try:
         work = issues.open_work(ref, token)
         snapshot = _open_work_snapshot(ref.repository, work, read_at, literals=(token,))
@@ -1067,9 +1203,12 @@ def open_work_without(snapshot: Mapping[str, Any], number: int) -> dict[str, Any
     }
 
 
-def preview(ref: IssueRef, tenant: Tenant, *, tokens: ForgeTokens, issues: GitHubIssues) -> dict[str, Any]:
-    """The preview document, masked and bounded. The token lives in this frame only."""
-    token = tokens.token_for(tenant)
+def preview(ref: IssueRef, tenant: Tenant, *, tokens: ForgeTokens, issues: GitHubIssues,
+            person: str | None = None) -> dict[str, Any]:
+    """The preview document, masked and bounded. The token lives in this frame only.
+
+    Read with the slot `resolve_forge_slot` picks for `person` in `tenant`."""
+    token = tokens.token_for(tenant, person=person)
     try:
         issue = issues.fetch(ref, token)
         literals = (token,)

@@ -100,6 +100,7 @@ from .forge import (
     IssueNoAccess,
     IssueNotFound,
     RepositoryRead,
+    read_resolved,
     repository_from,
 )
 from .gittokens import GitTokenRecord, GitTokens, refusal_cause
@@ -221,13 +222,16 @@ CredentialSource = Callable[[], AbstractContextManager[HeldCredential]]
 
 
 def tenant_credential(tenant: Tenant, tokens: ForgeTokens) -> CredentialSource:
-    """The tenant's `swarm-tenant-<t>-git`, read by name: today's credential."""
+    """The slot `forge.resolve_forge_slot` picks for the tenant, read by name:
+    its `swarm-tenant-<t>-git`, or -- a personal tenant with none -- its
+    owner's GitHub connection slot, labelled as the user credential it is."""
 
     @contextmanager
     def held() -> Iterator[HeldCredential]:
-        value = tokens.token_for(tenant)
+        slot, value = read_resolved(tokens, tenant)
+        scope = SCOPE_TENANT if slot.provider == GIT_PROVIDER else SCOPE_USER
         try:
-            yield HeldCredential(SCOPE_TENANT, tenant.secret_name(GIT_PROVIDER), value)
+            yield HeldCredential(scope, tenant.secret_name(slot.provider), value)
         finally:
             value = ""
 

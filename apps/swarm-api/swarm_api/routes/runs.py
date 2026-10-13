@@ -637,7 +637,8 @@ def _read_issue(
         created_at=ctx.now(),
     )
     try:
-        read = preview(ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge)
+        read = preview(ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge,
+                       person=auth.email)
     except ForgeReadError as refused:
         log.info("issue run read tenant=%s issue=%s outcome=%s", tenant_id, ref.short, refused.code)
         return None, {"code": refused.code, "message": refused.message}
@@ -687,7 +688,8 @@ def create_run(
     refuse_auto_merge(auto_merge)
     try:
         open_work = read_open_work(
-            ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge, read_at=ctx.now()
+            ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge, read_at=ctx.now(),
+            person=auth.email,
         )
     except ForgeReadError as refused:
         log.info(
