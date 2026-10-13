@@ -134,7 +134,7 @@ class NoForgeTokens:
     submission (lane U9 item 4), and the default context must not reach
     Secret Manager to find that out. A test about the read injects its own."""
 
-    def token_for(self, tenant: Tenant) -> str:
+    def token_for(self, tenant: Tenant, *, person=None) -> str:
         from swarm_api.forge import NoForgeCredential
 
         raise NoForgeCredential(f"tenant {tenant.tenant_id!r} has no forge credential in this test")

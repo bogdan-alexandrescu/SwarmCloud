@@ -410,7 +410,7 @@ class Slots:
         self.values[secret_id] = value
         self.versions[secret_id] = version
 
-    def token_for(self, tenant) -> str:
+    def token_for(self, tenant, *, person=None) -> str:
         return self.read_slot(tenant, forge.GIT_PROVIDER).value
 
     def read_slot(self, tenant, provider: str) -> forge.SlotValue:

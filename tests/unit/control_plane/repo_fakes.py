@@ -37,7 +37,7 @@ class TenantTokens:
         self.issued = {f"swarm-tenant-{t}-git": make_token() for t in have}
         self.asked: list[str] = []
 
-    def token_for(self, tenant) -> str:
+    def token_for(self, tenant, *, person=None) -> str:
         secret_id = tenant.secret_name(forge.GIT_PROVIDER)
         self.asked.append(secret_id)
         if secret_id not in self.issued:

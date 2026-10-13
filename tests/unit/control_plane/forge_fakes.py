@@ -27,7 +27,7 @@ class AnyTenantTokens:
         self.asked: list[str] = []
         self.issued: dict[str, str] = {}
 
-    def token_for(self, tenant) -> str:
+    def token_for(self, tenant, *, person=None) -> str:
         secret_id = tenant.secret_name(forge.GIT_PROVIDER)
         self.asked.append(secret_id)
         if secret_id in self.missing:

@@ -56,7 +56,7 @@ class FakeTokens:
         self.tokens = tokens
         self.asked: list[str] = []
 
-    def token_for(self, tenant) -> str:
+    def token_for(self, tenant, *, person=None) -> str:
         secret_id = tenant.secret_name(forge.GIT_PROVIDER)
         self.asked.append(secret_id)
         if secret_id not in self.tokens:
@@ -422,6 +422,11 @@ def test_a_secret_manager_refusal_is_read_failed_and_names_no_payload():
     reader = forge.SecretManagerForgeTokens(
         "p", client=FakeSecretClient(error=gexc.PermissionDenied(f"denied {TOKEN}"))
     )
+    # A tenant that lists its -git slot: a refusal of a slot known to exist
+    # is a missing grant (INDEX-USER-SLOT; one nobody listed is "no GitHub
+    # credential", test_forge_slot_resolution).
+    tenant = _tenant()
+    tenant.credentials = ["git"]
     with pytest.raises(forge.IssueReadFailed) as raised:
-        reader.token_for(_tenant())
+        reader.token_for(tenant)
     assert TOKEN not in str(raised.value)

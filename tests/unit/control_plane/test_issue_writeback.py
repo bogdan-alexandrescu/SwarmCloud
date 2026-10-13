@@ -256,7 +256,7 @@ def test_a_tenant_without_a_forge_credential_still_gets_a_run(db, tokens, group_
     class ReadOnly(forge_fakes.AnyTenantTokens):
         calls = 0
 
-        def token_for(self, tenant):
+        def token_for(self, tenant, *, person=None):
             ReadOnly.calls += 1
             if ReadOnly.calls > 1:
                 raise forge.NoForgeCredential("tenant 'eng' has no forge credential")

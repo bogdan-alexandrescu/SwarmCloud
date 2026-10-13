@@ -487,7 +487,7 @@ class FakeTokens:
         self.value = value
         self.reads: list[str] = []
 
-    def token_for(self, tenant: Any) -> str:
+    def token_for(self, tenant: Any, *, person=None) -> str:
         self.reads.append(tenant.tenant_id)
         return self.value
 
