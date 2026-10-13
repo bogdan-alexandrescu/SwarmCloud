@@ -165,8 +165,8 @@ describe('Waiting for you', () => {
     const items = [...card.querySelectorAll<HTMLElement>('li.pp-req')]
     expect(items.map((li) => `${li.dataset.kind}:${li.dataset.email}`)).toEqual(['workspace:devops@example.com', 'loan:fay@example.com'])
     expect(visible(card)).toContain('2 waiting · oldest 40m ago')
-    const people = document.querySelector('.pp-people')!
-    expect(card.compareDocumentPosition(people) & Node.DOCUMENT_POSITION_FOLLOWING, 'the card is not above the table').toBeTruthy()
+    const table = document.querySelector('.pp-people')!
+    expect(card.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING, 'the card is not above the table').toBeTruthy()
   })
 
   it('a workspace request shows the id, the time and the limits it would get, and Approve posts on one click', async () => {
