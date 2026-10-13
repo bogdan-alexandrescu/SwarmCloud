@@ -1084,6 +1084,43 @@ def test_the_list_shows_everyone_with_teams_github_workspace_account_and_activit
     assert all("tenant_id" not in r["workspace"] for r in body["people"])
 
 
+def test_the_list_names_each_account_lent_to_a_person_and_nothing_secret(client, db) -> None:
+    """PEOPLE-LOAN-VIEW (owner 2026-10-13): `lent_by` is the owner TENANTS,
+    so the console said "lent by eng" and never which account. The row now
+    carries each lent account's id, label and owner (with the owner's display
+    name), read from the same `accounts` query; never a secret's name."""
+    seed_tenant(db, "eng")
+    db.docs["tenants/eng"]["display_name"] = "Engineering"
+    seed_tenant(db, "ops")
+    _person(db, "u-hal", "hal@saga.xyz")
+    _person(db, "u-ivy", "ivy@saga.xyz")
+    secret_ref = "swarm-tenant-eng-" + "claude"
+    lent = _pool_account("eng:devops-main", "eng", lend_to=("u-hal",))
+    lent.update(label="devops main", secret_name=secret_ref, secret_version="7")
+    db.docs["accounts/eng:devops-main"] = lent
+    db.docs["accounts/ops-1"] = {**_pool_account("ops-1", "ops", lend_to=("u-hal",)), "label": None}
+    # Another provider's account and one owned by the borrower are not lent.
+    db.docs["accounts/eng-gpt"] = {**_pool_account("eng-gpt", "eng", lend_to=("u-hal",)),
+                                   "provider": "openai"}
+    db.docs["accounts/hal-own"] = _pool_account("hal-own", "u-hal", lend_to=("u-hal",))
+
+    body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+    rows = {r["email"]: r for r in body["people"]}
+    hal = rows["hal@saga.xyz"]["claude_account"]
+    # MUTATION: drop `lent_accounts`, or key it by owner tenant alone.
+    assert hal["lent_accounts"] == [
+        {"account_id": "eng:devops-main", "label": "devops main", "owner_tenant": "eng",
+         "owner_name": "Engineering", "state": "AVAILABLE"},
+        {"account_id": "ops-1", "label": None, "owner_tenant": "ops",
+         "owner_name": "ops", "state": "AVAILABLE"},
+    ]
+    assert hal["lent_by"] == ["eng", "ops"]
+    assert rows["ivy@saga.xyz"]["claude_account"]["lent_accounts"] == []
+    # MUTATION: return the account document as it is.
+    text = json.dumps(body["people"])
+    assert secret_ref not in text and "secret" not in text
+
+
 def test_the_list_carries_the_last_audit_entries_newest_first(client, db) -> None:
     _record(db)
     _post(client, f"/v1/admin/workspaces/{CAROL_WS}/deny", json={"reason": "no"})

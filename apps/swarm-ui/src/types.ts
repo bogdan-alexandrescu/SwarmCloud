@@ -5330,7 +5330,19 @@ export interface PersonClaudeAccount {
   own: number
   lent: number
   lent_by: string[]
+  /** Which accounts are lent to them, and by whom (PEOPLE-LOAN-VIEW). Absent from an older API. */
+  lent_accounts?: PersonLentAccount[]
   provider_key: boolean
+}
+
+/** One account lent to a person: ids and names only, never the account's secret. */
+export interface PersonLentAccount {
+  account_id: string
+  label: string | null
+  owner_tenant: string
+  /** The owner tenant's display name, or its id when it has none. */
+  owner_name: string | null
+  state: string | null
 }
 
 /** One row of `GET /v1/admin/people` (`people._row`). */
