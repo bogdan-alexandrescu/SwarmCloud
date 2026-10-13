@@ -950,10 +950,10 @@ function openPath(path: string): void {
 /**
  * "NEEDS YOU": ONE HAND-OFF BANNER PER AGENT WAITING FOR A PERSON (§6). The
  * reason, the expected site and the time left, under a line that says WHICH
- * agent is waiting (`HandoffWho`). A parked card's "I'm ready to sign in"
- * calls `human-ready` and opens the agent, which is where its browser comes
- * back (`onOpen`, by default the agent's own page); a held card offers Take
- * control.
+ * agent is waiting (`HandoffWho`). A parked card's "I'm ready" calls
+ * `human-ready` and opens the agent, which is where its browser comes back
+ * (`onOpen`, by default the agent's own page); a held card offers Take
+ * control. Either way that action comes first and Open second (QA12-28).
  *
  * OLDEST-WAITING FIRST, AT MOST THREE (visual QA pass 5, U2, 2026-10-12; lane
  * LB-V5). Five parked hand-offs drew five identical cards, held ones first
@@ -1036,10 +1036,12 @@ function HandoffCardList({
               now={at}
               onReady={(id) => (onOpen !== undefined ? onOpen(id) : openAgentPath({ id, state: 'READY' }))}
             >
-              <a className="ov-att-go" href={agentPath(t)}>
-                {rowLabel(t, null)} &rarr;
-              </a>
+              {/* QA12-28: Take control (the banner's own I'm ready on a park), then
+                  Open, then anything secondary -- one order on every card. */}
               {handoffOf(t)?.phase === 'hold' && <HandoffTakeControl taskId={t.id} />}
+              <a className="ov-att-go" href={agentPath(t)} title={`Open ${rowLabel(t, null)}`}>
+                Open &rarr;
+              </a>
             </HandoffBanner>
           </div>
         )

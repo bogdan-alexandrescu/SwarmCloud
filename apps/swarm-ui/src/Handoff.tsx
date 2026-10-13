@@ -2,17 +2,19 @@
  * THE LIVE-BROWSER HAND-OFF, AS THE CONSOLE DRAWS IT (docs/design/live-browser.md
  * §4 and §6, "The hand-off"; lane LB-L12, part of #1030).
  *
- * An agent that needs a person -- to sign in, mostly -- asks through
+ * An agent that needs a person -- to sign in, approve a prompt, solve a
+ * challenge; the reason is the agent's own -- asks through
  * `swarm-handoff`, and swarm-api sets the task's `human_wait` (§4.1). The task
  * STAYS RUNNING and holds its pod for `human_hold_seconds` (10 minutes, Q3);
  * if nobody takes control in that time the worker parks it
  * PARKED(HUMAN_REQUIRED), giving the capacity back, and only a person's
- * "I'm ready to sign in" (`POST /v1/tasks/{id}/human-ready`) returns it to
+ * "I'm ready" (`POST /v1/tasks/{id}/human-ready`) returns it to
  * READY. Nothing else promotes it, and past 24 hours (Q4) the scheduler
  * dead-letters it.
  *
  * So there are two phases to draw, and this file is the one place that tells
- * them apart (`handoffOf`). The Browser tab, the Overview's "Needs a look" and
+ * them apart (`handoffOf`) -- and a third, after "I'm ready", that no longer
+ * needs anyone but is not live yet either (`resumingAfterHandoff`). The Browser tab, the Overview's "Needs a look" and
  * the agent list all read it, so the three cannot disagree about whether a
  * task needs you.
  *
@@ -22,10 +24,10 @@
  * ticket.
  */
 import { useEffect, useState, type ReactNode } from 'react'
-import { USE_FIXTURES, loadTaskEventsPage } from './api'
+import { USE_FIXTURES, loadLiveSession, loadTaskEventsPage } from './api'
 import { Banner, Button } from './components'
 import { route, write, type ApiError, type Result } from './fetch'
-import { humaniseUntil, type Task } from './types'
+import { type Task } from './types'
 import { useNow } from './useNow'
 
 /**
@@ -110,26 +112,51 @@ export function handoffOf(task: Task): Handoff | null {
   return null
 }
 
+/**
+ * THE STATES A RESUMED HAND-OFF PASSES THROUGH ON ITS WAY BACK (QA12-06): READY
+ * after `human-ready`, then admission's LEASED, DISPATCHED and STARTING. About
+ * 80 s of cold start on the live-browser QA pass p12, during which the
+ * banner was gone and the tab said only "not running".
+ */
+const RESUMING_STATES: ReadonlySet<Task['state']> = new Set(['READY', 'LEASED', 'DISPATCHED', 'STARTING'])
+
+/**
+ * A PERSON SAID "I'M READY" AND THE BROWSER IS NOT BACK YET (QA12-06). swarm-api
+ * writes `metadata.human_ready` (`{by, at}`) when it accepts `human-ready`, and
+ * the agent's next hand-off request consumes it (swarm_api/handoff.py), so
+ * its presence on a task on its way to RUNNING is the resumed hand-off. Not
+ * `needsYou`: nobody has to do anything, so Needs a look and Waiting drop it.
+ *
+ * What it cannot tell: an agent that came back and never asked again leaves
+ * the key behind, so a later, unrelated trip back through READY (a quota
+ * park, say) draws this banner too. The worker's own `park_phase` is on the
+ * park event, not the task row, and an event read per row is not worth it.
+ */
+export function resumingAfterHandoff(task: Pick<Task, 'state' | 'metadata'>): boolean {
+  return RESUMING_STATES.has(task.state) && isWait(task.metadata?.human_ready)
+}
+
 /** The task is waiting for a person, held or parked. */
 export function needsYou(task: Task): boolean {
   return handoffOf(task) !== null
 }
 
 /**
- * The time left before `deadline`, as the banner prints it: `4m 12s left`
- * under an hour, where the seconds matter to someone on their way to the
- * keyboard; `23h 00m left` beyond. Null once the deadline has passed -- never
- * a negative figure -- and when there is no deadline to count to.
+ * The time left before `deadline`, as the banner prints it: `4:12 left` under
+ * an hour, `23:00:00 left` beyond. ONE FORMAT, m:ss (QA12-21): the banner
+ * printed `4m 12s` beside the theater checklist's `4:12` for the same hold,
+ * and the Overview card is this banner. Null once the deadline has passed --
+ * never a negative figure -- and when there is no deadline to count to.
  */
 export function timeLeft(deadline: number | null, now: number): string | null {
   if (deadline === null) return null
   const ms = deadline - now
   if (ms <= 0) return null
-  if (ms < 3_600_000) {
-    const s = Math.floor(ms / 1000)
-    return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s left`
-  }
-  return `${humaniseUntil(ms)} left`
+  const s = Math.floor(ms / 1000)
+  const ss = String(s % 60).padStart(2, '0')
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}:${ss} left`
+  return `${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}:${ss} left`
 }
 
 /**
@@ -145,7 +172,7 @@ export function liveBrowserRows(tasks: readonly Task[]): Task[] {
 }
 
 /**
- * `POST /v1/tasks/{id}/human-ready`: "I'm ready to sign in" (§4.3). No body:
+ * `POST /v1/tasks/{id}/human-ready`: "I'm ready" (§4.3). No body:
  * the caller names the task and nothing else, and swarm-api decides whether
  * this person may say it (the submitter, §5.1 and Q1). The fixture build
  * serves no hand-off, and says so rather than pretending.
@@ -201,32 +228,77 @@ export function useHandoffRequest(task: Task, enabled: boolean): Request | null 
 type Ready = { kind: 'idle' } | { kind: 'busy' } | { kind: 'done' } | { kind: 'refused'; error: ApiError }
 
 /**
- * THE HAND-OFF BANNER: the reason, the expected site and the time left, and
- * on a park "I'm ready to sign in". The Browser tab draws it across the tab;
- * the Overview draws one per waiting task (`HandoffCards`). Yellow, as a
- * warning is: the agent is stopped until a person comes.
+ * WHO "YOU" ARE, for "You are in control" (QA12-05). The console has no
+ * identity read of its own; the live session's `you.email` is the one place
+ * the server names the viewer. Read once per task, and only while somebody
+ * holds control -- the only time the banner has a sentence that depends on
+ * it. Null until it lands, and when it does not: the banner then names the
+ * controller by address, as it did before.
+ */
+function useYou(taskId: string, enabled: boolean): string | null {
+  const [you, setYou] = useState<string | null>(null)
+  useEffect(() => {
+    if (!enabled) return
+    let live = true
+    void loadLiveSession(taskId).then(
+      (r) => {
+        if (!live || (r.status !== 'ok' && r.status !== 'stale')) return
+        setYou(text(r.data.session?.you?.email))
+      },
+      () => {},
+    )
+    return () => {
+      live = false
+    }
+  }, [taskId, enabled])
+  return enabled ? you : null
+}
+
+/**
+ * THE HAND-OFF BANNER: the agent's reason as the headline, the expected site
+ * and the time left, and on a park "I'm ready". The Browser tab draws it
+ * across the tab; the Overview draws one per waiting task (`HandoffCards`).
+ * Yellow, as a warning is: the agent is stopped until a person comes.
+ *
+ * NEUTRAL WORDING (owner decision, 2026-10-13, QA12-04): a hand-off is not
+ * always a sign-in, so nothing here says "sign in". The headline is "The agent
+ * needs your help" with the agent's own reason; the button is "I'm ready";
+ * that password fields are masked is said as a fact about the browser, not as
+ * a step. The theater's checklist (TheaterTimeline.tsx) is its own lane's.
+ *
+ * After "I'm ready" the task is READY and `handoffOf` is null; while it is on
+ * its way back to RUNNING the banner says so instead of vanishing
+ * (`resumingAfterHandoff`, QA12-06).
  *
  * `now` is the caller's clock, so a list of banners ticks on one instant.
  * `onReady` is called after swarm-api accepted `human-ready`, with the task
  * id; the Overview opens the agent with it, the tab has nowhere to go.
- * `children` are the tab's own actions (Take control, Open in theater).
+ * `you` is the viewer's address when the caller has read it (the tab's
+ * session); left out, the banner reads it itself while someone holds control.
+ * `children` are the caller's own actions (Take control, Open, Open in
+ * theater), drawn after the banner's own.
  */
 export function HandoffBanner({
   task,
   now,
   onReady,
+  you,
   children,
 }: {
   task: Task
   now: number
   onReady?: (taskId: string) => void
+  you?: string | null
   children?: ReactNode
 }) {
   const h = handoffOf(task)
   const request = useHandoffRequest(task, h?.phase === 'parked')
   const [ready, setReady] = useState<Ready>({ kind: 'idle' })
-  if (h === null) return null
+  const controller = h?.phase === 'hold' ? h.controller : null
+  const read = useYou(task.id, you === undefined && controller !== null)
+  if (h === null) return resumingAfterHandoff(task) ? <ResumingBanner>{children}</ResumingBanner> : null
 
+  const viewer = you === undefined ? read : you
   const left = timeLeft(h.deadline, now)
   const reason = h.phase === 'hold' ? h.reason : request !== null && request !== 'unread' ? request.reason : null
   const expect = h.phase === 'hold' ? h.expect : request !== null && request !== 'unread' ? request.expect : null
@@ -262,16 +334,24 @@ export function HandoffBanner({
           ? `${left} before it is given up (dead-lettered)`
           : 'Past its 24 hours; the scheduler gives it up on its next pass.'
 
+  // QA12-05: the person in control is "you", not their own address.
+  const control =
+    controller === null
+      ? null
+      : viewer !== null && viewer.toLowerCase() === controller.toLowerCase()
+        ? 'You are in control · return control when done'
+        : `${controller} is in control`
+
   return (
     <Banner
       tone="warn"
       role="status"
-      title={h.phase === 'hold' ? `Waiting for you: ${reasonLine}` : `Parked until you are ready to sign in: ${reasonLine}`}
+      title={`The agent needs your help: ${reasonLine}`}
       actions={
         h.phase === 'parked' && ready.kind !== 'done' ? (
           <>
             <Button kind="primary" size="sm" busy={ready.kind === 'busy' ? 'Asking…' : false} onClick={() => void press()}>
-              I'm ready to sign in
+              I'm ready
             </Button>
             {children}
           </>
@@ -281,6 +361,7 @@ export function HandoffBanner({
       }
     >
       <span className="ho-facts">
+        {h.phase === 'parked' && ready.kind !== 'done' && <span className="ho-parked">Parked until you say you are ready · </span>}
         <span className="ho-expect">
           {expect !== null ? (
             <>
@@ -290,9 +371,12 @@ export function HandoffBanner({
             'no expected site given'
           )}
         </span>
-        {h.phase === 'hold' && h.controller !== null && <span className="ho-ctl"> · {h.controller} is in control</span>}
+        {control !== null && <span className="ho-ctl"> · {control}</span>}
         {clock !== null && <span className="ho-left"> · {clock}</span>}
       </span>
+      {h.phase === 'hold' && (
+        <span className="ho-masked">Password fields are masked before anything leaves the agent's pod.</span>
+      )}
       {ready.kind === 'done' && (
         <span className="ho-starting">
           Starting your browser. It is admitted like any task and starts cold, so allow a minute or two; the agent
@@ -309,25 +393,63 @@ export function HandoffBanner({
 }
 
 /**
+ * THE BANNER WHILE A RESUMED HAND-OFF COMES BACK (QA12-06). Nothing to do and
+ * nothing to count down: admission and a cold start, about a minute and a
+ * half on the QA pass. Blue, not yellow -- nobody is being waited for.
+ */
+function ResumingBanner({ children }: { children?: ReactNode }) {
+  return (
+    <Banner tone="info" role="status" title="Starting your browser again — the agent will ask for you when it is back" actions={children}>
+      <span className="ho-starting">
+        You said you are ready. It is admitted like any task and starts cold, so allow a minute or two.
+      </span>
+    </Banner>
+  )
+}
+
+/**
  * The banner as the agent's view mounts it: on the shared 1s clock, and
  * nothing at all for a task nobody is waited for, so the clock is held only
  * while there is a figure to tick. `onReady` re-reads the agent, which is
- * READY after `human-ready` and is admitted from there.
+ * READY after `human-ready` and is admitted from there; the strip then stays
+ * up, saying the browser is starting again, until it is RUNNING. `you` is
+ * passed through to the banner (a tab that has read its session already
+ * knows it, and saves the banner its own read).
  */
-export function HandoffStrip({ task, onReady, children }: { task: Task; onReady?: () => void; children?: ReactNode }) {
-  if (handoffOf(task) === null) return null
+export function HandoffStrip({
+  task,
+  onReady,
+  you,
+  children,
+}: {
+  task: Task
+  onReady?: () => void
+  you?: string | null
+  children?: ReactNode
+}) {
+  if (handoffOf(task) === null && !resumingAfterHandoff(task)) return null
   return (
-    <TickingBanner task={task} onReady={onReady}>
+    <TickingBanner task={task} onReady={onReady} you={you}>
       {children}
     </TickingBanner>
   )
 }
 
-function TickingBanner({ task, onReady, children }: { task: Task; onReady: (() => void) | undefined; children?: ReactNode }) {
+function TickingBanner({
+  task,
+  onReady,
+  you,
+  children,
+}: {
+  task: Task
+  onReady: (() => void) | undefined
+  you: string | null | undefined
+  children?: ReactNode
+}) {
   const now = useNow(1000)
   return (
     <div className="ho-strip">
-      <HandoffBanner task={task} now={now} onReady={onReady === undefined ? undefined : () => onReady()}>
+      <HandoffBanner task={task} now={now} you={you} onReady={onReady === undefined ? undefined : () => onReady()}>
         {children}
       </HandoffBanner>
     </div>
