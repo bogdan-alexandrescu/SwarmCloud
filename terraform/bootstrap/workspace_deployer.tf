@@ -458,6 +458,7 @@ resource "google_storage_bucket_iam_member" "workspace_deployer_marker" {
 # ---------------------------------------------------------------------------
 
 resource "google_pubsub_topic" "workspace_apply" {
+  # checkov:skip=CKV_GCP_83:A message names one approved workspace to provision (workspace id, request id) -- no tenant data, no credential -- and is retained a day. CMEK would need a key ring this platform does not own in a shared project; same reasoning as the scheduler's wake topic.
   count = local.workspace_deployer_on
 
   project = var.project_id
