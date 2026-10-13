@@ -221,17 +221,24 @@ RUN cp /opt/repo-index/lsp/package.json /opt/repo-index/lsp/package-lock.json /o
     done
 
 USER swarm:swarm
-WORKDIR /workspace
-
+# NO `WORKDIR /workspace` HERE, and ONE RUN for the three self-tests below.
+# GKE does not stream an image with a duplicate layer (docs/browser-startup-
+# speed.md §2.4), and both wrote one: restating the base's WORKDIR wrote
+# BuildKit's empty layer a second time, and each check-only RUN leaves a
+# ~100-byte layer holding only the etc/ and tmp/ directory entries -- the SAME
+# layer when two of them finish in the same second, as 7 of the 30 newest
+# digests of this image did (read 2026-10-13). The release refuses such an
+# image (scripts/image-sizes.sh --duplicate-layers);
+# tests/unit/scripts/test_image_streaming.py holds this file to it.
+#
 # The repository-index extractor must load all five grammars and parse one
 # file with each, as the agent user, or the indexer step would find out
-# instead of the build.
-RUN swarm-repo-index --self-test
-# And each installed language server must start, as the agent user, and
-# resolve one call across two files -- not merely start.
-RUN swarm-repo-index --lsp-self-test
-# And the shard writer must shard, rewrite and sweep a graph in a scratch dir.
-RUN swarm-repo-graph --self-test
+# instead of the build. And each installed language server must start, as the
+# agent user, and resolve one call across two files -- not merely start. And
+# the shard writer must shard, rewrite and sweep a graph in a scratch dir.
+RUN swarm-repo-index --self-test \
+ && swarm-repo-index --lsp-self-test \
+ && swarm-repo-graph --self-test
 
 # The base's, restated because a derived image that sets nothing inherits it
 # but a reader of this file should not have to know that.

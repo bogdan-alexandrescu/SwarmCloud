@@ -20,11 +20,19 @@
 # digest that actually exists in the registry rather than one a previous build
 # reported.
 #
-# ORDERING: this build pulls `agent-runtime-base:${_TAG}`, so the base must
-# already be pushed. `build-images.sh` submits builds CONCURRENTLY, so list
+# THE BASE IS THE CODEX-LESS ONE (BROWSER-NO-CODEX, owner decision
+# 2026-10-13; docs/browser-startup-speed.md §2.3). `agent-runtime-base-nocodex`
+# is images/agent-runtime-base/Dockerfile built a second time, by
+# build-images.sh, with `--build-arg INSTALL_CODEX=0`: codex is 129.7 MB of the
+# base's npm layer, `claude-code-browser` never runs it, and this image could
+# not drop it -- deleting an inherited layer's files only adds a whiteout.
+# Every other image built on the base (agent-runtime-indexer) keeps codex.
+#
+# ORDERING: this build pulls `agent-runtime-base-nocodex:${_TAG}`, so that base
+# must already be pushed. `build-images.sh` submits builds CONCURRENTLY, so list
 # order no longer guarantees that; its `build_after()` holds this image back
-# until agent-runtime-base has FINISHED building in the same run, and does not
-# submit it at all if the base failed. A unit test reads this file for the
+# until agent-runtime-base-nocodex has FINISHED building in the same run, and
+# does not submit it at all if that base failed. A unit test reads this file for the
 # base it pulls and fails if `build_after()` does not say so.
 # A targeted `scripts/build-images.sh agent-runtime-browser` at a tag whose base
 # was never built fails in step 1, loudly, naming the ref it could not find --
@@ -63,7 +71,7 @@ steps:
         image='${_IMAGE}'
         tag='${_TAG}'
         registry="$${image%/*}"
-        base="$${registry}/agent-runtime-base:$${tag}"
+        base="$${registry}/agent-runtime-base-nocodex:$${tag}"
         echo "resolving base image $${base}"
         docker pull "$${base}"
         digest="$$(docker image inspect --format '{{index .RepoDigests 0}}' "$${base}")"

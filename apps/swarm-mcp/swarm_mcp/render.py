@@ -1631,6 +1631,22 @@ def merge_row(task: dict[str, Any]) -> str | None:
     return " · ".join(parts)
 
 
+def answer_lines(task: dict[str, Any], style: Style) -> list[str]:
+    """`answered  1. <choice> -- <text>  (<by>, <at>)`, one line per answered question."""
+    answers = [a for a in task.get("owner_answers") or [] if isinstance(a, dict)]
+    lines = []
+    for i, answer in enumerate(answers):
+        index = answer.get("question_index")
+        n = index + 1 if isinstance(index, int) and not isinstance(index, bool) else "?"
+        said = [str(v) for v in (answer.get("choice"), answer.get("text")) if v]
+        who = ", ".join(str(v) for v in (answer.get("by"), answer.get("at")) if v)
+        head = style.paint("answered", "dim") if i == 0 else " " * len("answered")
+        body = f"{n}. {' -- '.join(said) or style.dash}"
+        tail = style.paint(f"  ({who})", "dim") if who else ""
+        lines.append(f"  {head}  {_fit(body, max(20, style.usable - 14), style)}{tail}")
+    return lines
+
+
 def render_task(
     task: dict[str, Any] | None,
     style: Style,
@@ -1686,6 +1702,9 @@ def render_task(
     # repository printed only that, over an output.txt it had written.
     if produced is not None:
         lines += produced_lines(produced, style, fetch_with=fetch_with)
+    # WHAT THE OWNER ANSWERED (TASK-ANSWERS): the answers given in the console
+    # to the agent's questions, so whoever launched it reads them here too.
+    lines += answer_lines(task, style)
 
     merged = merge_row(task)
     if merged is not None:

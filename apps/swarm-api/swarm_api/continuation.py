@@ -407,11 +407,14 @@ def resolve_merge_pr(
     repositories: Repositories,
     tokens: Any,
     writer: GitHubWriter,
+    person: str | None = None,
 ) -> NamedPull | None:
     """Check `spec.merge_pr` against the registry and GitHub, or None when absent.
 
-    `tokens` is the API's `forge.ForgeTokens`: the tenant's own `-git`
-    secret, read here once and dropped. A tenant with none is 409
+    `tokens` is the API's `forge.ForgeTokens`: the slot
+    `forge.resolve_forge_slot` picks for `person` in the tenant (their own,
+    the tenant's `-git`, or a personal tenant's owner's), read here once and
+    dropped. A tenant with none is 409
     `NoForgeCredential`, raised by the reader; a GitHub answer that is
     neither the pull request nor "not found" propagates as the writer's own
     error. Every refusal of the request itself is `DispatchOptionError`
@@ -426,7 +429,7 @@ def resolve_merge_pr(
     full_name = f"{owner}/{repo}"
     number, wanted = named.number, named.head_sha
     detail: dict[str, Any] = {"repository": full_name, "number": number, "head_sha": wanted}
-    token = tokens.token_for(tenant)
+    token = tokens.token_for(tenant, person=person)
     try:
         pull = writer.read_pull(IssueRef(owner=owner, repo=repo, number=number), number, token)
     except ForgeWriteNotFound:

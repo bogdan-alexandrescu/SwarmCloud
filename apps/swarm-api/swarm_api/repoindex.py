@@ -832,18 +832,20 @@ def _repo_url(record: Mapping[str, Any]) -> str:
 
 
 def read_head(
-    record: Mapping[str, Any], tenant: Tenant, *, tokens: ForgeTokens, forge: GitHubIssues
+    record: Mapping[str, Any], tenant: Tenant, *, tokens: ForgeTokens, forge: GitHubIssues,
+    person: str | None = None,
 ) -> str:
     """The default branch's head sha: `GET /repos/{o}/{r}/git/ref/heads/{branch}`.
 
     Read with the token that resolves for the repository: under R2 (PICKS.md,
     2026-10-05) a repository token, then the tenant's; repository tokens do not
-    exist yet (git-tokens.md, GT1-GT5), so it is the tenant's.
+    exist yet (git-tokens.md, GT1-GT5), so it is the slot `forge.resolve_forge_slot`
+    picks: `person`'s own, the tenant's, or a personal tenant's owner's.
     """
     branch = record["default_branch"]
     what = f"the head of {record['owner']}/{record['repo']}@{branch}"
     url = f"{_repo_url(record)}/git/ref/heads/{quote(branch, safe='/')}"
-    token = tokens.token_for(tenant)
+    token = tokens.token_for(tenant, person=person)
     try:
         data = _forge_json(forge, url, token, what)
     except IssueNotFound:
@@ -1064,7 +1066,7 @@ class PollReport:
 
 def read_relation(
     record: Mapping[str, Any], tenant: Tenant, base: str, head: str, *,
-    tokens: ForgeTokens, forge: GitHubIssues,
+    tokens: ForgeTokens, forge: GitHubIssues, person: str | None = None,
 ) -> dict[str, Any]:
     """How `head` relates to `base`: GitHub's compare, `{base}...{head}`.
 
@@ -1076,7 +1078,7 @@ def read_relation(
     """
     what = f"the commits between {base[:12]} and {head[:12]}"
     url = f"{_repo_url(record)}/compare/{base}...{head}?per_page=1"
-    token = tokens.token_for(tenant)
+    token = tokens.token_for(tenant, person=person)
     try:
         data = _forge_json(forge, url, token, what)
     except IssueNotFound:
@@ -2241,7 +2243,8 @@ class RepoIndex:
             )
         # Settle first: a run that ended since the last read frees the slot.
         self.settle(tenant_id, repo_id)
-        head = read_head(record, tenant, tokens=self._tokens, forge=self._forge)
+        head = read_head(record, tenant, tokens=self._tokens, forge=self._forge,
+                         person=auth.email)
         run, coalesced = self._start(
             auth, tenant_id, record, head, kind=kind, trigger="manual",
             requested_by=auth.email, head_read=True, from_pending=False,
@@ -2549,8 +2552,11 @@ class RepoIndex:
                  tenant_id, repo_id, task.id, new[:12], outcome)
 
     # -- freshness ---------------------------------------------------------
-    def refresh_relation(self, tenant_id: str, repo_id: str, tenant: Tenant) -> None:
-        """Compare the promoted index with the head once per pair, and keep it."""
+    def refresh_relation(self, tenant_id: str, repo_id: str, tenant: Tenant, *,
+                         person: str | None = None) -> None:
+        """Compare the promoted index with the head once per pair, and keep it.
+
+        `person`: who is looking, whose own slot the compare prefers."""
         record = self.registrations.get(tenant_id, repo_id)
         index = record.get("index") or {}
         current, head = index.get("current_sha"), index.get("head_sha")
@@ -2561,7 +2567,7 @@ class RepoIndex:
             return
         try:
             found = read_relation(record, tenant, current, head, tokens=self._tokens,
-                                  forge=self._forge)
+                                  forge=self._forge, person=person)
         except ForgeReadError as unread:
             log.info("repo index freshness tenant=%s repo_id=%s compare=%s",
                      tenant_id, repo_id, unread.code)

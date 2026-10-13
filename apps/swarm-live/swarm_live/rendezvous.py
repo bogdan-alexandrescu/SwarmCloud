@@ -82,7 +82,10 @@ relay's `{"type": "ready"}`, every tunnel message is binary:
             swarm-api, which proxies every viewer link, validates it field by
             field and records it on `live_sessions/{id}`; the relay checks
             only that it is a small object of those two keys. It is page data:
-            never logged, and dropped with its session.
+            never logged, and dropped with its session. A gate from
+            LIVE-UNUSED adds a third, `agent` (whether the agent is driving
+            this browser, report.py `agent_report`); it is optional, so a
+            gate that sends only the two is kept as before.
 
 A viewer's websocket carries that viewer's RFB bytes as binary messages, and
 swarm-api's control messages as text: `{"type": "control"|"release",
@@ -180,6 +183,8 @@ _RFB_INPUT = frozenset({4, 5, 6})
 #: 253-character host and a device fit in well under half of it.
 MAX_REPORT_BYTES = 4096
 _REPORT_KEYS = frozenset({"origin", "device"})
+#: Keys a report MAY carry besides those (LIVE-UNUSED): passed on when present.
+_REPORT_OPTIONAL = frozenset({"agent"})
 
 #: Websocket close codes. Every ticket refusal is CLOSE_REFUSED ("404").
 CLOSE_REFUSED = 4404
@@ -605,7 +610,7 @@ class Rendezvous:
         if tunnel is None or tunnel.report is None:
             return None
         message = json.loads(tunnel.report)
-        return {key: message[key] for key in _REPORT_KEYS}
+        return {key: message[key] for key in _REPORT_KEYS | _REPORT_OPTIONAL if key in message}
 
     def recorder(self, session_id: str) -> Recording | None:
         tunnel = self._tunnels.get(session_id)
@@ -710,19 +715,20 @@ class Rendezvous:
 
     def _take_report(self, tunnel: Tunnel, payload: bytes) -> None:
         """Keep the gate's report and pass it to every viewer link. Anything
-        that is not a small object of `origin` and `device`, each an object or
-        null, is dropped: the report is page data (swarm-api checks it again)."""
+        that is not a small object of `origin` and `device` (and, from a
+        LIVE-UNUSED gate, `agent`), each an object or null, is dropped: the report is page data (swarm-api checks it again)."""
         report: Any = None
         if len(payload) <= MAX_REPORT_BYTES:
             try:
                 report = json.loads(payload)
             except ValueError:
                 report = None
-        if (not isinstance(report, dict) or set(report) != _REPORT_KEYS
+        if (not isinstance(report, dict) or not _REPORT_KEYS <= set(report)
+                or not set(report) <= _REPORT_KEYS | _REPORT_OPTIONAL
                 or not all(v is None or isinstance(v, dict) for v in report.values())):
             log.info("live relay: session=%s dropped a malformed report", tunnel.session.session_id)
             return
-        text = json.dumps({"type": "report", **{k: report[k] for k in sorted(_REPORT_KEYS)}},
+        text = json.dumps({"type": "report", **{k: report[k] for k in sorted(report)}},
                           separators=(",", ":"))
         tunnel.report = text
         for viewer in tunnel.viewers.values():

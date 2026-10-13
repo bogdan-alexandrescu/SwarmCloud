@@ -20,7 +20,7 @@ import {
   type CallGraph, type ImpactPlan, type ModuleGraph, type SymbolSearch, type SymbolTests,
 } from './RepoGraphData'
 import type {
-  ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
+  ArtifactContent, ArtifactListing, LogStream, LogStreamName, OwnerAnswer, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
@@ -43,6 +43,7 @@ import type {
 // task page with no tasks are both non-empty objects.
 
 export type { Result, ApiError } from './fetch'
+export type { OwnerAnswer, OwnerAnswerVersion } from './types'
 
 /** Fixtures, so the UI can be worked on before DNS resolves. Exported so a
  *  component that keeps its own loaders (CheckpointBrowser.tsx) reads this one
@@ -1037,6 +1038,84 @@ export async function loadAnswer(taskId: string, options: { attemptId?: string }
   const query = new URLSearchParams()
   if (options.attemptId) query.set('attempt_id', options.attemptId)
   return read<TaskAnswer>(route('/v1/tasks/{id}/answer', { id: taskId }, query), () => false)
+}
+
+/** One option of an agent's question, as the worker validated it. */
+export interface QuestionOption {
+  label: string | null
+  description: string | null
+}
+
+/** One question an agent asked its owner (`questions.json`). */
+export interface AgentQuestion {
+  question: string | null
+  options: QuestionOption[]
+  /** One of the options' labels, or null when the agent recommended none. */
+  recommended: string | null
+  context: string | null
+  /** The owner's stored answer; null or absent when unanswered (or from an API older than answers). */
+  answer?: OwnerAnswer | null
+}
+
+/**
+ * `GET /v1/tasks/{id}/questions`. `status` is `ok`, `none` (asked none --
+ * `questions: []`, never a 404) or `unavailable` (the worker counted some
+ * and they could not be read; `unavailable_because` says why).
+ */
+export interface TaskQuestions {
+  task_id: string
+  count: number
+  status: 'ok' | 'none' | 'unavailable'
+  questions: AgentQuestion[]
+  attempt_id?: string | null
+  unavailable_because?: string
+  redacted: boolean
+  redaction_count: number
+  /** Whether this viewer may answer: the task's submitter or an admin. Absent from an API older than answers. */
+  may_answer?: boolean
+  /** Why not, when `may_answer` is false. */
+  may_answer_because?: string | null
+}
+
+/** `POST /v1/tasks/{id}/answers`: an option label, free text, or both. */
+export interface AnswerChoice {
+  question_index: number
+  choice: string | null
+  text: string | null
+}
+
+/**
+ * What the task's agent asked its owner: `GET /v1/tasks/{id}/questions`, the
+ * file the worker validated, redacted by the artifact read (part of #1206).
+ */
+export async function loadQuestions(taskId: string): Promise<Result<TaskQuestions>> {
+  if (USE_FIXTURES) {
+    noteFixtureProbe(route('/v1/tasks/{id}/questions', { id: taskId }), 0, true)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: { task_id: taskId, count: 0, status: 'none', questions: [], redacted: false, redaction_count: 0 },
+    }
+  }
+  return read<TaskQuestions>(route('/v1/tasks/{id}/questions', { id: taskId }), () => false)
+}
+
+/**
+ * The owner answers one of the agent's questions: `POST /v1/tasks/{id}/answers`
+ * (TASK-ANSWERS, owner decision 2026-10-13). Stored on the task, where whoever
+ * launched the work reads it; answers with the questions as they now read.
+ * Re-answering replaces the answer, and the API keeps the replaced one.
+ */
+export async function answerQuestion(taskId: string, answer: AnswerChoice): Promise<Result<TaskQuestions>> {
+  const target = route('/v1/tasks/{id}/answers', { id: taskId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, false)
+    return {
+      status: 'error',
+      error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build stores no answers.' },
+    }
+  }
+  return (await write(target, 'POST', answer)) as Result<TaskQuestions>
 }
 
 /**
@@ -6574,7 +6653,10 @@ export interface LiveSession {
   human_wait: LiveHumanWait | null
   /** The person in control, or null in view mode. One at a time, always (§4.2). */
   controller: { email: string; since: string } | null
-  /** Whether the submitter opened control to every member of the tenant (§5.1, Q1). */
+  /**
+   * Whether the submitter opened control to every member of the tenant (§5.1,
+   * Q1). The task's setting, carried into each new attempt's session (QA12-11).
+   */
   open_to_members: boolean
   /**
    * The device the gate applied, or null while nothing reports it to
@@ -6591,11 +6673,21 @@ export interface LiveSession {
     can_control: boolean
     /** May take control from someone who holds it: the submitter only (§5.1). */
     can_preempt: boolean
-    /** May open control to every member: the submitter only (§5.1). */
+    /** May open control to every member, and close it again: the submitter only (§5.1). */
     can_open: boolean
     /** May switch the device, rotate it and turn touch on or off: the person in control only (§6.1, Q13; LB-DEV-B). */
     can_switch_device: boolean
   }
+  /**
+   * WHETHER THE AGENT IS USING THIS BROWSER (LIVE-UNUSED, #1030), as the
+   * gate's CDP proxy reported it: when the agent first connected (null until
+   * it has), how many connections it holds now (null while no gate has
+   * reported it -- never read as "none"), and when the gate published its
+   * first frame. Optional: an older API serves none of them.
+   */
+  agent_connected_at?: string | null
+  agent_connections?: number | null
+  first_frame_at?: string | null
 }
 
 /**
@@ -6625,6 +6717,48 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
     return { status: 'ok', fetchedAt: Date.now(), data: { live_browser: false, session: null } }
   }
   return read<LiveRead>(target, () => false)
+}
+
+/** A step of a browser agent's start-up: lane STARTUP-API's `startup_progress` steps, in order. */
+export type StartupStepName =
+  | 'pod_scheduled'
+  | 'image_pulling'
+  | 'image_pulled'
+  | 'container_started'
+  | 'browser_launching'
+  | 'browser_ready'
+  | 'first_frame'
+
+/**
+ * `GET /v1/tasks/{task_id}/startup` (lane STARTUP-API, owner request
+ * 2026-10-13): the CURRENT attempt's start-up, oldest step first --
+ * `lease_acquired`, `dispatched`, `starting`, `running` and every
+ * `startup_progress` step. `estimate` is the median seconds from `dispatched`
+ * to each step over the profile's last 20 completed start-ups; `{}` with
+ * `sample_size` 0 when there is no history, and the bar then shows no time.
+ */
+export interface StartupRead {
+  attempt_id: string | null
+  generation: number | null
+  steps: { step: string; at: string }[]
+  estimate: Partial<Record<string, number>>
+  sample_size: number
+  /** `first_frame` seen, or the task is no longer starting or running. */
+  done: boolean
+}
+
+/**
+ * A 404 IS "NOT DEPLOYED YET", not a failure of the agent: the route ships in
+ * a parallel lane, and StartupProgress then draws the bar from the task's own
+ * events (`useStartup`). No empty predicate: a start-up with no step yet is a
+ * real answer.
+ */
+export async function loadStartup(taskId: string): Promise<Result<StartupRead>> {
+  const target = route('/v1/tasks/{id}/startup', { id: taskId })
+  // The fixture build has no browser agent to start: answered as the route
+  // not being served, so the fixture exercises the events fallback.
+  if (USE_FIXTURES) return liveNotServed(target)
+  return read<StartupRead>(target, () => false)
 }
 
 /**
@@ -6909,13 +7043,25 @@ export async function setLiveDevice(
 
 /**
  * `POST /v1/tasks/{task_id}/live/open-to-members`: the submitter opens control
- * to every member (§5.1, audited). One way only: swarm-api serves no route that
- * closes it again, so the console offers no uncheck.
+ * to every member (§5.1, audited). The TASK's setting (owner decision
+ * 2026-10-13, QA12-11): swarm-api keeps it on the task and every later
+ * attempt's session starts with it, until `closeLiveToMembers` turns it off.
  */
 export async function openLiveToMembers(taskId: string): Promise<Result<unknown>> {
   const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
   if (USE_FIXTURES) return liveNotServed(target)
   return write(target, 'POST')
+}
+
+/**
+ * `DELETE /v1/tasks/{task_id}/live/open-to-members`: the submitter turns member
+ * control off again, for this attempt and the task's later ones (QA12-11,
+ * audited). Whoever holds control now keeps it until they return it.
+ */
+export async function closeLiveToMembers(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'DELETE')
 }
 
 /**

@@ -374,9 +374,11 @@ def test_a_device_change_makes_every_report_stale(tmp_path):
 
 
 def test_a_pinch_zoomed_visual_viewport_is_mapped(tmp_path):
-    # Zoomed 2x into the layout viewport, scrolled 10,5 CSS px into it.
+    # Zoomed 2x into the layout viewport, scrolled 10,5 CSS px into it. As
+    # Chromium reports it, `innerWidth` x `innerHeight` are the visible area,
+    # half the page each way (QA12-01, mask.py GEOMETRY).
     state = _state()
-    state.on_message(TOP, _report(viewport=(SCREEN_W, PAGE_H, 10, 5, 2),
+    state.on_message(TOP, _report(viewport=(SCREEN_W // 2, PAGE_H // 2, 10, 5, 2),
                                   fields=[_field(1, "password", 20, 15, 10, 5)]))
     frame = _frame(tmp_path)
     state.apply(frame)

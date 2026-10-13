@@ -1002,7 +1002,11 @@ class Worker:
         # unless the profile is a live-browser one; signs with the child
         # path's attempt key, so it needs that registered.
         self.handoff = handoff_mod.HandoffPath(
-            config, logger=deps.logger, memory=deps.memory, children=self.children
+            config,
+            logger=deps.logger,
+            memory=deps.memory,
+            children=self.children,
+            progress=self._emit_startup_progress,
         )
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
@@ -4174,13 +4178,23 @@ class Worker:
         # `attempt_count`, so the attempt after it can read 1 and still be a
         # resume. Counted back here; a tenant that can write the counter can
         # write `attempt_count` itself, so this adds no reach (see below).
+        #
+        # A refunded HAND-OFF park (live-browser §4.3) takes one off the same
+        # way, and is counted back the same way (RESUME-PROGRESS, QA12-14).
+        # It was not: MEASURED 2026-10-13 on task_4defa61c5eea4a5c87f5, the
+        # attempt after a hand-off park read `attempt_count` 1, was taken for
+        # the task's first, restored nothing, and its agent started the task
+        # over -- asking again for the hand-off already done.
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        resumes = metadata.get(CHILD_AWAIT_RESUMES_METADATA_KEY)
-        resumes = resumes if isinstance(resumes, int) and not isinstance(resumes, bool) else 0
+        resumes = 0
+        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
+            value = metadata.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                resumes += max(0, value)
         if (
             isinstance(count, bool)
             or not isinstance(count, int)
-            or count + max(0, resumes) <= 1
+            or count + resumes <= 1
         ):
             refuse(reason="first attempt of this task", attempt_count=count)
             return None
@@ -7687,6 +7701,27 @@ class Worker:
                 "message": f"live browser unavailable: {reason}",
             },
         )
+
+    def _emit_startup_progress(self, step: str, at: datetime) -> bool:
+        """`startup_progress`: one of the browser's start-up steps, at the gate's time (STARTUP-API).
+
+        Called by `handoff.HandoffPath.note_startup` once per step and
+        attempt, for the console's progress bar (contract request 74). Never
+        on a fenced exit or a tenant mismatch (invariant 5: the stream is not
+        this attempt's to write then), which settles the step unwritten; a
+        control-plane outage leaves it for a later tick. A write that fails
+        raises, and the caller tries it again. Holds and moves nothing.
+        """
+        if self._fenced_exit or self._writes_forbidden:
+            return True
+        if self._control_plane_down:
+            return False
+        self.control.emit(
+            EventType.STARTUP_PROGRESS,
+            {"step": step, "attempt_id": self.cfg.attempt_id, "generation": self.cfg.generation},
+            at=at,
+        )
+        return True
 
     def _emit_startup_mark(self, cause: str, detail: dict[str, Any]) -> None:
         """One startup mark on the task's events: RUNNING, with `cause`.

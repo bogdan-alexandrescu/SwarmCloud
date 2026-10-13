@@ -22,7 +22,10 @@ variables -- `SWARM_HANDOFF`, `SWARM_CDP_ENDPOINT`, `SWARM_BROWSER_UPLOADS`
 loopback address and a directory, never a credential). The CLI's environment
 is what its Bash tool inherits, so without them `swarm-handoff` found no spool
 and the agent had to export `SWARM_HANDOFF` itself (MEASURED 2026-10-13,
-task_1f28d5bfa5a14f618f83; LB-POLISH, part of #1030). Nothing else crosses. The credential is the tenant's secret, or a pool
+task_1f28d5bfa5a14f618f83; LB-POLISH, part of #1030). On an attempt resumed
+after a hand-off park, the worker's summary of the earlier attempts'
+hand-offs, `$SWARM_HANDOFF/resumed.md`, follows the caller's prompt
+(`resume_summary`; RESUME-PROGRESS). Nothing else crosses. The credential is the tenant's secret, or a pool
 account's OAuth token when the attempt holds an account, and it is passed in
 exactly one variable: `ANTHROPIC_API_KEY` (metered API access) or
 `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token from
@@ -105,6 +108,25 @@ passed on, and one paragraph is added to the prompt saying how to launch.
 Keyed on the image's variable, not the profile's name, so it holds on any
 profile that runs the browser image and never on agent-runtime-base.
 
+WHY THE LIVE BROWSER IS THE ONLY ONE (BROWSER-ENFORCE, owner decision
+2026-10-13, part of #1030). On task_7cda0d5335f049b4b442 the agent followed the
+note above, launched its own headless Chromium, and the person watching the
+live browser saw none of its work. So when the live browser exists -- the
+dispatcher set `SWARM_CDP_ENDPOINT`, which it does only with the display
+sidecar -- three things change, and only then:
+  * the agent's `PLAYWRIGHT_BROWSERS_PATH` is `AGENT_BROWSERS_PATH`, a
+    directory the image fills with a stub (images/agent-runtime-browser/
+    live-browser-only), so any `chromium.launch()` fails with a message
+    naming the CDP endpoint. The worker's own value, which the gate and the
+    `browser` runner read, is untouched;
+  * the Playwright MCP server is registered with `--cdp-endpoint`
+    (`write_mcp_config`), so the agent's browser_* tools drive the live
+    browser and the tabs they open are the console's;
+  * the note says so, and names `swarm_browser.live()` for Python.
+And on the browser image the CLI's PATH puts `VENV_BIN` first, so the agent's
+`python` is the one with Playwright and the helper. Without the endpoint the
+browser image behaves as before: the real browsers and the headless note.
+
 WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
 that read stdin with nothing attached sat until the Bash timeout killed it:
 the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
@@ -115,6 +137,7 @@ outer stdin is /dev/null, leaving pipes and redirects inside it alone.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shlex
@@ -123,7 +146,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV
+from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV, RESUME_NAME
 from .base import RunnerContext, run_runner
 from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
 
@@ -155,10 +178,49 @@ BROWSERS_PATH_ENV = "PLAYWRIGHT_BROWSERS_PATH"
 BROWSER_NOTE = (
     "A headless Chromium is installed for Playwright in this environment "
     "(Python: `from playwright.sync_api import sync_playwright`). Launch it "
-    "with `p.chromium.launch(headless=True, chromium_sandbox=False, "
-    "args=[\"--no-zygote\"])`: Chromium's own sandbox cannot start in this "
+    "with `p.chromium.launch(headless=True, channel=\"chromium\", "
+    "chromium_sandbox=False, args=[\"--no-zygote\"])`: the image has the full "
+    "Chromium only, and its own sandbox cannot start in this "
     "container, which is itself the sandbox. Save screenshots and other "
     "captures under $SWARM_ARTIFACTS_DIR so they are uploaded."
+)
+
+#: Set by the dispatcher on the worker container only with the live browser's
+#: display sidecar (scheduler/dispatch.py); the lifecycle passes it on.
+CDP_ENDPOINT_ENV = "SWARM_CDP_ENDPOINT"
+
+#: The agent's PLAYWRIGHT_BROWSERS_PATH when the live browser exists: the
+#: image's stub directory, where every Chromium Playwright could launch is
+#: `live-browser-only` (images/agent-runtime-browser/install-browser-stub.py).
+AGENT_BROWSERS_PATH = "/opt/swarm/live-browser-only"
+
+#: The Playwright MCP server the browser image pins (`@playwright/mcp`), by
+#: absolute path: the npm global prefix the base image installs CLIs into.
+PLAYWRIGHT_MCP_BIN = "/usr/local/share/npm-global/bin/playwright-mcp"
+MCP_SERVER_NAME = "playwright"
+MCP_CONFIG_NAME = "mcp.json"
+
+#: The image's venv, first on the agent's PATH on the browser image.
+VENV_BIN = "/opt/venv/bin"
+
+#: What an agent is told, once, after its prompt, when the live browser exists.
+LIVE_BROWSER_NOTE = (
+    "This task has a live browser that a person watches on the console. It is "
+    "the only browser here: starting your own Chromium (`chromium.launch()`, "
+    "headless or not) fails by design. Drive it with the browser_* tools "
+    "(browser_navigate, browser_snapshot, browser_click, browser_tabs, "
+    "browser_take_screenshot), which are already connected to it. From Python, "
+    "`from swarm_browser import live; playwright, browser, context = live()` "
+    "connects over CDP to $SWARM_CDP_ENDPOINT; call `playwright.stop()` when "
+    "done, never `browser.close()`. Open each new page in its own tab so the "
+    "person sees it. When a site shows a CAPTCHA, a bot check, a consent wall "
+    "or a sign-in, do not try to get around it and do not switch to a "
+    "different site than the one asked for: run `swarm-handoff request "
+    "--reason \"<what the person should do>\" --expect <domain>`, then "
+    "`swarm-handoff wait`, and carry on once control comes back. Only if "
+    "nobody comes, say so in your answer and then use an alternative, naming "
+    "it. Save screenshots and other captures under $SWARM_ARTIFACTS_DIR so "
+    "they are uploaded."
 )
 
 #: The PreToolUse hook. Standard library only, run by this runner's own
@@ -197,6 +259,33 @@ def _write_private(path: Path, text: str) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(text)
+
+
+#: The most of the worker's resume summary a prompt carries. The worker
+#: bounds what it writes well under this; a larger file is not its.
+MAX_RESUME_BYTES = 16 * 1024
+
+
+def resume_summary(spool: str) -> str | None:
+    """The worker's summary for a resumed live-browser attempt, or None.
+
+    RESUME-PROGRESS (QA12-14, part of #1030): the CLI has no conversation to
+    continue across a hand-off park, so the next attempt's agent learns which
+    hand-offs were done, and reads its own notes, from its prompt.
+    `handoff.HandoffPath.prepare` writes the file on every attempt that has an
+    earlier one's hand-offs to tell and removes it on every other, before this
+    runner starts, so a file here is this attempt's.
+    """
+    if not spool:
+        return None
+    path = Path(spool) / RESUME_NAME
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_RESUME_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text or None
 
 
 def write_headless_settings(directory: Path) -> Path:
@@ -256,6 +345,30 @@ def write_headless_settings(directory: Path) -> Path:
     }
     path = directory / "settings.json"
     _write_private(path, json.dumps(settings, indent=2) + "\n")
+    return path
+
+
+def write_mcp_config(directory: Path, endpoint: str) -> Path:
+    """Write the CLI's `--mcp-config`: Playwright MCP on the live browser; return it.
+
+    Beside the settings file, in `work/` (never the checkout), mode 0600 and
+    replaced rather than followed, for the same reasons (`_write_private`).
+    The endpoint is the dispatcher's loopback address, never caller input.
+    """
+    if directory.is_symlink():
+        directory.unlink()
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    config = {
+        "mcpServers": {
+            MCP_SERVER_NAME: {
+                "type": "stdio",
+                "command": PLAYWRIGHT_MCP_BIN,
+                "args": ["--cdp-endpoint", endpoint],
+            }
+        }
+    }
+    path = directory / MCP_CONFIG_NAME
+    _write_private(path, json.dumps(config, indent=2) + "\n")
     return path
 
 
@@ -372,13 +485,31 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         if value:
             env[name] = value
     browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
+    endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
     prompt = ctx.payload.get("prompt")
+    spec = SPEC
+    # A resumed live-browser attempt: what the earlier one did, after the
+    # caller's prompt (RESUME-PROGRESS; `resume_summary`). A new dict, as below.
+    resumed = resume_summary(env.get(HANDOFF_ENV, ""))
+    if resumed and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{resumed}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
     if browsers:
-        env[BROWSERS_PATH_ENV] = browsers
+        spec = dataclasses.replace(SPEC, path_prefix=(VENV_BIN,))
+        note = BROWSER_NOTE
+        if endpoint:
+            # The live browser exists: the agent's own launch finds only the
+            # stub, and its browser tools are the live browser's (docstring).
+            env[BROWSERS_PATH_ENV] = AGENT_BROWSERS_PATH
+            mcp = write_mcp_config(Path(ctx.work_dir) / SETTINGS_DIR_NAME, endpoint)
+            extra += ["--mcp-config", str(mcp)]
+            note = LIVE_BROWSER_NOTE
+        else:
+            env[BROWSERS_PATH_ENV] = browsers
         # A new dict on the same context: `run_runner` holds this object.
         if isinstance(prompt, str) and prompt.strip():
-            ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{BROWSER_NOTE}"}
-    return run_cli_agent(ctx, SPEC, extra_args=extra, extra_env=env)
+            ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
+    return run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
 
 
 def main() -> int:

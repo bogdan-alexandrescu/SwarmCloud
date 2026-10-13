@@ -425,8 +425,8 @@ class DeviceController:
         async with self._lock:
             try:
                 await self._apply_display(device)
-                for target, session in list(self._pages.items()):
-                    await self._apply_page(device, target, session)
+                for target in list(self._pages):
+                    await self._apply_page_again(device, target)
             except Exception as exc:
                 self._record("device_failed", {"preset": device.name, "orientation": device.orientation,
                                                "cause": type(exc).__name__})
@@ -459,11 +459,20 @@ class DeviceController:
             target = params.get("targetId")
             if isinstance(target, str):
                 self._pages.pop(target, None)
-        elif method == "Target.detachedFromTarget":
+        elif method == "Target.detachedFromTarget" and message.get("sessionId") is None:
             session = params.get("sessionId")
             for target, held in list(self._pages.items()):
                 if held == session:
                     del self._pages[target]
+                    # The overrides went with the session; the page may not
+                    # have (a renderer swap). A closed page fails the attach
+                    # quietly, its `targetDestroyed` right behind.
+                    self._spawn(self._attach_quietly(target))
+
+    def _spawn(self, work: Any) -> None:
+        task = asyncio.get_running_loop().create_task(work)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def _attach_quietly(self, target_id: str) -> None:
         try:
@@ -473,13 +482,49 @@ class DeviceController:
 
     async def _attach(self, target_id: str, *, fit: bool = True) -> None:
         session = self._pages.get(target_id)
+        if session is not None:
+            try:
+                await self._apply_page(self._device, target_id, session)
+            except Exception:  # noqa: BLE001 -- a session that went: attach again, below
+                if self._pages.get(target_id) == session:
+                    del self._pages[target_id]
+                session = None
         if session is None:
             result = await self._cdp.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
             session = str(result["sessionId"])
             self._pages[target_id] = session
-        await self._apply_page(self._device, target_id, session)
+            await self._apply_page(self._device, target_id, session)
         if fit:
             await self._fit_window(self._device, target_id)
+
+    async def _apply_page_again(self, device: Device, target_id: str) -> None:
+        """`device` on one page, through a fresh session when its own went.
+
+        A device switch never fails because one page's session is gone
+        (DEVICE-RECOVER; part of #1030). MEASURED 2026-10-13: a switch that met
+        a session Chromium had dropped raised "Session with given id not
+        found" out of `select`, the whole change was refused, and the dead
+        session stayed in `_pages` to fail the next switch the same way. A
+        page that is gone for good is dropped, not an error: its
+        `targetDestroyed` is on the way.
+        """
+        session = self._pages.get(target_id)
+        if session is not None:
+            try:
+                await self._apply_page(device, target_id, session)
+                return
+            except Exception as exc:  # noqa: BLE001 -- attach again, below
+                log.info("live device: page session lost (%s); attaching again", type(exc).__name__)
+                if self._pages.get(target_id) == session:
+                    del self._pages[target_id]
+        try:
+            result = await self._cdp.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+            session = str(result["sessionId"])
+            self._pages[target_id] = session
+            await self._apply_page(device, target_id, session)
+        except Exception as exc:  # noqa: BLE001 -- the page closed; nothing to apply to
+            self._pages.pop(target_id, None)
+            self._record("device_page_lost", {"preset": device.name, "cause": type(exc).__name__})
 
     async def _browser_version(self) -> tuple[str, str]:
         if self._browser is None:
@@ -496,7 +541,10 @@ class DeviceController:
             self._on_resize(device)
         self._windows.clear()
         for target in list(self._pages):
-            await self._fit_window(device, target)
+            try:
+                await self._fit_window(device, target)
+            except Exception as exc:  # noqa: BLE001 -- a page that closed: the next one fits the window
+                log.info("live device: window not fitted (%s)", type(exc).__name__)
 
     async def _fit_window(self, device: Device, target_id: str) -> None:
         """The window holding `target_id` at the display's size plus the overhang, once per display size."""

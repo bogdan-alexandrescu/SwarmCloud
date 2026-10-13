@@ -252,8 +252,11 @@
     post({
       k: "report",
       e: epoch,
+      // The visual viewport's size too: the mask sizes the page on screen as
+      // that times the scale, which is the device's viewport even when a
+      // phone preset shows the page zoomed out to fit (mask.py, QA12-01).
       vp: [innerWidth, innerHeight, vv ? vv.offsetLeft : 0, vv ? vv.offsetTop : 0,
-           vv ? vv.scale : 1],
+           vv ? vv.scale : 1, vv ? vv.width : innerWidth, vv ? vv.height : innerHeight],
       f: fields,
       t: texts,
       o: owners,

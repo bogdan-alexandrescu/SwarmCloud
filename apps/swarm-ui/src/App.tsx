@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList } from './agentlist'
+import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -54,9 +54,8 @@ import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
-import { NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
+import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
 import { ApprovalsScreen } from './Approvals'
-import { AdminSchedulesScreen } from './AdminSchedules'
 import { RepositoriesScreen } from './Repositories'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
@@ -344,7 +343,9 @@ export const SECTIONS: SectionDef[] = [
     // that holds what runs by itself. A LITERAL id for the reason given on
     // Work: test_nav_headings_agree.py reads this array with a regex.
     // Approvals is its second page, `/approvals` (§6.1), and the question's
-    // last clause is its.
+    // last clause is its. ONE SCHEDULES PAGE (SCHED-ONE-PAGE, owner decision
+    // 2026-10-13, §6.1): an admin's every-tenant view is Schedules' "All
+    // tenants" switch (`?scope=all`), not a second Schedules tab under Admin.
     id: 'automate',
     label: 'Automate',
     question: 'What runs here by itself, on a schedule, and what is waiting on me to approve?',
@@ -469,10 +470,13 @@ export const SECTIONS: SectionDef[] = [
     // arrives wanting to know. It asks what each tab answers, in tab order.
     // docs/web-ui/redesign.md §2 carries the same words, and
     // tests/sections.test.ts holds the two together.
-    // docs/schedules.md §5.3 and §6.1 put the cross-tenant schedules view here,
-    // beside Tenants, and the question's last clause is its.
+    // The cross-tenant schedules view sat here from 2026-10-11 until the owner
+    // asked why schedules were in Admin and in Automate (SCHED-ONE-PAGE,
+    // 2026-10-13, docs/schedules.md §6.1): it is Automate › Schedules' "All
+    // tenants" now, and its clause went with it. The platform's own ticks
+    // moved to Platform counts, and the clause after its count asks for them.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, who is waiting for a workspace, and what is every tenant scheduled to run?',
+      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, and who is waiting for a workspace?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
@@ -483,9 +487,6 @@ export const SECTIONS: SectionDef[] = [
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
       { id: 'people', label: 'People', admin: true },
-      // docs/schedules.md §5.3: every tenant's schedules, the schedule tick's
-      // last hour and the platform's own ticks (§8.4). Admin only.
-      { id: 'schedules', label: 'Schedules', admin: true },
     ],
   },
 ]
@@ -715,6 +716,15 @@ export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts'
 /** The address segment each non-default pane is written with. `detail` has none. */
 const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser']
 
+/**
+ * THE DETAILS TAB'S OWN NAME IS AN ADDRESS TOO (QA12-17, live-browser QA p12):
+ * `/agents/live/<id>/details` read as a task called `<id>/details` and drew a
+ * 404. Every other tab is reached at its lower-cased name; Details is written
+ * with no segment, and these two spellings of it are read as that and written
+ * back without it.
+ */
+const DETAIL_SEGMENTS: readonly string[] = ['details', 'detail']
+
 export interface Route {
   /** A section id, or REFERENCE. */
   sectionId: string
@@ -854,6 +864,10 @@ export function fromAddress(full: string): Route {
   // opening an agent inspector for an agent called "counts".
   const moved = MOVED_PANES[seg.join('/')]
   if (moved) return { sectionId: moved.section, tab: moved.tab, ...blank }
+  // ADMIN › SCHEDULES FOLDED INTO AUTOMATE › SCHEDULES (SCHED-ONE-PAGE, owner
+  // decision 2026-10-13): its old address opens the All tenants view, which a
+  // MOVED_PANES entry cannot say -- the destination carries a query.
+  if (hash === 'admin/schedules') return fromAddress(ALL_TENANTS_SCHEDULES)
 
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
   if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
@@ -888,7 +902,8 @@ export function fromAddress(full: string): Route {
       rest = rest.slice(0, -1)
     }
     const last = rest[rest.length - 1]
-    const pane = PANE_SEGMENTS.find((p) => p === last) ?? null
+    // A pane needs an id before it: a lone `details` is still read as it was.
+    const pane = PANE_SEGMENTS.find((p) => p === last) ?? (rest.length > 1 && DETAIL_SEGMENTS.includes(last ?? '') ? 'detail' : null)
     // Task ids are opaque and may contain characters that were encoded on the
     // way in, so the remaining segments are rejoined rather than assumed to
     // be one.
@@ -978,7 +993,8 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) return ['pool']
   // One schedule rides on the list's address (`/automate/schedules/<id>`,
   // paths.ts), with its tab and its editor (AUT-11).
-  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit']
+  // `scope=all` is the admin's All tenants view (SCHED-ONE-PAGE), linkable.
+  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope']
   // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
   if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
@@ -1076,6 +1092,9 @@ export function App() {
   // closed to bare `/agents` while the list behind it still showed, say,
   // Recent · failed. Written during render, so the close address is never one
   // route behind; the write is idempotent, so a double render is harmless.
+  // The fragment the page was opened at, read before the normalise effect
+  // rewrites the bar to its path: `useState(fromLocation)` already applied it.
+  const mountHash = useRef(typeof window === 'undefined' ? '' : window.location.hash)
   const lastList = useRef<AgentList | null>(at.list ?? null)
   if (at.taskId === null) lastList.current = at.list ?? null
 
@@ -1115,9 +1134,38 @@ export function App() {
   )
 
   useEffect(() => {
+    // A hashchange for the fragment this mount already read is the echo of
+    // that same assignment (a script sets the hash, then renders; the event is
+    // queued and lands after). Replayed from its newURL it would undo whatever
+    // the reader did in between -- an agent closed by its breadcrumb opened
+    // again. It is swallowed once, and only for a moment, so a fragment typed
+    // later is still a navigation.
+    let echo: string | null = mountHash.current === '' ? null : mountHash.current
+    const echoTimer = setTimeout(() => {
+      echo = null
+    }, 250)
     const onPop = () => setAt(fromLocation())
-    const onHash = () => {
-      if (isLegacyHash(window.location.hash, LEGACY_HEADS, window.location.pathname)) setAt(fromHash())
+    // The fragment the event names, not the one the bar holds now: the
+    // normalise effect (or the list following an agent's group) may already
+    // have rewritten the address to its path, which drops the fragment, and a
+    // hashchange read from the bar then found nothing and the navigation was
+    // lost -- an agent closed by hash stayed open (CH-2).
+    const onHash = (e?: Event) => {
+      let hash = window.location.hash
+      const next = (e as HashChangeEvent | undefined)?.newURL
+      if (typeof next === 'string') {
+        try {
+          hash = new URL(next).hash
+        } catch {
+          /* keep the bar's own */
+        }
+      }
+      if (echo !== null && hash === echo) {
+        echo = null
+        return
+      }
+      echo = null
+      if (isLegacyHash(hash, LEGACY_HEADS, window.location.pathname)) setAt(fromAddress(hash.replace(/^#/, '')))
     }
     // A click on an old-style `href="#work/..."` link, or on a same-origin
     // path, is a navigation: pushed, so Back returns to where it was made.
@@ -1139,6 +1187,7 @@ export function App() {
     window.addEventListener('hashchange', onHash)
     document.addEventListener('click', onClick)
     return () => {
+      clearTimeout(echoTimer)
       window.removeEventListener('popstate', onPop)
       window.removeEventListener('hashchange', onHash)
       document.removeEventListener('click', onClick)
@@ -1172,6 +1221,18 @@ export function App() {
     lastList.current = list
     setAt((r) => ({ ...r, list }))
   }, [])
+
+  // THE LIST FOLLOWS THE OPEN AGENT'S GROUP (QA12-26, live-browser QA p12):
+  // a task opened under Live that parks belongs to Waiting, and the back link
+  // said `‹ Live` beside a list that no longer held it. The split reports the
+  // group its state puts it in; the list's tab, the back link and the address
+  // move there, written in place like a tab click. The toggles are kept; the
+  // Recent state filter is dropped, so the row is not hidden by it.
+  const onGroup = useCallback((tab: AgentTab) => {
+    const was = lastList.current
+    if (was?.tab === tab) return
+    onList(agentList(tab, null, { grouped: was?.grouped === true, failedFirst: was?.failedFirst === true }))
+  }, [onList])
 
   // THE TIMELINE'S AND THE WORKFLOWS LIST'S FILTERS ARE A ROUTE CHANGE TOO
   // (#185), written the same way.
@@ -1328,6 +1389,7 @@ export function App() {
                 theater={at.theater === true}
                 closeTo={listAddress}
                 go={go}
+                onGroup={onGroup}
                 base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
               />
             )}
@@ -1912,8 +1974,6 @@ function SectionBody({
       return <PlatformCountsScreen />
     case 'admin/people':
       return <PeopleScreen />
-    case 'admin/schedules':
-      return <AdminSchedulesScreen go={go} />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash

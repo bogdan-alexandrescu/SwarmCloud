@@ -2,6 +2,10 @@
 #
 # agent-runtime-base -- the image every non-browser runner profile runs in.
 #
+# It is built twice. `--build-arg INSTALL_CODEX=0` makes
+# agent-runtime-base-nocodex, the base agent-runtime-browser is built FROM
+# (scripts/build-images.sh; BROWSER-NO-CODEX, owner decision 2026-10-13).
+#
 # Build from the REPOSITORY ROOT, because the worker and the frozen contract
 # package are both part of the image:
 #
@@ -185,6 +189,14 @@ ARG INSTALL_AGENT_CLIS=1
 # as unrecognized_model, so every claude-code task failed (task_2ad43c35a18448fca83b).
 ARG CLAUDE_CODE_VERSION=2.1.283
 ARG CODEX_VERSION=0.154.0
+# 1 (the default, and every runner profile but the browser's): codex is
+# installed beside Claude Code. 0: the same image without it -- the build
+# `agent-runtime-base-nocodex` that agent-runtime-browser is built FROM
+# (BROWSER-NO-CODEX, owner decision 2026-10-13, docs/browser-startup-speed.md
+# §2.3). codex is 129.7 MB as a layer and `claude-code-browser` never runs it;
+# a derived image cannot drop an inherited layer (deleting adds a whiteout and
+# the bytes are still pulled), so it has to be left out HERE, by this argument.
+ARG INSTALL_CODEX=1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -742,11 +754,18 @@ RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS
 # The coding-agent CLIs the claude-code and codex runner profiles start. Both
 # are optional at build time so the base image can be rebuilt in an environment
 # with no npm registry access; the runners fail with a clear message if absent.
+#
+# codex is left out IN THIS RUN when INSTALL_CODEX=0, never removed by a later
+# one: a later RUN would only white it out, and a check-only RUN can write a
+# duplicate layer (PR 1239). With the default the command is the one it always
+# was: one `npm install -g` of both CLIs.
 RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
-      mkdir -p "${NPM_CONFIG_PREFIX}" \
+      codex="" \
+      && if [ "${INSTALL_CODEX}" = "1" ]; then codex="@openai/codex@${CODEX_VERSION}"; fi \
+      && mkdir -p "${NPM_CONFIG_PREFIX}" \
       && npm install -g --no-audit --no-fund \
            "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-           "@openai/codex@${CODEX_VERSION}" \
+           ${codex:+"${codex}"} \
       && npm cache clean --force ; \
     fi
 
@@ -767,14 +786,22 @@ WORKDIR /workspace
 # nothing about the patch level, so the build asserts it rather than a resume
 # discovering it. `agent_worker.checkpoint` refuses to import without the
 # filter too; this line names the cause in the build log.
+#
+# And a worker that cannot import its own runners is broken in a way that must
+# not reach production, so the build proves it can.
+#
+# ONE RUN, not two. A check-only RUN leaves a ~100-byte layer holding only the
+# etc/ directory entry, and two that finish in the same second write the SAME
+# layer: 2 of the 30 newest digests of this image repeated one here (read
+# 2026-10-13), and so did every browser and indexer image built on them. GKE
+# does not stream an image with a duplicate layer (docs/browser-startup-
+# speed.md §2.4), and the release refuses one (scripts/image-sizes.sh
+# --duplicate-layers; tests/unit/scripts/test_image_streaming.py).
 RUN python -c "import sys, tarfile; \
 assert sys.version_info >= (3, 11, 4), 'Python %s: the checkpoint restore needs 3.11.4 or later' % sys.version.split()[0]; \
 assert hasattr(tarfile, 'data_filter'), 'tarfile.data_filter is missing'; \
-print('python', sys.version.split()[0])"
-
-# A worker that cannot import its own runners is broken in a way that must not
-# reach production, so the build proves it can.
-RUN python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"
+print('python', sys.version.split()[0])" \
+ && python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"
 
 # Every program the generic runner's catalogue names must exist in this image,
 # or the first tenant to submit the documented use case discovers it instead of

@@ -39,6 +39,7 @@ from .validation import (
     DEFAULT_CARRIER,
     DEFAULT_STRATEGY,
     DISPATCH_METADATA_KEY,
+    OWNER_ANSWERS_METADATA_KEY,
     START_PROBLEM_METADATA_KEY,
 )
 
@@ -325,6 +326,64 @@ def start_problem_to_api(task: Task, masking: TaskMasking) -> dict[str, Any] | N
     return masked
 
 
+def owner_answers_by_index(metadata: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+    """The owner's answers stored on a task (`metadata.owner_answers`), by question index.
+
+    Written only by `agent_questions.answer_question` (TASK-ANSWERS). A
+    document can hold anything, so an entry that is not a map or has no
+    non-negative integer `question_index` is skipped, never guessed at.
+    """
+    raw = (metadata or {}).get(OWNER_ANSWERS_METADATA_KEY)
+    out: dict[int, dict[str, Any]] = {}
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        index = entry.get("question_index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            continue
+        out[index] = entry
+    return out
+
+
+def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str, Any]:
+    """One stored answer as it is served, every string masked by the task's masker.
+
+    The free text was redacted before it was stored; it is masked again here
+    as every collected text is (`task_input.COLLECTED_METADATA_KEYS`).
+    """
+
+    def text(value: Any) -> str | None:
+        return value if isinstance(value, str) else None
+
+    def one(e: dict[str, Any]) -> dict[str, Any]:
+        at = e.get("at")
+        return {
+            "choice": text(e.get("choice")),
+            "text": text(e.get("text")),
+            "by": text(e.get("by")),
+            "at": at.isoformat() if isinstance(at, datetime) else text(at),
+        }
+
+    history = entry.get("history") if isinstance(entry.get("history"), list) else []
+    masked, _ = masking.leaves(
+        {
+            "question_index": entry.get("question_index"),
+            "question": text(entry.get("question")),
+            **one(entry),
+            "history": [one(h) for h in history if isinstance(h, dict)],
+        }
+    )
+    return masked
+
+
+def owner_answers_to_api(task: Task, masking: TaskMasking) -> list[dict[str, Any]]:
+    """The owner's answers to the agent's questions, in question order; `[]` for none."""
+    return [
+        owner_answer_to_api(entry, masking)
+        for _, entry in sorted(owner_answers_by_index(task.metadata).items())
+    ]
+
+
 def workflow_dispatch(tasks: Any) -> dict[str, Any]:
     """A workflow's dispatch options, read back from the tasks that carry them.
 
@@ -494,6 +553,11 @@ def task_to_api(
         # list is where a stuck "dispatched" row is first seen. Null when the
         # reconciler recorded nothing. Also inside `metadata`, masked there too.
         "start_problem": start_problem_to_api(task, masking),
+        # TASK-ANSWERS (part of #1206): the owner's answers to the agent's
+        # questions, lifted out of `metadata.owner_answers` as `start_problem`
+        # is, so whoever launched the work reads them from the task it already
+        # reads. `[]` when none is answered. Also inside `metadata`, masked.
+        "owner_answers": owner_answers_to_api(task, masking),
         "repository_url": repository_url,
         "repository_url_redaction_count": repository_url_count,
         "repository_ref": task.repository_ref,

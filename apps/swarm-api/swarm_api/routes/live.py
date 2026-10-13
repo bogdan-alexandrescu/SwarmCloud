@@ -9,7 +9,7 @@ Two kinds of caller, as the hand-off routes have:
     the same per-group membership, the same principal check every route has --
     reads the session, gets a viewer ticket, takes, renews and returns control,
     switches the device while in control (LB-DEV-B), opens control to the
-    tenant, and reads the audit. The socket
+    tenant and closes it again (QA12-11), and reads the audit. The socket
     (`/v1/live/{session_id}/stream`) authenticates the same identity from the
     upgrade request's headers and selects the tenant the ticket names.
 
@@ -373,6 +373,21 @@ def open_to_members(
     browser while its agent asks for help (§5.1, Q1). Audited."""
     return _person_service(ctx, request.app).open_to_members(tenant_id, task_id, email=auth.email,
                                                 submitted_by=submitted_by)
+
+
+@router.delete("/tasks/{task_id}/live/open-to-members", response_model=LiveRead)
+def close_to_members(
+    task_id: str,
+    request: Request,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The owner turns member control off again, for this attempt and the
+    task's later ones (owner decision 2026-10-13, QA12-11). Audited."""
+    return _person_service(ctx, request.app).close_to_members(tenant_id, task_id, email=auth.email,
+                                                 submitted_by=submitted_by)
 
 
 @router.get("/tasks/{task_id}/live/audit")

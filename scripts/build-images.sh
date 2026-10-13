@@ -132,12 +132,31 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # shellcheck source=lib/build-mirror.sh
 source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live workspace-apply)
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live workspace-apply)
+
+# The target whose recipe an image is built from. Every image is its own,
+# except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built
+# again with INSTALL_CODEX=0 (target_build_args), the base agent-runtime-browser
+# is built FROM (BROWSER-NO-CODEX, owner decision 2026-10-13,
+# docs/browser-startup-speed.md §2.3). codex is 129.7 MB in the base's npm
+# layer, and a derived image cannot drop an inherited layer, so the browser
+# needs a base built without it. Its own image name, not a second tag of
+# agent-runtime-base, so the build record, the promotion, the size and
+# duplicate-layer gates (scripts/image-sizes.sh) and terraform's image_refs --
+# all keyed by image name -- cover it as the image it is. Its recipe directory
+# is the base's, so it reads the base's inputs and is rebuilt with it.
+recipe_target() {
+  case "$1" in
+    agent-runtime-base-nocodex) printf '%s' "agent-runtime-base" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 # Find the build recipe for a target. Track B owns images/ and the service
 # Dockerfiles, so both layouts are accepted rather than assumed.
 find_recipe() {
-  local target="$1" candidate
+  local target candidate
+  target="$(recipe_target "$1")"
   for candidate in \
     "images/${target}/cloudbuild.yaml" \
     "apps/${target}/cloudbuild.yaml"; do
@@ -155,10 +174,11 @@ find_recipe() {
 # The images that must wait for another to FINISH building before they may be
 # SUBMITTED.
 #
-# images/agent-runtime-browser/cloudbuild.yaml pulls agent-runtime-base:<tag>
-# in its first step and builds FROM that digest, so submitting it before the
-# base has been pushed fails with manifest-unknown. images/agent-runtime-indexer/
-# cloudbuild.yaml does the same (#625). When builds ran one at a
+# images/agent-runtime-browser/cloudbuild.yaml pulls
+# agent-runtime-base-nocodex:<tag> in its first step and builds FROM that
+# digest, so submitting it before that base has been pushed fails with
+# manifest-unknown. images/agent-runtime-indexer/cloudbuild.yaml does the same
+# with agent-runtime-base:<tag> (#625). When builds ran one at a
 # time this was satisfied by ALL_TARGETS happening to list the base first --
 # which a targeted `build-images.sh agent-runtime-browser agent-runtime-base`
 # did not, and which concurrency would not either.
@@ -168,7 +188,7 @@ find_recipe() {
 # new `FROM <another target>` cannot be added without it.
 build_after() {
   case "$1" in
-    agent-runtime-browser) printf '%s' "agent-runtime-base" ;;
+    agent-runtime-browser) printf '%s' "agent-runtime-base-nocodex" ;;
     agent-runtime-indexer) printf '%s' "agent-runtime-base" ;;
     *) : ;;
   esac
@@ -442,7 +462,7 @@ BUILD_LOGIC=(scripts/build-images.sh scripts/lib/common.sh scripts/lib/ci-built-
 # even on a part of the tree nobody touches.
 REUSE_MAX_AGE_DAYS="${BUILD_REUSE_MAX_AGE_DAYS:-7}"
 
-# PER-TARGET BUILD ARGS, as YAML list items for a docker step's args. Only swarm-ui takes one, and it has to be a BUILD
+# PER-TARGET BUILD ARGS, as YAML list items for a docker step's args. swarm-ui's has to be a BUILD
 # arg rather than a Cloud Run env var: Vite inlines `import.meta.env.VITE_*`
 # when the bundle is compiled, so by the time a container starts, a static
 # bundle has already decided what environment it thinks it is in.
@@ -450,10 +470,17 @@ REUSE_MAX_AGE_DAYS="${BUILD_REUSE_MAX_AGE_DAYS:-7}"
 # ENVIRONMENT is exported by lib/common.sh, so this carries dev to a dev
 # build and prod to a prod one without a second place to keep in step.
 # Defined here, above plan_incremental, because baked_build_args reads it.
+#
+# agent-runtime-base-nocodex is agent-runtime-base's Dockerfile (recipe_target)
+# with INSTALL_CODEX=0, and this is the ONE place that argument is passed: the
+# base, and so every runner profile but the browser's, keeps codex.
 target_build_args() {
-  if [[ "$1" == "swarm-ui" ]]; then
-    printf '%s\n' "      - --build-arg" "      - VITE_SWARM_ENV=${ENVIRONMENT}"
-  fi
+  case "$1" in
+    swarm-ui)
+      printf '%s\n' "      - --build-arg" "      - VITE_SWARM_ENV=${ENVIRONMENT}" ;;
+    agent-runtime-base-nocodex)
+      printf '%s\n' "      - --build-arg" "      - INSTALL_CODEX=0" ;;
+  esac
 }
 
 # target_build_args' values, one KEY=VALUE a line: what an image bakes in
@@ -922,8 +949,8 @@ YAML
 
 # --build-only, for an image built FROM another: build both, in ONE Cloud
 # Build, the second FROM the first. Main's recipe for agent-runtime-browser
-# pulls agent-runtime-base:<tag> from the registry, which a build-only run never
-# pushed -- and building the base here is also the point: a pull request that
+# pulls agent-runtime-base-nocodex:<tag> from the registry, which a build-only
+# run never pushed -- and building the base here is also the point: a pull request that
 # breaks the base's self-tests is caught by either image's build. The second
 # image takes the first as BASE_IMAGE, as the checked-in recipe passes it.
 generate_chain_config() {

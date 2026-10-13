@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from 'react'
 import { createPortal } from 'react-dom'
 // `Em` and `Mark` live in AgentDetail.tsx, which is where `ABSENT_MARK` was
 // written and which design-system.md §9.1 names as the source to promote from.
@@ -7,10 +7,10 @@ import { createPortal } from 'react-dom'
 // `Chip` joins them for the same reason: §9.3 of design-system.md counted four
 // status chips in this product and asked for one, and the rebuilt `.ctl-chip`
 // is only a rebuild if the screens stop hand-rolling their own.
-import { Em, Mark, type ChipTone } from './AgentDetail'
+import { Em, Mark, timesRun, type ChipTone } from './AgentDetail'
 import { TaskIdLine } from './TaskIdLine'
 import { PHONE_PAGE_LIMIT, RECENT_STATES, RECENT_STATE_OF, agentKind, agentList, agentName, shortTaskId, workflowHref, type AgentList, type RecentState } from './agentlist'
-import { TASK_PAGE_LIMIT, loadLiveSession, loadTask, loadTasks, type LiveSession, type ResourceClasses } from './api'
+import { TASK_PAGE_LIMIT, USE_FIXTURES, loadAttempts, loadLiveSession, loadTask, loadTasks, loadTasksInState, type LiveSession, type ResourceClasses } from './api'
 import { classUnits, useResourceClasses } from './Blockers'
 import type { Result } from './fetch'
 import { isLiveBrowser, liveBrowserRows, needsYou } from './Handoff'
@@ -82,6 +82,24 @@ const TABS: { id: Tab; label: string; say: string }[] = [
   { id: 'waiting', label: 'Waiting', say: 'Waiting: durable and free — READY or PARKED' },
   { id: 'recent', label: 'Recent', say: 'Recent: finished, one way or another' },
 ]
+
+/**
+ * THE BROWSER SWITCH'S ROWS (QA12-20): `liveBrowserRows` -- the RUNNING
+ * browser agents, needs-you first -- then the browser agents still STARTING.
+ * A starting browser was left out, so a browser agent the reader had just
+ * launched was missing from the one filter that names browsers; it is listed
+ * last, with a `starting` mark in its row, because its browser is not up yet.
+ */
+export function browserRows(tasks: readonly Task[]): Task[] {
+  return [...liveBrowserRows(tasks), ...tasks.filter((t) => t.state === 'STARTING' && isLiveBrowser(t))]
+}
+
+/**
+ * THE LIST'S READ TIME, FOR THE ROWS THAT READ ON THE LIST'S POLL (QA12-29):
+ * the device outline. A context rather than a prop through every row
+ * component, because one cell of one kind of row uses it.
+ */
+const ListReadAt = createContext<number | null>(null)
 
 function tabOf(t: Task): Tab {
   if (CONCURRENCY_STATES.has(t.state)) return 'live'
@@ -176,6 +194,13 @@ interface AgentsPage extends TaskPage {
   asked: number
   /** Further pages were read into it with "load more" (`MorePages`). */
   extended?: boolean
+  /**
+   * EVERY LIVE AGENT IS IN `tasks` (QA12-20): the page held them all, or the
+   * live states were read in full beside it (`readLive`). False when a capped
+   * page's live-state read failed or was itself capped, and Live's count is
+   * then a lower bound like every other.
+   */
+  liveWhole?: boolean
 }
 
 /**
@@ -207,6 +232,8 @@ export function withMorePages(page: AgentsPage, more: MorePages | null): AgentsP
     tasks: [...page.tasks, ...more.tasks.filter((t) => !fresh.has(t.id))],
     next_page_token: more.token,
     extended: true,
+    // Read to the last page, the list holds every row, live ones included.
+    liveWhole: page.liveWhole === true || more.token === null,
   }
 }
 
@@ -232,9 +259,58 @@ async function loadAgentsPage(): Promise<Result<AgentsPage>> {
   if (read.status === 'empty') {
     return { status: 'ok', data: { tasks: [], next_page_token: null, asked }, fetchedAt: read.fetchedAt, serverAt: read.serverAt }
   }
-  return read.status === 'ok' || read.status === 'stale'
-    ? { ...read, data: { ...read.data, asked } }
-    : read
+  if (read.status !== 'ok' && read.status !== 'stale') return read
+  if (!read.data.next_page_token) return { ...read, data: { ...read.data, asked, liveWhole: true } }
+  // A FIXTURE LIST IS ONE PAGE (`loadTasks`): it never hands out a token, so
+  // there is no capped page to read the live states beside, and its `?state=`
+  // reads are the same fixture rows again, not a second population.
+  if (USE_FIXTURES) return { ...read, data: { ...read.data, asked, liveWhole: false } }
+  const live = await readLive()
+  const held = new Set(read.data.tasks.map((t) => t.id))
+  return {
+    ...read,
+    data: {
+      ...read.data,
+      tasks: [...read.data.tasks, ...live.tasks.filter((t) => !held.has(t.id))],
+      asked,
+      liveWhole: live.whole,
+    },
+  }
+}
+
+/**
+ * THE LIVE STATES, READ IN FULL (live-browser QA p12, QA12-20). Live was
+ * counted over the newest 200 rows, so with more beyond them it read `Live
+ * 5+` with exactly five live, offered `Load 200 more` under five rows, and a
+ * resumed task older than the page -- the case p12 measured -- was not on it
+ * at all. A live agent holds a pool slot, so the live states are bounded by
+ * concurrency (invariant 3), not by the page: one `?state=` read each, summary
+ * rows, made only when the page is capped. A failed or capped read leaves
+ * Live a lower bound, as it was.
+ */
+async function readLive(): Promise<{ tasks: Task[]; whole: boolean }> {
+  const reads = await Promise.all(
+    // A read that throws or answers nothing is a failed read, never an
+    // empty state, as the header's attempt read treats one (AgentSplit.tsx).
+    [...CONCURRENCY_STATES].map((state) =>
+      Promise.resolve()
+        .then(() => loadTasksInState(state, { view: 'summary' }))
+        .then((r) => r ?? null, () => null),
+    ),
+  )
+  let whole = true
+  const tasks: Task[] = []
+  for (const r of reads) {
+    if (r !== null && r.status === 'empty') continue
+    if (r === null || r.status !== 'ok') {
+      whole = false
+      if (r !== null && r.status === 'stale') tasks.push(...r.data.tasks)
+      continue
+    }
+    tasks.push(...r.data.tasks)
+    if (r.data.next_page_token) whole = false
+  }
+  return { tasks, whole }
 }
 
 /**
@@ -515,15 +591,18 @@ function AgentsBody({
   // THE STARTED SORT (#376), on every tab: newest start, oldest start, then
   // back to the list's own order. A reader's scratch, so not in the address.
   const [startedSort, setStartedSort] = useState<StartedSort>(null)
-  // THE "ALL | LIVE N" SWITCH (docs/design/live-browser.md §6, "All live
-  // browsers"; lanes LB-L12, LB-UX3): on the Live tab, Live lists only
-  // RUNNING browser agents, the ones waiting for a person first
-  // (`liveBrowserRows`), and N counts them. It was a "Live browsers"
-  // checkbox; the chosen design draws a switch. A reader's scratch, like the
-  // sort.
+  // THE "ALL | BROWSERS N" SWITCH (docs/design/live-browser.md §6, "All live
+  // browsers"; lanes LB-L12, LB-UX3): on the Live tab, Browsers lists only
+  // the browser agents, the ones waiting for a person first, then the rest
+  // running, then the ones starting (`browserRows`), and N counts them. It
+  // was a "Live browsers" checkbox; the chosen design draws a switch. A
+  // reader's scratch, like the sort.
+  //
+  // `BROWSERS`, NOT `LIVE` (live-browser QA p12, QA12-20): the option read
+  // `Live` inside the Live tab, one word for two different sets on one line.
   const [browsersOnly, setBrowsersOnly] = useState(false)
   const browsers = shown === 'live' && browsersOnly
-  const liveBrowsers = useMemo(() => liveBrowserRows(page.tasks).length, [page.tasks])
+  const liveBrowsers = useMemo(() => browserRows(page.tasks).length, [page.tasks])
   const sort: SortControl = {
     started: startedSort,
     onStarted: () => setStartedSort((s) => (s === null ? 'desc' : s === 'desc' ? 'asc' : null)),
@@ -533,7 +612,7 @@ function AgentsBody({
       browsers
         ? // Needs-you first IS this filter's order, so the started sort does
           // not reorder it; the profile and the search still narrow it.
-          liveBrowserRows(page.tasks)
+          browserRows(page.tasks)
             .filter((t) => profile === '' || t.runner_profile === profile)
             .filter((t) => needle === '' || matchesQuery(t, needle))
         : page.tasks
@@ -663,11 +742,21 @@ function AgentsBody({
   // aggregation per state set on every poll, and this screen's figures are
   // the page's by design (the Overview counts over the same page, OV-10).
   const bounded = Boolean(page.next_page_token)
-  const countText = (n: number): string => (bounded ? `${n}+` : String(n))
+  // LIVE IS READ IN FULL (QA12-20), so its count is exact over a capped page
+  // whenever the live-state reads answered whole (`readLive`): `Live 5+` with
+  // exactly five live claimed a doubt there was no reason for.
+  const liveWhole = page.liveWhole === true
+  const tabBounded = (t: Tab): boolean => bounded && !(t === 'live' && liveWhole)
+  const countText = (n: number, b: boolean = bounded): string => (b ? `${n}+` : String(n))
   const countSay = (n: number): string => `at least ${n} among the ${page.tasks.length} newest read; more rows exist beyond them`
+  // ON LIVE, NO "MORE" WHEN THERE IS NO MORE (QA12-20): `200 loaded · more
+  // beyond` and `Load 200 more` sat under five live rows. More pages exist,
+  // but none of them holds a live agent, so Live does not offer them.
+  const liveAll = shown === 'live' && liveWhole
+  const liveSay = `Every agent holding a pool slot is listed: the live states are read in full, not only from the ${page.tasks.length} newest rows.`
 
   return (
-    <>
+    <ListReadAt.Provider value={readAt}>
       {/* THE SECTION'S PAGES AS A STRIP (agents.html V1; #503 at 390): Live,
           Waiting and Recent with their counts, underlined rather than boxed.
           On a phone it sticks under the header, so the reader can change tab
@@ -679,10 +768,11 @@ function AgentsBody({
             type="button"
             role="tab"
             aria-selected={shown === t.id}
-            aria-label={bounded ? `${t.say} — ${countSay(counts[t.id])}` : t.say}
+            aria-label={tabBounded(t.id) ? `${t.say} — ${countSay(counts[t.id])}` : t.say}
             onClick={() => chooseTab(t.id)}
           >
-            {t.label} <span className={`badge${bounded ? ' is-bound' : ''}`}>{countText(counts[t.id])}</span>
+            {t.label}{' '}
+            <span className={`badge${tabBounded(t.id) ? ' is-bound' : ''}`}>{countText(counts[t.id], tabBounded(t.id))}</span>
           </button>
         ))}
       </div>
@@ -707,10 +797,12 @@ function AgentsBody({
             aria-label="Find by name or task id"
             onChange={(e) => setQuery(e.target.value)}
           />
-          <span className="ag-scope" aria-label={scopeSay}>
-            {phonePage
-              ? `showing the ${page.tasks.length} most recent`
-              : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
+          <span className="ag-scope" aria-label={liveAll && bounded ? liveSay : scopeSay}>
+            {liveAll && bounded
+              ? `all ${counts.live} live`
+              : phonePage
+                ? `showing the ${page.tasks.length} most recent`
+                : `${page.tasks.length} loaded${page.next_page_token ? ' · more beyond' : ''}`}
           </span>
         </div>
 
@@ -764,16 +856,29 @@ function AgentsBody({
             never disappears under the reader. */}
         {shown === 'live' && (liveBrowsers > 0 || browsersOnly) && (
           <Segmented
-            label="All agents or live browser agents"
+            label="All live agents or the browser agents among them"
             value={browsersOnly ? 'browsers' : 'all'}
             options={[
               { key: 'all', label: 'All', title: 'Every agent holding a pool slot' },
-              {
-                key: 'browsers',
-                label: 'Live',
-                count: liveBrowsers,
-                title: 'Running browser agents only, the ones waiting for you first',
-              },
+              tabBounded('live')
+                ? {
+                    key: 'browsers',
+                    label: (
+                      <>
+                        Browsers
+                        <em className="is-bound" title={countSay(liveBrowsers)}>
+                          {countText(liveBrowsers)}
+                        </em>
+                      </>
+                    ),
+                    title: 'Browser agents only: the ones waiting for you first, then running, then starting',
+                  }
+                : {
+                    key: 'browsers',
+                    label: 'Browsers',
+                    count: liveBrowsers,
+                    title: 'Browser agents only: the ones waiting for you first, then running, then starting',
+                  },
             ]}
             onChange={(k) => setBrowsersOnly(k === 'browsers')}
           />
@@ -905,7 +1010,7 @@ function AgentsBody({
           said `more beyond` with nothing to reach it by. The next page is
           read into the same list, so every count, filter and search above
           runs over it as well. */}
-      {bounded && (
+      {bounded && !liveAll && (
         <div className="ag-more">
           <button type="button" className="ag-more-btn" disabled={moreRead.kind === 'reading'} onClick={onMore}>
             {moreRead.kind === 'reading' ? 'Loading…' : `Load ${page.asked} more`}
@@ -918,7 +1023,7 @@ function AgentsBody({
           )}
         </div>
       )}
-    </>
+    </ListReadAt.Provider>
   )
 }
 
@@ -1408,17 +1513,61 @@ function GroupedRows({
  * problem with the platform, and only it gets the treatment and the overage
  * in words.
  */
-export function attemptsUsed(task: Pick<Task, 'attempt_count' | 'max_attempts'>): {
+export function attemptsUsed(
+  task: Pick<Task, 'attempt_count' | 'max_attempts'>,
+  runs: number = task.attempt_count,
+): {
   over: boolean
+  text: string
   say: string
 } {
   const over = task.attempt_count > task.max_attempts
+  // THE HEADER'S WORDS AND THE HEADER'S COUNT (live-browser QA p12, QA12-12):
+  // a resumed attempt read `try 1/3` here and `attempt 2 of 3` in the task
+  // header. `runs` is `timesRun` over the attempt documents, as the header's
+  // is; the charged counter is still what the ceiling is judged on (AG-15),
+  // and the sentence says so when the two differ.
+  const text = runs > 0 ? `attempt ${runs} of ${task.max_attempts}` : 'no attempt yet'
+  const charged = runs !== task.attempt_count ? `, ${task.attempt_count} counted against the cap` : ''
   return {
     over,
+    text,
     say: over
       ? `${task.attempt_count} attempts against a cap of ${task.max_attempts}: ${task.attempt_count - task.max_attempts} over the ceiling`
-      : `${task.attempt_count} of ${task.max_attempts} attempts used`,
+      : `${text}${charged}`,
   }
+}
+
+/**
+ * HOW MANY TIMES A ROW'S TASK RAN, read as the task header reads it
+ * (`timesRun` over `GET /v1/tasks/{id}/attempts`, QA12-12). Only for a row
+ * that shows the figure -- live, or over its cap -- and re-read only when the
+ * task says its attempts changed (its generation, its counter or its state),
+ * the header's own key, never on every list poll. Until the documents are
+ * read, or when the read fails, the task's own counter, as the header falls
+ * back to it.
+ */
+function useRuns(task: Task, shows: boolean): number {
+  const key = `${task.id}:${task.current_generation}:${task.attempt_count}:${task.state}`
+  const [got, setGot] = useState<{ key: string; attempts: readonly unknown[] | null } | null>(null)
+  useEffect(() => {
+    if (!shows) return
+    let live = true
+    // A read that throws or answers nothing is a failed read: the counter.
+    Promise.resolve()
+      .then(() => loadAttempts(task.id))
+      .then((r) => r ?? null, () => null)
+      .then((r) => {
+        if (!live) return
+        const attempts = r === null ? null : r.status === 'ok' || r.status === 'stale' ? r.data.attempts : r.status === 'empty' ? [] : null
+        setGot({ key, attempts })
+      })
+    return () => {
+      live = false
+    }
+    // `key` names everything the read depends on, the task id included.
+  }, [key, shows])
+  return timesRun(task, got !== null && got.key === key ? got.attempts : null)
 }
 
 /** The qualifier on a CANCELLED row's elapsed figure (#163); `TaskRow` says why. */
@@ -1505,7 +1654,8 @@ type CardAt = { top: number; left: number }
  * THE COMPACT ROW (agents.html V1, decided 2026-10-01): two lines, as drawn.
  *
  *   line 1  the state mark, the agent's name, its elapsed time
- *   line 2  profile (and model) · owner · `try n/m` on a live row
+ *   line 2  profile (and model) · owner · `attempt n of m` on a live row,
+ *           in the task header's words and from its count (QA12-12)
  *   then    the reason it waits or stopped, where there is one -- never
  *           dropped, for the reason `TaskRow` gives (the phone question)
  *
@@ -1544,13 +1694,17 @@ function CompactRow({
   // has room for the figure only, so here it is the cell's `title`: the figure
   // is not presented as run time without saying what it spans.
   const cancelSpan = task.state === 'CANCELLED' && el.phase === 'ran'
-  const tries = attemptsUsed(task)
+  const live = tabOf(task) === 'live'
+  const tries = attemptsUsed(task, useRuns(task, live || task.attempt_count > task.max_attempts))
   // NAMED FROM WHAT IT IS (walkthrough G): its step, else `browser check ·
   // 02e9705a` -- it was the bare hash. `agentName`'s rule, drawn below.
   const name = agentName(task)
   const owner = task.submitted_by?.split('@')[0] ?? null
   const profile = task.model ? `${task.runner_profile} · ${task.model}` : task.runner_profile
-  const live = tabOf(task) === 'live'
+  // A BROWSER AGENT WHOSE BROWSER IS NOT UP YET (QA12-20): listed under
+  // Browsers with the running ones, and marked, so it is not read as a
+  // browser to watch.
+  const startingBrowser = task.state === 'STARTING' && isLiveBrowser(task)
   // THE ONE FACT THAT CONTRADICTS THE STATE WORD: a stop is requested and the
   // lease is still held (invariant 3), so the row still reads RUNNING.
   const cancelling = task.cancel_requested && !TERMINAL_STATES.has(task.state)
@@ -1634,7 +1788,15 @@ function CompactRow({
           <>
             {' · '}
             <span className={`cr-try${tries.over ? ' is-over' : ''}`} aria-label={tries.say}>
-              try {task.attempt_count}/{task.max_attempts}
+              {tries.text}
+            </span>
+          </>
+        )}
+        {startingBrowser && (
+          <>
+            {' · '}
+            <span className="cr-starting" title="The browser is starting: there is nothing to watch yet">
+              <ToneMark tone="unknown">starting</ToneMark>
             </span>
           </>
         )}
@@ -1734,12 +1896,16 @@ export function deviceShape(session: Pick<LiveSession, 'device' | 'presets'> | n
  * per card (LiveThumb.tsx); forty rows of sockets on a list that re-reads
  * every 5s would be the cost of forty Browser tabs.
  *
- * READ ONCE PER ROW: the session read is per task, so it is made when the row
- * first draws and not on the list's poll. The device moves only when someone
- * switches it, and the open agent's Browser tab shows the live one.
+ * RE-READ WITH THE LIST'S POLL (live-browser QA p12, QA12-29). It was read
+ * once, when the row first drew, on the reasoning that the device moves only
+ * when someone switches it -- and after a switch the row went on drawing the
+ * old device for as long as the list was open. Still one small session read
+ * per live browser row, never a socket; each list read (`ListReadAt`) brings
+ * the next, and the outline drawn stays until it answers.
  */
 function DeviceThumb({ taskId }: { taskId: string }) {
   const [got, setGot] = useState<{ taskId: string; session: LiveSession | null } | null>(null)
+  const polledAt = useContext(ListReadAt)
   useEffect(() => {
     let live = true
     void loadLiveSession(taskId).then((r) => {
@@ -1748,7 +1914,7 @@ function DeviceThumb({ taskId }: { taskId: string }) {
     return () => {
       live = false
     }
-  }, [taskId])
+  }, [taskId, polledAt])
   const session = got !== null && got.taskId === taskId ? got.session : null
   const shape = deviceShape(session)
   const device = session?.device ?? null
