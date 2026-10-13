@@ -263,11 +263,36 @@ locals {
     workspace_firestore = {
       title       = "Swarm Workspace Firestore"
       description = "managed-by=swarm-terraform; read the workspace record and admin_roles, write progress and the tenant and pool documents. No delete. Project-wide: Firestore ignores conditions on the data plane."
+      # One permission per Firestore call of register-tenant.sh --workspace,
+      # from Google's table (firestore/docs/security/iam).
+      # tests/unit/scripts/test_workspace_firestore_permissions.py walks the
+      # script's calls and the guard's (workspace-calls.json) and holds this
+      # list to exactly what they need.
+      #
+      # databases.get was missing until 2026-10-13, so the A1 claim's
+      # beginTransaction 403'd on every execution for w-7f9285.
+      # databases.getMetadata is projects.databases.get, which the job never
+      # calls (its guard refuses it). It STAYS by owner decision 2026-10-12
+      # (adds-only IAM change; removing it is a separate change), and
+      # tests/unit/scripts/test_workspace_firestore_permissions.py allows
+      # exactly that one unused extra.
       permissions = [
+        # Unused (see above); kept by owner decision 2026-10-12.
         "datastore.databases.getMetadata",
+        # beginTransaction (A1 claim) and rollback (a claim that re-admits
+        # nothing). The transaction permission, not the metadata one.
+        "datastore.databases.get",
+        # fs_patch on tenants/<t> and pools/tenant:<t> with no precondition
+        # (A8) is an upsert that creates a missing document; a commit update
+        # with no exists precondition needs it too.
         "datastore.entities.create",
+        # fs_get of workspaces/, tenants/, pools/, admin_roles/<email>; the
+        # claim's transactional GET; runQuery on workspaces (A1) reads docs.
         "datastore.entities.get",
+        # runQuery on workspaces by workspace_id (A1), and on admin_roles.
         "datastore.entities.list",
+        # fs_patch of progress on workspaces/<t>, of tenants/ and pools/
+        # (A8), and the claim's commit (an update, currentDocument.exists).
         "datastore.entities.update",
       ]
     }
