@@ -31,6 +31,16 @@ RATE LIMIT (§5.10). The controller's injected events are limited to
 character and is dropped whole if it does not fit -- half a password typed is
 worse than none.
 
+MOTION IS COALESCED, NEVER DROPPED (LB-CURSOR2; part of #1030). A PointerEvent
+that changes no button is a move. Moves have their own limit,
+`MAX_MOTION_PER_SECOND`, and one above it is not thrown away: it becomes the
+held point, replaced by every later move, and is injected (and counted) as soon
+as the limit allows, or superseded by the next event that is let through.
+MEASURED 2026-10-13 (task_1d1785b21d5b4e1f894e): 20 moves, a click and two keys
+reached the console's canvas and the audit counted two pointer events -- the
+press and the release -- and the painted pointer sat at the click point. A
+pointer that follows only clicks is one the person "sees but cannot move".
+
 NOTHING READ FROM A VIEWER IS LOGGED (§5.3.3). Log lines carry the connection
 id, counts and outcomes. No keysym, character, pasted text or coordinate is
 ever an argument to a log call; `SessionCounts` is what the audit's "41 key
@@ -91,6 +101,11 @@ ENCODING_CURSOR = -239
 
 #: §5.10: controller input events per second, dropped above.
 MAX_INPUT_EVENTS_PER_SECOND = 200
+#: Moves (a PointerEvent that changes no button) per second. Above it the
+#: latest move is held and sent when the limit allows: coalesced, never
+#: dropped (module docstring). 60 is a display's refresh; noVNC itself sends
+#: at most one move per 17 ms.
+MAX_MOTION_PER_SECOND = 60
 
 #: A ClientCutText longer than this is not read into memory; the connection
 #: is closed. A paste longer than `MAX_TYPED_CHARS` is read and discarded.
@@ -305,6 +320,7 @@ class RfbSession:
     def __init__(self, conn_id: str, reader: asyncio.StreamReader, writer: asyncio.StreamWriter,
                  hub: FrameHub, control: ControlState, injector: Injector, *,
                  max_events_per_second: int = MAX_INPUT_EVENTS_PER_SECOND,
+                 max_motion_per_second: int = MAX_MOTION_PER_SECOND,
                  clock: Callable[[], float] = time.monotonic) -> None:
         self.conn_id = conn_id
         self._reader = reader
@@ -313,6 +329,11 @@ class RfbSession:
         self._control = control
         self._injector = injector
         self._bucket = _Bucket(max_events_per_second, clock)
+        self._motion = _Bucket(max_motion_per_second, clock)
+        self._motion_gap = 1.0 / max_motion_per_second
+        self._buttons = 0  # the button mask last injected for this connection
+        self._held: tuple[int, int] | None = None  # a coalesced move waiting for the limit
+        self._held_task: asyncio.Task[None] | None = None
         self.counts = SessionCounts()
         self._format: _Format | None = None  # the viewer's; None until ServerInit
         self._encodings: tuple[int, ...] = (ENCODING_RAW,)
@@ -345,10 +366,12 @@ class RfbSession:
         except (asyncio.IncompleteReadError, ConnectionError):
             pass
         finally:
-            for task in (reader, writer):
+            self._held = None
+            tasks = (reader, writer, self._held_task)
+            for task in tasks:
                 if task is not None and not task.done():
                     task.cancel()
-            await asyncio.gather(*(t for t in (reader, writer) if t is not None), return_exceptions=True)
+            await asyncio.gather(*(t for t in tasks if t is not None), return_exceptions=True)
             self._hub.unsubscribe(self._wake)
             await self._control.connection_closed(self.conn_id)
             self._writer.close()
@@ -414,12 +437,7 @@ class RfbSession:
                     await self._injector.key(keysym, bool(down))
             elif kind == _POINTER_EVENT:
                 buttons, x, y = struct.unpack(">BHH", await read(5))
-                if self._admit(1):
-                    self.counts.pointer_events += 1
-                    w, h = self._hub.current.frame.width, self._hub.current.frame.height
-                    x, y = min(x, w - 1), min(y, h - 1)
-                    self._hub.pointer.move(x, y)
-                    await self._injector.pointer_event(buttons, x, y)
+                await self._pointer(buttons, x, y)
             elif kind == _CLIENT_CUT_TEXT:
                 (length,) = struct.unpack(">xxxI", await read(7))
                 if length > MAX_CUT_TEXT_BYTES:
@@ -435,6 +453,48 @@ class RfbSession:
             self.counts.dropped += 1
             return False
         return True
+
+    async def _pointer(self, buttons: int, x: int, y: int) -> None:
+        """One PointerEvent: a button change through the input limit, a move
+        through the motion limit, coalesced above it (module docstring)."""
+        if not self._control.holds(self.conn_id):
+            self.counts.dropped += 1
+            return
+        if buttons == self._buttons:
+            if not self._motion.take(1):
+                self._held = (x, y)
+                if self._held_task is None:
+                    self._held_task = asyncio.create_task(self._send_held())
+                return
+        elif not self._admit(1):
+            return
+        self._held = None  # this event is newer than any held move
+        await self._inject_pointer(buttons, x, y)
+
+    async def _inject_pointer(self, buttons: int, x: int, y: int) -> None:
+        self.counts.pointer_events += 1
+        w, h = self._hub.current.frame.width, self._hub.current.frame.height
+        x, y = min(x, w - 1), min(y, h - 1)
+        self._buttons = buttons
+        self._hub.pointer.move(x, y)
+        await self._injector.pointer_event(buttons, x, y)
+
+    async def _send_held(self) -> None:
+        """The held move, once the motion limit has room for it."""
+        try:
+            while self._held is not None:
+                await asyncio.sleep(self._motion_gap)
+                if self._held is None:
+                    return
+                if not self._control.holds(self.conn_id):
+                    self._held = None
+                    self.counts.dropped += 1
+                    return
+                if self._motion.take(1):
+                    (x, y), self._held = self._held, None
+                    await self._inject_pointer(self._buttons, x, y)
+        finally:
+            self._held_task = None
 
     async def _paste(self, text: str) -> None:
         if not self._control.holds(self.conn_id) or not text or len(text) > MAX_TYPED_CHARS:

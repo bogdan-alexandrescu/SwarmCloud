@@ -109,6 +109,15 @@ MAX_DEVICE_FRAME = 256
 #: the relay keeps at most 20,000 a minute anyway (recorder.py).
 MAX_QUEUED_ACTIONS = 1000
 
+#: How long the gate may spend granting control (pausing the agent, attaching
+#: to its page, reading its security state) before it refuses. The relay's
+#: frames are handled one at a time, so a grant that never answered held up
+#: every viewer's stream behind it -- the picture and the controller's input.
+CONTROL_GRANT_SECONDS = 15.0
+
+#: How long reading a page's URL and title may take when control ends.
+PAGE_INFO_SECONDS = 2.0
+
 #: A hand-off's `expect`: a host (the worker checked it with `expect_refusal`).
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?")
 
@@ -835,7 +844,10 @@ class LiveGate:
     async def _on_control(self, conn_id: str) -> None:
         """The relay's CONTROL: swarm-api granted `conn_id` control, or none (empty)."""
         if conn_id:
-            await self._grant(conn_id)
+            try:
+                await asyncio.wait_for(self._grant(conn_id), CONTROL_GRANT_SECONDS)
+            except asyncio.TimeoutError:
+                await self._refused("grant_timeout")
         else:
             await self._release("released")
 
@@ -920,12 +932,23 @@ class LiveGate:
             return await self._refused(decision.cause or "refused")
         await control.grant(conn_id)
         touch.begin(target)
+        await self._bring_to_front(target)
         if self._episode is None:
             self._episode = _Episode(target=target, since=time.monotonic(), conn_id=conn_id)
         else:
             self._episode.conn_id = conn_id
         self._had_control = True
         await self._action({"kind": "control", "event": "granted"})
+
+    async def _bring_to_front(self, target: str) -> None:
+        """The controlled page is the tab on screen: what is streamed, and
+        where X input lands. An agent that opened a second tab may have left
+        its page behind it; the person's clicks must not go to the other one."""
+        assert self.proxy is not None
+        try:
+            await self.proxy.call("Target.activateTarget", {"targetId": target})
+        except Exception as exc:  # noqa: BLE001 -- control is granted; the page may already be in front
+            self.record("activate_failed", {"cause": type(exc).__name__})
 
     async def _refused(self, cause: str) -> None:
         await self._action({"kind": "control", "event": "refused", "cause": cause})
@@ -962,8 +985,13 @@ class LiveGate:
         if self.proxy is None or self.wiped:
             return {}
         try:
-            info = (await self.proxy.call("Target.getTargetInfo", {"targetId": target})).get("targetInfo") or {}
-        except Exception:  # noqa: BLE001 -- the page closed
+            # Bounded: on shutdown the pipe's reader may already be gone, and an
+            # episode ended then waited for a reply forever, so the gate never
+            # stopped while a person was in control.
+            reply = await asyncio.wait_for(
+                self.proxy.call("Target.getTargetInfo", {"targetId": target}), PAGE_INFO_SECONDS)
+            info = reply.get("targetInfo") or {}
+        except Exception:  # noqa: BLE001 -- the page closed, or Chromium no longer answers
             return {}
         return {"url": str(info.get("url", "")), "title": str(info.get("title", ""))}
 
@@ -997,12 +1025,24 @@ class LiveGate:
         self._fresh_target = None
 
     async def pause(self, args: Mapping[str, Any]) -> dict[str, Any]:
-        """§4.1 step 2: hold the agent; open the hand-off's site on a fresh page."""
+        """§4.1 step 2: hold the agent, on the page it is on.
+
+        THE PERSON TAKES THE AGENT'S OWN TAB (LB-CURSOR2; part of #1030). The
+        fresh page (§5.4.3) is opened only when it is asked for by name
+        (`fresh_page: true`); `expect` alone no longer opens one. MEASURED
+        2026-10-13 (task_1d1785b21d5b4e1f894e, generation 1): the agent asked
+        for help on https://httpbin.org/forms/post with `expect` httpbin.org;
+        the gate opened https://httpbin.org/ in a context of its own, the
+        stream and the person's input went there, and the agent's form tab sat
+        hidden and empty behind it -- "a new tab nobody asked for". Owner
+        decision, the same day: taking control keeps the agent's current tab.
+        """
         proxy = self._need(self.proxy)
         self._self_paused = False
         await proxy.pause()
         expect = args.get("expect")
-        if isinstance(expect, str) and expect and _HOST.fullmatch(expect):
+        if (args.get("fresh_page") is True and isinstance(expect, str) and expect
+                and _HOST.fullmatch(expect)):
             try:
                 self._fresh_target = await proxy.open_fresh_page(f"https://{expect}/")
                 if self.devices is not None:

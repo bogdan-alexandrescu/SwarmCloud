@@ -626,7 +626,8 @@ def test_a_control_ticket_for_the_session_with_another_generation_is_refused():
 
     run(go())
     assert relay.controller(SESSION) is None
-    assert [json.loads(t) for t in a.text][-1] == {"type": "refused", "reason": "control"}
+    assert [json.loads(t) for t in a.text][-1] == {"type": "refused", "reason": "control",
+                                                  "cause": "wrong_generation"}
 
 
 def test_a_tunnel_that_drops_closes_its_viewers():

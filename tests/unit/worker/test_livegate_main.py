@@ -611,7 +611,8 @@ def test_the_worker_drives_the_gate_over_ctl_sock(short_tmp):
         assert rig.relay_urls == [rig.cfg.relay_url]
         assert rig.relay.texts == [ticket], "the ticket is the tunnel's first message"
 
-        paused = await asyncio.to_thread(client.call, "pause", {"request_id": "r1", "expect": "example.test"})
+        paused = await asyncio.to_thread(
+            client.call, "pause", {"request_id": "r1", "expect": "example.test", "fresh_page": True})
         assert paused == {"paused": True, "fresh_page": True}
         assert "Target.createBrowserContext" in rig.browser.transport.methods
 
