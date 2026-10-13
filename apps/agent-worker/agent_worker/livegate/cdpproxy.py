@@ -264,6 +264,8 @@ class CdpProxy:
         # since: a state that is not `secure` is checked against the URL.
         self._granted_blank = False
         self._checks: set[asyncio.Task[None]] = set()
+        #: Chromium's pipe closed (`chromium_closed`): nothing written is answered.
+        self._gone = False
 
     # ------------------------------------------------------------------ state
 
@@ -290,6 +292,8 @@ class CdpProxy:
 
     async def call(self, method: str, params: Mapping[str, Any] | None = None, session_id: str | None = None) -> dict[str, Any]:
         """The gate's own command; the method policy does not apply to it."""
+        if self._gone:
+            raise CdpError("the browser closed")
         future: asyncio.Future[dict[str, Any]] = asyncio.get_running_loop().create_future()
         pending = _Pending(None, None, method, session_id, None, dict(params or {}), future)
         command_id = self._allocate(pending)
@@ -298,6 +302,8 @@ class CdpProxy:
 
     async def _post(self, method: str, params: Mapping[str, Any], session_id: str | None) -> None:
         """A command whose reply nobody waits for (safe inside the reader)."""
+        if self._gone:
+            return
         pending = _Pending(None, None, method, session_id, None, dict(params), None)
         await self._write(self._allocate(pending), method, pending.params, session_id)
 
@@ -335,6 +341,28 @@ class CdpProxy:
         if connection in self._connections:
             self._connections.remove(connection)
         await self._post("Target.detachFromTarget", {"sessionId": connection.browser_session}, None)
+
+    async def chromium_closed(self) -> None:
+        """Chromium's pipe closed: nothing it was asked will be answered (BROWSER-RELAUNCH).
+
+        Every gate call still waiting fails now rather than never, and every
+        agent connection is closed: its sessions were in the browser that
+        ended, so the agent reconnects to the browser started next. A gate
+        call made after this fails at once.
+        """
+        self._gone = True
+        pending, self._pending = self._pending, {}
+        for entry in pending.values():
+            if entry.future is not None and not entry.future.done():
+                entry.future.set_exception(CdpError("the browser closed"))
+        connections, self._connections = self._connections, []
+        self._owner.clear()
+        for connection in connections:
+            connection.closed = True
+            try:
+                await connection.link.close()
+            except Exception:  # noqa: BLE001 -- a link already gone is closed
+                pass
 
     def _forget_session(self, session: str) -> None:
         owner = self._owner.pop(session, None)
