@@ -54,7 +54,8 @@ GUARD_RULES="${SWARM_LIB_DIR}/workspace-calls.json"
 GUARD_CASES="${SWARM_LIB_DIR}/workspace-guard-cases.json"
 GUARD_BIN_DIR="${SWARM_LIB_DIR}/guard-bin"
 # The rules the judge reads. Only the self-test points it elsewhere (a copy with
-# the WD9 fallback on, to prove C5 both ways); it is a shell variable and not an
+# the WD9 fallback on and one with it off, to prove C4's bucket-metadata shape
+# and C5 both ways whichever the live switch says); it is a shell variable and not an
 # environment knob, so nothing outside this process can swap the rules.
 GUARD_RULES_ACTIVE="${GUARD_RULES}"
 GUARD_REFUSED_RC=86
@@ -266,6 +267,10 @@ def body_fail($s; $b; $e; $rules):
         (if ($j | keys_within(["options"])) then empty else "beginTransaction takes only options" end)
       elif $kind == "transaction_id" then
         (if ($j | keys_within(["transaction"])) then empty else "rollback takes only a transaction" end)
+      elif $kind == "marker" then
+        # The .tenant marker of A5: the tenant and the workspace it is for, nothing else.
+        (if $j == {tenant_id: ($e.tenant_id // null), workspace_id: ($e.workspace_id // null)} then empty
+         else "the marker names \($j | tojson), not the tenant and workspace this job is for" end)
       elif $kind == "runquery_workspace" then
         if ($j | keys_within(["structuredQuery", "transaction", "newTransaction", "readTime"])) | not then
           "runQuery carries a field the guard does not judge"
@@ -304,7 +309,7 @@ def eval_curl($s; $c; $e; $rules):
   | curl_target($e; $p) as $t
   | curl_method($p) as $m
   | ($m == $s.method
-     and (if $s.url then $t.kind == "other"
+     and (if $s.url then ($t.kind == "other" and $t.path == ($s.url | tpl($e) | split("?") | .[0]))
           elif $s.op then ($t.kind == "op" and $t.op == $s.op)
           elif $s.doc then $t.kind == "doc"
           else false end)) as $near
@@ -316,8 +321,8 @@ def eval_curl($s; $c; $e; $rules):
            | if (($s.headers // $rules.tools.curl.default_headers) | has_el($h)) then empty
              else "header \($h | split(":")[0] | tojson) is not one this call sends" end),
         ((($p.fl["-K"] // []) + ($p.fl["--config"] // [])) as $k
-           | if $s.url then (if ($k | length) > 0 then "the metadata server is asked with no curl config" else empty end)
-             elif ($k | length) != 1 or $k[0] != "-" then "a Firestore call reads its bearer header from -K -, exactly once"
+           | if $s.url and (($s.auth // false) | not) then (if ($k | length) > 0 then "the metadata server is asked with no curl config" else empty end)
+             elif ($k | length) != 1 or $k[0] != "-" then "an authenticated call reads its bearer header from -K -, exactly once"
              elif $c.config != "ok" then "the curl config on stdin holds a line other than the one Authorization header"
              else empty end),
         (if $s.url then (if $t.url == ($s.url | tpl($e)) then empty else "the URL is not \($s.url)" end)
@@ -1082,6 +1087,7 @@ cmd_expect() {
         bucket_url: "gs://\($bucket)",
         gcs_prefix: $prefix,
         marker_url: "gs://\($bucket)/\($prefix)/.tenant",
+        marker_upload_url: "https://storage.googleapis.com/upload/storage/v1/b/\($bucket)/o?uploadType=media&ifGenerationMatch=0&name=\("\($prefix)/.tenant" | @uri)",
         read_expr: $read_expr,
         write_expr: $write_expr,
         forge_slot: $forge_slot,
@@ -1168,6 +1174,7 @@ cmd_self_test() {
   cmd_expect --record "${tmp}/record.json" 2>/dev/null
   cp "${SWARM_CALL_GUARD}" "${tmp}/ready.json"
   jq '.wd9_fallback = true' "${GUARD_RULES}" >"${tmp}/rules-fallback.json"
+  jq '.wd9_fallback = false' "${GUARD_RULES}" >"${tmp}/rules-principal-set.json"
 
   # Built at run time, never a literal: nothing here may look like a credential.
   # {auth_config} is the config line fs_request really writes, around it.
@@ -1213,7 +1220,10 @@ cmd_self_test() {
     if [[ "${CASE_PHASE}" == "stopped" ]]; then
       printf '{"state":"needs_owner","rule":"C2"}\n' >"${SWARM_CALL_GUARD}.stop"
     fi
-    GUARD_RULES_ACTIVE="${GUARD_RULES}"
+    # A case without wd9_fallback is judged under the principal-set grant, not
+    # under whatever the live switch says: the owner turned the fallback on
+    # (2026-10-12), and the cases proving refusal without it must still refuse.
+    GUARD_RULES_ACTIVE="${tmp}/rules-principal-set.json"
     [[ "${CASE_FALLBACK}" == "true" ]] && GUARD_RULES_ACTIVE="${tmp}/rules-fallback.json"
     GUARD_STDIN="${CASE_STDIN}"
     GUARD_HAS_STDIN="${CASE_HAS_STDIN}"

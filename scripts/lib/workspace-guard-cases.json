@@ -606,6 +606,23 @@
       ]
     },
     {
+      "name": "the forge slot's versions, which the job never lists",
+      "rule": "C1",
+      "expect": "refuse",
+      "by": "C0",
+      "tool": "gcloud",
+      "argv": [
+        "secrets",
+        "versions",
+        "list",
+        "{forge_slot}",
+        "--project",
+        "{project_id}",
+        "--limit",
+        "1"
+      ]
+    },
+    {
       "name": "create the expected worker account",
       "rule": "C2",
       "expect": "allow",
@@ -875,18 +892,29 @@
       }
     },
     {
-      "name": "the .tenant marker object",
+      "name": "the .tenant marker, one create-only upload",
       "rule": "C4",
       "expect": "allow",
-      "tool": "gcloud",
+      "tool": "curl",
       "argv": [
-        "storage",
-        "cp",
+        "-sS",
+        "-m",
+        "30",
+        "-K",
         "-",
-        "{marker_url}",
-        "--project",
-        "{project_id}"
-      ]
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"tenant_id\":\"{tenant_id}\",\"workspace_id\":\"{workspace_id}\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{marker_upload_url}"
+      ],
+      "stdin": "{auth_config}"
     },
     {
       "name": "on the WD9 fallback, the bucket-metadata role",
@@ -997,12 +1025,104 @@
       "name": "an object written under another tenant's prefix",
       "rule": "C4",
       "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"tenant_id\":\"{tenant_id}\",\"workspace_id\":\"{workspace_id}\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "https://storage.googleapis.com/upload/storage/v1/b/{artifact_bucket}/o?uploadType=media&ifGenerationMatch=0&name=tenants%2Fu-bob%2F.tenant"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "a marker upload that could replace an existing object",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"tenant_id\":\"{tenant_id}\",\"workspace_id\":\"{workspace_id}\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "https://storage.googleapis.com/upload/storage/v1/b/{artifact_bucket}/o?uploadType=media&name=tenants%2F{tenant_id}%2F.tenant"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "a marker naming another tenant",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-m",
+        "30",
+        "-K",
+        "-",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"tenant_id\":\"u-bob\",\"workspace_id\":\"{workspace_id}\"}",
+        "-o",
+        "{casedir}/out",
+        "-w",
+        "%{http_code}",
+        "{marker_upload_url}"
+      ],
+      "stdin": "{auth_config}"
+    },
+    {
+      "name": "a marker upload with no bearer config on stdin",
+      "rule": "C4",
+      "expect": "refuse",
+      "tool": "curl",
+      "argv": [
+        "-sS",
+        "-X",
+        "POST",
+        "-H",
+        "Content-Type: application/json",
+        "--data-binary",
+        "{\"tenant_id\":\"{tenant_id}\",\"workspace_id\":\"{workspace_id}\"}",
+        "{marker_upload_url}"
+      ]
+    },
+    {
+      "name": "gcloud storage cp, which reads the object before it writes it",
+      "rule": "C4",
+      "expect": "refuse",
+      "by": "C0",
       "tool": "gcloud",
       "argv": [
         "storage",
         "cp",
         "-",
-        "gs://{artifact_bucket}/tenants/u-bob/.tenant",
+        "{marker_url}",
         "--project",
         "{project_id}"
       ]
@@ -1380,6 +1500,21 @@
       ],
       "stdin": "apiVersion: v1\nkind: Namespace\nmetadata:\n  name: {namespace}\n  labels:\n    pod-security.kubernetes.io/enforce: restricted\n---\napiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: swarm-tenant-quota\n  namespace: {namespace}\nspec:\n  hard:\n    pods: \"4\"\n---\napiVersion: v1\nkind: ServiceAccount\nmetadata:\n  name: swarm-agent-worker\n  namespace: {namespace}\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: Role\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nrules: []\n---\napiVersion: rbac.authorization.k8s.io/v1\nkind: RoleBinding\nmetadata:\n  name: swarm-worker\n  namespace: {namespace}\nroleRef:\n  apiGroup: rbac.authorization.k8s.io\n  kind: Role\n  name: swarm-worker\nsubjects:\n  - kind: ServiceAccount\n    name: swarm-agent-worker\n    namespace: {namespace}\n---\napiVersion: networking.k8s.io/v1\nkind: NetworkPolicy\nmetadata:\n  name: swarm-default-deny\n  namespace: {namespace}\nspec:\n  podSelector: {}\n  policyTypes: [\"Ingress\", \"Egress\"]\n",
       "by": "C9"
+    },
+    {
+      "name": "kubectl patch of the namespace, which A7 never runs",
+      "rule": "C7",
+      "expect": "refuse",
+      "by": "C0",
+      "tool": "kubectl",
+      "argv": [
+        "--context=gke_{project_id}_{gke_location}_{gke_cluster}",
+        "patch",
+        "namespace",
+        "{namespace}",
+        "-p",
+        "{}"
+      ]
     },
     {
       "name": "the tenant document",
