@@ -27,9 +27,11 @@ registry of token slots, the permission probe, resolution order R2) and
 credential is in [merge-step.md](merge-step.md); frozen-contract requests are
 filed in [contract-change-requests.md](contract-change-requests.md), and this
 document only drafts one (§3.3). The checklist's other half, the person's own
-workspace (tenant, identity, namespace) that a locked-down provisioner creates
-during onboarding, before which no task or workflow starts, is designed in
-[workspaces.md](workspaces.md) (#847).
+workspace (tenant, identity, namespace), is built: an admin approves it in
+Admin → People and the Cloud Run job `swarm-workspace-apply` makes it, under a
+call guard. §2.7 says what a person sees; the design is
+[workspaces.md](workspaces.md) (#847), and how it is operated is
+[multi-tenancy §7](multi-tenancy.md#7-a-persons-personal-workspace).
 
 What it settles, one line each:
 
@@ -246,8 +248,10 @@ read (a connection record, an enabled org, a grant, a probe result), never a
 flag a client sets, so a step that was done and stopped being true (a revoked
 authorisation, an uninstalled org) shows as such without anyone editing it.
 
-The steps, in order: `signed_in`, `github_connected`, `app_installed`,
-`orgs_enabled`, `repos_chosen`, `access_verified`, `ready`. `app_installed`
+The steps, in order: `signed_in`, `workspace`, `claude_account`,
+`github_connected`, `app_installed`, `orgs_enabled`, `repos_chosen`,
+`access_verified`, `ready` (`swarm_api.onboarding.STEPS`). The two workspace
+steps came with #847 and are §2.7's. `app_installed`
 was added on 2026-10-08 (#780) after the owner connected GitHub, authorised
 the App, never installed it, and found an Access page with no orgs and no
 explanation: authorising the App (Connect) and installing it are two acts at
@@ -383,6 +387,46 @@ Every call is a GET. No installation token is minted, because minting is a
 POST. One org failing becomes that card's `error`; the rest of the answer
 still comes back. The answer is cached per tenant for 60 seconds, and
 `?refresh=true` (the console's re-check, and its return-to-tab) reads again.
+
+
+### 2.7 The workspace steps: somewhere to run
+
+A forge credential says *as whom* a person's work reaches GitHub; it does not
+give them anywhere to run. That is the person's own workspace, `u-<you>`: a
+worker account, a `tenants/u-<you>/` artifact prefix, a forge slot and a
+namespace, made for them alone. **Why it is a step and not automatic:** each
+workspace is a new identity in a shared project, so an admin decides, once,
+and a guarded job does the rest. Nothing of it is in Terraform or the public
+repository; a person appears in anything public only as an opaque `w-` id.
+
+* **`workspace`.** The checklist's "Request your workspace" (or `sc setup`,
+  `/sc:setup`, the bridge tool `swarm_setup_workspace`) calls
+  `POST /v1/workspace`. An admin sees the request in Admin → People, on the
+  **Waiting for you** card, and approves or denies it (a denial carries a
+  reason, shown to the person). Approval starts the Cloud Run job
+  `swarm-workspace-apply`, which runs steps A1 to A9 and marks the workspace
+  `ready`, a few minutes later. The step shows the job's steps as they run.
+  A run the call guard stops reads "waiting for the platform owner"; a failed
+  one shows its failure copy, and an admin's **Retry** runs it again.
+* **`claude_account`.** A ready workspace runs nothing until it has a Claude
+  account (WD6): the person adds their own under Capacity → Accounts, or asks for a loan
+  (`POST /v1/workspace/loan-request`) and an admin lends one of a group's
+  accounts from People. A loan made before the workspace is ready waits and
+  applies itself once it is.
+
+**Both are required only while `WORKSPACE_GATE` is on**, and only for a person
+submitting into their own tenant. With the gate off they are shown and not
+required, as `required: false`. With it on, a submission into a personal
+tenant without a `ready` workspace is refused `403 WORKSPACE_NOT_READY`, or
+`403 NO_CLAUDE_ACCOUNT` without an account, on the console, the API and the
+plugin, each with a link back to this checklist. A team (group) submission is
+never gated (WD7). The rest of the checklist can be done in any order
+meanwhile: a person can connect GitHub and choose repositories before their
+workspace exists.
+
+The first workspace made this way, `w-7f9285`, reached `ready` on 2026-10-13
+at 05:05Z and was lent `eng:devops-main`
+([multi-tenancy §7.5](multi-tenancy.md#75-the-first-end-to-end-run-2026-10-12-to-13)).
 
 ---
 

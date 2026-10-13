@@ -58,6 +58,20 @@
 # not a choice: it must equal the derived id or this refuses, because any other
 # id registers boundaries under a name nothing ever resolves to.
 #
+# A PERSON'S TENANT IS NOT REGISTERED BY HAND ANY MORE. Since WD3 (2026-10-08)
+# a person requests their workspace (the console's checklist, `sc setup`), an
+# admin approves it in Admin > People, and the Cloud Run job
+# swarm-workspace-apply -- started by Pub/Sub, Eventarc and Workflows, never by
+# a person -- runs this script with --workspace, as swarm-workspace-deployer,
+# under the call guard (section W). Its log goes to the restricted log bucket
+# swarm-workspace-apply, not to a terminal. The first workspace made that way
+# reached ready on 2026-10-13 (w-7f9285, docs/multi-tenancy.md section 7.5).
+# --user stays for the operator: a repair, or a tenant that predates the job.
+# It does not make the act-as grant the job's A4 makes, and it writes no
+# workspaces/ record, so with WORKSPACE_GATE on the person it registers is
+# still refused until a record says ready. docs/multi-tenancy.md section 7
+# is how it works; docs/runbooks/tenant-offboarding.md is how one is removed.
+#
 # Usage:
 #   scripts/register-tenant.sh --group eng@saga.xyz
 #   scripts/register-tenant.sh --user alice@saga.xyz
