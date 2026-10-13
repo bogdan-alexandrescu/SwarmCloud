@@ -58,7 +58,6 @@ from typing import Any
 
 import pytest
 
-from agent_worker.livegate import __main__ as gate_main
 from agent_worker.livegate import rfb
 from agent_worker.livegate.capture import Frame
 from agent_worker.livegate.mask import (
@@ -66,9 +65,11 @@ from agent_worker.livegate.mask import (
     MASK_RGB,
     UNAVAILABLE_RGB,
     WORLD_NAME,
+    REASON_HIDDEN,
     MaskCdp,
     MaskState,
     Outcome,
+    observer_source,
 )
 
 import test_live_device_recover as recover
@@ -289,6 +290,8 @@ class TabsChromium(recover.FakeChromium):
         self.pages = {t: {"url": f"https://{t.lower()}.example.test/", "crashed": False} for t in pages}
         self.shown = shown
         self._worlds = 0
+        #: Out-of-process frames' sessions: session -> (frame id, parent frame id).
+        self.oopifs: dict[str, tuple[str, str]] = {}
 
     def show(self, target: str) -> None:
         self.shown = target
@@ -312,6 +315,12 @@ class TabsChromium(recover.FakeChromium):
             return {"result": {}}
         if method == "Target.activateTarget" and params.get("targetId") in self.pages:
             self.shown = params["targetId"]
+        if session in self.oopifs:
+            frame_id, parent = self.oopifs[session]
+            if method == "Page.getFrameTree":
+                return {"result": {"frameTree": {"frame": {"id": frame_id, "parentId": parent,
+                                                           "url": "https://ads.example.test/slot"}}}}
+            return {"result": {"identifier": "1"} if method == "Page.addScriptToEvaluateOnNewDocument" else {}}
         if session is not None and session in self.sessions:
             target = self.sessions[session]
             if method == "Page.createIsolatedWorld":
@@ -556,3 +565,79 @@ def test_the_unavailable_fill_is_still_the_whole_frame():
     frame = _screen()
     assert MaskState().apply(frame) is Outcome.UNAVAILABLE
     assert all(frame.rgb_at(x, y) == UNAVAILABLE_RGB for x in range(0, SCREEN_W, 97) for y in range(0, SCREEN_H, 89))
+
+
+# --------------------------------------------------------------------------
+# The pieces under the above
+# --------------------------------------------------------------------------
+
+
+def test_a_report_from_a_hidden_tab_is_never_painted_over_the_screen():
+    """The observer says when its tab is hidden (`h`), the moment it is
+    (`visibilitychange`): from then its report describes other pixels."""
+    state = _top("https://example.test/")
+    state.on_message("TOP", _report("d", fields=[_password(1, 40, 40)]))
+    assert state.apply(_screen()) is Outcome.MASKED
+    state.on_message("TOP", json.dumps({"v": 1, "k": "layout", "doc": "d", "e": 2, "h": True}))
+    frame = _screen()
+    assert state.apply(frame) is Outcome.UNAVAILABLE
+    assert state.reason == REASON_HIDDEN
+    assert frame.rgb_at(700, CHROME_H + 400) == UNAVAILABLE_RGB
+    # Shown again and measured: the page is back.
+    state.on_message("TOP", _report("d", epoch=3, fields=[_password(1, 40, 40)]))
+    assert state.apply(_screen()) is Outcome.MASKED
+
+
+def test_a_visibility_flag_that_is_not_a_boolean_makes_the_frame_stale():
+    state = _top("https://example.test/")
+    state.on_message("TOP", _report("d"))
+    state.on_message("TOP", json.dumps({"v": 1, "k": "layout", "doc": "d", "e": 2, "h": "no"}))
+    assert state.apply(_screen()) is not Outcome.MASKED
+
+
+def test_the_observer_announces_a_tab_hidden_or_shown_and_flags_every_message():
+    source = observer_source()
+    assert '"visibilitychange"' in source
+    assert 'message.h = document.visibilityState !== "visible"' in source
+
+
+def test_the_follower_installs_the_observer_on_an_out_of_process_frame_and_routes_its_reports(tmp_path):
+    rig = _tabs_rig(tmp_path, ["PAGE1"], shown="PAGE1")
+
+    async def body(rig: recover.Rig) -> None:
+        gate, chromium = rig.gate, rig.chromium
+        await recover._until(lambda: gate.pages.current == "PAGE1" and gate.pages._session is not None)
+        page_session = gate.pages._session
+        # The page reports an iframe element; its frame is out of process.
+        state = gate.mask_state
+        state.frame_attached("AD", "PAGE1")
+        state.frame_linked("AD", 31)
+        chromium.report(page_session, "PAGE1", _report("top", owners=[_owner(31, 200, 200, 400, 300)]))
+        await recover._until(lambda: state.apply(_screen()) is Outcome.MASKED)
+        frame = _screen()
+        state.apply(frame)
+        assert frame.rgb_at(400, CHROME_H + 350) == MASK_RGB, "a silent cross-site frame is not covered"
+
+        chromium.oopifs["OOP1"] = ("AD", "PAGE1")
+        chromium.emit("Target.attachedToTarget", {"sessionId": "OOP1", "waitingForDebugger": False,
+                                                  "targetInfo": {"targetId": "AD", "type": "iframe"}},
+                      page_session)
+        # A worker the auto-attach brought is let go.
+        chromium.emit("Target.attachedToTarget", {"sessionId": "WRK1", "waitingForDebugger": False,
+                                                  "targetInfo": {"targetId": "W", "type": "worker"}},
+                      page_session)
+        await recover._until(lambda: any(m == "Runtime.addBinding" and sess == "OOP1"
+                                          for m, _p, sess in chromium.sent))
+        await recover._until(lambda: any(m == "Target.detachFromTarget" and p.get("sessionId") == "WRK1"
+                                          for m, p, _s in chromium.sent))
+        chromium.report("OOP1", "AD", _report("ad", viewport=(400, 300, 0, 0, 1, 400, 300),
+                                              fields=[_password(1, 10, 10, 100, 30)]), context=90)
+
+        def shown() -> bool:
+            frame = _screen()
+            return (state.apply(frame) is Outcome.MASKED and frame.rgb_at(400, CHROME_H + 350) == WHITE
+                    and frame.rgb_at(250, CHROME_H + 225) == MASK_RGB)
+
+        await recover._until(shown)
+
+    _run(rig, body)

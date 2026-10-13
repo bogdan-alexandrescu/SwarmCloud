@@ -1060,7 +1060,23 @@ export interface Rfb {
   compressionLevel: number
   disconnect(): void
   clipboardPasteFrom(text: string): void
-  addEventListener(type: 'connect' | 'disconnect' | 'securityfailure', listener: (e: Event) => void): void
+  addEventListener(type: 'connect' | 'disconnect' | 'securityfailure' | 'desktopname', listener: (e: Event) => void): void
+}
+
+/**
+ * WHY THE PAGE IS NOT SHOWN (LIVE-BLANK; part of #1030). The gate fills a frame
+ * it cannot vouch for -- every pixel it sends passes its mask -- and names the
+ * reason as the RFB desktop name (livegate/rfb.py `desktop_name`, livegate/mask.py
+ * `CANNOT_SHOW` and `PARTLY_COVERED`), which noVNC hands the page as a
+ * `desktopname` event. MEASURED 2026-10-13 on release 1e86c37e: ten minutes of a
+ * flat page area on Google's reCAPTCHA page, and nothing here said why.
+ *
+ * The reason, when `name` is one; null for the gate's ordinary name (the page is
+ * shown), or anything else.
+ */
+export function gateReason(name: unknown): string | null {
+  if (typeof name !== 'string') return null
+  return /^(Can['’]t show this page safely|Part of this page is covered): /.test(name) ? name : null
 }
 
 export type RfbConstructor = new (target: HTMLElement, channel: LiveChannel, options?: { shared?: boolean }) => Rfb
@@ -1184,6 +1200,8 @@ function LiveScreen({
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
   const [refused, setRefused] = useState<string | null>(null)
+  // The gate's reason the page is not (all) shown, while it names one (`gateReason`).
+  const [gateSays, setGateSays] = useState<string | null>(null)
   const [hasFocus, setHasFocus] = useState(false)
   const stage = useRef<HTMLDivElement>(null)
   const below = useRef<HTMLDivElement>(null)
@@ -1369,8 +1387,12 @@ function LiveScreen({
             setRefused(null)
             setConn('connected')
           })
+          r.addEventListener('desktopname', (e) => {
+            setGateSays(gateReason((e as CustomEvent<{ name?: unknown }>).detail?.name))
+          })
           r.addEventListener('disconnect', () => {
             if (rfb.current === r) rfb.current = null
+            setGateSays(null)
             retry('The live connection closed. Reconnecting with a new ticket.')
           })
         }, onStatus, onRefused)
@@ -1453,6 +1475,11 @@ function LiveScreen({
         {conn === 'connecting' && <StartupProgress taskId={taskId} overlay hideWhenDone />}
       </div>
       <p className="live-screen-say" role="status">
+        {conn === 'connected' && gateSays !== null && (
+          <>
+            <span className="live-screen-why">{gateSays}.</span>{' '}
+          </>
+        )}
         {conn === 'connecting'
           ? 'Connecting to the agent’s browser.'
           : conn === 'connected'

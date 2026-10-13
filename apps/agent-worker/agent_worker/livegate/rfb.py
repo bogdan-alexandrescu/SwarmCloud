@@ -88,6 +88,17 @@ from a frame captured after it that changed anything -- the latency the
 person feels, inside the pod. Its p50 and p95 are logged when the connection
 closes, with the update and byte counts: numbers, never content.
 
+WHY THE PAGE IS NOT SHOWN (LIVE-BLANK; part of #1030). A frame the mask
+cannot vouch for is still filled -- every pixel sent passes the mask -- and
+the viewer is told why: a viewer that lists the DesktopName pseudo-encoding
+(-307; noVNC 1.4.0 does, and hands the page a `desktopname` event) is sent
+"Can't show this page safely: <reason>" (`mask.CANNOT_SHOW`), or "Part of
+this page is covered: <reason>" when frames on it are covered, with the
+update whose frame first carries it, and `_DESKTOP_NAME` again once the page
+is back. The console's strip shows it (LiveBrowser.tsx `gateReason`).
+MEASURED 2026-10-13 on release 1e86c37e: a flat page area for ten minutes on
+Google's reCAPTCHA page, and nothing on the console said why.
+
 THE POINTER (LB-CURSOR; part of #1030). Xvfb's framebuffer never holds the X
 pointer, and noVNC hides its own over the canvas, so without this the person
 in control clicks blind. A viewer that lists the Cursor pseudo-encoding (-239,
@@ -117,7 +128,7 @@ from typing import Callable
 
 from .capture import Frame
 from .inject import MAX_TYPED_CHARS, Injector
-from .mask import UNAVAILABLE_RGB, MaskState, Outcome
+from .mask import CANNOT_SHOW, PARTLY_COVERED, UNAVAILABLE_RGB, MaskState, Outcome
 from .pointer import HEIGHT as CURSOR_HEIGHT
 from .pointer import HOTSPOT as CURSOR_HOTSPOT
 from .pointer import WIDTH as CURSOR_WIDTH
@@ -134,6 +145,7 @@ ENCODING_ZLIB = 6
 ENCODING_TIGHT = 7
 ENCODING_DESKTOP_SIZE = -223
 ENCODING_CURSOR = -239
+ENCODING_DESKTOP_NAME = -307
 #: The CompressLevel pseudo-encodings: -256 is level 0 ... -247 is level 9.
 _COMPRESS_LEVEL_0 = -256
 
@@ -187,6 +199,8 @@ MAX_CUT_TEXT_BYTES = 64 * 1024
 _MAX_ENCODINGS = 256
 
 _DESKTOP_NAME = b"swarm live browser"
+#: A desktop name longer than this is cut: it is a sentence for the strip.
+MAX_DESKTOP_NAME_BYTES = 256
 
 # Client -> server message types (RFC 6143 §7.5).
 _SET_PIXEL_FORMAT = 0
@@ -209,13 +223,16 @@ class RfbError(Exception):
 class MaskedFrame:
     """A frame the mask has painted. Made only by `masked`."""
 
-    __slots__ = ("frame", "outcome", "at")
+    __slots__ = ("frame", "outcome", "at", "reason")
 
-    def __init__(self, frame: Frame, outcome: Outcome, *, _token: object) -> None:
+    def __init__(self, frame: Frame, outcome: Outcome, *, _token: object,
+                 reason: str | None = None) -> None:
         if _token is not _MASKED:
             raise TypeError("a MaskedFrame is made by rfb.masked(), which applies the mask")
         self.frame = frame
         self.outcome = outcome
+        #: Why the frame is not (all of) the page (`MaskState.reason`); None when it is.
+        self.reason = reason
         #: `time.monotonic()` when it was masked, just after the grab: an
         #: update from it can show an input that arrived before this.
         self.at = time.monotonic()
@@ -227,7 +244,15 @@ _MASKED = object()
 def masked(frame: Frame, mask: MaskState) -> MaskedFrame:
     """Paint `frame` with the mask, in place, and mark it fit to leave the pod."""
     outcome = mask.apply(frame)
-    return MaskedFrame(frame, outcome, _token=_MASKED)
+    return MaskedFrame(frame, outcome, _token=_MASKED, reason=mask.reason)
+
+
+def desktop_name(frame: MaskedFrame) -> bytes:
+    """The desktop name a viewer is sent with `frame` (module docstring, WHY THE PAGE IS NOT SHOWN)."""
+    if frame.reason is None:
+        return _DESKTOP_NAME
+    lead = PARTLY_COVERED if frame.outcome is Outcome.MASKED else CANNOT_SHOW
+    return f"{lead}: {frame.reason}".encode("utf-8")[:MAX_DESKTOP_NAME_BYTES]
 
 
 class FrameHub:
@@ -236,7 +261,8 @@ class FrameHub:
     def __init__(self, width: int = 1280, height: int = 800) -> None:
         # Until the first frame: the "masking unavailable" fill (§5.3.2).
         blank = Frame.blank(width, height, UNAVAILABLE_RGB)
-        self._current = MaskedFrame(blank, Outcome.UNAVAILABLE, _token=_MASKED)
+        self._current = MaskedFrame(blank, Outcome.UNAVAILABLE, _token=_MASKED,
+                                    reason="the gate has not captured the screen yet")
         self.version = 0
         self._waiters: set[asyncio.Event] = set()
         #: Where the pointer last was, in this frame's coordinates (module docstring).
@@ -594,6 +620,7 @@ class RfbSession:
         self._format: _Format | None = None  # the viewer's; None until ServerInit
         self._encodings: tuple[int, ...] = (ENCODING_RAW,)
         self._cursor_due = False  # send the cursor shape with the next update
+        self._name_sent = _DESKTOP_NAME  # the desktop name this viewer has (ServerInit's)
         self._size = (0, 0)
         # Set on the loop, read into the next `_Job`: resend everything (the
         # pixel format or the size changed), start new zlib streams (the
@@ -838,6 +865,11 @@ class RfbSession:
         loop = asyncio.get_running_loop()
         rects = await loop.run_in_executor(_ENCODE_POOL, self._render, job)
         changed = bool(rects)
+        name = desktop_name(current)
+        if ENCODING_DESKTOP_NAME in self._encodings and name != self._name_sent:
+            # Before the pixels, so the strip says why as the fill is drawn.
+            self._name_sent = name
+            rects.insert(0, struct.pack(">HHHHiI", 0, 0, 0, 0, ENCODING_DESKTOP_NAME, len(name)) + name)
         if self._cursor_due:
             self._cursor_due = False
             rects.insert(0, self._cursor_rect())

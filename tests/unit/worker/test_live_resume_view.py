@@ -123,8 +123,14 @@ class NoVncViewer:
                 return False
             x, y, w, h, enc = struct.unpack(">HHHHi", bytes(b[at:at + 12]))
             at += 12
-            assert enc in (0, 1, 7, -223, -239), f"the gate sent encoding {enc}, which noVNC 1.4.0 did not ask for"
-            if enc == 7:
+            assert enc in (0, 1, 7, -223, -239, -307), f"the gate sent encoding {enc}, which noVNC 1.4.0 did not ask for"
+            if enc == -307:
+                # DesktopName (LIVE-BLANK): a 4-byte length, then the name in UTF-8.
+                if len(b) < at + 4:
+                    return False
+                (length,) = struct.unpack(">I", bytes(b[at:at + 4]))
+                length += 4
+            elif enc == 7:
                 # Tight (STREAM-SMOOTH): Fill, or Basic with the copy filter -- never JPEG or PNG.
                 if len(b) < at + 1:
                     return False
