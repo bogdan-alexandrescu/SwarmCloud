@@ -41,6 +41,7 @@ from .routes import (
     issues,
     leases,
     live,
+    notifications,
     onboarding,
     outcomes,
     people,
@@ -196,6 +197,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # tunnel ticket, a member's view and control, and the socket proxied to
     # swarm-live. Tenant-scoped through the same authenticator as every route.
     app.include_router(live.router)
+    # The notification feed (#1206, NOTIF-API; docs/notifications.md): the
+    # caller's own items, derived on each read from the records above, and
+    # one document of read marks per person.
+    app.include_router(notifications.router)
 
     @app.middleware("http")
     async def observe(request: Request, call_next):
