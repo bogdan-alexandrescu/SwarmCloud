@@ -69,6 +69,9 @@ const rfb = vi.hoisted(() => {
     resizeSession = true
     focusOnClick = false
     showDotCursor = false
+    // noVNC 1.4.0's own defaults.
+    qualityLevel = 6
+    compressionLevel = 2
     readonly canvas: HTMLCanvasElement
     /** Touches that reached noVNC's own canvas listener. */
     touches = 0
@@ -144,7 +147,7 @@ class FakeSocket extends EventTarget {
 }
 
 const { AgentSplit } = await import('../AgentSplit')
-const { LiveBrowserPane, LiveControl } = await import('../LiveBrowser')
+const { LiveBrowserPane, LiveControl, crispAt } = await import('../LiveBrowser')
 const { resetListSnap } = await import('../listSnap')
 
 const ID = 'task_0123456789abcdef0456'
@@ -352,6 +355,24 @@ describe('the ticket goes in the first message, never the URL', () => {
     pane(session())
     const r = await connected()
     expect(r.showDotCursor).toBe(true)
+  })
+
+  it('asks the gate for a lossless picture at the zlib level the gate was measured at (STREAM-SMOOTH)', async () => {
+    // The gate never sends JPEG (livegate/rfb.py); quality 9 says so to noVNC too, and
+    // compression 1 is rfb.py ZLIB_LEVEL, chosen from livegate.bench.
+    pane(session())
+    const r = await connected()
+    expect(r.qualityLevel).toBe(9)
+    expect(r.compressionLevel).toBe(1)
+  })
+
+  it('draws the frame pixel for pixel at a whole scale, and smooths it at a fractional fit (STREAM-SMOOTH)', () => {
+    expect(crispAt(1440, 1440, 1)).toBe(true) // 1:1
+    expect(crispAt(1440, 1440, 2)).toBe(true) // 1:1 on a 2x screen: 2x2 device pixels each
+    expect(crispAt(786, 393, 1)).toBe(true) // a phone drawn at twice its size
+    expect(crispAt(1000, 1440, 1)).toBe(false) // fitted down: nearest-neighbour would drop rows of text
+    expect(crispAt(1000, 1440, 1.5)).toBe(false)
+    expect(crispAt(0, 1440, 1)).toBe(false) // not laid out yet
   })
 
   it('has noVNC reading the socket before the relay\'s first frame can arrive', async () => {
