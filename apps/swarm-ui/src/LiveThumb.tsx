@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { USE_FIXTURES, loadLiveSession, mintLiveTicket, openLiveChannel, type LiveChannel } from './api'
 import { route } from './fetch'
 import { addressToPath } from './paths'
+import { StartupBar } from './StartupProgress'
 import type { LiveAgentRef } from './Theater'
 import { stepState, type Task, type TaskState, type Workflow } from './types'
 
@@ -705,6 +706,9 @@ export function LiveThumb({
           </>
         )}
       </div>
+      {/* WHILE ITS BROWSER STARTS (owner request 2026-10-13): a thin bar and
+          "starting m:ss" until the first frame; it draws nothing once done. */}
+      {status !== 'live' && <StartupBar taskId={taskId} />}
       <canvas
         ref={canvas}
         className="wf-live-thumb"

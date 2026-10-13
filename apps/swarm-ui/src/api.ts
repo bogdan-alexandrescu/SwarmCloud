@@ -6627,6 +6627,48 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
   return read<LiveRead>(target, () => false)
 }
 
+/** A step of a browser agent's start-up: lane STARTUP-API's `startup_progress` steps, in order. */
+export type StartupStepName =
+  | 'pod_scheduled'
+  | 'image_pulling'
+  | 'image_pulled'
+  | 'container_started'
+  | 'browser_launching'
+  | 'browser_ready'
+  | 'first_frame'
+
+/**
+ * `GET /v1/tasks/{task_id}/startup` (lane STARTUP-API, owner request
+ * 2026-10-13): the CURRENT attempt's start-up, oldest step first --
+ * `lease_acquired`, `dispatched`, `starting`, `running` and every
+ * `startup_progress` step. `estimate` is the median seconds from `dispatched`
+ * to each step over the profile's last 20 completed start-ups; `{}` with
+ * `sample_size` 0 when there is no history, and the bar then shows no time.
+ */
+export interface StartupRead {
+  attempt_id: string | null
+  generation: number | null
+  steps: { step: string; at: string }[]
+  estimate: Partial<Record<string, number>>
+  sample_size: number
+  /** `first_frame` seen, or the task is no longer starting or running. */
+  done: boolean
+}
+
+/**
+ * A 404 IS "NOT DEPLOYED YET", not a failure of the agent: the route ships in
+ * a parallel lane, and StartupProgress then draws the bar from the task's own
+ * events (`useStartup`). No empty predicate: a start-up with no step yet is a
+ * real answer.
+ */
+export async function loadStartup(taskId: string): Promise<Result<StartupRead>> {
+  const target = route('/v1/tasks/{id}/startup', { id: taskId })
+  // The fixture build has no browser agent to start: answered as the route
+  // not being served, so the fixture exercises the events fallback.
+  if (USE_FIXTURES) return liveNotServed(target)
+  return read<StartupRead>(target, () => false)
+}
+
 /**
  * The viewer ticket's answer. `session_id` names the session the ticket is
  * bound to; the socket is opened on it (`liveSocketUrl`), not on the task.

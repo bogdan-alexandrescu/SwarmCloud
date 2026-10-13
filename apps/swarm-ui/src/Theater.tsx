@@ -66,6 +66,7 @@ import { agentName, useAgentName } from './agentlist'
 import { errorHeading, route, tenantQuery, type ApiError } from './fetch'
 import { liveBrowserRows, needsYou } from './Handoff'
 import { theaterPath } from './LiveThumb'
+import { StartupProgress } from './StartupProgress'
 import { TASK_PAGE_LIMIT } from './pageLimits'
 import { HandoffChecklist, TheaterTimeline, type TheaterHandoff } from './TheaterTimeline'
 import './styles/theater.css'
@@ -791,6 +792,8 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
           />
         ) : null}
         {session.screen === null && segment === null ? <p className="th-note">The browser has not connected yet.</p> : null}
+        {/* The start-up over the screen area until the first frame (owner request 2026-10-13). */}
+        {session.live && segment === null ? <StartupProgress taskId={session.taskId} screen={session.screen} overlay hideWhenDone /> : null}
       </main>
 
       <aside className="th-right">
