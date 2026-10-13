@@ -123,6 +123,7 @@ from .forge import (
     neutral_line,
     urllib_probe_send,
 )
+from . import indexfailure
 from .gittokens import GitTokens
 from .json_masking import redact_json_window
 from .objects import ObjectAbsent, ObjectUnreadable
@@ -1047,7 +1048,8 @@ class PollReport:
     truncated: bool = False
     failures: list[dict[str, str]] = field(default_factory=list)
     #: Why the registrations that queued nothing did not, by reason
-    #: (`PollDecision.reason`, `paused`, `in_flight`): a tick that read every
+    #: (`PollDecision.reason`, `paused`, `in_flight`, `backoff` -- INDEX-FAIL's
+    #: stop after repeated access failures): a tick that read every
     #: head and built none says why, not just `submitted: 0` (AUT-7).
     held: dict[str, int] = field(default_factory=dict)
     #: The pass's git token re-verification (git-tokens.md §5.3,
@@ -2243,6 +2245,9 @@ class RepoIndex:
             )
         # Settle first: a run that ended since the last read frees the slot.
         self.settle(tenant_id, repo_id)
+        # A person pressed Index now: the poll's back-off lifts (INDEX-FAIL).
+        # After settling, so a failure it records cannot set it again first.
+        self._resume(tenant_id, repo_id, why="index_now")
         head = read_head(record, tenant, tokens=self._tokens, forge=self._forge,
                          person=auth.email)
         run, coalesced = self._start(
@@ -2363,6 +2368,11 @@ class RepoIndex:
             if cause is None and task.last_error:
                 cause = neutral_line(task.last_error, 300)
             self._end_run(tenant_id, repo_id, run, state=state, end_cause=cause)
+            if state == TaskState.FAILED.value:
+                # INDEX-FAIL: the cause goes on the registration, where the
+                # card reads it and the poll decides whether to stop. A
+                # CANCELLED run says nothing about the repository.
+                self._record_failure(tenant_id, repo_id, run, task)
             log.info("repo index run tenant=%s repo_id=%s task=%s ended=%s",
                      tenant_id, repo_id, task.id, state)
         elif run.get("state") != state:
@@ -2521,6 +2531,9 @@ class RepoIndex:
                 index = settle_relation(index)
             if index.get("in_flight_task_id") == task.id:
                 index["in_flight_task_id"] = None
+            # The clone and the build worked, promoted or superseded: the
+            # failure streak and any poll back-off end (INDEX-FAIL).
+            index = indexfailure.after_success(index)
             txn.update(repo_ref, {"index": index})
             outcome = "promoted" if decision == "promote" else "superseded"
             txn.update(run_ref, {
@@ -2863,6 +2876,17 @@ class RepoIndex:
         if index.get("paused"):
             report.skipped += 1
             return "held", "paused", head
+        backoff = index.get("backoff")
+        if backoff:
+            # INDEX-FAIL: runs of this repository keep failing because its
+            # credential cannot read it, so the poll queues none until the
+            # tenant's git credentials change (or Index now lifts it).
+            if not indexfailure.credential_changed(backoff, self._credential_mark(tenant_id)):
+                report.skipped += 1
+                return "held", "backoff", head
+            self._resume(tenant_id, repo_id, why="credential_changed")
+            record = self.registrations.get(tenant_id, repo_id)
+            index = record.get("index") or {}
         newest = next(iter(self.runs(tenant_id, repo_id, limit=1)), None)
         reads = index.get("on_change", ON_CHANGE_DEFAULT) == "poll" or interval_due(
             index, newest_run=newest, created_at=record.get("created_at"), now=self._now()
@@ -2931,6 +2955,67 @@ class RepoIndex:
             return "pending", trigger or "pending", head
         report.submitted += 1
         return "queued", trigger or "pending", head
+
+    # -- failures and the poll's back-off (INDEX-FAIL) ----------------------
+    def _credential_mark(self, tenant_id: str) -> str | None:
+        """`indexfailure.credential_mark` of the tenant's git tokens, or None
+        when they cannot be read (which never lifts a back-off)."""
+        try:
+            return indexfailure.credential_mark(GitTokens(self._db, now=self._now).list(tenant_id))
+        except Exception as failed:
+            log.warning("repo index credential mark tenant=%s error=%s",
+                        tenant_id, type(failed).__name__)
+            return None
+
+    def _update_index(self, tenant_id: str, repo_id: str,
+                      change: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+        """`index = change(index)` on the registration, in one transaction."""
+        ref = self._repo_ref(repo_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            data = snap.to_dict() if snap.exists else None
+            if data is None or data.get("tenant_id") != tenant_id:
+                return
+            index = dict(data.get("index") or {})
+            changed = change(index)
+            if changed != index:
+                txn.update(ref, {"index": changed})
+
+        _apply(transaction)
+
+    def _record_failure(self, tenant_id: str, repo_id: str, run: Mapping[str, Any],
+                        task: Any) -> None:
+        """`index.last_failure`, the streak and, at the threshold, the back-off.
+        Never fails the settle: it is a reading."""
+        now = self._now()
+        end_cause = task.end_cause.value if getattr(task, "end_cause", None) else None
+        failure = indexfailure.failure_record(
+            task_id=run["task_id"], commit_sha=run.get("commit_sha"), at=now,
+            last_error=getattr(task, "last_error", None), end_cause=end_cause,
+        )
+        mark = (self._credential_mark(tenant_id)
+                if failure["class"] == indexfailure.ACCESS else None)
+        try:
+            self._update_index(tenant_id, repo_id, lambda index: indexfailure.after_failure(
+                index, failure, credential=mark, at=now))
+        except Exception as failed:
+            log.warning("repo index failure tenant=%s repo_id=%s error=%s",
+                        tenant_id, repo_id, type(failed).__name__)
+            return
+        log.info("repo index failure tenant=%s repo_id=%s task=%s class=%s",
+                 tenant_id, repo_id, run["task_id"], failure["class"])
+
+    def _resume(self, tenant_id: str, repo_id: str, *, why: str) -> None:
+        """Lift the poll's back-off, if there is one."""
+        record = self.registrations.get(tenant_id, repo_id)
+        if not (record.get("index") or {}).get("backoff"):
+            return
+        self._update_index(tenant_id, repo_id, indexfailure.resumed)
+        log.info("repo index backoff lifted tenant=%s repo_id=%s why=%s",
+                 tenant_id, repo_id, why)
 
     def _record_poll(self, tenant_id: str, repo_id: str, *, head: str | None,
                      outcome: str, reason: str) -> None:

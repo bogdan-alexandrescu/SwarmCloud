@@ -39,6 +39,14 @@
 .ur-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
 .ur-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .ur-card > .ur-cacts { margin-top: auto; }
+/* The last failed index run (INDEX-FAIL): a bad-toned note above the actions.
+   Access failures and a stopped poll are the operator's to fix; a transient
+   one is quieter, it retries on its own. */
+.ur-fail { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text); border-left: 2px solid var(--bad); padding-left: var(--ctl-s3); margin: 0; overflow-wrap: anywhere; }
+.ur-fail[data-class="transient"] { border-left-color: var(--line); color: var(--text-dim); }
+.ur-fail b { font-weight: 550; }
+.ur-fail-cause { color: var(--bad-ink); }
+.ur-fail[data-class="transient"] .ur-fail-cause { color: inherit; }
 /* A META LINE'S "·" NEVER STARTS A LINE (V117). The dot is drawn in the gap to
    the left of each item, outside the item's box; the item that starts a
    wrapped line starts at the line's left edge, so its dot falls left of the

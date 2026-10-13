@@ -217,6 +217,7 @@ def test_a_credential_change_lifts_the_backoff(client, db, objects, repo_id, clo
 def test_an_unchanged_credential_keeps_the_backoff(client, db, objects, repo_id, clock):
     _queued_then_failed(client, db, objects, clock, NOT_FOUND)
     _queued_then_failed(client, db, objects, clock, NOT_FOUND)
+    assert _poll(client).json()["report"]["held"] == {"backoff": 1}
     mark = _index(db, repo_id)["backoff"]["credential"]
     assert mark, "the back-off records the credentials it was set under"
     for _ in range(3):
@@ -228,7 +229,9 @@ def test_an_unchanged_credential_keeps_the_backoff(client, db, objects, repo_id,
 def test_a_transient_failure_keeps_polling(client, db, objects, repo_id, clock):
     for _ in range(4):
         _queued_then_failed(client, db, objects, clock, UNREACHABLE)
-    assert len(_tasks(db)) == 4
+    # The tick that settles the fourth failure queues a fifth run.
+    assert _poll(client).json()["report"]["submitted"] == 1
+    assert len(_tasks(db)) == 5
     index = _index(db, repo_id)
     assert index.get("backoff") is None
     assert index["last_failure"]["class"] == "transient"
