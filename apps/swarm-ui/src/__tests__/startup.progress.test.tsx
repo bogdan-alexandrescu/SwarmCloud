@@ -216,6 +216,42 @@ describe('StartupProgress', () => {
     expect(api.loadStartup).toHaveBeenCalledTimes(1)
   })
 
+  // LIVE-UNUSED (#1030), task_84cb2038aa704c829d48 (2026-10-13 13:3x UTC): a
+  // warm node with the image cached reported none of the pod's steps.
+  it('marks earlier stages no step of which arrived as skipped (already ready) once a later one has', async () => {
+    api.loadStartup.mockResolvedValue(
+      ok(
+        startup({
+          steps: [
+            { step: 'lease_acquired', at: iso(0) },
+            { step: 'dispatched', at: iso(2) },
+            { step: 'starting', at: iso(5) },
+            { step: 'running', at: iso(6) },
+            { step: 'browser_launching', at: iso(7) },
+          ],
+        }),
+      ),
+    )
+    render(<StartupProgress taskId={ID} />)
+    await flush()
+    const items = within(screen.getByRole('list')).getAllByRole('listitem')
+    expect(items.map((li) => li.getAttribute('data-status'))).toEqual(['done', 'skipped', 'skipped', 'done', 'current', 'todo'])
+    expect(items[1]!.textContent).toContain('✓')
+    expect(items[1]!.textContent).toContain('skipped (already ready)')
+    expect(items[2]!.textContent).toContain('skipped (already ready)')
+    expect(items[1]!.querySelector('.startup-time')).toBeNull()
+    // The bar fills by the latest stage reached: four of six behind it.
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('67')
+  })
+
+  it('skips nothing that a later stage has not passed', () => {
+    const v = startupView(
+      { steps: [{ step: 'lease_acquired', at: iso(0) }, { step: 'dispatched', at: iso(2) }], estimate: {}, sampleSize: 0, done: false, fallback: false },
+      T0 + 10_000,
+    )
+    expect(v.stages.map((s) => s.status)).toEqual(['done', 'current', 'todo', 'todo', 'todo', 'todo'])
+  })
+
   it('never shows a negative time', () => {
     const v = startupView(
       { steps: [{ step: 'lease_acquired', at: iso(100) }], estimate: {}, sampleSize: 0, done: false, fallback: false },

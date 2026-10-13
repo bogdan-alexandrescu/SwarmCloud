@@ -168,6 +168,42 @@ def test_a_pod_read_as_plain_dicts_reads_the_same():
     }
 
 
+def test_a_pod_placed_on_a_warm_node_with_its_image_cached_still_reports_every_step():
+    """LIVE-UNUSED (#1030), measured on task_84cb2038aa704c829d48 (2026-10-13
+    13:3x UTC): the node was already up and the image already on it, and the
+    console's bar waited on the pod's steps. Such a pod reads like any other:
+    the scheduler still sets `PodScheduled` (onto the node that exists), and
+    kubelet still dates each container's start -- `image_pulled` is the first
+    start, though nothing was pulled. All within a second or two."""
+    warm_scheduled = T0 + timedelta(milliseconds=300)
+    pod = _pod(sidecar=T0 + timedelta(seconds=1), worker=T0 + timedelta(seconds=2))
+    pod.status.conditions = [
+        _condition("PodScheduled", warm_scheduled),
+        _condition("Initialized", T0 + timedelta(seconds=1)),
+        _condition("PodReadyToStartContainers", T0 + timedelta(milliseconds=800)),
+        _condition("ContainersReady", T0 + timedelta(seconds=2)),
+        _condition("Ready", T0 + timedelta(seconds=2)),
+    ]
+    assert pod_start_steps(pod) == {
+        "pod_scheduled": warm_scheduled,
+        "image_pulling": T0 + timedelta(milliseconds=800),
+        "image_pulled": T0 + timedelta(seconds=1),
+        "container_started": T0 + timedelta(seconds=2),
+    }
+
+
+def test_an_undated_pod_scheduled_leaves_out_that_step_only():
+    """A step the status cannot date is left out -- that one, not every later
+    one: the pod started its containers, and those times are the pod's own."""
+    pod = _pod()
+    pod.status.conditions[0].last_transition_time = None
+    assert pod_start_steps(pod) == {
+        "image_pulling": SANDBOX,
+        "image_pulled": SIDECAR_STARTED,
+        "container_started": WORKER_STARTED,
+    }
+
+
 def test_of_several_pods_the_newest_is_read():
     old = _pod(sidecar=None, worker=None)
     old.metadata.creation_timestamp = T0 - timedelta(minutes=5)
@@ -350,3 +386,20 @@ def test_a_dry_run_writes_no_step(db, config):
     reconcile(db, dry, ALL_FOUR)
 
     assert step_events(db) == []
+
+
+def test_a_warm_start_that_is_already_running_at_the_first_pass_still_writes_pod_scheduled(db, config):
+    """LIVE-UNUSED (#1030): on a warm node with the image cached the worker is
+    RUNNING within seconds, before any pass sees it DISPATCHED. The pass that
+    first sees it RUNNING still reads the pod and writes every step it dates,
+    `pod_scheduled` and `image_pulled` included."""
+    seed_attempt(db, state=TaskState.RUNNING)
+    warm = _pod(sidecar=SCHEDULED + timedelta(seconds=1), worker=SCHEDULED + timedelta(seconds=2))
+
+    _, backend = reconcile(db, config, pod_start_steps(warm))
+
+    assert backend.reads, "a warm start's pod was never read"
+    written = {e["detail"]["step"]: e["at"] for e in step_events(db)}
+    assert written["pod_scheduled"] == SCHEDULED
+    assert written["image_pulled"] == SCHEDULED + timedelta(seconds=1)
+    assert set(written) == set(POD_STARTUP_STEPS)
