@@ -437,6 +437,8 @@ def test_a_resume_after_a_hand_off_on_a_page_that_was_re_attached_succeeds(tmp_p
 def test_a_resume_after_the_browser_closed_lets_the_agent_go_instead_of_refusing(tmp_path):
     async def body(rig: Rig) -> None:
         gate, chromium = rig.gate, rig.chromium
+        # A browser that stays closed: its relaunch budget is spent (BROWSER-RELAUNCH).
+        gate._relaunch_limit = 0
         await gate.pause({})
         await gate._grant("c1")
         chromium.close_pipe()
@@ -444,7 +446,7 @@ def test_a_resume_after_the_browser_closed_lets_the_agent_go_instead_of_refusing
         page = await asyncio.wait_for(gate.resume(), 10)
         assert page == {}
         assert gate.proxy is not None and not gate.proxy.paused
-        assert "browser_closed" in rig.events()
+        assert "browser_closed" in rig.events() and "browser_gave_up" in rig.events()
         # Nothing keeps knocking on a pipe that is gone.
         reconnecting = gate.pages._reconnecting
         assert reconnecting is None or reconnecting.done()

@@ -34,11 +34,21 @@ from agent_worker.livegate import __main__ as gate_main
 SIGSEGV = -11
 
 
+class Chromium(FakeChromium):
+    """`FakeChromium`, also answering an agent's connection (`Target.attachToBrowserTarget`)."""
+
+    def _answer(self, method: str, params: dict[str, Any], session: str | None) -> dict[str, Any]:
+        if method == "Target.attachToBrowserTarget":
+            self._next += 1
+            return {"result": {"sessionId": f"B{self._next}"}}
+        return super()._answer(method, params, session)
+
+
 class ExitingBrowser:
     """One launched Chromium: its pipe, and how it ended."""
 
     def __init__(self) -> None:
-        self.transport = FakeChromium()
+        self.transport = Chromium()
         self.returncode: int | None = None
         self.stderr: list[str] = []
         self.stopped = False
@@ -212,7 +222,7 @@ def test_the_exit_cause_is_logged_with_chromiums_last_stderr_lines_redacted(tmp_
                         code=SIGSEGV)
         await _until(rig.showing)
         exited = rig.recorded("browser_exited")
-        assert exited and exited[0]["exit_code"] == str(SIGSEGV) and exited[0]["signal"] == "SIGSEGV"
+        assert exited and exited[0]["exit_code"] == SIGSEGV and exited[0]["signal"] == "SIGSEGV"
 
     _run(body, tmp_path)
     text = caplog.text
@@ -322,3 +332,28 @@ def test_the_agents_connections_drop_on_exit_and_the_proxy_accepts_a_new_one_aft
         assert await served.connect_agent(Link()) is not None
 
     _run(body, tmp_path)
+
+
+def test_a_real_process_that_dies_on_a_signal_gives_its_signal_and_its_last_stderr_lines():
+    """`Browser.exited`, on a real child: what `start_chromium` keeps of Chromium's stderr."""
+    import signal
+    import sys
+
+    script = ("import os, signal, sys\n"
+              "for n in range(30): sys.stderr.write(f'line {n}\\n')\n"
+              "sys.stderr.flush()\n"
+              "os.kill(os.getpid(), signal.SIGSEGV)\n")
+
+    class Pipe:
+        async def close(self) -> None: ...
+
+    async def main() -> tuple[int | None, list[str]]:
+        proc = await asyncio.create_subprocess_exec(sys.executable, "-c", script,
+                                                    stdin=asyncio.subprocess.DEVNULL,
+                                                    stderr=asyncio.subprocess.PIPE)
+        return await gate_main.Browser(proc, Pipe()).exited(10)
+
+    code, tail = asyncio.run(asyncio.wait_for(main(), 20))
+    assert code == -signal.SIGSEGV
+    assert gate_main.exit_cause(code) == ("signal_SIGSEGV", "SIGSEGV")
+    assert len(tail) == gate_main.STDERR_TAIL_LINES and tail[-1] == "line 29"
