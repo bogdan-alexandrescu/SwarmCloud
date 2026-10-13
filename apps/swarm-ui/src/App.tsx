@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList } from './agentlist'
+import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -715,6 +715,15 @@ export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts'
 /** The address segment each non-default pane is written with. `detail` has none. */
 const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser']
 
+/**
+ * THE DETAILS TAB'S OWN NAME IS AN ADDRESS TOO (QA12-17, live-browser QA p12):
+ * `/agents/live/<id>/details` read as a task called `<id>/details` and drew a
+ * 404. Every other tab is reached at its lower-cased name; Details is written
+ * with no segment, and these two spellings of it are read as that and written
+ * back without it.
+ */
+const DETAIL_SEGMENTS: readonly string[] = ['details', 'detail']
+
 export interface Route {
   /** A section id, or REFERENCE. */
   sectionId: string
@@ -888,7 +897,8 @@ export function fromAddress(full: string): Route {
       rest = rest.slice(0, -1)
     }
     const last = rest[rest.length - 1]
-    const pane = PANE_SEGMENTS.find((p) => p === last) ?? null
+    // A pane needs an id before it: a lone `details` is still read as it was.
+    const pane = PANE_SEGMENTS.find((p) => p === last) ?? (rest.length > 1 && DETAIL_SEGMENTS.includes(last ?? '') ? 'detail' : null)
     // Task ids are opaque and may contain characters that were encoded on the
     // way in, so the remaining segments are rejoined rather than assumed to
     // be one.
@@ -1173,6 +1183,18 @@ export function App() {
     setAt((r) => ({ ...r, list }))
   }, [])
 
+  // THE LIST FOLLOWS THE OPEN AGENT'S GROUP (QA12-26, live-browser QA p12):
+  // a task opened under Live that parks belongs to Waiting, and the back link
+  // said `‹ Live` beside a list that no longer held it. The split reports the
+  // group its state puts it in; the list's tab, the back link and the address
+  // move there, written in place like a tab click. The toggles are kept; the
+  // Recent state filter is dropped, so the row is not hidden by it.
+  const onGroup = useCallback((tab: AgentTab) => {
+    const was = lastList.current
+    if (was?.tab === tab) return
+    onList(agentList(tab, null, { grouped: was?.grouped === true, failedFirst: was?.failedFirst === true }))
+  }, [onList])
+
   // THE TIMELINE'S AND THE WORKFLOWS LIST'S FILTERS ARE A ROUTE CHANGE TOO
   // (#185), written the same way.
   const onView = useCallback((view: string) => {
@@ -1328,6 +1350,7 @@ export function App() {
                 theater={at.theater === true}
                 closeTo={listAddress}
                 go={go}
+                onGroup={onGroup}
                 base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
               />
             )}

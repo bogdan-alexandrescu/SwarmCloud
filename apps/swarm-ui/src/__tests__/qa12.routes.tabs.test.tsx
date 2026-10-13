@@ -18,6 +18,8 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Result } from '../fetch'
+import type { CascadeEnv } from './cssgate'
+import { painted } from './marks'
 import type { Task, TaskPage, TaskState } from '../types'
 import { task as runTask } from './runfixture'
 
@@ -130,9 +132,8 @@ describe('QA12-18: the tab bar fits', () => {
     Object.defineProperty(proto, 'offsetWidth', {
       configurable: true,
       get(this: HTMLElement) {
-        if (this.closest('.ag-tabs-measure') === null) return 0
-        if (this.classList.contains('ag-tabs-more')) return 70
-        return this.getAttribute('role') === 'tab' ? 100 : 0
+        if (this.classList.contains('ag-tabs-more-host')) return 70
+        return this.getAttribute('role') === 'tab' && this.closest('.ag-tabs-edge') !== null ? 100 : 0
       },
     })
     const go = vi.fn()
@@ -170,6 +171,27 @@ describe('QA12-18: the tab bar fits', () => {
     render(<AgentSplit taskId={ID} pane="detail" artifact={null} closeTo="work/running/live" go={() => {}} base={`work/task/${ID}`} />)
     await waitFor(() => expect(document.querySelector('.ag-head-title')?.textContent).toBe('fix-heartbeat'))
     expect(screen.queryByRole('button', { name: /^More/ })).toBeNull()
+  })
+})
+
+describe('QA12-18: the sheet draws More at the end of the bar', () => {
+  const ENVS: CascadeEnv[] = [{ width: 1440 }, { width: 390, height: 844 }]
+  it('lets the strip shrink and keeps More beside it at full width, at 1440 and 390', () => {
+    const host = document.createElement('div')
+    host.innerHTML =
+      '<div class="ag-split"><div class="ag-tabs-edge"><div class="c-tabs ag-split-tabs" role="tablist"></div>' +
+      '<span class="c-menu-host ag-tabs-more-host"><button class="ag-tabs-more">More</button></span></div></div>'
+    document.body.appendChild(host)
+    try {
+      for (const env of ENVS) {
+        expect(painted(host.querySelector('.ag-tabs-edge')!, 'display', env)).toBe('flex')
+        expect(painted(host.querySelector('.ag-split-tabs')!, 'min-width', env)).toBe('0')
+        expect(painted(host.querySelector('.ag-tabs-more-host')!, ['flex', 'flex-shrink'], env)).toMatch(/none|^0$/)
+        expect(painted(host.querySelector('.ag-tabs-more')!, 'white-space', env)).toBe('nowrap')
+      }
+    } finally {
+      host.remove()
+    }
   })
 })
 
