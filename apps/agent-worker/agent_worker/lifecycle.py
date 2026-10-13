@@ -4178,13 +4178,23 @@ class Worker:
         # `attempt_count`, so the attempt after it can read 1 and still be a
         # resume. Counted back here; a tenant that can write the counter can
         # write `attempt_count` itself, so this adds no reach (see below).
+        #
+        # A refunded HAND-OFF park (live-browser §4.3) takes one off the same
+        # way, and is counted back the same way (RESUME-PROGRESS, QA12-14).
+        # It was not: MEASURED 2026-10-13 on task_4defa61c5eea4a5c87f5, the
+        # attempt after a hand-off park read `attempt_count` 1, was taken for
+        # the task's first, restored nothing, and its agent started the task
+        # over -- asking again for the hand-off already done.
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        resumes = metadata.get(CHILD_AWAIT_RESUMES_METADATA_KEY)
-        resumes = resumes if isinstance(resumes, int) and not isinstance(resumes, bool) else 0
+        resumes = 0
+        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
+            value = metadata.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                resumes += max(0, value)
         if (
             isinstance(count, bool)
             or not isinstance(count, int)
-            or count + max(0, resumes) <= 1
+            or count + resumes <= 1
         ):
             refuse(reason="first attempt of this task", attempt_count=count)
             return None
