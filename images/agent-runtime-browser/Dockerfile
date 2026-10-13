@@ -41,9 +41,30 @@ USER root
 # Chromium and its system libraries. `--with-deps` is what installs the ~100
 # shared objects Chromium needs; doing it here, once, keeps it out of the
 # attempt's critical path.
+#
+# SLIMMED (owner decision 2026-10-13, docs/browser-startup-speed.md §2.3/§9;
+# BROWSER-ENFORCE, part of #1030). Everything removed is removed IN THIS RUN:
+# deleting it in a later one only hides it under a whiteout, and the bytes are
+# still pulled.
+#
+#   * `--no-shell`: no chromium-headless-shell (108.5 MB as a layer). Since
+#     Playwright 1.49 `install chromium` adds it unless told not to, and it is
+#     only what `headless=True` launches by default. The `browser` runner
+#     launches the full build headless with `channel="chromium"`
+#     (runners/browser.py::_launch); the live gate never ran the shell
+#     (livegate/__main__.py::find_chromium globs `chromium-*/chrome-linux*/chrome`,
+#     which this keeps).
+#   * no second Node (44.6 MB): the wheel's `driver/node` is replaced by a link
+#     to the base's /usr/local/bin/node (Node 24). A link at the same name and
+#     not PLAYWRIGHT_NODEJS_PATH, because the runner's environment is built by
+#     exact name (lifecycle.py) and would not carry a new variable. The link is
+#     made after `playwright install`, which runs on the bundled one.
 RUN pip install --no-cache-dir "playwright==${PLAYWRIGHT_VERSION}" \
  && mkdir -p "${PLAYWRIGHT_BROWSERS_PATH}" \
- && playwright install --with-deps chromium \
+ && playwright install --with-deps --no-shell chromium \
+ && driver="$(python -c 'import os, playwright; print(os.path.join(os.path.dirname(playwright.__file__), "driver"))')" \
+ && rm -f "${driver}/node" \
+ && ln -s /usr/local/bin/node "${driver}/node" \
  && rm -rf /var/lib/apt/lists/* \
  && chmod -R a+rX "${PLAYWRIGHT_BROWSERS_PATH}"
 
@@ -87,6 +108,44 @@ COPY --chmod=0444 images/agent-runtime-browser/chromium-policy.json /etc/chromiu
 # writable by none: the agent runs it and cannot change what it does.
 COPY --chmod=0555 images/agent-runtime-browser/swarm-handoff /usr/local/bin/swarm-handoff
 
+# THE AGENT'S BROWSER IS THE LIVE ONE (BROWSER-ENFORCE, part of #1030;
+# docs/design/live-browser.md §3.2). task_7cda0d5335f049b4b442's agent launched
+# its own hidden headless Chromium, and the person watching saw none of its
+# work. Three pieces, all root-owned and read-only to every uid:
+#
+#   * the Playwright MCP server, pinned. The claude-code runner registers it
+#     with `--cdp-endpoint $SWARM_CDP_ENDPOINT` when the live browser exists
+#     (`claude_code.PLAYWRIGHT_MCP_BIN`), so the agent's browser_navigate and
+#     browser_tabs act on the browser the console shows. It connects and
+#     launches nothing, so it needs no browser of its own. Pinned 2026-10-13
+#     against npm's `latest`.
+#   * the stub browsers directory, /opt/swarm/live-browser-only. The runner
+#     points the AGENT's PLAYWRIGHT_BROWSERS_PATH at it -- only the agent's:
+#     the image ENV above, which the gate and the `browser` runner read, stays
+#     /opt/playwright -- so `chromium.launch()` and
+#     `launch_persistent_context()`, headless or not, start `live-browser-only`
+#     and fail with a message that names the CDP endpoint. Chosen over a
+#     sitecustomize wrapping BrowserType.launch: it also holds for Node's
+#     Playwright and for any Python, and it cannot reach the gate, whose
+#     environment never names this directory. install-browser-stub.py asks
+#     Playwright where each launch looks, so a version bump moves the stubs
+#     with it.
+#   * `swarm_browser.live()`, in the venv's site-packages: the CDP connection
+#     in one line. The agent's PATH has /opt/venv/bin first on this image
+#     (claude_code.VENV_BIN), so its `python` imports it.
+#
+# npm's cache and Playwright's scratch go to a directory removed in the same
+# RUN: as root, npm would otherwise leave a root-owned ~/.npm in /home/swarm.
+ARG PLAYWRIGHT_MCP_VERSION=0.0.83
+COPY --chmod=0444 images/agent-runtime-browser/swarm_browser.py /opt/venv/lib/python3.11/site-packages/swarm_browser.py
+RUN --mount=type=bind,source=images/agent-runtime-browser,target=/tmp/swarm-browser-build \
+    scratch="$(mktemp -d)" \
+ && npm_config_cache="${scratch}/npm" npm install -g --no-audit --no-fund "@playwright/mcp@${PLAYWRIGHT_MCP_VERSION}" \
+ && TMPDIR="${scratch}" python /tmp/swarm-browser-build/install-browser-stub.py \
+      /opt/swarm/live-browser-only /tmp/swarm-browser-build/live-browser-only \
+ && chmod -R a+rX,a-w /opt/swarm \
+ && rm -rf "${scratch}"
+
 USER swarm:swarm
 # NO `WORKDIR /workspace` HERE: the base sets it and this image inherits it.
 # Restating it wrote BuildKit's empty layer (sha256:4f4fb700ef54...) a second
@@ -96,26 +155,16 @@ USER swarm:swarm
 # image (scripts/image-sizes.sh --duplicate-layers);
 # tests/unit/scripts/test_image_streaming.py holds this file to it.
 
-# Prove the browser actually launches in this image rather than discovering it
-# at 3am in a tenant's attempt.
-RUN python - <<'PY'
-from playwright.sync_api import sync_playwright
-
-with sync_playwright() as p:
-    browser = p.chromium.launch(headless=True, chromium_sandbox=False,
-                                args=["--disable-dev-shm-usage", "--no-zygote"])
-    page = browser.new_page()
-    page.set_content("<h1>swarm browser runtime ok</h1>")
-    assert "swarm browser runtime ok" in page.inner_text("h1")
-    browser.close()
-print("chromium launches headless as a non-root user")
-PY
-
-# And that the display sidecar's pieces are where the dispatcher expects them:
-# the uid it runs the sidecar as, Xvfb, and a policy Chromium can parse.
-RUN test "$(id -u swarm-display)" = 10002 \
- && test -x /usr/bin/Xvfb \
- && python -c 'import json, sys; [json.load(open(p)) for p in sys.argv[1:]]' \
-      /etc/opt/chrome/policies/managed/swarm.json /etc/chromium/policies/managed/swarm.json
+# Prove, as the agent's uid and in ONE RUN (two check-only RUNs can write the
+# same layer -- the duplicate above), that the full Chromium launches headless,
+# that the agent's own launch is refused toward the live browser, that the
+# helper and the MCP server are there, and that the display sidecar's pieces
+# are where the dispatcher expects them, rather than discovering any of it at
+# 3am in a tenant's attempt. selftest.py lists each check; it is
+# bind-mounted, not shipped.
+RUN --mount=type=bind,source=images/agent-runtime-browser,target=/tmp/swarm-browser-build \
+    scratch="$(mktemp -d)" \
+ && TMPDIR="${scratch}" python /tmp/swarm-browser-build/selftest.py /opt/swarm/live-browser-only \
+ && rm -rf "${scratch}"
 
 ENTRYPOINT ["/usr/bin/tini", "--", "python", "-m", "agent_worker"]
