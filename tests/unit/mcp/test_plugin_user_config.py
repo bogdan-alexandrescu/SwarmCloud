@@ -68,9 +68,22 @@ def _user_config() -> dict:
 _HOOK_OPTIONS = {"auto_attach": _MANIFEST.parents[1] / "hooks" / "session-start.sh"}
 
 
+#: The option that reaches the bridge NOT as `SWARM_PLUGIN_<KEY>` but as the
+#: variable every client already reads for it: `tenant` -> SWARM_TENANT
+#: (SC-TENANT, owner decision 2026-10-12), behind a SWARM_TENANT already in
+#: Claude Code's environment. `test_sc_tenant.py` holds that mapping and that
+#: precedence, by expanding the manifest's own entry the way Claude Code does.
+_TENANT_OPTION = "tenant"
+_TENANT_ENV = "SWARM_TENANT"
+
+
 def _bridge_options() -> dict:
-    """The options the bridge reads: every declared one but the hooks'."""
-    return {k: v for k, v in _user_config().items() if k not in _HOOK_OPTIONS}
+    """The options the bridge reads as SWARM_PLUGIN_<KEY>: every declared one
+    but the hooks' and the tenant."""
+    return {
+        k: v for k, v in _user_config().items()
+        if k not in _HOOK_OPTIONS and k != _TENANT_OPTION
+    }
 
 
 def test_every_hook_option_is_read_by_its_hook():
@@ -114,7 +127,10 @@ def test_every_option_reaches_the_bridge_under_the_name_it_reads():
             f"{key!r} must reach the bridge as {name}={'${user_config.' + key + '}'}; "
             f"env carries {env.get(name)!r}"
         )
-    passed = {v for v in env.values() if isinstance(v, str) and "${user_config." in v}
+    passed = {
+        v for name, v in env.items()
+        if name != _TENANT_ENV and isinstance(v, str) and "${user_config." in v
+    }
     assert len(passed) == len(_bridge_options()), f"env passes an option nobody declared: {passed}"
 
 

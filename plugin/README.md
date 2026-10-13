@@ -40,7 +40,9 @@ In a Claude Code session:
 You are prompted for the deployment URL (required), the OAuth client ID and
 the OAuth client secret. The secret is `sensitive` in the manifest, so Claude
 Code keeps it in your system's secure credential store, never in
-`settings.json`. Then:
+`settings.json`. Two more settings have defaults: `default_target` and
+`auto_attach`, and a third, **`tenant`**, is empty unless you name one — see
+*Acting as one of several tenants*, below. Then:
 
 ```text
 /reload-plugins
@@ -422,9 +424,10 @@ back rather than retyping it.
 
 ### Acting as one of several tenants
 
-A person in more than one registered tenant group acts as the **first**
-matching group, in the order the admin registered them, unless they choose
-another (#447). The choice is sent as `X-Swarm-Tenant` on every request, and
+With no choice made, the API picks your default: your own personal workspace
+when it is **ready**, otherwise the first matching registered group in the
+order the admin registered them (#1200; `docs/multi-tenancy.md`). Your groups
+are what you choose instead (#447). The choice is sent as `X-Swarm-Tenant` on every request, and
 the API honours it only when your verified membership includes that tenant's
 group: the header selects among your memberships, it never grants one. A
 tenant you are not a member of is refused with 403 `tenant_not_member`, and
@@ -433,12 +436,34 @@ that refusal is shown as the API wrote it.
 | Surface | List your tenants | Choose one |
 |---|---|---|
 | terminal | `swarm tenants` (`--json`), the current one marked `*` | `swarm --tenant <id> ...`, or `SWARM_TENANT=<id>`; the flag wins |
-| MCP | `swarm_tenants` (read-only) | `SWARM_TENANT` in the bridge's environment, read once when it starts |
+| `sc` | `sc whoami` / `sc config` show the tenant that answered and which setting chose it | `SWARM_TENANT=<id>`, read once per invocation |
+| MCP | `swarm_tenants` (read-only) | the plugin's **`tenant`** setting, or `SWARM_TENANT` in the environment Claude Code started with — **the environment wins**; read once when the bridge starts |
+| SessionStart hook | — | the same as the MCP server: `SWARM_TENANT` if set, else the `tenant` setting |
 
-Nothing chosen sends no header at all, so behaviour is exactly what it was
-before. The bridge's setting is per session, not per call: a session whose
-calls could each name a tenant would read one tenant's rows and act on
-another's. `sc` does not take a tenant yet; it acts as your default.
+Nothing chosen sends no header at all, and the API's default applies. The
+bridge's setting is per session, not per call: a session whose calls could
+each name a tenant would read one tenant's rows and act on another's.
+
+**`sc` reads `SWARM_TENANT`** (SC-TENANT, owner decision 2026-10-12). Before
+#1200 every tool that sent no header landed in the same first group, so `sc`
+sending none was harmless. Once a ready personal workspace became the default,
+`sc` would have read your personal workspace while the bridge, the plugin's
+tools and `swarm` acted in the group you chose — two views of "your" tasks
+that disagree. `sc` now chooses with the same helper they do
+(`client.chosen_tenant`) and names that tenant on every request.
+
+**The plugin's `tenant` setting** (`/plugin configure sc@swarmcloud`) is how a
+plugin session stays in a group without exporting anything. The manifest
+passes it to the bridge as
+`SWARM_TENANT: ${SWARM_TENANT:-${user_config.tenant}}`: Claude Code
+substitutes the setting first and then expands the variable from its own
+environment, so **a `SWARM_TENANT` in the environment Claude Code was started
+with wins** — set, even empty (empty means your default). The SessionStart
+hook applies the same rule before its `sc workflows`, so the workflows it
+names are the tenant's the session will act on. The setting does **not**
+reach a `uv run sc` the `sc` skill or `/sc` runs through the Bash tool: that
+process sees only the session's environment, so export `SWARM_TENANT` there
+(or start Claude Code with it) to move `sc` as well.
 
 ## Choosing a runner profile
 
@@ -831,7 +856,8 @@ pieces do it, and none of them submits anything.
   read-only, gives up after 10 seconds (`SWARM_SESSION_START_TIMEOUT`), and is
   silent and exits 0 when none run, when the bridge or the API fails, and when
   the plugin's **`auto_attach`** option is off (`/plugin configure
-  sc@swarmcloud`; on by default). The first session after a new plugin version
+  sc@swarmcloud`; on by default). It reads in the session's tenant:
+  `SWARM_TENANT` if set, else the plugin's `tenant` setting. The first session after a new plugin version
   may get no notice while uv fetches the new bridge; `/sc attach --all` works
   by hand at any time.
 
