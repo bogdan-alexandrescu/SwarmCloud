@@ -6678,6 +6678,27 @@ export interface RawLiveSocket {
   close(): void
 }
 
+/**
+ * The relay's word that it refused a control message on this link
+ * (`{"type": "refused", "reason": "control", "cause": ...}`, swarm_live
+ * rendezvous.py `viewer_text`): the cause, such as `wrong_session` or
+ * `session_closed`, or `unknown` from a relay that names none. Null for any
+ * other frame. Without it, a console whose control the relay turned away drew
+ * "you are in control" over a browser that ignored every move (LB-CURSOR2).
+ */
+export function liveRefusal(text: string): string | null {
+  let msg: unknown
+  try {
+    msg = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof msg !== 'object' || msg === null) return null
+  const m = msg as Record<string, unknown>
+  if (m.type !== 'refused' || m.reason !== 'control') return null
+  return typeof m.cause === 'string' && /^[a-z_]{1,64}$/.test(m.cause) ? m.cause : 'unknown'
+}
+
 function liveStatus(text: string): LiveStatus | null {
   let msg: unknown
   try {
@@ -6722,7 +6743,12 @@ export class LiveChannel {
   onclose: ((ev: CloseEvent) => void) | null = null
   onerror: ((ev: Event) => void) | null = null
 
-  constructor(private readonly raw: RawLiveSocket, ticket: string, onStatus?: (status: LiveStatus) => void) {
+  constructor(
+    private readonly raw: RawLiveSocket,
+    ticket: string,
+    onStatus?: (status: LiveStatus) => void,
+    onRefused?: (cause: string) => void,
+  ) {
     raw.binaryType = 'arraybuffer'
     raw.onopen = (ev) => {
       raw.send(JSON.stringify({ ticket }))
@@ -6732,6 +6758,10 @@ export class LiveChannel {
       if (typeof ev.data === 'string') {
         const status = liveStatus(ev.data)
         if (status !== null) onStatus?.(status)
+        else {
+          const refused = liveRefusal(ev.data)
+          if (refused !== null) onRefused?.(refused)
+        }
         return
       }
       this.onmessage?.({ data: ev.data as ArrayBuffer | Blob })
@@ -6766,8 +6796,13 @@ export class LiveChannel {
 }
 
 /** Open the session's live socket as a `LiveChannel`: the ticket first, then binary frames only. */
-export function openLiveChannel(sessionId: string, ticket: string, onStatus?: (status: LiveStatus) => void): LiveChannel {
-  return new LiveChannel(new WebSocket(liveSocketUrl(sessionId)), ticket, onStatus)
+export function openLiveChannel(
+  sessionId: string,
+  ticket: string,
+  onStatus?: (status: LiveStatus) => void,
+  onRefused?: (cause: string) => void,
+): LiveChannel {
+  return new LiveChannel(new WebSocket(liveSocketUrl(sessionId)), ticket, onStatus, onRefused)
 }
 
 /**
@@ -6791,9 +6826,10 @@ export function openLiveSocket<T>(
   ticket: string,
   attach: (channel: LiveChannel) => T,
   onStatus?: (status: LiveStatus) => void,
+  onRefused?: (cause: string) => void,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
-    const channel = openLiveChannel(sessionId, ticket, onStatus)
+    const channel = openLiveChannel(sessionId, ticket, onStatus, onRefused)
     channel.onerror = () => reject(new Error('The live connection did not open.'))
     channel.onclose = () => reject(new Error('The live connection closed before it opened.'))
     channel.onopen = () => {
