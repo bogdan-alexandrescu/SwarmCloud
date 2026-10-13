@@ -122,7 +122,8 @@ def people_service(
     publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> People:
     return People(ctx.db, publisher=publisher, now=ctx.now,
-                  console_url=ctx.settings.console_url)
+                  console_url=ctx.settings.console_url,
+                  project_id=ctx.settings.project_id)
 
 
 @router.get("/people")
@@ -158,12 +159,23 @@ def list_people(
 
 @router.post("/workspaces/sweep")
 def sweep_workspaces(
+    request: Request,
     auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
     people: People = Depends(people_service),
 ) -> dict:
-    """§2.2's dispatch sweep. Declared before the `{workspace_id}` routes so
-    the literal path is never read as a workspace id."""
-    return people.sweep()
+    """§2.2's dispatch sweep, and the pending loans of every workspace now
+    ready (LOAN-NEW). Declared before the `{workspace_id}` routes so the
+    literal path is never read as a workspace id. The broker client is built
+    here rather than as a dependency so that a deployment whose broker is
+    misconfigured still gets its dispatch and its stuck reports; the loans
+    then wait, and `loans_error` says why."""
+    try:
+        pool = account_pool(request, ctx)
+        pool_error = None
+    except Exception as exc:  # noqa: BLE001 - the loans wait, the sweep runs
+        pool, pool_error = None, getattr(exc, "code", None) or type(exc).__name__
+    return {**people.sweep(pool), "loans_error": pool_error}
 
 
 @router.post("/workspaces/{workspace_id}/approve")
