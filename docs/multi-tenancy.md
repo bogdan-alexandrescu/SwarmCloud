@@ -790,9 +790,11 @@ link on the person's row in People.
   `ready`, or that has no Claude account, is refused (`403
   WORKSPACE_NOT_READY`, `NO_CLAUDE_ACCOUNT`), and `tenant_for` no longer writes
   `tenants/u-*` on first sight. Group submissions are never gated (WD7). It
-  ships off and is turned on per environment, in its tfvars, only after one
+  ships off and is turned on per environment, in its tfvars
+  (`workspace_gate`, rendered by `terraform/infra/locals.tf`), only after one
   real approval has gone end to end (WD8): turning it on refuses every person
-  without a `ready` record.
+  without a `ready` record. **Dev: on from W10 (2026-10-13), once its pull
+  request is merged; prod: off.**
 
 ### 7.5 The first end-to-end run, 2026-10-12 to 13
 

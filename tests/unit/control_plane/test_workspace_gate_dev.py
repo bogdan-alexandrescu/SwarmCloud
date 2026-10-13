@@ -1,4 +1,4 @@
-"""WORKSPACE_GATE reaches swarm-api from Terraform, off by default (W10, WD8; docs/workspaces.md §5.5).
+"""WORKSPACE_GATE is ON in dev and nowhere else (W10, WD8; docs/workspaces.md §5.5).
 
 `swarm_api.workspaces.gate_from_env` reads WORKSPACE_GATE and ships OFF. Until
 W10 nothing in Terraform set it, so the only way to turn it on was by hand on a
@@ -35,6 +35,21 @@ RENDER = re.compile(
 
 def _assignments(env: str) -> list[str]:
     return [m.group("value") for m in ASSIGNMENT.finditer((ENVIRONMENTS / env / f"{env}.tfvars").read_text())]
+
+
+def test_dev_turns_the_gate_on_exactly_once():
+    assert _assignments("dev") == ["true"], (
+        "dev.tfvars must set `workspace_gate = true` once (W10: WD8's precondition, "
+        "one real approval end to end, was met on 2026-10-13)"
+    )
+
+
+def test_dev_says_why_and_when_beside_the_value():
+    text = (ENVIRONMENTS / "dev" / "dev.tfvars").read_text()
+    head = text[: text.index("\nworkspace_gate")]
+    comment = head[head.rindex("\n\n"):]
+    for needle in ("WORKSPACE_GATE", "2026-10-13", "w-7f9285", "WD8"):
+        assert needle in comment, f"the comment above dev's workspace_gate must name {needle!r}"
 
 
 def test_every_other_environment_leaves_the_gate_off():
