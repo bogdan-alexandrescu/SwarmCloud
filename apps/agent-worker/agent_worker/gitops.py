@@ -3550,6 +3550,17 @@ def mirror_worktree(
     return copied
 
 
+#: The wait before `push_branch` tries a push again, once, after git's own
+#: words said the forge did not answer (`transient_git_failure`; G1, #1225).
+#: Short, because the publish runs after the agent with the lease held and a
+#: push that fails twice ends the step FAILED (`Worker._publish_failed`)
+#: rather than sleeping longer inside the worker (invariant 4); the clone's
+#: 10 s first wait (`CLONE_RETRY_WAITS_SECONDS`) is the bound it stays under.
+PUSH_RETRY_WAIT_SECONDS = 5.0
+#: Tries of one push in all: the first, and one more for a transient failure.
+PUSH_TRIES = 2
+
+
 def push_branch(
     *,
     repo: Path,
@@ -3583,6 +3594,14 @@ def push_branch(
     * the push is never forced. A non-fast-forward means something other than
       this attempt moved the branch, and the correct response to that is to
       report it, not to win.
+
+    A PUSH THE FORGE DID NOT ANSWER IS TRIED ONCE MORE (G1, #1225). git says
+    a reset connection or a 5xx only as text on stderr, so the text is read
+    with the clone's classifier (`transient_git_failure`): a refusal, a
+    missing repository or refused authentication is raised at once, and a
+    second transient failure is raised as the first would have been. Pushing
+    again is safe because the push is never forced: a first try that landed
+    before the connection dropped makes the second one a no-op.
     """
     branch = validate_ref(branch) or ""
     if not branch:
@@ -3606,27 +3625,40 @@ def push_branch(
     if cred_file is not None:
         config_args += ["-c", f"credential.helper=store --file={cred_file}"]
     try:
-        # `--no-follow-tags`: the refspec names one branch, but `push.followTags`
-        # in the clone's config -- the agent's to set -- would push every
-        # annotated tag reachable from it as well, with a tagger and a message
-        # the agent chose. A swarm attempt has no tag to publish.
-        code, _ = _git_text(
-            [
-                git_binary, *config_args, "push", "--no-verify", "--no-follow-tags",
-                "--porcelain", "--", url, f"HEAD:refs/heads/{branch}",
-            ],
-            repo=repo,
-            private_dir=private_dir,
-            logs_dir=logs_dir,
-            slug="publish-push",
-            timeout_seconds=timeout_seconds,
-            logger=logger,
-        )
-        if code != 0:
+        for attempt in range(1, PUSH_TRIES + 1):
+            # `--no-follow-tags`: the refspec names one branch, but
+            # `push.followTags` in the clone's config -- the agent's to set --
+            # would push every annotated tag reachable from it as well, with a
+            # tagger and a message the agent chose. A swarm attempt has no tag
+            # to publish.
+            code, _ = _git_text(
+                [
+                    git_binary, *config_args, "push", "--no-verify", "--no-follow-tags",
+                    "--porcelain", "--", url, f"HEAD:refs/heads/{branch}",
+                ],
+                repo=repo,
+                private_dir=private_dir,
+                logs_dir=logs_dir,
+                slug="publish-push",
+                timeout_seconds=timeout_seconds,
+                logger=logger,
+            )
+            if code == 0:
+                break
             tail = ""
             err = logs_dir / "git-publish-push.err.log"
             if err.exists():
                 tail = err.read_text(errors="replace")[-1200:].strip()
+            if attempt < PUSH_TRIES and transient_git_failure(tail):
+                logger.warning(
+                    "the push could not reach the forge; trying it once more",
+                    attempt=attempt,
+                    attempts=PUSH_TRIES,
+                    wait_seconds=PUSH_RETRY_WAIT_SECONDS,
+                    exit_code=code,
+                )
+                time.sleep(PUSH_RETRY_WAIT_SECONDS)
+                continue
             raise GitError(f"push failed with exit {code}{_withheld_note(url, token)}: {tail}")
     finally:
         # Same discipline as the clone: the credential exists for the length of

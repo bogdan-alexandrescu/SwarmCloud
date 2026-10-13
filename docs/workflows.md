@@ -646,9 +646,40 @@ names the uploaded `swarm-work.patch` uri, so the work can be recovered with
 attempt's final checkpoint. It is not retried: a refused push meets the same
 refusal on the same branch. The end cause is `outputs_missing`, as for
 `published_nothing:`, because the frozen contract has no publish-failed cause
-and no new `TaskState` was added for it. A step that publishes nothing by
-design -- a review, an `integrate` contributor, a `collect` step, a step with
-no repository -- is unaffected.
+and no new `TaskState` was added for it.
+
+**A step whose branch is its deliverable is FAILED when the branch was not
+pushed (G1, part of #1225).** #872 covered only a step that opens a pull
+request, and the gap it left was measured on 2026-10-12
+(`wf_e55610ded71c4d9d9fae`, `wf_0260c920acf8414395b2`): a review failed
+cloning "Remote branch swarm/task_... not found" behind a build step that had
+ended SUCCEEDED without pushing. That build step was an `integrate`
+contributor, whose branch is what the integrator merges and what a step that
+`builds_on` it clones. So the rule is now about the branch, not the pull
+request (`Worker._deliverable_branch`). It covers a step that opens a pull
+request, an `integrate` contributor, a `carrier: branches` step under any
+strategy, and a `single-pr` amender. A step another step `builds_on` is one of
+these already, because `builds_on` is accepted only under `direct-pr` and
+`integrate`. Such a step ends FAILED `publish_failed:` when it changed
+something and its branch was not pushed, by any path, not only a git failure:
+a publish that declined because the token cannot push (`can_push` false), a
+refused git token, a forge the worker cannot publish to, publishing disabled,
+a harvest that failed or met processes that survived the reap, or a publish
+that raised. Each of these used to read SUCCEEDED. A forge that could not be
+reached at the probe fails the attempt retryably instead (`forge_unreachable`),
+as it already did for a pull-request step. A push whose stderr says the forge
+did not answer (a reset connection, a 5xx, a timeout; git's own words, read by
+`gitops.transient_git_failure`) is tried once more after 5 s
+(`gitops.push_branch`). A refusal is not retried. A second transient failure
+ends the step FAILED as above.
+
+These steps still SUCCEED without a branch: one that changed nothing (its
+dependants already step past it), one that declared `allow_empty_diff` or
+wrote `verification.md`, and one whose verdict gate kept its agent from
+running. The skip path has its own rule (PUB-SKIP). Steps that deliver no
+branch at all are unaffected: a `collect` step without a carrier, a
+`single-pr` reader, a review that edits nothing, and a step with no
+repository.
 
 ## An empty diff can succeed: `allow_empty_diff`
 
