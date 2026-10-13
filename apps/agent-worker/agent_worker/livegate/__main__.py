@@ -65,7 +65,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .capture import CaptureError, XvfbFramebuffer
+from .capture import CaptureError, Frame, XvfbFramebuffer
 from .cdppolicy import PolicyPaths
 from .cdpproxy import AgentConnection, AgentLink, CdpProxy, PipeTransport, serve_agents
 from .ctl import DEFAULT_MARKER, CtlServer
@@ -93,8 +93,18 @@ CHROMIUM_READY_SECONDS = 45.0
 #: Under the worker's ctl.sock timeout (CtlClient, 10 s), so a relay that does
 #: not answer is a refused `tunnel_ticket`, not a lost channel.
 TUNNEL_OPEN_SECONDS = 8.0
-#: Frames per second while anyone (a viewer, the recorder) is watching.
-CAPTURE_FPS = 10
+#: Frames per second while a person holds control (STREAM-SMOOTH; part of
+#: #1030). Measured with `livegate.bench` (the numbers are in the pull
+#: request): a changed Desktop frame costs the gate about 1 ms to grab, 0.1 ms
+#: to mask and a few ms to diff and encode, so 30 a second fits one core with
+#: room for the recorder. 30 is what a screen-sharing viewer reads as motion
+#: rather than steps, and with a 16 ms browser paint it puts the next frame
+#: after a key within ~50 ms; the viewer pulls at its own pace on top of this
+#: (rfb.py), so a slower link gets fewer frames, never older ones.
+CONTROL_FPS = 30
+#: Frames per second while people only watch, or only the relay records:
+#: as before, since nobody is waiting on a key.
+WATCH_FPS = 10
 #: The longest ticket the relay accepts (swarm_live.rendezvous MAX_TICKET_CHARS).
 MAX_TICKET_CHARS = 4096
 #: The keys of the relay's `DEVICE` frame (rendezvous.DeviceRequest.payload):
@@ -127,6 +137,13 @@ RECONNECT_DELAYS = (0.05, 0.25, 0.5, 1.0, 2.0)
 
 #: A hand-off's `expect`: a host (the worker checked it with `expect_refusal`).
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?")
+
+
+def capture_fps(*, watching: bool, controlled: bool) -> int:
+    """How often to grab: `CONTROL_FPS` in control, `WATCH_FPS` watched, 0 for nobody."""
+    if not watching:
+        return 0
+    return CONTROL_FPS if controlled else WATCH_FPS
 
 
 class SetupError(Exception):
@@ -709,6 +726,8 @@ class LiveGate:
         self._self_paused = False
         self._fresh_target: str | None = None
         self._watching = asyncio.Event()
+        #: Set when control is granted or released: the capture loop's rate changed.
+        self._rate_changed = asyncio.Event()
         #: What the gate reports over the tunnel (report.py): the top frame's
         #: origin and the applied device, each None until it is known.
         self.origin: dict[str, Any] | None = None
@@ -839,27 +858,57 @@ class LiveGate:
     # -- capture ------------------------------------------------------------
 
     async def _capture(self) -> None:
-        interval = 1.0 / CAPTURE_FPS
+        """Grab, mask, publish, at `capture_fps` for who is there.
+
+        The grab -- a 4 MB copy out of Xvfb's mapping, and the device crop --
+        runs on a thread, so the event loop that reads the controller's input
+        is never held by it. The mask runs here on the loop: `MaskState` is fed
+        by the CDP events on this loop and is single-threaded, and painting a
+        few boxes costs a tenth of a millisecond (livegate.bench). The wait to
+        the next frame counts the work already done, so 30 a second is 30, and
+        it ends early when control changes hands.
+        """
+        loop = asyncio.get_running_loop()
         failing = False
         while True:
             await self._watching.wait()
+            controlled = self.control is not None and self.control.controller is not None
+            fps = capture_fps(watching=True, controlled=controlled)
+            started = loop.time()
+            device = self.devices.device if self.devices is not None else self.desktop
             try:
-                frame = self.framebuffer.grab()
+                frame = await asyncio.to_thread(self._grab, device)
             except CaptureError as exc:
                 if not failing:
                     log.warning("live gate: capture failed (%s); nothing is sent", exc)
                 failing = True
-                await asyncio.sleep(interval)
+                await self._pace(started + 1.0 / fps)
                 continue
             failing = False
-            device = self.devices.device if self.devices is not None else self.desktop
-            frame = captured(frame, device)
             self.hub.publish(masked(frame, self.mask_state))
             # The first frame the stream is given: the capture runs only while
             # an RFB stream (a viewer, or the relay's recorder) is open, and
             # every stream sends from the hub this was published to.
             self.startup.setdefault("first_frame", self._wall())
-            await asyncio.sleep(interval)
+            await self._pace(started + 1.0 / fps)
+
+    def _grab(self, device: Any) -> Frame:
+        """On a thread: the screen, cut to the device's frame. Unmasked: never published from here."""
+        return captured(self.framebuffer.grab(), device)
+
+    async def _pace(self, until: float) -> None:
+        """Wait for `until` on the loop's clock, or for control to change hands."""
+        delay = until - asyncio.get_running_loop().time()
+        if delay > 0:
+            try:
+                await asyncio.wait_for(self._rate_changed.wait(), delay)
+            except asyncio.TimeoutError:
+                pass
+        self._rate_changed.clear()
+
+    def control_changed(self) -> None:
+        """Control was granted or released: the capture rate follows at once."""
+        self._rate_changed.set()
 
     def _agent_pointer(self, x: float, y: float) -> None:
         """The agent's `Input.dispatchMouseEvent`, in CSS pixels: where watchers see the pointer (pointer.py)."""
@@ -1121,6 +1170,7 @@ class LiveGate:
         if not decision.granted:
             return await self._refused(decision.cause or "refused")
         await control.grant(conn_id)
+        self.control_changed()
         touch.begin(target)
         await self._bring_to_front(target)
         if self._episode is None:
@@ -1161,6 +1211,7 @@ class LiveGate:
                 await asyncio.wait_for(self.control.revoke(), PAGE_INFO_SECONDS)
             except Exception as exc:  # noqa: BLE001 -- see above
                 self.record("release_degraded", {"step": "revoke", "cause": type(exc).__name__})
+            self.control_changed()
         if self.touch is not None:
             try:
                 await asyncio.wait_for(self.touch.end(), PAGE_INFO_SECONDS)
