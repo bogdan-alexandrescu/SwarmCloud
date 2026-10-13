@@ -229,7 +229,7 @@ describe('V083: collapsed, the section you are in opens its pages', () => {
     expect(c.querySelector('.sk-app.is-collapsed'), 'the click expanded the panel').not.toBeNull()
     const fly = c.querySelector('.sk-flyout')
     expect(fly, 'no way to the other Admin pages').not.toBeNull()
-    expect([...fly!.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['Pool limits', 'Tenants', 'Platform counts', 'People', 'Schedules'])
+    expect([...fly!.querySelectorAll('a')].map((a) => a.textContent)).toEqual(['Pool limits', 'Tenants', 'Platform counts', 'People'])
     expect(go).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Open the panel' }))
     expect(c.querySelector('.sk-app.is-collapsed')).toBeNull()

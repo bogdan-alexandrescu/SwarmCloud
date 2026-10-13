@@ -222,7 +222,7 @@ def test_an_agents_questions_are_a_needs_you_item(db):
     items = notif.agent_questions(_reading(db, _viewer()))
     assert _ids(items) == ["task:questions:task_q"]
     assert items[0]["needs_you"] is True
-    assert items[0]["href"] == "/agents/recent/task_q/artifacts"
+    assert items[0]["href"] == "/agents/recent/task_q#questions"
 
 
 def test_github_needing_reconnect_and_an_expired_token_are_account_items(db):

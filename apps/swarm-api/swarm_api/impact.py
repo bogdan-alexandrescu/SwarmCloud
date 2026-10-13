@@ -1389,9 +1389,10 @@ def resolve_read_token(db: Any, tenant: Tenant, tenant_doc: Tenant | None, repo_
     """R2 for a read: the repository's token, else the tenant default.
 
     (value, label). The label names the slot -- scope, token id, secret name
-    -- and never the value. A tenant with no registry record at all reads
-    with its `-git` slot, which is what every other forge read in swarm-api
-    uses; a tenant whose default is revoked or expired is refused, naming the
+    -- and never the value. A tenant with no repository or tenant record
+    reads with the slot every other forge read in swarm-api resolves
+    (`forge.resolve_forge_slot`: its `-git`, or a personal tenant's owner's
+    user slot); a tenant whose default is revoked or expired is refused, naming the
     scopes tried.
     """
     registry = GitTokens(db, now=lambda: now)
@@ -1405,9 +1406,12 @@ def resolve_read_token(db: Any, tenant: Tenant, tenant_doc: Tenant | None, repo_
             raise _forge.NoForgeCredential(
                 "no usable git token for this repository: " + "; ".join(resolution.tried)
             )
-        label = {"scope": "tenant", "token_id": None,
-                 "secret_name": tenant.secret_name(_forge.GIT_PROVIDER)}
-        return tokens.token_for(tenant), label
+        # No registry record says which slot: the one every other read
+        # resolves (`forge.resolve_forge_slot`), named as what it is.
+        slot, value = _forge.read_resolved(tokens, tenant)
+        label = {"scope": "tenant" if slot.provider == _forge.GIT_PROVIDER else "user",
+                 "token_id": None, "secret_name": tenant.secret_name(slot.provider)}
+        return value, label
     label = {"scope": record.scope.value, "token_id": record.token_id,
              "secret_name": record.secret_name}
     if record.provider_suffix == _forge.GIT_PROVIDER:

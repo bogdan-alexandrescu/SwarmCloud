@@ -38,7 +38,7 @@ from .executioncancel import (
     NoExecutionCanceller,
     PubSubExecutionCanceller,
 )
-from .forge import ForgeTokens, GitHubIssues, SecretManagerForgeTokens
+from .forge import FirestoreSlotIndex, ForgeTokens, GitHubIssues, SecretManagerForgeTokens
 from .forgewrite import GitHubWriter
 from .groups import CloudIdentityGroups, MembershipResolver
 from .inspect import InspectionService
@@ -203,7 +203,10 @@ def build_context(
     spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
     # Built before the submissions service, which reads a `merge_pr` workflow's
     # pull request with them (#352), and handed to the context as the same two.
-    forge_tokens = forge_tokens or SecretManagerForgeTokens(settings.project_id)
+    # The slot index lets every read resolve the slot a task would use
+    # (`forge.resolve_forge_slot`): a personal tenant has only its owner's.
+    forge_tokens = forge_tokens or SecretManagerForgeTokens(
+        settings.project_id, index=FirestoreSlotIndex(db))
     forge_writer = forge_writer or GitHubWriter()
     submissions = SubmissionService(
         settings=settings, store=store, waker=waker, metrics=metrics, now=now,

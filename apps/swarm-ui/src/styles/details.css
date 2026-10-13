@@ -368,3 +368,17 @@
    instant the Details tab's `eligible` bar used to print, as a fact, not an
    action. */
 .ho-since { color: var(--text-dim); font-size: var(--t-micro); }
+
+/* --- Questions for you (QuestionsCard.tsx, part of #1206) ----------------- */
+/* The agent's questions for its owner lead Details; the recommended option
+   carries the info rule so it is found without reading every description. */
+.qc { border-left: 3px solid var(--info); }
+.qc-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.qc-q { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 8px; border-top: 1px solid var(--line); }
+.qc-text { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.qc-n { color: var(--text-dim); }
+.qc-context { white-space: pre-wrap; overflow-wrap: anywhere; }
+.qc-options { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.qc-option { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; padding: 4px 8px; border-left: 2px solid var(--line); }
+.qc-option.is-recommended { border-left-color: var(--info); }
+.qc-desc { flex-basis: 100%; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }

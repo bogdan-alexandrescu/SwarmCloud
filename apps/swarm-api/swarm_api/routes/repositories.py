@@ -364,7 +364,7 @@ def get_index(
     service.registrations.get(tenant_id, repo_id)
     tenant = _tenant(ctx, tenant_id, auth)
     service.settle(tenant_id, repo_id, auth=auth, tenant=tenant)
-    service.refresh_relation(tenant_id, repo_id, tenant)
+    service.refresh_relation(tenant_id, repo_id, tenant, person=auth.email)
     record = service.registrations.get(tenant_id, repo_id)
     index_state = dict(record.get("index") or {})
     in_flight_id = index_state.get("in_flight_task_id")

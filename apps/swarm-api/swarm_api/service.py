@@ -639,7 +639,8 @@ class SubmissionService:
             # naming two) and before the dispatch options, because it
             # supplies the repository they require. A continuation-scoped
             # caller was refused above: `merge_pr` carries no continues_task.
-            named_pull = self._named_pull(tenant, spec) if spec.merge_pr else None
+            named_pull = (self._named_pull(tenant, spec, person=ctx.email)
+                          if spec.merge_pr else None)
             # A merge workflow its caller left nameless is stored as "Merge PR
             # <number>" (owner report 2026-10-11), before any step task copies
             # the workflow's metadata.
@@ -1093,8 +1094,10 @@ class SubmissionService:
             update={"steps": [*with_rereview.steps, WorkflowStepCreate.model_validate(appended)]}
         ), rereview["step_id"]
 
-    def _named_pull(self, tenant: Tenant, spec: WorkflowCreate) -> NamedPull | None:
-        """`spec.merge_pr`, checked (`continuation.resolve_merge_pr`)."""
+    def _named_pull(self, tenant: Tenant, spec: WorkflowCreate, *,
+                    person: str | None = None) -> NamedPull | None:
+        """`spec.merge_pr`, checked (`continuation.resolve_merge_pr`), read
+        with the slot `forge.resolve_forge_slot` picks for `person`."""
         if self._forge_tokens is None or self._forge_writer is None:
             raise DispatchOptionError(
                 "merge_pr reads the pull request from GitHub at submission, and this "
@@ -1106,6 +1109,7 @@ class SubmissionService:
             repositories=Repositories(self._store.db, now=self._now),
             tokens=self._forge_tokens,
             writer=self._forge_writer,
+            person=person,
         )
 
     def _registration(self, tenant_id: str, repository_url: str | None) -> dict[str, Any]:
