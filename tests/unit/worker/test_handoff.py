@@ -62,6 +62,9 @@ seen = {"env": dict(os.environ), "steps": []}
 spool = os.environ.get("SWARM_HANDOFF")
 resumed = pathlib.Path(spool, "resumed.md") if spool else None
 seen["resumed"] = resumed.read_text() if resumed is not None and resumed.is_file() else None
+# Where it stopped, as the guide asks an agent to keep it.
+if plan.get("notes") and spool:
+    pathlib.Path(spool, "notes.md").write_text(plan["notes"])
 command = [sys.executable, plan["command"]]
 for step in plan.get("steps", []):
     proc = subprocess.run(command + step, capture_output=True, text=True)
@@ -187,8 +190,10 @@ def agent(tmp_path, monkeypatch):
     record = tmp_path / "record.jsonl"
     monkeypatch.setattr(lifecycle, "_runner_argv", lambda cfg: [sys.executable, str(script), str(plan_path)])
 
-    def write_plan(*steps: list[str]) -> None:
-        plan_path.write_text(json.dumps({"record": str(record), "command": str(COMMAND), "steps": list(steps)}))
+    def write_plan(*steps: list[str], notes: str | None = None) -> None:
+        plan_path.write_text(json.dumps(
+            {"record": str(record), "command": str(COMMAND), "steps": list(steps), "notes": notes}
+        ))
 
     def records() -> list[dict[str, Any]]:
         return [json.loads(line) for line in record.read_text().splitlines()] if record.exists() else []
@@ -382,7 +387,7 @@ def test_a_resumed_attempt_is_told_which_hand_offs_were_done_and_which_were_not(
     done, so without a person it would loop. The resumed attempt is now told,
     before it starts, which hand-offs were done and which were not."""
     write_plan, records = agent
-    write_plan(QA1, WAIT, QA2, WAIT)
+    write_plan(QA1, WAIT, QA2, WAIT, notes="Steps 1-4 done; QA1 passed. Next: QA2, then step 6.")
     seed_attempt(db)
     first_gate = FakeGateClient(trace)
 
@@ -422,6 +427,10 @@ def test_a_resumed_attempt_is_told_which_hand_offs_were_done_and_which_were_not(
     assert resumed.index(qa1) < resumed.index(qa2), "oldest first"
     assert handoff_mod.MARK_DONE in qa1 and handoff_mod.MARK_NOT_DONE not in qa1
     assert handoff_mod.MARK_NOT_DONE in qa2
+    # The first attempt's work/ was restored, its notes with it: the park's
+    # refund (attempt_count back to 0) must not make generation 2 look like
+    # the task's first attempt, which restores nothing.
+    assert "Steps 1-4 done; QA1 passed. Next: QA2, then step 6." in resumed
 
 
 def _ledger(work: Path) -> list[dict[str, Any]]:
