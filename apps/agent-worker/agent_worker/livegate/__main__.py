@@ -31,6 +31,18 @@ this order:
    an RFB stream through it, with the controller's input injected only in
    control mode.
 
+CHROMIUM THAT EXITS UNEXPECTEDLY IS STARTED AGAIN (BROWSER-RELAUNCH; part of
+#1030) -- its pipe closed, not by a wipe or the gate stopping. The exit code or
+signal and its last stderr lines are logged; a person in control has the
+episode ended (`browser_restarted`); the agent's CDP connections are closed
+and the CDP proxy stops listening; then, after a backoff, the same binary with
+the same flags and policy opens the SAME profile (cookies kept), a new proxy
+is served on the same SWARM_CDP_LISTEN address (SWARM_CDP_ENDPOINT stays
+valid; the agent connects again), the page follower attaches to the new page
+and the device and touch toggle are applied again. At most `RELAUNCH_LIMIT`
+times in `RELAUNCH_WINDOW_SECONDS`; past that the browser stays closed and the
+timeline says `browser_gave_up`. `status` says `restarting` meanwhile.
+
 A GATE THAT RESTARTS keeps Chromium closed (ctl.py): when the first start's
 marker is already in /tmp, only ctl.sock is served -- it refuses every
 registration and records `gate_restarted` -- and nothing else starts.
@@ -43,7 +55,9 @@ proxy, the capture, Chromium, Xvfb; exit 0.
 
 NOTHING CARRIED HERE IS LOGGED: the ticket, a page's content, a key, a URL.
 Records (`_record`) carry event names, causes and counts, as every component's
-own contract says.
+own contract says. Chromium's own stderr lines, logged when it exits, are
+Chromium's diagnostics, not a page's: credentials in them are masked
+(swarm_redaction) and every URL is cut to its origin first.
 """
 
 from __future__ import annotations
@@ -60,14 +74,17 @@ import shutil
 import signal
 import sys
 import time
+from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from swarm_redaction import redact as redact_text
+
 from .capture import CaptureError, Frame, XvfbFramebuffer
 from .cdppolicy import PolicyPaths
-from .cdpproxy import AgentConnection, AgentLink, CdpProxy, PipeTransport, serve_agents
+from .cdpproxy import AgentConnection, AgentLink, CdpError, CdpProxy, PipeTransport, serve_agents
 from .ctl import DEFAULT_MARKER, CtlServer
 from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
 from .inject import InjectError, XInjector, display_socket
@@ -134,6 +151,32 @@ PAGE_INFO_SECONDS = 2.0
 #: milliseconds; then every two seconds, one `Target.getTargets` each, for as
 #: long as the page is there and will not take a session (a crashed renderer).
 RECONNECT_DELAYS = (0.05, 0.25, 0.5, 1.0, 2.0)
+
+#: CHROMIUM IS STARTED AGAIN WHEN IT EXITS UNEXPECTEDLY (BROWSER-RELAUNCH;
+#: part of #1030), at most this many times in this many seconds, then it
+#: stays closed and the gate says so (`browser_gave_up`). Owner decision
+#: 2026-10-13, after att_59f378aac5c340ca9507's take was refused "the browser
+#: had closed". Three in ten minutes: one crash is bad luck the person should
+#: not pay for; a browser that dies every three minutes is a page or a device
+#: that kills it, and relaunching it for ever only hides that.
+RELAUNCH_LIMIT = 3
+RELAUNCH_WINDOW_SECONDS = 600.0
+#: Before each relaunch, the last repeated: a crash loop must not spin.
+RELAUNCH_DELAYS = (1.0, 3.0, 10.0)
+#: How long a Chromium that closed its pipe may take to exit before it is
+#: stopped: a second one cannot open the same profile while it lives.
+EXIT_WAIT_SECONDS = 5.0
+#: Chromium's last stderr lines kept, each cut to this many characters: the
+#: one record of why it died (att_59f378aac5c340ca9507 left none).
+STDERR_TAIL_LINES = 20
+STDERR_LINE_CHARS = 300
+#: What a Chromium that died leaves in its profile, naming its host and pid;
+#: the next one refuses a profile whose lock it cannot prove stale.
+PROFILE_LOCKS = ("SingletonLock", "SingletonSocket", "SingletonCookie")
+
+#: A URL in a stderr line, reduced to its origin before it is logged: a
+#: page's path and query are content (module docstring), its host is not.
+_URL = re.compile(r"([a-zA-Z][a-zA-Z0-9+.-]*://)(?:[^/\s?#@]*@)?([^/\s?#]+)\S*")
 
 #: A hand-off's `expect`: a host (the worker checked it with `expect_refusal`).
 _HOST = re.compile(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?(?::[0-9]{1,5})?")
@@ -240,17 +283,46 @@ class Child:
 
 
 class Browser:
-    """Chromium and the pipe the gate holds to it."""
+    """Chromium, the pipe the gate holds to it, and the tail of its stderr."""
 
     def __init__(self, proc: Any, transport: Any) -> None:
         self.proc = proc
         self.transport = transport
+        self.stderr: deque[str] = deque(maxlen=STDERR_TAIL_LINES)
+        stream = getattr(proc, "stderr", None)
+        self._stderr_task = asyncio.create_task(self._read_stderr(stream)) if stream is not None else None
+
+    async def _read_stderr(self, stream: asyncio.StreamReader) -> None:
+        """Keep the last lines: read for as long as Chromium writes, or it would block on a full pipe."""
+        while True:
+            try:
+                line = await stream.readline()
+            except ValueError:  # a line past the reader's limit: dropped, the rest read on
+                continue
+            if not line:
+                return
+            self.stderr.append(line.decode("utf-8", "replace").rstrip()[:STDERR_LINE_CHARS])
+
+    async def exited(self, timeout: float = EXIT_WAIT_SECONDS) -> tuple[int | None, list[str]]:
+        """Its exit code (negative: the signal) once it has exited, stopping it if it will not."""
+        try:
+            await asyncio.wait_for(self.proc.wait(), timeout)
+        except asyncio.TimeoutError:
+            await _stop_process(self.proc)
+        if self._stderr_task is not None:
+            try:
+                await asyncio.wait_for(asyncio.shield(self._stderr_task), 1.0)
+            except Exception:  # noqa: BLE001 -- a timeout or a failed read: what was read is kept
+                pass
+        return self.proc.returncode, list(self.stderr)
 
     async def stop(self) -> None:
         try:
             await self.transport.close()
         finally:
             await _stop_process(self.proc)
+            if self._stderr_task is not None:
+                self._stderr_task.cancel()
 
 
 async def start_xvfb(cfg: GateConfig) -> Child:
@@ -275,6 +347,21 @@ async def start_xvfb(cfg: GateConfig) -> Child:
             raise SetupError(f"Xvfb did not open {socket_path} within {XVFB_READY_SECONDS:.0f}s")
         await asyncio.sleep(0.1)
     return Child(proc)
+
+
+def _clear_profile_locks(profile_dir: Path) -> None:
+    """The lock files a Chromium that died left: only ever called once it has exited.
+
+    Cookies, storage and everything else in the profile stay; the next
+    Chromium opens the same profile (BROWSER-RELAUNCH).
+    """
+    for name in PROFILE_LOCKS:
+        try:
+            (profile_dir / name).unlink()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            log.warning("live gate: %s not removed (%s)", name, type(exc).__name__)
 
 
 def find_chromium(browsers_path: str) -> str:
@@ -336,7 +423,7 @@ async def start_chromium(cfg: GateConfig) -> Browser:
         proc = await asyncio.create_subprocess_exec(
             binary, *chromium_args(cfg),
             stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL, preexec_fn=remap, close_fds=False,
+            stderr=asyncio.subprocess.PIPE, preexec_fn=remap, close_fds=False,
         )
     except OSError as exc:
         for fd in (to_chrome_w, from_chrome_r):
@@ -407,6 +494,52 @@ class GateProxy(CdpProxy):
         if connection is not None:
             self.agent_seen = True
         return connection
+
+
+class _CurrentBrowser:
+    """The proxy and the devices of whichever Chromium is running now.
+
+    Touch, the controller's state and the session carry outlive one Chromium
+    (BROWSER-RELAUNCH): a viewer's RFB stream holds the TouchInjector it was
+    opened with, so after a relaunch it must still reach the new browser.
+    """
+
+    def __init__(self, gate: "LiveGate") -> None:
+        self._gate = gate
+
+    async def call(self, method: str, params: Mapping[str, Any] | None = None,
+                   session_id: str | None = None) -> dict[str, Any]:
+        proxy = self._gate.proxy
+        if proxy is None or self._gate.browser_closed:
+            raise CdpError("the browser is not running")
+        return await proxy.call(method, params, session_id)
+
+    @property
+    def device(self) -> Device:
+        devices = self._gate.devices
+        return devices.device if devices is not None else self._gate.desktop
+
+    def session_for(self, target_id: str) -> str | None:
+        devices = self._gate.devices
+        return devices.session_for(target_id) if devices is not None else None
+
+
+def exit_cause(returncode: int | None) -> tuple[str, str | None]:
+    """Chromium's exit, as a cause the timeline can carry, and the signal's name."""
+    if returncode is None:
+        return "exit_unknown", None
+    if returncode < 0:
+        try:
+            name = signal.Signals(-returncode).name
+        except ValueError:
+            name = str(-returncode)
+        return f"signal_{name}", name
+    return f"exit_code_{returncode}", None
+
+
+def redacted_stderr(lines: list[str]) -> list[str]:
+    """Chromium's stderr lines, fit for the log: credentials masked, every URL cut to its origin."""
+    return [_URL.sub(r"\1\2", redact_text(line).text) for line in lines]
 
 
 class PageFollower:
@@ -684,7 +817,11 @@ class _Episode:
 class LiveGate:
     def __init__(self, cfg: GateConfig, deps: Deps | None = None, *,
                  record: Callable[[str, Mapping[str, Any]], None] = _record,
-                 wall: Callable[[], float] = time.time) -> None:
+                 wall: Callable[[], float] = time.time,
+                 relaunch_limit: int = RELAUNCH_LIMIT,
+                 relaunch_window: float = RELAUNCH_WINDOW_SECONDS,
+                 relaunch_delays: tuple[float, ...] = RELAUNCH_DELAYS,
+                 clock: Callable[[], float] = time.monotonic) -> None:
         self.cfg = cfg
         self.deps = deps or Deps()
         self.record = record
@@ -717,8 +854,25 @@ class LiveGate:
         self.tunnel: Tunnel | None = None
         self.mux: StreamMux | None = None
         self.wiped = False
-        #: Chromium's pipe closed (a wipe, or a crash): nothing needing it is served.
+        #: Chromium's pipe closed (a wipe, or a crash, until a relaunch is up):
+        #: nothing needing it is served.
         self.browser_closed = False
+        #: The browser's state in `status`: `running`, `restarting` (it exited
+        #: and is being started again), `closed` (for good) or `wiped`.
+        self.browser_state = "running"
+        #: The relaunch budget (`RELAUNCH_LIMIT` in `RELAUNCH_WINDOW_SECONDS`),
+        #: and when each relaunch was tried, on `clock`.
+        self._relaunch_limit = relaunch_limit
+        self._relaunch_window = relaunch_window
+        self._relaunch_delays = relaunch_delays or (0.0,)
+        self._clock = clock
+        self._relaunches: list[float] = []
+        self.restarts = 0
+        #: The browser that has finished starting: only its exit is handled.
+        self._ready_browser: Any = None
+        self._stopping = False
+        self._agent_seen_before = False
+        self._current = _CurrentBrowser(self)
         self.viewers = 0
         self.last_episode: dict[str, Any] | None = None
         self._episode: _Episode | None = None
@@ -768,7 +922,27 @@ class LiveGate:
     async def start_browser(self) -> None:
         """2. Headed Chromium on the pipe, and the CDP proxy on 127.0.0.1:9222."""
         self.startup.setdefault("browser_launching", self._wall())
-        self.browser = await self.deps.start_chromium(self.cfg)
+        self.touch = TouchInjector(self.injector, self._current, self._current)
+        self.control = ControlState(self.touch)
+        current = self._current
+        self.carry = SessionCarry(current.call, record=self.record, agent_connected=self._agent_connected)
+        await self._launch()
+        log.info("live gate: chromium up; CDP proxy on %s:%d", self.cfg.cdp_host, self.cfg.cdp_port)
+
+    def _agent_connected(self) -> bool:
+        return self._agent_seen_before or bool(self.proxy is not None and self.proxy.agent_seen)
+
+    async def _launch(self, previous: Device | None = None, touch_on: bool | None = None,
+                      held_by: CdpProxy | None = None) -> None:
+        """Chromium, its proxy, its devices and its page follower; the CDP proxy served last.
+
+        On a relaunch: `previous` and `touch_on` are the device and the touch
+        toggle the browser that exited had, applied to this one; `held_by` is
+        its proxy, and while that still holds the agent for a hand-off the
+        worker asked for (not a person's unasked take, which ended with the
+        browser) the new proxy holds it too, until the worker resumes.
+        """
+        browser = self.browser = await self.deps.start_chromium(self.cfg)
         self.proxy = GateProxy(
             self.browser.transport.send,
             paths=PolicyPaths(downloads_dir=self.cfg.downloads_dir, uploads_dir=self.cfg.uploads_dir),
@@ -777,7 +951,11 @@ class LiveGate:
             on_action=self._queue_action,
             on_pointer=self._agent_pointer,
         )
-        pipe = self._tasks["pipe"] = asyncio.create_task(self._read_pipe())
+        if held_by is not None and held_by.paused and not self._self_paused:
+            # Decided here, as the proxy is made: a resume before it let the
+            # old proxy go, a resume after it lets this one go.
+            await self.proxy.pause()
+        pipe = self._tasks["pipe"] = asyncio.create_task(self._read_pipe(browser))
         version = asyncio.create_task(self.proxy.call("Browser.getVersion", {}))
         done, _ = await asyncio.wait({pipe, version}, timeout=CHROMIUM_READY_SECONDS,
                                      return_when=asyncio.FIRST_COMPLETED)
@@ -793,20 +971,23 @@ class LiveGate:
         self.devices = DeviceController(self.proxy, self.deps.open_display(self.cfg), self.mask_state,
                                         record=self.record, on_resize=self._on_resize,
                                         on_change=self._device_changed)
-        self.touch = TouchInjector(self.injector, self.proxy, self.devices)
-        self.control = ControlState(self.touch)
-        proxy = self.proxy
-        self.carry = SessionCarry(proxy.call, record=self.record, agent_connected=lambda: proxy.agent_seen)
         try:
             await self.devices.start()
+            if previous is not None and (previous.name, previous.orientation) != (
+                    self.devices.device.name, self.devices.device.orientation):
+                await self.devices.select(previous.name, previous.orientation)
         except Exception as exc:  # noqa: BLE001 -- the desktop still works; the mask fails closed
-            self.record("device_failed", {"preset": DEFAULT_PRESET, "cause": type(exc).__name__})
-            log.warning("live gate: default device not applied (%s)", type(exc).__name__)
+            preset = previous.name if previous is not None else DEFAULT_PRESET
+            self.record("device_failed", {"preset": preset, "cause": type(exc).__name__})
+            log.warning("live gate: device not applied (%s)", type(exc).__name__)
+        if touch_on is not None and self.touch is not None:
+            self.touch.set_touch(touch_on)
+            self._device_changed(self.devices.device)
         self.pages = PageFollower(self.proxy, self.mask_state, on_origin=self._origin_changed,
                                   on_state=self._page_state)
         await self.pages.start()
         self.cdp_server = await self.deps.serve_cdp(self.proxy, self.cfg.cdp_host, self.cfg.cdp_port)
-        log.info("live gate: chromium up; CDP proxy on %s:%d", self.cfg.cdp_host, self.cfg.cdp_port)
+        self._ready_browser = browser
 
     async def start_ctl(self) -> None:
         """3. ctl.sock: the probe's condition, and the worker's channel."""
@@ -827,18 +1008,130 @@ class LiveGate:
 
     # -- the pipe ---------------------------------------------------------------
 
-    async def _read_pipe(self) -> None:
-        await self.browser.transport.run(self)
-        if not self.wiped:
+    async def _read_pipe(self, browser: Any) -> None:
+        proxy = self.proxy
+        await browser.transport.run(self)
+        if proxy is not None:
+            # Whatever was asked of this browser is never answered now.
+            await proxy.chromium_closed()
+        if browser is not self._ready_browser or browser is not self.browser:
+            return  # one still starting (`_launch` fails on it), or one already replaced
+        self._ready_browser = None
+        expected = self.wiped or self._stopping
+        if not expected:
             log.warning("live gate: chromium closed its pipe")
         self.browser_closed = True
         self.mask_state.session_down()
         if self.pages is not None:
             self.pages.halt()
-        if not self.wiped:
-            # The timeline says why the screen went grey, rather than nothing.
-            self.record("browser_closed", {})
-            self._spawn(self._action({"kind": "control", "event": "browser_closed"}))
+        if self.devices is not None:
+            for task in list(self.devices._tasks):
+                task.cancel()
+        if expected:
+            return
+        if self.cdp_server is not None:
+            # Refused while no browser is there; served again on the same
+            # address by the relaunch, so SWARM_CDP_ENDPOINT stays right.
+            self.cdp_server.close()
+        await self._browser_exited(browser)
+
+    async def _browser_exited(self, browser: Any) -> None:
+        """Chromium exited unexpectedly: say why, end a person's control, start it again or say it is gone.
+
+        THE REASON IT DIED IS LOGGED (BROWSER-RELAUNCH; part of #1030): the
+        exit code or signal and Chromium's last stderr lines, credentials
+        masked and URLs cut to their origin. att_59f378aac5c340ca9507's
+        browser closed and nothing said why.
+        """
+        exited = getattr(browser, "exited", None)
+        code, tail = await exited(EXIT_WAIT_SECONDS) if exited is not None else (None, [])
+        cause, signame = exit_cause(code)
+        exit_fields = {"exit_code": code, "signal": signame}
+        log.warning("live gate: chromium exited (%s); its last stderr lines: %s",
+                    cause, json.dumps(redacted_stderr(tail)))
+        self.record("browser_exited", exit_fields)
+        if self.wiped or self._stopping:
+            return  # wiped or stopped while it was exiting: closed as asked
+        # The timeline says why the screen went grey, rather than nothing.
+        await self._action({"kind": "control", "event": "browser_closed", "cause": cause})
+        relaunch = self._may_relaunch()
+        if relaunch:
+            self.browser_state = "restarting"
+        if self._episode is not None:
+            # Nobody is left controlling a page that is gone; audited by the proxy (`control_ended`).
+            await self._release("browser_restarted" if relaunch else "browser_closed")
+        if not relaunch:
+            self._give_up(cause, exit_fields)
+            return
+        previous = self.devices.device if self.devices is not None else None
+        touch_on = self.touch.touch_on if self.touch is not None else None
+        self._tasks["relaunch"] = asyncio.create_task(self._relaunch(cause, exit_fields, previous, touch_on))
+
+    def _may_relaunch(self) -> bool:
+        now = self._clock()
+        self._relaunches = [t for t in self._relaunches if now - t < self._relaunch_window]
+        return not (self.wiped or self._stopping) and len(self._relaunches) < self._relaunch_limit
+
+    def _give_up(self, cause: str, exit_fields: Mapping[str, Any]) -> None:
+        self.browser_state = "closed"
+        log.warning("live gate: chromium stays closed: %d relaunches in %.0fs", len(self._relaunches),
+                    self._relaunch_window)
+        self.record("browser_gave_up", {**exit_fields, "restarts": self.restarts})
+        self._spawn(self._action({"kind": "control", "event": "browser_gave_up", "cause": cause}))
+
+    async def _relaunch(self, cause: str, exit_fields: Mapping[str, Any],
+                        previous: Device | None, touch_on: bool | None) -> None:
+        """Start Chromium again on the same profile, flags and policy, with backoff, within the budget."""
+        old_proxy = self.proxy
+        if old_proxy is not None and old_proxy.agent_seen:
+            self._agent_seen_before = True
+        tries = 0
+        while True:
+            if not self._may_relaunch():
+                self._give_up(cause, exit_fields)
+                return
+            await asyncio.sleep(self._relaunch_delays[min(tries, len(self._relaunch_delays) - 1)])
+            tries += 1
+            if self.wiped or self._stopping:
+                return
+            self._relaunches.append(self._clock())
+            await self._retire_browser()
+            _clear_profile_locks(self.cfg.profile_dir)
+            try:
+                await self._launch(previous, touch_on, held_by=old_proxy)
+            except Exception as exc:  # noqa: BLE001 -- tried again, within the budget
+                self._ready_browser = None
+                await self._retire_browser()
+                log.warning("live gate: chromium relaunch failed (%s: %s)", type(exc).__name__,
+                            exc if isinstance(exc, SetupError) else "")
+                self.record("browser_relaunch_failed", {"cause": type(exc).__name__})
+                continue
+            break
+        self._fresh_target = None
+        self.browser_closed = False
+        self.browser_state = "running"
+        self.restarts += 1
+        log.info("live gate: chromium relaunched (%d); CDP proxy on %s:%d", self.restarts,
+                 self.cfg.cdp_host, self.cfg.cdp_port)
+        self.record("browser_restarted", {**exit_fields, "restarts": self.restarts})
+        await self._action({"kind": "control", "event": "browser_restarted", "cause": cause})
+
+    async def _retire_browser(self) -> None:
+        """What belonged to the browser that went: its follower, its device tasks, its process, its server."""
+        if self.pages is not None:
+            await self.pages.close()
+        if self.devices is not None:
+            tasks = list(self.devices._tasks)
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if self.cdp_server is not None:
+            self.cdp_server.close()
+        if self.browser is not None:
+            try:
+                await self.browser.stop()
+            except Exception as exc:  # noqa: BLE001 -- it is gone either way
+                log.info("live gate: stopping the old chromium failed (%s)", type(exc).__name__)
 
     def _spawn(self, work: Awaitable[Any]) -> None:
         task = asyncio.get_running_loop().create_task(work)
@@ -1012,7 +1305,9 @@ class LiveGate:
             tunnel = "closed" if self.tunnel.closed else "open"
         return {
             "browser": "wiped" if self.wiped else (
-                "running" if self.browser is not None and not self.browser_closed else "closed"),
+                "running" if self.browser is not None and not self.browser_closed
+                else "restarting" if self.browser_state == "restarting" else "closed"),
+            "browser_restarts": self.restarts,
             "paused": bool(self.proxy is not None and self.proxy.paused),
             "in_control": self._episode is not None,
             "tunnel": tunnel,
@@ -1156,7 +1451,8 @@ class LiveGate:
     async def _grant(self, conn_id: str) -> None:
         proxy, control, touch = self.proxy, self.control, self.touch
         if proxy is None or control is None or touch is None or self.wiped or self.browser_closed:
-            return await self._refused("browser_closed")
+            return await self._refused("browser_restarting" if self.browser_state == "restarting"
+                                       else "browser_closed")
         if not proxy.paused:
             # §4.2 (Q6): a person may take control unasked; the agent is
             # held the same way, and released when they let go.
@@ -1349,6 +1645,10 @@ class LiveGate:
         if self.wiped:
             return
         self.wiped = True
+        relaunch = self._tasks.pop("relaunch", None)
+        if relaunch is not None:
+            relaunch.cancel()
+            await asyncio.gather(relaunch, return_exceptions=True)
         if self.cdp_server is not None:
             self.cdp_server.close()
         if self.browser is not None:
@@ -1371,6 +1671,7 @@ class LiveGate:
 
     async def stop(self) -> None:
         """Everything this process started, in reverse. Never raises."""
+        self._stopping = True
         steps: list[tuple[str, Callable[[], Awaitable[None]]]] = [
             ("tunnel", self._stop_tunnel),
             ("ctl", self._stop_ctl),
