@@ -31,6 +31,7 @@ import { SaveAsLoginOffer } from './BrowserLogins'
 import { Button } from './components'
 import { HandoffStrip } from './Handoff'
 import { LiveToolMenu } from './LiveToolMenu'
+import { StartupProgress } from './StartupProgress'
 import { TheaterButton, TheaterHost, useTheater, type TheaterHandoff, type TheaterSession } from './Theater'
 import { TERMINAL_STATES, type Task } from './types'
 import './styles/live.css'
@@ -476,7 +477,14 @@ export function LiveBrowserPane({
     return note(`The live browser could not be read: ${live.message}`)
   }
   if (session === null) {
-    return note('The agent’s browser is starting. It appears here once its pod is running.')
+    // THE START-UP, STEP BY STEP (owner request 2026-10-13): what the pod has
+    // done so far and what is left, where this said only "starting".
+    return (
+      <div className="live-tab">
+        {banner()}
+        <StartupProgress taskId={task.id} state={task.state} />
+      </div>
+    )
   }
   if (session.state === 'closed') {
     return note(
@@ -1142,6 +1150,9 @@ function LiveScreen({
         <div ref={below} className="live-stage-caption">
           {caption}
         </div>
+        {/* Until the first frame, the start-up over the empty screen: it
+            steps aside when noVNC connects or the pod reports the frame. */}
+        {conn === 'connecting' && <StartupProgress taskId={taskId} overlay hideWhenDone />}
       </div>
       <p className="live-screen-say" role="status">
         {conn === 'connecting'
