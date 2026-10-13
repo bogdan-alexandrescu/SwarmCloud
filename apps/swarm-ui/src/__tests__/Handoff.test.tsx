@@ -3,7 +3,7 @@
 //
 //   * the tab banner and the Overview card show the reason, the expected site
 //     and the time left;
-//   * "I'm ready to sign in" calls `POST /v1/tasks/{id}/human-ready`;
+//   * "I'm ready" calls `POST /v1/tasks/{id}/human-ready`;
 //   * the Live filter lists only RUNNING browser agents, needs-you first;
 //   * recordings list only the caller's tenant's.
 //
@@ -146,9 +146,9 @@ describe('the hand-off banner', () => {
     const banner = screen.getByRole('status')
     expect(banner.textContent).toContain('Sign in to GitHub as the bot account')
     expect(banner.textContent).toContain('github.com')
-    expect(banner.textContent).toContain('4m 12s left')
+    expect(banner.textContent).toContain('4:12 left')
     // A held task is not parked: there is nothing to be ready for yet.
-    expect(within(banner).queryByRole('button', { name: /ready to sign in/i })).toBeNull()
+    expect(within(banner).queryByRole('button', { name: /I'm ready/i })).toBeNull()
   })
 
   it('says the hold is over once its deadline has passed, never a negative time', () => {
@@ -173,8 +173,8 @@ describe('the hand-off banner', () => {
     const text = screen.getByRole('status').textContent ?? ''
     expect(text).toContain('login.example.com')
     // 24 hours from the park, one hour ago: 23 hours to go.
-    expect(text).toMatch(/23h 00m left/)
-    expect(screen.getByRole('button', { name: /I'm ready to sign in/ })).toBeTruthy()
+    expect(text).toMatch(/23:00:00 left/)
+    expect(screen.getByRole('button', { name: /I'm ready/ })).toBeTruthy()
   })
 
   it('"I\'m ready to sign in" POSTs human-ready for that task and reports the task back', async () => {
@@ -184,7 +184,7 @@ describe('the hand-off banner', () => {
     vi.stubGlobal('fetch', fetchMock)
     const onReady = vi.fn()
     render(<HandoffBanner task={t} now={NOW} onReady={onReady} />)
-    fireEvent.click(screen.getByRole('button', { name: /I'm ready to sign in/ }))
+    fireEvent.click(screen.getByRole('button', { name: /I'm ready/ }))
     await waitFor(() => expect(onReady).toHaveBeenCalledTimes(1))
     const writes = fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')
     expect(writes).toHaveLength(1)
@@ -204,7 +204,7 @@ describe('the hand-off banner', () => {
     )
     const onReady = vi.fn()
     render(<HandoffBanner task={t} now={NOW} onReady={onReady} />)
-    fireEvent.click(screen.getByRole('button', { name: /I'm ready to sign in/ }))
+    fireEvent.click(screen.getByRole('button', { name: /I'm ready/ }))
     await waitFor(() => expect(screen.getByRole('alert').textContent).toMatch(/only the submitter/))
     expect(onReady).not.toHaveBeenCalled()
     expect(screen.getByRole('status').textContent).not.toMatch(/starting your browser/i)
@@ -227,7 +227,7 @@ describe("the Overview's hand-off cards", () => {
     const text = cards[0]!.textContent ?? ''
     expect(text).toContain('Sign in to GitHub as the bot account')
     expect(text).toContain('github.com')
-    expect(text).toContain('9m 00s left')
+    expect(text).toContain('9:00 left')
   })
 
   it('draws nothing when no task is waiting for a person', () => {
@@ -237,14 +237,14 @@ describe("the Overview's hand-off cards", () => {
     expect(container.textContent).toBe('')
   })
 
-  it("a parked card's \"I'm ready to sign in\" calls human-ready and opens the agent", async () => {
+  it("a parked card's \"I'm ready\" calls human-ready and opens the agent", async () => {
     eventsWithRequest()
     const t = parked('task_parked0000000000001')
     const fetchMock = vi.fn(async (_url: string, _init?: RequestInit) => okJson({ task: { ...t, state: 'READY' } }))
     vi.stubGlobal('fetch', fetchMock)
     const onOpen = vi.fn()
     render(<HandoffCards tasks={[t]} now={NOW} onOpen={onOpen} />)
-    fireEvent.click(screen.getByRole('button', { name: /I'm ready to sign in/ }))
+    fireEvent.click(screen.getByRole('button', { name: /I'm ready/ }))
     await waitFor(() => expect(onOpen).toHaveBeenCalledWith('task_parked0000000000001'))
     expect(fetchMock.mock.calls.some(([u]) => u === '/v1/tasks/task_parked0000000000001/human-ready')).toBe(true)
   })
