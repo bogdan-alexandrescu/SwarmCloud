@@ -1128,7 +1128,7 @@ class People:
             "teams": list(person.get("teams") or []),
             "github": self._github(email),
             "workspace": self._admin_view(record),
-            "claude_account": self._claude_account(tenant_id, tenant),
+            "claude_account": self._claude_account(tenant_id, tenant, store=store),
             # A decision's time and reason, never its `by`: the audit names
             # the admin. The reason is the one the person is shown.
             "loan_request": None if not loan_data else {
@@ -1182,21 +1182,43 @@ class People:
             return "expired"
         return "none"
 
-    def _claude_account(self, tenant_id: str, tenant: Tenant | None) -> dict[str, Any]:
+    def _claude_account(self, tenant_id: str, tenant: Tenant | None, *,
+                        store: Any) -> dict[str, Any]:
         """§5.1 (3), with who lent it: `own`, `lent`, `provider_key` or
-        `none`. The counts are `Workspaces.claude_accounts`'s rule."""
+        `none`. The counts are `Workspaces.claude_accounts`'s rule.
+
+        `lent_accounts` names WHICH accounts are lent (PEOPLE-LOAN-VIEW, owner
+        2026-10-13): `lent_by` is only the owner tenants, so the console said
+        "lent by eng" and an admin could not see what they had lent. Each is
+        the account's id, label, owner and state, and the owner's display
+        name; never the document as it is, which names its secret."""
         counts = ws.Workspaces(self._db, now=self._now, gate=False).claude_accounts(
             tenant_id, tenant)
-        lenders: list[str] = []
+        lent: list[dict[str, Any]] = []
         if counts["lent"]:
             query = self._db.collection(ws.ACCOUNTS).where(
                 filter=FieldFilter("lend_to", "array_contains", tenant_id)).limit(20)
-            lenders = sorted({str((s.to_dict() or {}).get("owner_tenant") or "")
-                              for s in query.stream()} - {"", tenant_id})
+            names: dict[str, str] = {}
+            for snap in query.stream():
+                data = snap.to_dict() or {}
+                owner = str(data.get("owner_tenant") or "")
+                if not owner or owner == tenant_id:
+                    continue
+                if data.get("provider", ws.CLAUDE_PROVIDER) != ws.CLAUDE_PROVIDER:
+                    continue
+                if owner not in names:
+                    owner_tenant = store.get_tenant(owner)
+                    names[owner] = getattr(owner_tenant, "display_name", None) or owner
+                lent.append({"account_id": str(data.get("account_id") or snap.id),
+                             "label": data.get("label"), "owner_tenant": owner,
+                             "owner_name": names[owner], "state": data.get("state")})
+            lent.sort(key=lambda a: (a["owner_tenant"], a["account_id"]))
+        lenders = sorted({a["owner_tenant"] for a in lent})
         source = "own" if counts["own"] else "lent" if counts["lent"] else \
             "provider_key" if counts["provider_key"] else "none"
         return {"source": source, "own": counts["own"], "lent": counts["lent"],
-                "lent_by": lenders, "provider_key": counts["provider_key"]}
+                "lent_by": lenders, "lent_accounts": lent,
+                "provider_key": counts["provider_key"]}
 
     def _admin_view(self, record: Mapping[str, Any] | None) -> dict[str, Any]:
         """What an admin is shown of a record: the person's view (W1's

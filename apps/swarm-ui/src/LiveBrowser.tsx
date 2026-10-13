@@ -994,12 +994,28 @@ export interface Rfb {
   resizeSession: boolean
   focusOnClick: boolean
   showDotCursor: boolean
+  qualityLevel: number
+  compressionLevel: number
   disconnect(): void
   clipboardPasteFrom(text: string): void
   addEventListener(type: 'connect' | 'disconnect' | 'securityfailure', listener: (e: Event) => void): void
 }
 
 export type RfbConstructor = new (target: HTMLElement, channel: LiveChannel, options?: { shared?: boolean }) => Rfb
+
+/**
+ * CRISP AT A WHOLE SCALE (STREAM-SMOOTH; part of #1030). noVNC scales its canvas
+ * with CSS, and the browser smooths every scaled image -- 1:1 on a 2x screen too,
+ * where each frame pixel is 2x2 device pixels and text comes out soft. At a whole
+ * number of device pixels per frame pixel, nearest-neighbour is exact, so the canvas
+ * is drawn `pixelated` there; at a fractional fit smoothing stays, since
+ * nearest-neighbour would drop whole rows of text.
+ */
+export function crispAt(cssWidth: number, frameWidth: number, dpr: number): boolean {
+  if (cssWidth <= 0 || frameWidth <= 0) return false
+  const scale = (cssWidth * dpr) / frameWidth
+  return scale >= 1 && Math.abs(scale - Math.round(scale)) < 0.01
+}
 
 /** noVNC, loaded with the first Browser tab rather than with the console. */
 async function loadRfb(): Promise<RfbConstructor> {
@@ -1268,6 +1284,21 @@ function LiveScreen({
           // instead; the gate sends one (-239, LB-CURSOR), and against a gate that sends none
           // the dot keeps a pointer visible rather than leaving the person clicking blind.
           r.showDotCursor = true
+          // The gate sends only lossless Tight (never JPEG, livegate/rfb.py); quality 9 says
+          // the same to noVNC. Compression 1 is the gate's ZLIB_LEVEL, from livegate.bench.
+          r.qualityLevel = 9
+          r.compressionLevel = 1
+          const canvas = host.current.querySelector('canvas')
+          if (canvas !== null && typeof ResizeObserver !== 'undefined') {
+            const sharpen = () => {
+              const crisp = crispAt(canvas.getBoundingClientRect().width, canvas.width, window.devicePixelRatio || 1)
+              canvas.style.imageRendering = crisp ? 'pixelated' : ''
+            }
+            const sizes = new ResizeObserver(sharpen)
+            sizes.observe(canvas)
+            r.addEventListener('connect', sharpen)
+            r.addEventListener('disconnect', () => sizes.disconnect())
+          }
           rfb.current = r
           applyInput()
           r.addEventListener('connect', () => {

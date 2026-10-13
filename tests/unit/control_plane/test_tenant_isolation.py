@@ -350,6 +350,8 @@ def test_the_colliding_principal_cannot_read_or_cancel_through_any_route(db):
         ("GET", f"/v1/tasks/{task_id}/artifacts/raw?name=x"),
         ("GET", f"/v1/tasks/{task_id}/transcript"),
         ("GET", f"/v1/tasks/{task_id}/answer"),
+        # The agent's questions for its owner (part of #1206).
+        ("GET", f"/v1/tasks/{task_id}/questions"),
         ("GET", f"/v1/tasks/{task_id}/input"),
         # Every attempt of the tenant, across tasks: the spend of every run
         # the colliding principal did not start.
