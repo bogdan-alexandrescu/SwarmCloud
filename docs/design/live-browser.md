@@ -450,8 +450,10 @@ RUNNING (human_wait set, lease HELD) --hold expires, nobody in control-->
            park(HUMAN_REQUIRED), bounded attempt refund, release lease, exit
 PARKED (HUMAN_REQUIRED, NO capacity) --a person presses "I'm ready to sign in"-->
 READY --admission--> LEASED -> ... -> RUNNING (new attempt, new generation)
-   worker restores work/, starts the agent; console shows "starting your browser"
-   agent re-opens the page and asks again; the person is already there
+   worker restores work/, tells the agent which hand-offs were done (resumed.md),
+   starts it; console shows "starting your browser"
+   agent carries on from its notes, re-opens the page and asks again only for
+   what was not done; the person is already there
 PARKED (HUMAN_REQUIRED) past human_park_max_seconds --> DEAD_LETTERED, end_cause human_wait_expired
 ```
 
@@ -490,11 +492,47 @@ would be re-admitted with nobody there to sign in. So it is a new `ParkReason` (
 **What the park costs.** The browser is gone: its session, its tabs, its
 history (section 5.5 says why they are not checkpointed). The claude-code
 agent has no conversation resume (`docs/design/child-tasks.md` (`the CLI runners have no conversation resume`)), so the next attempt starts the agent again on
-the restored `work/`; the agent must keep its plan there, which
-`claude-code-browser`'s instructions say. And the person waits for a cold start
+the restored `work/`. And the person waits for a cold start
 -- admission plus a GKE pod start -- before the browser is back. That is the
 price of giving the capacity back, and it is paid only when nobody came within
 the hold.
+
+**What the resumed attempt is told (RESUME-PROGRESS, QA12-14).** Measured
+2026-10-13 on task_4defa61c5eea4a5c87f5: an agent asked for QA1 (returned),
+then QA2 (nobody came; parked); generation 2 asked for QA1 again, then QA2.
+Two things were missing, and both are now in place:
+
+* *The restore.* The park's refund takes `attempt_count` back down, so the
+  next lease read 1 and the worker took it for the task's first attempt,
+  which restores nothing (`Worker._recorded_checkpoint`). The agent's notes
+  and work were never put back. `human_wait_resumes` is now counted back
+  exactly as `child_await_resumes` is, so the attempt after a hand-off park
+  restores the checkpoint the park wrote.
+* *A record of what was done.* The worker keeps a ledger of every hand-off,
+  `$SWARM_HANDOFF/history.json` (request, redacted reason, outcome, the
+  §5.9 summary), which travels in the checkpoint with the rest of `work/`.
+  On an attempt whose restored ledger holds an earlier attempt's hand-offs,
+  the worker writes `$SWARM_HANDOFF/resumed.md` before the agent starts --
+  each hand-off marked DONE or NOT DONE, oldest first, then the agent's own
+  `$SWARM_HANDOFF/notes.md`, redacted -- and the claude-code runner puts it
+  in the agent's prompt, after the caller's
+  (`apps/agent-worker/agent_worker/handoff.py::resume_summary`,
+  `apps/agent-worker/agent_worker/runners/claude_code.py::resume_summary`). The
+  agent's guide asks it to keep `notes.md` current, and to write it on exit
+  3. The ledger is in the agent's reach, so it is read as untrusted: shape-
+  checked, bounded and redacted again, and only ever told to the same task's
+  agent; a `resumed.md` the worker did not write this attempt is removed, and
+  an earlier attempt's answers in `responses/` are cleared so a `wait` cannot
+  read an old `expired` as its own.
+
+Continuing the CLI's own conversation (`claude --resume`) across the park was
+considered and not done: the transcript is in the checkpoint
+(`work/.claude/`), but it is keyed by the working directory, which is
+per-attempt (`<workspace_root>/<attempt_id>/work`), and every absolute path
+the old conversation used points into a workspace that no longer exists. The
+summary needs no CLI internals and no contract change. Invariants 4 and 8 are
+untouched: the park still checkpoints, releases and exits; the resume only
+changes what the next attempt restores and is told.
 
 **Promotion is a person's.** `POST /v1/tasks/{task_id}/human-ready`
 (eligible as for taking control, section 5.1) moves `PARKED(HUMAN_REQUIRED) ->
@@ -583,6 +621,19 @@ credentials into it is a decision the submitter should make. The submitter can
 open control to any member of the tenant for this task with one toggle,
 audited. "Any member may control" as the default is simpler and is the
 alternative offered.
+
+**The toggle is the task's, and it goes both ways (owner decision 2026-10-13,
+"Carry over, with a confirm"; QA12-11).** QA pass p12 found it one way, with no
+word of what it did, and back off on a resumed attempt, because it lived on one
+attempt's `live_sessions` document. swarm-api now keeps it on the task document
+as well (`live_open_to_members`, `live_opened_to_members_by`; swarm-api's own
+fields, which the frozen `Task` model does not read) and copies it into each new
+attempt's session when the session opens, saying so in that session's
+`session_opened` audit entry. Turning it on asks once, explaining that it
+carries over; `DELETE /v1/tasks/{task_id}/live/open-to-members` turns it off,
+submitter only, audited as `control_closed_to_members`. Turning it off takes no
+control away: whoever holds it keeps it until they return it or it lapses, and
+the submitter can take it over.
 
 ### 5.2 Every connection is checked, and keeps being checked
 
@@ -1277,7 +1328,8 @@ and a bullet above disagree, this list wins.
 **Kept as built (3):**
 
 27. The "Let any member take control" checkbox stays in the Browser tab's
-    toolbar, after ⤢ Theater.
+    toolbar, after ⤢ Theater. (Since 2026-10-13 it can be unticked, and
+    ticking it asks first: §5.1.)
 28. The rail has no needs-you dot. This supersedes the "dot on Agents in the
     rail" in the hand-off bullet above.
 29. "Save as login" keeps its current offer logic, unchanged

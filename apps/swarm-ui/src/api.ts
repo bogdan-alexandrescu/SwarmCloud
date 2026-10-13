@@ -6574,7 +6574,10 @@ export interface LiveSession {
   human_wait: LiveHumanWait | null
   /** The person in control, or null in view mode. One at a time, always (§4.2). */
   controller: { email: string; since: string } | null
-  /** Whether the submitter opened control to every member of the tenant (§5.1, Q1). */
+  /**
+   * Whether the submitter opened control to every member of the tenant (§5.1,
+   * Q1). The task's setting, carried into each new attempt's session (QA12-11).
+   */
   open_to_members: boolean
   /**
    * The device the gate applied, or null while nothing reports it to
@@ -6591,7 +6594,7 @@ export interface LiveSession {
     can_control: boolean
     /** May take control from someone who holds it: the submitter only (§5.1). */
     can_preempt: boolean
-    /** May open control to every member: the submitter only (§5.1). */
+    /** May open control to every member, and close it again: the submitter only (§5.1). */
     can_open: boolean
     /** May switch the device, rotate it and turn touch on or off: the person in control only (§6.1, Q13; LB-DEV-B). */
     can_switch_device: boolean
@@ -6951,13 +6954,25 @@ export async function setLiveDevice(
 
 /**
  * `POST /v1/tasks/{task_id}/live/open-to-members`: the submitter opens control
- * to every member (§5.1, audited). One way only: swarm-api serves no route that
- * closes it again, so the console offers no uncheck.
+ * to every member (§5.1, audited). The TASK's setting (owner decision
+ * 2026-10-13, QA12-11): swarm-api keeps it on the task and every later
+ * attempt's session starts with it, until `closeLiveToMembers` turns it off.
  */
 export async function openLiveToMembers(taskId: string): Promise<Result<unknown>> {
   const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
   if (USE_FIXTURES) return liveNotServed(target)
   return write(target, 'POST')
+}
+
+/**
+ * `DELETE /v1/tasks/{task_id}/live/open-to-members`: the submitter turns member
+ * control off again, for this attempt and the task's later ones (QA12-11,
+ * audited). Whoever holds control now keeps it until they return it.
+ */
+export async function closeLiveToMembers(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'DELETE')
 }
 
 /**

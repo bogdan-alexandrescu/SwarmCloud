@@ -36,6 +36,7 @@ vi.mock('@novnc/novnc/core/rfb.js', () => ({ default: class {} }))
 // imported after it.
 vi.stubEnv('VITE_LIVE', '1')
 const {
+  closeLiveToMembers,
   loadLiveRecordings,
   loadLiveSession,
   mintLiveTicket,
@@ -93,6 +94,7 @@ const CALLS: Record<string, (body: unknown) => Promise<Result<unknown>>> = {
   renewLiveControl: () => renewLiveControl(TASK),
   returnLiveControl: () => returnLiveControl(TASK),
   openLiveToMembers: () => openLiveToMembers(TASK),
+  closeLiveToMembers: () => closeLiveToMembers(TASK),
   setLiveDevice: (body) =>
     setLiveDevice(TASK, (body ?? { preset: 'desktop' }) as Parameters<typeof setLiveDevice>[1]),
   // The Attempts tab's player and the theater's replay share this one loader (LB-UX2a).
