@@ -60,6 +60,8 @@ class NoVncViewer:
         self.size = (0, 0)
         self.sizes: list[tuple[int, int]] = []
         self.painted: list[tuple[int, int, int, int]] = []
+        #: Each update's painted rectangles, in the order they came.
+        self.updates: list[list[tuple[int, int, int, int]]] = []
         self._seen = 0
 
     def _send(self, data: bytes) -> None:
@@ -121,19 +123,48 @@ class NoVncViewer:
                 return False
             x, y, w, h, enc = struct.unpack(">HHHHi", bytes(b[at:at + 12]))
             at += 12
-            assert enc in (0, -223, -239), f"the gate sent encoding {enc}, which noVNC 1.4.0 did not ask for"
-            # Cursor (-239, RFC 6143 §7.8.1): the shape's pixels, then a 1-bit mask padded to whole bytes per row.
-            length = w * h * 4 if enc == 0 else (w * h * 4 + (w + 7) // 8 * h if enc == -239 else 0)
+            assert enc in (0, 1, 7, -223, -239), f"the gate sent encoding {enc}, which noVNC 1.4.0 did not ask for"
+            if enc == 7:
+                # Tight (STREAM-SMOOTH): Fill, or Basic with the copy filter -- never JPEG or PNG.
+                if len(b) < at + 1:
+                    return False
+                kind = b[at] >> 4
+                assert kind == 0x08 or kind & 0x08 == 0, "the gate sends lossless Tight only"
+                head = 1
+                if kind == 0x08:
+                    length = 3
+                else:
+                    head += 1 if kind & 0x04 else 0
+                    length = w * h * 3
+                    if length >= 12:
+                        length = 0
+                        for i, shift in enumerate((0, 7, 14)):
+                            if len(b) < at + head + 1:
+                                return False
+                            byte = b[at + head]
+                            head += 1
+                            length |= (byte & (0x7F if i < 2 else 0xFF)) << shift
+                            if not byte & 0x80 or i == 2:
+                                break
+                length += head
+            else:
+                # CopyRect (1): the source's x and y. Cursor (-239, RFC 6143 §7.8.1): the
+                # shape's pixels, then a 1-bit mask padded to whole bytes per row.
+                length = (w * h * 4 if enc == 0 else 4 if enc == 1
+                          else w * h * 4 + (w + 7) // 8 * h if enc == -239 else 0)
             if len(b) < at + length:
                 return False
             rects.append((x, y, w, h, enc))
             at += length
         del b[:at]
+        painted = [(x, y, w, h) for x, y, w, h, enc in rects if enc in (0, 1, 7) and w and h]
+        if painted:
+            self.updates.append(painted)
         for x, y, w, h, enc in rects:
             if enc == -223:
                 self.size = (w, h)
                 self.sizes.append(self.size)
-            elif enc == 0 and w and h:
+            elif enc in (0, 1, 7) and w and h:
                 self.painted.append((x, y, w, h))
         self._send(struct.pack(">BBHHHH", 3, 1, 0, 0, *self.size))
         return True
@@ -182,7 +213,11 @@ def test_a_reopened_tunnel_paints_a_late_viewer_at_the_resumed_mobile_preset(sho
         await _watch(viewer, lambda: bool(viewer.painted))
         device = gate.devices.device
         assert viewer.size == (device.display_width, device.frame_height) == (393, 852)
-        assert viewer.painted[0] == (0, 0, 393, 852), "the first update is the whole phone frame"
+        # The first update is the whole phone frame: its rectangles (tiles,
+        # since STREAM-SMOOTH) lie inside it and cover all of it.
+        first = viewer.updates[0]
+        assert all(x + w <= 393 and y + h <= 852 for x, y, w, h in first)
+        assert sum(w * h for _, _, w, h in first) == 393 * 852, "the first update is the whole phone frame"
 
         stop.set()
         assert await task == 0
