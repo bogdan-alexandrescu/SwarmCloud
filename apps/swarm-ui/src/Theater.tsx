@@ -368,6 +368,11 @@ export interface TheaterSlots {
   device?: ReactNode
   /** The tab's Take control / Return control, eligibility decided by the tab (§5.1). */
   control?: ReactNode
+  /**
+   * The tab's Take control alone (`<LiveControl takeOnly />`), for the
+   * hand-off checklist: the same route and the same asks as `control`.
+   */
+  take?: ReactNode
   /** The tab's origin strip (§3.4, §5.7): drawn above the canvas here too. */
   strip?: ReactNode
   /** `Task.human_wait`, when set: the left column becomes the checklist (§6). */
@@ -475,7 +480,7 @@ export interface TheaterProps extends TheaterSlots {
   onClose: () => void
 }
 
-export function Theater({ session, onClose, agents, onNavigate, logs, device, control, strip, handoff }: TheaterProps) {
+export function Theater({ session, onClose, agents, onNavigate, logs, device, control, take, strip, handoff }: TheaterProps) {
   const rootRef = useRef<HTMLDivElement>(null)
   const stageRef = useRef<HTMLDivElement>(null)
   const videoRef = useRef<HTMLVideoElement>(null)
@@ -635,6 +640,10 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
   const browser = session.browser ?? null
   const current = browser?.device ?? null
   const youControl = browser !== null && browser.controller !== null && browser.controller.email === browser.you.email
+  // LiveControl's own eligibility (§5.1), for the checklist to say who holds
+  // control instead of offering a button the tab would not draw.
+  const canTake =
+    browser !== null && browser.state === 'open' && browser.you.can_control && (browser.controller === null || browser.you.can_preempt)
   const reload = session.reload
 
   // THE DEVICE COLUMN IS A LIST (LB-V2, visual QA pass 5: the chip row was
@@ -758,7 +767,14 @@ export function Theater({ session, onClose, agents, onNavigate, logs, device, co
               hidden={left !== id}
             >
               {id === 'handoff' && handoff ? (
-                <HandoffChecklist handoff={handoff} youControl={youControl} onReturn={browser ? returnControl : undefined} />
+                <HandoffChecklist
+                  handoff={handoff}
+                  youControl={youControl}
+                  onReturn={browser ? returnControl : undefined}
+                  take={take}
+                  canTake={browser ? canTake : undefined}
+                  holder={browser?.controller?.email ?? null}
+                />
               ) : null}
               {id === 'timeline' ? <TheaterTimeline taskId={session.taskId} live={session.live} /> : null}
               {id === 'logs' ? logs ?? <p className="th-note">The tab has no log view for this agent.</p> : null}

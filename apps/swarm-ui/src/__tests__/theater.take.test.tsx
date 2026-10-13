@@ -160,18 +160,6 @@ function Routed({ start = 'detail', theater = false, onGo }: { start?: Pane; the
   )
 }
 
-function tabs(): HTMLElement[] {
-  return within(screen.getByRole('tablist', { name: 'Agent panes' })).getAllByRole('tab')
-}
-
-function label(t: HTMLElement): string {
-  return t.querySelector('.c-tab-label')?.textContent ?? t.textContent ?? ''
-}
-
-function browserTab(): HTMLElement {
-  return tabs().find((t) => label(t) === 'Browser')!
-}
-
 const theaterOpen = () => screen.queryByRole('dialog', { name: /^Theater/ })
 const SPLIT = { timeout: 8000 }
 

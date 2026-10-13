@@ -529,6 +529,7 @@ export function LiveBrowserPane({
       logs={<AgentLogs task={task} />}
       device={<LiveDevice taskId={task.id} session={session} reload={reload} />}
       control={<LiveControl taskId={task.id} session={session} reload={reload} />}
+      take={<LiveControl taskId={task.id} session={session} reload={reload} takeOnly />}
     >
       <div className={`live-tab${logs ? ' with-logs' : ''}`}>
         {banner(
