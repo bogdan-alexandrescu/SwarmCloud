@@ -26,6 +26,7 @@ from .auth import (
     Authenticator,
     GoogleTokenVerifier,
     IapAssertionVerifier,
+    PersonalTenants,
     TokenVerifier,
     require_admin,
     require_continuation_route,
@@ -191,6 +192,9 @@ def build_context(
     authenticator = Authenticator(
         settings, verifier, groups, iap=iap,
         admin_roles=build_admin_roles(db, settings, now=now),
+        # A person's own ready personal workspace is their default tenant
+        # (#1200); read from the same named database.
+        personal=PersonalTenants(db),
     )
     spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
     # Built before the submissions service, which reads a `merge_pr` workflow's

@@ -168,7 +168,7 @@ function me(tenantId: string) {
 }
 
 /** A live API with `mine` as the caller's verified memberships. */
-function liveApi(mine: { tenant_id: string; display_name: string }[]) {
+function liveApi(mine: { tenant_id: string; display_name: string; kind?: 'user' | 'group' }[]) {
   const f = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     const chosen = new Headers(init?.headers).get(TENANT_HEADER)
@@ -283,6 +283,25 @@ describe('the spine tenant block', () => {
     })
     expect(window.localStorage.getItem(TENANT_PREF)).toBe('eng')
     await waitFor(() => expect(document.querySelector('.sk-tenant b')?.textContent).toBe('Engineering'))
+  })
+
+  it('names your own personal workspace "Your workspace", first and current by default (#1200)', async () => {
+    // MUTATION: drop the kind === 'user' branch in nameTenants, or the block's own label.
+    const OWN = { tenant_id: 'u-ana-b', display_name: 'Your workspace (u-ana-b)', kind: 'user' as const }
+    liveApi([OWN, { ...ENG, kind: 'group' as const }])
+    await shell()
+    await waitFor(() => expect(switcher()).not.toBeNull())
+    expect(switcher()!.querySelector('b')?.textContent).toBe('Your workspace')
+    expect(switcher()!.querySelector('small')?.textContent).toBe('tenant · 1 of 2')
+    fireEvent.click(switcher()!)
+    expect(rowFor('Your workspace')?.getAttribute('aria-current')).toBe('true')
+    expect(rowFor('Your workspace')?.querySelector('small')?.textContent).toBe('u-ana-b')
+    await act(async () => {
+      fireEvent.click(rowFor('eng@example.com')!)
+    })
+    expect(window.localStorage.getItem(TENANT_PREF)).toBe('eng')
+    const back = [...document.querySelectorAll<HTMLButtonElement>('.c-toast button')].find((b) => b.textContent === 'Back to Your workspace')
+    expect(back, 'the way back does not name your workspace').toBeDefined()
   })
 
   it('keeps the tenant on the collapsed spine as a tile that opens the same list', async () => {

@@ -548,12 +548,14 @@ export function LiveBrowserPane({
           <LiveScreen
             key={session.session_id}
             taskId={task.id}
+            sessionId={session.session_id}
             control={mine}
             touch={mine && session.device !== null && session.device.touch}
             onScreen={setScreenNode}
             device={deviceSize(session)}
             caption={<span className="live-caption">{deviceCaption(session)}</span>}
             onControlChange={reload}
+            onSessionMoved={reload}
           />
         </div>
       </div>
@@ -633,13 +635,14 @@ export function deviceSize(
 
 /**
  * UNDER THE DEVICE, WHAT IT IS (the mockup's caption): `iPhone 15 · 393×852
- * · <path>`, width × height as the device is turned (`deviceSize`). The
- * page's path is not served: the session's origin is scheme, host and port
- * by design (§5.7), and nothing carries the path to swarm-api, so it says so
- * rather than print one nobody measured. A device the gate has not reported
- * is said the same way (LB-SEAM).
+ * · <path>`, width × height as the device is turned (`deviceSize`). The path
+ * is the one the gate read from the top frame and reported beside the origin
+ * (`origin.path`, redacted, no query: LB-R6 -- until then nothing carried it,
+ * and every live session read "path not reported", re-QA pass 8). With no
+ * path reported it still says so rather than print one nobody measured, and
+ * a device the gate has not reported is said the same way (LB-SEAM).
  */
-export function deviceCaption(session: Pick<LiveSession, 'device' | 'presets'>): string {
+export function deviceCaption(session: Pick<LiveSession, 'device' | 'presets' | 'origin'>): string {
   const d = session.device
   const size = deviceSize(session)
   const device =
@@ -648,7 +651,8 @@ export function deviceCaption(session: Pick<LiveSession, 'device' | 'presets'>):
       : size === null
         ? presetLabel(d.preset)
         : `${presetLabel(d.preset)} · ${size.width}×${size.height}`
-  return `${device} · path not reported`
+  const path = session.origin?.path
+  return `${device} · ${typeof path === 'string' && path !== '' ? path : 'path not reported'}`
 }
 
 /**
@@ -879,14 +883,21 @@ const TABLET_MIN = 600
 
 function LiveScreen({
   taskId,
+  sessionId,
   control,
   touch,
   onScreen,
   device = null,
   caption,
   onControlChange,
+  onSessionMoved,
 }: {
   taskId: string
+  /**
+   * The session this canvas draws: the CURRENT attempt's, as the pane read
+   * it. A ticket minted for any other is not connected (LB-R6).
+   */
+  sessionId: string
   control: boolean
   touch: boolean
   /** Told the element noVNC draws into, and null when it goes: the theater borrows it. */
@@ -897,6 +908,8 @@ function LiveScreen({
   caption?: ReactNode
   /** Called when swarm-api's status frames say control or the session changed: the pane re-reads the session. */
   onControlChange?: () => void
+  /** Called when a ticket names another session than `sessionId`: the pane re-reads which one is current. */
+  onSessionMoved?: () => void
 }) {
   const host = useRef<HTMLDivElement>(null)
   const rfb = useRef<Rfb | null>(null)
@@ -905,6 +918,8 @@ function LiveScreen({
   controlRef.current = control
   const changedRef = useRef(onControlChange)
   changedRef.current = onControlChange
+  const movedRef = useRef(onSessionMoved)
+  movedRef.current = onSessionMoved
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
   const [hasFocus, setHasFocus] = useState(false)
@@ -995,6 +1010,16 @@ function LiveScreen({
         retry(ticket.status === 'error' ? ticket.error.message : 'No viewer ticket was issued.')
         return
       }
+      if (ticket.data.session_id !== sessionId) {
+        // THE CURRENT ATTEMPT'S SESSION, NEVER ANOTHER (LB-R6): swarm-api
+        // mints for the task's current attempt, and this canvas is the one
+        // the pane drew for `sessionId`. They differ only across an attempt
+        // change; the pane reads the session again, and the canvas for the
+        // new one (keyed by its id) connects to it.
+        movedRef.current?.()
+        retry('The agent’s browser moved to a new attempt. Reconnecting.')
+        return
+      }
       try {
         await openLiveSocket(ticket.data.session_id, ticket.data.ticket, (ws) => {
           if (stopped || host.current === null) {
@@ -1034,7 +1059,7 @@ function LiveScreen({
       rfb.current = null
       r?.disconnect()
     }
-  }, [taskId, applyInput])
+  }, [taskId, sessionId, applyInput])
 
   const onFocus = () => {
     focused.current = true
