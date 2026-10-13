@@ -74,6 +74,15 @@ for that client's audience. There is no environment variable here that names a
 second host to try, because forwarding an ID token minted for swarm-api to a
 host named by a variable is how a bearer credential ends up somewhere it can
 be replayed from.
+
+IT ACTS IN THE TENANT SWARM_TENANT NAMES (SC-TENANT, owner decision
+2026-10-12: "sc reads SWARM_TENANT"). Once #1204 made a person's ready
+personal workspace their default tenant, a client that sends no
+`X-Swarm-Tenant` moved off the group it used to read. So `sc` chooses as the
+bridge and `swarm` do -- `client.chosen_tenant`, read once per invocation --
+and every request it makes names that tenant; unset or blank, it sends no
+header and the API's default applies. `sc whoami` and `sc config` say which
+tenant answered and which setting chose it.
 """
 
 from __future__ import annotations
@@ -92,7 +101,7 @@ from typing import Any, Callable, Sequence
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TERMINAL_STATES, TaskState
 
 from . import render
-from .client import SwarmClient, SwarmError, outputs_of
+from .client import SwarmClient, SwarmError, chosen_tenant, outputs_of
 from .follow import with_console
 from .invocation import help_command, terminal_command
 from .patches import explain_absence, masked_counts, patch_uri
@@ -3177,16 +3186,41 @@ def cmd_login(_client, args, out) -> int:
     # over the service account's tenant with exit 0 -- even where IAP had not
     # allowlisted the Desktop client, which is the one thing this call exists
     # to find out (review of PR #61, 2026-09-25).
+    chosen, chosen_by = tenant_choice()
     try:
-        with SwarmClient(deployment=deployment, tier=auth.Tier.SIGNED_IN) as api:
+        with SwarmClient(deployment=deployment, tier=auth.Tier.SIGNED_IN, tenant=chosen) as api:
             me = api.request("GET", "/v1/tenants/me") or {}
     except SwarmError as exc:
         out.write(f"but {deployment.url} did not accept it: {exc}\n")
         return EXIT_FAIL
     # `tenant_of`: the route nests the tenant, and the flat read printed
     # "(not reported)" for one it had just served (#88, SC-F3).
-    out.write(f"tenant      {render.tenant_of(me) or '(not reported)'}\n")
+    out.write(
+        f"tenant      {render.tenant_of(me) or '(not reported)'}  ({chosen_by})\n"
+    )
     return EXIT_OK
+
+
+#: Said when no SWARM_TENANT is set: the API picks, and since #1204 its pick is
+#: the caller's personal workspace when that is ready.
+_DEFAULT_TENANT_SOURCE = (
+    "SWARM_TENANT is not set, so the API chose your default: "
+    "your personal workspace when it is ready"
+)
+
+
+def tenant_choice() -> tuple[str | None, str]:
+    """`(tenant, which setting chose it)` for this invocation.
+
+    THROUGH `chosen_tenant`, the bridge's and `swarm`'s own helper, with no
+    flag: the rule (blank is no choice) lives once. The plugin's `tenant`
+    option reaches this process as SWARM_TENANT too, so that one name is
+    the whole answer to "which setting".
+    """
+    tenant = chosen_tenant(None)
+    if tenant is None:
+        return None, _DEFAULT_TENANT_SOURCE
+    return tenant, "chosen by SWARM_TENANT"
 
 
 def cmd_logout(_client, args, out) -> int:
@@ -3208,10 +3242,12 @@ def read_whoami(args) -> tuple[dict[str, Any], int]:
     deployment this is or whose tenant it answered for."""
     from . import auth, credentials, signin
 
+    chosen, chosen_by = tenant_choice()
     shown: dict[str, Any] = {
         "context": None, "url": None, "source": None, "current": None,
         "tier": None, "credential_store": None, "principal": None,
-        "tenant": None, "error": None,
+        "tenant": None, "tenant_chosen": chosen, "tenant_source": chosen_by,
+        "error": None,
     }
     code = EXIT_OK
     try:
@@ -3225,7 +3261,7 @@ def read_whoami(args) -> tuple[dict[str, Any], int]:
         if tier is auth.Tier.SIGNED_IN:
             shown["credential_store"] = credentials.store().describe()
             shown["principal"] = signin.SignedIn(deployment).claims().get("email")
-        with SwarmClient(deployment=deployment) as api:
+        with SwarmClient(deployment=deployment, tenant=chosen) as api:
             me = api.request("GET", "/v1/tenants/me") or {}
         # Nested under `tenant` and `principal`, which the flat reads missed
         # (#88, SC-F3) -- through the one reader `render` keeps for it.
@@ -3259,6 +3295,8 @@ def cmd_whoami(_client, args, out) -> int:
         value = shown[field]
         if field == "context" and shown["current"]:
             value = f"{value}  (current)"
+        if field == "tenant":
+            value = f"{value}  ({shown['tenant_source']})"
         out.write(f"{label:<11} {value}\n")
     if shown["error"]:
         out.write(f"{'problem':<11} {shown['error']}\n")
@@ -3341,7 +3379,7 @@ def cmd_config(_client, args, out) -> int:
         target_field, code = {"value": None, "not_read_because": str(exc)}, EXIT_FAIL
     view = {
         "endpoint": field(shown.get("url"), context=shown.get("context"), source=shown.get("source")),
-        "tenant": field(shown.get("tenant")),
+        "tenant": field(shown.get("tenant"), source=shown.get("tenant_source")),
         "target": target_field,
         "plugin_version": _plugin_version(),
         "bridge_version": _bridge_version(),
@@ -3358,7 +3396,7 @@ def cmd_config(_client, args, out) -> int:
     endpoint = view["endpoint"]
     rows = (
         ("endpoint", text(endpoint, f"  (context {endpoint.get('context')}, from {endpoint.get('source')})")),
-        ("tenant", text(view["tenant"])),
+        ("tenant", text(view["tenant"], f"  ({view['tenant'].get('source')})")),
         ("target", text(target_field, f"  (from {target_field.get('source')})")),
         ("plugin", text(view["plugin_version"], f"  ({view['plugin_version'].get('path')})")),
         ("bridge", text(view["bridge_version"])),
@@ -4289,7 +4327,7 @@ def main(argv: list[str] | None = None, out=None) -> int:
         except KeyboardInterrupt:  # pragma: no cover
             return 130
     try:
-        with SwarmClient(context=args.context) as client:
+        with SwarmClient(context=args.context, tenant=tenant_choice()[0]) as client:
             return args.func(client, args, stream)
     except SwarmError as exc:
         # THE SUBMISSION GATE'S REFUSAL (#847): the API answered, so this is

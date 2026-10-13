@@ -36,6 +36,12 @@
       "title": "Show running SwarmCloud workflows and tasks at session start",
       "description": "When on, a new or resumed session in which this plugin is configured lists your tenant's SwarmCloud workflows that are still running, and your single tasks that are (read-only, a few seconds at most, silent when none run or SwarmCloud cannot be reached) and is told to run /sc attach --all first, which shows them as live [SwarmCloud] rows. Turn off to start sessions without it; /sc attach --all still works by hand.",
       "default": true
+    },
+    "tenant": {
+      "type": "string",
+      "title": "Tenant",
+      "description": "The tenant every call acts in; empty uses your default, which is your personal workspace when it is ready. Name a group's tenant id here to keep the plugin's tools and its session-start check in that group (the swarm_tenants tool, or `swarm tenants`, lists the tenants you may choose). It reaches the plugin as SWARM_TENANT; a SWARM_TENANT already set in the environment Claude Code was started with wins over this setting.",
+      "sensitive": false
     }
   },
   "mcpServers": {
@@ -52,6 +58,7 @@
         "SWARM_PLUGIN_DEPLOYMENT_URL": "${user_config.deployment_url}",
         "SWARM_PLUGIN_OAUTH_CLIENT_ID": "${user_config.oauth_client_id}",
         "SWARM_PLUGIN_DEFAULT_TARGET": "${user_config.default_target}",
+        "SWARM_TENANT": "${SWARM_TENANT:-${user_config.tenant}}",
         "SWARM_SC_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
         "SWARM_PLUGIN_OAUTH_CLIENT_SECRET": "${user_config.oauth_client_secret}"
       }
