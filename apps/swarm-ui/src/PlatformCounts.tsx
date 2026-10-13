@@ -8,6 +8,7 @@ import { FrameAge, PageHead, timeAgo, useClaimPageAge } from './Shell'
 import { NEVER_WRITTEN, REAL_STATES, pluralise, type Stats } from './types'
 import { AGE_TICK_MS, useNow } from './useNow'
 import './styles/admin.css'
+import './styles/schedules.css'
 import { Button } from './components'
 
 /**
@@ -51,6 +52,67 @@ let lastRun: { run: Result<Stats>; runs: number } | null = null
 /** Forgets the session's record, for a test that starts a new session. */
 export function forgetLastRun(): void {
   lastRun = null
+}
+
+/**
+ * THE PLATFORM TICKS (docs/schedules.md §8.4): the platform's machinery,
+ * which no tenant manages and which stays in Terraform
+ * (`terraform/modules/scheduler/jobs.tf`). A static list, so an admin sees
+ * every recurring thing in one place; what each does is its Cloud Scheduler
+ * job's own description. Nothing here is read from GCP.
+ *
+ * EVERY JOB, IN jobs.tf's ORDER (live QA ADM-6, 2026-10-11): the list said
+ * "every recurring thing" and held 7 of the 12, schedule_tick among the
+ * missing though its own report headed the page then. `name` is the job's
+ * resource name in jobs.tf and `job` its name after the prefix, `<tenant>`
+ * for a per-tenant job; `adminSchedules.test.tsx` and
+ * `schedules.onepage.test.tsx` read jobs.tf and fails
+ * when the two disagree.
+ *
+ * HERE SINCE SCHED-ONE-PAGE (owner decision 2026-10-13). They were the third
+ * table of Admin › Schedules; that page folded into Automate › Schedules as
+ * its admin-only "All tenants" view, which is about TENANTS' schedules. These
+ * belong to no tenant, and this page is already the admin's read of what the
+ * platform itself is doing, so they came here rather than onto a page whose
+ * switch says "Mine | All tenants".
+ */
+export const PLATFORM_TICKS: readonly { name: string; job: string; does: string }[] = [
+  { name: 'safety_tick', job: 'scheduler-tick', does: 'A one-minute safety tick for the scheduler’s drain loop.' },
+  { name: 'reconciler', job: 'reconciler-tick', does: 'Reclaims expired leases and garbage-collects unused Job resources.' },
+  { name: 'quota_refresh', job: 'quota-refresh', does: 'Recomputes provider quota state and adaptive pool targets.' },
+  { name: 'workflow_rollup', job: 'workflow-rollup-<tenant>', does: 'Converges the stored state of each tenant’s workflows nobody reads.' },
+  { name: 'issue_run_advance', job: 'issue-run-advance-<tenant>', does: 'Advances each tenant’s issue runs nobody is reading.' },
+  { name: 'stranded_pr_sweep', job: 'stranded-pr-sweep-<tenant>', does: 'Finds each tenant’s SwarmCloud pull requests nothing is going to merge, and logs them.' },
+  { name: 'repo_index_poll', job: 'repo-index-poll-<tenant>', does: 'Reads each tenant’s registered repositories’ heads and queues their index runs.' },
+  { name: 'merge_wake', job: 'merge-wake-<tenant>', does: 'Every minute, marks each tenant’s CI-waiting merge steps whose checks have settled.' },
+  { name: 'forge_refresh', job: 'forge-refresh', does: 'Refreshes GitHub user access tokens before they expire.' },
+  { name: 'schedule_tick', job: 'schedule-tick', does: 'Fires every tenant’s due schedules, one firing per slot (its last hour is on Automate › Schedules, All tenants).' },
+  { name: 'workspace_sweep', job: 'workspace-sweep', does: 'Re-dispatches approved personal workspaces nobody built, and logs each one still waiting.' },
+]
+
+function PlatformTicks() {
+  return (
+    <div className="sc-table-wrap">
+      <table className="sc-table is-ticks" data-testid="as-platform-ticks">
+        <thead>
+          <tr>
+            <th scope="col" data-col="name">Tick</th>
+            <th scope="col" data-col="job">Cloud Scheduler job</th>
+            <th scope="col" data-col="does">What it does</th>
+          </tr>
+        </thead>
+        <tbody>
+          {PLATFORM_TICKS.map((t) => (
+            <tr key={t.name} className="sc-row" data-tick={t.name}>
+              <td data-label="Tick"><span className="mono">{t.name}</span></td>
+              <td data-label="Cloud Scheduler job"><span className="mono">{t.job}</span></td>
+              <td data-label="What it does">{t.does}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  )
 }
 
 export function PlatformCountsScreen() {
@@ -221,6 +283,14 @@ export function PlatformCountsScreen() {
           )}
         </div>
       )}
+      {/* THE PLATFORM TICKS (§8.4), moved here from Admin › Schedules
+          (SCHED-ONE-PAGE, 2026-10-13). Static: nothing here is billed or
+          read, so it is drawn whether or not the count has run. */}
+      <section className="counts-ticks">
+        <h2 className="sc-h2">Platform ticks</h2>
+        <p className="sb-note">The platform’s own machinery. No tenant manages these; they are set in Terraform, and listed here so every recurring thing is in one place.</p>
+        <PlatformTicks />
+      </section>
       {/* THE FOOTER EVERY SIBLING PAGE HAS (QA G5-23): what a run returns,
           and why a state with no row is not a zero. */}
       <HelpLinks topics={COUNTS_TOPICS} />

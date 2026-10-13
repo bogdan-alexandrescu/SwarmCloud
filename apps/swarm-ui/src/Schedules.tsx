@@ -17,9 +17,11 @@
  * screen lists the thing that makes it, and links each firing to its work.
  */
 import { useEffect, useState, type MouseEvent, type ReactNode } from 'react'
+import { AllTenantsSchedules } from './AdminSchedules'
 import {
   deleteSchedule,
   loadApprovals,
+  loadMe,
   loadRepositories,
   loadSchedules,
   pauseSchedule,
@@ -34,10 +36,10 @@ import { usd } from './measure'
 import { addressToPath } from './paths'
 import { Absent, Mark } from './primitives'
 import { scheduleWords, type RepoRecord } from './RepositoriesData'
-import { Button, Dialog, buttonClass } from './components'
+import { Button, Dialog, Segmented, buttonClass } from './components'
 import { ScheduleDetail, detailTabOf } from './ScheduleDetail'
 import { NewSchedule } from './ScheduleEdit'
-import { Screen, timeAgo } from './Shell'
+import { PageHead, Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
 import './styles/schedules.css'
@@ -61,6 +63,59 @@ export function scheduleAddress(id: string, at: { tab?: string; edit?: boolean }
  * and twelve hex digits (`schedules.new_schedule_id`), so `new` names none.
  */
 export const NEW_SCHEDULE = 'new'
+
+/**
+ * THE LIST'S TWO SCOPES (SCHED-ONE-PAGE, owner decision 2026-10-13,
+ * docs/schedules.md §6.1). Schedules are one page: the tenant's own, and for
+ * an admin every tenant's (`AllTenantsSchedules`, what Admin › Schedules was).
+ * The scope is in the address, `?scope=all`, so an admin can link it;
+ * `/admin/schedules` lands there (paths.ts).
+ */
+export const ALL_TENANTS_SCHEDULES = `${SCHEDULES_ADDRESS}?scope=all`
+type Scope = 'mine' | 'all'
+
+function scopeOf(view: string | null): Scope {
+  return view !== null && new URLSearchParams(view).get('scope') === 'all' ? 'all' : 'mine'
+}
+
+/**
+ * WHETHER THE SESSION IS AN ADMIN: `principal.is_admin` from `GET
+ * /v1/tenants/me`, the read the nav's `admin: true` tabs and the header's
+ * admin badge are drawn from, so the switch and the rest of the console agree
+ * on who is an admin. `null` while it is read; `unknown` when the read failed.
+ * It decides only what is DRAWN: `GET /v1/admin/schedules` is `is_admin` on
+ * the server, whatever this says.
+ */
+function useSessionAdmin(): boolean | null | 'unknown' {
+  const [admin, setAdmin] = useState<boolean | null | 'unknown'>(null)
+  useEffect(() => {
+    let live = true
+    void loadMe({ frame: true }).then((r) => {
+      if (!live) return
+      setAdmin(r.status === 'ok' || r.status === 'stale' ? r.data.principal.is_admin === true : 'unknown')
+    })
+    return () => {
+      live = false
+    }
+  }, [])
+  return admin
+}
+
+/** "Mine | All tenants": links, so either side opens in a new tab and reads as where you are. */
+function ScopeSwitch({ scope, go }: { scope: Scope; go: (to: string) => void }) {
+  return (
+    <Segmented<Scope>
+      label="Whose schedules"
+      small
+      value={scope}
+      options={[
+        { key: 'mine', label: 'Mine', href: addressToPath(SCHEDULES_ADDRESS), title: 'This tenant’s schedules' },
+        { key: 'all', label: 'All tenants', href: addressToPath(ALL_TENANTS_SCHEDULES), title: 'Every tenant’s schedules and the schedule tick (admin)' },
+      ]}
+      onChange={(k) => go(k === 'all' ? ALL_TENANTS_SCHEDULES : SCHEDULES_ADDRESS)}
+    />
+  )
+}
 
 /** The schedule a Schedules address names (`schedule=<id>`), or null for the list. */
 function scheduleOf(view: string | null): string | null {
@@ -572,6 +627,7 @@ function SchedulesBody({
   go,
   notice,
   onDone,
+  scopeSwitch,
 }: {
   rows: Schedule[]
   /** Read with the list, so ⟳ re-reads the built-in rows too (AUT-19). */
@@ -579,11 +635,14 @@ function SchedulesBody({
   go: (to: string) => void
   notice: ActNotice | null
   onDone: (notice: ActNotice) => void
+  /** "Mine | All tenants", for an admin; nothing for anyone else. */
+  scopeSwitch: ReactNode
 }) {
   const names = repos.status === 'ok' || repos.status === 'stale' ? new Map(repos.data.map((r) => [r.repo_id, `${r.owner}/${r.repo}`])) : null
   return (
     <div className="sc-list">
       <div className="c-acts sc-acts">
+        {scopeSwitch}
         <InApp go={go} to={scheduleAddress(NEW_SCHEDULE)} className={buttonClass({ kind: 'primary', size: 'sm' })}>
           New schedule
         </InApp>
@@ -621,10 +680,26 @@ export function SchedulesScreen({ view, go }: { view: string | null; go: (to: st
     const q = new URLSearchParams(view ?? '')
     return <ScheduleDetail scheduleId={scheduleId} go={go} tab={detailTabOf(q.get('tab'))} editing={q.get('edit') === '1'} />
   }
-  return <ScheduleListScreen go={go} />
+  return <ScheduleLists scope={scopeOf(view)} go={go} />
 }
 
-function ScheduleListScreen({ go }: { go: (to: string) => void }) {
+function ScheduleLists({ scope, go }: { scope: Scope; go: (to: string) => void }) {
+  // WHICH LIST, AND WHETHER THE SWITCH IS DRAWN. Only an admin sees "Mine |
+  // All tenants". A non-admin following a `?scope=all` link gets their own
+  // list and no switch -- the admin read is never made for them. While the
+  // session is read, a `?scope=all` page waits rather than reading the admin
+  // list for someone who may not be one; if the session read fails, it reads
+  // it anyway and the API decides. (A comment here, not above: the nav
+  // heading test follows SchedulesScreen's final `return <X />` only when
+  // nothing stands between it and the next declaration.)
+  const admin = useSessionAdmin()
+  const scopeSwitch = admin === true ? <ScopeSwitch scope={scope} go={go} /> : null
+  if (scope === 'all' && admin === null) return <PageHead title="Schedules" />
+  if (scope === 'all' && admin !== false) return <AllTenantsSchedules go={go} scopeSwitch={scopeSwitch} />
+  return <ScheduleListScreen go={go} scopeSwitch={scopeSwitch} />
+}
+
+function ScheduleListScreen({ go, scopeSwitch }: { go: (to: string) => void; scopeSwitch: ReactNode }) {
   // Above the Screen, as on one schedule's page: an action bumps `round`,
   // which remounts the Screen to read the list again, and what it said stays.
   const [round, setRound] = useState(0)
@@ -640,7 +715,7 @@ function ScheduleListScreen({ go }: { go: (to: string) => void }) {
       load={loadListAndRepos}
       summary={(d) => `${pluralise(d.schedules.length, 'schedule')} · tenant ${d.tenant_id}`}
     >
-      {(d) => <SchedulesBody rows={d.schedules} repos={d.repos} go={go} notice={notice} onDone={onDone} />}
+      {(d) => <SchedulesBody rows={d.schedules} repos={d.repos} go={go} notice={notice} onDone={onDone} scopeSwitch={scopeSwitch} />}
     </Screen>
   )
 }

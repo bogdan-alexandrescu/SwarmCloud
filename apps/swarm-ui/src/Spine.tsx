@@ -122,8 +122,8 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again.
     { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
-    // docs/schedules.md §5.3: every tenant's schedules, beside Tenants.
-    { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'admin/schedules' },
+    // No Schedules here since SCHED-ONE-PAGE (owner decision 2026-10-13):
+    // every tenant's schedules are Automate › Schedules, All tenants.
   ],
 }
 

@@ -72,8 +72,6 @@ export const FIXED: Readonly<Record<string, string>> = {
   'admin/counts': '/admin/counts',
   // #847 W8: Admin › People, everyone who has signed in and their workspace requests.
   'admin/people': '/admin/people',
-  // docs/schedules.md §5.3, §6.1: every tenant's schedules, beside Tenants.
-  'admin/schedules': '/admin/schedules',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }
@@ -406,6 +404,11 @@ export function pathToAddress(pathname: string, search = '', hash = ''): PathRou
   // The callback's query (`code`, `state`, `error`) is dropped HERE, so the
   // route never holds it and the router's normalise writes a bare path.
   if (path === GITHUB_CALLBACK_PATH) return plain(GITHUB_CALLBACK_ADDRESS)
+
+  // ADMIN › SCHEDULES IS GONE (SCHED-ONE-PAGE, owner decision 2026-10-13):
+  // every tenant's schedules are Automate › Schedules' All tenants view, and
+  // its old path lands there, the bar rewritten once by App's normalise.
+  if (path === '/admin/schedules') return plain('automate/schedules?scope=all')
 
   const fixed = FIXED_BACK[path] ?? SECTION_ROOTS[path]
   if (fixed === undefined) return null
