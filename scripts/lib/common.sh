@@ -634,6 +634,29 @@ tf_root() {
   printf '%s' "${dir}"
 }
 
+# Where terraform keeps a root's initialised state (backend config, providers):
+# `.terraform` under the root, unless TF_DATA_DIR says otherwise -- terraform's
+# own override, relative to the root when it is not absolute.
+tf_data_dir() {
+  local root
+  root="$(tf_root)"
+  case "${TF_DATA_DIR:-}" in
+    "") printf '%s/.terraform' "${root}" ;;
+    /*) printf '%s' "${TF_DATA_DIR}" ;;
+    *)  printf '%s/%s' "${root}" "${TF_DATA_DIR}" ;;
+  esac
+}
+
+tf_initialised() { [[ -d "$(tf_data_dir)" ]]; }
+
+# The exact command that initialises terraform/infra for this environment, as
+# `make tf-init` runs it: this environment's state, in the swarm's own bucket.
+# Printed for an operator to run, so it names the root relative to the repo.
+tf_init_command() {
+  printf 'terraform -chdir=terraform/infra init -input=false -reconfigure -backend-config=bucket=%s -backend-config=prefix=%s' \
+    "${TF_STATE_BUCKET}" "${TF_STATE_PREFIX}"
+}
+
 # The variables for this environment. Absent is fatal rather than defaulted:
 # planning prod with dev's inputs is the mistake this refuses to make possible.
 tf_var_file() {
