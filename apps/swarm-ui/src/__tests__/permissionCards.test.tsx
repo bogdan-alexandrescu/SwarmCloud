@@ -178,7 +178,7 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     expect(heads).toEqual(['GitHub permission', 'Needs', 'Granted', '', 'For'])
     const rows = Array.from(card.querySelectorAll<HTMLElement>('.fp-grants tbody tr'))
     expect(rows.map((r) => r.getAttribute('data-permission'))).toEqual(['contents', 'pull_requests', 'statuses', 'checks', 'issues', 'actions'])
-    const statuses = rows[2]
+    const statuses = rows[2]!
     const cells = Array.from(statuses.querySelectorAll('td')).map(visible)
     expect(cells[0]).toBe('Commit statuses statuses')
     expect(cells[1]).toBe('read')
@@ -207,8 +207,9 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
 
   it('says which repositories the installation covers, the installation it came through, and when it was checked', async () => {
     const body = answer()
-    body.repositories.push({ ...body.repositories[0], repo_id: TOKEN_REPO, repo: 'example-org/example-web' })
-    body.repositories.push({ ...body.repositories[0], repo_id: 'repo_3333333333333333', repo: 'other-org/elsewhere', installation_id: 99 })
+    const first = body.repositories[0]!
+    body.repositories.push({ ...first, repo_id: TOKEN_REPO, repo: 'example-org/example-web' })
+    body.repositories.push({ ...first, repo_id: 'repo_3333333333333333', repo: 'other-org/elsewhere', installation_id: 99 })
     routes(() => body)
     await mountSection()
     await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
@@ -245,7 +246,7 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     expect(visible(card.querySelector('.fp-summary'))).toBe('5 of 6 needed · Push, Pull requests, Issues, Actions · blocked: Merge, CI')
     const row = card.querySelector<HTMLElement>('.fp-grants tr[data-permission="statuses"]')!
     expect(row.getAttribute('data-ok')).toBe('false')
-    expect(visible(row.querySelectorAll('td')[2])).toBe('none')
+    expect(visible(row.querySelectorAll('td')[2] ?? null)).toBe('none')
     expect(card.querySelectorAll('.fp-grants tr[data-ok="false"]').length).toBe(1)
     expect(Array.from(card.querySelectorAll('a')).find((a) => visible(a) === 'Review on GitHub')?.getAttribute('href')).toBe(REVIEW)
   })

@@ -5644,6 +5644,11 @@ export interface ForgeOrgCard {
   org: string
   account_type: string | null
   installation_id: number
+  /**
+   * GitHub's permission map for the installation (`contents: write`), the
+   * ones SwarmCloud does not use included; null when it was not read.
+   */
+  granted: Record<string, string> | null
   missing: ForgeGap[] | null
   pending: ForgePending[] | null
   review_url: string | null
@@ -5693,6 +5698,15 @@ function fpGitHubUrl(v: unknown): string | null {
   return s !== null && s.startsWith('https://github.com/') ? s : null
 }
 
+/** A permission map, keeping only string levels; not an object at all is null (not read), never `{}` (nothing granted). */
+function fpPermMap(v: unknown): Record<string, string> | null {
+  const o = fpObj(v)
+  if (o === null) return null
+  const out: Record<string, string> = {}
+  for (const [k, level] of Object.entries(o)) if (typeof level === 'string' && level !== '') out[k] = level
+  return out
+}
+
 function fpGap(o: Record<string, unknown>): ForgeGap | null {
   const why = fpStr(o.needed_for)
   if (why === null) return null
@@ -5721,6 +5735,7 @@ export function normForgePermissions(raw: unknown): ForgePermissionsDoc {
       org,
       account_type: fpStr(o.account_type),
       installation_id: o.installation_id,
+      granted: fpPermMap(o.granted),
       missing: fpGaps(o.missing),
       pending: Array.isArray(o.pending)
         ? fpList(o.pending).flatMap((p) => {
