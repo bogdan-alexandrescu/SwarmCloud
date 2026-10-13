@@ -850,6 +850,7 @@ export interface Rfb {
   scaleViewport: boolean
   resizeSession: boolean
   focusOnClick: boolean
+  showDotCursor: boolean
   disconnect(): void
   clipboardPasteFrom(text: string): void
   addEventListener(type: 'connect' | 'disconnect' | 'securityfailure', listener: (e: Event) => void): void
@@ -1030,6 +1031,10 @@ function LiveScreen({
           // The gate sizes the display from the device preset (§6.1); the viewer never asks for a size.
           r.resizeSession = false
           r.focusOnClick = true
+          // noVNC hides the local pointer over its canvas and draws the server's cursor shape
+          // instead; the gate sends one (-239, LB-CURSOR), and against a gate that sends none
+          // the dot keeps a pointer visible rather than leaving the person clicking blind.
+          r.showDotCursor = true
           rfb.current = r
           applyInput()
           r.addEventListener('connect', () => {
