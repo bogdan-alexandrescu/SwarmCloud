@@ -1039,6 +1039,53 @@ export async function loadAnswer(taskId: string, options: { attemptId?: string }
   return read<TaskAnswer>(route('/v1/tasks/{id}/answer', { id: taskId }, query), () => false)
 }
 
+/** One option of an agent's question, as the worker validated it. */
+export interface QuestionOption {
+  label: string | null
+  description: string | null
+}
+
+/** One question an agent asked its owner (`questions.json`). */
+export interface AgentQuestion {
+  question: string | null
+  options: QuestionOption[]
+  /** One of the options' labels, or null when the agent recommended none. */
+  recommended: string | null
+  context: string | null
+}
+
+/**
+ * `GET /v1/tasks/{id}/questions`. `status` is `ok`, `none` (asked none --
+ * `questions: []`, never a 404) or `unavailable` (the worker counted some
+ * and they could not be read; `unavailable_because` says why).
+ */
+export interface TaskQuestions {
+  task_id: string
+  count: number
+  status: 'ok' | 'none' | 'unavailable'
+  questions: AgentQuestion[]
+  attempt_id?: string | null
+  unavailable_because?: string
+  redacted: boolean
+  redaction_count: number
+}
+
+/**
+ * What the task's agent asked its owner: `GET /v1/tasks/{id}/questions`, the
+ * file the worker validated, redacted by the artifact read (part of #1206).
+ */
+export async function loadQuestions(taskId: string): Promise<Result<TaskQuestions>> {
+  if (USE_FIXTURES) {
+    noteFixtureProbe(route('/v1/tasks/{id}/questions', { id: taskId }), 0, true)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: { task_id: taskId, count: 0, status: 'none', questions: [], redacted: false, redaction_count: 0 },
+    }
+  }
+  return read<TaskQuestions>(route('/v1/tasks/{id}/questions', { id: taskId }), () => false)
+}
+
 /**
  * THE TASK'S INPUT, MASKED: `GET /v1/tasks/{id}/input` (#184 follow-up). What
  * Inputs and Details draw -- the prompt, the rest of the input and the whole

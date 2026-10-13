@@ -345,7 +345,10 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
     questions (`questions.json`, counted by the worker in
     `result_summary.questions`). No record says a question was answered, so
     the item stays for `WINDOW` after the task ended; reading it clears it
-    from the bell's count."""
+    from the bell's count. It opens the task's Details at `#questions`, where
+    the "Questions for you" card shows them (`GET /v1/tasks/{id}/questions`);
+    it opened Artifacts, which showed a file, not the questions (owner report
+    2026-10-13)."""
     items = []
     for task in reading.own_tasks():
         count = _question_count(task)
@@ -357,7 +360,7 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
         items.append(_item(
             f"task:questions:{task.id}", TASK, True,
             f"Your agent asked {count} question{'s' if count != 1 else ''}",
-            f"Task {task.id}", f"/agents/recent/{task.id}/artifacts", ended))
+            f"Task {task.id}", f"/agents/recent/{task.id}#questions", ended))
     return items
 
 
