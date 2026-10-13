@@ -76,6 +76,7 @@ What it settles, one line each:
   `u-bogdan` moves out of state with a plan that destroys nothing (§3.3).
 * **The database and bucket-metadata roles are granted once**, to the set of
   all personal worker identities, if W0 confirms IAM supports it (WD9, §2.3).
+  **W0 found IAM does not support it, so the WD9 fallback is ON** (owner decision 2026-10-12, PR 1217): the job grants each person's worker its database, telemetry and bucket-metadata roles at A5 (`wd9_fallback: true` in `scripts/lib/workspace-calls.json`).
 * **A ready workspace runs nothing until the person adds a Claude account or
   an admin lends one** (§5, WD6).
 * **One gate, in the two submission methods every create path goes through**,

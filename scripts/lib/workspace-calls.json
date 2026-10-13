@@ -1,6 +1,6 @@
 {
   "about": "The call guard's rules (docs/workspaces.md §2.5). scripts/lib/workspace-guard.sh judges every gcloud, kubectl and curl call the workspace job makes against these shapes; a call is allowed only if ONE shape matches it whole, every flag included. Values in braces are filled from the expectation file A1 writes from the approved workspace record; a shape naming a value the file does not hold yet matches nothing, so before A1 only A1's own reads can run. scripts/lib/workspace-guard-cases.json holds a call each rule must refuse and one it must allow, and tests/unit/scripts/test_workspace_guard.py runs them.",
-  "wd9_fallback": false,
+  "wd9_fallback": true,
   "wd9_fallback_why": "Off while the WD9 principal-set grant gives every personal worker its database, bucket-metadata and telemetry roles once (docs/workspaces.md §2.3). Turn it on only if W0 finds that grant impossible; then C5 and the bucket-metadata shape of C4 start to allow, and nothing else changes.",
   "tools": {
     "gcloud": {
