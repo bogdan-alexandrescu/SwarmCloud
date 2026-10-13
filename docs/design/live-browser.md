@@ -763,16 +763,23 @@ control mode it:
   `Page.addScriptToEvaluateOnNewDocument` and `Runtime.addBinding` it has seen
   the agent make, tracked by identifier -- and restores them on return, so a
   page loaded during control runs no agent-installed listener;
-* offers the person **"start from a fresh page"**, the default for a
-  hand-off: the gate creates **its own browser context**
+* can **"start from a fresh page"** when asked for it by name (`pause` with
+  `fresh_page: true`): the gate creates **its own browser context**
   (`Target.createBrowserContext` on the gate's session, with no proxy
   parameters and downloads set to `downloads/`) and opens the hand-off's
   `expect` host in it, so the sign-in happens on a document no agent script
   has touched, in a context whose network settings no agent call set. On
   return the gate hands that context to the agent (the proxy then forwards the
-  agent's attach to its targets), and the agent continues there, signed in. A
-  page loaded before control, in the agent's own context, may carry listeners
-  the agent installed; the console says so, and recommends the fresh page.
+  agent's attach to its targets), and the agent continues there, signed in.
+  **It is not the default** (owner decision 2026-10-13, LB-CURSOR2): opened on
+  every hand-off with an `expect`, it put a second tab in front of the agent's
+  -- measured on task_1d1785b21d5b4e1f894e, the agent's form tab sat hidden
+  and empty while the stream and the person's input went to the new
+  `https://httpbin.org/` tab. Taking control now keeps the agent's current
+  tab, brings it to the front, and routes input to it. A page loaded before
+  control, in the agent's own context, may carry listeners the agent
+  installed; the scripts it added are removed for the window (above), and its
+  held commands cannot act on what the person types.
 
 Holding commands during control does not undo state the agent set **before**
 it asked for help, so the proxy also enforces section 5.4.4 at all times.
@@ -1127,7 +1134,7 @@ the page there (section 5.4.3).
 | Replaying a captured stream or ticket | TLS from the console to swarm-api's load balancer; tickets one-use, 30-60 s, bound to session, person, role and generation, and refused after their session closes. Past the load balancer the hops are plain ws inside the VPC (decision (b), section 3.3): only swarm-api's egress range and the tenant gates may connect to the relay, and a connection without a fresh ticket is closed. Capturing those hops needs a foothold inside the VPC; that is the accepted cost of having no certificate on the relay. A recording is a stored object behind the same tenant check, not a re-stream. |
 | A stale worker (old generation) keeps streaming | The ticket carries the generation; swarm-api closes the session when the lease's generation moves (invariant 5) and POSTs the relay's `/internal/close`, and the relay drops the tunnel and its viewers (section 5.2). |
 | The agent keylogs the person | No display access (§3.1); CDP held and scripts removed during control (§5.4.3); postData stripped after. |
-| The agent sets traffic-routing or trust state before asking for help (a context with its own `proxyServer`, `Security.setIgnoreCertificateErrors`, `Page.setBypassCSP`, extra headers), so the sign-in passes through it | The proxy's method policy refuses those calls from the first command, not only in control (§5.4.4); the fresh page opens in a gate-owned context; the gate refuses or ends control while the page has a certificate error. |
+| The agent sets traffic-routing or trust state before asking for help (a context with its own `proxyServer`, `Security.setIgnoreCertificateErrors`, `Page.setBypassCSP`, extra headers), so the sign-in passes through it | The proxy's method policy refuses those calls from the first command, not only in control (§5.4.4) -- since 2026-10-13 the only layer on the agent's own tab, which is now the one taken by default (§5.4.3); the fresh page, when asked for, opens in a gate-owned context; the gate refuses or ends control while the page has a certificate error. |
 | The gate restarts mid-attempt and the agent registers on `ctl.sock` first | A restarted gate accepts no registration; the live path ends for that attempt (§5.4.2). |
 | The agent or an escaped process drives the browser during control | The proxy holds every command; there is no other path. |
 | The agent spams hand-offs to pester people or hold the pod | 3 per attempt; each hold bounded; the park gives capacity back. |
