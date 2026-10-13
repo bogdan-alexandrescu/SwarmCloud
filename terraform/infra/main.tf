@@ -495,12 +495,11 @@ module "scheduler" {
   # same value verify.tf gives its own direct caller of swarm-api. The same
   # tenants get the #454 issue-run tick (`issue_run_advance`), as the same
   # account, on var.issue_run_advance_schedule's default of every minute,
-  # and the issue sweeper (`issue_sweep`), as the same account, on
-  # var.issue_sweep_schedule's default of :07 and :37 -- which starts nothing
-  # until var.enable_issue_sweep (swarm-api's SWEEP_ENABLED) and the tenant's
-  # own switch are on -- and the stranded-PR sweep (`stranded_pr_sweep`, part
-  # of #295), as the same account, at :19 and :49, which only reads, stores and
-  # logs `pr_stranded` (redrive false; the monitoring module alerts on it).
+  # and the stranded-PR sweep (`stranded_pr_sweep`, part of #295), as the
+  # same account, at :19 and :49, which only reads, stores and logs
+  # `pr_stranded` (redrive false; the monitoring module alerts on it). The
+  # issue sweeper's job was deleted on 2026-10-12: the tenant's `issue-sweep`
+  # schedule replaced it (modules/scheduler/jobs.tf).
   api_endpoint      = module.cloud_run.service_urls["swarm-api"]
   rollup_tenant_ids = toset(keys(var.tenants))
 
