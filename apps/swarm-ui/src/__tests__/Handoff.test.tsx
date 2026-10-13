@@ -254,7 +254,7 @@ describe("the Overview's hand-off cards", () => {
 // The Live filter
 // ---------------------------------------------------------------------------
 
-describe('the Live browsers filter (the All | Live N switch)', () => {
+describe('the Live browsers filter (the All | Browsers N switch)', () => {
   const rows = (): Task[] => [
     // Newest first, as the list reads them; the needs-you row is the OLDEST,
     // so only the needs-you rule can put it first.
@@ -270,7 +270,10 @@ describe('the Live browsers filter (the All | Live N switch)', () => {
     expect(liveBrowserRows(rows()).map((t) => t.id)).toEqual(['task_needsyou00000000001', 'task_browser0000000000001'])
   })
 
-  it('on the Agents list, lists only running browser agents with the needs-you row first and yellow', async () => {
+  // The list's switch adds the STARTING browser agents after these, marked
+  // (`browserRows`, live-browser QA p12 QA12-20); `liveBrowserRows` stays the
+  // running ones, which is what the theater walks.
+  it('on the Agents list, lists the browser agents with the needs-you row first and yellow, starting ones last', async () => {
     api.loadTasks.mockResolvedValue({
       status: 'ok',
       data: { tasks: rows(), tenant_id: 'u-ada' },
@@ -278,12 +281,14 @@ describe('the Live browsers filter (the All | Live N switch)', () => {
     } satisfies Result<TaskPage>)
     const { container } = render(<AgentsScreen onOpen={() => {}} />)
     await waitFor(() => expect(container.querySelector('.ag-list-tabs [role="tab"]')).not.toBeNull())
-    // The "All | Live N" switch (LB-UX3; it was a "Live browsers" checkbox).
-    fireEvent.click(within(screen.getByRole('group', { name: /live browser agents/i })).getByRole('button', { name: /^Live/ }))
+    // The "All | Browsers N" switch (LB-UX3; it was a "Live browsers"
+    // checkbox, then "All | Live N" until QA12-20).
+    fireEvent.click(within(screen.getByRole('group', { name: /browser agents/i })).getByRole('button', { name: /^Browsers/ }))
     await waitFor(() =>
       expect([...container.querySelectorAll('.rows .row.clickable')].map((r) => r.getAttribute('data-task-id'))).toEqual([
         'task_needsyou00000000001',
         'task_browser0000000000001',
+        'task_starting00000000001',
       ]),
     )
     const first = container.querySelector('.rows .row.clickable')!
