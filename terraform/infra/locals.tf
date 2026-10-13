@@ -697,12 +697,6 @@ locals {
       # reads it and no route consults it, so it changes nothing the API does.
       SCHEDULE_TICK_USERS = module.scheduler.schedule_tick_email
 
-      # The issue sweeper's platform switch (swarm_api.issuesweep, owner
-      # decisions 2026-10-08): POST /v1/admin/issues/sweep starts nothing
-      # while it is off, whatever a tenant's own `issue_sweep.enabled` says.
-      # Off unless the environment's tfvars sets var.enable_issue_sweep.
-      SWEEP_ENABLED = var.enable_issue_sweep ? "true" : "false"
-
       # D4's refusal of a person's task on a repository they have not chosen
       # (swarm_api.settings `repository_grants_enforced`, #780 OB10). Until
       # OB10 it reached swarm-api only by hand, so an apply put it back to

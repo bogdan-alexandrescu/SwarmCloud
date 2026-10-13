@@ -1,22 +1,27 @@
-"""The issue sweeper: SwarmCloud starts issue runs for the open issues that are ready.
+"""The issue sweeper's selection: which open issues an `issue-sweep` schedule may start.
 
-    POST /v1/admin/issues/sweep?tenant_id=<t>   the per-tenant Cloud Scheduler job
+The `issue-sweep` and `issue-plan-only` schedule types
+(`swarm_api/schedtypes/`) read and filter a tenant's open issues through
+`issuesweep.collect_candidates` and `issuesweep.skip_reason`. Until
+2026-10-12 a per-tenant Cloud Scheduler job did the same through
+`POST /v1/admin/issues/sweep`; that job, the route, its SWEEP_ENABLED switch
+and the tenant document's `issue_sweep` settings were removed on 2026-10-12
+(Schedules S9, second change), and section 5 holds that they stay removed.
 
 Owner decisions 2026-10-08: readiness is decided by the PLANNER (NOT_READY),
-not by a label; the sweep runs inside the platform on a schedule; at most 8
-live issue runs per tenant; plans auto-approve and pull requests auto-merge.
+not by a label.
 
 What these tests hold:
 
   1. The candidate filter: every skip rule, each beside a control that the
      same issue without the reason IS a candidate.
-  2. The cap of 8, and the oldest-updated-first order.
+  2. The read: oldest-updated first, and a repository that cannot be read
+     whole is reported rather than half-swept.
   3. NOT_READY: the planner's verdict ends the run holding nothing, is posted
-     on the issue, and the issue is not planned again until it changes.
+     on the issue, and the issue is not selected again until it changes.
   4. The territory guard holds an auto approval whose files overlap a live
      run's plan, and releases it when that run ends.
-  5. Only the scheduler's identity may call the route.
-  6. Both switches default off.
+  5. The old job's route, its settings routes and its switch are gone.
 
 No credentials, no network, no emulator: GitHub is a fake transport under the
 real `forge.GitHubIssues`, Firestore is the fake.
@@ -25,6 +30,7 @@ real `forge.GitHubIssues`, Firestore is the fake.
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -32,7 +38,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from swarm_api import forge, forgewrite, issueruns, issuesweep
+from swarm_api import auth, forge, forgewrite, issueruns, issuesweep
 from swarm_api.auth import StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
@@ -43,7 +49,8 @@ from swarm_api.issueruns import InvalidPlan, IssueRuns, RunState, parse_planner_
 from swarm_api.issuesweep import SweepConfig, claimed_issues, skip_reason
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
-from swarm_api.repositories import repo_id_for
+from swarm_api.repositories import Repositories, repo_id_for
+from swarm_api.routes import admin as admin_routes
 from swarm_api.routes import runs as runs_routes
 from swarm_api.settings import ApiSettings
 from swarm_api.validation import IssueRef
@@ -101,11 +108,11 @@ def writes():
     return forge_fakes.GitHubWrites()
 
 
-def _context(db, tokens, group_map, objects, github, writes, *, sweep_enabled=True):
+def _context(db, tokens, group_map, objects, github, writes):
     tokens = dict(tokens)
     tokens["token-sweeper"] = {"email": SWEEPER, "email_verified": True, "sub": "sub-sweeper"}
     return build_context(
-        settings=api_settings(rollup_sweeper_users=(SWEEPER,), sweep_enabled=sweep_enabled),
+        settings=api_settings(rollup_sweeper_users=(SWEEPER,)),
         db=db,
         verifier=StaticTokenVerifier(tokens),
         groups=StaticGroups(group_map),
@@ -130,27 +137,34 @@ def _register(db, *, tenant_id="eng", owner=OWNER, repo=REPO, created_by="alice@
     return repo_id
 
 
-def _enable(db, tenant_id="eng", **settings: Any) -> None:
-    # `submit_as` is explicit (owner decision 2026-10-08): a sweep without it
-    # starts nothing, so every test that expects runs names a current member.
-    settings.setdefault("submit_as", "alice@saga.xyz")
-    issuesweep.set_config(db, tenant_id, SweepConfig(enabled=True, **settings))
-
-
 @pytest.fixture
 def client(db, tokens, group_map, objects, github, writes):
     seed_tenant(db, "eng")
     seed_tenant(db, "research")
     _register(db)
-    _enable(db)
     return TestClient(
         create_app(_context(db, tokens, group_map, objects, github, writes)),
         raise_server_exceptions=False,
     )
 
 
-def _sweep(client, tenant_id="eng", headers=SWEEPER_HEADERS):
-    return client.post(f"/v1/admin/issues/sweep?tenant_id={tenant_id}", headers=headers)
+def _collect(client, *, config: SweepConfig | None = None,
+             tenant_id: str = "eng") -> tuple[list[str], issuesweep.SweepReport]:
+    """One read and filter of the tenant's registrations, as a schedule's
+    selection makes it (`schedtypes.issue_sweep.select`): the candidates, in
+    the order they would start, and the report their skips went on."""
+    ctx = client.app.state.ctx
+    config = config or SweepConfig(enabled=True)
+    runs = IssueRuns(ctx.db, now=ctx.now)
+    report = issuesweep.SweepReport(tenant_id=tenant_id, enabled=True, cap=config.max_live_runs)
+    live_rows, _ = runs.live(tenant_id, limit=issuesweep.LIVE_SCAN)
+    live = {(row.issue.repository.lower(), row.issue.number): row for row in live_rows}
+    registrations, _ = Repositories(ctx.db, now=ctx.now).list(tenant_id, limit=100)
+    candidates = issuesweep.collect_candidates(
+        ctx, ctx.store.get_tenant(tenant_id), tenant_id, registrations, config=config,
+        report=report, runs=runs, live=live, clock=time.monotonic, started_at=time.monotonic(),
+    )
+    return [c.ref.short for c in candidates], report
 
 
 def _tick(client, tenant_id="eng"):
@@ -170,13 +184,20 @@ def _run_of(db, number: int) -> dict:
     return rows[-1]
 
 
-def _started(body: dict) -> list[str]:
-    return [entry["issue"] for entry in body["started"]]
+def _reasons(report: issuesweep.SweepReport) -> dict[str, str]:
+    return {entry["issue"]: entry["reason"] for entry in report.skipped}
 
 
-def _reasons(body: dict) -> dict[str, str]:
-    return {entry["issue"]: entry["reason"] for entry in body["skipped"]}
+def _auto_run(client, number: int) -> dict:
+    created = client.post("/v1/runs", headers=auth_header("alice"),
+                          json={"issue": f"{REPOSITORY}#{number}", "plan_approval": "auto"})
+    assert created.status_code == 201, created.text
+    return created.json()["run"]
 
+
+# --------------------------------------------------------------------------
+# 1. the candidate filter, rule by rule, each with its control
+# --------------------------------------------------------------------------
 
 # --------------------------------------------------------------------------
 # 1. the candidate filter, rule by rule, each with its control
@@ -312,23 +333,27 @@ def test_an_issue_github_gave_no_time_for_is_not_called_changed():
     assert _candidate(issue, last=None) is None
 
 
-def test_pull_requests_in_the_issue_list_are_never_candidates(client, db, github):
+
+# --------------------------------------------------------------------------
+# 2. the read
+# --------------------------------------------------------------------------
+
+def test_pull_requests_in_the_issue_list_are_never_candidates(client, github):
     github.issues = [{"number": 99, "title": "a PR", "pull_request": {}}, _issue(42)]
-    body = _sweep(client).json()
-    assert _started(body) == [f"{REPOSITORY}#42"]
-    assert all(d["issue"]["number"] != 99 for d in _runs(db).values())
+    started, report = _collect(client)
+    assert started == [f"{REPOSITORY}#42"]
+    assert all(not entry["issue"].endswith("#99") for entry in report.skipped)
 
 
-def test_an_outsiders_issue_is_never_planned_written_to_or_run(client, db, github, writes):
+def test_an_outsiders_issue_is_never_a_candidate(client, github):
     github.issues = [_issue(7, author="NONE"), _issue(8, author="CONTRIBUTOR"), _issue(42)]
-    body = _sweep(client).json()
-    assert _started(body) == [f"{REPOSITORY}#42"]
-    assert _reasons(body) == {
+    started, report = _collect(client)
+    assert started == [f"{REPOSITORY}#42"]
+    assert _reasons(report) == {
         f"{REPOSITORY}#7": "author: NONE",
         f"{REPOSITORY}#8": "author: CONTRIBUTOR",
     }
-    assert {d["issue"]["number"] for d in _runs(db).values()} == {42}
-    assert body["skipped_by_reason"]["author"] == 2
+    assert report.skipped_by_reason["author"] == 2
 
 
 def test_the_sweep_listing_carries_each_issues_author_association(github):
@@ -338,18 +363,18 @@ def test_the_sweep_listing_carries_each_issues_author_association(github):
     assert [(i.number, i.author_association) for i in listing.issues] == [(7, "NONE"), (42, "")]
 
 
-def test_each_skip_reaches_the_route_report_with_its_reason(client, db, github):
+def test_each_skip_reaches_the_report_with_its_reason(client, github):
     github.issues = [
         _issue(1, labels=("epic",)), _issue(2, labels=("blocked",)), _issue(3, labels=("security",)),
         _issue(4), _issue(5, labels=("deferred",)), _issue(6), _issue(42),
     ]
     github.pulls = [{"number": 9, "title": "Sort", "body": "Part of #6"}]
-    _enable(db, exclude_issues=[4], exclude_labels=["deferred"])
+    config = SweepConfig(enabled=True, exclude_issues=[4], exclude_labels=["deferred"])
 
-    body = _sweep(client).json()
+    started, report = _collect(client, config=config)
 
-    assert _started(body) == [f"{REPOSITORY}#42"]
-    assert _reasons(body) == {
+    assert started == [f"{REPOSITORY}#42"]
+    assert _reasons(report) == {
         f"{REPOSITORY}#1": "label: epic",
         f"{REPOSITORY}#2": "label: blocked",
         f"{REPOSITORY}#3": "label: security",
@@ -357,209 +382,46 @@ def test_each_skip_reaches_the_route_report_with_its_reason(client, db, github):
         f"{REPOSITORY}#5": "excluded: label deferred",
         f"{REPOSITORY}#6": "open_pull_request: #9",
     }
-    # And the next sweep finds #42's live run.
-    again = _sweep(client).json()
-    assert _started(again) == []
-    assert _reasons(again)[f"{REPOSITORY}#42"].startswith("live_run: run_")
+    # And once #42 has a live run, the next read finds it.
+    _auto_run(client, 42)
+    again, report = _collect(client, config=config)
+    assert again == []
+    assert _reasons(report)[f"{REPOSITORY}#42"].startswith("live_run: run_")
 
 
-# --------------------------------------------------------------------------
-# what a swept run is
-# --------------------------------------------------------------------------
-
-def test_a_swept_run_is_auto_auto_merge_two_rounds_and_says_the_sweep_made_it(client, db, objects):
-    body = _sweep(client).json()
-
-    assert body["enabled"] is True and body["cap"] == 8
-    run = _run_of(db, 42)
-    assert body["started"] == [{"issue": f"{REPOSITORY}#42", "run_id": run["id"]}]
-    assert run["plan_approval"] == "auto"
-    assert run["auto_merge"] is True
-    assert run["fix_rounds"] == 2
-    assert run["created_by"] == "issue-sweep"
-    assert run["on_behalf_of"] == "alice@saga.xyz"
-    assert run["state"] == "PLANNING"
-    # The planner is submitted as the registration's creator, never the sweeper.
-    planner = db.docs[f"tasks/{run['planner_task_id']}"]
-    assert planner["tenant_id"] == "eng" and planner["submitted_by"] == "alice@saga.xyz"
-    # It is shown the open work, without its own issue.
-    assert run["open_work"]["repository"] == REPOSITORY
-    assert all(item["number"] != 42 for item in run["open_work"]["issues"])
-
-    # And its auto approval submits as alice too (`run_owner_auth`).
-    _finish_planner(db, objects, run, _plan("src/sort.py"))
-    _tick(client)
-    stored = _run_of(db, 42)
-    assert stored["state"] == "RUNNING"
-    tasks = [d for p, d in db.docs.items()
-             if p.startswith("tasks/") and d.get("workflow_id") == stored["workflow_id"]]
-    assert tasks and {t["submitted_by"] for t in tasks} == {"alice@saga.xyz"}
-    assert SWEEPER not in json.dumps(tasks, default=str)
-
-
-def test_a_swept_run_fails_rather_than_submit_once_its_owner_leaves(client, db, objects, monkeypatch):
-    _sweep(client)
-    run = _run_of(db, 42)
-    _finish_planner(db, objects, run, _plan("src/sort.py"))
-    monkeypatch.setattr(client.app.state.ctx.authenticator, "is_tenant_member",
-                        lambda email, tenant: email != "alice@saga.xyz")
-
-    _tick(client)
-
-    stored = _run_of(db, 42)
-    assert stored["state"] == "FAILED"
-    assert "alice@saga.xyz" in stored["error"] and "no longer a member" in stored["error"]
-    assert not [p for p in db.docs if p.startswith("workflows/")]
-
-
-def test_submit_as_is_the_submitter_whoever_registered_the_repository(client, db, objects):
-    # bob registered it; the tenant's submit_as is alice. Alice carries the run.
-    _register(db, created_by="bob@saga.xyz")
-    body = _sweep(client).json()
-    assert body["tenant_skipped"] is None
-    run = _run_of(db, 42)
-    assert body["started"] == [{"issue": f"{REPOSITORY}#42", "run_id": run["id"]}]
-    assert run["on_behalf_of"] == "alice@saga.xyz"
-    planner = db.docs[f"tasks/{run['planner_task_id']}"]
-    assert planner["submitted_by"] == "alice@saga.xyz"
-
-
-def test_the_registrant_is_no_longer_the_submitter(client, db):
-    # alice registered it, submit_as is bob (not an eng member): nothing starts
-    # as alice, and nothing falls back to her.
-    issuesweep.set_config(db, "eng", SweepConfig(enabled=True, submit_as="bob@saga.xyz"))
-    body = _sweep(client).json()
-    assert body["started"] == [] and _runs(db) == {}
-    assert "alice@saga.xyz" not in json.dumps(body)
-
-
-def test_an_unset_submit_as_skips_the_tenant_with_the_reason(client, db, github, caplog):
-    issuesweep.set_config(db, "eng", SweepConfig(enabled=True))
-    with caplog.at_level("WARNING"):
-        body = _sweep(client).json()
-    assert body["started"] == [] and _runs(db) == {}
-    assert body["tenant_skipped"] == "submit_as_unset"
-    assert "submit_as" in caplog.text
-    assert github.calls == []  # nothing is read for a tenant that cannot submit
-
-
-def test_a_submit_as_who_is_not_a_member_skips_the_tenant_with_the_reason(client, db, github, caplog):
-    issuesweep.set_config(db, "eng", SweepConfig(enabled=True, submit_as="carol@saga.xyz"))
-    with caplog.at_level("WARNING"):
-        body = _sweep(client).json()
-    assert body["started"] == [] and _runs(db) == {}
-    assert body["tenant_skipped"] == "submit_as_not_member: carol@saga.xyz"
-    assert "carol@saga.xyz" in caplog.text
-    assert github.calls == []
-
-
-def test_membership_is_rechecked_on_every_submission(client, db, github, monkeypatch):
-    github.issues = [_issue(1, minutes_ago=90), _issue(2, minutes_ago=80)]
-    # A member until the first run exists, then gone: only a check made at
-    # each submission (not once per sweep) can refuse the second.
-    monkeypatch.setattr(client.app.state.ctx.authenticator, "is_tenant_member",
-                        lambda email, tenant: not _runs(db))
-    body = _sweep(client).json()
-    assert _started(body) == [f"{REPOSITORY}#1"]
-    assert _reasons(body)[f"{REPOSITORY}#2"] == "start_failed: submit_as_not_member"
-
-
-def test_the_settings_route_carries_submit_as(client, db):
-    put = client.put("/v1/admin/tenants/research/issue-sweep", headers=auth_header("root"),
-                     json={"enabled": True, "submit_as": " Bob@Saga.xyz "})
-    assert put.status_code == 200, put.text
-    assert put.json()["issue_sweep"]["submit_as"] == "bob@saga.xyz"
-    for bad in ({"submit_as": "not-an-address"}, {"submit_as": 5}):
-        assert client.put("/v1/admin/tenants/research/issue-sweep", headers=auth_header("root"),
-                          json=bad).status_code == 422, bad
-
-
-def test_the_sweep_reads_and_starts_only_the_named_tenant(client, db, github):
-    _register(db, tenant_id="research", created_by="bob@saga.xyz")
-    _enable(db, "research", submit_as="bob@saga.xyz")
-    body = _sweep(client, "eng").json()
-    assert body["repositories"] == 1
-    assert {d["tenant_id"] for d in _runs(db).values()} == {"eng"}
-
-
-# --------------------------------------------------------------------------
-# 2. the cap of 8, and oldest-updated first
-# --------------------------------------------------------------------------
-
-def test_the_sweep_stops_at_eight_live_runs(client, db, github):
-    github.issues = [_issue(n, minutes_ago=100 - n) for n in range(1, 11)]
-
-    body = _sweep(client).json()
-
-    assert len(body["started"]) == 8
-    assert body["skipped_by_reason"] == {"cap": 2}
-    assert body["live_runs"] == 8
-    assert len(_runs(db)) == 8
-    # Full: the next sweep starts nothing, and starts nothing twice.
-    again = _sweep(client).json()
-    assert again["started"] == []
-    assert again["skipped_by_reason"] == {"cap": 2, "live_run": 8}
-
-
-def test_runs_a_person_started_count_against_the_cap(client, db, github):
-    github.issues = [_issue(n) for n in range(1, 6)]
-    _enable(db, max_live_runs=3)
-    created = client.post("/v1/runs", headers=auth_header("alice"),
-                          json={"issue": f"{REPOSITORY}#77"})
-    assert created.status_code == 201, created.text
-
-    body = _sweep(client).json()
-
-    assert body["live_runs"] == 3 and len(body["started"]) == 2
-
-
-def test_an_ended_run_frees_its_place(client, db, github):
-    github.issues = [_issue(n, minutes_ago=100 - n) for n in range(1, 4)]
-    _enable(db, max_live_runs=1)
-    first = _sweep(client).json()
-    assert _started(first) == [f"{REPOSITORY}#1"]
-    IssueRuns(db).transition("eng", first["started"][0]["run_id"], RunState.CANCELLED, by="t")
-
-    second = _sweep(client).json()
-
-    assert _started(second) == [f"{REPOSITORY}#2"]
-
-
-def test_candidates_start_oldest_updated_first_across_repositories(client, db, github):
+def test_candidates_come_oldest_updated_first(client, github):
     github.issues = [
         _issue(5, minutes_ago=10), _issue(6, minutes_ago=5000), _issue(7, minutes_ago=300),
         {"number": 8, "title": "no time", "author_association": "MEMBER"},
     ]
-    _enable(db, max_live_runs=2)
 
-    body = _sweep(client).json()
+    started, _ = _collect(client)
 
-    assert _started(body) == [f"{REPOSITORY}#6", f"{REPOSITORY}#7"]
-    assert _reasons(body) == {f"{REPOSITORY}#5": "cap: 2 live runs",
-                              f"{REPOSITORY}#8": "cap: 2 live runs"}
+    assert started == [f"{REPOSITORY}#6", f"{REPOSITORY}#7", f"{REPOSITORY}#5", f"{REPOSITORY}#8"]
     # And the issue list was asked for in that order, so a cut keeps the oldest.
     url = next(u for u, _ in github.calls if "/issues?" in u)
     assert "sort=updated" in url and "direction=asc" in url
 
 
-def test_a_repository_with_more_open_pull_requests_than_one_read_is_not_swept(client, db, github):
+def test_a_repository_with_more_open_pull_requests_than_one_read_is_not_swept(client, github):
     github.pulls = [{"number": n, "title": f"pr {n}", "body": ""} for n in range(1, 302)]
-    body = _sweep(client).json()
-    assert body["started"] == []
-    assert body["failures"] == [{"repository": REPOSITORY, "error": "too_many_pull_requests"}]
+    started, report = _collect(client)
+    assert started == []
+    assert report.failures == [{"repository": REPOSITORY, "error": "too_many_pull_requests"}]
 
 
 def test_a_repository_the_token_cannot_read_is_reported_and_the_rest_swept(client, db, github):
     _register(db, owner="saga-xyz", repo="gadgets")
     github.status = {"/gadgets/issues": 403}
-    body = _sweep(client).json()
-    assert _started(body) == [f"{REPOSITORY}#42"]
-    assert body["failures"] == [{"repository": "saga-xyz/gadgets", "error": "no_access"}]
+    started, report = _collect(client)
+    assert started == [f"{REPOSITORY}#42"]
+    assert report.failures == [{"repository": "saga-xyz/gadgets", "error": "no_access"}]
 
 
 # --------------------------------------------------------------------------
 # 3. NOT_READY
 # --------------------------------------------------------------------------
+
 
 def test_the_planner_prompt_asks_for_readiness_first():
     prompt = issueruns.planner_prompt(IssueRef(owner=OWNER, repo=REPO, number=42))
@@ -593,8 +455,10 @@ def test_not_ready_is_terminal_and_reached_only_from_planning():
             assert RunState.NOT_READY not in issueruns.RUN_TRANSITIONS[frm], frm
 
 
+
+
 def test_a_not_ready_run_holds_nothing_and_tells_the_issue_why(client, db, objects, writes):
-    _sweep(client)
+    _auto_run(client, 42)
     run = _run_of(db, 42)
     _finish_planner(db, objects, run, NOT_READY)
     tasks_before = {p for p in db.docs if p.startswith("tasks/")}
@@ -622,9 +486,8 @@ def test_a_not_ready_run_holds_nothing_and_tells_the_issue_why(client, db, objec
     assert served["not_ready"]["kind"] == "blocked"
 
 
-def test_a_not_ready_issue_is_not_planned_again_until_it_changes(client, db, objects, github):
-    _sweep(client)
-    first = _run_of(db, 42)
+def test_a_not_ready_issue_is_not_selected_again_until_it_changes(client, db, objects, github):
+    first = _auto_run(client, 42)
     _finish_planner(db, objects, first, NOT_READY)
     _tick(client)
     wrote = _run_of(db, 42)["last_writeback_at"]
@@ -632,15 +495,14 @@ def test_a_not_ready_issue_is_not_planned_again_until_it_changes(client, db, obj
     github.issues = [{**_issue(42), "updated_at": (wrote + timedelta(seconds=2)).isoformat()}]
 
     for _ in range(3):
-        body = _sweep(client).json()
-        assert body["started"] == []
-        assert _reasons(body)[f"{REPOSITORY}#42"] == f"not_ready_unchanged: {first['id']}"
-    assert len(_runs(db)) == 1
+        started, report = _collect(client)
+        assert started == []
+        assert _reasons(report)[f"{REPOSITORY}#42"] == f"not_ready_unchanged: {first['id']}"
 
-    # Someone comments: the issue is planned again, by a new run.
+    # Someone comments: the issue is a candidate again.
     github.issues = [{**_issue(42), "updated_at": (wrote + timedelta(minutes=5)).isoformat()}]
-    body = _sweep(client).json()
-    assert len(body["started"]) == 1 and body["started"][0]["run_id"] != first["id"]
+    started, _ = _collect(client)
+    assert started == [f"{REPOSITORY}#42"]
 
 
 def test_the_status_comment_for_not_ready_neutralises_the_agents_text():
@@ -654,13 +516,6 @@ def test_the_status_comment_for_not_ready_neutralises_the_agents_text():
 # --------------------------------------------------------------------------
 # 4. the territory guard
 # --------------------------------------------------------------------------
-
-def _auto_run(client, number: int) -> dict:
-    created = client.post("/v1/runs", headers=auth_header("alice"),
-                          json={"issue": f"{REPOSITORY}#{number}", "plan_approval": "auto"})
-    assert created.status_code == 201, created.text
-    return created.json()["run"]
-
 
 def test_an_overlapping_plan_waits_in_planned_and_goes_when_the_other_run_ends(client, db, objects):
     first = _auto_run(client, 42)
@@ -740,84 +595,71 @@ def test_a_plan_waiting_for_a_person_holds_nobody(client, db, objects):
     assert db.docs[f"issue_runs/{auto['id']}"]["state"] == "RUNNING"
 
 
-# --------------------------------------------------------------------------
-# 5. only the scheduler's identity
-# --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("user", ["alice", "root", "carol"])
-def test_the_route_is_refused_to_everyone_but_the_scheduler(client, db, user):
-    response = _sweep(client, headers=auth_header(user))
-    assert response.status_code == 403, response.text
+# --------------------------------------------------------------------------
+# 5. the old job's route, settings and switch are gone (2026-10-12)
+# --------------------------------------------------------------------------
+#
+# Schedules S9's second change (docs/schedules.md §8.1 step 4): the tenant's
+# `issue-sweep` schedule replaced the per-tenant Cloud Scheduler job, so the
+# job's route, its settings routes, SWEEP_ENABLED and the tenant document's
+# `issue_sweep` settings were deleted with it. A route restored by a revert
+# would start auto-merging runs beside the schedule's -- two triggers of one
+# sweep -- so their absence is held here.
+
+GONE = [
+    ("POST", "/v1/admin/issues/sweep"),
+    ("GET", "/v1/admin/tenants/{tenant_id}/issue-sweep"),
+    ("PUT", "/v1/admin/tenants/{tenant_id}/issue-sweep"),
+]
+
+
+@pytest.mark.parametrize("method,path", GONE)
+def test_the_old_sweep_routes_are_not_served(method, path):
+    served = {
+        (m, getattr(route, "path", None))
+        for route in admin_routes.router.routes
+        for m in (getattr(route, "methods", None) or ())
+    }
+    assert (method, path) not in served
+    # The control: a neighbouring admin route of the same router is.
+    assert ("POST", "/v1/admin/runs/advance") in served
+
+
+def test_the_old_sweep_route_answers_not_found_even_to_an_admin(client, db):
+    response = client.post("/v1/admin/issues/sweep?tenant_id=eng", headers=auth_header("root"))
+    assert response.status_code in (404, 405), response.text
     assert _runs(db) == {}
-    assert _sweep(client).status_code == 200
 
 
-def test_the_settings_routes_are_admin_only(client):
-    assert client.get("/v1/admin/tenants/eng/issue-sweep", headers=auth_header("alice")).status_code == 403
-    assert client.put("/v1/admin/tenants/eng/issue-sweep", headers=auth_header("alice"),
-                      json={"enabled": True}).status_code == 403
-    assert client.get("/v1/admin/tenants/eng/issue-sweep", headers=SWEEPER_HEADERS).status_code == 403
+def test_the_scheduler_identity_can_no_longer_start_a_sweep(client, db, github):
+    response = client.post("/v1/admin/issues/sweep?tenant_id=eng", headers=SWEEPER_HEADERS)
+    assert response.status_code in (403, 404, 405), response.text
+    assert _runs(db) == {} and github.calls == []
+    assert ("POST", "/v1/admin/issues/sweep") not in auth.ROLLUP_SWEEPER_ROUTES
 
 
-def test_an_admin_sets_and_reads_the_tenants_sweep(client, db):
-    put = client.put("/v1/admin/tenants/research/issue-sweep", headers=auth_header("root"),
-                     json={"enabled": True, "max_live_runs": 4, "exclude_issues": [476, 12, 12],
-                           "exclude_labels": ["Deferred"]})
-    assert put.status_code == 200, put.text
-    read = client.get("/v1/admin/tenants/research/issue-sweep", headers=auth_header("root")).json()
-    assert read["issue_sweep"] == {"enabled": True, "max_live_runs": 4,
-                                   "exclude_issues": [12, 476], "exclude_labels": ["deferred"],
-                                   "submit_as": None}
-    assert read["platform_enabled"] is True
-    for bad in ({"enabled": "true"}, {"max_live_runs": 0}, {"max_live_runs": 51},
-                {"exclude_issues": ["12"]}, {"surprise": 1}):
-        assert client.put("/v1/admin/tenants/research/issue-sweep", headers=auth_header("root"),
-                          json=bad).status_code == 422, bad
-    assert client.put("/v1/admin/tenants/nobody/issue-sweep", headers=auth_header("root"),
-                      json={"enabled": True}).status_code == 404
+@pytest.mark.parametrize("path", ["/v1/admin/tenants/eng/issue-sweep"])
+def test_the_old_settings_routes_answer_not_found(client, path):
+    assert client.get(path, headers=auth_header("root")).status_code in (404, 405)
+    assert client.put(path, headers=auth_header("root"),
+                      json={"enabled": True}).status_code in (404, 405)
 
 
-# --------------------------------------------------------------------------
-# 6. both switches default off
-# --------------------------------------------------------------------------
-
-def test_the_platform_switch_defaults_off(monkeypatch):
-    assert ApiSettings.__dataclass_fields__["sweep_enabled"].default is False
+def test_the_platform_switch_is_gone(monkeypatch):
+    assert "sweep_enabled" not in ApiSettings.__dataclass_fields__
     monkeypatch.setenv("ENVIRONMENT", "dev")
     monkeypatch.setenv("PROJECT_ID", "saga-agents-staging")
-    monkeypatch.delenv("SWEEP_ENABLED", raising=False)
-    assert ApiSettings.from_env().sweep_enabled is False
     monkeypatch.setenv("SWEEP_ENABLED", "true")
-    assert ApiSettings.from_env().sweep_enabled is True
+    assert not hasattr(ApiSettings.from_env(), "sweep_enabled")
 
 
-def test_the_tenant_switch_defaults_off(db):
-    seed_tenant(db, "eng")
-    assert SweepConfig().enabled is False
-    assert issuesweep.get_config(db, "eng") == SweepConfig()
-    assert issuesweep.get_config(db, "eng").max_live_runs == 8
-    # A stored value that no longer validates reads as off, never on.
-    db.docs["tenants/eng"]["issue_sweep"] = {"enabled": "yes"}
-    assert issuesweep.get_config(db, "eng").enabled is False
-
-
-def test_with_the_tenant_switch_off_nothing_is_read_or_started(client, db, github):
-    issuesweep.set_config(db, "eng", SweepConfig())
-    body = _sweep(client).json()
-    assert body["enabled"] is False and body["disabled_by"] == "tenant"
-    assert body["started"] == [] and _runs(db) == {}
-    assert github.calls == []
-
-
-def test_with_the_platform_switch_off_nothing_is_read_or_started(
-    db, tokens, group_map, objects, github, writes
-):
-    seed_tenant(db, "eng")
-    _register(db)
-    _enable(db)
-    off = TestClient(create_app(_context(db, tokens, group_map, objects, github, writes,
-                                         sweep_enabled=False)), raise_server_exceptions=False)
-    response = _sweep(off)
-    assert response.status_code == 200, response.text
-    assert response.json()["disabled_by"] == "SWEEP_ENABLED"
-    assert _runs(db) == {} and github.calls == []
+@pytest.mark.parametrize("name", [
+    "sweep_tenant", "SweepSubmitterNotMember", "get_config", "set_config", "TENANT_FIELD",
+])
+def test_the_route_only_half_of_issuesweep_is_gone(name):
+    assert not hasattr(issuesweep, name), name
+    # What the schedule types call stays.
+    for kept in ("collect_candidates", "skip_reason", "SweepConfig", "SweepReport",
+                 "claimed_issues", "TRUSTED_AUTHORS", "LIVE_SCAN"):
+        assert hasattr(issuesweep, kept), kept
