@@ -25,7 +25,7 @@
  * Admin pill together.
  */
 import { useCallback, useEffect, useId, useRef, useState, useSyncExternalStore, type MouseEvent as ReactMouseEvent, type RefObject } from 'react'
-import type { NotificationFeed, NotificationItem } from './api'
+import { loadQuestions, type NotificationFeed, type NotificationItem, type TaskQuestions } from './api'
 import { routedClick } from './components'
 import { errorHeading } from './fetch'
 import { feedData, markAllRead, markRead, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
@@ -269,8 +269,50 @@ function Group({ title, items, now, onOpen }: { title: string; items: Notificati
   )
 }
 
+/** The feed's id of an agent-questions item, `task:questions:<task id>`. */
+const QUESTIONS_ITEM = 'task:questions:'
+
+/** How much of a question the bell shows: one line of the ~392px panel. */
+export const QUESTION_CHARS = 90
+
+/**
+ * WHAT THE AGENT ASKED, IN THE BELL (QA14-UI, owner QA 2026-10-13): "Your
+ * agent asked 1 question" with a task id said nothing to answer from. The
+ * first question still open, or the first when every one has an answer,
+ * cut at `QUESTION_CHARS` on a word where it can be. Null when there is no
+ * question text to show -- the item then says what it said before.
+ */
+export function firstQuestion(read: TaskQuestions): string | null {
+  const asked = read.questions.filter((q) => (q.question ?? '').trim() !== '')
+  const q = asked.find((x) => x.answer === null || x.answer === undefined) ?? asked[0]
+  if (q === undefined) return null
+  const text = q.question!.replace(/\s+/g, ' ').trim()
+  if (text.length <= QUESTION_CHARS) return text
+  const cut = text.slice(0, QUESTION_CHARS - 1)
+  const space = cut.lastIndexOf(' ')
+  return `${(space > QUESTION_CHARS / 2 ? cut.slice(0, space) : cut).trimEnd()}…`
+}
+
+/** The question an agent-questions item names, read when the bell draws it; null for any other item. */
+function useItemQuestion(item: NotificationItem): string | null {
+  const taskId = item.id.startsWith(QUESTIONS_ITEM) ? item.id.slice(QUESTIONS_ITEM.length) : null
+  const [text, setText] = useState<string | null>(null)
+  useEffect(() => {
+    if (taskId === null || taskId === '') return
+    let live = true
+    void loadQuestions(taskId).then((r) => {
+      if (live && r.status === 'ok') setText(firstQuestion(r.data))
+    })
+    return () => {
+      live = false
+    }
+  }, [taskId])
+  return text
+}
+
 function Item({ item, now, onOpen }: { item: NotificationItem; now: number; onOpen: (item: NotificationItem) => void }) {
   const dest = destinationOf(item.href)
+  const question = useItemQuestion(item)
   const icon = GROUP_ICON[item.group] ?? 'work'
   return (
     <li className={`nt-item is-${item.group}${item.read ? '' : ' is-unread'}`}>
@@ -289,6 +331,11 @@ function Item({ item, now, onOpen }: { item: NotificationItem; now: number; onOp
       >
         {item.read ? null : <span className="sk-vh">Unread: </span>}
         <span className="nt-title">{item.title}</span>
+        {question !== null && (
+          <span className="nt-question" data-testid="nt-question">
+            &ldquo;{question}&rdquo;
+          </span>
+        )}
         {item.detail !== null && item.detail !== '' && <span className="nt-detail">{item.detail}</span>}
         <span className="nt-dest">{`${dest.join(' › ')} ›`}</span>
       </a>

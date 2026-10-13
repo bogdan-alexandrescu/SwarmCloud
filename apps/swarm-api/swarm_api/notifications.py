@@ -351,7 +351,14 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
     from the bell's count. It opens the task's Details at `#questions`, where
     the "Questions for you" card shows them (`GET /v1/tasks/{id}/questions`);
     it opened Artifacts, which showed a file, not the questions (owner report
-    2026-10-13)."""
+    2026-10-13).
+
+    THE ITEM NAMES ITS TASK BY WHAT IT WAS DOING (QA14-UI, owner QA
+    2026-10-13): a bare task id said nothing about which agent asked. The
+    detail leads with the step's name, or the runner profile for a task that
+    is no workflow step; the question's own text is the console's to read
+    (`GET /v1/tasks/{id}/questions`), because it lives in an artifact this
+    feed does not open on every poll."""
     items = []
     for task in reading.own_tasks():
         count = _question_count(task)
@@ -365,7 +372,8 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
         items.append(_item(
             f"task:questions:{task.id}", TASK, True,
             f"Your agent asked {count} question{'s' if count != 1 else ''}",
-            f"Task {task.id}", f"/agents/recent/{task.id}#questions", ended))
+            f"{task.step_id or task.runner_profile} · Task {task.id}",
+            f"/agents/recent/{task.id}#questions", ended))
     return items
 
 
