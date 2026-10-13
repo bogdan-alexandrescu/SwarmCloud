@@ -57,6 +57,7 @@ import {
   type TaskState,
 } from './types'
 import { rowClock, useNow } from './useNow'
+import { questionCount } from './QuestionsCard'
 import './styles/agents.css'
 import { Button, CIcon, StateMark, Tabs, type TabDef } from './components'
 
@@ -422,7 +423,15 @@ export function AgentSplit({
   }, [decided, taskId, pane, head.state.status, inFlight, liveRead, go, base])
 
   const tabs: { id: TaskPane; label: string; count: number | string | null; say: string | null; to: string }[] = [
-    { id: 'detail', label: PANE_LABELS.detail, count: null, say: null, to: base },
+    // THE QUESTIONS' COUNT (part of #1206): the agent's questions for its
+    // owner lead Details, so the tab says how many; no badge when none.
+    {
+      id: 'detail',
+      label: PANE_LABELS.detail,
+      count: questionCount(task) || null,
+      say: questionCount(task) > 0 ? `The agent asked you ${questionCount(task)} question(s); they are at the top of Details.` : null,
+      to: base,
+    },
     // DETAILS, BROWSER, LOGS (the mockup, owner decision 2026-10-12): Browser
     // sits second, and says LIVE while its session is open.
     ...(hasBrowser
@@ -611,7 +620,7 @@ export function AgentSplit({
           tabs={tabs.map((t) => ({
             key: t.id,
             label: t.label,
-            ...(t.id === 'detail' || t.id === 'logs' || (t.id === 'browser' && t.count === null)
+            ...((t.id === 'detail' && t.count === null) || t.id === 'logs' || (t.id === 'browser' && t.count === null)
               ? {}
               : { count: t.count, why: t.say ?? undefined }),
           }))}

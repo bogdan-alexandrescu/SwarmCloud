@@ -51,11 +51,42 @@ authenticated by swarm-api on its own websocket (§5.2), and the relay admits
 the stream only with a one-use ticket. A VNC password would be a second,
 weaker secret on the same path.
 
-ENCODINGS. Raw always; Zlib when the viewer offers it (noVNC does), one zlib
-stream per connection. Each update carries the band of rows that changed since
-the last one sent to that viewer; a resize is announced with the DesktopSize
-pseudo-encoding, and a viewer that cannot take one is disconnected (noVNC
-reconnects).
+ENCODINGS (STREAM-SMOOTH; part of #1030). The first of Tight, Zlib and Raw in
+the viewer's own order of preference. noVNC 1.4.0 offers Tight and never
+Zlib, so until this lane the console was sent Raw: 4 bytes a pixel, 5.2 MB per
+update of a scrolling Desktop page (measured with `livegate.bench`). The
+relay's recorder offers Zlib and Raw, and gets Zlib. Tight here is LOSSLESS,
+because the owner asked for a sharp picture: a one-colour rectangle is sent as
+Fill, anything else as Basic with the copy filter through zlib stream 0 --
+never JPEG, never PNG, whatever quality level the viewer names. zlib runs at
+the level the viewer names (the CompressLevel pseudo-encoding, which noVNC's
+`compressionLevel` sets) and at `ZLIB_LEVEL` for a viewer that names none;
+the benchmark in the pull request is why `ZLIB_LEVEL` is what it is. A resize
+is announced with the DesktopSize pseudo-encoding, and a viewer that cannot
+take one is disconnected (noVNC reconnects).
+
+ONLY WHAT CHANGED, AND ONLY WHEN ASKED. Each viewer's last update is kept, as
+the pixels it was sent: masked, with its pointer painted. A new update is
+diffed against it in `TILE` x `TILE` tiles, and carries only the tiles that
+changed -- adjacent changed tiles of a band merged into one rectangle,
+trimmed to the rows that changed. The diff runs on the masked frame, so a
+masked area whose contents change is still the mask's colour in it, and
+nothing is ever sent from the unmasked screen. An update is sent only in
+answer to a FramebufferUpdateRequest, from the newest frame at that moment,
+so frames never queue for a slow viewer: it gets the latest when it asks.
+
+NOTHING HEAVY ON THE EVENT LOOP. The diff and the encoding run on a thread
+(`_ENCODE_POOL`), so the loop that reads the controller's keys and pointer
+never waits behind a frame: input is read and injected while an update is
+being encoded. zlib and the byte compares release or barely hold the GIL.
+One encode per connection at a time, so a connection's zlib stream is only
+ever touched by one thread.
+
+INPUT TO FRAME. `SessionCounts.input_to_frame_ms` holds, per connection, the
+time from a controller's input reaching the gate to the first update sent
+from a frame captured after it that changed anything -- the latency the
+person feels, inside the pod. Its p50 and p95 are logged when the connection
+closes, with the update and byte counts: numbers, never content.
 
 THE POINTER (LB-CURSOR; part of #1030). Xvfb's framebuffer never holds the X
 pointer, and noVNC hides its own over the canvas, so without this the person
@@ -75,10 +106,13 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import statistics
 import struct
 import time
 import zlib
-from dataclasses import dataclass
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
 from typing import Callable
 
 from .capture import Frame
@@ -95,9 +129,49 @@ PROTOCOL_VERSION = b"RFB 003.008\n"
 _SECURITY_NONE = 1
 
 ENCODING_RAW = 0
+ENCODING_COPY_RECT = 1
 ENCODING_ZLIB = 6
+ENCODING_TIGHT = 7
 ENCODING_DESKTOP_SIZE = -223
 ENCODING_CURSOR = -239
+#: The CompressLevel pseudo-encodings: -256 is level 0 ... -247 is level 9.
+_COMPRESS_LEVEL_0 = -256
+
+#: The diff's tile, in pixels: the size TightVNC and TigerVNC use. A typed
+#: character or a blinking caret is one tile; a full-width band of rows was
+#: 1440 pixels wide.
+TILE = 64
+#: zlib's level for a viewer that names none (the relay's recorder), and the
+#: level the console names (LiveBrowser.tsx `compressionLevel`). Chosen from
+#: `livegate.bench` (the STREAM-SMOOTH pull request): level 1 encodes a
+#: changed Desktop frame several times faster than the default 6 for a few
+#: per cent more bytes, and the gate's CPU, not the link, is what bounds the
+#: frame rate in control.
+ZLIB_LEVEL = 1
+_TIGHT_FILL = 0x80
+_TIGHT_RESET_STREAM_0 = 0x01
+#: A scroll is looked for only when at least this share of the frame changed,
+#: and used only when at least `TILE` rows moved, in runs of at least
+#: `_SCROLL_MIN_RUN` (a CopyRect is 16 bytes; checking a run is a compare per row).
+_SCROLL_MIN_CHANGED = 0.25
+_SCROLL_MIN_RUN = 8
+#: Rows sampled from the changed area to find how far it moved, and how often
+#: a row may repeat in the old frame and still be a witness to the shift.
+_SCROLL_PROBES = 32
+_SCROLL_REPEATS = 8
+_SCROLL_CANDIDATES = 3
+#: The right edge left out of the scroll match: a page's scrollbar thumb moves
+#: against the scroll, so its rows never match whole. The edge goes through
+#: the tile diff like any other change.
+_SCROLL_EDGE = TILE
+#: Tight's Basic rectangle under 12 bytes of pixels is sent as they are.
+_TIGHT_MIN_TO_COMPRESS = 12
+
+#: Where every connection's diff and encode run: off the event loop (module
+#: docstring). A few threads, since a viewer and the recorder encode at once.
+_ENCODE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="live-rfb")
+#: How many input-to-frame samples a connection keeps for its close log.
+_LATENCY_SAMPLES = 512
 
 #: §5.10: controller input events per second, dropped above.
 MAX_INPUT_EVENTS_PER_SECOND = 200
@@ -135,13 +209,16 @@ class RfbError(Exception):
 class MaskedFrame:
     """A frame the mask has painted. Made only by `masked`."""
 
-    __slots__ = ("frame", "outcome")
+    __slots__ = ("frame", "outcome", "at")
 
     def __init__(self, frame: Frame, outcome: Outcome, *, _token: object) -> None:
         if _token is not _MASKED:
             raise TypeError("a MaskedFrame is made by rfb.masked(), which applies the mask")
         self.frame = frame
         self.outcome = outcome
+        #: `time.monotonic()` when it was masked, just after the grab: an
+        #: update from it can show an input that arrived before this.
+        self.at = time.monotonic()
 
 
 _MASKED = object()
@@ -252,6 +329,16 @@ class SessionCounts:
     pastes: int = 0
     dropped: int = 0
     updates: int = 0
+    bytes_sent: int = 0
+    #: Input to the first changed frame after it, in ms (module docstring).
+    input_to_frame_ms: deque[float] = field(default_factory=lambda: deque(maxlen=_LATENCY_SAMPLES))
+
+    def latency(self, q: int) -> float | None:
+        """The input-to-frame latency's `q`th percentile, or None with no sample."""
+        samples = list(self.input_to_frame_ms)
+        if len(samples) < 2:
+            return samples[0] if samples else None
+        return statistics.quantiles(samples, n=100, method="inclusive")[q - 1]
 
 
 class _Bucket:
@@ -302,20 +389,185 @@ def _frame_format(frame: Frame) -> _Format:
                    (_shift(frame.red_mask), _shift(frame.green_mask), _shift(frame.blue_mask)))
 
 
-def _convert(frame: Frame, source: _Format, target: _Format) -> bytes:
-    """The frame's pixels, rows packed, in `target`'s byte layout."""
+def _packed(frame: Frame) -> bytes:
+    """A copy of the frame's pixels, rows packed (no stride padding)."""
     row = frame.width * 4
     if frame.stride == row:
-        packed = bytes(frame.pixels[:row * frame.height])
-    else:
-        packed = b"".join(bytes(frame.pixels[y * frame.stride:y * frame.stride + row])
-                          for y in range(frame.height))
+        return bytes(memoryview(frame.pixels)[:row * frame.height])
+    return b"".join(bytes(frame.pixels[y * frame.stride:y * frame.stride + row])
+                    for y in range(frame.height))
+
+
+def _reorder(packed: bytes, source: _Format, target: _Format) -> bytes:
+    """Packed pixels in `source`'s byte layout, in `target`'s."""
     if source == target or source.offsets() == target.offsets():
         return packed
     out = bytearray(len(packed))
     for src, dst in zip(source.offsets(), target.offsets()):
         out[dst::4] = packed[src::4]
     return bytes(out)
+
+
+def _rgb(packed: bytes, source: _Format) -> bytes:
+    """Packed pixels as Tight's TPIXEL: three bytes, red, green, blue (RFC 6143 §7.7.6)."""
+    r, g, b = source.offsets()
+    out = bytearray(len(packed) // 4 * 3)
+    out[0::3] = packed[r::4]
+    out[1::3] = packed[g::4]
+    out[2::3] = packed[b::4]
+    return bytes(out)
+
+
+def _compact_length(n: int) -> bytes:
+    """Tight's 1-3 byte length: 7 bits a byte, low first, the high bit says more follow."""
+    if n < 0x80:
+        return bytes((n,))
+    if n < 0x4000:
+        return bytes((n & 0x7F | 0x80, n >> 7))
+    return bytes((n & 0x7F | 0x80, n >> 7 & 0x7F | 0x80, n >> 14))
+
+
+def changed_rects(old: bytes | None, new: bytes, width: int, height: int,
+                  tile: int = TILE) -> list[tuple[int, int, int, int]]:
+    """The rectangles of `new` that differ from `old`, both packed 32-bit pixels.
+
+    Per band of `tile` rows: the tiles that changed, each run of adjacent ones
+    merged into one rectangle as tall as the rows that changed in it. With no
+    `old`, every band, whole. A band that did not change costs one compare.
+    """
+    row = width * 4
+    out: list[tuple[int, int, int, int]] = []
+    for by in range(0, height, tile):
+        bh = min(tile, height - by)
+        lo, hi = by * row, (by + bh) * row
+        if old is None:
+            out.append((0, by, width, bh))
+            continue
+        if old[lo:hi] == new[lo:hi]:
+            continue
+        rows = [y for y in range(by, by + bh) if old[y * row:(y + 1) * row] != new[y * row:(y + 1) * row]]
+        run: list[int] | None = None  # x0, x1, top, bottom (inclusive)
+        for tx in range(0, width, tile):
+            a, b = tx * 4, min(width, tx + tile) * 4
+            top = next((y for y in rows if old[y * row + a:y * row + b] != new[y * row + a:y * row + b]), None)
+            if top is None:
+                if run is not None:
+                    out.append((run[0], run[2], run[1] - run[0], run[3] - run[2] + 1))
+                    run = None
+                continue
+            bottom = next(y for y in reversed(rows)
+                          if old[y * row + a:y * row + b] != new[y * row + a:y * row + b])
+            if run is None:
+                run = [tx, b // 4, top, bottom]
+            else:
+                run[1], run[2], run[3] = b // 4, min(run[2], top), max(run[3], bottom)
+        if run is not None:
+            out.append((run[0], run[2], run[1] - run[0], run[3] - run[2] + 1))
+    return out
+
+
+def find_scroll(old: bytes, new: bytes, width: int, height: int,
+                changed: list[tuple[int, int, int, int]]) -> tuple[int, list[tuple[int, int]]] | None:
+    """`(dy, runs)` when each run of rows `top..bottom-1` of `new` is rows `top+dy..` of `old`.
+
+    Compared over every column but the right `_SCROLL_EDGE`, byte for byte:
+    a row is only counted as moved if it is exactly the old row, so the
+    CopyRects built from this leave the viewer holding exactly `new` there.
+    Several runs, because what does not move with the page -- a fixed header,
+    the mask over a field -- splits the area that does. The runs come in the
+    order they can be copied in: each one's source is rows no earlier copy
+    wrote. None when less than `_SCROLL_MIN_CHANGED` of the frame changed or
+    fewer than `TILE` rows moved.
+    """
+    span = (width - _SCROLL_EDGE) * 4
+    if span <= 0 or sum(w * h for _, _, w, h in changed) < _SCROLL_MIN_CHANGED * width * height:
+        return None
+    row = width * 4
+    lo = min(y for _, y, _, _ in changed)
+    hi = max(y + h for _, y, _, h in changed)
+
+    def seg(buf: bytes, y: int) -> bytes:
+        return buf[y * row:y * row + span]
+
+    # Where the changed area's old rows are. A uniform row (a margin, a blank
+    # line) is everywhere and says nothing about the shift; a row seen many
+    # times says little.
+    where: dict[bytes, list[int]] = {}
+    for y in range(lo, hi):
+        key = seg(old, y)
+        if key[:4] * (span // 4) == key:
+            continue
+        ys = where.setdefault(key, [])
+        if len(ys) <= _SCROLL_REPEATS:
+            ys.append(y)
+    votes: dict[int, int] = {}
+    step = max(1, (hi - lo) // _SCROLL_PROBES)
+    for y in range(lo, hi, step):
+        ys = where.get(seg(new, y), ())
+        if len(ys) <= _SCROLL_REPEATS:
+            for at in ys:
+                if at != y:
+                    votes[at - y] = votes.get(at - y, 0) + 1
+    if not votes:
+        return None
+
+    def moved_runs(dy: int) -> list[tuple[int, int]]:
+        runs: list[tuple[int, int]] = []
+        start: int | None = None
+        first, last = max(lo, -dy), min(hi, height - dy)
+        for y in range(first, last + 1):
+            moved = y < last and seg(new, y) == seg(old, y + dy)
+            if moved and start is None:
+                start = y
+            elif not moved and start is not None:
+                if y - start >= _SCROLL_MIN_RUN:
+                    runs.append((start, y))
+                start = None
+        return runs
+
+    # A row that repeats a few times votes for a few shifts, so the top
+    # candidates are each checked, and the one that moves the most rows wins.
+    best: tuple[int, list[tuple[int, int]]] | None = None
+    for dy in sorted(votes, key=lambda d: -votes[d])[:_SCROLL_CANDIDATES]:
+        runs = moved_runs(dy)
+        if best is None or sum(b - a for a, b in runs) > sum(b - a for a, b in best[1]):
+            best = (dy, runs)
+    assert best is not None
+    dy, runs = best
+    if sum(b - a for a, b in runs) < TILE:
+        return None
+    # Content moving up (dy > 0) reads from below: copy top run first. Moving
+    # down, bottom first. Either way no source row has been overwritten yet.
+    return dy, runs if dy > 0 else runs[::-1]
+
+
+def _scrolled(old: bytes, width: int, dy: int, runs: list[tuple[int, int]]) -> bytes:
+    """`old` as the viewer holds it after the CopyRects of `find_scroll`'s answer.
+
+    Whole rows, the right edge too: the edge was left out of the match, not
+    the move, and whatever of it does not match (the scrollbar's thumb) is
+    what the diff against this sends in the same update.
+    """
+    row = width * 4
+    out = bytearray(old)
+    for top, bottom in runs:
+        out[top * row:bottom * row] = old[(top + dy) * row:(bottom + dy) * row]
+    return bytes(out)
+
+
+@dataclass(frozen=True)
+class _Job:
+    """One update to render, as the event loop saw the connection when it asked."""
+
+    frame: Frame
+    target: _Format
+    encoding: int
+    level: int
+    copy_rect: bool
+    pointer: tuple[int, int] | None
+    incremental: bool
+    resend: bool
+    new_streams: bool
 
 
 class RfbSession:
@@ -342,9 +594,18 @@ class RfbSession:
         self._format: _Format | None = None  # the viewer's; None until ServerInit
         self._encodings: tuple[int, ...] = (ENCODING_RAW,)
         self._cursor_due = False  # send the cursor shape with the next update
-        self._zlib: zlib._Compress | None = None
         self._size = (0, 0)
-        self._last: bytes | None = None  # what this viewer has, in its format
+        # Set on the loop, read into the next `_Job`: resend everything (the
+        # pixel format or the size changed), start new zlib streams (the
+        # encodings changed).
+        self._resend = False
+        self._new_streams = False
+        # Touched only by `_render`, one at a time, on `_ENCODE_POOL`.
+        self._zlib: zlib._Compress | None = None  # the Zlib encoding's one stream
+        self._tight: zlib._Compress | None = None  # Tight's stream 0
+        self._last: bytes | None = None  # what this viewer has: packed, in the frame's format
+        # When the controller's oldest input not yet seen in an update reached the gate.
+        self._input_at: float | None = None
         self._sent_version = -1
         self._pending: bool | None = None  # None: no request; else incremental?
         self._wake = asyncio.Event()
@@ -380,8 +641,11 @@ class RfbSession:
             await self._control.connection_closed(self.conn_id)
             self._writer.close()
             c = self.counts
-            log.info("live rfb: conn=%s closed keys=%d pointer=%d pastes=%d dropped=%d updates=%d",
-                     self.conn_id, c.key_events, c.pointer_events, c.pastes, c.dropped, c.updates)
+            p50, p95 = c.latency(50), c.latency(95)
+            log.info("live rfb: conn=%s closed keys=%d pointer=%d pastes=%d dropped=%d updates=%d "
+                     "bytes=%d input_to_frame_ms p50=%s p95=%s", self.conn_id, c.key_events,
+                     c.pointer_events, c.pastes, c.dropped, c.updates, c.bytes_sent,
+                     "-" if p50 is None else f"{p50:.0f}", "-" if p95 is None else f"{p95:.0f}")
 
     async def _handshake(self) -> None:
         self._writer.write(PROTOCOL_VERSION)
@@ -427,7 +691,7 @@ class RfbSession:
                 if count > _MAX_ENCODINGS:
                     raise RfbError("too many encodings")
                 self._encodings = struct.unpack(f">{count}i", await read(4 * count))
-                self._zlib = None
+                self._new_streams = True
                 self._cursor_due = ENCODING_CURSOR in self._encodings
             elif kind == _FRAMEBUFFER_UPDATE_REQUEST:
                 incremental = (await read(9))[0] != 0
@@ -438,6 +702,7 @@ class RfbSession:
                 down, keysym = struct.unpack(">BxxI", await read(7))
                 if self._admit(1):
                     self.counts.key_events += 1
+                    self._input()
                     await self._injector.key(keysym, bool(down))
             elif kind == _POINTER_EVENT:
                 buttons, x, y = struct.unpack(">BHH", await read(5))
@@ -475,8 +740,14 @@ class RfbSession:
         self._held = None  # this event is newer than any held move
         await self._inject_pointer(buttons, x, y)
 
+    def _input(self) -> None:
+        """The controller's input reached the display: time it to the frame that shows it."""
+        if self._input_at is None:
+            self._input_at = time.monotonic()
+
     async def _inject_pointer(self, buttons: int, x: int, y: int) -> None:
         self.counts.pointer_events += 1
+        self._input()
         w, h = self._hub.current.frame.width, self._hub.current.frame.height
         x, y = min(x, w - 1), min(y, h - 1)
         self._buttons = buttons
@@ -506,6 +777,7 @@ class RfbSession:
             return
         if not self._admit(len(text)):
             return
+        self._input()
         if await self._injector.type_text(text):
             self.counts.pastes += 1
         else:
@@ -518,7 +790,7 @@ class RfbSession:
                 or any(s % 8 or s > 24 for s in shifts) or len(set(shifts)) != 3):
             raise RfbError("unsupported pixel format")
         self._format = _Format(bool(big), shifts)
-        self._last = None
+        self._resend = True
         # The shape was in the old format: send it again in the new one.
         self._cursor_due = ENCODING_CURSOR in self._encodings
 
@@ -544,56 +816,149 @@ class RfbSession:
             if ENCODING_DESKTOP_SIZE not in self._encodings:
                 raise RfbError("display resized and the viewer cannot take DesktopSize")
             self._size = (frame.width, frame.height)
-            self._last = None
+            self._resend = True
             # §7.8.1 leaves the cursor to the client across a resize; noVNC
             # keeps it, but a viewer that drops it would be blind again.
             self._cursor_due = ENCODING_CURSOR in self._encodings
-            self._writer.write(struct.pack(">BxH", _FRAMEBUFFER_UPDATE, 1)
-                               + struct.pack(">HHHHi", 0, 0, frame.width, frame.height,
-                                             ENCODING_DESKTOP_SIZE))
-            self.counts.updates += 1
+            self._write_update([struct.pack(">HHHHi", 0, 0, frame.width, frame.height,
+                                            ENCODING_DESKTOP_SIZE)])
             await self._writer.drain()
             # The viewer requests again at the new size.
             return
         assert self._format is not None
-        pixels: bytes | bytearray = _convert(frame, _frame_format(frame), self._format)
-        at = self._hub.pointer.position
-        if at is not None and not self._local_pointer():
-            # This viewer's own copy, after the mask (module docstring).
-            pixels = bytearray(pixels)
-            paint(self._format.frame(frame.width, frame.height, pixels), *at)
-        rects: list[bytes] = []
+        # Everything the render needs from the connection, read here on the
+        # loop; the render itself runs on a thread (module docstring).
+        job = _Job(frame=frame, target=self._format, encoding=self._encoding(),
+                   level=self._level(), copy_rect=ENCODING_COPY_RECT in self._encodings,
+                   incremental=incremental,
+                   # This viewer's own copy gets the pointer, after the mask (module docstring).
+                   pointer=None if self._local_pointer() else self._hub.pointer.position,
+                   resend=self._resend, new_streams=self._new_streams)
+        self._resend = self._new_streams = False
+        loop = asyncio.get_running_loop()
+        rects = await loop.run_in_executor(_ENCODE_POOL, self._render, job)
+        changed = bool(rects)
         if self._cursor_due:
             self._cursor_due = False
-            rects.append(self._cursor_rect())
-        row = frame.width * 4
-        top, bottom = 0, frame.height
-        if incremental and self._last is not None and len(self._last) == len(pixels):
-            while top < bottom and pixels[top * row:(top + 1) * row] == self._last[top * row:(top + 1) * row]:
-                top += 1
-            while bottom > top and (pixels[(bottom - 1) * row:bottom * row]
-                                    == self._last[(bottom - 1) * row:bottom * row]):
-                bottom -= 1
-            if top == bottom and not rects:
-                # Published but identical (a static page): nothing to send,
-                # so the request stays pending for the next frame.
+            rects.insert(0, self._cursor_rect())
+        elif not rects:
+            # Published but identical (a static page): nothing to send,
+            # so the request stays pending for the next frame -- unless the
+            # viewer asked again while this rendered, and that request stands.
+            if self._pending is None:
                 self._pending = True
-                return
-        self._last = bytes(pixels)
-        if top < bottom:
-            band = pixels[top * row:bottom * row]
-            encoding = self._encoding()
-            header = struct.pack(">HHHHi", 0, top, frame.width, bottom - top, encoding)
-            if encoding == ENCODING_ZLIB:
-                if self._zlib is None:
-                    self._zlib = zlib.compressobj()
-                data = self._zlib.compress(band) + self._zlib.flush(zlib.Z_SYNC_FLUSH)
-                rects.append(header + struct.pack(">I", len(data)) + data)
-            else:
-                rects.append(header + band)
-        self._writer.write(struct.pack(">BxH", _FRAMEBUFFER_UPDATE, len(rects)) + b"".join(rects))
-        self.counts.updates += 1
+            return
+        self._write_update(rects)
         await self._writer.drain()
+        if changed and self._input_at is not None and current.at >= self._input_at:
+            self.counts.input_to_frame_ms.append((time.monotonic() - self._input_at) * 1000)
+            self._input_at = None
+
+    def _write_update(self, rects: list[bytes]) -> None:
+        message = struct.pack(">BxH", _FRAMEBUFFER_UPDATE, len(rects)) + b"".join(rects)
+        self._writer.write(message)
+        self.counts.updates += 1
+        self.counts.bytes_sent += len(message)
+
+    def _render(self, job: _Job) -> list[bytes]:
+        """The update's rectangles: diffed against what the viewer has, encoded.
+
+        Runs on `_ENCODE_POOL`, never on the loop; one at a time per connection.
+        """
+        if job.new_streams:
+            self._zlib = self._tight = None
+        if job.resend:
+            self._last = None
+        frame = job.frame
+        width, height = frame.width, frame.height
+        native = _frame_format(frame)
+        pixels = _packed(frame)
+        if job.pointer is not None:
+            painted = bytearray(pixels)
+            paint(native.frame(width, height, painted), *job.pointer)
+            pixels = bytes(painted)
+        old = self._last if job.incremental else None
+        if old is not None and len(old) != len(pixels):
+            old = None
+        self._last = pixels
+        rects = changed_rects(old, pixels, width, height)
+        out: list[bytes] = []
+        scroll = find_scroll(old, pixels, width, height, rects) if job.copy_rect and old else None
+        if scroll is not None:
+            # A scroll: the viewer moves what it already has (CopyRect, first,
+            # so it copies from the picture before this update), and is sent
+            # only what the move did not bring -- the rows scrolled in, the
+            # scrollbar, anything that changed as well.
+            dy, runs = scroll
+            for top, bottom in runs:
+                out.append(struct.pack(">HHHHiHH", 0, top, width, bottom - top,
+                                       ENCODING_COPY_RECT, 0, top + dy))
+            rects = changed_rects(_scrolled(old, width, dy, runs), pixels, width, height)
+        if job.encoding == ENCODING_TIGHT:
+            return out + [piece for x, y, w, h in rects
+                          for piece in self._tight_pieces(job, native, pixels, width, x, y, w, h)]
+        return out + [self._encode_rect(job, native, pixels, width, *rect) for rect in rects]
+
+    def _tight_pieces(self, job: _Job, native: _Format, pixels: bytes, width: int,
+                      x: int, y: int, w: int, h: int) -> list[bytes]:
+        """A rectangle as Tight: its one-colour tiles as Fill, the runs between them as Basic.
+
+        A page's margins and backgrounds are most of a frame, and a Fill is
+        four bytes where zlib would still have to read the tile.
+        """
+        row = width * 4
+        runs: list[list[object]] = []  # [x0, x1, colour bytes or None]
+        for tx in range(x, x + w, TILE):
+            a, b = tx * 4, min(x + w, tx + TILE) * 4
+            first = pixels[y * row + a:y * row + a + 4]
+            line = first * ((b - a) // 4)
+            solid = all(pixels[at:at + b - a] == line for at in range(y * row + a, (y + h) * row, row))
+            colour = first if solid else None
+            if runs and runs[-1][1] == tx and runs[-1][2] == colour:
+                runs[-1][1] = b // 4
+            else:
+                runs.append([tx, b // 4, colour])
+        out = []
+        for x0, x1, colour in runs:
+            assert isinstance(x0, int) and isinstance(x1, int)
+            header = struct.pack(">HHHHi", x0, y, x1 - x0, h, ENCODING_TIGHT)
+            if isinstance(colour, bytes):
+                out.append(header + bytes((_TIGHT_FILL,)) + _rgb(colour, native))
+            else:
+                out.append(self._encode_rect(job, native, pixels, width, x0, y, x1 - x0, h))
+        return out
+
+    def _encode_rect(self, job: _Job, native: _Format, pixels: bytes, width: int,
+                     x: int, y: int, w: int, h: int) -> bytes:
+        row = width * 4
+        if x == 0 and w == width:
+            data = pixels[y * row:(y + h) * row]
+        else:
+            data = b"".join(pixels[at:at + w * 4] for at in range(y * row + x * 4, (y + h) * row, row))
+        header = struct.pack(">HHHHi", x, y, w, h, job.encoding)
+        if job.encoding == ENCODING_TIGHT:
+            return header + self._tight_rect(_rgb(data, native), w * h, job.level)
+        data = _reorder(data, native, job.target)
+        if job.encoding == ENCODING_ZLIB:
+            if self._zlib is None:
+                self._zlib = zlib.compressobj(job.level)
+            data = self._zlib.compress(data) + self._zlib.flush(zlib.Z_SYNC_FLUSH)
+            return header + struct.pack(">I", len(data)) + data
+        return header + data
+
+    def _tight_rect(self, rgb: bytes, n: int, level: int) -> bytes:
+        """One Tight rectangle, losslessly: Fill if it is one colour, else zlib'd Basic."""
+        if rgb == rgb[:3] * n:
+            return bytes((_TIGHT_FILL,)) + rgb[:3]
+        if len(rgb) < _TIGHT_MIN_TO_COMPRESS:
+            return b"\x00" + rgb  # Basic, copy filter, stream 0, not compressed
+        ctl = 0
+        if self._tight is None:
+            # A new stream: tell the viewer to reset its inflater for stream 0.
+            self._tight = zlib.compressobj(level)
+            ctl |= _TIGHT_RESET_STREAM_0
+        data = self._tight.compress(rgb) + self._tight.flush(zlib.Z_SYNC_FLUSH)
+        return bytes((ctl,)) + _compact_length(len(data)) + data
 
     def _local_pointer(self) -> bool:
         """Does this viewer draw the pointer itself? The controller with a cursor shape does."""
@@ -609,6 +974,13 @@ class RfbSession:
 
     def _encoding(self) -> int:
         for encoding in self._encodings:
-            if encoding in (ENCODING_ZLIB, ENCODING_RAW):
+            if encoding in (ENCODING_TIGHT, ENCODING_ZLIB, ENCODING_RAW):
                 return encoding
         return ENCODING_RAW
+
+    def _level(self) -> int:
+        """zlib's level: the viewer's CompressLevel, at least 1; else `ZLIB_LEVEL`."""
+        for encoding in self._encodings:
+            if _COMPRESS_LEVEL_0 <= encoding <= _COMPRESS_LEVEL_0 + 9:
+                return max(1, encoding - _COMPRESS_LEVEL_0)
+        return ZLIB_LEVEL

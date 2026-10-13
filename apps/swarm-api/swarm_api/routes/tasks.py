@@ -25,6 +25,7 @@ from starlette.concurrency import run_in_threadpool
 
 from swarm_common.states import TaskState
 
+from .. import agent_questions
 from ..agent_output import AgentOutputService
 from ..attempt_totals import totals_for, with_totals
 from ..children import (
@@ -878,6 +879,57 @@ def read_answer(
     """
     return service.read_answer(
         tenant_id, task_id, attempt_id=attempt_id, submitted_by=submitted_by
+    )
+
+
+@router.get("/{task_id}/questions")
+def read_questions(
+    task_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    service: AgentOutputService = Depends(agent_output_service),
+) -> dict:
+    """What the task's agent asked its owner, from its `questions.json`, redacted.
+
+    Only a file the worker validated and counted (`result_summary.questions`)
+    is served, read through the artifact read's tenant check and redaction.
+    `status` is `ok`, `none` (it asked none; `questions: []`, never a 404) or
+    `unavailable` (counted, not readable, with `unavailable_because`). Each
+    question carries the owner's `answer` (or null), and `may_answer` /
+    `may_answer_because` say whether the caller may answer. See
+    `swarm_api.agent_questions`.
+    """
+    return agent_questions.read_questions(
+        ctx.store, service, tenant_id, task_id, submitted_by=submitted_by,
+        viewer=auth.email, viewer_is_admin=auth.is_admin,
+    )
+
+
+@router.post("/{task_id}/answers")
+def answer_question(
+    task_id: str,
+    body: agent_questions.AnswerBody,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+    service: AgentOutputService = Depends(agent_output_service),
+) -> dict:
+    """The owner answers one of the agent's questions: an option label, free text, or both.
+
+    Only the task's submitter or an admin (403 for another member; another
+    tenant's task is a 404). `question_index` must name a question the worker
+    counted and `choice` one of THAT question's option labels; `text` is at
+    most 2,000 characters and is redacted before it is stored. One answer per
+    question: re-answering replaces it and keeps the replaced one in its
+    `history`. Stored as `metadata.owner_answers`; answers with the questions
+    as `GET /questions` now serves them. See `swarm_api.agent_questions`.
+    """
+    return agent_questions.answer_question(
+        ctx.store, service, ctx.db, tenant_id, task_id, body,
+        submitted_by=submitted_by, email=auth.email, is_admin=auth.is_admin, now=ctx.now(),
     )
 
 

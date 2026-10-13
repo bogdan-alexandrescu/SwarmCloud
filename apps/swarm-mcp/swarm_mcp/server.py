@@ -651,7 +651,13 @@ TOOLS: list[dict[str, Any]] = [
             "is absent when the agent asked none, and a file the worker rejected "
             "is never served. `questions_unavailable_because` means the worker "
             "counted questions this read could not get. They are for a person "
-            "to answer: show them; never pick an option yourself."
+            "to answer: show them; never pick an option yourself.\n"
+            "\n"
+            "`owner_answers` is what the owner answered, in the console, to "
+            "those questions: [{question_index, question, choice, text, by, at, "
+            "history}] -- `choice` one of the question's option labels or null, "
+            "`text` their own words or null. Absent until one is answered. Read "
+            "it as the owner's decision for the follow-up work."
         ),
         "inputSchema": {
             "type": "object",
@@ -2833,6 +2839,12 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
         described["owner_questions"] = asked["questions"]
     if asked.get("questions_unavailable_because"):
         described["questions_unavailable_because"] = asked["questions_unavailable_because"]
+    # WHAT THE OWNER ANSWERED (TASK-ANSWERS, owner decision 2026-10-13): the
+    # answers stored on the task in the console, as the task read served them.
+    # No key until one is answered, as `owner_questions` has none until asked.
+    answered = progress.owner_answers(task)
+    if answered:
+        described["owner_answers"] = answered
     # WHAT THE WHOLE TASK COST (lane review P1): every attempt's cost and time,
     # as the API served them, the last attempt's beside them, and `cost` --
     # the total in words, `at least` when an attempt recorded none.

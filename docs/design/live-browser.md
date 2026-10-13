@@ -169,11 +169,50 @@ Four reasons, each a requirement elsewhere in this document:
 
 What the agent loses is the choice of browser flags. `claude-code-browser`
 does not need them; the profile's agent instructions point Playwright at the
-CDP endpoint. **A Chromium the agent starts itself, headless, is not shown and
-cannot be prevented**: the live view shows the platform's browser. The worker
-sets no `DISPLAY` in the agent's environment (`Workspace.child_env`,
+CDP endpoint. The worker sets no `DISPLAY` in the agent's environment
+(`Workspace.child_env`,
 `apps/agent-worker/agent_worker/workspace.py::Workspace.child_env`), so a headed launch fails
 loudly rather than drawing somewhere nobody sees.
+
+**The agent's own Chromium is refused, not merely unshown** (BROWSER-ENFORCE,
+owner decision 2026-10-13, part of #1030). This section used to accept that a
+headless Chromium the agent started itself was not shown and could not be
+prevented, and task_7cda0d5335f049b4b442 showed what that costs: the agent launched one with
+Playwright, did its work there, and the person watching the live browser saw
+nothing. Now, whenever the live browser exists (`SWARM_CDP_ENDPOINT` is set),
+the claude-code runner (`runners/claude_code.py::body`):
+
+* points the **agent's** `PLAYWRIGHT_BROWSERS_PATH` at
+  `/opt/swarm/live-browser-only`, a directory in which every Chromium
+  Playwright would launch is the stub `images/agent-runtime-browser/live-browser-only`.
+  `chromium.launch()` and `launch_persistent_context()`, headless or not,
+  fail at once with *"This agent's browser is the live browser the person
+  watches: connect with
+  chromium.connect_over_cdp(os.environ['SWARM_CDP_ENDPOINT'])"*. Only the
+  agent's variable changes: the image's ENV, which the gate
+  (`livegate/__main__.py::find_chromium`) and the `browser` runner read, is
+  still `/opt/playwright`, so the stub cannot reach the platform's own
+  Chromium. A `sitecustomize` wrapping `BrowserType.launch` was the
+  alternative; the stub directory was chosen because it also holds for
+  Node's Playwright and for any interpreter, and needs no code in the
+  agent's process. The image's build-time self-test (`selftest.py`) proves
+  each launch form ends in that message;
+* registers the Playwright MCP server (`@playwright/mcp`, pinned in the
+  Dockerfile) through `--mcp-config` with `--cdp-endpoint
+  $SWARM_CDP_ENDPOINT`, so `browser_navigate`, `browser_tabs` and the rest
+  act on the live browser, and the tabs they open are the ones the console
+  shows. It connects; it launches nothing;
+* tells the agent so, and names `from swarm_browser import live`, which
+  returns `(playwright, browser, context)` connected over CDP to the
+  browser's existing context.
+
+On the browser image the CLI's PATH also puts `/opt/venv/bin` first, so the
+agent's `python` is the venv that has Playwright and `swarm_browser`.
+
+What this does **not** stop: an agent that names a binary itself
+(`executable_path=` pointing into `/opt/playwright`) still gets a hidden
+browser. The stub turns the default path, the one an agent reaches for, into
+an instruction; it is not a sandbox, and the pod remains the boundary.
 
 ### 3.3 The path to the console: outbound only, through a relay
 
@@ -435,8 +474,10 @@ RUNNING (human_wait set, lease HELD) --hold expires, nobody in control-->
            park(HUMAN_REQUIRED), bounded attempt refund, release lease, exit
 PARKED (HUMAN_REQUIRED, NO capacity) --a person presses "I'm ready to sign in"-->
 READY --admission--> LEASED -> ... -> RUNNING (new attempt, new generation)
-   worker restores work/, starts the agent; console shows "starting your browser"
-   agent re-opens the page and asks again; the person is already there
+   worker restores work/, tells the agent which hand-offs were done (resumed.md),
+   starts it; console shows "starting your browser"
+   agent carries on from its notes, re-opens the page and asks again only for
+   what was not done; the person is already there
 PARKED (HUMAN_REQUIRED) past human_park_max_seconds --> DEAD_LETTERED, end_cause human_wait_expired
 ```
 
@@ -475,11 +516,47 @@ would be re-admitted with nobody there to sign in. So it is a new `ParkReason` (
 **What the park costs.** The browser is gone: its session, its tabs, its
 history (section 5.5 says why they are not checkpointed). The claude-code
 agent has no conversation resume (`docs/design/child-tasks.md` (`the CLI runners have no conversation resume`)), so the next attempt starts the agent again on
-the restored `work/`; the agent must keep its plan there, which
-`claude-code-browser`'s instructions say. And the person waits for a cold start
+the restored `work/`. And the person waits for a cold start
 -- admission plus a GKE pod start -- before the browser is back. That is the
 price of giving the capacity back, and it is paid only when nobody came within
 the hold.
+
+**What the resumed attempt is told (RESUME-PROGRESS, QA12-14).** Measured
+2026-10-13 on task_4defa61c5eea4a5c87f5: an agent asked for QA1 (returned),
+then QA2 (nobody came; parked); generation 2 asked for QA1 again, then QA2.
+Two things were missing, and both are now in place:
+
+* *The restore.* The park's refund takes `attempt_count` back down, so the
+  next lease read 1 and the worker took it for the task's first attempt,
+  which restores nothing (`Worker._recorded_checkpoint`). The agent's notes
+  and work were never put back. `human_wait_resumes` is now counted back
+  exactly as `child_await_resumes` is, so the attempt after a hand-off park
+  restores the checkpoint the park wrote.
+* *A record of what was done.* The worker keeps a ledger of every hand-off,
+  `$SWARM_HANDOFF/history.json` (request, redacted reason, outcome, the
+  §5.9 summary), which travels in the checkpoint with the rest of `work/`.
+  On an attempt whose restored ledger holds an earlier attempt's hand-offs,
+  the worker writes `$SWARM_HANDOFF/resumed.md` before the agent starts --
+  each hand-off marked DONE or NOT DONE, oldest first, then the agent's own
+  `$SWARM_HANDOFF/notes.md`, redacted -- and the claude-code runner puts it
+  in the agent's prompt, after the caller's
+  (`apps/agent-worker/agent_worker/handoff.py::resume_summary`,
+  `apps/agent-worker/agent_worker/runners/claude_code.py::resume_summary`). The
+  agent's guide asks it to keep `notes.md` current, and to write it on exit
+  3. The ledger is in the agent's reach, so it is read as untrusted: shape-
+  checked, bounded and redacted again, and only ever told to the same task's
+  agent; a `resumed.md` the worker did not write this attempt is removed, and
+  an earlier attempt's answers in `responses/` are cleared so a `wait` cannot
+  read an old `expired` as its own.
+
+Continuing the CLI's own conversation (`claude --resume`) across the park was
+considered and not done: the transcript is in the checkpoint
+(`work/.claude/`), but it is keyed by the working directory, which is
+per-attempt (`<workspace_root>/<attempt_id>/work`), and every absolute path
+the old conversation used points into a workspace that no longer exists. The
+summary needs no CLI internals and no contract change. Invariants 4 and 8 are
+untouched: the park still checkpoints, releases and exits; the resume only
+changes what the next attempt restores and is told.
 
 **Promotion is a person's.** `POST /v1/tasks/{task_id}/human-ready`
 (eligible as for taking control, section 5.1) moves `PARKED(HUMAN_REQUIRED) ->

@@ -55,7 +55,8 @@ def preview_issue(
         created_at=ctx.now(),
     )
     try:
-        body = preview(ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge)
+        body = preview(ref, tenant, tokens=ctx.forge_tokens, issues=ctx.forge,
+                       person=auth.email)
     except ForgeReadError as refused:
         log.info("issue preview tenant=%s issue=%s outcome=%s", tenant_id, ref.short, refused.code)
         raise
