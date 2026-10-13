@@ -528,3 +528,127 @@ def test_a_bundle_carrying_a_malformed_object_is_refused_by_fsck(world) -> None:
         _exec(world).push_bundle(url=world["url"], token=_token(), bundle=data, branch="swarm/x")
     assert caught.value.code == "bad_bundle"
     assert _remote_tip(world) == world["b"]
+
+
+# ---------------------------------------------------------------------------
+# bounded in the kernel (the security review of 2026-10-13)
+# ---------------------------------------------------------------------------
+
+
+def test_every_git_runs_under_the_memory_and_file_limits(world) -> None:
+    c = _commit(world["work"], "c")
+    data = _bundle(world["work"], world["tmp"] / "c.bundle", c, world["b"])
+    rec = Recorder()
+    gx = _exec(world, rec, max_git_memory_bytes=300 * 1024 * 1024, max_bundle_bytes=10 ** 7)
+    gx.push_bundle(url=world["url"], token=_token(), bundle=data, branch="swarm/x")
+    assert rec.calls
+    for argv in rec.calls:
+        assert argv[1:3] == ["-I", "-c"] and "RLIMIT_AS" in argv[3], argv[:4]
+        assert argv[4:7] == [str(300 * 1024 * 1024), str(10 ** 7), "git"]
+        assert "core.bigFileThreshold=1m" in argv and "transfer.unpackLimit=1" in argv
+
+
+def test_a_fetch_whose_pack_outgrows_the_cap_is_stopped_while_it_is_written(world) -> None:
+    """The cap holds what a fetch WRITES, not only the bundle made afterwards:
+    a 2 MB pack under a 64 KiB cap stops the fetch itself."""
+    (world["work"] / "big").write_bytes(os.urandom(2_000_000))
+    _git(world["work"], "add", "big")
+    _git(world["work"], "commit", "-q", "-m", "big")
+    _git(world["work"], "push", "-q", str(world["remote"]), "HEAD:refs/heads/main")
+    rec = Recorder()
+    with pytest.raises(GitExecError) as caught:
+        _exec(world, rec, max_bundle_bytes=64 * 1024).fetch_bundle(
+            url=world["url"], token=_token(), ref="main")
+    assert caught.value.code == "too_large"
+    assert not [argv for argv in rec.calls if "bundle" in argv]
+    assert _scratch_is_empty(world)
+
+
+def test_a_call_over_the_concurrency_limit_is_busy_and_runs_no_git(world) -> None:
+    import threading
+
+    slots = threading.BoundedSemaphore(1)
+    entered, release = threading.Event(), threading.Event()
+
+    def holding(argv, *, cwd, env, timeout):  # noqa: ANN001
+        entered.set()
+        release.wait(30)
+        return run_git(argv, cwd=cwd, env=env, timeout=timeout)
+
+    first = threading.Thread(target=lambda: _exec(world, holding, slots=slots).fetch_bundle(
+        url=world["url"], token=_token(), ref="main"))
+    first.start()
+    try:
+        assert entered.wait(30)
+        rec = Recorder()
+        with pytest.raises(GitExecError) as caught:
+            _exec(world, rec, slots=slots).fetch_bundle(url=world["url"], token=_token(),
+                                                        ref="main")
+        assert caught.value.code == "busy"
+        assert rec.calls == []
+    finally:
+        release.set()
+        first.join(30)
+    # And the slot is given back.
+    assert _exec(world, slots=slots).fetch_bundle(url=world["url"], token=_token(),
+                                                  ref="main").sha == world["b"]
+
+
+def test_one_deadline_bounds_every_git_in_a_call(world) -> None:
+    timeouts: list[float] = []
+
+    def runner(argv, *, cwd, env, timeout):  # noqa: ANN001
+        timeouts.append(timeout)
+        return run_git(argv, cwd=cwd, env=env, timeout=timeout)
+
+    _exec(world, runner, deadline_seconds=5).fetch_bundle(
+        url=world["url"], token=_token(), ref="main", haves=[world["a"]])
+    assert timeouts and max(timeouts) <= 5
+
+    with pytest.raises(GitExecError) as caught:
+        _exec(world, runner, deadline_seconds=0).fetch_bundle(url=world["url"], token=_token(),
+                                                              ref="main")
+    assert caught.value.code == "timed_out"
+    assert _scratch_is_empty(world)
+
+
+def test_a_timeout_kills_git_s_children_too(tmp_path: Path) -> None:
+    """A grandchild that does not hold git's pipes (as `git-remote-https`
+    need not) is killed with the group, not left running."""
+    import time
+
+    pidfile = tmp_path / "pid"
+    started = time.monotonic()
+    with pytest.raises(GitExecError) as caught:
+        run_git(["sh", "-c", f"sleep 60 >/dev/null 2>&1 & echo $! > {pidfile}; wait"],
+                cwd=tmp_path, env={"PATH": "/usr/bin:/bin"}, timeout=1)
+    assert caught.value.code == "timed_out"
+    assert time.monotonic() - started < 20
+    pid = int(pidfile.read_text())
+
+    for _ in range(50):
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        os.kill(pid, 9)
+        pytest.fail("the grandchild outlived the timeout")
+
+
+def test_a_fetch_bundle_can_be_delivered_as_a_file_instead_of_bytes(world) -> None:
+    c = _commit(world["work"], "c")
+    _git(world["work"], "push", "-q", str(world["remote"]), "HEAD:refs/heads/main")
+    seen: list[tuple[bytes, int]] = []
+
+    def deliver(path: Path, size: int) -> str:
+        seen.append((path.read_bytes(), size))
+        return "gs://tenant-prefix/object"
+
+    fetched = _exec(world).fetch_bundle(url=world["url"], token=_token(), ref="main",
+                                        haves=[world["b"]], deliver=deliver)
+    assert (fetched.sha, fetched.bundle, fetched.delivered) == (c, None, "gs://tenant-prefix/object")
+    [(data, size)] = seen
+    assert size == len(data) == fetched.size and _pack_object_count(data) == 3
+    assert _scratch_is_empty(world)

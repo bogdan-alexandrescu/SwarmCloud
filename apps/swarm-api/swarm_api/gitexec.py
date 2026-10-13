@@ -57,19 +57,32 @@ the bundle (`refs/swarm/want ^<haves>`) carries only what the clone lacks. A
 have the remote does not know is skipped, not an error: the bundle is then
 merely larger.
 
+BOUNDED IN THE KERNEL, NOT ONLY BY THE CAP (security review, 2026-10-13).
+Every git runs under RLIMIT_AS (`max_git_memory_bytes`) and RLIMIT_FSIZE (the
+bundle cap), set by `_LIMIT_SHIM` before it becomes git; a call has one
+deadline across all its commands; at most `MAX_CONCURRENT_CALLS` run in a
+process, and a timeout kills git's whole process group. A write or an
+allocation over a limit is `too_large`.
+
 Codes (`GitExecError.code`): `bad_remote`, `bad_ref`, `bad_bundle`,
-`too_large`, `non_fast_forward`, `remote_rejected`, `timed_out`, `failed`.
+`too_large`, `non_fast_forward`, `remote_rejected`, `busy`, `timed_out`,
+`failed`.
 """
 
 from __future__ import annotations
 
+import contextvars
 import errno
 import os
 import re
 import shutil
+import signal
 import stat
 import subprocess
+import sys
 import tempfile
+import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -95,6 +108,40 @@ MAX_PREREQUISITES = 16
 BUNDLE_HEADER_MAX_BYTES = 64 * 1024
 #: The most of git's stderr an error carries, after scrubbing.
 STDERR_TAIL_CHARS = 2000
+#: The address space one git process may map (RLIMIT_AS). The security review
+#: (2026-10-13) measured a 408 KB bundle of a 400 MiB zero blob peaking at
+#: 403 MB RSS in the unbundle and again in fsck: the byte cap bounds what
+#: arrives, not what it inflates to, and a delta declares its result size up
+#: front. swarm-api is a shared 1 GiB service, so the bound is per process,
+#: in the kernel. `core.bigFileThreshold` keeps an honest large blob streamed
+#: under it; `pack.threads=1` and MALLOC_ARENA_MAX keep the address space a
+#: function of the data rather than of the core count.
+MAX_GIT_MEMORY_BYTES = 512 * 1024 * 1024
+#: A whole call, every git command in it. Up to MAX_HAVES or
+#: MAX_PREREQUISITES depth-1 fetches each had GIT_TIMEOUT_SECONDS of their
+#: own, which held one request for over an hour.
+CALL_DEADLINE_SECONDS = 600
+#: Calls running at once in one swarm-api process. Each may hold a bundle at
+#: the cap in tmpfs (memory, on Cloud Run) and a git under MAX_GIT_MEMORY_BYTES;
+#: a call over the limit is refused `busy` at once rather than queued in a
+#: request thread.
+MAX_CONCURRENT_CALLS = 2
+_CALL_SLOTS = threading.BoundedSemaphore(MAX_CONCURRENT_CALLS)
+_DEADLINE: contextvars.ContextVar[float] = contextvars.ContextVar("gitexec_deadline")
+
+#: Run as `python -I -c _LIMIT_SHIM <as> <fsize> git ...`: set the two limits,
+#: then become git. Not `preexec_fn`, which is unsafe in a threaded server, and
+#: not `sh -c ulimit`, whose units differ by shell. Python leaves SIGXFSZ
+#: ignored across the exec, so a write over RLIMIT_FSIZE fails EFBIG and git
+#: says "File too large" (measured, git 2.39.5) rather than dying silently.
+_LIMIT_SHIM = (
+    "import os, resource, sys\n"
+    "a, f = int(sys.argv[1]), int(sys.argv[2])\n"
+    "resource.setrlimit(resource.RLIMIT_AS, (a, a))\n"
+    "resource.setrlimit(resource.RLIMIT_FSIZE, (f, f))\n"
+    "os.execvp(sys.argv[3], sys.argv[3:])\n"
+)
+_OVER_LIMIT = re.compile(r"File too large|[Oo]ut of memory|Cannot allocate memory")
 
 _SHA = re.compile(r"^[0-9a-f]{40}$")
 #: A ref name the agent may ask for: what `gitops.validate_ref` accepts, minus
@@ -134,21 +181,34 @@ class Runner(Protocol):
 
 
 def run_git(argv: Sequence[str], *, cwd: Path, env: dict[str, str], timeout: float) -> GitRun:
-    """Run one git command with no stdin; a timeout is `timed_out`."""
+    """Run one git command with no stdin; a timeout is `timed_out`.
+
+    In its own session, so a timeout kills the whole group: git's
+    `git-remote-https`, `index-pack` and `credential-store` children would
+    otherwise outlive it and keep writing into a scratch directory being
+    removed.
+    """
+    proc = subprocess.Popen(list(argv), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            start_new_session=True)
     try:
-        out = subprocess.run(list(argv), cwd=cwd, env=env, stdin=subprocess.DEVNULL,
-                             capture_output=True, timeout=timeout, check=False)
+        out, err = proc.communicate(timeout=max(timeout, 0.001))
     except subprocess.TimeoutExpired:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        proc.communicate()
         raise GitExecError("timed_out", f"git ran longer than {timeout:g}s") from None
-    return GitRun(out.returncode, out.stdout.decode(errors="replace"),
-                  out.stderr.decode(errors="replace"))
+    return GitRun(proc.returncode, out.decode(errors="replace"), err.decode(errors="replace"))
 
 
 @dataclass(frozen=True)
 class FetchedBundle:
     """What a fetch resolved, and the bundle of what the worker lacks.
 
-    `bundle` is None (and `size` 0) when the worker already has `sha`. The
+    `bundle` is None (and `size` 0) when the worker already has `sha`, and
+    None when the caller passed `deliver` and took the file instead. The
     bundle's one ref is `ref` (`refs/swarm/want`); the worker applies it with
     `git fetch <bundle> refs/swarm/want:<where it belongs>`.
     """
@@ -157,6 +217,8 @@ class FetchedBundle:
     bundle: bytes | None
     size: int
     ref: str = WANT_REF
+    #: What `deliver` returned, when the caller took the bundle as a file.
+    delivered: Any = None
 
 
 @dataclass(frozen=True)
@@ -268,6 +330,15 @@ _BASE_CONFIG = (
     "-c", "http.followRedirects=false",    # the token goes to the host it was written for
     "-c", "fetch.recurseSubmodules=false",
     "-c", "submodule.recurse=false",
+    # Bounded by MAX_GIT_MEMORY_BYTES and the file cap (review, 2026-10-13):
+    # what arrives stays one pack the file limit covers, never loose objects;
+    # a large blob is streamed, not held; one thread, small pack windows.
+    "-c", "fetch.unpackLimit=1",
+    "-c", "transfer.unpackLimit=1",
+    "-c", "core.bigFileThreshold=1m",
+    "-c", "pack.threads=1",
+    "-c", "core.packedGitWindowSize=32m",
+    "-c", "core.packedGitLimit=128m",
 )
 
 
@@ -286,6 +357,10 @@ class GitExec:
     max_bundle_bytes: int = MAX_BUNDLE_BYTES
     runner: Runner = run_git
     local_remotes: bool = False
+    max_git_memory_bytes: int = MAX_GIT_MEMORY_BYTES
+    deadline_seconds: float = CALL_DEADLINE_SECONDS
+    #: Shared by every GitExec in the process unless a test passes its own.
+    slots: Any = _CALL_SLOTS
 
     # -- the request's shape, checked before any git ----------------------
 
@@ -355,6 +430,7 @@ class GitExec:
             "GIT_CONFIG_GLOBAL": "/dev/null",
             "GIT_NO_REPLACE_OBJECTS": "1",
             "LC_ALL": "C",
+            "MALLOC_ARENA_MAX": "2",
         }
 
     # -- running git -------------------------------------------------------
@@ -368,11 +444,38 @@ class GitExec:
         config += list(extra)
         if credential is not None:
             config += ["-c", f"credential.helper=store --file={credential}"]
-        argv = [self.git_binary, *config, "--git-dir", str(repo), *args]
-        run = self.runner(argv, cwd=scratch, env=self._env(scratch), timeout=self.timeout_seconds)
+        return self._run(scratch, [*config, "--git-dir", str(repo), *args], token=token)
+
+    def _run(self, scratch: Path, args: Sequence[str], *, token: str) -> GitRun:
+        """git under the per-process limits, within what is left of the call's deadline."""
+        left = _DEADLINE.get() - time.monotonic()
+        if left <= 0:
+            raise GitExecError("timed_out", f"the call ran longer than {self.deadline_seconds:g}s")
+        argv = [sys.executable, "-I", "-c", _LIMIT_SHIM, str(self.max_git_memory_bytes),
+                str(self.max_bundle_bytes), self.git_binary, *args]
+        run = self.runner(argv, cwd=scratch, env=self._env(scratch),
+                          timeout=min(self.timeout_seconds, left))
         return GitRun(run.code, scrub(run.stdout, (token,)), scrub(run.stderr, (token,)))
 
+    @contextmanager
+    def _call(self) -> Iterator[Path]:
+        """A slot, a deadline and a scratch directory for one call."""
+        if not self.slots.acquire(blocking=False):
+            raise GitExecError("busy", f"{MAX_CONCURRENT_CALLS} git calls are already running; "
+                                       "try again shortly")
+        reset = _DEADLINE.set(time.monotonic() + self.deadline_seconds)
+        try:
+            with self._scratch() as scratch:
+                yield scratch
+        finally:
+            _DEADLINE.reset(reset)
+            self.slots.release()
+
     def _must(self, run: GitRun, what: str, code: str = "failed") -> GitRun:
+        if run.code != 0 and _OVER_LIMIT.search(run.stderr):
+            raise GitExecError("too_large", f"{what} went over the {self.max_bundle_bytes}-byte "
+                                            f"file cap or the {self.max_git_memory_bytes}-byte "
+                                            "memory bound")
         if run.code != 0:
             raise GitExecError(code, f"{what} failed with exit {run.code}: "
                                      f"{run.stderr.strip()[-STDERR_TAIL_CHARS:]}")
@@ -380,9 +483,8 @@ class GitExec:
 
     def _init(self, scratch: Path) -> Path:
         repo = scratch / "repo.git"
-        self._must(self.runner([self.git_binary, *_BASE_CONFIG, "init", "--quiet", "--bare",
-                                str(repo)], cwd=scratch, env=self._env(scratch),
-                               timeout=self.timeout_seconds), "git init")
+        self._must(self._run(scratch, [*_BASE_CONFIG, "init", "--quiet", "--bare", str(repo)],
+                             token=""), "git init")
         return repo
 
     def _resolve(self, scratch: Path, repo: Path, ref: str, token: str) -> str | None:
@@ -393,15 +495,20 @@ class GitExec:
 
     # -- fetch → bundle ----------------------------------------------------
 
-    def fetch_bundle(self, *, url: str, token: str, ref: str,
-                     haves: Sequence[str] = ()) -> FetchedBundle:
-        """Fetch `ref` from `url`; bundle what is not reachable from `haves`."""
+    def fetch_bundle(self, *, url: str, token: str, ref: str, haves: Sequence[str] = (),
+                     deliver: Callable[[Path, int], Any] | None = None) -> FetchedBundle:
+        """Fetch `ref` from `url`; bundle what is not reachable from `haves`.
+
+        `deliver(path, size)`, when given, is handed the bundle file while it
+        exists -- to stream it to the tenant's GCS prefix, say -- instead of a
+        copy of up to the cap in memory; what it returns is `delivered`.
+        """
         url, host = self._check_url(url)
         ref = _check_ref(ref)
         haves = list(dict.fromkeys(haves))
         if len(haves) > MAX_HAVES or not all(isinstance(h, str) and _SHA.match(h) for h in haves):
             raise GitExecError("bad_ref", f"haves are at most {MAX_HAVES} 40-hex shas")
-        with self._scratch() as scratch:
+        with self._call() as scratch:
             repo = self._init(scratch)
             known: list[str] = []
             with self._credential(scratch, host, token) as cred:
@@ -430,6 +537,8 @@ class GitExec:
             if size > self.max_bundle_bytes:
                 raise GitExecError("too_large", f"the bundle is {size} bytes, over the "
                                                 f"{self.max_bundle_bytes}-byte cap")
+            if deliver is not None:
+                return FetchedBundle(sha, None, size, delivered=deliver(out, size))
             return FetchedBundle(sha, out.read_bytes(), size)
 
     # -- bundle → push -----------------------------------------------------
@@ -449,7 +558,7 @@ class GitExec:
             raise GitExecError("bad_ref", "a lease is the 40-hex sha swarm-api recorded")
         head = self._bounded_head(bundle)
         header = _parse_header(head)
-        with self._scratch() as scratch:
+        with self._call() as scratch:
             if isinstance(bundle, Path):
                 source = bundle
             else:
@@ -499,23 +608,26 @@ class GitExec:
     def _bounded_head(self, bundle: bytes | Path) -> bytes:
         """The bundle's first bytes, after its size is held to the cap."""
         if isinstance(bundle, Path):
+            # A file swarm-api itself wrote (G5 downloads a large bundle from
+            # the tenant's GCS prefix); never a path a request names. git
+            # reads it again by name, so the file must not change underneath.
             try:
-                info = bundle.lstat()
+                fd = os.open(bundle, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
             except OSError:
                 raise GitExecError("bad_bundle", "the bundle file cannot be read") from None
-            if not stat.S_ISREG(info.st_mode):
-                raise GitExecError("bad_bundle", "the bundle is not a regular file")
-            size = info.st_size
-        elif isinstance(bundle, (bytes, bytearray)):
-            size = len(bundle)
-        else:
-            raise GitExecError("bad_bundle", "a bundle is bytes or a file")
-        if size > self.max_bundle_bytes:
-            raise GitExecError("too_large", f"the bundle is {size} bytes, over the "
-                                            f"{self.max_bundle_bytes}-byte cap")
-        if isinstance(bundle, Path):
-            with bundle.open("rb") as handle:
+            with os.fdopen(fd, "rb") as handle:
+                info = os.fstat(handle.fileno())
+                if not stat.S_ISREG(info.st_mode):
+                    raise GitExecError("bad_bundle", "the bundle is not a regular file")
+                if info.st_size > self.max_bundle_bytes:
+                    raise GitExecError("too_large", f"the bundle is {info.st_size} bytes, over "
+                                                    f"the {self.max_bundle_bytes}-byte cap")
                 return handle.read(BUNDLE_HEADER_MAX_BYTES)
+        if not isinstance(bundle, (bytes, bytearray)):
+            raise GitExecError("bad_bundle", "a bundle is bytes or a file")
+        if len(bundle) > self.max_bundle_bytes:
+            raise GitExecError("too_large", f"the bundle is {len(bundle)} bytes, over the "
+                                            f"{self.max_bundle_bytes}-byte cap")
         return bytes(bundle[:BUNDLE_HEADER_MAX_BYTES])
 
     def _remote_tip(self, scratch: Path, repo: Path, url: str, branch: str, token: str,
