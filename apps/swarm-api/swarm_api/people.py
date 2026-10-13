@@ -812,14 +812,17 @@ class People:
                 raise
             member = worker_member(tenant_id, self._project_id)
             reason = exc.message
-            raise LoanGrantFailed(
+            refusals.refuse(LoanGrantFailed(
                 f"could not lend {account['account_id']} to workspace "
                 f"{record.get('workspace_id')}: the quota broker refused to grant {member} "
                 f"read access to the account's secret ({reason}). The workspace is ready, so "
                 "that service account should exist; check it in IAM. Nothing was changed.",
                 detail={"workspace_id": record.get("workspace_id"),
                         "account_id": account["account_id"], "member": member,
-                        "reason": reason}) from None
+                        "reason": reason}))
+            # Switched off, the refusal is only logged: serve the broker's
+            # own refusal, which is what this call raised before LOAN_GRANT_FAILED.
+            raise
 
     def _pending_ref(self, tenant_id: str) -> Any:
         return self._db.collection(PENDING_LOANS).document(tenant_id)
