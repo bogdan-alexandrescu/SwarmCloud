@@ -54,7 +54,8 @@ GUARD_RULES="${SWARM_LIB_DIR}/workspace-calls.json"
 GUARD_CASES="${SWARM_LIB_DIR}/workspace-guard-cases.json"
 GUARD_BIN_DIR="${SWARM_LIB_DIR}/guard-bin"
 # The rules the judge reads. Only the self-test points it elsewhere (a copy with
-# the WD9 fallback on, to prove C5 both ways); it is a shell variable and not an
+# the WD9 fallback on and one with it off, to prove C4's bucket-metadata shape
+# and C5 both ways whichever the live switch says); it is a shell variable and not an
 # environment knob, so nothing outside this process can swap the rules.
 GUARD_RULES_ACTIVE="${GUARD_RULES}"
 GUARD_REFUSED_RC=86
@@ -1173,6 +1174,7 @@ cmd_self_test() {
   cmd_expect --record "${tmp}/record.json" 2>/dev/null
   cp "${SWARM_CALL_GUARD}" "${tmp}/ready.json"
   jq '.wd9_fallback = true' "${GUARD_RULES}" >"${tmp}/rules-fallback.json"
+  jq '.wd9_fallback = false' "${GUARD_RULES}" >"${tmp}/rules-principal-set.json"
 
   # Built at run time, never a literal: nothing here may look like a credential.
   # {auth_config} is the config line fs_request really writes, around it.
@@ -1218,7 +1220,10 @@ cmd_self_test() {
     if [[ "${CASE_PHASE}" == "stopped" ]]; then
       printf '{"state":"needs_owner","rule":"C2"}\n' >"${SWARM_CALL_GUARD}.stop"
     fi
-    GUARD_RULES_ACTIVE="${GUARD_RULES}"
+    # A case without wd9_fallback is judged under the principal-set grant, not
+    # under whatever the live switch says: the owner turned the fallback on
+    # (2026-10-12), and the cases proving refusal without it must still refuse.
+    GUARD_RULES_ACTIVE="${tmp}/rules-principal-set.json"
     [[ "${CASE_FALLBACK}" == "true" ]] && GUARD_RULES_ACTIVE="${tmp}/rules-fallback.json"
     GUARD_STDIN="${CASE_STDIN}"
     GUARD_HAS_STDIN="${CASE_HAS_STDIN}"

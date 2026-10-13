@@ -317,12 +317,19 @@ def test_create_runs_every_step_and_ends_ready(job: Job, created: dict) -> None:
     assert _members(account["policy"], ACT_AS) == {f"serviceAccount:{SCHEDULER}", f"serviceAccount:{RECONCILER}"}
     assert {b["role"] for b in account["policy"]["bindings"]} == {WORKLOAD, ACT_AS}
 
-    # A5: the two prefix-conditioned grants, exactly the expressions C4 accepts.
+    # A5: the two prefix-conditioned grants, exactly the expressions C4 accepts,
+    # and, because W0 found the principal-set grant impossible and the WD9
+    # fallback is on (wd9_fallback in workspace-calls.json, docs/workspaces.md
+    # §2.3), the unconditioned bucket-metadata role and the three project roles.
     grants = {(b["role"], (b.get("condition") or {}).get("expression"))
               for b in world["bucket_policy"]["bindings"] if f"serviceAccount:{WORKER}" in b["members"]}
-    assert grants == {("roles/storage.objectViewer", READ_EXPR), ("roles/storage.objectUser", WRITE_EXPR)}
+    assert grants == {("roles/storage.objectViewer", READ_EXPR), ("roles/storage.objectUser", WRITE_EXPR),
+                      (f"projects/{PROJECT}/roles/swarmBucketMetadataReader", None)}
     assert f"gs://{BUCKET}/tenants/{TENANT}/.tenant" in world["objects"]
-    assert world["project_policy"]["bindings"] == [], "WD9 is a principal-set grant: no project IAM per person"
+    project_grants = {(b["role"], (b.get("condition") or {}).get("expression"))
+                      for b in world["project_policy"]["bindings"] if f"serviceAccount:{WORKER}" in b["members"]}
+    assert project_grants == {(f"projects/{PROJECT}/roles/swarmTenantWorkerFirestore", None),
+                              ("roles/logging.logWriter", None), ("roles/monitoring.metricWriter", None)}
 
     # A6: the slot and its twin, labelled as swarm-api labels its own; the
     # worker reads the slot and never the twin.
