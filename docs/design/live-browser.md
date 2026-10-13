@@ -168,9 +168,24 @@ Four reasons, each a requirement elsewhere in this document:
   5.5): a sidecar-only volume, never in `work/`, wiped at attempt end.
 
 What the agent loses is the choice of browser flags. `claude-code-browser`
-does not need them; the profile's agent instructions point Playwright at the
-CDP endpoint. **A Chromium the agent starts itself, headless, is not shown and
-cannot be prevented**: the live view shows the platform's browser. The worker
+does not need them. For a profile whose `live_browser` flag is set,
+`body` in `apps/agent-worker/agent_worker/runners/claude_code.py` appends
+`LIVE_BROWSER_BRIEF` to the CLI's system prompt (`--append-system-prompt`,
+after the platform's flags, so it holds on resumed turns and a replaced
+`CLAUDE_CODE_ARGS`). It says the watched browser is already running; to
+connect with `p.chromium.connect_over_cdp(os.environ["SWARM_CDP_ENDPOINT"])`,
+work in `browser.contexts[0]` and open each tab with `context.new_page()`;
+never to `launch()` one; and, at a CAPTCHA, bot check, consent wall or
+sign-in, to ask with `swarm-handoff request` / `wait` instead of getting
+around it or silently switching sites. The same function puts `/opt/venv/bin`
+first on the agent's PATH (`run_cli_agent`'s `path_prefix`), so `python3` is
+the interpreter that has Playwright, and drops the browser image's headless
+launch note for a live agent. Until it was built (MEASURED 2026-10-13,
+task_7cda0d5335f049b4b442) the agent launched its own headless browser, the
+live view stayed blank, and at Google's CAPTCHA it searched Bing without
+saying so. **A Chromium the agent starts itself, headless, is not shown and
+cannot be prevented**: the brief asks, it does not enforce; the live view
+shows the platform's browser. The worker
 sets no `DISPLAY` in the agent's environment (`Workspace.child_env`,
 `apps/agent-worker/agent_worker/workspace.py::Workspace.child_env`), so a headed launch fails
 loudly rather than drawing somewhere nobody sees.

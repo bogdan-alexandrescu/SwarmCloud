@@ -1122,6 +1122,7 @@ def run_cli_agent(
     *,
     extra_args: Sequence[str] = (),
     extra_env: Mapping[str, str] | None = None,
+    path_prefix: Sequence[str] = (),
 ) -> dict[str, Any]:
     payload = ctx.payload
     prompt = payload.get("prompt")
@@ -1296,7 +1297,11 @@ def run_cli_agent(
     stderr_path = ctx.artifacts_dir / files.stderr
 
     env = {
-        "PATH": BASE_PATH,
+        # `path_prefix`: directories the runner puts before the platform's
+        # PATH -- claude_code's /opt/venv/bin for a live-browser agent, whose
+        # `python3` must be the interpreter that has Playwright (BROWSER-BRIEF).
+        # A runner constant, never caller input.
+        "PATH": ":".join((*path_prefix, BASE_PATH)),
         # HOME IS THE ATTEMPT'S OWN `work/`, NEVER THE CHECKOUT, even when the
         # agent starts in the checkout (#226, owner decision of 2026-09-26).
         # The CLI writes its own state under HOME (`.claude.json`, `.claude/`,

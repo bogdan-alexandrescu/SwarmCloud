@@ -105,6 +105,24 @@ passed on, and one paragraph is added to the prompt saying how to launch.
 Keyed on the image's variable, not the profile's name, so it holds on any
 profile that runs the browser image and never on agent-runtime-base.
 
+WHY A LIVE-BROWSER BRIEF (BROWSER-BRIEF, part of #1030). MEASURED 2026-10-13
+on task_7cda0d5335f049b4b442: a `claude-code-browser` agent asked to open ten
+search results in tabs followed the note above, launched its OWN headless
+Chromium, and the live view the person watched stayed blank for the whole
+run; plain `python3` had no Playwright (only /opt/venv/bin's has it, and the
+CLI's PATH, `cliagent.BASE_PATH`, did not name it); and at Google's CAPTCHA it
+silently searched Bing instead. docs/design/live-browser.md §3.2 promised
+"agent instructions" pointing Playwright at the CDP endpoint; none existed. So
+for a profile whose `live_browser` flag is set (read by `SWARM_RUNNER_PROFILE`,
+which the worker sets, never `input`), `body` appends `LIVE_BROWSER_BRIEF` with
+`--append-system-prompt`, puts `LIVE_PYTHON_DIR` first on the agent's PATH,
+and leaves the headless note out -- it says `launch()`, the exact call that
+left the view blank. The system prompt rather than the prompt: it stays in
+force on every resumed turn (finish, repair, account change) and after the
+CLI compacts the conversation, and the flag comes after the platform's flags,
+so a deployment's CLAUDE_CODE_ARGS cannot drop it. It costs tokens every turn,
+which is why it is short.
+
 WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
 that read stdin with nothing attached sat until the Bash timeout killed it:
 the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
@@ -122,6 +140,8 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+
+from swarm_common.profiles import RUNNER_PROFILES
 
 from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV
 from .base import RunnerContext, run_runner
@@ -160,6 +180,41 @@ BROWSER_NOTE = (
     "container, which is itself the sandbox. Save screenshots and other "
     "captures under $SWARM_ARTIFACTS_DIR so they are uploaded."
 )
+
+#: The worker names the attempt's profile here (`lifecycle`, the runner's
+#: environment). A platform value: a caller names a profile and nothing else.
+PROFILE_ENV = "SWARM_RUNNER_PROFILE"
+
+#: Where the image's venv puts the `python3` that has Playwright
+#: (images/agent-runtime-base/Dockerfile, `python -m venv /opt/venv`).
+LIVE_PYTHON_DIR = "/opt/venv/bin"
+
+#: What a live-browser agent is told, in its system prompt (module docstring).
+LIVE_BROWSER_BRIEF = """\
+LIVE BROWSER. A person is watching a Chromium that is already running in this \
+pod. Do your browsing in it so they see it; never start a browser of your own \
+(`launch()` and `launch_persistent_context()` open a hidden one nobody sees). \
+Connect with Playwright from `python3`:
+
+    import os
+    from playwright.sync_api import sync_playwright
+    with sync_playwright() as p:
+        browser = p.chromium.connect_over_cdp(os.environ["SWARM_CDP_ENDPOINT"])
+        context = browser.contexts[0]  # the live profile
+        page = context.new_page()      # a new tab the person sees
+        page.bring_to_front()
+        page.goto("https://example.org")
+
+Open each page in its own tab with `context.new_page()`, keep the tabs open \
+while you work, and call `page.bring_to_front()` on the one you are using. \
+When a site shows a CAPTCHA, a bot check, a consent wall or a sign-in, do not \
+try to get around it and do not switch to a different site than the one asked \
+for. Ask the person: `swarm-handoff request --reason "<what the person should \
+do>" --expect <domain>`, then `swarm-handoff wait` (exit codes: \
+$SWARM_HANDOFF/README.md), and carry on in the same tab once control returns. \
+If nobody comes, say so in your final answer, and only then use an \
+alternative, naming it.
+"""
 
 #: The PreToolUse hook. Standard library only, run by this runner's own
 #: interpreter. Exit 2 is the CLI's "block this tool call", and what it writes
@@ -373,12 +428,25 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             env[name] = value
     browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
     prompt = ctx.payload.get("prompt")
+    live = live_browser()
     if browsers:
         env[BROWSERS_PATH_ENV] = browsers
-        # A new dict on the same context: `run_runner` holds this object.
-        if isinstance(prompt, str) and prompt.strip():
+        # A new dict on the same context: `run_runner` holds this object. Not
+        # for a live agent: the note says to launch, the brief never to.
+        if not live and isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{BROWSER_NOTE}"}
-    return run_cli_agent(ctx, SPEC, extra_args=extra, extra_env=env)
+    if not live:
+        return run_cli_agent(ctx, SPEC, extra_args=extra, extra_env=env)
+    extra += ["--append-system-prompt", LIVE_BROWSER_BRIEF]
+    return run_cli_agent(
+        ctx, SPEC, extra_args=extra, extra_env=env, path_prefix=(LIVE_PYTHON_DIR,)
+    )
+
+
+def live_browser() -> bool:
+    """True when this attempt's profile runs the live browser (`RunnerProfile.live_browser`)."""
+    profile = RUNNER_PROFILES.get(os.environ.get(PROFILE_ENV, "").strip())
+    return bool(profile is not None and profile.live_browser)
 
 
 def main() -> int:
