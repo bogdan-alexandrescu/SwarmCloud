@@ -3482,6 +3482,13 @@ class Worker:
             unreachable = self._publish_unreachable(summary)
             if unreachable is not None:
                 return self._fail_for_publish_unreachable(unreachable, summary, exit_code=0)
+            # After the outage, which stays retryable: anything else that left
+            # a skip-path step without its branch fails it now (PUB-SKIP).
+            unpushed = self._skipped_publish_missing(summary)
+            if unpushed is not None:
+                self._mark_publish(summary, failed=str(self._scrub(unpushed)))
+                return self._fail_for_published_nothing(unpushed, summary, exit_code=0)
+            self._mark_publish(summary)
             # LAST before the success, so an attempt that fails above never
             # leaves a write-once verdict behind it for its retry to meet.
             unpublished = self._publish_review_verdict(summary)
@@ -6381,6 +6388,75 @@ class Worker:
         return (
             f"publish_failed: the step was to open a pull request and its branch "
             f"was not pushed: {cause}. {where}"
+        )
+
+    def _skipped_publish_missing(self, summary: dict[str, Any]) -> str | None:
+        """Why a step whose verdict gate skipped its agent pushed no branch, or None (PUB-SKIP).
+
+        Measured 2026-10-12 (wf_18f0b5e64639417f83d6, task_58ecd704c73a433b9782):
+        the review said MERGE, the fix step skipped its agent and ended
+        SUCCEEDED with no push and no error, and the re-review that builds on
+        it failed cloning its branch. On the skip path the step's only
+        deliverable is the reviewed branch, published, and `_published_nothing`
+        exempts a shut gate -- so every way the publish can decline (a token
+        that may not push, a refused git token, a forge this worker cannot
+        publish to, a harvest that returned early) read as success. Now a
+        skip-path step that owes a pull request (`_shut_gate_owes_publish`)
+        and did not push its branch has this reason, quoting the publish's
+        own, and ends FAILED. A step whose agent ran is unchanged.
+        """
+        if not self._shut_gate_owes_publish():
+            return None
+        git = summary.get("git")
+        if isinstance(git, dict) and git.get("published") is True and git.get("branch"):
+            return None
+        if not isinstance(git, dict):
+            cause = "no repository was harvested, so there was nothing to push"
+        else:
+            cause = str(
+                git.get("publish_reason") or git.get("error")
+                or "the publish recorded no reason"
+            )
+        return (
+            f"publish_failed: the review verdict was {self._verdict['verdict']}, so this "
+            f"step's agent did not run and the step was to publish the reviewed work, "
+            f"but its branch was not pushed: {cause}"
+        )
+
+    def _mark_publish(self, summary: dict[str, Any], *, failed: str | None = None) -> None:
+        """`published` or `publish_failed` on the task's events (PUB-SKIP).
+
+        `published` when this attempt's publish pushed its branch: the branch,
+        the head pushed and the pull request, if one was opened or reused, on
+        both paths, so a reader of the events alone can tell a step that
+        delivered from one that only said SUCCEEDED. `publish_failed`, with the
+        reason, when the finish fails the step for a publish that did not
+        happen. A RUNNING mark with a `cause`, as every other note here is
+        (`_emit_startup_mark`): the frozen `EventType` has no note-only type.
+        """
+        verdict = self._verdict
+        agent_ran = True if verdict is None else bool(verdict.get("agent_ran", True))
+        if failed is not None:
+            self._emit_startup_mark(
+                "publish_failed", {"reason": failed, "agent_ran": agent_ran}
+            )
+            return
+        git = summary.get("git")
+        if not (isinstance(git, dict) and git.get("published") is True and git.get("branch")):
+            return
+        pull = git.get("pull_request")
+        self._emit_startup_mark(
+            "published",
+            {
+                "branch": git.get("branch"),
+                "head": git.get("pushed_head"),
+                "pull_request": (
+                    {"number": pull.get("number"), "url": pull.get("url"),
+                     "created": pull.get("created")}
+                    if isinstance(pull, dict) else None
+                ),
+                "agent_ran": agent_ran,
+            },
         )
 
     def _publish_unreachable(self, summary: dict[str, Any]) -> dict[str, Any] | None:
@@ -9796,7 +9872,16 @@ class Worker:
         # It was invisible because it depended on whether the integrator's
         # agent happened to touch a file. Found by running the strategy against
         # a real repository, not by reading it.
-        if work.is_empty and not self._integration_is_pending():
+        # A SHUT VERDICT GATE IS THE SAME KIND OF EXCEPTION (PUB-SKIP,
+        # 2026-10-12). Its agent never ran, so "changed nothing" is the gate's
+        # doing, and the reviewed work is the branch it cloned: a step that
+        # owes a pull request still pushes that branch and opens it, and
+        # `_skipped_publish_missing` fails the step if it could not.
+        if (
+            work.is_empty
+            and not self._integration_is_pending()
+            and not self._shut_gate_owes_publish()
+        ):
             out["published"] = False
             out["publish_reason"] = "the agent changed nothing in the repository"
             return out
@@ -9853,6 +9938,16 @@ class Worker:
             self._dispatch_strategy() == "integrate"
             and self._dispatch_role() == "integrator"
             and bool(self._dispatch_integrates())
+        )
+
+    def _shut_gate_owes_publish(self) -> bool:
+        """True when this step's verdict gate kept its agent from running and
+        the step owes a pull request (`_opens_pull_request`): the one ending
+        whose only deliverable is the reviewed branch, published (PUB-SKIP)."""
+        return (
+            self._verdict is not None
+            and not self._verdict.get("agent_ran", True)
+            and self._opens_pull_request()
         )
 
     def _build_clean_repo(
