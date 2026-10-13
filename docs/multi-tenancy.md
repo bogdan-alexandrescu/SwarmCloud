@@ -410,10 +410,11 @@ target falls, nobody else's does.
 
 From 2026-10-11 recurring tenant work runs as **schedules**
 ([schedules.md](schedules.md), §5.6 there), not as a Cloud Scheduler job per
-tenant. Lane SWEEP's per-tenant `issue_sweep` job is **paused** and its
-`issue-sweep` schedule replaces it. The job and its route are deleted in a
-later change, held for the owner
-([operations.md §13](operations.md#13-schedules-the-s9-migration-sweep-paused-deletion-pending)).
+tenant. Lane SWEEP's per-tenant `issue_sweep` job was paused on 2026-10-11,
+when its `issue-sweep` schedule replaced it, and the job, its route and
+`SWEEP_ENABLED` were deleted on 2026-10-12, the owner having waived the
+planned 7-day watch
+([operations.md §13](operations.md#13-schedules-the-s9-migration-sweep-removed-2026-10-12)).
 A schedule is a document in `schedules/`, carries its `tenant_id`, and fires
 **as its owner, in its own tenant**. The tick that fires every tenant's
 schedules holds one route and submits nothing as itself. So a schedule's work
