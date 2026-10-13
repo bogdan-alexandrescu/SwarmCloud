@@ -272,17 +272,19 @@ def test_the_steps_it_ran_are_read_from_the_dockerfile(tmp_path):
     root = _sandbox(tmp_path)
     dockerfile = root / "images" / "agent-runtime-indexer" / "Dockerfile"
     text = dockerfile.read_text()
-    anchor = "RUN swarm-repo-graph --self-test\n"
+    anchor = " && swarm-repo-graph --self-test\n"
     assert anchor in text
     dockerfile.write_text(text.replace(anchor, anchor + "RUN probe-tool --planted-self-test\n", 1))
     _, proc, _ = _local(tmp_path, "--build-only", "--local", "--tag", TAG, "agent-runtime-indexer", root=root)
     assert proc.returncode == 0, proc.stderr[-3000:]
     report = (root / "build" / "build-only" / "local-report.md").read_text()
-    for step in ("swarm-repo-index --self-test", "swarm-repo-index --lsp-self-test",
-                 "swarm-repo-graph --self-test", "probe-tool --planted-self-test"):
+    # A RUN is listed by its first line, and the indexer's three self-tests are
+    # one RUN (test_image_streaming.py says why), listed as its first.
+    for step in ("swarm-repo-index --self-test", "probe-tool --planted-self-test"):
         assert step in report, report
-    # The base's own checks run in the base's build, and are reported there.
-    assert "agent_worker" in report and "RUN tools=" in report, report
+    # The base's own checks run in the base's build, and are reported there
+    # (its Python and worker-import checks as one RUN, listed by its first line).
+    assert "import sys, tarfile" in report and "RUN tools=" in report, report
 
 
 def test_browser_report_carries_the_chromium_smoke_check(tmp_path):
