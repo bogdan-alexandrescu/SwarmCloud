@@ -35,6 +35,7 @@ import { GitHubCallbackScreen } from './GitHubConnect'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
+import { NotificationBell } from './Notifications'
 import { routedClick, Segmented, ToneMark } from './components'
 import { Mark } from './primitives'
 import { HelpScreen, helpPageOf } from './HelpSection'
@@ -1273,9 +1274,15 @@ export function App() {
           <FrameAge.Provider value={true}>
           <SectionHelp.Provider value={helpSection === null ? null : <SectionQuestion section={helpSection} topic={PAGE_TOPIC[`${at.sectionId}/${at.tab}`] ?? null} />}>
           <HeadAgeProvider at={at}>
+          {/* THE HEADER BAR (#1206, proposal A): on every page, over both the
+              page and an open agent beside it. The trail and the frame's age
+              where they are drawn at all (`Head`), the bell at the right. */}
+          <header className="ctl-bar">
+            <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
+            <NotificationBell go={go} />
+          </header>
           <div className={`app${inspector ? ' has-inspector' : ''}`}>
             <main className="work">
-              <Head at={at} section={section} title={title} closeTo={listAddress} go={go} />
 
               {section === null ? (
                 at.sectionId === HELP ? (
