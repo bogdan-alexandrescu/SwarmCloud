@@ -86,7 +86,24 @@ relay's `{"type": "ready"}`, every tunnel message is binary:
 
 A viewer's websocket carries that viewer's RFB bytes as binary messages, and
 swarm-api's control messages as text: `{"type": "control"|"release",
-"ticket": ...}`.
+"ticket": ...}`. A control message the relay refuses is answered on that
+link with `{"type": "refused", "reason": "control", "cause": <why>}`, and
+swarm-api passes it to the console, which says why.
+
+CONTROL FOLLOWS THE PERSON'S INPUT (LB-CURSOR2; part of #1030). swarm-api
+decides control per PERSON, and sends a control ticket on every link of
+theirs: a second console tab, a hidden one, a thumbnail. Each used to take the
+gate's single controller slot as its ticket arrived, so the last link to be
+polled won it, and the canvas the person was moving and typing on became a
+viewer whose input the gate discarded. MEASURED 2026-10-13: a controller's
+input from a hidden console tab counted 0 pointer events and 0 keys. So a link
+with a control ticket is GRANTED; the first one is the controller at once, and
+another granted link becomes it when its first key, pointer or paste arrives
+(sent to the gate as `CONTROL` before that input). A release takes the grant
+from every link of that person (swarm-api ends control per person). When the
+controller's link leaves, or is released, the most recently granted link still
+open takes over -- another of the person's tabs, or the person swarm-api gave
+control to next -- so control does not lapse while somebody holds it.
 
 NOTHING READ FROM A CONNECTION IS LOGGED. RFB bytes are a person's keystrokes
 (§5.3.3), and a ticket admits whoever holds it. Log lines carry reason codes,
@@ -156,6 +173,9 @@ MAX_CONN_ID = 64
 
 OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT, OP_DEVICE = 1, 2, 3, 4, 5, 6, 7
 _OPS = frozenset({OP_OPEN, OP_DATA, OP_CLOSE, OP_CONTROL, OP_ACTION, OP_REPORT, OP_DEVICE})
+#: RFB client messages that are a person's input (RFC 6143 §7.5): KeyEvent,
+#: PointerEvent, ClientCutText. By the first byte, as swarm-api counts them.
+_RFB_INPUT = frozenset({4, 5, 6})
 #: The largest REPORT kept (the gate's `report.MAX_REPORT_BYTES`): a
 #: 253-character host and a device fit in well under half of it.
 MAX_REPORT_BYTES = 4096
@@ -527,6 +547,8 @@ class Tunnel:
     outbox: _Outbox
     viewers: dict[str, "Viewer"] = field(default_factory=dict)
     controller: str | None = None
+    #: Links holding a control ticket, oldest first (module docstring).
+    granted: list[str] = field(default_factory=list)
     recording: Recording | None = None
     recording_task: asyncio.Task[None] | None = None
     #: The gate's latest REPORT, as the text every viewer link is sent.
@@ -771,7 +793,30 @@ class Rendezvous:
     async def from_viewer(self, viewer: Viewer, data: bytes) -> None:
         if viewer.closed or viewer.tunnel.closed:
             return
-        viewer.tunnel.outbox.put(True, encode_frame(OP_DATA, viewer.conn_id, data))
+        tunnel = viewer.tunnel
+        if (data[:1] and data[0] in _RFB_INPUT and tunnel.controller != viewer.conn_id
+                and viewer.conn_id in tunnel.granted):
+            # This person's input comes from this link now (module docstring).
+            self._set_controller(tunnel, viewer.conn_id)
+        tunnel.outbox.put(True, encode_frame(OP_DATA, viewer.conn_id, data))
+
+    def _set_controller(self, tunnel: Tunnel, conn_id: str | None) -> None:
+        if tunnel.controller == conn_id:
+            return
+        tunnel.controller = conn_id
+        tunnel.outbox.put(True, encode_frame(OP_CONTROL, conn_id or ""))
+
+    def _ungrant(self, tunnel: Tunnel, conn_ids: set[str]) -> bool:
+        """Take these links' grants away; True when one was the controller,
+        which passes to the newest granted link left, or to none."""
+        tunnel.granted = [c for c in tunnel.granted if c not in conn_ids]
+        if tunnel.controller not in conn_ids:
+            return False
+        live = [c for c in tunnel.granted if c in tunnel.viewers]
+        tunnel.controller = None
+        if live:
+            self._set_controller(tunnel, live[-1])
+        return True
 
     async def viewer_text(self, viewer: Viewer, text: str) -> None:
         """swarm-api's control messages, each carrying a ticket it minted."""
@@ -796,17 +841,27 @@ class Rendezvous:
         except Refused as exc:
             log.info("live relay: session=%s conn=%s control refused: %s",
                      viewer.tunnel.session.session_id, viewer.conn_id, exc.reason)
-            viewer.outbox.put(False, json.dumps({"type": "refused", "reason": "control"}))
+            viewer.outbox.put(False, json.dumps({"type": "refused", "reason": "control",
+                                                 "cause": exc.reason}))
             return
         tunnel = viewer.tunnel
         if ticket.role == "control":
-            tunnel.controller = viewer.conn_id
-            tunnel.outbox.put(True, encode_frame(OP_CONTROL, viewer.conn_id))
+            if viewer.conn_id not in tunnel.granted:
+                tunnel.granted.append(viewer.conn_id)
+            current = tunnel.controller
+            if current is not None and current in tunnel.granted and current in tunnel.viewers:
+                # Another link of this person's already holds it; this one
+                # takes it with its first input (module docstring).
+                return
+            self._set_controller(tunnel, viewer.conn_id)
             event = "control_taken"
         else:
-            if tunnel.controller != viewer.conn_id:
+            # swarm-api ends control per person: every link of theirs lets go.
+            mine = {c for c, v in tunnel.viewers.items() if v.email == viewer.email}
+            if not self._ungrant(tunnel, mine | {viewer.conn_id}):
                 return
-            tunnel.controller = None
+            if tunnel.controller is not None:
+                return  # handed to another granted link: control goes on
             tunnel.outbox.put(True, encode_frame(OP_CONTROL, ""))
             event = "control_returned"
         log.info("live relay: session=%s conn=%s %s", tunnel.session.session_id, viewer.conn_id, event)
@@ -822,12 +877,17 @@ class Rendezvous:
         viewer.closed = True
         tunnel = viewer.tunnel
         tunnel.viewers.pop(viewer.conn_id, None)
-        if tunnel.controller == viewer.conn_id:
-            # The gate revokes control when the connection closes
-            # (`ControlState.connection_closed`); the relay forgets it too.
-            tunnel.controller = None
         if tell_gate and not tunnel.closed:
             tunnel.outbox.put(True, encode_frame(OP_CLOSE, viewer.conn_id))
+        # The gate revokes control when the connection closes
+        # (`ControlState.connection_closed`); the relay forgets it too, and a
+        # granted link of the same person left open takes over.
+        if tunnel.closed:
+            tunnel.granted = [c for c in tunnel.granted if c != viewer.conn_id]
+            if tunnel.controller == viewer.conn_id:
+                tunnel.controller = None
+        else:
+            self._ungrant(tunnel, {viewer.conn_id})
         self._viewers_changed(tunnel)
         await viewer.outbox.shut(code, reason)
         log.info("live relay: session=%s conn=%s viewer left: %s",

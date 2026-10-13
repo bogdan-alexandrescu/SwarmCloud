@@ -63,12 +63,20 @@ import './styles/live.css'
  * `/v1/live/<session>/stream` and sends the one-use ticket as its first frame.
  *
  * KEYS ONLY WITH CANVAS FOCUS (§5.6). noVNC listens for keys on its own
- * canvas, so a key pressed anywhere else in the console never reaches it;
- * and the connection is view-only (`viewOnly`, which sends no key, pointer or
- * paste at all) except while this person holds control AND the canvas has
- * focus. While it has focus in control, a key stops at the canvas, so the
- * console's own shortcuts (Escape closes the split, `[` folds the list) do
- * not fire under someone typing into the agent's browser.
+ * canvas, so a key pressed anywhere else in the console never reaches it, and
+ * a paste goes only from the focused canvas. The connection is view-only
+ * (`viewOnly`, which sends no key, pointer or paste at all) except while this
+ * person holds control. While the canvas has focus in control, a key stops at
+ * the canvas, so the console's own shortcuts (Escape closes the split, `[`
+ * folds the list) do not fire under someone typing into the agent's browser.
+ *
+ * THE POINTER MOVES WITHOUT A CLICK FIRST (LB-CURSOR2; part of #1030). Input
+ * used to open only once the canvas also had focus, so every move before the
+ * first click was dropped by noVNC itself: MEASURED 2026-10-13 on
+ * task_1d1785b21d5b4e1f894e, 20 moves, a click and two keys on the canvas
+ * reached the gate as two pointer events -- the press and the release -- and
+ * the agent's page never saw the mouse arrive. Moving is not typing: the
+ * pointer is the controller's from the moment they hold control.
  *
  * TOUCH ONLY IN CONTROL, WITH TOUCH ON (§6.1). A touch on the canvas reaches
  * noVNC, which turns it into the pointer events the gate makes touch events
@@ -922,6 +930,7 @@ function LiveScreen({
   movedRef.current = onSessionMoved
   const [conn, setConn] = useState<Conn>('connecting')
   const [why, setWhy] = useState<string | null>(null)
+  const [refused, setRefused] = useState<string | null>(null)
   const [hasFocus, setHasFocus] = useState(false)
   const stage = useRef<HTMLDivElement>(null)
   const below = useRef<HTMLDivElement>(null)
@@ -960,13 +969,13 @@ function LiveScreen({
     return () => onScreen?.(null)
   }, [onScreen])
 
-  // VIEW-ONLY UNLESS IN CONTROL WITH THE CANVAS FOCUSED. Set on the RFB
-  // object directly, not through a render: noVNC focuses its canvas on
-  // mousedown before it handles the press, and the focus handler below has to
-  // have opened input by then or the first click of a sign-in is dropped.
+  // VIEW-ONLY UNLESS IN CONTROL. Set on the RFB object directly, not through
+  // a render, so the connection's first moment in control already sends. Not
+  // gated on focus: keys need it anyway (noVNC hears them on its canvas) and
+  // the pointer must not (the header comment's measurement).
   const applyInput = useCallback(() => {
     const r = rfb.current
-    if (r !== null) r.viewOnly = !(controlRef.current && focused.current)
+    if (r !== null) r.viewOnly = !controlRef.current
   }, [])
   useEffect(applyInput, [control, applyInput])
 
@@ -983,6 +992,16 @@ function LiveScreen({
       const changed = seen !== null && (s.in_control !== seen.in_control || s.controller !== seen.controller || s.open !== seen.open)
       seen = s
       if (changed && !stopped) changedRef.current?.()
+    }
+    // The relay turned this connection's control away (`liveRefusal`): said
+    // under the canvas, so "you are in control" is never drawn over a browser
+    // that will ignore every move. A later connection starts clear.
+    const onRefused = (cause: string) => {
+      if (stopped) return
+      setRefused(cause)
+      // Most often a connection left on an earlier attempt's session: the pane
+      // reads again which session is current, as for a ticket that moved.
+      movedRef.current?.()
     }
     const retry = (message: string) => {
       if (stopped) return
@@ -1040,13 +1059,14 @@ function LiveScreen({
           r.addEventListener('connect', () => {
             tries = 0
             setWhy(null)
+            setRefused(null)
             setConn('connected')
           })
           r.addEventListener('disconnect', () => {
             if (rfb.current === r) rfb.current = null
             retry('The live connection closed. Reconnecting with a new ticket.')
           })
-        }, onStatus)
+        }, onStatus, onRefused)
       } catch (err) {
         retry(err instanceof Error ? err.message : 'The live connection did not open.')
       }
@@ -1063,13 +1083,11 @@ function LiveScreen({
 
   const onFocus = () => {
     focused.current = true
-    applyInput()
     setHasFocus(true)
   }
   const onBlur = (e: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
     if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return
     focused.current = false
-    applyInput()
     setHasFocus(false)
   }
   // A key typed into the agent's browser is the agent's browser's, not the console's.
@@ -1128,7 +1146,9 @@ function LiveScreen({
         {conn === 'connecting'
           ? 'Connecting to the agent’s browser.'
           : conn === 'connected'
-            ? control
+            ? control && refused !== null
+              ? `The relay refused this connection’s control (${refused}). Your input does not reach the agent’s browser.`
+              : control
               ? hasFocus
                 ? 'Your keys go to the agent’s browser. Click outside it to use the console.'
                 : 'Click the browser to type into it.'

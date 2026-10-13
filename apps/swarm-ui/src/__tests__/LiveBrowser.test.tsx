@@ -8,7 +8,9 @@
 //     (LB-DEV-B): a preset by name, rotate and touch through setLiveDevice;
 //   * a page off the hand-off's named site turns the strip red, and Take
 //     control asks twice;
-//   * keys reach the agent's browser only while its canvas has focus;
+//   * keys reach the agent's browser only while its canvas has focus, and the
+//     pointer from the moment this person holds control (LB-CURSOR2);
+//   * a control refusal from the relay is said under the canvas;
 //   * touch reaches it only in control, with touch on.
 //
 // noVNC is replaced by `FakeRfb` and the socket by `FakeSocket`: jsdom has no
@@ -19,8 +21,8 @@
 // MUTATIONS, one per block: put the ticket in the socket URL's query; drop
 // the `can_control` check in LiveControl; enable the device chips for every
 // viewer (or decide it from `controller` instead of `you.can_switch_device`);
-// send a size instead of a preset name; skip the second ask on a mismatch; set `viewOnly` from control
-// alone, ignoring focus; let touches through whenever in control; await
+// send a size instead of a preset name; skip the second ask on a mismatch; gate `viewOnly` on canvas
+// focus again (moves before the first click are then dropped, LB-CURSOR2); let touches through whenever in control; await
 // anything between the socket's 'open' and noVNC's construction (the server's
 // first frame is then lost); construct noVNC outside the retry.
 
@@ -589,14 +591,28 @@ describe('a mismatched origin turns the strip red and asks twice', () => {
 })
 
 describe('keys are captured only with canvas focus', () => {
-  it('keeps the connection view-only until the person in control focuses the canvas, and again once it loses focus', async () => {
+  it('opens input for the person in control before any click, so a move reaches the agent’s page (LB-CURSOR2)', async () => {
+    // MEASURED 2026-10-13: 20 moves, a click and two keys on the canvas reached the gate as two
+    // pointer events. noVNC sends no move while view-only, and it was view-only until a click focused it.
     pane(mine())
     const r = await connected()
-    expect(r.viewOnly).toBe(true)
+    expect(r.viewOnly, 'a move before the first click is dropped by noVNC').toBe(false)
     act(() => r.canvas.focus())
     expect(r.viewOnly).toBe(false)
     act(() => r.canvas.blur())
-    expect(r.viewOnly).toBe(true)
+    expect(r.viewOnly, 'clicking outside the canvas does not take the pointer back').toBe(false)
+  })
+
+  it('says under the canvas when the relay refused this connection’s control, with its cause (LB-CURSOR2)', async () => {
+    const reload = vi.fn()
+    pane(mine(), reload)
+    await connected()
+    const raw = FakeSocket.made.at(-1)!
+    expect(screen.queryByText(/refused this connection’s control/)).toBeNull()
+    act(() =>
+      raw.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'refused', reason: 'control', cause: 'wrong_session' }) })),
+    )
+    expect(screen.getByText(/The relay refused this connection’s control \(wrong_session\)/)).toBeTruthy()
   })
 
   it('keeps a viewer’s connection view-only even with the canvas focused', async () => {

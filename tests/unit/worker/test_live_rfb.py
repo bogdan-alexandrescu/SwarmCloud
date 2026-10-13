@@ -324,15 +324,17 @@ def test_controller_input_above_the_rate_limit_is_dropped() -> None:
         gate = Gate()
         person = await gate.connect("person-1", clock=lambda: now[0])
         await gate.control.grant("person-1")
+        # Keys and clicks are dropped above the limit; a move is coalesced
+        # instead (test_live_cursor2.py, LB-CURSOR2).
         for i in range(rfb.MAX_INPUT_EVENTS_PER_SECOND + 50):
-            person.pointer(0, i % 60, 1)
+            person.key(0x61, i % 2 == 0)
         await person.flush()
-        assert len(gate.injector.pointer) == rfb.MAX_INPUT_EVENTS_PER_SECOND
+        assert len(gate.injector.keys) == rfb.MAX_INPUT_EVENTS_PER_SECOND
         assert gate.sessions["person-1"].counts.dropped == 50
         now[0] += 1.0
-        person.pointer(0, 1, 1)
+        person.key(0x61, False)
         await person.flush()
-        assert len(gate.injector.pointer) == rfb.MAX_INPUT_EVENTS_PER_SECOND + 1
+        assert len(gate.injector.keys) == rfb.MAX_INPUT_EVENTS_PER_SECOND + 1
         await gate.close()
 
     asyncio.run(main())
@@ -346,8 +348,9 @@ def test_a_paste_that_does_not_fit_the_rate_limit_is_dropped_whole() -> None:
         gate = Gate()
         person = await gate.connect("person-1", clock=lambda: now[0])
         await gate.control.grant("person-1")
-        for _ in range(rfb.MAX_INPUT_EVENTS_PER_SECOND - 3):
-            person.pointer(0, 1, 1)
+        # Spend the input limit on keys (moves have a limit of their own).
+        for i in range(rfb.MAX_INPUT_EVENTS_PER_SECOND - 3):
+            person.key(0x61, i % 2 == 0)
         person.cut_text(secrets.token_hex(8))
         await person.flush()
         assert gate.injector.typed == []
