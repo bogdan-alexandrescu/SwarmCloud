@@ -764,9 +764,23 @@ re-decision it is the runtime identity of one Cloud Run job,
 | `roles/storage.objectCreator`, **conditioned** | the artifact bucket, to `tenants/` | the `.tenant` marker object the script writes | the prefix; no read, no delete |
 | custom `swarmWorkspaceSecretBinder` (`secretmanager.secrets.get`, `.getIamPolicy`, `.setIamPolicy`) | project, **conditioned** | bind the worker to its forge slot | `resource.name.startsWith("projects/<number>/secrets/swarm-tenant-u-")`, the full-name form `terraform/bootstrap/forge_user_slots.tf` writes |
 | custom `swarmForgeSlotCreator` (exists) | project | create the empty slot and its twin | the project; creation is checked there. The same role swarm-api holds |
-| custom `swarmWorkspaceFirestore` (`datastore.entities.get`, `.list`, `.create`, `.update`, `datastore.databases.getMetadata`) | project | read the record and `admin_roles/`, write progress, the tenant and pool documents | **the project**; Firestore ignores conditions on the data plane (`scripts/register-tenant.sh` §3). No `delete` |
+| custom `swarmWorkspaceFirestore` (`datastore.entities.get`, `.list`, `.create`, `.update`, `datastore.databases.get`) | project | read the record and `admin_roles/`, write progress, the tenant and pool documents; `databases.get` is what Firestore checks for the A1 claim's `beginTransaction` and its `rollback` | **the project**; Firestore ignores conditions on the data plane (`scripts/register-tenant.sh` §3). No `delete`. Exactly the permissions the job's calls need, held there by `tests/unit/scripts/test_workspace_firestore_permissions.py` (below) |
 | `roles/container.clusterViewer`, **conditioned** | project, to the swarm cluster's resource name | `get-credentials` for the namespace step | the expression `terraform/modules/iam/bindings.tf` builds; nothing on the other team's cluster |
 | `roles/logging.logWriter` | project | a Cloud Build build wrote its log as its identity. **A Cloud Run job does not need it for its own output**: Cloud Run collects the container's stdout and stderr itself. W0b confirms that on one execution; then W4b drops the row, and the bootstrap's role-list validation with it | write only |
+
+**`swarmWorkspaceFirestore` follows the job's calls, not Firestore's role
+names.** Until 2026-10-13 it held `datastore.databases.getMetadata` and not
+`datastore.databases.get`, and every execution for the first self-service
+workspace (w-7f9285: vkb8q, n6hv8, 7srrk) stopped at A1 with `beginTransaction`
+→ 403 `PERMISSION_DENIED`. The names mislead: in Google's table
+(firestore/docs/security/iam) `databases.get` is what `beginTransaction` and
+`rollback` check, and `getMetadata` is `projects.databases.get`, which the job
+never calls and its call guard refuses. No execution had completed A1 before,
+because u-bogdan's workspace was moved by an operator run, so the create path's
+Firestore grants had never been exercised. `test_workspace_firestore_permissions.py`
+now walks every Firestore call `register-tenant.sh --workspace` makes and every
+Firestore shape `scripts/lib/workspace-calls.json` admits, maps each to its
+permission, and fails when the role lacks one or holds one no call needs.
 
 The image pull grant on the builder image's repository (`swarmImagePuller`,
 `workspace_deployer_pull` in `terraform/bootstrap/workspace_deployer.tf`) goes
