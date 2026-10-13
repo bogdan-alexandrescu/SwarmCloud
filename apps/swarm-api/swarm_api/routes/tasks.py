@@ -49,6 +49,7 @@ from ..handoff import HandoffService
 from .children import child_service
 from ..heartbeats import heartbeats_for_page
 from ..schemas import TaskBatchCreate, TaskCreate
+from ..startup import startup_of
 from ..task_accounts import accounts_for, accounts_for_attempts
 from ..task_input import TaskMasking, input_copy, masking_for
 from ..waiting import waiting_for_page
@@ -503,6 +504,24 @@ def list_events(
         "events": [_event_to_api(e, masking) for e in page.items],
         "next_page_token": page.next_page_token,
     }
+
+
+@router.get("/{task_id}/startup")
+def read_startup(
+    task_id: str,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The current attempt's start-up steps and the profile's usual times (STARTUP-API).
+
+    The console's start-up progress bar (owner request 2026-10-13). The same
+    scope as `GET /v1/tasks/{id}`: another tenant's task, or another
+    submitter's for a continuation-scoped caller, is the same 404 as a
+    missing one. See `swarm_api.startup` for the shape and the reads.
+    """
+    task = ctx.store.get_task(tenant_id, task_id, submitted_by=submitted_by)
+    return startup_of(ctx.db, task, ctx.startup_estimates)
 
 
 @router.get("/{task_id}/attempts")

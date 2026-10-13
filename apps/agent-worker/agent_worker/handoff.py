@@ -164,6 +164,18 @@ NO_LIVE_SESSION = "no_live_session"
 #: honour by closing Chromium and removing the profile. Reported on the PR.
 GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status"})
 
+#: The browser's start-up steps the gate dates in its `status` (`startup`, in
+#: epoch seconds), in order, for the console's progress bar (STARTUP-API,
+#: contract request 74). They follow the pod's four, which the reconciler
+#: writes (`reconciler.startsteps.POD_STARTUP_STEPS`); the worker writes these
+#: three, because the gate holds no credential to write anything.
+#:
+#: `first_frame` is the first frame the gate's capture published to its
+#: stream hub, which it does only while an RFB stream -- a viewer, or the
+#: relay's recorder -- is open: the nearest point to "the live stream sent its
+#: first frame" either side of the tunnel can observe.
+GATE_STARTUP_STEPS: tuple[str, ...] = ("browser_launching", "browser_ready", "first_frame")
+
 #: The guide the agent reads, written into the spool by `prepare`.
 GUIDE_NAME = "README.md"
 AGENT_GUIDE = """\
@@ -366,8 +378,14 @@ class HandoffPath:
         environ: Mapping[str, str] | None = None,
         now: Callable[[], datetime] = utcnow,
         wall: Callable[[], float] = time.time,
+        progress: Callable[[str, datetime], bool] | None = None,
     ) -> None:
         self.cfg = cfg
+        #: Writes one `startup_progress` step; True once it is settled (written,
+        #: or not this attempt's to write), False to try again on a later tick.
+        self._progress = progress
+        #: The gate's start-up steps already settled, each once per attempt.
+        self.startup_noted: set[str] = set()
         self.log = logger
         self._memory = memory
         self._children = children
@@ -580,7 +598,10 @@ class HandoffPath:
                 self._answer_requests(root)
             if self.active is not None:
                 return self._watch(root, fetch_task)
-            self._note_last_episode(root)
+            if self.offered:
+                self._note_last_episode(root)
+            else:
+                self._poll_startup()
         except Exception as exc:  # the hand-off never crashes the attempt
             self.log.warning("hand-off poll failed", error=type(exc).__name__)
         return None
@@ -710,6 +731,7 @@ class HandoffPath:
             # hold had expired.
             self.unavailable = GATE_UNAVAILABLE
             return GATE_LOST
+        self.note_startup(status)
         # A person is being waited for: exactly when the view must be there.
         self._keep_tunnel(status)
         task = fetch_task() or {}
@@ -759,6 +781,7 @@ class HandoffPath:
             result = self.gate.call("status", {})
         except GateLost:
             return
+        self.note_startup(result)
         self._keep_tunnel(result)
         episode = result.get("last_episode")
         if not isinstance(episode, dict):
@@ -772,6 +795,53 @@ class HandoffPath:
                 "title": redact_text(str(episode.get("title") or "")[:200]).text,
             },
         )
+
+    # -- the browser's start-up steps (STARTUP-API) -----------------------------
+
+    def _startup_outstanding(self) -> list[str]:
+        """The gate's steps still to settle. Without a live path there is no
+        tunnel, so no stream and no first frame: only the browser's two."""
+        wanted = GATE_STARTUP_STEPS if self.offered else GATE_STARTUP_STEPS[:2]
+        return [step for step in wanted if step not in self.startup_noted]
+
+    def _poll_startup(self) -> None:
+        """One `status` read for the start-up steps, on a gate with no live
+        path (whose tick reads no status otherwise). Stops once they are settled."""
+        if self.gate is None or self._progress is None or not self._startup_outstanding():
+            return
+        try:
+            self.note_startup(self.gate.call("status", {}))
+        except GateLost:
+            return
+
+    def note_startup(self, status: Any) -> None:
+        """Write each start-up step the gate's `status` dates, once per attempt. Never raises.
+
+        The time written is the gate's own (`startup`, epoch seconds), so a
+        tick that reads it late still records when the step happened. A step
+        whose write fails is tried again on the next tick's status.
+        """
+        if self._progress is None or not isinstance(status, Mapping):
+            return
+        times = status.get("startup")
+        if not isinstance(times, Mapping):
+            return
+        for step in self._startup_outstanding():
+            value = times.get(step)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            try:
+                at = datetime.fromtimestamp(float(value), tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                continue
+            try:
+                settled = self._progress(step, at)
+            except Exception as exc:  # a progress mark never costs the attempt
+                self.log.warning("could not record a start-up step", step=step, error=type(exc).__name__)
+                return
+            if not settled:
+                return
+            self.startup_noted.add(step)
 
     def _answer_devices(self, root: Path) -> None:
         devices = root / "devices"
