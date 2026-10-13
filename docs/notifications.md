@@ -87,10 +87,14 @@ Some notes on what each group deliberately leaves out:
   reads. The feed does neither. A waiting firing gets the id its record will
   have, because `approval_id` is deterministic, so a read mark survives the
   record being made.
-* **No record says a question was answered.** An agent's `questions.json` is
-  data for a person (`agent_worker/questions.py`), and nothing records the
-  reply. So a question item stays for 7 days after its task ended, and marking
-  it read clears it from the bell's count.
+* **A question item goes once every question is answered.** An agent's
+  `questions.json` is data for a person (`agent_worker/questions.py`). The
+  person answers on the task's "Questions for you" card
+  (`POST /v1/tasks/{id}/answers`, TASK-ANSWERS, owner decision 2026-10-13), and
+  the answer is stored on the task as `metadata.owner_answers`. The item derives
+  only while at least one counted question has no answer. Until then it stays
+  for 7 days after its task ended, and marking it read clears it from the bell's
+  count.
 * **A declined loan request does not count as needing you either.** Nothing
   the person does resolves it. It carries the admin's optional reason and
   never who declined. Asking again re-opens the request, and the item no
