@@ -160,6 +160,9 @@ class Cluster:
             _service(f"projects/{PROJECT}/regions/{LOCATION}/subnetworks/{FAKE_SUBNET}")))
         (self.dir / "subnet.json").write_text(json.dumps({"name": FAKE_SUBNET, "ipCidrRange": FAKE_API_CIDR}))
         (self.dir / "relay.yaml").write_text(_relay_manifest())
+        # apply.sh --swarm-system refuses an uninitialised terraform/infra
+        # first; the fake `init` writes nothing, so its data directory exists.
+        (self.tmp / "tfdata").mkdir()
         self.relay(enabled=True)
 
     def relay(self, *, enabled: bool) -> None:
@@ -177,6 +180,7 @@ class Cluster:
             PYTHON_BIN=sys.executable,
             SWARM_KUBECTL=str(self.bin / "kubectl"),
             SWARM_TERRAFORM=str(self.bin / "terraform"),
+            TF_DATA_DIR=str(self.tmp / "tfdata"),
             SWARM_ENV_FILE=str(self.tmp / "no.env"),
             KUBECONFIG=str(self.tmp / "no-such-kubeconfig"),
             HOME=str(self.tmp),
