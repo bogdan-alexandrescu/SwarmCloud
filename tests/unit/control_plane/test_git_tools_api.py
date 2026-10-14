@@ -136,7 +136,7 @@ class SlotTokens:
 
 
 class Forge(GitHubWrites):
-    """`GitHubWrites`, plus `GET commits/{ref}` and `GET contents/{path}?ref=`.
+    """`GitHubWrites`, plus `GET commits?sha=` and `GET contents/{path}?ref=`.
 
     `repos` is every repository that exists; a repository not in it answers
     404 on every route, as GitHub answers one the token cannot see.
@@ -157,12 +157,15 @@ class Forge(GitHubWrites):
         if method == "GET" and repository not in self.repos:
             self.calls.append((method, url, dict(headers), body))
             return 404, json.dumps({"message": "Not Found"}).encode()
-        if method == "GET" and len(rest) == 2 and rest[0] == "commits":
+        if method == "GET" and rest == ["commits"]:
             self.calls.append((method, url, dict(headers), body))
-            sha = self.refs.get((repository, rest[1]))
+            wanted = parse_qs(parsed.query).get("sha", [""])[0]
+            sha = self.refs.get((repository, wanted))
+            if sha is None and any(r == repository and s == wanted for r, s, _ in self.files):
+                sha = wanted  # a commit the repository has, named by its sha
             if sha is None:
                 return 404, json.dumps({"message": "No commit found"}).encode()
-            return 200, json.dumps({"sha": sha}).encode()
+            return 200, json.dumps([{"sha": sha}]).encode()
         if method == "GET" and rest[:1] == ["contents"]:
             self.calls.append((method, url, dict(headers), body))
             path = "/".join(rest[1:])
@@ -302,7 +305,9 @@ def call(client, attempt: Attempt, tool: str, fields: dict[str, Any], *,
 
 
 def audit_rows(db) -> list[dict[str, Any]]:
-    return [doc for path, doc in sorted(db.docs.items()) if path.startswith(f"{AUDIT}/")]
+    """The rows in the order the calls were made: ids sort newest first."""
+    return [doc for path, doc in sorted(db.docs.items(), reverse=True)
+            if path.startswith(f"{AUDIT}/")]
 
 
 def push_fields(origin, *, branch: str | None = None, bases: tuple[str, ...] | None = None,
@@ -523,8 +528,8 @@ def test_a_rewrite_of_the_tasks_own_branch_goes_through_under_the_recorded_lease
     assert response.status_code == 200, response.text
     assert response.json()["rewrite"] is True and response.json()["old_sha"] == c
     assert remote_tip(origin, OWN_BRANCH) == c2
-    row = audit_rows(db)
-    assert [r.get("rewrite") for r in row if r["tool"] == "git_push_branch"] == [False, True]
+    pushes = [r.get("rewrite") for r in audit_rows(db) if r["tool"] == "git_push_branch"]
+    assert pushes == [False, True]
 
 
 def test_a_branch_someone_else_moved_is_refused_not_forced(client, db, origin):
@@ -598,6 +603,17 @@ def test_a_fetch_returns_the_resolved_sha_and_a_bundle_of_what_the_haves_lack(
     header = raw[:raw.index(b"\n\n")].decode()
     assert f"-{origin['a']}" in header and origin["b"] in header
     assert audit_rows(db)[-1]["resolved_sha"] == origin["b"]
+
+
+def test_a_fetch_from_a_long_attempt_negotiates_against_its_newest_haves(client, db, origin):
+    """G3 sends every sha it learnt; gitexec negotiates against 16. The
+    newest are kept, so a long attempt still fetches only what it lacks."""
+    attempt, _ = running_task(client, db)
+    stale = [secrets.token_hex(20) for _ in range(40)]
+    response = call(client, attempt, "git_fetch", {"ref": "main", "haves": [*stale, origin["a"]]})
+    assert response.status_code == 200, response.text
+    raw = base64.b64decode(response.json()["bundle"])
+    assert f"-{origin['a']}" in raw[:raw.index(b"\n\n")].decode()
 
 
 def test_rebase_onto_is_served_as_the_fetch_it_starts_with(client, db, origin):

@@ -273,8 +273,9 @@ def patch_repository(
 ) -> dict:
     platform_by = _platform_admin(body.model_fields_set, auth)
     merge_policy_by = _platform_admin(body.model_fields_set, auth, "merge_policy")
+    readable_by = _platform_admin(body.model_fields_set, auth, "readable_by_tasks")
     record = _store(ctx).patch(tenant_id, repo_id, body, platform_by=platform_by,
-                               merge_policy_by=merge_policy_by)
+                               merge_policy_by=merge_policy_by, readable_by=readable_by)
     log.info(
         "repository patch tenant=%s repo_id=%s by=%s fields=%s", tenant_id, record["repo_id"],
         auth.email, ",".join(sorted(body.model_dump(exclude_none=True))),
