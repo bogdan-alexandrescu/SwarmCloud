@@ -243,12 +243,36 @@ def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkey
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
     monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
     monkeypatch.setenv("SWARM_BROWSER_UPLOADS", "/run/swarm/uploads")
+    # JUDGE-SELECT's two, so every name the hand-off passes is present.
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-laya")
+    monkeypatch.setenv("JEV_API_URL", "http://decision-api.swarm-system.svc.cluster.local/laya/v1/decide")
     seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
     assert seen["env"]["SWARM_HANDOFF"] == str(spool)
     assert seen["env"]["SWARM_CDP_ENDPOINT"] == "http://127.0.0.1:9223"
     assert seen["env"]["SWARM_BROWSER_UPLOADS"] == "/run/swarm/uploads"
     # Exactly the hand-off's own names: what the worker hands the agent.
     assert {handoff.HANDOFF_ENV, *handoff.AGENT_PASSTHROUGH_ENV} <= set(seen["env"])
+
+
+def test_the_judgment_backend_and_its_url_reach_the_cli_and_no_typesafe_key(monkeypatch, tmp_path):
+    """JUDGE-SELECT (owner decision 2026-10-14). The dispatcher names the
+    workspace's judgment backend (SWARM_JEV_BACKEND) and, for an internal one,
+    the in-cluster JEV_API_URL; the CLI's environment is what its MCP servers
+    inherit, so jev-browser-mcp reads both there. Nothing here hands the CLI a
+    TypeSafe key: an internal backend needs none."""
+    from agent_worker import handoff
+
+    url = "http://decision-api.swarm-system.svc.cluster.local/jev/v1/decide"
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(tmp_path / ".swarm-handoff"))
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-jev")
+    monkeypatch.setenv("JEV_API_URL", url)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["env"]["SWARM_JEV_BACKEND"] == "internal-jev"
+    assert seen["env"]["JEV_API_URL"] == url
+    assert "TYPESAFE_API_KEY" not in seen["env"]
+    assert {"SWARM_JEV_BACKEND", "JEV_API_URL"} <= set(handoff.AGENT_PASSTHROUGH_ENV)
 
 
 def test_the_launch_env_built_by_the_cli_runner_carries_swarm_handoff(monkeypatch, tmp_path):

@@ -56,8 +56,10 @@ NEEDS_ID_TOKEN = {
     "hotfix.yml": {"images", "promote", "infrastructure", "deploy"},
     # Post-deploy acceptance (owner decision 2026-10-08, cuts A and C), as its
     # OWN account, not the deployer (terraform/bootstrap/acceptance.tf).
-    # `sandbox` and `sandbox-results` talk only to GitHub.
-    "accept.yml": {"target", "quiesce", "smoke", "acceptance", "acceptance-2", "report"},
+    # `sandbox` and `sandbox-results` talk only to GitHub. `live-browser` is
+    # the group's scheduled run off the red path (2026-10-14, SPEED-C2); its
+    # report, `live-browser-report`, talks only to GitHub.
+    "accept.yml": {"target", "quiesce", "smoke", "acceptance", "acceptance-2", "report", "live-browser"},
 }
 
 WIF_TF = REPO / "terraform" / "bootstrap" / "wif.tf"

@@ -12,6 +12,15 @@ runner, and nothing sends page content anywhere. The API stores a key, says
 whether one is set, and says which one a task *would* use. `GET` status
 answers `consumed_by: []` so nobody reads the resolution as a live wiring.
 
+**A TypeSafe key is needed only when a workspace judges with TypeSafe**
+(JUDGE-SELECT, owner decisions 2026-10-14). Each workspace chooses Jev's
+judgment backend: Internal Jev (the default) or Internal Laya -- Saga's own
+decision API, which needs no TypeSafe key and is never sent one -- or TypeSafe.
+`GET /v1/provider-keys/typesafe` carries the choice as `jev` (`backend`,
+`label`, `available`, `reason`, every option); TypeSafe is `available` exactly
+when the resolution below finds a key. See
+[design/live-browser.md §3.2.2](design/live-browser.md#322-judgment-backends-judge-select).
+
 Code: `apps/swarm-api/swarm_api/provider_keys.py` (record, audit, links,
 resolution) and `apps/swarm-api/swarm_api/routes/provider_keys.py` (routes).
 The Secret Manager write is still `apps/swarm-api/swarm_api/credentials.py`,

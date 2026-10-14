@@ -106,8 +106,13 @@ HANDOFF_ENV = "SWARM_HANDOFF"
 GATE_CTL_ENV = "SWARM_GATE_CTL"
 #: The gate's CDP proxy for the agent's Playwright (§3.2), and the upload
 #: directory Chromium can read (§3.1). Passed on to the agent: a path and a
-#: loopback address, never a credential.
-AGENT_PASSTHROUGH_ENV = ("SWARM_CDP_ENDPOINT", "SWARM_BROWSER_UPLOADS")
+#: loopback address, never a credential. With them, the workspace's Jev
+#: judgment backend and, for an internal one, the in-cluster decision API URL
+#: the dispatcher set (`scheduler.judgment`, JUDGE-SELECT): a name and a
+#: cluster address, never a credential, which jev-browser-mcp reads from the
+#: CLI's environment.
+AGENT_PASSTHROUGH_ENV = ("SWARM_CDP_ENDPOINT", "SWARM_BROWSER_UPLOADS",
+                         "SWARM_JEV_BACKEND", "JEV_API_URL")
 
 #: §5.4.1: each worker-only route signs a domain-separated message, so a
 #: signature for one is never a signature for another. `swarm_api.handoff`

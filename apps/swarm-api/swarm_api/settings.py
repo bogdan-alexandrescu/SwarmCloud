@@ -407,6 +407,14 @@ class ApiSettings:
     #: a link that does not open.
     console_url: str = ""
 
+    #: Saga's decision API through the cluster's Tailscale egress Service
+    #: (INTERNAL_DECISION_API_URL; JUDGE-NET's switch, terraform
+    #: `internal_decision_api_enabled`). Non-empty means the tailnet egress is
+    #: on, so the internal Jev backends are offered as available
+    #: (`swarm_api.judgment`); this service never calls it. EMPTY BY DEFAULT:
+    #: the egress needs the owner's Tailscale OAuth client first.
+    internal_decision_api_url: str = ""
+
     # --- child tasks (docs/design/child-tasks.md) --------------------------
     #: `swarm-child-key`, the HMAC key that verifies a registration nonce,
     #: derives a registration id and attests a registration (§3.2). Held by
@@ -718,6 +726,7 @@ class ApiSettings:
             # variable that exists and says nothing has declared nothing.
             environment_declared=bool(os.environ.get("ENVIRONMENT", "").strip()),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
+            internal_decision_api_url=os.environ.get("INTERNAL_DECISION_API_URL", "").strip(),
             child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
             child_key_previous=os.environ.get("SWARM_CHILD_KEY_PREVIOUS", "").strip(),
             child_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip(),

@@ -40,6 +40,7 @@ from .routes import (
     gittools,
     health,
     issues,
+    judgment,
     leases,
     live,
     notifications,
@@ -164,6 +165,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # (docs/provider-keys.md, lane KEYS-API): write-only, a person's own key in
     # their personal tenant, the tenant key for admins, one-time form links.
     app.include_router(provider_keys.router)
+    # Each workspace's Jev judgment backend -- Internal Jev (the default),
+    # Internal Laya or TypeSafe -- its owner's or an admin's to choose,
+    # audited (swarm_api.judgment, lane JUDGE-SELECT).
+    app.include_router(judgment.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service
     # supplies the caller's tenant and nothing else.
