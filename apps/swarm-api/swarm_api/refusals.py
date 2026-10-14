@@ -265,10 +265,12 @@ SWITCHES: dict[str, Switch] = {
     # Playwright, which the live session's `browser.jev.reason` says.
     "browser_tool_unavailable": Switch(
         code="browser_tool_unavailable",
-        why="a claude-code-browser submission naming browser_tool jev is refused when no "
-        "TypeSafe key resolves for its submitter or tenant, or jev is not installed. On once "
-        "the Submit form disables Jev when GET /v1/provider-keys/typesafe resolves none, so "
-        "the form never offers what is refused",
+        why="a claude-code-browser submission naming browser_tool jev is refused when jev is "
+        "not installed, or when the workspace's judgment backend is TypeSafe and no TypeSafe "
+        "key resolves for its submitter or tenant (the default Internal Jev and Internal Laya "
+        "need no key and are never refused for one). On once the Submit form disables Jev "
+        "when GET /v1/provider-keys/typesafe resolves none on the TypeSafe backend, so the "
+        "form never offers what is refused",
     ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",

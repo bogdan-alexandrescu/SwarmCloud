@@ -66,6 +66,10 @@ class LinkRequest(StrictModel):
     scope: Literal["user", "tenant"]
 
 
+#: What reads each provider's resolved key, as status reports it.
+CONSUMERS: dict[str, list[str]] = {"typesafe": ["jev"]}
+
+
 def _keys(ctx: AppContext) -> ProviderKeys:
     return ProviderKeys(ctx.db, now=ctx.now)
 
@@ -97,9 +101,12 @@ def get_status(
         "user": user,
         "tenant": tenant,
         "resolution": {"tenant_id": tenant_id, "uses": uses, "secret_id": chosen},
-        # No runner reads these keys yet (no Jev runner exists); the
-        # resolution says what one would use, not what anything uses now.
-        "consumed_by": [],
+        # What reads the resolved key: the claude-code runner's `jev` MCP
+        # server on a live-browser task (JEV-RUNNER, agent_worker/jevkey.py).
+        # A personal key on a group-tenant task is read only where
+        # terraform/bootstrap/typesafe_user_keys.tf grants it; elsewhere the
+        # worker falls to the tenant key (docs/provider-keys.md §2).
+        "consumed_by": CONSUMERS.get(provider, []),
     }
     if provider == TYPESAFE:
         # Which backend this workspace's Jev judges with (JUDGE-SELECT): a

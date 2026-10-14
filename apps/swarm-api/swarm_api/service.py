@@ -73,6 +73,7 @@ from .forge import (
 from .forgeapp import GRANTS, ORGS, Caller
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .metrics import ApiMetrics
+from .judgment import TYPESAFE_BACKEND, JudgmentSettings
 from .provider_keys import task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .runnerinputs import input_contract
@@ -604,9 +605,12 @@ class SubmissionService:
         """`browser_tool: jev` with nothing to run it on: refused through its
         switch (`browser_tool_unavailable`, default off), never silently.
 
-        Jev needs the image to carry it (`browser_jev_installed`) and a
-        TypeSafe key for the submitter or the tenant -- the resolution
-        `GET /v1/provider-keys/typesafe` serves (`task_key_scope`). Every
+        Jev needs the image to carry it (`browser_jev_installed`) and, ONLY
+        when the workspace's judgment backend is `typesafe` (JUDGE-SELECT,
+        `judgment.JudgmentSettings`), a TypeSafe key for the submitter or the
+        tenant -- the resolution `GET /v1/provider-keys/typesafe` serves
+        (`task_key_scope`). The default backend, Internal Jev, and Internal
+        Laya need no key, so they are never refused for its absence. Every
         other name runs on what every live-browser attempt has. Off, the
         task is admitted and the runner falls back to Playwright, saying why.
         """
@@ -618,14 +622,18 @@ class SubmissionService:
                        "jev-browser; pick auto, playwright or dev-browser")
         else:
             db = getattr(self._store, "db", None)
+            if db is not None and JudgmentSettings(db, now=self._now).read(
+                    tenant_id)["judgment_backend"] != TYPESAFE_BACKEND:
+                return
             scope = task_key_scope(db, self._store, tenant_id, submitted_by, TYPESAFE_PROVIDER,
                                    now=self._now) if db is not None else None
             if scope is not None:
                 return
             reason = "no_key"
-            message = ("browser_tool 'jev' needs a TypeSafe key, and none is set for you or for "
-                       "this tenant: add one on the console's key page, or pick auto, "
-                       "playwright or dev-browser")
+            message = ("browser_tool 'jev' needs a TypeSafe key because this workspace's "
+                       "judgment backend is TypeSafe, and none is set for you or for this "
+                       "tenant: add one on the console's key page, choose Internal Jev as "
+                       "the backend, or pick auto, playwright or dev-browser")
         detail: dict[str, Any] = {"runner_profile": profile.name, "key": BROWSER_TOOL_INPUT_KEY,
                                   "browser_tool": "jev", "reason": reason}
         if step_id is not None:

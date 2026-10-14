@@ -174,3 +174,13 @@ enable_browser_logins = true
 # applies it after linting the condition (docs/provider-keys.md §6). The plan
 # is 2 adds -- the role and the conditioned grant.
 enable_provider_keys = true
+
+# JEV-RUNNER (2026-10-14, owner: "ship ... jev-browser ... by morning"): eng's
+# worker may read u-bogdan's personal TypeSafe key, so a jev task bogdan
+# submits in eng uses his key (typesafe_user_keys.tf). Every eng task can read
+# it -- the row is the consent. NOT YET APPLIED when this line was committed:
+# the owner applies it. The plan is 1 add,
+# google_project_iam_member.typesafe_user_key_reader["eng/u-bogdan"].
+typesafe_user_key_readers = {
+  eng = ["u-bogdan"]
+}
