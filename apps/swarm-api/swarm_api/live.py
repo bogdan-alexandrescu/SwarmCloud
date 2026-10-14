@@ -122,6 +122,7 @@ from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
 from .codec import event_to_firestore
 from .errors import ApiError, NotFound, ValidationFailed
 from .handoff import (
+    HUMAN_HANDOFFS_METADATA_KEY,
     HUMAN_HOLD_MAX_SECONDS,
     HUMAN_READY_METADATA_KEY,
     HUMAN_UNWATCHED_SECONDS,
@@ -131,7 +132,9 @@ from .handoff import (
     extended_deadline,
     first_time,
     log_funnel,
+    ready_writes,
     resolution_writes,
+    returned_mark,
 )
 from .handoff import log as handoff_log
 from .objects import ObjectAbsent, ObjectUnreadable
@@ -1036,9 +1039,13 @@ class _Plan:
         if self.session_update:
             txn.update(self.session_ref, {**self.session_update, "updated_at": self.now})
         if self.resolve:
+            # The rest of the plan's task fields ride the same write (a
+            # return's mark, LB-RETURN); the wait is the resolution's.
             resolution_writes(txn, self.db, self.task, outcome="returned", now=self.now,
                               by=self.resolve_by, lease_id=session.get("lease_id"),
-                              recorded=self.resolved)
+                              recorded=self.resolved,
+                              extra={k: v for k, v in self.task_update.items()
+                                     if k != "human_wait"})
         elif self.task_update:
             txn.update(task_ref, {**self.task_update, "updated_at": self.now})
         for event_type, detail, event_id in self.events:
@@ -1767,11 +1774,18 @@ class LiveService:
         `live_watch_flush_seconds`; the worker reads the deadline on its poll.
 
         True when the deadline was written. False, writing nothing, when no
-        hand-off of this session's attempt is open, the session is not this
-        socket's open one, or the hold has already run out: an expired hold is
-        never revived, because the worker may already be parking on it.
-        A cheap read first, so a socket on a task nobody asked for help on
-        costs no transaction."""
+        hand-off of this session's attempt is open or the session is not this
+        socket's open one. A cheap read first, so a socket on a task nobody
+        asked for help on costs no transaction.
+
+        A hold past its deadline IS revived while it is still open (LB-RETURN).
+        It was not ("the worker may already be parking"), and the live-browser
+        acceptance group parked on every run from 2026-10-14 00:24Z with its
+        viewer connected. The hold ends when the worker RESOLVES it, and
+        `HandoffService.resolve` answers "revived", writing nothing, to an
+        expiry whose deadline has moved since the worker read it. Whichever transaction commits first
+        decides: the viewer's keeps the hold; the worker's clears the wait,
+        and this writes nothing."""
         snap = self._db.collection(TASKS).document(admission.task_id).get()
         task = snap.to_dict() if snap.exists else None
         if not task or not isinstance(task.get("human_wait"), dict):
@@ -1789,7 +1803,7 @@ class LiveService:
             ):
                 return False
             deadline = extended_deadline(plan.now, plan.task, wait, seconds=unwatched,
-                                         max_seconds=cap, revive=False)
+                                         max_seconds=cap)
             if deadline is None:
                 return False
             plan.task_update["human_wait"] = {**first_time(wait, "first_viewer_at", plan.now),
@@ -1836,14 +1850,93 @@ class LiveService:
 
     def return_control(self, tenant_id: str, task_id: str, *, email: str,
                        submitted_by: str | None) -> dict[str, Any]:
+        who = email.strip().lower()
+
         def change(plan: _Plan, current: dict) -> None:
             plan.end_control("returned")
+            if plan.task.get("state") == TaskState.RUNNING.value:
+                # LB-RETURN: the worker may have judged the hold expired on a
+                # read from before this person came, and be parking now. Its
+                # park reads this and re-queues instead (handoff.py).
+                plan.task_update["metadata"] = returned_mark(plan.task, plan.state, by=who,
+                                                             now=plan.now)
             if plan.task.get("human_wait") is not None:
                 # §4.2 step 3: the hand-off is over; one shape for both writers.
                 plan.resolve = True
-                plan.resolve_by = email.strip().lower()
+                plan.resolve_by = who
 
-        return self._controller_change(tenant_id, task_id, email, submitted_by, change)
+        try:
+            return self._controller_change(tenant_id, task_id, email, submitted_by, change)
+        except (LiveSessionClosed, NotController):
+            resumed = self._return_to_parked(tenant_id, task_id, who, submitted_by)
+            if resumed is None:
+                raise
+            return resumed
+
+    def _return_to_parked(self, tenant_id: str, task_id: str, who: str,
+                          submitted_by: str | None) -> dict[str, Any] | None:
+        """LB-RETURN: the park landed while `who` was in control, so their
+        Return control is their "I'm ready" (`handoff.ready_writes`):
+        PARKED(HUMAN_REQUIRED) -> READY, nothing leased here.
+
+        Only for the attempt that parked -- its session at the task's current
+        generation, so a return on an earlier attempt's session answers no
+        later park -- and only for the person who held control of it when it
+        ended. None, writing nothing, otherwise: the caller's refusal stands,
+        and a second return finds the task READY and is refused the same way.
+        """
+        task = self._task(tenant_id, task_id, submitted_by)
+        counted = (task.metadata or {}).get(HUMAN_HANDOFFS_METADATA_KEY)
+        attempt_id = counted.get("attempt_id") if isinstance(counted, dict) else None
+        if (
+            task.state != TaskState.PARKED
+            or task.park_reason != ParkReason.HUMAN_REQUIRED
+            or not isinstance(attempt_id, str)
+            or not attempt_id
+        ):
+            return None
+        session_id = session_id_for(attempt_id)
+        # Settled first: closing the session ends this person's control and
+        # records their episode, which is what the check below reads.
+        self._transact(tenant_id, task_id, None, session_id=session_id)
+        task_ref = self._db.collection(TASKS).document(task_id)
+        session_ref = self._db.collection(LIVE_SESSIONS).document(session_id)
+        now = self._now()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(task_ref))
+            data = snap.to_dict() if snap.exists else None
+            session_snap = _snapshot(txn.get(session_ref))
+            session = session_snap.to_dict() if session_snap.exists else None
+            if data is None or session is None or data.get("tenant_id") != tenant_id:
+                return False
+            if (
+                session.get("tenant_id") != tenant_id
+                or session.get("task_id") != task_id
+                or session.get("generation") != data.get("current_generation")
+            ):
+                return False
+            current = session.get("controller")
+            ended = session.get("ended_episodes")
+            last = ended[-1] if isinstance(ended, list) and ended else None
+            held = (current if isinstance(current, dict) else last if isinstance(last, dict)
+                    else None)
+            if held is None or str(held.get("email") or "").strip().lower() != who:
+                return False
+            try:
+                ready_writes(txn, self._db, {**data, "id": task_id}, email=who, now=now,
+                             reason="human_returned")
+            except ApiError:
+                return False
+            return True
+
+        if not _apply(self._db.transaction()):
+            return None
+        log.info("a return after the hand-off parked re-queued the task", extra={
+            "event": "live_return_requeued", "task_id": task_id, "tenant_id": tenant_id,
+            "attempt_id": attempt_id})
+        return self._view(task, None, who, control_owner(task, self._db))
 
     def set_device(self, tenant_id: str, task_id: str, *, email: str,
                    submitted_by: str | None, raw: bytes) -> dict[str, Any]:
