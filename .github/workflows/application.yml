@@ -109,6 +109,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - uses: azure/setup-kubectl@v5
+        with:
+          # The parity checks below find kubectl >= 1.30 (scripts/lib/common.sh
+          # kubectl_bin). GitHub's image carries one; the self-hosted VM does
+          # not, so the check died with "no kubectl >= 1.30 found". Pinned for
+          # the reason the manifests job pins it.
+          version: ${{ env.KUBECTL_VERSION }}
+
       - name: shellcheck
         # -x follows `source` directives so lib/common.sh is analysed in context.
         # scripts/acceptance/ too (#358): its entry scripts source lib.sh and
@@ -180,6 +188,12 @@ jobs:
         # cloud credentials, so it skips -- with a ::notice on the run page, not
         # silently. It is here so that skip is visible on every PR; the real
         # comparison is `--require-live` after an apply (kubernetes/README.md).
+        env:
+          # The self-hosted VM carries its own gcloud identity, which GitHub's
+          # image does not, so without this the check would go live against a
+          # cluster instead of skipping as it does on a hosted runner. An empty
+          # gcloud config dir keeps both runner kinds on the documented skip.
+          CLOUDSDK_CONFIG: ${{ runner.temp }}/no-gcloud-config
         run: ./scripts/lib/check-cluster-network-parity.sh
 
       - name: the plan guard still catches offenders

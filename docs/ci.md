@@ -89,6 +89,33 @@ ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || gi
 * **A fork's pull request never reaches the VMs** (owner decision 2026-10-12).
   The repository is public, and a returning contributor's fork PR runs
   without approval.
+**The short form, for two workflows no fork can start.** accept.yml and
+auto-merge.yml spell `runs-on` without the fork clause:
+
+```
+${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+```
+
+The long form's text cannot sit in those files: test_auto_merge_workflow.py
+forbids `pull_request.head.repo` in auto-merge.yml (the workflow must never
+touch a pull request's code, so it must not even read the fork's repository),
+and test_acceptance_target.py forbids `github.repository` anywhere in
+accept.yml (it must not name the public repository). The clause is dead weight
+there anyway, because of the triggers:
+
+* accept.yml starts from `workflow_run` (a completed release on main) and
+  `workflow_dispatch` only, never from a pull request.
+* auto-merge.yml runs on `pull_request_target` (the base branch's own workflow
+  file, with no checkout of the pull request), `workflow_run`, `check_suite`
+  and dispatch. It has no `pull_request` trigger, the only event that runs a
+  fork's copy of a workflow file.
+
+Every other workflow can be started by a fork's `pull_request`, so it keeps the
+long form. The short form is accepted only for a file listed in
+`SHORT_FORM_WORKFLOWS` in the test, and only while that file's `on:` has no
+`pull_request`: adding one makes the test fail, which is the reminder to put
+the fork clause back.
+
 * **The capacity escape hatch.** Set the repo variable `SELF_HOSTED_CI` to
   `off` (`gh variable set SELF_HOSTED_CI --body off`) and every guarded job
   goes back to `ubuntu-24.04`. Use it when the pool is down or out of quota.
@@ -114,14 +141,20 @@ other secret may go on a guarded job.
 * no guarded job has `id-token: write`;
 * no guarded job holds a secret beyond its `GUARDED_SECRETS` entry;
 * the expression is evaluated for push, same-repository and fork pull
-  requests, with the hatch on and off.
+  requests, with the hatch on and off;
+* the short form is accepted only for the `SHORT_FORM_WORKFLOWS` files, whose
+  triggers it reads from the workflow itself.
 
 A new job that silently uses a hosted image fails CI, and so does one that
 puts a credential on the pool.
 
 What the VM image differs in: `/usr/local/bin` is not writable by the
 runner user, so a job installs a tool into `$RUNNER_TEMP` (security.yml does
-this for trivy). It has `gh`, `unzip`, docker with buildx, `jq` and
+this for trivy, which is installed by an explicit pinned step rather than
+aquasecurity/trivy-action: that action restores its binary from a cache at
+`/home/runner/.local/bin`, which the VM does not have, so the scan found no
+`trivy`; and the shell job installs kubectl with azure/setup-kubectl, since
+the VM has none). It has `gh`, `unzip`, docker with buildx, `jq` and
 `shellcheck`, passwordless sudo, and a writable tool cache. Anything else
 comes from a setup action.
 

@@ -24,6 +24,19 @@ ubuntu-24.04 (unset, or anything else, means the pool):
 
     runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
 
+THE SHORT FORM. A workflow no fork's pull request can start does not need
+the fork clause, and two of the repository's own guards forbid the text it is
+made of in those files (`pull_request.head.repo` in auto-merge.yml, which
+must never touch a pull request's code; the repository's name in accept.yml,
+which must not name the public repository):
+
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+
+It is accepted ONLY for a file in SHORT_FORM_WORKFLOWS whose `on:` has no
+`pull_request` trigger (a fork's `pull_request` runs the fork's own copy of the
+workflow file and its code). SHORT_FORM_WORKFLOWS says why each file qualifies;
+anywhere a fork `pull_request` can start the job, the long form is required.
+
 The guard FAILS CLOSED: any label that is not a GitHub-hosted image name
 (`ubuntu-*`, `windows-*`, `macos-*`) is treated as self-hosted, and any
 `runs-on` expression it cannot resolve is refused, so a new spelling has to
@@ -66,6 +79,27 @@ FORK_GATED = re.compile(
     r" && '([^']+)' \|\| fromJSON\('(\[[^']*\])'\)"
     r"\s*\}\}$"
 )
+#: The short spelling: the escape hatch only, no fork clause. Same groups.
+SHORT_FORM = re.compile(
+    r"^\$\{\{\s*"
+    r"vars\.SELF_HOSTED_CI == 'off'"
+    r" && '([^']+)' \|\| fromJSON\('(\[[^']*\])'\)"
+    r"\s*\}\}$"
+)
+#: Workflow files allowed the short form, and why each qualifies. Each is also
+#: checked against its own `on:` (no `pull_request`) below.
+SHORT_FORM_WORKFLOWS: dict[str, str] = {
+    "accept.yml": (
+        "starts only from a completed release on main (workflow_run) or by hand "
+        "(workflow_dispatch): never from any pull request"
+    ),
+    "auto-merge.yml": (
+        "runs on pull_request_target (the base branch's workflow file, with no "
+        "checkout of the pull request: test_auto_merge_workflow.py), workflow_run, "
+        "check_suite and dispatch: never on `pull_request`, so a fork's code is "
+        "never what runs"
+    ),
+}
 MATRIX_REF = re.compile(r"^\$\{\{\s*matrix\.([\w-]+)\s*\}\}$")
 
 
@@ -96,8 +130,42 @@ def _matrix_values(job: dict, key: str) -> list[object]:
     return values
 
 
-def verdict(job: dict) -> tuple[str, str]:
-    """('hosted' | 'gated' | 'EXPOSED', why) for one job's runs-on."""
+def _trigger_names(doc: dict) -> set[str]:
+    """The event names a workflow's `on:` lists (YAML reads the key `on` as True)."""
+    on = doc.get("on", doc.get(True))
+    if isinstance(on, str):
+        return {on}
+    if isinstance(on, list):
+        return {str(e) for e in on}
+    return {str(e) for e in (on or {})}
+
+
+def _file_triggers(filename: str) -> set[str]:
+    return _trigger_names(yaml.safe_load((WORKFLOWS / filename).read_text()))
+
+
+def _short_form_allowed(filename: str | None, triggers: set[str] | None) -> str | None:
+    """None when the short form is allowed for this workflow, else why not."""
+    if filename is None or triggers is None:
+        return "the short form is judged per workflow file, and none was given"
+    if filename not in SHORT_FORM_WORKFLOWS:
+        return f"{filename} is not in SHORT_FORM_WORKFLOWS"
+    if "pull_request" in triggers:
+        return f"{filename} has a `pull_request` trigger, so a fork can start the job"
+    return None
+
+
+def _is_guarded(runs_on: object) -> bool:
+    """On the pool through either approved spelling."""
+    return isinstance(runs_on, str) and bool(
+        FORK_GATED.match(runs_on.strip()) or SHORT_FORM.match(runs_on.strip())
+    )
+
+
+def verdict(job: dict, filename: str | None = None, triggers: set[str] | None = None) -> tuple[str, str]:
+    """('hosted' | 'gated' | 'EXPOSED', why) for one job's runs-on. `filename`
+    and `triggers` (the workflow's event names) are needed only to judge the
+    short form."""
     if "uses" in job and "runs-on" not in job:
         return "hosted", "calls a reusable workflow (its own jobs are scanned)"
     runs_on = job.get("runs-on")
@@ -110,6 +178,15 @@ def verdict(job: dict) -> tuple[str, str]:
             if _self_hosted([fallback]):
                 return "EXPOSED", f"fork fallback {fallback!r} is not a hosted image"
             return "gated", f"self-hosted {labels} behind the fork check"
+        short = SHORT_FORM.match(runs_on.strip())
+        if short:
+            fallback, labels = short.group(1), json.loads(short.group(2))
+            if _self_hosted([fallback]):
+                return "EXPOSED", f"fallback {fallback!r} is not a hosted image"
+            why = _short_form_allowed(filename, triggers)
+            if why:
+                return "EXPOSED", f"short form without a fork check: {why}"
+            return "gated", f"self-hosted {labels}; no fork can start this workflow"
         ref = MATRIX_REF.match(runs_on.strip())
         if ref:
             values = _matrix_values(job, ref.group(1))
@@ -139,10 +216,15 @@ def _jobs():
             yield f"{path.name}:{name}", job
 
 
+def _verdict_of(name: str, job: dict) -> tuple[str, str]:
+    filename = name.split(":", 1)[0]
+    return verdict(job, filename, _file_triggers(filename))
+
+
 def test_no_job_runs_a_fork_pr_on_a_self_hosted_runner() -> None:
     jobs = list(_jobs())
     assert jobs, "no jobs parsed: the guard would assert over nothing"
-    verdicts = {name: verdict(job) for name, job in jobs}
+    verdicts = {name: _verdict_of(name, job) for name, job in jobs}
     gated = sorted(n for n, (v, _) in verdicts.items() if v == "gated")
     print(f"scanned {len(jobs)} job(s); {len(gated)} self-hosted behind the fork check: {gated}")
     exposed = {n: why for n, (v, why) in verdicts.items() if v == "EXPOSED"}
@@ -156,6 +238,10 @@ APPROVED = (
     " || github.event_name == 'pull_request_target')"
     " && github.event.pull_request.head.repo.full_name != github.repository))"
     " && 'ubuntu-24.04' || fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bogdan-ci\"]') }}"
+)
+SHORT = (
+    "${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04'"
+    " || fromJSON('[\"self-hosted\",\"linux\",\"x64\",\"bogdan-ci\"]') }}"
 )
 #: The spelling PR 1174 approved, before the escape hatch. Fork-safe, but no
 #: longer the one spelling: a job still using it ignores SELF_HOSTED_CI=off.
@@ -192,6 +278,58 @@ PRE_HATCH = (
 )
 def test_verdict(runs_on: object, expected: str) -> None:
     assert verdict({"runs-on": runs_on})[0] == expected
+
+
+NO_PR = {"workflow_run", "workflow_dispatch"}
+
+
+@pytest.mark.parametrize(
+    ("runs_on", "filename", "triggers", "expected"),
+    [
+        # Allowed: a listed file whose triggers hold no `pull_request`.
+        (SHORT, "accept.yml", NO_PR, "gated"),
+        (SHORT, "auto-merge.yml", {"pull_request_target", "workflow_run", "check_suite"}, "gated"),
+        # Mutation: the same job in a workflow a fork's pull_request can start.
+        (SHORT, "accept.yml", NO_PR | {"pull_request"}, "EXPOSED"),
+        # Mutation: a file nobody listed, even with safe triggers.
+        (SHORT, "application.yml", NO_PR, "EXPOSED"),
+        # Mutation: no workflow context given at all.
+        (SHORT, None, None, "EXPOSED"),
+        # Mutation: the hatch dropped, or a self-hosted fallback.
+        (SHORT.replace("vars.SELF_HOSTED_CI == 'off' && ", ""), "accept.yml", NO_PR, "EXPOSED"),
+        (SHORT.replace("'ubuntu-24.04'", "'bogdan-ci'"), "accept.yml", NO_PR, "EXPOSED"),
+        # The long form never needs the file's triggers.
+        (APPROVED, "application.yml", NO_PR | {"pull_request"}, "gated"),
+    ],
+)
+def test_the_short_form_is_judged_by_the_workflows_triggers(
+    runs_on: str, filename: str | None, triggers: set[str] | None, expected: str
+) -> None:
+    """MUTATION: dropping the `pull_request` check, or the file allowlist,
+    turns the EXPOSED rows above into 'gated' and this test red."""
+    assert verdict({"runs-on": runs_on}, filename, triggers)[0] == expected
+
+
+def test_the_short_form_files_really_have_no_pull_request_trigger() -> None:
+    """MUTATION: adding `pull_request:` to accept.yml or auto-merge.yml fails
+    this even if every runs-on in it were unchanged. The control: the same
+    parser sees `pull_request` in application.yml, so an empty set here is not
+    a parser that reads nothing."""
+    assert "pull_request" in _file_triggers("application.yml")
+    for filename, why in SHORT_FORM_WORKFLOWS.items():
+        triggers = _file_triggers(filename)
+        assert triggers, f"{filename}: parsed no triggers"
+        assert "pull_request" not in triggers, f"{filename} qualifies because it {why}"
+
+
+def test_every_short_form_file_uses_it_somewhere() -> None:
+    """A SHORT_FORM_WORKFLOWS entry no job uses is a stale licence."""
+    used = {
+        name.split(":", 1)[0]
+        for name, job in _jobs()
+        if isinstance(job.get("runs-on"), str) and SHORT_FORM.match(job["runs-on"].strip())
+    }
+    assert used == set(SHORT_FORM_WORKFLOWS), (used, set(SHORT_FORM_WORKFLOWS))
 
 
 def test_matrix_runs_on_is_resolved() -> None:
@@ -283,11 +421,15 @@ def test_every_guarded_job_in_the_workflows_resolves_safely() -> None:
     seen = 0
     for name, job in _jobs():
         runs_on = job.get("runs-on")
-        if not (isinstance(runs_on, str) and FORK_GATED.match(runs_on.strip())):
+        if not _is_guarded(runs_on):
             continue
         seen += 1
-        for event in ("pull_request", "pull_request_target"):
-            assert resolve(runs_on, event=event, fork=True) == "ubuntu-24.04", name
+        # The short form has no fork clause by design (its workflows are never
+        # started by a fork's pull_request: judged by verdict()); every
+        # guarded job still honours the hatch and otherwise gets the pool.
+        if FORK_GATED.match(runs_on.strip()):
+            for event in ("pull_request", "pull_request_target"):
+                assert resolve(runs_on, event=event, fork=True) == "ubuntu-24.04", name
         assert resolve(runs_on, event="push", fork=False, hatch="off") == "ubuntu-24.04", name
         assert resolve(runs_on, event="push", fork=False) == POOL, name
     assert seen, "no guarded job found: the loop asserted over nothing"
@@ -388,12 +530,12 @@ def test_every_job_is_on_the_pool_or_hosted_for_a_checked_reason() -> None:
         if "uses" in job and "runs-on" not in job:
             continue  # a reusable workflow call: its own jobs are scanned
         runs_on = job.get("runs-on")
-        gated = isinstance(runs_on, str) and bool(FORK_GATED.match(runs_on.strip()))
+        gated = _is_guarded(runs_on)
         if name in HOSTED_JOBS:
             reason = HOSTED_JOBS[name]
             if gated:
                 problems.append(f"{name}: listed as hosted ({reason}) but on the guarded expression")
-            elif verdict(job)[0] != "hosted":
+            elif _verdict_of(name, job)[0] != "hosted":
                 problems.append(f"{name}: listed as hosted but runs-on {runs_on!r} is not a hosted image")
             elif not _reason_holds(reason, job, wf_perms):
                 problems.append(f"{name}: kept hosted because it {REASONS[reason]}, which is no longer true")
@@ -401,6 +543,8 @@ def test_every_job_is_on_the_pool_or_hosted_for_a_checked_reason() -> None:
             problems.append(
                 f"{name}: runs-on {runs_on!r} is neither the guarded expression nor in HOSTED_JOBS"
             )
+        elif _verdict_of(name, job)[0] != "gated":
+            problems.append(f"{name}: {_verdict_of(name, job)[1]}")
     stale = sorted(set(HOSTED_JOBS) - names)
     problems += [f"{n}: in HOSTED_JOBS but no such job" for n in stale]
     print(f"checked {len(jobs)} job(s), {len(HOSTED_JOBS)} kept hosted")
@@ -421,8 +565,7 @@ def test_no_guarded_job_holds_a_cloud_identity_or_an_unlisted_secret() -> None:
     held = []
     guarded = set()
     for name, job, wf_perms in _workflow_jobs():
-        runs_on = job.get("runs-on")
-        if not (isinstance(runs_on, str) and FORK_GATED.match(runs_on.strip())):
+        if not _is_guarded(job.get("runs-on")):
             continue
         guarded.add(name)
         if _id_token(job, wf_perms):

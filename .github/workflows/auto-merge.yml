@@ -197,14 +197,18 @@ concurrency:
 
 # RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
 # (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
-# `runs-on` expression: a fork's pull request, or the repo variable
-# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
-# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
-# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
+# `runs-on` expression, in its SHORT form: only the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch) sends it to
+# GitHub-hosted ubuntu-24.04. The fork-PR clause the other workflows carry is
+# left out on purpose: this workflow runs on pull_request_target (the base
+# branch's workflow file), workflow_run, check_suite and dispatch, and never
+# checks out or runs a pull request's code (test_auto_merge_workflow.py holds
+# that; test_fork_prs_off_self_hosted.py holds that it has no `pull_request`
+# trigger). Every job that stays hosted is listed, with why, in that test.
 jobs:
   enable:
     name: queue for auto-merge
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # The label event itself, or a re-evaluation dispatched by `requeue`.
     if: >-
       (github.event_name == 'pull_request_target' &&
@@ -875,7 +879,7 @@ jobs:
 
   requeue:
     name: re-evaluate ready pull requests when a run finishes
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # A pull request's run only: a push to main has no `ready` pull request
     # at its head. Or any check suite's completion (#815) -- not filtered by
     # branch, because a fork's pull request may come from a branch named
@@ -922,7 +926,7 @@ jobs:
 
   requeue-edited:
     name: re-evaluate a ready pull request whose body was edited
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # #888 box 97: adding or removing `depends on` changes the gate's answer,
     # and nothing looked again until the next label or finishing CI run --
     # an armed auto-merge merged past a dependency added after the label.
@@ -959,7 +963,7 @@ jobs:
 
   disable:
     name: disable auto-merge on a new head
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Only a pull request that is (or was) queued: `ready` still on it. Never
     # for the `labeled` action itself -- GitHub already lists the just-added
     # label in `github.event.pull_request.labels`, so without excluding that
@@ -1139,7 +1143,7 @@ jobs:
 
   close-issues:
     name: close the merged pull request's issues
-    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Every merge into the default branch, not only the App's: the event does
     # not reliably say who merged, an owner merge's issues are already closed
     # by the time this reads them (the script leaves a closed issue alone),

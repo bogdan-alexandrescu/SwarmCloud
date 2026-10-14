@@ -63,18 +63,27 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: install trivy
+        # Explicit and pinned, not aquasecurity/trivy-action: that action's
+        # setup restores its binary from actions/cache at /home/runner/.local/bin,
+        # which exists on GitHub's image but not on the self-hosted VM, so the
+        # cache "hit" extracted nowhere and `trivy` was missing (exit 127, then
+        # no trivy-fs.sarif). The install goes into the job's temp dir (the
+        # self-hosted runner user cannot write /usr/local/bin) and works the same
+        # on both runner kinds.
+        run: |
+          set -euo pipefail
+          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
+            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+
       - name: trivy filesystem scan
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          scan-type: fs
-          scan-ref: .
-          scanners: vuln,secret,misconfig
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          format: sarif
-          output: trivy-fs.sarif
-          exit-code: "0"        # report everything; the gate is the next step
-          version: v${{ env.TRIVY_VERSION }}
+        # Report everything (exit 0); the gate is the step after the upload.
+        run: |
+          set -euo pipefail
+          trivy fs --scanners vuln,secret,misconfig --severity HIGH,CRITICAL \
+            --ignore-unfixed --format sarif --output trivy-fs.sarif \
+            --exit-code 0 --no-progress .
 
       - name: upload SARIF
         uses: github/codeql-action/upload-sarif@v4
@@ -93,11 +102,6 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
         run: |
           set -euo pipefail
-          # Into the job's temp dir, not /usr/local/bin: the self-hosted VM's
-          # runner user cannot write there (GitHub's image lets it).
-          curl -sSfL "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh" \
-            | sh -s -- -b "${RUNNER_TEMP}/bin" "v${TRIVY_VERSION}"
-          export PATH="${RUNNER_TEMP}/bin:${PATH}"
           scripts/trivy-new-findings.sh gate --base "${BASE_SHA}"
 
   secrets:
