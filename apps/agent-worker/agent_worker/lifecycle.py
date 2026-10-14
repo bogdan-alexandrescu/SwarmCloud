@@ -486,13 +486,16 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 #: task_6a0c9afdbaea449eb53d: "push failed with exit 1", state SUCCEEDED, the
 #: workflow green, and the work found in `swarm-work.patch` six hours later.
 PUBLISH_FAILED_FIELD = "publish_failed"
-#: The task metadata key that marks a merge step's conflict fix round: the
-#: dict `swarm_api.mergewake._on_conflict` writes (round, merge task, head,
-#: pull request). Restated here because the worker cannot import swarm_api;
+#: The dispatch block's mark of a merge step's conflict fix round (#1321):
+#: swarm-api copies it from the `metadata.merge_conflict_round` record
+#: `mergewake._on_conflict` submits the round with, INTO the signed block,
+#: because the worker acts on no metadata the step-spec signature does not
+#: cover. Restated here because the worker cannot import swarm_api
+#: (`swarm_api.validation.CONFLICT_ROUND_FIELD`);
 #: tests/unit/worker/test_conflict_round_merge_parents.py holds the two
 #: together. A round checks, before it pushes, that it merged the default
-#: branch (`gitops.verify_merged_default_branch`, #1321).
-CONFLICT_ROUND_METADATA_KEY = "merge_conflict_round"
+#: branch (`gitops.verify_merged_default_branch`).
+CONFLICT_ROUND_FIELD = "conflict_round"
 #: The file whose presence makes a clean run that changed nothing a RESULT
 #: (Proposal J, owner decision 2026-10-08): the agent checked, found nothing
 #: to change, and wrote down why. Read from `$SWARM_ARTIFACTS_DIR`; its text is
@@ -9116,16 +9119,10 @@ class Worker:
                              error=str(self._scrub(str(exc)[:300])))
             return None
 
-    def _conflict_round(self) -> dict[str, Any] | None:
-        """This step's `metadata.merge_conflict_round`, when it is a merge
-        step's conflict fix round (`swarm_api.mergewake._on_conflict`,
-        #1076), else None. The record is the control plane's; a tenant that
-        writes it on its own task only asks this worker for a stricter check."""
-        metadata = (self._task or {}).get("metadata")
-        if not isinstance(metadata, dict):
-            return None
-        record = metadata.get(CONFLICT_ROUND_METADATA_KEY)
-        return record if isinstance(record, dict) else None
+    def _conflict_round(self) -> bool:
+        """True when this step is a merge step's conflict fix round (#1076):
+        `dispatch.conflict_round`, inside the signed block (#1321)."""
+        return self._dispatch_block().get(CONFLICT_ROUND_FIELD) is True
 
     def _publish_identity(self) -> tuple[str, str]:
         """(name, email) every commit the worker pushes is written as.
@@ -10676,7 +10673,7 @@ class Worker:
                 self._default_branch_tip(
                     publish_repo, url=url, token=token, default_branch=access.default_branch
                 )
-                if conflict_round is not None
+                if conflict_round
                 else None
             )
             # Read before the replay or the fold rewrites the agent's commits.
@@ -10781,7 +10778,7 @@ class Worker:
             # conflicts, and pushing it would spend one of the merge step's
             # rounds on a head that changes nothing. Refused here, with the
             # merge base named, as the attempt's error.
-            if conflict_round is not None:
+            if conflict_round:
                 verify_merged_default_branch(
                     repo=publish_repo,
                     base=self._publish_base,

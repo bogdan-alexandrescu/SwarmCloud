@@ -190,7 +190,10 @@ CI-fix round:
   is main's head -- or the main commit it merged, when main moved on during
   the round -- and otherwise fails with that merge base named
   (`gitops.verify_merged_default_branch`), rather than push a head that still
-  conflicts and spend a round on it;
+  conflicts and spend a round on it. The worker knows a round by
+  `dispatch.conflict_round`, which swarm-api copies at submission from the
+  `merge_conflict_round` record the tick submits the round with: the worker
+  acts on no metadata the step-spec signature does not cover;
 * **at most `MERGE_CONFLICT_ROUNDS_MAX` = 2 rounds**, the PR-side CI fixer's
   own bound (`cifix.DEFAULT_MAX_ATTEMPTS`), whatever `merge_fix_rounds` says:
   that budget is about red CI and defaults to none, and a conflict nobody
