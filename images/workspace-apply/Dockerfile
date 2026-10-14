@@ -110,13 +110,13 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # interpreter is gone (below). Debian trixie's python3 is 3.13, inside the
 # 3.9-3.14 range gcloud 587's launcher accepts.
 #
-# A FRESH LAYER, EVERY UTC DAY (owner decision 2026-10-14). Releases
-# 38535875750 and 38540997006 refused this image over curl and libcurl4t64
-# 8.14.1-2+deb13u5 (CVE-2026-8286, HIGH, fixed in +deb13u7): this RUN had
-# last run on 2026-10-13, and main's incremental build kept re-tagging that
-# digest because none of its inputs changed. scripts/build-images.sh now
-# rebuilds it once its digest is from an earlier UTC day, and passes that day
-# as APT_REFRESH, named here so no layer cache can serve an older upgrade.
+# A FRESH LAYER, EVERY BUILD AND EVERY RELEASE (owner decision 2026-10-14).
+# Releases 38535875750 and 38540997006 refused this image over curl and
+# libcurl4t64 8.14.1-2+deb13u5 (CVE-2026-8286, HIGH, fixed in +deb13u7): this
+# RUN had last run on 2026-10-13, and main's incremental build kept re-tagging
+# that digest because none of its inputs changed. scripts/build-images.sh now
+# rebuilds it in every main build and every release, and passes the build's
+# name as APT_REFRESH, named here so no layer cache can serve an older upgrade.
 #
 # THE ASSERTION. After the upgrade and the installs, a simulated dist-upgrade
 # must have nothing left to do. `apt-get upgrade` keeps back a package whose

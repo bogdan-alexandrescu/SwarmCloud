@@ -67,8 +67,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1
 
-# APT_REFRESH: the UTC day scripts/build-images.sh rebuilds this layer for, so
-# the upgrade below is never yesterday's (owner decision 2026-10-14).
+# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
+# main build and release), so the upgrade below is never an older build's
+# (owner decision 2026-10-14).
 ARG APT_REFRESH=unset
 RUN echo "apt layer of ${APT_REFRESH}" \
  && apt-get update \
@@ -123,8 +124,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # reaches the relay, which closes its sockets inside the pod's 30 s grace;
 # ffmpeg for the recorder. `apt-get upgrade` because a pinned base is a frozen
 # set of CVEs, not a safe one (images/swarm-reconciler/Dockerfile).
-# APT_REFRESH: the UTC day scripts/build-images.sh rebuilds this layer for, so
-# the upgrade below is never yesterday's (owner decision 2026-10-14).
+# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
+# main build and release), so the upgrade below is never an older build's
+# (owner decision 2026-10-14).
 ARG APT_REFRESH=unset
 RUN echo "apt layer of ${APT_REFRESH}" \
  && apt-get update \

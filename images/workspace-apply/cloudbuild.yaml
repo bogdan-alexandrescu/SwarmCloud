@@ -77,7 +77,7 @@ steps:
       - linux/amd64
       - -t
       - ${_IMAGE}:${_TAG}
-      # The UTC day the apt layer is built for (scripts/build-images.sh
+      # The build the apt layer is made in (scripts/build-images.sh
       # APT_REFRESH), which the Dockerfile's apt RUN line names.
       - --build-arg
       - APT_REFRESH=${_APT_REFRESH}
@@ -93,7 +93,7 @@ options:
   # no use for it, and without this Cloud Build refuses the submit.
   substitution_option: ALLOW_LOOSE
 
-# build-images.sh passes _APT_REFRESH, today's UTC date, to this recipe because
+# build-images.sh passes _APT_REFRESH, the name of its build, to this recipe because
 # its Dockerfile upgrades OS packages. The default only names a submit made by
 # hand, without it.
 substitutions:
