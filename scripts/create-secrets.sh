@@ -22,6 +22,7 @@
 #   scripts/create-secrets.sh --github-app client-secret --stdin
 #   scripts/create-secrets.sh --github-app private-key --stdin < app.private-key.pem
 #   scripts/create-secrets.sh --search-api-key --stdin
+#   scripts/create-secrets.sh --tailscale-oauth --stdin
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
 # read by the tenant's workers AND by swarm-api, which writes an issue run's
@@ -76,6 +77,16 @@
 # copy of it, for the reason at the top of this file. swarm-api reads it only
 # while SEARCH_TOOL_ENABLED is on, so storing it changes nothing by itself.
 #
+# --tailscale-oauth adds a version to `swarm-tailscale-oauth`, the PLATFORM
+# secret of the Tailscale OAuth client (tag:swarmcloud) the decision-api
+# tailnet egress logs in with (docs/runbooks/tailscale-egress.md; lane
+# JUDGE-NET). Read from stdin ONLY, for the reasons --github-app gives, and
+# refused unless it is shaped like an OAuth client secret (`tskey-client-`),
+# without printing what it was. Terraform owns the container and its one
+# reader (terraform/infra/tailscale.tf); this never creates it, so a typo
+# cannot make an unbound twin. `kubernetes/apply.sh --swarm-system --confirm`
+# copies it into the cluster, so storing it changes nothing by itself.
+#
 # A tenant credential's NAME is never an input. It is always
 # swarm-tenant-<tenant>-<provider>, which is what swarm_common.models.Tenant's
 # secret_name() returns and what the worker asks Secret Manager for.
@@ -97,6 +108,7 @@ CHILD_KEY=0
 LIVE_KEY=0
 GITHUB_APP_SLOT=""
 SEARCH_API_KEY=0
+TAILSCALE_OAUTH=0
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -111,7 +123,10 @@ while [[ $# -gt 0 ]]; do
     --github-app)       [[ $# -ge 2 ]] || die "--github-app needs a slot: client-secret or private-key"
                         GITHUB_APP_SLOT="$2"; shift 2 ;;
     --search-api-key)   SEARCH_API_KEY=1; shift ;;
-    -h|--help)          sed -n '2,81p' "$0"; exit 0 ;;
+    --tailscale-oauth)  TAILSCALE_OAUTH=1; shift ;;
+    # The header above `set -euo pipefail`, however long it grows; a fixed
+    # line range stops mid-sentence the first time the header changes.
+    -h|--help)          awk 'NR > 1 && /^set -euo pipefail$/ { exit } NR > 1 { print }' "$0"; exit 0 ;;
     # There is deliberately no --name. The secret's name is
     # swarm_common.models.Tenant.secret_name() and nothing else: docs call that
     # spelling the first of three independent mechanisms keeping one tenant's key
@@ -296,6 +311,63 @@ if [[ -n "${GITHUB_APP_SLOT}" ]]; then
   ok "added version ${APP_VERSION##*/} of ${APP_SLOT_ID}; its value was never printed"
   dim "swarm-api is its one reader (terraform/modules/secret_manager github_app_accessor)"
   dim "delete any downloaded copy now; Secret Manager is the only place the value lives"
+  exit 0
+fi
+
+if [[ "${TAILSCALE_OAUTH}" -eq 1 ]]; then
+  # The secret's name is fixed: terraform/infra/tailscale.tf creates it and
+  # kubernetes/apply.sh reads it; tests/unit/scripts/test_create_secrets_tailscale_oauth.py
+  # holds the three spellings equal.
+  TS_OAUTH_NAME="swarm-tailscale-oauth"
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--tailscale-oauth takes only --stdin: the client is the platform's, not a tenant's, a file argument is a path to a plaintext copy, and an old version is disabled by hand once the forwarder runs on the new one"
+  fi
+  [[ "${READ_STDIN}" -eq 1 ]] || die "--tailscale-oauth reads the value from --stdin and nothing else"
+
+  step "Secret ${TS_OAUTH_NAME}"
+  TS_DESCRIBE_ERR=""
+  if ! TS_DESCRIBE_ERR="$(gcloud secrets describe "${TS_OAUTH_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${TS_DESCRIBE_ERR}"
+    die "${TS_OAUTH_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its one reader (terraform/infra/tailscale.tf): run 'make apply' first, then --tailscale-oauth"
+  fi
+
+  TS_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
+  chmod 0700 "${TS_TMP}"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "find '${TS_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${TS_TMP}' 2>/dev/null || true" EXIT INT TERM
+  TS_FILE="${TS_TMP}/value"
+  ( umask 077; : >"${TS_FILE}" )
+  if [[ -t 0 ]]; then
+    printf 'Paste the Tailscale OAuth client secret (input hidden), then press Enter: ' >&2
+    read -rs TS_VALUE
+    printf '\n' >&2
+    printf '%s' "${TS_VALUE}" >"${TS_FILE}"
+    unset TS_VALUE
+  else
+    cat >"${TS_FILE}"
+  fi
+  if [[ -s "${TS_FILE}" ]]; then
+    printf '%s' "$(tr -d '[:space:]' <"${TS_FILE}")" >"${TS_FILE}.trimmed"
+    mv "${TS_FILE}.trimmed" "${TS_FILE}"
+    chmod 0600 "${TS_FILE}"
+  fi
+  TS_BYTES="$(wc -c <"${TS_FILE}" | tr -d ' ')"
+  [[ "${TS_BYTES}" -gt 0 ]] || die "refusing to store an empty secret"
+  [[ "${TS_BYTES}" -lt 1024 ]] || die "value is ${TS_BYTES} bytes; that is not a Tailscale OAuth client secret. Nothing was stored"
+  # The shape, judged without echoing it: the client's SECRET, not its id, an
+  # auth key (tskey-auth-) or an API token (tskey-api-).
+  if [[ "$(head -c 13 "${TS_FILE}")" != "tskey-client-" ]]; then
+    die "that is not a Tailscale OAuth client secret (it does not start tskey-client-); nothing was stored. Paste the client's secret, not its id, an auth key or an API token"
+  fi
+  info "stored value is ${TS_BYTES} bytes"
+
+  TS_VERSION="$(gcloud secrets versions add "${TS_OAUTH_NAME}" \
+    --project "${PROJECT_ID}" --data-file="${TS_FILE}" --format='value(name)')"
+  ok "added version ${TS_VERSION##*/} of ${TS_OAUTH_NAME}; its value was never printed"
+  dim "its one reader is the identity that syncs it into the cluster (terraform/infra/tailscale.tf)"
+  dim "next: kubernetes/apply.sh --swarm-system --confirm copies it into swarm-system/operator-oauth"
+  dim "rotating: store the new one, re-run that apply, restart deployment/decision-api-egress, revoke the old client secret in Tailscale"
   exit 0
 fi
 
