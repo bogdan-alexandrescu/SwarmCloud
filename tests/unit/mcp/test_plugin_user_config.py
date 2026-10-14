@@ -161,6 +161,7 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     options = _bridge_options()
     assert set(options) == {
         config.PLUGIN_URL, config.PLUGIN_CLIENT_ID, config.PLUGIN_CLIENT_SECRET, config.PLUGIN_TARGET,
+        config.PLUGIN_MAX_LIVE_ROWS,
     }, "the bridge names a role for every option the manifest prompts for, and no other"
     # URL-shaped for every option: a valid deployment URL, and a string that
     # is still a well-formed (if unusual) client id and secret. The target is
@@ -168,6 +169,9 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     # in the target proves the substitution and not the fallback.
     answers = {key: f"https://{key.replace('_', '-')}.example.test" for key in options}
     answers[config.PLUGIN_TARGET] = "local"
+    # A number the default is not, so landing in the cap proves the
+    # substitution and not the fallback (SC-ROWS).
+    answers[config.PLUGIN_MAX_LIVE_ROWS] = "17"
     environ = {"SWARM_CONFIG_DIR": str(tmp_path)}
     for name, value in _server_env().items():
         for key, answer in answers.items():
@@ -183,6 +187,7 @@ def test_what_the_install_dialog_collects_is_what_the_bridge_resolves(tmp_path):
     target = config.session_target(environ)
     assert target.value == answers[config.PLUGIN_TARGET], "the default target typed at install never arrived"
     assert "plugin" in target.source, target.source
+    assert config.max_live_rows(environ) == 17, "the live-row cap typed at install never arrived"
 
 
 def test_the_default_target_defaults_to_the_bridges_default_and_names_all_three():

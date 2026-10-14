@@ -1106,10 +1106,11 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_workflow_launch",
         "description": (
             "Write the script a /sc:swarmcloud run is launched from, titled after "
-            "its SwarmCloud workflow: `SC · <name> · N steps`, at most 150 "
+            "its SwarmCloud workflow: `SC · [<workspace>] <name> · N steps`, at most 150 "
             "characters, where <name> is the spec's `title`, else its `label` cut at "
             "a word, else (attach) the title or label SwarmCloud stored, else the "
-            "workflow id. A workflow script's name is fixed when it is launched, so "
+            "workflow id, and <workspace> the tenant the API's document names "
+            "(never cut). A workflow script's name is fixed when it is launched, so "
             "this writes a copy of the plugin's run.js with that name and returns "
             "its `script_path`: launch it with the Workflow tool, "
             "{scriptPath: <script_path>, args: ...}. Submits NOTHING.\n"
@@ -1117,8 +1118,10 @@ TOOLS: list[dict[str, Any]] = [
             "Pass ONE of `spec` (the spec object), `spec_path` (its file) or "
             "`attach` (a workflow id, read once for its stored name and step "
             "count; or \"all\": every running workflow of your tenant, one copy "
-            "each, at most 10 -- one Claude Code run per SwarmCloud workflow, "
-            "each launched with the `args` its entry carries)."
+            "each, newest first and grouped by workspace, at most the sc plugin's "
+            "`max_live_rows` (30 unless set; 1-50) -- one Claude Code run per "
+            "SwarmCloud workflow, each launched with the `args` its entry carries; "
+            "the rest in `not_followed`)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1169,7 +1172,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "The workflows of YOUR tenant that are still running in SwarmCloud: "
             "every one whose derived state is not SUCCEEDED, FAILED, CANCELLED or "
-            "DEAD_LETTERED, newest first, each with its workflow_id, its spec's "
+            "DEAD_LETTERED, newest first and grouped by workspace, each with its "
+            "workflow_id, the `workspace` it runs in, its spec's "
             "label, its state, its current (unfinished) steps and their states, "
             "its age and its console link. Read-only; it submits and attaches "
             "nothing. The API filters on the workflows' stored state in its "
@@ -1181,12 +1185,13 @@ TOOLS: list[dict[str, Any]] = [
             "may be missing. A workflow with `steps_unread_because` was listed "
             "but its steps were not read. To show them all as live rows, run "
             "`/sc attach --all` (the /sc:swarmcloud workflow with "
-            "{attach: \"all\"}), which follows at most 10.\n"
+            "{attach: \"all\"}), which follows at most the sc plugin's "
+            "`max_live_rows` (30 unless set).\n"
             "\n"
             "`single_tasks` lists YOUR running single tasks beside them: not "
             "finished, in no workflow, submitted by you (`swarm_dispatch`), each "
-            "with its task_id, label, state, age and console link. "
-            "`/sc attach --all` gives each one row too, at most 10. "
+            "with its task_id, workspace, label, state, age and console link. "
+            "`/sc attach --all` gives each one row too, at most `max_live_rows`. "
             "`single_tasks_error` means they could not be read."
         ),
         "inputSchema": {"type": "object", "properties": {}},
@@ -2215,6 +2220,10 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[s
     entries = []
     for task_id, label, task in sent:
         entry: dict[str, Any] = {"task_id": task_id, "label": label}
+        # The workspace the task runs in, from the API's own task (SC-ROWS).
+        workspace = workflows.workspace_of(task)
+        if workspace:
+            entry["workspace"] = workspace
         entries.append(with_console(entry, task))
     try:
         rows = launch.for_tasks(entries)
@@ -3668,6 +3677,9 @@ def _workflow_created(
     ]
     created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
     created.update({
+        # The workspace it runs in, from the API's document (SC-ROWS): the
+        # label of every row /sc:swarmcloud starts for it.
+        "workspace": workflows.workspace_of(workflow, fallback=envelope.get("tenant_id")),
         "steps": steps,
         "dispatch": envelope.get("dispatch"),
         "repository": repository,
@@ -3914,8 +3926,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             task = client.task(t)
             # `console`: the API's link to this task, as served, in every
             # state -- a QUEUED task is the one a person opens it to watch.
+            # `workspace`: the tenant the task runs in, from its own document
+            # (SC-ROWS), which `/sc status` prints first on the task's line.
             rows.append(with_console(
-                {"task_id": t, "state": task.get("state"), "masked": masked_counts(task)}, task
+                {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
+                 "masked": masked_counts(task)}, task
             ))
         return json.dumps(rows, indent=2)
 
@@ -4024,7 +4039,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             if args.get("spec_path") is not None
             else args["spec"]
         )
-        return json.dumps(launch.for_spec(document), indent=2)
+        return json.dumps(launch.for_spec(document, client), indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()
@@ -4205,7 +4220,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
     if name == "swarm_workflows":
         from .sc import running_tasks, running_workflows
 
+        from .launch import named_workspaces
+
         listing = running_workflows(client)
+        names = workflows.workspace_names(client)
+        named_workspaces(listing["workflows"], names)
         # The caller's running SINGLE tasks beside them (#830), so the LIST
         # row of `/sc attach --all` can give each a row. A failed read is said,
         # never an empty list.
@@ -4215,7 +4234,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             listing["single_tasks"] = []
             listing["single_tasks_error"] = str(exc)
         else:
-            listing["single_tasks"] = singles["tasks"]
+            listing["single_tasks"] = named_workspaces(singles["tasks"], names)
             listing["single_tasks_count"] = singles["count"]
             if not singles["complete"]:
                 listing["single_tasks_incomplete_because"] = singles.get("incomplete_because")

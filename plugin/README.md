@@ -40,8 +40,10 @@ In a Claude Code session:
 You are prompted for the deployment URL (required), the OAuth client ID and
 the OAuth client secret. The secret is `sensitive` in the manifest, so Claude
 Code keeps it in your system's secure credential store, never in
-`settings.json`. Two more settings have defaults: `default_target` and
-`auto_attach`, and a third, **`tenant`**, is empty unless you name one — see
+`settings.json`. Three more settings have defaults: `default_target`,
+`auto_attach` and **`max_live_rows`** (how many running workflows, and how
+many single tasks, `/sc attach --all` follows as live rows: 30, held to
+1–50), and a fourth, **`tenant`**, is empty unless you name one — see
 *Acting as one of several tenants*, below. Then:
 
 ```text
@@ -845,17 +847,32 @@ pieces do it, and none of them submits anything.
   (unfinished) steps with their states, its age, and the console link the API
   served. The route filters on the state it DERIVED from the steps, never the
   stored cache, and the bridge filters again so a deployment older than the
-  filter still lists only running ones. The 20 newest are read step by step;
-  any more are listed with `steps_unread_because`.
+  filter still lists only running ones. The 30 newest are read step by step;
+  any more are listed with `steps_unread_because`. Each entry names the
+  `workspace` it runs in, read from the workflow's own `tenant_id` (the
+  display name when `GET /v1/tenants/mine` gives one), never from the
+  session's configured tenant, and the list is newest first, grouped by
+  workspace.
 * **`/sc attach --all`** runs `/sc:swarmcloud` with `{attach: "all"}`: one
-  `sc:workflow` row lists them (`LIST`), and each of the newest **10** is
+  `sc:workflow` row lists them (`LIST`), and each of the newest **30** is
   attached exactly as `/sc attach <wf_id>` attaches one — finished steps said
-  once, one slim `sc:step` row per unfinished step, all workflows at once. The
-  cap is 10 because every unfinished step is an agent of its own in the
-  session: ten workflows of three to five steps is already 30–50 rows, and past
-  that `/workflows` is unreadable and watching costs more than the work. The
-  rest are logged and returned as `not_followed`, each with the `/sc attach`
-  that follows it. The run ends `ATTACHED`, `NOTHING_RUNNING`, or
+  once, one slim `sc:step` row per unfinished step, all workflows at once.
+  30 is the owner's number (SC-ROWS, 2026-10-14; 10 before) and the default
+  of the plugin's **`max_live_rows`** option, which any value is held to
+  1–50: every unfinished step is an agent of its own in the session, so it
+  stays a cap. The bridge reads the option and hands it to each run as
+  `max_rows`. The rest are logged and returned as `not_followed`, each with
+  its `workspace` and the `/sc attach` that follows it.
+* **Every row names its workspace.** Run titles are `SC · [<workspace>]
+  <name> · N steps` (the name is cut to 150, never the workspace or the
+  count), rows are `[SwarmCloud] [<workspace>] <name> · stage <n> · <step>`
+  and `[SwarmCloud] [<workspace>] <label> · task`, and every result object and
+  summary line carries `workspace` — from the API's workflow and task
+  documents, so one attach can cover several workspaces correctly.
+* **Scrolling is Claude Code's.** `/workflows` is Claude Code's panel; the
+  plugin cannot make it scroll. It keeps 30 rows scannable instead: one
+  compact line per row, newest first, grouped by workspace, in a stable
+  order. The run ends `ATTACHED`, `NOTHING_RUNNING`, or
   `NOT_ATTACHED` with the list's error verbatim; one workflow that cannot be
   attached is `NOT_ATTACHED` on its own and does not stop the others.
 * **The SessionStart hook** (`hooks/hooks.json`, `hooks/session-start.sh`).
@@ -903,7 +920,8 @@ never lists it: five lanes dispatched that day ran with no row at all. So:
   `/sc:swarmcloud` with `{attach_tasks: [{task_id, title, console}]}`, written
   by `swarm_workflow_launch` — which starts one `[SwarmCloud] <label> · task`
   row per running single task, titled from the task's label (else its id), at
-  most **10**, the same row cap as workflows for the same reason. Launched by
+  most **30** (`max_live_rows`), the same row cap as workflows for the same
+  reason, each labelled `[SwarmCloud] [<workspace>] <label> · task`. Launched by
   name with `{attach: "all"}`, the run returns those args as `task_call`.
 * **`swarm_dispatch` starts its own rows.** Every dispatch reply (one task or
   `tasks`) carries `rows`: a titled copy of the run script whose args are

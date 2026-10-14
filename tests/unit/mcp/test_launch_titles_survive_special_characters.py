@@ -160,7 +160,7 @@ def test_attach_all_with_hostile_titles_writes_a_parsing_copy_per_workflow(_plug
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 0, "tasks": []})
     reply = json.loads(server._call(_Recorder(), "swarm_workflow_launch", {"attach": "all"}))
     launches = reply["launches"]
-    assert len(launches) == len(entries) == launch.MAX_ATTACHED_WORKFLOWS
+    assert len(launches) == len(entries) == min(len(HOSTILE_TITLES), launch.MAX_ATTACHED_WORKFLOWS)
     got = _read(tmp_path, [Path(l["script_path"]) for l in launches])
     for entry, one, meta in zip(entries, launches, got):
         name = workflows.title_name(stored=entry["title"])

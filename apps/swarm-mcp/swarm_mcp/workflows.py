@@ -636,20 +636,79 @@ def _steps_text(steps: int) -> str:
     return f"{steps} step" if steps == 1 else f"{steps} steps"
 
 
-def workflow_title(name: str, steps: int) -> str:
-    """`SC · <name> · N steps`, at most TITLE_CHARS characters.
+# THE WORKSPACE ON EVERY ROW (SC-ROWS, owner request 2026-10-14: "include
+# the workspace where the workflow or task is running in the info that is
+# easily displayed"). A row names the workspace -- the tenant -- its workflow
+# or task RUNS in, read from the API's own document (`tenant_id` on the
+# workflow or task, else the `tenant_id` the listing page answered for), never
+# from the tenant this session is configured with: `/sc attach --all` may one
+# day cover several workspaces, and a guessed name on a row is worse than none.
 
-    The NAME is cut, never the step count: at the last word boundary that
-    fits, with `…`; a single word longer than the room is cut inside it."""
+#: A display name longer than this is not shown: the tenant id is. The
+#: workspace is never cut (a cut name could be another workspace's), so it has
+#: to be short enough to leave the title room for the workflow's own name.
+WORKSPACE_NAME_CHARS = 40
+
+
+def workspace_of(
+    document: Any,
+    names: dict[str, str] | None = None,
+    *,
+    fallback: Any = None,
+) -> str | None:
+    """The workspace `document` (a workflow or a task as the API served it)
+    runs in: its tenant's display name when `names` -- the API's
+    `GET /v1/tenants/mine` -- gives one that fits, else its `tenant_id`, else
+    `fallback` (the tenant the listing page answered for). None when neither
+    names one."""
+    tenant = _flat(document.get("tenant_id")) if isinstance(document, dict) else None
+    tenant = tenant or _flat(fallback)
+    if not tenant:
+        return None
+    shown = _flat((names or {}).get(tenant))
+    return shown if shown and len(shown) <= WORKSPACE_NAME_CHARS else tenant
+
+
+def workspace_names(client: Any) -> dict[str, str]:
+    """`{tenant_id: display_name}` from `GET /v1/tenants/mine`, for the rows'
+    workspace. Best effort: a caller whose tenant is personal has no entries,
+    and a deployment that cannot answer costs the rows their display names,
+    never their workspace -- the tenant id is shown instead."""
+    try:
+        listing = client.tenants_mine()
+    except Exception:  # noqa: BLE001 - a display name is never worth a failed launch
+        return {}
+    names: dict[str, str] = {}
+    for entry in listing if isinstance(listing, list) else []:
+        tenant, shown = _flat(entry.get("tenant_id")), _flat(entry.get("display_name"))
+        if tenant and shown:
+            names[tenant] = shown
+    return names
+
+
+def workspace_tag(workspace: Any) -> str:
+    """`[<workspace>] `, or "" when no workspace is known."""
+    flat = _flat(workspace)
+    return f"[{flat}] " if flat else ""
+
+
+def workflow_title(name: str, steps: int, workspace: str | None = None) -> str:
+    """`SC · [<workspace>] <name> · N steps`, at most TITLE_CHARS characters
+    (`SC · <name> · N steps` when no workspace is known).
+
+    The NAME is cut, never the workspace or the step count: at the last word
+    boundary that fits, with `…`; a single word longer than the room is cut
+    inside it."""
     tail = " · " + _steps_text(steps)
-    room = TITLE_CHARS - len(TITLE_PREFIX) - len(tail)
+    tag = workspace_tag(workspace)
+    room = max(1, TITLE_CHARS - len(TITLE_PREFIX) - len(tag) - len(tail))
     flat = _flat(name) or "workflow"
     if len(flat) > room:
         head = flat[: room - 1]
         if flat[room - 1] != " " and " " in head:
             head = head[: head.rindex(" ")]
         flat = head.rstrip() + "…"
-    return TITLE_PREFIX + flat + tail
+    return TITLE_PREFIX + tag + flat + tail
 
 
 def stored_names(envelope: dict[str, Any]) -> dict[str, str | None]:
@@ -909,6 +968,9 @@ def report(
     workflow = envelope["workflow"]
     rows = step_rows(envelope, describe=describe)
     out: dict[str, Any] = {"workflow_id": workflow.get("workflow_id")}
+    # The workspace it runs in, from its own document (SC-ROWS): every row
+    # /sc:swarmcloud starts for it is labelled with this.
+    out["workspace"] = workspace_of(workflow, fallback=envelope.get("tenant_id"))
     # The workflow's names as stored, for /sc:swarmcloud's attach to title
     # its rows the way the run that submitted it did.
     out.update(stored_names(envelope))
