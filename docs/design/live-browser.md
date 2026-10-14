@@ -437,7 +437,7 @@ submitter or its tenant has a TypeSafe key**. jev-browser 0.2.0 (MIT) is a Node 
 Playwright. Its `browser_do(goal, values)` and `browser_read(question)` hand
 a goal-driven step, or a question about a long page, to TypeSafe's Jev
 models. That means it **sends the page's text and labels to TypeSafe
-(`api.typesafe.ai`)**. The owner accepted that. A task with no key never
+(`api.typesafe.ai`)**. The owner accepted that. A TypeSafe-backend task with no key never
 loads it, and the prompt says nothing about it. jev-ultrafast stays out.
 
 **The gate is the backend, not the key** (`SWARM_JEV_BACKEND`, set by the
