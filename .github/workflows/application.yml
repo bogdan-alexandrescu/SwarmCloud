@@ -188,12 +188,13 @@ jobs:
         # cloud credentials, so it skips -- with a ::notice on the run page, not
         # silently. It is here so that skip is visible on every PR; the real
         # comparison is `--require-live` after an apply (kubernetes/README.md).
-        env:
-          # The self-hosted VM carries its own gcloud identity, which GitHub's
-          # image does not, so without this the check would go live against a
-          # cluster instead of skipping as it does on a hosted runner. An empty
-          # gcloud config dir keeps both runner kinds on the documented skip.
-          CLOUDSDK_CONFIG: ${{ runner.temp }}/no-gcloud-config
+        # Only on a GitHub-hosted runner. The self-hosted VM is a GCE
+        # instance, so gcloud finds its service account from the metadata
+        # server and reports an ACTIVE account on every run (an empty
+        # CLOUDSDK_CONFIG did not hide it): the check then went live and died
+        # on "kubectl is pointed at <none>". The live comparison is
+        # `--require-live` after an apply, not this step.
+        if: runner.environment == 'github-hosted'
         run: ./scripts/lib/check-cluster-network-parity.sh
 
       - name: the plan guard still catches offenders

@@ -684,7 +684,7 @@ jobs:
   # says nothing about the group.
   live-browser-report:
     name: report the scheduled live-browser group
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [live-browser]
     if: ${{ !cancelled() && needs.live-browser.result != 'skipped' }}
     concurrency:
