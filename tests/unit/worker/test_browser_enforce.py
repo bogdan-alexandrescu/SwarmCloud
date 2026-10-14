@@ -216,7 +216,8 @@ def test_the_runner_registers_playwright_mcp_on_the_live_browser(monkeypatch, tm
             "playwright": {
                 "type": "stdio",
                 "command": claude_code.PLAYWRIGHT_MCP_BIN,
-                "args": ["--cdp-endpoint", ENDPOINT],
+                # The client tag (BSTATUS-API): the gate attributes and strips it.
+                "args": ["--cdp-endpoint", ENDPOINT + "/client/playwright"],
             }
         }
     }

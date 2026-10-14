@@ -233,7 +233,8 @@ def test_the_attach_endpoint_is_always_the_live_browsers(wrapper):
     seen = _passed(_wrap(wrapper, env={"SWARM_CDP_ENDPOINT": ENDPOINT,
                                        "JEV_BROWSER_CDP_ENDPOINT": "http://127.0.0.1:9333"}))
     assert seen["argv"] == [SERVER]
-    assert seen["env"]["JEV_BROWSER_CDP_ENDPOINT"] == ENDPOINT
+    # With jev's client tag, which the gate attributes and strips (BSTATUS-API).
+    assert seen["env"]["JEV_BROWSER_CDP_ENDPOINT"] == ENDPOINT + "/client/jev"
 
 
 def test_the_wrapper_drops_what_would_launch_or_redirect_and_forbids_downloads(wrapper):

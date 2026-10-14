@@ -210,7 +210,7 @@ def test_the_lifecycle_hands_the_runner_the_path_from_private():
 # --- the runner -----------------------------------------------------------------
 
 
-def _ctx(tmp_path):
+def _ctx(tmp_path, browser_tool=None):
     from agent_worker.runners.base import RunnerContext
 
     return RunnerContext(
@@ -219,7 +219,8 @@ def _ctx(tmp_path):
         input_path=tmp_path / "input.json",
         result_path=tmp_path / "result.json",
         quota_path=tmp_path / "quota.json",
-        payload={"prompt": "Fill in the signup form."},
+        payload={"prompt": "Fill in the signup form.",
+                 **({"browser_tool": browser_tool} if browser_tool else {})},
     )
 
 
@@ -242,7 +243,7 @@ def jev_bin(tmp_path, monkeypatch):
     return server
 
 
-def _run_body(monkeypatch, tmp_path, *, endpoint, key_file, backend=None):
+def _run_body(monkeypatch, tmp_path, *, endpoint, key_file, backend=None, browser_tool=None):
     from agent_worker.runners import claude_code
 
     seen: dict[str, Any] = {}
@@ -270,7 +271,7 @@ def _run_body(monkeypatch, tmp_path, *, endpoint, key_file, backend=None):
         monkeypatch.delenv("SWARM_JEV_BACKEND", raising=False)
     else:
         monkeypatch.setenv("SWARM_JEV_BACKEND", backend)
-    claude_code.body(_ctx(tmp_path))
+    claude_code.body(_ctx(tmp_path, browser_tool))
     return seen
 
 
@@ -295,7 +296,7 @@ def test_the_live_browser_with_a_key_registers_jev_beside_playwright(monkeypatch
     assert jev["args"][:2] == ["-I", str(claude_code.JEV_LAUNCH)]
     assert jev["args"][-1] == str(jev_bin)
     assert jev["env"] == {"SWARM_CDP_ENDPOINT": ENDPOINT, "JEV_BROWSER_NO_INSTALL": "1"}
-    assert seen["prompt"].count(claude_code.LIVE_BROWSER_JEV_NOTE) == 1
+    assert seen["prompt"].count(claude_code.BROWSER_TOOL_STRENGTH["jev"]) == 1
     # The key is in no file and no environment the CLI or the agent is given.
     assert key not in seen["config_text"]
     assert key not in json.dumps(seen["env"])
@@ -331,16 +332,16 @@ def test_a_key_without_the_live_browser_registers_nothing(monkeypatch, tmp_path,
 def test_internal_jev_with_no_key_registers_jev_and_writes_no_key_file(monkeypatch, tmp_path, jev_bin):
     from agent_worker.runners import claude_code
 
-    monkeypatch.setenv("JEV_API_URL", "http://decision-api.example.invalid")
     seen = _run_body(monkeypatch, tmp_path, endpoint=ENDPOINT, key_file=None, backend="internal-jev")
     servers = seen["config"]["mcpServers"]
     assert set(servers) == {claude_code.MCP_SERVER_NAME, "jev"}
     jev = servers["jev"]
-    assert jev["command"] == str(jev_bin) and jev["args"] == []
-    assert jev["env"]["SWARM_CDP_ENDPOINT"] == ENDPOINT
-    assert jev["env"]["SWARM_JEV_BACKEND"] == "internal-jev"
+    # The wrapper itself, started directly: no launcher, no key, no env block
+    # (it reads the CLI's environment, which carries the backend and URL).
+    assert jev == {"type": "stdio", "command": str(jev_bin), "args": []}
     assert "TYPESAFE_API_KEY" not in json.dumps(jev)
-    assert seen["prompt"].count(claude_code.LIVE_BROWSER_JEV_INTERNAL_NOTE) == 1
+    assert seen["prompt"].count(claude_code.BROWSER_TOOL_STRENGTH_JEV_INTERNAL) == 1
+    assert claude_code.BROWSER_TOOL_STRENGTH["jev"] not in seen["prompt"]
     assert "TypeSafe" not in seen["prompt"]
     assert not (tmp_path / "private").exists()
 
@@ -350,7 +351,6 @@ def test_internal_laya_registers_jev(monkeypatch, tmp_path, jev_bin):
 
     seen = _run_body(monkeypatch, tmp_path, endpoint=ENDPOINT, key_file=None, backend="internal-laya")
     assert set(seen["config"]["mcpServers"]) == {claude_code.MCP_SERVER_NAME, "jev"}
-    assert seen["config"]["mcpServers"]["jev"]["env"]["SWARM_JEV_BACKEND"] == "internal-laya"
 
 
 def test_typesafe_with_a_key_registers_jev_with_the_key_file(monkeypatch, tmp_path, jev_bin):
@@ -363,7 +363,7 @@ def test_typesafe_with_a_key_registers_jev_with_the_key_file(monkeypatch, tmp_pa
     assert jev["command"] == sys.executable
     assert jev["args"][:2] == ["-I", str(claude_code.JEV_LAUNCH)]
     assert key not in seen["config_text"]
-    assert seen["prompt"].count(claude_code.LIVE_BROWSER_JEV_NOTE) == 1
+    assert seen["prompt"].count(claude_code.BROWSER_TOOL_STRENGTH["jev"]) == 1
 
 
 def test_typesafe_without_a_key_does_not_register_jev(monkeypatch, tmp_path, jev_bin):
@@ -413,13 +413,30 @@ def test_a_missing_binary_skips_jev_and_logs_jev_unavailable(monkeypatch, tmp_pa
     assert "jev_unavailable" in capsys.readouterr().err
 
 
-def test_the_note_names_the_tools_the_egress_and_the_handoff():
+@pytest.mark.parametrize("tool", ["playwright", "dev-browser"])
+@pytest.mark.parametrize("backend, with_key", [("internal-jev", False), ("internal-laya", False),
+                                                ("typesafe", True)])
+def test_browser_tool_playwright_or_dev_browser_never_registers_jev(
+        monkeypatch, tmp_path, jev_bin, tool, backend, with_key):
     from agent_worker.runners import claude_code
 
-    note = claude_code.LIVE_BROWSER_JEV_NOTE
-    for phrase in ("browser_do", "browser_read", "SAME live browser", "TypeSafe",
-                   "long pages and forms", "`swarm-handoff wait`", "re-read the page"):
-        assert phrase in note, phrase
+    key_file = _key_file(tmp_path, _fake_key()) if with_key else None
+    seen = _run_body(monkeypatch, tmp_path, endpoint=ENDPOINT, key_file=key_file,
+                     backend=backend, browser_tool=tool)
+    assert set(seen["config"]["mcpServers"]) == {claude_code.MCP_SERVER_NAME}
+
+
+def test_browser_tool_jev_registers_jev_on_an_internal_backend(monkeypatch, tmp_path, jev_bin):
+    seen = _run_body(monkeypatch, tmp_path, endpoint=ENDPOINT, key_file=None,
+                     backend="internal-jev", browser_tool="jev")
+    assert "jev" in seen["config"]["mcpServers"]
+
+
+def test_the_internal_strength_line_names_no_typesafe_egress():
+    from agent_worker.runners import claude_code
+
+    assert "TypeSafe" not in claude_code.BROWSER_TOOL_STRENGTH_JEV_INTERNAL
+    assert "TypeSafe" in claude_code.BROWSER_TOOL_STRENGTH["jev"]
 
 
 # --- the launcher, against a fake server -----------------------------------------
@@ -459,8 +476,8 @@ def test_the_launcher_refuses_a_missing_file_without_starting_the_server(tmp_pat
 
 def test_the_design_doc_has_the_jev_subsection():
     text = DESIGN_DOC.read_text()
-    assert "jev-browser (opt-in, per key)" in text
-    section = text.split("jev-browser (opt-in, per key)", 1)[1][:6000]
+    assert "### 3.2.5 jev-browser" in text
+    section = text.split("### 3.2.5 jev-browser", 1)[1].split("### 3.3", 1)[0]
     for phrase in ("api.typesafe.ai", "jev_launch.py", "private/", "jev_unavailable",
                    "typesafe_user_keys.tf", "same uid"):
         assert phrase in section, phrase

@@ -43,6 +43,9 @@ MANIFEST = REPO / "images" / "agent-runtime-base" / "tool-mirror.sha256"
 DESIGN_DOC = REPO / "docs" / "design" / "live-browser.md"
 
 ENDPOINT = "http://127.0.0.1:9222"
+#: What the wrapper connects to: the endpoint with dev-browser's client tag,
+#: which the gate attributes and strips (BSTATUS-API).
+TAGGED = ENDPOINT + "/client/dev-browser"
 STUB_ROOT = "/opt/swarm/live-browser-only"
 VERSION = "1.0.0-rc.3"
 REFUSAL = "dev-browser here drives only the live browser the person watches"
@@ -166,15 +169,15 @@ def _passed(done: subprocess.CompletedProcess) -> dict[str, Any]:
 
 def test_every_call_is_connected_to_the_live_browser(wrapper):
     seen = _passed(_wrap(wrapper, "-e", "await browser.listPages()"))
-    assert seen["argv"] == ["--connect", ENDPOINT, "-e", "await browser.listPages()"]
+    assert seen["argv"] == ["--connect", TAGGED, "-e", "await browser.listPages()"]
     for sub in (["stop"], ["pages"], ["status"], ["run", "script.js"], ["stop", "default"]):
-        assert _passed(_wrap(wrapper, *sub))["argv"] == ["--connect", ENDPOINT, *sub]
+        assert _passed(_wrap(wrapper, *sub))["argv"] == ["--connect", TAGGED, *sub]
 
 
 def test_a_heredoc_on_stdin_is_passed_through(wrapper):
     script = 'const p = await browser.getPage("main");\nconsole.log(await p.title());\n'
     seen = _passed(_wrap(wrapper, stdin=script))
-    assert seen["argv"] == ["--connect", ENDPOINT]
+    assert seen["argv"] == ["--connect", TAGGED]
     assert seen["stdin"] == script
 
 
@@ -202,14 +205,14 @@ def test_a_browser_of_its_own_is_refused_toward_the_live_browser(wrapper, argv):
 
 
 def test_the_live_browsers_own_connect_is_not_doubled(wrapper):
-    assert _passed(_wrap(wrapper, "--connect", ENDPOINT, "-e", "1"))["argv"] == ["--connect", ENDPOINT, "-e", "1"]
-    assert _passed(_wrap(wrapper, f"--connect={ENDPOINT}", "pages"))["argv"] == ["--connect", ENDPOINT, "pages"]
+    assert _passed(_wrap(wrapper, "--connect", ENDPOINT, "-e", "1"))["argv"] == ["--connect", TAGGED, "-e", "1"]
+    assert _passed(_wrap(wrapper, f"--connect={ENDPOINT}", "pages"))["argv"] == ["--connect", TAGGED, "pages"]
 
 
 def test_a_script_that_says_install_or_headless_is_not_read_as_a_flag(wrapper):
     code = "console.log('install chrome --headless')"
-    assert _passed(_wrap(wrapper, "-e", code))["argv"] == ["--connect", ENDPOINT, "-e", code]
-    assert _passed(_wrap(wrapper, "-e", "--headless"))["argv"] == ["--connect", ENDPOINT, "-e", "--headless"]
+    assert _passed(_wrap(wrapper, "-e", code))["argv"] == ["--connect", TAGGED, "-e", code]
+    assert _passed(_wrap(wrapper, "-e", "--headless"))["argv"] == ["--connect", TAGGED, "-e", "--headless"]
 
 
 def test_without_the_endpoint_the_stub_means_a_refusal(wrapper):

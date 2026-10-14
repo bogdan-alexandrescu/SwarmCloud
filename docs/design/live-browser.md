@@ -427,12 +427,105 @@ and values, not bodies. The self-test checks that a one-stage and a two-stage
 pick both come back as numeric element indexes, that the TypeSafe path is
 unchanged, and that `internal` with no key does not throw.
 
-### 3.2.4 jev-browser tools for a keyed submitter (JEV-RUNNER)
+### 3.2.4 Choosing and seeing the browser tool (BSTATUS-API)
+
+Owner decision 2026-10-14 (BSTATUS-API, part of #1030): "Picker on Submit,
+Auto by default". A `claude-code-browser` task names its tool in
+`input.browser_tool`, one of four names the frozen catalogue declares
+(contract request 77): `auto` (the default), `playwright`, `dev-browser` or
+`jev`. A NAME, never a command, an MCP config or a URL (invariant 10): the
+runner and the image's wrappers own what each name runs.
+
+**What each name registers** (`agent_worker/browser_tools.py`, `choose`):
+
+| `browser_tool` | registered | note names first |
+|---|---|---|
+| `auto` | Playwright MCP, dev-browser, and jev when it can run | every tool, each with its strength |
+| `playwright` | Playwright MCP only | Playwright |
+| `dev-browser` | dev-browser first, Playwright MCP as fallback | dev-browser |
+| `jev` | jev MCP first, Playwright MCP as fallback | jev |
+
+Playwright MCP is registered on every choice because it is the one tool
+that has worked through the gate since L2: a choice must never leave the
+agent with no working tool. Jev runs only when the image carries its
+wrapper and the runner has a TypeSafe key; otherwise the attempt runs
+without it and says why (`no_key`, `not_installed`). It does not fail: a
+key deleted between submission and run must not cost the attempt.
+
+**The API refuses what cannot run.** A `jev` submission with no TypeSafe key
+for its submitter or its tenant (the resolution `GET
+/v1/provider-keys/typesafe` serves), or on a deployment whose image has no
+jev (`BROWSER_JEV_INSTALLED=false`), is refused 422
+`browser_tool_unavailable`. It is a new refusal, so it ships switched off
+(`REFUSAL_BROWSER_TOOL_UNAVAILABLE`): until the Submit form disables Jev when
+no key resolves, the refusal is logged and the task runs on Playwright.
+
+**How the console learns which tool is in use.** Three parties each know
+one part, and none can see the others' part:
+
+* the RUNNER knows what it registered. It writes `browser.json` to the
+  hand-off spool before the CLI starts;
+* the WORKER's hand-off poll forwards that file to the gate over ctl.sock
+  (`browser_tools`), checked again, because the spool is in the agent's
+  reach. The spool's copy is removed at every attempt's start, so a restored
+  checkpoint never speaks for a new attempt;
+* the GATE knows which tool drove the browser last. Each tool connects with
+  a CLIENT TAG on the endpoint, `http://127.0.0.1:9222/client/<tool>`: the
+  runner gives Playwright MCP its tag in `--cdp-endpoint`, and the dev-browser
+  and jev wrappers add theirs. The tag is a path segment, not a query,
+  because a client that builds `/json/version` by string concatenation turns
+  `?client=x` into `?client=x/json/version/`. The CDP proxy reads the tag,
+  echoes it into the websocket URL it hands back, and STRIPS it: nothing of
+  it reaches Chromium. An untagged connection, such as `swarm_browser.live()`
+  from the agent's Python, works as before and is attributed to no tool.
+
+The gate puts it all in its report as `browser`: the registration, the last
+tool and when, and the egress. The relay passes the key on, and swarm-api
+checks it key by key (`clean_browser`): an unknown key anywhere in it drops
+the whole of it.
+
+**The egress state** is the forwarder's (§ "browser egress",
+docs/browser-egress.md): `residential` or `direct`; `ok`, `failing` or `off`;
+and `last_error`, one of the gate's FIXED sentences for the forwarder's
+cause word. The forwarder never reads a vendor's answer past its status and
+a cause word, so no vendor's text can reach the console. A refusal of one
+request (a destination the policy refuses, a rate) does not make the path
+`failing`; a refusal of the path (the vendor unreachable, a budget used up)
+does, until the next connection is served. The exit country is not the
+gate's to know: swarm-api adds it from `BROWSER_EGRESS_COUNTRY`, the setting
+that mints the ticket.
+
+**What the console reads** is `browser` on `GET
+/v1/tasks/{id}/live/session`, beside `live_browser`, served for a live-browser
+task before, during and after its session:
+
+```json
+{"tool_selected": "auto",
+ "tools_available": ["playwright", "dev-browser", "jev"],
+ "tool_last_used": {"name": "dev-browser", "at": "2026-10-14T15:02:11+00:00"},
+ "jev": {"enabled": true, "reason": null, "key_scope": "user"},
+ "egress": {"mode": "residential", "country": "us", "state": "ok", "last_error": null}}
+```
+
+`tool_selected` is the task's own input, so it is there from submission.
+`tools_available` is empty and `egress` null until the current attempt's gate
+reports them: never invented. `jev.key_scope` says whose TypeSafe key jev runs
+on while it is registered, and is null otherwise.
+
+**Not verified here.** That dev-browser's `--connect` and jev's
+`connectOverCDP` keep the path of a tagged endpoint was not run against the
+real binaries, nor was Playwright MCP's: recent Playwright appends
+`json/version/` to the endpoint URL's path, which keeps the tag, but that was
+not checked against the pinned 1.63 here. A tool that drops the path still
+connects, untagged, and is attributed to nothing; the proxy also reads a
+`client=` query, for a client that keeps a query and not a path.
+
+### 3.2.5 jev-browser: which backend, which key, how the key arrives (JEV-RUNNER)
 
 Owner decision 2026-10-14 (JEV-RUNNER, part of #1030): a live-browser task
 also gets [jev-browser](https://github.com/ying-kai-liao/jev-browser)'s MCP
 tools, beside Playwright MCP and dev-browser, **according to the workspace's
-judgment backend (§3.2.2, JUDGE-SELECT, PR 1312) and, for TypeSafe, when its
+judgment backend (§3.2.2, JUDGE-SELECT, PR 1312) and the task's `browser_tool` (§3.2.4) and, for TypeSafe, when its
 submitter or its tenant has a TypeSafe key**. jev-browser 0.2.0 (MIT) is a Node MCP server over
 Playwright. Its `browser_do(goal, values)` and `browser_read(question)` hand
 a goal-driven step, or a question about a long page, to TypeSafe's Jev
@@ -440,10 +533,12 @@ models. That means it **sends the page's text and labels to TypeSafe
 (`api.typesafe.ai`)**. The owner accepted that. A TypeSafe-backend task with no key never
 loads it, and the prompt says nothing about it. jev-ultrafast stays out.
 
-**The gate is the backend, not the key** (`SWARM_JEV_BACKEND`, set by the
+**The gate is two conditions**, both required: (a) the task's `browser_tool`
+(§3.2.4) is `jev` or `auto`, never `playwright` or `dev-browser`; and (b) the
+workspace's backend allows it. Condition (b) is the backend, not the key (`SWARM_JEV_BACKEND`, set by the
 scheduler's `judgment.py` and passed to the worker and the runner):
 
-| `SWARM_JEV_BACKEND` | key | `jev` registered | key file |
+| `SWARM_JEV_BACKEND` (with `browser_tool` jev or auto) | key | `jev` registered | key file |
 |---|---|---|---|
 | `internal-jev` or `internal-laya` | not needed | yes | never written |
 | `typesafe` | resolved | yes | yes (below) |
@@ -534,18 +629,21 @@ endpoint in the server's `env`. If the binary is absent from the image, the
 runner skips the registration and logs `jev_unavailable`, and the attempt
 runs with Playwright MCP and dev-browser.
 
-**The note** (`LIVE_BROWSER_JEV_NOTE`) is added only when `jev` is
-registered. It says that `browser_do`/`browser_read` act on the SAME live
-browser, that they send page text to TypeSafe, that they are the better
-choice for long pages and forms, and that the agent should re-read the page
-after every `swarm-handoff wait` returns, because the person may have changed
-it.
+**The note** is §3.2.4's: the selected tool first, then each registered
+tool's strength line. The `jev` line says it sends page text to TypeSafe,
+which is true only on the `typesafe` backend (`BROWSER_TOOL_STRENGTH`); on an
+internal backend the runner uses `BROWSER_TOOL_STRENGTH_JEV_INTERNAL`, which
+says nothing is sent to TypeSafe.
 
 **The benchmark** (scripts/browser-bench.sh, docs/browser-bench.md) has a
 third arm, `jev`, chosen by its own sentence in front of the prompt like the
 other two. It is opt-in (`--tools playwright-mcp,dev-browser,jev`) because
 its tools exist only for a keyed submitter and each run spends TypeSafe
 credits too. Each challenger gets its own verdict against Playwright MCP.
+
+swarm-api's `browser_tool_unavailable` refusal of `browser_tool: jev` for a
+missing key applies only when the workspace's backend is `typesafe`; Internal
+Jev and Internal Laya need no key, so they are never refused for its absence.
 
 ### 3.3 The path to the console: outbound only, through a relay
 
