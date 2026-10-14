@@ -27,7 +27,6 @@ from pathlib import Path
 
 import pytest
 
-from swarm_api.settings import ApiSettings
 
 ROOT = Path(__file__).resolve().parents[3]
 SCRIPT = ROOT / "scripts" / "create-secrets.sh"
@@ -102,6 +101,8 @@ def _key() -> str:
 
 
 def test_the_name_is_swarm_apis_default():
+    from swarm_api.settings import ApiSettings  # imported here: tests/unit/scripts must collect without the service stack
+
     assert ApiSettings.__dataclass_fields__["search_api_key_secret"].default == SECRET
     assert f'SEARCH_SECRET="{SECRET}"' in SCRIPT.read_text()
 
