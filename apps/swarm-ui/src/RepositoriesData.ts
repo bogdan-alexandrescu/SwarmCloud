@@ -95,6 +95,68 @@ export interface RepoIndexState {
   /** The test map's reach in the index's own units (QA G4-03); null when not served. */
   coverage: TestCoverage | null
   next_run_at: string | null
+  /** The last index run that FAILED, as the API classified it (INDEX-FAIL); null when none. */
+  last_failure: IndexFailure | null
+  /** Set when the poll stopped re-running this repository after repeated access failures. */
+  backoff: IndexBackoff | null
+}
+
+/** `access` (the forge refused or could not find it), `transient` (nobody answered), `other`. */
+export type FailureClass = 'access' | 'transient' | 'other'
+
+/**
+ * `index.last_failure` (`swarm_api/indexfailure.py` `failure_record`): the
+ * failed task, when, its class, the API's sentence and one scrubbed git line.
+ * Operator QA p14 (2026-10-13): runs failed every 15 minutes while the card
+ * said only "no index". The text is masked again here (`maskCredential`): the
+ * API scrubs it, and a card is not where to find out it once did not.
+ */
+export interface IndexFailure {
+  task_id: string
+  at: string | null
+  kind: FailureClass
+  cause: string
+  detail: string | null
+}
+
+/** `index.backoff`: the poll stopped, since when, after how many failures. */
+export interface IndexBackoff {
+  since: string | null
+  failures: number | null
+}
+
+/**
+ * A served line with anything credential-shaped cut: URL user-info, GitHub
+ * token shapes. The patterns are built from pieces, so this file is not one.
+ */
+const CREDENTIAL_SHAPES: readonly RegExp[] = [
+  /\b([a-z][a-z0-9+.-]*:\/\/)[^/\s@]*@/gi,
+  new RegExp('\\bgh[pousr]_[A-Za-z0-9]{8,}', 'g'),
+  new RegExp('\\bgithub' + '_pat_[A-Za-z0-9_]{8,}', 'g'),
+]
+
+export function maskCredential(text: string): string {
+  return CREDENTIAL_SHAPES.reduce((t, re, i) => t.replace(re, i === 0 ? '$1' : '[redacted]'), text)
+}
+
+function normFailure(v: unknown): IndexFailure | null {
+  if (!isRec(v)) return null
+  const id = str(v.task_id)
+  const cause = str(v.cause)
+  if (id === null || cause === null) return null
+  const detail = str(v.detail)
+  return {
+    task_id: id,
+    at: str(v.at),
+    kind: oneOf(v.class, ['access', 'transient', 'other'] as const) ?? 'other',
+    cause: maskCredential(cause),
+    detail: detail === null ? null : maskCredential(detail),
+  }
+}
+
+function normBackoff(v: unknown): IndexBackoff | null {
+  if (!isRec(v)) return null
+  return { since: str(v.since), failures: num(v.failures) }
 }
 
 /**
@@ -263,6 +325,8 @@ export function normRepo(v: unknown): RepoRecord | null {
       in_flight_task_id: str(ix.in_flight_task_id),
       coverage: normCoverage(ix.coverage),
       next_run_at: str(ix.next_run_at),
+      last_failure: normFailure(ix.last_failure),
+      backoff: normBackoff(ix.backoff),
     },
     last_run: normIndexRun(v.last_run),
     graph: { depth: num(graph.depth), min_confidence: num(graph.min_confidence) },
