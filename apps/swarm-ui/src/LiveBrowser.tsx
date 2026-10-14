@@ -8,6 +8,7 @@ import {
   useState,
   type ClipboardEvent,
   type KeyboardEvent,
+  type MouseEvent,
   type ReactNode,
   type RefObject,
   type SyntheticEvent,
@@ -74,6 +75,19 @@ import './styles/live.css'
  * person holds control. While the canvas has focus in control, a key stops at
  * the canvas, so the console's own shortcuts (Escape closes the split, `[`
  * folds the list) do not fire under someone typing into the agent's browser.
+ *
+ * THE KEYS FOLLOW THE PERSON IN CONTROL BACK TO THE CANVAS (KEYS-FOCUS; part
+ * of #1030). MEASURED 2026-10-14 on task_84cb2038aa704c829d48 generation 5:
+ * the owner switched iphone-15 -> desktop twice and typed into the form; the
+ * gate counted keys=0 pointer=87 for that connection. Pressing a device chip
+ * leaves focus on the chip, so every key went to the console; a reconnect
+ * replaces noVNC's canvas, and the theater moves it, without a blur, so the
+ * line under the canvas went on saying the keys went to the agent's browser.
+ * So: a device switch in control hands focus back to the canvas, a canvas
+ * that replaces a focused one takes its focus, a press anywhere on the
+ * screen focuses the canvas, whether the canvas has focus is read from the
+ * document rather than remembered, and "Click to type" sits on the screen
+ * -- in the tab and in the theater -- whenever it does not.
  *
  * THE POINTER MOVES WITHOUT A CLICK FIRST (LB-CURSOR2; part of #1030). Input
  * used to open only once the canvas also had focus, so every move before the
@@ -960,7 +974,10 @@ function rotated(orientation: Orientation): Orientation {
   return orientation === 'portrait' ? 'landscape' : 'portrait'
 }
 
-/** The device chips, rotate and touch: the toolbar's, and the same component in the theater's device slot. */
+/**
+ * The device chips, rotate and touch: the toolbar's, and the same component in the theater's device slot.
+ * Each is marked `data-live-device`: a switch it asked for hands the keys back to the canvas (KEYS-FOCUS).
+ */
 function LiveDevice({ taskId, session, reload }: { taskId: string; session: LiveSession; reload: LiveReload }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -995,6 +1012,7 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
           <Button
             key={n}
             size="sm"
+            data-live-device=""
             className="live-chip"
             aria-pressed={device !== null && device.preset === n}
             disabled={!can || busy}
@@ -1010,6 +1028,7 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
       </span>
       <Button
         size="sm"
+        data-live-device=""
         disabled={!can || busy}
         title={why}
         aria-describedby={describedBy}
@@ -1021,6 +1040,7 @@ function LiveDevice({ taskId, session, reload }: { taskId: string; session: Live
       </Button>
       <Button
         size="sm"
+        data-live-device=""
         aria-pressed={device?.touch ?? false}
         disabled={!can || busy || !mobile}
         title={can && !mobile ? 'This preset has no touch.' : why}
@@ -1138,6 +1158,11 @@ export function stageFloor(
   return Math.max(STAGE_MIN, Math.min(want, most))
 }
 
+/** Focus is on no control at all: the page's body, as after the focused element left the page. */
+function nowhere(): boolean {
+  return document.activeElement === null || document.activeElement === document.body
+}
+
 function LiveScreen({
   taskId,
   sessionId,
@@ -1174,7 +1199,12 @@ function LiveScreen({
 }) {
   const host = useRef<HTMLDivElement>(null)
   const rfb = useRef<Rfb | null>(null)
-  const focused = useRef(false)
+  /**
+   * The person's keys were last in this screen: it took focus, and nothing
+   * outside it has taken focus since. A canvas noVNC removes takes no blur
+   * with it, so this outlives a reconnect, for the new canvas to take over.
+   */
+  const keysHere = useRef(false)
   const controlRef = useRef(control)
   controlRef.current = control
   const changedRef = useRef(onControlChange)
@@ -1240,6 +1270,42 @@ function LiveScreen({
     onScreen?.(host.current)
     return () => onScreen?.(null)
   }, [onScreen])
+
+  // WHETHER THE CANVAS HAS FOCUS IS READ, NOT REMEMBERED (KEYS-FOCUS). A
+  // canvas that is removed or moved takes focus with it and fires no blur.
+  const typing = useCallback(() => {
+    const at = document.activeElement
+    return at !== null && host.current !== null && host.current.contains(at)
+  }, [])
+  /** Give noVNC's canvas the keys, for the person in control only. */
+  const focusCanvas = useCallback(() => {
+    const canvas = host.current?.querySelector('canvas')
+    if (!controlRef.current || canvas === null || canvas === undefined) return
+    canvas.focus({ preventScroll: true })
+    setHasFocus(typing())
+  }, [typing])
+  useEffect(() => {
+    const moved = (e: FocusEvent) => {
+      const inside = e.target instanceof Node && host.current !== null && host.current.contains(e.target)
+      keysHere.current = inside
+      setHasFocus(inside)
+    }
+    document.addEventListener('focusin', moved)
+    return () => document.removeEventListener('focusin', moved)
+  }, [])
+
+  // A DEVICE SWITCH IN CONTROL HANDS THE KEYS BACK. The chip that asked for it
+  // (or the page, once a busy chip let go of focus) holds them otherwise, and
+  // the person types on into the console. Once the switched device is drawn.
+  const shape = device === null ? null : `${device.width}x${device.height}:${device.mobile}:${touch}`
+  const drawn = useRef(shape)
+  useEffect(() => {
+    const was = drawn.current
+    drawn.current = shape
+    if (was === null || was === shape) return
+    const at = document.activeElement
+    if (nowhere() || (at instanceof Element && at.closest('[data-live-device]') !== null)) focusCanvas()
+  }, [shape, focusCanvas])
 
   // VIEW-ONLY UNLESS IN CONTROL. Set on the RFB object directly, not through
   // a render, so the connection's first moment in control already sends. Not
@@ -1368,8 +1434,12 @@ function LiveScreen({
             setWhy(null)
             setRefused(null)
             setConn('connected')
+            // A canvas that replaces the one the keys were in takes them (KEYS-FOCUS).
+            if (keysHere.current && nowhere()) focusCanvas()
+            else setHasFocus(typing())
           })
           r.addEventListener('disconnect', () => {
+            setHasFocus(typing())
             if (rfb.current === r) rfb.current = null
             retry('The live connection closed. Reconnecting with a new ticket.')
           })
@@ -1386,27 +1456,35 @@ function LiveScreen({
       rfb.current = null
       r?.disconnect()
     }
-  }, [taskId, sessionId, applyInput])
+  }, [taskId, sessionId, applyInput, focusCanvas, typing])
 
   const onFocus = () => {
-    focused.current = true
+    keysHere.current = true
     setHasFocus(true)
   }
   const onBlur = (e: { currentTarget: HTMLElement; relatedTarget: EventTarget | null }) => {
     if (e.relatedTarget instanceof Node && e.currentTarget.contains(e.relatedTarget)) return
-    focused.current = false
     setHasFocus(false)
+  }
+  // A PRESS ANYWHERE ON THE SCREEN TAKES THE KEYS. noVNC focuses its canvas
+  // only for a press on the canvas itself, and stops that press there, so
+  // this listens in the capture phase; a press beside a canvas scaled to fit
+  // would otherwise leave focus on the page.
+  const pressToType = (e: MouseEvent<HTMLDivElement>) => {
+    if (!controlRef.current) return
+    if (!(e.target instanceof HTMLCanvasElement)) e.preventDefault()
+    focusCanvas()
   }
   // A key typed into the agent's browser is the agent's browser's, not the console's.
   const keepKey = (e: KeyboardEvent<HTMLDivElement>) => {
-    if (controlRef.current && focused.current) e.stopPropagation()
+    if (controlRef.current && typing()) e.stopPropagation()
   }
   const gateTouch = (e: SyntheticEvent) => {
     if (!(controlRef.current && touch)) e.stopPropagation()
   }
   const onPaste = (e: ClipboardEvent<HTMLDivElement>) => {
     const r = rfb.current
-    if (r === null || !controlRef.current || !focused.current) return
+    if (r === null || !controlRef.current || !typing()) return
     const text = e.clipboardData.getData('text/plain')
     e.preventDefault()
     if (text !== '') r.clipboardPasteFrom(text)
@@ -1436,6 +1514,7 @@ function LiveScreen({
             aria-label={control ? 'The agent’s browser. Click it to type into it.' : 'The agent’s browser, view only.'}
             onFocus={onFocus}
             onBlur={onBlur}
+            onMouseDownCapture={pressToType}
             onKeyDown={keepKey}
             onKeyUp={keepKey}
             onPaste={onPaste}
@@ -1443,7 +1522,14 @@ function LiveScreen({
             onTouchMoveCapture={gateTouch}
             onTouchEndCapture={gateTouch}
             onTouchCancelCapture={gateTouch}
-          />
+          >
+            {/* Inside the screen, so it goes with it into the theater. Clicks go through it. */}
+            {control && conn === 'connected' && !hasFocus && (
+              <span className="live-type-hint" aria-hidden="true">
+                Click to type
+              </span>
+            )}
+          </div>
         </div>
         <div ref={below} className="live-stage-caption">
           {caption}

@@ -93,6 +93,13 @@
 }
 .live-screen.is-control { border-color: var(--warn); }
 .live-screen.is-control:focus-within { outline: 2px solid var(--warn); outline-offset: 1px; }
+/* KEYS-FOCUS: in control, over the screen while its canvas has no focus. Clicks go through to it. */
+.live-screen { position: relative; }
+.live-type-hint {
+  position: absolute; top: 8px; left: 50%; transform: translateX(-50%); pointer-events: none;
+  padding: 2px 8px; border-radius: var(--radius); background: var(--warn); color: var(--bg);
+  font-size: var(--t-meta); white-space: nowrap;
+}
 .live-screen-say { color: var(--text-dim); font-size: var(--t-meta); }
 
 .live-control { display: inline-flex; flex-wrap: wrap; gap: 6px; align-items: center; position: relative; }
