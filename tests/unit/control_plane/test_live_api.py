@@ -800,6 +800,9 @@ def test_the_open_socket_is_re_checked_and_closed_when_membership_lapses(
         with pytest.raises(WebSocketDisconnect) as closed:
             while True:
                 ws.receive_json()
+        # Inside the session: the app writes `viewer_left` after the close, and
+        # leaving the `with` cancels it (see the viewer-socket hold test below).
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
     assert closed.value.code == 4403
     assert wait_until(lambda: session_doc(ldb)["controller"] is None)
     ended = audit(ldb, "control_ended")
@@ -885,7 +888,9 @@ def test_every_key_event_of_an_episode_is_on_its_returned_event(
         with pytest.raises(WebSocketDisconnect):
             while True:
                 ws.receive_json()
-    assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
+        # Inside the session: the app writes `viewer_left` after the close, and
+        # leaving the `with` cancels it (see the viewer-socket hold test below).
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
     assert returned_event()["detail"]["keys"] == 18
     (row,) = audit(ldb, "control_returned")
     assert row["detail"]["keys"] == 18
@@ -1318,4 +1323,13 @@ def test_the_viewer_socket_extends_the_hold_while_it_is_open(
         with pytest.raises(WebSocketDisconnect):
             while True:
                 ws.receive_json()
-    assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
+        # INSIDE the session, not after it (flake fixed 2026-10-14; failed PRs
+        # 1267 and 1268 with CancelledError at this `with`). The close reaches
+        # the client before the app has finished: `_Proxy.run` still writes the
+        # `viewer_left` audit after closing the socket. Leaving the `with` makes
+        # the TestClient cancel the app's task, so a test that left as soon as
+        # it read the close cancelled that teardown mid-await -- surfacing as
+        # CancelledError from the portal, or as a missing audit. The app's
+        # last write is its `viewer_left` row: once it is there, nothing of the
+        # app is left to cancel.
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
