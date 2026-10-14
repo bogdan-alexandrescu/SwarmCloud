@@ -312,6 +312,21 @@ def test_a_shards_workers_steal_rather_than_split_up_front():
         assert re.search(r"uv run pytest\b[^\n]*-n auto --dist worksteal\b", run), run
 
 
+def test_a_hung_shard_fails_and_names_the_test_that_hung():
+    """On 2026-10-14 eight unit shards sat "in progress" for 51-306 minutes, and
+    `build images` (which needs this job) never started, so release.yml timed
+    out waiting for it. MUTATION: drop the job's timeout-minutes, raise it past
+    an hour, or drop faulthandler_timeout from either pytest step."""
+    job = _jobs()["python-unit"]
+    assert 0 < int(job.get("timeout-minutes", 0)) <= 60, job.get("timeout-minutes")
+    runs = [str(s.get("run", "")) for s in job["steps"]]
+    pytests = [r for r in runs if "uv run pytest" in r]
+    assert len(pytests) == 2, pytests
+    for run in pytests:
+        m = re.search(r"-o faulthandler_timeout=(\d+)\b", run)
+        assert m and int(m.group(1)) < int(job["timeout-minutes"]) * 60, run
+
+
 @pytest.mark.parametrize("mode, areas", [("none", ""), ("subset", ""), ("subset", "terraform"), ("bogus", "")])
 def test_the_pick_refuses_what_it_does_not_model(tmp_path, mode, areas):
     """A mode or area it does not know is a broken gate, never "run nothing"."""
