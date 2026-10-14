@@ -228,9 +228,14 @@ LIVE_BROWSER_NOTE = (
     "or a sign-in, do not try to get around it and do not switch to a "
     "different site than the one asked for: run `swarm-handoff request "
     "--reason \"<what the person should do>\" --expect <domain>`, then "
-    "`swarm-handoff wait`, and carry on once control comes back. Only if "
-    "nobody comes, say so in your answer and then use an alternative, naming "
-    "it. Save screenshots and other captures under $SWARM_ARTIFACTS_DIR so "
+    "`swarm-handoff wait`, and carry on once control comes back. Until then: "
+    "wait, do not poll the browser -- run `swarm-handoff wait` "
+    "in the foreground and nothing else (no `curl /json/version`, no "
+    "snapshots in a loop); on exit 75 run it again, on exit 3 (nobody came) "
+    "write where you stopped into $SWARM_HANDOFF/notes.md and stop -- the task "
+    "parks until the person is ready. Only if the hand-off is refused (exit "
+    "5), say so in your answer and then use an alternative, naming it. Save "
+    "screenshots and other captures under $SWARM_ARTIFACTS_DIR so "
     "they are uploaded."
 )
 

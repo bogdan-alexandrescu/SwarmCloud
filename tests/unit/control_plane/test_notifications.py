@@ -216,6 +216,57 @@ def test_handoffs_are_the_callers_own_waiting_tasks_with_the_browser_tab(db):
     assert all(i["needs_you"] and i["group"] == "task" for i in items)
 
 
+def _waiting(db, task_id: str, *, by: str = ALICE, tenant_id: str = "eng",
+             request_id: str = "signin-1", opened: bool | None = None) -> None:
+    """A RUNNING task whose agent asked for a person, with its live session
+    (`live_sessions/<session_id_for(attempt)>`) when `opened` says how."""
+    from swarm_api.live import LIVE_SESSIONS, session_id_for
+
+    attempt = f"att_{task_id}"
+    _task(db, task_id, by=by, tenant_id=tenant_id, state="RUNNING", current_generation=1,
+          human_wait={"reason": "Sign in to GitHub", "requested_at": _ago(seconds=5),
+                      "deadline": _ago(seconds=-55), "controller": None,
+                      "request_id": request_id, "attempt_id": attempt, "generation": 1})
+    if opened is not None:
+        db.docs[f"{LIVE_SESSIONS}/{session_id_for(attempt)}"] = {
+            "id": session_id_for(attempt), "tenant_id": tenant_id, "task_id": task_id,
+            "attempt_id": attempt, "generation": 1, "state": "open",
+            "open_to_members": opened}
+
+
+def test_a_hand_off_is_agent_needs_you_and_each_request_is_a_new_item(db):
+    """HANDOFF-POLICY (part of #1030): the person is told when a hand-off
+    opens, and a second request in the same attempt is unread again."""
+    _waiting(db, "task_h", request_id="signin-1")
+    (item,) = notif.handoffs(_reading(db, _viewer()))
+    assert item["title"] == "Agent needs you"
+    assert item["detail"] == "Sign in to GitHub"
+    assert item["href"] == "/agents/live/task_h/browser"
+    assert item["id"] == "task:handoff:task_h:1:signin-1"
+    db.docs["tasks/task_h"]["human_wait"]["request_id"] = "signin-2"
+    (again,) = notif.handoffs(_reading(db, _viewer()))
+    assert again["id"] != item["id"]
+
+
+def test_let_any_member_take_control_tells_every_member_and_off_tells_the_submitter_only(db):
+    _waiting(db, "task_h", opened=False)
+    assert _ids(notif.handoffs(_reading(db, _viewer(ROOT)))) == []
+    assert len(notif.handoffs(_reading(db, _viewer()))) == 1
+    _waiting(db, "task_h", opened=True)
+    (item,) = notif.handoffs(_reading(db, _viewer(ROOT)))
+    assert item["title"] == "Agent needs you" and item["needs_you"] is True
+    # Invariant 9: never another tenant's member, opened or not.
+    assert notif.handoffs(_reading(db, _viewer(BOB, "research"))) == []
+
+
+def test_a_member_scoped_reader_is_told_of_their_own_hand_offs_only(db):
+    """A personal workspace's member reads only their own tasks
+    (`AuthContext.member_scope`); the bell never reaches past that."""
+    _waiting(db, "task_h", opened=True)
+    scoped = notif.Viewer(email=ROOT, tenant_id="eng", member_scope=True)
+    assert notif.handoffs(_reading(db, scoped)) == []
+
+
 def test_an_agents_questions_are_a_needs_you_item(db):
     _task(db, "task_q", result_summary={"questions": 2})
     _task(db, "task_none", result_summary={"questions": 0})

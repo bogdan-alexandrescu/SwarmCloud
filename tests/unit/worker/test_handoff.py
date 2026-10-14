@@ -826,3 +826,109 @@ def test_wait_says_still_waiting_with_75(tmp_path, monkeypatch):
     assert cmd.main(["wait", "r1", "--max-seconds", "0.2", "--poll", "0.05"]) == 75
     monkeypatch.delenv("SWARM_HANDOFF")
     assert cmd.main(["wait", "r1"]) == 5
+
+
+# --------------------------------------------------------------------------
+# HANDOFF-POLICY (part of #1030): park fast when nobody comes; wait, do not poll
+# --------------------------------------------------------------------------
+
+
+def test_nobody_watching_parks_at_the_unwatched_minute_and_not_before(tmp_path, db, trace, gate):
+    """swarm-api opens the hold at `HUMAN_UNWATCHED_SECONDS`; the worker parks
+    on that deadline, not on a 10-minute one of its own."""
+    path, routes, work = _bare(tmp_path, db, trace, gate, hold=api_handoff.HUMAN_UNWATCHED_SECONDS)
+    fetch = lambda: db.doc("tasks/task_1")  # noqa: E731
+    _spool_request(work, "r1", {"reason": "sign in"})
+    assert path.tick(work, fetch) is None and path.active is not None
+    opened = db.doc("tasks/task_1")["human_wait"]["requested_at"]
+    path._now = lambda: opened + timedelta(seconds=api_handoff.HUMAN_UNWATCHED_SECONDS - 1)
+    assert path.tick(work, fetch) is None
+    path._now = lambda: opened + timedelta(seconds=api_handoff.HUMAN_UNWATCHED_SECONDS)
+    assert path.tick(work, fetch) == handoff_mod.HOLD_EXPIRED
+
+
+def test_a_watched_hold_follows_the_deadline_swarm_api_moves(tmp_path, db, trace, gate):
+    path, routes, work = _bare(tmp_path, db, trace, gate, hold=api_handoff.HUMAN_UNWATCHED_SECONDS)
+    fetch = lambda: db.doc("tasks/task_1")  # noqa: E731
+    _spool_request(work, "r1", {"reason": "sign in"})
+    path.tick(work, fetch)
+    wait = db.doc("tasks/task_1")["human_wait"]
+    opened = wait["requested_at"]
+    # A viewer connected: swarm-api (`LiveService.watched`) moved the deadline.
+    wait["deadline"] = opened + timedelta(minutes=20)
+    path._now = lambda: opened + timedelta(minutes=12)
+    assert path.tick(work, fetch) is None, "held while someone watches, past the old 10 minutes"
+    path._now = lambda: opened + timedelta(minutes=20)
+    assert path.tick(work, fetch) == handoff_mod.HOLD_EXPIRED
+
+
+def test_nobody_watching_parks_human_required_and_releases_the_lease(
+    db, worker_factory, agent, gate, trace, monkeypatch
+):
+    """Invariant 4: an unattended hand-off gives its 2-unit browser lease back
+    after the unwatched minute instead of holding it for ten."""
+    write_plan, records = agent
+    write_plan(REQUEST, WAIT)
+    seed_attempt(db)
+    routes = FakeLiveRoutes(db, trace, hold_seconds=api_handoff.HUMAN_UNWATCHED_SECONDS)
+    worker = _live_worker(worker_factory, routes, gate, trace, monkeypatch)
+    # The worker's clock a minute on: no viewer came, nothing moved the deadline.
+    worker.handoff._now = lambda: utcnow() + timedelta(seconds=api_handoff.HUMAN_UNWATCHED_SECONDS)
+    assert worker.run() == ExitCode.PARKED
+    task = db.doc("tasks/task_1")
+    assert task["state"] == TaskState.PARKED.value
+    assert task["park_reason"] == ParkReason.HUMAN_REQUIRED.value
+    assert db.doc("leases/lease_1")["released_at"] is not None
+    assert "resolve:expired" in trace
+    (seen,) = records()
+    assert seen["steps"][1]["exit"] == handoff_mod.EXIT_EXPIRED
+
+
+def _spool_with(tmp_path, monkeypatch, answer: dict[str, Any] | None):
+    root = tmp_path / "spool"
+    (root / "responses").mkdir(parents=True)
+    if answer is not None:
+        (root / "responses" / "r1.json").write_text(json.dumps(answer))
+    monkeypatch.setenv("SWARM_HANDOFF", str(root))
+    return root
+
+
+@pytest.mark.parametrize("answer,code", [
+    ({"outcome": "returned", "exit": 0}, 0),
+    ({"outcome": "expired", "exit": 3}, 3),
+    ({"outcome": "cancelled", "exit": 4}, 4),
+    ({"outcome": "refused", "exit": 5, "code": "handoff_limit"}, 5),
+    ({"outcome": "waiting"}, 75),
+])
+def test_wait_exits_with_the_outcomes_code_and_says_what_to_do_next(
+    tmp_path, monkeypatch, capsys, answer, code
+):
+    cmd = _command_module()
+    _spool_with(tmp_path, monkeypatch, answer)
+    assert cmd.main(["wait", "r1", "--max-seconds", "0.3", "--poll", "0.1"]) == code
+    out = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert isinstance(out.get("next"), str) and out["next"], out
+    if code == 75:
+        assert "swarm-handoff wait" in out["next"]
+    if code in (0, 75):
+        assert "do not poll" in out["next"].lower()
+
+
+def test_wait_is_not_a_busy_loop_even_asked_for_a_zero_poll(tmp_path, monkeypatch, capsys):
+    """MEASURED on task_2ac5d7e22a51460995a2: the agent busy-polled CDP. The
+    helper itself must never spin: it sleeps at least MIN_POLL_SECONDS
+    between reads of the answer, whatever `--poll` says."""
+    cmd = _command_module()
+    _spool_with(tmp_path, monkeypatch, {"outcome": "waiting"})
+    reads = []
+    real = cmd._read
+    monkeypatch.setattr(cmd, "_read", lambda p: reads.append(p) or real(p))
+    assert cmd.MIN_POLL_SECONDS >= 0.1
+    assert cmd.main(["wait", "r1", "--max-seconds", "0.5", "--poll", "0"]) == 75
+    assert len(reads) <= 0.5 / cmd.MIN_POLL_SECONDS + 2, len(reads)
+
+
+def test_the_agents_guide_says_wait_and_do_not_poll_the_browser():
+    guide = handoff_mod.AGENT_GUIDE.lower()
+    assert "do not poll" in guide
+    assert "a minute" in guide  # nobody opening the view parks it fast
