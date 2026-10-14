@@ -50,6 +50,31 @@ own domain, naming the session as a ticket does), which hands it to the gate.
 The gate applies it and REPORTS the device it applied, so `session.device`
 changes when the gate says so, never when the request is sent.
 
+ENDING CONTROL AT THE GATE (CONTROL-LAPSE; part of #1030). Every end of a
+person's control -- a lapsed renewal, idle, an expired hold, a preemption, a
+lapsed membership, a Return press -- is written here, and after the
+transaction commits swarm-api POSTs a revoke to the relay's
+`/internal/control` (`mint_control`: the ticket's shape under its own domain,
+naming the session, the person, `action` and `cause`), which the relay passes
+to the gate as `CONTROL` with nobody in control. Each renewal is posted the
+same way, which renews the gate's own control lease: a gate that hears no
+renewal takes control back by itself. MEASURED 2026-10-13 (task e8cb...):
+control lapsed at 15:11:12Z and was recorded as returned, but only a
+`release` ticket on the person's own viewer link could tell the gate, that
+link was gone, and the gate held control until a relay restart at 16:03:47Z
+-- 72 refused agent connections in 54 minutes. A cancel and the task's end
+close the session, which drops the tunnel, and the gate releases control when
+its tunnel closes.
+
+A SESSION OUTLIVES ITS ATTEMPT'S LEASE IN FIRESTORE ONLY UNTIL SOMEONE LOOKS.
+The task's end clears `current_lease_id`, so a read of the task's current
+session finds none, and an episode still open in it stayed open: MEASURED
+2026-10-13 (task c6bf0368...), control taken 11:34:19, the task SUCCEEDED
+11:40:50 with the episode open. A read that finds no current session now
+settles the task's open sessions by their own ids (`_settle_ended`), which
+closes them with `attempt_ended` and ends the episode with its audit; the
+viewer socket does the same when the relay link drops under it.
+
 CLOSING. When a session closes, or a stale generation is seen, swarm-api POSTs
 a close request to the relay's `/internal/close` (`mint_close`: the same shape
 under its own domain, `session_id`, `exp`, `nonce`), and the relay drops every
@@ -138,6 +163,9 @@ CLOSE_PURPOSE = b"swarm-live-close/v1\0"
 #: A device request's MAC domain (`swarm_live.rendezvous.DEVICE_DOMAIN`):
 #: never a ticket and never a close request.
 DEVICE_PURPOSE = b"swarm-live-device/v1\0"
+#: A control request's MAC domain (`swarm_live.rendezvous.CONTROL_DOMAIN`):
+#: never a ticket, a close or a device request.
+CONTROL_PURPOSE = b"swarm-live-control/v1\0"
 ROLE_TUNNEL = "tunnel"
 ROLE_VIEWER = "viewer"
 ROLE_CONTROL = "control"
@@ -154,6 +182,13 @@ DEVICE_SECONDS = 30
 #: The relay's device-request field set (`swarm_live.rendezvous._DEVICE_FIELDS`).
 DEVICE_FIELDS = frozenset({"session_id", "tenant_id", "task_id", "attempt_id", "generation",
                            "preset", "orientation", "touch", "exp", "nonce"})
+#: A control request's life (`swarm_live.rendezvous.CONTROL_TTL_SECONDS`).
+CONTROL_SECONDS = 30
+#: The relay's control-request field set (`swarm_live.rendezvous._CONTROL_FIELDS`).
+CONTROL_FIELDS = frozenset({"session_id", "tenant_id", "task_id", "attempt_id", "generation",
+                            "email", "action", "cause", "exp", "nonce"})
+CONTROL_REVOKE = "revoke"
+CONTROL_RENEW = "renew"
 #: The relay's field set; a ticket with any other is refused there.
 TICKET_FIELDS = frozenset({"session_id", "tenant_id", "task_id", "attempt_id", "generation",
                            "role", "exp", "nonce", "email"})
@@ -288,6 +323,18 @@ def mint_device(key: str, claims: Mapping[str, Any], *, now: float) -> str:
     return _signed(key, body, DEVICE_PURPOSE)
 
 
+def mint_control(key: str, claims: Mapping[str, Any], *, now: float) -> str:
+    """A request to the relay to tell the session's gate that a person's
+    control ended (`revoke`, with its cause) or goes on (`renew`, no cause):
+    the session's five names, `email`, `action` and `cause`."""
+    body = {**dict(claims), "exp": int(now) + CONTROL_SECONDS, "nonce": secrets.token_hex(16)}
+    if set(body) != CONTROL_FIELDS:
+        raise ValueError(f"a control request has exactly the fields {sorted(CONTROL_FIELDS)}")
+    if body["action"] not in (CONTROL_REVOKE, CONTROL_RENEW):
+        raise ValueError("a control request revokes or renews")
+    return _signed(key, body, CONTROL_PURPOSE)
+
+
 def ticket_seconds(role: str, configured: Any) -> int:
     """`configured`, never longer than the relay accepts for `role`."""
     return max(1, min(int(configured), TICKET_MAX_SECONDS[role]))
@@ -358,6 +405,13 @@ class RelayDevice(Protocol):
     def send_device(self, request: str) -> bool: ...
 
 
+class RelayControl(Protocol):
+    """The relay's `/internal/control`. `HttpRelayCloser` is the real one;
+    a closer without `send_control` (a test's) means no control route."""
+
+    def send_control(self, request: str) -> bool: ...
+
+
 def relay_http_url(ws_url: str, path: str) -> str:
     """`SWARM_LIVE_URL` (`ws://<internal address>:8080`) as the http URL of
     one of the relay's routes on the same port."""
@@ -383,6 +437,7 @@ class HttpRelayCloser:
                  timeout: float = RELAY_CLOSE_TIMEOUT_SECONDS) -> None:
         self._url = relay_http_url(url, "/internal/close")
         self._device_url = relay_http_url(url, "/internal/device")
+        self._control_url = relay_http_url(url, "/internal/control")
         self._key = key
         self._clock = clock
         self._timeout = timeout
@@ -406,15 +461,13 @@ class HttpRelayCloser:
         if status != 200:
             log.warning("live relay refused the close for session=%s (HTTP %s)", session_id, status)
 
-    def send_device(self, request: str) -> bool:
-        """POST a device request (`mint_device`) to `/internal/device`. True
-        when the relay sent it to the gate; False when it refused it (no
-        tunnel there, or the request did not verify) or could not be reached.
-        Never raises; the status is logged, never the request."""
+    def _post(self, url: str, request: str, what: str) -> bool:
+        """POST a MAC'd request; True on the relay's 200. Never raises; the
+        status is logged, never the request."""
         import urllib.error
         import urllib.request
 
-        req = urllib.request.Request(self._device_url, data=request.encode("ascii"), method="POST",
+        req = urllib.request.Request(url, data=request.encode("ascii"), method="POST",
                                      headers={"Content-Type": "text/plain"})
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as response:  # noqa: S310 - our own internal URL
@@ -422,11 +475,24 @@ class HttpRelayCloser:
         except urllib.error.HTTPError as exc:
             status = exc.code
         except (OSError, ValueError) as exc:
-            log.warning("live relay device request did not reach the relay (%s)", type(exc).__name__)
+            log.warning("live relay %s request did not reach the relay (%s)", what, type(exc).__name__)
             return False
         if status != 200:
-            log.info("live relay refused a device request (HTTP %s)", status)
+            log.info("live relay refused a %s request (HTTP %s)", what, status)
         return status == 200
+
+    def send_device(self, request: str) -> bool:
+        """POST a device request (`mint_device`) to `/internal/device`. True
+        when the relay sent it to the gate; False when it refused it (no
+        tunnel there, or the request did not verify) or could not be reached."""
+        return self._post(self._device_url, request, "device")
+
+    def send_control(self, request: str) -> bool:
+        """POST a control request (`mint_control`) to `/internal/control`.
+        True when the relay took it; False when it refused it (no tunnel
+        there: the gate's lease and its tunnel's end cover that) or could not
+        be reached (the gate's lease covers that too)."""
+        return self._post(self._control_url, request, "control")
 
 
 def relay_closer_for(settings: Any) -> RelayCloser | None:
@@ -880,6 +946,11 @@ class _Plan:
     events: list[tuple[EventType, dict[str, Any], str | None]] = field(default_factory=list)
     resolve_by: str | None = None
     resolve: bool = False
+    #: Each control this transaction ended, as (email, cause): told to the
+    #: gate once it commits (`LiveService._tell_gate`).
+    ended: list[tuple[str, str]] = field(default_factory=list)
+    #: The person whose control this transaction renewed, if any.
+    renewed: str | None = None
     #: The hand-off this plan resolved, for `log_funnel` once it committed.
     resolved: list[dict[str, Any]] = field(default_factory=list)
 
@@ -942,6 +1013,9 @@ class _Plan:
             "event_id": event_id,
         }][-ENDED_EPISODES_KEPT:]
         self.session_update["controller"] = None
+        self.ended.append((str(current.get("email") or ""), cause))
+        if self.renewed == current.get("email"):
+            self.renewed = None
         self.audit("control_returned" if cause == "returned" else "control_ended",
                    current.get("email"), detail, audit_id)
         self.events.append((EventType.HUMAN_CONTROL_RETURNED,
@@ -1266,6 +1340,67 @@ class LiveService:
         except Exception as exc:  # noqa: BLE001 - a close is best effort; the caller's answer stands
             log.warning("live relay close for session=%s failed (%s)", session_id, type(exc).__name__)
 
+    def _relay_control(self, session: Mapping[str, Any], email: str, action: str,
+                       cause: str = "") -> bool:
+        """Tell the session's gate, through the relay, that `email`'s control
+        ended (`revoke`) or goes on (`renew`). Never raises: a request that
+        does not arrive is covered by the gate's own control lease."""
+        sender = getattr(self._relay, "send_control", None)
+        key = self._s("live_key", "")
+        if sender is None or not key or not email or not session.get("id"):
+            return False
+        try:
+            request = mint_control(key, {
+                "session_id": str(session.get("id")),
+                "tenant_id": str(session.get("tenant_id")),
+                "task_id": str(session.get("task_id")),
+                "attempt_id": str(session.get("attempt_id")),
+                "generation": int(session.get("generation") or 0),
+                "email": email,
+                "action": action,
+                "cause": cause if action == CONTROL_REVOKE else "",
+            }, now=self._clock())
+            return bool(sender(request))
+        except Exception as exc:  # noqa: BLE001 - best effort; the gate's lease is the backstop
+            log.warning("live relay control %s for session=%s failed (%s)", action,
+                        session.get("id"), type(exc).__name__)
+            return False
+
+    def _tell_gate(self, plan: _Plan) -> None:
+        """After a commit: what changed about control, to the gate (module
+        docstring). A session closed just now is dropped at the relay
+        instead, and its gate releases control when the tunnel closes."""
+        if plan.session is None or plan.session.get("state") != "open":
+            return
+        state = plan.state
+        if state.get("state") != "open":
+            self.close_relay(str(plan.session.get("id")))
+            return
+        for email, cause in plan.ended:
+            self._relay_control(state, email, CONTROL_REVOKE, cause)
+        current = plan.controller
+        if plan.renewed is not None and current is not None and current.get("email") == plan.renewed:
+            self._relay_control(state, plan.renewed, CONTROL_RENEW)
+
+    def _settle_ended(self, tenant_id: str, task_id: str) -> int:
+        """Settle every open session of a task that has no current one -- its
+        attempt ended and `current_lease_id` went with it -- each by its own
+        id, so `_settle` closes it and ends its episode (module docstring).
+        The number of sessions found open."""
+        query = self._db.collection(LIVE_SESSIONS).where(
+            filter=FieldFilter("task_id", "==", task_id))
+        found = 0
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            if doc.get("tenant_id") != tenant_id or doc.get("state") != "open" or not doc.get("id"):
+                continue
+            found += 1
+            try:
+                self._transact(tenant_id, task_id, None, session_id=str(doc["id"]))
+            except NotFound:
+                continue
+        return found
+
     def _close_stale(self, tenant_id: str, task_id: str, session_id: str) -> None:
         """Settle `session_id` -- which closes it, with its audit, when its
         attempt no longer holds the lease -- and tell the relay either way:
@@ -1402,12 +1537,11 @@ class LiveService:
             return plan, result
 
         plan, result = _apply(self._db.transaction())
+        # Committed: a closed session is dropped at the relay (§5.11); an end
+        # or a renewal of control is told to the gate (CONTROL-LAPSE).
+        self._tell_gate(plan)
         for detail in plan.resolved:
             log_funnel(plan.task, detail)
-        if (plan.session is not None and plan.session.get("state") == "open"
-                and plan.session_update.get("state") == "closed"):
-            # Committed: the session is closed, so the relay drops it (§5.11).
-            self.close_relay(str(plan.session.get("id")))
         return plan, result
 
     def _needs_settling(self, tenant_id: str, task_id: str, session_id: str) -> bool:
@@ -1488,13 +1622,21 @@ class LiveService:
         task = self._task(tenant_id, task_id, submitted_by)
         owner = control_owner(task, self._db)
         plan, _ = self._transact(tenant_id, task_id, None)
+        self._settle_if_ended(task, plan)
         return self._view(task, plan, email, owner)
+
+    def _settle_if_ended(self, task: Task, plan: _Plan) -> None:
+        """No current session on a live-browser task: settle the ones its
+        ended attempts left open (`_settle_ended`)."""
+        if plan.session is None and profile_is_live(getattr(task, "runner_profile", None)):
+            self._settle_ended(plan.task["tenant_id"], plan.task["id"])
 
     def viewer_ticket(self, tenant_id: str, task_id: str, *, email: str,
                       submitted_by: str | None) -> dict[str, Any]:
         key = self._require_key()
-        self._task(tenant_id, task_id, submitted_by)
+        task = self._task(tenant_id, task_id, submitted_by)
         plan, _ = self._transact(tenant_id, task_id, None)
+        self._settle_if_ended(task, plan)
         self._require_open(plan)
         seconds = ticket_seconds(ROLE_VIEWER, self._s("live_viewer_ticket_seconds", 30))
         state = plan.state
@@ -1562,6 +1704,7 @@ class LiveService:
             if current is not None and current.get("email") == who:
                 plan.session_update["controller"] = {**current, "renew_by": plan.now
                                                      + timedelta(seconds=renew)}
+                plan.renewed = who
                 return
             if not rights["can_control"]:
                 raise ControlNotEligible(
@@ -1686,6 +1829,8 @@ class LiveService:
         def change(plan: _Plan, current: dict) -> None:
             plan.session_update["controller"] = {
                 **current, "renew_by": plan.now + timedelta(seconds=renew)}
+            # The gate's control lease is renewed with it (CONTROL-LAPSE).
+            plan.renewed = current.get("email")
 
         return self._controller_change(tenant_id, task_id, email, submitted_by, change)
 
@@ -1844,10 +1989,11 @@ class LiveService:
         ):
             raise refused
         try:
-            self._task(auth.tenant_id, task_id, submitted_by)
+            task = self._task(auth.tenant_id, task_id, submitted_by)
         except NotFound:
             raise refused from None
         plan, _ = self._transact(auth.tenant_id, task_id, None)
+        self._settle_if_ended(task, plan)
         state = plan.state
         if plan.session is None or state.get("id") != session_id or state.get("state") != "open":
             raise refused
