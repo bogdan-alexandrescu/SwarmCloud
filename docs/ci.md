@@ -3573,6 +3573,30 @@ Until steps 1-3 are done the acceptance job fails at `acc_require_tenant`
 with the sentence that names this section, and nothing is submitted: a red
 acceptance job, not a quiet return to eng.
 
+## ruff lint is the house Python linter, and formatting is not adopted
+
+ruff is the house linter (owner decision 2026-10-14, "Adopt ruff"), configured
+once in the root `pyproject.toml` under `[tool.ruff]` and pinned exactly in
+its dev group, so a lane, the pre-publish gate and CI lint with the same
+binary: `uv run ruff check .` for the repository, or `uv run ruff check
+<files>` for a change. The rule set is deliberately small -- pyflakes and the
+pycodestyle errors that are always bugs (`E4`, `E7`, `E9`, `F`), selected
+explicitly because ruff's own default set has grown past that -- so it reports
+defects (an unused import, an undefined name, an f-string with no
+placeholder), never taste; widening it is a decision of its own, with its
+churn measured first. `apps/common/swarm_common/` is frozen, so its unused
+imports are ignored there rather than fixed. **`ruff format` is NOT adopted**:
+a repository-wide reformat would conflict with every open lane, so
+`[tool.ruff.format]` excludes every file and `force-exclude` keeps that true
+when files are named explicitly, which is how the pre-publish gate
+(`apps/agent-worker/agent_worker/prepublish.py`) runs `ruff format --check`
+on a lane's changed Python -- without it every lane touching Python would be
+told to reformat what it touched. `tests/unit/scripts/test_ruff_config.py`
+holds the pin, the lock, the rule set and the format exclusion. The CI job
+that runs `ruff check` lands in the CI lane: the operator adds it to
+`application.yml`; until then ruff runs only in the pre-publish gate and by
+hand.
+
 ## The finishing sequence
 
 ```bash

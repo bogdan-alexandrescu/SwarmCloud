@@ -233,7 +233,6 @@ def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkey
     `swarm-handoff` in the Bash tool found no spool. The CLI's environment is
     what its Bash tool inherits; the hand-off's variables are now in it."""
     from agent_worker import handoff
-    from agent_worker.runners import claude_code
 
     spool = tmp_path / ".swarm-handoff"
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))

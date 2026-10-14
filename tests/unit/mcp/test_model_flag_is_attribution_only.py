@@ -37,7 +37,6 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from swarm_common.models import Lease, Task, Tenant
 from swarm_common.profiles import RUNNER_PROFILES

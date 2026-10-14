@@ -29,11 +29,9 @@ import pytest
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES
 from swarm_mcp import render
 from swarm_mcp.render import (
-    Binding,
     Cell,
     Column,
     Finding,
-    Reading,
     Snapshot,
     Style,
     account_is_stale,

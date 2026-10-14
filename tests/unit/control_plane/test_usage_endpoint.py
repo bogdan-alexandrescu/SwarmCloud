@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from quota_broker.usage import UsageUnavailable, parse
+from quota_broker.usage import parse
 
 FIXTURE = json.loads((Path(__file__).parent / "usage_response.json").read_text())
 

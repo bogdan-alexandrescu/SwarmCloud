@@ -234,7 +234,6 @@ def _routes() -> list[tuple[str, str, str]]:
     """Every reachable route as (hash, the label that opens it, component)."""
     app = _read(APP_TSX)
     cases = _switch_cases(app)
-    imports = _import_map(app)
 
     rows: list[tuple[str, str, str]] = []
     for sid, _slabel, tabs in _sections(app):

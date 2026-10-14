@@ -79,7 +79,6 @@ def clean() -> None:
 
 def drain() -> None:
     """One scheduler drain pass, in-process, against the real control plane."""
-    from scheduler.config import SchedulerConfig
     from scheduler.main import build_scheduler
 
     scheduler = build_scheduler()
