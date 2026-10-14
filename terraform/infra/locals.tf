@@ -704,6 +704,17 @@ locals {
       # var.repository_grants_enforced; service submissions are never refused.
       REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
 
+      # The live browser's search tool (swarm_api.settings
+      # `search_tool_enabled`, `search_provider`; docs/search-tool.md, lane
+      # SEARCH-TF, #1030). Off unless the environment's tfvars sets
+      # var.search_tool_enabled, so turning it on is a tfvars change an apply
+      # keeps rather than a hand edit the next apply puts back. Off, the route
+      # is a 404 and no agent is offered the tool. The provider's key is not
+      # here: it is a platform secret read per call from Secret Manager
+      # (scripts/create-secrets.sh --search-api-key --stdin).
+      SEARCH_TOOL_ENABLED = var.search_tool_enabled ? "true" : "false"
+      SEARCH_PROVIDER     = var.search_provider
+
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to
       # this topic, which terraform/bootstrap creates with its Cloud Build
