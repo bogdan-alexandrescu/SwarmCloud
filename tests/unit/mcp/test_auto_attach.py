@@ -232,7 +232,8 @@ def _session_start(client) -> tuple[int, str]:
     return code, out.getvalue()
 
 
-def test_session_start_names_the_running_workflows_and_the_attach(swarm, api, db):  # noqa: F811
+def test_session_start_names_the_running_workflows_and_the_attach(swarm, api, db,  # noqa: F811
+                                                                  claude_session):
     running = _submit(swarm, label="nightly")
     other = _submit(swarm)
     code, text = _session_start(swarm)
@@ -296,7 +297,9 @@ def _attached(workflow_id: str, steps: list[dict]) -> dict:
 def _listed(*ids: str) -> dict:
     return {
         "count": len(ids), "error": None,
-        "workflows": [{"workflow_id": i, "label": f"label-{i}", "state": "RUNNING", "console": None} for i in ids],
+        # This session's (SC-SESSION-SCOPE): swarm_workflows marks them so.
+        "workflows": [{"workflow_id": i, "label": f"label-{i}", "state": "RUNNING", "console": None,
+                       "this_session": True} for i in ids],
     }
 
 

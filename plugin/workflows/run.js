@@ -282,8 +282,11 @@ const LISTED = {
           label: { type: ['string', 'null'] },
           state: { type: ['string', 'null'] },
           console: CONSOLE,
+          // SC-SESSION-SCOPE: swarm_workflows marks what this Claude Code
+          // session started; only those are attached.
+          this_session: { type: 'boolean' },
         },
-        required: ['workflow_id', 'title', 'label', 'state', 'console'],
+        required: ['workflow_id', 'title', 'label', 'state', 'console', 'this_session'],
       },
     },
     // The caller's running single tasks (#830): swarm_workflows'
@@ -298,8 +301,9 @@ const LISTED = {
           label: { type: ['string', 'null'] },
           state: { type: ['string', 'null'] },
           console: CONSOLE,
+          this_session: { type: 'boolean' },
         },
-        required: ['task_id', 'label', 'state', 'console'],
+        required: ['task_id', 'label', 'state', 'console', 'this_session'],
       },
     },
     single_tasks_error: { type: ['string', 'null'] },
@@ -381,6 +385,14 @@ const READ = {
 // The states a task does not leave: swarm_common.states.TERMINAL_STATES,
 // restated because a script cannot import it; a unit test holds the two equal.
 const TERMINAL = ['SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED']
+
+// SC-SESSION-SCOPE (owner 2026-10-14): a submission whose outcome is unknown,
+// or that was created but did not match the spec, may have work running in
+// SwarmCloud, so it ARMS THE WATCH like a clean one does -- only a refusal
+// (NOT_SUBMITTED) sent nothing. The session arms with the `arm_watch`
+// swarm_workflow_launch handed it before this run (skill: "Arming the watch").
+const ARM_ANYWAY = 'arm the watch: work may be running in SwarmCloud. Make the arm_watch call swarm_workflow_launch returned for this run (the skill\'s "Arming the watch"; CronList first, never a second job)'
+
 
 // What an sc:step row returns: `{state, result}`, `result` copied as given
 // from the bridge's last reply (owner decision, 2026-10-05, lane review B2).
@@ -1494,11 +1506,19 @@ async function attachAll(cap) {
     log('not attached · ' + clip(error, 200))
     return { attach: 'all', state: 'NOT_ATTACHED', error: error, workflows: [], attach_calls: [], not_followed: [], task_call: null }
   }
+  // ONLY THIS SESSION'S (SC-SESSION-SCOPE, owner 2026-10-14): swarm_workflows
+  // lists the whole tenant and marks `this_session`; another session's work,
+  // and untagged work, is never attached here -- `/sc attach <wf_id>` still
+  // attaches one by hand. Anything but `true` is not this session's.
+  const ownTasks = (Array.isArray(listed.single_tasks) ? listed.single_tasks : []).filter((entry) => entry && entry.this_session === true)
+  const ownWorkflows = listed.workflows.filter((entry) => entry && entry.this_session === true)
+  const leftOut = (listed.workflows.length - ownWorkflows.length) + ((Array.isArray(listed.single_tasks) ? listed.single_tasks.length : 0) - ownTasks.length)
+  if (leftOut > 0) log(leftOut + ' running workflow(s) or task(s) of the tenant are not this session\'s · not attached · /sc attach <wf_id> attaches one by hand')
   // The single tasks (#830): one {attach_tasks} call for all of them, a run of
   // its own, so their rows never wait on this one.
   const tasks = []
   const seenTask = {}
-  for (const entry of Array.isArray(listed.single_tasks) ? listed.single_tasks : []) {
+  for (const entry of ownTasks) {
     const id = entry && flatText(entry.task_id)
     if (!id || seenTask[id]) continue
     seenTask[id] = true
@@ -1519,17 +1539,17 @@ async function attachAll(cap) {
         max_rows: limit,
       }
   const seen = {}
-  const running = groupByWorkspace(listed.workflows.filter((entry) => {
+  const running = groupByWorkspace(ownWorkflows.filter((entry) => {
     if (!entry || typeof entry.workflow_id !== 'string' || !entry.workflow_id || seen[entry.workflow_id]) return false
     seen[entry.workflow_id] = true
     return true
   }))
-  if (typeof listed.count === 'number' && listed.count !== running.length) {
+  if (typeof listed.count === 'number' && listed.count !== listed.workflows.length) {
     // The relay dropped or repeated an entry: said, not repaired.
-    log('the bridge listed ' + listed.count + ' running workflow(s) and the relay passed on ' + running.length)
+    log('the bridge listed ' + listed.count + ' running workflow(s) and the relay passed on ' + listed.workflows.length)
   }
   if (running.length === 0 && !taskCall) {
-    log('no SwarmCloud workflow of this tenant and no single task of yours is running · nothing to attach')
+    log('no SwarmCloud workflow or single task this session started is running · nothing to attach')
     return { attach: 'all', state: 'NOTHING_RUNNING', error: null, workflows: [], attach_calls: [], not_followed: [], task_call: null }
   }
   const follow = running.slice(0, limit)
@@ -1649,7 +1669,7 @@ if (!submitted || (!submitted.workflow_id && !submitted.error)) {
       : 'the submitting row stopped before it answered'
   const error = why + '. Whether SwarmCloud created the workflow is UNKNOWN: swarm_workflow may already have submitted it. Look for it in the console\'s workflow list' + (specLabel ? ' (label ' + specLabel + ')' : '') + ' before running /sc:swarmcloud again, which would submit a second copy.'
   log('submission outcome unknown · ' + clip(why, 200))
-  return { workflow_id: null, state: 'SUBMISSION_UNKNOWN', error: error, steps: [] }
+  return { workflow_id: null, state: 'SUBMISSION_UNKNOWN', error: error, steps: [], arm_watch: ARM_ANYWAY }
 }
 
 if (!submitted.workflow_id) {
@@ -1665,6 +1685,7 @@ if (problems.length > 0) {
     state: 'SUBMITTED_UNVERIFIED',
     error: 'SwarmCloud accepted workflow ' + submitted.workflow_id + ', but the reply relayed back does not match the spec given, so no row was started: ' + problems.join('; ') + '. The workflow runs regardless: read it with swarm_workflow_status, or cancel it with swarm_workflow_cancel if it is not what was meant.',
     steps: [],
+    arm_watch: ARM_ANYWAY,
   }, submitted.console)
 }
 

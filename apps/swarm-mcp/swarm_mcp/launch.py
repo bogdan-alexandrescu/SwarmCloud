@@ -345,6 +345,8 @@ def _attach_launch(
 def for_attach(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
     """The titled copy for attaching one workflow: one read, for the name
     SwarmCloud stored and the step count."""
+    from . import session
+
     envelope = workflows.fetch(client, workflow_id)
     stored = workflows.stored_names(envelope)
     name = workflows.title_name(stored=stored["title"] or stored["label"], workflow_id=workflow_id)
@@ -352,6 +354,16 @@ def for_attach(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
     workspace = workflows.workspace_of({"tenant_id": tenant}, workflows.workspace_names(client))
     out = _attach_launch(workflow_id, name, len(envelope["workflow"].get("steps") or []), workspace, tenant)
     out["launch_with"] = "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
+    # BY HAND, ANY WORKFLOW THE TENANT MAY READ (SC-SESSION-SCOPE): the
+    # session scope decides what is attached automatically, never what a
+    # developer may ask for by id. The reply says whose it is.
+    sid = session.current()
+    owner = session.owner_of(envelope["workflow"]) or session.owner_of_tasks(envelope.get("tasks") or [])
+    out["claude_session"] = owner
+    out["this_session"] = session.ownership(owner, sid) == "own"
+    not_ours = session.attached_note(owner, sid)
+    if not_ours:
+        out["not_this_session"] = not_ours
     return out
 
 
@@ -469,6 +481,21 @@ def _scoped(
     return kept, already, unread
 
 
+def _own(entries: list[dict[str, Any]], sid: str | None, left_out: dict[str, int]) -> list[dict[str, Any]]:
+    """The entries tagged with session `sid`; the rest counted in `left_out`
+    by why (`other_session`, `untagged`). With no `sid`, none."""
+    from . import session
+
+    kept = []
+    for entry in entries:
+        kind = session.ownership(session.owner_of(entry), sid)
+        if kind == "own":
+            kept.append(entry)
+        else:
+            left_out[kind] += 1
+    return kept
+
+
 def for_all(
     client: SwarmClient,
     *,
@@ -485,7 +512,7 @@ def for_all(
     remote, "all" for every one); `new_only` leaves out every id this
     session was already handed a row for (`attached()`), and `exclude` the
     ids the caller names -- rows it can see live. Without them, unchanged."""
-    from . import sc
+    from . import sc, session
 
     filtering = repository is not None or new_only or bool(exclude)
     scope = None
@@ -509,6 +536,15 @@ def for_all(
         [e for e in listing.get("workflows") or [] if isinstance(e, dict) and e.get("workflow_id")], names,
         keep_tenant=True,
     ))
+    # THIS SESSION'S OWN, AND NOTHING ELSE (SC-SESSION-SCOPE, owner
+    # 2026-10-14): another session's work in the same tenant, and untagged
+    # work, is never a candidate -- before the cap, so the cap counts only
+    # this session's. `/sc attach <wf_id>` still attaches any by hand.
+    sid = session.current()
+    left_out = {"workflows": session.counts(), "single_tasks": session.counts()}
+    entries = _own(entries, sid, left_out["workflows"])
+    if singles:
+        singles = {**singles, "tasks": _own(singles["tasks"], sid, left_out["single_tasks"])}
     already: list[str] = []
     unread: list[dict[str, Any]] = []
     if filtering:
@@ -559,6 +595,7 @@ def for_all(
         "<args>}: one Claude Code run per SwarmCloud workflow, and one for your running "
         "single tasks (args `attach_tasks`), with a row per task"
     )
+    out["session"] = {**session.describe(sid), "left_out": left_out}
     if filtering:
         out["repository"] = scope["key"] if scope else None
         if scope and scope.get("note"):
