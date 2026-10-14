@@ -94,6 +94,13 @@ same expected-outputs check and the same publish credential scan
 the session for up to two repair turns, naming each missing file's path or
 each flagged `path:line rule` -- never the matched text (`repair_checks`).
 
+WHY A PRE-PUBLISH GATE (SPEED-D1, owner decision 2026-10-14). 0.52 red CI
+runs per pull request, and 128 of 150 needed an update from main. After the
+repair turns the runner rebases the lane onto the current base through the git
+tools (one conflict turn) and runs the repository's own checks on what the
+diff touches (one fix turn); what still fails is published with its output in
+the pull request body (`agent_worker.prepublish`, `prepublish`).
+
 WHY A BROWSER NOTE ON agent-runtime-browser (contract request 67, owner
 2026-10-11). `claude-code-browser` runs this runner on the browser image, so
 an agent can render and screenshot pages. The image installs Chromium under
@@ -521,6 +528,11 @@ SPEC = CliAgentSpec(
     # credential scan run against the tree, and a failure is resumed for up
     # to two repair turns naming what failed (#624; `cliagent.REPAIR_MAX_TURNS`).
     repair_checks=True,
+    # Then the pre-publish gate (SPEED-D1, owner decision 2026-10-14): a
+    # rebase onto the current base, with one conflict turn, and the
+    # repository's own checks on what the diff touches, with one fix turn
+    # (`agent_worker.prepublish`).
+    prepublish=True,
     # The CLI warns on EVERY headless run that it ignores the settings' allow
     # list because the workspace is untrusted ("Ignoring 23 permissions.allow
     # entries from .claude/settings.json: this workspace has not been trusted.
