@@ -361,7 +361,9 @@ jobs:
           # one identity here with project-wide account-IAM power (docs/workspaces.md §2.4).
           # swarm-live too: the live relay carries a person's keystrokes during a sign-in,
           # and ffmpeg is the largest third-party surface any control-plane image ships.
-          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live; do
+          # swarm-egress too (EGRESS-BUILD): it holds the vendor credential and relays
+          # every proxied browser byte.
+          for image in agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler workspace-apply swarm-live swarm-egress; do
             echo "==> ${image}:dev"
             trivy image --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 --no-progress "${repo}/${image}:dev" || status=1

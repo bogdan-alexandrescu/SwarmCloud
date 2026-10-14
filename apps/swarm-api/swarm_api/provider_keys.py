@@ -27,8 +27,9 @@ Secret Manager write (resource-level accessor grant, no read path):
     It proves the write came through the /sc flow and grants NOTHING: every
     check a write without a link meets runs before the link is looked at.
   * RESOLUTION. `resolve_provider_key` says which secret a task would use.
-    Nothing consumes it yet -- there is no Jev runner (owner: later, gated) --
-    and no secret here is mounted into any runner.
+    `task_key_scope` asks it for a task already stored, from its tenant and
+    its submitter (BSTATUS-API): the submission refuses a `browser_tool: jev`
+    task with no key to use, and the live session says whose key jev runs on.
 """
 
 from __future__ import annotations
@@ -119,6 +120,46 @@ def resolve_provider_key(
             return own
     tenant = secret_name_for(task_tenant_id, provider)
     return tenant if tenant in present else None
+
+
+def submitter_personal_tenant(store: Store, email: str | None) -> str | None:
+    """`email`'s CONFIRMED personal tenant id, or None (BSTATUS-API).
+
+    For a task already stored, where no AuthContext is at hand: the tenant
+    document `u-<slug>` must be `kind: user` and name exactly this email as
+    its principal -- the check `own_personal_tenant` makes, for the reason
+    `resolve_provider_key` gives (the slug drops the domain). A service
+    identity has none. Not required to be `ready`: a key set while it was
+    ready is still the person's."""
+    address = (email or "").strip().lower()
+    if not address or is_service_identity(address):
+        return None
+    tenant_id = personal_tenant_id(address)
+    tenant = store.get_tenant(tenant_id)
+    if tenant is None or tenant.kind != "user" \
+            or (tenant.principal or "").strip().lower() != address:
+        return None
+    return tenant_id
+
+
+def task_key_scope(db: Any, store: Store, task_tenant_id: str, submitted_by: str | None,
+                   provider: str, *, now: Any) -> str | None:
+    """Whose `provider` key a task of `task_tenant_id` submitted by
+    `submitted_by` would use: `user`, `tenant`, or None when neither is set.
+    Status records only -- never Secret Manager, never a value."""
+    keys = ProviderKeys(db, now=now)
+    personal = submitter_personal_tenant(store, submitted_by)
+    present: set[str] = set()
+    own = secret_name_for(personal, provider) if personal else None
+    if personal and keys.status(personal, provider)["set"]:
+        present.add(str(own))
+    tenant = secret_name_for(task_tenant_id, provider)
+    if keys.status(task_tenant_id, provider)["set"]:
+        present.add(tenant)
+    chosen = resolve_provider_key(task_tenant_id, personal, provider, present)
+    if chosen is None:
+        return None
+    return USER if chosen == own else TENANT
 
 
 def own_personal_tenant(store: Store, db: Any, auth: AuthContext, *,

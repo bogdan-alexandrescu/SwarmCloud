@@ -1,6 +1,6 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 30 followed, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 30), every row naming the workspace it runs in; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project, and `watch off` stops it. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 30 followed, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 30), every row naming the workspace it runs in; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project; the watch also arms itself (CronList first, never a second job) whenever this session attaches to or starts SwarmCloud work, and `watch off` stops it and keeps it off for the project until `watch` again. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
 argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant]]"
 arguments:
   - verb
@@ -61,8 +61,8 @@ one action — never a second one the developer did not ask for:
 | `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
 | `attach --all` | live rows for every running workflow of your tenant (at most 30), and one per running single task of yours (at most 30); `max_live_rows` moves both, 1-50 | no |
 | `check` | which of THIS PROJECT's workflows and tasks are stuck or stale, stuck first, each with its reason, evidence, console link and next command: `swarm_check`. Then live rows for every running workflow and single task of the project that has none in this session | no (attaching submits nothing) |
-| `watch [interval]` | a `check` every interval (default `30m`, at least `5m`) in this session, through Claude Code's CronCreate, remembered for this project so the next session re-arms it: `swarm_check_schedule` | schedules a prompt in this session; nothing in SwarmCloud |
-| `watch off` | cancels this session's watch and forgets it for the project | no |
+| `watch [interval]` | a `check` every interval (default `30m`, at least `5m`) in this session, through Claude Code's CronCreate, remembered for this project so the next session re-arms it: `swarm_check_schedule`. It also arms itself when this session attaches or starts work (see "Arming the watch") | schedules a prompt in this session; nothing in SwarmCloud |
+| `watch off` | cancels this session's watch and saves "off" for the project, so nothing arms it again until `watch` | no |
 | `run <spec path\|JSON>` | submits a workflow spec, and says so first | **yes** |
 | `run --issue owner/repo#N [--plan auto] [--auto-merge] [--fix-rounds N]` | plans a GitHub issue (one planner task), and says so first | **yes** |
 | `runs` | lists your tenant's issue runs | no |
@@ -93,13 +93,19 @@ the session may ask once before the first read.
 
 ### Every run is titled after its workflow
 
-A SwarmCloud workflow run here is titled `SC · [<workspace>] <name> · N
-steps` (at most 150 characters), not `swarmcloud`: <workspace> is the
-workspace (tenant) the API's document says it runs in -- its display name
-when the API gives one -- and <name> is the spec's `title`, else its `label`
-cut at a word, else the title or label SwarmCloud stored, else the workflow
-id. The name is cut to fit, never the workspace or the step count. Every row
-is labelled the same way, `[SwarmCloud] [<workspace>] <name> · stage <n> ·
+A SwarmCloud workflow run here is titled `SC · <name> · N steps` (at most
+150 characters), not `swarmcloud`: <name> is the spec's `title`, else its
+`label` cut at a word, else the title or label SwarmCloud stored, else the
+workflow id, cut to fit, never the step count. A run of single tasks is
+titled `SC · <label> · task` (several: `SC · <first label> +N · N tasks`).
+The run's NAME carries no workspace; its DESCRIPTION starts with it,
+`Workspace: <workspace> (<tenant>) · ` then the rest -- <workspace> is the
+workspace (tenant) the API's document says it runs in, by its display name
+when the API gives one, and <tenant> its tenant id (`Workspace: <tenant> · `
+alone when there is no display name) -- first, so clipping a long
+description never drops it; `Workspace: not reported` when the API names
+none (owner, 2026-10-14). Every row INSIDE the run still names its
+workspace, `[SwarmCloud] [<workspace>] <name> · stage <n> ·
 <step>` (a single task: `[SwarmCloud] [<workspace>] <label> · task`), with its
 console link, and every result and summary line names the workspace. A run's name is fixed when it is launched, so `run` and `attach`
 first call `swarm_workflow_launch`, which writes a copy of the
@@ -118,6 +124,8 @@ its finished steps once, starts a live row for every unfinished step, and ends
 with the workflow's state. This is how a session that restarted gets its rows
 back for a workflow that kept running in SwarmCloud. An unknown or
 other-tenant id ends with the API's error; report it verbatim.
+Last, the mandatory final step: [Arming the watch](#arming-the-watch), with
+the reply's `arm_watch`.
 
 ### `workflows`
 
@@ -144,7 +152,8 @@ workflow keeps its own step count, as the console shows it. Call
 `swarm_workflow_launch` once with `{attach: "all"}`. It lists the caller's
 tenant's running workflows once and, for the newest 30 (the plugin's
 `max_live_rows` option, held to 1-50), grouped by workspace, writes one
-titled script each; then make one Workflow call per entry of its `launches`,
+titled script each -- named `SC · <name> · N steps`, its description
+starting `Workspace: <workspace> (<tenant>) · ` -- then make one Workflow call per entry of its `launches`,
 `{scriptPath: <its script_path>, args: <its args>}` — each attaches its
 workflow exactly as `attach <wf_id>` does: finished steps reported once, a
 live row for every unfinished step; every row's label carries its task's
@@ -178,7 +187,9 @@ run): run `/sc:swarmcloud` once more with it. This is what the
 plugin's SessionStart hook asks a new session to run first when workflows or
 single tasks of yours are running. No hook fires on `/reload-plugins`, so
 after a reload — or whenever a task started outside this session — run it
-by hand; it submits nothing either way.
+by hand; it submits nothing either way. Last, the mandatory final step when
+it launched at least one run: [Arming the watch](#arming-the-watch), with the
+reply's `arm_watch` (null when nothing was launched).
 
 ### `check`
 
@@ -220,6 +231,12 @@ re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
    `launches` is an answer: every running workflow of the project already has
    its rows. `/sc attach <wf_id>` by hand always attaches, whatever was
    attached before -- that is how a row that was closed comes back.
+3. When step 2 launched at least one run, the mandatory final step:
+   [Arming the watch](#arming-the-watch), with its reply's `arm_watch`.
+   `nothing_running` in the check's answer means nothing of the project runs:
+   say so in one line, and LEAVE the watch armed -- a check every interval
+   is one read, and the next workflow is watched without anyone re-arming
+   it. A check never cancels its own job; only `watch off` does.
 
 ### `watch [interval]`
 
@@ -237,12 +254,43 @@ for the default is `/loop 30m /sc check`, and do not claim a watch is armed.
 The plugin's SessionStart hook reads the saved preference and asks each new
 session in this project to run `/sc watch` again, until `watch off`.
 
+The watch arms itself, too (owner, 2026-10-14): whenever this session attaches to or
+starts SwarmCloud work -- `run`, `run --issue` once its workflow exists,
+`attach <wf_id>`, `attach --all` and a `check` that attached something --
+the tool's reply carries `arm_watch`, and that verb ends with
+[Arming the watch](#arming-the-watch). So does a new session in which work of
+yours is running: the SessionStart hook asks it to arm the watch beside the
+attach. `/sc watch` by hand is still how to pick another interval.
+
+### Arming the watch
+
+The final step of every verb that attached or started work, and MANDATORY:
+the reply's `arm_watch` says how, and it is null when there is nothing to arm
+-- nothing was attached, no workflow exists yet, or `/sc watch off` turned the
+project's watch off (`arm_watch_off` then says so: say it in one line and arm
+nothing).
+Otherwise:
+
+1. CronList. If a job whose prompt is `/sc check` already exists, the watch
+   is armed in this session: stop here -- never a second job, and do not
+   replace it (that is `/sc watch`'s to do, by hand).
+2. Call `swarm_check_schedule` with `arm_watch.save_with`'s args (the saved
+   interval, else `30m`), which remembers it for the project.
+3. Make the `arm_watch` call: CronCreate with its `args`, `{cron, prompt:
+   "/sc check", recurring: true}`, and say its `then_say` in one line.
+
+If CronCreate cannot be called here, say `swarm_check_schedule`'s
+`without_cron` command (`/loop 30m /sc check`) once and do not claim a watch is armed. Once armed,
+later verbs in this session find it at step 1 and make no call.
+
 ### `watch off`
 
 Call `swarm_check_schedule` with `{off: true}`, then CronList and CronDelete
 every job whose prompt is `/sc check`. Say how many were cancelled; a
 `/loop ... /sc check` started by hand stops with Esc, which only the
-developer can press.
+developer can press. The off is SAVED for the project, not forgotten: no
+attach, run or new session arms the watch again until `/sc watch`, and every
+`arm_watch` is null meanwhile.
 
 ### `keys`
 
@@ -310,6 +358,9 @@ The one verb that writes: it spends the shared pool, a step at a time.
 4. Report what the workflow returned: its `workflow_id`, its state, and any
    `error` verbatim — `NOT_SUBMITTED`, `SUBMISSION_UNKNOWN`,
    `SUBMITTED_UNVERIFIED` and `FOLLOW_REFUSED` each say what to do next.
+5. Last, the mandatory final step, once a spec was submitted:
+   [Arming the watch](#arming-the-watch), with `swarm_workflow_launch`'s
+   `arm_watch` (`swarm_workflow`'s reply carries the same).
 
 ### `run --issue owner/repo#N`
 
@@ -336,6 +387,9 @@ this session supplies.
    `PLANNED`, holding no capacity, until the developer approves — go on to
    `plan show`. Once the run is `RUNNING` (or `FIXING`, a CI fix round), its
    answer carries `attach_with`: run `/sc attach <workflow_id>` for live rows.
+   Once a workflow exists, the reply's `arm_watch` is set too: end with
+   [Arming the watch](#arming-the-watch) (the attach would arm it anyway, and
+   step 1 there makes sure only once).
 
 ### `runs`
 

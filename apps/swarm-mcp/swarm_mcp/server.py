@@ -1106,11 +1106,14 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_workflow_launch",
         "description": (
             "Write the script a /sc:swarmcloud run is launched from, titled after "
-            "its SwarmCloud workflow: `SC · [<workspace>] <name> · N steps`, at most 150 "
-            "characters, where <name> is the spec's `title`, else its `label` cut at "
-            "a word, else (attach) the title or label SwarmCloud stored, else the "
-            "workflow id, and <workspace> the tenant the API's document names "
-            "(never cut). A workflow script's name is fixed when it is launched, so "
+            "its SwarmCloud workflow: `SC · <name> · N steps` (single tasks: `SC · "
+            "<label> · task`), at most 150 characters, where <name> is the spec's "
+            "`title`, else its `label` cut at a word, else (attach) the title or label "
+            "SwarmCloud stored, else the workflow id; the step count is never cut. "
+            "The run's description STARTS with `Workspace: <workspace> (<tenant>) · `, "
+            "the workspace the API's document names (`Workspace: not reported` when it "
+            "names none), so clipping the description never drops it. A workflow "
+            "script's name is fixed when it is launched, so "
             "this writes a copy of the plugin's run.js with that name and returns "
             "its `script_path`: launch it with the Workflow tool, "
             "{scriptPath: <script_path>, args: ...}. Submits NOTHING.\n"
@@ -1121,7 +1124,13 @@ TOOLS: list[dict[str, Any]] = [
             "each, newest first and grouped by workspace, at most the sc plugin's "
             "`max_live_rows` (30 unless set; 1-50) -- one Claude Code run per "
             "SwarmCloud workflow, each launched with the `args` its entry carries; "
-            "the rest in `not_followed`)."
+            "the rest in `not_followed`).\n"
+            "\n"
+            "`arm_watch` (SC-AUTO-WATCH): when this launches a spec, an attach, or at "
+            "least one attach-all run, the CronCreate call that arms the sc plugin's "
+            "`/sc check` watch for this project -- make it after CronList shows no "
+            "`/sc check` job, never a second. Null when nothing was launched or the "
+            "project's watch is off (`arm_watch_off`)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1272,7 +1281,8 @@ TOOLS: list[dict[str, Any]] = [
             "30m, at least 5m, e.g. `30m`, `1h`) saves the preference for this project "
             "and answers `arm_with`, the CronCreate call that schedules it in this "
             "session (`replace_first` says how to drop an older one), and `without_cron`, "
-            "the `/loop` command that does the same; `{off: true}` forgets it and says "
+            "the `/loop` command that does the same; `{off: true}` saves \"off\" for the "
+            "project -- no reply's `arm_watch` arms it until `{interval}` again -- and says "
             "how to cancel the job; neither reports it. An interval a cron expression "
             "cannot say is rounded (`rounded`), one below the floor raised (`clamped`). "
             "Scheduled prompts end with the session; the plugin's SessionStart hook asks "
@@ -3392,8 +3402,6 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
     digest it approves with: `swarm_plan_approve` takes it from the caller,
     who was shown it.
     """
-    from . import runs
-
     if name == "swarm_run_issue":
         approval = args.get("plan_approval") or "required"
         if approval not in ("required", "auto"):
@@ -3407,7 +3415,7 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             auto_merge=_flag(args, "auto_merge"),
             fix_rounds=fix_rounds,
         )
-        return json.dumps(runs.summary(client, run), indent=2, default=str)
+        return json.dumps(_run_summary(client, run), indent=2, default=str)
     if name == "swarm_runs":
         limit = args.get("limit")
         listing = client.runs(
@@ -3431,7 +3439,17 @@ def _run_tool(client: SwarmClient, name: str, args: dict[str, Any]) -> str:
             plan_digest=args.get("plan_digest") or None,
             reason=_text_arg(args, "reason", name),
         )
-    return json.dumps(runs.summary(client, run), indent=2, default=str)
+    return json.dumps(_run_summary(client, run), indent=2, default=str)
+
+
+def _run_summary(client: SwarmClient, run: dict[str, Any]) -> dict[str, Any]:
+    """`runs.summary`, and `arm_watch` (SC-AUTO-WATCH) once the run's workflow
+    exists -- the same moment it carries `attach_with`."""
+    from . import runs, watch
+
+    out = runs.summary(client, run)
+    out.update(watch.arm_fields(bool(out.get("attach_with"))))
+    return out
 
 
 _SCHEDULE_TOOLS = frozenset(
@@ -3796,6 +3814,10 @@ def _workflow_created(
     if task_ids:
         created["follow_with"] = "swarm_follow"
         created["follow_live_with"] = follow_command(task_ids)
+    # A workflow now exists for this session to follow (SC-AUTO-WATCH).
+    from . import watch
+
+    created.update(watch.arm_fields(True))
     return json.dumps(created, indent=2)
 
 
@@ -4111,7 +4133,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         return json.dumps(read, indent=2)
 
     if name == "swarm_workflow_launch":
-        from . import launch
+        from . import launch, watch
 
         given = sorted(k for k in ("spec", "spec_path", "attach") if args.get(k) is not None)
         if len(given) != 1:
@@ -4125,32 +4147,36 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             raise SwarmError(
                 f"swarm_workflow_launch takes {filters} only with attach \"all\". Nothing was written"
             )
+        # EVERY LAUNCH ARMS THE WATCH (SC-AUTO-WATCH, owner 2026-10-14): a spec
+        # about to run, a workflow attached, or an attach-all that launched at
+        # least one run puts work in front of this session, so the reply
+        # carries `arm_watch` -- null when nothing was launched or the
+        # project's watch is explicitly off.
         if target is not None:
             if target in ("all", "--all"):
                 if not filters:
-                    return json.dumps(launch.for_all(client), indent=2, default=str)
-                exclude = args.get("exclude")
-                if exclude is not None and not (
-                    isinstance(exclude, list) and all(isinstance(i, str) for i in exclude)
-                ):
-                    raise SwarmError("swarm_workflow_launch: `exclude` is a list of ids. Nothing was written")
-                return json.dumps(
-                    launch.for_all(
+                    attached = launch.for_all(client)
+                else:
+                    exclude = args.get("exclude")
+                    if exclude is not None and not (
+                        isinstance(exclude, list) and all(isinstance(i, str) for i in exclude)
+                    ):
+                        raise SwarmError("swarm_workflow_launch: `exclude` is a list of ids. Nothing was written")
+                    attached = launch.for_all(
                         client,
                         repository=args.get("repository"),
                         new_only=_flag(args, "new_only"),
                         exclude=exclude,
-                    ),
-                    indent=2,
-                    default=str,
-                )
-            return json.dumps(launch.for_attach(client, target), indent=2)
+                    )
+                attached.update(watch.arm_fields(bool(attached.get("launches"))))
+                return json.dumps(attached, indent=2, default=str)
+            return json.dumps({**launch.for_attach(client, target), **watch.arm_fields(True)}, indent=2)
         document = (
             _read_spec_file(str(args["spec_path"]), base=checkout.directory())["spec"]
             if args.get("spec_path") is not None
             else args["spec"]
         )
-        return json.dumps(launch.for_spec(document, client), indent=2)
+        return json.dumps({**launch.for_spec(document, client), **watch.arm_fields(True)}, indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()

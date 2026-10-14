@@ -39,7 +39,10 @@ export const meta = {
 //
 // THE RUN IS NAMED AFTER THE WORKFLOW. `meta` is a literal and a running
 // script cannot rename its run, so the plugin launches each run from a copy
-// of this script whose meta.name is `SC · <name> · N steps`
+// of this script whose meta.name is `SC · <name> · N steps` (`SC · <label> ·
+// task` for single tasks) and whose meta.description starts with `Workspace:
+// <workspace> (<tenant>) · ` -- the workspace is in the description, not the
+// name, since SC-WS-DESC (owner 2026-10-14)
 // (swarm_mcp.launch, the swarm_workflow_launch tool). Inside, the same name
 // and step count open the first row's label, and the Result row adds the
 // workflow id, which only exists once SwarmCloud has answered.
@@ -643,8 +646,11 @@ function stagePhase(stage) {
 // SwarmCloud prefix, at most 100; owner 2026-10-05: prefix `SC · ` because
 // Claude Code's task panel shows ~28 characters of a name, and at most 150
 // because Enter shows the full name. swarm_mcp.workflows.workflow_title writes
-// the same title into the per-run copy's meta.name; the plugin's tests hold
-// the two equal. Counted in code points, as Python counts.
+// the same title into the per-run copy's meta.name -- with no workspace
+// there since SC-WS-DESC: the copy's meta.description leads with it instead,
+// while this Result title and the row labels still carry `[<workspace>] ` --
+// and the plugin's tests hold the two cuts equal. Counted in code points, as
+// Python counts.
 const TITLE_CHARS = 150
 const TITLE_PREFIX = 'SC · '
 

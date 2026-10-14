@@ -166,6 +166,17 @@ class WorkspaceNotRequested(Conflict):
     code = "WORKSPACE_NOT_REQUESTED"
 
 
+class BrowserToolUnavailable(ValidationFailed):
+    """A `claude-code-browser` task that names `browser_tool: jev` when jev
+    cannot run for it: no TypeSafe key resolves for its submitter or tenant
+    (KEYS-API), or this deployment's image has no jev (BSTATUS-API). A new
+    refusal: raised only through `refusals.refuse`, behind its switch. Off,
+    the task is admitted and its runner falls back to Playwright, saying why
+    on the live session (`jev.reason`)."""
+
+    code = "browser_tool_unavailable"
+
+
 class KeyLinkInvalid(Forbidden):
     """A one-time key-form link (KEYS-API, docs/provider-keys.md §3) that is
     unknown, used, expired, someone else's, or for another scope or tenant.

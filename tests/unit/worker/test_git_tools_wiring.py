@@ -184,7 +184,7 @@ def test_the_live_browser_and_the_git_tools_share_one_config(monkeypatch, tmp_pa
                      browsers="/opt/playwright", endpoint=endpoint)
     assert _mcp_config(seen) == {"mcpServers": {
         claude_code.MCP_SERVER_NAME: {"type": "stdio", "command": claude_code.PLAYWRIGHT_MCP_BIN,
-                                      "args": ["--cdp-endpoint", endpoint]},
+                                      "args": ["--cdp-endpoint", f"{endpoint}/client/playwright"]},
         shim.SERVER_NAME: _shim_server(spool),
     }}
     # Without the git tools the live browser's config is exactly what it was.

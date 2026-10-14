@@ -134,7 +134,16 @@ source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
 # shellcheck source=lib/build-mirror.sh
 source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 
-ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live workspace-apply)
+# swarm-egress (EGRESS-BUILD, owner decision 2026-10-14) is the browser egress
+# forwarder, apps/swarm-egress/Dockerfile: beside its app as swarm-live's
+# recipe is, so find_recipe() finds it and image_inputs() reads its COPY
+# lines (apps/common, apps/redaction, apps/swarm-egress) like any other.
+# terraform/infra/egress.tf renders swarm_egress_manifest only once
+# image_refs has its digest, and image_refs is written from what this builds
+# and push-images.sh promotes: an image missing here is a forwarder dev's
+# enable_browser_egress could never deploy. It upgrades OS packages, so it is
+# rebuilt by every build (upgrades_os_packages).
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress workspace-apply)
 
 # The target whose recipe an image is built from. Every image is its own,
 # except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built

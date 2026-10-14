@@ -622,6 +622,7 @@ class and runs on GKE Autopilot; it declares what `claude-code` does:
 | input | kind and bounds | what the claude-code-browser runner does with it |
 |---|---|---|
 | `issue` | integer 1..999999 | an issue in the task's repository: its title, body and comments are written to issue.md in the workspace and named in the prompt |
+| `browser_tool` | string, one of auto \| playwright \| dev-browser \| jev | the live browser's tool: auto (every tool available; the default), playwright (the Playwright MCP tools only), dev-browser (the dev-browser CLI first, Playwright as fallback) or jev (the jev MCP tools, which send page text to TypeSafe and need a TypeSafe key; Playwright as fallback) |
 <!-- /runner-inputs:claude-code-browser -->
 
 `--input issue=<number>` on `swarm dispatch`, or `"inputs": {"issue": <number>}`
@@ -863,9 +864,12 @@ pieces do it, and none of them submits anything.
   stays a cap. The bridge reads the option and hands it to each run as
   `max_rows`. The rest are logged and returned as `not_followed`, each with
   its `workspace` and the `/sc attach` that follows it.
-* **Every row names its workspace.** Run titles are `SC · [<workspace>]
-  <name> · N steps` (the name is cut to 150, never the workspace or the
-  count), rows are `[SwarmCloud] [<workspace>] <name> · stage <n> · <step>`
+* **Every row names its workspace.** Run titles are `SC · <name> · N steps`
+  and `SC · <label> · task` (the name is cut to 150, never the count), and
+  each run's description starts with `Workspace: <workspace> (<tenant>) · `
+  (`Workspace: not reported` when the API names none) — the workspace moved
+  out of the run's name into its description in SC-WS-DESC, owner
+  2026-10-14; rows inside the run are `[SwarmCloud] [<workspace>] <name> · stage <n> · <step>`
   and `[SwarmCloud] [<workspace>] <label> · task`, and every result object and
   summary line carries `workspace` — from the API's workflow and task
   documents, so one attach can cover several workspaces correctly.
@@ -967,12 +971,41 @@ of the project running at the time.
   expression can say), and remembers it for the project in
   `<config dir>/sc-watch/<sha256 of the project directory>.json`, never in
   the repository. Where CronCreate is not available, `/loop 30m /sc check`
-  does the same. **`/sc watch off`** cancels it and forgets it.
+  does the same. **`/sc watch off`** cancels it and saves "off" for the
+  project.
 * CronCreate's jobs end with the session (and a recurring one after 7 days),
   so the **SessionStart hook** reads the saved preference — locally, before
   and without the bridge — and asks each new session in the project to run
   `/sc watch <N>m` first, beside the attach or on its own, even with
   `auto_attach` off.
+
+### The watch arms itself (SC-AUTO-WATCH)
+
+Owner request 2026-10-14: "/sc watch should automatically be set if there is
+at least one workflow being worked on in sc that is attached here or if and
+when we start a new workflow ... Also this should run when we attach manually
+either one or --all".
+
+* `/sc run` (a spec submitted), `/sc run --issue` once its workflow exists,
+  `/sc attach <wf_id>`, `/sc attach --all` and a `/sc check` that attached
+  something each END by arming the watch. The tools say so themselves:
+  `swarm_workflow_launch` (spec and attach), `swarm_workflow` and the issue-run
+  tools answer `arm_watch` — the CronCreate call at the project's saved
+  interval, else 30 minutes, with the `swarm_check_schedule` call that
+  remembers it. The skill runs CronList first and makes no call when a
+  `/sc check` job exists, so a session never holds two watches.
+* `arm_watch` is null when nothing was attached, when no workflow exists yet,
+  and when the project's watch was turned off: **an explicit `/sc watch off`
+  is saved** (`"watch": "off"` in the same file) and wins until `/sc watch`
+  again, so an attach does not undo it.
+* At session start, when the bridge finds running workflows or single tasks
+  of yours and no interval was ever saved, its context asks the session to
+  arm the watch beside the attach; the hook hands an explicit off over as
+  `SWARM_SC_WATCH_MINUTES=off` and then nothing is asked. Nothing running,
+  nothing asked.
+* `/sc check` that finds nothing running for the project says so
+  (`nothing_running`) and leaves the job armed: one read per interval is
+  cheap, and the next workflow is watched without re-arming.
 
 ### What a row shows, and what it costs
 

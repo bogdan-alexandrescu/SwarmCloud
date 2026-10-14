@@ -70,6 +70,13 @@
 # on its own when nothing runs, the bridge fails, or `auto_attach` is off.
 # The project and the directory are derived exactly as swarm_mcp.watch derives
 # them (tests/unit/mcp/test_sc_watch.py holds the two together).
+#
+# AND IT ASKS TO ARM IT (SC-AUTO-WATCH, owner request 2026-10-14). When the
+# bridge finds running workflows or single tasks of the caller and no interval
+# was ever saved, its context asks the session to arm the watch at the default
+# (CronList first, so never a second job). An explicit `/sc watch off` is
+# saved in the same file as `"watch": "off"`; the hook hands that over as
+# SWARM_SC_WATCH_MINUTES=off and the context then asks for no arming at all.
 set -euo pipefail
 
 trap 'exit 0' ERR
@@ -78,9 +85,9 @@ lower() {
   printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
 }
 
-# The minutes `/sc watch` saved for this project, or nothing.
-watch_minutes() {
-  local project top conf key file minutes
+# The file `/sc watch` saves this project's preference in, or nothing.
+watch_file() {
+  local project top conf key
   project="${CLAUDE_PROJECT_DIR:-$PWD}"
   top="$(git -C "$project" rev-parse --show-toplevel 2>/dev/null)" || top=""
   [ -n "$top" ] && project="$top"
@@ -101,14 +108,28 @@ watch_minutes() {
   else
     return 0
   fi
-  file="$conf/sc-watch/$key.json"
-  [ -r "$file" ] || return 0
+  printf '%s' "$conf/sc-watch/$key.json"
+}
+
+# The minutes `/sc watch` saved for this project, or nothing.
+watch_minutes() {
+  local file minutes
+  file="$1"
+  [ -n "$file" ] && [ -r "$file" ] || return 0
   minutes="$(sed -n 's/.*"interval_minutes": *\([0-9][0-9]*\).*/\1/p' "$file" | head -n 1)" || return 0
   case "$minutes" in
     '' | *[!0-9]*) return 0 ;;
   esac
   [ "$minutes" -ge 5 ] || return 0
   printf '%s' "$minutes"
+}
+
+# `off` when `/sc watch off` was saved for this project, or nothing.
+watch_off() {
+  [ -n "$1" ] && [ -r "$1" ] || return 0
+  if grep -q '"watch": *"off"' "$1" 2>/dev/null; then
+    printf 'off'
+  fi
 }
 
 # The re-arm notice on its own. Digits only are interpolated, so the JSON
@@ -121,7 +142,9 @@ print_rearm() {
 url="${SWARM_PLUGIN_DEPLOYMENT_URL:-${CLAUDE_PLUGIN_OPTION_DEPLOYMENT_URL:-}}"
 [ -n "$url" ] || exit 0
 
-rearm="$(watch_minutes)" || rearm=""
+prefs="$(watch_file)" || prefs=""
+rearm="$(watch_minutes "$prefs")" || rearm=""
+off="$(watch_off "$prefs")" || off=""
 
 case "$(lower "${CLAUDE_PLUGIN_OPTION_AUTO_ATTACH:-true}")" in
   false | 0 | no | off)
@@ -171,8 +194,11 @@ for key in OAUTH_CLIENT_ID DEFAULT_TARGET OAUTH_CLIENT_SECRET; do
 done
 
 # The remembered watch, so the bridge's one context names the re-arm too.
+# Or that it is explicitly off, so the context asks for no arming.
 if [ -n "$rearm" ]; then
   export SWARM_SC_WATCH_MINUTES="$rearm"
+elif [ -n "$off" ]; then
+  export SWARM_SC_WATCH_MINUTES="$off"
 fi
 
 # The tenant under the variable every client reads, unless one is already set.

@@ -1079,6 +1079,7 @@ def session_start_context(
     tasks: dict[str, Any] | None = None,
     *,
     watch_minutes: int | None = None,
+    watch_off: bool = False,
 ) -> str | None:
     """What the SessionStart hook tells the session, or None when nothing runs.
 
@@ -1091,6 +1092,11 @@ def session_start_context(
     interval, handed over by the hook. Claude Code's scheduled prompts end
     with a session, so the context also asks for `/sc watch <N>m` -- and says
     so even when nothing runs.
+
+    `watch_off` (SC-AUTO-WATCH): the hook found an explicit `/sc watch off`
+    for the project. Otherwise, when something runs and no interval was ever
+    saved, the context asks the session to arm the watch at the default --
+    CronList first, so a session that already has one makes no second.
     """
     from . import watch
 
@@ -1148,6 +1154,8 @@ def session_start_context(
     )
     if watch_minutes:
         text += " Then: " + watch.rearm_sentence(watch_minutes)
+    elif not watch_off:
+        text += " " + watch.arm_sentence()
     return text
 
 
@@ -1178,10 +1186,11 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 workflows_read = pool.submit(_quietly, lambda: running_workflows(client))
                 tasks_read = pool.submit(_quietly, lambda: running_tasks(client))
-                from .watch import rearm_minutes
+                from .watch import handed_off, rearm_minutes
 
                 context = session_start_context(
                     workflows_read.result(), tasks_read.result(), watch_minutes=rearm_minutes(),
+                    watch_off=handed_off(),
                 )
         except Exception:  # noqa: BLE001 - nothing may stop a session starting
             return EXIT_OK
