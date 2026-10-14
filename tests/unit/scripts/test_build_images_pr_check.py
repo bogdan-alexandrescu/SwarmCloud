@@ -499,7 +499,7 @@ def test_mains_build_and_push_is_unchanged():
     build = _jobs()["build"]
     # ...and not on a merge queue entry, whose ref the pool rejects as it
     # rejects a pull request's (test_merge_queue_workflows.py).
-    assert build["if"] == "github.event_name != 'pull_request' && github.event_name != 'merge_group'"
+    assert build["if"] == "${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}"
     runs = [str(s.get("run", "")) for s in build["steps"] if s.get("run")]
     # Main builds and pushes: incrementally since observer proposal H
     # (test_build_images_incremental.py), never without pushing.
