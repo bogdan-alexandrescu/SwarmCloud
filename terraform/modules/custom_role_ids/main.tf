@@ -3,7 +3,9 @@
 # and swarmForgeSlotVersionManager (terraform/bootstrap/forge_user_slots.tf,
 # #780), and the five swarmWorkspace* roles of swarm-workspace-deployer
 # (terraform/bootstrap/workspace_deployer.tf, #847), and swarmHistoryPurgeDeleter
-# (terraform/bootstrap/history_purge.tf, the audited history purge).
+# (terraform/bootstrap/history_purge.tf, the audited history purge), the two
+# browser-session roles (terraform/bootstrap/browser_logins.tf) and
+# swarmProviderKeyWriter (terraform/bootstrap/provider_keys.tf, KEYS-IAM).
 #
 # terraform/bootstrap DEFINES these roles, and the owner applies it.
 # terraform/infra and its modules GRANT them, and CI applies that. The two roots
@@ -71,5 +73,9 @@ locals {
     # them. Both are swarm-api's: no worker holds a browser-session role (L8c).
     browser_session_provisioner = "swarmBrowserSessionProvisioner${local.role_suffix}"
     browser_login_revoker       = "swarmBrowserLoginRevoker${local.role_suffix}"
+    # Defined and granted by terraform/bootstrap/provider_keys.tf alone
+    # (KEYS-IAM, owner decision 2026-10-14): swarm-api's write and destroy of
+    # tenant provider keys. terraform/infra never names it.
+    provider_key_writer = "swarmProviderKeyWriter${local.role_suffix}"
   }
 }
