@@ -10536,6 +10536,24 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-theme button.is-on { color: var(--sk-ac); background: var(--sk-acs); font-weight: 600; }
 .sk-theme button:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
 .sk-adm { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); border: 1px solid var(--sk-ln); border-radius: 2px; padding: 1px 4px; }
+/* SIGN OUT (owner 2026-10-14), on the name row: pushed to its end, in the
+   hairline chip the admin tag beside it uses, so it reads as a control of the
+   person's row rather than a page action. Tokens only, so both themes paint
+   it. Below 760px the word goes and the icon carries its aria-label. */
+.sk-out { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 4px; font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); background: none; border: 1px solid var(--sk-ln); border-radius: 6px; padding: 2px 6px; cursor: pointer; }
+.sk-out:hover { background: var(--sk-hv); color: var(--text); }
+.sk-out:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
+.sk-out .sk-ic { width: 14px; height: 14px; }
+/* The collapsed spine's: an icon beside the avatar, in the spine's own ink.
+   The spine is one blue in both themes, so its colours are written as values
+   (as `.sk-expand` does) rather than as the page's theme tokens. */
+.sk-spine .sk-out { margin: 8px 0 0; padding: 6px; border-color: rgba(255, 255, 255, .22); color: #dbeafe; }
+.sk-spine .sk-out:hover { background: #194b89; color: #fff; }
+.sk-spine .sk-out:focus-visible { outline-color: #7cc8f8; /* the spine's sky line, as a value: see `.sk-ri.sk-cta` */ }
+.sk-spine .sk-out .sk-ic { width: 16px; height: 16px; }
+@media (max-width: 759px) {
+  .sk-out-l { display: none; }
+}
 
 /* --- the tenant switcher (intake-tenants.html 2A, picked 2026-10-02) ----- */
 .sk-tenant.is-sw { flex-direction: column; align-items: stretch; gap: 4px; padding: 0; }
