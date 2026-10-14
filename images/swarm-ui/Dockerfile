@@ -110,7 +110,12 @@ FROM ${MIRROR_DOCKER_HUB}/${NGINX_IMAGE}
 # Releases 37812320090 and 37816339298 (2026-10-08) refused it over tiff 4.7.1-r0
 # (CVE-2026-4775, HIGH, fixed in 4.7.2-r0), holding every merge since 09:37Z.
 USER root
-RUN apk upgrade --no-cache libexpat pcre2 tiff
+# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
+# main build and release), so the upgrade below is never an older build's
+# (owner decision 2026-10-14).
+ARG APT_REFRESH=unset
+RUN echo "apk layer of ${APT_REFRESH}" \
+ && apk upgrade --no-cache libexpat pcre2 tiff
 USER 101
 
 COPY images/swarm-ui/nginx.conf /etc/nginx/conf.d/default.conf

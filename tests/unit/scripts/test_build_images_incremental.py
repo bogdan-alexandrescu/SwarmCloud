@@ -116,6 +116,10 @@ sys.exit(2)
 '''
 
 
+#: The APT_REFRESH every sandbox build runs with and every sandbox record carries.
+APT_PIN = "sandbox-apt-pin"
+
+
 def _old_digest(name: str, commit: str) -> str:
     return "sha256:" + hashlib.sha256(f"previous {name} {commit}".encode()).hexdigest()
 
@@ -177,6 +181,12 @@ class Sandbox:
             "BUILD_PARALLELISM": "8",
             "BUILD_POLL_INTERVAL": "0.05",
             "BUILD_SUBMIT_STAGGER": "0",
+            # APT_REFRESH names the build in build-images.sh, and an image
+            # that upgrades OS packages is reused only from a record of the
+            # same one. Pinned here, and written into every record below, so
+            # these tests see only the input-diff rules; the refresh itself
+            # is exercised in test_build_images_apt_refresh.py.
+            "BUILD_APT_REFRESH": APT_PIN,
         }
         for leak in ("GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT", "GH_TOKEN", "GITHUB_TOKEN"):
             self.env.pop(leak, None)
@@ -215,6 +225,7 @@ class Sandbox:
             }
             if baked_args:
                 entry["build_args"] = _baked(name, environment)
+            entry["apt_refresh"] = APT_PIN
             entry.update((per_image or {}).get(name, {}))
             images.append(entry)
         path = self.tmp / f"previous-{commit[:12]}.json"

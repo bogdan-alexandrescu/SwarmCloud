@@ -619,10 +619,29 @@ before (`agent_worker.handoff.HandoffPath._watch`).
   attempt's own deadline (`handoff.extended_deadline`), and never moves the
   deadline earlier. A tab left open on a walked-away desk costs half an hour,
   not an afternoon.
-* **Never revived.** A viewer who arrives after the deadline passed changes
-  nothing: the worker may already be parking, and racing it would leave a
-  hold with no pod behind it. That person presses "I'm ready" (below), which
-  is unchanged.
+* **Ended by the worker's resolve, not by the clock (LB-RETURN).** This bullet
+  said "never revived": a viewer who arrived after the deadline changed
+  nothing, so as not to race the worker's park. MEASURED: the live-browser
+  acceptance group parked on every run from 2026-10-14 00:24Z with its
+  viewer connected and the person in control, because the person came within
+  the worker's 10 s poll of the minute and the park went ahead under them. So
+  the race is decided in Firestore instead. A viewer or controller moves an
+  OPEN hold even past its deadline. The worker's expiry names the deadline
+  it judged (`seen_deadline`), and swarm-api answers it `{"resolved":
+  "revived"}`, writing nothing (`HandoffService.resolve`), when that deadline
+  has since moved into the future. The worker then keeps holding and tells the agent nothing
+  (`HandoffPath.confirm_expired`). Whichever transaction commits first
+  decides.
+* **A return is never lost to a park.** A person who returns control while the
+  attempt is still RUNNING leaves `metadata.human_returned` (attempt,
+  generation, who). The worker's park reads it in its own fenced transaction
+  and writes READY instead of PARKED, with the same checkpoint, refund and
+  lease release (`park_human_required`). A return that arrives after the park
+  committed is that person's "I'm ready" (`LiveService.return_control`,
+  `handoff.ready_writes`). Both count only for the attempt that parked, at its
+  generation, and a new request forgets an older return. Anyone else presses
+  "I'm ready" (below), which is unchanged; the console calls a parked
+  hand-off "parked -- press I'm ready to resume", not expired.
 
 Who is counted as watching is any member admitted to the view (section 5.2),
 not only someone who may take control: the submitter watching from a second

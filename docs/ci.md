@@ -393,6 +393,38 @@ summary and the manifest's `incremental.full_build`:
   environment in, and prod is always built whole;
 * the **working tree is dirty**, so git cannot say what changed.
 
+**An image whose Dockerfile upgrades OS packages is rebuilt by every main
+build and every release.** This was the owner's decision on 2026-10-14 ("force a fresh apt
+layer", on every release). It costs about 7 extra minutes per release.
+`APT_REFRESH` names the build: the commit plus the GitHub run id and attempt,
+or the commit and the time outside Actions. `BUILD_APT_REFRESH` overrides it.
+The manifest records it per image as `apt_refresh`. A digest of such an image
+is reused only when its `apt_refresh` is this build's, which no other run's
+is. So `plan_incremental` rebuilds every one of them, and the release's reuse
+check does too, even from a record CI built whole for the same commit. An
+image built FROM one is rebuilt with it. One that upgrades nothing
+(swarm-verify) is still reused. Which images upgrade is read from their
+Dockerfiles (`upgrades_os_packages`), not listed.
+A digest CI built from the commit being released is that commit's own
+build, not a reuse: the 7-day age limit and the unrecorded-build-args rule are
+not asked of it, and it is not re-tagged (it already carries the tag), so a
+release rebuilds only the OS-upgrading images and those built FROM them.
+
+The cause it removes: releases 38535875750 and 38540997006 refused
+workspace-apply over curl/libcurl4t64 `8.14.1-2+deb13u5` (CVE-2026-8286, HIGH,
+fixed in `+deb13u7`). Its Dockerfile runs `apt-get upgrade`, but its log read
+`workspace-apply reuse no input changed since 346f2725df43`. The digest was
+built on 2026-10-13, before Debian shipped the fix, and nothing in the tree
+changes when Debian does.
+
+The build passes `--build-arg APT_REFRESH` (workspace-apply's recipe as
+`_APT_REFRESH`). Every apt or apk upgrade `RUN` names it, so no layer cache
+serves an older upgrade either. workspace-apply's apt `RUN` also fails its own
+build when a simulated `apt-get dist-upgrade` still has something to install,
+which catches a package `apt-get upgrade` kept back. The scan stays strict:
+nothing is ignored or pinned. `test_build_images_apt_refresh.py` holds all of
+this.
+
 **What this does not prove.** The tests (`test_build_images_incremental.py`,
 `test_ci_built_images.py`) run the real scripts against a fake `gcloud` that
 remembers tags and a fake `gh`. They cannot show that Artifact Registry moves
