@@ -10526,6 +10526,10 @@ a.sk-ri, a.sk-pk, a.sk-kid, .sk-flyout a { text-decoration: none; }
 .sk-pfrow > .sk-adm { flex: none; }
 .sk-pfoot b { font-size: var(--t-micro); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-pfoot small { font-size: var(--t-micro); color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Settings › API keys, under the person's name (KEYS-UI). */
+.sk-pset { margin-top: 6px; font-size: var(--t-micro); color: var(--text-dim); text-decoration: none; }
+.sk-pset:hover, .sk-pset.is-on { color: var(--sk-ac); }
+.sk-pset:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 1px; }
 .sk-theme { display: flex; gap: 2px; margin: 8px 0 10px; padding: 2px; border: 1px solid var(--sk-ln); border-radius: 10px; }
 .sk-theme button { flex: 1; font: inherit; font-size: var(--t-micro); color: var(--text-dim); background: none; border: 0; border-radius: 6px; padding: 4px 6px; cursor: pointer; }
 .sk-theme button:hover { background: var(--sk-hv); }

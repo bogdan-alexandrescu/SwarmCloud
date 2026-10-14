@@ -3269,6 +3269,31 @@ export interface Workflow {
   on_step_failure: string
   cancel_requested: boolean
   steps: WorkflowStep[]
+  /**
+   * The pull requests this workflow waits for before any step starts (lane
+   * SPEED-D3, the spec's `after`). ABSENT on every workflow submitted without
+   * one. Read off its step tasks by the API (`prgate.wait_for_api`), which
+   * also writes `text`: the sentence the list row and the page head print.
+   */
+  after_pull_requests?: WorkflowPullRequestWait
+}
+
+/** `workflow.after_pull_requests` (SPEED-D3). */
+export interface WorkflowPullRequestWait {
+  /** `waiting` until every one merged (`merged`), or one closed unmerged (`closed`). */
+  state: 'waiting' | 'merged' | 'closed'
+  /** `owner/repo`, the workflow's own repository; null when the gate names none. */
+  repository: string | null
+  pull_requests: number[]
+  /** Those not yet read merged. */
+  pending: number[]
+  merged: number[]
+  /** The one read closed without merging, when `state` is `closed`. */
+  closed: number | null
+  /** "waiting for PR #41 to merge", "PR #41 was closed without being merged", "PR #41 merged". */
+  text: string
+  checked_at?: string | null
+  released_at?: string | null
 }
 
 /** What a workflow's heading prints, and whether it is a confirmed answer. */

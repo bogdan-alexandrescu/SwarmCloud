@@ -75,6 +75,39 @@ CONTROL_PUBLISH_METADATA_KEY = "control_publish"
 CONTROL_PUBLISH_CLAIMED = "claimed"
 CONTROL_PUBLISH_CLAIM_SECONDS = 300
 
+#: A workflow that waits for named pull requests to merge (lane SPEED-D3,
+#: `swarm_api.prgate`): the gate on each of its root steps, PARKED on
+#: DEPENDENCY_INCOMPLETE, and the two states that end the wait. Restated
+#: because the scheduler image does not carry swarm-api; held equal by
+#: tests/unit/control_plane/test_workflow_after_pr.py.
+AFTER_PRS_METADATA_KEY = "after_prs"
+AFTER_PRS_MERGED = "merged"
+AFTER_PRS_CLOSED = "closed"
+
+
+def after_prs_hold(metadata: Any) -> tuple[str, int | None] | None:
+    """What a step's pull-request gate says: None when there is none to hold on.
+
+    `("merged", None)`: every pull request merged; the step is promoted as any
+    dependency park is. `("closed", n)`: pull request `n` was closed without
+    merging; the step is ended. `("waiting", None)`: anything else, a gate this
+    reader cannot make sense of included -- the document is tenant-writable,
+    and a gate that cannot be read HOLDS, it is never read as released.
+    """
+    gate = metadata.get(AFTER_PRS_METADATA_KEY) if isinstance(metadata, dict) else None
+    if gate is None:
+        return None
+    if not isinstance(gate, dict):
+        return ("waiting", None)
+    state = gate.get("state")
+    if state == AFTER_PRS_MERGED:
+        return (AFTER_PRS_MERGED, None)
+    closed = gate.get("closed")
+    if state == AFTER_PRS_CLOSED and isinstance(closed, int) and not isinstance(closed, bool):
+        return (AFTER_PRS_CLOSED, closed)
+    return ("waiting", None)
+
+
 #: The live-browser hand-off (docs/design/live-browser.md §4.3, lane LB-L10).
 #: A PARKED(HUMAN_REQUIRED) task is promoted ONLY by a person, through
 #: swarm-api's `human-ready`; this scheduler never promotes it. Past
@@ -263,6 +296,9 @@ class DrainReport:
     promoted_dependencies: int = 0
     #: Dependants left PARKED for swarm-api's publish of a MERGE verdict (#748).
     held_dependencies: int = 0
+    #: Root steps left PARKED because a pull request their workflow waits for
+    #: (`after`, lane SPEED-D3) has not merged yet.
+    held_pr_gates: int = 0
     promoted_credentials: int = 0
     promoted_prewarm: int = 0
     #: SCHEDULED_RETRY parks returned to READY once `next_eligible_at` passed.
@@ -1251,6 +1287,8 @@ class Scheduler:
         """
         if self._stop_for_failed_workflow(task, report):
             return False
+        if not self._pull_requests_merged(task, report):
+            return False
         if not task.depends_on:
             # Counted in the metric as well as the report. Incrementing only
             # the report here made `swarm_scheduler_promoted{kind=
@@ -1282,6 +1320,56 @@ class Scheduler:
                 detail={"reason": "dependencies_satisfied"},
                 report=report,
             )
+        return False
+
+    def _pull_requests_merged(self, task: Task, report: DrainReport) -> bool:
+        """The pull-request gate of a step whose workflow waits on `after` (SPEED-D3).
+
+        True when the step carries no gate, or its gate says every pull
+        request merged: the dependency rule below then applies as it always
+        did. False otherwise, and the step is left alone:
+
+          * still waiting -- the step stays PARKED, holding no lease, no pool
+            count and no execution (invariant 1), counted in
+            `report.held_pr_gates`;
+          * a pull request closed without merging -- the step is ended
+            DEAD_LETTERED (PARKED -> FAILED is not a transition the contract
+            allows), naming it, or CANCELLED when a cancel was asked for. Its
+            workflow has failed: under `fail_workflow` the next touch sweeps
+            the rest, and under either policy its dependants are cancelled as
+            a failed parent's.
+
+        The scheduler never reads GitHub. swarm-api's wake tick writes the
+        gate (`swarm_api.prgate.wake_tenant`); this reads only its `state`.
+        """
+        hold = after_prs_hold(task.metadata)
+        if hold is None or hold[0] == AFTER_PRS_MERGED:
+            return True
+        if hold[0] == AFTER_PRS_CLOSED:
+            gate = (task.metadata or {}).get(AFTER_PRS_METADATA_KEY) or {}
+            repository = gate.get("repository") if isinstance(gate, dict) else None
+            where = f" of {repository}" if isinstance(repository, str) and repository else ""
+            text = (
+                f"pull request #{hold[1]}{where} was closed without being merged; "
+                "this workflow waited for it to merge (after) and will not start"
+            )
+            if task.cancel_requested:
+                self._cancel(
+                    task, text, report, why="cancel_requested",
+                    end_cause=children_mod.cancel_end_cause(task.metadata),
+                )
+                return False
+            outcome = self._store.dead_letter_parked(
+                task, text, detail={"park_reason": ParkReason.DEPENDENCY_INCOMPLETE.value,
+                                    "after_pr_closed": hold[1]},
+            )
+            if outcome.applied:
+                report.dead_lettered += 1
+                self._note_ended(task.id)
+            else:
+                self._count_stale(outcome, report)
+            return False
+        report.held_pr_gates += 1
         return False
 
     def _held_for_control_publish(self, task: Task, parents: dict[str, ParentEnd]) -> bool:

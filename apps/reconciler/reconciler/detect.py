@@ -2444,6 +2444,12 @@ def _dependencies_met(
     in the workflow. A parent this pass did not read, or that belongs to
     another tenant, is not a satisfied one.
     """
+    if task.held_for_pull_requests:
+        # SPEED-D3: a root step of a workflow submitted with `after` depends
+        # on no step, and waits for a pull request to merge. Only the gate
+        # says when it may start; once it says `merged`, this rule is the
+        # backstop for the scheduler's sweep as for any other step.
+        return None
     parents = task.depends_on or tuple(
         by_step[name].task_id
         for name in by_step[step_id].depends_on

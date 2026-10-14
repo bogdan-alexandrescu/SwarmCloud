@@ -34,6 +34,7 @@ from swarm_common.models import (
 from swarm_common.states import BlockedReason, EventType, ParkReason, TaskState
 from swarm_common.models import ProviderState
 
+from .prgate import wait_for_api
 from .task_input import TaskMasking, masking_for
 from .validation import (
     DEFAULT_CARRIER,
@@ -1245,6 +1246,10 @@ def workflow_to_api(
     """
     served = dict(rollup or {})
     state = served.pop("state", None) or workflow.state.value
+    # SPEED-D3: the pull requests the workflow waits for, off its step tasks
+    # (the frozen `Workflow` has no metadata); the key only on a workflow
+    # submitted with `after`, so every other workflow's shape is unchanged.
+    after = wait_for_api(step_tasks or {})
     return {
         "workflow_id": workflow.workflow_id,
         "tenant_id": workflow.tenant_id,
@@ -1260,6 +1265,7 @@ def workflow_to_api(
         "priority": workflow.priority,
         "on_step_failure": workflow.on_step_failure,
         "cancel_requested": workflow.cancel_requested,
+        **({"after_pull_requests": after} if after is not None else {}),
         "steps": [
             _step_to_api(
                 s, _step_masking(workflow, s, step_tasks or {}), console_url, summary=summary
