@@ -654,3 +654,12 @@ deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceac
 # (publishing_off). If the job path breaks, turning this off again stops new
 # dispatches; the sweep and the stuck alert keep reporting waiting records.
 workspace_apply_publish = true
+
+# The live browser's search tool (swarm-api SEARCH_TOOL_ENABLED /
+# SEARCH_PROVIDER, docs/search-tool.md, #1030). OFF in dev as of 2026-10-14:
+# the owner chose Brave and "add it (off by default)" on 2026-10-13. It turns on
+# once the Brave key is stored with
+# `scripts/create-secrets.sh --search-api-key --stdin` -- on without the key,
+# every search answers 503 search_unconfigured. search_provider stays at
+# its default, "brave".
+search_tool_enabled = false
