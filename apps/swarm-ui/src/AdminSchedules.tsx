@@ -63,6 +63,20 @@ function actionsFor(state: AdminScheduleRow['state']): Action[] {
   return ['pause', 'disable']
 }
 
+/**
+ * THE TICK'S LATENESS IS A DURATION (QA14-UI, owner QA 2026-10-13): the
+ * server's float was printed as it came, "lateness 182.216849 s at most".
+ * Under a minute it is whole seconds; from a minute, whole minutes; from an
+ * hour, hours and minutes.
+ */
+export function latenessWords(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds))
+  if (s < 60) return `${s} s`
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m} min`
+  return m % 60 === 0 ? `${Math.floor(m / 60)} h` : `${Math.floor(m / 60)} h ${m % 60} min`
+}
+
 function TickHealth({ tick }: { tick: ScheduleTickHealth }) {
   if (tick.ticks === 0) {
     return (
@@ -76,7 +90,7 @@ function TickHealth({ tick }: { tick: ScheduleTickHealth }) {
       Last {tick.window_minutes} min: {pluralise(tick.ticks, 'tick')}, {tick.fired} fired, {pluralise(tick.errors, 'error')}
       {tick.disabled > 0 ? `, ${tick.disabled} with schedules switched off` : ''}
       {tick.truncated > 0 ? `, ${tick.truncated} cut short` : ''} · lateness{' '}
-      {tick.max_lateness_seconds === null ? <i className="ctl-em">&mdash; none measured</i> : `${tick.max_lateness_seconds} s at most`}
+      {tick.max_lateness_seconds === null ? <i className="ctl-em">&mdash; none measured</i> : `${latenessWords(tick.max_lateness_seconds)} at most`}
     </p>
   )
 }

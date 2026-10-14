@@ -1307,9 +1307,11 @@ def test_the_viewer_socket_extends_the_hold_while_it_is_open(
         assert _deadline(ldb) > before
         clock.advance(30)
         assert wait_until(lambda: _deadline(ldb) == clock() + timedelta(seconds=60))
-        # End the socket and let its cleanup finish before the `with` exits:
-        # the TestClient cancels the app's task straight after its own close,
-        # and a cancel landing while the proxy waits out an in-flight watch
-        # write (every 0.02 s here) escapes as a CancelledError on __exit__.
-        ws.close()
-        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
+        # The server ends the socket (a retry's new generation), as the other
+        # socket tests do: a client-side close cancels the app mid-flush.
+        ldb.docs[f"tasks/{TASK}"].update(
+            {"current_lease_id": "lease_live_2", "current_generation": 2})
+        with pytest.raises(WebSocketDisconnect):
+            while True:
+                ws.receive_json()
+    assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)

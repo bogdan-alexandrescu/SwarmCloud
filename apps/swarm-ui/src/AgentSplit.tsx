@@ -131,6 +131,7 @@ export function AgentSplit({
   artifact,
   file = null,
   theater = false,
+  detailNamed = false,
   closeTo,
   go,
   onGroup,
@@ -144,6 +145,12 @@ export function AgentSplit({
   file?: string | null
   /** The address asked for the Browser tab in the theater (`/browser?theater=1`, live-browser.md §6). */
   theater?: boolean
+  /**
+   * The address named Details itself (`<agent>/details`, QA14-UI): the
+   * running agent's default tab is for an address that named no pane, and
+   * this one named one.
+   */
+  detailNamed?: boolean
   /**
    * The list address this split was opened from (OV-10), so closing it
    * restores the address the list behind it is showing.
@@ -375,6 +382,11 @@ export function AgentSplit({
    * there, and a reader who then picks Details is not sent back to Logs.
    * Until that read lands nothing is drawn in the pane, so a running agent's
    * Details are not read and thrown away on the way to its log.
+   *
+   * `/details` IS AN ADDRESS THAT NAMED A PANE (QA14-UI, owner QA
+   * 2026-10-13): it sent a running agent to Browser or Logs, because Details
+   * is written with no segment and so looked like no pane at all. The router
+   * says when the address spelled it out, and that is honoured like `/attempts`.
    */
   // "Running" is an attempt in flight -- LEASED/DISPATCHED/STARTING/RUNNING
   // (CONTRACT.md invariant 1). A QUEUED, READY or PARKED agent has no
@@ -405,13 +417,14 @@ export function AgentSplit({
     (task !== null && !TERMINAL_STATES.has(task.state) && !inFlight && isLiveBrowser(task)) ||
     pane === 'browser'
   const [decided, setDecided] = useState<string | null>(null)
-  const deciding = decided !== taskId && pane === 'detail' && (head.state.status === 'loading' || inFlight)
+  const defaulted = pane === 'detail' && !detailNamed
+  const deciding = decided !== taskId && defaulted && (head.state.status === 'loading' || inFlight)
   // BROWSER HAS ITS OWN ADDRESS NOW (LB-UX1, owner decision 2026-10-12):
   // `<agent>/browser`, so a running browser agent is sent there as a
   // running agent of any other profile is sent to `/logs`.
   useEffect(() => {
     if (decided === taskId) return
-    if (pane !== 'detail') {
+    if (!defaulted) {
       setDecided(taskId)
       return
     }
@@ -420,7 +433,7 @@ export function AgentSplit({
     setDecided(taskId)
     if (inFlight && liveRead.status === 'ok' && liveRead.liveBrowser) go(`${base}/browser`)
     else if (inFlight) go(`${base}/logs`)
-  }, [decided, taskId, pane, head.state.status, inFlight, liveRead, go, base])
+  }, [decided, taskId, defaulted, head.state.status, inFlight, liveRead, go, base])
 
   const tabs: { id: TaskPane; label: string; count: number | string | null; say: string | null; to: string }[] = [
     // THE QUESTIONS' COUNT (part of #1206): the agent's questions for its
@@ -771,6 +784,11 @@ function listTabOf(listAddress: string): AgentTab | null {
  * leading run of them that fits beside More, and the open tab always, in its
  * own place in the order. Nothing measured (`room` 0: not laid out) is
  * everything fitting -- a bar is never emptied into More by a missing read.
+ *
+ * THE GAPS ARE PART OF THE BAR (QA14-UI, owner QA 2026-10-13): on a parked
+ * browser agent at 1440 the tabs summed to 529 in a 533 strip, and the six
+ * 2 px gaps between seven tabs made 541 -- `Artifacts` was cut under More
+ * and the strip scrolled. `gap` is the strip's own gap between two tabs.
  */
 export function fitTabs(
   keys: readonly string[],
@@ -778,15 +796,16 @@ export function fitTabs(
   room: number,
   moreWidth: number,
   current: string,
+  gap = 0,
 ): string[] {
-  const total = widths.reduce((n, w) => n + w, 0)
+  const total = widths.reduce((n, w) => n + w, 0) + gap * Math.max(0, keys.length - 1)
   if (room <= 0 || total <= room) return [...keys]
   const open = keys.indexOf(current)
   const shown = new Set<string>(open === -1 ? [] : [current])
   let used = open === -1 ? 0 : (widths[open] ?? 0)
   for (let i = 0; i < keys.length; i++) {
     if (i === open) continue
-    const w = widths[i] ?? 0
+    const w = (widths[i] ?? 0) + (shown.size > 0 ? gap : 0)
     if (used + w > room - moreWidth) break
     used += w
     shown.add(keys[i]!)
@@ -825,6 +844,10 @@ function AgTabsEdge({
   // count so a count that lands is measured again; and More's own.
   const widths = useRef(new Map<string, number>())
   const moreWidth = useRef(0)
+  // The strip's gap, read once: it is the stylesheet's, and `getComputedStyle`
+  // on every fit -- which every strip mutation now runs -- held the panes'
+  // first reads back by seconds in jsdom (walk.agent, reads.dedup).
+  const gapPx = useRef<number | null>(null)
   const onBar = shownKeys === null ? null : new Set(shownKeys.split('\n'))
   const barTabs = onBar === null ? tabs : tabs.filter((t) => onBar.has(t.key))
   const moreTabs = onBar === null ? [] : tabs.filter((t) => !onBar.has(t.key))
@@ -833,11 +856,22 @@ function AgTabsEdge({
   fit.current = () => {
     const b = box.current
     if (b === null) return
+    const strip = b.querySelector<HTMLElement>(':scope > .c-tabs')
     const drawn = b.querySelectorAll<HTMLElement>(':scope > .c-tabs > [role="tab"]')
     barTabs.forEach((t, i) => {
       const w = drawn[i]?.offsetWidth
-      if (w !== undefined) widths.current.set(sizeKey(t), w)
+      if (w === undefined) return
+      // A LABEL THAT CHANGED REPLACES ITS OLD WIDTH (QA14-UI): Browser
+      // losing LIVE is a narrower tab, and the wider one must not be the
+      // width it falls back to once it is in More.
+      for (const k of [...widths.current.keys()]) if (k.startsWith(`${t.key}\t`)) widths.current.delete(k)
+      widths.current.set(sizeKey(t), w)
     })
+    // Nothing laid out (\`clientWidth\` 0) fits everything, so the gap is only read once there is a width to fit.
+    if (gapPx.current === null && strip !== null && b.clientWidth > 0) {
+      gapPx.current = parseFloat(getComputedStyle(strip).columnGap) || 0
+    }
+    const gap = gapPx.current ?? 0
     const m = b.querySelector<HTMLElement>(':scope > .ag-tabs-more-host')
     if (m !== null) moreWidth.current = m.offsetWidth
     // A tab not drawn since its count changed keeps its last width (or its
@@ -846,7 +880,7 @@ function AgTabsEdge({
       widths.current.get(sizeKey(t)) ??
       [...widths.current].find(([k]) => k.startsWith(`${t.key}\t`))?.[1] ??
       0
-    const shown = fitTabs(tabs.map((t) => t.key), tabs.map(last), b.clientWidth, moreWidth.current, current)
+    const shown = fitTabs(tabs.map((t) => t.key), tabs.map(last), b.clientWidth, moreWidth.current, current, gap)
     const next = shown.length === tabs.length ? null : shown.join('\n')
     setShownKeys((was) => (was === next ? was : next))
   }
@@ -897,7 +931,14 @@ function AgTabsEdge({
     // does not change size, so the ResizeObserver never fired and the
     // overlay's strip was cut at `Checkpo` with no `›`. A change to what the
     // strip holds measures it again.
-    const grew = typeof MutationObserver === 'undefined' ? null : new MutationObserver(measure)
+    // A label or count that changed is fitted again too (QA14-UI).
+    const grew =
+      typeof MutationObserver === 'undefined'
+        ? null
+        : new MutationObserver(() => {
+            fit.current()
+            measure()
+          })
     grew?.observe(strip, { childList: true, subtree: true, characterData: true })
     return () => {
       strip.removeEventListener('scroll', measure)
