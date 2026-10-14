@@ -22,6 +22,8 @@ from datetime import datetime
 from swarm_common.config import Settings
 from swarm_common.profiles import RUNNER_PROFILES
 
+from .judgment import check_internal_decision_api_url
+
 #: `<registry path>@sha256:<64 hex>`, and nothing before the `@` that could be a
 #: tag. The same shape terraform/infra/variables.tf validates `image_refs`
 #: against: the runtime ignores a tag when a digest is present, so a tag there
@@ -316,6 +318,16 @@ class SchedulerSettings:
     #: Default False: off until the owner has seen it on a real PR (owner
     #: decision, 2026-10-01).
     pr_console_links: bool = False
+    #: Saga's decision API through the cluster's Tailscale egress Service
+    #: (INTERNAL_DECISION_API_URL; JUDGE-NET's switch, terraform
+    #: `internal_decision_api_enabled`). Set, a live-browser pod whose
+    #: workspace chose an internal judgment backend gets JEV_API_URL under it
+    #: and the `swarm-judge: internal` label (`scheduler.judgment`). Empty,
+    #: no pod gets either, and an internal choice leaves Jev unavailable
+    #: rather than sending page text to TypeSafe. Only "" or the egress
+    #: Service's own address (`judgment.INTERNAL_DECISION_SERVICE`), because
+    #: that is the one host the jev wrapper accepts.
+    internal_decision_api_url: str = ""
 
     # --- child tasks (docs/design/child-tasks.md) --------------------------
     #: `swarm-child-key` (SWARM_CHILD_KEY), from Secret Manager, held by this
@@ -414,6 +426,7 @@ class SchedulerSettings:
             quota_broker_audience=os.environ.get("QUOTA_BROKER_AUDIENCE", "").strip(),
             console_url=os.environ.get("SWARM_CONSOLE_URL", "").strip(),
             pr_console_links=_bool("SWARM_PR_CONSOLE_LINKS", False),
+            internal_decision_api_url=os.environ.get("INTERNAL_DECISION_API_URL", "").strip(),
             child_key=os.environ.get("SWARM_CHILD_KEY", "").strip(),
             swarm_api_url=os.environ.get("SWARM_API_URL", "").strip(),
             swarm_api_audience=os.environ.get("SWARM_API_AUDIENCE", "").strip(),
@@ -462,3 +475,4 @@ class SchedulerSettings:
         check_worker_image_refs(self.worker_image_refs)
         check_worker_models(self.worker_models)
         check_spec_settings(self)
+        check_internal_decision_api_url(self.internal_decision_api_url)

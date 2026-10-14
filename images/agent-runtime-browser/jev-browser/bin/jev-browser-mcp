@@ -21,10 +21,21 @@
 #   * JEV_BROWSER_PROFILE and JEV_BROWSER_HEADED, which would ask for a
 #     launched browser, are dropped, and JEV_BROWSER_NO_INSTALL=1 and
 #     PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 are set besides the patch's refusal;
-#   * JEV_API_URL and JEV_MODEL are dropped, so page text and labels go only
-#     to TypeSafe's own API (api.typesafe.ai), the one destination the owner
-#     accepted on 2026-10-14. TYPESAFE_API_KEY is passed through untouched and
-#     never printed.
+#   * JEV_MODEL is dropped, and where page text and labels go is the
+#     WORKSPACE'S JUDGMENT BACKEND (JUDGE-SELECT, owner decisions 2026-10-14),
+#     which the dispatcher names in SWARM_JEV_BACKEND:
+#       - internal-jev / internal-laya: Saga's decision API through the
+#         cluster's Tailscale egress Service. JEV_API_URL is passed through
+#         ONLY when it is exactly that Service's /jev or /laya /v1/decide; any
+#         other value, or none (the egress is off), is refused, so page text
+#         is never sent to TypeSafe in its place. No TypeSafe key goes with
+#         it: upstream refuses to start without TYPESAFE_API_KEY and sends it
+#         as a Bearer token, so it is replaced by a fixed marker that is not a
+#         key, and the internal API needs none;
+#       - typesafe, or unset (a pod from a scheduler older than JUDGE-SELECT):
+#         JEV_API_URL is dropped, so judgments go only to TypeSafe's own API
+#         (api.typesafe.ai), and TYPESAFE_API_KEY is passed through untouched
+#         and never printed.
 #
 # This is guidance, not a sandbox: the agent can run node on the package by
 # its path, and the pod and the gate are the boundary
@@ -44,7 +55,32 @@ MSG
   exit 2
 fi
 
-unset JEV_BROWSER_PROFILE JEV_BROWSER_HEADED JEV_API_URL JEV_MODEL
+refuse_backend() {
+  printf 'jev-browser-mcp: refused: %s\n' "$1" >&2
+  exit 2
+}
+
+DECISION_SERVICE="http://decision-api.swarm-system.svc.cluster.local"
+NO_TYPESAFE_KEY="swarm-internal-no-typesafe-key"
+backend="${SWARM_JEV_BACKEND:-}"
+case "${backend}" in
+  internal-jev | internal-laya)
+    want="${DECISION_SERVICE}/${backend#internal-}/v1/decide"
+    if [[ "${JEV_API_URL:-}" != "${want}" ]]; then
+      refuse_backend "this workspace judges with ${backend}, and this pod has no route to Saga's decision API (the tailnet egress is off). Jev is unavailable here; page text is never sent to TypeSafe instead."
+    fi
+    export JEV_API_URL="${want}"
+    export TYPESAFE_API_KEY="${NO_TYPESAFE_KEY}"
+    ;;
+  "" | typesafe)
+    unset JEV_API_URL
+    ;;
+  *)
+    refuse_backend "unknown judgment backend in SWARM_JEV_BACKEND; expected internal-jev, internal-laya or typesafe."
+    ;;
+esac
+
+unset JEV_BROWSER_PROFILE JEV_BROWSER_HEADED JEV_MODEL
 export JEV_BROWSER_CDP_ENDPOINT="${endpoint}"
 export JEV_BROWSER_NO_INSTALL=1
 export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1

@@ -179,6 +179,8 @@ def test_no_live_browser_no_jev(tenant, profile, live):
 
 
 def test_the_setting_is_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("PROJECT_ID", PROJECT)
+    monkeypatch.setenv("REGION", "us-central1")
     monkeypatch.setenv("INTERNAL_DECISION_API_URL", INTERNAL_DECISION_SERVICE)
     assert SchedulerSettings.from_env().internal_decision_api_url == INTERNAL_DECISION_SERVICE
     monkeypatch.delenv("INTERNAL_DECISION_API_URL")

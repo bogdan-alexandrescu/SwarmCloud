@@ -6,6 +6,7 @@ import { keyLinkToken } from './paths'
 import { UrRefresh, UrRegion, useUrRead } from './RepositoriesParts'
 import { PageHead } from './Shell'
 import { timeAgo } from './types'
+import { JevBackendCard } from './JudgmentBackend'
 import './styles/keys.css'
 
 /**
@@ -119,6 +120,9 @@ export function ProviderKeysScreen({ link }: { link: KeyLink | null }) {
           {linkScope === 'tenant' && who !== null && !who.admin ? ' It is for the tenant key, which only an admin can set.' : ''}
         </Banner>
       )}
+      {/* Which backend Jev judges with (JUDGE-SELECT): a TypeSafe key below is
+          needed only when it is TypeSafe. */}
+      <JevBackendCard />
       <Card title="TypeSafe">
         <p className="pk-lead">
           TypeSafe serves the Jev judgment models. A key saved here is write-only: no page, route or log can show it

@@ -17,9 +17,12 @@ the dispatcher's git identity, `GIT_AUTHOR_NAME`, `GIT_AUTHOR_EMAIL`,
 which the worker sets from the task so an agent's `git commit` names that
 person; `PLAYWRIGHT_BROWSERS_PATH` when the image sets it (the browser
 image only, below); and, when the worker set them, the live hand-off's
-variables -- `SWARM_HANDOFF`, `SWARM_CDP_ENDPOINT`, `SWARM_BROWSER_UPLOADS`
-(`handoff.HANDOFF_ENV`, `handoff.AGENT_PASSTHROUGH_ENV`; a directory, a
-loopback address and a directory, never a credential). The CLI's environment
+variables -- `SWARM_HANDOFF`, `SWARM_CDP_ENDPOINT`, `SWARM_BROWSER_UPLOADS`,
+and the workspace's Jev judgment backend `SWARM_JEV_BACKEND` with, for an
+internal backend, its in-cluster `JEV_API_URL` (JUDGE-SELECT; the jev MCP
+server inherits them from the CLI) (`handoff.HANDOFF_ENV`,
+`handoff.AGENT_PASSTHROUGH_ENV`; directories, a loopback address, a name and
+a cluster address, never a credential). The CLI's environment
 is what its Bash tool inherits, so without them `swarm-handoff` found no spool
 and the agent had to export `SWARM_HANDOFF` itself (MEASURED 2026-10-13,
 task_1f28d5bfa5a14f618f83; LB-POLISH, part of #1030). On an attempt resumed

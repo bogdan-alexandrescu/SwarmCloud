@@ -238,6 +238,9 @@ def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkey
     monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
     monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
     monkeypatch.setenv("SWARM_BROWSER_UPLOADS", "/run/swarm/uploads")
+    # JUDGE-SELECT's two, so every name the hand-off passes is present.
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-laya")
+    monkeypatch.setenv("JEV_API_URL", "http://decision-api.swarm-system.svc.cluster.local/laya/v1/decide")
     seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
     assert seen["env"]["SWARM_HANDOFF"] == str(spool)
     assert seen["env"]["SWARM_CDP_ENDPOINT"] == "http://127.0.0.1:9223"

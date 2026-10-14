@@ -281,6 +281,73 @@ Puppeteer sends when it opens a page. So dev-browser cannot open a page
 through the gate yet. That policy change is a separate lane and is not part
 of this one.
 
+### 3.2.2 Judgment backends (JUDGE-SELECT)
+
+jev-browser (Jev, on the claude-code-browser image, attached to this live
+browser) asks typed questions about page state -- "is this a login page", "which
+of these buttons submits" -- and sends the page text it judges to a **judgment
+backend**. Owner decisions, 2026-10-14:
+
+| backend | where page text goes | needs |
+|---|---|---|
+| **Internal Jev** (`internal-jev`, the DEFAULT) | Saga's decision API, `/jev/v1/decide`, on the company tailnet | the cluster's tailnet egress |
+| **Internal Laya** (`internal-laya`) | the same API's `/laya/v1/decide` | the cluster's tailnet egress |
+| **TypeSafe** (`typesafe`) | api.typesafe.ai -- outside Saga | a TypeSafe key ([provider-keys.md](../provider-keys.md)) |
+
+**Why internal is the default.** It keeps page text -- which can be a signed-in
+person's own data -- inside Saga, and it needs no TypeSafe key, so a workspace
+can use Jev before anyone has set one. TypeSafe stays a choice, and the console
+says what it costs: "sends page text to TypeSafe; needs a key".
+
+**How internal is reached.** Neither the laptop nor GKE was on the tailnet. The
+owner chose Tailscale egress in our cluster (JUDGE-NET): the Tailscale
+Kubernetes operator in `swarm-system` with ONE egress Service to
+`decision-api-staging`, its OAuth client (`tag:swarmcloud`, ACL limited to
+`decision-api-staging:443`) in Secret Manager as `swarm-tailscale-oauth`, stored
+by the owner and never in the repository, a tfvars file, an environment or a log.
+A pod reaches it as `http://decision-api.swarm-system.svc.cluster.local`.
+`terraform/infra` `internal_decision_api_enabled` (off by default) renders that
+address as `INTERNAL_DECISION_API_URL` onto swarm-api and the scheduler.
+
+**The setting** is per workspace: `workspace_settings/{tenant}.judgment_backend`,
+read and written with `GET`/`PUT /v1/workspaces/{id}/judgment-backend` by the
+workspace's owner (a personal workspace's principal) or a platform admin, every
+change an `admin_audit` entry (`swarm_api/judgment.py`). It is a document of its
+own because the frozen `Tenant` has no field for it and no per-workspace
+settings store existed. `GET /v1/judgment`, and `jev` on
+`GET /v1/provider-keys/typesafe`, give the chosen backend, its label ("Jev
+(Internal)", "Jev (TypeSafe)") and its availability for the Submit picker and
+the browser strip; Settings › API keys has the radio.
+
+**What a pod gets** (`scheduler/judgment.py`, live-browser pods only):
+`SWARM_JEV_BACKEND`, always; for an internal backend with the egress on,
+`JEV_API_URL` (the Service's `/jev` or `/laya` `/v1/decide`) and the pod label
+`swarm-judge: internal`, which JUDGE-NET's NetworkPolicy keys the decision API's
+egress on. The worker passes both variables to the CLI
+(`handoff.AGENT_PASSTHROUGH_ENV`), whose MCP servers inherit them.
+
+**No fallback, in either direction.** An internal choice with the egress off is
+*unavailable*, not TypeSafe: the pod gets no URL, and `jev-browser-mcp` refuses
+to start rather than let jev-browser use its TypeSafe default. The wrapper
+passes `JEV_API_URL` through only when it is exactly the egress Service's path
+for the chosen backend. For an internal backend it sends **no TypeSafe key**:
+upstream jev-browser 0.2.0 refuses to start without `TYPESAFE_API_KEY` and sends
+it as a Bearer token, so the wrapper replaces it with a fixed marker that is not
+a key. A stored value the code does not know, or a settings read that fails, is
+read as the default -- the backend that sends nothing outside Saga.
+
+**The code-context work reuses this setting.** The context-quality design
+(CTXQ-DESIGN) judges code context with the same decision API; it reads this
+same per-workspace `judgment_backend` and its availability rather than adding a
+second switch, so a workspace that chose to keep page text inside Saga keeps
+its code there too.
+
+**Not verified here.** No unit test can reach the tailnet. That the decision
+API accepts jev-browser's body (`{state, model, questions}` -- it adds `model`
+to the `{state, questions}` the API documents) and ignores the marker Bearer
+token is the owner's description of the API, unmeasured until JUDGE-NET's
+egress is up.
+
 ### 3.3 The path to the console: outbound only, through a relay
 
 No inbound port on the pod and no public endpoint: the gate **dials out**.
