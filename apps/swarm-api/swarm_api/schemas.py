@@ -345,6 +345,18 @@ class LimitRequest(StrictModel):
     )
 
 
+class AdaptiveTargetRequest(StrictModel):
+    """`PUT /v1/admin/quota/{provider}/{tenant_id}/adaptive-target` (QUOTA-RESET).
+
+    The broker's own body, minus `requested_by`: that is the admin's verified
+    email, taken from the token, never from the request.
+    """
+
+    target: int = Field(ge=0, le=100_000)
+    reason: str = Field(min_length=1, max_length=500)
+    clear_cooldown: bool = False
+
+
 class DrainRequest(StrictModel):
     #: Draining disables admission into the pool and lets in-flight work finish.
     #: Undraining is the same call with `drain=false`.

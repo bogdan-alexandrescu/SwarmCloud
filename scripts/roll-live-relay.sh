@@ -7,6 +7,30 @@
 #   scripts/roll-live-relay.sh --confirm                           # apply, parity, rollout, digest
 #   scripts/roll-live-relay.sh --tf-init --get-credentials --confirm   # what the release runs
 #   scripts/roll-live-relay.sh --confirm --timeout 900             # a slower Autopilot scale-up
+#   scripts/roll-live-relay.sh --confirm --force                   # roll even when the digest matches
+#   scripts/roll-live-relay.sh --confirm --defer-timeout 0         # roll now, watched or not
+#
+# ONLY A NEW IMAGE ROLLS IT, AND NEVER UNDER SOMEONE'S HANDS (lane RELAY-ROLL,
+# part of #1030). MEASURED 2026-10-12/14: the relay restarted 40 times in
+# ~48 h, because every release ran this, and the relay is ONE replica holding
+# every session's rendezvous in memory: each roll dropped every live session
+# and every person's control (tunnel close code 1012). So:
+#   * the digest the release rendered is compared with the one the relay's
+#     pods run, and both are printed; equal (and the StatefulSet already names
+#     that image) is "not rolled", exit 0, with nothing applied. --force rolls
+#     anyway. NOTE: kubernetes/apply.sh --swarm-system also applies
+#     swarm-system's ingress policies; a release that does not roll the relay
+#     does not re-apply them either -- run it by hand for a policy-only change;
+#   * a roll waits while anyone is watching or in control: the relay's own
+#     counts (`/healthz`, read inside the pod with `kubectl exec ... python -m
+#     swarm_live.status`, so authenticated by the Kubernetes API and widening
+#     no NetworkPolicy) are polled every --defer-poll seconds for up to
+#     --defer-timeout (480 s), then the roll goes ahead anyway and says why.
+#     480 s, not 600: with the 600 s rollout below it stays inside the
+#     release step's 20-minute timeout. An unreadable count is said, and does
+#     not block a roll;
+#   * the relay itself, on SIGTERM, tells every gate and viewer to reconnect
+#     now (close 1012) and both rejoin within about a second of the new pod.
 #
 # WHY THIS EXISTS (lane OPS-RELAY, part of #1030). The relay's manifest is
 # rendered by terraform (terraform/infra/live.tf, output `swarm_live_manifest`,
@@ -68,6 +92,9 @@ CLUSTER=""
 # image. Long enough for that, short enough that a crash-looping relay fails
 # the release inside the job instead of at the job's own timeout.
 TIMEOUT=600
+FORCE=0
+DEFER_TIMEOUT=480
+DEFER_POLL=30
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -80,11 +107,18 @@ while [[ $# -gt 0 ]]; do
     --cluster=*)        CLUSTER="${1#*=}"; shift ;;
     --timeout)          TIMEOUT="$2"; shift 2 ;;
     --timeout=*)        TIMEOUT="${1#*=}"; shift ;;
+    --force)            FORCE=1; shift ;;
+    --defer-timeout)    DEFER_TIMEOUT="$2"; shift 2 ;;
+    --defer-timeout=*)  DEFER_TIMEOUT="${1#*=}"; shift ;;
+    --defer-poll)       DEFER_POLL="$2"; shift 2 ;;
+    --defer-poll=*)     DEFER_POLL="${1#*=}"; shift ;;
     -h|--help)          awk 'NR > 1 && /^set -euo pipefail$/ { exit } NR > 1 { print }' "$0"; exit 0 ;;
     *)                  die "unknown argument: $1 (see --help)" ;;
   esac
 done
 [[ "${TIMEOUT}" =~ ^[1-9][0-9]*$ ]] || die "--timeout takes whole seconds, not '${TIMEOUT}'"
+[[ "${DEFER_TIMEOUT}" =~ ^[0-9]+$ ]] || die "--defer-timeout takes whole seconds, not '${DEFER_TIMEOUT}'"
+[[ "${DEFER_POLL}" =~ ^[1-9][0-9]*$ ]] || die "--defer-poll takes whole seconds, not '${DEFER_POLL}'"
 
 # notice TITLE MESSAGE -- a GitHub notice on a runner, an info line elsewhere.
 notice() {
@@ -212,6 +246,79 @@ else
 fi
 info "relay now    ${BEFORE}"
 
+# relay_pods FILE -- the relay's pods as `name<TAB>imageID` lines in FILE.
+relay_pods() {
+  "${KUBECTL}" "${KARGS[@]}" get pods --namespace "${RELAY_NAMESPACE}" -l "${RELAY_SELECTOR}" -o json \
+    >"${WORK}/pods-now.json" 2>/dev/null || return 1
+  jq -r --arg c "${RELAY_CONTAINER}" \
+    '.items[] | [.metadata.name, ([.status.containerStatuses[]? | select(.name == $c) | .imageID] | first // "")] | @tsv' \
+    "${WORK}/pods-now.json" >"$1" 2>/dev/null
+}
+
+# --- only a new image rolls the relay -------------------------------------------
+TAB="$(printf '\t')"
+RUNNING_DIGESTS=()
+RELAY_PODS=()
+if [[ "${BEFORE}" != none* ]] && relay_pods "${WORK}/pods-before.tsv"; then
+  while IFS="${TAB}" read -r pod image_id; do
+    [[ -n "${pod}" ]] || continue
+    RELAY_PODS+=("${pod}")
+    running="none"
+    case "${image_id}" in *@sha256:*) running="${image_id##*@}" ;; esac
+    RUNNING_DIGESTS+=("${running}")
+  done <"${WORK}/pods-before.tsv"
+fi
+info "rendered digest  ${DIGEST:-none (image not pinned)}"
+if [[ "${#RUNNING_DIGESTS[@]}" -gt 0 ]]; then
+  info "running digest   ${RUNNING_DIGESTS[*]}  (${#RELAY_PODS[@]} pod(s))"
+else
+  info "running digest   none (no relay pod)"
+fi
+SAME=0
+if [[ -n "${DIGEST}" && "${BEFORE}" == "${IMAGE}" && "${#RELAY_PODS[@]}" -gt 0 ]]; then
+  SAME=1
+  for running in "${RUNNING_DIGESTS[@]}"; do
+    [[ "${running}" == "${DIGEST}" ]] || SAME=0
+  done
+fi
+if [[ "${SAME}" -eq 1 && "${FORCE}" -ne 1 ]]; then
+  notice "Live relay not rolled" "not rolled: the relay already runs ${DIGEST} on ${#RELAY_PODS[@]} pod(s), the digest this release rendered (--force rolls anyway)."
+  exit 0
+fi
+[[ "${SAME}" -eq 1 ]] && warn "the relay already runs ${DIGEST}; rolling anyway (--force)."
+
+# --- never while someone is watching or in control ------------------------------
+# relay_counts -- "<viewers> <controlled>" from the first relay pod, or nothing.
+relay_counts() {
+  "${KUBECTL}" "${KARGS[@]}" exec "${RELAY_PODS[0]}" --namespace "${RELAY_NAMESPACE}" -c "${RELAY_CONTAINER}" \
+    -- python -m swarm_live.status >"${WORK}/status.json" 2>"${WORK}/status.err" || return 1
+  jq -r 'if (.viewers | type) == "number" and (.controlled | type) == "number"
+         then "\(.viewers) \(.controlled)" else empty end' "${WORK}/status.json" 2>/dev/null
+}
+if [[ "${CONFIRM}" -eq 1 && "${#RELAY_PODS[@]}" -gt 0 ]]; then
+  waited=0
+  while true; do
+    counts="$(relay_counts || true)"
+    if [[ -z "${counts}" ]]; then
+      warn "could not read the relay's counts ($(redact <"${WORK}/status.err" | head -n 1)); rolling without waiting."
+      break
+    fi
+    viewers="${counts% *}"
+    controlled="${counts#* }"
+    if [[ "${viewers}" -eq 0 && "${controlled}" -eq 0 ]]; then
+      info "nobody is watching or in control; rolling"
+      break
+    fi
+    if [[ "${waited}" -ge "${DEFER_TIMEOUT}" ]]; then
+      notice "Live relay rolled while in use" "waited ${waited}s (--defer-timeout ${DEFER_TIMEOUT}) and ${viewers} viewer(s) are still connected, ${controlled} session(s) in a person's control; rolling anyway. They are told to reconnect (close 1012) and rejoin within about a second of the new relay."
+      break
+    fi
+    info "deferring the roll: ${viewers} viewer(s) connected, ${controlled} session(s) in a person's control (waited ${waited}s of ${DEFER_TIMEOUT}s)"
+    sleep "${DEFER_POLL}"
+    waited=$((waited + DEFER_POLL))
+  done
+fi
+
 # --- apply: apply.sh's, with its checks and its parity comparison ---------------
 # render.py and network_parity.py run on ${PYTHON_BIN:-python3}; the project's
 # synced interpreter when there is one, never a bare python3 by accident.
@@ -254,7 +361,6 @@ jq -r --arg c "${RELAY_CONTAINER}" \
 
 visited=0
 STALE=()
-TAB="$(printf '\t')"
 while IFS="${TAB}" read -r pod image_id; do
   [[ -n "${pod}" ]] || continue
   visited=$((visited + 1))
