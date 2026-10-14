@@ -1,6 +1,6 @@
 ---
 description: SwarmCloud cluster state — accounts, capacity, agents, trouble
-argument-hint: "[accounts|agents|capacity|trouble|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals]"
+argument-hint: "[accounts|agents|capacity|trouble|check|watch [interval]|task <id>|runs|run show <run>|plan show <run>|schedules|schedules show <name>|approvals]"
 allowed-tools:
   - Bash(uv run sc)
   - Bash(uv run sc overview:*)
@@ -31,6 +31,12 @@ uv run sc $ARGUMENTS
 With no arguments that is the overview. Other views: `accounts`, `agents`,
 `capacity`, `task <id>`, `trouble`, `whoami`, and for issue runs (#454)
 `runs`, `run show <run>` and `plan show <run>`.
+
+If the arguments are `check`, `watch [interval]` or `watch off`, do **not**
+run them here: `sc` has no such view. They are the `sc` skill's verbs -- one
+`swarm_check` read and the attach of this project's running workflows, and
+the CronCreate schedule `swarm_check_schedule` hands back -- so follow that
+skill's `check` and `watch` sections.
 
 If the arguments are `run --issue ...` or `plan approve|edit|reject ...`, do
 **not** run them here: they create an issue run or act on its plan, so they

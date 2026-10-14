@@ -812,6 +812,13 @@ def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
         entry["state"] = workflow["state"]
     entry["waiting_for"] = pull_request_wait(workflow)
     entry["label"] = _label_of(envelope)
+    # The repository its steps clone (SC-WATCH): the frozen `Workflow` has
+    # none of its own, so `/sc check` scopes a project's workflows by this.
+    entry["repository_url"] = next(
+        (t["repository_url"] for t in envelope.get("tasks") or []
+         if isinstance(t, dict) and isinstance(t.get("repository_url"), str) and t["repository_url"]),
+        None,
+    )
     # The spec's short name, when it gave one: what /sc attach --all titles
     # each workflow's run with (`workflows.title_name`).
     entry["title"] = workflows.stored_names(envelope)["title"]
@@ -959,6 +966,8 @@ def _single_task_entry(task: dict[str, Any], now: datetime, tenant: Any = None) 
         "runner_profile": task.get("runner_profile"),
         "created_at": task.get("created_at"),
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
+        # What it clones (SC-WATCH): `/sc check` attaches only this project's.
+        "repository_url": task.get("repository_url"),
     }
     if task.get("park_reason"):
         entry["park_reason"] = task["park_reason"]
@@ -1068,6 +1077,8 @@ def _steps_text(entry: dict[str, Any]) -> str:
 def session_start_context(
     listing: dict[str, Any] | None,
     tasks: dict[str, Any] | None = None,
+    *,
+    watch_minutes: int | None = None,
 ) -> str | None:
     """What the SessionStart hook tells the session, or None when nothing runs.
 
@@ -1075,11 +1086,18 @@ def session_start_context(
     may be None when it could not be read, and the other is still named. A
     hook cannot start a Workflow; the context makes the session's first action
     the attach, and says how to turn this off.
+
+    `watch_minutes` (SC-WATCH): the project's remembered `/sc watch`
+    interval, handed over by the hook. Claude Code's scheduled prompts end
+    with a session, so the context also asks for `/sc watch <N>m` -- and says
+    so even when nothing runs.
     """
+    from . import watch
+
     running = (listing or {}).get("workflows") or []
     singles = (tasks or {}).get("tasks") or []
     if not running and not singles:
-        return None
+        return watch.rearm_sentence(watch_minutes) if watch_minutes else None
     tenant_id = (listing or {}).get("tenant_id") or (tasks or {}).get("tenant_id")
     tenant = f" for tenant {tenant_id}" if tenant_id else ""
     parts = []
@@ -1119,7 +1137,7 @@ def session_start_context(
     from . import config
 
     cap = config.max_live_rows()
-    return (
+    text = (
         " ".join(parts)
         + " Before anything else, run `/sc attach --all` to show them as live "
         "[SwarmCloud] rows: it submits nothing, starts one slim row per unfinished "
@@ -1128,6 +1146,9 @@ def session_start_context(
         "from the sc plugin's SessionStart hook; turn off its `auto_attach` option "
         "to stop it.)"
     )
+    if watch_minutes:
+        text += " Then: " + watch.rearm_sentence(watch_minutes)
+    return text
 
 
 def _workspace_tag(entry: dict[str, Any]) -> str:
@@ -1157,7 +1178,11 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 workflows_read = pool.submit(_quietly, lambda: running_workflows(client))
                 tasks_read = pool.submit(_quietly, lambda: running_tasks(client))
-                context = session_start_context(workflows_read.result(), tasks_read.result())
+                from .watch import rearm_minutes
+
+                context = session_start_context(
+                    workflows_read.result(), tasks_read.result(), watch_minutes=rearm_minutes(),
+                )
         except Exception:  # noqa: BLE001 - nothing may stop a session starting
             return EXIT_OK
         if context:

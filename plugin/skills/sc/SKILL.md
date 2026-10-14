@@ -1,7 +1,7 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 30 followed, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 30), every row naming the workspace it runs in; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
-argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant]]"
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 30 followed, the plugin's `max_live_rows`) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 30), every row naming the workspace it runs in; `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `check` reads which of this project's SwarmCloud workflows and tasks are stuck or stale (swarm_check, read-only) and then gives every running workflow of the project that has no row in this session its live rows; `watch [interval]` runs that `check` every interval (default 30m, at least 5m) with Claude Code's CronCreate and remembers it for the project, and `watch off` stops it. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
+argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | check | watch [interval] | watch off | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant]]"
 arguments:
   - verb
   - target
@@ -36,6 +36,9 @@ allowed-tools:
   - Bash(sc plan show:*)
   - Bash(uv run swarm doctor:*)
   - Bash(uv run swarm profiles:*)
+  - CronCreate
+  - CronList
+  - CronDelete
 ---
 
 # sc — SwarmCloud cluster state, and the front door
@@ -57,6 +60,9 @@ one action — never a second one the developer did not ask for:
 | `workflows` | lists your tenant's workflows still running in SwarmCloud | no |
 | `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
 | `attach --all` | live rows for every running workflow of your tenant (at most 30), and one per running single task of yours (at most 30); `max_live_rows` moves both, 1-50 | no |
+| `check` | which of THIS PROJECT's workflows and tasks are stuck or stale, stuck first, each with its reason, evidence, console link and next command: `swarm_check`. Then live rows for every running workflow and single task of the project that has none in this session | no (attaching submits nothing) |
+| `watch [interval]` | a `check` every interval (default `30m`, at least `5m`) in this session, through Claude Code's CronCreate, remembered for this project so the next session re-arms it: `swarm_check_schedule` | schedules a prompt in this session; nothing in SwarmCloud |
+| `watch off` | cancels this session's watch and forgets it for the project | no |
 | `run <spec path\|JSON>` | submits a workflow spec, and says so first | **yes** |
 | `run --issue owner/repo#N [--plan auto] [--auto-merge] [--fix-rounds N]` | plans a GitHub issue (one planner task), and says so first | **yes** |
 | `runs` | lists your tenant's issue runs | no |
@@ -173,6 +179,70 @@ plugin's SessionStart hook asks a new session to run first when workflows or
 single tasks of yours are running. No hook fires on `/reload-plugins`, so
 after a reload — or whenever a task started outside this session — run it
 by hand; it submits nothing either way.
+
+### `check`
+
+READ-ONLY: it reports and attaches, and never cancels, retries, releases or
+re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
+
+1. ONE `swarm_check` call with no arguments: it reads your tenant's running
+   workflows and your running single tasks that clone THIS checkout's
+   `origin` repository (`repository: "all"` for every repository; `tenants:
+   "all"` for every tenant you may choose; `stale_minutes` moves the 20-minute
+   window). Report `flagged` FIRST, STUCK before STALE as it is ordered, one
+   line each that starts with the workspace: `[<workspace>] <workflow_id or
+   task_id> · <kind> · <reason>`, then the `evidence` that supports it (the
+   heartbeat and last event, the age and whether it is exact or "at least",
+   the binding pool and where it was read), its console link as served, and
+   its `next` -- a `/sc status <id>` to run, or the PR link to open. The rules:
+
+   | `rule` | flags | is NOT flagged |
+   |---|---|---|
+   | `no_heartbeat` | RUNNING/STARTING with no heartbeat and no event for more than the window | a beat or an event inside it |
+   | `waiting_for_capacity` | READY/QUEUED longer than the window, with the pool that binds it | a task that entered the state recently. It holds nothing while it waits (invariant 1): report it as waiting, not as broken |
+   | `parked` | HUMAN_REQUIRED (only a person promotes it); CI_PENDING over 90 min; DEPENDENCY_INCOMPLETE whose dependency failed | any other park reason: a quota window or a retry backoff is the platform waiting by design |
+   | `merge_refused` | a merge step FAILED with `head_moved`, `merge_conflict` or `checks_failed` | any other failure. The API serves no PR state, so say the PR's state was NOT read, and give its link |
+   | `state_disagrees` | a workflow whose stored state and derived state disagree on whether it is finished (the stale RUNNING cache) | a stored QUEUED under a derived RUNNING: the cache lags between reads |
+
+   `unchecked` lists what was not checked and why -- say so, never call it
+   fine. `repository: null` means the check was not scoped (`repository_note`
+   says why). Nothing flagged is an answer: say "nothing stuck or stale in
+   <repository>" with the count of running workflows and tasks.
+2. Then attach what has no row: ONE `swarm_workflow_launch` call with
+   `{attach: "all", repository: <the check's repository, or "all" when it
+   was null>, new_only: true, exclude: [<the workflow and task ids of every
+   [SwarmCloud] row you can see live in this session>]}`, and one Workflow
+   call per entry of its `launches`, exactly as `attach --all` launches them.
+   `new_only` leaves out every workflow and task this session was already
+   handed a row for, and `exclude` what you can see, so nothing is attached
+   twice; `already_attached` names them, `repository_unread` names any whose
+   repository could not be read, with the `/sc attach <id>` for each. Empty
+   `launches` is an answer: every running workflow of the project already has
+   its rows. `/sc attach <wf_id>` by hand always attaches, whatever was
+   attached before -- that is how a row that was closed comes back.
+
+### `watch [interval]`
+
+A `check` every interval, in this session. Call `swarm_check_schedule` with
+`{interval: "<interval>"}` (none given: `30m`; below `5m` it is raised to
+`5m`; an interval a cron expression cannot say, such as `45m`, is rounded and
+the reply says so). It saves the preference for this project and schedules
+nothing itself: first remove any older watch -- CronList, then CronDelete
+every job whose prompt is `/sc check` -- then make the reply's `arm_with`
+call, CronCreate `{cron, prompt: "/sc check", recurring: true}`, and say the
+interval, the cron and that it runs only while this session is open and idle
+(a recurring job also ends after 7 days). If CronCreate cannot be called here,
+tell the developer to run the reply's `without_cron` command instead, which
+for the default is `/loop 30m /sc check`, and do not claim a watch is armed.
+The plugin's SessionStart hook reads the saved preference and asks each new
+session in this project to run `/sc watch` again, until `watch off`.
+
+### `watch off`
+
+Call `swarm_check_schedule` with `{off: true}`, then CronList and CronDelete
+every job whose prompt is `/sc check`. Say how many were cancelled; a
+`/loop ... /sc check` started by hand stops with Esc, which only the
+developer can press.
 
 ### `keys`
 

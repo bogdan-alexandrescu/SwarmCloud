@@ -46,6 +46,7 @@ import os
 import re
 import secrets
 import tempfile
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -202,6 +203,36 @@ def _prune(folder: Path) -> None:
             continue
 
 
+# SC-WATCH (owner request 2026-10-14): `/sc check` attaches every running
+# workflow of the project that has NO live row in this session, and never
+# one twice. This bridge process lives exactly as long as the Claude Code
+# session that started it, so it is the session's memory of what it handed
+# a row: every workflow id an attach launch was written for, and every task
+# id a task-row launch was written for (`/sc attach`, `/sc attach --all`,
+# swarm_dispatch's rows, `/sc check`). `{attach: "all", new_only: true}`
+# leaves those out. `/sc attach <id>` never consults it: attaching by hand
+# always attaches, which is how a row the developer closed comes back.
+_ATTACHED: set[str] = set()
+_ATTACHED_LOCK = threading.Lock()
+
+
+def remember_attached(ids: list[str]) -> None:
+    with _ATTACHED_LOCK:
+        _ATTACHED.update(str(i) for i in ids if i)
+
+
+def attached() -> frozenset[str]:
+    """The workflow and task ids this session was handed a row launch for."""
+    with _ATTACHED_LOCK:
+        return frozenset(_ATTACHED)
+
+
+def forget_attached() -> None:
+    """Empty the registry (tests; a new session starts empty anyway)."""
+    with _ATTACHED_LOCK:
+        _ATTACHED.clear()
+
+
 def _launch(title: str, description: str, args: dict[str, Any] | None) -> dict[str, Any]:
     script = write_script(title, description)
     out: dict[str, Any] = {"title": title, "script_path": str(script)}
@@ -266,6 +297,7 @@ def _attach_launch(workflow_id: str, name: str, steps: int, workspace: str | Non
     out = _launch(title, description, args)
     out["workflow_id"] = workflow_id
     out["workspace"] = workspace
+    remember_attached([workflow_id])
     return out
 
 
@@ -337,6 +369,7 @@ def for_tasks(entries: list[dict[str, Any]]) -> dict[str, Any]:
     # it starts too, at 30 when told nothing -- follows every task handed it.
     out = _launch(title, description, {"attach_tasks": rows, "max_rows": cap})
     out["task_ids"] = [row["task_id"] for row in rows]
+    remember_attached(out["task_ids"])
     out["not_followed"] = [
         {"task_id": str(e["task_id"]), "workspace": e.get("workspace"), "label": e.get("label"),
          "follow_with": "swarm_follow"}
@@ -357,11 +390,62 @@ def named_workspaces(entries: list[dict[str, Any]], names: dict[str, str]) -> li
     return entries
 
 
-def for_all(client: SwarmClient) -> dict[str, Any]:
+def _scoped(
+    entries: list[dict[str, Any]], kind: str, key: str | None, skip: frozenset[str],
+) -> tuple[list[dict[str, Any]], list[str], list[dict[str, Any]]]:
+    """`(kept, already_attached, unread)`: `entries` in `key`'s repository
+    (all of them when `key` is None) and not in `skip`. An entry whose
+    repository was not read cannot be placed in a project: it is not
+    launched, and comes back in `unread` with the command that attaches it."""
+    from .check import repo_key
+
+    id_key = "workflow_id" if kind == "workflow" else "task_id"
+    kept: list[dict[str, Any]] = []
+    already: list[str] = []
+    unread: list[dict[str, Any]] = []
+    for entry in entries:
+        ident = str(entry.get(id_key) or "")
+        if key is not None:
+            if not entry.get("repository_url"):
+                if entry.get("steps_unread_because") or kind == "task":
+                    unread.append({id_key: ident, "workspace": entry.get("workspace"),
+                                   "why": "its repository was not read, so it cannot be placed in this project",
+                                   "attach_with": f"/sc attach {ident}" if kind == "workflow" else "swarm_follow"})
+                continue
+            if repo_key(entry["repository_url"]) != key:
+                continue
+        if ident in skip:
+            already.append(ident)
+            continue
+        kept.append(entry)
+    return kept, already, unread
+
+
+def for_all(
+    client: SwarmClient,
+    *,
+    repository: str | None = None,
+    new_only: bool = False,
+    exclude: list[str] | None = None,
+) -> dict[str, Any]:
     """One titled copy per running workflow, newest first and grouped by
     workspace (`sc.group_by_workspace`), up to the live-row cap, and
-    one more for the caller's running single tasks (#830)."""
+    one more for the caller's running single tasks (#830).
+
+    SC-WATCH: `repository` keeps only the workflows and tasks that clone it
+    (`check.resolve_scope`: a URL, `owner/repo`, "origin" for this checkout's
+    remote, "all" for every one); `new_only` leaves out every id this
+    session was already handed a row for (`attached()`), and `exclude` the
+    ids the caller names -- rows it can see live. Without them, unchanged."""
     from . import sc
+
+    filtering = repository is not None or new_only or bool(exclude)
+    scope = None
+    if repository is not None:
+        from .check import resolve_scope
+
+        scope = resolve_scope(repository)
+    skip = frozenset((attached() if new_only else frozenset()) | {str(i) for i in exclude or [] if i})
 
     # The single tasks first, and on their own: a failure to read them is
     # reported beside the workflows, never instead of them.
@@ -376,6 +460,15 @@ def for_all(client: SwarmClient) -> dict[str, Any]:
     entries = sc.group_by_workspace(named_workspaces(
         [e for e in listing.get("workflows") or [] if isinstance(e, dict) and e.get("workflow_id")], names,
     ))
+    already: list[str] = []
+    unread: list[dict[str, Any]] = []
+    if filtering:
+        entries, already, unread = _scoped(entries, "workflow", scope and scope["key"], skip)
+        if singles:
+            kept, more, unread_tasks = _scoped(singles["tasks"], "task", scope and scope["key"], skip)
+            singles = {**singles, "tasks": kept}
+            already += more
+            unread += unread_tasks
     launches = []
     for entry in entries[:cap]:
         workflow_id = str(entry["workflow_id"])
@@ -415,4 +508,10 @@ def for_all(client: SwarmClient) -> dict[str, Any]:
         "<args>}: one Claude Code run per SwarmCloud workflow, and one for your running "
         "single tasks (args `attach_tasks`), with a row per task"
     )
+    if filtering:
+        out["repository"] = scope["key"] if scope else None
+        if scope and scope.get("note"):
+            out["repository_note"] = scope["note"]
+        out["already_attached"] = already
+        out["repository_unread"] = unread
     return out

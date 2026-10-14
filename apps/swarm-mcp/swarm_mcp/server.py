@@ -1129,6 +1129,28 @@ TOOLS: list[dict[str, Any]] = [
                 "spec": {"type": "object", "description": "The workflow spec about to be run."},
                 "spec_path": {"type": "string", "description": "Its file, under this checkout: relative to it, or absolute."},
                 "attach": {"type": "string", "description": "A workflow id, or \"all\"."},
+                "repository": {
+                    "type": "string",
+                    "description": (
+                        "With attach \"all\" only (SC-WATCH): keep the workflows and single "
+                        "tasks that clone this repository -- a URL, `owner/repo`, \"origin\" "
+                        "(this checkout's remote) or \"all\". `repository_unread` lists those "
+                        "whose repository could not be read, with the command for each."
+                    ),
+                },
+                "new_only": {
+                    "type": "boolean",
+                    "description": (
+                        "With attach \"all\" only: leave out every workflow and task this "
+                        "session was already handed a row for (listed in `already_attached`), "
+                        "so nothing is attached twice."
+                    ),
+                },
+                "exclude": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "With attach \"all\" only: workflow or task ids with a live row you can see; left out.",
+                },
             },
         },
     },
@@ -1195,6 +1217,74 @@ TOOLS: list[dict[str, Any]] = [
             "`single_tasks_error` means they could not be read."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "swarm_check",
+        "description": (
+            "Which SwarmCloud work of THIS PROJECT is stuck or stale -- read-only, it "
+            "cancels, retries and attaches nothing. Scoped to one repository (default: "
+            "this checkout's `origin` remote; a workflow belongs to the repository its "
+            "steps clone) in your tenant (`tenants: \"all\"` for every tenant you may "
+            "choose). `flagged` lists each item with `kind` STUCK or STALE, its `rule`, a "
+            "`reason`, the `evidence` the API served, its console link and `next`, the "
+            "command for a person to run:\n"
+            "  no_heartbeat (STALE): RUNNING/STARTING with no heartbeat and no event for "
+            "more than `stale_minutes` (default 20);\n"
+            "  waiting_for_capacity (STUCK): READY/QUEUED longer than that, with the pool "
+            "that binds it (`evidence.binding`);\n"
+            "  parked (STUCK): HUMAN_REQUIRED, CI_PENDING over 90 min, or "
+            "DEPENDENCY_INCOMPLETE whose dependency failed;\n"
+            "  merge_refused (STUCK): a merge step FAILED with head_moved, merge_conflict "
+            "or checks_failed, with its PR link -- the API serves no PR state, so whether "
+            "the PR is still open is not read;\n"
+            "  state_disagrees (STALE): a workflow whose stored and derived state disagree "
+            "on whether it is finished (the stale RUNNING cache).\n"
+            "`running` lists the project's running workflows and your single tasks; "
+            "`unchecked` names what was not checked and why; `repository: null` means "
+            "the check was not scoped (`repository_note` says why). Then attach rows "
+            "with swarm_workflow_launch {attach: \"all\", repository, new_only: true}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repository": {
+                    "type": "string",
+                    "description": "A URL or `owner/repo`; \"origin\" (the default) or \"all\".",
+                },
+                "stale_minutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "The window for no_heartbeat and waiting_for_capacity. Default 20.",
+                },
+                "tenants": {
+                    "type": "string",
+                    "enum": ["current", "all"],
+                    "description": "\"current\" (the default): the tenant this session acts in.",
+                },
+            },
+        },
+    },
+    {
+        "name": "swarm_check_schedule",
+        "description": (
+            "The sc plugin's watch for THIS PROJECT: a `/sc check` every interval. It "
+            "schedules nothing and reads nothing from SwarmCloud: `{interval}` (default "
+            "30m, at least 5m, e.g. `30m`, `1h`) saves the preference for this project "
+            "and answers `arm_with`, the CronCreate call that schedules it in this "
+            "session (`replace_first` says how to drop an older one), and `without_cron`, "
+            "the `/loop` command that does the same; `{off: true}` forgets it and says "
+            "how to cancel the job; neither reports it. An interval a cron expression "
+            "cannot say is rounded (`rounded`), one below the floor raised (`clamped`). "
+            "Scheduled prompts end with the session; the plugin's SessionStart hook asks "
+            "the next session to run `/sc watch` again while the preference is saved."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "interval": {"type": "string", "description": "`30m`, `45`, `1h`, `1h30m`. Default 30m."},
+                "off": {"type": "boolean", "description": "true: turn the watch off for this project."},
+            },
+        },
     },
     {
         "name": "swarm_workflow_result",
@@ -4029,10 +4119,31 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 f"swarm_workflow_launch takes exactly one of `spec`, `spec_path` or `attach`; "
                 f"it was given {given or 'none'}. Nothing was written"
             )
-        if args.get("attach") is not None:
-            target = _text_arg(args, "attach", name)
+        filters = sorted(k for k in ("repository", "new_only", "exclude") if args.get(k) is not None)
+        target = _text_arg(args, "attach", name) if args.get("attach") is not None else None
+        if filters and target not in ("all", "--all"):
+            raise SwarmError(
+                f"swarm_workflow_launch takes {filters} only with attach \"all\". Nothing was written"
+            )
+        if target is not None:
             if target in ("all", "--all"):
-                return json.dumps(launch.for_all(client), indent=2, default=str)
+                if not filters:
+                    return json.dumps(launch.for_all(client), indent=2, default=str)
+                exclude = args.get("exclude")
+                if exclude is not None and not (
+                    isinstance(exclude, list) and all(isinstance(i, str) for i in exclude)
+                ):
+                    raise SwarmError("swarm_workflow_launch: `exclude` is a list of ids. Nothing was written")
+                return json.dumps(
+                    launch.for_all(
+                        client,
+                        repository=args.get("repository"),
+                        new_only=_flag(args, "new_only"),
+                        exclude=exclude,
+                    ),
+                    indent=2,
+                    default=str,
+                )
             return json.dumps(launch.for_attach(client, target), indent=2)
         document = (
             _read_spec_file(str(args["spec_path"]), base=checkout.directory())["spec"]
@@ -4216,6 +4327,25 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         )
         reported["bridge_version"] = bridge_version()
         return json.dumps(reported, indent=2)
+
+    if name == "swarm_check":
+        from . import check
+
+        return json.dumps(
+            check.run(
+                client,
+                repository=args.get("repository"),
+                stale_minutes=args.get("stale_minutes"),
+                tenants=args.get("tenants"),
+            ),
+            indent=2,
+            default=str,
+        )
+
+    if name == "swarm_check_schedule":
+        from . import watch
+
+        return json.dumps(watch.tool(args), indent=2)
 
     if name == "swarm_workflows":
         from .sc import running_tasks, running_workflows
