@@ -157,6 +157,23 @@ class MergePullRequest(StrictModel):
     head_sha: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
+#: The most pull requests one workflow's `after` may name (SPEED-D3). Ten: a
+#: lane waits for one or two; a longer list is a plan that should be split,
+#: and each costs one GitHub read per tick (`prgate.wake_tenant`).
+MAX_AFTER_PRS = 10
+
+
+class AfterPullRequest(StrictModel):
+    """One pull request a workflow waits for before its steps start (SPEED-D3).
+
+    A NUMBER, never a repository: the pull request is the workflow's own
+    repository's (`prgate.resolve_after`), so a spec cannot point the
+    tenant's token at another one.
+    """
+
+    pr: StrictInt = Field(ge=1, le=10**9)
+
+
 class WorkflowCreate(StrictModel):
     steps: list[WorkflowStepCreate] = Field(min_length=1)
     priority: int = Field(default=0, ge=-100, le=100)
@@ -203,6 +220,20 @@ class WorkflowCreate(StrictModel):
     #: step, `direct-pr`, the tenant's registered repository, open, not from
     #: a fork, at that head now -- are in `continuation.resolve_merge_pr`.
     merge_pr: MergePullRequest | None = None
+    #: The pull requests of this workflow's own repository that must MERGE
+    #: before any of its steps starts (lane SPEED-D3, `prgate`): one
+    #: `{"pr": N}` or a list of them, stored as the list. Until then every
+    #: root step is PARKED, holding nothing (invariant 1); one closed without
+    #: merging fails the workflow. Absent: the workflow starts as it always did.
+    after: list[AfterPullRequest] | None = Field(default=None, min_length=1,
+                                                 max_length=MAX_AFTER_PRS)
+
+    @field_validator("after", mode="before")
+    @classmethod
+    def _one_or_many(cls, value: Any) -> Any:
+        # One object is the common case ("after PR 41"), so it is accepted
+        # as itself rather than making every spec write a one-item list.
+        return [value] if isinstance(value, dict) else value
 
     @field_validator("repository_url")
     @classmethod
@@ -312,6 +343,18 @@ class LimitRequest(StrictModel):
         le=100_000,
         validation_alias=AliasChoices("limit", "hard_limit"),
     )
+
+
+class AdaptiveTargetRequest(StrictModel):
+    """`PUT /v1/admin/quota/{provider}/{tenant_id}/adaptive-target` (QUOTA-RESET).
+
+    The broker's own body, minus `requested_by`: that is the admin's verified
+    email, taken from the token, never from the request.
+    """
+
+    target: int = Field(ge=0, le=100_000)
+    reason: str = Field(min_length=1, max_length=500)
+    clear_cooldown: bool = False
 
 
 class DrainRequest(StrictModel):

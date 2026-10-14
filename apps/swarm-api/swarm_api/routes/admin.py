@@ -44,11 +44,14 @@ from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
 from ..mergewake import wake_tenant
+from ..prgate import wake_tenant as wake_after_prs
 from ..purge import HistoryPurge, parse_query
 from ..verdictpublish import on_task_finished
 from ..waker import TASK_FINISHED
 from ..repoindex import RepoIndex
+from ..brokerclient import AccountPool
 from ..schemas import (
+    AdaptiveTargetRequest,
     DrainRequest,
     HistoryPurgeRequest,
     LimitRequest,
@@ -61,6 +64,7 @@ from ..schemas import (
 from ..task_accounts import accounts_for
 from ..task_input import masking_for
 from ..validation import known_providers
+from .accounts import account_pool
 from .browser_logins import browser_vault
 from .runs import advance_tenant_runs
 
@@ -798,6 +802,43 @@ def list_quota(
     }
 
 
+@router.put("/quota/{provider}/{tenant_id}/adaptive-target")
+def reset_adaptive_target(
+    provider: str,
+    tenant_id: str,
+    body: AdaptiveTargetRequest,
+    auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
+    broker: AccountPool = Depends(account_pool),
+) -> dict:
+    """Reset a throttled tenant's AIMD target, through the quota broker.
+
+    QUOTA-RESET (owner, 2026-10-14). One 429 halves `adaptive_target` and the
+    climb back is +1 per 20 consecutive successes, so a tenant can sit far
+    below the ceiling an admin chose long after the cause is gone. The broker
+    is the only writer of quota documents, so this route PROXIES: it checks
+    the caller is a platform admin (`admin_auth`; not a pool admin -- this
+    route is not in `POOL_ADMIN_ROUTES`), that the provider and tenant exist,
+    and forwards the admin's verified email as `requested_by`. The broker
+    clamps to `configured_hard_max`, refuses an EXHAUSTED tenant unless
+    `clear_cooldown`, and audits it in `quota_audit`.
+    docs/runbooks/quota-throttled-tenant.md.
+    """
+    name = _check_provider(provider)
+    if ctx.store.get_tenant(tenant_id) is None:
+        raise NotFound(f"tenant {tenant_id!r} not found")
+    result = broker.set_adaptive_target(
+        name,
+        tenant_id,
+        target=body.target,
+        reason=body.reason,
+        clear_cooldown=body.clear_cooldown,
+        requested_by=auth.email,
+    )
+    ctx.metrics.admin_actions.labels(action="quota_adaptive_target_reset").inc()
+    return result
+
+
 def _provider_pool_name(provider: str, tenant_id: str) -> str:
     # The name `swarm_common.models.pool_names_for` gives a profile's
     # per-tenant provider pool.
@@ -949,6 +990,13 @@ def wake_merges(
     # how its fix step ended (`cifix.postback_tenant`); it never moves a task.
     postback = postback_ci_fixes(ctx, tenant_id, limit=paged_limit(ctx, limit))
     ctx.metrics.admin_actions.labels(action="ci_fix_postback").inc()
+    # Lane SPEED-D3 rides it too, for the same reasons: workflows submitted
+    # with `after` wait, PARKED, for pull requests of their own repository to
+    # merge; this reads each with the same tenant's token and marks the gate
+    # merged or closed (`prgate.wake_tenant`). It never moves a task: the
+    # scheduler's dependency sweep promotes or ends the root.
+    gates = wake_after_prs(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="after_prs_wake").inc()
     return {
         "tenant_id": tenant_id,
         "report": report.to_api(),
@@ -957,6 +1005,8 @@ def wake_merges(
         "failures": report.failures,
         "ci_fix": postback.to_api(),
         "ci_fix_failures": postback.failures,
+        "after_prs": gates.to_api(),
+        "after_prs_failures": gates.failures,
     }
 
 

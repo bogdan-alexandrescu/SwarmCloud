@@ -170,7 +170,10 @@ jobs:
   # images` job `needs: [python, shell, manifests]`. On a push `build` below
   # takes CI's image record with `--reuse-ci only` and refuses to build its
   # own, so the record this release ships CANNOT EXIST unless those checks
-  # passed on this very commit. Running them again here was 26.4 min p50 of
+  # passed on this very commit -- or, since 2026-10-14 (B1, docs/ci.md "Main
+  # reuses the tested tree"), on a run of its IDENTICAL tree: the pull
+  # request this commit merged, a merge-train branch or a queue entry, each
+  # checked job by job against the GitHub API before main skips it. Running them again here was 26.4 min p50 of
   # the `release-dev` lock (22 successful runs, measured 2026-10-08) proving
   # what CI had already proven. On a workflow_dispatch -- every prod release,
   # and a dev dispatch that may build its own images (`or-build`), or redeploy
@@ -918,6 +921,23 @@ jobs:
           # apply.sh runs render.py and network_parity.py on ${PYTHON_BIN}.
           PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
         run: ./scripts/roll-live-relay.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-egress to this release's image
+        # Lane EGRESS-BUILD (part of #1030; docs/browser-egress.md §9.3).
+        # swarm-egress, the StatefulSet swarm-system/swarm-egress on
+        # swarm-autopilot, is applied by the relay step's apply.sh (after the
+        # relay, in the same stream), but nothing waited for it to roll or
+        # read back what it runs. scripts/roll-egress.sh is
+        # roll-live-relay.sh --component egress: the same apply.sh path, the
+        # same agents-staging refusal, then `rollout status` and the digest
+        # check for swarm-egress. Its Python is the relay's, synced above.
+        # No continue-on-error: a forwarder left on the old image fails every
+        # proxied browser attempt closed. enable_browser_egress false is a
+        # notice, not a failure.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        env:
+          PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/roll-egress.sh --tf-init --get-credentials --confirm
 
       - name: smoke test (inside the VPC)
         # The `mock` profile needs no provider key, so this proves the whole

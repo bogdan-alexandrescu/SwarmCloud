@@ -56,6 +56,7 @@ KUBERNETES = REPO / "kubernetes"
 APPLY = KUBERNETES / "apply.sh"
 LIVE_EGRESS_FILE = "network-policies/allow-live-egress.yaml"
 PROXY_EGRESS_FILE = "network-policies/allow-egress-proxy.yaml"
+JUDGE_EGRESS_FILE = "network-policies/allow-judge-egress.yaml"
 SYSTEM_FILE = "network-policies/swarm-system-live.yaml"
 
 #: A swarm-api subnet range that appears nowhere in the repository, so a
@@ -233,18 +234,21 @@ def test_the_live_policy_is_purely_appended_to_the_tenant_render():
     values = _tenant_values()
     files = _render().TENANT_FILES
     at = files.index(LIVE_EGRESS_FILE)
-    # Only browser egress's policy (docs/browser-egress.md §2.5) may follow it,
-    # appended the same way, so everything before the live path still renders
-    # as it did before L6.
-    assert files[at + 1:] == (PROXY_EGRESS_FILE,)
+    # Only browser egress's policy (docs/browser-egress.md §2.5) and the
+    # internal judge's (lane JUDGE-NET) may follow it, appended the same way,
+    # so everything before the live path still renders as it did before L6.
+    assert files[at + 1:] == (PROXY_EGRESS_FILE, JUDGE_EGRESS_FILE)
     before = _render().render_files(files[:at], values)
     assert hashlib.sha256(before.encode()).hexdigest() == PRE_L6_TENANT_RENDER
     with_live = _render().render_files(files[:at + 1], values)
     live = _render().render_files((LIVE_EGRESS_FILE,), values)
     assert with_live == before.rstrip("\n") + "\n---\n" + live
-    after = _render().render_files(files, values)
+    with_proxy = _render().render_files(files[:at + 2], values)
     proxy = _render().render_files((PROXY_EGRESS_FILE,), values)
-    assert after == with_live.rstrip("\n") + "\n---\n" + proxy
+    assert with_proxy == with_live.rstrip("\n") + "\n---\n" + proxy
+    after = _render().render_files(files, values)
+    judge = _render().render_files((JUDGE_EGRESS_FILE,), values)
+    assert after == with_proxy.rstrip("\n") + "\n---\n" + judge
 
 
 def test_the_workspace_deployer_may_write_the_new_tenant_policy():

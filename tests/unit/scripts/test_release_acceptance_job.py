@@ -19,7 +19,10 @@ running:
   later job checks out, and on a completed release only when that release is
   the one that applied it;
 * every group runs exactly once, through verify-remote.sh, as a matrix with
-  fail-fast false, in waves whose peaks fit the smoke tenant's ceiling;
+  fail-fast false, in waves whose peaks fit the smoke tenant's ceiling --
+  except the groups taken off the red path (owner decision 2026-10-14:
+  live-browser), which run on a schedule of their own, outside the waves, and
+  report to an issue of their own;
 * a red run opens or updates ONE issue labelled bug naming the SHA and the
   failing groups (scripts/accept-report.sh, run here against a fake `gh`);
 * every acceptance script is a script this repository accepts: `set -euo
@@ -65,6 +68,19 @@ PEAK = {"mock": 13, "generic": 8, "workflow": 4, "claude-code": 3, "browser": 3,
 
 ACCEPT_JOBS = ("acceptance", "acceptance-2")
 
+#: Groups OFF THE RED PATH (owner decision 2026-10-14, lane SPEED-C2): run by
+#: the scheduled job, never by the post-release waves, until
+#: scripts/accept-live-browser-streak.sh says they passed five scheduled runs
+#: in a row and the operator moves them back (docs/ci.md, "live-browser runs
+#: on a schedule"). Measured that day: live-browser failed 18 of 34
+#: post-release runs; every other group 0-3.
+SCHEDULED_GROUPS = ("live-browser",)
+#: The scheduled job and its report. Neither is an accepting job: they judge
+#: what dev runs every three hours, not a deployment, and cancel nothing.
+SCHEDULED_JOB = "live-browser"
+SCHEDULED_REPORT = "live-browser-report"
+STREAK_SH = ROOT / "scripts" / "accept-live-browser-streak.sh"
+
 #: Groups the suite has that accept.yml does not run YET, for a lane that cannot
 #: push workflow files. git-tools (G7, part of #1225) is written by a SwarmCloud
 #: lane, which cannot push .github/workflows/: the operator adds it to wave 2's
@@ -96,11 +112,14 @@ def _gh(expression, **context) -> object:
     )
 
 
-def _run_context(event: str, conclusion: str = "success", run_event: str = "push", title: str = "a commit") -> dict:
+def _run_context(event: str, conclusion: str = "success", run_event: str = "push", title: str = "a commit",
+                 scope: str = "all") -> dict:
     return {
         "github.event_name": event,
         "github.ref": "refs/heads/main",
         "github.run_id": "7",
+        # A dispatch's `scope` input; GitHub renders an absent input as ''.
+        "inputs.scope": scope if event == "workflow_dispatch" else "",
         "github.event.workflow_run.conclusion": conclusion if event == "workflow_run" else None,
         "github.event.workflow_run.event": run_event if event == "workflow_run" else None,
         "github.event.workflow_run.display_title": title if event == "workflow_run" else None,
@@ -138,12 +157,18 @@ def test_a_prod_release_says_so_in_its_run_name():
 # ---------------------------------------------------------------------------
 
 
-def test_it_runs_after_release_completes_on_main_and_by_dispatch():
+def test_it_runs_after_release_completes_on_main_by_dispatch_and_on_a_schedule():
     on = _accept()["on"]
-    assert set(on) == {"workflow_run", "workflow_dispatch"}, on
+    assert set(on) == {"workflow_run", "workflow_dispatch", "schedule"}, on
     assert on["workflow_run"]["workflows"] == ["release"]
     assert on["workflow_run"]["types"] == ["completed"]
     assert on["workflow_run"]["branches"] == ["main"]
+    # Every three hours: often enough that five in a row is a day, not a week.
+    (cron,) = [entry["cron"] for entry in on["schedule"]]
+    assert re.fullmatch(r"\d{1,2} \*/3 \* \* \*", cron), cron
+    scope = on["workflow_dispatch"]["inputs"]["scope"]
+    assert scope["type"] == "choice" and scope["default"] == "all", scope
+    assert set(scope["options"]) == {"all", "live-browser"}, scope
 
 
 ACCEPTING_JOBS = ("quiesce", "smoke", "sandbox", "acceptance", "acceptance-2", "sandbox-results", "report")
@@ -186,6 +211,29 @@ def test_every_accepting_job_cancels_the_run_in_progress_in_a_group_of_its_own()
 )
 def test_a_trigger_that_accepts_nothing_runs_no_accepting_job(context):
     assert not _gh(_accept()["jobs"]["target"]["if"], **context)
+
+
+@pytest.mark.parametrize(
+    "context",
+    [_run_context("schedule"), _run_context("workflow_dispatch", scope="live-browser")],
+    ids=["schedule", "live-browser-dispatch"],
+)
+def test_the_schedule_and_a_live_browser_dispatch_accept_nothing(context):
+    """MUTATION: drop the schedule clause from `target`'s if. Every three
+    hours a full acceptance would then run, and cancel the real one."""
+    jobs = _accept()["jobs"]
+    assert not _gh(jobs["target"]["if"], **context)
+    assert _gh(jobs[SCHEDULED_JOB]["if"], **context)
+
+
+@pytest.mark.parametrize(
+    "context",
+    [_run_context("workflow_run"), _run_context("workflow_dispatch"),
+     {**_run_context("schedule"), "github.ref": "refs/heads/feature"}],
+    ids=["release", "full-dispatch", "off-main"],
+)
+def test_the_scheduled_job_runs_only_on_the_schedule_or_its_own_dispatch(context):
+    assert not _gh(_accept()["jobs"][SCHEDULED_JOB]["if"], **context)
 
 
 def test_every_accepting_job_runs_only_when_the_decision_is_true():
@@ -320,9 +368,15 @@ def _groups(job: dict) -> list[str]:
     return list(job["strategy"]["matrix"]["group"])
 
 
+def _scheduled_groups(job: dict) -> list[str]:
+    runs = [_code(s.get("run", "")) for s in job["steps"] if "verify-remote.sh" in _code(s.get("run", ""))]
+    return [m.group(1) for r in runs for m in re.finditer(r'verify-remote\.sh "?acceptance/([a-z-]+)"?', r)]
+
+
 def test_every_group_runs_exactly_once_through_verify_remote_with_fail_fast_off():
     jobs = _accept()["jobs"]
-    seen: list[str] = []
+    seen: list[str] = list(_scheduled_groups(jobs[SCHEDULED_JOB]))
+    assert tuple(seen) == SCHEDULED_GROUPS, f"the scheduled job runs {seen}"
     for job_id in ACCEPT_JOBS:
         job = jobs[job_id]
         assert job["strategy"]["fail-fast"] is False, f"{job_id}: one red group must not cancel the others"
@@ -338,6 +392,43 @@ def test_every_group_runs_exactly_once_through_verify_remote_with_fail_fast_off(
         wrapper = ACCEPTANCE / f"{target}.sh"
         assert wrapper.is_file(), f"verify-remote.sh would run scripts/acceptance/{target}.sh, which does not exist"
         assert f"--only {target}" in wrapper.read_text()
+
+
+def test_live_browser_is_off_the_red_path():
+    """Owner decision 2026-10-14: live-browser failed 18 of 34 post-release
+    runs, and a red run files the one acceptance bug. MUTATION: put
+    live-browser back in wave 2's matrix, or make `report` need the scheduled
+    job."""
+    jobs = _accept()["jobs"]
+    for job_id in ACCEPT_JOBS:
+        assert not set(SCHEDULED_GROUPS) & set(_groups(jobs[job_id])), f"{job_id} runs a scheduled group"
+    for job_id in ("target", "quiesce", "smoke", "sandbox", *ACCEPT_JOBS, "sandbox-results", "report"):
+        assert not {SCHEDULED_JOB, SCHEDULED_REPORT} & _upstream_ids(jobs, job_id), job_id
+    job = jobs[SCHEDULED_JOB]
+    assert "target" not in _needs(job), "the scheduled job reads what dev runs itself"
+    runs = "\n".join(_code(s.get("run", "")) for s in job["steps"])
+    assert "release-order.sh deployed --environment" in runs
+    checkout = [s for s in job["steps"] if str(s.get("uses", "")).startswith("actions/checkout@")]
+    assert checkout and checkout[-1].get("with", {}).get("ref") == "${{ steps.deployed.outputs.sha }}", (
+        "the scheduled job must run the deployed commit's scripts, as the waves do"
+    )
+    concurrency = job["concurrency"]
+    assert concurrency["cancel-in-progress"] is False, "a scheduled run never cancels anything"
+    assert not str(concurrency["group"]).startswith("accept-dev-"), "it must not share the accepting jobs' groups"
+
+
+def test_the_scheduled_job_files_its_own_issue_not_the_acceptance_one():
+    jobs = _accept()["jobs"]
+    report = jobs[SCHEDULED_REPORT]
+    assert _needs(report) == [SCHEDULED_JOB]
+    condition = str(report["if"])
+    assert "!cancelled()" in condition and "always()" not in condition
+    assert "needs.live-browser.result != 'skipped'" in condition
+    assert report["permissions"].get("issues") == "write"
+    step = next(s for s in report["steps"] if "accept-report.sh" in _code(s.get("run", "")))
+    assert step["env"]["ACCEPT_KIND"] == "live-browser"
+    assert step["env"]["ACCEPT_SHA"] == "${{ needs.live-browser.outputs.sha }}"
+    assert step["env"]["ACCEPT_NEEDS"] == "${{ toJSON(needs) }}"
 
 
 def test_each_wave_fits_the_smoke_tenant_s_ceiling():
@@ -391,7 +482,7 @@ def test_the_sandbox_is_synced_once_and_read_back_and_swept_after_both_waves():
 
 def test_the_sandbox_token_never_reaches_the_suite():
     jobs = _accept()["jobs"]
-    for job_id in ("smoke", *ACCEPT_JOBS):
+    for job_id in ("smoke", *ACCEPT_JOBS, SCHEDULED_JOB):
         assert "SWARM_SANDBOX_GITHUB_TOKEN" not in json.dumps(jobs[job_id]), f"{job_id} is handed the sandbox token"
 
 
@@ -403,7 +494,9 @@ def test_the_sandbox_token_never_reaches_the_suite():
 def test_the_report_needs_every_job_and_files_an_issue_on_red():
     jobs = _accept()["jobs"]
     report = jobs["report"]
-    assert set(_needs(report)) == set(jobs) - {"report"}, "the report must see every job's result"
+    assert set(_needs(report)) == set(jobs) - {"report", SCHEDULED_JOB, SCHEDULED_REPORT}, (
+        "the report must see every job's result, and not the scheduled group's"
+    )
     condition = str(report["if"])
     assert "!cancelled()" in condition and "always()" not in condition
     assert "needs.target.result == 'failure'" in condition, "an identity that cannot authenticate is a red acceptance too"
@@ -413,7 +506,7 @@ def test_the_report_needs_every_job_and_files_an_issue_on_red():
     assert step["env"]["ACCEPT_SHA"] == "${{ needs.target.outputs.sha }}"
     assert step["env"]["ACCEPT_NEEDS"] == "${{ toJSON(needs) }}"
     writers = [j for j, job in jobs.items() if (job.get("permissions") or {}).get("issues") == "write"]
-    assert writers == ["report"], writers
+    assert sorted(writers) == sorted(["report", SCHEDULED_REPORT]), writers
 
 
 FAKE_GH = r"""#!{python}
@@ -522,6 +615,54 @@ def test_a_red_run_updates_the_open_issue_rather_than_opening_another(tmp_path):
     assert SHA in Path(str(log) + ".comment").read_text()
     listing = next(c for c in calls if c[:2] == ["issue", "list"])
     assert listing[listing.index("--label") + 1] == "bug" and listing[listing.index("--state") + 1] == "open"
+
+
+LIVE_GREEN = {"live-browser": {"result": "success", "outputs": {"sha": SHA}}}
+LIVE_RED = {"live-browser": {"result": "failure", "outputs": {"sha": SHA}}}
+
+
+def test_a_red_live_browser_run_opens_its_own_issue_not_the_acceptance_one(tmp_path):
+    """MUTATION: keep the dev MARKER for ACCEPT_KIND=live-browser. A red
+    scheduled run would then retitle and comment on the post-release bug,
+    which is the noise this lane takes off the red path."""
+    proc, calls, summary, log = _report(tmp_path, LIVE_RED, ACCEPT_KIND="live-browser",
+                                        FAKE_GH_FAILED_JOBS="acceptance (live-browser, scheduled)\n")
+    assert proc.returncode == 0, proc.stderr
+    listing = next(c for c in calls if c[:2] == ["issue", "list"])
+    query = listing[listing.index("--jq") + 1]
+    assert "live-browser acceptance is red" in query and "dev acceptance is red" not in query, query
+    create = next(c for c in calls if c[:2] == ["issue", "create"])
+    assert create[create.index("--label") + 1] == "bug"
+    title = create[create.index("--title") + 1]
+    assert title.startswith("The scheduled live-browser acceptance group failed on ") and SHA[:12] in title, title
+    body = Path(str(log) + ".body").read_text()
+    assert "<!-- swarm-accept: live-browser acceptance is red -->" in body
+    assert "<!-- swarm-accept: dev acceptance is red -->" not in body
+    assert "accept-live-browser-streak.sh" in body, "the issue must say how the group gets back into the waves"
+    sections = re.findall(r"(?m)^### (.+)$", body)
+    assert sections == ["What happened", "Severity", "Where you saw it", "Environment", "Steps to reproduce",
+                        "What you expected instead", "Identifiers", "Screenshots, errors, logs", "Anything else"]
+
+
+def test_a_red_live_browser_run_updates_its_own_open_issue(tmp_path):
+    proc, calls, _, _ = _report(tmp_path, LIVE_RED, ACCEPT_KIND="live-browser", FAKE_GH_OPEN="613\n",
+                                FAKE_GH_FAILED_JOBS="acceptance (live-browser, scheduled)\n")
+    assert proc.returncode == 0, proc.stderr
+    assert [c[1] for c in _issue_calls(calls)] == ["edit", "comment"], calls
+    assert all(c[2] == "613" for c in _issue_calls(calls))
+
+
+def test_a_green_live_browser_run_files_nothing(tmp_path):
+    proc, calls, summary, _ = _report(tmp_path, LIVE_GREEN, ACCEPT_KIND="live-browser")
+    assert proc.returncode == 0, proc.stderr
+    assert _issue_calls(calls) == []
+    assert "live-browser" in summary and "accept-live-browser-streak.sh" in summary
+
+
+def test_an_unknown_report_kind_is_refused(tmp_path):
+    proc, calls, _, _ = _report(tmp_path, RED, ACCEPT_KIND="nonsense")
+    assert proc.returncode != 0
+    assert _issue_calls(calls) == []
 
 
 def test_the_failing_jobs_come_from_needs_when_the_job_list_cannot_be_read(tmp_path):
@@ -710,7 +851,7 @@ def test_the_pre_wave_job_also_cancels_the_other_accept_runs_and_gates_the_rest(
         assert "quiesce" in _needs(jobs[job_id]), f"{job_id} can start before the old executions are stopped"
 
 
-@pytest.mark.parametrize("job_id", ["smoke", "acceptance", "acceptance-2"])
+@pytest.mark.parametrize("job_id", ["smoke", "acceptance", "acceptance-2", SCHEDULED_JOB])
 def test_a_job_that_runs_the_suite_cancels_its_executions_when_cancelled(job_id):
     steps = _accept()["jobs"][job_id]["steps"]
     cleanup = [s for s in steps if "gcloud run jobs executions cancel" in _code(s.get("run", ""))]

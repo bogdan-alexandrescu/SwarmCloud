@@ -86,6 +86,7 @@ import re
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -94,6 +95,7 @@ from swarm_common.models import Lease, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, RunnerProfile
 
 from .credentials import AccountPool, CredentialSource, credential_for
+from .judgment import DEFAULT_BACKEND, jev_dispatch, read_backend
 
 log = logging.getLogger(__name__)
 
@@ -457,6 +459,16 @@ DISPLAY_COMMAND = ("/usr/bin/tini", "--", "python", "-m", "agent_worker.livegate
 #: dispatcher sets it on live-browser pods and nowhere else.
 LIVE_POD_LABEL = ("swarm-live", "enabled")
 
+#: RESIDENTIAL EGRESS FOR THE LIVE BROWSER (docs/browser-egress.md §10.3; lane
+#: EGRESS-DISPATCH, part of #1030). What the gate reads on the `display`
+#: sidecar (agent_worker.livegate.egress EGRESS_ENV, BYPASS_ENV) and the label
+#: `swarm-allow-egress-proxy` (kubernetes/network-policies/allow-egress-proxy.yaml)
+#: selects to open TCP 3128 to swarm-egress. Set together by
+#: `with_browser_egress`, only when `browser_egress_on`, and nowhere else.
+BROWSER_EGRESS_ENV = ("SWARM_BROWSER_EGRESS", "proxy")
+BROWSER_EGRESS_BYPASS_ENV = "SWARM_EGRESS_BYPASS"
+EGRESS_POD_LABEL = ("swarm-egress", "proxy")
+
 #: The three volumes both containers mount, and only these (§3.1). All memory,
 #: so inside the pod's memory limit, and none under WORKSPACE_MOUNT, so none
 #: is checkpointed.
@@ -633,6 +645,48 @@ def with_live_display(job: dict[str, Any], *, rc: Any) -> dict[str, Any]:
         {"name": "live-gate", "emptyDir": {"medium": "Memory", "sizeLimit": "1Mi"}},
         {"name": "live-downloads", "emptyDir": {"medium": "Memory", "sizeLimit": "1Gi"}},
         {"name": "live-uploads", "emptyDir": {"medium": "Memory", "sizeLimit": "512Mi"}},
+    ]
+    return job
+
+def browser_egress_on(settings: Any, *, tenant_id: str, profile: Any) -> bool:
+    """Whether a pod of `profile` for `tenant_id` is dispatched for residential egress.
+
+    FROM THE SCHEDULER'S CONFIGURATION ONLY (invariant 10): the platform
+    switch, the tenant by exact membership and the profile by name, the three
+    tests swarm-api mints the attempt's egress ticket by (swarm_api.egress
+    `_switch`). Nothing on the task is read, so no caller field can turn it
+    on. A profile with no live browser has no Chromium to route and is never on.
+    """
+    if not getattr(settings, "browser_egress_enabled", False):
+        return False
+    if not getattr(profile, "live_browser", False):
+        return False
+    if tenant_id not in tuple(getattr(settings, "browser_egress_tenants", ())):
+        return False
+    return str(getattr(profile, "name", "")) in tuple(
+        getattr(settings, "browser_egress_profiles", ()))
+
+
+def with_browser_egress(job: dict[str, Any], *, bypass: Any) -> dict[str, Any]:
+    """`job`, a live-browser Job from `with_live_display`, routed through swarm-egress.
+
+    Adds exactly three things and changes nothing else, which
+    test_dispatch_browser_egress.py holds byte for byte: the pod label the
+    proxy NetworkPolicy selects, and on the `display` container -- where
+    Chromium runs; the worker container gets neither -- the switch and the
+    bypass list. The bypass list is configuration (egress.tf's
+    `egress_bypass_hosts`); the gate adds GitHub itself, so an empty one still
+    names the variable. No ticket and no forwarder address: the ticket reaches
+    the gate over ctl.sock, and the gate's default forwarder is swarm-egress's
+    Service.
+    """
+    job = copy.deepcopy(job)
+    template = job["spec"]["template"]
+    template["metadata"]["labels"][EGRESS_POD_LABEL[0]] = EGRESS_POD_LABEL[1]
+    (display,) = [c for c in template["spec"]["initContainers"] if c["name"] == "display"]
+    display["env"] = display["env"] + [
+        {"name": BROWSER_EGRESS_ENV[0], "value": BROWSER_EGRESS_ENV[1]},
+        {"name": BROWSER_EGRESS_BYPASS_ENV, "value": ",".join(bypass or ())},
     ]
     return job
 
@@ -1911,10 +1965,15 @@ class GkeJobDispatcher:
     """
 
     def __init__(self, settings: Any, *, target: GkeTarget | None = None,
-                 batch_api: Any | None = None, identity: str = "") -> None:
+                 batch_api: Any | None = None, identity: str = "",
+                 judgment: Callable[[str], str] | None = None) -> None:
         self._settings = settings
         self._target = target
         self._batch_api = batch_api
+        #: tenant id -> the workspace's Jev judgment backend (JUDGE-SELECT;
+        #: `judgment.read_backend` over Firestore in a deployment). None reads
+        #: as the default, internal-jev.
+        self._judgment = judgment
         self._ca_file: str | None = None
         #: WHO THIS DISPATCHER AUTHENTICATES AS, for the failure message. Filled
         #: in by `_api()` from the credentials it resolves, so in a deployment it
@@ -2212,8 +2271,30 @@ class GkeJobDispatcher:
         # is on. Every other pod is returned exactly as built above.
         if getattr(profile, "live_browser", False) and getattr(
                 self._settings, "live_browser_sidecar", False):
-            return with_live_display(job, rc=rc)
+            self._with_judgment(job, tenant)
+            job = with_live_display(job, rc=rc)
+            # Residential egress (docs/browser-egress.md §10.3): only on a pod
+            # that has the display sidecar, so only a browser that exists is
+            # routed, and only when configuration switches its tenant and
+            # profile on. Otherwise the live pod is returned as it was.
+            if browser_egress_on(self._settings, tenant_id=tenant.tenant_id, profile=profile):
+                job = with_browser_egress(
+                    job, bypass=getattr(self._settings, "browser_egress_bypass", ()))
         return job
+
+    def _with_judgment(self, job: dict[str, Any], tenant: Tenant) -> None:
+        """Where this live-browser pod's Jev judgments go (`judgment`,
+        JUDGE-SELECT): SWARM_JEV_BACKEND always, and for an internal backend
+        with the tailnet egress on, JEV_API_URL and the `swarm-judge:
+        internal` pod label JUDGE-NET's NetworkPolicy opens the decision API
+        to. Only with the live browser: jev-browser attaches to nothing else."""
+        backend = self._judgment(tenant.tenant_id) if self._judgment else DEFAULT_BACKEND
+        env, labels = jev_dispatch(
+            backend, str(getattr(self._settings, "internal_decision_api_url", "") or ""))
+        template = job["spec"]["template"]
+        (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
+        worker["env"].extend({"name": k, "value": v} for k, v in env.items())
+        template["metadata"]["labels"].update(labels)
 
     @staticmethod
     def _is_forbidden(exc: BaseException) -> bool:
@@ -2382,7 +2463,8 @@ def _gke_ca_file() -> str:
     return handle.name
 
 
-def build_router(settings: Any, *, pool: AccountPool | None = None) -> BackendRouter:
+def build_router(settings: Any, *, pool: AccountPool | None = None,
+                 db: Any | None = None) -> BackendRouter:
     """The deployment's router. `pool` is the Scheduler's AccountPool.
 
     main.build_scheduler passes it, so the Cloud Run Job's secret mount and
@@ -2405,6 +2487,10 @@ def build_router(settings: Any, *, pool: AccountPool | None = None) -> BackendRo
         )
     return BackendRouter(
         cloud_run=CloudRunJobDispatcher(settings, pool=pool),
-        gke=GkeJobDispatcher(settings, target=target),
+        # `db` for the workspace's Jev judgment backend (JUDGE-SELECT), one
+        # document read per live-browser dispatch; without it, the default.
+        gke=GkeJobDispatcher(
+            settings, target=target,
+            judgment=(lambda tenant_id: read_backend(db, tenant_id)) if db is not None else None),
         settings=settings,
     )

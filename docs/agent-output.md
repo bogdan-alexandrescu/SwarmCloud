@@ -433,6 +433,9 @@ the repair turns, while the session can still be continued
    | `*.sh` | `shellcheck -x <files>` |
    | `*.py`, where the repository configures ruff | `ruff format --check` and `ruff check` on the files |
    | an image's `Dockerfile` or `tool-mirror.sha256` | the build mirror's manifest-vs-Dockerfile tests |
+   | a file the graph's `tests` layer, a changed test or a sibling `X.test.tsx` covers (CTXQ-G) | `graph-pytest`: those Python test files `changed-guards.sh --list` did not already select, with `pytest -n auto`; `vitest`: the JavaScript ones, with the package's own `node_modules/.bin/vitest run`, from the package |
+   | a `.ts`/`.tsx` file of a package with a `tsconfig.json` | `tsc` with the package's own `typecheck` arguments |
+   | `*.tf` anywhere | `terraform fmt -check -diff <files>` |
 
    A check that cannot run is `skipped` with its reason and never sent to the
    agent. Two are skipped by design today. `tflint`: agent-runtime-base
@@ -440,7 +443,9 @@ the repair turns, while the session can still be continued
    image promote gate. `scripts/refresh-build-mirror.sh --check`: it needs
    gcloud and the mirror bucket, and the container has no cloud credential,
    so the gate runs the tests that hold the manifest equal to the Dockerfiles
-   instead. ruff is configured here (lint only, [docs/ci.md](ci.md#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)),
+   instead. `vitest` and `tsc` are skipped when the package has no
+   `node_modules` (the gate does not run `npm install`), and `terraform-fmt`
+   when terraform is not on PATH. ruff is configured here (lint only, [docs/ci.md](ci.md#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)),
    and formatting excludes every file, so `ruff format --check` passes
    whatever a lane touched and `ruff check` is the one that can fail.
 4. **One fix turn**, with each failing check's output, then the set runs
@@ -450,6 +455,21 @@ the repair turns, while the session can still be continued
    puts it at the top of its block of the pull request body under
    **Pre-publish checks failed** (`Worker._prepublish_section`), so the
    operator reads it before merging.
+6. **An advisory section no merge path reads** (CTXQ-G,
+   [design/context-quality.md](design/context-quality.md) §4.6). The runner
+   writes `prepublish-advisory.md`, and the worker appends it to its block
+   under **Advisory signals (not a gate)** (`Worker._prepublish_advisory`):
+   what the graph selected, **test reach** (M11: the changed symbols with no
+   covering test edge, nor a test this change adds or edits that names them),
+   and the agent's `self-check.md` from the artifacts directory, or a line
+   saying it wrote none. Auto-merge, the review verdict and the requirements
+   never read it, and it never sets `prepublish_checks_failed`.
+
+   **Why a sibling rule as well as the graph.** The graph is read from the
+   snapshot staged beside the checkout (`.swarm-context/snapshot`, or
+   `SWARM_CONTEXT_DIR`). A step with none staged still runs a changed test and
+   the `.tsx`'s own `.test.tsx`, and says test reach is *unknown*: it never
+   reports every symbol covered because it could not look.
 
 The result records the rebase and every check's name, status and duration per
 round (`result_summary.runner.output.prepublish`), never a check's output. The

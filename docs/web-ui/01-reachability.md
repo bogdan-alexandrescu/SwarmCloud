@@ -240,10 +240,10 @@ becomes a hard break the day `ENVIRONMENT` is not `dev`.
    its own copy and its own next step:
    - `403 forbidden` / `domain <x> is not permitted` (`identity.py:96`) — "SwarmCloud
      accepts saga.xyz accounts. You are signed in as `<email>`." + a "switch account"
-     link. *The sign-out path `/_gcp_iap/clear_login_cookie` is Google's, not ours, and
-     is not verifiable in this repository — confirm it against IAP's docs before shipping
-     the link, and fall back to plain copy ("sign out of Google and sign in again") if it
-     does not hold.*
+     link. *Resolved 2026-10-14 (SIGNOUT): the `/_gcp_iap/clear_login_cookie` path this
+     note asked to confirm appears on no current IAP page; the documented form is
+     `?gcp-iap-mode=CLEAR_LOGIN_COOKIE`, and that is what the console uses — see
+     "Signing out" below.*
    - `503 upstream_unavailable` / *"group membership could not be resolved; retry
      shortly"* (`auth.py:213-214`) — "We could not confirm which team you belong to. This
      is Google's group service, not your account." + a Retry button. **This is never
@@ -255,6 +255,53 @@ becomes a hard break the day `ENVIRONMENT` is not `dev`.
      id collides with a registered group. This is a platform misconfiguration." + the two
      principals from `detail.registered_principal` / `detail.requested_principal`.
    - `403 forbidden` / *"tenant `<x>` is disabled"* (`service.py:97-98`).
+
+**SIGNING OUT, AND SIGNING IN AS SOMEONE ELSE** (owner request 2026-10-14, built in
+`apps/swarm-ui/src/signoutState.ts` and `SignOut.tsx`). The panel's footer has a **Sign out**
+button on the name row, above the Light/Dark/System switch: icon and word at desktop
+width, the icon alone (named "Sign out" to assistive technology) below 760px and beside
+the avatar on the collapsed spine. It has no confirmation, because signing back in is one
+Google page, and no keyboard shortcut, so it only fires on a deliberate click. It is not
+drawn on `localhost`, `*.local` or a bare IP address: `npm run dev` has no IAP session to
+end.
+
+What a click does, in order:
+
+1. Removes **this console's per-user keys** from `localStorage` — the tenant switcher's
+   choice (`swarm.tenant`), the default tenant, the remembered tenant names, recent and
+   newest workflows (including their `:<tenant>` variants), and the timeline's saved
+   filter — and every `swarm.` key in `sessionStorage`. It **keeps** the per-browser
+   display preferences: theme, collapsed panel, pane sizes, list width, graph drawing,
+   diff view. Neither list says anything about a person the other does not, and the next
+   person at the browser gets the same screen. Another app's keys are never touched.
+   `signout.test.tsx` fails when a source file declares a `swarm.` key that is in neither
+   list, so new per-user state cannot quietly outlive a sign-out.
+2. Drops the in-memory read cache and the API-reads registry (`fetch.ts`
+   `forgetReads`, `forgetProbes`) and the tenant-switch banner.
+3. Navigates to **`/?gcp-iap-mode=CLEAR_LOGIN_COOKIE`**, Google's documented way to clear
+   IAP's cookies for an app ([IAP: using query parameters and
+   headers](https://cloud.google.com/iap/docs/special-urls-howto), read 2026-10-14). It
+   does **not** sign anyone out of Google.
+
+**Whether the person can pick a different account is Google's call, and the doc says
+which way it goes:** "a silent sign-in might happen when there is only one account in use
+with the IdP. If there are multiple accounts in use, an account selection page opens."
+The deployment cannot force the chooser: `prompt=select_account` is a parameter of the
+OAuth request, and IAP builds that request with a Google-managed OAuth client
+(`terraform/modules/frontend/main.tf`, the `iap {}` blocks set no `oauth2_client_id`), so
+there is nothing of ours to add it to. The console handles the silent case on the way
+back instead: before leaving, it notes the email in the tab's `sessionStorage`
+(`swarm.signout.from`). If the **same** email comes back, the page shows "You signed out,
+and Google signed you back in as …" with **Choose another account**, a link to
+`https://accounts.google.com/AccountChooser?continue=<origin>/?gcp-iap-mode=CLEAR_LOGIN_COOKIE`.
+Google's chooser adds or picks an account without signing out of the first. Once two
+accounts are in use, IAP's own sign-in shows its chooser too. **Stay as …** dismisses
+it. A different email arriving is the sign-out working, and nothing is shown.
+
+**Not verified in this repository:** that Google honours `continue=` to this origin from
+`AccountChooser`. If it does not, the person lands on their Google account page, already
+signed in with both accounts; the banner says to open the console's address again, and
+then IAP shows its chooser.
 
 **WHERE EVERY VALUE COMES FROM.** The asserted email: the `email` claim of the verified
 IAP JWT, echoed back by `GET /v1/tenants/me` → `principal.email` (`tenants.py:30-37`).

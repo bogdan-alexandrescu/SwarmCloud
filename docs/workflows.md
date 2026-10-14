@@ -570,6 +570,73 @@ would otherwise sit in `DEPENDENCY_INCOMPLETE` forever — holding no capacity, 
 never completing and never erroring, which is the worst kind of failure because
 nothing alerts on it.
 
+## Waiting for a pull request: `after`
+
+**Why it exists.** On 2026-10-14 three lanes -- RELAY-ROLL, DEVB-GATE and
+EGRESS-GATE -- each depended on another lane's pull request, and each sat
+until an operator noticed that pull request had merged and submitted them by
+hand. A workflow now says what it waits for, and the platform starts it
+(owner decision, delivery speed plan D3):
+
+```json
+{"repository_url": "https://github.com/owner/repo", "after": {"pr": 41}, "steps": [...]}
+```
+
+`after` is one `{"pr": N}` or a list of them, at most 10. The numbers are
+pull requests of the **workflow's own repository** -- a number, never a
+repository, so a spec cannot point the tenant's token at anything else. A
+workflow with no `repository_url`, or one not on github.com, is refused at
+submission, naming `after`.
+
+**What happens.** Every root step (a step that depends on no other) is
+written `PARKED(DEPENDENCY_INCOMPLETE)` carrying `metadata.after_prs`; every
+other step already waits on a root, so the whole workflow waits. It holds no
+lease, no pool count and no execution (invariant 1). Then:
+
+* **the wake tick reads.** The merge step's per-tenant tick
+  (`POST /v1/admin/merges/wake`, Cloud Scheduler job `merge_wake`, every
+  minute) reads each waiting gate's pull requests with **the tenant's own
+  `-git` token**, at most once per `issueci.CI_READ_SECONDS` per gate
+  (`swarm_api.prgate.wake_tenant`). It writes only the gate, in a
+  transaction guarded on the task still being PARKED on that gate. It never
+  moves a task.
+* **every one merged -> released.** The gate is marked `merged`; the
+  scheduler's dependency sweep promotes the root to READY on its next drain
+  and admission takes it as any other step. The reconciler's
+  DEPENDENCIES_MET rule is the backstop, as for any dependency park.
+* **one closed without merging -> failed.** The gate is marked `closed`,
+  naming it; the scheduler dead-letters the root ("pull request #42 of
+  owner/repo was closed without being merged; ..."), and its dependants are
+  cancelled as a failed parent's. PARKED -> FAILED is not a transition the
+  contract allows; DEAD_LETTERED is, and the workflow reads failed.
+* **a pull request GitHub says does not exist keeps waiting**, with the
+  tick's failure `pull_request_not_found`: a token that lost the repository
+  answers 404 too, and failing every waiting workflow on a rotated token is
+  worse than waiting. Cancel the workflow to stop it.
+
+**No webhook.** The platform has no GitHub webhook receiver (a per-repository
+hook, an HMAC secret per registration and a public unauthenticated route --
+docs/merge-step.md says why it has none), so the tick is the wake: a merge is
+noticed within a minute or two. The scheduler never reads GitHub.
+
+**Restart-safe by construction.** The wait is a document, not a process: the
+gate, its last reading and its release are on the root task. A restarted
+swarm-api re-reads the gates on its next tick; a restarted scheduler reads
+the gate's `state` on its next drain.
+
+**Where it shows.** `GET /v1/workflows[/{id}]` serves `after_pull_requests`
+(`state`, `pull_requests`, `pending`, `merged`, `closed`, and `text`) on a
+workflow submitted with `after`, read off its step tasks. The console's
+workflow list and page print `text` as a tag -- "waiting for PR #41 to
+merge" -- and `sc workflows` prints it under the workflow. A released wait
+prints nothing; the steps say the rest.
+
+**The contract.** The frozen `Workflow` has no metadata and `ParkReason` has
+no "pull request pending", so the gate lives on the root tasks and the park
+reuses `DEPENDENCY_INCOMPLETE`; every promoter of that reason checks the
+gate. Contract change request 76 (docs/contract-change-requests.md) asks for
+a typed home.
+
 ## The base pin: a downstream step starts where its parents started
 
 **Why it exists.** On 2026-10-02 workflow `wf_b9b337e107494c10a416`

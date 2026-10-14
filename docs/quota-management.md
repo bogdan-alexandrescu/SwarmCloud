@@ -285,6 +285,18 @@ tenant that runs on a pool account usually has no such pool.
 ./scripts/api.sh PUT /admin/limits/provider/anthropic '{"hard_limit": 80}'
 ```
 
+A tenant held low by AIMD after a 429 -- target far below both its pool's
+`hard_limit` and its `configured_hard_max` -- does not rise when either ceiling
+is raised: AIMD only ever climbs by +1 per 20 consecutive successes. A platform
+admin can reset the target, clamped to `configured_hard_max` and audited in
+`quota_audit`; the next 429 halves it again.
+[runbooks/quota-throttled-tenant.md](runbooks/quota-throttled-tenant.md).
+
+```bash
+./scripts/api.sh PUT /admin/quota/anthropic/u-bogdan/adaptive-target \
+  '{"target": 40, "reason": "lent two more accounts"}'
+```
+
 Verify the behaviour end to end without waiting for a real rate limit:
 
 ```bash
@@ -304,7 +316,7 @@ original state on every exit path.
 |---|---|---|
 | Tasks park on their first drain after submit | tenant has no key for the profile's provider, and no pool account can run the profile for it | `park_reason: CREDENTIAL_MISSING`; the `parked` event's `detail.account_pool` says which condition in section 4 failed; `scripts/create-secrets.sh --list` |
 | A task that ran on a lent account parks `CREDENTIAL_MISSING` and stays parked for up to an hour | the worker wrote that park, not admission. Either it could not reach the broker and the tenant has no key to fall back to (the event has `provider` and no `account_pool_reason`), or the broker refused it (`account_pool_reason: broker_refused`, usually a missing `run.invoker` grant), or it could read no account's secret (`account_unreadable`) | the credential sweep waits for the park's `next_eligible_at` on purpose (section 4). Fix the cause, or register a key: a key promotes the task on the next drain |
-| Provider stuck at a low target | AIMD is still climbing after a 429 storm | `quota/{provider}:{tenant}.success_count` vs `AIMD_SUCCESS_THRESHOLD` |
+| Provider stuck at a low target | AIMD is still climbing after a 429 storm | `quota/{provider}:{tenant}.success_count` vs `AIMD_SUCCESS_THRESHOLD`; once the cause is fixed, a platform admin may reset it ([runbooks/quota-throttled-tenant.md](runbooks/quota-throttled-tenant.md)) |
 | Provider never recovers | `state=EXHAUSTED` and nothing clears it | `reset_at` in the future, or the broker tick is not running |
 | One tenant's 429s throttle everyone | **a regression, not an expected mode** — section 3 forbids a tenant-derived limit on `provider:X`. Compare `provider:X` and `provider:X:tenant:Y` in `status.sh`; if `provider:X` carries a `quota_derived_limit` while any enabled tenant is healthy, `_recompute_provider_pool` has broken and the AIMD test that covers it should be failing |
 | Workers burning CPU while rate-limited | `max_in_worker_retry_delay_seconds` set too high | it should stay well under a typical provider window |

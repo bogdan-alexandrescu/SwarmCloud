@@ -1,0 +1,352 @@
+# decision-api: the ONE way out of this cluster onto Saga's Tailscale tailnet,
+# and the one place it leads -- the decision API Jev's internal judgment
+# backends call (owner decisions 2026-10-14; lane JUDGE-NET;
+# docs/runbooks/tailscale-egress.md).
+#
+# A pod labelled `swarm-judge: internal` connects to
+#
+#   decision-api.swarm-system.svc.cluster.local:443
+#
+# and gets a raw TCP stream to __TAILNET_FQDN__:443 on the tailnet. TLS is
+# end to end, between the caller and the decision API: nothing here
+# terminates it, holds a certificate or sees a request. The certificate is
+# the tailnet name's, so a caller connects to the in-cluster Service and
+# verifies (and sends SNI and Host for) the tailnet name -- curl spells that
+# `--connect-to`; the runbook has the command.
+#
+# A TEMPLATE, with ONE placeholder (the tailnet name), filled by
+# terraform/infra/tailscale.tf and served as its `tailscale_egress_manifest`
+# output; `kubernetes/apply.sh --swarm-system` applies it after the relay and
+# swarm-egress, and then syncs the Tailscale OAuth client secret into the
+# `operator-oauth` Secret below the manifest refers to. Null while
+# enable_tailscale_egress is off, so nothing about the tailnet is applied.
+#
+# APPLY IT TO swarm-autopilot ONLY. `agents-staging` in the same project is
+# another team's cluster (CLAUDE.md rule 2); apply.sh refuses it.
+#
+# WHY NOT THE TAILSCALE KUBERNETES OPERATOR. The owner chose the operator and
+# one egress Service. Read at v1.104.1, the operator cannot run an egress
+# proxy on Autopilot: an egress Service (`tailscale.com/tailnet-fqdn`) makes
+# it build its proxy from cmd/k8s-operator/deploy/manifests/proxy.yaml -- a
+# PRIVILEGED `sysctler` init container that turns on ip_forward and a
+# PRIVILEGED tailscale container that DNATs with iptables -- and the
+# userspace template (userspace-proxy.yaml) is used only for Ingress serve
+# proxies (sts.go reconcileSTS). Overriding TS_USERSPACE=true through a
+# ProxyClass does not help either: containerboot refuses it outright,
+# "TS_TAILNET_TARGET_FQDN is not supported with TS_USERSPACE"
+# (cmd/containerboot/settings.go). GKE Autopilot admits no privileged
+# container (and NET_ADMIN only with --workload-policies=allow-net-admin,
+# which still leaves the privileged init), and this namespace enforces the
+# `restricted` Pod Security Standard. Tailscale's own documentation says the
+# operator is not supported on Autopilot for exactly this.
+#
+# So this is the same egress Service built from the same image the operator
+# would have run, without the operator: ONE unprivileged pod,
+#
+#   * `tailscale`  -- containerboot in USERSPACE networking mode
+#     (TS_USERSPACE=true, `tailscaled --tun=userspace-networking`): no TUN
+#     device, no iptables, no sysctl, no capability at all. It joins the
+#     tailnet as an EPHEMERAL node tagged tag:swarmcloud, authenticating with
+#     the OAuth client's secret (tailscale up --client-secret; an OAuth key is
+#     ephemeral unless it says otherwise). Its state is in memory
+#     (TS_KUBE_SECRET="" and no TS_STATE_DIR -> --state=mem:), so it needs no
+#     Kubernetes API, no RBAC and no service account token; a restart is a
+#     fresh ephemeral node, and the tailnet removes the old one by itself;
+#   * `forwarder`  -- busybox `nc -lk` on 8443, which for each connection runs
+#     `tailscale nc __TAILNET_FQDN__ 443` against tailscaled's LocalAPI socket
+#     in the shared /run/tailscale. The destination is in the command line,
+#     not taken from the connection: a caller cannot ask it for any other
+#     host or port.
+#
+# NOTHING ELSE ON THE TAILNET. Three independent limits, any one of which
+# holds it to the one destination:
+#
+#   1. the forwarder dials exactly __TAILNET_FQDN__:443 (above);
+#   2. the tailnet policy file grants tag:swarmcloud only that host on
+#      tcp:443, and nothing on the tailnet may open a connection TO
+#      tag:swarmcloud (the runbook has the ACL; the tailnet admin applies it);
+#   3. who reaches this pod: TCP 8443 from a pod the dispatcher labels
+#      `swarm-judge: internal` in a tenant namespace, and from nothing else
+#      (the NetworkPolicy below, and network-policies/allow-judge-egress.yaml
+#      on the tenant side). swarm-system-default-deny-ingress closes the rest.
+#
+# THE CREDENTIAL. The OAuth client secret lives in Secret Manager as
+# `swarm-tailscale-oauth` (terraform/infra/tailscale.tf: the container, never
+# a version). It is NOT in this file, a tfvars file, terraform state, an
+# environment variable or a log. apply.sh --swarm-system --confirm copies it
+# into the Kubernetes Secret `operator-oauth` (key `client_secret`; the name
+# the operator uses, so a later move to the operator reuses it) and the
+# tailscale container reads it as a FILE (TS_CLIENT_SECRET=file:...), so it
+# is not in the container's environment either.
+#
+# PINNED. ghcr.io/tailscale/tailscale v1.104.1 (released 2026-10-07), by the
+# digest of its multi-arch index, read from ghcr.io on 2026-10-14. A new
+# version is a deliberate edit of the one image line, with the release notes
+# read; tests/unit/scripts/test_tailscale_egress.py holds the pin.
+#
+# NOT MEASURED: the resource sizes below, and the forwarder's concurrency.
+# Every open connection is one `tailscale nc` process (~20 MiB); 512 MiB is
+# room for about twenty judgments in flight. Read the pod's metrics once Jev
+# runs through it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    # The same labels as swarm-live.yaml's and swarm-egress.yaml's copies of
+    # this object: all three create the namespace, so any may be applied
+    # first, and they must not fight over it.
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: decision-api-egress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: decision-api-egress
+# The pod never calls the Kubernetes API (its tailscale state is in memory),
+# and has no Google identity: it reads nothing from Secret Manager itself.
+automountServiceAccountToken: false
+---
+# Who may reach the forwarder, from the moment it exists: a pod the dispatcher
+# labelled `swarm-judge: internal` in a tenant namespace, on 8443. ONE peer
+# with both selectors (two would be an OR: every pod in every tenant namespace,
+# or a pod so labelled in ANY namespace). Before the Service and the
+# Deployment, so the pod is never selected by no policy at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: decision-api-egress-ingress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: decision-api-egress
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              app.kubernetes.io/part-of: swarm
+            matchExpressions:
+              - key: swarm-tenant
+                operator: Exists
+          podSelector:
+            matchLabels:
+              swarm-judge: "internal"
+      ports:
+        - protocol: TCP
+          port: 8443
+---
+# decision-api.swarm-system.svc.cluster.local:443 -> the forwarder's 8443.
+# A ClusterIP Service, not headless, so callers use 443 as the brief names it;
+# Dataplane V2 enforces NetworkPolicy after the Service's DNAT, so the
+# policies above and in the tenant namespace judge the pod and its 8443.
+apiVersion: v1
+kind: Service
+metadata:
+  name: decision-api
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: decision-api-egress
+  annotations:
+    swarm.saga.xyz/tailnet-fqdn: __TAILNET_FQDN__
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: decision-api-egress
+  ports:
+    - name: https
+      protocol: TCP
+      port: 443
+      targetPort: 8443
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: decision-api-egress
+  namespace: swarm-system
+  labels:
+    managed-by: swarm-terraform
+    app.kubernetes.io/name: decision-api-egress
+spec:
+  # One ephemeral tailnet node. Recreate, so a rollout never has two nodes
+  # claiming the same hostname; a judgment in flight during a rollout fails
+  # and is retried by its caller.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: decision-api-egress
+  template:
+    metadata:
+      labels:
+        managed-by: swarm-terraform
+        app.kubernetes.io/name: decision-api-egress
+    spec:
+      serviceAccountName: decision-api-egress
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      terminationGracePeriodSeconds: 15
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: tailscale
+          image: ghcr.io/tailscale/tailscale:v1.104.1@sha256:87c55d6be56ad85b3d8bceca5f87f73de288c609131460dd1be1874c250cc41d
+          imagePullPolicy: IfNotPresent
+          command: ["/usr/local/bin/containerboot"]
+          env:
+            # Userspace networking: no TUN, no iptables, no privilege.
+            - name: TS_USERSPACE
+              value: "true"
+            # Explicitly empty: state in memory, no Kubernetes Secret, so no
+            # RBAC and no API token. (Unset, containerboot defaults to a
+            # Secret named `tailscale` inside Kubernetes.)
+            - name: TS_KUBE_SECRET
+              value: ""
+            # A PATH, never the value: tailscale up reads the file.
+            - name: TS_CLIENT_SECRET
+              value: file:/oauth/client_secret
+            - name: TS_EXTRA_ARGS
+              value: --advertise-tags=tag:swarmcloud
+            - name: TS_HOSTNAME
+              value: swarmcloud-decision-api
+            - name: TS_ACCEPT_DNS
+              value: "false"
+            - name: TS_AUTH_ONCE
+              value: "false"
+            - name: TS_SOCKET
+              value: /run/tailscale/tailscaled.sock
+            # No log upload to Tailscale: the node's logs stay in the pod.
+            - name: TS_TAILSCALED_EXTRA_ARGS
+              value: --no-logs-no-support
+            # /healthz answers 200 once the node has a tailnet address; the
+            # readiness probe below keeps the Service empty until then.
+            - name: TS_ENABLE_HEALTH_CHECK
+              value: "true"
+            - name: TS_LOCAL_ADDR_PORT
+              value: 0.0.0.0:9002
+            # tailscaled writes its small cache under $HOME.
+            - name: HOME
+              value: /tmp
+          # Invariant 7: requests == limits, no bursting.
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+            limits:
+              cpu: 250m
+              memory: 256Mi
+              ephemeral-storage: 256Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9002
+            periodSeconds: 5
+          # A node that has had no tailnet address for a minute and a half
+          # is restarted: a fresh ephemeral login is cheap.
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9002
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 6
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: oauth
+              mountPath: /oauth
+              readOnly: true
+            - name: run
+              mountPath: /run/tailscale
+            - name: tmp
+              mountPath: /tmp
+        - name: forwarder
+          image: ghcr.io/tailscale/tailscale:v1.104.1@sha256:87c55d6be56ad85b3d8bceca5f87f73de288c609131460dd1be1874c250cc41d
+          imagePullPolicy: IfNotPresent
+          # `-e` takes the rest of the line as the program and its arguments;
+          # the destination is fixed here, never read from the connection.
+          command:
+            - /bin/busybox
+            - nc
+            - -lk
+            - -p
+            - "8443"
+            - -e
+            - /usr/local/bin/tailscale
+            - --socket=/run/tailscale/tailscaled.sock
+            - nc
+            - __TAILNET_FQDN__
+            - "443"
+          ports:
+            - name: forward
+              containerPort: 8443
+              protocol: TCP
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 64Mi
+            limits:
+              cpu: 250m
+              memory: 512Mi
+              ephemeral-storage: 64Mi
+          readinessProbe:
+            tcpSocket:
+              port: 8443
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 8443
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            privileged: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: run
+              mountPath: /run/tailscale
+      volumes:
+        # Written by apply.sh --swarm-system --confirm from Secret Manager.
+        # Not optional: until it exists the pod waits rather than starting a
+        # node that cannot log in.
+        - name: oauth
+          secret:
+            secretName: operator-oauth
+            # Group-readable: the file is root's, the pod's fsGroup reads it.
+            defaultMode: 0440
+            items:
+              - key: client_secret
+                path: client_secret
+        # tailscaled's LocalAPI socket, shared with the forwarder.
+        - name: run
+          emptyDir:
+            medium: Memory
+            sizeLimit: 1Mi
+        - name: tmp
+          emptyDir:
+            medium: Memory
+            sizeLimit: 64Mi

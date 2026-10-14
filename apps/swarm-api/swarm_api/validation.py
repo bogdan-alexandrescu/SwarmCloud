@@ -862,6 +862,16 @@ DEFAULT_CARRIER = "checkpoints"
 #: form: a caller who already sends `metadata.strategy` for their own purposes
 #: must not have it silently overwritten by the platform.
 DISPATCH_METADATA_KEY = "dispatch"
+#: The record a merge step's conflict fix round is submitted with
+#: (`mergewake._on_conflict`, #1076): round, merge task, head, pull request.
+#: A caller's metadata as far as signing goes, so the worker never reads it.
+CONFLICT_ROUND_METADATA_KEY = "merge_conflict_round"
+#: The dispatch block's mark of a conflict fix round (#1321), copied from
+#: the record above at submission, on a continuation only. Inside the signed
+#: block, so the worker may act on it: it checks, before the round pushes,
+#: that the branch now stands on the default branch's head. The worker spells
+#: it `agent_worker.lifecycle.CONFLICT_ROUND_FIELD`.
+CONFLICT_ROUND_FIELD = "conflict_round"
 
 #: The key inside `task.metadata` the worker stages declared inputs from:
 #: `{upstream TASK id: filename}`. Written by workflow expansion only
@@ -997,6 +1007,16 @@ SCHEDULE_METADATA_KEY = "schedule"
 HUMAN_WAIT_RESUMES_METADATA_KEY = "human_wait_resumes"
 HUMAN_READY_METADATA_KEY = "human_ready"
 HUMAN_HANDOFFS_METADATA_KEY = "human_handoffs"
+#: LB-RETURN: a person returned control while an attempt ran; the worker's park
+#: of exactly that attempt reads it and re-queues READY instead. A caller who
+#: set it would turn a park into a free re-queue.
+HUMAN_RETURNED_METADATA_KEY = "human_returned"
+
+#: The pull requests a workflow's root step waits for before it may start
+#: (`after`, lane SPEED-D3, `swarm_api.prgate`): written by `submit_workflow`
+#: from the spec's `after` and then only by the wake tick. A caller who set
+#: it would start a held workflow early or hold one nobody asked to.
+AFTER_PRS_METADATA_KEY = "after_prs"
 
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
@@ -1017,9 +1037,11 @@ RESERVED_METADATA_KEYS = (
     HUMAN_WAIT_RESUMES_METADATA_KEY,
     HUMAN_READY_METADATA_KEY,
     HUMAN_HANDOFFS_METADATA_KEY,
+    HUMAN_RETURNED_METADATA_KEY,
     START_PROBLEM_METADATA_KEY,
     OWNER_ANSWERS_METADATA_KEY,
     FORGE_SOURCE_METADATA_KEY,
+    AFTER_PRS_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -1403,6 +1425,10 @@ class DispatchOptions:
     #: tenant's `findings_epic` setting at submission. Here, inside the signed
     #: block, so no agent of the tenant can point the worker at another issue.
     findings_epic: int | None = None
+    #: A merge step's conflict fix round (#1321): set by `submit_workflow` on
+    #: a continuation whose metadata carries `CONFLICT_ROUND_METADATA_KEY`.
+    #: Written only when true, inside the signed block.
+    conflict_round: bool = False
     #: `(upstream TASK id, upstream STEP id)` for every `input_from` entry of a
     #: step that opted in to `input_layout: "by_parent"` (#75), else empty. The
     #: worker sees only task ids in `metadata.input_from`; this is how it learns
@@ -1587,6 +1613,10 @@ class DispatchOptions:
         # every other step stores exactly the block it stored before.
         if self.merge_target:
             block[MERGE_TARGET_FIELD] = dict(self.merge_target)
+        # Absent on every step but a conflict fix round (#1321), so every
+        # other step stores exactly the block it stored before.
+        if self.conflict_round:
+            block[CONFLICT_ROUND_FIELD] = True
         return block
 
 
@@ -1708,6 +1738,11 @@ _RESERVED_BECAUSE = {
         "live-browser hand-offs an attempt asked for, written only by the worker's "
         "hand-off route. Drop the key from metadata."
     ),
+    HUMAN_RETURNED_METADATA_KEY: (
+        f"metadata.{HUMAN_RETURNED_METADATA_KEY} is reserved: it records a person's "
+        "return of the live browser during an attempt, written only by "
+        "POST /v1/tasks/{task_id}/live/control/return. Drop the key from metadata."
+    ),
     OWNER_ANSWERS_METADATA_KEY: (
         f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "
         "answers to the agent's questions, written only by "
@@ -1717,6 +1752,12 @@ _RESERVED_BECAUSE = {
         f"metadata.{FORGE_SOURCE_METADATA_KEY} is reserved: it says whose GitHub "
         "credential a service submission runs with, written only by submission. "
         "Drop the key from metadata."
+    ),
+    AFTER_PRS_METADATA_KEY: (
+        f"metadata.{AFTER_PRS_METADATA_KEY} is reserved: it records the pull "
+        "requests a workflow waits for, written from the spec's `after` and then "
+        "only by the platform's wake tick. Name them in `after` instead, e.g. "
+        '"after": {"pr": 41}.'
     ),
 }
 

@@ -51,6 +51,7 @@ from . import gitidentity
 from .auth import AuthContext
 from .codec import hard_limit_known, quota_to_api
 from .cifix import stamp as stamp_ci_fix
+from .prgate import gate_for, resolve_after
 from .continuation import (
     NamedPull,
     resolve_continuation,
@@ -81,6 +82,7 @@ from .store import Store, derived_service_account
 from .task_accounts import ACCOUNT_TOKEN_ENV
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
+    CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
     FORGE_SOURCE_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
@@ -114,6 +116,7 @@ from .validation import (
     resolve_merge_choice,
     resolve_fix_rounds,
     resolve_merge_fix_rounds,
+    AFTER_PRS_METADATA_KEY,
     github_repository,
     is_service_submitter,
     repository_not_granted,
@@ -727,8 +730,18 @@ class SubmissionService:
                 scale="workflow",
                 repository_url=repository_url,
             )
+            # Lane SPEED-D3: the pull requests of the workflow's own
+            # repository it waits for, once that repository is known.
+            after_prs = resolve_after(
+                [entry.pr for entry in spec.after] if spec.after else None, repository_url,
+            )
             if continuation:
                 dispatch = replace(dispatch, continues=continuation.root_task_id)
+                # A merge step's conflict fix round (#1321), marked inside the
+                # signed block so the worker may check, before it pushes, that
+                # the round left the branch on the default branch's head.
+                if isinstance(spec.metadata.get(CONFLICT_ROUND_METADATA_KEY), dict):
+                    dispatch = replace(dispatch, conflict_round=True)
             # The merge step (contract request 47): appended here, once the
             # strategy is known and before anything is built or signed, then
             # checked with the rest of the graph.
@@ -923,6 +936,15 @@ class SubmissionService:
                 repository_ref=spec.repository_ref,
                 git_identity=git_identity,
             )
+            if after_prs and not source.depends_on:
+                # SPEED-D3: a root step waits for the pull requests to merge,
+                # PARKED and holding nothing (invariant 1); every other step
+                # already waits on a root. The wake tick marks the gate and
+                # the scheduler's dependency sweep promotes it (`prgate`).
+                assert_transition(TaskState.QUEUED, TaskState.PARKED)
+                task.state = TaskState.PARKED
+                task.park_reason = ParkReason.DEPENDENCY_INCOMPLETE
+                task.metadata[AFTER_PRS_METADATA_KEY] = gate_for(after_prs, repository_url or "")
             # The one place `metadata.input_from` is written. After `_build_task`,
             # which refused the key in the caller's metadata, so what lands here
             # is only ever this rewrite of a step declaration the DAG check has

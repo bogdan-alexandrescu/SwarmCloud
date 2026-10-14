@@ -1106,10 +1106,14 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_workflow_launch",
         "description": (
             "Write the script a /sc:swarmcloud run is launched from, titled after "
-            "its SwarmCloud workflow: `SC · <name> · N steps`, at most 150 "
-            "characters, where <name> is the spec's `title`, else its `label` cut at "
-            "a word, else (attach) the title or label SwarmCloud stored, else the "
-            "workflow id. A workflow script's name is fixed when it is launched, so "
+            "its SwarmCloud workflow: `SC · <name> · N steps` (single tasks: `SC · "
+            "<label> · task`), at most 150 characters, where <name> is the spec's "
+            "`title`, else its `label` cut at a word, else (attach) the title or label "
+            "SwarmCloud stored, else the workflow id; the step count is never cut. "
+            "The run's description STARTS with `Workspace: <workspace> (<tenant>) · `, "
+            "the workspace the API's document names (`Workspace: not reported` when it "
+            "names none), so clipping the description never drops it. A workflow "
+            "script's name is fixed when it is launched, so "
             "this writes a copy of the plugin's run.js with that name and returns "
             "its `script_path`: launch it with the Workflow tool, "
             "{scriptPath: <script_path>, args: ...}. Submits NOTHING.\n"
@@ -1117,8 +1121,10 @@ TOOLS: list[dict[str, Any]] = [
             "Pass ONE of `spec` (the spec object), `spec_path` (its file) or "
             "`attach` (a workflow id, read once for its stored name and step "
             "count; or \"all\": every running workflow of your tenant, one copy "
-            "each, at most 10 -- one Claude Code run per SwarmCloud workflow, "
-            "each launched with the `args` its entry carries)."
+            "each, newest first and grouped by workspace, at most the sc plugin's "
+            "`max_live_rows` (30 unless set; 1-50) -- one Claude Code run per "
+            "SwarmCloud workflow, each launched with the `args` its entry carries; "
+            "the rest in `not_followed`)."
         ),
         "inputSchema": {
             "type": "object",
@@ -1126,6 +1132,28 @@ TOOLS: list[dict[str, Any]] = [
                 "spec": {"type": "object", "description": "The workflow spec about to be run."},
                 "spec_path": {"type": "string", "description": "Its file, under this checkout: relative to it, or absolute."},
                 "attach": {"type": "string", "description": "A workflow id, or \"all\"."},
+                "repository": {
+                    "type": "string",
+                    "description": (
+                        "With attach \"all\" only (SC-WATCH): keep the workflows and single "
+                        "tasks that clone this repository -- a URL, `owner/repo`, \"origin\" "
+                        "(this checkout's remote) or \"all\". `repository_unread` lists those "
+                        "whose repository could not be read, with the command for each."
+                    ),
+                },
+                "new_only": {
+                    "type": "boolean",
+                    "description": (
+                        "With attach \"all\" only: leave out every workflow and task this "
+                        "session was already handed a row for (listed in `already_attached`), "
+                        "so nothing is attached twice."
+                    ),
+                },
+                "exclude": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "With attach \"all\" only: workflow or task ids with a live row you can see; left out.",
+                },
             },
         },
     },
@@ -1169,7 +1197,8 @@ TOOLS: list[dict[str, Any]] = [
         "description": (
             "The workflows of YOUR tenant that are still running in SwarmCloud: "
             "every one whose derived state is not SUCCEEDED, FAILED, CANCELLED or "
-            "DEAD_LETTERED, newest first, each with its workflow_id, its spec's "
+            "DEAD_LETTERED, newest first and grouped by workspace, each with its "
+            "workflow_id, the `workspace` it runs in, its spec's "
             "label, its state, its current (unfinished) steps and their states, "
             "its age and its console link. Read-only; it submits and attaches "
             "nothing. The API filters on the workflows' stored state in its "
@@ -1181,15 +1210,84 @@ TOOLS: list[dict[str, Any]] = [
             "may be missing. A workflow with `steps_unread_because` was listed "
             "but its steps were not read. To show them all as live rows, run "
             "`/sc attach --all` (the /sc:swarmcloud workflow with "
-            "{attach: \"all\"}), which follows at most 10.\n"
+            "{attach: \"all\"}), which follows at most the sc plugin's "
+            "`max_live_rows` (30 unless set).\n"
             "\n"
             "`single_tasks` lists YOUR running single tasks beside them: not "
             "finished, in no workflow, submitted by you (`swarm_dispatch`), each "
-            "with its task_id, label, state, age and console link. "
-            "`/sc attach --all` gives each one row too, at most 10. "
+            "with its task_id, workspace, label, state, age and console link. "
+            "`/sc attach --all` gives each one row too, at most `max_live_rows`. "
             "`single_tasks_error` means they could not be read."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "swarm_check",
+        "description": (
+            "Which SwarmCloud work of THIS PROJECT is stuck or stale -- read-only, it "
+            "cancels, retries and attaches nothing. Scoped to one repository (default: "
+            "this checkout's `origin` remote; a workflow belongs to the repository its "
+            "steps clone) in your tenant (`tenants: \"all\"` for every tenant you may "
+            "choose). `flagged` lists each item with `kind` STUCK or STALE, its `rule`, a "
+            "`reason`, the `evidence` the API served, its console link and `next`, the "
+            "command for a person to run:\n"
+            "  no_heartbeat (STALE): RUNNING/STARTING with no heartbeat and no event for "
+            "more than `stale_minutes` (default 20);\n"
+            "  waiting_for_capacity (STUCK): READY/QUEUED longer than that, with the pool "
+            "that binds it (`evidence.binding`);\n"
+            "  parked (STUCK): HUMAN_REQUIRED, CI_PENDING over 90 min, or "
+            "DEPENDENCY_INCOMPLETE whose dependency failed;\n"
+            "  merge_refused (STUCK): a merge step FAILED with head_moved, merge_conflict "
+            "or checks_failed, with its PR link -- the API serves no PR state, so whether "
+            "the PR is still open is not read;\n"
+            "  state_disagrees (STALE): a workflow whose stored and derived state disagree "
+            "on whether it is finished (the stale RUNNING cache).\n"
+            "`running` lists the project's running workflows and your single tasks; "
+            "`unchecked` names what was not checked and why; `repository: null` means "
+            "the check was not scoped (`repository_note` says why). Then attach rows "
+            "with swarm_workflow_launch {attach: \"all\", repository, new_only: true}."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "repository": {
+                    "type": "string",
+                    "description": "A URL or `owner/repo`; \"origin\" (the default) or \"all\".",
+                },
+                "stale_minutes": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "The window for no_heartbeat and waiting_for_capacity. Default 20.",
+                },
+                "tenants": {
+                    "type": "string",
+                    "enum": ["current", "all"],
+                    "description": "\"current\" (the default): the tenant this session acts in.",
+                },
+            },
+        },
+    },
+    {
+        "name": "swarm_check_schedule",
+        "description": (
+            "The sc plugin's watch for THIS PROJECT: a `/sc check` every interval. It "
+            "schedules nothing and reads nothing from SwarmCloud: `{interval}` (default "
+            "30m, at least 5m, e.g. `30m`, `1h`) saves the preference for this project "
+            "and answers `arm_with`, the CronCreate call that schedules it in this "
+            "session (`replace_first` says how to drop an older one), and `without_cron`, "
+            "the `/loop` command that does the same; `{off: true}` forgets it and says "
+            "how to cancel the job; neither reports it. An interval a cron expression "
+            "cannot say is rounded (`rounded`), one below the floor raised (`clamped`). "
+            "Scheduled prompts end with the session; the plugin's SessionStart hook asks "
+            "the next session to run `/sc watch` again while the preference is saved."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "interval": {"type": "string", "description": "`30m`, `45`, `1h`, `1h30m`. Default 30m."},
+                "off": {"type": "boolean", "description": "true: turn the watch off for this project."},
+            },
+        },
     },
     {
         "name": "swarm_workflow_result",
@@ -2215,6 +2313,10 @@ def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[s
     entries = []
     for task_id, label, task in sent:
         entry: dict[str, Any] = {"task_id": task_id, "label": label}
+        # The workspace the task runs in, from the API's own task (SC-ROWS).
+        workspace = workflows.workspace_of(task)
+        if workspace:
+            entry["workspace"] = workspace
         entries.append(with_console(entry, task))
     try:
         rows = launch.for_tasks(entries)
@@ -3668,6 +3770,9 @@ def _workflow_created(
     ]
     created: dict[str, Any] = with_console({"workflow_id": workflow_id}, workflow)
     created.update({
+        # The workspace it runs in, from the API's document (SC-ROWS): the
+        # label of every row /sc:swarmcloud starts for it.
+        "workspace": workflows.workspace_of(workflow, fallback=envelope.get("tenant_id")),
         "steps": steps,
         "dispatch": envelope.get("dispatch"),
         "repository": repository,
@@ -3914,8 +4019,11 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             task = client.task(t)
             # `console`: the API's link to this task, as served, in every
             # state -- a QUEUED task is the one a person opens it to watch.
+            # `workspace`: the tenant the task runs in, from its own document
+            # (SC-ROWS), which `/sc status` prints first on the task's line.
             rows.append(with_console(
-                {"task_id": t, "state": task.get("state"), "masked": masked_counts(task)}, task
+                {"task_id": t, "workspace": workflows.workspace_of(task), "state": task.get("state"),
+                 "masked": masked_counts(task)}, task
             ))
         return json.dumps(rows, indent=2)
 
@@ -4014,17 +4122,38 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
                 f"swarm_workflow_launch takes exactly one of `spec`, `spec_path` or `attach`; "
                 f"it was given {given or 'none'}. Nothing was written"
             )
-        if args.get("attach") is not None:
-            target = _text_arg(args, "attach", name)
+        filters = sorted(k for k in ("repository", "new_only", "exclude") if args.get(k) is not None)
+        target = _text_arg(args, "attach", name) if args.get("attach") is not None else None
+        if filters and target not in ("all", "--all"):
+            raise SwarmError(
+                f"swarm_workflow_launch takes {filters} only with attach \"all\". Nothing was written"
+            )
+        if target is not None:
             if target in ("all", "--all"):
-                return json.dumps(launch.for_all(client), indent=2, default=str)
+                if not filters:
+                    return json.dumps(launch.for_all(client), indent=2, default=str)
+                exclude = args.get("exclude")
+                if exclude is not None and not (
+                    isinstance(exclude, list) and all(isinstance(i, str) for i in exclude)
+                ):
+                    raise SwarmError("swarm_workflow_launch: `exclude` is a list of ids. Nothing was written")
+                return json.dumps(
+                    launch.for_all(
+                        client,
+                        repository=args.get("repository"),
+                        new_only=_flag(args, "new_only"),
+                        exclude=exclude,
+                    ),
+                    indent=2,
+                    default=str,
+                )
             return json.dumps(launch.for_attach(client, target), indent=2)
         document = (
             _read_spec_file(str(args["spec_path"]), base=checkout.directory())["spec"]
             if args.get("spec_path") is not None
             else args["spec"]
         )
-        return json.dumps(launch.for_spec(document), indent=2)
+        return json.dumps(launch.for_spec(document, client), indent=2)
 
     if name == "swarm_apply":
         repo = Path(args.get("repo") or ".").resolve()
@@ -4152,6 +4281,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             title=fields["title"],
             # Only a whole spec carries `merge`; the `steps` form never did.
             merge=fields.get("merge"),
+            # Nor `after` (SPEED-D3).
+            after=fields.get("after"),
         )
         reply = _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
                                   digest=digest, expected_digest=expected_digest,
@@ -4200,10 +4331,33 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         reported["bridge_version"] = bridge_version()
         return json.dumps(reported, indent=2)
 
+    if name == "swarm_check":
+        from . import check
+
+        return json.dumps(
+            check.run(
+                client,
+                repository=args.get("repository"),
+                stale_minutes=args.get("stale_minutes"),
+                tenants=args.get("tenants"),
+            ),
+            indent=2,
+            default=str,
+        )
+
+    if name == "swarm_check_schedule":
+        from . import watch
+
+        return json.dumps(watch.tool(args), indent=2)
+
     if name == "swarm_workflows":
         from .sc import running_tasks, running_workflows
 
+        from .launch import named_workspaces
+
         listing = running_workflows(client)
+        names = workflows.workspace_names(client)
+        named_workspaces(listing["workflows"], names)
         # The caller's running SINGLE tasks beside them (#830), so the LIST
         # row of `/sc attach --all` can give each a row. A failed read is said,
         # never an empty list.
@@ -4213,7 +4367,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             listing["single_tasks"] = []
             listing["single_tasks_error"] = str(exc)
         else:
-            listing["single_tasks"] = singles["tasks"]
+            listing["single_tasks"] = named_workspaces(singles["tasks"], names)
             listing["single_tasks_count"] = singles["count"]
             if not singles["complete"]:
                 listing["single_tasks_incomplete_because"] = singles.get("incomplete_because")

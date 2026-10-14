@@ -182,6 +182,7 @@ from .redaction import redact
 from .repositories import parse_repository
 from .schemas import WorkflowCreate
 from .validation import (
+    CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
     MERGE_METADATA_KEY,
     MERGE_FIX_ROUNDS_KEY,
@@ -825,7 +826,7 @@ def _on_conflict(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: Is
             rounds=MERGE_CONFLICT_ROUNDS_MAX,
             files=_conflicting_files(ctx.forge_writer, ref, read.pull, token),
             resource_class=resource_class,
-            metadata={"merge_conflict_round": {
+            metadata={CONFLICT_ROUND_METADATA_KEY: {
                 "merge_task": task_id,
                 "round": round_no,
                 "head_sha": head,

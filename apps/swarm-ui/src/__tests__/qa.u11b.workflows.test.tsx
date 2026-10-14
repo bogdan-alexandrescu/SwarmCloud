@@ -265,14 +265,18 @@ describe('the graph: a picked node\'s card is scrolled to', () => {
     // its card, and the arrival pick itself is not scrolled to (QA G3-28).
     // Queried AFTER the arrival pick has landed: the canvas redraws its nodes
     // then, and a node taken before it is a detached element a click misses.
-    // The arrival pick waits on the run's reads and a canvas layout; on a
-    // loaded CI shard that took longer than waitFor's 1s default (#1299).
+    // ITS OWN CEILING, NOT THE SUITE'S 2000 ms: this wait's callback is one
+    // `querySelector`, so it is not #605's query cost. Measured 2026-10-14 on an
+    // idle box, the page's reads (workflow, tenants, stats, capacity, tasks) all
+    // land within ~530 ms of `render`, then the graph page's own render takes
+    // another ~2.3 s before a node carries `is-picked` -- 1.9-3.4 s in all, and
+    // red at 2000 ms both on CI (run 38581770106) and on that box.
     await waitFor(() => expect(document.querySelector('.wf-canvas button.node.is-picked')).not.toBeNull(), {
-      timeout: 5000,
+      timeout: 10_000,
     })
     const node = document.querySelector<HTMLButtonElement>('.wf-canvas button.node:not(.is-picked)')!
     expect(node).not.toBeNull()
     fireEvent.click(node)
-    await waitFor(() => expect(seen.some((el) => el.classList.contains('wf-panel'))).toBe(true), { timeout: 5000 })
+    await waitFor(() => expect(seen.some((el) => el.classList.contains('wf-panel'))).toBe(true))
   })
 })

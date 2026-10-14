@@ -177,6 +177,23 @@ CI-fix round:
 * the round's pushed head is a fix round's head to the worker, exactly as in
   #1073; a merge, never a rebase or force-push, because a rewritten branch
   would orphan heads the step already accepted;
+* the merge reaches the forge as a **two-parent merge** (Revised 2026-10-14,
+  #1321). The worker rewrites every commit it pushes as its own, and that
+  rewrite used to drop every merge's second parent, so the round's
+  `git merge origin/main` was pushed with one parent: GitHub kept the old
+  merge base, listed every file main had changed as the PR's, and the PR still
+  conflicted (PR 1316, PR 1304). The replay and the fold now keep a merge
+  parent the forge's default branch holds (`lifecycle.replay_agent_commits`,
+  `gitops.fold_agent_commits`); a side branch the agent made is still
+  dropped, so none of its commits is pushed as the agent wrote it. Before it
+  pushes, a round checks that `git merge-base <main's head on the forge> HEAD`
+  is main's head -- or the main commit it merged, when main moved on during
+  the round -- and otherwise fails with that merge base named
+  (`gitops.verify_merged_default_branch`), rather than push a head that still
+  conflicts and spend a round on it. The worker knows a round by
+  `dispatch.conflict_round`, which swarm-api copies at submission from the
+  `merge_conflict_round` record the tick submits the round with: the worker
+  acts on no metadata the step-spec signature does not cover;
 * **at most `MERGE_CONFLICT_ROUNDS_MAX` = 2 rounds**, the PR-side CI fixer's
   own bound (`cifix.DEFAULT_MAX_ATTEMPTS`), whatever `merge_fix_rounds` says:
   that budget is about red CI and defaults to none, and a conflict nobody

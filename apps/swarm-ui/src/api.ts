@@ -5694,6 +5694,168 @@ export async function verifyGitToken(tokenId: string): Promise<Result<unknown>> 
 }
 
 // ---------------------------------------------------------------------------
+// Provider keys a person or an admin sets: TypeSafe (KEYS-API, PR #1284;
+// docs/provider-keys.md). Settings › API keys (ProviderKeys.tsx) is the only
+// caller. THE KEY IS AN ARGUMENT OF `putProviderKey` AND NOTHING ELSE: it goes
+// into that one request's body and is not kept, logged or returned here, and
+// no response carries it back. The status is copied field by field
+// (`normKeyStatus`), so anything a response carried by mistake is never drawn.
+// ---------------------------------------------------------------------------
+
+/** Whose key: the caller's own (`u-<you>`), or the selected tenant's (admins). */
+export type ProviderKeyScope = 'user' | 'tenant'
+
+/** One key's status: never a value, its length, a prefix or a suffix. */
+export interface ProviderKeyStatus {
+  /** False for `user` when the caller has no ready personal workspace to keep a key in. */
+  available: boolean
+  set: boolean
+  set_at: string | null
+  set_by: string | null
+  version: string | null
+}
+
+/** `GET /v1/provider-keys/{provider}`. */
+export interface ProviderKeys {
+  provider: string
+  user: ProviderKeyStatus
+  tenant: ProviderKeyStatus & { tenant_id: string }
+  /** Which key a task the caller submits in `tenant_id` would use. */
+  resolution: { tenant_id: string; uses: ProviderKeyScope | 'none' }
+  /** What reads these keys today. Empty: nothing does yet (docs/provider-keys.md). */
+  consumed_by: string[]
+}
+
+function keyField(v: unknown): string | null {
+  return typeof v === 'string' && v !== '' ? v : typeof v === 'number' ? String(v) : null
+}
+
+function normKeyStatus(raw: unknown): ProviderKeyStatus {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    available: r.available !== false,
+    set: r.set === true,
+    set_at: keyField(r.set_at),
+    set_by: keyField(r.set_by),
+    version: keyField(r.version),
+  }
+}
+
+function normProviderKeys(raw: unknown): ProviderKeys {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const tenant = (typeof r.tenant === 'object' && r.tenant !== null ? r.tenant : {}) as Record<string, unknown>
+  const res = (typeof r.resolution === 'object' && r.resolution !== null ? r.resolution : {}) as Record<string, unknown>
+  const uses = res.uses === 'user' || res.uses === 'tenant' ? res.uses : 'none'
+  const tenantId = keyField(res.tenant_id) ?? keyField(tenant.tenant_id) ?? ''
+  return {
+    provider: keyField(r.provider) ?? '',
+    user: normKeyStatus(r.user),
+    tenant: { ...normKeyStatus(r.tenant), tenant_id: keyField(tenant.tenant_id) ?? tenantId },
+    resolution: { tenant_id: tenantId, uses },
+    consumed_by: Array.isArray(r.consumed_by) ? r.consumed_by.filter((c): c is string => typeof c === 'string') : [],
+  }
+}
+
+/** `GET /v1/provider-keys/{provider}`: your key's status, your selected tenant's, and which a task here would use. */
+export async function loadProviderKeys(provider: string): Promise<Result<ProviderKeys>> {
+  return readAs(route('/v1/provider-keys/{provider}', { provider }), normProviderKeys)
+}
+
+/**
+ * `PUT /v1/provider-keys/{provider}/user|tenant`: store a key. `linkToken` is
+ * the `t` of a one-time link minted for this scope, sent back so the API can
+ * consume it; it authorises nothing (the caller's session does).
+ */
+export async function putProviderKey(provider: string, scope: ProviderKeyScope, apiKey: string, linkToken: string | null): Promise<Result<unknown>> {
+  const target = scope === 'user'
+    ? route('/v1/provider-keys/{provider}/user', { provider })
+    : route('/v1/provider-keys/{provider}/tenant', { provider })
+  return writeTo(target, 'PUT', linkToken === null ? { api_key: apiKey } : { api_key: apiKey, link_token: linkToken })
+}
+
+/** `DELETE /v1/provider-keys/{provider}/user|tenant`: destroy every version of the key. */
+export async function deleteProviderKey(provider: string, scope: ProviderKeyScope): Promise<Result<unknown>> {
+  const target = scope === 'user'
+    ? route('/v1/provider-keys/{provider}/user', { provider })
+    : route('/v1/provider-keys/{provider}/tenant', { provider })
+  return writeTo(target, 'DELETE')
+}
+
+// ---------------------------------------------------------------------------
+// The workspace's Jev judgment backend (JUDGE-SELECT; swarm_api/judgment.py).
+// Internal Jev is the default; Internal Laya and TypeSafe are the others. The
+// backend is chosen BY NAME: no URL or key goes in the PUT body.
+// ---------------------------------------------------------------------------
+
+export type JevBackend = 'internal-jev' | 'internal-laya' | 'typesafe'
+
+export const JEV_BACKENDS: readonly JevBackend[] = ['internal-jev', 'internal-laya', 'typesafe']
+
+export interface JevOption {
+  backend: JevBackend
+  label: string
+  available: boolean
+  /** Why not, in the API's words; null when available. */
+  reason: string | null
+}
+
+/** The `jev` object: the chosen backend, whether it can run, and every option. */
+export interface JevStatus extends JevOption {
+  default: JevBackend
+  set_at: string | null
+  set_by: string | null
+  options: JevOption[]
+}
+
+/** `GET /v1/judgment` and `GET|PUT /v1/workspaces/{id}/judgment-backend`. */
+export interface Judgment {
+  tenant_id: string
+  can_edit: boolean
+  jev: JevStatus
+}
+
+function jevBackend(v: unknown): JevBackend {
+  return v === 'internal-laya' || v === 'typesafe' ? v : 'internal-jev'
+}
+
+function normJevOption(raw: unknown): JevOption {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    backend: jevBackend(r.backend),
+    label: keyField(r.label) ?? '',
+    available: r.available === true,
+    reason: keyField(r.reason),
+  }
+}
+
+function normJudgment(raw: unknown): Judgment {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const jev = (typeof r.jev === 'object' && r.jev !== null ? r.jev : {}) as Record<string, unknown>
+  const options = Array.isArray(jev.options) ? jev.options.map(normJevOption) : []
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    can_edit: r.can_edit === true,
+    jev: {
+      ...normJevOption(jev),
+      default: jevBackend(jev.default),
+      set_at: keyField(jev.set_at),
+      set_by: keyField(jev.set_by),
+      options: JEV_BACKENDS.map((b) => options.find((o) => o.backend === b) ?? { backend: b, label: b, available: false, reason: null }),
+    },
+  }
+}
+
+/** `GET /v1/judgment`: the selected workspace's Jev backend and what is available. */
+export async function loadJudgment(): Promise<Result<Judgment>> {
+  return readAs(route('/v1/judgment'), normJudgment)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/judgment-backend`: the owner's or an admin's choice. */
+export async function putJudgmentBackend(tenantId: string, backend: JevBackend): Promise<Result<unknown>> {
+  return writeTo(route('/v1/workspaces/{tenant_id}/judgment-backend', { tenant_id: tenantId }), 'PUT', { judgment_backend: backend })
+}
+
+// ---------------------------------------------------------------------------
 // Connect GitHub (#780, OB3): the SwarmCloud GitHub App's user authorisation.
 //
 // The routes are swarm_api/routes/forgeapp.py and routes/onboarding.py. NONE

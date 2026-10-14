@@ -44,6 +44,33 @@ Every check's name, status, duration and the files it read go into the
 runner's result (`result_summary.runner.output.prepublish`); the output goes
 only into the fix prompt and that section.
 
+THE TESTS THE GRAPH SAYS COVER THE CHANGE (CTXQ-G, docs/design/context-quality.md
+§4.6). §3 of that design read the root cause of every red run over the last
+150 lane PRs: 8 were a covering test nobody ran (class T), and 14 a guard or
+house rule not met (class G) -- and `changed-guards.sh` is a grep that runs no
+vitest, no `tsc` and no `terraform fmt`. So the check set also holds:
+
+* `graph-pytest` and `vitest`: the test files that cover the changed files,
+  read from the graph snapshot staged beside the checkout
+  (`CONTEXT_DIR_NAME`/`SNAPSHOT_DIR_NAME`, the `tests` layer `swarm-graph`'s
+  `tests_for` answers from), plus the changed test files themselves, plus a
+  script's sibling `X.test.tsx` -- the one selection that needs no graph, so
+  an unstaged step still runs it. Python files `changed-guards.sh --list`
+  already selected are not run twice; JavaScript ones run with the
+  package's OWN `node_modules/.bin/vitest`, from the package, so its config
+  applies. Blocking, with the same one fix turn as every other check.
+* `tsc`, when a TypeScript file of a package with a `tsconfig.json` changed
+  (the package's `typecheck` script's arguments, with its own tsc), and
+  `terraform fmt -check` over changed `.tf` files (#1217).
+
+AND AN ADVISORY SECTION NO MERGE PATH READS (`ADVISORY_SECTION_NAME`, appended
+to the pull request by `lifecycle.Worker._prepublish_advisory`): test reach
+(M11) -- the changed symbols with no covering test edge after the change --
+the agent's `self-check.md`, or a line saying it wrote none, and what the
+graph selected. Auto-merge, the review verdict and the requirements never
+read it (§4.1 "Advisory signals never decide a merge"). A step with no
+snapshot says reach is unknown; it never says every symbol is covered.
+
 A CHECK THAT CANNOT RUN IS NOT A FAILURE. A tool missing from the image,
 `tflint --init` that cannot reach its plugin source, an unknown base: the check
 is `skipped` (or `error`) with the reason, recorded, and never sent to the
@@ -59,6 +86,7 @@ before it reaches a prompt, a log or the pull request.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -72,6 +100,7 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 from swarm_redaction import redact as redact_text
 
+from .graphmcp.snapshot import Snapshot, SnapshotError, load_freshness_record, path_of
 from .redact import scrub_text
 
 #: Set by the worker to the base BRANCH the lane is rebased onto, and only when
@@ -110,6 +139,35 @@ _PY_SUFFIX = ".py"
 _K8S_SKIP = "CKV_K8S_14,CKV_K8S_15,CKV_K8S_43"
 #: What `tflint` exits with when it found issues (0 none, 1 it could not run).
 _TFLINT_ISSUES = 2
+
+#: Where the step's context is staged (docs/design/context-quality.md §4.4):
+#: beside the checkout, never in it, so the publish never commits it. The
+#: worker may name another directory in `CONTEXT_DIR_ENV`. Not `SWARM_CONTEXT`:
+#: swarm-mcp already reads that name as a named API context (`swarm_mcp.config`).
+CONTEXT_DIR_NAME = ".swarm-context"
+SNAPSHOT_DIR_NAME = "snapshot"
+CONTEXT_DIR_ENV = "SWARM_CONTEXT_DIR"
+#: The advisory section the worker appends to the pull request's body, read by
+#: people and by no merge path; `lifecycle.PREPUBLISH_ADVISORY_*` restates both.
+ADVISORY_SECTION_NAME = "prepublish-advisory.md"
+ADVISORY_SECTION_HEADING = "## Advisory signals (not a gate)"
+ADVISORY_MAX_CHARS = 8000
+#: The agent's own checklist answers, in the artifacts directory (§4.6 item 3).
+SELF_CHECK_NAME = "self-check.md"
+SELF_CHECK_MAX_CHARS = 3000
+#: Symbols without a covering test listed by name; the rest are counted.
+REACH_SHOWN = 30
+#: Test files one graph check runs. Past this the graph's ranking is too wide
+#: to be a selection, and CI runs the whole suite anyway.
+GRAPH_TESTS_MAX = 60
+_JS_SUFFIXES = (".ts", ".tsx", ".js", ".jsx", ".mts", ".cts", ".mjs", ".cjs")
+_TS_SUFFIXES = (".ts", ".tsx", ".mts", ".cts")
+_JS_TEST = re.compile(r"\.(test|spec)\.(ts|tsx|js|jsx|mts|cts|mjs|cjs)$")
+_TF_SUFFIX = ".tf"
+#: The files whose symbols test reach counts: the languages the indexer parses.
+_CODE_SUFFIXES = (_PY_SUFFIX, *_JS_SUFFIXES, ".go", _TF_SUFFIX)
+#: `terraform fmt -check` exits 3 when a file is not formatted.
+_FMT_UNFORMATTED = 3
 
 PASSED, FAILED, SKIPPED, ERROR = "passed", "failed", "skipped", "error"
 
@@ -331,8 +389,359 @@ def _touches_build_mirror(path: str) -> bool:
     )
 
 
+# ---------------------------------------------------------------------------
+# The graph's covering tests (CTXQ-G)
+# ---------------------------------------------------------------------------
+
+
+def context_dir(repo: Path, env: Mapping[str, str]) -> Path:
+    """Where the step's context is staged: `CONTEXT_DIR_ENV`, else beside the checkout."""
+    named = (env.get(CONTEXT_DIR_ENV) or "").strip()
+    return Path(named) if named else Path(repo).parent / CONTEXT_DIR_NAME
+
+
+def load_snapshot(directory: Path) -> tuple[Snapshot | None, str]:
+    """The staged snapshot under `directory`, and a line saying what was found.
+
+    None when nothing is staged or the snapshot cannot be read as it is: the
+    gate then selects without the graph, and says so, rather than failing.
+    """
+    root = Path(directory) / SNAPSHOT_DIR_NAME
+    if not (root / "manifest.json").is_file():
+        return None, "no graph snapshot is staged for this step"
+    try:
+        record = load_freshness_record(root)
+        snapshot = Snapshot(root, manifest_digest=(record or {}).get("manifest_digest"))
+    except (SnapshotError, OSError, ValueError) as exc:
+        return None, f"the staged graph snapshot could not be read ({exc})"
+    sha = snapshot.commit_sha[:12] or "an unknown commit"
+    return snapshot, f"graph snapshot of {sha} (format {snapshot.format_version})"
+
+
+def is_test_path(path: str) -> bool:
+    name = path.rsplit("/", 1)[-1]
+    if name.endswith(_PY_SUFFIX):
+        return name.startswith("test_") or name.endswith("_test.py")
+    if not name.endswith(_JS_SUFFIXES):
+        return False
+    return bool(_JS_TEST.search(name)) or "/__tests__/" in f"/{path}"
+
+
+def _graph_tests(snapshot: Snapshot, path: str) -> set[str]:
+    """The test files the snapshot's `tests` layer says cover `path`: the file's
+    own test rows and every one of its symbols' (`graphmcp.tools.tool_tests_for`)."""
+    out: set[str] = set()
+    try:
+        file = snapshot.file(path)
+        if file is None:
+            return out
+        rows = list(file.get("tests") or [])
+        for symbol in snapshot.symbols_in(path):
+            rows.extend(snapshot.tests(str(symbol.get("id"))))
+    except SnapshotError:
+        return out
+    for row in rows:
+        test = str(row.get("test") or "")
+        if test:
+            out.add(path_of(test))
+    return out
+
+
+def _sibling_tests(path: str) -> list[str]:
+    """`X.test.tsx` and `__tests__/X.test.tsx` beside a changed script `X.tsx`."""
+    if not path.endswith(_JS_SUFFIXES) or is_test_path(path):
+        return []
+    directory, _, name = path.rpartition("/")
+    stem, _, _suffix = name.rpartition(".")
+    prefix = f"{directory}/" if directory else ""
+    return [f"{prefix}{where}{stem}.{kind}.{suffix}"
+            for where in ("", "__tests__/") for kind in ("test", "spec")
+            for suffix in ("ts", "tsx", "js", "jsx")]
+
+
+def select_tests(repo: Path, files: Sequence[str],
+                 snapshot: Snapshot | None) -> dict[str, str]:
+    """Each test file that covers `files`, and why: `changed`, `graph` or `sibling`.
+
+    Only files present in the checkout: a test the change deleted, or one the
+    graph remembers from before a rename, has nothing left to run.
+    """
+    chosen: dict[str, str] = {}
+
+    def add(test: str, why: str) -> None:
+        if test not in chosen and (repo / test).is_file() and is_test_path(test):
+            chosen[test] = why
+
+    for path in files:
+        if is_test_path(path):
+            add(path, "changed")
+    for path in files:
+        if is_test_path(path):
+            continue
+        if snapshot is not None:
+            for test in sorted(_graph_tests(snapshot, path)):
+                add(test, "graph")
+        for test in _sibling_tests(path):
+            add(test, "sibling")
+    return chosen
+
+
+def _package_root(repo: Path, path: str) -> str | None:
+    """The nearest directory above `path` holding a package.json, relative to `repo`."""
+    parts = path.split("/")[:-1]
+    while parts:
+        if (repo / "/".join(parts) / "package.json").is_file():
+            return "/".join(parts)
+        parts.pop()
+    return "" if (repo / "package.json").is_file() else None
+
+
+def _node_bin(repo: Path, package: str, tool: str) -> Path | None:
+    candidate = repo / package / "node_modules" / ".bin" / tool
+    return candidate if candidate.is_file() and os.access(candidate, os.X_OK) else None
+
+
+def _relative(package: str, path: str) -> str:
+    return path[len(package) + 1:] if package else path
+
+
+def _in_package(repo: Path, package: str, binary: Path, args: Sequence[str]
+                ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
+    """Run a package's own tool from the package directory, so its config applies."""
+    def run(runner: Runner, root: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
+        return _verdict(runner([str(binary), *args], Path(root) / package if package else
+                               Path(root), env, timeout))
+    return run
+
+
+def _typecheck_args(repo: Path, package: str) -> list[str]:
+    """The arguments of the package's own `typecheck` script when it is a plain
+    `tsc ...`, else `--noEmit -p tsconfig.json`."""
+    try:
+        scripts = json.loads((repo / package / "package.json").read_text()).get("scripts") or {}
+    except (OSError, ValueError, AttributeError):
+        scripts = {}
+    words = str(scripts.get("typecheck") or "").split()
+    if words and words[0] == "tsc" and not any(w in ("&&", "||", ";", "|") for w in words):
+        return words[1:]
+    return ["--noEmit", "-p", "tsconfig.json"]
+
+
+def _guards_selection(runner: Runner, repo: Path, env: Mapping[str, str], base: str,
+                      timeout: float) -> set[str]:
+    """The test files `changed-guards.sh --list` selects: the changed-guards
+    check runs those, so graph-pytest does not run them twice. Empty when the
+    script cannot say -- then the graph's files all run, which costs time,
+    never coverage."""
+    if not (repo / "scripts" / "changed-guards.sh").is_file():
+        return set()
+    ran = runner(["bash", "scripts/changed-guards.sh", "--base", base, "--list"], repo, env,
+                 min(timeout, 120.0))
+    if ran.code != 0:
+        return set()
+    return {line.strip() for line in ran.output.splitlines()
+            if line.strip().endswith(_PY_SUFFIX) and " " not in line.strip()}
+
+
+def _graph_pytest(tests: Sequence[str], base: str
+                  ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
+    def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
+        already = _guards_selection(runner, repo, env, base, timeout)
+        rest = [t for t in tests if t not in already]
+        if not rest:
+            return PASSED, "every selected test file is already run by changed-guards"
+        argv = ["uv", "run", "--quiet", "pytest", "-q", "-n", "auto", "-p", "no:cacheprovider",
+                *rest]
+        return _verdict(runner(argv, repo, env, timeout))
+    return run
+
+
+def _terraform_fmt(files: Sequence[str]
+                   ) -> Callable[[Runner, Path, Mapping[str, str], float], tuple[str, str]]:
+    def run(runner: Runner, repo: Path, env: Mapping[str, str], timeout: float) -> tuple[str, str]:
+        ran = runner(["terraform", "fmt", "-check", "-diff", "-no-color", *files], repo, env,
+                     timeout)
+        if ran.code == 0 and not ran.timed_out:
+            return PASSED, ran.output
+        if ran.code == _FMT_UNFORMATTED:
+            return FAILED, ("these files are not `terraform fmt` formatted; run "
+                            f"`terraform fmt` on them:\n{ran.output}")
+        return FAILED, ran.output
+    return run
+
+
+def graph_checks(repo: Path, files: Sequence[str], *, base: str, env: Mapping[str, str],
+                 snapshot: Snapshot | None) -> list[Check]:
+    """graph-pytest, vitest, tsc and terraform-fmt for this diff (CTXQ-G)."""
+    present = [f for f in files if (repo / f).is_file()]
+    checks: list[Check] = []
+    tests = list(select_tests(repo, files, snapshot))[:GRAPH_TESTS_MAX]
+
+    py_tests = [t for t in tests if t.endswith(_PY_SUFFIX)]
+    if py_tests:
+        if not _which("uv", env):
+            checks.append(Check("graph-pytest", tuple(py_tests), "uv run pytest -n auto",
+                                skipped="uv is not on PATH in this image"))
+        else:
+            checks.append(Check("graph-pytest", tuple(py_tests),
+                                "uv run pytest -q -n auto <graph-selected files>",
+                                run=_graph_pytest(py_tests, base)))
+
+    by_package: dict[str, list[str]] = {}
+    for test in tests:
+        if test.endswith(_JS_SUFFIXES) and not test.endswith((".mjs", ".cjs")):
+            package = _package_root(repo, test)
+            if package is not None:
+                by_package.setdefault(package, []).append(test)
+    for package, members in sorted(by_package.items()):
+        where = package or "."
+        binary = _node_bin(repo, package, "vitest")
+        if binary is None:
+            checks.append(Check(
+                "vitest", tuple(members), f"vitest run (in {where})",
+                skipped=f"vitest is not installed in {where} (no node_modules/.bin/vitest; "
+                        "the gate does not run npm install); CI runs it"))
+            continue
+        # A file outside the package's vitest `include` (a node:test file) is
+        # simply not collected; it is not the agent's failure.
+        args = ["run", "--passWithNoTests", *(_relative(package, t) for t in members)]
+        checks.append(Check("vitest", tuple(members), f"vitest run <files> (in {where})",
+                            run=_in_package(repo, package, binary, args)))
+
+    ts_packages: dict[str, list[str]] = {}
+    for path in files:
+        if path.endswith(_TS_SUFFIXES):
+            package = _package_root(repo, path)
+            if package is not None and (repo / package / "tsconfig.json").is_file():
+                ts_packages.setdefault(package, []).append(path)
+    for package, members in sorted(ts_packages.items()):
+        where = package or "."
+        binary = _node_bin(repo, package, "tsc")
+        if binary is None:
+            checks.append(Check(
+                "tsc", tuple(members), f"tsc (in {where})",
+                skipped=f"tsc is not installed in {where} (no node_modules/.bin/tsc; the "
+                        "gate does not run npm install); CI runs it"))
+            continue
+        args = _typecheck_args(repo, package)
+        checks.append(Check("tsc", tuple(members), f"tsc {' '.join(args)} (in {where})",
+                            run=_in_package(repo, package, binary, args)))
+
+    tf = [f for f in present if f.endswith(_TF_SUFFIX)]
+    if tf:
+        if _which("terraform", env):
+            checks.append(Check("terraform-fmt", tuple(tf), "terraform fmt -check -diff <files>",
+                                run=_terraform_fmt(tf)))
+        else:
+            checks.append(Check("terraform-fmt", tuple(tf), "terraform fmt -check",
+                                skipped="terraform is not on PATH in this image"))
+    return checks
+
+
+# ---------------------------------------------------------------------------
+# Test reach (M11, advisory)
+# ---------------------------------------------------------------------------
+
+_HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+\d+(?:,\d+)? @@")
+
+
+def changed_lines(diff: str) -> dict[str, list[tuple[int, int]]]:
+    """Per file, the base-side line ranges a `git diff -U0` touches. A pure
+    insertion after line N is `(N, 0)`: it touches the symbol N is inside."""
+    out: dict[str, list[tuple[int, int]]] = {}
+    current: str | None = None
+    for line in diff.splitlines():
+        if line.startswith("--- "):
+            current = line[6:] if line.startswith("--- a/") else None
+        elif current is not None and (match := _HUNK.match(line)):
+            start, count = int(match.group(1)), int(match.group(2) or "1")
+            out.setdefault(current, []).append((start, count))
+    return out
+
+
+def _touches(symbol: Mapping[str, Any], hunks: Sequence[tuple[int, int]]) -> bool:
+    try:
+        first, last = int(symbol.get("start_line") or 0), int(symbol.get("end_line") or 0)
+    except (TypeError, ValueError):
+        return False
+    if first <= 0:
+        return False
+    last = max(first, last)
+    for start, count in hunks:
+        if count == 0:
+            if first <= start < last:
+                return True
+        elif start <= last and start + count - 1 >= first:
+            return True
+    return False
+
+
+def _short_name(symbol_id: str) -> str:
+    name = symbol_id.split("#", 1)[-1]
+    return re.split(r"[.:]", name)[-1]
+
+
+def measure_test_reach(repo: Path, base: str, files: Sequence[str], snapshot: Snapshot, *,
+               runner: Runner, env: Mapping[str, str]) -> dict[str, Any] | None:
+    """M11 over this change: the changed symbols the graph knows, and which of
+    them have a covering test -- an edge in the snapshot's `tests` layer, or a
+    test file this change adds or edits that names them. None when git could
+    not say which lines changed."""
+    ran = _git(repo, "diff", "-U0", "--no-color", "--no-renames", "--no-ext-diff", base, "--",
+               runner=runner, env=env)
+    if ran.code != 0:
+        return None
+    hunks = changed_lines(ran.output)
+    test_texts: list[str] = []
+    for path in files:
+        if is_test_path(path) and (repo / path).is_file():
+            try:
+                test_texts.append((repo / path).read_text(encoding="utf-8", errors="replace"))
+            except OSError:
+                pass
+    changed: list[str] = []
+    reached: list[str] = []
+    unindexed: list[str] = []
+    for path in files:
+        if is_test_path(path) or path not in hunks or not path.endswith(_CODE_SUFFIXES):
+            continue
+        try:
+            if snapshot.file(path) is None:
+                unindexed.append(path)
+                continue
+            symbols = snapshot.symbols_in(path)
+        except SnapshotError:
+            unindexed.append(path)
+            continue
+        for symbol in symbols:
+            symbol_id = str(symbol.get("id") or "")
+            if not symbol_id or symbol.get("kind") == "test" or not _touches(symbol, hunks[path]):
+                continue
+            changed.append(symbol_id)
+            try:
+                covered = bool(snapshot.tests(symbol_id))
+            except SnapshotError:
+                covered = False
+            if not covered:
+                word = re.compile(rf"\b{re.escape(_short_name(symbol_id))}\b")
+                covered = any(word.search(text) for text in test_texts)
+            if covered:
+                reached.append(symbol_id)
+    for path in files:
+        if (not is_test_path(path) and path.endswith(_CODE_SUFFIXES) and path not in hunks
+                and path not in unindexed and (repo / path).is_file()):
+            unindexed.append(path)  # untracked: new to the index too
+    return {
+        "changed_symbols": len(changed),
+        "reached": len(reached),
+        "unreached": sorted(set(changed) - set(reached)),
+        "unindexed_files": sorted(unindexed),
+    }
+
+
 def select_checks(repo: Path, files: Sequence[str], *, base: str,
-                  env: Mapping[str, str], python: str = "python3") -> list[Check]:
+                  env: Mapping[str, str], python: str = "python3",
+                  snapshot: Snapshot | None = None) -> list[Check]:
     """The fixed check set, narrowed to the kinds of file `files` holds.
 
     A check whose files are all deleted is not chosen: there is nothing left
@@ -430,6 +839,7 @@ def select_checks(repo: Path, files: Sequence[str], *, base: str,
             argv = ["uv", "run", "--quiet", "pytest", "-q", "-p", "no:cacheprovider", *tests]
             checks.append(Check("build-mirror", tuple(mirror),
                                 "uv run pytest " + " ".join(tests), run=_simple(argv)))
+    checks += graph_checks(repo, files, base=base, env=env, snapshot=snapshot)
     return checks
 
 
@@ -537,6 +947,77 @@ def pr_section(rebase: Mapping[str, Any] | None, outcomes: Sequence[Outcome],
     return text + "\n"
 
 
+def read_self_check(artifacts_dir: Path) -> str | None:
+    """The agent's `self-check.md`, or None when it wrote none (or a symlink)."""
+    path = Path(artifacts_dir) / SELF_CHECK_NAME
+    try:
+        if path.is_symlink() or not path.is_file():
+            return None
+        return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+
+
+def advisory_section(*, graph: Mapping[str, Any], outcomes: Sequence[Outcome],
+                     reach: Mapping[str, Any] | None, self_check: str | None,
+                     secrets: Sequence[str]) -> str:
+    """The advisory markdown the worker appends to the pull request's body.
+
+    Read by people. No merge path reads it: auto-merge, the review verdict and
+    the requirements decide exactly as they would without it.
+    """
+    parts = [
+        ADVISORY_SECTION_HEADING, "",
+        "Written by the worker's pre-publish gate for the reader, not for a merge: "
+        "auto-merge, the review verdict and the requirements never read this section.",
+        "", "### Graph-selected tests", f"Source: {graph.get('snapshot')}.",
+    ]
+    selected = dict(graph.get("selected") or {})
+    if selected:
+        shown = [f"`{t}` ({why})" for t, why in list(selected.items())[:20]]
+        more = f" and {len(selected) - 20} more" if len(selected) > 20 else ""
+        parts.append(f"{len(selected)} test file(s) cover the changed files: "
+                     f"{', '.join(shown)}{more}.")
+    else:
+        parts.append("No test file was found covering the changed files.")
+    ran = [o for o in outcomes if o.name in ("graph-pytest", "vitest", "tsc", "terraform-fmt")]
+    if ran:
+        parts.append("Ran: " + ", ".join(
+            f"{o.name} {o.status}" + (f" ({o.reason})" if o.status == SKIPPED and o.reason
+                                       else "") for o in ran) + ".")
+
+    parts += ["", "### Test reach (M11)"]
+    if reach is None:
+        parts.append(f"Test reach is unknown: {graph.get('snapshot')}. This does not mean "
+                     "the change is covered.")
+    else:
+        total, hit = int(reach.get("changed_symbols") or 0), int(reach.get("reached") or 0)
+        parts.append(f"{hit} of {total} changed symbols have a covering test (an edge in "
+                     "the graph's tests layer, or a test file this change adds or edits "
+                     "that names them).")
+        missing = list(reach.get("unreached") or [])
+        if missing:
+            more = (f" and {len(missing) - REACH_SHOWN} more"
+                    if len(missing) > REACH_SHOWN else "")
+            parts.append("Without one: " + ", ".join(f"`{m}`" for m in missing[:REACH_SHOWN])
+                         + more + ".")
+        unindexed = list(reach.get("unindexed_files") or [])
+        if unindexed:
+            parts.append(f"Not in the index (new, or changed since it was built), reach "
+                         f"unknown: {_files_line(unindexed)}.")
+
+    parts += ["", "### Self-check"]
+    if self_check is None:
+        parts.append(f"The agent wrote no `{SELF_CHECK_NAME}`.")
+    else:
+        text = clean_output(self_check, secrets, limit=SELF_CHECK_MAX_CHARS) or "(empty)"
+        parts += [f"The agent's own `{SELF_CHECK_NAME}`:", _fence(text)]
+    text = "\n".join(parts)
+    if len(text) > ADVISORY_MAX_CHARS:
+        text = text[:ADVISORY_MAX_CHARS].rstrip() + "\n\n_[cut by the worker]_"
+    return text + "\n"
+
+
 # ---------------------------------------------------------------------------
 # The gate
 # ---------------------------------------------------------------------------
@@ -563,6 +1044,10 @@ class Gate:
     python: str = "python3"
     clock: Callable[[], float] = time.monotonic
     record: dict[str, Any] = field(default_factory=dict)
+    #: Where the step's context is staged; None reads `context_dir`.
+    context: Path | None = None
+    _snapshot: Snapshot | None = field(default=None, init=False, repr=False)
+    _diff: tuple[str, list[str]] | None = field(default=None, init=False, repr=False)
 
     def run(self) -> dict[str, Any]:
         record = self.record
@@ -580,6 +1065,10 @@ class Gate:
         if rebase and rebase.get("status") in ("rebased", "conflict_resolved"):
             base = str(rebase["onto"])
         record["base"] = base or None
+        self._snapshot, graph_status = load_snapshot(
+            self.context if self.context is not None else context_dir(self.repo, self.env))
+        record.update({"graph": {"snapshot": graph_status, "selected": {}},
+                       "test_reach": None, "self_check": False, "advisory_section": False})
         outcomes: list[Outcome] = []
         if not base:
             record["skipped"] = "unknown_base"
@@ -604,7 +1093,31 @@ class Gate:
                              "the pull request body", failed=record["failed"])
         else:
             target.unlink(missing_ok=True)
+        self._advise(outcomes)
         return record
+
+    def _advise(self, outcomes: Sequence[Outcome]) -> None:
+        """The advisory section: never a failure, never sent to the agent."""
+        record = self.record
+        target = Path(self.artifacts_dir) / ADVISORY_SECTION_NAME
+        if self._diff is None:
+            target.unlink(missing_ok=True)
+            return
+        resolved, files = self._diff
+        reach = None
+        if self._snapshot is not None:
+            try:
+                reach = measure_test_reach(self.repo, resolved, files, self._snapshot,
+                                           runner=self.runner, env=self.env)
+            except (SnapshotError, OSError) as exc:
+                self.log.warning("test reach could not be measured", error=type(exc).__name__)
+        record["test_reach"] = reach
+        self_check = read_self_check(self.artifacts_dir)
+        record["self_check"] = self_check is not None
+        target.write_text(advisory_section(graph=record["graph"], outcomes=outcomes,
+                                           reach=reach, self_check=self_check,
+                                           secrets=self.secrets), encoding="utf-8")
+        record["advisory_section"] = True
 
     # -- the checks ---------------------------------------------------------
 
@@ -618,7 +1131,11 @@ class Gate:
                               reason="the diff could not be read")
             self.record["rounds"].append([outcome.record()])
             return [outcome]
-        checks = select_checks(self.repo, files, base=resolved, env=self.env, python=self.python)
+        self._diff = (resolved, files)
+        self.record.setdefault("graph", {})["selected"] = select_tests(
+            self.repo, files, self._snapshot)
+        checks = select_checks(self.repo, files, base=resolved, env=self.env, python=self.python,
+                               snapshot=self._snapshot)
         timeout = max(30.0, min(CHECK_TIMEOUT_SECONDS, self.remaining() - 30.0))
         outcomes = run_checks(self.repo, checks, env=self.env, runner=self.runner,
                               timeout=timeout, clock=self.clock)
