@@ -175,10 +175,10 @@ def test_the_task_type_comes_from_the_step_s_role_never_a_guess(work):
     assert tasktype.classify(issue, work) == "plan"
     review = {"prompt": "Review the change on this branch for GitHub issue o/r#7. Write "
                         "$SWARM_ARTIFACTS_DIR/verdict.json", "staged_inputs":
-              ["swarm-work.patch"]}
+              [{"path": "swarm-work.patch"}]}
     assert tasktype.classify(review, work) == "review"
     fix = {"prompt": "Fix every finding in verdict.json for GitHub issue o/r#7.",
-           "staged_inputs": ["verdict.json"]}
+           "staged_inputs": [{"path": "verdict.json"}]}
     assert tasktype.classify(fix, work) == "fix"
     ci = {"prompt": "PR #9 is red. This is CI fix round 1 of at most 2.\n"
                     "=== FAILING CHECKS 0a1b2c3d4e5f6a7b ===\nFAILED x\n"
@@ -223,7 +223,7 @@ def test_review_names_callers_outside_the_diff_and_the_sibling_idiom(work):
         "+    return dict(key=key)\n", encoding="utf-8")
     payload = {"prompt": "Review the change on this branch for GitHub issue o/r#7 against "
                          "the approved plan. Write $SWARM_ARTIFACTS_DIR/verdict.json",
-               "staged_inputs": ["swarm-work.patch"]}
+               "staged_inputs": [{"path": "swarm-work.patch"}]}
     pack = _pack(work, payload)
     assert pack["task_type"] == "review"
     assert pack["seeds"]["symbols"] == [FETCH]
@@ -252,7 +252,7 @@ def test_a_review_fix_is_seeded_by_the_findings_files(work):
         "verdict": "NOT_YET",
         "findings": [{"summary": "s", "file": "src/pkg/users.py", "line": 9}]}))
     pack = _pack(work, {"prompt": "Fix every finding in verdict.json for issue o/r#7.",
-                        "staged_inputs": ["verdict.json"]})
+                        "staged_inputs": [{"path": "verdict.json"}]})
     assert pack["task_type"] == "fix"
     assert pack["seeds"]["files"] == ["src/pkg/users.py"]
     assert LOAD_USER in _refs(pack, "symbol")
@@ -309,10 +309,14 @@ def test_in_flight_and_cannot_push_rows_are_never_cut_and_the_cap_holds(work, mo
     (work / contextpack.CONTEXT_DIR_NAME / contextpack.INFLIGHT_FILE).write_text(
         json.dumps({"rows": many}))
     _stage(work, hard_stop_paths=["terraform/bootstrap/**", "CODEOWNERS"])
-    # Swamp the ranked section: 400 extra docs naming the seed path.
+    # Swamp the ranked section: 400 guard tests and 60 docs naming the seed
+    # path. Guards have no maximum, so only the byte budget can stop them.
     for i in range(400):
+        (work / "repo" / "tests" / f"test_guard_{i:03}.py").write_text(
+            f"def test_guard_{i:03}():\n    assert 'src/pkg/store.py'\n")
+    for i in range(60):
         (work / "repo" / "docs" / f"note{i:03}.md").write_text(
-            f"# Note {i}\n\n## Section\n\n" + "`src/pkg/store.py` " * 30 + "\n")
+            f"# Note {i}\n\n## Section\n\n`src/pkg/store.py`\n")
     subprocess.run(["git", "-C", str(work / "repo"), "add", "-A"], check=True,
                    capture_output=True)
     pack = _pack(work, {"prompt": _step_prompt(["src/pkg/store.py"])})
@@ -324,10 +328,11 @@ def test_in_flight_and_cannot_push_rows_are_never_cut_and_the_cap_holds(work, mo
     for glob in (".github/workflows/**", "terraform/bootstrap/**", "CODEOWNERS"):
         assert glob in text
     # What did not fit is counted, with the tool that pages it.
-    assert pack["paged_out"]["doc"] > 0
-    assert "rules_for" in text
+    assert pack["paged_out"]["guard"] > 0 and pack["paged_out"]["doc"] > 0
+    assert f"{pack['paged_out']['guard']} more guard rows: swarm-graph `rules_for`" in text
     # And pack.json keeps every row, ranked or not: nothing is silently cut.
-    assert len(_rows(pack, "doc")) >= 400
+    assert len(_rows(pack, "guard")) >= 400 and len(_rows(pack, "doc")) >= 60
+    assert sum(1 for r in pack["rows"] if not r["shown"]) == sum(pack["paged_out"].values())
 
 
 def test_quotas_keep_the_minimum_tests_and_guards_and_cap_docs_and_similar_prs():
