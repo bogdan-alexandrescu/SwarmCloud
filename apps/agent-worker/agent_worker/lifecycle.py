@@ -149,6 +149,7 @@ from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
+from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
@@ -234,6 +235,8 @@ from .gitops import (
     retry_clone,
     shallow_clone,
     summarize_work,
+    validate_ref,
+    verify_merged_default_branch,
     verify_worker_authorship,
 )
 # The helpers every function in `gitops` builds its git commands from. Borrowed
@@ -483,6 +486,16 @@ PUBLISH_UNREACHABLE_FIELD = "forge_unreachable"
 #: task_6a0c9afdbaea449eb53d: "push failed with exit 1", state SUCCEEDED, the
 #: workflow green, and the work found in `swarm-work.patch` six hours later.
 PUBLISH_FAILED_FIELD = "publish_failed"
+#: The dispatch block's mark of a merge step's conflict fix round (#1321):
+#: swarm-api copies it from the `metadata.merge_conflict_round` record
+#: `mergewake._on_conflict` submits the round with, INTO the signed block,
+#: because the worker acts on no metadata the step-spec signature does not
+#: cover. Restated here because the worker cannot import swarm_api
+#: (`swarm_api.validation.CONFLICT_ROUND_FIELD`);
+#: tests/unit/worker/test_conflict_round_merge_parents.py holds the two
+#: together. A round checks, before it pushes, that it merged the default
+#: branch (`gitops.verify_merged_default_branch`).
+CONFLICT_ROUND_FIELD = "conflict_round"
 #: The file whose presence makes a clean run that changed nothing a RESULT
 #: (Proposal J, owner decision 2026-10-08): the agent checked, found nothing
 #: to change, and wrote down why. Read from `$SWARM_ARTIFACTS_DIR`; its text is
@@ -507,6 +520,19 @@ TITLE_MISSING_PREFIX = "[title missing] "
 #: `Worker._agent_pull_request_text`.
 PR_TITLE_FILE = "pr-title.txt"
 PR_BODY_FILE = "pr-body.md"
+#: The runner's pre-publish section (SPEED-D1; `prepublish.PR_SECTION_NAME` and
+#: `prepublish.PR_SECTION_HEADING`, restated because the runner never imports
+#: the worker; tests/unit/worker/test_prepublish_gate.py holds them equal).
+PREPUBLISH_SECTION_FILE = "prepublish-checks.md"
+PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
+PREPUBLISH_SECTION_MAX_CHARS = 20000
+#: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
+#: and `_HEADING`, held equal by tests/unit/worker/test_prepublish_graph_gate.py):
+#: test reach, the agent's self-check, what the graph selected. Appended for
+#: the reader; no merge path reads it, and it never marks the checks failed.
+PREPUBLISH_ADVISORY_FILE = "prepublish-advisory.md"
+PREPUBLISH_ADVISORY_HEADING = "## Advisory signals (not a gate)"
+PREPUBLISH_ADVISORY_MAX_CHARS = 10000
 #: One line, at most this many characters: GitHub's own title field is 256.
 PR_TITLE_MAX_CHARS = 256
 #: At most this many bytes of the agent's body, before the platform's block. A
@@ -708,6 +734,9 @@ class Worker:
         self.secret_client = deps.secret_client
         self.memory = deps.memory
         self.ws: workspace_mod.Workspace | None = None
+        #: The staged graph's runner variables (CTXQ-S), decided once per
+        #: attempt: a credential reload rebuilds the env and must not restage.
+        self._graph_env: dict[str, str] | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
             tenant_id=config.tenant_id,
@@ -808,6 +837,10 @@ class Worker:
         # in this process, or the base a previous attempt's worker recorded in
         # the checkpoint manifest. `EMPTY_CLONE_BASE` for an empty repository.
         self._publish_base: str | None = None
+        # The base BRANCH the runner rebases the lane onto before it publishes
+        # (SPEED-D1, `agent_worker.prepublish`), when that is safe for this
+        # step (`_prepublish_rebase_ref`); None, and no rebase, otherwise.
+        self._prepublish_rebase: str | None = None
         # What `metadata.input_from` put in the workspace. Kept so the result
         # summary can report which upstream artifact this attempt actually ran
         # on -- the question every debugging of a wrong workflow output starts
@@ -1002,7 +1035,11 @@ class Worker:
         # unless the profile is a live-browser one; signs with the child
         # path's attempt key, so it needs that registered.
         self.handoff = handoff_mod.HandoffPath(
-            config, logger=deps.logger, memory=deps.memory, children=self.children
+            config,
+            logger=deps.logger,
+            memory=deps.memory,
+            children=self.children,
+            progress=self._emit_startup_progress,
         )
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
@@ -2893,6 +2930,10 @@ class Worker:
                     # watch an open hand-off's hold. Never raises.
                     with self._heartbeat_meanwhile("hand-off"):
                         ended = self.handoff.tick(ws.work, self.control.fetch_task)
+                        # LB-RETURN: swarm-api decides whether the hold really
+                        # ran out, against a viewer who came as it did.
+                        if ended == handoff_mod.HOLD_EXPIRED and not self.handoff.confirm_expired():
+                            ended = None
                     if ended is not None:
                         return self._park_for_human(child, cause=ended)
 
@@ -4174,13 +4215,23 @@ class Worker:
         # `attempt_count`, so the attempt after it can read 1 and still be a
         # resume. Counted back here; a tenant that can write the counter can
         # write `attempt_count` itself, so this adds no reach (see below).
+        #
+        # A refunded HAND-OFF park (live-browser §4.3) takes one off the same
+        # way, and is counted back the same way (RESUME-PROGRESS, QA12-14).
+        # It was not: MEASURED 2026-10-13 on task_4defa61c5eea4a5c87f5, the
+        # attempt after a hand-off park read `attempt_count` 1, was taken for
+        # the task's first, restored nothing, and its agent started the task
+        # over -- asking again for the hand-off already done.
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        resumes = metadata.get(CHILD_AWAIT_RESUMES_METADATA_KEY)
-        resumes = resumes if isinstance(resumes, int) and not isinstance(resumes, bool) else 0
+        resumes = 0
+        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
+            value = metadata.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                resumes += max(0, value)
         if (
             isinstance(count, bool)
             or not isinstance(count, int)
-            or count + max(0, resumes) <= 1
+            or count + resumes <= 1
         ):
             refuse(reason="first attempt of this task", attempt_count=count)
             return None
@@ -4602,6 +4653,12 @@ class Worker:
         # manifest from here on, so a resumed attempt can trust it too.
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
         self.checkpoints.clone_base = self._publish_base
+        self._prepublish_rebase = self._prepublish_rebase_ref(
+            ref=ref,
+            checkout=Path(destination),
+            fixed_base=bool(pr_branch or continued or builds_on or carried)
+            or pinned_sha is not None,
+        )
         self._write_clone_base(clone.commit)
         info: dict[str, Any] = {
             "path": REPO_DIR_NAME,
@@ -4626,6 +4683,145 @@ class Worker:
         if refusal:
             info["git_token_refused"] = refusal
         return info
+
+    def _prepublish_rebase_ref(
+        self, *, ref: str | None, checkout: Path, fixed_base: bool
+    ) -> str | None:
+        """The branch the runner may rebase this lane onto before publishing, or None.
+
+        SPEED-D1 (owner decision 2026-10-14): 128 of 150 merged pull requests
+        needed an update from main, because a lane's branch is cut from the
+        commit it started on. The runner rebases onto the base's CURRENT tip
+        through the git tools (`agent_worker.prepublish`), and the publish
+        then diffs from where it landed (`_adopt_rebase_base`). Only where a
+        moved base breaks nothing:
+
+        * an AUTHOR of its own pull request -- `direct-pr`, or `single-pr`'s
+          author. `collect` stages its patch onto a downstream step's pinned
+          base, an amender only fast-forwards the author's branch, an
+          integrator merges contributors onto their base;
+        * cloned from the repository's branch, not from a continued, built-on,
+          carried or author's branch (`fixed_base`), whose pushed tip a
+          rewritten history would no longer fast-forward, and not pinned to an
+          upstream step's base, which a downstream patch must apply to;
+        * no `carrier: branches`, whose checkpoints already pushed the branch;
+        * a BRANCH: a ref that is a sha has no newer tip.
+
+        The default branch, when the task names no ref, is read from the
+        clone's own HEAD file, which this process wrote before any agent ran.
+        """
+        if fixed_base or self._dispatch_carrier() == "branches":
+            return None
+        role = self._pr_role()
+        if role:
+            if role != "author":
+                return None
+        elif self._dispatch_strategy() != "direct-pr":
+            return None
+        name = (ref or "").strip()
+        if not name:
+            try:
+                head = (checkout / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+            prefix = "ref: refs/heads/"
+            name = head[len(prefix):] if head.startswith(prefix) else ""
+        if not name or re.fullmatch(r"[0-9a-f]{7,40}", name):
+            return None
+        try:
+            validate_ref(name)
+        except GitError:
+            return None
+        return name
+
+    def _adopt_rebase_base(self, publish_repo: Path, floor: str | None) -> str | None:
+        """The commit the publish diffs from after a pre-publish rebase, or None.
+
+        The runner rebased the lane onto the base's newer tip
+        (`agent_worker.prepublish`), so `floor..HEAD` holds every commit the
+        base gained since the clone; replayed as the lane's, they would be
+        republished under the worker's name. The commit the rebase landed on
+        is a sha the git tools' relay fetched itself (`GitTools.rebased_onto`),
+        so origin has it, and it becomes the publish base when, in the
+        worker's own clean repository, the floor is its ancestor and HEAD
+        descends from it -- an aborted or undone rebase fails the second test
+        and the floor stands.
+        """
+        onto = self.children.rebased_onto
+        base = (floor or "").strip()
+        if not onto or not _FULL_SHA_RE.fullmatch(onto) or not _FULL_SHA_RE.fullmatch(base) \
+                or onto == base:
+            return None
+        ws = self.ws
+        assert ws is not None
+        g = ["git", *_NO_HOOKS]
+        for older, newer, slug in ((base, onto, "publish-rebase-floor"),
+                                   (onto, "HEAD", "publish-rebase-head")):
+            code, _ = _git_text(
+                [*g, "merge-base", "--is-ancestor", older, newer],
+                repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs, slug=slug,
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            if code != 0:
+                self.log.warning(
+                    "the lane was rebased but its head no longer stands on that base; "
+                    "the publish diffs from the clone base",
+                    onto=onto, base=base, failed=slug,
+                )
+                return None
+        self.log.info("the lane was rebased before publishing; the publish diffs from "
+                      "where it landed", onto=onto, base=base)
+        return onto
+
+    def _prepublish_advisory(self) -> str:
+        """The runner's "Advisory signals (not a gate)" section, or "" (CTXQ-G).
+
+        Read, scrubbed and capped exactly like `_prepublish_section`, and only
+        when it carries the runner's heading, so no other file in the
+        artifacts folder reaches the pull request's body this way.
+        """
+        ws = self.ws
+        if ws is None:
+            return ""
+        path = ws.artifacts / PREPUBLISH_ADVISORY_FILE
+        try:
+            if path.is_symlink() or not path.is_file():
+                return ""
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        text = str(self._scrub(redact_text(text).text)).strip()
+        if not text.startswith(PREPUBLISH_ADVISORY_HEADING):
+            return ""
+        if len(text) > PREPUBLISH_ADVISORY_MAX_CHARS:
+            text = text[:PREPUBLISH_ADVISORY_MAX_CHARS].rstrip() + "\n\n_[cut by the worker]_"
+        return text
+
+    def _prepublish_section(self) -> str:
+        """The runner's "Pre-publish checks failed" section, or "" (SPEED-D1).
+
+        Written into the artifacts folder by the runner (`prepublish.Gate`)
+        only when a check still failed after the agent's fix turn, or a
+        rebase conflict was not resolved: the branch is published anyway and
+        this tells the operator what is red. Read after the pre-publish reap,
+        like the agent's own body; scrubbed again here, and capped.
+        """
+        ws = self.ws
+        if ws is None:
+            return ""
+        path = ws.artifacts / PREPUBLISH_SECTION_FILE
+        try:
+            if path.is_symlink() or not path.is_file():
+                return ""
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        text = str(self._scrub(redact_text(text).text)).strip()
+        if not text.startswith(PREPUBLISH_SECTION_HEADING):
+            return ""
+        if len(text) > PREPUBLISH_SECTION_MAX_CHARS:
+            text = text[:PREPUBLISH_SECTION_MAX_CHARS].rstrip() + "\n\n_[cut by the worker]_"
+        return text
 
     def _fail_clone_unreachable(self, reason: str, tries: int) -> Outcome:
         """A retryable failure before the agent ran: the clone's forge did not answer.
@@ -5303,6 +5499,8 @@ class Worker:
         found_by = f"found by review `{verdict.get('task_id')}`" + (
             f" of workflow `{workflow_id}`" if workflow_id else ""
         )
+        # The lambdas run inside this call, before `del token` below; ruff reads
+        # the `del` as leaving `token` unbound in them (F821).
         result = findings_epic_mod.file_minors(
             minors=minors,
             epic=epic,
@@ -5310,12 +5508,12 @@ class Worker:
             # Reads are retried on an outage; the POST is not, since one whose
             # answer was lost may have made the comment (the dedup finds it).
             list_comments=lambda number: forge_mod.retry_transient(
-                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),
+                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),  # noqa: F821
                 policy=self._forge_retry(),
                 what="the findings epic's comments",
             ),
             post_comment=lambda number, body: forge_mod.create_issue_comment(
-                ref=ref, token=token, number=number, body=body
+                ref=ref, token=token, number=number, body=body  # noqa: F821
             ),
             found_by=found_by,
             clean=lambda text: _neutralise_mentions(str(self._scrub(text))),
@@ -6281,7 +6479,9 @@ class Worker:
         `single-pr` author. NOT an `integrate` contributor (its branch is its
         deliverable), a `single-pr` reader or amender, a `collect` task or a
         worker action: for those, changing nothing is a correct outcome -- a
-        review that edits no file is a review that did its job.
+        review that edits no file is a review that did its job. A contributor,
+        an amender and a `carrier: branches` step still owe their BRANCH when
+        they changed something: `_deliverable_branch` (G1, #1225).
 
         The strategy is read raw, not through `_dispatch_strategy`, which
         reads `single-pr` as `collect` (`_publish_git` reads its role through
@@ -6299,6 +6499,47 @@ class Worker:
             role = block.get("pr_role")
             return isinstance(role, str) and role.strip().lower() == "author"
         return False
+
+    def _deliverable_branch(self) -> str:
+        """Why this step's PUSHED BRANCH is what it delivers, or "" (G1, #1225).
+
+        Wider than `_opens_pull_request`, which stays what it says: a step
+        that owes a pull request. A branch is also the deliverable of
+
+          * an `integrate` contributor: the integrator merges `swarm/<its id>`
+            and a review that `builds_on` it clones that branch;
+          * a `carrier: branches` step, under any strategy but a `single-pr`
+            reader's: the branch is where the next step finds the work;
+          * a `single-pr` amender: its fast-forward push IS the pull
+            request's update.
+
+        A step another step `builds_on` is one of these already: swarm-api
+        accepts `builds_on` only under `direct-pr` and `integrate`
+        (`validation._EVERY_STEP_PUSHES_STRATEGIES`), where every step that
+        runs an agent opens a pull request or is a contributor. Measured
+        (#1225, wf_e55610ded71c4d9d9fae, wf_0260c920acf8414395b2): a review
+        failed cloning "Remote branch swarm/task_... not found" behind a build
+        step that ended SUCCEEDED having pushed nothing.
+        """
+        if self._opens_pull_request():
+            return "the step was to open a pull request"
+        pr_role = self._pr_role()
+        if pr_role == "amender":
+            return (
+                "the step is the 'single-pr' amender, whose push to the author's "
+                "branch is its update of the pull request"
+            )
+        if pr_role in ("reader", "none"):
+            # `_publish_git` pushes nothing for these, whatever the carrier.
+            return ""
+        if self._dispatch_carrier() == "branches":
+            return "the step carries its work on its branch (carrier: branches)"
+        if self._dispatch_strategy() == "integrate" and self._dispatch_role() == "contributor":
+            return (
+                "the step is an 'integrate' contributor, whose branch the integrator "
+                "merges and a step that builds on it clones"
+            )
+        return ""
 
     def _published_nothing(self, summary: dict[str, Any]) -> str | None:
         """Why a pull-request step that ran clean delivered nothing, or None.
@@ -6347,25 +6588,53 @@ class Worker:
         return None
 
     def _publish_failed(self, summary: dict[str, Any]) -> str | None:
-        """Why a pull-request step's push failed, naming the patch, or None (#872).
+        """Why a step whose branch is its deliverable ended without pushing it,
+        naming where the work is, or None (#872; G1, #1225).
 
         `_publish_git` sets `publish_failed` when git failed the publish --
         the push itself, or the commit, fold or authorship check before it.
         Measured 2026-10-08 (task_6a0c9afdbaea449eb53d): the push failed with
         exit 1, the agent had exited 0, and the step and its workflow read
-        SUCCEEDED with the work only in `swarm-work.patch`. A step whose job is
-        to open a pull request (`_opens_pull_request`) has not delivered, so
-        it ends FAILED, and the error says where the work is so it can be
-        recovered with `swarm_apply`. A step that publishes nothing by design
-        -- a review, an `integrate` contributor, a `collect` step, a step with
-        no repository -- never reaches here: it is not a pull-request step.
+        SUCCEEDED with the work only in `swarm-work.patch`.
+
+        #872 covered only a step that opens a pull request. G1 (#1225) widens
+        it to every step whose branch is its deliverable
+        (`_deliverable_branch`), and to every way such a step can end with
+        work and no pushed branch, not only a git failure: a publish that
+        declined for a token that cannot push (`can_push` false), a refused
+        git token, a forge this worker cannot publish to, publishing
+        disabled, a harvest that failed or met survivors of the reap, or the
+        catch-all in `_publish_checked`. Each read SUCCEEDED, and the step
+        that builds on it then failed cloning a branch that was never there.
+
+        Not here: a step that changed nothing (`published_nothing`, and the
+        allowed empty diff), which had no branch to push and whose dependants
+        already step past it; a shut verdict gate's step, which
+        `_skipped_publish_missing` answers; a forge outage, which
+        `_publish_unreachable` fails retryably. The forge-write refusal and
+        the final-tree leak are answered before this is asked. A `collect`
+        step without a carrier, a `single-pr` reader and a step with no
+        repository deliver no branch and never reach here.
         """
-        if not self._opens_pull_request():
+        why = self._deliverable_branch()
+        if not why:
             return None
         git = summary.get("git")
-        if not isinstance(git, dict) or git.get(PUBLISH_FAILED_FIELD) is not True:
+        if not isinstance(git, dict):
             return None
-        cause = str(git.get("publish_reason") or "the push failed")
+        # `_publish_git` says `published: true` only once the push returned.
+        if git.get("published") is True:
+            return None
+        if git.get(PUBLISH_FAILED_FIELD) is not True:
+            if summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True:
+                return None
+            if published_nothing(summary):
+                return None
+            if self._verdict is not None and not self._verdict.get("agent_ran", True):
+                return None
+            if isinstance(git.get(PUBLISH_UNREACHABLE_FIELD), dict):
+                return None
+        cause = str(git.get("publish_reason") or git.get("error") or "the push failed")
         patch = next(
             (
                 entry.get("uri")
@@ -6385,10 +6654,7 @@ class Worker:
                 + (f" ({git['patch_note']})" if git.get("patch_note") else "")
                 + "; the work is in the attempt's final checkpoint."
             )
-        return (
-            f"publish_failed: the step was to open a pull request and its branch "
-            f"was not pushed: {cause}. {where}"
-        )
+        return f"publish_failed: {why} and its branch was not pushed: {cause}. {where}"
 
     def _skipped_publish_missing(self, summary: dict[str, Any]) -> str | None:
         """Why a step whose verdict gate skipped its agent pushed no branch, or None (PUB-SKIP).
@@ -6468,14 +6734,19 @@ class Worker:
         rate-limit 403 at the probe or at `open_pull_request`. A forge that
         ANSWERED (a 422 refusal, a 404, a plain 403) is not here: the refusal
         is `_published_nothing`'s, and the rest stay the publish's recorded
-        reason. Only a step that owes a pull request (`_opens_pull_request`)
-        is failed for it; any other step's deliverable is its branch or its
-        artifacts, which an outage at the forge's API does not touch.
+        reason. Only a step whose branch is its deliverable
+        (`_deliverable_branch`, widened from `_opens_pull_request` by G1,
+        #1225) is failed for it: one that owes a pull request, or one whose
+        outage at the probe kept its branch from being pushed. Any other
+        step's deliverable is its artifacts, which an outage at the forge's
+        API does not touch.
         """
-        if not self._opens_pull_request():
+        if not self._deliverable_branch():
             return None
         git = summary.get("git")
         if not isinstance(git, dict):
+            return None
+        if not self._opens_pull_request() and git.get("published") is True:
             return None
         marker = git.get(PUBLISH_UNREACHABLE_FIELD)
         return marker if isinstance(marker, dict) else None
@@ -6956,6 +7227,12 @@ class Worker:
         clone_base = self._publish_base or self._clone_base
         if clone_base:
             base[CLONE_BASE_ENV] = clone_base
+        # THE BRANCH THE RUNNER REBASES ONTO BEFORE PUBLISHING (SPEED-D1), set
+        # only when that is safe for this step (`_prepublish_rebase_ref`).
+        # The runner rebases through the git tools, so without them it is
+        # recorded and skipped. Set by the worker, never from `input`.
+        if self._prepublish_rebase:
+            base[PREPUBLISH_BASE_ENV] = self._prepublish_rebase
         # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
         # Everything else in the worker's environment stays behind; see
         # `workspace.child_env` for why this environment is built rather than
@@ -7045,12 +7322,45 @@ class Worker:
                 base.update(self._session_channel_env())
         # The child-task spool, when this attempt has a child path: the one
         # variable an agent needs to submit and await helpers (child tasks,
-        # §3.1). A path, never a credential: the attempt key stays here.
-        base.update(self.children.prepare(ws.work))
+        # §3.1). And the git tools' spool, when it is offered them
+        # (docs/runner-git-tools.md §1.3, lane G6): read from the VERIFIED
+        # task, the checkout and the clone base this worker recorded. Paths,
+        # never a credential: the attempt key stays here, and no forge token
+        # is in this process while the agent runs (§0).
+        base.update(self.children.prepare(
+            ws.work,
+            task=self._task,
+            checkout=ws.checkout() if self._repo_url else None,
+            repository_url=self._repo_url,
+            clone_base=clone_base,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            store=self.store,
+        ))
         # The hand-off spool, on a live-browser attempt (live-browser §4.1):
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))
+        base.update(self._graph_context_env(ws, clone_base))
         return ws.child_env(base)
+
+    def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
+        """The staged graph snapshot's variables (docs/design/context-quality.md
+        §4.7, lane CTXQ-S): decided by the stored setting, once per attempt.
+        A staging failure is a reason in `stage.json`, never this attempt's."""
+        if self._graph_env is None:
+            try:
+                self._graph_env = graphstage_mod.prepare(
+                    ws.work, profile_name=self.cfg.runner_profile,
+                    runner_argv=self.cfg.profile.runner_argv, db=self.db, store=self.store,
+                    tenant_id=self.cfg.tenant_id, repository_url=self._repo_url,
+                    task_id=self.cfg.task_id,
+                    checkout=ws.checkout() if self._repo_url else None,
+                    base_sha=clone_base, call_options=self.control.call_options(),
+                    log=self.log)
+            except Exception as exc:  # noqa: BLE001 -- never fails the attempt
+                self.log.warning("graph context not staged", error=type(exc).__name__)
+                self._graph_env = {}
+        return dict(self._graph_env)
 
     # -- the account pool --------------------------------------------------
     def _pool_credential_env(self, profile: Any) -> dict[str, str] | None:
@@ -7688,6 +7998,27 @@ class Worker:
             },
         )
 
+    def _emit_startup_progress(self, step: str, at: datetime) -> bool:
+        """`startup_progress`: one of the browser's start-up steps, at the gate's time (STARTUP-API).
+
+        Called by `handoff.HandoffPath.note_startup` once per step and
+        attempt, for the console's progress bar (contract request 74). Never
+        on a fenced exit or a tenant mismatch (invariant 5: the stream is not
+        this attempt's to write then), which settles the step unwritten; a
+        control-plane outage leaves it for a later tick. A write that fails
+        raises, and the caller tries it again. Holds and moves nothing.
+        """
+        if self._fenced_exit or self._writes_forbidden:
+            return True
+        if self._control_plane_down:
+            return False
+        self.control.emit(
+            EventType.STARTUP_PROGRESS,
+            {"step": step, "attempt_id": self.cfg.attempt_id, "generation": self.cfg.generation},
+            at=at,
+        )
+        return True
+
     def _emit_startup_mark(self, cause: str, detail: dict[str, Any]) -> None:
         """One startup mark on the task's events: RUNNING, with `cause`.
 
@@ -7956,12 +8287,17 @@ class Worker:
         self._checkpoint("human-wait")
         uploaded = self._upload_outputs().get("artifacts")
         with self._metrics_after_the_record():
-            handoff_mod.park_human_required(
+            park = handoff_mod.park_human_required(
                 self.control,
                 max_resumes=self.handoff.max_resumes,
                 detail={"park_phase": "human_wait", "cause": cause},
                 uploads=uploaded if isinstance(uploaded, list) else None,
             )
+        if park.returned_by is not None:
+            # A person returned control while this attempt parked: re-queued
+            # READY, lease released all the same (LB-RETURN).
+            self.log.info("a person returned control as the hold ended; re-queued")
+            return Outcome(exit_code=ExitCode.PARKED, state=TaskState.READY)
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_for_quota(self, decision: QuotaDecision, *, source: str) -> Outcome:
@@ -8675,7 +9011,8 @@ class Worker:
         return Outcome(exit_code=ExitCode.FAILED, state=state)
 
     def _scan_floor(
-        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
+        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None,
+        tip: str | None = None,
     ) -> str | None:
         """The commit the publish scans read from when it is not the clone base, or None.
 
@@ -8698,6 +9035,16 @@ class Worker:
 
         No merge, no default branch, a fetch that fails, or a floor that is
         the base itself: None, and the scans read from the clone base.
+
+        `tip`, when given, is the default branch's tip the caller already
+        fetched from the forge (`_default_branch_tip`, a conflict fix round),
+        and it is not fetched again.
+
+        THE FLOOR IS ALSO WHAT KEEPS A MERGE A MERGE (#1321). The replay and
+        the fold keep a merge parent that is the floor or one of its
+        ancestors -- a commit the forge's default branch holds -- so a lane
+        that merged `main` pushes a two-parent merge and its pull request's
+        merge base moves to where it merged.
         """
         ws = self.ws
         assert ws is not None
@@ -8723,25 +9070,10 @@ class Worker:
         )
         if code != 0 or not merges.split():
             return None
-        try:
-            tip = fetch_branch_tip(
-                repo=publish_repo,
-                url=url,
-                branch=default_branch,
-                token=token,
-                private_dir=ws.private,
-                logs_dir=ws.logs,
-                timeout_seconds=cfg.git_clone_timeout_seconds,
-                logger=self.log,
-                # The default branch is read, never written: `push_branch`
-                # still refuses it (`protected`), and the prefix rule governs
-                # what this worker may push.
-                branch_prefix="",
+        if not tip:
+            tip = self._default_branch_tip(
+                publish_repo, url=url, token=token, default_branch=default_branch
             )
-        except GitError as exc:
-            self.log.warning("could not read the default branch; scanning from the clone base",
-                             error=str(self._scrub(str(exc)[:300])))
-            return None
         if not tip:
             return None
         code, found = run([*g, "merge-base", "HEAD", tip], "publish-floor-base")
@@ -8754,6 +9086,43 @@ class Worker:
             base=base,
         )
         return floor
+
+    def _default_branch_tip(
+        self, publish_repo: Path, *, url: str, token: str, default_branch: str | None
+    ) -> str | None:
+        """The default branch's tip, fetched from the FORGE into the publish
+        repository (`fetch_branch_tip`, the token-bearing fetch the carrier
+        uses), or None when there is no default branch or the fetch failed.
+        Never read from the agent's clone, whose `origin/main` the agent can
+        point anywhere."""
+        if not default_branch:
+            return None
+        ws = self.ws
+        assert ws is not None
+        try:
+            return fetch_branch_tip(
+                repo=publish_repo,
+                url=url,
+                branch=default_branch,
+                token=token,
+                private_dir=ws.private,
+                logs_dir=ws.logs,
+                timeout_seconds=self.cfg.git_clone_timeout_seconds,
+                logger=self.log,
+                # The default branch is read, never written: `push_branch`
+                # still refuses it (`protected`), and the prefix rule governs
+                # what this worker may push.
+                branch_prefix="",
+            )
+        except GitError as exc:
+            self.log.warning("could not read the default branch from the forge",
+                             error=str(self._scrub(str(exc)[:300])))
+            return None
+
+    def _conflict_round(self) -> bool:
+        """True when this step is a merge step's conflict fix round (#1076):
+        `dispatch.conflict_round`, inside the signed block (#1321)."""
+        return self._dispatch_block().get(CONFLICT_ROUND_FIELD) is True
 
     def _publish_identity(self) -> tuple[str, str]:
         """(name, email) every commit the worker pushes is written as.
@@ -9794,6 +10163,15 @@ class Worker:
         )
         try:
             publish_repo = self._build_clean_repo(repo, floor=floor, allow_unknown_base=True)
+            # A lane the runner rebased onto the base's newer tip (SPEED-D1)
+            # is described, scanned and published from where it landed.
+            rebased = self._adopt_rebase_base(publish_repo, self._publish_base)
+            if rebased is not None:
+                out["rebased_from"] = self._publish_base
+                out["rebased_onto"] = rebased
+                self._publish_base = rebased
+                self.checkpoints.clone_base = rebased
+                fetched_base = rebased
             work = summarize_work(
                 repo=publish_repo,
                 base=fetched_base,
@@ -9923,7 +10301,13 @@ class Worker:
             )
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.exception("the publish raised; continuing without it", exc)
-            result = {"published": False, "publish_reason": "the publish failed unexpectedly"}
+            # Marked failed (G1, #1225): a step whose branch is its deliverable
+            # did not push it, and `_publish_failed` ends it FAILED for that.
+            result = {
+                "published": False,
+                "publish_reason": "the publish failed unexpectedly",
+                PUBLISH_FAILED_FIELD: True,
+            }
         git.update(self._scrub(result))
 
     def _integration_is_pending(self) -> bool:
@@ -10280,10 +10664,24 @@ class Worker:
             # replay or the fold, the integrator's merges. The bot only when
             # the task names nobody. See `_publish_identity`.
             author_name, author_email = self._publish_identity()
-            # Read before the replay or the fold rewrites the agent's merges
-            # away. See `_scan_floor`.
+            # A CONFLICT FIX ROUND READS MAIN'S TIP WHETHER OR NOT IT MERGED
+            # (#1321): the check before the push asks whether the round's
+            # branch now stands on it, and a round that merged nothing is the
+            # case that check exists to refuse.
+            conflict_round = self._conflict_round()
+            default_tip = (
+                self._default_branch_tip(
+                    publish_repo, url=url, token=token, default_branch=access.default_branch
+                )
+                if conflict_round
+                else None
+            )
+            # Read before the replay or the fold rewrites the agent's commits.
+            # See `_scan_floor`: it is also the bound on which merge parents
+            # the replay and the fold keep.
             scan_floor = self._scan_floor(
-                publish_repo, url=url, token=token, default_branch=access.default_branch
+                publish_repo, url=url, token=token, default_branch=access.default_branch,
+                tip=default_tip,
             )
             new_sha = commit_dirty(
                 repo=publish_repo,
@@ -10365,11 +10763,32 @@ class Worker:
                         logs_dir=ws.logs,
                         timeout_seconds=cfg.git_harvest_timeout_seconds,
                         logger=self.log,
+                        # The default branch's commit the lane merged, proven
+                        # on the forge: the fold's second parent (#1321).
+                        merged=scan_floor or "",
                     )
                     # The worker's own auto-commit is among what was replaced when
                     # there was one; the rest were the agent's.
                     folded = max(replaced - (1 if new_sha else 0), 0)
                     out["agent_commits_folded"] = folded
+
+            # A CONFLICT FIX ROUND MUST LEAVE THE BRANCH ON MAIN (#1321). Its
+            # whole job is to move the pull request's merge base to the
+            # default branch's head; a branch that does not stand on it still
+            # conflicts, and pushing it would spend one of the merge step's
+            # rounds on a head that changes nothing. Refused here, with the
+            # merge base named, as the attempt's error.
+            if conflict_round:
+                verify_merged_default_branch(
+                    repo=publish_repo,
+                    base=self._publish_base,
+                    tip=default_tip,
+                    default_branch=access.default_branch or "the default branch",
+                    private_dir=ws.private,
+                    logs_dir=ws.logs,
+                    timeout_seconds=cfg.git_harvest_timeout_seconds,
+                    logger=self.log,
+                )
 
             # THE BRANCH AS IT WILL BE PUSHED IS SCANNED BEFORE ANY PUSH
             # (owner decision, 2026-09-28, #259 review M4). The scan above
@@ -10557,6 +10976,17 @@ class Worker:
         )
         agent_title, agent_body, refused = self._agent_pull_request_text()
         title = agent_title or self._generated_pull_request_title()
+        # WHAT THE PRE-PUBLISH GATE COULD NOT CLEAR (SPEED-D1): published
+        # anyway, never dropped, and said where the operator reads first.
+        prepublish = self._prepublish_section()
+        if prepublish:
+            generated = f"{prepublish}\n\n{generated}"
+            out["prepublish_checks_failed"] = True
+        # WHAT THE GATE ADVISES (CTXQ-G): test reach and the self-check, for
+        # the reader. It sets nothing in `out` that a merge path reads.
+        advisory = self._prepublish_advisory()
+        if advisory:
+            generated = f"{generated}\n\n{advisory}"
         body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
         # The generated block quotes the step's prompt, which is anyone's
         # text too; the whole body is neutralised, so no part of what the
@@ -10584,6 +11014,7 @@ class Worker:
                 self._pull_request_amendment(
                     agent_body=agent_body, branch=branch, head=str(pushed or work_head or "")
                 )
+                + (f"\n\n{prepublish}" if prepublish else "")
             ),
             origin=cfg.console_url,
             task_id=cfg.task_id,
@@ -12189,6 +12620,9 @@ SCAN_OVERLAP_CHARS = 64 * 1024
 #: secret was outside its diff (#470's review). A description of the work,
 #: never trusted for the push: the publish keeps reading `_publish_base`.
 CLONE_BASE_ENV = "SWARM_CLONE_BASE"
+#: The branch the runner rebases onto before publishing (SPEED-D1;
+#: `prepublish.PREPUBLISH_BASE_ENV`, held equal by test_prepublish_gate.py).
+PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
 
 
 class CredentialHit(NamedTuple):
@@ -13645,8 +14079,15 @@ def replay_agent_commits(
     made with `git commit-tree` under `_worker_identity`, and #219's rule that
     the worker writes every commit it pushes holds, checked again at the push
     by `verify_worker_authorship`. A merge the agent made keeps its merged
-    tree and loses its second parent: every commit on that side would
-    otherwise be pushed as it was written.
+    tree, and keeps a second parent ONLY when that parent is `upstream` or
+    one of its ancestors -- a commit of the default branch proven on the
+    forge (`Worker._scan_floor`), already published, so nothing on that side
+    is pushed as the agent wrote it (#1321). Every other merge parent -- a
+    side branch the agent made -- is dropped: every commit on that side would
+    otherwise be pushed as it was written. Dropping main's parent too was
+    #1321: a conflict fix round's `git merge origin/main` reached the forge
+    with one parent, GitHub kept the old merge base and the pull request
+    still conflicted.
 
     The index and working tree are not touched; `reset --soft` moves the
     branch onto the rewritten line, which ends in the same tree HEAD had.
@@ -13746,6 +14187,9 @@ def replay_agent_commits(
         tree = trees[0].strip() if trees else ""
         if not _SHA_RE.match(tree):
             raise GitError(f"could not read the tree of commit {sha[:12]}")
+        merged = _published_merge_parents(
+            run, g, header, upstream=upstream, base=floor
+        )
         if sha == keep:
             # The worker's own message, from `commit_dirty`.
             text = message.replace("\x00", "").strip()
@@ -13760,6 +14204,8 @@ def replay_agent_commits(
         argv = [*g, "commit-tree", tree]
         if parent:
             argv += ["-p", parent]
+        for other in merged:
+            argv += ["-p", other]
         argv += ["-m", text]
         code, made = run(argv, "publish-keep-write")
         made = made.strip()
@@ -13774,6 +14220,42 @@ def replay_agent_commits(
         kept=kept,
         rewritten=len(shas),
     )
+    return kept
+
+
+def _published_merge_parents(
+    run: Callable[[list[str], str], tuple[int, str]],
+    g: list[str],
+    header: str,
+    *,
+    upstream: str,
+    base: str,
+) -> list[str]:
+    """The merge parents of a commit (its `header`) the replay keeps (#1321).
+
+    Every parent after the first that is `upstream` or one of its ancestors
+    -- the default branch's commit the lane merged, proven on the forge
+    (`Worker._scan_floor`) -- and that `base` does not already contain,
+    which would make it a redundant parent. Nothing when `upstream` is "".
+    A side branch the agent made is no ancestor of the forge's default
+    branch, so it is never here.
+    """
+    if not upstream:
+        return []
+    parents = [line[len("parent "):].strip() for line in header.split("\n")
+               if line.startswith("parent ")]
+    kept: list[str] = []
+    for other in parents[1:]:
+        if not _SHA_RE.match(other):
+            continue
+        code, _ = run([*g, "merge-base", "--is-ancestor", other, upstream], "publish-keep-merged")
+        if code != 0:
+            continue
+        if base:
+            code, _ = run([*g, "merge-base", "--is-ancestor", other, base], "publish-keep-redundant")
+            if code == 0:
+                continue
+        kept.append(other)
     return kept
 
 

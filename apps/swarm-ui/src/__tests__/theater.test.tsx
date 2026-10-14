@@ -324,10 +324,11 @@ describe('prev and next', () => {
 
     // OTHER LIVE lists the others in the same order; this agent is the
     // theater's own, named in its LIVE pill, not a row of the list.
+    // Each row's name; its short task id (QA12-24) sits beside it.
     const items = within(screen.getByRole('region', { name: 'OTHER LIVE' }))
       .getAllByRole('listitem')
-      .map((li) => li.textContent ?? '')
-    expect(items.map((t) => t.replace(/needs you/i, '').trim())).toEqual(['bravo', 'delta', 'charlie'])
+      .map((li) => li.querySelector('.th-agent-go, .th-agent-name')?.textContent ?? '')
+    expect(items).toEqual(['bravo', 'delta', 'charlie'])
     expect(screen.getByTestId('theater-live-pill').textContent).toContain('alpha')
   })
 

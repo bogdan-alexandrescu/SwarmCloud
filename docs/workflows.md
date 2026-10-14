@@ -531,11 +531,29 @@ line of a `format: "progress"` row says `? N question(s) for the owner`, and a
 carries `questions` with `""` for a missing text, keeping its no-null rule, and
 `plugin/agents/step.md` tells the row to put them in its result as given.
 
-**Data for the operator, never a channel to the platform.** Nothing executes,
-answers or acts on the file. No state, retry, dispatch, merge or verdict reads
-it, and no part of the platform takes an instruction from it. The agent asks,
-and a person decides. If the answer changes the work, that is a new task,
-dispatched by a person.
+**The owner answers on the task** (owner decision 2026-10-13, "Yes, pick an
+option on the task"; TASK-ANSWERS). The console's "Questions for you" card
+offers each question's options, with the recommended one marked, and an
+"Other…" box for the person's own words. Answering posts
+`POST /v1/tasks/{id}/answers` with `{question_index, choice, text}`. Only the
+task's submitter or an admin may answer. Another member of the tenant gets a
+403, and the card says why. Another tenant's task is a 404. `choice` must be one
+of that question's option labels, and `text` is at most 2,000 characters,
+redacted before it is stored. The answer is stored on the task as
+`metadata.owner_answers`. It is a reserved platform key, as `start_problem` is,
+so it needs no change to the frozen `Task`. Each question has one answer.
+Answering again replaces it and moves the replaced answer, with who gave it and
+when, into that answer's `history`. A question can change at most 20 times;
+after that a change is refused rather than dropping history. The task read
+serves the answers as `owner_answers`. `GET /questions` puts each one beside
+its question, and `swarm_result`, the follow outcome and `sc task` show them.
+That is how whoever launched the work reads the decision.
+
+**Data for the operator, never a channel to the platform.** Nothing executes or
+acts on the file or on the answers. No state, retry, dispatch, merge or verdict
+reads them, and no part of the platform takes an instruction from them. The
+agent asks, and a person decides. If the answer changes the work, that is a new
+task, dispatched by whoever reads the answer.
 
 ## Dependencies and state
 
@@ -551,6 +569,73 @@ monopolise a pass.
 would otherwise sit in `DEPENDENCY_INCOMPLETE` forever — holding no capacity, but
 never completing and never erroring, which is the worst kind of failure because
 nothing alerts on it.
+
+## Waiting for a pull request: `after`
+
+**Why it exists.** On 2026-10-14 three lanes -- RELAY-ROLL, DEVB-GATE and
+EGRESS-GATE -- each depended on another lane's pull request, and each sat
+until an operator noticed that pull request had merged and submitted them by
+hand. A workflow now says what it waits for, and the platform starts it
+(owner decision, delivery speed plan D3):
+
+```json
+{"repository_url": "https://github.com/owner/repo", "after": {"pr": 41}, "steps": [...]}
+```
+
+`after` is one `{"pr": N}` or a list of them, at most 10. The numbers are
+pull requests of the **workflow's own repository** -- a number, never a
+repository, so a spec cannot point the tenant's token at anything else. A
+workflow with no `repository_url`, or one not on github.com, is refused at
+submission, naming `after`.
+
+**What happens.** Every root step (a step that depends on no other) is
+written `PARKED(DEPENDENCY_INCOMPLETE)` carrying `metadata.after_prs`; every
+other step already waits on a root, so the whole workflow waits. It holds no
+lease, no pool count and no execution (invariant 1). Then:
+
+* **the wake tick reads.** The merge step's per-tenant tick
+  (`POST /v1/admin/merges/wake`, Cloud Scheduler job `merge_wake`, every
+  minute) reads each waiting gate's pull requests with **the tenant's own
+  `-git` token**, at most once per `issueci.CI_READ_SECONDS` per gate
+  (`swarm_api.prgate.wake_tenant`). It writes only the gate, in a
+  transaction guarded on the task still being PARKED on that gate. It never
+  moves a task.
+* **every one merged -> released.** The gate is marked `merged`; the
+  scheduler's dependency sweep promotes the root to READY on its next drain
+  and admission takes it as any other step. The reconciler's
+  DEPENDENCIES_MET rule is the backstop, as for any dependency park.
+* **one closed without merging -> failed.** The gate is marked `closed`,
+  naming it; the scheduler dead-letters the root ("pull request #42 of
+  owner/repo was closed without being merged; ..."), and its dependants are
+  cancelled as a failed parent's. PARKED -> FAILED is not a transition the
+  contract allows; DEAD_LETTERED is, and the workflow reads failed.
+* **a pull request GitHub says does not exist keeps waiting**, with the
+  tick's failure `pull_request_not_found`: a token that lost the repository
+  answers 404 too, and failing every waiting workflow on a rotated token is
+  worse than waiting. Cancel the workflow to stop it.
+
+**No webhook.** The platform has no GitHub webhook receiver (a per-repository
+hook, an HMAC secret per registration and a public unauthenticated route --
+docs/merge-step.md says why it has none), so the tick is the wake: a merge is
+noticed within a minute or two. The scheduler never reads GitHub.
+
+**Restart-safe by construction.** The wait is a document, not a process: the
+gate, its last reading and its release are on the root task. A restarted
+swarm-api re-reads the gates on its next tick; a restarted scheduler reads
+the gate's `state` on its next drain.
+
+**Where it shows.** `GET /v1/workflows[/{id}]` serves `after_pull_requests`
+(`state`, `pull_requests`, `pending`, `merged`, `closed`, and `text`) on a
+workflow submitted with `after`, read off its step tasks. The console's
+workflow list and page print `text` as a tag -- "waiting for PR #41 to
+merge" -- and `sc workflows` prints it under the workflow. A released wait
+prints nothing; the steps say the rest.
+
+**The contract.** The frozen `Workflow` has no metadata and `ParkReason` has
+no "pull request pending", so the gate lives on the root tasks and the park
+reuses `DEPENDENCY_INCOMPLETE`; every promoter of that reason checks the
+gate. Contract change request 76 (docs/contract-change-requests.md) asks for
+a typed home.
 
 ## The base pin: a downstream step starts where its parents started
 
@@ -628,9 +713,40 @@ names the uploaded `swarm-work.patch` uri, so the work can be recovered with
 attempt's final checkpoint. It is not retried: a refused push meets the same
 refusal on the same branch. The end cause is `outputs_missing`, as for
 `published_nothing:`, because the frozen contract has no publish-failed cause
-and no new `TaskState` was added for it. A step that publishes nothing by
-design -- a review, an `integrate` contributor, a `collect` step, a step with
-no repository -- is unaffected.
+and no new `TaskState` was added for it.
+
+**A step whose branch is its deliverable is FAILED when the branch was not
+pushed (G1, part of #1225).** #872 covered only a step that opens a pull
+request, and the gap it left was measured on 2026-10-12
+(`wf_e55610ded71c4d9d9fae`, `wf_0260c920acf8414395b2`): a review failed
+cloning "Remote branch swarm/task_... not found" behind a build step that had
+ended SUCCEEDED without pushing. That build step was an `integrate`
+contributor, whose branch is what the integrator merges and what a step that
+`builds_on` it clones. So the rule is now about the branch, not the pull
+request (`Worker._deliverable_branch`). It covers a step that opens a pull
+request, an `integrate` contributor, a `carrier: branches` step under any
+strategy, and a `single-pr` amender. A step another step `builds_on` is one of
+these already, because `builds_on` is accepted only under `direct-pr` and
+`integrate`. Such a step ends FAILED `publish_failed:` when it changed
+something and its branch was not pushed, by any path, not only a git failure:
+a publish that declined because the token cannot push (`can_push` false), a
+refused git token, a forge the worker cannot publish to, publishing disabled,
+a harvest that failed or met processes that survived the reap, or a publish
+that raised. Each of these used to read SUCCEEDED. A forge that could not be
+reached at the probe fails the attempt retryably instead (`forge_unreachable`),
+as it already did for a pull-request step. A push whose stderr says the forge
+did not answer (a reset connection, a 5xx, a timeout; git's own words, read by
+`gitops.transient_git_failure`) is tried once more after 5 s
+(`gitops.push_branch`). A refusal is not retried. A second transient failure
+ends the step FAILED as above.
+
+These steps still SUCCEED without a branch: one that changed nothing (its
+dependants already step past it), one that declared `allow_empty_diff` or
+wrote `verification.md`, and one whose verdict gate kept its agent from
+running. The skip path has its own rule (PUB-SKIP). Steps that deliver no
+branch at all are unaffected: a `collect` step without a carrier, a
+`single-pr` reader, a review that edits nothing, and a step with no
+repository.
 
 ## An empty diff can succeed: `allow_empty_diff`
 
@@ -1627,8 +1743,22 @@ submission, from the workflow's own `metadata`:
   a bool, a float -- is a 422 naming the bounds. So is the key on a workflow
   that ends with no merge step, whatever its value: rounds nothing would
   spend are a request that would silently not happen, as `metadata.merge`
-  `"on"` there is refused. It is stored as written; lane MS7 spends it, and
-  until then it is accepted and changes nothing.
+  `"on"` there is refused. It is stored as written; lane MS7 spends it.
+  **Since SPEED-D2 (2026-10-14) absent means 2, not 0**, and the spec's
+  top-level `fix_rounds` (0-5) says the same thing: see the next bullet.
+* **`fix_rounds`** on the workflow spec (lane SPEED-D2, owner decision
+  2026-10-14 "Auto fix rounds"): how many agent rounds the merge step spends
+  on a pull request whose required checks are red at its head. Absent, a
+  workflow with a merge step gets **2**, an issue run's 0 (it has its own
+  loop). `0` disables them: red refuses `checks_failed` at once, as before.
+  Given with a different `metadata.merge_fix_rounds`, or with no merge step,
+  it is a 422. Before spending a round on a red head the platform re-runs the
+  failing Actions jobs once; a re-run that passes spends nothing. Each round
+  appears as a step of this workflow, `ci-fix:<n>` (or `conflict-fix:<n>`
+  for a conflicting pull request, capped at 2 whatever this says), and a
+  round that failed does not fail a workflow whose merge then succeeded.
+  The why is in
+  [merge-step.md](merge-step.md#revised-2026-10-14-auto-fix-rounds-lane-speed-d2).
 * **The workflow's label is its pull request's fallback title, merge step
   or not.** `metadata.unit`, else `metadata.title`, reaches the gated step as
   the dispatch block's `pr_label`, which the worker uses only as title and

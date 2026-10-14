@@ -847,6 +847,121 @@ def test_the_list_shows_a_pending_loan_on_the_persons_row(client, db, pool) -> N
 
 
 # --------------------------------------------------------------------------
+# decline a loan request (LOAN-DECLINE, part of #1206)
+# --------------------------------------------------------------------------
+
+def _decline(client, user: str = "root", **body):
+    return client.post(f"/v1/admin/people/{CAROL_WS}/loan/decline", headers=auth_header(user),
+                       json=body)
+
+
+def test_an_admin_declines_a_loan_request_and_it_is_recorded_and_audited(client, db) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    request_id = db.docs["loan_requests/u-carol"]["request_id"]
+    response = _decline(client, reason="  Use the eng team's account.  ")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"workspace_id": CAROL_WS, "state": "declined",
+                               "reason": "Use the eng team's account."}
+    loan = db.docs["loan_requests/u-carol"]
+    assert loan["state"] == people_mod.LOAN_DECLINED == "declined"
+    decision = loan["decision"]
+    assert decision["by"] == ROOT and decision["reason"] == "Use the eng team's account."
+    assert decision["verdict"] == "declined" and isinstance(decision["at"], datetime)
+    [entry] = _audit(db, "loan_declined")
+    assert entry["target_workspace_id"] == CAROL_WS and entry["by"] == ROOT
+    # The reason is on the request; the audit keeps its length, not a second copy.
+    assert entry["detail"] == {"request_id": request_id, "reason_length": 27}
+
+
+def test_a_decline_without_a_reason_is_recorded_with_none(client, db) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    response = client.post(f"/v1/admin/people/{CAROL_WS}/loan/decline",
+                           headers=auth_header("root"))
+    assert response.status_code == 200, response.text
+    assert db.docs["loan_requests/u-carol"]["decision"]["reason"] is None
+    assert _audit(db, "loan_declined")[0]["detail"]["reason_length"] == 0
+
+
+def test_declining_with_no_open_request_is_a_409_and_writes_nothing(client, db, pool) -> None:
+    _record(db, state="ready")
+    response = _decline(client)
+    assert response.status_code == 409, response.text
+    assert response.json()["code"] == "LOAN_REQUEST_NOT_OPEN"
+    # Lent already: closed, so not declinable either.
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    assert _loan(client, "acct-eng", True).status_code == 200
+    response = _decline(client)
+    assert response.status_code == 409
+    assert db.docs["loan_requests/u-carol"]["state"] == "lent"
+    assert _audit(db, "loan_declined") == []
+
+
+def test_a_declined_request_cannot_be_declined_twice(client, db) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    assert _decline(client).status_code == 200
+    assert _decline(client).status_code == 409
+    assert len(_audit(db, "loan_declined")) == 1
+
+
+@pytest.mark.parametrize("user", ["carol", "alice"])
+def test_a_non_admin_cannot_decline_a_loan_request(client, db, user) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    response = _decline(client, user)
+    assert response.status_code == 403
+    assert db.docs["loan_requests/u-carol"]["state"] == "requested"
+    assert _audit(db, "loan_declined") == []
+
+
+def test_a_decline_reason_over_its_limit_is_refused(client, db) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    response = _decline(client, reason="x" * (people_mod.MAX_LOAN_REASON + 1))
+    assert response.status_code == 422
+    assert db.docs["loan_requests/u-carol"]["state"] == "requested"
+
+
+def test_a_declined_person_may_ask_again_and_the_list_shows_each_state(client, db) -> None:
+    _record(db, state="ready")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    assert _decline(client, reason="not this week").status_code == 200
+
+    def row() -> dict:
+        body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+        [found] = [r for r in body["people"]
+                   if (r.get("workspace") or {}).get("workspace_id") == CAROL_WS]
+        return found
+
+    declined = row()["loan_request"]
+    assert declined["state"] == "declined" and declined["reason"] == "not this week"
+    assert declined["decided_at"] is not None
+    assert ROOT not in json.dumps(row())  # decision.by never reaches the list
+    again = client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    assert again.status_code == 202, again.text
+    loan = db.docs["loan_requests/u-carol"]
+    assert loan["state"] == "requested" and loan["decision"] is None
+    assert loan["history"][-1]["state"] == "declined"
+    assert row()["loan_request"]["state"] == "requested"
+
+
+def test_declining_leaves_a_pending_loan_where_it_is(client, db, pool) -> None:
+    # LOAN-NEW's pending loan is the lending, not the request: declining the
+    # request does not cancel it; only a reclaim does.
+    seed_tenant(db, "eng")
+    pool.accounts["acct-eng"] = _pool_account("acct-eng", "eng")
+    _record(db, state="applying")
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    _loan(client, "acct-eng", True)
+    assert _decline(client).status_code == 200
+    assert [p["account_id"] for p in db.docs["pending_loans/u-carol"]["loans"]] == ["acct-eng"]
+
+
+# --------------------------------------------------------------------------
 # the sweep
 # --------------------------------------------------------------------------
 
@@ -967,6 +1082,43 @@ def test_the_list_shows_everyone_with_teams_github_workspace_account_and_activit
     # decision.by never leaves Firestore; the tenant ids are names.
     assert ROOT not in json.dumps(body["people"])
     assert all("tenant_id" not in r["workspace"] for r in body["people"])
+
+
+def test_the_list_names_each_account_lent_to_a_person_and_nothing_secret(client, db) -> None:
+    """PEOPLE-LOAN-VIEW (owner 2026-10-13): `lent_by` is the owner TENANTS,
+    so the console said "lent by eng" and never which account. The row now
+    carries each lent account's id, label and owner (with the owner's display
+    name), read from the same `accounts` query; never a secret's name."""
+    seed_tenant(db, "eng")
+    db.docs["tenants/eng"]["display_name"] = "Engineering"
+    seed_tenant(db, "ops")
+    _person(db, "u-hal", "hal@saga.xyz")
+    _person(db, "u-ivy", "ivy@saga.xyz")
+    secret_ref = "swarm-tenant-eng-" + "claude"
+    lent = _pool_account("eng:devops-main", "eng", lend_to=("u-hal",))
+    lent.update(label="devops main", secret_name=secret_ref, secret_version="7")
+    db.docs["accounts/eng:devops-main"] = lent
+    db.docs["accounts/ops-1"] = {**_pool_account("ops-1", "ops", lend_to=("u-hal",)), "label": None}
+    # Another provider's account and one owned by the borrower are not lent.
+    db.docs["accounts/eng-gpt"] = {**_pool_account("eng-gpt", "eng", lend_to=("u-hal",)),
+                                   "provider": "openai"}
+    db.docs["accounts/hal-own"] = _pool_account("hal-own", "u-hal", lend_to=("u-hal",))
+
+    body = client.get("/v1/admin/people", headers=auth_header("root")).json()
+    rows = {r["email"]: r for r in body["people"]}
+    hal = rows["hal@saga.xyz"]["claude_account"]
+    # MUTATION: drop `lent_accounts`, or key it by owner tenant alone.
+    assert hal["lent_accounts"] == [
+        {"account_id": "eng:devops-main", "label": "devops main", "owner_tenant": "eng",
+         "owner_name": "Engineering", "state": "AVAILABLE"},
+        {"account_id": "ops-1", "label": None, "owner_tenant": "ops",
+         "owner_name": "ops", "state": "AVAILABLE"},
+    ]
+    assert hal["lent_by"] == ["eng", "ops"]
+    assert rows["ivy@saga.xyz"]["claude_account"]["lent_accounts"] == []
+    # MUTATION: return the account document as it is.
+    text = json.dumps(body["people"])
+    assert secret_ref not in text and "secret" not in text
 
 
 def test_the_list_carries_the_last_audit_entries_newest_first(client, db) -> None:

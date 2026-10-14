@@ -1093,6 +1093,23 @@ def ffmpeg_frames(path: str) -> tuple[int, int, Any] | None:
     return width, height, frames()
 
 
+def stray_live_objects(prefix: str, names: list[str]) -> list[str]:
+    """Objects in an attempt's own `live/` directory that are neither a
+    recording segment nor its actions file. Only `<prefix><attempt>/live/`:
+    the worker's live log tails sit under `<attempt>/logs/live/`
+    (agent_worker/runners/streams.py) and are not the recording's. Matching
+    any `/live/` counted those two tails as strays and failed `recording` on
+    every run that streamed its logs (lane SPEED-C2, 2026-10-14)."""
+    own = re.compile(re.escape(prefix) + r"[A-Za-z0-9_-]+/live/(?P<rest>.+)")
+    keep = re.compile(r"(rec-[0-9]{13}\.live\.webm|actions-[0-9]{13}\.live\.jsonl)")
+    stray = []
+    for name in names:
+        hit = own.fullmatch(name)
+        if hit and not keep.fullmatch(hit.group("rest")):
+            stray.append(name)
+    return stray
+
+
 def check_recording(cfg: Config, gcs: Gcs | None, tally: FrameTally | None,
                     results: Results) -> None:
     prefix = f"tenants/{cfg.tenant}/tasks/{cfg.task}/attempts/"
@@ -1112,8 +1129,7 @@ def check_recording(cfg: Config, gcs: Gcs | None, tally: FrameTally | None,
         if segments or time.monotonic() > deadline:
             break
         time.sleep(10)
-    stray = [n for n in names if "/live/" in n and not re.search(
-        r"/live/(rec-[0-9]{13}\.live\.webm|actions-[0-9]{13}\.live\.jsonl)$", n)]
+    stray = stray_live_objects(prefix, names)
     if stray:
         results.put("recording", "FAIL", f"{len(stray)} object(s) under live/ are not recording segments")
         return

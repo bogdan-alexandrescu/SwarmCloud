@@ -9,7 +9,7 @@ Two kinds of caller, as the hand-off routes have:
     the same per-group membership, the same principal check every route has --
     reads the session, gets a viewer ticket, takes, renews and returns control,
     switches the device while in control (LB-DEV-B), opens control to the
-    tenant, and reads the audit. The socket
+    tenant and closes it again (QA12-11), and reads the audit. The socket
     (`/v1/live/{session_id}/stream`) authenticates the same identity from the
     upgrade request's headers and selects the tenant the ticket names.
 
@@ -61,6 +61,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from ..auth import AuthContext, require_continuation_route
 from ..children import PROOF_HEADER, TIMESTAMP_HEADER, ChildService, parse_body
 from ..deps import AppContext, current_auth, get_context, submission_scope, tenant_scope
+from ..egress import EgressService
 from ..errors import ApiError, NotFound, ValidationFailed
 from ..live import (
     Admission,
@@ -238,6 +239,37 @@ async def open_live_session(
     return answer
 
 
+@router.post("/attempts/{attempt_id}/egress-ticket", status_code=status.HTTP_201_CREATED)
+async def mint_egress_ticket(
+    attempt_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    serverless_authorization: str | None = Header(
+        default=None, alias="X-Serverless-Authorization"
+    ),
+    proof: str | None = Header(default=None, alias=PROOF_HEADER),
+    timestamp: str | None = Header(default=None, alias=TIMESTAMP_HEADER),
+    ctx: AppContext = Depends(get_context),
+    children: ChildService = Depends(child_service),
+) -> dict:
+    """WORKER ONLY: the attempt egress ticket the gate presents to swarm-egress
+    on every CONNECT (docs/browser-egress.md §2.2, §2.5), under the same proof
+    and fence as `/live-session`. 409 `egress_off` when the platform, the
+    tenant or the profile is not switched on: the attempt then runs direct."""
+    raw = await request.body()
+    service = EgressService(settings=ctx.settings, db=ctx.db, children=children, now=ctx.now)
+    return await run_in_threadpool(
+        lambda: service.mint(
+            serverless_authorization or authorization,
+            attempt_id,
+            raw,
+            path=request.url.path,
+            proof=proof,
+            timestamp=timestamp,
+        )
+    )
+
+
 # --------------------------------------------------------------------------
 # People (§4.2, §5.1, §5.2)
 # --------------------------------------------------------------------------
@@ -373,6 +405,21 @@ def open_to_members(
     browser while its agent asks for help (§5.1, Q1). Audited."""
     return _person_service(ctx, request.app).open_to_members(tenant_id, task_id, email=auth.email,
                                                 submitted_by=submitted_by)
+
+
+@router.delete("/tasks/{task_id}/live/open-to-members", response_model=LiveRead)
+def close_to_members(
+    task_id: str,
+    request: Request,
+    tenant_id: str = Depends(tenant_scope),
+    submitted_by: str | None = Depends(submission_scope),
+    auth: AuthContext = Depends(current_auth),
+    ctx: AppContext = Depends(get_context),
+) -> dict:
+    """The owner turns member control off again, for this attempt and the
+    task's later ones (owner decision 2026-10-13, QA12-11). Audited."""
+    return _person_service(ctx, request.app).close_to_members(tenant_id, task_id, email=auth.email,
+                                                 submitted_by=submitted_by)
 
 
 @router.get("/tasks/{task_id}/live/audit")
@@ -628,7 +675,13 @@ class _Proxy:
         self.poll = float(getattr(settings, "live_session_poll_seconds", 2.0))
         self.recheck = float(getattr(settings, "live_membership_recheck_seconds", 300.0))
         self.flush = float(getattr(settings, "live_input_flush_seconds", 15.0))
+        #: HANDOFF-POLICY: how often this open socket says "someone is
+        #: watching", which keeps an open hand-off's hold from parking.
+        self.watch = float(getattr(settings, "live_watch_flush_seconds", 15.0))
         self.in_control = False
+        #: The episode `keys` and `pointers` belong to: counted while it was
+        #: held, written to it even when it ends before they are flushed.
+        self.episode: str | None = None
         self.keys = 0
         self.pointers = 0
         self.total_keys = 0
@@ -639,6 +692,7 @@ class _Proxy:
 
     async def run(self) -> None:
         await run_in_threadpool(self.service.viewer_event, self.admission, "viewer_joined", {})
+        await self._watched()
         await self._status()
         tasks = [asyncio.ensure_future(c) for c in (self._from_viewer(), self._from_relay(),
                                                      self._tick())]
@@ -648,8 +702,10 @@ class _Proxy:
             for task in tasks:
                 task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
-            if self.in_control and (self.keys or self.pointers):
+            if self.keys or self.pointers:
                 await self._flush_input()
+            if self.close_code == 1012:
+                await self._settle_on_relay_end()
             try:
                 await self.link.close()
             except Exception:  # the relay already went
@@ -661,6 +717,18 @@ class _Proxy:
                  "pointer_events": self.total_pointers},
             )
 
+    async def _settle_on_relay_end(self) -> None:
+        """The relay link ended under this socket -- the gate's tunnel went,
+        as it does when the task ends -- so the session is settled once more
+        by its own id before the socket closes: an attempt that has ended
+        closes it, and an episode still open in it ends with its audit
+        (CONTROL-LAPSE; task c6bf0368..., 2026-10-13). After this the task's
+        current session is gone, and nothing would read this one again."""
+        try:
+            await run_in_threadpool(self.service.status, self.admission)
+        except Exception as exc:  # noqa: BLE001 -- the socket closes either way
+            log.info("live session not settled at the relay's end (%s)", type(exc).__name__)
+
     async def _status(self) -> bool:
         status_ = await run_in_threadpool(self.service.status, self.admission)
         if not status_["open"]:
@@ -671,9 +739,19 @@ class _Proxy:
             # connection of it, not only this one (decision (a)).
             await run_in_threadpool(self.service.close_relay, self.admission.session_id)
             return False
-        if status_["in_control"] != self.in_control:
-            if not status_["in_control"] and (self.keys or self.pointers):
-                self.keys = self.pointers = 0  # the episode ended; its counts are its own
+        episode = status_.get("episode_id") if status_["in_control"] else None
+        # Control ended and this person took it again between two polls: the
+        # end's revoke took the relay's grant (CONTROL-LAPSE), so the new
+        # episode's grant is sent again even though `in_control` never read false.
+        regrant = (self.in_control and status_["in_control"] and self.episode is not None
+                   and episode != self.episode)
+        if self.in_control and episode != self.episode and (self.keys or self.pointers):
+            # The episode ended (a Return press, a lapse, a preemption) with
+            # input this socket had not flushed: it is that episode's, and goes
+            # on its entries, never into the next one's (LB-POLISH).
+            await self._flush_input()
+        self.episode = episode
+        if status_["in_control"] != self.in_control or regrant:
             self.in_control = status_["in_control"]
             ticket = await run_in_threadpool(self.service.control_ticket, self.admission,
                                              self.in_control)
@@ -682,6 +760,14 @@ class _Proxy:
                                  "in_control": self.in_control,
                                  "controller": status_.get("controller")})
         return True
+
+    async def _watched(self) -> None:
+        """A viewer is here: move the open hand-off's hold (`LiveService.watched`).
+        A failure is logged and retried on the next flush, never the socket's end."""
+        try:
+            await run_in_threadpool(self.service.watched, self.admission)
+        except Exception as exc:  # noqa: BLE001 -- the view goes on
+            log.info("live watch not recorded (%s)", type(exc).__name__)
 
     async def _send_viewer(self, message: dict[str, Any]) -> None:
         if message == self.last_sent:
@@ -732,17 +818,25 @@ class _Proxy:
 
     async def _flush_input(self) -> None:
         # Swapped on the event loop, where the counters are incremented, and
-        # written from a worker thread.
-        keys, pointers = self.keys, self.pointers
+        # written from a worker thread. To the episode they were counted in:
+        # still held, onto the controller record; ended, onto its entries.
+        keys, pointers, episode = self.keys, self.pointers, self.episode
         self.keys = self.pointers = 0
-        await run_in_threadpool(
-            lambda: self.service.record_input(self.admission, keys=keys, pointers=pointers)
+        held = await run_in_threadpool(
+            lambda: self.service.record_input(self.admission, keys=keys, pointers=pointers,
+                                              episode_id=episode)
         )
+        if not held and episode is not None:
+            await run_in_threadpool(
+                lambda: self.service.record_episode_tail(self.admission, episode, keys=keys,
+                                                         pointers=pointers)
+            )
 
     async def _tick(self) -> None:
         loop = asyncio.get_running_loop()
         next_recheck = loop.time() + self.recheck
         next_flush = loop.time() + self.flush
+        next_watch = loop.time() + self.watch
         last_status = None
         while True:
             await asyncio.sleep(self.poll)
@@ -763,6 +857,9 @@ class _Proxy:
             if self.in_control and (self.keys or self.pointers) and now >= next_flush:
                 next_flush = now + self.flush
                 await self._flush_input()
+            if now >= next_watch:
+                next_watch = now + self.watch
+                await self._watched()
             try:
                 if not await self._status():
                     return

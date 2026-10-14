@@ -273,11 +273,11 @@ What the CI jobs cover, so you know what you are waiting for:
 
 | workflow | jobs |
 |---|---|
-| `application.yml` | shell · python (unit) · ui (typecheck + component) · integration (emulator) · manifests · build images |
+| `application.yml` | shell · ruff · python (unit; a pull request runs the tests its change reaches) · ui (typecheck + component) · integration (emulator) · manifests · build images (main; skips the tests a run of the identical tree passed) · record the tested tree |
 | `terraform.yml` | fmt/validate/tflint · `terraform test` (86 assertions) · checkov · plan (main only) |
 | `security.yml` | filesystem · secrets · iac · policy · images (scheduled) |
 | `release.yml` | verify · build · infrastructure · deploy (push to main, env-gated) |
-| `accept.yml` | what dev runs · warm, smoke and GKE proof · acceptance (6 groups, two waves) · report (a red run opens or updates one `bug` issue); after `release` completes on main |
+| `accept.yml` | what dev runs · warm, smoke and GKE proof · acceptance (6 groups, two waves) · report (a red run opens or updates one `bug` issue); after `release` completes on main. The 7th group, live-browser, runs every three hours off the red path with its own issue until `scripts/accept-live-browser-streak.sh` says five in a row ([docs/ci.md](docs/ci.md#live-browser-runs-on-a-schedule)) |
 
 `make test` is fully offline — no credentials, no emulator, nothing created. It
 runs the unit tests, `terraform test` over `tests/terraform` (86 assertions

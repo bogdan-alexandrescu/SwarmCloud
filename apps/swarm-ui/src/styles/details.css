@@ -368,3 +368,28 @@
    instant the Details tab's `eligible` bar used to print, as a fact, not an
    action. */
 .ho-since { color: var(--text-dim); font-size: var(--t-micro); }
+
+/* --- Questions for you (QuestionsCard.tsx, part of #1206) ----------------- */
+/* The agent's questions for its owner lead Details; the recommended option
+   carries the info rule so it is found without reading every description. */
+.qc { border-left: 3px solid var(--info); }
+.qc-list { display: flex; flex-direction: column; gap: 10px; margin: 0; padding: 0; list-style: none; }
+.qc-q { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding-top: 8px; border-top: 1px solid var(--line); }
+.qc-text { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.qc-n { color: var(--text-dim); }
+.qc-context { white-space: pre-wrap; overflow-wrap: anywhere; }
+.qc-options { display: flex; flex-direction: column; gap: 4px; margin: 0; padding: 0; list-style: none; }
+.qc-option { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; padding: 4px 8px; border-left: 2px solid var(--line); }
+.qc-option.is-recommended { border-left-color: var(--info); }
+.qc-desc { flex-basis: 100%; color: var(--text-dim); font-size: var(--t-micro); line-height: var(--lh-micro); overflow-wrap: anywhere; }
+/* TASK-ANSWERS: each option is a radio button the whole row wide; the picked
+   one, and the saved answer's option, carry the ok rule. */
+.qc-option.is-chosen { border-left-color: var(--ok); background: var(--surface-2); }
+.qc-pickset { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.qc-pick { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; width: 100%; min-width: 0; padding: 0; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.qc-pick:disabled { cursor: not-allowed; opacity: .7; }
+.qc-other { flex-direction: column; align-items: stretch; }
+.qc-own { width: 100%; min-height: 4.5em; resize: vertical; font: inherit; }
+.qc-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-top: 2px; }
+.qc-saved { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; min-width: 0; padding: 4px 8px; border-left: 2px solid var(--ok); }
+.qc-saved-text { white-space: pre-wrap; overflow-wrap: anywhere; }

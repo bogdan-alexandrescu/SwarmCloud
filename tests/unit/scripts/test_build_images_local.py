@@ -191,34 +191,48 @@ def test_local_build_uses_buildx_and_pushes_nothing(tmp_path):
     assert "pushed nothing" in proc.stderr, proc.stderr[-1500:]
 
 
-def test_derived_images_are_built_after_the_base_and_from_it(tmp_path):
-    """Only the indexer and the browser are named: the base is built anyway,
-    once, first, and both are built FROM the digest this run produced."""
+@pytest.mark.parametrize(
+    "derived, base",
+    [
+        ("agent-runtime-indexer", "agent-runtime-base"),
+        # BROWSER-NO-CODEX: the browser's base is the base's Dockerfile built
+        # again without codex.
+        ("agent-runtime-browser", "agent-runtime-base-nocodex"),
+    ],
+)
+def test_derived_images_are_built_after_the_base_and_from_it(tmp_path, derived, base):
+    """Only the indexer and the browser are named: each one's base is built
+    anyway, once, before it, and it is built FROM the digest this run produced."""
     _, proc, events = _local(
         tmp_path, "--build-only", "--local", "--tag", TAG,
         "agent-runtime-indexer", "agent-runtime-browser",
     )
     assert proc.returncode == 0, proc.stderr[-3000:]
-    order = [_built_target(argv) for argv in _builds(events)]
-    assert order[0] == "agent-runtime-base" and order.count("agent-runtime-base") == 1, order
-    assert set(order) == {"agent-runtime-base", "agent-runtime-indexer", "agent-runtime-browser"}, order
+    builds = _builds(events)
+    order = [_built_target(argv) for argv in builds]
+    assert set(order) == {
+        "agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-indexer", "agent-runtime-browser",
+    }, order
+    assert order.count(base) == 1 and order.index(base) < order.index(derived), order
 
-    base = _builds(events)[0]
-    layout = dict(p.split("=", 1) for p in _value(base, "--output")[0].split(","))
+    base_argv = builds[order.index(base)]
+    layout = dict(p.split("=", 1) for p in _value(base_argv, "--output")[0].split(","))
     assert layout["type"] == "oci" and layout.get("tar") == "false", layout
-    digest = _digest("agent-runtime-base")
-    for argv in _builds(events)[1:]:
-        base_ref = f"swarm-build-only/agent-runtime-base@{digest}"
-        assert f"BASE_IMAGE={base_ref}" in _value(argv, "--build-arg"), argv
-        # The indexer's Dockerfile refuses a BASE_IMAGE without a digest; the
-        # named context is what resolves it with no registry.
-        assert f"{base_ref}=oci-layout://{layout['dest']}@{digest}" in _value(argv, "--build-context"), argv
+    digest = _digest(base)
+    argv = builds[order.index(derived)]
+    base_ref = f"swarm-build-only/{base}@{digest}"
+    assert f"BASE_IMAGE={base_ref}" in _value(argv, "--build-arg"), argv
+    # The indexer's Dockerfile refuses a BASE_IMAGE without a digest; the
+    # named context is what resolves it with no registry.
+    assert f"{base_ref}=oci-layout://{layout['dest']}@{digest}" in _value(argv, "--build-context"), argv
+    codex_args = [a for a in _value(base_argv, "--build-arg") if a.startswith("INSTALL_CODEX")]
+    assert codex_args == (["INSTALL_CODEX=0"] if base.endswith("-nocodex") else []), base_argv
 
 
 def test_a_base_that_failed_builds_nothing_from_it(tmp_path):
     _, proc, events = _local(
         tmp_path, "--build-only", "--local", "--tag", TAG,
-        "agent-runtime-browser", "swarm-ui", fail="agent-runtime-base",
+        "agent-runtime-browser", "swarm-ui", fail="agent-runtime-base-nocodex",
     )
     assert proc.returncode != 0
     built = [_built_target(argv) for argv in _builds(events)]
@@ -251,6 +265,8 @@ def test_each_build_is_the_dockerfile_main_builds_to_its_last_stage_uncached(tmp
     assert proc.returncode == 0, proc.stderr[-3000:]
     for argv in _builds(events):
         target = _built_target(argv)
+        if target == "agent-runtime-base-nocodex":
+            target = "agent-runtime-base"   # the base's Dockerfile, built without codex
         recipe = REPO / "images" / target / "cloudbuild.yaml"
         if recipe.exists():
             # What main's checked-in recipe builds: its _DOCKERFILE.
@@ -272,24 +288,37 @@ def test_the_steps_it_ran_are_read_from_the_dockerfile(tmp_path):
     root = _sandbox(tmp_path)
     dockerfile = root / "images" / "agent-runtime-indexer" / "Dockerfile"
     text = dockerfile.read_text()
-    anchor = "RUN swarm-repo-graph --self-test\n"
+    anchor = " && swarm-repo-graph --self-test\n"
     assert anchor in text
     dockerfile.write_text(text.replace(anchor, anchor + "RUN probe-tool --planted-self-test\n", 1))
     _, proc, _ = _local(tmp_path, "--build-only", "--local", "--tag", TAG, "agent-runtime-indexer", root=root)
     assert proc.returncode == 0, proc.stderr[-3000:]
     report = (root / "build" / "build-only" / "local-report.md").read_text()
-    for step in ("swarm-repo-index --self-test", "swarm-repo-index --lsp-self-test",
-                 "swarm-repo-graph --self-test", "probe-tool --planted-self-test"):
+    # A RUN is listed by its first line, and the indexer's three self-tests are
+    # one RUN (test_image_streaming.py says why), listed as its first.
+    for step in ("swarm-repo-index --self-test", "probe-tool --planted-self-test"):
         assert step in report, report
-    # The base's own checks run in the base's build, and are reported there.
-    assert "agent_worker" in report and "RUN tools=" in report, report
+    # The base's own checks run in the base's build, and are reported there
+    # (its Python and worker-import checks as one RUN, listed by its first line).
+    assert "import sys, tarfile" in report and "RUN tools=" in report, report
 
 
 def test_browser_report_carries_the_chromium_smoke_check(tmp_path):
     root, proc, _ = _local(tmp_path, "--build-only", "--local", "--tag", TAG, "agent-runtime-browser")
     assert proc.returncode == 0, proc.stderr[-3000:]
     report = (root / "build" / "build-only" / "local-report.md").read_text()
-    assert "RUN python - <<'PY'" in report and "agent-runtime-browser" in report, report
+    # The smoke check is selftest.py, run from a bind-mounted RUN whose first
+    # line (the only one the report quotes) is shared with the install step,
+    # so the report is held to that RUN's file:line rather than its text.
+    lines = (root / "images" / "agent-runtime-browser" / "Dockerfile").read_text().splitlines()
+    def run_text(start: int) -> str:
+        end = start
+        while lines[end].rstrip().endswith("\\"):
+            end += 1
+        return "\n".join(lines[start : end + 1])
+
+    (smoke,) = [i for i, line in enumerate(lines) if line.startswith("RUN ") and "selftest.py" in run_text(i)]
+    assert f"`images/agent-runtime-browser/Dockerfile:{smoke + 1}` `RUN " in report, report
 
 
 def test_a_checked_in_recipe_is_replayed_without_its_push(tmp_path):
@@ -426,7 +455,7 @@ def _git(cwd: Path, *args: str) -> str:
     [
         ("docs/notes.md", ""),
         ("images/swarm-ui/nginx.conf", "swarm-ui"),
-        ("images/agent-runtime-base/Dockerfile", "agent-runtime-base agent-runtime-browser agent-runtime-indexer"),
+        ("images/agent-runtime-base/Dockerfile", "agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer"),
     ],
 )
 def test_the_plan_builds_only_when_an_image_input_changed(tmp_path, change, expected):

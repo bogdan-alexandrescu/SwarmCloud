@@ -50,6 +50,31 @@ own domain, naming the session as a ticket does), which hands it to the gate.
 The gate applies it and REPORTS the device it applied, so `session.device`
 changes when the gate says so, never when the request is sent.
 
+ENDING CONTROL AT THE GATE (CONTROL-LAPSE; part of #1030). Every end of a
+person's control -- a lapsed renewal, idle, an expired hold, a preemption, a
+lapsed membership, a Return press -- is written here, and after the
+transaction commits swarm-api POSTs a revoke to the relay's
+`/internal/control` (`mint_control`: the ticket's shape under its own domain,
+naming the session, the person, `action` and `cause`), which the relay passes
+to the gate as `CONTROL` with nobody in control. Each renewal is posted the
+same way, which renews the gate's own control lease: a gate that hears no
+renewal takes control back by itself. MEASURED 2026-10-13 (task e8cb...):
+control lapsed at 15:11:12Z and was recorded as returned, but only a
+`release` ticket on the person's own viewer link could tell the gate, that
+link was gone, and the gate held control until a relay restart at 16:03:47Z
+-- 72 refused agent connections in 54 minutes. A cancel and the task's end
+close the session, which drops the tunnel, and the gate releases control when
+its tunnel closes.
+
+A SESSION OUTLIVES ITS ATTEMPT'S LEASE IN FIRESTORE ONLY UNTIL SOMEONE LOOKS.
+The task's end clears `current_lease_id`, so a read of the task's current
+session finds none, and an episode still open in it stayed open: MEASURED
+2026-10-13 (task c6bf0368...), control taken 11:34:19, the task SUCCEEDED
+11:40:50 with the episode open. A read that finds no current session now
+settles the task's open sessions by their own ids (`_settle_ended`), which
+closes them with `attempt_ended` and ends the episode with its audit; the
+viewer socket does the same when the relay link drops under it.
+
 CLOSING. When a session closes, or a stale generation is seen, swarm-api POSTs
 a close request to the relay's `/internal/close` (`mint_close`: the same shape
 under its own domain, `session_id`, `exp`, `nonce`), and the relay drops every
@@ -96,7 +121,22 @@ from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
 from .codec import event_to_firestore
 from .errors import ApiError, NotFound, ValidationFailed
-from .handoff import LIVE_AUDIT, control_owner, resolution_writes
+from .handoff import (
+    HUMAN_HANDOFFS_METADATA_KEY,
+    HUMAN_HOLD_MAX_SECONDS,
+    HUMAN_READY_METADATA_KEY,
+    HUMAN_UNWATCHED_SECONDS,
+    LIVE_AUDIT,
+    READY_FRAME_EVENT,
+    control_owner,
+    extended_deadline,
+    first_time,
+    log_funnel,
+    ready_writes,
+    resolution_writes,
+    returned_mark,
+)
+from .handoff import log as handoff_log
 from .objects import ObjectAbsent, ObjectUnreadable
 from .store import ATTEMPTS, EVENTS, LEASES, TASKS, Store
 
@@ -105,6 +145,15 @@ log = logging.getLogger(__name__)
 #: swarm-api's own collection (§8.4): one document per attempt that opened a
 #: live path. Not a frozen model, as `admin_roles` is not.
 LIVE_SESSIONS = "live_sessions"
+
+#: "Let any member take control" is the TASK's setting, kept on the task
+#: document and copied into each new attempt's session when it opens (owner
+#: decision 2026-10-13, QA12-11: it reset on a resumed attempt when it lived
+#: on the session alone). swarm-api's own fields, written only here; the
+#: frozen `Task` model does not read them (`codec.task_from_dict` names the
+#: fields it reads), so they cost no contract change.
+TASK_OPEN_TO_MEMBERS = "live_open_to_members"
+TASK_OPENED_BY = "live_opened_to_members_by"
 
 #: The worker's signing purpose for the tunnel-ticket route (§5.4.1). Lane L4
 #: restates it; a hand-off or child signature never verifies as this one.
@@ -117,6 +166,9 @@ CLOSE_PURPOSE = b"swarm-live-close/v1\0"
 #: A device request's MAC domain (`swarm_live.rendezvous.DEVICE_DOMAIN`):
 #: never a ticket and never a close request.
 DEVICE_PURPOSE = b"swarm-live-device/v1\0"
+#: A control request's MAC domain (`swarm_live.rendezvous.CONTROL_DOMAIN`):
+#: never a ticket, a close or a device request.
+CONTROL_PURPOSE = b"swarm-live-control/v1\0"
 ROLE_TUNNEL = "tunnel"
 ROLE_VIEWER = "viewer"
 ROLE_CONTROL = "control"
@@ -133,6 +185,13 @@ DEVICE_SECONDS = 30
 #: The relay's device-request field set (`swarm_live.rendezvous._DEVICE_FIELDS`).
 DEVICE_FIELDS = frozenset({"session_id", "tenant_id", "task_id", "attempt_id", "generation",
                            "preset", "orientation", "touch", "exp", "nonce"})
+#: A control request's life (`swarm_live.rendezvous.CONTROL_TTL_SECONDS`).
+CONTROL_SECONDS = 30
+#: The relay's control-request field set (`swarm_live.rendezvous._CONTROL_FIELDS`).
+CONTROL_FIELDS = frozenset({"session_id", "tenant_id", "task_id", "attempt_id", "generation",
+                            "email", "action", "cause", "exp", "nonce"})
+CONTROL_REVOKE = "revoke"
+CONTROL_RENEW = "renew"
 #: The relay's field set; a ticket with any other is refused there.
 TICKET_FIELDS = frozenset({"session_id", "tenant_id", "task_id", "attempt_id", "generation",
                            "role", "exp", "nonce", "email"})
@@ -153,6 +212,11 @@ END_CAUSES = (
 #: and a pointer event. Counted by their first byte, never read further.
 RFB_KEY_EVENT = 4
 RFB_POINTER_EVENT = 5
+
+#: How many ended episodes a session remembers for `record_episode_tail`: the
+#: last few, so a socket that sees two episodes end inside one poll can still
+#: put each one's tail on its own entry.
+ENDED_EPISODES_KEPT = 4
 
 
 # --------------------------------------------------------------------------
@@ -262,6 +326,18 @@ def mint_device(key: str, claims: Mapping[str, Any], *, now: float) -> str:
     return _signed(key, body, DEVICE_PURPOSE)
 
 
+def mint_control(key: str, claims: Mapping[str, Any], *, now: float) -> str:
+    """A request to the relay to tell the session's gate that a person's
+    control ended (`revoke`, with its cause) or goes on (`renew`, no cause):
+    the session's five names, `email`, `action` and `cause`."""
+    body = {**dict(claims), "exp": int(now) + CONTROL_SECONDS, "nonce": secrets.token_hex(16)}
+    if set(body) != CONTROL_FIELDS:
+        raise ValueError(f"a control request has exactly the fields {sorted(CONTROL_FIELDS)}")
+    if body["action"] not in (CONTROL_REVOKE, CONTROL_RENEW):
+        raise ValueError("a control request revokes or renews")
+    return _signed(key, body, CONTROL_PURPOSE)
+
+
 def ticket_seconds(role: str, configured: Any) -> int:
     """`configured`, never longer than the relay accepts for `role`."""
     return max(1, min(int(configured), TICKET_MAX_SECONDS[role]))
@@ -332,6 +408,13 @@ class RelayDevice(Protocol):
     def send_device(self, request: str) -> bool: ...
 
 
+class RelayControl(Protocol):
+    """The relay's `/internal/control`. `HttpRelayCloser` is the real one;
+    a closer without `send_control` (a test's) means no control route."""
+
+    def send_control(self, request: str) -> bool: ...
+
+
 def relay_http_url(ws_url: str, path: str) -> str:
     """`SWARM_LIVE_URL` (`ws://<internal address>:8080`) as the http URL of
     one of the relay's routes on the same port."""
@@ -357,6 +440,7 @@ class HttpRelayCloser:
                  timeout: float = RELAY_CLOSE_TIMEOUT_SECONDS) -> None:
         self._url = relay_http_url(url, "/internal/close")
         self._device_url = relay_http_url(url, "/internal/device")
+        self._control_url = relay_http_url(url, "/internal/control")
         self._key = key
         self._clock = clock
         self._timeout = timeout
@@ -380,15 +464,13 @@ class HttpRelayCloser:
         if status != 200:
             log.warning("live relay refused the close for session=%s (HTTP %s)", session_id, status)
 
-    def send_device(self, request: str) -> bool:
-        """POST a device request (`mint_device`) to `/internal/device`. True
-        when the relay sent it to the gate; False when it refused it (no
-        tunnel there, or the request did not verify) or could not be reached.
-        Never raises; the status is logged, never the request."""
+    def _post(self, url: str, request: str, what: str) -> bool:
+        """POST a MAC'd request; True on the relay's 200. Never raises; the
+        status is logged, never the request."""
         import urllib.error
         import urllib.request
 
-        req = urllib.request.Request(self._device_url, data=request.encode("ascii"), method="POST",
+        req = urllib.request.Request(url, data=request.encode("ascii"), method="POST",
                                      headers={"Content-Type": "text/plain"})
         try:
             with urllib.request.urlopen(req, timeout=self._timeout) as response:  # noqa: S310 - our own internal URL
@@ -396,11 +478,24 @@ class HttpRelayCloser:
         except urllib.error.HTTPError as exc:
             status = exc.code
         except (OSError, ValueError) as exc:
-            log.warning("live relay device request did not reach the relay (%s)", type(exc).__name__)
+            log.warning("live relay %s request did not reach the relay (%s)", what, type(exc).__name__)
             return False
         if status != 200:
-            log.info("live relay refused a device request (HTTP %s)", status)
+            log.info("live relay refused a %s request (HTTP %s)", what, status)
         return status == 200
+
+    def send_device(self, request: str) -> bool:
+        """POST a device request (`mint_device`) to `/internal/device`. True
+        when the relay sent it to the gate; False when it refused it (no
+        tunnel there, or the request did not verify) or could not be reached."""
+        return self._post(self._device_url, request, "device")
+
+    def send_control(self, request: str) -> bool:
+        """POST a control request (`mint_control`) to `/internal/control`.
+        True when the relay took it; False when it refused it (no tunnel
+        there: the gate's lease and its tunnel's end cover that) or could not
+        be reached (the gate's lease covers that too)."""
+        return self._post(self._control_url, request, "control")
 
 
 def relay_closer_for(settings: Any) -> RelayCloser | None:
@@ -602,6 +697,16 @@ class LiveSessionView(_Wire):
     device: LiveDevice | None
     presets: list[LivePreset]
     you: LiveYou
+    #: WHETHER THE AGENT IS USING THIS BROWSER (LIVE-UNUSED; part of #1030),
+    #: as the gate's CDP proxy last reported it: when the agent's first CDP
+    #: connection was accepted (null until it has been), how many it holds
+    #: now (null while no gate has reported it: an older gate, or no report
+    #: yet -- never read as "none"), and when the gate published its first
+    #: frame, which the console times "the agent isn't using this browser
+    #: yet" from.
+    agent_connected_at: str | None = None
+    agent_connections: int | None = None
+    first_frame_at: str | None = None
 
 
 class LiveRead(_Wire):
@@ -761,19 +866,59 @@ def clean_device(raw: Any) -> dict[str, Any] | None:
     return {"preset": preset["name"], "orientation": raw["orientation"], "touch": raw["touch"]}
 
 
+#: The most agent connections believed: Playwright opens one, a tool a few.
+MAX_AGENT_CONNECTIONS = 64
+
+
+def _epoch(raw: Any) -> datetime | None:
+    """Epoch seconds the gate reported, as a UTC datetime, or None. An aware
+    datetime -- one `clean_agent` already read -- is itself, so a report is
+    checked again unchanged (`record_report`)."""
+    if isinstance(raw, datetime):
+        return raw if raw.tzinfo is not None else None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)) or not 0 < raw < 1e11:
+        return None
+    try:
+        return datetime.fromtimestamp(float(raw), tz=timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def clean_agent(raw: Any) -> dict[str, Any] | None:
+    """The report's `agent` (the gate's report.py `agent_report`, LIVE-UNUSED)
+    as `{connected_at, connections, first_frame_at}` -- the times as UTC
+    datetimes or None -- or None when it does not hold together."""
+    if not isinstance(raw, dict) or set(raw) != {"connected_at", "connections", "first_frame_at"}:
+        return None
+    count = raw["connections"]
+    if isinstance(count, bool) or not isinstance(count, int) or not 0 <= count <= MAX_AGENT_CONNECTIONS:
+        return None
+    connected, frame = _epoch(raw["connected_at"]), _epoch(raw["first_frame_at"])
+    if (raw["connected_at"] is not None and connected is None) or (raw["first_frame_at"] is not None and frame is None):
+        return None
+    if count > 0 and connected is None:
+        return None  # connected now, but never connected: not a reading
+    return {"connected_at": connected, "connections": count, "first_frame_at": frame}
+
+
 def parse_report(text: Any) -> dict[str, Any] | None:
     """A relay text message as `{"origin", "device"}`, each checked (null when
-    it fails), or None when the message is not a well-formed report at all."""
+    it fails), or None when the message is not a well-formed report at all.
+    A report that carries `agent` (LIVE-UNUSED) has it too, checked by
+    `clean_agent`; one that does not is read exactly as before."""
     if not isinstance(text, str) or len(text) > MAX_REPORT_CHARS:
         return None
     try:
         message = json.loads(text)
     except ValueError:
         return None
-    if not isinstance(message, dict) or set(message) != {"type", "origin", "device"} \
+    if not isinstance(message, dict) or set(message) - {"agent"} != {"type", "origin", "device"} \
             or message["type"] != REPORT_TYPE:
         return None
-    return {"origin": clean_origin(message["origin"]), "device": clean_device(message["device"])}
+    report = {"origin": clean_origin(message["origin"]), "device": clean_device(message["device"])}
+    if "agent" in message:
+        report["agent"] = clean_agent(message["agent"])
+    return report
 
 
 def profile_is_live(runner_profile: Any) -> bool:
@@ -800,10 +945,17 @@ class _Plan:
     now: datetime
     session_update: dict[str, Any] = field(default_factory=dict)
     task_update: dict[str, Any] = field(default_factory=dict)
-    audits: list[tuple[str, str | None, dict[str, Any]]] = field(default_factory=list)
-    events: list[tuple[EventType, dict[str, Any]]] = field(default_factory=list)
+    audits: list[tuple[str, str | None, dict[str, Any], str | None]] = field(default_factory=list)
+    events: list[tuple[EventType, dict[str, Any], str | None]] = field(default_factory=list)
     resolve_by: str | None = None
     resolve: bool = False
+    #: Each control this transaction ended, as (email, cause): told to the
+    #: gate once it commits (`LiveService._tell_gate`).
+    ended: list[tuple[str, str]] = field(default_factory=list)
+    #: The person whose control this transaction renewed, if any.
+    renewed: str | None = None
+    #: The hand-off this plan resolved, for `log_funnel` once it committed.
+    resolved: list[dict[str, Any]] = field(default_factory=list)
 
     # -- reads of the planned state ---------------------------------------
 
@@ -823,8 +975,9 @@ class _Plan:
 
     # -- writes -------------------------------------------------------------
 
-    def audit(self, entry: str, email: str | None, detail: dict[str, Any]) -> None:
-        self.audits.append((entry, email, detail))
+    def audit(self, entry: str, email: str | None, detail: dict[str, Any],
+              entry_id: str | None = None) -> None:
+        self.audits.append((entry, email, detail, entry_id))
 
     def set_wait_controller(self, value: dict[str, Any] | None, deadline: datetime | None) -> None:
         wait = self.wait
@@ -851,11 +1004,25 @@ class _Plan:
             "pointer_events": int(current.get("pointers") or 0) + pointers,
             "held_seconds": int(held) if held is not None else None,
         }
+        # The entries' ids are kept on the session, so input a socket had not
+        # flushed when the episode ended is added to them (`record_episode_tail`).
+        audit_id, event_id = new_id("la"), new_id("ev")
+        ended = self.state.get("ended_episodes")
+        ended = [e for e in ended if isinstance(e, dict)] if isinstance(ended, list) else []
+        self.session_update["ended_episodes"] = [*ended, {
+            "episode_id": current.get("episode_id"),
+            "email": current.get("email"),
+            "audit_id": audit_id,
+            "event_id": event_id,
+        }][-ENDED_EPISODES_KEPT:]
         self.session_update["controller"] = None
+        self.ended.append((str(current.get("email") or ""), cause))
+        if self.renewed == current.get("email"):
+            self.renewed = None
         self.audit("control_returned" if cause == "returned" else "control_ended",
-                   current.get("email"), detail)
+                   current.get("email"), detail, audit_id)
         self.events.append((EventType.HUMAN_CONTROL_RETURNED,
-                            {**detail, "email": current.get("email")}))
+                            {**detail, "email": current.get("email")}, event_id))
         self.set_wait_controller(None, None)
 
     def close(self, cause: str) -> None:
@@ -872,13 +1039,18 @@ class _Plan:
         if self.session_update:
             txn.update(self.session_ref, {**self.session_update, "updated_at": self.now})
         if self.resolve:
+            # The rest of the plan's task fields ride the same write (a
+            # return's mark, LB-RETURN); the wait is the resolution's.
             resolution_writes(txn, self.db, self.task, outcome="returned", now=self.now,
-                              by=self.resolve_by, lease_id=session.get("lease_id"))
+                              by=self.resolve_by, lease_id=session.get("lease_id"),
+                              recorded=self.resolved,
+                              extra={k: v for k, v in self.task_update.items()
+                                     if k != "human_wait"})
         elif self.task_update:
             txn.update(task_ref, {**self.task_update, "updated_at": self.now})
-        for event_type, detail in self.events:
+        for event_type, detail, event_id in self.events:
             event = TaskEvent(
-                event_id=new_id("ev"),
+                event_id=event_id or new_id("ev"),
                 task_id=self.task["id"],
                 tenant_id=self.task["tenant_id"],
                 type=event_type,
@@ -894,18 +1066,19 @@ class _Plan:
             )
             txn.set(task_ref.collection(EVENTS).document(event.event_id),
                     event_to_firestore(event))
-        for entry, email, detail in self.audits:
-            write_audit(txn, self.db, session, entry, email=email, detail=detail, now=self.now)
+        for entry, email, detail, entry_id in self.audits:
+            write_audit(txn, self.db, session, entry, email=email, detail=detail, now=self.now,
+                        entry_id=entry_id)
 
 
 def write_audit(
     writer: Any, db: Any, session: Mapping[str, Any], entry: str, *, email: str | None,
-    detail: Mapping[str, Any], now: datetime,
+    detail: Mapping[str, Any], now: datetime, entry_id: str | None = None,
 ) -> None:
     """One `live_audit` entry, in the shape `handoff._audit` writes, through
     `writer` (the caller's transaction, or the collection for an entry that
     records no other change: a viewer joining or leaving)."""
-    entry_id = new_id("la")
+    entry_id = entry_id or new_id("la")
     doc = {
         "id": entry_id,
         "entry": entry,
@@ -945,6 +1118,32 @@ class Admission:
 
 def _iso(value: Any) -> Any:
     return value.isoformat() if isinstance(value, datetime) else value
+
+
+def _ready_at(task: Mapping[str, Any]) -> datetime | None:
+    """When a person last pressed "I'm ready" on this task (handoff.human_ready
+    stores it in the metadata as ISO text), or None."""
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), Mapping) else {}
+    ready = metadata.get(HUMAN_READY_METADATA_KEY)
+    at = ready.get("at") if isinstance(ready, Mapping) else None
+    if not isinstance(at, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(at)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _stored_time(value: Any) -> datetime | None:
+    """A time `record_report` stored, or None: anything else is not served."""
+    return value if isinstance(value, datetime) else None
+
+
+def _stored_count(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= MAX_AGENT_CONNECTIONS:
+        return None
+    return value
 
 
 class LiveService:
@@ -1079,6 +1278,7 @@ class LiveService:
                 txn.update(session_ref, {"tunnel_tickets": int(existing.get("tunnel_tickets")
                                                                or 0) + 1, "updated_at": now})
                 return False
+            carried = bool(task.get(TASK_OPEN_TO_MEMBERS))
             session = {
                 "id": session_id,
                 "tenant_id": attempt.tenant_id,
@@ -1092,13 +1292,23 @@ class LiveService:
                 "closed_at": None,
                 "close_cause": None,
                 "controller": None,
-                "open_to_members": False,
-                "opened_to_members_by": None,
+                # MEMBER CONTROL BELONGS TO THE TASK (owner decision
+                # 2026-10-13, QA12-11): a resumed attempt's session starts as
+                # the submitter last left it, not closed again behind them.
+                "open_to_members": carried,
+                "opened_to_members_by": task.get(TASK_OPENED_BY) if carried else None,
                 "tunnel_tickets": 1,
             }
+            ready_at = _ready_at(task)
+            if ready_at is not None:
+                # "I'm ready" -> this attempt's first frame (`record_report`).
+                session["human_ready_at"] = ready_at
             txn.set(session_ref, session)
+            opened = {"profile": task.get("runner_profile")}
+            if carried:
+                opened["open_to_members"] = True
             write_audit(txn, self._db, session, "session_opened", email=None,
-                        detail={"profile": task.get("runner_profile")}, now=now)
+                        detail=opened, now=now)
             return True
 
         try:
@@ -1136,6 +1346,67 @@ class LiveService:
             self._relay.close_session(session_id)
         except Exception as exc:  # noqa: BLE001 - a close is best effort; the caller's answer stands
             log.warning("live relay close for session=%s failed (%s)", session_id, type(exc).__name__)
+
+    def _relay_control(self, session: Mapping[str, Any], email: str, action: str,
+                       cause: str = "") -> bool:
+        """Tell the session's gate, through the relay, that `email`'s control
+        ended (`revoke`) or goes on (`renew`). Never raises: a request that
+        does not arrive is covered by the gate's own control lease."""
+        sender = getattr(self._relay, "send_control", None)
+        key = self._s("live_key", "")
+        if sender is None or not key or not email or not session.get("id"):
+            return False
+        try:
+            request = mint_control(key, {
+                "session_id": str(session.get("id")),
+                "tenant_id": str(session.get("tenant_id")),
+                "task_id": str(session.get("task_id")),
+                "attempt_id": str(session.get("attempt_id")),
+                "generation": int(session.get("generation") or 0),
+                "email": email,
+                "action": action,
+                "cause": cause if action == CONTROL_REVOKE else "",
+            }, now=self._clock())
+            return bool(sender(request))
+        except Exception as exc:  # noqa: BLE001 - best effort; the gate's lease is the backstop
+            log.warning("live relay control %s for session=%s failed (%s)", action,
+                        session.get("id"), type(exc).__name__)
+            return False
+
+    def _tell_gate(self, plan: _Plan) -> None:
+        """After a commit: what changed about control, to the gate (module
+        docstring). A session closed just now is dropped at the relay
+        instead, and its gate releases control when the tunnel closes."""
+        if plan.session is None or plan.session.get("state") != "open":
+            return
+        state = plan.state
+        if state.get("state") != "open":
+            self.close_relay(str(plan.session.get("id")))
+            return
+        for email, cause in plan.ended:
+            self._relay_control(state, email, CONTROL_REVOKE, cause)
+        current = plan.controller
+        if plan.renewed is not None and current is not None and current.get("email") == plan.renewed:
+            self._relay_control(state, plan.renewed, CONTROL_RENEW)
+
+    def _settle_ended(self, tenant_id: str, task_id: str) -> int:
+        """Settle every open session of a task that has no current one -- its
+        attempt ended and `current_lease_id` went with it -- each by its own
+        id, so `_settle` closes it and ends its episode (module docstring).
+        The number of sessions found open."""
+        query = self._db.collection(LIVE_SESSIONS).where(
+            filter=FieldFilter("task_id", "==", task_id))
+        found = 0
+        for snap in query.stream():
+            doc = snap.to_dict() or {}
+            if doc.get("tenant_id") != tenant_id or doc.get("state") != "open" or not doc.get("id"):
+                continue
+            found += 1
+            try:
+                self._transact(tenant_id, task_id, None, session_id=str(doc["id"]))
+            except NotFound:
+                continue
+        return found
 
     def _close_stale(self, tenant_id: str, task_id: str, session_id: str) -> None:
         """Settle `session_id` -- which closes it, with its audit, when its
@@ -1273,10 +1544,11 @@ class LiveService:
             return plan, result
 
         plan, result = _apply(self._db.transaction())
-        if (plan.session is not None and plan.session.get("state") == "open"
-                and plan.session_update.get("state") == "closed"):
-            # Committed: the session is closed, so the relay drops it (§5.11).
-            self.close_relay(str(plan.session.get("id")))
+        # Committed: a closed session is dropped at the relay (§5.11); an end
+        # or a renewal of control is told to the gate (CONTROL-LAPSE).
+        self._tell_gate(plan)
+        for detail in plan.resolved:
+            log_funnel(plan.task, detail)
         return plan, result
 
     def _needs_settling(self, tenant_id: str, task_id: str, session_id: str) -> bool:
@@ -1340,6 +1612,9 @@ class LiveService:
                 "device": clean_device(state.get("device")),
                 "presets": [dict(p) for p in LIVE_PRESETS],
                 "you": self._rights(task, plan, email, owner),
+                "agent_connected_at": _iso(_stored_time(state.get("agent_connected_at"))),
+                "agent_connections": _stored_count(state.get("agent_connections")),
+                "first_frame_at": _iso(_stored_time(state.get("first_frame_at"))),
             },
         }
 
@@ -1354,13 +1629,21 @@ class LiveService:
         task = self._task(tenant_id, task_id, submitted_by)
         owner = control_owner(task, self._db)
         plan, _ = self._transact(tenant_id, task_id, None)
+        self._settle_if_ended(task, plan)
         return self._view(task, plan, email, owner)
+
+    def _settle_if_ended(self, task: Task, plan: _Plan) -> None:
+        """No current session on a live-browser task: settle the ones its
+        ended attempts left open (`_settle_ended`)."""
+        if plan.session is None and profile_is_live(getattr(task, "runner_profile", None)):
+            self._settle_ended(plan.task["tenant_id"], plan.task["id"])
 
     def viewer_ticket(self, tenant_id: str, task_id: str, *, email: str,
                       submitted_by: str | None) -> dict[str, Any]:
         key = self._require_key()
-        self._task(tenant_id, task_id, submitted_by)
+        task = self._task(tenant_id, task_id, submitted_by)
         plan, _ = self._transact(tenant_id, task_id, None)
+        self._settle_if_ended(task, plan)
         self._require_open(plan)
         seconds = ticket_seconds(ROLE_VIEWER, self._s("live_viewer_ticket_seconds", 30))
         state = plan.state
@@ -1428,6 +1711,7 @@ class LiveService:
             if current is not None and current.get("email") == who:
                 plan.session_update["controller"] = {**current, "renew_by": plan.now
                                                      + timedelta(seconds=renew)}
+                plan.renewed = who
                 return
             if not rights["can_control"]:
                 raise ControlNotEligible(
@@ -1461,9 +1745,11 @@ class LiveService:
             plan.audit("control_taken", who, taken)
             plan.events.append((EventType.HUMAN_CONTROL_TAKEN,
                                 {"email": who, "episode_id": episode,
-                                 "requested": plan.wait is not None}))
+                                 "requested": plan.wait is not None}, None))
             plan.set_wait_controller({"email": who, "since": plan.now},
                                      self._extended_deadline(plan, idle))
+            if plan.wait is not None:  # the hand-off funnel (handoff.FUNNEL_MILESTONES)
+                plan.task_update["human_wait"] = first_time(plan.wait, "control_taken_at", plan.now)
 
         plan, _ = self._transact(tenant_id, task_id, change)
         self._require_open(plan)
@@ -1471,19 +1757,62 @@ class LiveService:
 
     def _extended_deadline(self, plan: _Plan, idle: int) -> datetime | None:
         """§4.3: control moves the hold's deadline to min(now + idle, the
-        attempt's own deadline), and never earlier than it already was."""
+        request + `human_hold_max_seconds`, the attempt's own deadline), and
+        never earlier than it already was."""
         wait = plan.wait
         if wait is None:
             return None
-        current = wait.get("deadline")
-        target = plan.now + timedelta(seconds=idle)
-        started = plan.task.get("started_at")
-        timeout = plan.task.get("timeout_seconds")
-        if isinstance(started, datetime) and isinstance(timeout, int):
-            target = min(target, started + timedelta(seconds=timeout))
-        if isinstance(current, datetime):
-            target = max(current, target)
-        return target
+        return extended_deadline(
+            plan.now, plan.task, wait, seconds=idle,
+            max_seconds=int(self._s("human_hold_max_seconds", HUMAN_HOLD_MAX_SECONDS)))
+
+    def watched(self, admission: Admission) -> bool:
+        """HANDOFF-POLICY: a viewer is connected to this session, so the open
+        hand-off's hold moves to now + `human_unwatched_seconds`, capped at
+        the request + `human_hold_max_seconds` and the attempt's deadline
+        (§4.3). Called by the viewer socket on join and every
+        `live_watch_flush_seconds`; the worker reads the deadline on its poll.
+
+        True when the deadline was written. False, writing nothing, when no
+        hand-off of this session's attempt is open or the session is not this
+        socket's open one. A cheap read first, so a socket on a task nobody
+        asked for help on costs no transaction.
+
+        A hold past its deadline IS revived while it is still open (LB-RETURN).
+        It was not ("the worker may already be parking"), and the live-browser
+        acceptance group parked on every run from 2026-10-14 00:24Z with its
+        viewer connected. The hold ends when the worker RESOLVES it, and
+        `HandoffService.resolve` answers "revived", writing nothing, to an
+        expiry whose deadline has moved since the worker read it. Whichever transaction commits first
+        decides: the viewer's keeps the hold; the worker's clears the wait,
+        and this writes nothing."""
+        snap = self._db.collection(TASKS).document(admission.task_id).get()
+        task = snap.to_dict() if snap.exists else None
+        if not task or not isinstance(task.get("human_wait"), dict):
+            return False
+        unwatched = int(self._s("human_unwatched_seconds", HUMAN_UNWATCHED_SECONDS))
+        cap = int(self._s("human_hold_max_seconds", HUMAN_HOLD_MAX_SECONDS))
+
+        def change(plan: _Plan) -> bool:
+            wait = plan.wait
+            if (
+                wait is None
+                or plan.state.get("id") != admission.session_id
+                or plan.state.get("generation") != admission.generation
+                or wait.get("attempt_id") != plan.state.get("attempt_id")
+            ):
+                return False
+            deadline = extended_deadline(plan.now, plan.task, wait, seconds=unwatched,
+                                         max_seconds=cap)
+            if deadline is None:
+                return False
+            plan.task_update["human_wait"] = {**first_time(wait, "first_viewer_at", plan.now),
+                                              "deadline": deadline, "watched_at": plan.now}
+            return True
+
+        _, moved = self._transact(admission.tenant_id, admission.task_id, change,
+                                  session_id=admission.session_id)
+        return bool(moved)
 
     def _controller_change(self, tenant_id: str, task_id: str, email: str,
                            submitted_by: str | None, change: Callable[[_Plan, dict], None]
@@ -1514,19 +1843,100 @@ class LiveService:
         def change(plan: _Plan, current: dict) -> None:
             plan.session_update["controller"] = {
                 **current, "renew_by": plan.now + timedelta(seconds=renew)}
+            # The gate's control lease is renewed with it (CONTROL-LAPSE).
+            plan.renewed = current.get("email")
 
         return self._controller_change(tenant_id, task_id, email, submitted_by, change)
 
     def return_control(self, tenant_id: str, task_id: str, *, email: str,
                        submitted_by: str | None) -> dict[str, Any]:
+        who = email.strip().lower()
+
         def change(plan: _Plan, current: dict) -> None:
             plan.end_control("returned")
+            if plan.task.get("state") == TaskState.RUNNING.value:
+                # LB-RETURN: the worker may have judged the hold expired on a
+                # read from before this person came, and be parking now. Its
+                # park reads this and re-queues instead (handoff.py).
+                plan.task_update["metadata"] = returned_mark(plan.task, plan.state, by=who,
+                                                             now=plan.now)
             if plan.task.get("human_wait") is not None:
                 # §4.2 step 3: the hand-off is over; one shape for both writers.
                 plan.resolve = True
-                plan.resolve_by = email.strip().lower()
+                plan.resolve_by = who
 
-        return self._controller_change(tenant_id, task_id, email, submitted_by, change)
+        try:
+            return self._controller_change(tenant_id, task_id, email, submitted_by, change)
+        except (LiveSessionClosed, NotController):
+            resumed = self._return_to_parked(tenant_id, task_id, who, submitted_by)
+            if resumed is None:
+                raise
+            return resumed
+
+    def _return_to_parked(self, tenant_id: str, task_id: str, who: str,
+                          submitted_by: str | None) -> dict[str, Any] | None:
+        """LB-RETURN: the park landed while `who` was in control, so their
+        Return control is their "I'm ready" (`handoff.ready_writes`):
+        PARKED(HUMAN_REQUIRED) -> READY, nothing leased here.
+
+        Only for the attempt that parked -- its session at the task's current
+        generation, so a return on an earlier attempt's session answers no
+        later park -- and only for the person who held control of it when it
+        ended. None, writing nothing, otherwise: the caller's refusal stands,
+        and a second return finds the task READY and is refused the same way.
+        """
+        task = self._task(tenant_id, task_id, submitted_by)
+        counted = (task.metadata or {}).get(HUMAN_HANDOFFS_METADATA_KEY)
+        attempt_id = counted.get("attempt_id") if isinstance(counted, dict) else None
+        if (
+            task.state != TaskState.PARKED
+            or task.park_reason != ParkReason.HUMAN_REQUIRED
+            or not isinstance(attempt_id, str)
+            or not attempt_id
+        ):
+            return None
+        session_id = session_id_for(attempt_id)
+        # Settled first: closing the session ends this person's control and
+        # records their episode, which is what the check below reads.
+        self._transact(tenant_id, task_id, None, session_id=session_id)
+        task_ref = self._db.collection(TASKS).document(task_id)
+        session_ref = self._db.collection(LIVE_SESSIONS).document(session_id)
+        now = self._now()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(task_ref))
+            data = snap.to_dict() if snap.exists else None
+            session_snap = _snapshot(txn.get(session_ref))
+            session = session_snap.to_dict() if session_snap.exists else None
+            if data is None or session is None or data.get("tenant_id") != tenant_id:
+                return False
+            if (
+                session.get("tenant_id") != tenant_id
+                or session.get("task_id") != task_id
+                or session.get("generation") != data.get("current_generation")
+            ):
+                return False
+            current = session.get("controller")
+            ended = session.get("ended_episodes")
+            last = ended[-1] if isinstance(ended, list) and ended else None
+            held = (current if isinstance(current, dict) else last if isinstance(last, dict)
+                    else None)
+            if held is None or str(held.get("email") or "").strip().lower() != who:
+                return False
+            try:
+                ready_writes(txn, self._db, {**data, "id": task_id}, email=who, now=now,
+                             reason="human_returned")
+            except ApiError:
+                return False
+            return True
+
+        if not _apply(self._db.transaction()):
+            return None
+        log.info("a return after the hand-off parked re-queued the task", extra={
+            "event": "live_return_requeued", "task_id": task_id, "tenant_id": tenant_id,
+            "attempt_id": attempt_id})
+        return self._view(task, None, who, control_owner(task, self._db))
 
     def set_device(self, tenant_id: str, task_id: str, *, email: str,
                    submitted_by: str | None, raw: bytes) -> dict[str, Any]:
@@ -1587,11 +1997,43 @@ class LiveService:
                 raise ControlNotEligible(
                     "only the task's submitter may open control to the tenant"
                 )
+            if not plan.task.get(TASK_OPEN_TO_MEMBERS):
+                # On the task too, so every later attempt's session starts
+                # open (QA12-11): the setting is the task's, not one attempt's.
+                plan.task_update.update({TASK_OPEN_TO_MEMBERS: True, TASK_OPENED_BY: who})
             if plan.state.get("open_to_members"):
                 return
             plan.session_update.update({"open_to_members": True,
                                         "opened_to_members_by": who})
             plan.audit("control_opened_to_members", who, {})
+
+        plan, _ = self._transact(tenant_id, task_id, change)
+        self._require_open(plan)
+        return self._view(task, plan, who, owner)
+
+    def close_to_members(self, tenant_id: str, task_id: str, *, email: str,
+                         submitted_by: str | None) -> dict[str, Any]:
+        """The submitter turns "Let any member take control" off again, for
+        this attempt and every later one (owner decision 2026-10-13, QA12-11).
+        Audited. A member who holds control now keeps it until they return
+        it or it lapses -- the submitter can take it over (`can_preempt`) --
+        so turning it off never yanks the screen from someone mid-sign-in."""
+        task = self._task(tenant_id, task_id, submitted_by)
+        owner = control_owner(task, self._db)
+        who = email.strip().lower()
+
+        def change(plan: _Plan) -> None:
+            if owner is None or owner != who:
+                raise ControlNotEligible(
+                    "only the task's submitter may close control to the tenant"
+                )
+            if plan.task.get(TASK_OPEN_TO_MEMBERS):
+                plan.task_update.update({TASK_OPEN_TO_MEMBERS: False, TASK_OPENED_BY: None})
+            if not plan.state.get("open_to_members"):
+                return
+            plan.session_update.update({"open_to_members": False,
+                                        "opened_to_members_by": None})
+            plan.audit("control_closed_to_members", who, {})
 
         plan, _ = self._transact(tenant_id, task_id, change)
         self._require_open(plan)
@@ -1640,10 +2082,11 @@ class LiveService:
         ):
             raise refused
         try:
-            self._task(auth.tenant_id, task_id, submitted_by)
+            task = self._task(auth.tenant_id, task_id, submitted_by)
         except NotFound:
             raise refused from None
         plan, _ = self._transact(auth.tenant_id, task_id, None)
+        self._settle_if_ended(task, plan)
         state = plan.state
         if plan.session is None or state.get("id") != session_id or state.get("state") != "open":
             raise refused
@@ -1683,12 +2126,16 @@ class LiveService:
             "cause": session.get("close_cause"),
             "in_control": bool(current and current.get("email") == admission.email),
             "controller": current.get("email") if current else None,
+            "episode_id": current.get("episode_id") if current else None,
         }
 
-    def record_input(self, admission: Admission, *, keys: int, pointers: int) -> bool:
+    def record_input(self, admission: Admission, *, keys: int, pointers: int,
+                     episode_id: str | None = None) -> bool:
         """The controller's input since the last flush: counts for the audit,
         and the hold's deadline moved (§4.3). False when they no longer hold
-        control, and nothing is written."""
+        control -- or, given `episode_id`, no longer hold THAT episode -- and
+        nothing is written: the counts are the ended episode's
+        (`record_episode_tail`)."""
         idle = int(self._s("control_idle_seconds", 300))
 
         def change(plan: _Plan) -> bool:
@@ -1697,6 +2144,7 @@ class LiveService:
                 plan.state.get("id") != admission.session_id
                 or current is None
                 or current.get("email") != admission.email
+                or (episode_id is not None and current.get("episode_id") != episode_id)
             ):
                 return False
             plan.session_update["controller"] = {
@@ -1709,11 +2157,66 @@ class LiveService:
             if deadline is not None:
                 plan.set_wait_controller(plan.wait.get("controller") if plan.wait else None,
                                          deadline)
+            if plan.wait is not None and keys + pointers > 0:  # handoff.FUNNEL_MILESTONES
+                plan.task_update["human_wait"] = first_time(plan.wait, "first_input_at", plan.now)
             return True
 
         _, held = self._transact(admission.tenant_id, admission.task_id, change,
                                  session_id=admission.session_id)
         return bool(held)
+
+    def record_episode_tail(self, admission: Admission, episode_id: str, *, keys: int,
+                            pointers: int) -> bool:
+        """Input this socket counted in an episode that has since ENDED, added
+        to that episode's `control_returned`/`control_ended` entry and its
+        `human_control_returned` event (LB-POLISH, part of #1030).
+
+        A Return press is an HTTP request; the counts are on the socket, which
+        flushes them in batches (`live_input_flush_seconds`). MEASURED
+        2026-10-13 on task_1f28d5bfa5a14f618f83: two episodes in which a
+        person typed and then pressed Return reported `keys: 0`, because the
+        last batch -- the typing -- was dropped when the socket saw control
+        end. The ended episode's entry ids are on the session
+        (`ended_episodes`, written by `_Plan.end_control`), so the tail lands
+        on exactly that episode's entries. Only this person's episode, on this
+        socket's session; False, and nothing written, otherwise. Counts only,
+        as everywhere: no keysym is read."""
+        if keys <= 0 and pointers <= 0:
+            return False
+        session_ref = self._db.collection(LIVE_SESSIONS).document(admission.session_id)
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(session_ref))
+            session = snap.to_dict() if snap.exists else None
+            ended = (session or {}).get("ended_episodes")
+            match = next(
+                (e for e in (ended if isinstance(ended, list) else [])
+                 if isinstance(e, dict) and e.get("episode_id") == episode_id
+                 and e.get("email") == admission.email),
+                None,
+            )
+            if match is None or (session or {}).get("task_id") not in (None, admission.task_id):
+                return False
+            refs = []
+            if match.get("event_id"):
+                refs.append(self._db.collection(TASKS).document(admission.task_id)
+                            .collection(EVENTS).document(str(match["event_id"])))
+            if match.get("audit_id"):
+                refs.append(self._db.collection(LIVE_AUDIT).document(str(match["audit_id"])))
+            docs = []
+            for ref in refs:  # every read before any write, as a transaction requires
+                found = _snapshot(txn.get(ref))
+                if found.exists:
+                    docs.append((ref, found.to_dict() or {}))
+            for ref, doc in docs:
+                detail = dict(doc.get("detail") or {})
+                detail["keys"] = int(detail.get("keys") or 0) + keys
+                detail["pointer_events"] = int(detail.get("pointer_events") or 0) + pointers
+                txn.update(ref, {"detail": detail})
+            return bool(docs)
+
+        return bool(_apply(self._db.transaction()))
 
     def end_control(self, admission: Admission, cause: str, *, keys: int = 0,
                     pointers: int = 0) -> bool:
@@ -1746,10 +2249,50 @@ class LiveService:
                 or session.get("generation") != admission.generation):
             return False
         origin, device = clean_origin(report.get("origin")), clean_device(report.get("device"))
-        if session.get("origin") == origin and session.get("device") == device:
+        update: dict[str, Any] = {}
+        if session.get("origin") != origin or session.get("device") != device:
+            update.update({"origin": origin, "device": device})
+        agent = clean_agent(report.get("agent"))
+        if agent is not None:
+            # The FIRST connection is kept: a relaunched gate that has not
+            # seen the agent again does not make it a stranger.
+            first = session.get("agent_connected_at") or agent["connected_at"]
+            frame = session.get("first_frame_at") or agent["first_frame_at"]
+            for key, value in (("agent_connected_at", first), ("agent_connections", agent["connections"]),
+                               ("first_frame_at", frame)):
+                if session.get(key) != value:
+                    update[key] = value
+        ready = self._ready_to_first_frame(session, update)
+        if not update:
             return False
-        ref.update({"origin": origin, "device": device, "reported_at": self._now()})
+        ref.update({**update, "reported_at": self._now()})
+        if ready is not None:
+            write_audit(None, self._db, session, "ready_first_frame", email=None,
+                        detail={"seconds": ready}, now=self._now())
+            handoff_log.info(
+                "live ready to first frame task=%s seconds=%.1f", session.get("task_id"), ready,
+                extra={"event": READY_FRAME_EVENT, "task_id": session.get("task_id"),
+                       "tenant_id": session.get("tenant_id"),
+                       "attempt_id": session.get("attempt_id"), "seconds": ready},
+            )
         return True
+
+    @staticmethod
+    def _ready_to_first_frame(session: Mapping[str, Any], update: dict[str, Any]) -> float | None:
+        """LIVE-MEASURE: seconds from the person's "I'm ready" (copied onto the
+        resumed attempt's session when it opened) to the first frame its gate
+        published -- the picture appearing. Measured once, when the first
+        frame is first written, and added to `update`."""
+        ready_at, frame = session.get("human_ready_at"), update.get("first_frame_at")
+        if (not isinstance(ready_at, datetime) or not isinstance(frame, datetime)
+                or session.get("first_frame_at") is not None
+                or session.get("ready_to_first_frame_seconds") is not None):
+            return None
+        seconds = round((frame - ready_at).total_seconds(), 3)
+        if seconds < 0:
+            return None
+        update["ready_to_first_frame_seconds"] = seconds
+        return seconds
 
     def viewer_event(self, admission: Admission, entry: str, detail: Mapping[str, Any]) -> None:
         """`viewer_joined` / `viewer_left`: an entry that records no other
@@ -2099,7 +2642,7 @@ _EVENT_RANK: Mapping[str, int] = {
 #: opening and closing -- who watched is the audit's business, not what was done.
 _AUDIT_EVENTS = frozenset({
     "control_taken", "control_returned", "control_ended", "control_opened_to_members",
-    "handoff_requested", "handoff_resolved", "device_requested",
+    "control_closed_to_members", "handoff_requested", "handoff_resolved", "device_requested",
 })
 
 #: A word the audit's detail may carry to the timeline as `cause` or `outcome`:

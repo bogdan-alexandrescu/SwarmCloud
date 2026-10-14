@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } fr
 import { createPortal } from 'react-dom'
 import {
   approveWorkspace,
+  declineLoanRequest,
   denyWorkspace,
   grantAdmin,
   loadPeople,
@@ -147,8 +148,21 @@ export function waitingRequests(rows: readonly PersonRow[]): WaitingRequest[] {
   return out.sort((a, b) => when(a) - when(b))
 }
 
+/** An account as the console says it: its id, then its label when it has another one. */
+function accountName(a: { account_id: string; label: string | null }): string {
+  return a.label !== null && a.label !== '' && a.label !== a.account_id ? `${a.account_id} (${a.label})` : a.account_id
+}
+
+/**
+ * WHICH ACCOUNT, THEN WHO LENT IT (owner, 2026-10-13): "lent by eng" named
+ * the owner tenant and never the account. An older API without
+ * `lent_accounts` still says its owners.
+ */
 function claudeText(c: PersonClaudeAccount): ReactNode {
   if (c.source === 'own') return `own (${c.own})`
+  if (c.source === 'lent' && c.lent_accounts !== undefined && c.lent_accounts.length > 0) {
+    return c.lent_accounts.map((a) => `${accountName(a)}, lent by ${a.owner_name ?? a.owner_tenant}`).join('; ')
+  }
   if (c.source === 'lent') return c.lent_by.length > 0 ? `lent by ${c.lent_by.join(', ')}` : `lent (${c.lent})`
   if (c.source === 'provider_key') return 'provider key'
   return 'none'
@@ -308,6 +322,59 @@ function Deny({ row, reload, onSaid }: { row: PersonRow; reload: () => void; onS
   )
 }
 
+/**
+ * DECLINE A LOAN REQUEST (LOAN-DECLINE). The reason is optional and shown to
+ * the person, so a blank one sends none; the confirm is small and inline,
+ * like Deny's, and nothing is sent until it is confirmed. A declined request
+ * leaves the card on the next read, so the outcome is said under the card.
+ */
+function DeclineLoan({ row, reload, onSaid }: { row: PersonRow; reload: () => void; onSaid?: (s: Said) => void }) {
+  const id = row.workspace.workspace_id ?? ''
+  const [open, setOpen] = useState(false)
+  const [reason, setReason] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [said, say] = useSaid(onSaid)
+  const go = async () => {
+    if (busy) return
+    setBusy(true)
+    const r = await declineLoanRequest(id, reason)
+    setBusy(false)
+    if (r.status !== 'error') {
+      setOpen(false)
+      setReason('')
+    }
+    say(outcome(r, () => `Declined ${row.email}'s request to borrow a Claude account. They are told.`))
+    reload()
+  }
+  if (!open) {
+    return (
+      <>
+        <Button size="sm" onClick={() => setOpen(true)}>
+          Decline
+        </Button>
+        <SaidLine said={said} />
+      </>
+    )
+  }
+  return (
+    <span className="pp-deny">
+      <label className="c-field">
+        <span className="c-lbl">Reason, shown to {row.email} (optional)</span>
+        <input className="c-inp" value={reason} maxLength={200} autoFocus onChange={(e) => setReason(e.target.value)} />
+      </label>
+      <span className="ob-acts">
+        <Button size="sm" onClick={() => setOpen(false)}>
+          Cancel
+        </Button>
+        <Button size="sm" kind="primary" disabled={busy} onClick={() => void go()}>
+          {busy ? 'Declining…' : 'Decline'}
+        </Button>
+      </span>
+      <SaidLine said={said} />
+    </span>
+  )
+}
+
 function Retry({ row, reload }: { row: PersonRow; reload: () => void }) {
   const [busy, setBusy] = useState(false)
   const [said, setSaid] = useState<Said | null>(null)
@@ -418,12 +485,15 @@ const NOT_ASSIGNING: ReadonlySet<string> = new Set(['PAUSED', 'DRAINING', 'REAUT
 /**
  * Whether `account` is lent to this person, as far as the API lets the
  * console see. The admin view leaves the person's tenant id out, so the
- * account's `lend_to` cannot be matched against it here; `lent_by` is the
- * API's list of the owner tenants whose accounts name this person's tenant
- * in `lend_to`, so an account whose owner is not in it is not lent to them.
+ * account's `lend_to` cannot be matched against it here. `lent_accounts`
+ * names the accounts themselves; an older API has only `lent_by`, the owner
+ * tenants whose accounts name this person's tenant in `lend_to`, which
+ * offers every account such an owner holds.
  */
 export function lentToRow(account: LendableAccount, row: PersonRow): boolean {
-  return Array.isArray(row.claude_account.lent_by) && row.claude_account.lent_by.includes(account.owner_tenant)
+  const c = row.claude_account
+  if (Array.isArray(c.lent_accounts)) return c.lent_accounts.some((a) => a.account_id === account.account_id)
+  return Array.isArray(c.lent_by) && c.lent_by.includes(account.owner_tenant)
 }
 
 /**
@@ -432,7 +502,9 @@ export function lentToRow(account: LendableAccount, row: PersonRow): boolean {
  * CLICK (live QA ADM-1, 2026-10-11): lending hands one tenant's Claude
  * account to another person's workspace, and reclaiming takes it back from
  * under their runs. Each asks first, naming the account, its owner tenant and
- * the person. A single account to reclaim is chosen already.
+ * the person. A single account to reclaim is said as text beside Reclaim
+ * (owner, 2026-10-13: an empty "choose…" hid what was lent); a select only
+ * when there is a choice to make.
  */
 function LoanPicker({
   row,
@@ -468,26 +540,34 @@ function LoanPicker({
   const name = chosen === null ? '' : `${chosen.label ?? chosen.account_id} (${chosen.owner_tenant})`
   const idle = chosen !== null && chosen.state !== null && NOT_ASSIGNING.has(chosen.state)
   const verb = lend ? 'Lend' : 'Reclaim'
+  const one = !lend && accounts.length === 1 ? accounts[0]! : null
   return (
     <div className="pp-loan">
-      <label className="c-field">
-        <span className="c-lbl">{lend ? 'Account from the pool' : 'Account lent to them'}</span>
-        <select
-          className="c-inp"
-          value={account}
-          onChange={(e) => setAccount(e.target.value)}
-          aria-label={lend ? `Account to lend to ${row.email}` : `Account to reclaim from ${row.email}`}
-        >
-          <option value="">choose…</option>
-          {accounts.map((a) => (
-            <option key={a.account_id} value={a.account_id}>
-              {a.label ?? a.account_id} · {a.owner_tenant}
-              {a.state !== null ? ` · ${a.state}` : ''}
-              {a.state !== null && NOT_ASSIGNING.has(a.state) ? ' (starts no new agent)' : ''}
-            </option>
-          ))}
-        </select>
-      </label>
+      {one !== null ? (
+        <span className="pp-loan-one" data-testid="pp-loan-one">
+          Lent to them: <strong>{accountName(one)}</strong> · {one.owner_tenant}
+          {one.state !== null ? ` · ${one.state}` : ''}
+        </span>
+      ) : (
+        <label className="c-field">
+          <span className="c-lbl">{lend ? 'Account from the pool' : 'Account lent to them'}</span>
+          <select
+            className="c-inp"
+            value={account}
+            onChange={(e) => setAccount(e.target.value)}
+            aria-label={lend ? `Account to lend to ${row.email}` : `Account to reclaim from ${row.email}`}
+          >
+            <option value="">choose…</option>
+            {accounts.map((a) => (
+              <option key={a.account_id} value={a.account_id}>
+                {a.label ?? a.account_id} · {a.owner_tenant}
+                {a.state !== null ? ` · ${a.state}` : ''}
+                {a.state !== null && NOT_ASSIGNING.has(a.state) ? ' (starts no new agent)' : ''}
+              </option>
+            ))}
+          </select>
+        </label>
+      )}
       <Button size="sm" kind="primary" disabled={busy || chosen === null} onClick={() => setAsking(true)}>
         {verb}
       </Button>
@@ -624,13 +704,7 @@ function WaitingCard({ doc, rows, reload }: { doc: PeopleDoc; rows: PersonRow[];
                     {doc.lendable_accounts !== null && doc.lendable_accounts.length > 0 && (
                       <LoanPicker row={row} accounts={doc.lendable_accounts} lend reload={reload} onSaid={setSaid} />
                     )}
-                    {/* NO DEAD DECLINE. The API closes a loan request only by
-                        lending (`people._record_loan`); there is no route that
-                        declines one, and this lane adds no API. So the card says
-                        so rather than drawing a button that does nothing. */}
-                    <p className="ur-hint" data-testid="pp-no-decline">
-                      There is no route to decline a loan request yet; it stays open until an account is lent.
-                    </p>
+                    <DeclineLoan row={row} reload={reload} onSaid={setSaid} />
                   </div>
                 </>
               )}
@@ -718,6 +792,7 @@ function ClaudeCell({ row }: { row: PersonRow }) {
     <span className="pp-claude">
       {claudeText(row.claude_account)}
       {row.loan_request?.state === 'requested' && <Chip className="pp-borrow">borrow requested</Chip>}
+      {row.loan_request?.state === 'declined' && <Chip className="pp-borrow">loan declined</Chip>}
     </span>
   )
 }
@@ -811,6 +886,15 @@ function ClaudeSection({ row, doc, reload }: { row: PersonRow; doc: PeopleDoc; r
             {' '}
             <Chip className="pp-borrow">
               borrow requested{row.loan_request.requested_at !== null ? ` ${timeAgo(row.loan_request.requested_at)}` : ''}
+            </Chip>
+          </>
+        )}
+        {/* Until they ask again (LOAN-DECLINE): a new request re-opens it. */}
+        {row.loan_request?.state === 'declined' && (
+          <>
+            {' '}
+            <Chip className="pp-borrow">
+              loan declined{row.loan_request.decided_at != null ? ` ${timeAgo(row.loan_request.decided_at)}` : ''}
             </Chip>
           </>
         )}

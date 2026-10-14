@@ -81,6 +81,9 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 70 | `models.py`: `Task.human_wait`, the hand-off a holding task waits on, as a field and not a new state (LB-C) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
 | 71 | `profiles.py`: `RunnerProfile.live_browser`, True only on `claude-code-browser`, valid only on a GKE_AUTOPILOT profile (LB-D) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
 | 72 | `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist | proposed |
+| 74 | `states.py`: `EventType.STARTUP_PROGRESS`, the browser agent's start-up steps (STARTUP-API) | ACCEPTED by the owner 2026-10-13 and APPLIED by the pull request that adds this line |
+| 75 | `models.py`: `Workflow.fix_rounds` and `WorkflowStep.spawned_by`, a merge step's fix rounds as workflow fields (SPEED-D2) | proposed; worked around |
+| 76 | `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING`, a workflow that waits for pull requests to merge (SPEED-D3) | proposed; worked around |
 
 ---
 
@@ -11202,3 +11205,208 @@ The record stays in `metadata.start_problem`, which is what ships.
 **1-3** unchanged: it is a record, not a state; nothing that writes it moves
 a state, a lease or a pool. **9**: it is on the tenant's own task and served
 only through the tenant-scoped task routes, masked. 4-8 and 10 unchanged.
+
+---
+
+## 74. `states.py`: `EventType.STARTUP_PROGRESS`, the browser agent's start-up steps (STARTUP-API)
+
+**Status:** ACCEPTED by the owner 2026-10-13 ("we should put a progress bar
+when the browser agent is starting up the browser so you get a sense of
+progress as it comes up"; detail "Stages + real pod steps", carried as "One
+new event type"), and APPLIED by the pull request that adds this entry (lane
+STARTUP-API).
+
+### Why
+
+A `claude-code-browser` attempt spends a minute or more between `dispatched`
+and a first picture in the Browser tab: the pod is scheduled, the image is
+pulled, the `display` sidecar launches Chromium and waits for CDP, the worker
+container starts, and only then does the live stream paint. The task's state
+history shows none of it -- the task reads DISPATCHED, then STARTING, then
+RUNNING -- so the console had nothing to draw a progress bar from. The steps
+are moments in one attempt, not states (the task does not change state for
+any of them), so they are events, as the hand-off moments of entry 69 are.
+
+### The change
+
+```python
+class EventType(str, Enum):
+    ...
+    STARTUP_PROGRESS = "startup_progress"
+```
+
+`detail` is `{"step": <step>, "attempt_id": ..., "generation": ...}`, the
+steps in order `pod_scheduled`, `image_pulling`, `image_pulled`,
+`container_started` (written by the reconciler from the GKE pod's status,
+`reconciler.startsteps`), then `browser_launching`, `browser_ready`,
+`first_frame` (written by the worker from the live gate's `status`,
+`agent_worker.handoff.HandoffPath.note_startup`). Each step at most once per
+attempt; a step from a generation that is no longer the task's is not
+written. One type with the step in `detail`, not seven types: the existing
+`lease_acquired`, `dispatched`, `starting` and `running` events stay as they
+are and are the bar's first stages. swarm-api serves the steps of the current
+attempt with a per-profile estimate at `GET /v1/tasks/{id}/startup`.
+
+### Rollback
+
+Delete the member. Events already stored with this value would then fail to
+decode in `swarm_api.codec.event_from_dict` (`EventType(data["type"])`), so a
+rollback must first delete the stored `startup_progress` events, or ship a
+decoder that skips unknown types.
+
+### What it would break
+
+Nothing: a new member, written by code that ships with it. No reader matches
+every type exhaustively (`reconciler.progress` reads named types only, and
+the stuck rule's clock starts at `starting`/`running`/`checkpoint_restored`,
+never at this). No shell, jq or TypeScript copy of `EventType` exists to keep
+in step (`scripts/lib/check-contract-parity.sh` restates none; the console's
+`TaskEvent.type` is a plain string).
+
+### Invariants
+
+**1-3** untouched: an event is a record; writing it creates no demand, holds
+nothing and moves no state, lease or pool. **5**: the reconciler writes a pod
+step only inside a transaction that finds the task still on the lease and
+generation the pod was read for, and the worker writes only while it is not
+fenced; the route serves only the current attempt's generation. 4, 6-10
+unchanged.
+
+## 75. `models.py`: `Workflow.fix_rounds` and `WorkflowStep.spawned_by` (SPEED-D2)
+
+**Status:** proposed, and worked around without it by the pull request that
+adds this entry (lane SPEED-D2, owner decision 2026-10-14 "Auto fix rounds").
+Nothing under `apps/common/swarm_common/` was edited.
+
+### Why
+
+A lane workflow's merge step now spends up to `fix_rounds` agent rounds (2 by
+default) on a red or conflicting pull request, and each round is shown as a
+step of the lane's workflow (docs/merge-step.md "Revised 2026-10-14"). Two
+facts about that have no home in the frozen `Workflow`:
+
+1. **The budget.** `Workflow` carries no metadata, so the spec's `fix_rounds`
+   is stored only on the merge TASK (`metadata.merge_fix_rounds`, which the
+   wake tick and the worker read). A reader of the workflow alone cannot say
+   how many rounds it was given.
+2. **Which steps the platform appended.** A round's step is an ordinary
+   `WorkflowStep`. The rollup must not let a round's FAILED fail a workflow
+   whose merge then succeeded, so it has to tell a round from a caller's step.
+   Today it does so by the step id's shape, `ci-fix:<n>` / `conflict-fix:<n>`
+   (`swarm_rollup.FIX_ROUND_STEP_RE`), which works only because a caller's
+   step id may not hold `:` (`WorkflowStepCreate.step_id`'s pattern). The
+   input could not carry the mark: the reconciler decodes steps without it.
+
+### The change
+
+```python
+@dataclass
+class WorkflowStep:
+    ...
+    #: The step id of the platform step that appended this one (a merge
+    #: step's fix round names the merge step), or None for a submitted step.
+    spawned_by: str | None = None
+
+@dataclass
+class Workflow:
+    ...
+    #: Agent fix rounds the merge step may spend on a red pull request;
+    #: None when the workflow has no merge step.
+    fix_rounds: int | None = None
+```
+
+`swarm_rollup.is_fix_round_step` would then read `spawned_by`, and the
+step-id shape would stop carrying meaning.
+
+### Rollback
+
+Delete the two fields; both default to None, and the workaround above is
+what would remain.
+
+### What it would break
+
+Nothing: two defaulted fields. `codec.workflow_from_dict` and
+`reconciler.model.WorkflowView.from_doc` would have to decode `spawned_by`
+for the rollup to read it; until they do, the step-id rule stays.
+
+### Invariants
+
+**1-3** untouched: a field records a decision; a round is an ordinary task
+admitted like any other. 4-10 unchanged.
+
+## 76. `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING` (SPEED-D3)
+
+**Status:** proposed, and worked around without it by the pull request that
+adds this entry (lane SPEED-D3, owner decision 2026-10-14, delivery speed
+plan D3). Nothing under `apps/common/swarm_common/` was edited.
+
+### Why
+
+A workflow spec may now say `"after": {"pr": 41}` (or a list): no step starts
+until each named pull request of the workflow's own repository has merged,
+and one closed without merging fails the workflow (docs/workflows.md
+"Waiting for a pull request: `after`"). Two facts about that have no home in
+the frozen contract:
+
+1. **What the workflow waits for.** `Workflow` carries no metadata, so the
+   numbers live on each ROOT step's task as `metadata.after_prs`
+   (`swarm_api.prgate`), with the gate's state (`waiting`, `merged`,
+   `closed`). A reader of the workflow alone cannot say what it waits for;
+   the API reads it back off the step tasks (`codec.workflow_to_api`'s
+   `after_pull_requests`).
+2. **Why a root step is parked.** No `ParkReason` says "waiting for a pull
+   request", so a gated root is parked on `DEPENDENCY_INCOMPLETE` with no
+   `depends_on`. Every reader that promotes that reason had to learn the
+   gate: the scheduler's dependency sweep (`scheduler.loop.after_prs_hold`)
+   and the reconciler's DEPENDENCIES_MET rule
+   (`reconciler.model.held_for_pull_requests`), which would otherwise have
+   promoted a root that "depends on no step" after its grace. Each restates
+   the key and the `merged` state, held equal by
+   tests/unit/control_plane/test_workflow_after_pr.py. A third promoter added
+   later without that check would start a held workflow.
+
+### The change
+
+```python
+# states.py
+class ParkReason(str, Enum):
+    ...
+    #: A workflow submitted with `after` waits for pull requests of its own
+    #: repository to merge. Marked by swarm-api's wake tick, promoted by the
+    #: scheduler on the mark; never promoted by the dependency rule.
+    PULL_REQUEST_PENDING = "PULL_REQUEST_PENDING"
+
+# models.py
+@dataclass
+class Workflow:
+    ...
+    #: Pull request numbers of the workflow's repository that must merge
+    #: before any step starts; empty for a workflow without `after`.
+    after: list[int] = field(default_factory=list)
+```
+
+The gate's state would stay on the root tasks (it is written per task, in a
+guarded transaction, by the tick); only the park reason and the declaration
+move.
+
+### Rollback
+
+Delete the reason and the field. Every park written with the reason would
+need rewriting to `DEPENDENCY_INCOMPLETE` first, which is the workaround
+above.
+
+### What it would break
+
+A new `ParkReason` value is read by every surface that names park reasons:
+the console's state pills and blockers (`apps/swarm-ui/src/types.ts`), the
+bridge's progress text (`swarm_mcp.progress`, `swarm_mcp.compact`) and
+`test_every_park_has_an_unparker.py`, which requires a sweep for each. The
+field is defaulted and decodes old documents unchanged.
+
+### Invariants
+
+**1** kept either way: a gated root is PARKED, holding no lease, no pool
+count and no execution. **3** untouched: nothing is counted before LEASED.
+**9**: the tick reads with the named tenant's own `-git` token, only that
+tenant's parks. 2, 4-8 and 10 unchanged.
+

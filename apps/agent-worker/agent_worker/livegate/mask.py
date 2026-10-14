@@ -20,14 +20,37 @@ them, the kind of second copy that has drifted in this repository before.
 IT FAILS CLOSED. A rectangle report is always a little older than the frame
 it is painted on, so:
 
-* a frame is masked only with a report measured after the frame's last
+* the top frame is masked only with a report measured after its last
   layout-changing event; otherwise the whole page area below the address bar
   is painted out (`Outcome.PAGE_BLANKED`). Scrolling flickers; that is the
   cost;
-* with the CDP session down, or no report from the top frame since its last
-  navigation, the whole frame is a blank "masking unavailable" frame
-  (`Outcome.UNAVAILABLE`);
+* a CHILD frame that cannot vouch for itself -- no report, a stale or
+  truncated one, a grandchild it cannot place -- is covered over ITS OWN BOX,
+  the iframe element's content box its parent reported, and so is an iframe
+  element no frame this gate knows claims (an out-of-process frame whose
+  session has not reported yet). A frame's content is clipped to that box,
+  so covering it covers all of it. Only a child the gate cannot place at all
+  -- not linked to any box its parent reported -- blanks the page area;
+* with the CDP session down, no report from the top frame since its last
+  navigation, the top frame's tab not the one on screen, or the follower
+  between tabs (`hold`), the whole frame is a blank "masking unavailable"
+  frame (`Outcome.UNAVAILABLE`);
 * every box is dilated by `DILATE_PX`.
+
+WHY A CHILD FRAME COVERS ITS BOX, NOT THE PAGE (LIVE-BLANK; part of #1030).
+MEASURED 2026-10-13 on release 1e86c37e: on www.thelist.com, an article with
+many ad iframes, and on Google's reCAPTCHA page, the browser's tab strip and
+address bar were drawn over a flat `MASK_RGB` page area for ten minutes and
+more, while a person asked to help waited to see the page. One frame that
+never reported -- an ad iframe the observer never ran in -- blanked
+everything; only that frame needed covering.
+
+EVERY FRAME THAT IS NOT THE PAGE SAYS WHY (`reason`). `apply` leaves the
+reason in `reason`, and `rfb.masked` carries it to every viewer as the RFB
+desktop name, "Can't show this page safely: <reason>" (`CANNOT_SHOW`), or
+"Part of this page is covered: <reason>" (`PARTLY_COVERED`) when frames are
+covered, which the console's strip shows. The fill is unchanged: saying why
+never sends a pixel the mask did not vouch for.
 
 Each frame's observer numbers its layout changes (its "epoch"), says so the
 moment one happens (a `layout` message, sent from the mutation or event
@@ -45,11 +68,26 @@ its text fields, which while a person holds control are what they type. Log
 lines from this module carry counts and outcomes only (§5.3.3).
 
 GEOMETRY. The display holds one maximised Chromium window (§3.1), so the page
-area is the bottom-left `innerWidth x innerHeight` CSS pixels times the
-screen scale (`scale`: `Device.screen_scale`, one screen pixel per CSS pixel
-on every preset -- headed Chromium draws an emulated device scale factor at
-that size, presets.py, §6.1) and the browser's own UI is the band above it. Page rectangles are layout-viewport client rectangles; the
-top frame's visual viewport (pinch zoom) maps them onto the screen. A child
+area is at the bottom-left, the browser's own UI the band above it, and its
+size is the top frame's VISUAL VIEWPORT in CSS px (`visualViewport.width` x
+`height`) times the page scale (`visualViewport.scale`) times the screen scale
+(`scale`: `Device.screen_scale`, one screen pixel per CSS pixel on every
+preset -- headed Chromium draws an emulated device scale factor at that size,
+presets.py, §6.1). Page rectangles are layout-viewport client rectangles; the
+visual viewport's offset and scale map them onto the screen.
+
+WHY THE PAGE SCALE IS IN THE PAGE'S SIZE (QA12-01, 2026-10-13). A phone or
+tablet preset is emulated with `mobile: true`, so Chromium zooms a page laid
+out wider than the device -- 980 CSS px without a `<meta name=viewport>`, its
+content's width when that overflows -- out to fit, as a phone does. Then
+`innerWidth` x `innerHeight` are the visible area in CSS px (980 x 2123 on
+iPhone 15 portrait) and `visualViewport.scale` is 393 / 980. Sizing the page
+as `innerWidth * scale` called it 980 screen px on a 393 px frame and blanked
+every frame grey: iPhone 15 and iPad portrait showed #555 for as long as the
+page was up, while iPad landscape (1080, no zoom) and the desktop (never
+`mobile`) drew. A page drawn at the window's own metrics before the device
+override lands is still wider than the frame at scale 1, so it is still
+unavailable. A child
 frame's rectangles are offset by its owner element's content box, which the
 parent frame's own report carries, linked by `MaskCdp.link`.
 """
@@ -80,6 +118,25 @@ DILATE_PX = 8
 #: purpose" from "masking unavailable".
 MASK_RGB = (0x22, 0x22, 0x22)
 UNAVAILABLE_RGB = (0x55, 0x55, 0x55)
+
+#: What a viewer is told before the reason, when the frame is not the page
+#: (`Outcome.UNAVAILABLE`, `Outcome.PAGE_BLANKED`), and when the page is shown
+#: with frames on it covered. The console's strip shows either
+#: (LiveBrowser.tsx `gateReason`), so the words are held equal there.
+CANNOT_SHOW = "Can't show this page safely"
+PARTLY_COVERED = "Part of this page is covered"
+
+#: The reasons, each a phrase after `CANNOT_SHOW` or `PARTLY_COVERED`. Words
+#: only: never a URL, a frame's text or anything else read from the page.
+REASON_NO_SESSION = "the gate is not attached to the page on screen"
+REASON_NO_PAGE = "no page is open"
+REASON_NOT_REPORTED = "the page on screen has not reported its layout yet"
+REASON_HIDDEN = "the page the gate follows is not the tab on screen"
+REASON_SWITCHING = "the browser is switching tabs"
+REASON_TOO_WIDE = "the page is laid out wider than the screen (a device change is being applied)"
+REASON_CHANGING = "the page is changing faster than it can be checked"
+REASON_TRUNCATED = "the page has more text than the mask can check"
+REASON_UNPLACED = "a frame on the page cannot be placed"
 
 #: `autocomplete` tokens that name a credential (§5.3.1). Matched per token:
 #: the attribute is a list ("section-pay billing cc-number").
@@ -176,10 +233,17 @@ class _Report:
     visual_x: float
     visual_y: float
     visual_scale: float
+    #: The visual viewport's size in CSS px: `visualViewport.width` x
+    #: `height`, or `innerWidth` x `innerHeight` (the same area, floored) from
+    #: an observer without it.
+    visual_width: float
+    visual_height: float
     fields: tuple[_Field, ...]
     texts: tuple[_Text, ...]
     owners: dict[int, _Box]
     truncated: bool
+    #: The document was not visible when measured (`document.visibilityState`).
+    hidden: bool = False
 
 
 def _number(value: Any) -> float:
@@ -215,8 +279,16 @@ def _records(value: Any) -> list[dict[str, Any]]:
     return value
 
 
-def _parse(payload: str) -> tuple[str, str, int, _Report | None]:
-    """(kind, doc, epoch, report) of one observer message, or MalformedReport."""
+def _hidden(message: dict[str, Any]) -> bool:
+    """The message's `h`: whether its document was hidden. Absent is visible (an older observer)."""
+    hidden = message.get("h", False)
+    if not isinstance(hidden, bool):
+        raise MalformedReport("visibility flag is not a boolean")
+    return hidden
+
+
+def _parse(payload: str) -> tuple[str, str, int, _Report | None, bool]:
+    """(kind, doc, epoch, report, hidden) of one observer message, or MalformedReport."""
     if not isinstance(payload, str) or len(payload) > MAX_MESSAGE_CHARS:
         raise MalformedReport("message too large")
     try:
@@ -228,15 +300,17 @@ def _parse(payload: str) -> tuple[str, str, int, _Report | None]:
     kind = message.get("k")
     doc = _string(message.get("doc"))
     epoch = _integer(message.get("e"))
+    hidden = _hidden(message)
     if kind == "layout":
-        return kind, doc, epoch, None
+        return kind, doc, epoch, None, hidden
     if kind != "report":
         raise MalformedReport("unknown kind")
     viewport = message.get("vp")
-    if not isinstance(viewport, list) or len(viewport) != 5:
-        raise MalformedReport("viewport is not [w, h, vx, vy, vs]")
-    width, height, visual_x, visual_y, visual_scale = (_number(v) for v in viewport)
-    if width < 0 or height < 0 or visual_scale <= 0:
+    if not isinstance(viewport, list) or len(viewport) not in (5, 7):
+        raise MalformedReport("viewport is not [w, h, vx, vy, vs, vw, vh]")
+    width, height, visual_x, visual_y, visual_scale = (_number(v) for v in viewport[:5])
+    visual_width, visual_height = (_number(v) for v in viewport[5:]) if len(viewport) == 7 else (width, height)
+    if width < 0 or height < 0 or visual_width < 0 or visual_height < 0 or visual_scale <= 0:
         raise MalformedReport("viewport out of range")
     fields = tuple(
         _Field(
@@ -258,8 +332,8 @@ def _parse(payload: str) -> tuple[str, str, int, _Report | None]:
     if not isinstance(truncated, bool):
         raise MalformedReport("truncation flag missing")
     report = _Report(doc, epoch, width, height, visual_x, visual_y, visual_scale,
-                     fields, texts, owners, truncated)
-    return kind, doc, epoch, report
+                     visual_width, visual_height, fields, texts, owners, truncated, hidden)
+    return kind, doc, epoch, report, hidden
 
 
 # --------------------------------------------------------------------------
@@ -284,6 +358,8 @@ class _FrameState:
     #: Documents this frame has navigated away from. A message still in
     #: flight from one of them is not a report on the page now shown.
     retired: set[str] = field(default_factory=set)
+    #: The observer said its document is hidden: its tab is not on screen.
+    hidden: bool = False
 
     def new_document(self, doc: str | None, epoch: int = 0) -> None:
         self.doc = doc
@@ -291,6 +367,7 @@ class _FrameState:
         self.report = None
         self.fresh = False
         self.ever_password = set()
+        self.hidden = False
 
 
 class MaskState:
@@ -307,6 +384,10 @@ class MaskState:
         self._frames: dict[str, _FrameState] = {}
         self._top: str | None = None
         self._verdicts: OrderedDict[str, bool] = OrderedDict()
+        #: Why the frame is not the page while the follower is between tabs (`hold`).
+        self._held: str | None = None
+        #: Why the last frame `apply` painted is not (all of) the page; None when it is.
+        self.reason: str | None = None
 
     # -- what the gate tells it ------------------------------------------
 
@@ -324,6 +405,22 @@ class MaskState:
 
     def session_down(self) -> None:
         self._session = False
+
+    def hold(self, reason: str) -> None:
+        """The tab on screen may be about to change: no report is trusted until `release`.
+
+        The page follower holds the mask from the moment an agent asks
+        Chromium to open, close or bring forward a tab until it has looked
+        which tab Chromium shows, so the page it followed is never painted
+        over another one's pixels.
+        """
+        self._held = reason
+
+    def release(self) -> None:
+        self._held = None
+
+    def has_frame(self, frame_id: str) -> bool:
+        return frame_id in self._frames
 
     def set_scale(self, scale: float) -> None:
         """Screen pixels per CSS pixel changed (a device preset): every report is stale."""
@@ -355,6 +452,20 @@ class MaskState:
         if self._top == frame_id:
             self._top = None
 
+    def frame_swapped(self, frame_id: str) -> None:
+        """`frame_id` moved to a renderer of its own (an out-of-process iframe).
+
+        It keeps its place -- its parent and the box it is drawn in -- and
+        loses its report: what reports for it now is the observer in its new
+        process, through the gate's session on that frame's target.
+        """
+        frame = self._frames.get(frame_id)
+        if frame is None:
+            return
+        if frame.doc is not None:
+            frame.retired.add(frame.doc)
+        frame.new_document(None)
+
     def navigated(self, frame_id: str, url: str) -> None:
         """A cross-document navigation committed: no report covers the new page yet."""
         frame = self._frames.get(frame_id)
@@ -379,7 +490,7 @@ class MaskState:
         if frame is None:
             return
         try:
-            kind, doc, epoch, report = _parse(payload)
+            kind, doc, epoch, report, hidden = _parse(payload)
         except MalformedReport as exc:
             # The reason names a shape, never the payload's content.
             log.warning("live mask: malformed observer message (%s); frame is stale", exc)
@@ -391,6 +502,7 @@ class MaskState:
             # A document this gate has not heard from: whatever was reported
             # before belongs to another page.
             frame.new_document(doc, epoch)
+        frame.hidden = hidden
         if kind == "layout":
             if epoch > frame.epoch:
                 frame.epoch = epoch
@@ -411,40 +523,69 @@ class MaskState:
     # -- the mask ----------------------------------------------------------
 
     def apply(self, frame: Frame) -> Outcome:
-        """Paint every sensitive area of `frame`, in place, and say how."""
+        """Paint every sensitive area of `frame`, in place, and say how (and, in `reason`, why)."""
         top = self._frames.get(self._top) if self._top is not None else None
-        if (not self._session or top is None or top.url is None or top.report is None):
-            return self._unavailable(frame)
+        if self._held is not None:
+            return self._unavailable(frame, self._held)
+        if not self._session:
+            return self._unavailable(frame, REASON_NO_SESSION)
+        if top is None:
+            return self._unavailable(frame, REASON_NO_PAGE)
+        if top.url is None or top.report is None:
+            return self._unavailable(frame, REASON_NOT_REPORTED)
+        if top.hidden:
+            # A report from a tab that is not on screen describes other pixels.
+            return self._unavailable(frame, REASON_HIDDEN)
         report = top.report
-        page_w = report.width * self._scale
-        page_h = report.height * self._scale
+        # The visible area times the page scale: the device's viewport however
+        # the page is zoomed (GEOMETRY in the module docstring). Not
+        # `innerWidth` alone, which is 980 on a phone showing a page zoomed out
+        # to fit, and half the phone under a 2x pinch (QA12-01).
+        k = report.visual_scale * self._scale
+        page_w = report.visual_width * k
+        page_h = report.visual_height * k
         if page_w <= 0 or page_h <= 0 or page_w > frame.width + 1 or page_h > frame.height + 1:
-            return self._unavailable(frame)
+            return self._unavailable(frame, REASON_TOO_WIDE)
         page = _Box(0, frame.height - page_h, page_w, frame.height)
 
         if self._matches(top.url):
             _paint(frame, _Box(0, 0, frame.width, page.y0))
 
         boxes: list[_Box] = []
-        if not self._collect(self._top, top, page, boxes):
+        covers: list[_Box] = []
+        failed = self._collect(self._top, top, page, boxes, covers)
+        if failed is not None:
             _paint(frame, page)
+            self.reason = failed
             log.debug("live mask: page area blanked")
             return Outcome.PAGE_BLANKED
-        for box in boxes:
+        for box in boxes + covers:
             _paint(frame, _dilate(box).intersect(page))
+        self.reason = None if not covers else (
+            "an embedded frame on it cannot be checked" if len(covers) == 1
+            else f"{len(covers)} embedded frames on it cannot be checked")
         return Outcome.MASKED
 
-    def _collect(self, frame_id: str, frame: _FrameState, page: _Box, out: list[_Box]) -> bool:
+    def _collect(self, frame_id: str, frame: _FrameState, page: _Box, out: list[_Box],
+                 covers: list[_Box]) -> str | None:
         """Screen boxes of every sensitive area of `frame_id` and its children.
 
-        False when any frame that is drawn on screen cannot vouch for itself.
+        `out` gets the sensitive areas; `covers` the box of every child frame
+        that cannot vouch for itself, and of every iframe element no known
+        frame claims. Returns why `frame_id` itself cannot vouch for what it
+        shows (its caller covers it: its box, or the page for the top frame),
+        or None when it can.
         """
-        if frame.report is None or not frame.fresh or frame.report.truncated:
-            return False
+        report = frame.report
+        if report is None:
+            return REASON_NOT_REPORTED
+        if not frame.fresh:
+            return REASON_CHANGING
+        if report.truncated:
+            return REASON_TRUNCATED
         to_screen = self._to_screen(frame_id, page)
         if to_screen is None:
-            return False
-        report = frame.report
+            return REASON_UNPLACED
         for f in report.fields:
             if (f.type == "password" or f.ever_password or f.id in frame.ever_password
                     or SENSITIVE_AUTOCOMPLETE.intersection(f.autocomplete.split())):
@@ -455,16 +596,33 @@ class MaskState:
         for items in blocks.values():
             if self._matches("".join(t.text for t in items)):
                 out.extend(to_screen(t.box) for t in items)
-        for child_id, child in self._frames.items():
+        claimed: set[int] = set()
+        for child_id, child in list(self._frames.items()):
             if child.parent != frame_id:
                 continue
             if child.owner is None or child.owner not in report.owners:
-                return False  # drawn somewhere this gate cannot place
-            if to_screen(report.owners[child.owner]).intersect(page).empty:
+                return REASON_UNPLACED  # drawn somewhere this gate cannot place
+            claimed.add(child.owner)
+            box = to_screen(report.owners[child.owner]).intersect(page)
+            if box.empty:
                 continue  # drawn nowhere on screen
-            if not self._collect(child_id, child, page, out):
-                return False
-        return True
+            inner: list[_Box] = []
+            inner_covers: list[_Box] = []
+            if self._collect(child_id, child, page, inner, inner_covers) is None:
+                out.extend(inner)
+                covers.extend(inner_covers)
+            else:
+                # Its content is clipped to its box: covering the box covers all of it.
+                covers.append(box)
+        for owner, rect in report.owners.items():
+            if owner in claimed:
+                continue
+            box = to_screen(rect).intersect(page)
+            if not box.empty:
+                # An iframe element no frame this gate knows is drawn in: an
+                # out-of-process frame not yet reporting, or one just created.
+                covers.append(box)
+        return None
 
     def _to_screen(self, frame_id: str, page: _Box) -> Callable[[_Box], _Box] | None:
         """The map from `frame_id`'s client rectangles to screen pixels."""
@@ -506,8 +664,9 @@ class MaskState:
             self._verdicts.move_to_end(text)
         return verdict
 
-    def _unavailable(self, frame: Frame) -> Outcome:
+    def _unavailable(self, frame: Frame, reason: str) -> Outcome:
         frame.fill(0, 0, frame.width, frame.height, UNAVAILABLE_RGB)
+        self.reason = reason
         log.debug("live mask: masking unavailable")
         return Outcome.UNAVAILABLE
 
@@ -548,11 +707,22 @@ class MaskCdp:
     every frame, present and future, and runs the observer there. A second
     world in the same frame would report a second document, so binding calls
     are accepted only from the newest world context of each frame.
+
+    OUT-OF-PROCESS FRAMES (LIVE-BLANK). A cross-site iframe runs in a renderer
+    of its own, and a page's session neither runs a world in it nor hears its
+    reports: Chromium detaches it from the page's frame tree with reason
+    `swap`. `install` asks Chromium to auto-attach such frames
+    (`Target.setAutoAttach`, flat), and the page follower installs a CHILD
+    `MaskCdp` (`child=True`) on each one's session: the same observer, the
+    same binding, reporting into the same `MaskState`, where the frame kept
+    its place. A child's frames are never the top frame: a frame it names with
+    no parent this gate knows is ignored, and stays covered.
     """
 
-    def __init__(self, state: MaskState, send: Send) -> None:
+    def __init__(self, state: MaskState, send: Send, *, child: bool = False) -> None:
         self._state = state
         self._send = send
+        self._child = child
         #: execution context id -> frame id, for observer worlds only.
         self._worlds: dict[int, str] = {}
         #: frame id -> its current observer world context.
@@ -566,16 +736,30 @@ class MaskCdp:
                                                 "executionContextName": WORLD_NAME})
         await self._send("Page.addScriptToEvaluateOnNewDocument", {
             "source": observer_source(), "worldName": WORLD_NAME, "runImmediately": True})
+        # Out-of-process frames, each on a session of its own (class docstring).
+        await self._send("Target.setAutoAttach", {"autoAttach": True, "waitForDebuggerOnStart": False,
+                                                  "flatten": True})
         tree = await self._send("Page.getFrameTree", {})
-        self._state.session_up()
+        if not self._child:
+            self._state.session_up()
         stack = [tree.get("frameTree", {})]
         while stack:
             node = stack.pop()
             frame = node.get("frame")
             if isinstance(frame, dict) and isinstance(frame.get("id"), str):
-                self._state.frame_attached(frame["id"], frame.get("parentId"))
-                self._state.navigated(frame["id"], str(frame.get("url", "")))
+                if self._attach(frame["id"], frame.get("parentId")):
+                    self._state.navigated(frame["id"], str(frame.get("url", "")))
             stack.extend(node.get("childFrames", []) or [])
+
+    def _attach(self, frame_id: str, parent_id: Any) -> bool:
+        """Tell the state of `frame_id`; False when it is not a frame this session may name."""
+        parent = parent_id if isinstance(parent_id, str) and parent_id else None
+        if parent is None and self._child:
+            # A child session's root with no parent: the frame its parent's
+            # session placed, or nothing this gate can place.
+            return self._state.has_frame(frame_id)
+        self._state.frame_attached(frame_id, parent)
+        return True
 
     async def on_event(self, method: str, params: dict[str, Any]) -> None:
         state = self._state
@@ -607,17 +791,19 @@ class MaskCdp:
             self._world_of.clear()
         elif method == "Page.frameAttached":
             frame_id, parent_id = params.get("frameId"), params.get("parentFrameId")
-            if isinstance(frame_id, str):
-                state.frame_attached(frame_id, parent_id if isinstance(parent_id, str) else None)
+            if isinstance(frame_id, str) and self._attach(frame_id, parent_id):
                 if isinstance(parent_id, str):
                     await self.link(frame_id, parent_id)
         elif method == "Page.frameDetached":
             if isinstance(params.get("frameId"), str):
-                state.frame_detached(params["frameId"])
+                if params.get("reason") == "swap":
+                    # Into a renderer of its own: it keeps its place (class docstring).
+                    state.frame_swapped(params["frameId"])
+                else:
+                    state.frame_detached(params["frameId"])
         elif method == "Page.frameNavigated":
             frame = params.get("frame") or {}
-            if isinstance(frame.get("id"), str):
-                state.frame_attached(frame["id"], frame.get("parentId"))
+            if isinstance(frame.get("id"), str) and self._attach(frame["id"], frame.get("parentId")):
                 state.navigated(frame["id"], str(frame.get("url", "")))
         elif method == "Page.navigatedWithinDocument":
             if isinstance(params.get("frameId"), str):

@@ -57,10 +57,12 @@ from swarm_common.admission import _snapshot
 from swarm_common.states import ParkReason, TaskState
 
 from . import approvals, schedulefire
+from .agent_questions import unanswered
 from . import workspaces as ws
 from .forgeapp import CONNECTIONS, REFRESH_FAILED, connection_id_for, user_hash
 from .gittokens import COLLECTION as GIT_TOKENS
-from .issueruns import IssueRuns, RunState
+from .issueruns import IssueRuns
+from .people import LOAN_DECLINED
 from .redaction import redact_detail
 
 log = logging.getLogger(__name__)
@@ -117,6 +119,9 @@ class Viewer:
     tenant_id: str
     is_admin: bool = False
     is_owner: bool = False
+    #: A personal workspace's member, who reads only their own tasks
+    #: (`AuthContext.member_scope`): no tenant-wide source reaches past that.
+    member_scope: bool = False
 
 
 @dataclass
@@ -309,21 +314,60 @@ def _own_in_state(reading: Reading, state: TaskState) -> list[Any]:
     return [t for t in page.items if t.tenant_id == reading.viewer.tenant_id and t.state == state]
 
 
+#: The open hand-off's title (owner decision 2026-10-13, HANDOFF-POLICY).
+HANDOFF_TITLE = "Agent needs you"
+
+
+def _opened_to_members(reading: Reading, wait: Mapping[str, Any]) -> bool:
+    """"Let any member take control" on the waiting attempt's live session
+    (`live.LiveService.open_to_members`). Its tenant is checked again: a
+    session of another tenant's task never opens anything here."""
+    from .live import LIVE_SESSIONS, session_id_for
+
+    attempt = wait.get("attempt_id")
+    if not isinstance(attempt, str) or not attempt:
+        return False
+    snap = reading.db.collection(LIVE_SESSIONS).document(session_id_for(attempt)).get()
+    session = snap.to_dict() if snap.exists else None
+    return bool(session and session.get("tenant_id") == reading.viewer.tenant_id
+                and session.get("open_to_members"))
+
+
 def handoffs(reading: Reading) -> list[dict[str, Any]]:
-    """The caller's tasks whose agent waits for them in the live browser: a
-    RUNNING task holding a hand-off (`Task.human_wait`, docs/design/
-    live-browser.md §4.1), and one PARKED `HUMAN_REQUIRED` after its hold
-    expired (§4.3), which only a person promotes. Both link to the Browser tab."""
+    """Tasks whose agent waits for a person in the live browser: a RUNNING
+    task holding a hand-off (`Task.human_wait`, docs/design/live-browser.md
+    §4.1), and one of the caller's PARKED `HUMAN_REQUIRED` after its hold
+    expired (§4.3), which only a person promotes. Both link to the Browser tab.
+
+    An open hand-off is "Agent needs you" for everyone who may take control
+    of it (`handoff.may_control`, §5.1): its submitter, and the tenant's
+    members while the submitter has "Let any member take control" on (or the
+    task has no human owner). That is the bell parking fast relies on: the
+    hold lasts a minute unless someone opens the view. Each request is its
+    own id, so a second hand-off in one attempt is unread again."""
+    from .handoff import may_control
+
     items = []
-    for task in _own_in_state(reading, TaskState.RUNNING):
+    scope = reading.viewer.email if reading.viewer.member_scope else None
+    page = reading.store.list_tasks(reading.viewer.tenant_id, state=TaskState.RUNNING,
+                                    limit=SCAN, submitted_by=scope)
+    for task in page.items:
+        if task.tenant_id != reading.viewer.tenant_id or task.state != TaskState.RUNNING:
+            continue
         wait = task.human_wait if isinstance(task.human_wait, dict) else None
         if not wait:
             continue
+        own = (task.submitted_by or "").strip().lower() == reading.email
+        if not own and not may_control(task, reading.email, reading.db,
+                                       opened_to_members=_opened_to_members(reading, wait)):
+            continue
         generation = wait.get("generation") or task.current_generation
+        request = wait.get("request_id")
+        suffix = f":{request}" if isinstance(request, str) and request else ""
         items.append(_item(
-            f"task:handoff:{task.id}:{generation}", TASK, True,
-            "Your agent is waiting for you in its browser", wait.get("reason"),
-            f"/agents/live/{task.id}/browser", wait.get("requested_at") or task.updated_at))
+            f"task:handoff:{task.id}:{generation}{suffix}", TASK, True, HANDOFF_TITLE,
+            wait.get("reason"), f"/agents/live/{task.id}/browser",
+            wait.get("requested_at") or task.updated_at))
     for task in _own_in_state(reading, TaskState.PARKED):
         if task.park_reason != ParkReason.HUMAN_REQUIRED:
             continue
@@ -342,13 +386,27 @@ def _question_count(task: Any) -> int:
 def agent_questions(reading: Reading) -> list[dict[str, Any]]:
     """The caller's tasks of the last `WINDOW` whose agent asked the owner
     questions (`questions.json`, counted by the worker in
-    `result_summary.questions`). No record says a question was answered, so
-    the item stays for `WINDOW` after the task ended; reading it clears it
-    from the bell's count."""
+    `result_summary.questions`) and has not answered them all. An answer is
+    stored on the task (`metadata.owner_answers`, `POST /v1/tasks/{id}/answers`,
+    TASK-ANSWERS); once every question has one the item is gone, and until
+    then it stays for `WINDOW` after the task ended, reading it clearing it
+    from the bell's count. It opens the task's Details at `#questions`, where
+    the "Questions for you" card shows them (`GET /v1/tasks/{id}/questions`);
+    it opened Artifacts, which showed a file, not the questions (owner report
+    2026-10-13).
+
+    THE ITEM NAMES ITS TASK BY WHAT IT WAS DOING (QA14-UI, owner QA
+    2026-10-13): a bare task id said nothing about which agent asked. The
+    detail leads with the step's name, or the runner profile for a task that
+    is no workflow step; the question's own text is the console's to read
+    (`GET /v1/tasks/{id}/questions`), because it lives in an artifact this
+    feed does not open on every poll."""
     items = []
     for task in reading.own_tasks():
         count = _question_count(task)
         if count <= 0 or task.state not in _ENDED:
+            continue
+        if unanswered(count, task.metadata) == 0:
             continue
         ended = task.completed_at or task.updated_at
         if not _recent(reading, ended):
@@ -356,7 +414,8 @@ def agent_questions(reading: Reading) -> list[dict[str, Any]]:
         items.append(_item(
             f"task:questions:{task.id}", TASK, True,
             f"Your agent asked {count} question{'s' if count != 1 else ''}",
-            f"Task {task.id}", f"/agents/recent/{task.id}/artifacts", ended))
+            f"{task.step_id or task.runner_profile} · Task {task.id}",
+            f"/agents/recent/{task.id}#questions", ended))
     return items
 
 
@@ -423,6 +482,26 @@ def workspace_items(reading: Reading) -> list[dict[str, Any]]:
     return []
 
 
+def loan_items(reading: Reading) -> list[dict[str, Any]]:
+    """The person's own Claude-account loan request was declined within
+    `WINDOW` (LOAN-DECLINE). The reason is theirs to read; who declined is
+    not. An open request is the admins' item, and a lent one shows as the
+    account itself, so neither is an item here. Asking again re-opens the
+    request, and the item goes with the declined state."""
+    snap = reading.db.collection(ws.LOAN_REQUESTS).document(
+        ws.personal_tenant_id(reading.email)).get()
+    loan = snap.to_dict() if snap.exists else None
+    if not loan or str(loan.get("principal") or "").lower() != reading.email:
+        return []
+    decision = loan.get("decision") or {}
+    if loan.get("state") != LOAN_DECLINED or not _recent(reading, decision.get("at")):
+        return []
+    return [_item(f"account:loan:{loan.get('workspace_id') or snap.id}:declined:"
+                  f"{loan.get('request_id') or ''}", ACCOUNT, False,
+                  "Your request to borrow a Claude account was declined", decision.get("reason"),
+                  "/setup#claude-account", decision.get("at"))]
+
+
 # --------------------------------------------------------------------------
 # finished: updates, never "needs you"
 # --------------------------------------------------------------------------
@@ -478,6 +557,7 @@ SOURCES: tuple[tuple[str, Source], ...] = (
     ("questions", agent_questions),
     ("github", github_items),
     ("workspace", workspace_items),
+    ("loan", loan_items),
     ("finished", finished_items),
 )
 

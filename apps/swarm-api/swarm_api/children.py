@@ -389,6 +389,17 @@ class ChildService:
     # -- §6.1a: the registration ------------------------------------------
 
     def register_key(self, authorization: str | None, attempt_id: str, raw: bytes) -> dict:
+        """§6.1a. DEPTH-AGNOSTIC ON PURPOSE: a child task's key registers too.
+
+        The attempt key proves "the worker, not the agent" for every signed
+        call, not only for submitting children: the git tools are signed with it
+        (docs/runner-git-tools.md §1.4, lane G2), and the scheduler issues a
+        child the nonce when its profile offers them. So nothing here reads
+        `parent_task_id`. The depth limit is `submit`'s, read from the task
+        document in its own transaction (`ChildDepthExceeded`); a registered key
+        does not lift it. Refusing a child here would quietly take the git tools
+        away from every fan-out lane.
+        """
         self._require_configured()
         body: ChildKeyRegistration = parse_body(ChildKeyRegistration, raw)
         self.authenticate_worker(authorization, body.tenant_id)
@@ -451,7 +462,12 @@ class ChildService:
 
         _apply(self._db.transaction())
         # Nothing secret is returned: not the nonce, the attestation or the registration id.
-        return {"registered": "key" if public_key else "tombstone", "attempt_id": attempt_id}
+        # `search_tool`: whether this worker names the search tool to its agent
+        # (docs/search-tool.md). The flag, and a key to sign the calls with; the
+        # route re-checks both, and the profile, on every call.
+        search_tool = bool(public_key) and bool(getattr(self._settings, "search_tool_enabled", False))
+        return {"registered": "key" if public_key else "tombstone", "attempt_id": attempt_id,
+                "search_tool": search_tool}
 
     # -- §6.1: the submission ---------------------------------------------
 

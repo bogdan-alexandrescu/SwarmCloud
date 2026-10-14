@@ -186,6 +186,12 @@ class CliAgentSpec:
     #: to `REPAIR_MAX_TURNS` repair turns naming what failed (#624, owner
     #: decision 2026-10-05; see `repair_problems`). Needs `resume_flag`.
     repair_checks: bool = False
+    #: After the repair turns, the pre-publish gate: rebase onto the current
+    #: base through the git tools (one conflict turn) and run the repository's
+    #: own checks on what the diff touches (one fix turn); what still fails
+    #: goes into the pull request body (SPEED-D1; `agent_worker.prepublish`).
+    #: Needs `resume_flag` and a checkout.
+    prepublish: bool = False
     #: What follows the flags to tell the CLI its prompt is on stdin. The
     #: prompt is ALWAYS written to the CLI's stdin, never put in its argv
     #: (owner decision 2026-10-06, observer P9; see `run_cli_agent`).
@@ -204,6 +210,12 @@ class CliAgentSpec:
     #: (`codex.latest_session`); claude-code's stream-json names it on every
     #: event, so it needs none.
     session_locator: Callable[[Path, float], str | None] | None = None
+    #: Directories put BEFORE `BASE_PATH` in the CLI's PATH, which its tools
+    #: inherit. Platform constants from the runner module, never caller input.
+    #: claude-code on the browser image puts /opt/venv/bin first, so the
+    #: agent's `python` is the venv holding Playwright and `swarm_browser`
+    #: (BROWSER-ENFORCE, part of #1030; `claude_code.VENV_BIN`).
+    path_prefix: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -1210,6 +1222,20 @@ def run_cli_agent(
         from .. import children as children_mod  # lazy: the runner rarely needs it
 
         prompt = f"{prompt}\n\n{children_mod.prompt_line(spool)}"
+    # REPOSITORY CONTEXT (docs/design/context-quality.md §4.4, lane CTXQ-P).
+    # When the stager put a graph snapshot beside the checkout, the pack is
+    # built from it now -- `work/.swarm-context/CONTEXT.md`, outside the
+    # checkout, so the publish never commits it -- and one line names it.
+    # Nothing staged, no line; a pack that cannot be built is one line saying
+    # so, and the agent starts all the same (`contextpack.prepare` never
+    # raises). Not on a resume: the session already holds the line, and the
+    # file is still where it said.
+    if cwd != ctx.work_dir and not os.environ.get(RESUME_SESSION_ENV, "").strip():
+        from .. import contextpack  # lazy: most starts have nothing staged
+
+        context_line = contextpack.prepare(ctx, cwd)
+        if context_line:
+            prompt = f"{prompt}\n\n{context_line}"
     # A RESUMED SESSION (S13/S14). The worker moved this attempt to another
     # account at a turn boundary and restarted this runner to continue the
     # session it stopped: `--resume <id>` and one short user message, in the
@@ -1296,7 +1322,7 @@ def run_cli_agent(
     stderr_path = ctx.artifacts_dir / files.stderr
 
     env = {
-        "PATH": BASE_PATH,
+        "PATH": ":".join((*spec.path_prefix, BASE_PATH)),
         # HOME IS THE ATTEMPT'S OWN `work/`, NEVER THE CHECKOUT, even when the
         # agent starts in the checkout (#226, owner decision of 2026-09-26).
         # The CLI writes its own state under HOME (`.claude.json`, `.claude/`,
@@ -1719,6 +1745,40 @@ def run_cli_agent(
                 "credential_lines": flagged[:REPAIR_LIST_CAP],
             }
 
+    # THE PRE-PUBLISH GATE (SPEED-D1; `agent_worker.prepublish`). After the
+    # repair turns, so the checks read the tree they left. A task with no
+    # checkout has nothing to publish.
+    prepublish_record: dict[str, Any] | None = None
+    if spec.prepublish and spec.resume_flag and cwd != ctx.work_dir:
+        # The checks' own time counts against the step's budget as the
+        # agent's does: `duration_seconds` sums only the CLI's starts.
+        gate_started, agent_before = time.monotonic(), duration_seconds
+
+        def gate_remaining() -> float:
+            outside = (time.monotonic() - gate_started) - (duration_seconds - agent_before)
+            return limits.timeout_seconds - duration_seconds - max(0.0, outside)
+
+        def resume_for_gate(text: str) -> bool:
+            """One more turn of the session for the gate; False, and nothing
+            started, with no session to resume or too little budget."""
+            session = _session_of(parsed)
+            remaining = gate_remaining()
+            if session is None or remaining < FINISH_MIN_SECONDS:
+                log.warning(
+                    "the pre-publish gate could not resume the session",
+                    why="no_session" if session is None else "budget",
+                    remaining_seconds=round(remaining, 1),
+                )
+                return False
+            log.register_secret(session)
+            resume_pass(session, text, remaining)
+            return True
+
+        prepublish_record = run_prepublish_gate(
+            ctx, cwd=cwd, env=env, credential_env=credential_env, secrets=secrets,
+            log=log, resume=resume_for_gate, remaining=gate_remaining,
+        )
+
     # WHOLE OR NOT AT ALL -- see TRANSCRIPT_MAX_CHARS. The stdout capture above
     # is the canonical transcript and is uploaded either way.
     transcript_skipped: str | None = None
@@ -1790,6 +1850,10 @@ def run_cli_agent(
         "repair_unresolved": unresolved,
         "repair_skipped": repair_skipped,
         "repair_scan_error": repair_scan_error,
+        # The pre-publish gate (SPEED-D1): the rebase, every check that ran
+        # with its status and duration per round, whether the fix or conflict
+        # turn was taken, and what still fails. Never a check's output.
+        "prepublish": prepublish_record,
         # Also in `ctx.report`, which `write_result` merges anyway; stated here
         # so this function's own return value is the whole answer.
         **capture,
@@ -1799,6 +1863,69 @@ def run_cli_agent(
             "stderr_bytes": stderr_bytes,
         },
     }
+
+
+def run_prepublish_gate(
+    ctx: RunnerContext,
+    *,
+    cwd: Path,
+    env: Mapping[str, str],
+    credential_env: str,
+    secrets: Sequence[str],
+    log: StructuredLogger,
+    resume: Callable[[str], bool],
+    remaining: Callable[[], float],
+) -> dict[str, Any]:
+    """The pre-publish gate over the checkout (`agent_worker.prepublish.Gate`).
+
+    The checks run in the agent's environment WITHOUT its provider credential;
+    the rebase goes through the git tools' spool when the worker offered it
+    and named a base (`prepublish.PREPUBLISH_BASE_ENV`). Recorded in
+    `ctx.report` as it goes, so a gate cut short still says what it did.
+    """
+    from .. import prepublish
+    from ..gitmcp import server as gitmcp_server
+
+    base = os.environ.get(prepublish.CLONE_BASE_ENV, "").strip() or None
+    check_env = prepublish.check_env(env, drop=(credential_env,), base=base)
+    rebase_ref = os.environ.get(prepublish.PREPUBLISH_BASE_ENV, "").strip()
+    if rebase_ref:
+        check_env[prepublish.PREPUBLISH_BASE_ENV] = rebase_ref
+    spool = os.environ.get(gitmcp_server.SPOOL_ENV, "").strip()
+    submit: Callable[..., dict[str, Any]] | None = None
+    if spool:
+        def submit(tool: str, arguments: dict[str, Any]) -> dict[str, Any]:
+            return gitmcp_server.submit(Path(spool), tool, arguments,
+                                        wait_seconds=prepublish.REBASE_WAIT_SECONDS)
+
+    # What a resumed turn raises -- a rate limit, a credential refusal, a
+    # kill -- ends the step exactly as it would after any turn; only the
+    # gate's own failures are swallowed.
+    from_turn: list[BaseException] = []
+
+    def turn(text: str) -> bool:
+        try:
+            return resume(text)
+        except BaseException as exc:
+            from_turn.append(exc)
+            raise
+
+    record: dict[str, Any] = {}
+    ctx.report["prepublish"] = record
+    gate = prepublish.Gate(
+        repo=Path(cwd), env=check_env, secrets=secrets, resume=turn, remaining=remaining,
+        log=log, artifacts_dir=Path(ctx.artifacts_dir), submit=submit,
+        python=sys.executable or "python3", record=record,
+    )
+    try:
+        return gate.run()
+    except Exception as exc:  # the gate never costs the step its result
+        if from_turn and exc is from_turn[-1]:
+            raise
+        log.error("the pre-publish gate failed; publishing without it",
+                  error=type(exc).__name__)
+        record["error"] = type(exc).__name__
+        return record
 
 
 def _parse_cli_output(raw_stdout: str) -> Any:

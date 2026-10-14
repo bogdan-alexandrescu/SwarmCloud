@@ -15,6 +15,8 @@ with a record:
               or by the acting admin's own personal tenant. A lend to a
               workspace that is not `ready` is recorded PENDING and applied
               by the sweep once it is (LOAN-NEW, below)
+    decline   close a person's open loan request without lending, with an
+              optional reason they are shown (LOAN-DECLINE, below)
     sweep     publish again an `approved` record nobody claimed in 10 minutes,
               and report every `approved` record nothing is advancing
               (`workspace_stuck`), even when publishing is off
@@ -49,6 +51,19 @@ the broker answered removes it, closes the loan request and writes `lend` --
 so a loan is either pending, or lent and audited, never half of each. A grant
 that fails on a READY workspace is an error naming the member and the
 broker's reason (`LOAN_GRANT_FAILED`): there, the member should exist.
+
+A LOAN REQUEST MAY BE DECLINED (LOAN-DECLINE, owner 2026-10-12, part of
+#1206). Before, a request closed only when an account was lent against it, so
+one an admin would not grant sat in "Waiting for you" for ever. `decline_loan`
+moves an open (`requested`) request to `declined`, with `{verdict, by, at,
+reason}` in its decision and a `loan_declined` audit entry, in one
+transaction; anything else is `LOAN_REQUEST_NOT_OPEN` (409), so a declined or
+lent request is not declined again. The reason is optional and short, and it
+is shown to the person (the notification feed's `account` item); the audit
+keeps its length, as a denial's does. The person may ask again: a new request
+re-opens the document as `requested` and keeps the declined one in `history`
+(`workspaces.request_loan`). Declining does not touch `pending_loans`: a
+pending loan is a lending already decided, and only a reclaim cancels it.
 
 swarm-api NEVER WRITES `ready`. Nothing here does: the job's final check is
 the only writer (§1.2).
@@ -161,6 +176,11 @@ AUTO_APPROVE_REASON = "requester is an admin"
 
 #: The loan request's state once an admin has lent an account against it.
 LOAN_LENT = "lent"
+#: ... and once an admin has declined it (LOAN-DECLINE). The person may ask again.
+LOAN_DECLINED = "declined"
+#: A decline's reason is optional and SHORT: one line the person reads in the
+#: notification feed, not a denial's paragraph (MAX_REASON).
+MAX_LOAN_REASON = 200
 
 #: Loans an admin made to a workspace that was not `ready` yet, one document
 #: per tenant: `{tenant_id, workspace_id, loans: [{account_id, owner_tenant,
@@ -203,6 +223,12 @@ class AccountNotLendable(NotFound):
 
 class AccountIsTheirs(Conflict):
     code = "ACCOUNT_IS_THEIRS"
+
+
+class LoanRequestNotOpen(Conflict):
+    """There is no open loan request to decline: none was made, or it was
+    lent against or declined already (LOAN-DECLINE)."""
+    code = "LOAN_REQUEST_NOT_OPEN"
 
 
 class LoanGrantFailed(ValidationFailed):
@@ -919,6 +945,40 @@ class People:
 
         _apply(transaction)
 
+    def decline_loan(self, workspace_id: str, *, by: str,
+                     reason: str | None = None) -> dict[str, Any]:
+        """requested -> declined, for the person behind `workspace_id`
+        (LOAN-DECLINE). The reason is optional, at most `MAX_LOAN_REASON`
+        characters, and shown to the person; blank is none. Refused with
+        `LOAN_REQUEST_NOT_OPEN` when no request is open."""
+        by = by.strip().lower()
+        text = " ".join((reason or "").split()) or None
+        if text is not None and len(text) > MAX_LOAN_REASON:
+            raise ValidationFailed(
+                f"a decline's reason is at most {MAX_LOAN_REASON} characters")
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            _, record = self._resolve(txn, workspace_id)
+            ref = self._db.collection(ws.LOAN_REQUESTS).document(str(record["tenant_id"]))
+            snap = _snapshot(txn.get(ref))
+            loan = (snap.to_dict() or {}) if snap.exists else {}
+            state = loan.get("state")
+            if state != ws.REQUESTED:
+                raise LoanRequestNotOpen(
+                    f"workspace {workspace_id} has no open loan request to decline"
+                    + (f"; its last one is {state}" if state else ""),
+                    detail={"workspace_id": workspace_id, "state": state})
+            txn.update(ref, {"state": LOAN_DECLINED, "decision": {
+                "verdict": LOAN_DECLINED, "by": by, "at": self._now(), "reason": text}})
+            self._audit(txn, "loan_declined", workspace_id, by, {
+                "request_id": loan.get("request_id"), "reason_length": len(text or "")})
+
+        _apply(transaction)
+        log.info("loan request declined workspace=%s", workspace_id)
+        return {"workspace_id": workspace_id, "state": LOAN_DECLINED, "reason": text}
+
     def apply_pending_loans(self, pool: Any) -> dict[str, int]:
         """The sweep's second half: every pending loan of a `ready`
         workspace is lent through the same broker call a direct lend makes.
@@ -1068,10 +1128,14 @@ class People:
             "teams": list(person.get("teams") or []),
             "github": self._github(email),
             "workspace": self._admin_view(record),
-            "claude_account": self._claude_account(tenant_id, tenant),
+            "claude_account": self._claude_account(tenant_id, tenant, store=store),
+            # A decision's time and reason, never its `by`: the audit names
+            # the admin. The reason is the one the person is shown.
             "loan_request": None if not loan_data else {
                 "state": loan_data.get("state"),
                 "requested_at": _iso(loan_data.get("requested_at")),
+                "decided_at": _iso((loan_data.get("decision") or {}).get("at")),
+                "reason": (loan_data.get("decision") or {}).get("reason"),
             },
             # Loans recorded while the workspace was not ready (LOAN-NEW).
             # Never `by`, like the decision: the audit names the admin.
@@ -1118,21 +1182,43 @@ class People:
             return "expired"
         return "none"
 
-    def _claude_account(self, tenant_id: str, tenant: Tenant | None) -> dict[str, Any]:
+    def _claude_account(self, tenant_id: str, tenant: Tenant | None, *,
+                        store: Any) -> dict[str, Any]:
         """§5.1 (3), with who lent it: `own`, `lent`, `provider_key` or
-        `none`. The counts are `Workspaces.claude_accounts`'s rule."""
+        `none`. The counts are `Workspaces.claude_accounts`'s rule.
+
+        `lent_accounts` names WHICH accounts are lent (PEOPLE-LOAN-VIEW, owner
+        2026-10-13): `lent_by` is only the owner tenants, so the console said
+        "lent by eng" and an admin could not see what they had lent. Each is
+        the account's id, label, owner and state, and the owner's display
+        name; never the document as it is, which names its secret."""
         counts = ws.Workspaces(self._db, now=self._now, gate=False).claude_accounts(
             tenant_id, tenant)
-        lenders: list[str] = []
+        lent: list[dict[str, Any]] = []
         if counts["lent"]:
             query = self._db.collection(ws.ACCOUNTS).where(
                 filter=FieldFilter("lend_to", "array_contains", tenant_id)).limit(20)
-            lenders = sorted({str((s.to_dict() or {}).get("owner_tenant") or "")
-                              for s in query.stream()} - {"", tenant_id})
+            names: dict[str, str] = {}
+            for snap in query.stream():
+                data = snap.to_dict() or {}
+                owner = str(data.get("owner_tenant") or "")
+                if not owner or owner == tenant_id:
+                    continue
+                if data.get("provider", ws.CLAUDE_PROVIDER) != ws.CLAUDE_PROVIDER:
+                    continue
+                if owner not in names:
+                    owner_tenant = store.get_tenant(owner)
+                    names[owner] = getattr(owner_tenant, "display_name", None) or owner
+                lent.append({"account_id": str(data.get("account_id") or snap.id),
+                             "label": data.get("label"), "owner_tenant": owner,
+                             "owner_name": names[owner], "state": data.get("state")})
+            lent.sort(key=lambda a: (a["owner_tenant"], a["account_id"]))
+        lenders = sorted({a["owner_tenant"] for a in lent})
         source = "own" if counts["own"] else "lent" if counts["lent"] else \
             "provider_key" if counts["provider_key"] else "none"
         return {"source": source, "own": counts["own"], "lent": counts["lent"],
-                "lent_by": lenders, "provider_key": counts["provider_key"]}
+                "lent_by": lenders, "lent_accounts": lent,
+                "provider_key": counts["provider_key"]}
 
     def _admin_view(self, record: Mapping[str, Any] | None) -> dict[str, Any]:
         """What an admin is shown of a record: the person's view (W1's

@@ -6,6 +6,7 @@
 #   scripts/image-sizes.sh [--image NAME] [--since YYYY-MM-DD] [--layers]
 #   scripts/image-sizes.sh [--image NAME] --diff OLD NEW
 #   scripts/image-sizes.sh --manifest build/deployed-images-<env>.json
+#   scripts/image-sizes.sh --duplicate-layers build/images-<env>.json
 #
 #   --image NAME   the image (default agent-runtime-base); one path segment of
 #                  ${IMAGE_REPO}, e.g. agent-runtime-indexer
@@ -25,6 +26,15 @@
 #                  first release says "no earlier release", never +0.0. A row
 #                  that cannot be measured says so, and the script exits 1
 #                  after the other rows. Not combined with the options above.
+#                  An image that repeats a layer is named under the table, with
+#                  the layer, and the script exits 1 after every row too
+#   --duplicate-layers FILE  the release's gate: every image FILE names (a
+#                  build record, build/images-<env>.json, or a deployed-images
+#                  record), not only the runners, checked for a layer digest
+#                  its linux/amd64 manifest lists twice. Exits 1 naming each
+#                  image and layer, or any image it could not read: it fails
+#                  closed. Reads one manifest per image, nothing else. Not
+#                  combined with any other option
 #
 # WHY IT EXISTS (#625). Claude-code container start on Cloud Run Jobs went from
 # a 71 s p50 on 2026-09-24 to ~115 s on 09-30..10-02 and 166-168 s on
@@ -36,6 +46,19 @@
 # `--manifest` is the same measurement taken by every promote
 # (.github/actions/release-promote), so each release records its own size and
 # a jump is visible without anyone running the bisect.
+#
+# WHY A REPEATED LAYER FAILS IT (IMG-STREAM, owner decision 2026-10-13,
+# docs/browser-startup-speed.md §2.4 and §9). GKE image streaming, which
+# Autopilot uses for every eligible image, does not support an image with a
+# duplicate layer, and such an image is pulled whole before its pod starts. The
+# browser image repeated the empty layer sha256:4f4fb700ef54... (its own
+# `WORKDIR /workspace` restated the base's) and its cold pull took 42 s of an
+# 88 s start. Two check-only RUNs that finish in the same second write the
+# same tiny layer too (BuildKit leaves the etc/ directory entry, mtime and
+# all): 2 of the 30 newest base digests and 7 of 30 indexer digests did, read
+# 2026-10-13. Nothing in a Dockerfile review sees either, so the registry is
+# read: `--duplicate-layers` runs in .github/actions/release-images before the
+# scanned record reaches the promotion, and refuses the release.
 #
 # WHAT IT MEASURES. compressed_mb is the sum of the linux/amd64 manifest's
 # layer sizes: the gzip bytes a node pulls, which is what an image's pull time
@@ -68,6 +91,7 @@ LAYERS=0
 DIFF_OLD=""
 DIFF_NEW=""
 MANIFEST=""
+DUPLICATES=""
 SINGLE_IMAGE_OPTION=0
 
 while [[ $# -gt 0 ]]; do
@@ -78,12 +102,17 @@ while [[ $# -gt 0 ]]; do
     --diff)   [[ $# -ge 3 ]] || die "--diff needs OLD and NEW (a tag or a sha256 digest each)"
               DIFF_OLD="$2"; DIFF_NEW="$3"; SINGLE_IMAGE_OPTION=1; shift 3 ;;
     --manifest) [[ $# -ge 2 ]] || die "--manifest needs a deployed-images record"; MANIFEST="$2"; shift 2 ;;
-    -h|--help) sed -n '2,58p' "$0"; exit 0 ;;
+    --duplicate-layers) [[ $# -ge 2 ]] || die "--duplicate-layers needs a build or deployed-images record"
+                        DUPLICATES="$2"; shift 2 ;;
+    -h|--help) sed -n "2,$(awk '!/^#/ { print NR - 1; exit }' "$0")p" "$0"; exit 0 ;;
     *) die "unknown argument: $1 (see --help)" ;;
   esac
 done
 if [[ -n "${MANIFEST}" && "${SINGLE_IMAGE_OPTION}" -eq 1 ]]; then
   die "--manifest measures every runner image the record names; it takes no --image, --since, --layers or --diff"
+fi
+if [[ -n "${DUPLICATES}" && ( "${SINGLE_IMAGE_OPTION}" -eq 1 || -n "${MANIFEST}" ) ]]; then
+  die "--duplicate-layers checks every image the record names; it takes no other option"
 fi
 
 # One path segment of this environment's repository, so nothing here can be
@@ -188,6 +217,28 @@ print_layers() {
       done
 }
 
+# repeated_layers NAME DIGEST MANIFEST -- one line per layer digest MANIFEST
+# lists more than once: NAME, DIGEST, the layer and its positions (counted from
+# 0, as `--layers` and a manifest's .layers[] count). Nothing when none repeats.
+repeated_layers() {
+  jq -r --arg name "$1" --arg digest "$2" '
+    .layers | length as $count
+    | [ to_entries[] | { layer: .value.digest, at: .key } ] | group_by(.layer) | map(select(length > 1))
+    | .[] | [$name, $digest, .[0].layer, (map(.at | tostring) | join(", ")), ($count | tostring)] | @tsv' "$3"
+}
+
+# say_repeated FILE -- each repeated_layers line of FILE as one sentence on
+# stdout and one `fail` line on stderr, so the summary and the log both name
+# the image and the layer.
+say_repeated() {
+  local name digest layer at count
+  while IFS=$'\t' read -r name digest layer at count; do
+    printf "**%s repeats a layer**: \`%s\` is \`%s\` at layers %s of %s, so GKE image streaming does not stream it.\n" \
+      "${name}" "${digest}" "${layer}" "${at}" "${count}"
+    err "${name}@${digest} repeats layer ${layer} at layers ${at} of ${count}: GKE image streaming does not stream an image with a duplicate layer, so its pods pull it whole"
+  done <"$1"
+}
+
 # resolve REF -- the digest a tag or digest names among the listed releases.
 resolve() {
   local ref="$1" digest
@@ -224,6 +275,8 @@ measure_row() {
   IFS=$'\t' read -r previous previous_created <"${WORK}/previous.tsv" || true
   manifest_of "${digest}" "${WORK}/manifest.json"
   total="$(jq '[.layers[].size] | add // 0' "${WORK}/manifest.json")"
+  # A file, not a variable: this runs in a subshell per row.
+  repeated_layers "${name}" "${digest}" "${WORK}/manifest.json" >>"${WORK}/repeated.tsv"
   if [[ -n "${previous:-}" ]]; then
     manifest_of "${previous}" "${WORK}/manifest.json"
     previous_total="$(jq '[.layers[].size] | add // 0' "${WORK}/manifest.json")"
@@ -234,6 +287,65 @@ measure_row() {
       "$(mb "${total}")" "${name}" "${IMAGE_REPO}"
   fi
 }
+
+# --- --duplicate-layers: the release's gate -----------------------------------
+#
+# check_image NAME IMAGE DIGEST -- repeated_layers for one image of the record,
+# or die naming why it could not be read. Run in a subshell per image, so one
+# unreadable image does not stop the others from being checked.
+check_image() {
+  local name="$1" image="$2" digest="$3"
+  [[ "${name}" =~ ^[a-z0-9][a-z0-9._-]*$ ]] || die "${name}: not one image name"
+  [[ "${digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "${name}: the record's digest is not a sha256 digest"
+  [[ "${image}" == "${IMAGE_REPO}/${name}" ]] \
+    || die "${name}: the record names ${image}, not ${IMAGE_REPO}/${name}"
+  IMAGE="${name}"
+  REGISTRY_URL="https://${IMAGE_HOST}/v2/${PROJECT_ID}/${ARTIFACT_REGISTRY}/${IMAGE}"
+  manifest_of "${digest}" "${WORK}/manifest.json"
+  repeated_layers "${name}" "${digest}" "${WORK}/manifest.json"
+}
+
+if [[ -n "${DUPLICATES}" ]]; then
+  [[ -r "${DUPLICATES}" ]] || die "cannot read ${DUPLICATES}"
+  jq -r '.images | if type == "array" then . else error("no images list") end
+         | .[] | [(.name // ""), (.image // ""), (.digest // "")] | @tsv' "${DUPLICATES}" >"${WORK}/images.tsv" 2>/dev/null \
+    || die "${DUPLICATES} is not a build or deployed-images record (no images list)"
+  images="$(wc -l <"${WORK}/images.tsv" | tr -d ' ')"
+  # A gate over nothing has passed nothing.
+  [[ "${images}" -gt 0 ]] || die "${DUPLICATES} names no image, so no image was checked"
+  access_token >/dev/null
+  : >"${WORK}/repeated.tsv"
+  visited=0
+  unread=0
+  unread_names=""
+  while IFS=$'\t' read -r name image digest; do
+    visited=$((visited + 1))
+    # </dev/null: nothing in the check reads the record this loop is reading.
+    if ( check_image "${name}" "${image}" "${digest}" ) </dev/null >"${WORK}/image.tsv" 2>"${WORK}/image.err"; then
+      redact <"${WORK}/image.err" >&2
+      if [[ -s "${WORK}/image.tsv" ]]; then
+        cat "${WORK}/image.tsv" >>"${WORK}/repeated.tsv"
+      else
+        ok "${name}: no layer repeated"
+      fi
+      continue
+    fi
+    redact <"${WORK}/image.err" >&2
+    unread=$((unread + 1))
+    unread_names="${unread_names:+${unread_names}, }${name:-?}"
+  done <"${WORK}/images.tsv"
+  [[ "${visited}" -eq "${images}" ]] || die "the record names ${images} images but ${visited} were visited"
+  say_repeated "${WORK}/repeated.tsv" >/dev/null
+  repeated_names="$(cut -f1 "${WORK}/repeated.tsv" | uniq | paste -sd, - | sed 's/,/, /g')"
+  repeated="$(cut -f1 "${WORK}/repeated.tsv" | uniq | wc -l | tr -d ' ')"
+  [[ "${unread}" -eq 0 ]] || err "${unread} of ${images} images not checked (unreadable, so not passed): ${unread_names}"
+  [[ "${repeated}" -eq 0 ]] || err "${repeated} of ${images} images repeat a layer: ${repeated_names}"
+  if [[ "${unread}" -gt 0 || "${repeated}" -gt 0 ]]; then
+    die "refused: GKE streams only an image with no duplicate layer, and every image is checked (docs/browser-startup-speed.md §2.4)"
+  fi
+  info "${visited} of ${images} images checked in ${IMAGE_REPO}: no layer repeated"
+  exit 0
+fi
 
 if [[ -n "${MANIFEST}" ]]; then
   [[ -r "${MANIFEST}" ]] || die "cannot read ${MANIFEST}"
@@ -254,6 +366,7 @@ if [[ -n "${MANIFEST}" ]]; then
   printf 'compressed_mb is the linux/amd64 manifest'"'"'s layer sum, the bytes a node pulls; delta_mb is from the newest earlier release of the image (#625, scripts/image-sizes.sh).\n\n'
   printf '| image | digest | compressed_mb | delta_mb | against |\n|---|---|---|---|---|\n'
   access_token >/dev/null
+  : >"${WORK}/repeated.tsv"
   visited=0
   failed=0
   failed_names=""
@@ -274,9 +387,16 @@ if [[ -n "${MANIFEST}" ]]; then
   done <"${WORK}/runners.tsv"
   # The count, so a table of one row cannot read as all of them.
   [[ "${visited}" -eq "${runners}" ]] || die "the record names ${runners} runner images but ${visited} were visited"
+  repeated="$(cut -f1 "${WORK}/repeated.tsv" | uniq | wc -l | tr -d ' ')"
+  if [[ "${repeated}" -gt 0 ]]; then
+    printf '\n'
+    say_repeated "${WORK}/repeated.tsv"
+    err "${repeated} of ${runners} runner images repeat a layer: $(cut -f1 "${WORK}/repeated.tsv" | uniq | paste -sd, - | sed 's/,/, /g')"
+  fi
   if [[ "${failed}" -gt 0 ]]; then
     die "${failed} of ${runners} runner images not measured: ${failed_names}"
   fi
+  [[ "${repeated}" -eq 0 ]] || die "a runner image GKE cannot stream was promoted (docs/browser-startup-speed.md §2.4)"
   info "${runners} runner images measured from ${IMAGE_REPO}"
   exit 0
 fi

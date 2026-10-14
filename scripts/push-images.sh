@@ -59,21 +59,27 @@ set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# The scan policy, shared with the pull request's scan (scan-image-layout.sh).
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/image-scan.sh
+source "${REPO_ROOT}/scripts/lib/image-scan.sh"
 
-# The same eleven build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e). This list had six -- no swarm-ui, no
+# The same thirteen build-images.sh builds (agent-runtime-indexer since #625, workspace-apply since #847, swarm-live since LB-L8e,
+# agent-runtime-base-nocodex -- the codex-less base agent-runtime-browser is built FROM -- since BROWSER-NO-CODEX, swarm-egress since
+# EGRESS-BUILD: its promoted digest is the image_refs entry egress.tf renders swarm_egress_manifest from). This list had six -- no swarm-ui, no
 # swarm-verify -- and it is the fallback whenever build/images-<env>.json is
 # absent. That used to cost only an unpromoted image; now terraform deploys
 # every image by digest from the manifest this writes and refuses to plan one
 # with no digest, so a promotion that silently skips two images is a deploy
 # that fails naming them. Better to promote them.
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live workspace-apply)
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live swarm-egress workspace-apply)
 TARGETS=()
 TAG=""
 CHANNEL="${ENVIRONMENT}"
 SCAN="${SCAN_IMAGES:-1}"
 SCAN_ONLY=0
 NO_SCAN_FLAG=0
-SEVERITY="${TRIVY_SEVERITY:-HIGH,CRITICAL}"
+SEVERITY="${IMAGE_SCAN_SEVERITY}"
 FROM_MANIFEST=""
 
 while [[ $# -gt 0 ]]; do
@@ -328,17 +334,11 @@ if [[ "${SCAN}" -eq 1 ]]; then
   # --ignorefile carries the accepted-with-an-expiry list. Entries there are
   # dated, so one that outlives its date fails this scan again rather than
   # quietly becoming permanent.
-  IGNORE_ARGS=()
-  if [[ -f "${REPO_ROOT}/.trivyignore.yaml" ]]; then
-    IGNORE_ARGS=(--ignorefile "${REPO_ROOT}/.trivyignore.yaml")
-  fi
+  image_scan_args
   for ((i = 0; i < ${#R_NAME[@]}; i++)); do
     target="${R_NAME[$i]}"
     step "Scan ${target} (${SEVERITY})"
-    if ! "${TRIVY_BIN}" image --quiet --scanners vuln \
-         --severity "${SEVERITY}" --exit-code 1 --ignore-unfixed \
-         ${IGNORE_ARGS[@]+"${IGNORE_ARGS[@]}"} \
-         "${R_IMAGE[$i]}@${R_DIGEST[$i]}" 2>&1 | redact; then
+    if ! "${TRIVY_BIN}" "${IMAGE_SCAN_ARGS[@]}" "${R_IMAGE[$i]}@${R_DIGEST[$i]}" 2>&1 | redact; then
       err "${target}: trivy found unfixed-excluded ${SEVERITY} vulnerabilities; refusing to promote"
       refuse "${target}" "trivy: fixable ${SEVERITY} findings"
       continue

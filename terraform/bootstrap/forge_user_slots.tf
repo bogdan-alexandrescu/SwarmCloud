@@ -111,8 +111,9 @@ variable "enable_forge_user_slots" {
     the user-slot grants (forge_user_slots.tf): swarm-api creates GitHub user
     slots at onboarding, refreshes them, and disables and re-enables their
     versions on disconnect and reconnect; each tenant's worker reads its own
-    tenant's base slots. Owner decisions D2, D3 and D7 on #780, and OB3's
-    disable of 2026-10-07. The accounts must
+    tenant's base slots; swarm-api reads repository (-git-r-) slots for the
+    runner git tools it executes (#1225). Owner decisions D2, D3 and D7 on
+    #780, OB3's disable of 2026-10-07, and Q4 on #1225. The accounts must
     exist (terraform/infra creates swarm-api, register-tenant.sh each worker).
   EOT
   type        = bool
@@ -354,4 +355,72 @@ resource "google_project_iam_member" "forge_personal_slots" {
 
   # The version manager is this file's custom role.
   depends_on = [google_project_iam_custom_role.forge_slot_version_manager]
+}
+
+# ---------------------------------------------------------------------------
+# REPOSITORY SLOTS, READ BY SWARM-API (docs/runner-git-tools.md §2.1, lane G4
+# of #1225)
+# ---------------------------------------------------------------------------
+#
+# The runner git tools run in swarm-api (owner decision Q4 = A, 2026-10-13):
+# a runner's agent shares a uid with its worker, so the token a mid-task push
+# or fetch uses is read and held only in swarm-api's process. The tools use
+# exactly the slot the task's signed forge_credential names, and one of those
+# is a repository slot, `swarm-tenant-<tenant>-git-r-<16 hex>`
+# (docs/git-tokens.md §2). swarm-api already reads the tenant's `-git` (the
+# per-secret binding in terraform/modules/secret_manager) and its `-git-u-`
+# slots (forge_refresh_reader above, forge_personal_slots below that); until
+# this, no grant reached a `-git-r-` slot, and forge.grant_hint said so.
+#
+# Read only: secretAccessor, nothing that creates, versions or disables. A
+# repository slot is stored by `scripts/create-secrets.sh --stdin`, a human
+# path, and has no -refresh twin. The same prefix narrowing as the user slots,
+# in the same full resource-name form.
+#
+# No nested-tenant precondition, unlike forge_slot_reader: there one tenant's
+# WORKER could read another tenant's slots. Here every binding is swarm-api's,
+# which reads every tenant's -git and -git-u- slots already, so a prefix that
+# also matched another tenant's names would give swarm-api nothing it lacks.
+#
+# Same gate as the user slots: these are swarm-api's forge-slot reads, and an
+# owner bootstrap apply makes them all at once.
+
+locals {
+  forge_repo_slot_conditions = {
+    for t in local.forge_user_slot_tenants :
+    t => "resource.name.startsWith(\"projects/${local.forge_project_number}/secrets/swarm-tenant-${t}-git-r-\")"
+  }
+
+  # A personal tenant's repository slots, recognised as forge_personal_any
+  # recognises its user slots: the `swarm-tenant-u-` prefix AND a `-git-r-`
+  # after the tenant, in either resource-name form.
+  forge_personal_repo_any = "resource.name.startsWith(\"${local.forge_personal_prefix}\") && resource.name.extract(\"/secrets/swarm-tenant-u-{tenant}-git-r-\") != \"\""
+}
+
+resource "google_project_iam_member" "forge_repo_slot_reader" {
+  for_each = local.forge_repo_slot_conditions
+
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = local.forge_api_member
+
+  condition {
+    title       = "swarm forge repository slots api ${each.key}"
+    description = "managed-by=swarm-terraform; swarm-api reads tenant ${each.key}'s GitHub repository slots for the runner git tools it executes (#1225, docs/runner-git-tools.md §2.1)."
+    expression  = each.value
+  }
+}
+
+resource "google_project_iam_member" "forge_personal_repo_slot_reader" {
+  count = local.forge_personal_slots_on ? 1 : 0
+
+  project = var.project_id
+  role    = "roles/secretmanager.secretAccessor"
+  member  = local.forge_api_member
+
+  condition {
+    title       = "swarm forge repository slots personal"
+    description = "managed-by=swarm-terraform; swarm-api reads personal tenants' GitHub repository slots for the runner git tools it executes (#1225, docs/runner-git-tools.md §2.1)."
+    expression  = local.forge_personal_repo_any
+  }
 }

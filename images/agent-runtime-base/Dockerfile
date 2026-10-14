@@ -2,6 +2,10 @@
 #
 # agent-runtime-base -- the image every non-browser runner profile runs in.
 #
+# It is built twice. `--build-arg INSTALL_CODEX=0` makes
+# agent-runtime-base-nocodex, the base agent-runtime-browser is built FROM
+# (scripts/build-images.sh; BROWSER-NO-CODEX, owner decision 2026-10-13).
+#
 # Build from the REPOSITORY ROOT, because the worker and the frozen contract
 # package are both part of the image:
 #
@@ -74,7 +78,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1
 
-RUN apt-get update \
+# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
+# main build and release), so the upgrade below is never an older build's
+# (owner decision 2026-10-14).
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update \
  && apt-get upgrade --no-install-recommends -y \
  && apt-get install --no-install-recommends -y \
       build-essential \
@@ -185,6 +194,14 @@ ARG INSTALL_AGENT_CLIS=1
 # as unrecognized_model, so every claude-code task failed (task_2ad43c35a18448fca83b).
 ARG CLAUDE_CODE_VERSION=2.1.283
 ARG CODEX_VERSION=0.154.0
+# 1 (the default, and every runner profile but the browser's): codex is
+# installed beside Claude Code. 0: the same image without it -- the build
+# `agent-runtime-base-nocodex` that agent-runtime-browser is built FROM
+# (BROWSER-NO-CODEX, owner decision 2026-10-13, docs/browser-startup-speed.md
+# §2.3). codex is 129.7 MB as a layer and `claude-code-browser` never runs it;
+# a derived image cannot drop an inherited layer (deleting adds a whiteout and
+# the bytes are still pulled), so it has to be left out HERE, by this argument.
+ARG INSTALL_CODEX=1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -208,7 +225,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # CVEs, not a safe one. `install` alone never touches a package that is already
 # present, which is how libpcre2-8-0 sat at 10.42-1 with a fixed 10.42-1+deb12u1
 # available and failed the promote scan on every image at once.
-RUN apt-get update \
+# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
+# main build and release), so the upgrade below is never an older build's
+# (owner decision 2026-10-14).
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update \
  && apt-get upgrade --no-install-recommends -y \
  && apt-get install --no-install-recommends -y \
       bash \
@@ -362,13 +384,13 @@ RUN BE_DIR=/usr/local/lib/node_modules/npm/node_modules/brace-expansion \
  && UNDICI_TGZ="/tmp/undici-${UNDICI_VERSION}.tgz" \
  && TAR_TGZ="/tmp/tar-${TAR_VERSION}.tgz" \
  && IPADDR_TGZ="/tmp/ip-address-${IP_ADDRESS_VERSION}.tgz" \
- && curl -fsSL -o "${BE_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${BE_TGZ}" \
       "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${BRACE_EXPANSION_VERSION}.tgz" \
- && curl -fsSL -o "${UNDICI_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${UNDICI_TGZ}" \
       "https://registry.npmjs.org/undici/-/undici-${UNDICI_VERSION}.tgz" \
- && curl -fsSL -o "${TAR_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${TAR_TGZ}" \
       "https://registry.npmjs.org/tar/-/tar-${TAR_VERSION}.tgz" \
- && curl -fsSL -o "${IPADDR_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${IPADDR_TGZ}" \
       "https://registry.npmjs.org/ip-address/-/ip-address-${IP_ADDRESS_VERSION}.tgz" \
  && echo "${BRACE_EXPANSION_SHA512}  ${BE_TGZ}" | sha512sum -c - \
  && echo "${UNDICI_SHA512}  ${UNDICI_TGZ}" | sha512sum -c - \
@@ -484,6 +506,12 @@ COPY --from=builder /opt/venv /opt/venv
 # bash with pipefail from here on: every `echo <sha> <file> | sha256sum -c -`
 # below is a pipe, and so is the smoke step's output, and a pipe whose first
 # command failed must not pass on the last one's exit status.
+# EVERY DOWNLOAD HERE RETRIES (2026-10-14, PR 1281's flake table): `curl -fsSL
+# --retry 5 --retry-all-errors --retry-connrefused`, 1+2+4+8+16 s of backoff at
+# most. --retry-all-errors is what makes an HTTP error (curl's exit 22, which
+# failed one main build of this image in run 38245452463) retry at all. A
+# file that is really gone still fails, ~31 s later, and every download is
+# still checked against its pinned checksum after it lands.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Google Cloud: gcloud, the GKE auth plugin, kubectl.
@@ -537,11 +565,11 @@ ARG KUBECTL_SHA256=33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b4302486
 # ldconfig and start-stop-daemon, which live there and which the runtime PATH
 # deliberately omits; /usr/local/bin is there for the postinst's python3.
 RUN mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/google-cloud-cli.deb \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/google-cloud-cli.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli_${GCLOUD_VERSION}-0_amd64_${GCLOUD_POOL_ID}.deb" \
- && curl -fsSL -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
- && curl -fsSL -o /tmp/toolbox/kubectl \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/kubectl \
       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
  && echo "${GCLOUD_SHA256}  /tmp/toolbox/google-cloud-cli.deb" | sha256sum -c - \
  && echo "${GKE_PLUGIN_SHA256}  /tmp/toolbox/gke-gcloud-auth-plugin.deb" | sha256sum -c - \
@@ -587,9 +615,9 @@ ARG DOCKER_CLI_VERSION=29.8.2
 ARG DOCKER_CLI_SHA256=ff99352d3b95ebaaf94bcdf65026714a1a72a44a999a9fc83f1386c3f30f33d6
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
     mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/gh.tar.gz \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gh.tar.gz \
       "file:///tmp/tool-mirror/github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
- && curl -fsSL -o /tmp/toolbox/docker-ce-cli.deb \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/docker-ce-cli.deb \
       "https://download.docker.com/linux/debian/dists/bookworm/pool/stable/amd64/docker-ce-cli_${DOCKER_CLI_VERSION}-1~debian.12~bookworm_amd64.deb" \
  && echo "${GH_SHA256}  /tmp/toolbox/gh.tar.gz" | sha256sum -c - \
  && echo "${DOCKER_CLI_SHA256}  /tmp/toolbox/docker-ce-cli.deb" | sha256sum -c - \
@@ -663,20 +691,20 @@ ARG TFLINT_VERSION=0.64.0
 ARG TFLINT_SHA256=cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
     mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/terraform.zip \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/terraform.zip \
       "file:///tmp/tool-mirror/releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
  && echo "${TERRAFORM_SHA256}  /tmp/toolbox/terraform.zip" | sha256sum -c - \
  && unzip -q /tmp/toolbox/terraform.zip terraform -d /tmp/toolbox \
  && install -o root -g root -m 0755 /tmp/toolbox/terraform /usr/local/bin/terraform \
  && if [ "${INSTALL_TOFU}" = "1" ]; then \
-      curl -fsSL -o /tmp/toolbox/tofu.tar.gz \
+      curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/tofu.tar.gz \
         "file:///tmp/tool-mirror/github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.tar.gz" \
       && echo "${TOFU_SHA256}  /tmp/toolbox/tofu.tar.gz" | sha256sum -c - \
       && tar -xzf /tmp/toolbox/tofu.tar.gz -C /tmp/toolbox tofu \
       && install -o root -g root -m 0755 /tmp/toolbox/tofu /usr/local/bin/tofu ; \
     fi \
  && if [ "${INSTALL_TFLINT}" = "1" ]; then \
-      curl -fsSL -o /tmp/toolbox/tflint.zip \
+      curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/tflint.zip \
         "file:///tmp/tool-mirror/github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip" \
       && echo "${TFLINT_SHA256}  /tmp/toolbox/tflint.zip" | sha256sum -c - \
       && unzip -q /tmp/toolbox/tflint.zip tflint -d /tmp/toolbox \
@@ -707,13 +735,13 @@ ARG TRIVY_VERSION=0.75.0
 ARG TRIVY_SHA256=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
     mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/shellcheck.tar.gz \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/shellcheck.tar.gz \
       "file:///tmp/tool-mirror/github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz" \
  && echo "${SHELLCHECK_SHA256}  /tmp/toolbox/shellcheck.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/toolbox/shellcheck.tar.gz -C /tmp/toolbox --strip-components=1 \
       "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
  && install -o root -g root -m 0755 /tmp/toolbox/shellcheck /usr/local/bin/shellcheck \
- && curl -fsSL -o /tmp/toolbox/trivy.tar.gz \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/trivy.tar.gz \
       "file:///tmp/tool-mirror/github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
  && echo "${TRIVY_SHA256}  /tmp/toolbox/trivy.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/toolbox/trivy.tar.gz -C /tmp/toolbox trivy \
@@ -742,11 +770,18 @@ RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin UV_PYTHON_DOWNLOADS
 # The coding-agent CLIs the claude-code and codex runner profiles start. Both
 # are optional at build time so the base image can be rebuilt in an environment
 # with no npm registry access; the runners fail with a clear message if absent.
+#
+# codex is left out IN THIS RUN when INSTALL_CODEX=0, never removed by a later
+# one: a later RUN would only white it out, and a check-only RUN can write a
+# duplicate layer (PR 1239). With the default the command is the one it always
+# was: one `npm install -g` of both CLIs.
 RUN if [ "${INSTALL_AGENT_CLIS}" = "1" ]; then \
-      mkdir -p "${NPM_CONFIG_PREFIX}" \
+      codex="" \
+      && if [ "${INSTALL_CODEX}" = "1" ]; then codex="@openai/codex@${CODEX_VERSION}"; fi \
+      && mkdir -p "${NPM_CONFIG_PREFIX}" \
       && npm install -g --no-audit --no-fund \
            "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-           "@openai/codex@${CODEX_VERSION}" \
+           ${codex:+"${codex}"} \
       && npm cache clean --force ; \
     fi
 
@@ -767,14 +802,22 @@ WORKDIR /workspace
 # nothing about the patch level, so the build asserts it rather than a resume
 # discovering it. `agent_worker.checkpoint` refuses to import without the
 # filter too; this line names the cause in the build log.
+#
+# And a worker that cannot import its own runners is broken in a way that must
+# not reach production, so the build proves it can.
+#
+# ONE RUN, not two. A check-only RUN leaves a ~100-byte layer holding only the
+# etc/ directory entry, and two that finish in the same second write the SAME
+# layer: 2 of the 30 newest digests of this image repeated one here (read
+# 2026-10-13), and so did every browser and indexer image built on them. GKE
+# does not stream an image with a duplicate layer (docs/browser-startup-
+# speed.md §2.4), and the release refuses one (scripts/image-sizes.sh
+# --duplicate-layers; tests/unit/scripts/test_image_streaming.py).
 RUN python -c "import sys, tarfile; \
 assert sys.version_info >= (3, 11, 4), 'Python %s: the checkpoint restore needs 3.11.4 or later' % sys.version.split()[0]; \
 assert hasattr(tarfile, 'data_filter'), 'tarfile.data_filter is missing'; \
-print('python', sys.version.split()[0])"
-
-# A worker that cannot import its own runners is broken in a way that must not
-# reach production, so the build proves it can.
-RUN python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"
+print('python', sys.version.split()[0])" \
+ && python -c "import agent_worker, agent_worker.runners.mock, agent_worker.lifecycle; print('agent-worker', agent_worker.__version__)"
 
 # Every program the generic runner's catalogue names must exist in this image,
 # or the first tenant to submit the documented use case discovers it instead of

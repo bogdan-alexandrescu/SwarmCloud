@@ -1,7 +1,8 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { authorizeGitHub, disconnectGitHub, enableAccessOwner, exchangeGitHub, loadOnboarding, verifyAccessGrant, verifyGitToken } from './api'
+import { authorizeGitHub, disconnectGitHub, enableAccessOwner, exchangeGitHub, loadOnboarding, loadRepositories, verifyAccessGrant, verifyGitToken } from './api'
 import { Banner, Button, ButtonLink, Card, Chip, Dash, ToneMark } from './components'
 import { errorHeading, type ApiError, type Result } from './fetch'
+import { indexCredentialWords, type RepoRecord } from './RepositoriesData'
 import { GT_PAGE, UrNavButton, UrRefresh, UrRegion, useUrRead, type UrRead } from './RepositoriesParts'
 import { PageHead, useClaimPageAge } from './Shell'
 import { prefillTask } from './submitPrefill'
@@ -566,12 +567,56 @@ function ReachStep({ doc, read, go }: { doc: OnboardingDoc; read: UrRead<Onboard
 /** What one Check access answered, as the step draws it. */
 type CheckView = { kind: 'grant'; repository: string; data: AccessVerifyResponse } | { kind: 'token' } | { kind: 'refused'; error: ApiError }
 
+/**
+ * WHAT INDEXING USES, UNDER TRY IT (lane INDEX-CRED, owner report
+ * 2026-10-13: "it says all tests pass for /repositories/tokens but it can't
+ * index the repo in my personal workspace?"). Try it checks the access a
+ * person's own tasks use; an index run is the tenant's and clones with the
+ * credential `GET /v1/repositories` names (`index_credential`), so this says
+ * which one, and the chosen repository's last index result with its reason
+ * (`index.last_failure`) -- a passing check beside a failing index is
+ * explained, never left to look like the same thing.
+ */
+function IndexingNote({ repo, registered }: { repo: ChosenRepo | null; registered: RepoRecord[] | null }) {
+  if (repo === null || registered === null) return null
+  const record = registered.find((r) => r.repo_id === repo.repo_id) ?? null
+  const words = indexCredentialWords(record?.index_credential ?? registered[0]?.index_credential ?? null)
+  const failure = record?.index.last_failure ?? null
+  return (
+    <div className="ur-small ur-indexing" data-testid="indexing-note">
+      <p>
+        Indexing uses: {words === null ? <Dash why="Not served: no repository is registered for indexing" /> : <b className={words.startsWith('none') ? 'ur-bad' : undefined}>{words}</b>}
+        {words !== null && '. Try it checks the access your own tasks use; indexing clones with this.'}
+      </p>
+      <p>
+        {record === null ? (
+          <>{repo.repository} is not registered for indexing.</>
+        ) : failure !== null ? (
+          <span className="ur-bad" data-class={failure.kind}>
+            Last index of {repo.repository} failed{failure.at !== null && <> {timeAgo(failure.at)}</>}: {failure.cause}
+            {record.index.backoff !== null && <> Polling stopped; Index now retries.</>}
+          </span>
+        ) : record.index.last_indexed_at !== null ? (
+          <>
+            Last index of {repo.repository}: <b>indexed {timeAgo(record.index.last_indexed_at)}</b>.
+          </>
+        ) : (
+          <>{repo.repository} has not been indexed yet.</>
+        )}
+      </p>
+    </div>
+  )
+}
+
 function TryStep({ doc, read, go }: { doc: OnboardingDoc; read: UrRead<OnboardingDoc>; go: (to: string) => void }) {
   const g = guideState(doc, ['access_verified'])
   const repos = chosenRepos(doc)
   const [pick, setPick] = useState('')
   const [busy, setBusy] = useState(false)
   const [check, setCheck] = useState<CheckView | null>(null)
+  // What indexing uses and how each repository last indexed (INDEX-CRED).
+  const indexed = useUrRead(loadRepositories, 'try-it:repositories')
+  const registered = indexed.state.status === 'ok' || indexed.state.status === 'stale' ? indexed.state.data : indexed.state.status === 'empty' ? [] : null
   if (g.state === 'waiting') {
     return (
       <GuideRow
@@ -674,6 +719,7 @@ function TryStep({ doc, read, go }: { doc: OnboardingDoc; read: UrRead<Onboardin
         </p>
       )}
       {check?.kind === 'refused' && <Refusal error={check.error} title="Access was not checked" />}
+      <IndexingNote repo={repo} registered={registered} />
       {step !== null &&
         g.state === 'failed' &&
         (Array.isArray(step.issues) ? step.issues : []).map((i) => (

@@ -10,11 +10,12 @@
 //     itself (the Agents list's Live filter: RUNNING browser agents,
 //     needs-you first) and navigates to the chosen one's …/browser?theater=1.
 //     A list that IS passed (the workflow graph's live steps) is used as is.
-//  2. The labels are the mockup's: "LIVE <agent>", the device chips and
-//     "⟲ rotate", "‹ prev agent", "next ›", "Esc · back to tab"; DEVICE and
-//     OTHER LIVE on the right, a device outline per agent. The chips are
-//     disabled (nothing serves device switching yet) and show session.device,
-//     or "Not reported" when it is null.
+//  2. The labels are the mockup's: "LIVE <agent>", "‹ prev agent", "next ›",
+//     "Esc · back to tab"; DEVICE and OTHER LIVE on the right, a device
+//     outline per agent. DEVICE shows session.device, or "Not reported" when
+//     it is null. The top bar's own chips are gone (QA12-08/24, owner
+//     2026-10-13: one set, the DEVICE column's, which switches);
+//     theater.followup.test.tsx holds that.
 //  3. Replay is a scrubber over the recording's segments, end to end, with
 //     "◀◀ replay" and "live ●" -- not a row of segment buttons.
 //  4. The hand-off checklist ticks what is done and its green "I'm done,
@@ -234,7 +235,7 @@ describe('1. prev, next and OTHER LIVE are fed', () => {
 })
 
 describe('2. the mockup’s labels', () => {
-  it('top bar: LIVE pill, device chips, ⟲ rotate, prev, next and Esc · back to tab; right: DEVICE and OTHER LIVE', async () => {
+  it('top bar: LIVE pill, prev, next and Esc · back to tab, and no second set of device chips; right: DEVICE and OTHER LIVE', async () => {
     stubFetch(answer)
     const reported = { ...OPEN, device: { preset: 'iphone-15', orientation: 'portrait' as const, touch: true } }
     render(<Tab browser={reported} />)
@@ -243,13 +244,8 @@ describe('2. the mockup’s labels', () => {
     const pill = screen.getByTestId('theater-live-pill')
     expect(pill.textContent).toMatch(/^LIVE\s*this-one$/)
 
-    const chips = within(screen.getByRole('group', { name: 'Device' }))
-    const labels = chips.getAllByRole('button').map((b) => b.textContent)
-    expect(labels).toEqual(['Desktop', 'iPhone 15', 'Pixel 8', 'iPhone SE', 'iPad', '⟲ rotate'])
-    // Disabled until the session serves device switching; the current one marked.
-    for (const b of chips.getAllByRole('button')) expect((b as HTMLButtonElement).disabled).toBe(true)
-    expect(chips.getByRole('button', { name: 'iPhone 15' }).getAttribute('aria-pressed')).toBe('true')
-    expect(chips.getByRole('button', { name: 'Desktop' }).getAttribute('aria-pressed')).toBe('false')
+    // The device chips are the DEVICE column's (the tab's slot), never the top bar's.
+    expect(within(screen.getByRole('dialog').querySelector('header')!).queryByRole('group', { name: 'Device' })).toBeNull()
 
     for (const name of ['‹ prev agent', 'next ›', 'Esc · back to tab']) {
       expect(screen.getByRole('button', { name })).toBeTruthy()
@@ -261,13 +257,13 @@ describe('2. the mockup’s labels', () => {
     expect(others.querySelectorAll('[data-device-outline]').length).toBe(2)
   })
 
-  it('a device nobody reported reads "Not reported", and no chip is marked', async () => {
+  it('a device nobody reported reads "Not reported", with the unknown outline', async () => {
     stubFetch(answer)
     render(<Tab />)
     await flush()
-    expect(screen.getByRole('region', { name: 'DEVICE' }).textContent).toContain('Not reported')
-    const chips = within(screen.getByRole('group', { name: 'Device' })).getAllByRole('button')
-    expect(chips.filter((b) => b.getAttribute('aria-pressed') === 'true')).toEqual([])
+    const device = screen.getByRole('region', { name: 'DEVICE' })
+    expect(device.textContent).toContain('Not reported')
+    expect(device.querySelector('[data-device-outline]')?.getAttribute('data-device-outline')).toBe('unknown')
   })
 
   it('Esc · back to tab closes the theater', async () => {
@@ -322,7 +318,7 @@ describe('4. the hand-off checklist', () => {
     const list = screen.getByRole('region', { name: 'Hand-off checklist' })
     const done = [...list.querySelectorAll('[data-done="true"]')].map((li) => li.textContent ?? '')
     expect(done.length).toBe(2)
-    expect(done[0]).toMatch(/opened the sign-in page/i)
+    expect(done[0]).toMatch(/asked for your help/i)
     expect(done[0]).toContain('✓')
     expect(done[1]).toMatch(/you took control/i)
 

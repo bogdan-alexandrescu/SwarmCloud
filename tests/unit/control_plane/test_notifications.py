@@ -216,13 +216,93 @@ def test_handoffs_are_the_callers_own_waiting_tasks_with_the_browser_tab(db):
     assert all(i["needs_you"] and i["group"] == "task" for i in items)
 
 
+def _waiting(db, task_id: str, *, by: str = ALICE, tenant_id: str = "eng",
+             request_id: str = "signin-1", opened: bool | None = None) -> None:
+    """A RUNNING task whose agent asked for a person, with its live session
+    (`live_sessions/<session_id_for(attempt)>`) when `opened` says how."""
+    from swarm_api.live import LIVE_SESSIONS, session_id_for
+
+    attempt = f"att_{task_id}"
+    _task(db, task_id, by=by, tenant_id=tenant_id, state="RUNNING", current_generation=1,
+          human_wait={"reason": "Sign in to GitHub", "requested_at": _ago(seconds=5),
+                      "deadline": _ago(seconds=-55), "controller": None,
+                      "request_id": request_id, "attempt_id": attempt, "generation": 1})
+    if opened is not None:
+        db.docs[f"{LIVE_SESSIONS}/{session_id_for(attempt)}"] = {
+            "id": session_id_for(attempt), "tenant_id": tenant_id, "task_id": task_id,
+            "attempt_id": attempt, "generation": 1, "state": "open",
+            "open_to_members": opened}
+
+
+def test_a_hand_off_is_agent_needs_you_and_each_request_is_a_new_item(db):
+    """HANDOFF-POLICY (part of #1030): the person is told when a hand-off
+    opens, and a second request in the same attempt is unread again."""
+    _waiting(db, "task_h", request_id="signin-1")
+    (item,) = notif.handoffs(_reading(db, _viewer()))
+    assert item["title"] == "Agent needs you"
+    assert item["detail"] == "Sign in to GitHub"
+    assert item["href"] == "/agents/live/task_h/browser"
+    assert item["id"] == "task:handoff:task_h:1:signin-1"
+    db.docs["tasks/task_h"]["human_wait"]["request_id"] = "signin-2"
+    (again,) = notif.handoffs(_reading(db, _viewer()))
+    assert again["id"] != item["id"]
+
+
+def test_let_any_member_take_control_tells_every_member_and_off_tells_the_submitter_only(db):
+    _waiting(db, "task_h", opened=False)
+    assert _ids(notif.handoffs(_reading(db, _viewer(ROOT)))) == []
+    assert len(notif.handoffs(_reading(db, _viewer()))) == 1
+    _waiting(db, "task_h", opened=True)
+    (item,) = notif.handoffs(_reading(db, _viewer(ROOT)))
+    assert item["title"] == "Agent needs you" and item["needs_you"] is True
+    # Invariant 9: never another tenant's member, opened or not.
+    assert notif.handoffs(_reading(db, _viewer(BOB, "research"))) == []
+
+
+def test_a_member_scoped_reader_is_told_of_their_own_hand_offs_only(db):
+    """A personal workspace's member reads only their own tasks
+    (`AuthContext.member_scope`); the bell never reaches past that."""
+    _waiting(db, "task_h", opened=True)
+    scoped = notif.Viewer(email=ROOT, tenant_id="eng", member_scope=True)
+    assert notif.handoffs(_reading(db, scoped)) == []
+
+
 def test_an_agents_questions_are_a_needs_you_item(db):
     _task(db, "task_q", result_summary={"questions": 2})
     _task(db, "task_none", result_summary={"questions": 0})
     items = notif.agent_questions(_reading(db, _viewer()))
     assert _ids(items) == ["task:questions:task_q"]
     assert items[0]["needs_you"] is True
-    assert items[0]["href"] == "/agents/recent/task_q/artifacts"
+    assert items[0]["href"] == "/agents/recent/task_q#questions"
+
+
+def test_a_questions_item_names_the_step_not_only_the_task_id(db):
+    """QA14-UI (owner QA 2026-10-13): the item said "Task <id>" and nothing
+    about which agent asked. It leads with the step's name, or the runner
+    profile when the task is no workflow step."""
+    _task(db, "task_step", result_summary={"questions": 1}, step_id="fix-heartbeat")
+    _task(db, "task_lone", result_summary={"questions": 1}, step_id=None)
+    by_id = {i["id"]: i for i in notif.agent_questions(_reading(db, _viewer()))}
+    assert by_id["task:questions:task_step"]["detail"] == "fix-heartbeat · Task task_step"
+    assert by_id["task:questions:task_lone"]["detail"] == "mock · Task task_lone"
+
+
+def test_a_task_whose_every_question_is_answered_is_no_longer_listed(db):
+    """TASK-ANSWERS (part of #1206): an answer is stored on the task as
+    `metadata.owner_answers`; the bell asks only while a question is open."""
+    from swarm_api.validation import OWNER_ANSWERS_METADATA_KEY as KEY
+
+    def answer(index: int) -> dict[str, Any]:
+        return {"question_index": index, "question": "q", "choice": "a", "text": None,
+                "by": ALICE, "at": _now().isoformat(), "history": []}
+
+    _task(db, "task_all", result_summary={"questions": 2},
+          metadata={KEY: [answer(0), answer(1)]})
+    _task(db, "task_half", result_summary={"questions": 2}, metadata={KEY: [answer(1)]})
+    # An answer to an index beyond the count does not close a real question.
+    _task(db, "task_odd", result_summary={"questions": 1}, metadata={KEY: [answer(3)]})
+    items = notif.agent_questions(_reading(db, _viewer()))
+    assert sorted(_ids(items)) == ["task:questions:task_half", "task:questions:task_odd"]
 
 
 def test_github_needing_reconnect_and_an_expired_token_are_account_items(db):
@@ -257,6 +337,50 @@ def test_the_workspace_becoming_ready_or_denied_is_an_account_item(db):
     assert "denied" in items[0]["title"].lower()
     assert items[0]["detail"] == "use the team's"
     assert ROOT not in str(items)  # decision.by never leaves Firestore
+
+
+def test_a_declined_loan_request_is_an_account_item_for_the_requester(db):
+    # LOAN-DECLINE: the person is told, with the reason, never who declined.
+    _loan(db, CAROL, state="declined")
+    db.docs[f"{ws.LOAN_REQUESTS}/u-carol"]["decision"] = {
+        "verdict": "declined", "by": ROOT, "at": _ago(hours=1), "reason": "use the team's"}
+    [item] = notif.loan_items(_reading(db, _viewer(CAROL, "u-carol")))
+    assert item["group"] == "account" and item["needs_you"] is False
+    assert item["title"] == "Your request to borrow a Claude account was declined"
+    assert item["detail"] == "use the team's"
+    assert item["id"] == "account:loan:w-c0ffee:declined:loan-w-c0ffee"
+    assert item["href"] == "/setup#claude-account"
+    assert ROOT not in str(item)
+    # Only the requester sees it, and only within the window.
+    assert notif.loan_items(_reading(db, _viewer(ALICE))) == []
+    db.docs[f"{ws.LOAN_REQUESTS}/u-carol"]["decision"]["at"] = _ago(days=8)
+    assert notif.loan_items(_reading(db, _viewer(CAROL, "u-carol"))) == []
+
+
+def test_an_open_or_lent_loan_request_is_no_account_item(db):
+    _loan(db, CAROL)
+    assert notif.loan_items(_reading(db, _viewer(CAROL, "u-carol"))) == []
+    _loan(db, CAROL, state="lent")
+    assert notif.loan_items(_reading(db, _viewer(CAROL, "u-carol"))) == []
+
+
+def test_declining_a_loan_request_replaces_the_admin_item_with_the_requesters(client, db):
+    _workspace(db, CAROL, state=ws.READY, ready_at=_ago(days=9))
+    client.post("/v1/workspace/loan-request", headers=auth_header("carol"))
+    root = _feed(client, "root")
+    assert [i["title"] for i in root["items"] if i["group"] == "admin"] == [
+        "carol@saga.xyz asks for a Claude account"]
+    response = client.post("/v1/admin/people/w-c0ffee/loan/decline",
+                           headers=auth_header("root"), json={"reason": "not this week"})
+    assert response.status_code == 200, response.text
+    root = _feed(client, "root")
+    assert [i for i in root["items"] if i["group"] == "admin"] == []
+    assert root["admin_pending"] == 0
+    carol = _feed(client, "carol")
+    [item] = [i for i in carol["items"] if i["group"] == "account"]
+    assert item["title"] == "Your request to borrow a Claude account was declined"
+    assert item["detail"] == "not this week"
+    assert carol["unread_updates"] >= 1
 
 
 def test_finished_lists_own_tasks_workflows_and_merged_prs_from_the_last_7_days(db):

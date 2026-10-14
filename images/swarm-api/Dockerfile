@@ -57,7 +57,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     UV_LINK_MODE=copy \
     UV_COMPILE_BYTECODE=1
 
-RUN apt-get update \
+# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
+# main build and release), so the upgrade below is never an older build's
+# (owner decision 2026-10-14).
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update \
  && apt-get upgrade --no-install-recommends -y \
  && apt-get install --no-install-recommends -y build-essential ca-certificates \
  && rm -rf /var/lib/apt/lists/*
@@ -151,9 +156,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # CVEs, not a safe one. `install` alone never touches a package that is already
 # present, which is how libpcre2-8-0 sat at 10.42-1 with a fixed 10.42-1+deb12u1
 # available and failed the promote scan on every image at once.
-RUN apt-get update \
+#
+# git: swarm-api executes the runner git tools (docs/runner-git-tools.md §1.3;
+# owner decision Q4 = A, 2026-10-13). A runner's agent shares a uid with its
+# worker, so the forge token is used here, outside the runner's container, and
+# only git objects cross: `swarm_api.gitexec` fetches into a bundle and pushes
+# from one. Debian's package, not a pinned build, so `apt-get upgrade` above
+# keeps it on bookworm's security fixes like everything else here.
+# gitexec.py records which of its checks depend on this git's version (the
+# unbundle is `git fsck`ed because 2.39's bundle fetch ignores
+# fetch.fsckObjects).
+# APT_REFRESH: the build scripts/build-images.sh makes this layer in (every
+# main build and release), so the upgrade below is never an older build's
+# (owner decision 2026-10-14).
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update \
  && apt-get upgrade --no-install-recommends -y \
- && apt-get install --no-install-recommends -y ca-certificates tini \
+ && apt-get install --no-install-recommends -y ca-certificates git tini \
  && rm -rf /var/lib/apt/lists/*
 
 # The python:3.11-slim base carries its own setuptools and wheel in

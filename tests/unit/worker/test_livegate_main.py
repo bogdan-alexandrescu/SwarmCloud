@@ -752,7 +752,9 @@ def test_the_gate_reports_the_top_frames_origin_and_the_device_over_its_tunnel(s
 
         await _until(lambda: len(_reports(rig)) >= 1)
         assert _reports(rig)[-1] == {"origin": None,
-                                     "device": {"preset": "desktop", "orientation": "landscape", "touch": False}}
+                                     "device": {"preset": "desktop", "orientation": "landscape", "touch": False},
+                                     # LIVE-UNUSED: no agent has connected, and no frame was published.
+                                     "agent": {"connected_at": None, "connections": 0, "first_frame_at": None}}
 
         _navigated(rig, "https://accounts.github.com/login?return_to=%2Fsettings", "github.com")
         await _until(lambda: _reports(rig)[-1]["origin"] is not None)
@@ -773,7 +775,8 @@ def test_the_gate_reports_the_top_frames_origin_and_the_device_over_its_tunnel(s
         await _until(lambda: _reports(rig)[-1]["device"]["preset"] == "iphone-15")
         assert _reports(rig)[-1] == {
             "origin": _reports(rig)[count - 1]["origin"],
-            "device": {"preset": "iphone-15", "orientation": "landscape", "touch": True}}
+            "device": {"preset": "iphone-15", "orientation": "landscape", "touch": True},
+            "agent": {"connected_at": None, "connections": 0, "first_frame_at": None}}
         client.close()
         stop.set()
         assert await task == 0

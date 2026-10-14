@@ -30,7 +30,7 @@ pattern the scheduler's admission and the account holds use.
 from __future__ import annotations
 
 import logging
-from dataclasses import asdict
+from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Any, Callable
 
@@ -41,12 +41,16 @@ from swarm_common.models import ProviderState, QuotaState, utcnow
 
 from .aimd import (
     AimdConfig,
+    # Re-exported: the route maps it to a 409 and imports it from here.
+    TargetResetRefused as TargetResetRefused,
+    current_target,
     initial_state,
     quota_derived_limit_for,
     record_exhausted,
     record_rate_limit,
     record_success,
     refresh,
+    reset_target,
 )
 from .settings import BrokerSettings
 from .sweeplease import txn_snapshot
@@ -56,6 +60,11 @@ log = logging.getLogger(__name__)
 QUOTA = "quota"
 POOLS = "pools"
 TENANTS = "tenants"
+#: One append-only document per admin change to a quota document, written in
+#: the change's own transaction (`_mutate(audit=...)`). The broker had no audit
+#: trail before QUOTA-RESET: `set_hard_max` records nothing, and every other
+#: write here is a provider's signal rather than a person's decision.
+QUOTA_AUDIT = "quota_audit"
 
 #: Every provider state that means "start nothing new right now".
 _STOP_STATES = (ProviderState.EXHAUSTED, ProviderState.DISABLED, ProviderState.COOLDOWN)
@@ -95,6 +104,14 @@ def quota_from_dict(data: dict[str, Any]) -> QuotaState:
         success_count=int(data.get("success_count", 0)),
         rate_limit_count=int(data.get("rate_limit_count", 0)),
     )
+
+
+@dataclass
+class TargetReset:
+    """What `reset_adaptive_target` committed: the state, and its audit record."""
+
+    state: QuotaState
+    audit: dict[str, Any] = field(default_factory=dict)
 
 
 class QuotaBroker:
@@ -166,6 +183,7 @@ class QuotaBroker:
         *,
         reassert_pool: bool = False,
         recompute_shared: bool = True,
+        audit: Callable[[QuotaState, QuotaState], dict[str, Any]] | None = None,
     ) -> QuotaState:
         """Apply `change` to the stored state inside one transaction.
 
@@ -181,10 +199,17 @@ class QuotaBroker:
         The shared provider pool follows in its own transaction once this one
         has committed (`_recompute_provider_pool`), unless `recompute_shared`
         is False because the caller recomputes it once for many documents.
+
+        `audit`, when given, builds a record from (stored, changed) that is
+        written to `quota_audit` IN THIS TRANSACTION, so a change and the
+        record of who made it commit together or not at all. Its document id
+        is chosen once, outside the body, so a re-run overwrites its own
+        record rather than adding a second.
         """
         ref = self._db.collection(QUOTA).document(doc_id(provider, tenant_id))
         pool_name = f"provider:{provider}:tenant:{tenant_id}"
         pool_ref = self._db.collection(POOLS).document(pool_name)
+        audit_ref = self._db.collection(QUOTA_AUDIT).document() if audit else None
         transaction = self._db.transaction()
 
         @firestore.transactional
@@ -217,6 +242,8 @@ class QuotaBroker:
                     )
                 return stored, False
             txn.set(ref, quota_to_firestore(changed))
+            if audit is not None and audit_ref is not None:
+                txn.set(audit_ref, audit(stored, changed))
             self._pool_write(
                 txn,
                 pool_ref,
@@ -262,6 +289,86 @@ class QuotaBroker:
             return state
 
         return self._mutate(provider, tenant_id, _change)
+
+    def reset_adaptive_target(
+        self,
+        provider: str,
+        tenant_id: str,
+        *,
+        target: int,
+        reason: str,
+        requested_by: str = "",
+        caller: str = "",
+        clear_cooldown: bool = False,
+    ) -> TargetReset:
+        """A platform admin's reset of a throttled tenant's AIMD target.
+
+        The rules are `aimd.reset_target`'s, applied to the COMMITTED state
+        inside `_mutate`, so the quota document, the per-tenant pool's
+        `adaptive_target` / `quota_derived_limit` and the audit record land in
+        one transaction -- the same one every other signal uses. A refusal
+        (EXHAUSTED without `clear_cooldown`) raises out of that transaction
+        and writes nothing.
+
+        `requested_by` is the person the platform caller says it acts for
+        (swarm-api forwards its admin's verified email); `caller` is the
+        identity the broker itself verified. Both are recorded, because the
+        broker can vouch only for the second.
+        """
+        why = (reason or "").strip()
+        if not why:
+            raise ValueError("a reason is required to reset an adaptive target")
+        recorded: list[dict[str, Any]] = []
+
+        def _change(state: QuotaState) -> QuotaState:
+            return reset_target(
+                refresh(state, now=self._now(), config=self._config),
+                target,
+                now=self._now(),
+                config=self._config,
+                clear_cooldown=clear_cooldown,
+            )
+
+        def _audit(stored: QuotaState, changed: QuotaState) -> dict[str, Any]:
+            record = {
+                "action": "adaptive_target_reset",
+                "provider": provider,
+                "tenant_id": tenant_id,
+                "requested_by": requested_by or None,
+                "caller": caller or None,
+                "reason": why[:500],
+                "requested_target": int(target),
+                "from_target": current_target(stored, self._config),
+                "to_target": changed.adaptive_target,
+                "clamped": changed.adaptive_target != int(target),
+                "configured_hard_max": changed.configured_hard_max,
+                "from_state": stored.state.value,
+                "to_state": changed.state.value,
+                "cleared_cooldown": bool(clear_cooldown),
+                "from_effective_limit": quota_derived_limit_for(
+                    stored, self._config, now=self._now()
+                ),
+                "to_effective_limit": quota_derived_limit_for(
+                    changed, self._config, now=self._now()
+                ),
+                "at": self._now(),
+            }
+            recorded.clear()
+            recorded.append(record)
+            return record
+
+        state = self._mutate(provider, tenant_id, _change, audit=_audit)
+        record = recorded[-1] if recorded else {}
+        log.info(
+            "adaptive target reset for %s:%s from %s to %s by %s",
+            provider,
+            tenant_id,
+            record.get("from_target"),
+            record.get("to_target"),
+            requested_by or caller or "an unnamed platform caller",
+            extra={"quota_audit": {k: v for k, v in record.items() if k != "at"}},
+        )
+        return TargetReset(state=state, audit=record)
 
     def observe_success(
         self,

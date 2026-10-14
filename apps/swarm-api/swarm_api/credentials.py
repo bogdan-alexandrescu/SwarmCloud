@@ -20,8 +20,8 @@ and all three live in this file.
      rotation path -- leaving the tenant locked out of its own key. The etag
      makes the read-modify-write safe against a concurrent rotation, and a
      policy that already carries the accessor is not written at all.
-  3. READ PATH. There is no read path. This module can write a version and
-     report metadata; it has no function that returns payload bytes, so no
+  3. READ PATH. There is no read path. This module can write a version,
+     destroy versions (`delete_credential`, KEYS-API) and report metadata; it has no function that returns payload bytes, so no
      future route can accidentally expose one.
   4. PROVIDER. The retired #295 App keys (`APP_CREDENTIAL_PROVIDERS`:
      `git-merge`, `git-review`) and the forge token (`FORGE_PROVIDER`) are
@@ -82,6 +82,8 @@ class CredentialWriteResult:
 
 class CredentialWriter(Protocol):
     def put_credential(self, tenant: Tenant, provider: str, api_key: str) -> CredentialWriteResult: ...
+
+    def delete_credential(self, tenant: Tenant, provider: str) -> int: ...
 
 
 def refuse_unbindable_provider(provider: str) -> None:
@@ -225,6 +227,38 @@ class SecretManagerCredentials:
             created=created,
         )
 
+    def delete_credential(self, tenant: Tenant, provider: str) -> int:
+        """Destroy every version of the tenant's `provider` secret that is not
+        destroyed already; returns how many were destroyed.
+
+        DESTROY, not disable (KEYS-API, docs/provider-keys.md): a disabled
+        version is one `enableSecretVersion` away from readable again, and a
+        person who deletes their key means the material to be gone. The secret
+        resource and its IAM policy stay, so setting a key again is the
+        ordinary write path. A missing secret is zero versions, not an error.
+        """
+        refuse_unbindable_provider(provider)
+        from google.api_core import exceptions as gexc
+
+        client = self._secret_client()
+        secret_name = f"{self.parent}/secrets/{tenant.secret_name(provider)}"
+        destroyed = 0
+        try:
+            versions = list(client.list_secret_versions(
+                request={"parent": secret_name, "filter": "state:ENABLED OR state:DISABLED"}
+            ))
+            for version in versions:
+                client.destroy_secret_version(request={"name": version.name})
+                destroyed += 1
+        except gexc.NotFound:
+            pass
+        except gexc.GoogleAPICallError as exc:
+            raise UpstreamUnavailable(f"could not destroy the key: {exc.message}") from None
+        log.info(
+            "destroyed provider credential tenant=%s provider=%s versions=%d",
+            tenant.tenant_id, provider, destroyed,
+        )
+        return destroyed
 
     def _grant_accessor(self, client: Any, secret_name: str, tenant: Tenant, gexc: Any) -> bool:
         """Add the tenant's service account to the secret's accessor binding.
@@ -303,6 +337,9 @@ class InMemoryCredentials:
     def __init__(self) -> None:
         self._versions: dict[str, int] = {}
         self._bindings: dict[str, str] = {}
+        #: Per secret, how many versions `delete_credential` destroyed.
+        self._destroyed: dict[str, int] = {}
+        self._live: dict[str, int] = {}
 
     def put_credential(self, tenant: Tenant, provider: str, api_key: str) -> CredentialWriteResult:
         refuse_unbindable_provider(provider)
@@ -312,6 +349,7 @@ class InMemoryCredentials:
         secret_id = tenant.secret_name(provider)
         created = secret_id not in self._versions
         self._versions[secret_id] = self._versions.get(secret_id, 0) + 1
+        self._live[secret_id] = self._live.get(secret_id, 0) + 1
         self._bindings[secret_id] = tenant.service_account
         return CredentialWriteResult(
             provider=provider,
@@ -321,3 +359,11 @@ class InMemoryCredentials:
             accessor=tenant.service_account,
             created=created,
         )
+
+    def delete_credential(self, tenant: Tenant, provider: str) -> int:
+        refuse_unbindable_provider(provider)
+        secret_id = tenant.secret_name(provider)
+        destroyed = self._live.pop(secret_id, 0)
+        if destroyed:
+            self._destroyed[secret_id] = self._destroyed.get(secret_id, 0) + destroyed
+        return destroyed

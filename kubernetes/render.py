@@ -375,6 +375,14 @@ TENANT_FILES = (
     # LAST, so every document before it renders exactly as it did before the
     # live browser existed (test_live_netpol.py holds the digests).
     "network-policies/allow-live-egress.yaml",
+    # The proxied browser's path to swarm-egress (docs/browser-egress.md §2.5).
+    # After the live path, for the same reason: everything before it renders
+    # as it did before browser egress existed.
+    "network-policies/allow-egress-proxy.yaml",
+    # The internal judge's path to the tailnet forwarder (lane JUDGE-NET,
+    # kubernetes/swarm-system/tailscale-egress.yaml). Last, for the same
+    # reason: everything before it renders as it did before.
+    "network-policies/allow-judge-egress.yaml",
 )
 
 #: The older worker identity -- LEGACY_KSA_NAME's ServiceAccount and the

@@ -98,11 +98,23 @@ ARG GOPLS_VERSION=0.24.0-pre.1
 ARG X_MOD_VERSION=0.41.0
 ARG X_TEXT_VERSION=0.42.0
 
+# EVERY DOWNLOAD HERE RETRIES (2026-10-14, PR 1281's flake table): `curl -fsSL
+# --retry 5 --retry-all-errors --retry-connrefused`, 1+2+4+8+16 s of backoff at
+# most. --retry-all-errors is what makes an HTTP error (curl's exit 22, which
+# failed one main build of agent-runtime-base in run 38245452463) retry at all. A
+# file that is really gone still fails, ~31 s later, and every download is
+# still checked against its pinned checksum after it lands.
+# The Go module fetches retry too: `go mod download` and `go get` read
+# proxy.golang.org, whose stream reset (INTERNAL_ERROR) failed one pull
+# request's build of this image (run 38518513292). build_server runs up to
+# three times, 15 and 30 s apart, from a clean source copy each time; a real
+# failure -- a pin that did not land -- fails all three and is reported as
+# itself.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
  && apt-get install --no-install-recommends -y ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
  && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
  && tar -C /usr/local -xzf /tmp/go.tar.gz \
  && rm -rf /tmp/go.tar.gz /usr/local/go/test
@@ -123,7 +135,15 @@ RUN export PATH="/usr/local/go/bin:${PATH}" GOPATH=/tmp/gopath GOCACHE=/tmp/goca
       done; \
       chmod 0755 "${out}"; \
     }; \
-    build_server golang.org/x/tools/gopls "${GOPLS_VERSION}" /usr/local/bin/gopls \
+    three_tries() { \
+      local attempt; for attempt in 1 2 3; do \
+        "$@" && return 0; \
+        [ "${attempt}" -lt 3 ] || return 1; \
+        echo "$1 $2: try ${attempt} of 3 failed; retrying in $((15 * attempt)) s" >&2; \
+        sleep $((15 * attempt)); \
+      done; \
+    }; \
+    three_tries build_server golang.org/x/tools/gopls "${GOPLS_VERSION}" /usr/local/bin/gopls \
       "golang.org/x/mod@v${X_MOD_VERSION}" "golang.org/x/text@v${X_TEXT_VERSION}" \
  && rm -rf /tmp/src /tmp/gopath /tmp/gocache \
  && /usr/local/bin/gopls version
@@ -181,8 +201,11 @@ RUN /usr/local/bin/python3.11 -m venv --without-pip /opt/repo-index/venv \
 # names. Standard library only, so it runs on the image's own python3.11
 # (`-I`, as the extractor) and reaches the bucket through `gcloud storage`
 # with the step's own account; root-owned and read-only to the agent.
-COPY images/agent-runtime-indexer/repo-index/repo_graph_shards.py /opt/repo-index/
-RUN chmod 0644 /opt/repo-index/repo_graph_shards.py \
+# repo_index_history.py beside it mines the clone for the history and rules
+# layers (lane CTXQ-H); the writer loads it by path, and its self-test fails
+# the build when it is missing.
+COPY images/agent-runtime-indexer/repo-index/repo_graph_shards.py images/agent-runtime-indexer/repo-index/repo_index_history.py /opt/repo-index/
+RUN chmod 0644 /opt/repo-index/repo_graph_shards.py /opt/repo-index/repo_index_history.py \
  && printf '%s\n' '#!/bin/sh' \
       'exec /usr/local/bin/python3.11 -I /opt/repo-index/repo_graph_shards.py "$@"' \
       > /usr/local/bin/swarm-repo-graph \
@@ -221,17 +244,24 @@ RUN cp /opt/repo-index/lsp/package.json /opt/repo-index/lsp/package-lock.json /o
     done
 
 USER swarm:swarm
-WORKDIR /workspace
-
+# NO `WORKDIR /workspace` HERE, and ONE RUN for the three self-tests below.
+# GKE does not stream an image with a duplicate layer (docs/browser-startup-
+# speed.md §2.4), and both wrote one: restating the base's WORKDIR wrote
+# BuildKit's empty layer a second time, and each check-only RUN leaves a
+# ~100-byte layer holding only the etc/ and tmp/ directory entries -- the SAME
+# layer when two of them finish in the same second, as 7 of the 30 newest
+# digests of this image did (read 2026-10-13). The release refuses such an
+# image (scripts/image-sizes.sh --duplicate-layers);
+# tests/unit/scripts/test_image_streaming.py holds this file to it.
+#
 # The repository-index extractor must load all five grammars and parse one
 # file with each, as the agent user, or the indexer step would find out
-# instead of the build.
-RUN swarm-repo-index --self-test
-# And each installed language server must start, as the agent user, and
-# resolve one call across two files -- not merely start.
-RUN swarm-repo-index --lsp-self-test
-# And the shard writer must shard, rewrite and sweep a graph in a scratch dir.
-RUN swarm-repo-graph --self-test
+# instead of the build. And each installed language server must start, as the
+# agent user, and resolve one call across two files -- not merely start. And
+# the shard writer must shard, rewrite and sweep a graph in a scratch dir.
+RUN swarm-repo-index --self-test \
+ && swarm-repo-index --lsp-self-test \
+ && swarm-repo-graph --self-test
 
 # The base's, restated because a derived image that sets nothing inherits it
 # but a reader of this file should not have to know that.

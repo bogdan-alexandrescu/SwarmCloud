@@ -301,11 +301,30 @@ def test_a_shards_workers_steal_rather_than_split_up_front():
     """xdist's default `load` schedule left shard 3 ~45 % over its floor: its
     long sleep-bound tests landed on one worker (docs/ci.md, "Where
     pull-request CI time goes (2026-10-09)"). MUTATION: drop `--dist
-    worksteal`, or let a second pytest run in the job without it."""
+    worksteal`, or let a second pytest run in the job without it.
+
+    Two runs since 2026-10-14: the gating one and the quarantined tests'
+    (tests/flaky.txt), which reports and never fails the gate."""
     runs = [str(s.get("run", "")) for s in _jobs()["python-unit"]["steps"]]
     pytests = [r for r in runs if "uv run pytest" in r]
-    assert len(pytests) == 1, pytests
-    assert re.search(r"uv run pytest\b[^\n]*-n auto --dist worksteal\b", pytests[0]), pytests[0]
+    assert len(pytests) == 2, pytests
+    for run in pytests:
+        assert re.search(r"uv run pytest\b[^\n]*-n auto --dist worksteal\b", run), run
+
+
+def test_a_hung_shard_fails_and_names_the_test_that_hung():
+    """On 2026-10-14 eight unit shards sat "in progress" for 51-306 minutes, and
+    `build images` (which needs this job) never started, so release.yml timed
+    out waiting for it. MUTATION: drop the job's timeout-minutes, raise it past
+    an hour, or drop faulthandler_timeout from either pytest step."""
+    job = _jobs()["python-unit"]
+    assert 0 < int(job.get("timeout-minutes", 0)) <= 60, job.get("timeout-minutes")
+    runs = [str(s.get("run", "")) for s in job["steps"]]
+    pytests = [r for r in runs if "uv run pytest" in r]
+    assert len(pytests) == 2, pytests
+    for run in pytests:
+        m = re.search(r"-o faulthandler_timeout=(\d+)\b", run)
+        assert m and int(m.group(1)) < int(job["timeout-minutes"]) * 60, run
 
 
 @pytest.mark.parametrize("mode, areas", [("none", ""), ("subset", ""), ("subset", "terraform"), ("bogus", "")])

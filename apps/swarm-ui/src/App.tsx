@@ -10,7 +10,7 @@ import {
   type ReactNode,
 } from 'react'
 import { createPortal } from 'react-dom'
-import { agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList } from './agentlist'
+import { agentList, agentListPath, agentListQuery, parseAgentList, useAgentName, type AgentList, type AgentTab } from './agentlist'
 import { AccountsScreen } from './Accounts'
 import { ActivityScreen, TenantsScreen } from './Activity'
 import { AdminSettingsScreen } from './AdminSettings'
@@ -30,8 +30,9 @@ import {
 } from './fetch'
 import { useCardBridge, useHelpDisclosure, useEdgeSafePlacement } from './HelpCard'
 import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId } from './help'
-import { GITHUB_CALLBACK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, pathToAddress } from './paths'
+import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, pathToAddress } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
+import { ProviderKeysScreen } from './ProviderKeys'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
@@ -54,9 +55,8 @@ import { SubmitChooser } from './SubmitChooser'
 import { SubmitWorkflowScreen } from './SubmitWorkflow'
 import { IssueSubmitScreen } from './IssueSubmit'
 import { RunsScreen } from './Runs'
-import { NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
+import { ALL_TENANTS_SCHEDULES, NEW_SCHEDULE, SchedulesScreen, WaitingOnYouCard } from './Schedules'
 import { ApprovalsScreen } from './Approvals'
-import { AdminSchedulesScreen } from './AdminSchedules'
 import { RepositoriesScreen } from './Repositories'
 import { AGE_TICK_MS, useNow } from './useNow'
 import { WorkflowsScreen } from './Workflows'
@@ -344,7 +344,9 @@ export const SECTIONS: SectionDef[] = [
     // that holds what runs by itself. A LITERAL id for the reason given on
     // Work: test_nav_headings_agree.py reads this array with a regex.
     // Approvals is its second page, `/approvals` (§6.1), and the question's
-    // last clause is its.
+    // last clause is its. ONE SCHEDULES PAGE (SCHED-ONE-PAGE, owner decision
+    // 2026-10-13, §6.1): an admin's every-tenant view is Schedules' "All
+    // tenants" switch (`?scope=all`), not a second Schedules tab under Admin.
     id: 'automate',
     label: 'Automate',
     question: 'What runs here by itself, on a schedule, and what is waiting on me to approve?',
@@ -469,10 +471,13 @@ export const SECTIONS: SectionDef[] = [
     // arrives wanting to know. It asks what each tab answers, in tab order.
     // docs/web-ui/redesign.md §2 carries the same words, and
     // tests/sections.test.ts holds the two together.
-    // docs/schedules.md §5.3 and §6.1 put the cross-tenant schedules view here,
-    // beside Tenants, and the question's last clause is its.
+    // The cross-tenant schedules view sat here from 2026-10-11 until the owner
+    // asked why schedules were in Admin and in Automate (SCHED-ONE-PAGE,
+    // 2026-10-13, docs/schedules.md §6.1): it is Automate › Schedules' "All
+    // tenants" now, and its clause went with it. The platform's own ticks
+    // moved to Platform counts, and the clause after its count asks for them.
     question:
-      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, who is waiting for a workspace, and what is every tenant scheduled to run?',
+      'What is each ceiling set to, who is registered to use this platform, how many tasks are in each state, what does the platform run on its own, and who is waiting for a workspace?',
     tabs: [
       { id: 'limits', label: 'Pool limits', admin: true },
       { id: 'tenants', label: 'Tenants', admin: true },
@@ -483,9 +488,6 @@ export const SECTIONS: SectionDef[] = [
       // requests to approve or deny, each person's ceiling and Claude account,
       // and who is an admin. Admin only, like the three before it.
       { id: 'people', label: 'People', admin: true },
-      // docs/schedules.md §5.3: every tenant's schedules, the schedule tick's
-      // last hour and the platform's own ticks (§8.4). Admin only.
-      { id: 'schedules', label: 'Schedules', admin: true },
     ],
   },
 ]
@@ -523,6 +525,27 @@ const SUBMIT_HELP: SectionQuestionDef = {
  * nav does -- so no nav tab, and no issue-form "Where" entry, follows it.
  */
 const GITHUB_CALLBACK = GITHUB_CALLBACK_ADDRESS
+
+/**
+ * SETTINGS › API KEYS (KEYS-UI, owner request 2026-10-14;
+ * docs/provider-keys.md). Not a section, for the reason API reads is not one:
+ * it is a thing you set once, not a thing you work in, and a fifth section
+ * would sit beside the questions people arrive with. It is reached from the
+ * panel's foot, beside the person's own name, because the first key on it is
+ * theirs. Two addresses: the page, `settings/keys`, and the one-time link
+ * `/sc` mints, `settings/keys/typesafe?scope=..` (the token never enters the
+ * address, paths.ts `KEY_LINK_ADDRESS`), which opens the same page.
+ *
+ * `#settings` and `#settings/<anything else>` still land on Pool limits
+ * (LEGACY, MOVED_PANES): only these two exact addresses are this page.
+ */
+const SETTINGS = 'settings'
+const KEYS_TAB = 'keys'
+/** The link's tab: the same page, opened from a one-time link. */
+const KEY_LINK_TAB = KEY_LINK_ADDRESS.slice(SETTINGS.length + 1)
+const SETTINGS_LABEL = 'Settings'
+/** The page's `<h1>` and the second half of its name in the issue forms. */
+const KEYS_LABEL = 'API keys'
 
 /**
  * The utility button's label AND the heading of the screen it opens. One
@@ -715,6 +738,15 @@ export type TaskPane = 'detail' | 'logs' | 'children' | 'attempts' | 'artifacts'
 /** The address segment each non-default pane is written with. `detail` has none. */
 const PANE_SEGMENTS: readonly TaskPane[] = ['logs', 'children', 'attempts', 'artifacts', 'checkpoints', 'changes', 'browser']
 
+/**
+ * THE DETAILS TAB'S OWN NAME IS AN ADDRESS TOO (QA12-17, live-browser QA p12):
+ * `/agents/live/<id>/details` read as a task called `<id>/details` and drew a
+ * 404. Every other tab is reached at its lower-cased name; Details is written
+ * with no segment, and these two spellings of it are read as that and written
+ * back without it.
+ */
+const DETAIL_SEGMENTS: readonly string[] = ['details', 'detail']
+
 export interface Route {
   /** A section id, or REFERENCE. */
   sectionId: string
@@ -762,6 +794,13 @@ export interface Route {
    * so Esc out of the theater and a reload land on the tab, not back in it.
    */
   theater?: boolean
+  /**
+   * The address spelled Details out (`/agents/<tab>/<id>/details`, QA14-UI):
+   * read on arrival only, like `theater`, so a running agent opened there
+   * stays on Details instead of taking the running default (Browser or Logs).
+   * The bar is still written back without the segment.
+   */
+  detailNamed?: boolean
 }
 
 /** What `SectionQuestion` reads off a section: its name and its question. */
@@ -854,9 +893,20 @@ export function fromAddress(full: string): Route {
   // opening an agent inspector for an agent called "counts".
   const moved = MOVED_PANES[seg.join('/')]
   if (moved) return { sectionId: moved.section, tab: moved.tab, ...blank }
+  // ADMIN › SCHEDULES FOLDED INTO AUTOMATE › SCHEDULES (SCHED-ONE-PAGE, owner
+  // decision 2026-10-13): its old address opens the All tenants view, which a
+  // MOVED_PANES entry cannot say -- the destination carries a query.
+  if (hash === 'admin/schedules') return fromAddress(ALL_TENANTS_SCHEDULES)
 
   if (head === REFERENCE) return { sectionId: REFERENCE, tab: '', ...blank }
   if (hash === GITHUB_CALLBACK) return { sectionId: GITHUB_CALLBACK, tab: '', ...blank }
+  // Settings › API keys and its one-time link, before LEGACY reads `settings`
+  // as the eleven-item nav's Pool limits. Only the link's scope is kept.
+  if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
+  if (hash === KEY_LINK_ADDRESS) {
+    const scope = keyLinkScope(query)
+    return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
+  }
   // The Submit chooser (/submit): two large choices, opened by the spine's
   // Submit and by N.
   if (head === SUBMIT && tail.length === 0) return { sectionId: SUBMIT, tab: '', ...blank }
@@ -888,7 +938,8 @@ export function fromAddress(full: string): Route {
       rest = rest.slice(0, -1)
     }
     const last = rest[rest.length - 1]
-    const pane = PANE_SEGMENTS.find((p) => p === last) ?? null
+    // A pane needs an id before it: a lone `details` is still read as it was.
+    const pane = PANE_SEGMENTS.find((p) => p === last) ?? (rest.length > 1 && DETAIL_SEGMENTS.includes(last ?? '') ? 'detail' : null)
     // Task ids are opaque and may contain characters that were encoded on the
     // way in, so the remaining segments are rejoined rather than assumed to
     // be one.
@@ -900,6 +951,7 @@ export function fromAddress(full: string): Route {
         taskId: decodeURIComponent(id),
         taskPane: pane ?? 'detail',
         ...(pane === 'browser' && new URLSearchParams(query).get('theater') === '1' ? { theater: true } : {}),
+        ...(pane === 'detail' ? { detailNamed: true } : {}),
         ...(artifact !== null && artifact !== '' ? { artifact } : {}),
         ...(file !== null && file !== '' ? { file } : {}),
       }
@@ -978,7 +1030,8 @@ function keptKeys(sectionId: string, tab: string): readonly string[] {
   if (sectionId === ADMIN_SECTION && tab === LIMITS_TAB) return ['pool']
   // One schedule rides on the list's address (`/automate/schedules/<id>`,
   // paths.ts), with its tab and its editor (AUT-11).
-  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit']
+  // `scope=all` is the admin's All tenants view (SCHED-ONE-PAGE), linkable.
+  if (sectionId === AUTOMATE && tab === 'schedules') return ['schedule', 'tab', 'edit', 'scope']
   // One inbox item rides on the page's address (`/approvals/<id>`, paths.ts),
   // and the inbox's kind filter beside it (AUT-15).
   if (sectionId === AUTOMATE && tab === 'approvals') return ['approval', 'kind']
@@ -1011,6 +1064,7 @@ export function canonical(r: Route): string {
   if (r.sectionId === REFERENCE) return REFERENCE
   if (r.sectionId === SUBMIT) return SUBMIT
   if (r.sectionId === GITHUB_CALLBACK) return GITHUB_CALLBACK
+  if (r.sectionId === SETTINGS) return r.view ? `${SETTINGS}/${r.tab}?${r.view}` : `${SETTINGS}/${r.tab}`
   if (r.sectionId === HELP) return r.tab === '' ? HELP : `${HELP}/${r.tab}`
   // A list address is written only while no drawer is open: the drawer's own
   // address wins above, and the list it was opened from is kept by App.
@@ -1076,6 +1130,14 @@ export function App() {
   // closed to bare `/agents` while the list behind it still showed, say,
   // Recent · failed. Written during render, so the close address is never one
   // route behind; the write is idempotent, so a double render is harmless.
+  // The fragment the page was opened at, read before the normalise effect
+  // rewrites the bar to its path: `useState(fromLocation)` already applied it.
+  const mountHash = useRef(typeof window === 'undefined' ? '' : window.location.hash)
+  // THE KEY LINK'S TOKEN, read before the normalise effect below rewrites the
+  // bar without it (paths.ts `KEY_LINK_ADDRESS`): the key page may mount
+  // later than this render, behind a takeover, and would find it gone. Held
+  // here and handed to that page, never written into a route.
+  const keyLink = useRef(typeof window === 'undefined' ? null : keyLinkToken(window.location.pathname, window.location.search))
   const lastList = useRef<AgentList | null>(at.list ?? null)
   if (at.taskId === null) lastList.current = at.list ?? null
 
@@ -1115,9 +1177,38 @@ export function App() {
   )
 
   useEffect(() => {
+    // A hashchange for the fragment this mount already read is the echo of
+    // that same assignment (a script sets the hash, then renders; the event is
+    // queued and lands after). Replayed from its newURL it would undo whatever
+    // the reader did in between -- an agent closed by its breadcrumb opened
+    // again. It is swallowed once, and only for a moment, so a fragment typed
+    // later is still a navigation.
+    let echo: string | null = mountHash.current === '' ? null : mountHash.current
+    const echoTimer = setTimeout(() => {
+      echo = null
+    }, 250)
     const onPop = () => setAt(fromLocation())
-    const onHash = () => {
-      if (isLegacyHash(window.location.hash, LEGACY_HEADS, window.location.pathname)) setAt(fromHash())
+    // The fragment the event names, not the one the bar holds now: the
+    // normalise effect (or the list following an agent's group) may already
+    // have rewritten the address to its path, which drops the fragment, and a
+    // hashchange read from the bar then found nothing and the navigation was
+    // lost -- an agent closed by hash stayed open (CH-2).
+    const onHash = (e?: Event) => {
+      let hash = window.location.hash
+      const next = (e as HashChangeEvent | undefined)?.newURL
+      if (typeof next === 'string') {
+        try {
+          hash = new URL(next).hash
+        } catch {
+          /* keep the bar's own */
+        }
+      }
+      if (echo !== null && hash === echo) {
+        echo = null
+        return
+      }
+      echo = null
+      if (isLegacyHash(hash, LEGACY_HEADS, window.location.pathname)) setAt(fromAddress(hash.replace(/^#/, '')))
     }
     // A click on an old-style `href="#work/..."` link, or on a same-origin
     // path, is a navigation: pushed, so Back returns to where it was made.
@@ -1139,6 +1230,7 @@ export function App() {
     window.addEventListener('hashchange', onHash)
     document.addEventListener('click', onClick)
     return () => {
+      clearTimeout(echoTimer)
       window.removeEventListener('popstate', onPop)
       window.removeEventListener('hashchange', onHash)
       document.removeEventListener('click', onClick)
@@ -1172,6 +1264,18 @@ export function App() {
     lastList.current = list
     setAt((r) => ({ ...r, list }))
   }, [])
+
+  // THE LIST FOLLOWS THE OPEN AGENT'S GROUP (QA12-26, live-browser QA p12):
+  // a task opened under Live that parks belongs to Waiting, and the back link
+  // said `‹ Live` beside a list that no longer held it. The split reports the
+  // group its state puts it in; the list's tab, the back link and the address
+  // move there, written in place like a tab click. The toggles are kept; the
+  // Recent state filter is dropped, so the row is not hidden by it.
+  const onGroup = useCallback((tab: AgentTab) => {
+    const was = lastList.current
+    if (was?.tab === tab) return
+    onList(agentList(tab, null, { grouped: was?.grouped === true, failedFirst: was?.failedFirst === true }))
+  }, [onList])
 
   // THE TIMELINE'S AND THE WORKFLOWS LIST'S FILTERS ARE A ROUTE CHANGE TOO
   // (#185), written the same way.
@@ -1207,7 +1311,9 @@ export function App() {
           ? REFERENCE_LABEL
           : at.sectionId === GITHUB_CALLBACK
             ? 'Connect GitHub'
-            : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
+            : at.sectionId === SETTINGS
+              ? KEYS_LABEL
+              : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
     document.title = documentTitleOf(title, object)
@@ -1291,6 +1397,8 @@ export function App() {
                   <SubmitChooser go={go} />
                 ) : at.sectionId === GITHUB_CALLBACK ? (
                   <GitHubCallbackScreen go={go} />
+                ) : at.sectionId === SETTINGS ? (
+                  <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 ) : (
                   <ReferenceScreen failuresOnly={apiFailuresOnly} />
                 )
@@ -1326,8 +1434,10 @@ export function App() {
                 artifact={at.artifact ?? null}
                 file={at.file ?? null}
                 theater={at.theater === true}
+                detailNamed={at.detailNamed === true}
                 closeTo={listAddress}
                 go={go}
+                onGroup={onGroup}
                 base={`${WORK}/task/${encodeURIComponent(at.taskId)}`}
               />
             )}
@@ -1450,7 +1560,7 @@ function Head({
   // of its own, not API reads (#503), and the two forms lead back to it.
   const submitForm = at.sectionId === WORK && isSubmitPage(at)
   const head = isSubmitPage(at) ? 'Submit'
-    : section?.label ?? (at.sectionId === HELP ? 'Help' : REFERENCE_LABEL)
+    : section?.label ?? (at.sectionId === HELP ? 'Help' : at.sectionId === SETTINGS ? SETTINGS_LABEL : REFERENCE_LABEL)
   const home = submitForm ? SUBMIT : section === null ? at.sectionId : `${section.id}/${firstTab(section)}`
   // The open agent by its name once its split has read it (walkthrough G).
   const named = useAgentName(at.taskId)
@@ -1912,8 +2022,6 @@ function SectionBody({
       return <PlatformCountsScreen />
     case 'admin/people':
       return <PeopleScreen />
-    case 'admin/schedules':
-      return <AdminSchedulesScreen go={go} />
 
     default:
       // Unreachable through the nav, and reachable only by hand-editing a hash

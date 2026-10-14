@@ -1653,6 +1653,7 @@ $ /sc:run "fix the flaky test"
 | `POST /v1/admin/workspaces/{workspace_id}/retry` | admin | from `failed` or `needs_owner`: publishes again |
 | `PUT /v1/admin/workspaces/{workspace_id}/limits` | admin | §6.4's ceiling; body `{max_active}` only |
 | `PUT /v1/admin/people/{workspace_id}/loan` | admin | lend or reclaim an account (§6.4); a lend to a workspace not yet `ready` answers `state: "pending"` and is applied by the sweep |
+| `POST /v1/admin/people/{workspace_id}/loan/decline` | admin | decline the person's open loan request (§6.4); body `{reason?}`, at most 200 characters; 409 `LOAN_REQUEST_NOT_OPEN` when none is open |
 | `PUT /v1/admin/admins/{email}` and `DELETE` | admin | grant or remove admin (§6.5) |
 | `POST /v1/admin/workspaces/sweep` | the rollup sweeper (`swarm-workspace-sweep`, every 10 minutes) | §2.2's dispatch sweep, then the pending loans of every workspace now `ready` (§6.4) |
 | `GET /v1/onboarding` | (exists) | gains the `workspace` and `claude_account` steps |
@@ -1743,6 +1744,25 @@ the platform owner" with the step the guard stopped at; a `failed` row has **Ret
   once as before (`state: "applied"`), and if the broker refuses it the answer
   is 422 `LOAN_GRANT_FAILED`, naming the member it asked IAM to grant and the
   broker's reason: there, that service account should exist.
+
+  **A loan request may be declined** (LOAN-DECLINE, owner 2026-10-12, part
+  of #1206). Until then a request closed only when an account was lent
+  against it, so one an admin would not grant stayed in "Waiting for you"
+  with no way to answer it. **Decline** (`POST
+  /v1/admin/people/{workspace_id}/loan/decline`) moves an open request to
+  `declined` with the admin, the time and an optional short reason in its
+  decision, and writes a `loan_declined` audit entry (the reason's length,
+  not a second copy of it) in the same transaction. With no open request,
+  because none was made or it was already lent or declined, it is 409
+  `LOAN_REQUEST_NOT_OPEN`. The person is told in their notification feed
+  (`account`: "Your request to borrow a Claude account was declined", with
+  the reason, never who declined; docs/notifications.md), and the admins'
+  "asks for a Claude account" item is gone because the request is no longer
+  `requested`. People's row reads "loan declined" until the person asks
+  again: a new `POST /v1/workspace/loan-request` re-opens it as `requested`
+  and keeps the declined one in `history`. Declining calls no broker and
+  does not touch `pending_loans`. A pending loan is a lending an admin has
+  already decided, and only **Reclaim** cancels it.
 
 **4. Admins.** §6.5.
 
@@ -1907,7 +1927,8 @@ makes every install do steps Terraform cannot:
   that connection's token. On 2026-10-10 it took two bootstrap applies (PRs
   993 and 1005) and a narrowing the same night, because the first prefix also
   matched the platform's own GitHub App secrets
-  (`terraform/bootstrap/cloudbuild_connection.tf`);
+  (`terraform/bootstrap/cloudbuild_connection.tf`, deleted by W11 on
+  2026-10-13);
 * possibly a private pool, so a build can reach a GKE control plane under
   `master_authorized_cidrs` (W0's open question, never verified).
 
@@ -1927,7 +1948,7 @@ A Cloud Run job:
 Pub/Sub subscription; the build file `scripts/cloudbuild/workspace-apply.yaml`
 (its three steps become the job's entrypoint, §2.2); the repository connection
 `swarm-github` and the two grants to Cloud Build's service agent in
-`terraform/bootstrap/cloudbuild_connection.tf`; the safeguard wording "usable
+`terraform/bootstrap/cloudbuild_connection.tf` (deleted by W11); the safeguard wording "usable
 only by that Cloud Build trigger, which builds only `main`", which now reads
 "usable only by that Cloud Run job, which runs only the image the owner pinned"
 (§2.4 safeguard 1); and W0's private-pool question (§10). The Pub/Sub topic
@@ -2105,7 +2126,7 @@ phases. New files are named without their root.
 | W6b | 6 | **the job's image and entrypoint**: `images/workspace-apply/Dockerfile` copies in, read-only under `/opt/swarm`, `scripts/register-tenant.sh`, `scripts/lib/`, `kubernetes/`, `apps/common/swarm_common` and `quota_broker`, and sets no `ENTRYPOINT` the job relies on (the job's `command` is W4b's); new `entry.py` (§2.2 step 0: discard the environment, metadata-server project and region, `CLOUD_RUN_EXECUTION` checked against `WS_BUILD_RE`, task count one, own 1800-second deadline, `execve` with the fixed environment); new `scripts/workspace-apply.sh` (steps 1 to 3, the build file's lines, with the two-argument check and exit 3 as success), which replaces `scripts/cloudbuild/workspace-apply.yaml`, deleted; `register-tenant.sh`'s header and `BUILD_ID` wording; CODEOWNERS on `entry.py`, `scripts/workspace-apply.sh` and the Dockerfile in place of the build file; the PR-check expectation that the guard and the script now rebuild `workspace-apply`; a unit test that every environment variable handed to `entry.py` is gone in the child, that any argument list but `[<w-id>, <mode>]` is refused, and that a task count other than one is refused | `images/workspace-apply/Dockerfile`, new `images/workspace-apply/entry.py`, new `scripts/workspace-apply.sh`, `scripts/cloudbuild/workspace-apply.yaml` (deleted), `scripts/register-tenant.sh` (comments and the `BUILD_ID` message only), `.github/CODEOWNERS`, `tests/unit/scripts/test_build_images_pr_check.py`, `tests/unit/scripts/test_register_tenant_workspace.py`, new `tests/unit/scripts/test_workspace_apply_entry.py` | W6 (built) |
 | W4b | 7 | **Terraform, owner-approved once**: in `workspace_deployer.tf`, `google_cloud_run_v2_job.workspace_apply` in place of `google_cloudbuild_trigger.workspace_apply` (the image by digest, `command` `python3 -I /opt/swarm/entry.py`, one task, `max_retries = 0`, timeout 1800s, direct VPC egress `ALL_TRAFFIC` into the swarm subnet with the worker network tag, so `modules/network`'s worker-ingress deny covers it, `managed-by=swarm-terraform`) and its authoritative `google_cloud_run_v2_job_iam_policy` naming the chosen dispatcher only; the sink and exclusion filter re-targeted at `resource.type="cloud_run_job" AND resource.labels.job_name="swarm-workspace-apply"`; `workspace_deployer_pull` removed, and `roles/logging.logWriter` if W0b (4) says so; `workspace_apply_builder_image` renamed `workspace_apply_image`, `workspace_apply_repository` removed, the swarm subnet named; the alerts of §2.4 re-targeted, plus the alert on a `jobs.run` from any other caller. **Option (ii):** new `workspace_dispatch.tf` (the account `swarm-workspace-dispatch` with its policy written empty, the workflow, the Eventarc trigger on the existing topic, the run role on the job, the invoker grant) and the workflow's source, and the Workflows and Eventarc APIs in infra's service list. **Option (i):** the topic and its publisher binding removed, and swarm-api's run role bound on the job. `terraform test` for each | `terraform/bootstrap/workspace_deployer.tf`, `terraform/bootstrap/variables.tf`, `terraform/modules/monitoring/workspace_alerts.tf`, `scripts/lib/unlabelable-types.json` (drop `google_cloudbuild_trigger`), `tests/terraform/workspace_deployer.tftest.hcl`, `tests/terraform/personal_workspaces_absent.tftest.hcl`; option (ii) adds new `terraform/bootstrap/workspace_dispatch.tf`, new `terraform/bootstrap/workflows/workspace-apply.yaml`, `terraform/infra/main.tf` (the service list only) and new `tests/terraform/workspace_dispatch.tftest.hcl` | W0b (1), W6b (its image promoted, for the digest), the owner's choice |
 | W7b | 7 | **swarm-api. Option (i):** `publish_workspace.py` becomes a caller of `jobs.run` on the one job with the two arguments (same `publish` contract: returns False, never raises, a failure stays `approved` for the sweep), its settings, and the Cloud Run client dependency. **Option (ii):** the module docstring's "Cloud Build trigger" becomes "Eventarc and Workflows start the Cloud Run job", and nothing else | `apps/swarm-api/swarm_api/publish_workspace.py`; option (i) adds `apps/swarm-api/swarm_api/settings.py`, `apps/swarm-api/pyproject.toml` and the publish tests under `tests/unit/control_plane/` | the owner's choice |
-| W11 | 9 | **removal, once the job ships** (the first execution has reached A9 and W0b (4) to (6) are dated): delete `terraform/bootstrap/cloudbuild_connection.tf` (its two custom roles and the two grants to Cloud Build's service agent) and any assertion that names it; the owner then deletes the `swarm-github` connection (`gcloud builds connections delete swarm-github --region=us-central1`), the `swarm-github-github-oauthtoken-*` secret Google's agent made for it, which deleting a connection does not remove, and uninstalls Google's Cloud Build GitHub App from the repository. `cloudbuild.googleapis.com` stays enabled: the release builds every image with Cloud Build | `terraform/bootstrap/cloudbuild_connection.tf` (deleted), `tests/terraform/` (none names it, read 2026-10-10) | W4b applied, W10 |
+| W11 | 9 | **removal, once the job ships** (the first execution has reached A9 and W0b (4) to (6) are dated): delete `terraform/bootstrap/cloudbuild_connection.tf` (its two custom roles and the two grants to Cloud Build's service agent) and any assertion that names it; the owner then deletes the `swarm-github` connection (`gcloud builds connections delete swarm-github --region=us-central1`), the `swarm-github-github-oauthtoken-*` secret Google's agent made for it, which deleting a connection does not remove, and uninstalls Google's Cloud Build GitHub App from the repository. `cloudbuild.googleapis.com` stays enabled: the release builds every image with Cloud Build. **Terraform half done 2026-10-13**, after the job took w-7f9285 through A1 to A9 to ready at 05:05Z: the file is deleted (a plain deletion, so the owner's next bootstrap apply destroys its four resources; `removed.tf`'s `destroy = false` is for grants that must stay live, and these must not), and `tests/unit/scripts/test_cloudbuild_connection_retired.py` holds every name it declared out of `terraform/`. **The owner's half is open**: the bootstrap apply and the three steps of "W11: retiring the Cloud Build connection" below | `terraform/bootstrap/cloudbuild_connection.tf` (deleted), `terraform/bootstrap/workspace_deployer.tf` (its comment), new `tests/unit/scripts/test_cloudbuild_connection_retired.py`, `tests/terraform/` (none names it, read 2026-10-10 and again 2026-10-13) | W4b applied, W10 |
 | — | later | deprovisioning (§7), with its own guard mode | — | the owner's decision then |
 
 **The owner's one-time steps** (shrunk by the 2026-10-10 re-decision):
@@ -2151,15 +2172,71 @@ phases. New files are named without their root.
   <repo>/workspace-apply:dev-promoted-pre-mark-<digest> --project <project>`.
   Marking a digest no release promoted is exactly what the check exists to
   refuse, so the confirmation is not optional.
-* **W11, after the job ships:** delete the `swarm-github` connection, its
-  OAuth secret, and Google's Cloud Build App from the repository.
+* **W11, now that the job has shipped:** delete the `swarm-github`
+  connection, apply bootstrap, delete the connection's OAuth secret, and
+  uninstall Google's Cloud Build App from the repository, in that order
+  ("W11: retiring the Cloud Build connection", below).
 
 **Removal note.** The `swarm-github` Cloud Build connection and the grants in
-`terraform/bootstrap/cloudbuild_connection.tf` exist only for the Cloud Build
+`terraform/bootstrap/cloudbuild_connection.tf` existed only for the Cloud Build
 trigger. They are **deleted once the job ships** (W11): not before, so a
 rollback to the trigger stays possible until the first execution has made a
 workspace end to end, and not long after, because the condition there admits
-Google's agent to set IAM on a secret prefix nothing else needs.
+Google's agent to set IAM on a secret prefix nothing else needs. The job
+shipped on 2026-10-13 (w-7f9285 reached ready at 05:05Z through the job), and
+the file was deleted the same day.
+
+### W11: retiring the Cloud Build connection
+
+The Terraform half is merged; what is left is the owner's, because it is a
+bootstrap apply, a credential Google's agent made, and an App installed on
+the repository. Every command names the shared project explicitly and touches
+only names this platform made. Do them in this order.
+
+1. **Delete the connection**, while its agent still holds the grants, so the
+   delete cannot fail on a permission the apply has just removed:
+
+   ```bash
+   gcloud builds connections delete swarm-github --region=us-central1 \
+     --project=saga-agents-staging
+   ```
+
+   Nothing reads it: the job needs no forge connection, and the release
+   builds images from an uploaded source, not from a connection.
+
+2. **Apply bootstrap** from `main` (`make bootstrap`). Its plan must read
+   **0 to add, 0 to change, 4 to destroy**, and the four are exactly:
+
+   * `google_project_iam_member.cloudbuild_connection_secret_create[0]`
+   * `google_project_iam_member.cloudbuild_connection_secret_policy[0]`
+   * `google_project_iam_custom_role.cloudbuild_connection_secret_create[0]`
+     (`swarmCloudBuildConnectionSecretCreate`)
+   * `google_project_iam_custom_role.cloudbuild_connection_secret_policy[0]`
+     (`swarmCloudBuildConnectionSecretPolicy`)
+
+   Anything else in the destroy list is not this change: stop. A destroyed
+   custom role is soft-deleted, and its id cannot be reused for 37 days.
+
+3. **Delete the connection's OAuth secret.** Deleting a connection does not
+   remove it. List it by its exact prefix first, and delete only what that
+   prints. The prefix is `swarm-github-github-oauthtoken-`, never
+   `swarm-github-`: that also matches `swarm-github-app-*`, the platform's own
+   GitHub App credentials.
+
+   ```bash
+   gcloud secrets list --project=saga-agents-staging \
+     --filter='name~^projects/[0-9]+/secrets/swarm-github-github-oauthtoken-' \
+     --format='value(name.basename())'
+   gcloud secrets delete <each name printed above> --project=saga-agents-staging
+   ```
+
+4. **Uninstall Google's Cloud Build GitHub App** ("Google Cloud Build") from
+   the repository: on GitHub, Settings → Applications → Installed GitHub
+   Apps → Google Cloud Build → Configure, then remove this repository, or
+   uninstall the App if this was the only repository it was given.
+
+`cloudbuild.googleapis.com` stays enabled throughout: the release builds every
+image with Cloud Build.
 
 After those, **no person's onboarding needs the owner**, unless the guard stops
 a run. W3, W4, W6 and W7 get the one review (credentials, tenant isolation,

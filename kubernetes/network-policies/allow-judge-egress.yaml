@@ -1,0 +1,51 @@
+# The internal judge's one extra path out of a tenant namespace: TCP 8443 to
+# the decision-api forwarder in swarm-system -- the only route onto Saga's
+# Tailscale tailnet -- from a pod the dispatcher labelled
+# `swarm-judge: internal`, and nothing else (owner decisions 2026-10-14; lane
+# JUDGE-NET; kubernetes/swarm-system/tailscale-egress.yaml,
+# docs/runbooks/tailscale-egress.md).
+#
+# Built exactly like `swarm-allow-live-egress` and `swarm-allow-egress-proxy`,
+# for the same reason: the internet rule in `allow-egress.yaml` is an ipBlock,
+# and "Pod traffic is never covered by an ipBlock rule", so reaching a pod in
+# swarm-system needs a pod selector naming ONE destination. 8443 is the
+# forwarder's port; callers dial the Service's 443, and Dataplane V2 judges
+# the connection after the Service's DNAT, at the pod and its 8443.
+#
+# WHY A LABEL. `swarm-judge: internal` is set by the dispatcher on a
+# live-browser or agent pod whose Jev judgment backend is an internal one
+# ("Internal Jev", the default, or "Internal Laya"), never by a caller
+# (invariant 10). A pod without it -- a TypeSafe-backed one included -- has no
+# route to the tailnet at all; its DNS and direct internet still come from the
+# existing policy. NetworkPolicies are unions, so this adds exactly that path
+# and removes nothing.
+#
+# WHAT THIS DOES NOT DO. It does not choose where on the tailnet the pod goes:
+# the forwarder dials one host on one port, and the tailnet's own ACL grants
+# its node nothing else.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-allow-judge-egress
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  podSelector:
+    matchLabels:
+      swarm-judge: "internal"
+  policyTypes:
+    - Egress
+  egress:
+    # ONE peer with BOTH selectors: the forwarder pods in swarm-system.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: swarm-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: decision-api-egress
+      ports:
+        - protocol: TCP
+          port: 8443

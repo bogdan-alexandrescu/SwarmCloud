@@ -125,6 +125,7 @@
 .nt-title { font-size: var(--t-body); color: var(--text-dim); overflow-wrap: anywhere; }
 .nt-item.is-unread .nt-title { font-weight: 600; color: var(--text); }
 .nt-detail { font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+.nt-question { font-size: var(--t-meta); color: var(--text); overflow-wrap: anywhere; }
 .nt-dest { font-size: var(--t-meta); color: var(--sk-ac); }
 .nt-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); white-space: nowrap; }
 .nt-mark { border: 0; padding: 0; background: none; color: var(--sk-ac); font: inherit; cursor: pointer; }

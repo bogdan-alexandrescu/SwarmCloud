@@ -37,10 +37,12 @@ from swarm_api.groups import StaticGroups
 from swarm_api.handoff import (
     HUMAN_HANDOFFS_METADATA_KEY,
     HUMAN_READY_METADATA_KEY,
+    HUMAN_RETURNED_METADATA_KEY,
     HUMAN_WAIT_EXPIRED,
     HUMAN_WAIT_RESUMES_METADATA_KEY,
     LIVE_AUDIT,
     MAX_HANDOFFS_PER_ATTEMPT,
+    REVIVED,
     handoff_message,
 )
 from swarm_api.main import create_app
@@ -252,6 +254,59 @@ def test_a_signed_request_sets_human_wait_and_records_it(live_client, db):
     entries = _audit(db)
     assert [e["entry"] for e in entries] == ["handoff_requested"]
     assert entries[0]["task_id"] == TASK and entries[0]["tenant_id"] == "eng"
+
+
+# --------------------------------------------------------------------------
+# HANDOFF-POLICY (part of #1030): notify, park fast, extend while watched
+# --------------------------------------------------------------------------
+
+
+def test_an_unwatched_hand_off_holds_for_one_minute_not_ten(live_client, db):
+    """MEASURED on 26 live-browser tasks (2026-10-13): of 42 hand-offs 25
+    expired, 13 of them with nobody there, each holding a 2-unit browser lease
+    and its pod for the whole 10 minutes. The hold now opens at
+    `human_unwatched_seconds` (60) and only a viewer or a controller moves it."""
+    from swarm_api.handoff import HUMAN_HOLD_MAX_SECONDS, HUMAN_UNWATCHED_SECONDS
+
+    assert HUMAN_UNWATCHED_SECONDS == 60
+    assert HUMAN_HOLD_MAX_SECONDS == 30 * 60
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    doc = running(live_client, db, attempt)
+    assert request_handoff(live_client, attempt).status_code == 201
+    wait = doc["human_wait"]
+    assert wait["deadline"] - wait["requested_at"] == timedelta(seconds=60)
+    assert wait["watched_at"] is None
+
+
+def test_the_unwatched_hold_never_passes_the_attempts_own_deadline(live_client, db):
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    doc = running(live_client, db, attempt,
+                  started_at=datetime.now(timezone.utc) - timedelta(seconds=3590))
+    assert request_handoff(live_client, attempt).status_code == 201
+    wait = doc["human_wait"]
+    assert wait["deadline"] <= doc["started_at"] + timedelta(seconds=3600)
+    assert wait["deadline"] >= wait["requested_at"]
+
+
+def test_a_request_puts_agent_needs_you_in_the_submitters_bell(live_client, db):
+    """Notify: the submitter's feed has an unread needs-you item linking to the
+    task's Browser tab as soon as the hand-off is recorded."""
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    running(live_client, db, attempt)
+    before = live_client.get("/v1/notifications", headers=auth_header("alice"))
+    assert before.status_code == 200, before.text
+    assert not [i for i in before.json()["items"] if i["id"].startswith("task:handoff:")]
+    assert request_handoff(live_client, attempt).status_code == 201
+    feed = live_client.get("/v1/notifications", headers=auth_header("alice")).json()
+    (item,) = [i for i in feed["items"] if i["id"].startswith("task:handoff:")]
+    assert item["title"] == "Agent needs you"
+    assert item["needs_you"] is True and item["read"] is False
+    assert item["href"] == f"/agents/live/{TASK}/browser"
+    assert item["id"].endswith(":signin-1")
+    assert feed["unread_needs_you"] >= 1
 
 
 def test_the_reason_is_redacted_before_it_is_stored(live_client, db):
@@ -595,7 +650,8 @@ def test_a_human_park_on_its_last_attempt_is_dead_lettered_at_once(db, make_sche
 
 @pytest.mark.parametrize(
     "key",
-    [HUMAN_WAIT_RESUMES_METADATA_KEY, HUMAN_READY_METADATA_KEY, HUMAN_HANDOFFS_METADATA_KEY],
+    [HUMAN_WAIT_RESUMES_METADATA_KEY, HUMAN_READY_METADATA_KEY, HUMAN_HANDOFFS_METADATA_KEY,
+     HUMAN_RETURNED_METADATA_KEY],
 )
 def test_the_hand_off_metadata_keys_are_reserved(client, db, key):
     seed_tenant(db, "eng")
@@ -616,3 +672,70 @@ def test_the_scheduler_restates_the_expiry_cause_swarm_api_names():
     from scheduler import loop
 
     assert loop.HUMAN_WAIT_EXPIRED == HUMAN_WAIT_EXPIRED
+
+
+# --------------------------------------------------------------------------
+# LB-RETURN (part of #1030): an expiry is refused once the hold was revived
+# --------------------------------------------------------------------------
+
+
+def _resolve_expired(client, attempt: Attempt, seen) -> Any:
+    body = json.dumps({**attempt.fields(), "request_id": "signin-1", "outcome": "expired",
+                       "seen_deadline": seen.isoformat()}).encode()
+    path = f"/v1/tasks/{attempt.tuple.task_id}/handoff/resolve"
+    headers = {"Authorization": f"Bearer {WORKER_TOKEN}", "Content-Type": "application/json"}
+    headers.update(attempt.sign("POST", path, body))
+    return client.post(path, content=body, headers=headers)
+
+
+def test_an_expiry_is_refused_when_a_viewer_moved_the_deadline_after_the_worker_read_it(
+    live_client, db
+):
+    """The worker judged the hold expired on the deadline it read; a viewer
+    joined before its resolve landed and moved it. The resolve is answered
+    "revived" -- 200, nothing written, the wait kept -- so the worker does not
+    park. An answer, not a refusal: a worker from before reads any 200."""
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    doc = running(live_client, db, attempt)
+    assert request_handoff(live_client, attempt).status_code == 201
+    seen = datetime.now(timezone.utc) - timedelta(seconds=2)
+    doc["human_wait"]["deadline"] = seen + timedelta(seconds=62)  # `LiveService.watched`
+    response = _resolve_expired(live_client, attempt, seen)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"resolved": REVIVED}
+    assert isinstance(doc["human_wait"], dict)
+    assert "human_handoff_resolved" not in [e["type"] for e in _events(db)]
+
+
+def test_an_expiry_on_the_deadline_the_worker_read_resolves(live_client, db):
+    """The control: nobody moved it, so the expiry stands."""
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    doc = running(live_client, db, attempt)
+    assert request_handoff(live_client, attempt).status_code == 201
+    seen = datetime.now(timezone.utc) - timedelta(seconds=2)
+    doc["human_wait"]["deadline"] = seen
+    response = _resolve_expired(live_client, attempt, seen)
+    assert response.status_code == 200, response.text
+    assert response.json() == {"resolved": True}
+    assert doc["human_wait"] is None
+
+
+def test_a_new_hand_off_forgets_a_return_from_before_it(live_client, db):
+    """A return recorded before this request answers nothing it asks."""
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    doc = running(live_client, db, attempt, metadata={
+        HUMAN_RETURNED_METADATA_KEY: {"attempt_id": ATTEMPT, "generation": 1,
+                                      "by": "alice@saga.xyz"}})
+    assert request_handoff(live_client, attempt).status_code == 201
+    assert HUMAN_RETURNED_METADATA_KEY not in doc["metadata"]
+
+
+def test_human_ready_forgets_a_recorded_return(live_client, db):
+    seed_tenant(db, "eng")
+    doc = seed_parked(db, metadata={HUMAN_RETURNED_METADATA_KEY: {"attempt_id": ATTEMPT}})
+    assert live_client.post(f"/v1/tasks/{TASK}/human-ready",
+                            headers=auth_header("alice")).status_code == 200
+    assert HUMAN_RETURNED_METADATA_KEY not in doc["metadata"]

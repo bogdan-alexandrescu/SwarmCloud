@@ -121,7 +121,7 @@ class SecretStore:
     def put(self, secret_id: str, value: str) -> None:
         self.values[secret_id] = value
 
-    def token_for(self, tenant) -> str:
+    def token_for(self, tenant, *, person=None) -> str:
         return self.read_slot(tenant, forge.GIT_PROVIDER).value
 
     def read_slot(self, tenant, provider: str) -> forge.SlotValue:

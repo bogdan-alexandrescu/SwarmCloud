@@ -20,7 +20,90 @@ the "Revised 2026-10-06" section below is that design and its build plan
 one at a time, in submission order -- the section after the next.**
 **Revised 2026-10-11: a head the PR-side CI fixer pushed for the pull request
 is a fix round's, and a conflicting pull request goes to a conflict fix round
-instead of a six-hour wait for checks -- the first section below.**
+instead of a six-hour wait for checks -- the second section below.**
+**Revised 2026-10-14: a lane workflow's red or conflicting pull request runs
+bounded fix rounds by itself, two by default, re-running a flaky job before
+it spends an agent -- the first section below.**
+
+## Revised 2026-10-14: auto fix rounds (lane SPEED-D2)
+
+Owner decision 2026-10-14 ("Auto fix rounds", the delivery speed plan),
+taken on a measurement over the last 150 merged pull requests: 0.52 red CI
+runs per pull request, 23% of SwarmCloud lanes needing a hand fix-up, and
+five fixers dispatched by hand in one day because a lane's merge step ended
+FAILED `checks_failed` (PR 1278: "checks_failed at <sha>: ci-gate") the
+first time CI was red. Nothing new was needed to fix a pull request -- MS7's
+CI-fix rounds and #1076's conflict rounds already existed. They were not
+used because a lane asked for no rounds: `metadata.merge_fix_rounds`
+defaulted to 0. What this lane changed, and why:
+
+* **Two rounds by default.** A workflow spec takes `fix_rounds` (0-5), the
+  same budget as `metadata.merge_fix_rounds`; given both, they must agree.
+  Submission resolves it once (`validation.resolve_fix_rounds`) and stamps
+  it on the merge task as `metadata.merge_fix_rounds`, which the wake tick
+  and the worker already read. Neither given: **2** beside a merge step
+  (`LANE_FIX_ROUNDS_DEFAULT`), the PR-side fixer's own bound; **0** for an
+  issue run's workflow, whose own loop (`--fix-rounds`) fixes CI before it
+  submits its merge -- two loops on one pull request would race each
+  other's pushes; and **0** for a `merge_pr` workflow (#352), which refuses
+  any other number: its branch is no task's, so no round could push to it,
+  and rounds asked for and never possible would park the worker on
+  `ci_fix_pending` until its six-hour bound. `fix_rounds: 0` keeps the behaviour from before this lane:
+  red refuses `checks_failed` at once, and nothing is re-run. Conflict
+  rounds keep their own cap of 2 (`MERGE_CONFLICT_ROUNDS_MAX`) whatever
+  `fix_rounds` says, as #1076 decided: a conflict nobody resolves is never
+  mergeable at all, so 0 does not turn them off.
+* **A flake costs no agent.** The first red reading at a head, when a round
+  is possible and every failing check is an Actions job, asks GitHub to
+  re-run exactly those jobs (`POST actions/jobs/<id>/rerun`, `actions:
+  write`, the tenant's own `-git` token) and spends no round. It is recorded
+  in `metadata.merge_fix.reruns`, claimed under the guard a round is claimed
+  under, once per head. The re-run's check runs are the latest of their name,
+  so the next reading is the re-run's: green wakes the step to merge, red
+  goes to a round. A red commit status or another App's check is not re-run
+  (re-running the rest could not make the head green). A credential without
+  `actions: write` is recorded as the re-run's `error`, and the round is
+  claimed in the same tick: the refusal costs one request, not a wait.
+  While GitHub still serves the very runs that were re-run, the tick waits,
+  at most `RERUN_SETTLE_SECONDS` (10 min).
+* **Each round is a step of the lane's workflow.** The round is still its
+  own one-step continuation workflow (it must be: it is submitted, signed and
+  admitted like any other). After it is submitted the tick appends a step to
+  the merge task's workflow -- `ci-fix:<n>` or `conflict-fix:<n>`, naming the
+  round's task -- so `GET /v1/workflows/<id>` and the console show it beside
+  implement, review, fix and merge. A caller's step id cannot hold `:`, so the
+  id alone marks a step only the platform appended; the append is guarded on
+  the workflow being the tenant's and holding the merge task.
+* **The rollup counts the round steps as rounds.** `swarm_rollup.derive`
+  ranks them like any step while they run or wait (a running round is a
+  RUNNING workflow; it holds capacity), but leaves them out of the terminal
+  severity while the workflow has steps of its own: the merge step's ending
+  is the verdict on its rounds. Round 1 FAILED, round 2 SUCCEEDED, merge
+  SUCCEEDED is a SUCCEEDED workflow; a merge that refused after its rounds is
+  FAILED on its own state. `counts` still says what each round's task is, and
+  `fix_round_steps` names them. The reconciler's stall check derives the same
+  answer, because it decodes step ids (not inputs) and calls the same rule.
+* **What a round is told.** A CI round's prompt carries the failing jobs'
+  names, titles, annotations and log tails (`issueci.excerpt_at`: read by the
+  platform with the tenant's token -- agents hold no GitHub token -- redacted,
+  then bounded at 8 KiB) and nothing else from GitHub. A conflict round's
+  carries the files both sides changed since the branch left its base: the
+  pull request's files intersected with `compare/<head>...<base>`, at most 50,
+  fenced as data. Unreadable, the round runs without the list. A round runs
+  the continued step's resource class when that step ran the round's profile.
+
+**Invariants.** 1-3: a re-run creates no task; a round is an ordinary task
+admitted like any other, and the merge step stays PARKED, holding nothing,
+while either runs. 5: unchanged -- the worker accepts a round's head only
+from its signed spec (`agent_worker.merge._fix_round_heads`). 9: every read
+and the re-run use the merge task's own tenant's token, and a round is
+submitted as the merge task's submitter only while they are a member. 10:
+the round's profile is `claude-code`, chosen by the platform.
+
+**Frozen contract.** `Workflow` has no field for the budget and
+`WorkflowStep` none that says "appended by the platform". Both are worked
+around (the merge task's metadata; the reserved step-id shape) and filed as
+request 75 in [contract-change-requests.md](contract-change-requests.md).
 
 ## Revised 2026-10-11: the CI fixer's head, and conflicts (#1073, #1076)
 
@@ -94,6 +177,23 @@ CI-fix round:
 * the round's pushed head is a fix round's head to the worker, exactly as in
   #1073; a merge, never a rebase or force-push, because a rewritten branch
   would orphan heads the step already accepted;
+* the merge reaches the forge as a **two-parent merge** (Revised 2026-10-14,
+  #1321). The worker rewrites every commit it pushes as its own, and that
+  rewrite used to drop every merge's second parent, so the round's
+  `git merge origin/main` was pushed with one parent: GitHub kept the old
+  merge base, listed every file main had changed as the PR's, and the PR still
+  conflicted (PR 1316, PR 1304). The replay and the fold now keep a merge
+  parent the forge's default branch holds (`lifecycle.replay_agent_commits`,
+  `gitops.fold_agent_commits`); a side branch the agent made is still
+  dropped, so none of its commits is pushed as the agent wrote it. Before it
+  pushes, a round checks that `git merge-base <main's head on the forge> HEAD`
+  is main's head -- or the main commit it merged, when main moved on during
+  the round -- and otherwise fails with that merge base named
+  (`gitops.verify_merged_default_branch`), rather than push a head that still
+  conflicts and spend a round on it. The worker knows a round by
+  `dispatch.conflict_round`, which swarm-api copies at submission from the
+  `merge_conflict_round` record the tick submits the round with: the worker
+  acts on no metadata the step-spec signature does not cover;
 * **at most `MERGE_CONFLICT_ROUNDS_MAX` = 2 rounds**, the PR-side CI fixer's
   own bound (`cifix.DEFAULT_MAX_ATTEMPTS`), whatever `merge_fix_rounds` says:
   that budget is about red CI and defaults to none, and a conflict nobody
@@ -428,7 +528,9 @@ continuation only once CI is green and its `Closes #N` block is written.
 That step therefore parks only on mergeability or a behind branch.
 
 A workflow that is not an issue run gets the same loop on request, as MS7.
-`metadata.merge_fix_rounds` is 0-5 and defaults to 0. When the tick reads a
+`metadata.merge_fix_rounds` is 0-5 and defaulted to 0; since SPEED-D2
+(2026-10-14, the first section of this document) it is stamped on every
+merge task, 2 unless the spec says otherwise. When the tick reads a
 red required check for a `CI_PENDING` merge with rounds left, it claims the
 round in the merge task's metadata in a guarded transaction, then submits
 the continuation the issue-run loop already builds

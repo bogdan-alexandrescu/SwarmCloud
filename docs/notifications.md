@@ -60,9 +60,9 @@ records each time, and the read marks only say which ids have been seen.
 
 That is why **ids are stable**. The same underlying thing derives the same id
 on every read, for example `admin:workspace:<workspace id>:<request id>` or
-`task:handoff:<task>:<generation>`. A new occurrence of the same thing derives
-a new id, which starts unread: a request made again after a denial, a plan
-revised, a second hand-off in a later attempt.
+`task:handoff:<task>:<generation>:<request id>`. A new occurrence of the same
+thing derives a new id, which starts unread: a request made again after a
+denial, a plan revised, a second hand-off in the same attempt or a later one.
 
 ## The groups
 
@@ -70,8 +70,8 @@ revised, a second hand-off in a later attempt.
 |---|---|---|---|
 | `admin` | yes, admins only | `workspaces` in `requested`, `loan_requests` in `requested`: what Admin › People lists first | `/admin/people` |
 | `approval` | yes | the tenant's pending `approvals` records (an expired one, or a merge whose run has moved on, is skipped); `schedule_firings` held for approval before the inbox made their record; `issue_runs` in `PLANNED` | `/approvals/<id>` |
-| `task` | yes | the caller's RUNNING tasks with a live-browser hand-off (`Task.human_wait`) and their PARKED `HUMAN_REQUIRED` tasks; the caller's tasks of the last 7 days whose agent wrote `questions.json` (`result_summary.questions`) | the task's Browser tab; its Artifacts tab |
-| `account` | yes for GitHub, no for the workspace | the caller's `forge_connections` document in `refresh_failed` (only reconnecting renews it); their own expired user-scope `git_tokens`; their own workspace becoming `ready` or `denied` in the last 7 days | `/access`; `/setup#workspace` |
+| `task` | yes | "Agent needs you": RUNNING tasks with a live-browser hand-off (`Task.human_wait`) the caller may take control of -- their own, and the tenant's while "Let any member take control" is on (docs/design/live-browser.md §4.1) -- and the caller's PARKED `HUMAN_REQUIRED` tasks; the caller's tasks of the last 7 days whose agent wrote `questions.json` (`result_summary.questions`) | the task's Browser tab; its Artifacts tab |
+| `account` | yes for GitHub, no for the workspace | the caller's `forge_connections` document in `refresh_failed` (only reconnecting renews it); their own expired user-scope `git_tokens`; their own workspace becoming `ready` or `denied` in the last 7 days; their own Claude-account loan request `declined` in the last 7 days (LOAN-DECLINE) | `/access`; `/setup#workspace`; `/setup#claude-account` |
 | `finished` | no | the caller's own tasks submitted alone, their workflows (stored state), and their issue runs whose pull request merged, all ended in the last 7 days | the agent, workflow or run |
 
 Some notes on what each group deliberately leaves out:
@@ -87,10 +87,18 @@ Some notes on what each group deliberately leaves out:
   reads. The feed does neither. A waiting firing gets the id its record will
   have, because `approval_id` is deterministic, so a read mark survives the
   record being made.
-* **No record says a question was answered.** An agent's `questions.json` is
-  data for a person (`agent_worker/questions.py`), and nothing records the
-  reply. So a question item stays for 7 days after its task ended, and marking
-  it read clears it from the bell's count.
+* **A question item goes once every question is answered.** An agent's
+  `questions.json` is data for a person (`agent_worker/questions.py`). The
+  person answers on the task's "Questions for you" card
+  (`POST /v1/tasks/{id}/answers`, TASK-ANSWERS, owner decision 2026-10-13), and
+  the answer is stored on the task as `metadata.owner_answers`. The item derives
+  only while at least one counted question has no answer. Until then it stays
+  for 7 days after its task ended, and marking it read clears it from the bell's
+  count.
+* **A declined loan request does not count as needing you either.** Nothing
+  the person does resolves it. It carries the admin's optional reason and
+  never who declined. Asking again re-opens the request, and the item no
+  longer derives.
 * **A workspace becoming ready, or being denied, does not count as needing
   you.** Nothing the person does resolves it, so as a needs-you item it would
   sit in the bell until marked read. It is an update in the `account` group,

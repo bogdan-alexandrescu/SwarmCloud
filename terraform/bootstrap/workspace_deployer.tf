@@ -18,8 +18,9 @@
 # namespace (owner decisions WD2, re-decided 2026-10-10, and WD3).
 #
 # The Cloud Build trigger this file used to make is gone with WD2's
-# re-decision. The repository connection in cloudbuild_connection.tf stays
-# until the job has shipped (lane W11), and nothing here reads it.
+# re-decision, and so, since the job reached A9 on 2026-10-13 (lane W11), are
+# the two grants to Cloud Build's service agent that let the repository
+# connection store its token.
 #
 # THE ACCEPTED RISK (§2.4, owner, 2026-10-08). A worker account's own IAM
 # policy can only be written by an identity holding

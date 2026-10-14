@@ -60,13 +60,16 @@ pytestmark = pytest.mark.skipif(
 )
 
 PYTHON_SERVICES = {"swarm-api", "swarm-scheduler", "swarm-quota-broker", "swarm-reconciler"}
-WORKER = {"agent-runtime-base", "agent-runtime-browser", "agent-runtime-indexer"}
+# agent-runtime-base-nocodex (BROWSER-NO-CODEX) is the base's Dockerfile built
+# without codex, so it takes exactly the base's inputs.
+WORKER = {"agent-runtime-base", "agent-runtime-base-nocodex", "agent-runtime-browser", "agent-runtime-indexer"}
 # workspace-apply (#847, lane W4) copies nothing from the repository: the job's
 # code is the checkout Cloud Build hands each step, so only its own directory
 # and the two ignore files reach it.
 # swarm-live (LB-L8e) is the one recipe under apps/ rather than images/
-# (apps/swarm-live/Dockerfile); find_recipe() accepts both.
-ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "workspace-apply"}
+# (apps/swarm-live/Dockerfile); find_recipe() accepts both. swarm-egress
+# (EGRESS-BUILD) sits beside its app the same way (apps/swarm-egress/Dockerfile).
+ALL = PYTHON_SERVICES | WORKER | {"swarm-ui", "swarm-verify", "swarm-live", "swarm-egress", "workspace-apply"}
 
 
 def _env(tmp_path: Path, **extra: str) -> dict[str, str]:
@@ -143,12 +146,19 @@ def _affected(tmp_path: Path, changed: list[str], root: Path | None = None):
         (["terraform/modules/service_account_ids/main.tf"], {"workspace-apply"}),
         (["apps/scheduler/scheduler/dispatch.py"], {"swarm-scheduler", "workspace-apply"}),
         # COPY'd files outside images/.
-        (["apps/common/swarm_common/models.py"], PYTHON_SERVICES | WORKER | {"swarm-live", "workspace-apply"}),
+        (["apps/common/swarm_common/models.py"],
+         PYTHON_SERVICES | WORKER | {"swarm-live", "swarm-egress", "workspace-apply"}),
         # The live relay: its recipe beside it, and its own lock.
         (["apps/swarm-live/swarm_live/main.py"], {"swarm-live"}),
         (["apps/swarm-live/uv.lock"], {"swarm-live"}),
         (["apps/swarm-live/Dockerfile"], {"swarm-live"}),
-        (["apps/redaction/redaction/scan.py"], WORKER | {"swarm-api"}),
+        # The egress forwarder (EGRESS-BUILD): the same shape as the relay. A
+        # change to the relay above reaches the relay alone, and one to the
+        # forwarder reaches the forwarder alone.
+        (["apps/swarm-egress/swarm_egress/server.py"], {"swarm-egress"}),
+        (["apps/swarm-egress/uv.lock"], {"swarm-egress"}),
+        (["apps/swarm-egress/Dockerfile"], {"swarm-egress"}),
+        (["apps/redaction/redaction/scan.py"], WORKER | {"swarm-api", "swarm-egress"}),
         (["apps/agent-worker/worker/main.py"], WORKER),
         (["apps/quota-broker/quota_broker/app.py"], {"swarm-quota-broker", "swarm-scheduler", "workspace-apply"}),
         (["apps/swarm-ui/src/App.tsx"], {"swarm-ui"}),
@@ -380,8 +390,9 @@ def test_build_only_builds_and_pushes_nothing(tmp_path):
     assert not others, f"a build-only run called gcloud for more than a build: {others}"
 
     submits = {e["target"]: e for e in events}
-    # The base is built INSIDE the browser's build, so it is not submitted twice.
-    assert set(submits) == {"swarm-api", "swarm-verify", "agent-runtime-browser"}, sorted(submits)
+    # The browser's chain builds agent-runtime-base-nocodex (BROWSER-NO-CODEX),
+    # not the base asked for here, so the base is its own build.
+    assert set(submits) == {"swarm-api", "swarm-verify", "agent-runtime-base", "agent-runtime-browser"}, sorted(submits)
 
     registry = "docker.pkg.dev"
     for target, event in submits.items():

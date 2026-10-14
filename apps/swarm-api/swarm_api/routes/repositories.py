@@ -77,7 +77,7 @@ from ..deps import AppContext, current_auth, get_context, paged_limit, tenant_sc
 from ..forgeapp import Caller
 from .access import get_access
 from ..errors import ValidationFailed
-from ..forge import ForgeReadError
+from ..forge import FirestoreSlotIndex, ForgeReadError, service_credential_view
 from ..impact import (
     DEPTH_MAX,
     NEIGHBOURHOOD_DEPTH_DEFAULT,
@@ -167,12 +167,24 @@ def _platform_admin(fields: set[str], auth: AuthContext, field: str = "platform"
     return auth.email
 
 
-def _served(ctx: AppContext, record: dict) -> dict:
+def _index_credential(ctx: AppContext, tenant_id: str, auth: AuthContext) -> dict:
+    """Which credential the tenant's index runs clone with (INDEX-CRED):
+    `forge.service_credential_view` over the slot `forge.service_slot` picks
+    -- the one `SubmissionService._resolve_forge` gives an index run -- so a
+    repository that passes Try it but fails to index shows why on its card.
+    Names and a login only, never a value."""
+    return service_credential_view(_tenant(ctx, tenant_id, auth), FirestoreSlotIndex(ctx.db))
+
+
+def _served(ctx: AppContext, record: dict, credential: dict | None = None) -> dict:
     """A registration as served: `to_api`, with a coverage block that says
-    which of its counts are capped (RSA-4, `RepoIndex.served_coverage`)."""
+    which of its counts are capped (RSA-4, `RepoIndex.served_coverage`), and
+    the credential its index runs use (`index_credential`, INDEX-CRED)."""
     body = to_api(record)
     if isinstance((record.get("index") or {}).get("coverage"), dict):
         body["index"]["coverage"] = _index(ctx).served_coverage(record)
+    if credential is not None:
+        body["index_credential"] = dict(credential)
     return body
 
 
@@ -214,13 +226,16 @@ def list_repositories(
     limit: int | None = Query(default=None),
     page_token: str | None = Query(default=None, max_length=256),
     tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     rows, next_token = _store(ctx).list(
         tenant_id, limit=paged_limit(ctx, limit), page_token=page_token
     )
+    # Resolved once for the page: it is the tenant's, the same on every card.
+    credential = _index_credential(ctx, tenant_id, auth) if rows else None
     return {
-        "repositories": [_served(ctx, row) for row in rows],
+        "repositories": [_served(ctx, row, credential) for row in rows],
         "next_page_token": next_token,
         "tenant_id": tenant_id,
     }
@@ -257,10 +272,12 @@ def readable_repositories(
 def get_repository(
     repo_id: str,
     tenant_id: str = Depends(tenant_scope),
+    auth: AuthContext = Depends(current_auth),
     ctx: AppContext = Depends(get_context),
 ) -> dict:
     record = _store(ctx).get(tenant_id, repo_id)
-    return {"repository": _served(ctx, record), "tenant_id": tenant_id}
+    return {"repository": _served(ctx, record, _index_credential(ctx, tenant_id, auth)),
+            "tenant_id": tenant_id}
 
 
 @router.patch("/{repo_id}")
@@ -273,8 +290,9 @@ def patch_repository(
 ) -> dict:
     platform_by = _platform_admin(body.model_fields_set, auth)
     merge_policy_by = _platform_admin(body.model_fields_set, auth, "merge_policy")
+    readable_by = _platform_admin(body.model_fields_set, auth, "readable_by_tasks")
     record = _store(ctx).patch(tenant_id, repo_id, body, platform_by=platform_by,
-                               merge_policy_by=merge_policy_by)
+                               merge_policy_by=merge_policy_by, readable_by=readable_by)
     log.info(
         "repository patch tenant=%s repo_id=%s by=%s fields=%s", tenant_id, record["repo_id"],
         auth.email, ",".join(sorted(body.model_dump(exclude_none=True))),
@@ -364,7 +382,7 @@ def get_index(
     service.registrations.get(tenant_id, repo_id)
     tenant = _tenant(ctx, tenant_id, auth)
     service.settle(tenant_id, repo_id, auth=auth, tenant=tenant)
-    service.refresh_relation(tenant_id, repo_id, tenant)
+    service.refresh_relation(tenant_id, repo_id, tenant, person=auth.email)
     record = service.registrations.get(tenant_id, repo_id)
     index_state = dict(record.get("index") or {})
     in_flight_id = index_state.get("in_flight_task_id")

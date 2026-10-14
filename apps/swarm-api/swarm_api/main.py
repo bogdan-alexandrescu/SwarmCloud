@@ -37,18 +37,22 @@ from .routes import (
     forgeapp,
     forgeperms,
     gittokens,
+    gittools,
     health,
     issues,
+    judgment,
     leases,
     live,
     notifications,
     onboarding,
     outcomes,
+    provider_keys,
     people,
     platform,
     repositories,
     runs,
     schedule_tick,
+    search,
     strandedprs,
     schedules,
     tasks,
@@ -157,6 +161,14 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The caller's own tenant; the App's settings link for admins only.
     app.include_router(forgeperms.router)
     app.include_router(tenants.router)
+    # Provider keys a person or a tenant admin sets, TypeSafe first
+    # (docs/provider-keys.md, lane KEYS-API): write-only, a person's own key in
+    # their personal tenant, the tenant key for admins, one-time form links.
+    app.include_router(provider_keys.router)
+    # Each workspace's Jev judgment backend -- Internal Jev (the default),
+    # Internal Laya or TypeSafe -- its owner's or an admin's to choose,
+    # audited (swarm_api.judgment, lane JUDGE-SELECT).
+    app.include_router(judgment.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service
     # supplies the caller's tenant and nothing else.
@@ -185,6 +197,12 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.
     app.include_router(children.router)
+    # The runner git tools (docs/runner-git-tools.md, lane G5): worker-only,
+    # authenticated as the child routes are, plus the audit's tenant read.
+    app.include_router(gittools.router)
+    # The search tool (docs/search-tool.md, lane SEARCH-TOOL): worker-only,
+    # authenticated as the git tools are; a 404 while SEARCH_TOOL_ENABLED is off.
+    app.include_router(search.router)
     # Named browser logins and the workflow carry (docs/design/live-browser.md
     # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
     # routes that authenticate as the child routes do.

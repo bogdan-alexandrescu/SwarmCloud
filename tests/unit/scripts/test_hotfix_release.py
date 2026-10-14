@@ -36,6 +36,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import stat
 import subprocess
 import sys
@@ -708,6 +709,13 @@ def test_the_scripts_are_executable_and_shellcheck_clean(script):
     assert os.access(script, os.X_OK)
     lines = [l for l in script.read_text().splitlines() if l.strip() and not l.startswith("#")]
     assert lines[0] == "set -euo pipefail"
+    # Skipped, not crashed, where shellcheck is absent -- the same skip as
+    # test_release_acceptance_job.py, test_register_tenant_forge_reader.py and
+    # test_build_mirror.py. A bogdan-ci VM booted from an image without it
+    # raised FileNotFoundError here (PR 1184, run 38552512519); the image now
+    # installs it, so CI runs the check.
+    if shutil.which("shellcheck") is None:
+        pytest.skip("shellcheck is not installed here")
     proc = subprocess.run(["shellcheck", "-x", str(script)], capture_output=True, text=True, cwd=REPO)
     assert proc.returncode == 0, proc.stdout
 

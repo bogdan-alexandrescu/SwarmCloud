@@ -225,6 +225,116 @@ def test_the_runner_says_nothing_of_a_browser_on_the_base_image(monkeypatch, tmp
     assert seen["prompt"] == "Screenshot the settings page."
 
 
+def test_the_agents_bash_tool_inherits_swarm_handoff_and_the_cdp_endpoint(monkeypatch, tmp_path):
+    """LB-POLISH (part of #1030). MEASURED 2026-10-13 on
+    task_1f28d5bfa5a14f618f83: the agent had to `export SWARM_HANDOFF=...`
+    itself -- the lifecycle sets it for the runner (`handoff.prepare`), but
+    the CLI's environment is built from scratch and did not carry it, so
+    `swarm-handoff` in the Bash tool found no spool. The CLI's environment is
+    what its Bash tool inherits; the hand-off's variables are now in it."""
+    from agent_worker import handoff
+
+    spool = tmp_path / ".swarm-handoff"
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv("SWARM_BROWSER_UPLOADS", "/run/swarm/uploads")
+    # JUDGE-SELECT's two, so every name the hand-off passes is present.
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-laya")
+    monkeypatch.setenv("JEV_API_URL", "http://decision-api.swarm-system.svc.cluster.local/laya/v1/decide")
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["env"]["SWARM_HANDOFF"] == str(spool)
+    assert seen["env"]["SWARM_CDP_ENDPOINT"] == "http://127.0.0.1:9223"
+    assert seen["env"]["SWARM_BROWSER_UPLOADS"] == "/run/swarm/uploads"
+    # Exactly the hand-off's own names: what the worker hands the agent.
+    assert {handoff.HANDOFF_ENV, *handoff.AGENT_PASSTHROUGH_ENV} <= set(seen["env"])
+
+
+def test_the_judgment_backend_and_its_url_reach_the_cli_and_no_typesafe_key(monkeypatch, tmp_path):
+    """JUDGE-SELECT (owner decision 2026-10-14). The dispatcher names the
+    workspace's judgment backend (SWARM_JEV_BACKEND) and, for an internal one,
+    the in-cluster JEV_API_URL; the CLI's environment is what its MCP servers
+    inherit, so jev-browser-mcp reads both there. Nothing here hands the CLI a
+    TypeSafe key: an internal backend needs none."""
+    from agent_worker import handoff
+
+    url = "http://decision-api.swarm-system.svc.cluster.local/jev/v1/decide"
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(tmp_path / ".swarm-handoff"))
+    monkeypatch.setenv("SWARM_CDP_ENDPOINT", "http://127.0.0.1:9223")
+    monkeypatch.setenv("SWARM_JEV_BACKEND", "internal-jev")
+    monkeypatch.setenv("JEV_API_URL", url)
+    monkeypatch.delenv("TYPESAFE_API_KEY", raising=False)
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["env"]["SWARM_JEV_BACKEND"] == "internal-jev"
+    assert seen["env"]["JEV_API_URL"] == url
+    assert "TYPESAFE_API_KEY" not in seen["env"]
+    assert {"SWARM_JEV_BACKEND", "JEV_API_URL"} <= set(handoff.AGENT_PASSTHROUGH_ENV)
+
+
+def test_the_launch_env_built_by_the_cli_runner_carries_swarm_handoff(monkeypatch, tmp_path):
+    """The same, one layer down: the env `run_cli_agent` hands the CLI process
+    (and so its Bash tool) names the attempt's spool, which `prepare` made."""
+    from agent_worker import handoff
+    from agent_worker.runners import claude_code, cliagent
+
+    spool = tmp_path / ".swarm-handoff"
+    spool.mkdir()
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    monkeypatch.delenv("SWARM_CDP_ENDPOINT", raising=False)
+    monkeypatch.delenv("SWARM_BROWSER_UPLOADS", raising=False)
+    monkeypatch.setenv(claude_code.SPEC.key_env, "sk-ant-" + "x" * 40)
+    launched: dict[str, Any] = {}
+
+    class Stop(Exception):
+        pass
+
+    def fake_child(argv, *, env, **kwargs):
+        launched.update(env)
+        raise Stop
+
+    monkeypatch.setattr(cliagent, "run_child", fake_child)
+    binary = tmp_path / "claude"
+    binary.write_text("")
+    monkeypatch.setenv(claude_code.SPEC.binary_env, str(binary))
+    from agent_worker.runners.base import RunnerContext
+
+    ctx = RunnerContext(
+        work_dir=tmp_path,
+        artifacts_dir=tmp_path / "artifacts",
+        input_path=tmp_path / "input.json",
+        result_path=tmp_path / "result.json",
+        quota_path=tmp_path / "quota.json",
+        payload={"prompt": "Sign in, then hand off."},
+    )
+    (tmp_path / "artifacts").mkdir()
+    with pytest.raises(Stop):
+        claude_code.body(ctx)
+    assert launched.get("SWARM_HANDOFF") == str(spool)
+
+
+def test_a_resumed_attempt_is_told_in_its_prompt_what_the_earlier_one_did(monkeypatch, tmp_path):
+    """RESUME-PROGRESS (QA12-14, part of #1030). The CLI has no conversation
+    to resume across a park, so the worker's summary of the earlier attempts'
+    hand-offs (`handoff.HandoffPath.prepare`, written into the spool) is the
+    resumed agent's prompt: after the caller's, before the platform's notes."""
+    from agent_worker import handoff
+    from agent_worker.runners.claude_code import BROWSER_NOTE
+
+    spool = tmp_path / handoff.SPOOL_DIR_NAME
+    spool.mkdir()
+    summary = f"{handoff.RESUME_HEADLINE}\n\n1. \"QA1\": {handoff.MARK_DONE}"
+    (spool / handoff.RESUME_NAME).write_text(summary)
+    monkeypatch.setenv(handoff.HANDOFF_ENV, str(spool))
+    seen = _run_body(monkeypatch, tmp_path, "/opt/playwright")
+    assert seen["prompt"].startswith("Screenshot the settings page.")
+    assert summary in seen["prompt"]
+    assert seen["prompt"].index(summary) < seen["prompt"].index(BROWSER_NOTE)
+
+    # No summary in the spool: a first attempt's prompt is the caller's.
+    (spool / handoff.RESUME_NAME).unlink()
+    seen = _run_body(monkeypatch, tmp_path, None)
+    assert seen["prompt"] == "Screenshot the settings page."
+
+
 def test_the_browser_image_sets_the_path_the_runner_reads():
     text = DOCKERFILE.read_text(encoding="utf-8")
     assert re.search(r"^ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright", text, re.M)

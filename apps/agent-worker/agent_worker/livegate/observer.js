@@ -23,6 +23,12 @@
 //       with no change, so a gate that missed one (a reconnect, a report
 //       raced by a navigation) recovers without the page having to move.
 //
+// Both carry "h": true while the document is hidden -- its tab is not the one
+// on screen -- and a `layout` is sent the moment that changes
+// (`visibilitychange`). A hidden tab runs no animation frames, so it never
+// measures again; the gate treats a report from it as describing pixels that
+// are not on screen (mask.py `REASON_HIDDEN`, LIVE-BLANK).
+//
 // `doc` is random per document instance. Field ids and iframe ids are
 // per-document numbers this world assigns; the gate keeps its own copy of the
 // "ever a password" set by id.
@@ -73,6 +79,8 @@
   // a listener on `window`; and a non-composed event inside a shadow root
   // never leaves it.
   const DOCUMENT_TRIGGERS = ["load", "error"];
+  // Listened for on `document` only: the tab was hidden or shown.
+  const VISIBILITY_TRIGGERS = ["visibilitychange"];
   const MUTATIONS = {
     subtree: true, childList: true, attributes: true, characterData: true,
   };
@@ -103,6 +111,7 @@
   function post(message) {
     message.v = 1;
     message.doc = doc;
+    message.h = document.visibilityState !== "visible";
     try {
       send(JSON.stringify(message));
     } catch (_) {
@@ -252,8 +261,11 @@
     post({
       k: "report",
       e: epoch,
+      // The visual viewport's size too: the mask sizes the page on screen as
+      // that times the scale, which is the device's viewport even when a
+      // phone preset shows the page zoomed out to fit (mask.py, QA12-01).
       vp: [innerWidth, innerHeight, vv ? vv.offsetLeft : 0, vv ? vv.offsetTop : 0,
-           vv ? vv.scale : 1],
+           vv ? vv.scale : 1, vv ? vv.width : innerWidth, vv ? vv.height : innerHeight],
       f: fields,
       t: texts,
       o: owners,
@@ -333,6 +345,7 @@
   mutations.observe(document, MUTATIONS);
   for (const type of WINDOW_TRIGGERS) addEventListener(type, layout, capture);
   for (const type of DOCUMENT_TRIGGERS) document.addEventListener(type, layout, capture);
+  for (const type of VISIBILITY_TRIGGERS) document.addEventListener(type, layout, capture);
   if (globalThis.visualViewport) {
     visualViewport.addEventListener("resize", layout, { passive: true });
     visualViewport.addEventListener("scroll", layout, { passive: true });

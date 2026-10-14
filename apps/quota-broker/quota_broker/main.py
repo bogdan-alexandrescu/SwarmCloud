@@ -82,7 +82,7 @@ from .oauth import HttpTokenEndpoint
 from .publishledger import FirestorePublishLedger, InMemoryPublishLedger
 from .publishledger import fingerprint as publish_fingerprint
 from .secretstore import SecretManagerStore
-from .service import QuotaBroker, quota_to_firestore
+from .service import QuotaBroker, TargetResetRefused, quota_to_firestore
 from .settings import BrokerSettings, held_refresh_margin
 from .sweeplease import (
     SWEEP_ERROR,
@@ -345,6 +345,26 @@ class HardMaxRequest(StrictModel):
     hard_max: int = Field(ge=0, le=100_000)
 
 
+class AdaptiveTargetRequest(StrictModel):
+    """A platform admin's reset of one tenant's AIMD target (QUOTA-RESET).
+
+    No `hard_max`: this route never moves the ceiling, so a body that names
+    one is refused (`extra="forbid"`) rather than half-applied.
+    """
+
+    #: Clamped into [min_target, configured_hard_max] by `aimd._clamp`; the
+    #: bound here only refuses nonsense before it reaches the clamp.
+    target: int = Field(ge=0, le=100_000)
+    #: Why, in the operator's words. Required: it is the audit record's point.
+    reason: str = Field(min_length=1, max_length=500)
+    #: Also reopen a cooldown (and an EXHAUSTED window). Off by default,
+    #: because raising a target and overruling the provider are two decisions.
+    clear_cooldown: bool = False
+    #: The person a platform caller acts for. swarm-api's admin proxy sends
+    #: its admin's verified email; only a platform caller reaches this field.
+    requested_by: str | None = Field(default=None, max_length=320)
+
+
 class BrokerMetrics:
     def __init__(self) -> None:
         self.registry = CollectorRegistry()
@@ -370,6 +390,15 @@ class BrokerMetrics:
             "swarm_quota_derived_limit",
             "Quota-derived pool cap per provider and tenant.",
             ["provider", "tenant"],
+            registry=self.registry,
+        )
+        #: Admin decisions applied to a quota document, by provider and
+        #: action (`adaptive_target_reset`). The audit record in `quota_audit`
+        #: says who and why; this says how often.
+        self.admin_changes = Counter(
+            "swarm_quota_admin_changes_total",
+            "Admin changes applied to quota state, by provider and action.",
+            ["provider", "action"],
             registry=self.registry,
         )
         self.auth_failures = Counter(
@@ -433,6 +462,22 @@ class WorkerIdentity:
         """Return (tenant_id or None, is_platform_caller)."""
         if not self._required:
             return None, True
+        email = self.verified_email(authorization)
+        if email in self._platform:
+            return None, True
+        match = self._pattern.match(email) if self._pattern else None
+        if not match:
+            raise BrokerAuthError("caller is not a swarm worker service account")
+        return match.group("tenant"), False
+
+    def verified_email(self, authorization: str | None) -> str:
+        """The caller's verified email, lower-cased; "" when OIDC is off.
+
+        Separate from `resolve` so an audit record can name the caller without
+        widening what `resolve` returns to every route that reads it.
+        """
+        if not self._required:
+            return ""
         if not authorization or not authorization.lower().startswith("bearer "):
             raise BrokerAuthError("missing bearer token")
         token = authorization.split(" ", 1)[1].strip()
@@ -448,13 +493,7 @@ class WorkerIdentity:
         except ValueError:
             # Never echo the token or the library's message.
             raise BrokerAuthError("token verification failed") from None
-        email = str(claims.get("email", "")).lower()
-        if email in self._platform:
-            return None, True
-        match = self._pattern.match(email) if self._pattern else None
-        if not match:
-            raise BrokerAuthError("caller is not a swarm worker service account")
-        return match.group("tenant"), False
+        return str(claims.get("email", "")).lower()
 
 
 def _flag(name: str, default: bool) -> bool:
@@ -2192,6 +2231,19 @@ def create_app(
             },
         )
 
+    @app.exception_handler(TargetResetRefused)
+    async def reset_refused_handler(request: Request, exc: TargetResetRefused) -> Response:
+        """409: the request is allowed and well-formed, the quota's STATE
+        refuses it (EXHAUSTED without `clear_cooldown`). Not 422, which a
+        client reads as "fix the body"; the same body succeeds once the
+        window reopens."""
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            status_code=409,
+            content={"code": "quota_exhausted", "message": str(exc)},
+        )
+
     @app.exception_handler(MalformedAccountError)
     async def malformed_account_handler(
         request: Request, exc: MalformedAccountError
@@ -2342,6 +2394,53 @@ def create_app(
         state = request.app.state.broker.set_hard_max(name, tenant_id, body.hard_max)
         request.app.state.metrics.observe(state)
         return {"quota": quota_to_api(state)}
+
+    @app.put("/v1/quota/{provider}/{tenant_id}/adaptive-target")
+    def reset_adaptive_target(
+        request: Request,
+        provider: str,
+        tenant_id: str,
+        body: AdaptiveTargetRequest,
+        authorization: str | None = Header(default=None, alias="Authorization"),
+    ) -> dict[str, Any]:
+        """Reset a throttled tenant's AIMD target (QUOTA-RESET, 2026-10-14).
+
+        PLATFORM ONLY, by the same check as `set_hard_max`: a worker that
+        could raise its own target would undo the one brake AIMD applies.
+        Clamped by `aimd._clamp`, audited in `quota_audit` in the same
+        transaction as the quota document and its pool. AIMD resumes from the
+        new target, so the next 429 halves it again -- this is a reset, not a
+        pin. docs/runbooks/quota-throttled-tenant.md.
+        """
+        name = _known_provider(provider)
+        identity = request.app.state.identity
+        _, is_platform = identity.resolve(authorization)
+        if not is_platform:
+            request.app.state.metrics.auth_failures.labels(kind="not_platform").inc()
+            raise BrokerAuthError("only the platform may reset an adaptive target")
+        verified = getattr(identity, "verified_email", None)
+        caller = verified(authorization) if callable(verified) else ""
+        try:
+            result = request.app.state.broker.reset_adaptive_target(
+                name,
+                tenant_id,
+                target=body.target,
+                reason=body.reason,
+                requested_by=(body.requested_by or "").strip().lower(),
+                caller=caller,
+                clear_cooldown=body.clear_cooldown,
+            )
+        except TargetResetRefused:
+            raise
+        except ValueError as exc:
+            raise BrokerValidationError(str(exc)) from None
+        request.app.state.metrics.admin_changes.labels(
+            provider=name, action="adaptive_target_reset"
+        ).inc()
+        request.app.state.metrics.observe(result.state)
+        reset = {k: v for k, v in result.audit.items() if k != "at"}
+        reset["at"] = _iso(result.audit.get("at"))
+        return {"quota": quota_to_api(result.state), "reset": reset}
 
     # ----------------------------------------------------------------------
     # The account pool

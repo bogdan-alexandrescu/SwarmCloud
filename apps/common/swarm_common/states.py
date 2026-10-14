@@ -237,3 +237,12 @@ class EventType(str, Enum):
     HUMAN_CONTROL_RETURNED = "human_control_returned"
     #: The wait is over and `human_wait` is cleared; the agent carries on.
     HUMAN_HANDOFF_RESOLVED = "human_handoff_resolved"
+    #: One step of an attempt's start-up, for the console's progress bar.
+    #: `detail.step` names it -- "pod_scheduled", "image_pulling",
+    #: "image_pulled", "container_started" (the reconciler, off the GKE pod),
+    #: then "browser_launching", "browser_ready", "first_frame" (the worker,
+    #: off the live gate) -- with the attempt's `attempt_id` and `generation`.
+    #: Each at most once per attempt. A record only: nothing moves a state, a
+    #: lease or a pool for it. Contract request 74 (STARTUP-API), accepted by
+    #: the owner 2026-10-13.
+    STARTUP_PROGRESS = "startup_progress"

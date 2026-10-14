@@ -30,6 +30,7 @@ made here, and nothing below depends on it arriving.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -47,6 +48,22 @@ from swarm_common.states import (
 #: `agent_worker.expected_outputs.SKIPPED_SUMMARY_KEY`; the API image cannot
 #: import the worker's.
 SKIPPED_SUMMARY_KEY = "skipped"
+
+#: The step id of a merge fix round (lane SPEED-D2): `ci-fix:<n>` or
+#: `conflict-fix:<n>`, appended to the merge's workflow by swarm-api's wake
+#: tick (`swarm_api.mergewake.round_step_id`) when it hands a red or
+#: conflicting pull request to a round. A caller can never submit one: a
+#: submitted step id holds no ':' (`WorkflowStepCreate.step_id`'s pattern),
+#: so the id alone marks a step only the platform appended. The id, not the
+#: step's input, because the reconciler decodes steps without their input
+#: (`reconciler.model.WorkflowView`) and must derive what this derives.
+FIX_ROUND_STEP_RE = re.compile(r"^(?:ci|conflict)-fix:[1-9][0-9]{0,2}$")
+
+
+def is_fix_round_step(step_id: str) -> bool:
+    """Whether `step_id` names a merge fix round the platform appended."""
+    return bool(FIX_ROUND_STEP_RE.fullmatch(step_id or ""))
+
 
 #: The state a reader is given when the derivation could not be completed. It is
 #: deliberately NOT a TaskState: it must be impossible to write this into
@@ -177,6 +194,9 @@ class WorkflowRollup:
     #: counted under SUCCEEDED in `counts`, because that is what it is in the
     #: frozen state machine and what a "done" count reads.
     skipped_steps: list[str] = field(default_factory=list)
+    #: The merge fix rounds among the steps (`is_fix_round_step`). Counted in
+    #: `counts` as what their tasks are; see `derive` for how they rank.
+    fix_round_steps: list[str] = field(default_factory=list)
 
     @property
     def terminal(self) -> bool:
@@ -192,6 +212,7 @@ class WorkflowRollup:
             "unstarted_steps": list(self.unstarted_steps),
             "steps_read": self.steps_read,
             "skipped_steps": list(self.skipped_steps),
+            "fix_round_steps": list(self.fix_round_steps),
         }
 
 
@@ -258,6 +279,17 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
     A SKIPPED step ("nothing to change", 2026-10-05) is a SUCCEEDED task, so
     it ranks as a success at step 4 and needs no state of its own; it is
     named in `skipped_steps` so a reader can tell it from one that ran.
+
+    A MERGE FIX ROUND (`is_fix_round_step`, SPEED-D2) is counted like any
+    step at 2, 3 and 5 -- unreadable is UNKNOWN, holding capacity is
+    RUNNING, waiting is pending -- but it does not take part in step 4's
+    severity while the workflow has steps of its own: a round is the merge
+    step's attempt to make the pull request mergeable, and the merge step's
+    own ending is the verdict on it. A round that failed before a second one
+    fixed CI, under a merge that then SUCCEEDED, is a SUCCEEDED workflow; a
+    merge that refused after its rounds is FAILED by its own state. The
+    round still shows in `counts` as what its task is, and is named in
+    `fix_round_steps`.
     """
     if not readings:
         return WorkflowRollup(
@@ -272,6 +304,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
     unreadable: list[str] = []
     unstarted: list[str] = []
     skipped = [r.step_id for r in readings if r.skipped]
+    rounds = [r.step_id for r in readings if is_fix_round_step(r.step_id)]
     read = 0
     for r in readings:
         if r.unstarted:
@@ -303,6 +336,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
             unstarted_steps=unstarted,
             steps_read=read,
             skipped_steps=skipped,
+            fix_round_steps=rounds,
         )
 
     present = [r.state for r in readings if r.state is not None]
@@ -321,10 +355,14 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
             unstarted_steps=unstarted,
             steps_read=read,
             skipped_steps=skipped,
+            fix_round_steps=rounds,
         )
 
     if not unstarted and present and all(s in TERMINAL_STATES for s in present):
-        worst = next(s for s in _TERMINAL_SEVERITY if s in present)
+        own = [r.state for r in readings if r.state is not None
+               and not is_fix_round_step(r.step_id)]
+        judged = own or present
+        worst = next(s for s in _TERMINAL_SEVERITY if s in judged)
         reason = (
             "all_steps_succeeded" if worst is TaskState.SUCCEEDED
             else f"worst_terminal_step_{worst.value.lower()}"
@@ -336,6 +374,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
             counts=counts,
             steps_read=read,
             skipped_steps=skipped,
+            fix_round_steps=rounds,
         )
 
     pending = [s for s in present if s in PENDING_STATES]
@@ -349,6 +388,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
             unstarted_steps=unstarted,
             steps_read=read,
             skipped_steps=skipped,
+            fix_round_steps=rounds,
         )
 
     # Everything terminal except steps that were never started. The workflow has
@@ -361,6 +401,7 @@ def derive(readings: Sequence[StepReading]) -> WorkflowRollup:
         unstarted_steps=unstarted,
         steps_read=read,
         skipped_steps=skipped,
+        fix_round_steps=rounds,
     )
 
 

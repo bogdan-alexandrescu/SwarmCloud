@@ -10,7 +10,15 @@
 #                         # creates the namespace), then its TCP 8080 from
 #                         # labelled tenant pods and swarm-api's Direct VPC
 #                         # egress range, read from the service
-#                         # (docs/design/live-browser.md §3.3, §8.3)
+#                         # (docs/design/live-browser.md §3.3, §8.3), then
+#                         # swarm-egress from `swarm_egress_manifest` when
+#                         # terraform renders one (docs/browser-egress.md),
+#                         # then the decision-api tailnet egress from
+#                         # `tailscale_egress_manifest` when terraform renders
+#                         # one, and after the apply copies its Tailscale
+#                         # OAuth secret from Secret Manager into
+#                         # swarm-system/operator-oauth, never printing it
+#                         # (docs/runbooks/tailscale-egress.md)
 #   kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
 #                         # ... with the step-spec public keys ConfigMap, from
 #                         # `terraform output -json spec_verify_keys_configmap`
@@ -115,6 +123,13 @@ SERVER_DRY_RUN=0
 CONTEXT=""
 SPEC_VERIFY_KEYS_FILE=""
 RENDER_ARGS=()
+# --swarm-system's tailnet egress manifest, when terraform renders one; read
+# in that mode, tested after the apply in every mode. The two secrets' names
+# are fixed: terraform/infra/tailscale.tf creates the first, and
+# kubernetes/swarm-system/tailscale-egress.yaml mounts the second.
+TAILSCALE_MANIFEST=""
+TAILSCALE_OAUTH_GSM_NAME="swarm-tailscale-oauth"
+TAILSCALE_K8S_OBJECT="operator-oauth"
 
 # THE CLUSTER'S NETWORK IS READ, NOT PASSED. These five render.py flags used to
 # be forwarded like everything else, and render.py defaulted them, and nothing
@@ -579,6 +594,74 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
     fi
     info "relay manifest  terraform output swarm_live_manifest (admits ${TF_EGRESS_CIDR})"
   fi
+
+  # SWARM-EGRESS, FROM TERRAFORM, AFTER THE RELAY (docs/browser-egress.md;
+  # lane EGRESS-SVC). terraform/infra/egress.tf's `swarm_egress_manifest`:
+  # kubernetes/swarm-system/swarm-egress.yaml with the image digest, the two
+  # secrets' version references and the browser egress setting filled in.
+  # OPTIONAL, unlike the relay's: null while enable_browser_egress is off,
+  # and then nothing about egress is applied. Present, it gets the relay's
+  # three checks before anything sees a cluster.
+  EGRESS_MANIFEST=""
+  if tf -chdir="${TF_DIR}" output -raw swarm_egress_manifest >"${RELAY_WORK}/egress.yaml" 2>"${RELAY_WORK}/egress.err" \
+      && [[ -s "${RELAY_WORK}/egress.yaml" ]]; then
+    if grep -Eo '__[A-Z0-9_]+__' "${RELAY_WORK}/egress.yaml" >"${RELAY_WORK}/egress-placeholders"; then
+      PLACEHOLDER="$(head -n 1 "${RELAY_WORK}/egress-placeholders")"
+      rm -rf "${RELAY_WORK}"
+      die "the swarm-egress manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
+    fi
+    if grep -Eq '^kind:[[:space:]]*(Cluster)?Role(Binding)?[[:space:]]*$' "${RELAY_WORK}/egress.yaml"; then
+      rm -rf "${RELAY_WORK}"
+      die "the swarm-egress manifest carries Kubernetes RBAC; swarm-egress holds none. Nothing was applied."
+    fi
+    if grep -E '^[[:space:]]+namespace:[[:space:]]' "${RELAY_WORK}/egress.yaml" \
+        | grep -Ev '^[[:space:]]+namespace:[[:space:]]+swarm-system[[:space:]]*$' >"${RELAY_WORK}/egress-foreign"; then
+      redact <"${RELAY_WORK}/egress-foreign" | sed -n '1,5p' | sed 's/^/     /' >&2
+      rm -rf "${RELAY_WORK}"
+      die "the swarm-egress manifest names a namespace other than swarm-system (above); nothing was applied."
+    fi
+    EGRESS_MANIFEST="$(cat "${RELAY_WORK}/egress.yaml")"
+    info "egress manifest terraform output swarm_egress_manifest"
+  else
+    info "no swarm-egress manifest (enable_browser_egress is off); nothing about browser egress is applied"
+  fi
+
+  # THE TAILNET EGRESS, FROM TERRAFORM, AFTER SWARM-EGRESS (lane JUDGE-NET;
+  # docs/runbooks/tailscale-egress.md). terraform/infra/tailscale.tf's
+  # `tailscale_egress_manifest`: kubernetes/swarm-system/tailscale-egress.yaml
+  # with the tailnet name filled in. OPTIONAL, like swarm-egress's: null while
+  # enable_tailscale_egress is off, and then nothing about the tailnet is
+  # applied and no secret is read. Present, it gets the same three checks,
+  # plus one of its own: it must not carry a Secret. The OAuth client secret
+  # reaches the cluster only through the sync step after the apply, never
+  # inside a manifest that is previewed, diffed and dry-run.
+  TAILSCALE_MANIFEST=""
+  if tf -chdir="${TF_DIR}" output -raw tailscale_egress_manifest >"${RELAY_WORK}/tailscale.yaml" 2>"${RELAY_WORK}/tailscale.err" \
+      && [[ -s "${RELAY_WORK}/tailscale.yaml" ]]; then
+    if grep -Eo '__[A-Z0-9_]+__' "${RELAY_WORK}/tailscale.yaml" >"${RELAY_WORK}/tailscale-placeholders"; then
+      PLACEHOLDER="$(head -n 1 "${RELAY_WORK}/tailscale-placeholders")"
+      rm -rf "${RELAY_WORK}"
+      die "the tailscale egress manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
+    fi
+    if grep -Eq '^kind:[[:space:]]*(Cluster)?Role(Binding)?[[:space:]]*$' "${RELAY_WORK}/tailscale.yaml"; then
+      rm -rf "${RELAY_WORK}"
+      die "the tailscale egress manifest carries Kubernetes RBAC; the forwarder holds none. Nothing was applied."
+    fi
+    if grep -Eq '^kind:[[:space:]]*Secret[[:space:]]*$' "${RELAY_WORK}/tailscale.yaml"; then
+      rm -rf "${RELAY_WORK}"
+      die "the tailscale egress manifest carries a Secret; the OAuth secret is synced from Secret Manager, never shipped in a manifest. Nothing was applied."
+    fi
+    if grep -E '^[[:space:]]+namespace:[[:space:]]' "${RELAY_WORK}/tailscale.yaml" \
+        | grep -Ev '^[[:space:]]+namespace:[[:space:]]+swarm-system[[:space:]]*$' >"${RELAY_WORK}/tailscale-foreign"; then
+      redact <"${RELAY_WORK}/tailscale-foreign" | sed -n '1,5p' | sed 's/^/     /' >&2
+      rm -rf "${RELAY_WORK}"
+      die "the tailscale egress manifest names a namespace other than swarm-system (above); nothing was applied."
+    fi
+    TAILSCALE_MANIFEST="$(cat "${RELAY_WORK}/tailscale.yaml")"
+    info "tailnet egress  terraform output tailscale_egress_manifest"
+  else
+    info "no tailscale egress manifest (enable_tailscale_egress is off); nothing about the tailnet is applied"
+  fi
   rm -rf "${RELAY_WORK}"
 
   if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" get namespace swarm-system -o name >/dev/null 2>&1; then
@@ -595,6 +678,14 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
   if [[ -n "${RELAY_MANIFEST}" ]]; then
     MANIFEST="${RELAY_MANIFEST}"$'\n---\n'"${POLICIES}"
     info "rendering the live relay, then swarm-system's ingress policies"
+    if [[ -n "${EGRESS_MANIFEST}" ]]; then
+      MANIFEST="${MANIFEST}"$'\n---\n'"${EGRESS_MANIFEST}"
+      info "and swarm-egress after them"
+    fi
+    if [[ -n "${TAILSCALE_MANIFEST}" ]]; then
+      MANIFEST="${MANIFEST}"$'\n---\n'"${TAILSCALE_MANIFEST}"
+      info "and the decision-api tailnet egress last"
+    fi
   else
     MANIFEST="${POLICIES}"
     info "rendering swarm-system's ingress policies"
@@ -828,6 +919,10 @@ if [[ "${CONFIRM}" -ne 1 ]]; then
   if [[ "${MODE}" == "swarm-system" ]]; then
     dim "  --confirm then compares swarm-system's policies with ${SWARM_API_EGRESS_CIDR}"
     dim "    (kubernetes/network_parity.py --live-ingress)"
+    if [[ -n "${TAILSCALE_MANIFEST}" ]]; then
+      dim "  --confirm then copies Secret Manager ${TAILSCALE_OAUTH_GSM_NAME} into swarm-system/${TAILSCALE_K8S_OBJECT}"
+      dim "    (never printed; a dry run does not read it)"
+    fi
   fi
   ok "dry run only. Re-run with --confirm to apply."
   exit 0
@@ -843,6 +938,68 @@ fi
 
 printf '%s\n' "${MANIFEST}" | "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" apply -f -
 ok "applied"
+if [[ "${MODE}" == "swarm-system" && -n "${TAILSCALE_MANIFEST}" ]]; then
+  # THE TAILSCALE OAUTH SECRET, SYNCED (lane JUDGE-NET). terraform/infra/
+  # tailscale.tf says why here and not a Job or the pod itself: this run
+  # already passed the shared-cluster refusals, already writes swarm-system,
+  # and gcloud verifies the TLS it reads over. Only under --confirm (a dry run
+  # exited above without reading it), only through this context, and only
+  # once the namespace the apply just made exists.
+  #
+  # The value goes Secret Manager -> a 0600 file in a 0700 directory ->
+  # `kubectl create secret --dry-run=client` -> `kubectl apply`, and is
+  # removed on every exit path. It is never an argument, a variable, a pipe
+  # into something that echoes, or a line of output: what kubectl prints is
+  # the object's name and verdict, and that goes through `redact` as well.
+  TS_WORK="$(mktemp -d "${TMPDIR:-/tmp}/swarm-tailscale-oauth.XXXXXX")"
+  chmod 0700 "${TS_WORK}"
+  trap 'rm -rf "${TS_WORK}"' EXIT
+  info "syncing Secret Manager ${TAILSCALE_OAUTH_GSM_NAME} into swarm-system/${TAILSCALE_K8S_OBJECT} (the value is never printed)"
+  ( umask 077; : >"${TS_WORK}/client_secret" )
+  if ! gcloud secrets versions access latest --secret "${TAILSCALE_OAUTH_GSM_NAME}" --project "${PROJECT_ID}" \
+      --out-file="${TS_WORK}/client_secret" >/dev/null 2>"${TS_WORK}/access.err"; then
+    TS_ERR="$(redact <"${TS_WORK}/access.err")"
+    rm -rf "${TS_WORK}"
+    die_if_auth_failure "${TS_ERR}"
+    err "could not read ${TAILSCALE_OAUTH_GSM_NAME} from Secret Manager in ${PROJECT_ID}:"
+    printf '%s\n' "${TS_ERR}" | sed -n '1,5p' | sed 's/^/     /' >&2
+    die "applied, but swarm-system/${TAILSCALE_K8S_OBJECT} was not written, so the decision-api forwarder
+       waits for it. Store the OAuth client secret (scripts/create-secrets.sh --tailscale-oauth --stdin)
+       and re-run; docs/runbooks/tailscale-egress.md."
+  fi
+  # The SHAPE, checked without printing a byte of it: a Tailscale OAuth client
+  # secret starts `tskey-client-`, and anything else (an auth key, an API
+  # token, a paste of the wrong field) would log the node in as something
+  # other than tag:swarmcloud's OAuth client, or not at all.
+  if [[ "$(head -c 13 "${TS_WORK}/client_secret")" != "tskey-client-" ]]; then
+    rm -rf "${TS_WORK}"
+    die "applied, but the latest version of ${TAILSCALE_OAUTH_GSM_NAME} is not a Tailscale OAuth client secret
+       (it does not start tskey-client-); swarm-system/${TAILSCALE_K8S_OBJECT} was not written. Store the
+       right value with scripts/create-secrets.sh --tailscale-oauth --stdin."
+  fi
+  if ! ( umask 077
+         "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" create secret generic "${TAILSCALE_K8S_OBJECT}" \
+           --namespace swarm-system --from-file=client_secret="${TS_WORK}/client_secret" \
+           --dry-run=client -o yaml >"${TS_WORK}/secret.yaml" 2>"${TS_WORK}/create.err" \
+         && "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" label --local -f "${TS_WORK}/secret.yaml" \
+           managed-by=swarm-terraform app.kubernetes.io/name=decision-api-egress \
+           -o yaml >"${TS_WORK}/labelled.yaml" 2>>"${TS_WORK}/create.err" ); then
+    redact <"${TS_WORK}/create.err" | sed -n '1,5p' | sed 's/^/     /' >&2
+    rm -rf "${TS_WORK}"
+    die "applied, but swarm-system/${TAILSCALE_K8S_OBJECT} could not be built (above); it was not written."
+  fi
+  if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" apply -f "${TS_WORK}/labelled.yaml" \
+      >"${TS_WORK}/apply.out" 2>&1; then
+    redact <"${TS_WORK}/apply.out" | sed -n '1,5p' | sed 's/^/     /' >&2
+    rm -rf "${TS_WORK}"
+    die "applied, but swarm-system/${TAILSCALE_K8S_OBJECT} could not be written (above)."
+  fi
+  redact <"${TS_WORK}/apply.out" | sed 's/^/  /'
+  rm -rf "${TS_WORK}"
+  ok "swarm-system/${TAILSCALE_K8S_OBJECT} holds the current ${TAILSCALE_OAUTH_GSM_NAME}; its value was never printed"
+  dim "  after a rotation the running node keeps its login; restart it onto the new secret with"
+  dim "    kubectl -n swarm-system rollout restart deployment/decision-api-egress"
+fi
 if [[ "${MODE}" == "tenant" ]]; then
   # RUN, not printed (#76): printed, the comparison happened only when someone
   # remembered to. Scoped to this tenant's namespace, so a stale neighbour

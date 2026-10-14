@@ -8,7 +8,7 @@ over the internal load balancer, and the NetworkPolicy admits only swarm-api's
 egress range and the tenant gates. There is no TLS and no certificate anywhere
 on this hop; §3.3 records why that is acceptable.
 
-Four routes, and a health check:
+Five routes, and a health check:
 
 * `/v1/tunnel`        -- the gate dials out to here (§3.3 step 2). First
   message: the tunnel ticket, as text. Then the framed tunnel protocol of
@@ -24,7 +24,21 @@ Four routes, and a health check:
   swarm-live-key (rendezvous.verify_device), sent to the session's gate as a
   `DEVICE` frame. 200 when it was sent, 404 otherwise -- a forged, replayed
   or expired request and a session with no tunnel here alike.
-* `/healthz`          -- counts only.
+* `POST /internal/control` -- swarm-api says a person's control ended or was
+  renewed (CONTROL-LAPSE): the body is a control request MAC'd with
+  swarm-live-key (rendezvous.verify_control); a revoke reaches the gate as
+  `CONTROL` with no controller, a renewal as `CONTROL` naming the controller
+  again. 200 when it verified and matched a tunnel here, 404 otherwise.
+* `/healthz`          -- counts only: tunnels, viewers, and sessions a person
+  controls (`controlled`). scripts/roll-live-relay.sh reads it through
+  `kubectl exec ... python -m swarm_live.status` -- on the pod's loopback,
+  behind the Kubernetes API's own authentication -- and defers a roll while
+  anyone is watching or in control (RELAY-ROLL).
+
+SIGTERM (RELAY-ROLL). `RelayServer.shutdown` tells every gate and viewer to
+reconnect (`Rendezvous.restarting`, close code 1012) BEFORE uvicorn's own
+shutdown cuts the sockets, and every connection that arrives during the drain
+is refused with the same code.
 
 THE RELAY READS THE TICKET AND NOTHING ELSE. No Firestore client is built, and
 no session document is read (decision (a)); rendezvous.py says how a session
@@ -146,6 +160,13 @@ def create_app(rendezvous: Rendezvous | None = None) -> FastAPI:
 
     app = FastAPI(title="swarm-live", docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
 
+    async def restarting() -> int:
+        # Nothing to tell when the rendezvous was never built.
+        return 0 if state["rz"] is None else await state["rz"].restarting()
+
+    #: What `RelayServer` calls on SIGTERM, before uvicorn closes anything.
+    app.state.restarting = restarting
+
     def rz() -> Rendezvous:
         if state["rz"] is None:
             state["rz"] = build_rendezvous()
@@ -154,7 +175,8 @@ def create_app(rendezvous: Rendezvous | None = None) -> FastAPI:
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
         r = rz()
-        return {"ok": True, "tunnels": r.tunnel_count(), "viewers": r.viewer_count()}
+        return {"ok": True, "tunnels": r.tunnel_count(), "viewers": r.viewer_count(),
+                "controlled": r.controlled_count()}
 
     @app.post("/internal/close")
     async def close(request: Request) -> JSONResponse:
@@ -179,6 +201,17 @@ def create_app(rendezvous: Rendezvous | None = None) -> FastAPI:
         # The session only: the device is the person's choice, not a log line's.
         log.info("live relay: session=%s device request sent to the gate", session_id)
         return JSONResponse({"sent": True, "session_id": session_id})
+
+    @app.post("/internal/control")
+    async def control(request: Request) -> JSONResponse:
+        raw = (await request.body())[: MAX_TICKET_CHARS + 1]
+        try:
+            session_id, action, sent = await rz().control_request(raw.decode("ascii").strip())
+        except (Refused, UnicodeDecodeError) as exc:
+            log.info("live relay: control request refused: %s", getattr(exc, "reason", "malformed"))
+            return JSONResponse({"sent": False}, status_code=404)
+        log.info("live relay: session=%s control %s (sent to the gate: %s)", session_id, action, sent)
+        return JSONResponse({"sent": sent, "session_id": session_id, "action": action})
 
     @app.websocket("/v1/tunnel")
     async def tunnel(ws: WebSocket) -> None:
@@ -288,18 +321,40 @@ def build_rendezvous() -> Rendezvous:
     return Rendezvous(key, recorder_factory=factory)
 
 
-def main() -> None:
+def relay_server(app: FastAPI) -> Any:
+    """uvicorn's Server for `app`, whose shutdown first tells every gate and
+    viewer the relay is restarting (module docstring, SIGTERM).
+
+    uvicorn's own shutdown closes each websocket with 1012 by cutting it, and
+    only then runs the app's lifespan shutdown -- too late to say anything.
+    Overriding `shutdown` puts `Rendezvous.restarting` ahead of it."""
     import uvicorn
+
+    class RelayServer(uvicorn.Server):
+        async def shutdown(self, *args: Any, **kwargs: Any) -> None:
+            try:
+                await app.state.restarting()
+            except Exception as exc:  # noqa: BLE001 - uvicorn's shutdown runs regardless
+                log.warning("live relay: restart notice failed: %s", type(exc).__name__)
+            await super().shutdown(*args, **kwargs)
+
+    # Plain WS inside the VPC (decision (b)): no ssl_* argument, by design.
+    config = uvicorn.Config(app, host="0.0.0.0", port=PORT, ws_max_size=MAX_MESSAGE_BYTES,
+                            log_config=None, access_log=False)
+    return RelayServer(config)
+
+
+def main() -> None:
     from swarm_common.logging_setup import configure_logging
 
     configure_logging(os.environ.get("LOG_LEVEL", "INFO"))
-    # Plain WS inside the VPC (decision (b)): no ssl_* argument, by design.
-    uvicorn.run("swarm_live.main:create_app", factory=True, host="0.0.0.0", port=PORT,
-                ws_max_size=MAX_MESSAGE_BYTES, log_config=None, access_log=False)
+    # The app is built here, not by uvicorn's --factory, so the server holds
+    # the same one whose rendezvous it tells on SIGTERM. Still nothing at import.
+    relay_server(create_app()).run()
 
 
 if __name__ == "__main__":
     main()
 
 
-__all__ = ["create_app", "build_rendezvous", "main", "read_key"]
+__all__ = ["create_app", "build_rendezvous", "main", "read_key", "relay_server"]

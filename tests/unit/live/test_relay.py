@@ -709,6 +709,44 @@ def test_a_report_that_is_not_two_objects_or_is_too_large_is_dropped(payload):
     assert _reports(a) == []
 
 
+def test_a_report_with_the_agents_connection_is_kept_and_passed_on():
+    """LIVE-UNUSED (#1030): a gate reports whether the agent is driving its
+    browser as a third key, `agent`. The relay keeps and passes it like the
+    other two; a report without it is kept as before (an older gate)."""
+    key, clock, relay = build()
+    gate, a = Endpoint(), Endpoint()
+    agent = {"connected_at": None, "connections": 0, "first_frame_at": 1_791_900_000.0}
+
+    async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), gate)
+        await relay.open_viewer(ticket(key, clock, "viewer"), a)
+        await relay.from_tunnel(tunnel, _report(origin=ORIGIN, device=DEVICE, agent=agent))
+        await relay.flush()
+        return relay.report(SESSION)
+
+    assert run(go()) == {"origin": ORIGIN, "device": DEVICE, "agent": agent}
+    assert _reports(a) == [{"type": "report", "agent": agent, "origin": ORIGIN, "device": DEVICE}]
+
+
+@pytest.mark.parametrize("payload", [
+    json.dumps({"origin": ORIGIN, "agent": None}).encode(),
+    json.dumps({"origin": ORIGIN, "device": DEVICE, "agent": "connected"}).encode(),
+])
+def test_an_agent_key_does_not_let_a_report_without_origin_or_device_or_a_bad_agent_through(payload):
+    key, clock, relay = build()
+    gate, a = Endpoint(), Endpoint()
+
+    async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), gate)
+        await relay.open_viewer(ticket(key, clock, "viewer"), a)
+        await relay.from_tunnel(tunnel, encode_frame(rz.OP_REPORT, "", payload))
+        await relay.flush()
+        return relay.report(SESSION)
+
+    assert run(go()) is None
+    assert _reports(a) == []
+
+
 def test_a_report_ends_with_its_session():
     key, clock, relay = build()
 
@@ -1160,7 +1198,7 @@ def test_the_websocket_routes_refuse_a_bad_ticket_and_splice_a_good_one():
     # `with`: one event loop for every socket, as in the relay process. Without
     # it the test client gives each websocket its own loop thread.
     with TestClient(create_app(relay)) as client:
-        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0}
+        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0, "controlled": 0}
         with client.websocket_connect("/v1/tunnel") as ws:
             ws.send_text("not-a-ticket")
             with pytest.raises(WebSocketDisconnect) as e:
@@ -1205,7 +1243,7 @@ def test_post_internal_close_drops_a_connected_viewer():
                 with pytest.raises(WebSocketDisconnect) as e:
                     viewer.receive_bytes()
                 assert e.value.code == CLOSE_ENDED
-        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0}
+        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0, "controlled": 0}
 
 
 # ---------------------------------------------------------------- start-up (decisions (b), (c))
@@ -1234,7 +1272,7 @@ def test_the_relay_starts_and_serves_with_no_firestore_client_and_no_certificate
         monkeypatch.delenv(gone, raising=False)
 
     with TestClient(relay_main.create_app()) as client:
-        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0}
+        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0, "controlled": 0}
         with client.websocket_connect("/v1/tunnel") as gate:
             gate.send_text(mint_ticket(key, session_id=SESSION, tenant_id=TENANT, task_id=TASK,
                                        attempt_id=ATTEMPT, generation=GEN, role="tunnel"))
@@ -1242,9 +1280,20 @@ def test_the_relay_starts_and_serves_with_no_firestore_client_and_no_certificate
     assert asked == [version]
 
     served: dict = {}
-    monkeypatch.setitem(sys.modules, "uvicorn", type(sys)("uvicorn"))
-    sys.modules["uvicorn"].run = lambda *a, **kw: served.update(kw)
+    fake = type(sys)("uvicorn")
+
+    class Server:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def run(self) -> None:
+            served["ran"] = True
+
+    fake.Config = lambda app, **kw: served.update(kw) or kw
+    fake.Server = Server
+    monkeypatch.setitem(sys.modules, "uvicorn", fake)
     relay_main.main()
+    assert served["ran"]
     assert served["port"] == relay_main.PORT == 8080
     assert not [k for k in served if k.startswith("ssl")]
 

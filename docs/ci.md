@@ -38,11 +38,11 @@ Three reasons, in the order they cost the most:
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
+| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `ruff check` ([below](#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `record the tested tree` (every run but main's: what it passed, keyed by its tree, which main's push run reuses — [below](#main-reuses-the-tested-tree)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
-| `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main`; accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 5, in two waves · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue) — dev only, as its own identity, never the deployer |
+| `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main` (scope `all`); accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)). Also **every three hours** (`schedule`) and on a dispatch with scope `live-browser`, for the live-browser group alone ([below](#live-browser-runs-on-a-schedule)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 6, in two waves · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue). On the schedule: `acceptance (live-browser, scheduled)` · `report the scheduled live-browser group` (its own `bug` issue) — dev only, as its own identity, never the deployer |
 | `hotfix.yml` | push to `main` on the same paths as `release.yml`; or manual dispatch on `main`. Acts only for a pull request merged with the `hotfix` label ([below](#hotfix-releases)) | `is this a hotfix` (reads the label; no Google identity) · `images and scan (dev, hotfix)` · `promote (dev, hotfix)` · `terraform apply (dev, hotfix)` (fails on a plan that changes IAM) · `deploy and smoke (dev, hotfix)` — dev only, concurrency group `hotfix-dev`, release.yml's own stages from `.github/actions/release-*` |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
@@ -392,6 +392,38 @@ summary and the manifest's `incremental.full_build`:
   (`--reuse-ci or-build`, which is never incremental). `swarm-ui` bakes its
   environment in, and prod is always built whole;
 * the **working tree is dirty**, so git cannot say what changed.
+
+**An image whose Dockerfile upgrades OS packages is rebuilt by every main
+build and every release.** This was the owner's decision on 2026-10-14 ("force a fresh apt
+layer", on every release). It costs about 7 extra minutes per release.
+`APT_REFRESH` names the build: the commit plus the GitHub run id and attempt,
+or the commit and the time outside Actions. `BUILD_APT_REFRESH` overrides it.
+The manifest records it per image as `apt_refresh`. A digest of such an image
+is reused only when its `apt_refresh` is this build's, which no other run's
+is. So `plan_incremental` rebuilds every one of them, and the release's reuse
+check does too, even from a record CI built whole for the same commit. An
+image built FROM one is rebuilt with it. One that upgrades nothing
+(swarm-verify) is still reused. Which images upgrade is read from their
+Dockerfiles (`upgrades_os_packages`), not listed.
+A digest CI built from the commit being released is that commit's own
+build, not a reuse: the 7-day age limit and the unrecorded-build-args rule are
+not asked of it, and it is not re-tagged (it already carries the tag), so a
+release rebuilds only the OS-upgrading images and those built FROM them.
+
+The cause it removes: releases 38535875750 and 38540997006 refused
+workspace-apply over curl/libcurl4t64 `8.14.1-2+deb13u5` (CVE-2026-8286, HIGH,
+fixed in `+deb13u7`). Its Dockerfile runs `apt-get upgrade`, but its log read
+`workspace-apply reuse no input changed since 346f2725df43`. The digest was
+built on 2026-10-13, before Debian shipped the fix, and nothing in the tree
+changes when Debian does.
+
+The build passes `--build-arg APT_REFRESH` (workspace-apply's recipe as
+`_APT_REFRESH`). Every apt or apk upgrade `RUN` names it, so no layer cache
+serves an older upgrade either. workspace-apply's apt `RUN` also fails its own
+build when a simulated `apt-get dist-upgrade` still has something to install,
+which catches a package `apt-get upgrade` kept back. The scan stays strict:
+nothing is ignored or pinned. `test_build_images_apt_refresh.py` holds all of
+this.
 
 **What this does not prove.** The tests (`test_build_images_incremental.py`,
 `test_ci_built_images.py`) run the real scripts against a fake `gcloud` that
@@ -997,7 +1029,7 @@ held the lock, and every later push queued behind it. `release-dev` is
 * **C. The five groups run in parallel**, as matrix jobs with `fail-fast:
   false`, one swarm-verify execution each.
 
-### Five at once does not fit, so it is two waves
+### Six at once does not fit, so it is two waves
 
 The suite submits for the `smoke` tenant. Its ceiling is **20** concurrent
 tasks: `max_active = capacity_units = 20` in `dev.tfvars`, `tenants.smoke`.
@@ -1010,19 +1042,85 @@ Each group's peak of tasks in flight, read from its group file:
 | workflow | ~4 | four workflow roots |
 | claude-code | ~3 | three tasks |
 | browser | ~3 | three tasks |
+| git-tools | ~5 | its lane and a two-step build workflow, then the build pair beside the rebase lane and the reader |
+| live-browser | 1 | one task; on a schedule since 2026-10-14, not in a wave ([below](#live-browser-runs-on-a-schedule)) |
 
-Together that is about 31, over the ceiling. A task over the ceiling queues
+Without live-browser that is about 36, over the ceiling. A task over the ceiling queues
 rather than fails (invariant 1: `QUEUED` costs nothing). But every check has a
 settle deadline, and time spent in the queue comes out of it. So the groups
 run in **two waves**:
 
 * **wave 1**: `mock`, `workflow` and `browser`, a peak of about 20;
-* **wave 2**: `generic` and `claude-code`, about 11. It starts when wave 1
-  ends, whatever wave 1 concluded.
+* **wave 2**: `generic`, `claude-code` and `git-tools`, about 16. It starts
+  when wave 1 ends, whatever wave 1 concluded.
 
 `test_each_wave_fits_the_smoke_tenant_s_ceiling` reads the ceiling from
 `dev.tfvars`. It fails if a wave's peaks exceed it, and also if all five
 would fit in one wave.
+
+### live-browser runs on a schedule
+
+**Owner decision, 2026-10-14 (lane SPEED-C2): take the live-browser group off
+the red path until it is stable.** Read that day: `accept.yml` had run 159
+times; 43 runs completed and **21 of them failed (49%)**. The `acceptance
+(live-browser)` job failed **18 of 34** runs; every other group failed 0-3
+times. Each red run opens or updates the one acceptance `bug` issue, so most
+of that issue's history was one group's noise, and a real regression in
+another group read as more of the same.
+
+So live-browser is in neither wave. `accept.yml`'s `live-browser` job runs it
+**every three hours** (`schedule`, at :41) and on a dispatch with scope
+`live-browser`. It reads what dev runs from `releases/dev/applied.json`, checks
+that commit out and runs `verify-remote.sh acceptance/live-browser`, as the
+waves would. `live-browser-report` files a red result on **its own** `bug`
+issue: `scripts/accept-report.sh` with `ACCEPT_KIND=live-browser` finds that
+issue by its own marker, never the post-release one. The scheduled run is not
+an accepting job:
+
+* it has no `target`, `quiesce`, smoke or sandbox sync, and cancels nothing;
+* the post-release `report` does not need it, so it cannot turn that run red;
+* its concurrency group is `accept-live-browser`, not an `accept-dev-` one.
+
+A post-release run's `quiesce` cancels every other in-progress `accept.yml` run
+and every running `swarm-verify` execution. That includes a scheduled
+live-browser run in flight. A cancelled scheduled run files nothing and does
+not count toward the streak. Its peak of one task fits beside either wave if
+the two overlap.
+
+**Coming back.** `scripts/accept-live-browser-streak.sh` reads the completed
+scheduled runs of `accept.yml` on `main`, newest first. It counts successes
+until the first run that did not succeed. A cancelled or skipped run neither
+counts nor breaks the streak. A dispatch is a probe and is not counted.
+It prints `streak=`, `need=` and `promote=` and exits 0 at **five in a row**
+(`--need` changes the number) or 3 below it. When it says `promote=true`, the
+operator moves the group back:
+
+1. put `live-browser` back in `acceptance-2`'s matrix in `accept.yml`;
+2. remove the `schedule` trigger, the `scope` input, and the `live-browser`
+   and `live-browser-report` jobs, and take `SCHEDULED_GROUPS` out of
+   `tests/unit/scripts/test_release_acceptance_job.py`;
+3. close the live-browser issue with that pull request.
+
+The streak only says the group passed five times in a row. The causes below
+are why it failed, and a later lane fixes them.
+
+**Why it failed (14 failed live-browser jobs read, 2026-10-12 to 10-14).** Five
+distinct causes, some in the same run:
+
+| cause | runs | where |
+|---|---|---|
+| `returned`: the task was still **`PARKED`** at the 900 s deadline, after the hand-off, the take-over and the typing had all passed | 5 (every run from 2026-10-14 00:24 on) | began with HANDOFF-POLICY (PR 1264), which parks a hold after one unwatched minute: `apps/swarm-api/swarm_api/handoff.py` (`HUMAN_UNWATCHED_SECONDS`, `opening_deadline`), the worker's park in `apps/agent-worker/agent_worker/lifecycle.py` (`park_human_required`). The scripted viewer (`tests/acceptance/test_live_browser.py`) holds control through the wait, so either it does not count as watching, or a returned task is not woken from the park |
+| `recording`: "2 object(s) under live/ are not recording segments" | 8 | **harness bug, fixed here.** The stray check matched any `/live/` in the object name, so it counted the worker's log tails `logs/live/agent_stdout.tail.log` and `agent_stderr.tail.log` (`agent_worker/runners/streams.py`). It now judges only `<attempt>/live/` (`stray_live_objects`) |
+| `returned`: the task succeeded, but its answer and `session-code.txt` do not hold the code the typed password makes | 4, plus 1 whose reason was lost (below) | the agent's second read of `#code` after `swarm-handoff wait` exits 0, through the live browser as BROWSER-ENFORCE (PR 1248) reshaped it: `images/agent-runtime-browser/swarm_browser.py`, `swarm-handoff` |
+| `handoff`: the task ended `SUCCEEDED` without asking for help | 3 (2026-10-12 to 10-13 03:18, none since) | the agent skipped `swarm-handoff request`; the prompt is `LIVE_BROWSER_PROMPT` in `scripts/acceptance/groups/live-browser.sh` |
+| `handoff`: still `RUNNING` at the deadline | 1 | one run, 2026-10-12 14:52 |
+
+One more harness bug blanked the reasons in all of these. 13 of the 14 logs
+print `sed: unmatched '#'` once per check. `redact` (`scripts/lib/common.sh`)
+is a `sed -E` program with `#` delimiters, and busybox sed cannot compile it.
+The `swarm-verify` image is Alpine, so every reason piped through `redact`
+came out empty. It failed closed: nothing leaked, but the reason was lost. The
+image now installs GNU `sed` (`images/swarm-verify/Dockerfile`).
 
 ### The timeline now (expected, not yet measured)
 
@@ -2985,6 +3083,221 @@ run going from **935 s to ~835 s**. By class:
 The first runs after this lands are the measurement: re-read them with the
 same two calls and correct this table.
 
+## Flaky tests and the quarantine
+
+**Owner decision, 2026-10-14: "Fix the known flakes and quarantine new
+ones".** A flake costs a merge a rerun, and with strict up-to-date merging
+every merge behind it waits too. A flake is also invisible in a pull
+request's final state: the rerun went green, and only the run's earlier
+attempt remembers the red job.
+
+### What was measured (2026-10-14)
+
+`scripts/flaky-report.sh --limit 1000` over `application.yml`, the 1,000 runs
+from 2026-10-10 to 2026-10-14: 8 runs failed at a commit and then passed at
+the same commit. By job and cause:
+
+| job | times | test or step | cause | done |
+|---|---:|---|---|---|
+| `unit tests (2/4)` | 2 | `test_live_api.py::test_the_viewer_socket_extends_the_hold_while_it_is_open` (PRs 1267 and 1268) | the test left the socket's `with` as soon as it read the close, but the app still writes its `viewer_left` audit after closing; leaving the `with` makes the TestClient cancel the app's task mid-teardown, which surfaced as `CancelledError` from the portal | fixed: the test waits for the `viewer_left` row inside the session, as do the two other socket tests with the same shape |
+| `unit tests (2/4)` | 1 | `test_forge_token_isolation.py::test_no_agent_process_is_alive_when_the_publish_token_is_used` | `_pid_alive` called only a `Z` process dead: a read while init reaped the killed daemon saw `X (dead)`, or failed with ESRCH and fell back to `kill(pid, 0)`, which succeeds on a zombie -- so a process the reaper had already seen dead read as alive a moment later | fixed: every state after death reads dead |
+| `release workflow wiring (actionlint)` | 2 | the actionlint download | rhysd's download script curls the release tarball with no `-f` and no retry; GitHub's release download answered an error page (92 bytes; 1,812 bytes after 19 s) and `tar` read it as the archive (`gzip: stdin: not in gzip format`) | fixed: the tarball is fetched directly with `-f` and retries, checked against its pinned sha256, and cached |
+| `build images` | 1 | `agent-runtime-base` | a Cloud Build docker step exited 22 (curl's HTTP-error status) | not fixed: a network fetch in the image build |
+| `build changed images without pushing` | 1 | `agent-runtime-indexer` | `proxy.golang.org` reset the stream (`INTERNAL_ERROR`) mid-download | not fixed: a network fetch in the image build |
+| `integration tests (emulator)` | 1 | the emulator install | `gcloud components install cloud-firestore-emulator` failed to download | not fixed: a network fetch in the job's setup |
+
+The last three are downloads, not tests: the remedy for those is a pin, a
+mirror or a retry in the job that fetches, not the quarantine list.
+
+### The quarantine
+
+A test that flakes and whose cause is not known yet is **quarantined**, not
+skipped, while its issue is worked:
+
+* **`tests/flaky.txt`** is the list, checked in. One test per line: its pytest
+  node id from the repository root, its issue (`#N`), and the date it was
+  added. A bare id quarantines every parameter of a test; an id with `[...]`
+  only that case. The operator edits it; **CI never does**, so nothing leaves
+  the gate without a person and an issue behind it.
+* **`tests/unit/conftest.py`** marks every listed test `flaky` at collection
+  (the marker is registered in `pyproject.toml`), through
+  `tests/unit/flaky_quarantine.py`. A malformed list stops collection with its
+  line number rather than quarantine the wrong thing.
+* **The unit job** runs the gating suite with `-m "not flaky"`, then runs the
+  shard's quarantined tests in `quarantined unit tests (report only, never fail
+  the gate)`. That step's failure is a warning annotation and a line in the
+  step summary; it never fails the job. A quarantined test therefore still
+  runs on every pull request, so the day it starts failing every time --
+  a real defect, not a flake -- shows up there.
+* **`tests/unit/scripts/test_flaky_quarantine.py`** holds the parser, the
+  marking, the job's two steps, and that every listed test exists: a renamed
+  test would otherwise leave its entry quarantining nothing while the real
+  flake gates again.
+
+The list covers `tests/unit` only. The UI suite and the integration suite have
+no quarantine; a flake there is fixed at its cause.
+
+### Finding candidates
+
+```bash
+scripts/flaky-report.sh                 # the last 300 application.yml runs
+scripts/flaky-report.sh --limit 1000    # further back
+scripts/flaky-report.sh --no-logs       # jobs only, no log downloads
+```
+
+It reads every earlier attempt of a run that was rerun green (`gh run list`
+shows only a run's latest attempt), and every failed run at a commit where
+another run passed, and prints each failed job with the failing pytest or
+vitest ids its log names. It is read-only. Then:
+
+1. fix the cause if it can be found now -- that is the default;
+2. otherwise file an issue, add the line to `tests/flaky.txt`, and link the
+   issue to the line; the fix removes the line.
+
+## Main reuses the tested tree
+
+**Owner decision 2026-10-14 (the delivery speed plan, B1).** Measured over the
+last 150 pull requests: `application.yml`'s pull-request run took a median
+7.6 min, main's push run 12.8 min, and merge to deployed 26.7 min -- the
+release waits for the push run's `build images` (6.5 min), which waited
+behind about 5 min of unit shards that re-tested **the exact tree the pull
+request had already tested**. With strict up-to-date merging, a squash merge
+commits the tree of the pull request's merge commit, and that merge commit is
+what the pull request's run checked out.
+
+So every run but main's own -- a pull request, a merge-train branch, a queue
+entry -- ends with `record the tested tree`, which uploads the artifact
+`tested-tree-<tree hash>`: the tree, the commit, the event, the `changes`
+job's python mode and every test job that concluded `success`
+([`scripts/lib/ci_reuse.py`](../scripts/lib/ci_reuse.py) `record`). It is in
+`ci-gate`'s `needs`, so the record exists before the pull request can merge.
+
+On a push to main, the `changes` job's `reuse` step looks the commit's tree up
+(`ci_reuse.py find`) and writes `reused`, the JSON list of jobs this run
+skips; each test job's `if:` ends in
+`!contains(fromJSON(needs.changes.outputs.reused || '[]'), '<job>')`. A job
+skipped by its own `if:` reads as passed to `format / unit tests`, to `build
+images` and to `ci-gate`, so `build images` starts as soon as what was not
+reused has passed -- with nothing reused, exactly as before. The summary says
+`reused from run N` and lists the jobs.
+
+**Exact or nothing.** A job is reused only when all of these hold, and any
+doubt -- no record, an API that cannot be read, a record that disagrees --
+reuses nothing:
+
+* a record of **this exact tree hash**, from a run of
+  `.github/workflows/application.yml` in this repository (never a fork's),
+  whose conclusion is `success`;
+* the run is tied to this commit: a `pull_request` run **at the head of the
+  pull request this commit merged**, as the API names it; or a `push` (a
+  merge-train branch) or `merge_group` run whose own commit has this tree, as
+  git computes it in the job;
+* the job concluded `success` in the record **and** in the API's list of that
+  run's jobs, every shard of a matrix job 1..N with none missing; a job the
+  run skipped (a pull request that did not reach the UI) runs again;
+* for the unit shards, the run ran **the whole suite** (`python=all`). A pull
+  request's selected subset ([below](#a-pull-request-runs-the-unit-tests-its-change-reaches))
+  is never main's full run. So main reuses the unit shards from a merge-train
+  run, a queue entry, or a pull request whose selection fell back to the
+  whole suite; it reuses the other jobs from any up-to-date pull request.
+
+**Not done, and why: pull-request images tagged by tree.** The plan's better
+form had a pull request's final-head run push its images tagged by tree hash,
+and the release scan and promote those. A pull request has no Google identity
+(owner decision 2026-10-05, [below](#why-there-is-no-pull-request-identity)), so
+it cannot push anything, and giving it one is the change that section exists
+to refuse. Main still builds -- only the images its commit changed
+([above](#main-builds-only-the-images-a-commit-changed)) -- and the release
+still promotes exactly what main built, including the per-release OS-package
+refresh of PR 1279.
+
+## A pull request runs the unit tests its change reaches
+
+**Owner decision 2026-10-14 (the delivery speed plan, B2).** On a pull request
+whose change reaches beyond `docs/` and `apps/swarm-ui/` (`python=all`), the
+`changes` job's `select` step narrows the unit shards to `python=selected`:
+the files [`scripts/lib/select_unit_tests.py`](../scripts/lib/select_unit_tests.py)
+says the change reaches, which are
+
+* everything `scripts/changed-guards.sh --list` selects for the same diff --
+  the repository-wide guard set and every test whose text names a changed
+  path, the same selection a SwarmCloud agent runs before it finishes;
+* every test that imports a changed module through any chain of imports under
+  `apps/`, `scripts/` and `tests/unit` (relative imports resolved; a changed
+  `__init__.py` reaches every importer of its package);
+* every test naming a script that sources a changed script, transitively
+  (a change to `scripts/lib/common.sh` reaches the tests of every script that
+  sources it), and a generic basename (`Dockerfile`, `__init__.py`) only
+  beside one of its directories' names;
+* when the change also touches `docs/` or `apps/swarm-ui/`, the pick step's
+  own area readers, as a docs-only change picks them.
+
+**It falls back to the whole suite**, and says why in the job summary, when a
+selection is not one it can vouch for: a workflow, composite action,
+`conftest.py`, `pyproject.toml`, `uv.lock`, `tests/flaky.txt` or the
+quarantine module changed (each changes how every test runs); the frozen
+contract changed (every component imports it); more than 40 paths changed
+(of the last 150 merged pull requests, measured 2026-10-14: median 7 files,
+p95 23, one over 40); or the
+selection is already half the suite, when the rest costs little and a whole
+run is one main can reuse ([above](#main-reuses-the-tested-tree)).
+
+**A miss costs a red main, never an untested release.** Main's push run, a
+merge-train run and a queue entry pass the diff's `python=all` straight
+through and run every file, and main reuses unit shards only from a run of the
+whole suite. `lock / contract / format / bridge install` still runs on a
+selected pull request.
+
+## A pull request scans the images it builds
+
+**Owner decision 2026-10-14 (the delivery speed plan, C3).** Two release
+blockers were first seen after a merge: PR 1276 merged without its tool-mirror
+object uploaded, so main's Cloud Build failed at its `tool-mirror` step; and a
+Debian curl CVE stopped every release at the promotion scan for hours.
+
+**The scan.** `build changed images without pushing` installs trivy at
+`release.yml`'s pin (a test holds the two equal) and passes
+`BUILD_ONLY_SCAN=scripts/scan-image-layout.sh` to `build-images.sh
+--build-only --local`. Each image the replay builds is exported to an OCI
+layout and scanned as soon as it is built, with the release's own policy --
+fixable HIGH and CRITICAL findings, `.trivyignore.yaml` honoured -- read from
+[`scripts/lib/image-scan.sh`](../scripts/lib/image-scan.sh), which
+`push-images.sh --scan` reads too, so the two scans cannot drift. A finding
+fails the build and names the image; a leaf's layout is removed after its
+scan.
+
+**The tool mirror.** `refresh-build-mirror.sh --check` reads the bucket, which
+a pull request cannot. The job instead runs the offline check that holds
+`images/agent-runtime-base/tool-mirror.sha256` equal to the Dockerfiles' pins,
+and names every row the pull request **adds** -- a warning annotation and a
+line in its summary -- as an object the operator uploads with
+`scripts/refresh-build-mirror.sh --tools-only` before the merge
+([runbook](runbooks/build-mirror.md)). It is a warning, not a failure: the
+job cannot see whether the upload happened.
+
+**Main fills the bucket itself (owner decision 2026-10-14, on PR 1298).**
+Main's `build images` job, which holds the deployer's identity, runs
+`scripts/refresh-build-mirror.sh --tools-only` before it builds. That uploads
+every manifest object the bucket lacks, each downloaded from its upstream URL
+and checked against its pinned sha256 first. A mismatch is refused and fails
+the step, naming the object. An object already there is left alone, nothing
+is ever deleted, and no image is pulled through (`--tools-only`). The step
+never runs on a pull request or a queue entry, where the job itself is
+skipped. So a merged manifest row no longer fails main's build; the PR
+warning above says the object will be uploaded from upstream at the merge.
+
+**The scan blocks (owner decision 2026-10-14).** A fixable HIGH or CRITICAL
+finding fails the pull request's image job, the same rule as the release's
+promotion scan, even when the CVE is new upstream and unrelated to the change.
+
+**Download retries.** The three fetches PR 1281 measured failing runs now
+retry, bounded: every `curl -fsSL` in a Dockerfile carries `--retry 5
+--retry-all-errors --retry-connrefused` (the `build images` exit 22 was an
+HTTP error, which curl retries only with `--retry-all-errors`); the indexer's
+`build_server` -- `go mod download` and `go get` against proxy.golang.org --
+runs up to three times, 15 and 30 s apart; and the Firestore emulator install
+in `integration tests (emulator)` tries four times, 10, 20 and 40 s apart.
+
 ## Merging through the merge queue
 
 **Owner decision, 2026-10-08 (observer proposal G).** Since 2026-10-07, main
@@ -3515,6 +3828,32 @@ person's row in Admin → People links to the execution. Each step's progress
 is also on the record (`steps.A1` … `steps.A9`), which People shows without
 any log access. The first execution to reach A9 ran 2026-10-13 05:03 to
 05:05Z, for `w-7f9285`.
+
+## ruff lint is the house Python linter, and formatting is not adopted
+
+ruff is the house linter (owner decision 2026-10-14, "Adopt ruff"), configured
+once in the root `pyproject.toml` under `[tool.ruff]` and pinned exactly in
+its dev group, so a lane, the pre-publish gate and CI lint with the same
+binary: `uv run ruff check .` for the repository, or `uv run ruff check
+<files>` for a change. The rule set is deliberately small -- pyflakes and the
+pycodestyle errors that are always bugs (`E4`, `E7`, `E9`, `F`), selected
+explicitly because ruff's own default set has grown past that -- so it reports
+defects (an unused import, an undefined name, an f-string with no
+placeholder), never taste; widening it is a decision of its own, with its
+churn measured first. `apps/common/swarm_common/` is frozen, so its unused
+imports are ignored there rather than fixed. **`ruff format` is NOT adopted**:
+a repository-wide reformat would conflict with every open lane, so
+`[tool.ruff.format]` excludes every file and `force-exclude` keeps that true
+when files are named explicitly, which is how the pre-publish gate
+(`apps/agent-worker/agent_worker/prepublish.py`) runs `ruff format --check`
+on a lane's changed Python -- without it every lane touching Python would be
+told to reformat what it touched. `tests/unit/scripts/test_ruff_config.py`
+holds the pin, the lock, the rule set and the format exclusion. The CI job
+that runs it is `ruff check` in `application.yml` (SPEED-B, 2026-10-14):
+`uv run --frozen --only-dev ruff check --output-format github .`, which
+installs the dev group alone -- the pinned ruff with it -- so it takes
+seconds, and annotates each finding on its line. It is in `ci-gate`'s
+`needs`, so it is required the way every job there is.
 
 ## The finishing sequence
 

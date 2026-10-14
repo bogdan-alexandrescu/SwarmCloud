@@ -22,9 +22,17 @@ needed and only one shape of it is dangerous:
 * `Target.createBrowserContext` without `proxyServer`, `proxyBypassList` or
   `originsWithUniversalNetworkAccess` (Playwright's `newContext()` sends
   none of them unless asked for a proxy);
-* `Browser.setDownloadBehavior` / `Page.setDownloadBehavior` that allows a
-  download only into `downloads/`, the one volume the worker reads and the gate
-  does not (section 3.1); `deny` and `default` carry no path and are allowed;
+* `Browser.setDownloadBehavior` / `Page.setDownloadBehavior` with one of
+  Chromium's four behaviours. `deny` and `default` carry no path and pass as
+  sent. `allow` and `allowAndName` download only into `downloads/`, the one
+  volume the worker reads and the gate does not (section 3.1): a path outside
+  it, or none, is CONFINED -- `confine` rewrites it to `downloads/` before the
+  command is held or forwarded -- rather than refused. MEASURED 2026-10-13
+  (task_1f28d5bfa5a14f618f83, LB-POLISH): Playwright's `connect_over_cdp`
+  names its own artifacts directory (a mkdtemp under the CLIENT's tmpdir) for
+  the default context, so refusing it refused the whole connection and the
+  agent fell back to raw CDP. Chromium writes where the gate says, never
+  where the agent said; a path the agent names is never forwarded;
 * `DOM.setFileInputFiles` only from `uploads/`. Not in the design's table, and
   added here for the same reason as the download rule from the other side: the
   path is opened by Chromium, in the sidecar, so a path outside `uploads/`
@@ -61,6 +69,34 @@ plant, change or clear one (`Network.setCookie(s)`, `Storage.setCookies`,
 `addCookies()` and `clearCookies()` therefore fail loudly in the agent, which
 is the intended outcome. Not covered, as the design says: a cookie without
 `HttpOnly` is readable by page script through `Runtime.evaluate`.
+
+PUPPETEER OPENS PAGES TOO (DEVB-GATE; part of #1030). dev-browser v1 drives
+Chromium with puppeteer-core 25.8.0, whose `newPage()` fails outright when
+`Performance.enable` or `Audits.enable` errors (CdpPage#initialize,
+FrameManager.initialize; the sequence is pinned in
+tests/unit/worker/fixtures/puppeteer-core-25.8.0-*.json). So:
+
+* `Performance.enable` / `getMetrics` / `disable` are allowed. The domain
+  reports counters -- `Metric` is a name and a number, the `metrics` event a
+  list of those and a title -- and nothing of a page's content;
+* `Audits.enable` and `Audits.disable` are ANSWERED BY THE GATE with `{}`
+  (`LOCAL_REPLIES`) and never reach Chromium, so Chromium never enables the
+  domain on an agent session, and the proxy drops any `Audits.*` event
+  besides. CHECKED 2026-10-14 against the CDP protocol definition
+  (devtools-protocol 0.0.1666840, the one puppeteer-core 25.8.0 pins):
+  `Audits.issueAdded` carries `InspectorIssueDetails.cookieIssueDetails`,
+  whose `rawCookieLine` is, in the protocol's words, "the raw Set-Cookie header
+  string" when the cookie is malformed and no `AffectedCookie` could be made --
+  a header with the cookie's value. Forwarded, it would hand the agent cookies
+  the rule above keeps from it (LB-7). The domain's other methods stay off the
+  allowlist: `getEncodedResponse` returns a response body, `checkFormsIssues`
+  reads a page's forms;
+* `WebMCP.enable` and `Network.emulateNetworkConditionsByRule` stay refused
+  (the first is not on the list; the second would set network conditions
+  by URL pattern) but are `QUIET_REFUSALS`: Puppeteer sends them, catches the
+  error and goes on, so each page it opened recorded a refusal that meant
+  nothing (ANALYSIS issue 19, refusal noise). The proxy counts them and logs
+  them at debug instead of recording `cdp_method_refused`.
 
 A REFUSAL IS RECORDED BY METHOD NAME ONLY (`cdp_method_refused`), never with
 its parameters, which can carry page text.
@@ -103,8 +139,8 @@ DENIED: Mapping[str, str] = {
     "Security.setOverrideCertificateErrors": "lets a man-in-the-middle certificate pass",
     "Page.setBypassCSP": "turns off the site's own script defences",
     "Network.setExtraHTTPHeaders": "adds headers the agent chose to every request",
-    "Browser.setDownloadBehavior": "writes files outside downloads/",
-    "Page.setDownloadBehavior": "writes files outside downloads/",
+    "Browser.setDownloadBehavior": "a download behavior Chromium does not name",
+    "Page.setDownloadBehavior": "a download behavior Chromium does not name",
     "DOM.setFileInputFiles": "uploads a file from outside uploads/",
     "Target.attachToTarget": "a non-flat session tunnels CDP past this policy",
     "Target.setAutoAttach": "a non-flat session tunnels CDP past this policy",
@@ -130,6 +166,7 @@ DENIED: Mapping[str, str] = {
     "Storage.setCookies": "writes the browser's cookies",
     "Storage.clearCookies": "writes the browser's cookies",
     "Storage.clearDataForOrigin": "writes the browser's cookies",
+    "Network.emulateNetworkConditionsByRule": "sets the network's conditions by URL pattern; Puppeteer survives the refusal",
 }
 
 # Methods refused only for one shape of their parameters; every other entry
@@ -146,6 +183,12 @@ _PARAMETER_RULED = frozenset(
 )
 
 _PROXY_PARAMETERS = ("proxyServer", "proxyBypassList", "originsWithUniversalNetworkAccess")
+
+_DOWNLOAD_METHODS = ("Browser.setDownloadBehavior", "Page.setDownloadBehavior")
+#: Chromium's download behaviours: the two that write nowhere, and the two
+#: that write into `downloadPath`, which `confine` makes `downloads/`.
+_DOWNLOAD_PATHLESS = ("deny", "default")
+_DOWNLOAD_WRITING = ("allow", "allowAndName")
 
 # What Playwright's Chromium driver sends over `connectOverCDP` for page work
 # (crBrowser, crPage, crNetworkManager, crExecutionContext, crInput,
@@ -282,6 +325,11 @@ ALLOWED_METHODS: frozenset[str] = frozenset(
         # Storage: the storage key only. Its cookie methods are the gate's
         # (section 5.5.1), refused above.
         "Storage.getStorageKeyForFrame",
+        # Performance: run-time counters only (`Metric` is a name and a
+        # number). Puppeteer's newPage() fails without Performance.enable.
+        "Performance.enable",
+        "Performance.disable",
+        "Performance.getMetrics",
         # Log and IO: console capture, and reading a PDF stream the agent made.
         "Log.enable",
         "Log.disable",
@@ -289,6 +337,21 @@ ALLOWED_METHODS: frozenset[str] = frozenset(
         "IO.close",
     }
 )
+
+# Methods the gate answers itself, with this result, without forwarding them
+# (module docstring): a client that needs the call to succeed gets its yes,
+# and Chromium never turns the domain on for an agent session.
+LOCAL_REPLIES: Mapping[str, Mapping[str, Any]] = {
+    "Audits.enable": {},
+    "Audits.disable": {},
+}
+
+# Events no agent session receives, by domain prefix, whatever enabled them.
+DROPPED_EVENT_DOMAINS: tuple[str, ...] = ("Audits.",)
+
+# Refused like any method off the allowlist, but known probes a client
+# survives: counted and logged at debug, never recorded (module docstring).
+QUIET_REFUSALS: frozenset[str] = frozenset({"WebMCP.enable", "Network.emulateNetworkConditionsByRule"})
 
 # A response carrying page content. One that completes while a person is in
 # control was sent before control and resolved during it -- an `awaitPromise`
@@ -337,16 +400,31 @@ def _inside(path: Any, root: Path) -> bool:
 def _parameter_refusal(method: str, params: Mapping[str, Any], paths: PolicyPaths) -> bool:
     if method == "Target.createBrowserContext":
         return any(key in params for key in _PROXY_PARAMETERS)
-    if method in ("Browser.setDownloadBehavior", "Page.setDownloadBehavior"):
-        if params.get("behavior") in ("deny", "default"):
+    if method in _DOWNLOAD_METHODS:
+        if params.get("behavior") in _DOWNLOAD_PATHLESS:
             return False
-        return not _inside(params.get("downloadPath"), paths.downloads_dir)
+        return params.get("behavior") not in _DOWNLOAD_WRITING or not _inside(
+            params.get("downloadPath"), paths.downloads_dir
+        )
     if method == "DOM.setFileInputFiles":
         files = params.get("files", [])
         return not isinstance(files, list) or not all(_inside(f, paths.uploads_dir) for f in files)
     if method in ("Target.attachToTarget", "Target.setAutoAttach"):
         return params.get("flatten") is not True
     return False
+
+
+def confine(method: str, params: Mapping[str, Any], paths: PolicyPaths) -> Mapping[str, Any]:
+    """`params` as Chromium may receive them: a download that writes is
+    pointed into `downloads/` when it named anywhere else (module docstring).
+    Every other command is returned as it came; `check` still runs after."""
+    if (
+        method in _DOWNLOAD_METHODS
+        and params.get("behavior") in _DOWNLOAD_WRITING
+        and not _inside(params.get("downloadPath"), paths.downloads_dir)
+    ):
+        return {**params, "downloadPath": str(paths.downloads_dir)}
+    return params
 
 
 def check(method: str, params: Mapping[str, Any] | None, paths: PolicyPaths) -> Refusal | None:
@@ -360,6 +438,8 @@ def check(method: str, params: Mapping[str, Any] | None, paths: PolicyPaths) -> 
         return None
     if method in DENIED:
         return Refusal(method, DENIED[method])
+    if method in LOCAL_REPLIES:
+        return None
     if method not in ALLOWED_METHODS:
         return Refusal(method, "not on the allowlist")
     return None
