@@ -295,11 +295,17 @@ def test_events_to_the_agent_are_dropped_in_control(tmp_path):
 
         await w.proxy.resume()
         await settle()
-        # Dropped means dropped: nothing from the control window is replayed.
-        assert len(w.agent.events("Page.frameNavigated")) == 1
+        # Dropped means dropped: no event from the control window is replayed
+        # as it happened. The frame's state at return is told once
+        # (HANDOFF-RESYNC, test_live_cdp_clients.py), so the agent's client
+        # knows where its page is.
+        assert [e["params"]["frame"]["url"] for e in w.agent.events("Page.frameNavigated")] == [
+            "https://a.example/", "https://b.example/"]
+        assert w.agent.events("Page.screencastFrame") == []
+        assert w.agent.events("Runtime.bindingCalled") == []
         w.chromium.emit("Page.frameNavigated", {"frame": {"id": "F", "url": "https://c.example/"}}, page)
         await settle()
-        assert len(w.agent.events("Page.frameNavigated")) == 2
+        assert len(w.agent.events("Page.frameNavigated")) == 3
         await w.chromium.stop()
 
     run(body)
@@ -509,6 +515,11 @@ REFUSED_OUTSIDE_CONTROL = [
     ("Network.setUserAgentOverride", {"userAgent": "agent"}),
     ("DOM.setFileInputFiles", {"files": ["/etc/passwd"], "nodeId": 1}),
     ("Browser.close", {}),
+    # DEVB-GATE: Audits is answered by the gate, never opened to Chromium; its
+    # other methods read a response body or a form's state.
+    ("Audits.getEncodedResponse", {"requestId": "R1", "encoding": "webp"}),
+    ("Audits.checkFormsIssues", {}),
+    ("Performance.setTimeDomain", {"timeDomain": "threadTicks"}),
 ]
 
 
@@ -547,6 +558,11 @@ ALLOWED_CONTROLS = [
     ("DOM.setFileInputFiles", {"files": ["{uploads}/report.pdf"], "nodeId": 1}),
     ("Runtime.evaluate", {"expression": "1"}),
     ("Storage.getStorageKeyForFrame", {"frameId": "f1"}),
+    # DEVB-GATE: Puppeteer's CdpPage#initialize sends Performance.enable and
+    # fails newPage() on an error; page.metrics() reads the counters.
+    ("Performance.enable", {}),
+    ("Performance.getMetrics", {}),
+    ("Performance.disable", {}),
 ]
 
 
@@ -701,6 +717,60 @@ def test_an_agent_cannot_address_a_session_it_does_not_own(tmp_path):
         await w.chromium.stop()
 
     run(body)
+
+
+@pytest.mark.parametrize("method", ["Audits.enable", "Audits.disable"])
+def test_audits_is_answered_by_the_gate_and_never_reaches_chromium(tmp_path, method):
+    """DEVB-GATE: Puppeteer's FrameManager.initialize fails newPage() when
+    Audits.enable errors, and Audits.issueAdded can carry a Set-Cookie line
+    (`rawCookieLine`). So the gate says yes and Chromium is never asked."""
+
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        page = await w.attach_page()
+        before = len(w.chromium.received)
+        request = await w.send(method, {}, page)
+        assert w.agent.response(request) == {"id": request, "result": {}, "sessionId": page}
+        assert w.chromium.received[before:] == []
+        assert w.refused() == []
+        # Held in control like any command, and answered on return.
+        await w.proxy.pause()
+        held = await w.send(method, {}, page)
+        assert w.agent.response(held) is None
+        await w.proxy.resume()
+        await settle()
+        assert w.agent.response(held) == {"id": held, "result": {}, "sessionId": page}
+        assert [m for m in w.chromium.received if m["method"].startswith("Audits.")] == []
+        await w.chromium.stop()
+
+    run(body)
+
+
+@pytest.mark.parametrize("method", ["WebMCP.enable", "Network.emulateNetworkConditionsByRule"])
+def test_a_probe_puppeteer_survives_is_refused_quietly(tmp_path, caplog, method):
+    """ANALYSIS issue 19: refused on every page Puppeteer opens, these were
+    noise in the refusal record. Still refused, still not forwarded; counted,
+    and logged at debug only."""
+
+    async def body():
+        w = World(tmp_path)
+        await w.connect()
+        page = await w.attach_page()
+        before = len(w.chromium.received)
+        for _ in range(2):
+            request = await w.send(method, {}, page)
+            assert "error" in w.agent.response(request)
+        assert w.chromium.received[before:] == []
+        assert w.refused() == []
+        assert w.proxy.quiet_refusals == {method: 2}
+        await w.chromium.stop()
+
+    with caplog.at_level("DEBUG", logger="agent_worker.livegate"):
+        run(body)
+    lines = [r for r in caplog.records if method in r.getMessage()]
+    assert lines and all(r.levelname == "DEBUG" for r in lines)
+    assert "2" in lines[-1].getMessage()
 
 
 def test_the_policy_is_one_allowlist_with_a_named_denylist():
