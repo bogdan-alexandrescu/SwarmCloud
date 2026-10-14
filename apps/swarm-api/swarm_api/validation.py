@@ -867,6 +867,16 @@ DEFAULT_CARRIER = "checkpoints"
 #: form: a caller who already sends `metadata.strategy` for their own purposes
 #: must not have it silently overwritten by the platform.
 DISPATCH_METADATA_KEY = "dispatch"
+#: The record a merge step's conflict fix round is submitted with
+#: (`mergewake._on_conflict`, #1076): round, merge task, head, pull request.
+#: A caller's metadata as far as signing goes, so the worker never reads it.
+CONFLICT_ROUND_METADATA_KEY = "merge_conflict_round"
+#: The dispatch block's mark of a conflict fix round (#1321), copied from
+#: the record above at submission, on a continuation only. Inside the signed
+#: block, so the worker may act on it: it checks, before the round pushes,
+#: that the branch now stands on the default branch's head. The worker spells
+#: it `agent_worker.lifecycle.CONFLICT_ROUND_FIELD`.
+CONFLICT_ROUND_FIELD = "conflict_round"
 
 #: The key inside `task.metadata` the worker stages declared inputs from:
 #: `{upstream TASK id: filename}`. Written by workflow expansion only
@@ -1420,6 +1430,10 @@ class DispatchOptions:
     #: tenant's `findings_epic` setting at submission. Here, inside the signed
     #: block, so no agent of the tenant can point the worker at another issue.
     findings_epic: int | None = None
+    #: A merge step's conflict fix round (#1321): set by `submit_workflow` on
+    #: a continuation whose metadata carries `CONFLICT_ROUND_METADATA_KEY`.
+    #: Written only when true, inside the signed block.
+    conflict_round: bool = False
     #: `(upstream TASK id, upstream STEP id)` for every `input_from` entry of a
     #: step that opted in to `input_layout: "by_parent"` (#75), else empty. The
     #: worker sees only task ids in `metadata.input_from`; this is how it learns
@@ -1604,6 +1618,10 @@ class DispatchOptions:
         # every other step stores exactly the block it stored before.
         if self.merge_target:
             block[MERGE_TARGET_FIELD] = dict(self.merge_target)
+        # Absent on every step but a conflict fix round (#1321), so every
+        # other step stores exactly the block it stored before.
+        if self.conflict_round:
+            block[CONFLICT_ROUND_FIELD] = True
         return block
 
 
