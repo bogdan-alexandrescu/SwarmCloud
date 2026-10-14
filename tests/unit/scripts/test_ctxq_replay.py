@@ -330,6 +330,17 @@ def test_a_score_that_names_no_outcome_for_a_test_is_unknown_not_passed():
     assert pair["arms"]["B"]["historic_red"] is None and pair["arms"]["B"]["ci_pass"] is None
 
 
+def test_hunk_overlap_compares_the_changed_lines_of_two_diffs_by_file():
+    merged = "\n".join(["diff --git a/x.py b/x.py", "--- a/x.py", "+++ b/x.py", "@@ -1 +1 @@",
+                         "-old = 1", "+new = 2", "+", "+kept = 3"])
+    same_lines_other_file = merged.replace("x.py", "y.py")
+    half = "\n".join(["--- a/x.py", "+++ b/x.py", "@@ -1 +1 @@", "-old = 1", "+other = 9"])
+    assert cr.hunk_overlap(merged, merged) == 1.0
+    assert cr.hunk_overlap(merged, same_lines_other_file) == 0.0
+    assert cr.hunk_overlap(merged, half) == 0.25        # {-old} of {-old, +new, +kept, +other}
+    assert cr.hunk_overlap(merged, None) is None        # a diff not read is not 0
+
+
 # --------------------------------------------------------------------------
 # rule 3: the pairing is stable across runs
 # --------------------------------------------------------------------------
