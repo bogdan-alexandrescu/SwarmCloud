@@ -156,17 +156,21 @@ describe('the session read, as the API serves it, draws a Browser tab', () => {
   })
 
   it('session.pending.json: a live-browser task whose tunnel is not up yet still draws a Browser tab', async () => {
-    serve(fixture('session.pending.json'))
+    const read = fixture<{ browser?: unknown }>('session.pending.json')
+    serve(read)
     const { result } = renderHook(() => useLiveSession(TASK, true))
     await waitFor(() => expect(result.current.live.status).toBe('ok'))
-    expect(result.current.live).toEqual({ status: 'ok', liveBrowser: true, session: null })
+    // The read's `browser` object rides along unparsed (BSTATUS-STRIP).
+    expect(result.current.live).toEqual({ status: 'ok', liveBrowser: true, session: null, browser: read.browser })
   })
 
   it('session.not-live.json: another profile draws none', async () => {
-    serve(fixture('session.not-live.json'))
+    const read = fixture<{ browser?: unknown }>('session.not-live.json')
+    serve(read)
     const { result } = renderHook(() => useLiveSession(TASK, true))
     await waitFor(() => expect(result.current.live.status).toBe('ok'))
-    expect(result.current.live).toEqual({ status: 'ok', liveBrowser: false, session: null })
+    // The read's `browser` object rides along unparsed (BSTATUS-STRIP).
+    expect(result.current.live).toEqual({ status: 'ok', liveBrowser: false, session: null, browser: read.browser })
   })
 
   it('session.closed.json: a closed session says why', async () => {
