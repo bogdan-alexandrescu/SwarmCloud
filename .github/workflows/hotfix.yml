@@ -82,8 +82,8 @@ env:
   TF_ROOT: terraform/infra
   TRIVY_VERSION: "0.74.0"
 
-# RUNNERS (owner decision 2026-10-14). A job that holds no cloud, deploy or
-# App credential runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
 # GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,

@@ -12,8 +12,10 @@ the VMs. Pushes and same-repository PRs may.
 OWNER DECISION, 2026-10-14: "make sure we use CI runners for all jobs moving
 forward if capacity allows". So EVERY job uses the one approved expression
 unless it is in HOSTED_JOBS below, and each HOSTED_JOBS entry names a reason
-this file checks against the job (it holds a cloud identity, the merge App's
-key, or a forge token). A new job that silently uses a hosted image fails here,
+this file checks against the job (today the only reason is a cloud identity
+through workload identity). Repository secrets on a guarded job are refused
+except the ones GUARDED_SECRETS names for that job (owner decision
+2026-10-14: secrets on ephemeral self-hosted VMs accepted). A new job that silently uses a hosted image fails here,
 and so does a job that keeps a hosted entry after its credential is gone.
 
 The approved expression, with its capacity escape hatch: the repo variable
@@ -294,8 +296,6 @@ def test_every_guarded_job_in_the_workflows_resolves_safely() -> None:
 # --- Every job is on the pool, or hosted for a checked reason ---------------
 
 CLOUD = "cloud"
-APP_KEY = "app-key"
-FORGE = "forge-token"
 
 REASONS = {
     CLOUD: (
@@ -303,18 +303,19 @@ REASONS = {
         "google-github-actions/auth): deploy and cloud credentials stay on "
         "GitHub-hosted, the rule PR 1184 recorded for release.yml"
     ),
-    APP_KEY: (
-        "holds the merge App's private key (secrets.MERGE_APP_PRIVATE_KEY). Kept "
-        "hosted, decided 2026-10-14: on a bogdan-ci VM the key sits in that VM's "
-        "memory and disk for the job's life, readable by whoever holds IAP SSH "
-        "(the VMs' one ingress rule) or disk-snapshot rights in the runner "
-        "project. That audience is not shown to be no wider than GitHub's, so "
-        "the default the brief set (keep it hosted) stands"
-    ),
-    FORGE: (
-        "holds a forge token (secrets.SWARM_SANDBOX_GITHUB_TOKEN, a broad PAT): "
-        "kept hosted for the same reason as the merge App's key"
-    ),
+}
+
+SECRETS_ON_VMS = "owner decision 2026-10-14: secrets on ephemeral self-hosted VMs accepted"
+
+#: The only repository secrets a guarded job may hold, per job. The owner
+#: accepted the residual risk: for the job's life the secret is readable on
+#: the VM through IAP SSH or a disk snapshot in saga-ci-runners. Any other
+#: secret on a guarded job, or one of these on another job, fails.
+GUARDED_SECRETS: dict[str, tuple[frozenset[str], str]] = {
+    "auto-merge.yml:enable": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
+    "auto-merge.yml:disable": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
+    "accept.yml:sandbox": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
+    "accept.yml:sandbox-results": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
 }
 
 #: Every job NOT on the guarded expression. Keyed `file:job`.
@@ -322,14 +323,10 @@ HOSTED_JOBS: dict[str, str] = {
     "accept.yml:target": CLOUD,
     "accept.yml:quiesce": CLOUD,
     "accept.yml:smoke": CLOUD,
-    "accept.yml:sandbox": FORGE,
     "accept.yml:acceptance": CLOUD,
     "accept.yml:acceptance-2": CLOUD,
-    "accept.yml:sandbox-results": FORGE,
     "accept.yml:report": CLOUD,
     "application.yml:build": CLOUD,
-    "auto-merge.yml:enable": APP_KEY,
-    "auto-merge.yml:disable": APP_KEY,
     "ci-fix.yml:fix": CLOUD,
     "hotfix.yml:images": CLOUD,
     "hotfix.yml:promote": CLOUD,
@@ -378,10 +375,6 @@ def _reason_holds(reason: str, job: dict, workflow_permissions: object) -> bool:
         return _id_token(job, workflow_permissions) and any(
             u.startswith("google-github-actions/auth@") for u in _uses(job)
         )
-    if reason == APP_KEY:
-        return "MERGE_APP_PRIVATE_KEY" in _secrets(job)
-    if reason == FORGE:
-        return "SWARM_SANDBOX_GITHUB_TOKEN" in _secrets(job)
     raise AssertionError(f"unknown reason {reason!r}")
 
 
@@ -414,19 +407,45 @@ def test_every_job_is_on_the_pool_or_hosted_for_a_checked_reason() -> None:
     assert not problems, "\n".join(problems)
 
 
-def test_no_guarded_job_holds_a_cloud_identity_or_a_repository_secret() -> None:
+def _secrets_refused(name: str, job: dict) -> set[str]:
+    """The repository secrets a guarded job holds beyond what GUARDED_SECRETS
+    allows that job."""
+    allowed = GUARDED_SECRETS.get(name, (frozenset(), ""))[0]
+    return _secrets(job) - allowed
+
+
+def test_no_guarded_job_holds_a_cloud_identity_or_an_unlisted_secret() -> None:
     """The other direction: a credential never rides onto the pool by a job
-    being moved, or by a credential being added to a job already there."""
+    being moved, or by a credential being added to a job already there.
+    The only exceptions are GUARDED_SECRETS, job by job."""
     held = []
+    guarded = set()
     for name, job, wf_perms in _workflow_jobs():
         runs_on = job.get("runs-on")
         if not (isinstance(runs_on, str) and FORK_GATED.match(runs_on.strip())):
             continue
+        guarded.add(name)
         if _id_token(job, wf_perms):
             held.append(f"{name}: id-token: write")
-        if _secrets(job):
-            held.append(f"{name}: secrets {sorted(_secrets(job))}")
+        if _secrets_refused(name, job):
+            held.append(f"{name}: secrets {sorted(_secrets_refused(name, job))} not in GUARDED_SECRETS")
+    for name, (names, reason) in GUARDED_SECRETS.items():
+        assert reason == SECRETS_ON_VMS, name
+        if name not in guarded:
+            held.append(f"{name}: in GUARDED_SECRETS but not a guarded job (stale entry)")
     assert not held, "credentials on self-hosted jobs:\n" + "\n".join(held)
+
+
+def test_the_secret_allowlist_can_fail() -> None:
+    """Controls: an allowed secret on another job, and another secret on an
+    allowed job, are both refused."""
+    app = {"steps": [{"with": {"private-key": "${{ secrets.MERGE_APP_PRIVATE_KEY }}"}}]}
+    assert _secrets_refused("auto-merge.yml:enable", app) == set()
+    assert _secrets_refused("auto-merge.yml:requeue", app) == {"MERGE_APP_PRIVATE_KEY"}
+    extra = {"steps": [{"env": {"A": "${{ secrets.MERGE_APP_PRIVATE_KEY }}", "B": "${{ secrets.OTHER }}"}}]}
+    assert _secrets_refused("auto-merge.yml:enable", extra) == {"OTHER"}
+    pat = {"steps": [{"env": {"T": "${{ secrets.SWARM_SANDBOX_GITHUB_TOKEN }}"}}]}
+    assert _secrets_refused("auto-merge.yml:disable", pat) == {"SWARM_SANDBOX_GITHUB_TOKEN"}
 
 
 def test_the_reason_checks_can_fail() -> None:

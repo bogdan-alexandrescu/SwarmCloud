@@ -195,8 +195,8 @@ concurrency:
   group: auto-merge-${{ github.event_name == 'workflow_dispatch' && 'requeue-' || '' }}${{ github.event.pull_request.number || inputs.pr || github.run_id }}${{ github.event_name == 'pull_request_target' && github.event.action != 'labeled' && format('-{0}', github.run_id) || '' }}
   cancel-in-progress: false
 
-# RUNNERS (owner decision 2026-10-14). A job that holds no cloud, deploy or
-# App credential runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud identity
+# (id-token) runs on the self-hosted `bogdan-ci` VMs through the one guarded
 # `runs-on` expression: a fork's pull request, or the repo variable
 # SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
 # GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
@@ -204,7 +204,7 @@ concurrency:
 jobs:
   enable:
     name: queue for auto-merge
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # The label event itself, or a re-evaluation dispatched by `requeue`.
     if: >-
       (github.event_name == 'pull_request_target' &&
@@ -959,7 +959,7 @@ jobs:
 
   disable:
     name: disable auto-merge on a new head
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Only a pull request that is (or was) queued: `ready` still on it. Never
     # for the `labeled` action itself -- GitHub already lists the just-added
     # label in `github.event.pull_request.labels`, so without excluding that
