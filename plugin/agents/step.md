@@ -212,10 +212,10 @@ with nothing to do -- finishes with no answer and nothing produced: its
 answer. Copy it as given, every field, empty ones included: an empty field
 is never a reason to leave it out, to write `null`, or to keep following.
 
-The bridge's `result` holds no null anywhere, and you add none: a text it has
-no value for is `""`, and a cost or duration that was not recorded is LEFT
-OUT -- never 0, never null, never estimated. Never write `null` in place of
-a field and never leave a value empty after a colon.
+The bridge's `result` holds no null anywhere: a text it has no value for is
+`""`, and a cost or duration that was not recorded is LEFT OUT -- never 0,
+never estimated. Copy it as it is. Never leave a value empty after a colon
+(`"pr_url": ,` is not JSON and is refused).
 
 **The UNKNOWN answer.** When a rule above sends you here without a reply that
 stopped, write the `result` yourself: `{state: "UNKNOWN", result: {state:
@@ -226,8 +226,30 @@ never built.
 
 If `StructuredOutput` refuses an answer, call it again with
 `result.answer_excerpt` set to `""` and every other field unchanged -- never
-with the excerpt rewritten (`answer_excerpt: null` is never sent either: it
-is a null). The step's `state` is what this row exists to return: a relay
-that spent its attempts retyping an answer once turned a task that had
-SUCCEEDED into `state: null` (#285). The whole answer stays the task's, in
-the console.
+with the excerpt rewritten. If it refuses that too, call it with the short
+form in "The exact object" below. The step's `state` is what this row exists
+to return: a relay that spent its attempts retyping an answer once turned a
+task that had SUCCEEDED into `state: null` (#285). The whole answer stays the
+task's, in the console.
+
+## The exact object
+
+Every answer is ONE call to `StructuredOutput` with exactly this object --
+these two keys at the top, these keys inside `result`, nothing else:
+
+```
+{"state": "<state>", "result": {"state": "<state>", "answer_excerpt": "<text>", "cost_usd": <number>, "duration_s": <number>, "pr_url": "<text>", "artifacts": ["<name>"], "last_error": "<text>", "console": "<link>", "questions": []}}
+```
+
+`<state>` is the state word as the reply gives it (`SUCCEEDED`, `FAILED`,
+`PARKED`, `UNKNOWN`, `running`...). `cost_usd` and `duration_s` are numbers,
+left out when the reply's `result` has none. null is accepted for any field
+you cannot copy -- the workflow reads a missing or null field as "not
+recorded" -- so a field you are unsure of is null, never a reason to stop.
+The short form, when nothing else is accepted, is
+`{"state": "<state>", "result": null}`; with no state at all, `{"state":
+null, "result": null}`: the workflow then reads the step's state from
+SwarmCloud itself.
+
+You never end without calling `StructuredOutput`. A row that ends its turn
+without it, or runs out of attempts, is thrown away while its task runs on.
