@@ -135,6 +135,15 @@ only then: this runner names the `swarm-git` shim (`agent_worker.gitmcp`) in
 and a second flag is a second reading of the same option. The shim holds
 nothing: no token, no key, no network. It writes requests the worker answers.
 
+THE SEARCH TOOL (docs/search-tool.md, lane SEARCH-TOOL, part of #1030). When
+the worker offers the attempt the search tool it sets `SWARM_SEARCH`, the
+spool, and only then -- swarm-api's SEARCH_TOOL_ENABLED on, a live-browser
+profile, a registered attempt key: this runner names the `swarm-search` shim
+(`agent_worker.searchmcp`) in the same `--mcp-config`, and the live-browser
+note gains `LIVE_BROWSER_SEARCH_NOTE`. With the flag off the note says nothing
+about a search tool, because an agent told to use a tool it does not have
+loses turns looking for it.
+
 WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
 that read stdin with nothing attached sat until the Bash timeout killed it:
 the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
@@ -154,9 +163,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from ..children import git_shim_argv
+from ..children import git_shim_argv, search_shim_argv
 from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
+from ..searchmcp.server import SERVER_NAME as SEARCH_MCP_SERVER_NAME
+from ..searchmcp.server import SPOOL_ENV as SEARCH_SPOOL_ENV
 from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV, RESUME_NAME
 from .base import RunnerContext, run_runner
 from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
@@ -237,6 +248,15 @@ LIVE_BROWSER_NOTE = (
     "5), say so in your answer and then use an alternative, naming it. Save "
     "screenshots and other captures under $SWARM_ARTIFACTS_DIR so "
     "they are uploaded."
+)
+
+#: Appended to `LIVE_BROWSER_NOTE` only when the search tool is offered
+#: (`SWARM_SEARCH` is set). Owner decision 2026-10-13, "Both: search tool +
+#: proxy": a query typed into a search engine's page is what Google answered
+#: 429 /sorry to (docs/browser-egress.md §0).
+LIVE_BROWSER_SEARCH_NOTE = (
+    "To search the web, use the search tool, then open the results in the live "
+    "browser: do not type queries into a search engine's page."
 )
 
 #: The PreToolUse hook. Standard library only, run by this runner's own
@@ -365,10 +385,15 @@ def write_headless_settings(directory: Path) -> Path:
 
 
 def write_mcp_config(
-    directory: Path, endpoint: str | None = None, *, git_spool: str | None = None
+    directory: Path,
+    endpoint: str | None = None,
+    *,
+    git_spool: str | None = None,
+    search_spool: str | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
-    browser when `endpoint` is given, the `swarm-git` shim when `git_spool` is.
+    browser when `endpoint` is given, the `swarm-git` shim when `git_spool` is,
+    the `swarm-search` shim when `search_spool` is.
 
     Beside the settings file, in `work/` (never the checkout), mode 0600 and
     replaced rather than followed, for the same reasons (`_write_private`).
@@ -388,6 +413,9 @@ def write_mcp_config(
     if git_spool:
         command, *args = git_shim_argv(git_spool)
         servers[GIT_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+    if search_spool:
+        command, *args = search_shim_argv(search_spool)
+        servers[SEARCH_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
     config = {"mcpServers": servers}
     path = directory / MCP_CONFIG_NAME
     _write_private(path, json.dumps(config, indent=2) + "\n")
@@ -512,6 +540,10 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     git_spool = os.environ.get(GIT_SPOOL_ENV, "").strip()
     if git_spool:
         env[GIT_SPOOL_ENV] = git_spool
+    # The search tool's spool, likewise: set only for an attempt offered it.
+    search_spool = os.environ.get(SEARCH_SPOOL_ENV, "").strip()
+    if search_spool:
+        env[SEARCH_SPOOL_ENV] = search_spool
     live_endpoint = ""
     browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
@@ -532,15 +564,17 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             env[BROWSERS_PATH_ENV] = AGENT_BROWSERS_PATH
             live_endpoint = endpoint
             note = LIVE_BROWSER_NOTE
+            if search_spool:
+                note = f"{note} {LIVE_BROWSER_SEARCH_NOTE}"
         else:
             env[BROWSERS_PATH_ENV] = browsers
         # A new dict on the same context: `run_runner` holds this object.
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
     # ONE `--mcp-config` for every server this attempt has (module docstring).
-    if live_endpoint or git_spool:
+    if live_endpoint or git_spool or search_spool:
         mcp = write_mcp_config(Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
-                               git_spool=git_spool or None)
+                               git_spool=git_spool or None, search_spool=search_spool or None)
         extra += ["--mcp-config", str(mcp)]
     return run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
 
