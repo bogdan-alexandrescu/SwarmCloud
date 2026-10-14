@@ -1998,7 +1998,10 @@ class ControlPlane:
             metadata = dict(task.get("metadata") or {})
             last = metadata.get(MERGE_WAIT_METADATA_KEY)
             last = last if isinstance(last, Mapping) else {}
-            counts = {name: _count(last.get(name)) for name in ("wakes", "slot_waits")}
+            # Every counter is carried over, the train's (TRAIN-WS) included,
+            # so a CI wait between two train waits restarts neither bound.
+            counts = {name: _count(last.get(name))
+                      for name in ("wakes", "slot_waits", "train_waits")}
             counts.setdefault(counter, _count(last.get(counter)))
             attempt_count = int(task.get("attempt_count", 0))
             refund = counts[counter] < max_wakes and attempt_count > 0

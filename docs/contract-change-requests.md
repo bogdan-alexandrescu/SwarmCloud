@@ -85,6 +85,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 75 | `models.py`: `Workflow.fix_rounds` and `WorkflowStep.spawned_by`, a merge step's fix rounds as workflow fields (SPEED-D2) | proposed; worked around |
 | 76 | `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING`, a workflow that waits for pull requests to merge (SPEED-D3) | proposed; worked around |
 | 77 | `profiles.py`: `claude-code-browser` declares the input `browser_tool` (auto, playwright, dev-browser, jev), the live browser's tool picked by name (BSTATUS-API) | ACCEPTED by the owner 2026-10-14 ("Picker on Submit, Auto by default"), APPLIED by this PR |
+| 78 | `models.py` / `states.py`: a workspace's merge mode on `Tenant`, and a park reason for a merge step waiting on its merge train (TRAIN-WS) | proposed; worked around |
 
 ---
 
@@ -11479,3 +11480,66 @@ binary, an MCP config or a URL; the image's wrappers and the runner own what
 each name runs. 1-9 unchanged: the same profile, image, class, backend and
 secrets.
 
+
+## 78. `models.py` / `states.py`: a workspace's merge mode, and a merge-train park reason (TRAIN-WS)
+
+**Status:** proposed, and worked around without it by the pull request that
+adds this entry (lane TRAIN-WS, owner decision 2026-10-14: "the merge train
+should be a setting users manage on their own workspace and admins on all
+workspaces"). Nothing under `apps/common/swarm_common/` was edited.
+
+### Why
+
+A workspace now chooses how its lane pull requests land -- directly, or in
+merge trains (docs/merge-trains.md). Two facts about that have no home in
+the frozen contract:
+
+1. **The setting.** A workspace is a `Tenant`, which is frozen and has no
+   field for its merge mode, train size or max train age. They are stored in
+   swarm-api's own `workspace_settings/{tenant_id}` (field `merge`, beside JUDGE-SELECT's `judgment_backend`) (`swarm_api.mergesettings`),
+   and a repository's override in its registration (`repositories/{id}`
+   `merge_mode`, swarm-api's own registry, not the contract). Every reader
+   goes through `mergesettings.settings_of`, which reads a malformed value as
+   the default, so nothing breaks; but a tenant's merge policy is a property
+   of the tenant that the contract cannot describe.
+2. **The wait.** A merge step whose pull request is registered for a train
+   parks `CI_PENDING` with the code `merge_train_waiting`, as a step waiting
+   for the merge slot parks `CI_PENDING` with `merge_slot_wait` (request 62).
+   It is not waiting for CI: its checks were green when it registered.
+   Both the CI wake tick and anything that reads park reasons must know the
+   code to tell the two apart.
+
+### The change
+
+```python
+@dataclass
+class Tenant:
+    ...
+    #: How this workspace's merge steps land their pull requests:
+    #: "direct" (default) or "train"; and the train's shape.
+    merge_mode: str = "direct"
+    merge_train_size: int = 4
+    merge_train_max_age_minutes: int = 90
+
+class ParkReason(str, Enum):
+    ...
+    MERGE_TRAIN = "MERGE_TRAIN"   # waiting for its repository's merge train
+```
+
+### Rollback
+
+Delete the fields and the member. The workaround above is what would remain.
+
+### What it would break
+
+Nothing: defaulted fields and a new enum member. `codec` would decode the
+three fields; the scheduler's `_promote_ci_waits` would promote
+`MERGE_TRAIN` parks on the same wake marker, and `mergewake` would stop
+needing to skip a code.
+
+### Invariants
+
+**1** preserved: a waiting train and its parked steps hold no lease and no
+pool count; only the coordinator's per-tenant tick reads them. **2-3**
+untouched: a merge step is admitted like any other. **5** preserved: the
+step's registration is a fenced transaction. 4, 6-10 unchanged.

@@ -25,6 +25,7 @@ import asyncio
 import dataclasses
 import json
 import secrets
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -114,7 +115,7 @@ def test_the_tag_goes_on_a_bare_origin_and_nothing_else():
 
 
 def _run_body(monkeypatch, tmp_path, *, payload: dict[str, Any], jev_key: bool = False,
-              jev_installed: bool = True) -> dict[str, Any]:
+              jev_installed: bool = True, backend: str | None = None) -> dict[str, Any]:
     from agent_worker.runners import claude_code
     from agent_worker.runners.base import RunnerContext
 
@@ -136,11 +137,20 @@ def _run_body(monkeypatch, tmp_path, *, payload: dict[str, Any], jev_key: bool =
     monkeypatch.setenv(claude_code.BROWSERS_PATH_ENV, "/opt/playwright")
     monkeypatch.setenv("SWARM_CDP_ENDPOINT", ENDPOINT)
     monkeypatch.setenv("SWARM_HANDOFF", str(spool))
+    # The key now reaches the runner as the worker's key FILE (JEV-RUNNER), not
+    # as TYPESAFE_API_KEY in its environment; an internal backend needs neither.
+    monkeypatch.delenv(claude_code.JEV_KEY_ENV, raising=False)
     if jev_key:
         # Built at runtime: nothing here has a credential's shape.
-        monkeypatch.setenv(claude_code.JEV_KEY_ENV, "ts-" + secrets.token_hex(8))
+        key_file = tmp_path / "jev-typesafe.key"
+        key_file.write_text("ts-" + secrets.token_hex(8))
+        monkeypatch.setenv("SWARM_JEV_KEY_FILE", str(key_file))
     else:
-        monkeypatch.delenv(claude_code.JEV_KEY_ENV, raising=False)
+        monkeypatch.delenv("SWARM_JEV_KEY_FILE", raising=False)
+    if backend is None:
+        monkeypatch.delenv("SWARM_JEV_BACKEND", raising=False)
+    else:
+        monkeypatch.setenv("SWARM_JEV_BACKEND", backend)
     for name in ("SWARM_GIT", "SWARM_SEARCH"):
         monkeypatch.delenv(name, raising=False)
     ctx = RunnerContext(
@@ -174,9 +184,13 @@ def test_the_runner_registers_the_choice_and_names_it_first(monkeypatch, tmp_pat
     # Playwright MCP connects with its client tag; jev's wrapper adds its own.
     assert seen["mcp"]["playwright"]["args"] == ["--cdp-endpoint", ENDPOINT + "/client/playwright"]
     if "jev" in servers:
-        assert seen["mcp"]["jev"] == {"type": "stdio", "command": claude_code.JEV_MCP_BIN, "args": []}
-        # No key is ever written into the MCP config.
-        assert "env" not in seen["mcp"]["jev"]
+        # With the key file, the launcher starts the wrapper; the config holds the
+        # file's PATH and never the key (the wrapper-direct entry is the internal case).
+        jev = seen["mcp"]["jev"]
+        assert jev["command"] == sys.executable
+        assert jev["args"][:2] == ["-I", str(claude_code.JEV_LAUNCH)]
+        assert jev["args"][-1] == claude_code.JEV_MCP_BIN
+        assert "ts-" not in json.dumps(jev)
     note = seen["prompt"].split("Check the pricing page.\n\n", 1)[1]
     assert note.startswith(claude_code.BROWSER_TOOL_LEAD[lead])
     assert claude_code.LIVE_BROWSER_NOTE in note
@@ -185,6 +199,22 @@ def test_the_runner_registers_the_choice_and_names_it_first(monkeypatch, tmp_pat
     # dev-browser is named only where it is offered.
     assert (claude_code.LIVE_BROWSER_DEV_BROWSER_NOTE in note) == ("dev-browser" in choice.tools)
     assert (claude_code.BROWSER_TOOL_STRENGTH["jev"] in note) == choice.jev_enabled
+
+
+@pytest.mark.parametrize("backend", ["internal-jev", "internal-laya"])
+@pytest.mark.parametrize("selected, servers", [
+    ("auto", {"playwright", "jev"}), ("jev", {"playwright", "jev"}),
+    ("playwright", {"playwright"}), ("dev-browser", {"playwright"}),
+])
+def test_an_internal_backend_needs_no_key_for_the_selected_tool(monkeypatch, tmp_path, backend, selected, servers):
+    from agent_worker.runners import claude_code
+
+    seen = _run_body(monkeypatch, tmp_path, payload={"browser_tool": selected}, jev_key=False,
+                     backend=backend)
+    assert set(seen["mcp"]) == servers
+    assert seen["state"]["jev"]["enabled"] == ("jev" in servers)
+    if "jev" in servers:
+        assert seen["mcp"]["jev"] == {"type": "stdio", "command": claude_code.JEV_MCP_BIN, "args": []}
 
 
 def test_jev_chosen_without_a_key_runs_on_playwright_and_says_why(monkeypatch, tmp_path):

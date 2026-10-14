@@ -131,14 +131,32 @@ def test_another_profile_does_not_take_browser_tool(keys_client, seeded):
 # --------------------------------------------------------------------------- #
 
 
+def _typesafe_backend(db, *tenants: str) -> None:
+    """The workspaces chose the TypeSafe judgment backend (JUDGE-SELECT). The
+    default, Internal Jev, needs no key, so the key refusal below is only
+    reachable on this backend."""
+    for tenant in tenants:
+        db.docs[f"workspace_settings/{tenant}"] = {"judgment_backend": "typesafe"}
+
+
+@pytest.mark.parametrize("backend", [None, "internal-jev", "internal-laya"])
+def test_jev_without_a_key_is_admitted_on_an_internal_backend(keys_client, seeded, monkeypatch, backend):
+    monkeypatch.setenv(SWITCH, "on")
+    if backend is not None:
+        seeded.docs["workspace_settings/u-alice"] = {"judgment_backend": backend}
+    response = _submit(keys_client, "alice", "jev")
+    assert response.status_code == 201, response.text
+
+
 def test_jev_without_a_key_is_refused_when_the_switch_is_on(keys_client, seeded, monkeypatch):
     monkeypatch.setenv(SWITCH, "on")
+    _typesafe_backend(seeded, "u-alice")
     response = _submit(keys_client, "alice", "jev")
     assert response.status_code == 422, response.text
     body = response.json()
     assert body["code"] == "browser_tool_unavailable"
     assert body["detail"]["reason"] == "no_key"
-    assert "TypeSafe key" in body["message"]
+    assert "TypeSafe key" in body["message"] and "judgment backend is TypeSafe" in body["message"]
 
 
 def test_jev_without_a_key_is_logged_and_let_through_while_the_switch_is_off(
@@ -146,6 +164,7 @@ def test_jev_without_a_key_is_logged_and_let_through_while_the_switch_is_off(
     monkeypatch.delenv(SWITCH, raising=False)
     assert refusals.SWITCHES["browser_tool_unavailable"].default is False
     caplog.set_level(logging.WARNING, logger="swarm_api.refusals")
+    _typesafe_backend(seeded, "u-alice")
     response = _submit(keys_client, "alice", "jev")
     assert response.status_code == 201, response.text
     assert "refusal report-only code=browser_tool_unavailable" in caplog.text
@@ -153,6 +172,7 @@ def test_jev_without_a_key_is_logged_and_let_through_while_the_switch_is_off(
 
 def test_jev_with_the_submitters_own_key_or_the_tenants_is_accepted(keys_client, seeded, monkeypatch):
     monkeypatch.setenv(SWITCH, "on")
+    _typesafe_backend(seeded, "u-alice", "u-bob", "eng")
     assert put_user(keys_client, "alice", fake_key()).status_code in (200, 201)
     assert _submit(keys_client, "alice", "jev").status_code == 201
     # bob has no key of his own; eng's tenant key is root's to set, and alice's

@@ -73,8 +73,10 @@ from .forge import (
 from .forgeapp import GRANTS, ORGS, Caller
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .metrics import ApiMetrics
+from .judgment import TYPESAFE_BACKEND, JudgmentSettings
 from .provider_keys import task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
+from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from .served_limits import configured_limits
@@ -604,9 +606,12 @@ class SubmissionService:
         """`browser_tool: jev` with nothing to run it on: refused through its
         switch (`browser_tool_unavailable`, default off), never silently.
 
-        Jev needs the image to carry it (`browser_jev_installed`) and a
-        TypeSafe key for the submitter or the tenant -- the resolution
-        `GET /v1/provider-keys/typesafe` serves (`task_key_scope`). Every
+        Jev needs the image to carry it (`browser_jev_installed`) and, ONLY
+        when the workspace's judgment backend is `typesafe` (JUDGE-SELECT,
+        `judgment.JudgmentSettings`), a TypeSafe key for the submitter or the
+        tenant -- the resolution `GET /v1/provider-keys/typesafe` serves
+        (`task_key_scope`). The default backend, Internal Jev, and Internal
+        Laya need no key, so they are never refused for its absence. Every
         other name runs on what every live-browser attempt has. Off, the
         task is admitted and the runner falls back to Playwright, saying why.
         """
@@ -618,14 +623,18 @@ class SubmissionService:
                        "jev-browser; pick auto, playwright or dev-browser")
         else:
             db = getattr(self._store, "db", None)
+            if db is not None and JudgmentSettings(db, now=self._now).read(
+                    tenant_id)["judgment_backend"] != TYPESAFE_BACKEND:
+                return
             scope = task_key_scope(db, self._store, tenant_id, submitted_by, TYPESAFE_PROVIDER,
                                    now=self._now) if db is not None else None
             if scope is not None:
                 return
             reason = "no_key"
-            message = ("browser_tool 'jev' needs a TypeSafe key, and none is set for you or for "
-                       "this tenant: add one on the console's key page, or pick auto, "
-                       "playwright or dev-browser")
+            message = ("browser_tool 'jev' needs a TypeSafe key because this workspace's "
+                       "judgment backend is TypeSafe, and none is set for you or for this "
+                       "tenant: add one on the console's key page, choose Internal Jev as "
+                       "the backend, or pick auto, playwright or dev-browser")
         detail: dict[str, Any] = {"runner_profile": profile.name, "key": BROWSER_TOOL_INPUT_KEY,
                                   "browser_tool": "jev", "reason": reason}
         if step_id is not None:
@@ -900,6 +909,14 @@ class SubmissionService:
             self._registered_base(tenant.tenant_id, repository_url)
             if merge_plan is not None else None
         )
+        # TRAIN-WS, read once at submission like the base: the workspace's
+        # merge mode for this repository, its registration's override first
+        # (docs/merge-trains.md §5.1). Signed into the merge step's target;
+        # a setting changed later reaches later workflows.
+        merge_mode = (
+            self._merge_mode(tenant.tenant_id, repository_url)
+            if merge_plan is not None else None
+        )
         # Every step's commits name the workflow's submitter (P37). A
         # continuation a service account submitted names the person behind
         # the task it continues instead, else the bot (`gitidentity`).
@@ -920,6 +937,7 @@ class SubmissionService:
                 single_pr=single_pr,
                 merge_plan=merge_plan,
                 merge_base=merge_base,
+                merge_mode=merge_mode,
                 named_pull=named_pull,
                 continued_workflow=continuation.workflow_id if continuation else None,
             ).with_routing(
@@ -1278,6 +1296,12 @@ class SubmissionService:
         None when it is unregistered or set none (the platform default then)."""
         return merge_policy_of(self._registration(tenant_id, repository_url))
 
+    def _merge_mode(self, tenant_id: str, repository_url: str | None) -> str:
+        """The mode `tenant_id`'s merge step merges this repository in: the
+        registration's override, else the workspace's (TRAIN-WS)."""
+        return MergeSettingsStore(self._store.db, now=self._now).mode_for(
+            tenant_id, self._registration(tenant_id, repository_url))
+
     def _registered_base(self, tenant_id: str, repository_url: str | None) -> str | None:
         """The default branch `tenant_id` registered this repository with, or None.
 
@@ -1299,6 +1323,7 @@ class SubmissionService:
         single_pr: SinglePrPlan | None = None,
         merge_plan: MergePlan | None = None,
         merge_base: str | None = None,
+        merge_mode: str | None = None,
         named_pull: NamedPull | None = None,
         continued_workflow: str | None = None,
     ) -> DispatchOptions:
@@ -1350,6 +1375,7 @@ class SubmissionService:
                 # caller named, as `resolve_merge_pr` checked them.
                 return dispatch.with_merge_target(
                     number=named_pull.number, head_sha=named_pull.head_sha, base=merge_base,
+                    merge_mode=merge_mode,
                 )
             return dispatch.with_merge_target(
                 pull_request=(
@@ -1365,6 +1391,7 @@ class SubmissionService:
                 pull_request_workflow=(
                     (continued_workflow or None) if sources.continued else None
                 ),
+                merge_mode=merge_mode,
             )
         if integrator_step_id is None:
             return dispatch

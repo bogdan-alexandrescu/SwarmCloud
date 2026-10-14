@@ -285,6 +285,27 @@ class IssueCreated:
 
 
 @dataclass(frozen=True)
+class BranchMerge:
+    """GitHub's answer to merging a commit into a branch (`POST /merges`).
+
+    `sha` the merge commit it made; None with `conflict` False when the
+    branch already contained the commit (204); `conflict` True on a 409."""
+
+    sha: str | None
+    conflict: bool = False
+    message: str = ""
+
+
+@dataclass(frozen=True)
+class PullMerge:
+    """GitHub's answer to merging a pull request: merged, or why not."""
+
+    merged: bool
+    sha: str | None = None
+    message: str = ""
+
+
+@dataclass(frozen=True)
 class PullSnapshot:
     number: int
     url: str
@@ -648,7 +669,8 @@ class GitHubWriter:
         return _pull(ref, entries[0], what) if entries else None
 
     def open_pull(
-        self, ref: IssueRef, *, head: str, base: str, title: str, body: str, token: str
+        self, ref: IssueRef, *, head: str, base: str, title: str, body: str, token: str,
+        draft: bool = False,
     ) -> tuple[PullSnapshot, bool]:
         """Open a pull request from `head` into `base`: `(it, True)`, or
         `(the open one already there, False)` when GitHub refuses a second.
@@ -661,7 +683,7 @@ class GitHubWriter:
             data = self._call(
                 "POST", self._url(ref, "pulls"), token, what, needs=PULLS_WRITE,
                 payload={"title": title, "head": head, "base": base, "body": body,
-                         "draft": False},
+                         "draft": draft},
                 ok=(201,),
             )
         except (ForgeWriteForbidden, ForgeWriteUnauthorized):
@@ -756,6 +778,81 @@ class GitHubWriter:
             if len(data) < PAGE_SIZE:
                 break
         return names
+
+    # -- a merge train's branch and landings (TRAIN-WS, docs/merge-trains.md §4) --
+
+    def merge_into_branch(
+        self, ref: IssueRef, *, branch: str, head: str, message: str, token: str
+    ) -> BranchMerge:
+        """Merge commit `head` into `branch` on GitHub (`POST /merges`)."""
+        what = f"a merge of {head[:12]} into {branch} of {ref.repository}"
+        data = self._call(
+            "POST", self._url(ref, "merges"), token, what, needs=CONTENTS_WRITE,
+            payload={"base": branch, "head": head, "commit_message": message},
+            ok=(201, 204, 409),
+        )
+        if data is None:
+            return BranchMerge(sha=None)
+        sha = data.get("sha") if isinstance(data, dict) else None
+        if isinstance(sha, str) and sha:
+            return BranchMerge(sha=sha)
+        text = data.get("message") if isinstance(data, dict) else None
+        return BranchMerge(sha=None, conflict=True,
+                           message=text if isinstance(text, str) else "merge conflict")
+
+    def merge_pull(
+        self, ref: IssueRef, number: int, *, sha: str, title: str, message: str, token: str
+    ) -> PullMerge:
+        """Squash-merge pull request `number`, pinned to head `sha`.
+
+        GitHub's refusals (405 not mergeable, 409 head moved, 422 invalid)
+        are answers, returned unmerged with GitHub's message; anything else
+        raises as every call here does."""
+        what = f"the merge of {ref.repository}#{int(number)}"
+        data = self._call(
+            "PUT", self._url(ref, f"pulls/{int(number)}/merge"), token, what,
+            needs=CONTENTS_WRITE,
+            payload={"merge_method": "squash", "sha": sha, "commit_title": title,
+                     "commit_message": message},
+            ok=(200, 405, 409, 422),
+        )
+        data = data if isinstance(data, dict) else {}
+        text = data.get("message")
+        merged_sha = data.get("sha")
+        return PullMerge(merged=data.get("merged") is True,
+                         sha=merged_sha if isinstance(merged_sha, str) else None,
+                         message=text if isinstance(text, str) else "")
+
+    def commit_tree(self, ref: IssueRef, sha: str, token: str) -> str:
+        """The tree commit `sha` points at (`git/commits/{sha}`)."""
+        what = f"the commit {sha[:12]} of {ref.repository}"
+        data = self._call(
+            "GET", self._url(ref, f"git/commits/{quote(sha, safe='')}"), token, what,
+            needs=PULLS_WRITE,
+        )
+        tree = data.get("tree") if isinstance(data, dict) else None
+        tree_sha = tree.get("sha") if isinstance(tree, dict) else None
+        if not isinstance(tree_sha, str) or not tree_sha:
+            raise ForgeWriteError(f"GitHub's answer for {what} names no tree")
+        return tree_sha
+
+    def close_pull(self, ref: IssueRef, number: int, token: str) -> None:
+        self._call(
+            "PATCH", self._url(ref, f"pulls/{int(number)}"), token,
+            f"closing {ref.repository}#{int(number)}", needs=PULLS_WRITE,
+            payload={"state": "closed"},
+        )
+
+    def delete_branch(self, ref: IssueRef, branch: str, token: str) -> bool:
+        """Delete `branch`; False when it was already gone."""
+        try:
+            self._call(
+                "DELETE", self._url(ref, f"git/refs/heads/{quote(branch, safe='/')}"), token,
+                f"the branch {branch} of {ref.repository}", needs=CONTENTS_WRITE, ok=(204,),
+            )
+        except ForgeWriteNotFound:
+            return False
+        return True
 
     def compare_files(self, ref: IssueRef, base: str, head: str, token: str) -> list[str]:
         """The paths changed from the merge base of `base` and `head` to `head`.

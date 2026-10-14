@@ -1995,7 +1995,10 @@ jobs:
     # rejects refs/pull/*. Left to run, it would fail every entry's run and so
     # ci-gate on every entry. The commit is built once it is on main, by the
     # push run, as every commit is.
-    if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
+    # A needed check skipped by its paths (shell, manifests) is not a failure:
+    # without this guard GitHub skips the build too, and the release then
+    # refuses the unbuilt commit (adc51c0f, 2026-10-14).
+    if: ${{ !cancelled() && !failure() && github.event_name != 'pull_request' && github.event_name != 'merge_group' }}
     environment: build-pr
     # Authenticates to Google through workload identity: the only reason this
     # job holds id-token (the workflow grants it to no one by default).

@@ -520,6 +520,131 @@ not checked against the pinned 1.63 here. A tool that drops the path still
 connects, untagged, and is attributed to nothing; the proxy also reads a
 `client=` query, for a client that keeps a query and not a path.
 
+### 3.2.5 jev-browser: which backend, which key, how the key arrives (JEV-RUNNER)
+
+Owner decision 2026-10-14 (JEV-RUNNER, part of #1030): a live-browser task
+also gets [jev-browser](https://github.com/ying-kai-liao/jev-browser)'s MCP
+tools, beside Playwright MCP and dev-browser, **according to the workspace's
+judgment backend (§3.2.2, JUDGE-SELECT, PR 1312) and the task's `browser_tool` (§3.2.4) and, for TypeSafe, when its
+submitter or its tenant has a TypeSafe key**. jev-browser 0.2.0 (MIT) is a Node MCP server over
+Playwright. Its `browser_do(goal, values)` and `browser_read(question)` hand
+a goal-driven step, or a question about a long page, to TypeSafe's Jev
+models. That means it **sends the page's text and labels to TypeSafe
+(`api.typesafe.ai`)**. The owner accepted that. A TypeSafe-backend task with no key never
+loads it, and the prompt says nothing about it. jev-ultrafast stays out.
+
+**The gate is two conditions**, both required: (a) the task's `browser_tool`
+(§3.2.4) is `jev` or `auto`, never `playwright` or `dev-browser`; and (b) the
+workspace's backend allows it. Condition (b) is the backend, not the key (`SWARM_JEV_BACKEND`, set by the
+scheduler's `judgment.py` and passed to the worker and the runner):
+
+| `SWARM_JEV_BACKEND` (with `browser_tool` jev or auto) | key | `jev` registered | key file |
+|---|---|---|---|
+| `internal-jev` or `internal-laya` | not needed | yes | never written |
+| `typesafe` | resolved | yes | yes (below) |
+| `typesafe` | none | no | none |
+| unset (an old pod) | resolved | yes | yes |
+| unset (an old pod) | none | no | none |
+
+An internal backend starts `jev-browser-mcp` directly: no `jev_launch.py`,
+no `TYPESAFE_API_KEY`, and `jevkey.prepare` returns before it reads a
+secret. The wrapper refuses by itself when the egress URL is absent, and the
+runner does not repeat that check. Its note leaves out the sentence about
+TypeSafe, because nothing goes there. The key path below applies to the
+`typesafe` backend only; the per-key paragraphs that follow describe it.
+
+**Why per key, and which key** (the `typesafe` backend). jev-browser does nothing without
+`TYPESAFE_API_KEY`, and the keys are the ones docs/provider-keys.md stores.
+The worker resolves the key with swarm-api's rule (`resolve_provider_key`): the
+submitter's own key, `swarm-tenant-u-<user>-typesafe`, wins, else the task
+tenant's, else none. "The submitter's own" means their confirmed personal
+tenant, whose document names their email. A namesake on another domain
+derives the same `u-` id, so the id alone is not enough.
+`agent_worker/jevkey.py` restates the order, and
+`tests/unit/worker/test_jev_runner.py` holds it to swarm-api's function over
+every combination. The worker reads the secret as its own service account,
+the same way it reads every tenant credential. Nothing asks swarm-api for the
+value, because no route serves a credential.
+
+**A personal key on a group task needs a grant.** A task bogdan submits in
+`eng` runs as eng's worker account. swarm-api's write granted
+`swarm-tenant-u-bogdan-typesafe` to u-bogdan's worker only, so eng's worker
+gets PERMISSION_DENIED. It logs `jev_key_unreadable` (the secret id and the
+error type) and uses eng's key if eng has one.
+`terraform/bootstrap/typesafe_user_keys.tf` grants one group's worker read
+on one person's key, one row at a time (`typesafe_user_key_readers`; the
+owner applies it). **A row lets every task in that group read that person's
+key**, because every member runs as the same account in the same container.
+It is the same trade as the GitHub user slots (#780 D7 U1), so a person is
+listed only by consent.
+
+**How the key reaches only the jev server.** This is the narrowest path that
+works:
+
+1. The worker process (`lifecycle._build_child_env` → `jevkey.prepare`), only
+   when `SWARM_CDP_ENDPOINT` is set, writes the key to
+   `<attempt>/private/jev-typesafe.key`: mode 0600, created afresh
+   (`O_EXCL`, `O_NOFOLLOW`), and registered for log redaction before
+   anything else. `private/` is never checkpointed and never uploaded
+   (workspace.py). The runner is given the file's **path**,
+   `SWARM_JEV_KEY_FILE`, and never the key.
+2. The claude-code runner registers an MCP server `jev` whose command is
+   `jev_launch.py` (in the runner package, run by absolute path with `-I`)
+   with the key file and `/opt/swarm/jev-browser/bin/jev-browser-mcp` as
+   arguments. The MCP config therefore holds a path, not the key. The CLI's
+   environment, and so the agent's Bash tool, never gets the key or the
+   variable.
+3. `jev_launch.py` reads the file and execs the server with
+   `TYPESAFE_API_KEY` set in that one process's environment. It also sets
+   `JEV_BROWSER_NO_INSTALL=1` (from the config's `env`), so jev-browser never
+   downloads a Chromium of its own. It does **not** delete the file. The CLI
+   is launched more than once in one attempt (a pending-work resume, a repair
+   turn, an account move), and each launch starts its MCP servers again. A
+   file deleted on first read would leave every later turn without jev. The
+   runner deletes it when the agent has finished, and it is gone with the
+   workspace anyway.
+
+**Claude Code's `${VAR}` expansion in MCP configs was not used.** It expands
+from the CLI's own environment, so the key would have to sit in the
+environment every Bash command inherits. Writing the key into the config's
+`env` would put it in `work/`, which is checkpointed to GCS.
+
+**What this does not stop.** The agent runs as the same uid in the same
+container. It can read the MCP config, find the path and read the file
+while the attempt runs. That is the same trust level as every in-pod
+credential, including the provider key already in the CLI's environment.
+The pod is the boundary, as §3.2 says of `executable_path=`. What this path
+does guarantee is that the key is in no log, no checkpoint, no artifact, no
+environment dump of the agent's shell, and no file under `work/`.
+
+**Attach, not launch.** jev-browser 0.2.0 only launches a browser of its own
+(`chromium.launch` / `launchPersistentContext`, a new context at 1280×800).
+It has no CDP-connect option, and with the agent's `PLAYWRIGHT_BROWSERS_PATH`
+on the stub (§3.2) that launch fails. The image lane (JEV-IMAGE) installs
+`/opt/swarm/jev-browser/bin/jev-browser-mcp` as the variant that attaches to
+`$SWARM_CDP_ENDPOINT` with `viewport: null` and the browser's **existing**
+default context. The gate refuses `Emulation.setDeviceMetricsOverride` and
+the cookie methods, so `newContext` cannot be used. The runner passes the
+endpoint in the server's `env`. If the binary is absent from the image, the
+runner skips the registration and logs `jev_unavailable`, and the attempt
+runs with Playwright MCP and dev-browser.
+
+**The note** is §3.2.4's: the selected tool first, then each registered
+tool's strength line. The `jev` line says it sends page text to TypeSafe,
+which is true only on the `typesafe` backend (`BROWSER_TOOL_STRENGTH`); on an
+internal backend the runner uses `BROWSER_TOOL_STRENGTH_JEV_INTERNAL`, which
+says nothing is sent to TypeSafe.
+
+**The benchmark** (scripts/browser-bench.sh, docs/browser-bench.md) has a
+third arm, `jev`, chosen by its own sentence in front of the prompt like the
+other two. It is opt-in (`--tools playwright-mcp,dev-browser,jev`) because
+its tools exist only for a keyed submitter and each run spends TypeSafe
+credits too. Each challenger gets its own verdict against Playwright MCP.
+
+swarm-api's `browser_tool_unavailable` refusal of `browser_tool: jev` for a
+missing key applies only when the workspace's backend is `typesafe`; Internal
+Jev and Internal Laya need no key, so they are never refused for its absence.
+
 ### 3.3 The path to the console: outbound only, through a relay
 
 No inbound port on the pod and no public endpoint: the gate **dials out**.

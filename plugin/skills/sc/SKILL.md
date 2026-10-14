@@ -300,8 +300,9 @@ and which one a task they submit there would use — their own key wins over
 the tenant's. Status only: `set`, `version`, who set it and when. There is no
 value to show and never a reason to ask for one. `available: false` on their
 own key means they have no ready personal workspace to keep it in: say so,
-and that an admin can set a tenant key instead. Nothing reads TypeSafe keys
-yet (`consumed_by` is empty); do not describe a key as in use.
+and that an admin can set a tenant key instead. `consumed_by` names what
+reads the key: `jev`, the jev-browser tools of a live-browser task, which send
+page text to TypeSafe. When it is empty, do not describe a key as in use.
 
 ### `keys set <provider> [--tenant]`
 

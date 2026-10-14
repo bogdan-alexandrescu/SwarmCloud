@@ -90,7 +90,7 @@ from one table of cases (§8) until that workflow is retired.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Mapping, Protocol
 from urllib.parse import quote
@@ -100,6 +100,7 @@ from swarm_common.states import TERMINAL_STATES, TaskState
 
 from . import forge as forge_mod
 from . import mergeslot
+from . import mergetrain
 from . import verdict as verdict_mod
 from .errors import ExitCode, FencedError, InputUnavailable
 from .post_verdict import (
@@ -897,6 +898,11 @@ class MergeTarget:
     #: THIS workflow, not the merge's own; None for a merge inside the
     #: workflow that opened the pull request.
     pull_request_workflow: str | None = None
+    #: How this step lands its pull request (TRAIN-WS): `direct`, the merge
+    #: call below, or `train`, registered for the repository's merge train
+    #: (`mergetrain`). Signed by swarm-api from the workspace's settings at
+    #: submission; absent is direct.
+    merge_mode: str = mergetrain.DIRECT
 
 
 class TargetInvalid(ValueError):
@@ -904,6 +910,15 @@ class TargetInvalid(ValueError):
 
 
 def parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
+    target = _parse_merge_target(dispatch)
+    raw = dispatch.get(MERGE_TARGET_FIELD)
+    mode = raw.get("merge_mode", mergetrain.DIRECT) if isinstance(raw, Mapping) else None
+    if mode not in (mergetrain.DIRECT, mergetrain.TRAIN):
+        raise TargetInvalid(f"{MERGE_TARGET_FIELD}.merge_mode is not direct or train")
+    return replace(target, merge_mode=mode) if mode != target.merge_mode else target
+
+
+def _parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
     raw = dispatch.get(MERGE_TARGET_FIELD)
     if not isinstance(raw, Mapping):
         raise TargetInvalid(
@@ -913,7 +928,7 @@ def parse_merge_target(dispatch: Mapping[str, Any]) -> MergeTarget:
     unknown = sorted(
         str(k) for k in raw
         if k not in ("pull_request", "review", "verdict_file", "base", "number", "head_sha",
-                     "pull_request_workflow")
+                     "pull_request_workflow", "merge_mode")
     )
     if unknown:
         raise TargetInvalid(f"{MERGE_TARGET_FIELD} names {', '.join(unknown)}")
@@ -1245,6 +1260,21 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
         if pr.head_sha is not None and _accept(
             merger, head=pr.head_sha, pinned=pinned, fix_heads=fix_heads, base=default
         ) is not None:
+            landed = _landed_by_train(ctx, own, head=pr.head_sha)
+            if landed is not None:
+                # The repository's merge train landed what this step
+                # registered (TRAIN-WS): this step's merge, recorded as the
+                # direct merge's is.
+                summary["merged_by_this_task"] = True
+                summary["merged_through_train"] = True
+                summary["merge_train"] = {"entry": landed.get("entry_id"),
+                                          "train": landed.get("train_id")}
+                summary["merge_commit"] = pr.merge_commit_sha or landed.get("merge_commit")
+                _record(summary, merger, number,
+                        train_provenance(ctx, merger, number=number, head=pr.head_sha,
+                                         base=default, train=landed.get("train_id")))
+                _close_issues(run, merger, number)
+                return _outcome(TaskState.SUCCEEDED, None, summary, "")
             if _queued_by_this_step(own):
                 # The merge queue merged what this step enqueued (C3H): this
                 # step's merge, recorded as the direct merge's is.
@@ -1362,6 +1392,14 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     if pending:
         return wait("checks_pending", f"at {head}: " + ", ".join(sorted(pending)), pending)
 
+    # Green at this step's own head. In a workspace that merges in trains
+    # (TRAIN-WS) the step lands nothing itself: it registers the pull request
+    # for the repository's train and parks, and takes no merge slot -- the
+    # train coordinator is the repository's one merger. Everything above,
+    # conflicts and fix rounds included, ran exactly as in direct mode.
+    if parse_merge_target(ctx.dispatch).merge_mode == mergetrain.TRAIN:
+        return _train(run, merger, title=pr.title, number=number, head=head, base=default)
+
     # Green: from here on this step updates and merges, which only the
     # holder of the repository's merge slot may do. Waiting is a park.
     if slot is not None and slot.held is None:
@@ -1445,6 +1483,76 @@ def _with_forge(run: _Run, merger: ForgeMerger, *, number: int, pinned: str,
     _record(summary, merger, number, message)
     _close_issues(run, merger, number)
     return _outcome(TaskState.SUCCEEDED, None, summary, "")
+
+
+def _train(run: _Run, merger: ForgeMerger, *, title: str, number: int, head: str,
+           base: str) -> ActionOutcome:
+    """Register the pull request for the repository's merge train, then park.
+
+    Behind the fencing and cancel recheck, as every write is: a superseded
+    attempt registers nothing (invariant 5). An entry the train EJECTED ends
+    the step `train_ejected`, with the train's reason; any other state parks
+    on `TRAIN_WAITING` until the coordinator marks the park or the fallback
+    instant passes. A RETURNED entry, or one at an older head, is queued
+    again by `mergetrain.register_entry`, keeping its place.
+    """
+    ctx, summary = run.ctx, run.summary
+    trains = ctx.merge_trains
+    if trains is None:
+        return run.refuse("merge_train_unavailable",
+                          "this step merges through the repository's merge train, and the "
+                          "worker was given no train store to register it in")
+    if ctx.recheck():
+        return cancelled(summary)
+    entry = trains.register({
+        "task_id": ctx.task_id,
+        "repository": merger.full_name,
+        "repository_url": ctx.repository_url or "",
+        "base": base,
+        "number": number,
+        "head": head,
+        "title": title,
+        "message": provenance(ctx, merger, number=number, pinned=head),
+    })
+    state = str(entry.get("state") or mergetrain.QUEUED)
+    summary["merge_train"] = {"entry": entry.get("entry_id"), "state": state,
+                              "train": entry.get("train_id")}
+    if state == mergetrain.EJECTED:
+        reason = str(entry.get("reason") or "no reason recorded")
+        detail = str(entry.get("detail") or "")
+        return run.refuse("train_ejected",
+                          f"pull request #{number} was ejected from {base}'s merge train at "
+                          f"{head}: {reason}" + (f": {detail}" if detail else ""))
+    return run.wait(mergetrain.TRAIN_WAITING,
+                    f"pull request #{number} is {state} in {base}'s merge train at {head}",
+                    head=head, pull_request=number, pending=[])
+
+
+def _landed_by_train(ctx: ActionContext, own: Mapping[str, Any], *,
+                     head: str) -> Mapping[str, Any] | None:
+    """This step's entry, when its last park was on the train and the train
+    recorded it LANDED at `head`; None otherwise (then a merged pull request
+    is `already_merged`, as before). The entry is tenant-writable: a forged
+    one can at worst credit this step with a merge GitHub already shows."""
+    wait = _mapping(_mapping(own.get("metadata")).get(MERGE_WAIT_METADATA_KEY))
+    if wait.get("code") != mergetrain.TRAIN_WAITING or ctx.merge_trains is None:
+        return None
+    entry = ctx.merge_trains.peek(ctx.task_id)
+    if entry is None or entry.get("state") != mergetrain.LANDED or entry.get("head") != head:
+        return None
+    return entry
+
+
+def train_provenance(ctx: ActionContext, merger: ForgeMerger, *, number: int, head: str,
+                     base: str, train: Any) -> str:
+    """The pull request comment for a merge the train made (§5.4). No attribution."""
+    return "\n".join([
+        f"Merged by SwarmCloud task {ctx.task_id} (workflow {ctx.workflow_id}, "
+        f"attempt {ctx.attempt_id}) into {merger.full_name}#{number},",
+        f"through {base}'s merge train{f' {train}' if train else ''}, squashed at {head}, "
+        "the head this task registered, after the base's required checks were green on "
+        "the train's composed head.",
+    ])
 
 
 def _record(summary: dict[str, Any], merger: ForgeMerger, number: int, message: str) -> None:

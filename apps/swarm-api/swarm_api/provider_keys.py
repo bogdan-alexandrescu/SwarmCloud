@@ -27,6 +27,10 @@ Secret Manager write (resource-level accessor grant, no read path):
     It proves the write came through the /sc flow and grants NOTHING: every
     check a write without a link meets runs before the link is looked at.
   * RESOLUTION. `resolve_provider_key` says which secret a task would use.
+    The worker restates it (agent_worker/jevkey.py, held equal by
+    tests/unit/worker/test_jev_runner.py) to hand the key to the `jev` MCP
+    server of a live-browser task (JEV-RUNNER); no secret here is mounted
+    into a runner by its Job definition.
     `task_key_scope` asks it for a task already stored, from its tenant and
     its submitter (BSTATUS-API): the submission refuses a `browser_tool: jev`
     task with no key to use, and the live session says whose key jev runs on.
