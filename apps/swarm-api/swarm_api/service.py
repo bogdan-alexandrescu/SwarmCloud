@@ -82,6 +82,7 @@ from .store import Store, derived_service_account
 from .task_accounts import ACCOUNT_TOKEN_ENV
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
+    CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
     FORGE_SOURCE_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
@@ -736,6 +737,11 @@ class SubmissionService:
             )
             if continuation:
                 dispatch = replace(dispatch, continues=continuation.root_task_id)
+                # A merge step's conflict fix round (#1321), marked inside the
+                # signed block so the worker may check, before it pushes, that
+                # the round left the branch on the default branch's head.
+                if isinstance(spec.metadata.get(CONFLICT_ROUND_METADATA_KEY), dict):
+                    dispatch = replace(dispatch, conflict_round=True)
             # The merge step (contract request 47): appended here, once the
             # strategy is known and before anything is built or signed, then
             # checked with the rest of the graph.

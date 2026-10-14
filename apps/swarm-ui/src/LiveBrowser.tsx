@@ -31,6 +31,7 @@ import {
   type LiveStatus,
 } from './api'
 import { SaveAsLoginOffer } from './BrowserLogins'
+import { BrowserBadges, browserStatusOf } from './BrowserBadges'
 import { Button } from './components'
 import { HandoffStrip } from './Handoff'
 import { LiveToolMenu } from './LiveToolMenu'
@@ -119,6 +120,29 @@ export const LIVE_RENEW_MS = 20_000
 /** The longest wait between reconnects; noVNC's socket ends with Cloud Run's request timeout (§3.3, R2). */
 const RECONNECT_MAX_MS = 30_000
 
+/**
+ * RFC 6455's 1012, "Service Restart": the relay is restarting, reconnect now
+ * (RELAY-ROLL). The relay closes with it on a roll, and swarm-api closes a
+ * viewer with it whenever the viewer's relay link ends. MEASURED 2026-10-12/14:
+ * 40 relay restarts in ~48 h, one per release, and each one cost every viewer
+ * the 2 s, 4 s, 8 s ... backoff of an ordinary drop before it rejoined.
+ */
+export const LIVE_RESTART_CODE = 1012
+/** After a restart: the first reconnect ~250 ms away, doubling, jittered, never past 4 s. */
+const RESTART_RECONNECT_MS = 250
+const RESTART_RECONNECT_MAX_MS = 4_000
+
+/**
+ * How long reconnect number `tries` (1 first) waits. After a restart close,
+ * ~250 ms doubling and jittered to 75-125 %, so the viewers a relay drops at
+ * once do not all knock in the same instant; otherwise the ordinary backoff.
+ */
+export function liveReconnectDelay(tries: number, restart: boolean, rand: () => number = Math.random): number {
+  const step = Math.max(0, Math.min(tries - 1, 10))
+  if (restart) return Math.min(RESTART_RECONNECT_MAX_MS, RESTART_RECONNECT_MS * 2 ** step * (0.75 + 0.5 * rand()))
+  return Math.min(RECONNECT_MAX_MS, 1000 * 2 ** Math.min(tries, 5))
+}
+
 /** The presets' display names (§6.1, LB-6). The gate holds the list and its sizes; a name not here is shown as served. */
 const PRESET_LABEL: Readonly<Record<string, string>> = {
   desktop: 'Desktop',
@@ -161,7 +185,17 @@ export function presetLabel(name: string): string {
 export type LiveState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ok'; liveBrowser: boolean; session: LiveSession | null }
+  | {
+      status: 'ok'
+      liveBrowser: boolean
+      session: LiveSession | null
+      /**
+       * The read's `browser` object (BSTATUS-STRIP), unparsed: the tool,
+       * egress and Jev badges read it with `browserStatusOf`, here or on
+       * `session.browser`, and draw nothing when an older API serves none.
+       */
+      browser?: unknown
+    }
   | { status: 'error'; message: string }
 
 /**
@@ -172,6 +206,11 @@ export function liveReadOf(answer: unknown): LiveRead | null {
   if (typeof answer !== 'object' || answer === null) return null
   const a = answer as Partial<LiveRead>
   return typeof a.live_browser === 'boolean' && 'session' in a ? (a as LiveRead) : null
+}
+
+/** The read's top-level `browser` object, if it serves one (BSTATUS-STRIP). */
+function browserOfRead(read: LiveRead): unknown {
+  return (read as LiveRead & { browser?: unknown }).browser
 }
 
 /** Read the session again; given a control route's answer, draw it at once first. */
@@ -195,7 +234,7 @@ export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveS
     (answer?: unknown) => {
       const read = liveReadOf(answer)
       if (read !== null) {
-        setGot({ taskId, state: { status: 'ok', liveBrowser: read.live_browser === true, session: read.session ?? null } })
+        setGot({ taskId, state: { status: 'ok', liveBrowser: read.live_browser === true, session: read.session ?? null, browser: browserOfRead(read) } })
       }
       setTick((n) => n + 1)
     },
@@ -209,7 +248,10 @@ export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveS
     void loadLiveSession(taskId).then((r) => {
       if (gone) return
       if (r.status === 'ok' || r.status === 'stale') {
-        setGot({ taskId, state: { status: 'ok', liveBrowser: r.data.live_browser === true, session: r.data.session ?? null } })
+        setGot({
+          taskId,
+          state: { status: 'ok', liveBrowser: r.data.live_browser === true, session: r.data.session ?? null, browser: browserOfRead(r.data) },
+        })
       } else if (r.status === 'error') {
         // A failed re-read keeps the session it had: a blip must not tear the
         // canvas down under someone typing into it.
@@ -669,6 +711,11 @@ export function LiveBrowserPane({
   const mine = isController(session)
   const verdict = stripVerdict(session)
   const o = session.origin
+  // The tool, egress and Jev badges (BSTATUS-STRIP): the API may serve the
+  // object on the session or beside it; either, and none from an older one.
+  const tools = browserStatusOf(
+    (session as LiveSession & { browser?: unknown }).browser ?? (live.status === 'ok' ? live.browser : undefined),
+  )
   const theater: TheaterSession = {
     taskId: task.id,
     tenantId: task.tenant_id,
@@ -700,6 +747,7 @@ export function LiveBrowserPane({
               ? 'You are in control.'
               : `${session.controller.email} is in control.`}
         </span>
+        <BrowserBadges status={tools} />
         {unused && <AgentUnused task={task} />}
       </div>
   )
@@ -1293,12 +1341,17 @@ function LiveScreen({
       // reads again which session is current, as for a ticket that moved.
       movedRef.current?.()
     }
-    const retry = (message: string) => {
+    // Set when the relay closed this viewer with LIVE_RESTART_CODE, and kept
+    // through the retries that meet it still coming back, until one connects.
+    let restarting = false
+    const retry = (message: string, restart = false) => {
       if (stopped) return
       tries += 1
+      restarting = restarting || restart
       setWhy(message)
-      setConn(tries > 5 ? 'failed' : 'reconnecting')
-      timer = setTimeout(() => void connect(), Math.min(RECONNECT_MAX_MS, 1000 * 2 ** Math.min(tries, 5)))
+      // A relay coming back is not a failed viewer, however many quick knocks it takes.
+      setConn(tries > 5 && !restarting ? 'failed' : 'reconnecting')
+      timer = setTimeout(() => void connect(), liveReconnectDelay(tries, restarting))
     }
     const connect = async () => {
       // noVNC is loaded BEFORE a ticket is minted or a socket opened, so the
@@ -1381,15 +1434,25 @@ function LiveScreen({
           }
           rfb.current = r
           applyInput()
+          // noVNC set the channel's close handler as it attached; the close
+          // code is read on the way through, for the 'disconnect' below.
+          let closeCode: number | null = null
+          const noVncClose = ws.onclose
+          ws.onclose = (ev) => {
+            closeCode = ev.code
+            noVncClose?.call(ws, ev)
+          }
           r.addEventListener('connect', () => {
             tries = 0
+            restarting = false
             setWhy(null)
             setRefused(null)
             setConn('connected')
           })
           r.addEventListener('disconnect', () => {
             if (rfb.current === r) rfb.current = null
-            retry('The live connection closed. Reconnecting with a new ticket.')
+            if (closeCode === LIVE_RESTART_CODE) retry('The live relay restarted. Reconnecting.', true)
+            else retry('The live connection closed. Reconnecting with a new ticket.')
           })
         }, onStatus, onRefused)
       } catch (err) {

@@ -95,6 +95,13 @@ PY
 )"; fi
     "${py}" -c 'import json,sys; print(json.dumps({"items": [{"metadata": {"name": "swarm-live-0"}, "status": {"containerStatuses": [{"name": "relay", "imageID": sys.argv[1]}]}}]}))' "${image_id}" ;;
   *"get pods"*) printf 'NAME           READY   STATUS\nswarm-live-0   0/1     Pending\n' ;;
+  *"exec "*"swarm_live.status"*)
+    # The relay's counts: line N of relay-status for the Nth read, the last repeating.
+    [[ -f "${d}/relay-status" ]] || { echo 'error: unable to upgrade connection' >&2; exit 1; }
+    n=0; [[ -f "${d}/status-reads" ]] && n="$(cat "${d}/status-reads")"
+    printf '%s\n' "$((n + 1))" >"${d}/status-reads"
+    "${py}" -c 'import sys; L=open(sys.argv[1]).read().splitlines(); print(L[min(int(sys.argv[2]), len(L) - 1)])' \
+      "${d}/relay-status" "${n}" ;;
   *"rollout status statefulset/swarm-live"*)
     if [[ -f "${d}/rollout-fails" ]]; then echo 'error: timed out waiting for the condition' >&2; exit 1; fi
     printf 'partitioned roll out complete: 1 new pods have been updated...\n' ;;
@@ -191,6 +198,19 @@ class Cluster:
             ["bash", str(SCRIPT), *args], cwd=REPO, env=env,
             capture_output=True, text=True, timeout=300, check=False,
         )
+
+    def running(self, digest: str) -> None:
+        """A relay already deployed, its StatefulSet and pod on `digest`."""
+        (self.dir / "applied.yaml").write_text(_relay_manifest().replace(DIGEST, digest))
+
+    def statuses(self, *counts: tuple[int, int]) -> None:
+        """What the relay's /healthz says on each read: (viewers, controlled)."""
+        (self.dir / "relay-status").write_text("".join(
+            json.dumps({"ok": True, "tunnels": 1, "viewers": v, "controlled": c}) + "\n" for v, c in counts))
+
+    def forget_calls(self) -> None:
+        for name in ("kubectl.log", "status-reads"):
+            (self.dir / name).unlink(missing_ok=True)
 
     def log(self, binary: str) -> str:
         path = self.dir / f"{binary}.log"
@@ -383,3 +403,97 @@ def test_the_relay_step_runs_on_the_projects_synced_python_and_terraform(workflo
             and "APPLY_TENANT_NAMESPACES" not in str(s.get("if", ""))]
     assert uv and sync, f"{workflow}: no unswitched uv setup and sync before the relay step"
     assert ".venv/bin/python" in str((steps[at].get("env") or {}).get("PYTHON_BIN", ""))
+
+
+# --- RELAY-ROLL: only a new image rolls it, never under someone's hands -------
+#
+# MEASURED 2026-10-12/14: the relay restarted 40 times in ~48 h, because every
+# release rolled it, and each roll dropped every live session and control.
+# MUTATIONS: drop the digest comparison (the first test applies); drop the
+# defer loop (the defer tests see no exec and no "deferring").
+
+
+def test_a_relay_already_on_the_rendered_digest_is_not_rolled_and_both_digests_are_printed(tmp_path):
+    cluster = Cluster(tmp_path)
+    cluster.running(DIGEST)
+    cluster.statuses((0, 0))
+    result = cluster.run("--tf-init", "--get-credentials", "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    calls = cluster.log("kubectl")
+    assert "apply -f -" not in calls and "rollout status" not in calls, calls
+    assert "--dry-run" not in calls, "apply.sh ran for a relay that is not rolled"
+    assert "not rolled" in out and "already runs" in out, out
+    assert f"rendered digest  {DIGEST}" in out and f"running digest   {DIGEST}" in out, out
+
+
+def test_a_relay_on_another_digest_is_rolled_and_both_digests_are_printed(tmp_path):
+    cluster = Cluster(tmp_path)
+    cluster.running(STALE_DIGEST)
+    cluster.statuses((0, 0))
+    result = cluster.run("--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert f"rendered digest  {DIGEST}" in out and f"running digest   {STALE_DIGEST}" in out, out
+    calls = _lines(cluster.log("kubectl"))
+    assert _first(calls, "swarm_live.status") < _first(calls, "apply -f -") < _first(calls, "rollout status")
+    assert "nobody is watching or in control" in out, out
+
+
+def test_force_rolls_a_relay_already_on_the_rendered_digest(tmp_path):
+    cluster = Cluster(tmp_path)
+    cluster.running(DIGEST)
+    cluster.statuses((0, 0))
+    result = cluster.run("--confirm", "--force")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "rollout status" in cluster.log("kubectl")
+
+
+def test_the_roll_waits_while_a_person_is_in_control_then_rolls_once_they_leave(tmp_path):
+    cluster = Cluster(tmp_path)
+    cluster.running(STALE_DIGEST)
+    cluster.statuses((1, 1), (1, 0), (0, 0))
+    result = cluster.run("--confirm", "--defer-timeout", "30", "--defer-poll", "1")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert (cluster.dir / "status-reads").read_text().strip() == "3"
+    assert "deferring the roll: 1 viewer(s) connected, 1 session(s) in a person's control" in out, out
+    assert "nobody is watching or in control" in out and "rolling anyway" not in out, out
+    calls = _lines(cluster.log("kubectl"))
+    status = [i for i, line in enumerate(calls) if "swarm_live.status" in line]
+    assert len(status) == 3 and status[-1] < _first(calls, "apply -f -"), calls
+    # Read inside the relay's own pod and container, through the API's exec.
+    assert all("exec swarm-live-0" in calls[i] and "-c relay" in calls[i]
+               and "--namespace swarm-system" in calls[i] for i in status), calls
+
+
+def test_the_roll_waits_a_bounded_time_then_rolls_anyway_and_says_why(tmp_path):
+    cluster = Cluster(tmp_path)
+    cluster.running(STALE_DIGEST)
+    cluster.statuses((2, 1))
+    result = cluster.run("--confirm", "--defer-timeout", "2", "--defer-poll", "1")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "rolling anyway" in out and "2 viewer(s)" in out, out
+    assert (cluster.dir / "status-reads").read_text().strip() == "3"  # at 0 s, 1 s and 2 s
+    assert "rollout status" in cluster.log("kubectl")
+
+
+def test_an_unreadable_count_is_said_and_does_not_block_the_roll(tmp_path):
+    cluster = Cluster(tmp_path)
+    cluster.running(STALE_DIGEST)
+    result = cluster.run("--confirm", "--defer-poll", "1")
+    out = result.stdout + result.stderr
+    assert result.returncode == 0, out
+    assert "could not read the relay's counts" in out, out
+    assert "rollout status" in cluster.log("kubectl")
+
+
+def test_the_default_wait_fits_the_release_steps_timeout():
+    """release.yml gives the step 20 minutes; the wait plus the rollout must fit."""
+    text = SCRIPT.read_text()
+    defer = int(next(line.split("=")[1] for line in text.splitlines() if line.startswith("DEFER_TIMEOUT=")))
+    rollout = int(next(line.split("=")[1] for line in text.splitlines() if line.startswith("TIMEOUT=")))
+    assert 0 < defer and defer + rollout < 20 * 60
+

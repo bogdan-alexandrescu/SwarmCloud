@@ -68,19 +68,36 @@
 # is in the bootstrap layer, which the owner applies: until it is, `what dev
 # runs` fails at authentication, and `report` files that as the red group.
 #
-# HOW THE SUITE IS SPLIT. The seven groups run as matrix jobs, one swarm-verify
-# execution each, in TWO WAVES rather than seven at once: the smoke tenant's
+# HOW THE SUITE IS SPLIT. Six of the seven groups run as matrix jobs, one
+# swarm-verify execution each, in TWO WAVES rather than six at once (the
+# seventh, live-browser, runs on a schedule: below): the smoke tenant's
 # ceiling is 20 concurrent tasks (terraform/environments/dev/dev.tfvars,
 # tenants.smoke, max_active = capacity_units = 20), and the groups' peaks
 # summed are about 37 (mock submits 12 tasks and a workflow at once, generic
 # 8, workflow 4 roots, claude-code 3, browser 3, live-browser 1, git-tools 5).
 # Wave 1 is the three longest or heaviest -- mock, workflow, browser, a peak
-# of ~20 -- and wave 2 the rest -- generic, claude-code, live-browser,
-# git-tools, ~17. Over the ceiling a task QUEUES (invariant
+# of ~20 -- and wave 2 the rest -- generic, claude-code, git-tools, ~16.
+# Over the ceiling a task QUEUES (invariant
 # 1: queued costs nothing), so a burst would not fail outright, but every
 # check has a settle deadline and the queue would eat into it. So acceptance
 # takes about the longest of wave 1 (workflow, ~13 min) plus the longest of
 # wave 2 (generic, ~8), against 45.4 serially.
+#
+# LIVE-BROWSER IS OFF THE RED PATH (owner decision 2026-10-14, lane
+# SPEED-C2). Of 43 completed runs of this file, 21 failed; the live-browser
+# job failed 18 of 34, every other group 0-3, and every red run updated the
+# one acceptance issue. So it is not in either wave: the `live-browser` job
+# runs it every three hours (and on a dispatch with scope `live-browser`)
+# against whatever dev runs, and `live-browser-report` files its OWN issue
+# (scripts/accept-report.sh, ACCEPT_KIND=live-browser). Neither is an
+# accepting job: the schedule decides nothing about a deployment, so it has
+# no quiesce and cancels nothing, and its concurrency group is not an
+# `accept-dev-` one. A post-release run's quiesce DOES cancel a scheduled run
+# in flight (both runs belong to this file); a cancelled scheduled run files
+# nothing and does not count. It returns to wave 2 when
+# scripts/accept-live-browser-streak.sh says it passed five scheduled runs in
+# a row (docs/ci.md, "live-browser runs on a schedule"). Its peak of 1 fits
+# beside either wave if the two overlap.
 
 name: accept
 
@@ -91,7 +108,20 @@ on:
     branches: [main]
   # Accept whatever dev runs now, e.g. after a hotfix (hotfix.yml) or to retry
   # a red run. Main only: the identity is bound to this file on main.
+  # scope live-browser runs only the scheduled group (below), now.
   workflow_dispatch:
+    inputs:
+      scope:
+        description: all = the post-release acceptance; live-browser = only the scheduled live-browser group
+        type: choice
+        options: [all, live-browser]
+        default: all
+  # The live-browser group, off the red path (header). Every three hours, at
+  # :41 to stay off the top of the hour GitHub's scheduler is busiest at.
+  # A schedule runs on the default branch, so the identity binding (this
+  # file on refs/heads/main) holds; a separate workflow file would not get it.
+  schedule:
+    - cron: '41 */3 * * *'
 
 permissions:
   contents: read
@@ -118,7 +148,9 @@ jobs:
   target:
     name: what dev runs
     runs-on: ubuntu-24.04
-    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'push' || !startsWith(github.event.workflow_run.display_title, 'release prod ')))) }}
+    # Not on the schedule, nor on a dispatch for the live-browser group alone:
+    # those run `live-browser` and accept nothing.
+    if: ${{ github.ref == 'refs/heads/main' && github.event_name != 'schedule' && inputs.scope != 'live-browser' && (github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && (github.event.workflow_run.event == 'push' || !startsWith(github.event.workflow_run.display_title, 'release prod ')))) }}
     permissions:
       contents: read
       id-token: write
@@ -443,7 +475,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [generic, claude-code, live-browser, git-tools]
+        # live-browser left this wave on 2026-10-14 for the `live-browser`
+        # job below; it comes back here when its streak says so.
+        group: [generic, claude-code, git-tools]
     steps:
       - uses: actions/checkout@v5
         with:
@@ -569,5 +603,106 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           ACCEPT_SHA: ${{ needs.target.outputs.sha }}
           ACCEPT_NOW_SHA: ${{ steps.now.outputs.sha }}
+          ACCEPT_NEEDS: ${{ toJSON(needs) }}
+        run: ./scripts/accept-report.sh
+
+  # -------------------------------------------------------------------------
+  # THE LIVE-BROWSER GROUP, OFF THE RED PATH (header; owner decision
+  # 2026-10-14). Every three hours, or on a dispatch with scope live-browser:
+  # read what dev runs, check that commit out, run the one group, and file
+  # any red on its OWN issue. No `target`, `quiesce`, smoke or sandbox sync:
+  # it judges no deployment and cancels nothing, and the task clones the
+  # sandbox's fixtures the last post-release run synced from what dev runs.
+  # Nothing the post-release `report` needs, so it can never turn that run
+  # red. scripts/accept-live-browser-streak.sh reads these runs' results.
+  # -------------------------------------------------------------------------
+  live-browser:
+    name: acceptance (live-browser, scheduled)
+    runs-on: ubuntu-24.04
+    if: ${{ github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.scope == 'live-browser')) }}
+    concurrency:
+      group: accept-live-browser
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      sha: ${{ steps.deployed.outputs.sha }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_ACCEPT_SA }}
+
+      - uses: google-github-actions/setup-gcloud@v3
+
+      - name: read the deployed SHA from releases/dev/applied.json
+        id: deployed
+        run: ./scripts/lib/release-order.sh deployed --environment "${ENVIRONMENT}" >> "$GITHUB_OUTPUT"
+
+      # The deployed commit's scripts, as the waves run them. clean: false
+      # keeps the credentials file the auth step wrote into the workspace.
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ steps.deployed.outputs.sha }}
+          clean: false
+
+      - name: note when this job starts
+        id: started
+        run: echo "at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+
+      - name: acceptance suite, the live-browser group (inside the VPC)
+        env:
+          SHA: ${{ steps.deployed.outputs.sha }}
+        run: |
+          echo "### Scheduled live-browser acceptance of \`${SHA}\`" >> "$GITHUB_STEP_SUMMARY"
+          ./scripts/verify-remote.sh "acceptance/live-browser"
+
+      - name: cancel the executions this job started
+        # A cancel stops the client, not the Cloud Run execution (header).
+        # Cancels the swarm-verify executions created since this job started.
+        if: ${{ cancelled() }}
+        continue-on-error: true
+        env:
+          STARTED: ${{ steps.started.outputs.at }}
+        run: |
+          [ -n "${STARTED}" ] || exit 0
+          gcloud run jobs executions list --job swarm-verify --region "${REGION}" --project "${PROJECT_ID}" \
+            --filter 'status.runningCount>0' --format 'value(metadata.name,metadata.creationTimestamp)' \
+            | while read -r name created; do
+                if [ -n "${name}" ] && [[ "${created}" > "${STARTED}" ]]; then
+                  gcloud run jobs executions cancel "${name}" --region "${REGION}" --project "${PROJECT_ID}" --quiet || true
+                fi
+              done
+
+  # On red, ONE issue labelled bug for the scheduled live-browser group, found
+  # by its own marker -- never the post-release acceptance issue
+  # (scripts/accept-report.sh, ACCEPT_KIND=live-browser). Not after a cancel:
+  # a post-release run's quiesce cancels a scheduled run in flight, and that
+  # says nothing about the group.
+  live-browser-report:
+    name: report the scheduled live-browser group
+    runs-on: ubuntu-24.04
+    needs: [live-browser]
+    if: ${{ !cancelled() && needs.live-browser.result != 'skipped' }}
+    concurrency:
+      group: accept-live-browser-report
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      # The failing job's name, read from this run's job list.
+      actions: read
+      # Its own issue.
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: summary, and its own issue when red
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ACCEPT_KIND: live-browser
+          ACCEPT_SHA: ${{ needs.live-browser.outputs.sha }}
           ACCEPT_NEEDS: ${{ toJSON(needs) }}
         run: ./scripts/accept-report.sh

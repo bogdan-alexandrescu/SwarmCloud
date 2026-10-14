@@ -53,7 +53,10 @@
         {"tool": "gcloud", "command": ["iam", "roles", "describe"], "why": "the operator path asks whether the worker Firestore and bucket-metadata roles exist; --workspace grants them only on the WD9 fallback, by name, and never describes them (WS-WALK)"},
         {"tool": "gcloud", "command": ["storage", "buckets", "describe"], "why": "the operator path asks whether the artifact bucket exists; --workspace reads only its policy (WS-WALK)"},
         {"tool": "gcloud", "command": ["secrets", "versions", "list"], "why": "the operator path checks a provider secret has a version; --workspace makes the forge slot empty and never lists its versions, which the deployer cannot (no secretmanager.versions.list) (WS-WALK)"},
-        {"tool": "kubectl", "command": ["diff"], "why": "kubernetes/apply.sh diffs only without --confirm; A7 always passes --confirm"}
+        {"tool": "kubectl", "command": ["diff"], "why": "kubernetes/apply.sh diffs only without --confirm; A7 always passes --confirm"},
+        {"tool": "gcloud", "command": ["secrets", "versions", "access", "latest"], "why": "kubernetes/apply.sh --swarm-system --confirm reads swarm-tailscale-oauth to sync it into swarm-system/operator-oauth (docs/runbooks/tailscale-egress.md; JUDGE-NET); --workspace runs apply.sh --tenant only"},
+        {"tool": "kubectl", "command": ["create"], "why": "kubernetes/apply.sh --swarm-system --confirm builds swarm-system/operator-oauth with kubectl create secret --dry-run=client (JUDGE-NET); --workspace runs apply.sh --tenant only"},
+        {"tool": "kubectl", "command": ["label"], "why": "kubernetes/apply.sh --swarm-system --confirm labels that Secret with kubectl label --local (JUDGE-NET); --workspace runs apply.sh --tenant only"}
       ],
       "shapes": []
     },

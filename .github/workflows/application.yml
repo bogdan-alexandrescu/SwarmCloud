@@ -957,6 +957,13 @@ jobs:
     # pull requests arrive together. The matrix is the only place the count is
     # written; the step reads `strategy.job-total`.
     name: unit tests (${{ matrix.shard }}/${{ strategy.job-total }})
+    # A HUNG SHARD MUST FAIL, NOT HOLD ITS RUNNER FOR SIX HOURS. On 2026-10-14
+    # eight shards sat "in progress" for 51-306 minutes (self-hosted and hosted
+    # alike); `build images` needs this job, so release.yml timed out waiting for
+    # a build that never started. A shard runs ~12 minutes; 30 is the ceiling.
+    # faulthandler_timeout on the pytest steps dumps every thread of a test past
+    # 5 minutes, so the run that times out names the test that hung.
+    timeout-minutes: 30
     # SELF-HOSTED (owner decision 2026-10-12, sagaxyz/ai-studio#336): the ephemeral
     # bogdan-ci VMs, with fork PRs kept on a GitHub-hosted image. The expression is
     # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces, and
@@ -1188,7 +1195,7 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < "${SHARD_FILES}"
-          uv run pytest -q -n auto --dist worksteal -m "not flaky" -o junit_family=xunit1 --junitxml="${JUNIT}" "${files[@]}"
+          uv run pytest -q -n auto --dist worksteal -o faulthandler_timeout=300 -m "not flaky" -o junit_family=xunit1 --junitxml="${JUNIT}" "${files[@]}"
 
       - name: quarantined unit tests (report only, never fail the gate)
         # THE FLAKY-TEST QUARANTINE (owner decision 2026-10-14, docs/ci.md
@@ -1210,7 +1217,7 @@ jobs:
           set -euo pipefail
           mapfile -t files < "${SHARD_FILES}"
           rc=0
-          uv run pytest -q -n auto --dist worksteal -m flaky "${files[@]}" || rc=$?
+          uv run pytest -q -n auto --dist worksteal -o faulthandler_timeout=300 -m flaky "${files[@]}" || rc=$?
           case "${rc}" in
             0) line="every quarantined test in this shard passed" ;;
             5) line="no quarantined test in this shard" ;;

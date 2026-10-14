@@ -27,7 +27,16 @@
 # that no longer exists. The summary says so; that commit's own acceptance
 # reports for it.
 #
+# TWO KINDS, TWO ISSUES (owner decision 2026-10-14, lane SPEED-C2). The
+# live-browser group failed 18 of 34 post-release runs, so it left the waves
+# for accept.yml's scheduled `live-browser` job. ACCEPT_KIND=live-browser
+# reports that job: its own marker, so its own ONE issue, never the
+# post-release one, and a body that says how the group gets back into the
+# waves (scripts/accept-live-browser-streak.sh; docs/ci.md, "live-browser
+# runs on a schedule").
+#
 # Inputs, from the workflow's environment:
+#   ACCEPT_KIND     dev (the post-release run; the default) or live-browser
 #   ACCEPT_SHA      the SHA `what dev runs` read (empty if that job failed)
 #   ACCEPT_NOW_SHA  what applied.json names now (empty if it could not be read)
 #   ACCEPT_NEEDS    toJSON(needs) of the report job
@@ -58,7 +67,22 @@ NEEDS="${ACCEPT_NEEDS:-}"
 [[ -n "${NEEDS}" ]] || NEEDS='{}'
 
 # The issue this script owns: found by this line in its body, never by title.
-MARKER='<!-- swarm-accept: dev acceptance is red -->'
+# One per kind, so a red scheduled live-browser run never retitles or comments
+# on the post-release issue, nor the other way round.
+KIND="${ACCEPT_KIND:-dev}"
+case "${KIND}" in
+  dev)
+    NEEDLE='swarm-accept: dev acceptance is red'
+    WHAT='Dev acceptance'
+    ;;
+  live-browser)
+    NEEDLE='swarm-accept: live-browser acceptance is red'
+    WHAT='The scheduled live-browser acceptance group'
+    ;;
+  *) die "ACCEPT_KIND must be dev or live-browser, got '${KIND}'" ;;
+esac
+MARKER="<!-- ${NEEDLE} -->"
+STREAK_HINT='scripts/accept-live-browser-streak.sh says when it has passed five scheduled runs in a row; the operator then moves it back into the post-release waves (docs/ci.md, "live-browser runs on a schedule").'
 
 [[ -z "${SHA}" || "${SHA}" =~ ^[0-9a-f]{40}$ ]] || die "ACCEPT_SHA is not a commit SHA: '${SHA}'"
 [[ -z "${NOW_SHA}" || "${NOW_SHA}" =~ ^[0-9a-f]{40}$ ]] || NOW_SHA=""
@@ -99,8 +123,12 @@ short="${SHA:0:12}"
 } >>"${SUMMARY}"
 
 if [[ -z "${failed_needs}" ]]; then
-  echo "Green: dev runs \`${SHA}\` and it passed acceptance." >>"${SUMMARY}"
-  ok "acceptance of ${SHA} is green"
+  if [[ "${KIND}" == "live-browser" ]]; then
+    echo "Green: the scheduled live-browser group passed against \`${SHA}\`. ${STREAK_HINT}" >>"${SUMMARY}"
+  else
+    echo "Green: dev runs \`${SHA}\` and it passed acceptance." >>"${SUMMARY}"
+  fi
+  ok "${KIND} acceptance of ${SHA} is green"
   exit 0
 fi
 
@@ -110,7 +138,7 @@ if [[ -n "${SHA}" && -n "${NOW_SHA}" && "${NOW_SHA}" != "${SHA}" ]]; then
   exit 0
 fi
 
-title="Dev acceptance failed on ${short:-an unknown commit}: ${groups}"
+title="${WHAT} failed on ${short:-an unknown commit}: ${groups}"
 # A title is one line and GitHub caps it at 256 characters.
 title="${title:0:250}"
 
@@ -130,7 +158,7 @@ title="${title:0:250}"
 
 existing=""
 if ! existing="$(gh issue list --repo "${GITHUB_REPOSITORY}" --label bug --state open --limit 200 \
-    --json number,body --jq '[.[] | select(.body | contains("swarm-accept: dev acceptance is red"))][0].number // empty' 2>"${WORK}/list.err")"; then
+    --json number,body --jq "[.[] | select(.body | contains(\"${NEEDLE}\"))][0].number // empty" 2>"${WORK}/list.err")"; then
   redact <"${WORK}/list.err" | head -n 3 | sed 's/^/     /' >&2
   die "could not list open bug issues, so the red acceptance of ${SHA:-an unknown commit} (${groups}) is NOT filed. Run: ${RUN_URL}"
 fi
@@ -142,7 +170,7 @@ if [[ -n "${existing}" ]]; then
   gh issue comment "${existing}" --repo "${GITHUB_REPOSITORY}" --body-file "${WORK}/section.md" >/dev/null \
     || die "could not comment on issue #${existing}"
   echo "Red: updated issue #${existing}." >>"${SUMMARY}"
-  echo "::error title=Dev acceptance is red::${SHA:-unknown} failed ${groups}; issue #${existing} updated."
+  echo "::error title=${WHAT} is red::${SHA:-unknown} failed ${groups}; issue #${existing} updated."
   exit 0
 fi
 
@@ -153,7 +181,13 @@ fi
   echo
   echo "### What happened"
   echo
-  echo "Post-deploy acceptance of dev failed on \`${SHA:-an unknown commit}\`: ${groups}."
+  if [[ "${KIND}" == "live-browser" ]]; then
+    echo "The scheduled live-browser acceptance group (accept.yml's \`live-browser\` job, every three hours) failed against \`${SHA:-an unknown commit}\`, the commit dev runs: ${groups}."
+    echo
+    echo "It runs off the red path since 2026-10-14: it failed 18 of 34 post-release runs, against 0-3 for every other group, so it reports here and not on the post-release acceptance issue."
+  else
+    echo "Post-deploy acceptance of dev failed on \`${SHA:-an unknown commit}\`: ${groups}."
+  fi
   echo
   echo "### Severity"
   echo
@@ -172,7 +206,11 @@ fi
   echo "### Steps to reproduce"
   echo
   echo "1. Open the run below and read the failing job's log; verify-remote.sh prints the swarm-verify execution's own transcript for a failed group."
-  echo "2. Re-run it against what dev runs now: dispatch the \`accept\` workflow on main."
+  if [[ "${KIND}" == "live-browser" ]]; then
+    echo "2. Re-run it against what dev runs now: dispatch the \`accept\` workflow on main with scope \`live-browser\`."
+  else
+    echo "2. Re-run it against what dev runs now: dispatch the \`accept\` workflow on main."
+  fi
   echo
   echo "### What you expected instead"
   echo
@@ -189,10 +227,14 @@ fi
   echo "### Anything else"
   echo
   echo "Later red runs comment on this issue and retitle it, rather than opening another. A green run changes nothing here: close it with the change that fixed it."
+  if [[ "${KIND}" == "live-browser" ]]; then
+    echo
+    echo "${STREAK_HINT}"
+  fi
 } >"${WORK}/body.md"
 
 if ! url="$(gh issue create --repo "${GITHUB_REPOSITORY}" --label bug --title "${title}" --body-file "${WORK}/body.md")"; then
   die "could not open an issue for the red acceptance of ${SHA:-an unknown commit} (${groups}). Run: ${RUN_URL}"
 fi
 echo "Red: opened ${url}." >>"${SUMMARY}"
-echo "::error title=Dev acceptance is red::${SHA:-unknown} failed ${groups}; opened ${url}."
+echo "::error title=${WHAT} is red::${SHA:-unknown} failed ${groups}; opened ${url}."

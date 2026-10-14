@@ -38,6 +38,15 @@ nothing on -- not a frame, not a ping -- for `SILENT_SECONDS`. The gate's
 `status` then says `closed` and the worker hands it a fresh ticket
 (handoff.HandoffPath._keep_tunnel).
 
+A RESTARTING RELAY IS REJOINED AT ONCE (RELAY-ROLL). The relay closes every
+tunnel with `CLOSE_RESTARTING` (1012, "restarting, reconnect now") when it is
+stopped for a roll. `Tunnel.close_code` keeps the code, the gate's `status`
+reports it, and the worker -- the only holder of the attempt key that proves a
+tunnel ticket -- reopens on `reconnect_delay`'s schedule: jittered, from about
+250 ms, never past `RESTART_RETRY_MAX_SECONDS`, instead of the 5 s doubling to
+a minute every other close gets. MEASURED 2026-10-12/14: 40 relay restarts in
+~48 h, one per release, each leaving the gate up to a minute behind the relay.
+
 NOTHING CARRIED HERE IS LOGGED. The ticket admits whoever holds it, and DATA
 is a person's keystrokes (§5.3.3). Log lines carry close codes, conn ids and
 counts.
@@ -51,6 +60,7 @@ import hashlib
 import json
 import logging
 import os
+import random
 import struct
 import time
 from collections.abc import Awaitable, Callable, Mapping
@@ -81,6 +91,20 @@ READY_SECONDS = 10.0
 #: relay's 20-second pings, so one lost ping is not a dead relay.
 SILENT_SECONDS = 75.0
 
+#: The relay's "restarting, reconnect now" (swarm_live.rendezvous
+#: CLOSE_RESTARTING; RFC 6455's 1012 "Service Restart", which uvicorn sends
+#: on SIGTERM too). test_livegate_tunnel_restart.py holds the two equal.
+CLOSE_RESTARTING = 1012
+#: The first reopen after a restart, before jitter, and the longest wait
+#: between reopens while the new relay comes up. The cap is under the worker's
+#: 10 s poll (CONTROL_POLL_SECONDS), so every poll tries again.
+RESTART_RETRY_SECONDS = 0.25
+RESTART_RETRY_MAX_SECONDS = 4.0
+#: Every other close: the wait after a refused reopen, doubling to the cap,
+#: so a relay that stays down costs a route call a minute (LB-R6).
+RETRY_SECONDS = 5.0
+RETRY_MAX_SECONDS = 60.0
+
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _TEXT, _BINARY, _CLOSE, _PING, _PONG, _CONTINUATION = 0x1, 0x2, 0x8, 0x9, 0xA, 0x0
 
@@ -104,6 +128,23 @@ def decode_frame(data: bytes) -> tuple[int, str, bytes]:
     except UnicodeDecodeError:
         raise ValueError("bad tunnel frame") from None
     return data[0], conn_id, bytes(data[2 + data[1]:])
+
+
+def reconnect_delay(close_code: int | None, attempt: int, *,
+                    rand: Callable[[], float] = random.random) -> float:
+    """Seconds to wait before reopen number `attempt` (0 first) of a tunnel
+    that closed with `close_code`.
+
+    A restart (`CLOSE_RESTARTING`): `RESTART_RETRY_SECONDS` doubling, jittered
+    to 75-125 % so a relay's every gate does not knock in the same instant,
+    capped at `RESTART_RETRY_MAX_SECONDS` -- the first try is ~250 ms away.
+    Anything else: `RETRY_SECONDS` doubling to `RETRY_MAX_SECONDS`, unjittered,
+    as before."""
+    step = max(0, min(int(attempt), 16))
+    if close_code == CLOSE_RESTARTING:
+        base = RESTART_RETRY_SECONDS * (2 ** step)
+        return min(RESTART_RETRY_MAX_SECONDS, base * (0.75 + 0.5 * rand()))
+    return min(RETRY_MAX_SECONDS, RETRY_SECONDS * (2 ** step))
 
 
 def relay_url(environ: Mapping[str, str]) -> str:
@@ -258,6 +299,9 @@ class Tunnel:
         self._silent = silent_seconds
         self._ws: Any = None
         self.closed = False
+        #: The relay's close code once `run` has ended (None before, or when
+        #: the link ended without one): `CLOSE_RESTARTING` asks for a reopen now.
+        self.close_code: int | None = None
 
     async def open(self, ticket: str) -> None:
         """Dial, present `ticket`, and wait for `ready`. `TunnelError` if refused."""
@@ -313,7 +357,8 @@ class Tunnel:
             while True:
                 message = await self._ws.receive()
                 if message is None:
-                    return getattr(self._ws, "close_code", None)
+                    self.close_code = getattr(self._ws, "close_code", None)
+                    return self.close_code
                 is_text, data = message
                 if is_text:
                     continue

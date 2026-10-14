@@ -43,7 +43,7 @@ Three reasons, in the order they cost the most:
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
-| `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main`; accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 5, in two waves · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue) — dev only, as its own identity, never the deployer |
+| `accept.yml` | `release` **completing** on `main` (`workflow_run`), or manual dispatch on `main` (scope `all`); accepting jobs in `accept-dev-<job>` groups, cancel-in-progress ([below](#the-release-timeline)). Also **every three hours** (`schedule`) and on a dispatch with scope `live-browser`, for the live-browser group alone ([below](#live-browser-runs-on-a-schedule)) | `what dev runs` (the SHA in `releases/dev/applied.json`) · `warm, smoke and GKE proof (dev)` · `put the deployed commit's fixtures on the sandbox` · `acceptance (<group>)` × 6, in two waves · `read back and sweep the sandbox` · `report what was accepted` (a red run opens or updates one `bug` issue). On the schedule: `acceptance (live-browser, scheduled)` · `report the scheduled live-browser group` (its own `bug` issue) — dev only, as its own identity, never the deployer |
 | `hotfix.yml` | push to `main` on the same paths as `release.yml`; or manual dispatch on `main`. Acts only for a pull request merged with the `hotfix` label ([below](#hotfix-releases)) | `is this a hotfix` (reads the label; no Google identity) · `images and scan (dev, hotfix)` · `promote (dev, hotfix)` · `terraform apply (dev, hotfix)` (fails on a plan that changes IAM) · `deploy and smoke (dev, hotfix)` — dev only, concurrency group `hotfix-dev`, release.yml's own stages from `.github/actions/release-*` |
 | `ci-fix.yml` | `application` **completing red on a `swarm/<task-id>` branch** of this repository (`workflow_run`, so only as the file is on `main`) ([below](#the-ci-fixer)) | `fix a red SwarmCloud pull request` |
 | `auto-merge.yml` | `pull_request_target` when a label is added (acts only on `ready`) and when a pull request is merged; `workflow_run: completed` of every pull-request workflow, and the `workflow_dispatch` that sends ([below](#a-ready-pull-request-is-merged-by-github-not-by-a-session)) | `queue for auto-merge` (refuses a `[swarm] task_` title, an unprotected base branch, a failing check or a missing merge App, with a comment; waits while a check still runs; otherwise enables native squash auto-merge under the PR's title); `re-evaluate ready pull requests when a run finishes` dispatches it again for each `ready` pull request at a finished run's head ([below](#a-ready-label-that-lands-while-checks-run-is-re-evaluated), #697); on `closed`, `close the merged pull request's issues` closes the open issues a merge's closing keywords name ([below](#a-merge-closes-the-issues-its-keywords-name), #621). **To be retired** once the workflow `merge` step is proven (owner, 2026-10-04) |
@@ -1123,7 +1123,7 @@ held the lock, and every later push queued behind it. `release-dev` is
 * **C. The five groups run in parallel**, as matrix jobs with `fail-fast:
   false`, one swarm-verify execution each.
 
-### Five at once does not fit, so it is two waves
+### Six at once does not fit, so it is two waves
 
 The suite submits for the `smoke` tenant. Its ceiling is **20** concurrent
 tasks: `max_active = capacity_units = 20` in `dev.tfvars`, `tenants.smoke`.
@@ -1136,19 +1136,85 @@ Each group's peak of tasks in flight, read from its group file:
 | workflow | ~4 | four workflow roots |
 | claude-code | ~3 | three tasks |
 | browser | ~3 | three tasks |
+| git-tools | ~5 | its lane and a two-step build workflow, then the build pair beside the rebase lane and the reader |
+| live-browser | 1 | one task; on a schedule since 2026-10-14, not in a wave ([below](#live-browser-runs-on-a-schedule)) |
 
-Together that is about 31, over the ceiling. A task over the ceiling queues
+Without live-browser that is about 36, over the ceiling. A task over the ceiling queues
 rather than fails (invariant 1: `QUEUED` costs nothing). But every check has a
 settle deadline, and time spent in the queue comes out of it. So the groups
 run in **two waves**:
 
 * **wave 1**: `mock`, `workflow` and `browser`, a peak of about 20;
-* **wave 2**: `generic` and `claude-code`, about 11. It starts when wave 1
-  ends, whatever wave 1 concluded.
+* **wave 2**: `generic`, `claude-code` and `git-tools`, about 16. It starts
+  when wave 1 ends, whatever wave 1 concluded.
 
 `test_each_wave_fits_the_smoke_tenant_s_ceiling` reads the ceiling from
 `dev.tfvars`. It fails if a wave's peaks exceed it, and also if all five
 would fit in one wave.
+
+### live-browser runs on a schedule
+
+**Owner decision, 2026-10-14 (lane SPEED-C2): take the live-browser group off
+the red path until it is stable.** Read that day: `accept.yml` had run 159
+times; 43 runs completed and **21 of them failed (49%)**. The `acceptance
+(live-browser)` job failed **18 of 34** runs; every other group failed 0-3
+times. Each red run opens or updates the one acceptance `bug` issue, so most
+of that issue's history was one group's noise, and a real regression in
+another group read as more of the same.
+
+So live-browser is in neither wave. `accept.yml`'s `live-browser` job runs it
+**every three hours** (`schedule`, at :41) and on a dispatch with scope
+`live-browser`. It reads what dev runs from `releases/dev/applied.json`, checks
+that commit out and runs `verify-remote.sh acceptance/live-browser`, as the
+waves would. `live-browser-report` files a red result on **its own** `bug`
+issue: `scripts/accept-report.sh` with `ACCEPT_KIND=live-browser` finds that
+issue by its own marker, never the post-release one. The scheduled run is not
+an accepting job:
+
+* it has no `target`, `quiesce`, smoke or sandbox sync, and cancels nothing;
+* the post-release `report` does not need it, so it cannot turn that run red;
+* its concurrency group is `accept-live-browser`, not an `accept-dev-` one.
+
+A post-release run's `quiesce` cancels every other in-progress `accept.yml` run
+and every running `swarm-verify` execution. That includes a scheduled
+live-browser run in flight. A cancelled scheduled run files nothing and does
+not count toward the streak. Its peak of one task fits beside either wave if
+the two overlap.
+
+**Coming back.** `scripts/accept-live-browser-streak.sh` reads the completed
+scheduled runs of `accept.yml` on `main`, newest first. It counts successes
+until the first run that did not succeed. A cancelled or skipped run neither
+counts nor breaks the streak. A dispatch is a probe and is not counted.
+It prints `streak=`, `need=` and `promote=` and exits 0 at **five in a row**
+(`--need` changes the number) or 3 below it. When it says `promote=true`, the
+operator moves the group back:
+
+1. put `live-browser` back in `acceptance-2`'s matrix in `accept.yml`;
+2. remove the `schedule` trigger, the `scope` input, and the `live-browser`
+   and `live-browser-report` jobs, and take `SCHEDULED_GROUPS` out of
+   `tests/unit/scripts/test_release_acceptance_job.py`;
+3. close the live-browser issue with that pull request.
+
+The streak only says the group passed five times in a row. The causes below
+are why it failed, and a later lane fixes them.
+
+**Why it failed (14 failed live-browser jobs read, 2026-10-12 to 10-14).** Five
+distinct causes, some in the same run:
+
+| cause | runs | where |
+|---|---|---|
+| `returned`: the task was still **`PARKED`** at the 900 s deadline, after the hand-off, the take-over and the typing had all passed | 5 (every run from 2026-10-14 00:24 on) | began with HANDOFF-POLICY (PR 1264), which parks a hold after one unwatched minute: `apps/swarm-api/swarm_api/handoff.py` (`HUMAN_UNWATCHED_SECONDS`, `opening_deadline`), the worker's park in `apps/agent-worker/agent_worker/lifecycle.py` (`park_human_required`). The scripted viewer (`tests/acceptance/test_live_browser.py`) holds control through the wait, so either it does not count as watching, or a returned task is not woken from the park |
+| `recording`: "2 object(s) under live/ are not recording segments" | 8 | **harness bug, fixed here.** The stray check matched any `/live/` in the object name, so it counted the worker's log tails `logs/live/agent_stdout.tail.log` and `agent_stderr.tail.log` (`agent_worker/runners/streams.py`). It now judges only `<attempt>/live/` (`stray_live_objects`) |
+| `returned`: the task succeeded, but its answer and `session-code.txt` do not hold the code the typed password makes | 4, plus 1 whose reason was lost (below) | the agent's second read of `#code` after `swarm-handoff wait` exits 0, through the live browser as BROWSER-ENFORCE (PR 1248) reshaped it: `images/agent-runtime-browser/swarm_browser.py`, `swarm-handoff` |
+| `handoff`: the task ended `SUCCEEDED` without asking for help | 3 (2026-10-12 to 10-13 03:18, none since) | the agent skipped `swarm-handoff request`; the prompt is `LIVE_BROWSER_PROMPT` in `scripts/acceptance/groups/live-browser.sh` |
+| `handoff`: still `RUNNING` at the deadline | 1 | one run, 2026-10-12 14:52 |
+
+One more harness bug blanked the reasons in all of these. 13 of the 14 logs
+print `sed: unmatched '#'` once per check. `redact` (`scripts/lib/common.sh`)
+is a `sed -E` program with `#` delimiters, and busybox sed cannot compile it.
+The `swarm-verify` image is Alpine, so every reason piped through `redact`
+came out empty. It failed closed: nothing leaked, but the reason was lost. The
+image now installs GNU `sed` (`images/swarm-verify/Dockerfile`).
 
 ### The timeline now (expected, not yet measured)
 

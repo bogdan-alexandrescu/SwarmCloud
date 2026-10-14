@@ -281,6 +281,152 @@ Puppeteer sends when it opens a page. So dev-browser cannot open a page
 through the gate yet. That policy change is a separate lane and is not part
 of this one.
 
+### 3.2.2 Judgment backends (JUDGE-SELECT)
+
+jev-browser (Jev, on the claude-code-browser image, attached to this live
+browser) asks typed questions about page state -- "is this a login page", "which
+of these buttons submits" -- and sends the page text it judges to a **judgment
+backend**. Owner decisions, 2026-10-14:
+
+| backend | where page text goes | needs |
+|---|---|---|
+| **Internal Jev** (`internal-jev`, the DEFAULT) | Saga's decision API, `/jev/v1/decide`, on the company tailnet | the cluster's tailnet egress |
+| **Internal Laya** (`internal-laya`) | the same API's `/laya/v1/decide` | the cluster's tailnet egress |
+| **TypeSafe** (`typesafe`) | api.typesafe.ai -- outside Saga | a TypeSafe key ([provider-keys.md](../provider-keys.md)) |
+
+**Why internal is the default.** It keeps page text -- which can be a signed-in
+person's own data -- inside Saga, and it needs no TypeSafe key, so a workspace
+can use Jev before anyone has set one. TypeSafe stays a choice, and the console
+says what it costs: "sends page text to TypeSafe; needs a key".
+
+**How internal is reached.** Neither the laptop nor GKE was on the tailnet. The
+owner chose Tailscale egress in our cluster (JUDGE-NET): the Tailscale
+Kubernetes operator in `swarm-system` with ONE egress Service to
+`decision-api-staging`, its OAuth client (`tag:swarmcloud`, ACL limited to
+`decision-api-staging:443`) in Secret Manager as `swarm-tailscale-oauth`, stored
+by the owner and never in the repository, a tfvars file, an environment or a log.
+A pod reaches it as `http://decision-api.swarm-system.svc.cluster.local`.
+`terraform/infra` `internal_decision_api_enabled` (off by default) renders that
+address as `INTERNAL_DECISION_API_URL` onto swarm-api and the scheduler.
+
+**The setting** is per workspace: `workspace_settings/{tenant}.judgment_backend`,
+read and written with `GET`/`PUT /v1/workspaces/{id}/judgment-backend` by the
+workspace's owner (a personal workspace's principal) or a platform admin, every
+change an `admin_audit` entry (`swarm_api/judgment.py`). It is a document of its
+own because the frozen `Tenant` has no field for it and no per-workspace
+settings store existed. `GET /v1/judgment`, and `jev` on
+`GET /v1/provider-keys/typesafe`, give the chosen backend, its label ("Jev
+(Internal)", "Jev (TypeSafe)") and its availability for the Submit picker and
+the browser strip; Settings › API keys has the radio.
+
+**What a pod gets** (`scheduler/judgment.py`, live-browser pods only):
+`SWARM_JEV_BACKEND`, always; for an internal backend with the egress on,
+`JEV_API_URL` (the Service's `/jev` or `/laya` `/v1/decide`) and the pod label
+`swarm-judge: internal`, which JUDGE-NET's NetworkPolicy keys the decision API's
+egress on. The worker passes both variables to the CLI
+(`handoff.AGENT_PASSTHROUGH_ENV`), whose MCP servers inherit them.
+
+**No fallback, in either direction.** An internal choice with the egress off is
+*unavailable*, not TypeSafe: the pod gets no URL, and `jev-browser-mcp` refuses
+to start rather than let jev-browser use its TypeSafe default. The wrapper
+passes `JEV_API_URL` through only when it is exactly the egress Service's path
+for the chosen backend, and sets `JEV_API_COMPAT=internal` with it, so the
+patched jev-browser reshapes each request for the internal API (§3.2.3). For an
+internal backend it sends **no TypeSafe key**: upstream jev-browser 0.2.0
+refuses to start without `TYPESAFE_API_KEY` and sends it as a Bearer token, so
+the wrapper replaces it with a fixed marker that is not a key, and the adapter
+sends its own placeholder in its place on every request. A stored value the code does not know, or a settings read that fails, is
+read as the default -- the backend that sends nothing outside Saga.
+
+**The code-context work reuses this setting.** The context-quality design
+(CTXQ-DESIGN) judges code context with the same decision API; it reads this
+same per-workspace `judgment_backend` and its availability rather than adding a
+second switch, so a workspace that chose to keep page text inside Saga keeps
+its code there too.
+
+**Not verified here.** No unit test can reach the tailnet. The decision API
+does not accept jev-browser's body as upstream sends it; the operator's
+measurement and the adapter that reshapes it are §3.2.3. That the reshaped body
+is accepted end to end from a pod is unmeasured until JUDGE-NET's egress is up.
+
+### 3.2.3 jev-browser: the internal request adapter (JUDGE-ADAPT)
+
+jev-browser (pinned 0.2.0, patched to attach over CDP: JEV-IMAGE) is an MCP
+server where a model, "Jev", picks each step of a browsing task. It asks only
+two kinds of question: `noul` (a yes/no probability) and `choice` (one option
+of several). On 2026-10-14 the owner made the backend selectable: **Internal
+Jev** (the default), **Internal Laya** or **TypeSafe**. The network path and
+the setting belong to lanes JUDGE-NET and JUDGE-SELECT. This section is about
+the request shape (JUDGE-ADAPT).
+
+Upstream jev-browser speaks TypeSafe's API. Saga's internal decision API
+(`decision-api-staging` on the tailnet, `/jev` or `/laya` +
+`/v1/decide`) answers in the same shape (`choice`, `probabilities`,
+`confidence`, `noul`), but it is **not wire-compatible on the request side**.
+The operator measured it over Tailscale from the laptop on 2026-10-14:
+
+| check | `/jev` | `/laya` |
+|---|---|---|
+| `noul`, string `state` | 200, 0.3-0.4 s | 200, 1.7-5 s |
+| `state` as an object (what jev-browser sends) | 400 `state: Input should be a valid string` | 400 |
+| `choice` with criteria | 200, 0.34 s, TypeSafe's shape, correct pick, confidence 0.98 | 200, 2.9 s, same shape, confidence 0.04 on the same question |
+| `choice` without criteria (jev-browser's element and group picks) | 400 `criteria Field required` | same validator expected |
+| `score`, criteria as a dict | 400 `criteria Input should be a valid list` | 500 `predict failed` |
+
+The internal API ignores `model` and `Authorization`. jev-browser, however,
+refuses to make any call without a non-empty `TYPESAFE_API_KEY`.
+
+**The adapter.** The image's patch adds `src/internal-compat.mjs` to the
+package, plus two lines in `src/jev.mjs` that pass every request through it.
+That one function is where every request leaves, so this is the smallest
+change. Wrapping `fetch` from the MCP wrapper would mean preloading a module
+into node that rewrites every HTTP call the process makes. With
+`JEV_API_COMPAT` unset, the request is returned untouched, so TypeSafe sees
+exactly what upstream sends. With `JEV_API_COMPAT=internal`:
+
+* an object `state` is sent as JSON with sorted keys and no whitespace, so the
+  same page always makes the same request;
+* a `choice` option without a description is described from the page the
+  question names: `page.elements` by `i` as `"<role> <name>"`, cut at 80
+  characters, or `page.groups` by `g` as the group's summary. jev-browser's
+  picks send only the keys (`{"7": null}`). A described option keeps its
+  description. A keys-only choice that names neither (dropdown options,
+  keyboard keys) is described by its own key, which is the option's whole
+  text. A choice with no criteria at all that names neither, or an option that
+  is not on the page, **fails that call with its reason**. Nothing is guessed;
+* a `score` with dict criteria is refused, because the list's element shape
+  was never measured and jev-browser asks no `score`;
+* the key sent is the fixed, non-secret placeholder
+  `internal-backend-takes-no-key`. `TYPESAFE_API_KEY` is never sent to an
+  internal backend, even when it is set;
+* `answers` are passed through unchanged;
+* `internal` together with TypeSafe's URL is refused. The reshaped body and
+  the placeholder never go to TypeSafe.
+
+**Who sets it.** `JEV_API_COMPAT=internal` must be set by whatever sets
+`JEV_API_URL` to an internal backend. That is the wrapper
+(`bin/jev-browser-mcp`): for `internal-jev` or `internal-laya` (§3.2.2) it
+passes the egress Service's URL through and sets `JEV_API_COMPAT=internal`
+beside it. For TypeSafe it drops `JEV_API_URL` and passes `JEV_API_COMPAT`
+through as it came, so a stray `internal` fails loudly instead of reaching
+TypeSafe.
+
+**Why Internal Jev is the default.** On one element-pick probe, Laya was 8x
+slower than Jev (2.9 s against 0.34 s) and far less confident (0.04 against
+0.98). That is one probe, not a benchmark, but it supports the owner's choice
+of Internal Jev as the default.
+
+**What proves it.** `tests/unit/worker/test_jev_internal_compat.py` takes the
+module out of the patch and runs each transform with node on the exact shapes
+the internal API refused. The image's self-test (`selftest.py` `jev_compat`,
+through `jev-browser/compat-probe.mjs`) runs the installed package's own
+`decide()` and `resolve()` over `jev-browser/fixtures/internal-decide.json`.
+That fixture holds the internal API's answers in the shape and with the values
+the measurement recorded. It is not a byte capture: the measurement kept shapes
+and values, not bodies. The self-test checks that a one-stage and a two-stage
+pick both come back as numeric element indexes, that the TypeSafe path is
+unchanged, and that `internal` with no key does not throw.
+
 ### 3.3 The path to the console: outbound only, through a relay
 
 No inbound port on the pod and no public endpoint: the gate **dials out**.
@@ -417,6 +563,47 @@ strip and the device chips over a frame no viewer could be painted into --
 what re-QA pass 8 (2026-10-12) saw on a resumed attempt. Scale-out, when measured to be needed, is sharding by
 `session_id` across named replicas with the shard written on the session
 document.
+
+**The relay restarts only for a new image, not under a person's hands, and
+says so when it does (RELAY-ROLL).** One replica holding every rendezvous in
+memory means every restart drops every live session and every person's
+control. MEASURED 2026-10-12/14: 40 restarts in ~48 h, because every release
+rolled it whether or not its image had changed, and each one cost the console
+the ordinary 2-4-8 s reconnect backoff and the gate up to a minute (the 5 s
+doubling above). Three things now hold, and none of them makes a restart free:
+
+* `scripts/roll-live-relay.sh` compares the digest the release rendered with
+  the one the relay's pods run, prints both, and does not apply when they are
+  equal (`--force` rolls anyway). A release that does not roll the relay does
+  not re-apply swarm-system's ingress policies either; a policy-only change is
+  applied by hand with `kubernetes/apply.sh --swarm-system --confirm`.
+* Before a roll it reads the relay's own counts -- `/healthz` now reports
+  `controlled`, sessions a person controls, beside `tunnels` and `viewers` --
+  inside the pod (`kubectl exec ... python -m swarm_live.status`), so the read
+  is authenticated by the Kubernetes API and no NetworkPolicy is widened for
+  it. While anyone is watching or in control it waits, up to 480 s
+  (`--defer-timeout`; with the 600 s rollout wait it fits the release step's
+  20 minutes), then rolls anyway and says why. A person who stays on the page
+  for longer than that is interrupted, once.
+* On SIGTERM the relay closes every gate AND every viewer with 1012 ("restarting,
+  reconnect now", `swarm_live.rendezvous.CLOSE_RESTARTING`) before uvicorn's own
+  shutdown cuts the sockets -- queues drained, the recording's last segment
+  written -- and refuses every connection that arrives during the drain with
+  the same code. 1012 is not 4410: the session is still open, on the next relay.
+  The console reconnects on 1012 after ~250 ms, jittered, doubling to at most
+  4 s and never shown as failed (`LiveBrowser.tsx` `liveReconnectDelay`);
+  swarm-api closes a viewer with 1012 whenever its relay link ends, so the
+  console reads the same code either way. The worker reopens the gate's tunnel
+  in the same poll when the gate's `status` reports `tunnel_close_code` 1012,
+  retrying on the same short schedule for up to 3 s and on every later poll
+  (`livegate.tunnel.reconnect_delay`, `handoff.RESTART_BURST_SECONDS`).
+  Control comes back through swarm-api: a reconnected viewer's first status
+  re-sends the controller's control ticket through the relay (CONTROL-LAPSE).
+
+What is still not immediate: the worker only learns the tunnel closed at its
+next poll of the gate (`CONTROL_POLL_SECONDS`, 10 s), and the new relay pod is
+not serving until Autopilot has placed it; both ends rejoin within about a
+second of that, not of the SIGTERM.
 
 **What the relay is not.** It is not trusted with authorisation: it verifies
 tickets it did not mint against a key it shares only with swarm-api, and it

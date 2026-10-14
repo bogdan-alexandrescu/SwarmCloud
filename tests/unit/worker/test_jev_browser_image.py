@@ -23,8 +23,16 @@ build-time self-test (selftest.py `jev_browser`) attaches the patched package
 to a real Chromium over CDP, reads Playwright's protocol log for every method
 the live gate refuses, and lists the MCP server's tools through this wrapper.
 
+JUDGE-SELECT (owner decision 2026-10-14): the workspace's judgment backend
+reaches the wrapper as SWARM_JEV_BACKEND, and for an internal backend the
+dispatcher's JEV_API_URL -- the in-cluster egress Service's `/jev` or `/laya`
+`/v1/decide`. The wrapper passes that URL through, and only that URL, and
+sends no TypeSafe key with it; an internal backend without it is refused, so
+page text never goes to TypeSafe in its place.
+
 MUTATION: drop the wrapper's SWARM_CDP_ENDPOINT refusal, or its `unset` of
-JEV_API_URL, or the patch's `if (!attached)` guard on the WebMCP init script,
+JEV_API_URL for TypeSafe, or its replacement of TYPESAFE_API_KEY for an
+internal backend, or the patch's `if (!attached)` guard on the WebMCP init script,
 or its `throw new Error(LAUNCH_REFUSED)` in launch(), and the named test below
 fails.
 """
@@ -127,6 +135,9 @@ def test_the_patch_touches_only_the_pinned_package():
         "node_modules/jev-browser/src/session.mjs",
         "node_modules/jev-browser/src/index.mjs",
         "node_modules/jev-browser/bin/jev-browser-mcp.mjs",
+        # JUDGE-ADAPT: the internal decision API's request adapter, and jev()'s call to it.
+        "node_modules/jev-browser/src/jev.mjs",
+        "node_modules/jev-browser/src/internal-compat.mjs",
     }
     patches = sorted(p.name for p in (JEV_DIR / "patches").iterdir())
     assert patches == [PATCH.name]
@@ -178,7 +189,8 @@ def test_the_mcp_server_never_downloads_a_browser_and_the_module_exports_the_ref
 FAKE_NODE = """#!{python}
 import json, os, sys
 keep = ("JEV_BROWSER_CDP_ENDPOINT", "JEV_BROWSER_NO_INSTALL", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
-        "JEV_BROWSER_PROFILE", "JEV_BROWSER_HEADED", "JEV_API_URL", "JEV_MODEL", "TYPESAFE_API_KEY")
+        "JEV_BROWSER_PROFILE", "JEV_BROWSER_HEADED", "JEV_API_URL", "JEV_MODEL", "TYPESAFE_API_KEY",
+        "SWARM_JEV_BACKEND", "JEV_API_COMPAT")
 print(json.dumps({{"argv": sys.argv[1:], "env": {{k: os.environ.get(k) for k in keep}}}}))
 """
 
@@ -199,7 +211,7 @@ def wrapper(tmp_path) -> Path:
 
 def _wrap(wrapper: Path, *argv: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     base = {k: v for k, v in os.environ.items()
-            if not k.startswith(("JEV_", "SWARM_CDP", "TYPESAFE", "PLAYWRIGHT_SKIP"))}
+            if not k.startswith(("JEV_", "SWARM_CDP", "SWARM_JEV", "TYPESAFE", "PLAYWRIGHT_SKIP"))}
     return subprocess.run(["bash", str(wrapper), *argv], env={**base, **(env or {})},
                           capture_output=True, text=True, timeout=30, check=False)
 
@@ -237,6 +249,71 @@ def test_the_wrapper_drops_what_would_launch_or_redirect_and_forbids_downloads(w
     assert env["JEV_BROWSER_NO_INSTALL"] == "1"
     assert env["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"] == "1"
     assert env["TYPESAFE_API_KEY"] == key  # passed through, never printed by the wrapper
+
+
+DECISION = "http://decision-api.swarm-system.svc.cluster.local"
+
+
+@pytest.mark.parametrize("backend,path", [("internal-jev", "jev"), ("internal-laya", "laya")])
+def test_an_internal_backend_passes_its_url_through_and_no_typesafe_key(wrapper, backend, path):
+    key = "ts-" + "k" * 24
+    url = f"{DECISION}/{path}/v1/decide"
+    seen = _passed(_wrap(wrapper, env={
+        "SWARM_CDP_ENDPOINT": ENDPOINT, "SWARM_JEV_BACKEND": backend,
+        "JEV_API_URL": url, "TYPESAFE_API_KEY": key, "JEV_MODEL": "other",
+    }))
+    env = seen["env"]
+    assert env["JEV_API_URL"] == url
+    # Upstream refuses to run with no key and sends whatever it holds as a
+    # Bearer token: here that is a fixed marker, never the TypeSafe key.
+    assert env["TYPESAFE_API_KEY"] != key and key not in json.dumps(seen)
+    assert env["TYPESAFE_API_KEY"] == "swarm-internal-no-typesafe-key"
+    # JUDGE-ADAPT: the patched jev() reshapes each request for the internal API.
+    assert env["JEV_API_COMPAT"] == "internal"
+    assert env["JEV_MODEL"] is None
+
+
+@pytest.mark.parametrize("url", [
+    "",  # the egress is off: the dispatcher set no URL
+    f"{DECISION}/laya/v1/decide",  # the other backend's path
+    "https://api.typesafe.ai/v1/systemone",
+    "https://decision-api-staging.example.invalid/jev/v1/decide",
+])
+def test_an_internal_backend_without_its_in_cluster_url_is_refused(wrapper, url):
+    env = {"SWARM_CDP_ENDPOINT": ENDPOINT, "SWARM_JEV_BACKEND": "internal-jev",
+           "TYPESAFE_API_KEY": "ts-" + "k" * 24}
+    if url:
+        env["JEV_API_URL"] = url
+    done = _wrap(wrapper, env=env)
+    assert done.returncode == 2, done.stdout
+    assert done.stdout == ""
+    assert "internal-jev" in done.stderr and "never sent to TypeSafe instead" in done.stderr
+
+
+def test_typesafe_drops_any_url_and_keeps_the_key(wrapper):
+    key = "ts-" + "k" * 24
+    seen = _passed(_wrap(wrapper, env={
+        "SWARM_CDP_ENDPOINT": ENDPOINT, "SWARM_JEV_BACKEND": "typesafe",
+        "JEV_API_URL": f"{DECISION}/jev/v1/decide", "TYPESAFE_API_KEY": key,
+    }))
+    assert seen["env"]["JEV_API_URL"] is None
+    assert seen["env"]["TYPESAFE_API_KEY"] == key
+
+
+def test_an_unknown_backend_is_refused(wrapper):
+    done = _wrap(wrapper, env={"SWARM_CDP_ENDPOINT": ENDPOINT, "SWARM_JEV_BACKEND": "openai"})
+    assert done.returncode == 2 and done.stdout == ""
+    assert "unknown judgment backend" in done.stderr
+
+
+def test_the_wrapper_passes_the_backend_compat_switch_through(wrapper):
+    # JUDGE-ADAPT: the wrapper sets JEV_API_COMPAT=internal itself for an internal backend.
+    # On the TypeSafe path it drops JEV_API_URL and passes the switch as it came, and the
+    # patched jev() refuses internal toward TypeSafe's URL
+    # (tests/unit/worker/test_jev_internal_compat.py), so passing it is safe.
+    seen = _passed(_wrap(wrapper, env={"SWARM_CDP_ENDPOINT": ENDPOINT, "JEV_API_COMPAT": "internal"}))
+    assert seen["env"]["JEV_API_COMPAT"] == "internal"
+    assert "JEV_API_COMPAT" in WRAPPER.read_text()  # and the wrapper says why
 
 
 def test_the_wrapper_is_a_house_script():
