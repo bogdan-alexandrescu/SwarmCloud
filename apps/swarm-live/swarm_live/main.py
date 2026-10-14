@@ -8,7 +8,7 @@ over the internal load balancer, and the NetworkPolicy admits only swarm-api's
 egress range and the tenant gates. There is no TLS and no certificate anywhere
 on this hop; §3.3 records why that is acceptable.
 
-Four routes, and a health check:
+Five routes, and a health check:
 
 * `/v1/tunnel`        -- the gate dials out to here (§3.3 step 2). First
   message: the tunnel ticket, as text. Then the framed tunnel protocol of
@@ -24,6 +24,11 @@ Four routes, and a health check:
   swarm-live-key (rendezvous.verify_device), sent to the session's gate as a
   `DEVICE` frame. 200 when it was sent, 404 otherwise -- a forged, replayed
   or expired request and a session with no tunnel here alike.
+* `POST /internal/control` -- swarm-api says a person's control ended or was
+  renewed (CONTROL-LAPSE): the body is a control request MAC'd with
+  swarm-live-key (rendezvous.verify_control); a revoke reaches the gate as
+  `CONTROL` with no controller, a renewal as `CONTROL` naming the controller
+  again. 200 when it verified and matched a tunnel here, 404 otherwise.
 * `/healthz`          -- counts only.
 
 THE RELAY READS THE TICKET AND NOTHING ELSE. No Firestore client is built, and
@@ -179,6 +184,17 @@ def create_app(rendezvous: Rendezvous | None = None) -> FastAPI:
         # The session only: the device is the person's choice, not a log line's.
         log.info("live relay: session=%s device request sent to the gate", session_id)
         return JSONResponse({"sent": True, "session_id": session_id})
+
+    @app.post("/internal/control")
+    async def control(request: Request) -> JSONResponse:
+        raw = (await request.body())[: MAX_TICKET_CHARS + 1]
+        try:
+            session_id, action, sent = await rz().control_request(raw.decode("ascii").strip())
+        except (Refused, UnicodeDecodeError) as exc:
+            log.info("live relay: control request refused: %s", getattr(exc, "reason", "malformed"))
+            return JSONResponse({"sent": False}, status_code=404)
+        log.info("live relay: session=%s control %s (sent to the gate: %s)", session_id, action, sent)
+        return JSONResponse({"sent": sent, "session_id": session_id, "action": action})
 
     @app.websocket("/v1/tunnel")
     async def tunnel(ws: WebSocket) -> None:

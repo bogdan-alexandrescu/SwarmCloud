@@ -441,7 +441,8 @@ def test_new_agent_connections_are_refused_in_control(tmp_path):
         await w.proxy.pause()
         second = FakeAgent()
         assert await w.proxy.connect_agent(second) is None
-        assert ("cdp_connection_refused", {}) in w.records
+        refused = [f for e, f in w.records if e == "cdp_connection_refused"]
+        assert [f["cause"] for f in refused] == ["held_for_handoff"]
         assert len(w.chromium.from_agent("Target.attachToBrowserTarget")) == 1
         await w.proxy.resume()
         assert await w.proxy.connect_agent(FakeAgent()) is not None

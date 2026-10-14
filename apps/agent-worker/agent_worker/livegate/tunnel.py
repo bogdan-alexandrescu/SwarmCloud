@@ -387,7 +387,7 @@ class StreamMux:
     """Routes the relay's frames to one `serve(conn_id, reader, writer)` per stream."""
 
     def __init__(self, tunnel: Tunnel, serve: Callable[[str, asyncio.StreamReader, TunnelWriter], Awaitable[None]],
-                 on_control: Callable[[str], Awaitable[None]],
+                 on_control: Callable[..., Awaitable[None]],
                  on_device: Callable[[bytes], Awaitable[None]] | None = None) -> None:
         self._tunnel = tunnel
         self._serve = serve
@@ -416,7 +416,12 @@ class StreamMux:
             if stream is not None:
                 stream[0].feed_eof()
         elif op == OP_CONTROL:
-            await self._on_control(conn_id)
+            # A revoke's cause rides in the payload (rendezvous.py); a plain
+            # grant or release has none, and is passed as before.
+            if payload:
+                await self._on_control(conn_id, payload)
+            else:
+                await self._on_control(conn_id)
         elif op == OP_DEVICE and self._on_device is not None:
             await self._on_device(payload)
 

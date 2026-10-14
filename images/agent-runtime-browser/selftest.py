@@ -23,7 +23,13 @@ attempt at 3am:
   6. the display sidecar's pieces: uid 10002, Xvfb, a policy Chromium parses;
   7. codex is NOT in the image -- it is built FROM agent-runtime-base-nocodex
      (BROWSER-NO-CODEX, owner decision 2026-10-13) -- and every other tool the
-     base carries is.
+     base carries is;
+  8. `dev-browser` on PATH is the wrapper, the real binary is off PATH and
+     reports the pinned DEV_BROWSER_VERSION, `dev-browser install`,
+     `--headless` and a foreign `--connect` are refused, a run without
+     SWARM_CDP_ENDPOINT while the stub is active fails toward the live
+     browser, and the real binary's own launch, with DEV_BROWSER_CHROME on
+     the stub, ends in the stub's message (DEVB-INSTALL, part of #1030).
 """
 
 from __future__ import annotations
@@ -53,6 +59,13 @@ TOOLS = (
     "trivy", "shellcheck", "make", "docker",
 )
 CODEX_PACKAGE = "/usr/local/share/npm-global/lib/node_modules/@openai/codex"
+#: dev-browser (DEVB-INSTALL): the wrapper on PATH, the real binary off it,
+#: and the stub the real binary is given as its Chrome.
+DEV_BROWSER = "/usr/local/bin/dev-browser"
+DEV_BROWSER_BIN = "/opt/swarm/dev-browser/dev-browser-bin"
+DEV_BROWSER_STUB = "/opt/swarm/dev-browser/live-browser-only"
+#: What the wrapper prints on every refusal.
+DEV_BROWSER_REFUSAL = "dev-browser here drives only the live browser the person watches"
 POLICIES = ("/etc/opt/chrome/policies/managed/swarm.json", "/etc/chromium/policies/managed/swarm.json")
 
 
@@ -153,10 +166,64 @@ def no_codex() -> None:
     check(not missing, f"{len(TOOLS)} tools of the base are present (missing: {missing})")
 
 
+def _dev_browser(argv: list[str], env: dict[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, env=env, capture_output=True, text=True, timeout=120,
+                          stdin=subprocess.DEVNULL)
+
+
+def dev_browser(stub_root: str, version: str) -> None:
+    check(bool(version), "DEV_BROWSER_VERSION names the pinned version")
+    check(shutil.which("dev-browser") == DEV_BROWSER, f"dev-browser on PATH is the wrapper {DEV_BROWSER}")
+    check(os.access(DEV_BROWSER_BIN, os.X_OK), f"the real binary is {DEV_BROWSER_BIN}")
+    check(shutil.which("dev-browser-bin") is None, "the real binary is not on PATH")
+    check(os.access(DEV_BROWSER_STUB, os.X_OK), f"the stub dev-browser launches is {DEV_BROWSER_STUB}")
+    home = tempfile.mkdtemp()
+    base = {**os.environ, "HOME": home, "DEV_BROWSER_HOME": os.path.join(home, "dev-browser")}
+    base.pop("SWARM_CDP_ENDPOINT", None)
+    base.pop("DISPLAY", None)
+
+    done = _dev_browser([DEV_BROWSER_BIN, "--version"], base)
+    check(done.returncode == 0 and done.stdout.strip() == f"dev-browser {version}",
+          f"the real binary is dev-browser {version}: {done.stdout.strip()!r} {done.stderr[-300:]!r}")
+    done = _dev_browser([DEV_BROWSER, "--version"], base)
+    check(done.returncode == 0 and version in done.stdout, f"the wrapper passes --version through: {done.stdout!r}")
+
+    # The live browser's variables as the claude-code runner sets them; the
+    # endpoint answers nothing here, and nothing below gets as far as it.
+    live = {**base, "PLAYWRIGHT_BROWSERS_PATH": stub_root, "SWARM_CDP_ENDPOINT": "http://127.0.0.1:9"}
+    for argv, what in (
+        (["install"], "`dev-browser install`"),
+        (["install", "--force"], "`dev-browser install --force`"),
+        (["chrome"], "`dev-browser chrome`"),
+        (["--headless", "-e", "1"], "`dev-browser --headless`"),
+        (["--connect", "9222", "-e", "1"], "`dev-browser --connect 9222`"),
+        (["--connect", "-e", "1"], "a bare `--connect`"),
+    ):
+        done = _dev_browser([DEV_BROWSER, *argv], live)
+        check(done.returncode == 2 and DEV_BROWSER_REFUSAL in done.stderr,
+              f"{what} is refused toward the live browser: {done.returncode} {done.stderr[-400:]!r}")
+
+    no_endpoint = {k: v for k, v in live.items() if k != "SWARM_CDP_ENDPOINT"}
+    done = _dev_browser([DEV_BROWSER, "-e", "1"], no_endpoint)
+    check(done.returncode == 2 and "SWARM_CDP_ENDPOINT is not set" in done.stderr
+          and DEV_BROWSER_REFUSAL in done.stderr,
+          f"a run without SWARM_CDP_ENDPOINT fails toward the live browser: {done.stderr[-400:]!r}")
+
+    # The real binary, run by its path, launching: DEV_BROWSER_CHROME is the
+    # stub, so the launch fails with the stub's message. Then stop the daemon
+    # it started, so nothing outlives this RUN.
+    own = {**base, "DEV_BROWSER_CHROME": DEV_BROWSER_STUB, "DEV_BROWSER_SKIP_DOWNLOAD": "1"}
+    done = _dev_browser([DEV_BROWSER_BIN, "--headless", "-e", "1"], own)
+    _dev_browser([DEV_BROWSER_BIN, "stop"], own)
+    check(done.returncode != 0 and MESSAGE in done.stdout + done.stderr,
+          f"the real binary's own launch ends in the stub: {(done.stdout + done.stderr)[-600:]!r}")
+
+
 if __name__ == "__main__":
     real_browser()
     stub_launches(sys.argv[1])
     helper_and_mcp()
     display_pieces()
     no_codex()
+    dev_browser(sys.argv[1], os.environ.get("DEV_BROWSER_VERSION", ""))
     print("browser image self-test passed")

@@ -113,7 +113,7 @@ WHY THE LIVE BROWSER IS THE ONLY ONE (BROWSER-ENFORCE, owner decision
 note above, launched its own headless Chromium, and the person watching the
 live browser saw none of its work. So when the live browser exists -- the
 dispatcher set `SWARM_CDP_ENDPOINT`, which it does only with the display
-sidecar -- three things change, and only then:
+sidecar -- four things change, and only then:
   * the agent's `PLAYWRIGHT_BROWSERS_PATH` is `AGENT_BROWSERS_PATH`, a
     directory the image fills with a stub (images/agent-runtime-browser/
     live-browser-only), so any `chromium.launch()` fails with a message
@@ -122,7 +122,10 @@ sidecar -- three things change, and only then:
   * the Playwright MCP server is registered with `--cdp-endpoint`
     (`write_mcp_config`), so the agent's browser_* tools drive the live
     browser and the tabs they open are the console's;
-  * the note says so, and names `swarm_browser.live()` for Python.
+  * the note says so, and names `swarm_browser.live()` for Python;
+  * dev-browser (DEVB-INSTALL) gets its state directory under `work/`
+    (`DEV_BROWSER_HOME`) and the stub as its Chrome, and the note gains one
+    paragraph naming it as an alternative to the browser_* tools.
 And on the browser image the CLI's PATH puts `VENV_BIN` first, so the agent's
 `python` is the one with Playwright and the helper. Without the endpoint the
 browser image behaves as before: the real browsers and the headless note.
@@ -248,6 +251,29 @@ LIVE_BROWSER_NOTE = (
     "5), say so in your answer and then use an alternative, naming it. Save "
     "screenshots and other captures under $SWARM_ARTIFACTS_DIR so "
     "they are uploaded."
+)
+
+#: dev-browser (DEVB-INSTALL, owner decision 2026-10-14, part of #1030): the
+#: browser image's opt-in CLI beside the Playwright MCP server, which stays
+#: registered and stays the default. Its state directory -- the daemon's
+#: socket and the named-page map -- goes under `work/`, so the pages an agent
+#: named survive with the workspace across a park; DEV_BROWSER_CHROME is the
+#: image's copy of the live-browser-only stub, so even the real binary, run by
+#: its path, cannot launch a hidden Chromium (images/agent-runtime-browser/
+#: Dockerfile). All three are set only when the live browser exists.
+DEV_BROWSER_HOME_ENV = "DEV_BROWSER_HOME"
+DEV_BROWSER_HOME_NAME = ".dev-browser"
+DEV_BROWSER_CHROME_ENV = "DEV_BROWSER_CHROME"
+DEV_BROWSER_CHROME = "/opt/swarm/dev-browser/live-browser-only"
+DEV_BROWSER_SKIP_DOWNLOAD_ENV = "DEV_BROWSER_SKIP_DOWNLOAD"
+
+#: Appended to `LIVE_BROWSER_NOTE` whenever the live browser exists.
+LIVE_BROWSER_DEV_BROWSER_NOTE = (
+    "dev-browser is also available, as an alternative to the browser_* tools "
+    "for scripted multi-step browsing (run `dev-browser --help`). It always "
+    "drives the same live browser the person watches. After every "
+    "`swarm-handoff wait` returns, run `dev-browser stop` before your next "
+    "script, so it re-attaches to the pages as the person left them."
 )
 
 #: Appended to `LIVE_BROWSER_NOTE` only when the search tool is offered
@@ -562,8 +588,11 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             # The live browser exists: the agent's own launch finds only the
             # stub, and its browser tools are the live browser's (docstring).
             env[BROWSERS_PATH_ENV] = AGENT_BROWSERS_PATH
+            env[DEV_BROWSER_HOME_ENV] = str(Path(ctx.work_dir) / DEV_BROWSER_HOME_NAME)
+            env[DEV_BROWSER_CHROME_ENV] = DEV_BROWSER_CHROME
+            env[DEV_BROWSER_SKIP_DOWNLOAD_ENV] = "1"
             live_endpoint = endpoint
-            note = LIVE_BROWSER_NOTE
+            note = f"{LIVE_BROWSER_NOTE} {LIVE_BROWSER_DEV_BROWSER_NOTE}"
             if search_spool:
                 note = f"{note} {LIVE_BROWSER_SEARCH_NOTE}"
         else:

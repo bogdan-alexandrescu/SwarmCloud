@@ -1311,7 +1311,8 @@ def test_the_viewer_socket_extends_the_hold_while_it_is_open(
         clock.advance(30)
         assert wait_until(lambda: _deadline(ldb) == clock() + timedelta(seconds=60))
         # The server ends the socket (a retry's new generation), as the other
-        # socket tests do: a client-side close cancels the app mid-flush.
+        # socket tests do: a client-side close cancels the app mid-write, and
+        # the TestClient's portal then raises CancelledError on exit.
         ldb.docs[f"tasks/{TASK}"].update(
             {"current_lease_id": "lease_live_2", "current_generation": 2})
         with pytest.raises(WebSocketDisconnect):
