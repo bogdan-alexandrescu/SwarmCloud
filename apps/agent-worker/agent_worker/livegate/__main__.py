@@ -1393,7 +1393,7 @@ class LiveGate:
             "tunnel": tunnel,
             # RELAY-ROLL: 1012 from a restarting relay is reopened at once
             # by the worker (handoff.HandoffPath._keep_tunnel).
-            "tunnel_close_code": self.tunnel.close_code if self.tunnel is not None else None,
+            "tunnel_close_code": getattr(self.tunnel, "close_code", None),
             "viewers": self.viewers,
             "device": device.name,
             "orientation": device.orientation,
