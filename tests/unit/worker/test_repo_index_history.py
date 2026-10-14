@@ -328,6 +328,20 @@ def test_a_checkout_without_git_has_rules_but_no_history(hist, tmp_path):
     assert [r["pattern"] for r in built["layers"]["cannot_push"]] == [".github/workflows/**"]
 
 
+def test_a_one_commit_deep_clone_says_its_history_is_not_known(hist, guarded, tmp_path):
+    shallow = tmp_path / "shallow"
+    subprocess.run(["git", "clone", "-q", "--depth", "1", guarded.as_uri(), str(shallow)],
+                   check=True, capture_output=True)
+    built = hist.build_context(shallow, commit_sha=head(shallow),
+                               files=file_rows(shallow, GUARDED_TESTS))
+    assert built["meta"]["available"] is False
+    assert "shallow" in built["meta"]["reason"]
+    assert built["meta"]["boundary_commits"] == 1
+    assert built["meta"]["root_commits"] == 0
+    assert built["layers"]["history"] == []
+    assert rows(built, "rules", path="apps/api/swarm_api/sweep.py", source="docs/ops.md")
+
+
 def test_a_path_named_by_many_docs_keeps_the_strongest_rows(hist, tmp_path):
     docs = {f"docs/d{i:03}.md": "See `src/x.py`.\n" for i in range(hist.MAX_RULES_PER_PATH + 15)}
     fx.write_files(tmp_path, {**docs, "src/x.py": "x = 1\n",
@@ -560,7 +574,8 @@ def test_the_cli_reads_the_clone_beside_the_graph_file(shards, hist, tmp_path):
     work = tmp_path / "work"
     clone = make_repo(work / "repo", GUARDED_FILES, GUARDED_COMMITS)
     graph = work / "repo-graph.json"
-    graph.write_text(json.dumps(_graph_doc(head(clone))))
+    graph.write_text(json.dumps({**_graph_doc(head(clone)),
+                                 "files": file_rows(clone, GUARDED_TESTS)}))
     store = tmp_path / "store"
     assert shards.main(["write", "--graph", str(graph), "--repo-id", REPO_ID, "--tenant",
                         TENANT, "--store", str(store), "--no-sweep"]) == 0
@@ -568,6 +583,7 @@ def test_the_cli_reads_the_clone_beside_the_graph_file(shards, hist, tmp_path):
         (store / shards.manifest_key(TENANT, REPO_ID, head(clone))).read_text())
     assert manifest["context"]["available"] is True
     assert manifest["context_shards"]["rules"]
+    assert manifest["context"]["counts"]["test_fixes"] == 3
 
 
 def test_the_cli_takes_an_explicit_repo_and_writes_the_graph_without_one(shards, tmp_path):
@@ -581,6 +597,26 @@ def test_the_cli_takes_an_explicit_repo_and_writes_the_graph_without_one(shards,
     manifest = json.loads((store / shards.manifest_key(TENANT, REPO_ID, commit)).read_text())
     assert manifest["context"]["available"] is False
     assert "absent" in manifest["context"]["reason"]
+
+
+def test_the_writer_and_the_miner_name_the_same_layers(shards, hist):
+    assert shards.CONTEXT_LAYERS == hist.LAYERS
+    dropped = {layer for _name, group in shards.CONTEXT_DROP for layer in group}
+    assert dropped == set(hist.DROP_FIRST) | set(hist.DROP_NEXT)
+    assert "cannot_push" not in dropped
+
+
+def test_the_self_test_mines_through_the_module_beside_the_writer(tmp_path):
+    """As the image runs it: `python3.11 -I`, which puts no script directory on sys.path."""
+    done = subprocess.run([sys.executable, "-I", str(WRITER), "--self-test"],
+                          capture_output=True, text=True, cwd=tmp_path, timeout=120)
+    assert done.returncode == 0, done.stderr
+    alone = tmp_path / "alone"
+    alone.mkdir()
+    (alone / WRITER.name).write_bytes(WRITER.read_bytes())
+    done = subprocess.run([sys.executable, "-I", str(alone / WRITER.name), "--self-test"],
+                          capture_output=True, text=True, cwd=tmp_path, timeout=120)
+    assert done.returncode == 1, "a writer without its history module must fail the build"
 
 
 def test_the_image_ships_the_history_module_beside_the_writer():

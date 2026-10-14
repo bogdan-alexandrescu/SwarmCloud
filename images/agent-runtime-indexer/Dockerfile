@@ -201,8 +201,11 @@ RUN /usr/local/bin/python3.11 -m venv --without-pip /opt/repo-index/venv \
 # names. Standard library only, so it runs on the image's own python3.11
 # (`-I`, as the extractor) and reaches the bucket through `gcloud storage`
 # with the step's own account; root-owned and read-only to the agent.
-COPY images/agent-runtime-indexer/repo-index/repo_graph_shards.py /opt/repo-index/
-RUN chmod 0644 /opt/repo-index/repo_graph_shards.py \
+# repo_index_history.py beside it mines the clone for the history and rules
+# layers (lane CTXQ-H); the writer loads it by path, and its self-test fails
+# the build when it is missing.
+COPY images/agent-runtime-indexer/repo-index/repo_graph_shards.py images/agent-runtime-indexer/repo-index/repo_index_history.py /opt/repo-index/
+RUN chmod 0644 /opt/repo-index/repo_graph_shards.py /opt/repo-index/repo_index_history.py \
  && printf '%s\n' '#!/bin/sh' \
       'exec /usr/local/bin/python3.11 -I /opt/repo-index/repo_graph_shards.py "$@"' \
       > /usr/local/bin/swarm-repo-graph \
