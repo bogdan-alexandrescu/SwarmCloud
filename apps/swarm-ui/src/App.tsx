@@ -772,6 +772,13 @@ export interface Route {
    * so Esc out of the theater and a reload land on the tab, not back in it.
    */
   theater?: boolean
+  /**
+   * The address spelled Details out (`/agents/<tab>/<id>/details`, QA14-UI):
+   * read on arrival only, like `theater`, so a running agent opened there
+   * stays on Details instead of taking the running default (Browser or Logs).
+   * The bar is still written back without the segment.
+   */
+  detailNamed?: boolean
 }
 
 /** What `SectionQuestion` reads off a section: its name and its question. */
@@ -915,6 +922,7 @@ export function fromAddress(full: string): Route {
         taskId: decodeURIComponent(id),
         taskPane: pane ?? 'detail',
         ...(pane === 'browser' && new URLSearchParams(query).get('theater') === '1' ? { theater: true } : {}),
+        ...(pane === 'detail' ? { detailNamed: true } : {}),
         ...(artifact !== null && artifact !== '' ? { artifact } : {}),
         ...(file !== null && file !== '' ? { file } : {}),
       }
@@ -1387,6 +1395,7 @@ export function App() {
                 artifact={at.artifact ?? null}
                 file={at.file ?? null}
                 theater={at.theater === true}
+                detailNamed={at.detailNamed === true}
                 closeTo={listAddress}
                 go={go}
                 onGroup={onGroup}

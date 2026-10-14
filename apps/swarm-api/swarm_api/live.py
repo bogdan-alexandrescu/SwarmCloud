@@ -123,12 +123,17 @@ from .codec import event_to_firestore
 from .errors import ApiError, NotFound, ValidationFailed
 from .handoff import (
     HUMAN_HOLD_MAX_SECONDS,
+    HUMAN_READY_METADATA_KEY,
     HUMAN_UNWATCHED_SECONDS,
     LIVE_AUDIT,
+    READY_FRAME_EVENT,
     control_owner,
     extended_deadline,
+    first_time,
+    log_funnel,
     resolution_writes,
 )
+from .handoff import log as handoff_log
 from .objects import ObjectAbsent, ObjectUnreadable
 from .store import ATTEMPTS, EVENTS, LEASES, TASKS, Store
 
@@ -946,6 +951,8 @@ class _Plan:
     ended: list[tuple[str, str]] = field(default_factory=list)
     #: The person whose control this transaction renewed, if any.
     renewed: str | None = None
+    #: The hand-off this plan resolved, for `log_funnel` once it committed.
+    resolved: list[dict[str, Any]] = field(default_factory=list)
 
     # -- reads of the planned state ---------------------------------------
 
@@ -1030,7 +1037,8 @@ class _Plan:
             txn.update(self.session_ref, {**self.session_update, "updated_at": self.now})
         if self.resolve:
             resolution_writes(txn, self.db, self.task, outcome="returned", now=self.now,
-                              by=self.resolve_by, lease_id=session.get("lease_id"))
+                              by=self.resolve_by, lease_id=session.get("lease_id"),
+                              recorded=self.resolved)
         elif self.task_update:
             txn.update(task_ref, {**self.task_update, "updated_at": self.now})
         for event_type, detail, event_id in self.events:
@@ -1103,6 +1111,21 @@ class Admission:
 
 def _iso(value: Any) -> Any:
     return value.isoformat() if isinstance(value, datetime) else value
+
+
+def _ready_at(task: Mapping[str, Any]) -> datetime | None:
+    """When a person last pressed "I'm ready" on this task (handoff.human_ready
+    stores it in the metadata as ISO text), or None."""
+    metadata = task.get("metadata") if isinstance(task.get("metadata"), Mapping) else {}
+    ready = metadata.get(HUMAN_READY_METADATA_KEY)
+    at = ready.get("at") if isinstance(ready, Mapping) else None
+    if not isinstance(at, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(at)
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
 
 
 def _stored_time(value: Any) -> datetime | None:
@@ -1269,6 +1292,10 @@ class LiveService:
                 "opened_to_members_by": task.get(TASK_OPENED_BY) if carried else None,
                 "tunnel_tickets": 1,
             }
+            ready_at = _ready_at(task)
+            if ready_at is not None:
+                # "I'm ready" -> this attempt's first frame (`record_report`).
+                session["human_ready_at"] = ready_at
             txn.set(session_ref, session)
             opened = {"profile": task.get("runner_profile")}
             if carried:
@@ -1513,6 +1540,8 @@ class LiveService:
         # Committed: a closed session is dropped at the relay (§5.11); an end
         # or a renewal of control is told to the gate (CONTROL-LAPSE).
         self._tell_gate(plan)
+        for detail in plan.resolved:
+            log_funnel(plan.task, detail)
         return plan, result
 
     def _needs_settling(self, tenant_id: str, task_id: str, session_id: str) -> bool:
@@ -1712,6 +1741,8 @@ class LiveService:
                                  "requested": plan.wait is not None}, None))
             plan.set_wait_controller({"email": who, "since": plan.now},
                                      self._extended_deadline(plan, idle))
+            if plan.wait is not None:  # the hand-off funnel (handoff.FUNNEL_MILESTONES)
+                plan.task_update["human_wait"] = first_time(plan.wait, "control_taken_at", plan.now)
 
         plan, _ = self._transact(tenant_id, task_id, change)
         self._require_open(plan)
@@ -1761,8 +1792,8 @@ class LiveService:
                                          max_seconds=cap, revive=False)
             if deadline is None:
                 return False
-            plan.task_update["human_wait"] = {**wait, "deadline": deadline,
-                                              "watched_at": plan.now}
+            plan.task_update["human_wait"] = {**first_time(wait, "first_viewer_at", plan.now),
+                                              "deadline": deadline, "watched_at": plan.now}
             return True
 
         _, moved = self._transact(admission.tenant_id, admission.task_id, change,
@@ -2033,6 +2064,8 @@ class LiveService:
             if deadline is not None:
                 plan.set_wait_controller(plan.wait.get("controller") if plan.wait else None,
                                          deadline)
+            if plan.wait is not None and keys + pointers > 0:  # handoff.FUNNEL_MILESTONES
+                plan.task_update["human_wait"] = first_time(plan.wait, "first_input_at", plan.now)
             return True
 
         _, held = self._transact(admission.tenant_id, admission.task_id, change,
@@ -2136,10 +2169,37 @@ class LiveService:
                                ("first_frame_at", frame)):
                 if session.get(key) != value:
                     update[key] = value
+        ready = self._ready_to_first_frame(session, update)
         if not update:
             return False
         ref.update({**update, "reported_at": self._now()})
+        if ready is not None:
+            write_audit(None, self._db, session, "ready_first_frame", email=None,
+                        detail={"seconds": ready}, now=self._now())
+            handoff_log.info(
+                "live ready to first frame task=%s seconds=%.1f", session.get("task_id"), ready,
+                extra={"event": READY_FRAME_EVENT, "task_id": session.get("task_id"),
+                       "tenant_id": session.get("tenant_id"),
+                       "attempt_id": session.get("attempt_id"), "seconds": ready},
+            )
         return True
+
+    @staticmethod
+    def _ready_to_first_frame(session: Mapping[str, Any], update: dict[str, Any]) -> float | None:
+        """LIVE-MEASURE: seconds from the person's "I'm ready" (copied onto the
+        resumed attempt's session when it opened) to the first frame its gate
+        published -- the picture appearing. Measured once, when the first
+        frame is first written, and added to `update`."""
+        ready_at, frame = session.get("human_ready_at"), update.get("first_frame_at")
+        if (not isinstance(ready_at, datetime) or not isinstance(frame, datetime)
+                or session.get("first_frame_at") is not None
+                or session.get("ready_to_first_frame_seconds") is not None):
+            return None
+        seconds = round((frame - ready_at).total_seconds(), 3)
+        if seconds < 0:
+            return None
+        update["ready_to_first_frame_seconds"] = seconds
+        return seconds
 
     def viewer_event(self, admission: Admission, entry: str, detail: Mapping[str, Any]) -> None:
         """`viewer_joined` / `viewer_left`: an entry that records no other

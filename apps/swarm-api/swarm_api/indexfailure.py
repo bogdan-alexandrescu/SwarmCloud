@@ -173,12 +173,21 @@ def resumed(index: Mapping[str, Any]) -> dict[str, Any]:
     return out
 
 
-def credential_mark(records: Iterable[Any]) -> str:
+def credential_mark(records: Iterable[Any], *, slot: str | None = None) -> str:
     """A digest of the tenant's git token records as far as a grant or a
     rotation moves them: which slots exist, their state, the secret version
     and when each was registered, rotated or revoked. Never a value; the
     probe's own timestamps are left out, so a daily re-verification that
-    changes nothing is not a change."""
+    changes nothing is not a change.
+
+    `slot` is the slot an index run would clone with (`forge.service_slot`,
+    INDEX-CRED), so a change of WHICH credential the poll uses lifts the
+    back-off even when no record moved: in u-bogdan the owner's connection
+    already existed, and the runs failed only because they cloned with a
+    `-git` slot the workspace never had. The tenant's `-git` slot adds
+    nothing to the digest: every mark recorded before INDEX-CRED was taken
+    while every index run used it, so a tenant still on it keeps its mark,
+    and its back-off, across the release."""
     parts = sorted(
         "|".join(str(x) for x in (
             getattr(r, "token_id", None),
@@ -191,6 +200,8 @@ def credential_mark(records: Iterable[Any]) -> str:
         ))
         for r in records
     )
+    if slot and slot != "git":
+        parts.append(f"service-slot|{slot}")
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
 
 

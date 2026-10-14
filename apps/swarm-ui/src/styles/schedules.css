@@ -17,6 +17,19 @@
 .sc-table th[data-col='name'] { width: 22%; }
 .sc-table th[data-col='approvals'] { width: 88px; }
 .sc-table th[data-col='state'] { width: 120px; }
+/* REPOSITORY AND WHEN TAKE THE ROOM (QA14-UI, owner QA 2026-10-13): at 1440
+   they were cut at "every regis…" and "03:00 on S…" while Next run, Last run
+   and Spend held room their short words never used -- five unsized columns
+   split the rest evenly. Those three are sized to their words, the name gives
+   up a little, and Repository and When share what is left; what still does
+   not fit wraps instead of being cut, because a scope or a cadence read in
+   half is a wrong one. */
+.sc-table.is-schedules th[data-col='name'] { width: 18%; }
+.sc-table.is-schedules th[data-col='next'] { width: 104px; }
+.sc-table.is-schedules th[data-col='last'] { width: 112px; }
+.sc-table.is-schedules th[data-col='spend'] { width: 96px; }
+.sc-table.is-schedules td[data-label='Repository'] > .sc-cut,
+.sc-table.is-schedules td[data-label='When'] > .sc-cut { white-space: normal; overflow-wrap: anywhere; }
 .sc-row > td {
   padding: 4px 8px; vertical-align: top;
   border-bottom: 1px solid var(--line);

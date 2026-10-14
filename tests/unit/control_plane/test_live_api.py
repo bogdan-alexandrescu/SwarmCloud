@@ -1315,3 +1315,4 @@ def test_the_viewer_socket_extends_the_hold_while_it_is_open(
         with pytest.raises(WebSocketDisconnect):
             while True:
                 ws.receive_json()
+    assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
