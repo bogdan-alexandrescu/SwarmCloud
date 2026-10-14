@@ -590,6 +590,12 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
     last_poll = index.get("last_poll")
     if isinstance(last_poll, Mapping) and "at" in last_poll:
         index["last_poll"] = {**last_poll, "at": _iso(last_poll["at"])}
+    # Why the index runs fail, and whether the poll stopped (INDEX-FAIL):
+    # fixed sentences and one scrubbed git line (`indexfailure`), no value.
+    for key, stamp in (("last_failure", "at"), ("backoff", "since")):
+        entry = index.get(key)
+        if isinstance(entry, Mapping) and stamp in entry:
+            index[key] = {**entry, stamp: _iso(entry[stamp])}
     return {
         "repo_id": data.get("repo_id"),
         "tenant_id": data.get("tenant_id"),
