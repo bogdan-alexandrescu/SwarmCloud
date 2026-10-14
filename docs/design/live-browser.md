@@ -431,15 +431,34 @@ unchanged, and that `internal` with no key does not throw.
 
 Owner decision 2026-10-14 (JEV-RUNNER, part of #1030): a live-browser task
 also gets [jev-browser](https://github.com/ying-kai-liao/jev-browser)'s MCP
-tools, beside Playwright MCP and dev-browser, **when its submitter or its
-tenant has a TypeSafe key**. jev-browser 0.2.0 (MIT) is a Node MCP server over
+tools, beside Playwright MCP and dev-browser, **according to the workspace's
+judgment backend (§3.2.2, JUDGE-SELECT, PR 1312) and, for TypeSafe, when its
+submitter or its tenant has a TypeSafe key**. jev-browser 0.2.0 (MIT) is a Node MCP server over
 Playwright. Its `browser_do(goal, values)` and `browser_read(question)` hand
 a goal-driven step, or a question about a long page, to TypeSafe's Jev
 models. That means it **sends the page's text and labels to TypeSafe
 (`api.typesafe.ai`)**. The owner accepted that. A task with no key never
 loads it, and the prompt says nothing about it. jev-ultrafast stays out.
 
-**Why per key, and which key.** jev-browser does nothing without
+**The gate is the backend, not the key** (`SWARM_JEV_BACKEND`, set by the
+scheduler's `judgment.py` and passed to the worker and the runner):
+
+| `SWARM_JEV_BACKEND` | key | `jev` registered | key file |
+|---|---|---|---|
+| `internal-jev` or `internal-laya` | not needed | yes | never written |
+| `typesafe` | resolved | yes | yes (below) |
+| `typesafe` | none | no | none |
+| unset (an old pod) | resolved | yes | yes |
+| unset (an old pod) | none | no | none |
+
+An internal backend starts `jev-browser-mcp` directly: no `jev_launch.py`,
+no `TYPESAFE_API_KEY`, and `jevkey.prepare` returns before it reads a
+secret. The wrapper refuses by itself when the egress URL is absent, and the
+runner does not repeat that check. Its note leaves out the sentence about
+TypeSafe, because nothing goes there. The key path below applies to the
+`typesafe` backend only; the per-key paragraphs that follow describe it.
+
+**Why per key, and which key** (the `typesafe` backend). jev-browser does nothing without
 `TYPESAFE_API_KEY`, and the keys are the ones docs/provider-keys.md stores.
 The worker resolves the key with swarm-api's rule (`resolve_provider_key`): the
 submitter's own key, `swarm-tenant-u-<user>-typesafe`, wins, else the task

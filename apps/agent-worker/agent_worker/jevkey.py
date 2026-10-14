@@ -2,7 +2,8 @@
 
 Owner decision 2026-10-14: a live-browser task gets jev-browser's MCP tools
 (browser_do, browser_read, ...) beside Playwright MCP and dev-browser when its
-submitter or its tenant has a TypeSafe key. The owner accepts that jev-browser
+submitter or its tenant has a TypeSafe key AND its workspace chose the
+TypeSafe judgment backend (an internal one needs no key: §3.2.4). The owner accepts that jev-browser
 sends page text and labels to TypeSafe (api.typesafe.ai). This module is the
 worker's half: which key, read how, and handed over how.
 
@@ -75,6 +76,12 @@ KEY_FILE_NAME = "jev-typesafe.key"
 #: What jev-browser reads (jev-browser 0.2.0, src/jev.mjs KEY_NAMES). Also the
 #: one JSON field a JSON payload may carry it under.
 KEY_ENV = "TYPESAFE_API_KEY"
+
+#: The workspace's judgment backend (scheduler.judgment, JUDGE-SELECT), passed
+#: on to the worker by handoff.AGENT_PASSTHROUGH_ENV. An internal backend
+#: needs no TypeSafe key, so this module never resolves or writes one for it.
+BACKEND_ENV = "SWARM_JEV_BACKEND"
+INTERNAL_BACKENDS = ("internal-jev", "internal-laya")
 
 USER = "user"
 TENANT = "tenant"
@@ -170,13 +177,19 @@ def _write_private(path: Path, text: str) -> None:
 
 def prepare(*, endpoint: str | None, db: Any, client: Any, tenant_id: str,
             submitted_by: Any, private_dir: Path, logger: Any,
-            call_options: Mapping[str, Any] | None = None) -> dict[str, str]:
+            call_options: Mapping[str, Any] | None = None,
+            backend: str | None = None) -> dict[str, str]:
     """`{KEY_FILE_ENV: path}` for a live-browser attempt with a key, else {}.
+
+    An internal judgment backend (`backend`, JUDGE-SELECT) never reads or
+    writes a key: it is {} before any lookup.
 
     Only with the live browser (`endpoint`, the gate's loopback CDP address):
     jev attaches to nothing else, and a task without one never reads the key.
     """
     if not endpoint or client is None or db is None:
+        return {}
+    if (backend or "").strip() in INTERNAL_BACKENDS:
         return {}
     try:
         found = resolve(db=db, client=client, tenant_id=tenant_id, submitted_by=submitted_by,

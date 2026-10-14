@@ -242,7 +242,7 @@ def jev_bin(tmp_path, monkeypatch):
     return server
 
 
-def _run_body(monkeypatch, tmp_path, *, endpoint, key_file):
+def _run_body(monkeypatch, tmp_path, *, endpoint, key_file, backend=None):
     from agent_worker.runners import claude_code
 
     seen: dict[str, Any] = {}
@@ -264,8 +264,12 @@ def _run_body(monkeypatch, tmp_path, *, endpoint, key_file):
             monkeypatch.delenv(name, raising=False)
         else:
             monkeypatch.setenv(name, value)
-    for name in ("SWARM_GIT", "SWARM_SEARCH", "SWARM_HANDOFF"):
+    for name in ("SWARM_GIT", "SWARM_SEARCH", "SWARM_HANDOFF", "JEV_API_URL"):
         monkeypatch.delenv(name, raising=False)
+    if backend is None:
+        monkeypatch.delenv("SWARM_JEV_BACKEND", raising=False)
+    else:
+        monkeypatch.setenv("SWARM_JEV_BACKEND", backend)
     claude_code.body(_ctx(tmp_path))
     return seen
 
@@ -319,6 +323,77 @@ def test_a_key_without_the_live_browser_registers_nothing(monkeypatch, tmp_path,
     seen = _run_body(monkeypatch, tmp_path, endpoint=None, key_file=_key_file(tmp_path, _fake_key()))
     assert "config" not in seen
     assert "TypeSafe" not in seen["prompt"]
+
+
+# --- the backend decides the gate (JUDGE-SELECT) --------------------------------
+
+
+def test_internal_jev_with_no_key_registers_jev_and_writes_no_key_file(monkeypatch, tmp_path, jev_bin):
+    from agent_worker.runners import claude_code
+
+    monkeypatch.setenv("JEV_API_URL", "http://decision-api.example.invalid")
+    seen = _run_body(monkeypatch, tmp_path, endpoint=ENDPOINT, key_file=None, backend="internal-jev")
+    servers = seen["config"]["mcpServers"]
+    assert set(servers) == {claude_code.MCP_SERVER_NAME, "jev"}
+    jev = servers["jev"]
+    assert jev["command"] == str(jev_bin) and jev["args"] == []
+    assert jev["env"]["SWARM_CDP_ENDPOINT"] == ENDPOINT
+    assert jev["env"]["SWARM_JEV_BACKEND"] == "internal-jev"
+    assert "TYPESAFE_API_KEY" not in json.dumps(jev)
+    assert seen["prompt"].count(claude_code.LIVE_BROWSER_JEV_INTERNAL_NOTE) == 1
+    assert "TypeSafe" not in seen["prompt"]
+    assert not (tmp_path / "private").exists()
+
+
+def test_internal_laya_registers_jev(monkeypatch, tmp_path, jev_bin):
+    from agent_worker.runners import claude_code
+
+    seen = _run_body(monkeypatch, tmp_path, endpoint=ENDPOINT, key_file=None, backend="internal-laya")
+    assert set(seen["config"]["mcpServers"]) == {claude_code.MCP_SERVER_NAME, "jev"}
+    assert seen["config"]["mcpServers"]["jev"]["env"]["SWARM_JEV_BACKEND"] == "internal-laya"
+
+
+def test_typesafe_with_a_key_registers_jev_with_the_key_file(monkeypatch, tmp_path, jev_bin):
+    from agent_worker.runners import claude_code
+
+    key = _fake_key()
+    seen = _run_body(monkeypatch, tmp_path, endpoint=ENDPOINT,
+                     key_file=_key_file(tmp_path, key), backend="typesafe")
+    jev = seen["config"]["mcpServers"]["jev"]
+    assert jev["command"] == sys.executable
+    assert jev["args"][:2] == ["-I", str(claude_code.JEV_LAUNCH)]
+    assert key not in seen["config_text"]
+    assert seen["prompt"].count(claude_code.LIVE_BROWSER_JEV_NOTE) == 1
+
+
+def test_typesafe_without_a_key_does_not_register_jev(monkeypatch, tmp_path, jev_bin):
+    from agent_worker.runners import claude_code
+
+    seen = _run_body(monkeypatch, tmp_path, endpoint=ENDPOINT, key_file=None, backend="typesafe")
+    assert set(seen["config"]["mcpServers"]) == {claude_code.MCP_SERVER_NAME}
+    assert "jev" not in seen["prompt"]
+
+
+def test_an_unset_backend_with_no_key_does_not_register_jev(monkeypatch, tmp_path, jev_bin):
+    from agent_worker.runners import claude_code
+
+    seen = _run_body(monkeypatch, tmp_path, endpoint=ENDPOINT, key_file=None, backend=None)
+    assert set(seen["config"]["mcpServers"]) == {claude_code.MCP_SERVER_NAME}
+
+
+def test_an_internal_backend_never_reads_or_writes_a_key(tmp_path):
+    for backend in ("internal-jev", "internal-laya"):
+        db, values = _world(user_key=_fake_key(), tenant_key=_fake_key())
+        client = _Secrets(values)
+        from agent_worker import jevkey
+
+        log, _ = _logger()
+        private = tmp_path / backend
+        private.mkdir()
+        env = jevkey.prepare(endpoint=ENDPOINT, db=db, client=client, tenant_id="eng",
+                             submitted_by="bogdan@saga.xyz", private_dir=private,
+                             logger=log, backend=backend)
+        assert env == {} and client.reads == [] and not list(private.iterdir())
 
 
 def test_write_mcp_config_needs_the_endpoint_for_jev(tmp_path):

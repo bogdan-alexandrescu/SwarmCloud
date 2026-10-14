@@ -7355,6 +7355,7 @@ class Worker:
             private_dir=ws.private,
             logger=self.log,
             call_options=self.control.call_options("tenant"),
+            backend=base.get(jevkey_mod.BACKEND_ENV) or os.environ.get(jevkey_mod.BACKEND_ENV),
         ))
         return ws.child_env(base)
 

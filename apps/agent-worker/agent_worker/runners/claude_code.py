@@ -181,6 +181,13 @@ the image skips the registration and logs `jev_unavailable`; the file is
 removed when the agent has finished. jev-browser sends page text and labels
 to TypeSafe (api.typesafe.ai), which the owner accepted.
 
+THE BACKEND DECIDES THE GATE (JUDGE-SELECT, PR 1312; design §3.2.2/§3.2.4).
+`SWARM_JEV_BACKEND` `internal-jev` or `internal-laya` registers `jev` with NO
+TypeSafe key: the server's command is `JEV_MCP_BIN` itself, no key file is
+written (`jevkey.prepare` returns {}), and the wrapper refuses by itself when
+its egress URL is absent. `typesafe`, or unset on an old pod, registers it
+only when the key file exists. The internal note leaves out the TypeSafe line.
+
 WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
 that read stdin with nothing attached sat until the Bash timeout killed it:
 the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
@@ -207,6 +214,8 @@ from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
 from ..searchmcp.server import SERVER_NAME as SEARCH_MCP_SERVER_NAME
 from ..searchmcp.server import SPOOL_ENV as SEARCH_SPOOL_ENV
 from ..handoff import AGENT_PASSTHROUGH_ENV, EGRESS_NOTICE_NAME, HANDOFF_ENV, RESUME_NAME
+from ..jevkey import BACKEND_ENV as JEV_BACKEND_ENV
+from ..jevkey import INTERNAL_BACKENDS as JEV_INTERNAL_BACKENDS
 from ..jevkey import KEY_FILE_ENV as JEV_KEY_FILE_ENV
 from ..logs import StructuredLogger
 from .base import RunnerContext, run_runner
@@ -329,8 +338,21 @@ JEV_LAUNCH = Path(__file__).resolve().parent / "jev_launch.py"
 #: jev-browser's own switch: never download a Chromium on first use (its
 #: launch must fail toward the live browser, not fetch a hidden one).
 JEV_NO_INSTALL_ENV = "JEV_BROWSER_NO_INSTALL"
+#: Where an internal backend's decision API is (JUDGE-SELECT): a cluster
+#: address, never a credential, passed to the jev server explicitly.
+JEV_API_URL_ENV = "JEV_API_URL"
 
 #: Appended to `LIVE_BROWSER_NOTE` only when the `jev` server is registered.
+LIVE_BROWSER_JEV_INTERNAL_NOTE = (
+    "The `jev` tools (browser_do, browser_read and the rest of jev-browser) "
+    "are also available, on the SAME live browser: browser_do(goal, values) "
+    "for a goal-driven step such as filling in a form, browser_read(question) "
+    "to answer a question from a long page without scrolling through it. "
+    "Prefer them for long pages and forms. After every `swarm-handoff wait` "
+    "returns, re-read the page before your next jev step, because the person "
+    "may have changed it."
+)
+
 LIVE_BROWSER_JEV_NOTE = (
     "The `jev` tools (browser_do, browser_read and the rest of jev-browser) "
     "are also available, on the SAME live browser: browser_do(goal, values) "
@@ -505,13 +527,16 @@ def write_mcp_config(
     graph_snapshot: str | None = None,
     graph_workdir: str | None = None,
     jev_key_file: str | None = None,
+    jev_internal: bool = False,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
     browser when `endpoint` is given, the `swarm-git` shim when `git_spool` is,
     the `swarm-search` shim when `search_spool` is, `swarm-graph` when
     `graph_snapshot` (the staged directory) is, and jev-browser when
     `endpoint` AND `jev_key_file` are (the key file's path, never the key:
-    `jev_launch.py` reads it into the server's own environment).
+    `jev_launch.py` reads it into the server's own environment), or
+    `endpoint` AND `jev_internal` are (an internal judgment backend: the
+    server is started directly, with no key and no key file).
 
     Beside the settings file, in `work/` (never the checkout), mode 0600 and
     replaced rather than followed, for the same reasons (`_write_private`).
@@ -528,7 +553,14 @@ def write_mcp_config(
             "command": PLAYWRIGHT_MCP_BIN,
             "args": ["--cdp-endpoint", endpoint],
         }
-    if endpoint and jev_key_file:
+    if endpoint and jev_internal:
+        jev_env = {CDP_ENDPOINT_ENV: endpoint, JEV_NO_INSTALL_ENV: "1"}
+        for name in (JEV_BACKEND_ENV, JEV_API_URL_ENV):
+            if os.environ.get(name, "").strip():
+                jev_env[name] = os.environ[name].strip()
+        servers[JEV_SERVER_NAME] = {
+            "type": "stdio", "command": JEV_MCP_BIN, "args": [], "env": jev_env}
+    elif endpoint and jev_key_file:
         servers[JEV_SERVER_NAME] = {
             "type": "stdio",
             "command": sys.executable,
@@ -684,6 +716,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         env[graphstage.CONTEXT_ENV] = os.environ[graphstage.CONTEXT_ENV].strip()
     live_endpoint = ""
     jev_key_file = ""
+    jev_internal = False
     browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
     prompt = ctx.payload.get("prompt")
@@ -716,8 +749,10 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             env[DEV_BROWSER_SKIP_DOWNLOAD_ENV] = "1"
             live_endpoint = endpoint
             note = f"{LIVE_BROWSER_NOTE} {LIVE_BROWSER_DEV_BROWSER_NOTE}"
-            jev_key_file = _jev_key_file()
-            if jev_key_file:
+            jev_key_file, jev_internal = _jev_plan()
+            if jev_internal:
+                note = f"{note} {LIVE_BROWSER_JEV_INTERNAL_NOTE}"
+            elif jev_key_file:
                 note = f"{note} {LIVE_BROWSER_JEV_NOTE}"
             if search_spool:
                 note = f"{note} {LIVE_BROWSER_SEARCH_NOTE}"
@@ -733,7 +768,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             git_spool=git_spool or None, search_spool=search_spool or None,
             graph_snapshot=graph_snapshot or None,
             graph_workdir=str(ctx.repo_dir) if graph_snapshot and ctx.repo_dir else None,
-            jev_key_file=jev_key_file or None)
+            jev_key_file=jev_key_file or None, jev_internal=jev_internal)
         extra += ["--mcp-config", str(mcp)]
     try:
         return run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
@@ -743,21 +778,27 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         _remove_jev_key_file()
 
 
-def _jev_key_file() -> str:
-    """The worker's TypeSafe key file when jev can be registered, else "".
+def _jev_plan() -> tuple[str, bool]:
+    """`(key file, internal)`: how to register the jev server, or ("", False).
 
-    No file: the task has no key (`agent_worker.jevkey`), said there. A file
-    but no server binary: the image lacks jev-browser, logged `jev_unavailable`
-    here, and the attempt runs without it -- never an error.
+    JUDGE-SELECT: with `SWARM_JEV_BACKEND` an internal backend (`internal-jev`,
+    `internal-laya`) it is registered with no key and no key file; the
+    wrapper itself refuses when the egress URL is absent. Otherwise
+    (`typesafe`, or unset on an old pod) it needs the worker's TypeSafe key
+    file: no file, no registration (`agent_worker.jevkey`, said there). A
+    registration with no server binary is logged `jev_unavailable` and the
+    attempt runs without it -- never an error.
     """
-    path = os.environ.get(JEV_KEY_FILE_ENV, "").strip()
-    if not path:
-        return ""
+    backend = os.environ.get(JEV_BACKEND_ENV, "").strip()
+    internal = backend in JEV_INTERNAL_BACKENDS
+    path = "" if internal else os.environ.get(JEV_KEY_FILE_ENV, "").strip()
+    if not internal and not path:
+        return "", False
     if not os.access(JEV_MCP_BIN, os.X_OK):
         StructuredLogger(stream=sys.stderr, component="claude-code-runner").warning(
             "jev_unavailable", binary=JEV_MCP_BIN, reason="not installed in this image")
-        return ""
-    return path
+        return "", False
+    return path, internal
 
 
 def _remove_jev_key_file() -> None:
