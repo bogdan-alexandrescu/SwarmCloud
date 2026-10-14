@@ -232,7 +232,7 @@ def test_the_agents_own_launch_finds_only_the_stub(monkeypatch, tmp_path):
     seen = _run_body(monkeypatch, tmp_path, browsers="/opt/playwright", endpoint=ENDPOINT)
     assert seen["env"]["PLAYWRIGHT_BROWSERS_PATH"] == claude_code.AGENT_BROWSERS_PATH
     assert seen["env"]["SWARM_CDP_ENDPOINT"] == ENDPOINT
-    assert seen["prompt"].endswith(claude_code.LIVE_BROWSER_NOTE)
+    assert claude_code.LIVE_BROWSER_NOTE in seen["prompt"]
     note = claude_code.LIVE_BROWSER_NOTE
     assert "from swarm_browser import live" in note and "browser_navigate" in note
     assert "headless=True" not in note

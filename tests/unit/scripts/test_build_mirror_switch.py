@@ -137,10 +137,28 @@ def test_every_base_is_pulled_from_a_mirror_by_digest(dockerfile: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
+#: The Dockerfiles that read the tool mirror. agent-runtime-browser joined the
+#: base on 2026-10-14 for the pinned dev-browser binary (DEVB-INSTALL, part of
+#: #1030); the manifest is still one file, listing what all of them read.
+MIRROR_READERS = (BASE_DOCKERFILE, REPO / "images" / "agent-runtime-browser" / "Dockerfile")
+
+
+def test_the_mirror_readers_are_every_dockerfile_that_bind_mounts_it() -> None:
+    mounting = {df for df in DOCKERFILES if "source=build/tool-mirror," in df.read_text()}
+    assert mounting == set(MIRROR_READERS), sorted(_rel(df) for df in mounting)
+
+
 def _dockerfile_tool_reads() -> set[tuple[str, str]]:
-    """(sha256, object) for every file the base Dockerfile reads from
+    """(sha256, object) for every file a mirror-reading Dockerfile reads from
     /tmp/tool-mirror, paired with the sha256 its RUN checks the copy with."""
-    text = BASE_DOCKERFILE.read_text()
+    found: set[tuple[str, str]] = set()
+    for dockerfile in MIRROR_READERS:
+        found |= _tool_reads(dockerfile)
+    return found
+
+
+def _tool_reads(dockerfile: Path) -> set[tuple[str, str]]:
+    text = dockerfile.read_text()
     args = _all_args(text)
     found: set[tuple[str, str]] = set()
     for line in _code_lines(text):
@@ -160,9 +178,9 @@ def _dockerfile_tool_reads() -> set[tuple[str, str]]:
 def test_the_manifest_is_every_file_the_base_reads_at_its_pinned_sha256() -> None:
     reads = _dockerfile_tool_reads()
     rows = set(_manifest_rows())
-    assert reads, "the base Dockerfile reads nothing from the tool mirror"
+    assert all(_tool_reads(df) for df in MIRROR_READERS), "a mirror reader reads nothing from the tool mirror"
     assert reads == rows, (
-        f"{_rel(MANIFEST)} and {_rel(BASE_DOCKERFILE)} disagree.\n"
+        f"{_rel(MANIFEST)} and {', '.join(_rel(df) for df in MIRROR_READERS)} disagree.\n"
         f"  read by the Dockerfile, not listed: {sorted(reads - rows)}\n"
         f"  listed, not read: {sorted(rows - reads)}"
     )
@@ -257,6 +275,52 @@ def test_the_base_images_cloud_build_stages_the_tool_mirror_before_it_builds(tmp
     for sha, obj in rows:
         staged = tmp_path / "workspace" / "build" / "tool-mirror" / obj
         assert hashlib.sha256(staged.read_bytes()).hexdigest() == sha, obj
+
+
+def _browser_mirror_step() -> dict:
+    """The checked-in browser recipe's staging step, rendered the way Cloud
+    Build renders it: `$$` is a dollar, `${PROJECT_ID}` the build's project."""
+    config = yaml.safe_load((REPO / "images" / "agent-runtime-browser" / "cloudbuild.yaml").read_text())
+    steps = config["steps"]
+    assert steps[0].get("id") == "tool-mirror", [s.get("id") for s in steps]
+    assert [s.get("id") for s in steps][-1] == "build", "the docker build comes after the staging step"
+    step = dict(steps[0])
+    project = BUCKET[len("swarm-build-mirror-"):]
+    step["args"] = [a.replace("${PROJECT_ID}", project).replace("$$", "$") for a in step["args"]]
+    return step
+
+
+def _browser_workspace(tmp_path: Path, rows: list[tuple[str, str]]) -> None:
+    manifest = tmp_path / "workspace" / MANIFEST.relative_to(REPO)
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("".join(f"{sha}  {obj}\n" for sha, obj in rows))
+
+
+def test_the_browser_recipe_stages_every_manifest_object_before_it_builds(tmp_path: Path) -> None:
+    rows = [(hashlib.sha256(_fake_content(obj)).hexdigest(), obj) for _, obj in _manifest_rows()]
+    assert any("SawyerHood/dev-browser" in obj for _, obj in rows)
+    _browser_workspace(tmp_path, rows)
+    bucket = tmp_path / "bucket"
+    _fill_bucket(bucket, rows)
+    done = _run_step(tmp_path, _browser_mirror_step(), bucket)
+    assert done.returncode == 0, done.stderr
+    for sha, obj in rows:
+        staged = tmp_path / "workspace" / "build" / "tool-mirror" / obj
+        assert hashlib.sha256(staged.read_bytes()).hexdigest() == sha, obj
+
+
+def test_the_browser_recipe_names_a_missing_or_tampered_object(tmp_path: Path) -> None:
+    rows = [(hashlib.sha256(_fake_content(obj)).hexdigest(), obj) for _, obj in _manifest_rows()]
+    _browser_workspace(tmp_path, rows)
+    dev_browser = next(obj for _, obj in rows if "SawyerHood/dev-browser" in obj)
+    _fill_bucket(tmp_path / "missing", rows, skip=dev_browser)
+    done = _run_step(tmp_path, _browser_mirror_step(), tmp_path / "missing")
+    assert done.returncode != 0
+    assert f"gs://{BUCKET}/{dev_browser}" in done.stderr and "refresh-build-mirror.sh" in done.stderr
+    _fill_bucket(tmp_path / "tampered", rows, tamper=dev_browser)
+    done = _run_step(tmp_path, _browser_mirror_step(), tmp_path / "tampered")
+    assert done.returncode != 0
+    assert dev_browser in done.stdout + done.stderr
 
 
 def test_a_missing_mirror_object_fails_the_build_and_names_it(tmp_path: Path) -> None:
