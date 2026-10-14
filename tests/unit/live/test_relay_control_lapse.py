@@ -32,10 +32,11 @@ PERSON = "viewer@example.test"
 OTHER = "other@example.test"
 
 
-def _control(key, clock, action: str = "revoke", cause: str = "renew_lapsed", **over) -> str:
+def _control(key, clock, action: str = "revoke", cause: str | None = None, **over) -> str:
+    if cause is None:
+        cause = "renew_lapsed" if action == "revoke" else ""
     fields = dict(session_id=SESSION, tenant_id="eng", task_id="task_a1", attempt_id="att_a1",
-                  generation=3, email=PERSON, action=action,
-                  cause=cause if action == "revoke" else "", now=clock())
+                  generation=3, email=PERSON, action=action, cause=cause, now=clock())
     fields.update(over)
     return rz.mint_control(key, **fields)
 

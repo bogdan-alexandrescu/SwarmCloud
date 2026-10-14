@@ -196,3 +196,22 @@ def test_a_refused_connection_is_told_why_over_http(tmp_path):
         await w.chromium.stop()
 
     asyncio.run(body())
+
+
+def test_a_gate_stopped_while_a_person_holds_control_stops_and_ends_the_episode(short_tmp):
+    """The task ends with a person in control (task c6bf0368...: taken
+    11:34:19, SUCCEEDED 11:40:50 with the episode open). The gate's stop used
+    to wait forever on resuming the agent through a pipe whose reader it had
+    already cancelled, so it never stopped and the episode never ended."""
+
+    async def body() -> None:
+        rig, records = _rig(short_tmp, lease=LEASE)
+        stop, task = await _started(rig)
+        gate = rig.gate
+        await _granted(rig)
+        stop.set()
+        assert await asyncio.wait_for(task, 10) == 0
+        assert gate.control.controller is None
+        assert ("control_ended", {"cause": "tunnel_closed"}) in records
+
+    asyncio.run(body())
