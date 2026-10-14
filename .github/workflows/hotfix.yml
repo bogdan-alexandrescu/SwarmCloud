@@ -404,6 +404,23 @@ jobs:
           # apply.sh runs render.py and network_parity.py on ${PYTHON_BIN}.
           PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
         run: ./scripts/roll-live-relay.sh --tf-init --get-credentials --confirm
+      - name: roll swarm-egress to this release's image
+        # Lane EGRESS-BUILD (part of #1030; docs/browser-egress.md §9.3).
+        # swarm-egress, the StatefulSet swarm-system/swarm-egress on
+        # swarm-autopilot, is applied by the relay step's apply.sh (after the
+        # relay, in the same stream), but nothing waited for it to roll or
+        # read back what it runs. scripts/roll-egress.sh is
+        # roll-live-relay.sh --component egress: the same apply.sh path, the
+        # same agents-staging refusal, then `rollout status` and the digest
+        # check for swarm-egress. Its Python is the relay's, synced above.
+        # No continue-on-error: a forwarder left on the old image fails every
+        # proxied browser attempt closed. enable_browser_egress false is a
+        # notice, not a failure.
+        if: ${{ !cancelled() && steps.verify.outcome == 'success' && steps.verify.outputs.superseded != 'true' }}
+        timeout-minutes: 20
+        env:
+          PYTHON_BIN: ${{ github.workspace }}/.venv/bin/python
+        run: ./scripts/roll-egress.sh --tf-init --get-credentials --confirm
 
       - name: smoke test (inside the VPC)
         id: smoke

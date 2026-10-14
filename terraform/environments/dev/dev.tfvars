@@ -491,6 +491,35 @@ enable_forge_refresh = true
 # enable_browser_logins, which this does not touch.
 enable_live_browser = true
 
+# --- browser egress (docs/browser-egress.md §9, #1030) -----------------------
+# ON in dev: owner decision 2026-10-14 (lane EGRESS-BUILD). Residential egress
+# through Bright Data, US exit, for the owner's personal tenant u-bogdan and
+# the claude-code-browser profile ONLY; every other tenant and profile runs
+# direct. The budget is $150/month: browser_egress.monthly_cap_usd keeps its
+# default of 150, which at the default list price of $8/GB is the 18.75 GB
+# swarm-egress refuses past. The hard stop is the Bright Data sub-user's own
+# $150 traffic limit, set in the vendor dashboard, not here. Raising the cap
+# or naming another tenant is a new owner decision, and
+# tests/terraform/egress.tftest.hcl holds this block to exactly these values.
+#
+# enable_browser_egress deploys swarm-egress (step 4 of terraform/infra/egress.tf's
+# order). Steps 1-3 were done 2026-10-14: the bootstrap apply, version 1 of
+# swarm-egress-key and swarm-egress-credential, and -- from this change on --
+# every release builds swarm-egress and pins its digest in image_refs
+# (scripts/build-images.sh). Each release then rolls it to swarm-autopilot
+# (scripts/roll-egress.sh, after the live relay; never agents-staging).
+# Needs enable_gke_autopilot (true above) and enable_live_browser (true just
+# above: kubernetes/apply.sh applies swarm-egress after the relay).
+# Kill switch: browser_egress.enabled = false and apply (docs/browser-egress.md
+# §9.3, "Stopping it").
+enable_browser_egress = true
+browser_egress = {
+  enabled  = true
+  tenants  = ["u-bogdan"]
+  profiles = ["claude-code-browser"]
+  country  = "us"
+}
+
 # D4's refusal is ON in dev (#780 OB10, the migration step). A PERSON's task on
 # a GitHub repository they have not chosen under Access is refused with 403
 # REPOSITORY_NOT_GRANTED ("choose it under Access") instead of running with the

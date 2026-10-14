@@ -22,6 +22,8 @@
 #   scripts/create-secrets.sh --github-app client-secret --stdin
 #   scripts/create-secrets.sh --github-app private-key --stdin < app.private-key.pem
 #   scripts/create-secrets.sh --search-api-key --stdin
+#   scripts/create-secrets.sh --egress-key [--overwrite swarm-egress-key]
+#   scripts/create-secrets.sh --egress-credential --stdin [--overwrite swarm-egress-credential] < credential.json
 #   scripts/create-secrets.sh --tailscale-oauth --stdin
 #
 # The forge token (`--provider git`, stored as swarm-tenant-<tenant>-git) is
@@ -77,6 +79,27 @@
 # copy of it, for the reason at the top of this file. swarm-api reads it only
 # while SEARCH_TOOL_ENABLED is on, so storing it changes nothing by itself.
 #
+# --egress-key adds a version to `swarm-egress-key`, the PLATFORM key swarm-api
+# mints browser egress tickets with and swarm-egress verifies them with
+# (docs/browser-egress.md §9). Generated and added exactly as --live-key's is,
+# never read and never shown. --egress-credential adds a version to
+# `swarm-egress-credential`, the Bright Data credential only swarm-egress reads:
+# the JSON object apps/swarm-egress/swarm_egress/vendor.py parses (`vendor`,
+# `host`, `port`, `tls`, `zones`), from --stdin ONLY -- never an argument, a
+# file argument, a tfvars value or an environment variable, for the reasons
+# --github-app gives. Terraform owns both containers and their readers
+# (terraform/infra/egress.tf); this never creates either, so a typo cannot make
+# an unbound twin.
+#
+# Both already hold a version (2026-10-14), and swarm-egress reads `latest`, so
+# a new version REPLACES what it uses. Adding one to a secret that has an
+# enabled version needs a TYPED confirmation: the secret's own name, given as
+# `--overwrite <name>` or typed at the terminal (/dev/tty) when there is one.
+# SWARM_ASSUME_YES does not stand in for it. Nothing is read from stdin until
+# the confirmation is given. swarm-egress re-reads both on a timer
+# (swarm_egress.main SECRET_POLL_SECONDS), so a rotation needs no restart of
+# it; swarm-api resolves the key reference when an instance starts. Disable the
+# old version by hand once both run on the new one.
 # --tailscale-oauth adds a version to `swarm-tailscale-oauth`, the PLATFORM
 # secret of the Tailscale OAuth client (tag:swarmcloud) the decision-api
 # tailnet egress logs in with (docs/runbooks/tailscale-egress.md; lane
@@ -108,6 +131,9 @@ CHILD_KEY=0
 LIVE_KEY=0
 GITHUB_APP_SLOT=""
 SEARCH_API_KEY=0
+EGRESS_KEY=0
+EGRESS_CREDENTIAL=0
+OVERWRITE=""
 TAILSCALE_OAUTH=0
 
 while [[ $# -gt 0 ]]; do
@@ -123,6 +149,14 @@ while [[ $# -gt 0 ]]; do
     --github-app)       [[ $# -ge 2 ]] || die "--github-app needs a slot: client-secret or private-key"
                         GITHUB_APP_SLOT="$2"; shift 2 ;;
     --search-api-key)   SEARCH_API_KEY=1; shift ;;
+    --egress-key)       EGRESS_KEY=1; shift ;;
+    --egress-credential) EGRESS_CREDENTIAL=1; shift ;;
+    --overwrite)        [[ $# -ge 2 ]] || die "--overwrite takes the name of the secret to add a version to"
+                        OVERWRITE="$2"; shift 2 ;;
+    # A value glued to a flag is a value on the command line, which argv
+    # exposes through ps and shell history. Refused without repeating it.
+    --egress-key=*|--egress-credential=*)
+      die "${1%%=*} takes no value on the command line: the key is generated, and the credential is read from --stdin only. Nothing was stored." ;;
     --tailscale-oauth)  TAILSCALE_OAUTH=1; shift ;;
     # The header above `set -euo pipefail`, however long it grows; a fixed
     # line range stops mid-sentence the first time the header changes.
@@ -137,7 +171,9 @@ while [[ $# -gt 0 ]]; do
     --name) die "--name was removed. A tenant's secret is always swarm-tenant-<tenant>-<provider>,
   because that is what swarm_common.models.Tenant.secret_name() returns and what the
   worker asks Secret Manager for. Any other name is a secret nothing will ever read." ;;
-    *) die "unknown argument: $1" ;;
+    -*) die "unknown argument: $1" ;;
+    # Not a flag, so possibly a value someone meant to store: never repeated.
+    *) die "unexpected value on the command line (not shown). Values are read from --stdin or --from-file, never from arguments; nothing was stored." ;;
   esac
 done
 
@@ -196,6 +232,126 @@ add_generated_platform_key() {
     --project "${PROJECT_ID}" --data-file="${key_file}" --format='value(name)')"
   ok "added version ${added##*/} of ${key_name}; its value was never printed"
 }
+
+# confirm_overwrite NAME -- return when NAME has no enabled version, or when the
+# operator has typed NAME (--overwrite NAME, or at /dev/tty); die otherwise.
+# Called before any value is read or generated. Not common.sh's confirm():
+# that honours SWARM_ASSUME_YES and reads stdin, which here carries the value.
+confirm_overwrite() {
+  local name="$1" listed answer
+  listed="$(mktemp "${TMPDIR:-/tmp}/swarm-versions.XXXXXX")"
+  if ! gcloud secrets versions list "${name}" --project "${PROJECT_ID}" \
+       --filter='state=ENABLED' --format='value(name)' --limit=50 >"${listed}" 2>"${listed}.err"; then
+    die_if_auth_failure "$(cat "${listed}.err")"
+    redact <"${listed}.err" | head -n 3 | sed 's/^/     /' >&2
+    rm -f "${listed}" "${listed}.err"
+    die "could not list ${name}'s versions, so whether this replaces one cannot be told; nothing was stored"
+  fi
+  if [[ ! -s "${listed}" ]]; then
+    rm -f "${listed}" "${listed}.err"
+    return 0
+  fi
+  rm -f "${listed}" "${listed}.err"
+  if [[ -n "${OVERWRITE}" ]]; then
+    [[ "${OVERWRITE}" == "${name}" ]] \
+      || die "--overwrite names '${OVERWRITE}', not ${name}; nothing was stored"
+    warn "${name} has an enabled version; adding a new one, which swarm-egress reads as latest (--overwrite ${name})"
+    return 0
+  fi
+  if { exec 3</dev/tty; } 2>/dev/null; then
+    printf '%s already has an enabled version, and swarm-egress reads the latest.\n' "${name}" >/dev/tty
+    printf 'Type %s to add a new one: ' "${name}" >/dev/tty
+    read -r answer <&3 || answer=""
+    exec 3<&-
+    [[ "${answer}" == "${name}" ]] || die "confirmation did not match; nothing was stored"
+    return 0
+  fi
+  die "${name} already has an enabled version and swarm-egress reads the latest. Confirm by typing its name:
+     --overwrite ${name}   (SWARM_ASSUME_YES is not a confirmation). Nothing was stored."
+}
+
+if [[ "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 ]]; then
+  if [[ "${EGRESS_KEY}" -eq 1 && "${EGRESS_CREDENTIAL}" -eq 1 ]]; then
+    die "--egress-key and --egress-credential are two secrets; add one per run"
+  fi
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${TAILSCALE_OAUTH}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+    die "--egress-key and --egress-credential take no --tenant, --provider, --from-file, --subscription, other key or --disable-previous: both are the platform's, a file argument is a path to a plaintext copy, and an old version is disabled by hand once swarm-egress runs on the new one"
+  fi
+  if [[ "${EGRESS_KEY}" -eq 1 ]]; then
+    EGRESS_NAME="swarm-egress-key"
+    [[ "${READ_STDIN}" -eq 0 ]] || die "--egress-key takes no --stdin: the key is generated here and never shown"
+  else
+    EGRESS_NAME="swarm-egress-credential"
+    [[ "${READ_STDIN}" -eq 1 ]] || die "--egress-credential reads the value from --stdin and nothing else"
+  fi
+  # Exists first: terraform/infra/egress.tf creates both with their readers.
+  EGRESS_ERR=""
+  if ! EGRESS_ERR="$(gcloud secrets describe "${EGRESS_NAME}" --project "${PROJECT_ID}" \
+       --format='value(name)' 2>&1 >/dev/null)"; then
+    die_if_auth_failure "${EGRESS_ERR}"
+    die "${EGRESS_NAME} does not exist in ${PROJECT_ID}. terraform creates it with its readers (terraform/infra/egress.tf): run 'make apply' first, then this"
+  fi
+  confirm_overwrite "${EGRESS_NAME}"
+
+  if [[ "${EGRESS_KEY}" -eq 1 ]]; then
+    add_generated_platform_key "${EGRESS_NAME}" "terraform/infra/egress.tf" "--egress-key"
+    dim "swarm-egress re-reads it on its own timer; swarm-api reads it when an instance starts. Disable the old version by hand once both use the new one"
+    exit 0
+  fi
+
+  step "Secret ${EGRESS_NAME}"
+  EGRESS_TMP="$(mktemp -d "${TMPDIR:-/tmp}/swarm-secret.XXXXXX")"
+  chmod 0700 "${EGRESS_TMP}"
+  # shellcheck disable=SC2064  # expand now: the path is fixed for this run
+  trap "find '${EGRESS_TMP}' -type f -exec rm -f {} + 2>/dev/null || true; rmdir '${EGRESS_TMP}' 2>/dev/null || true" EXIT INT TERM
+  EGRESS_FILE="${EGRESS_TMP}/value"
+  ( umask 077; : >"${EGRESS_FILE}" )
+  if [[ -t 0 ]]; then
+    die "the credential is a JSON document: redirect it into stdin (--stdin < <file>), then delete the file"
+  fi
+  cat >"${EGRESS_FILE}"
+  if [[ -s "${EGRESS_FILE}" ]]; then
+    printf '%s' "$(cat "${EGRESS_FILE}")" >"${EGRESS_FILE}.trimmed"
+    mv "${EGRESS_FILE}.trimmed" "${EGRESS_FILE}"
+    chmod 0600 "${EGRESS_FILE}"
+  fi
+  EGRESS_BYTES="$(wc -c <"${EGRESS_FILE}" | tr -d ' ')"
+  [[ "${EGRESS_BYTES}" -gt 0 ]] || die "refusing to store an empty secret"
+  [[ "${EGRESS_BYTES}" -lt 65536 ]] || die "value is ${EGRESS_BYTES} bytes; that is not a vendor credential. Nothing was stored"
+  # The shape BLOCKS: swarm-egress refuses a value vendor.parse_credential
+  # cannot read and fails closed, which would show up only when the first
+  # proxied attempt does. This is the outline of that parser (the top-level
+  # fields and a non-empty `zones` object), not a copy of it; its answer names
+  # the problem and never a value.
+  require_cmd python3
+  if ! python3 - "${EGRESS_FILE}" <<'PYEOF2'; then
+import json, sys
+try:
+    body = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit("not JSON")
+if not isinstance(body, dict):
+    sys.exit("not a JSON object")
+if set(body) - {"vendor", "host", "port", "tls", "zones"}:
+    sys.exit("unknown top-level fields")
+zones = body.get("zones")
+if not isinstance(zones, dict) or not zones or not all(isinstance(z, dict) and z for z in zones.values()):
+    sys.exit("no zone")
+PYEOF2
+    die "the value is not the credential object apps/swarm-egress/swarm_egress/vendor.py reads (vendor, host, port, tls, zones); nothing was stored"
+  fi
+  info "value is a vendor credential object (${EGRESS_BYTES} bytes)"
+  EGRESS_VERSION="$(gcloud secrets versions add "${EGRESS_NAME}" \
+    --project "${PROJECT_ID}" --data-file="${EGRESS_FILE}" --format='value(name)')"
+  ok "added version ${EGRESS_VERSION##*/} of ${EGRESS_NAME}; its value was never printed"
+  dim "swarm-egress is its one reader (terraform/infra/egress.tf) and re-reads it on its own timer; no restart is needed"
+  dim "delete any file you redirected from; Secret Manager is the only place the value lives"
+  exit 0
+fi
+
+if [[ -n "${OVERWRITE}" ]]; then
+  die "--overwrite confirms a new version of swarm-egress-key or swarm-egress-credential only"
+fi
 
 if [[ "${CHILD_KEY}" -eq 1 && "${LIVE_KEY}" -eq 1 ]]; then
   die "--child-key and --live-key are two keys; add one per run"
@@ -319,7 +475,7 @@ if [[ "${TAILSCALE_OAUTH}" -eq 1 ]]; then
   # kubernetes/apply.sh reads it; tests/unit/scripts/test_create_secrets_tailscale_oauth.py
   # holds the three spellings equal.
   TS_OAUTH_NAME="swarm-tailscale-oauth"
-  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
+  if [[ -n "${TENANT}${PROVIDER}${FROM_FILE}${GITHUB_APP_SLOT}" || "${SUBSCRIPTION}" -eq 1 || "${CHILD_KEY}" -eq 1 || "${LIVE_KEY}" -eq 1 || "${EGRESS_KEY}" -eq 1 || "${EGRESS_CREDENTIAL}" -eq 1 || "${SEARCH_API_KEY}" -eq 1 || "${DISABLE_PREVIOUS}" -eq 1 ]]; then
     die "--tailscale-oauth takes only --stdin: the client is the platform's, not a tenant's, a file argument is a path to a plaintext copy, and an old version is disabled by hand once the forwarder runs on the new one"
   fi
   [[ "${READ_STDIN}" -eq 1 ]] || die "--tailscale-oauth reads the value from --stdin and nothing else"
