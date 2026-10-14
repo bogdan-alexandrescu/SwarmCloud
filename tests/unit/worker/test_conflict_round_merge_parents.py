@@ -20,8 +20,9 @@ WHAT IS PINNED.
   and the pull request's merge base becomes main's head. A side branch the
   agent made is still dropped (`test_agent_commits_are_kept.py`), since its
   commits would otherwise reach the forge unrewritten.
-* A conflict fix round (`metadata.merge_conflict_round`) checks, before it
-  pushes, that `git merge-base <main on the forge> HEAD` is main's head --
+* A conflict fix round (`metadata.dispatch.conflict_round`, the signed mark
+  swarm-api copies from the `metadata.merge_conflict_round` record
+  `mergewake` submits the round with) checks, before it pushes, that `git merge-base <main on the forge> HEAD` is main's head --
   or a main commit the round itself merged, when main moved on during the
   round -- and refuses the publish with a reason naming the merge base
   otherwise, so a round that cannot clear the conflict fails loudly.
@@ -126,9 +127,13 @@ def _round(worker_factory, monkeypatch, origin: Path, *, task_id: str, edit,
         repository_url=f"file://{origin}",
     )
     worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
-    metadata: dict = {"dispatch": {"strategy": "direct-pr"}}
+    dispatch: dict = {"strategy": "direct-pr"}
+    metadata: dict = {"dispatch": dispatch}
     if conflict_round:
-        metadata[lifecycle.CONFLICT_ROUND_METADATA_KEY] = dict(ROUND)
+        # Both, as swarm-api stores a round: the record mergewake submits it
+        # with, and the signed mark the worker acts on.
+        dispatch[lifecycle.CONFLICT_ROUND_FIELD] = True
+        metadata["merge_conflict_round"] = dict(ROUND)
     task = {"task_id": task_id, "repository_ref": "lane", "metadata": metadata}
     worker._task = task
     monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
@@ -297,12 +302,39 @@ def test_a_folded_conflict_round_keeps_main_as_the_folds_second_parent(
     assert_only_the_worker_wrote(_first_parent_commits(origin, base, branch), config)
 
 
-def test_the_round_metadata_key_is_the_one_mergewake_writes():
-    """The worker cannot import swarm_api, so it restates the key; this holds
-    the restatement to the dict `mergewake._on_conflict` builds."""
-    import inspect
+def test_the_round_mark_is_the_one_swarm_api_signs():
+    """The worker cannot import swarm_api, so it restates the field; this
+    holds the restatement to the block swarm-api writes and signs."""
+    from swarm_api.validation import CONFLICT_ROUND_FIELD, DispatchOptions
 
-    from swarm_api import mergewake
+    assert lifecycle.CONFLICT_ROUND_FIELD == CONFLICT_ROUND_FIELD
+    assert DispatchOptions(conflict_round=True).to_metadata()[CONFLICT_ROUND_FIELD] is True
 
-    source = inspect.getsource(mergewake._on_conflict)
-    assert f'metadata={{"{lifecycle.CONFLICT_ROUND_METADATA_KEY}": {{' in source, source
+
+def test_an_unsigned_round_record_alone_asks_for_no_check(
+    worker_factory, monkeypatch, origin, local_urls, forge, tmp_path
+):
+    """The worker acts only on what the step-spec signature covers: the
+    record under `metadata.merge_conflict_round` without the signed mark is
+    an ordinary step's metadata."""
+    _diverge(origin, tmp_path)
+
+    def edit(repo: Path) -> None:
+        (repo / "lane-more.txt").write_text("more lane work\n")
+        _as_claude(repo, "add", "-A")
+        assert _as_claude(repo, "commit", "--quiet", "-m", "more").returncode == 0
+
+    worker_metadata = {"dispatch": {"strategy": "direct-pr"}, "merge_conflict_round": dict(ROUND)}
+    worker, config, _ = worker_factory(
+        task_id="t-unsigned", attempt_id="att-t-unsigned", lease_id="lease-t-unsigned",
+        repository_url=f"file://{origin}",
+    )
+    worker.ws = workspace_mod.create(config.workspace_root, config.attempt_id)
+    task = {"task_id": "t-unsigned", "repository_ref": "lane", "metadata": worker_metadata}
+    worker._task = task
+    monkeypatch.setattr(worker, "_git_token", lambda: "not-a-real-token")
+    assert worker._maybe_clone(task) is not None
+    edit(worker.ws.work / lifecycle.REPO_DIR_NAME)
+    out = worker._harvest_git(publish=True)
+
+    assert out["published"] is True, out.get("publish_reason")
