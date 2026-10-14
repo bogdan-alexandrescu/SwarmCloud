@@ -86,7 +86,8 @@ WAIT_SECONDS = 60.0
 #: Per attempt, per hour: only spares a looping agent's round trips.
 CALLS_PER_HOUR = 60
 _HOUR = 3600.0
-CONTEXT_FENCED = "context_fenced"
+#: The route's fenced answer (the child routes' code). Any 409 is read as this.
+CONTEXT_FENCED = "child_submit_fenced"
 
 NOT_KNOWN = ("UNKNOWN is never 'nothing in flight': the platform could not say which other "
              "lanes hold these files. Check open pull requests before editing a shared file")
@@ -395,7 +396,7 @@ class InFlightRelay:
         try:
             _, payload = self._api.call("POST", route, body=body, headers=headers)
         except ChildApiError as exc:
-            if exc.status == 409 or exc.code in (CONTEXT_FENCED, "child_submit_fenced"):
+            if exc.status == 409 or exc.code == CONTEXT_FENCED:
                 raise InFlightFenced(exc.status, CONTEXT_FENCED, exc.message,
                                      retryable=False) from None
             if exc.status == 404:

@@ -18,14 +18,14 @@ EVERY CALL, IN THIS ORDER -- the git tools' and the search tool's checks
 1. **who.** `ChildService.authenticate_worker` (the tenant's worker service
    account, audience-pinned) and `ChildService.verify_proof` (the attempt key
    this attempt registered before its agent existed). Every failure is ONE
-   403, `context_unproven`, and nothing is read for it.
+   403, `child_submit_unproven`, and nothing is read for it.
 2. **the fence (invariant 5).** The task must be RUNNING under exactly this
    attempt's live lease with no cancel requested; a stale attempt is 409
-   `context_fenced`. Nothing is written either way: this route reads, so it
+   `child_submit_fenced`. Nothing is written either way: this route reads, so it
    keeps no audit and no quota, and a fenced call has nothing to record.
 3. **the signed spec.** The repository is read from the task document only
    after its spec signature verifies (`verdictpublish.spec_refusal`); an
-   unverified one is 422 `spec_unverified`, before the forge is read. The
+   unverified one is 422 (`spec_unverified: ...`), before the forge is read. The
    caller names files, never a repository, a tenant's other id or a token
    (invariant 10): the body is strict.
 
@@ -78,7 +78,7 @@ from swarm_common.states import TaskState
 from . import territory as _territory
 from .childkey import AttemptTuple
 from .children import ChildService, ChildUnauthenticated, ChildUnproven, _lease_is_live, parse_body
-from .errors import ApiError
+from .errors import ApiError, ValidationFailed
 from .gittools import REQUEST_ID, GitToolRefused, task_repository
 from .issueruns import MAX_STEP_FILES, TERMINAL_RUN_STATES, IssueRuns
 from .repositories import repo_id_for
@@ -93,16 +93,24 @@ EXPAND_DEPTH = 1
 #: Running tasks read per call. More than this is `tasks_truncated`.
 MAX_RUNNING_TASKS = 100
 
-CONTEXT_FENCED = "context_fenced"
+CONTEXT_FENCED = "child_submit_fenced"
 UNPROVEN_MESSAGE = "this request is not proven for this attempt"
 _GITHUB_REPOSITORY = re.compile(
     r"^(?:https://(?:www\.)?github\.com/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?/?$"
 )
 
 
+# THE CODES ARE THE CHILD ROUTES' OWN. The attempt proof and the fence here are
+# `ChildService`'s, so a caller is refused with the codes that already name
+# them, on main and always enforced (tests/unit/control_plane/
+# test_new_refusals_ship_off.py). A new code would have to ship behind a
+# refusal switch, whose off position lets an unproven or fenced caller
+# through -- the breach itself. The worker reads any 409 as the fence.
+
+
 class ContextUnproven(ApiError):
     status_code = 403
-    code = "context_unproven"
+    code = "child_submit_unproven"
 
 
 class ContextFenced(ApiError):
@@ -110,16 +118,9 @@ class ContextFenced(ApiError):
     code = CONTEXT_FENCED
 
 
-class ContextRefused(ApiError):
-    """A refusal the worker passes to the agent. 422; NEVER 409, which the
-    worker reads as the fence and ends its attempt on."""
-
-    status_code = 422
-    code = "context_refused"
-
-    def __init__(self, code: str, message: str) -> None:
-        super().__init__(message)
-        self.code = code
+class ContextRefused(ValidationFailed):
+    """A refusal the worker passes to the agent: 422 `validation_failed`, the
+    reason in the message. NEVER 409, which the worker reads as the fence."""
 
 
 class InFlightBody(BaseModel):
@@ -188,8 +189,7 @@ class AttemptContext:
                proof: str | None, timestamp: str | None, path: str) -> dict[str, Any]:
         self.children._require_configured()
         if len(raw) > MAX_BODY_BYTES:
-            raise ContextRefused("too_large",
-                                 f"an in-flight request is at most {MAX_BODY_BYTES} bytes")
+            raise ContextRefused(f"an in-flight request is at most {MAX_BODY_BYTES} bytes")
         body: InFlightBody = parse_body(InFlightBody, raw)
         attempt = AttemptTuple(body.tenant_id, body.task_id, attempt_id, body.lease_id,
                                body.generation)
@@ -198,11 +198,11 @@ class AttemptContext:
         task = self._fence(attempt)
         unverified = spec_refusal(self.settings, task, attempt.task_id)
         if unverified:
-            raise ContextRefused("spec_unverified", unverified)
+            raise ContextRefused(f"spec_unverified: {unverified}")
         try:
             ref = task_repository(task)
         except GitToolRefused as refused:
-            raise ContextRefused("no_repository", refused.message) from None
+            raise ContextRefused(f"no_repository: {refused.message}") from None
         answer = self.in_flight(attempt, task, ref.owner, ref.repo, body.files)
         # Counts only: a path, a title or a run's plan is the tenant's.
         log.info("in-flight context tenant=%s task=%s attempt=%s files=%d pulls=%d lanes=%d "

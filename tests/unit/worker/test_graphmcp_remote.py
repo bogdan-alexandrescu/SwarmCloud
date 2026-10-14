@@ -238,7 +238,7 @@ def test_bad_arguments_are_refused_before_anything_is_spooled(tmp_path, argument
 
 
 def test_a_409_is_the_fence(tmp_path):
-    api = _Api(raises=ChildApiError(409, "context_fenced", "superseded", retryable=False))
+    api = _Api(raises=ChildApiError(409, "child_submit_fenced", "superseded", retryable=False))
     worker = relay(api)
     spool = Path(worker.prepare(tmp_path)[remote.SPOOL_ENV])
     request = remote.write_request(spool, "graph-1-abc", remote.TOOL_NAME, {"files": [ROUTES]})

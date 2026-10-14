@@ -12,8 +12,10 @@ the network.
 What each case pins, from §7's row CTXQ-I:
 
 * an unproven caller is 403, the same answer for every cause, and nothing is
-  read for it;
-* a stale generation is 409, and nothing is read for it either;
+  read for it -- `child_submit_unproven`, the child routes' established code
+  for the same attempt proof;
+* a stale generation is 409 `child_submit_fenced`, and nothing is read for
+  it either;
 * another tenant's lane is never listed -- its live run, its running task --
   while the same tenant's, on the same files, is (the control);
 * a forge that could not be read is said, never answered as "no pull
@@ -197,7 +199,8 @@ def test_an_unproven_caller_is_the_same_403_for_every_cause(client, db, pulls):
     bodies = {cause: r.json() for cause, r in answers.items()}
     first = next(iter(bodies.values()))
     assert all(body == first for body in bodies.values()), bodies
-    assert first["code"] == "context_unproven"
+    # The child routes' established code: the same attempt proof.
+    assert first["code"] == "child_submit_unproven"
     # Nothing was read for an unproven caller: not the forge.
     assert pulls.calls == []
     # The control: the same call, proven, is answered.
@@ -217,7 +220,7 @@ def test_a_stale_generation_is_409_and_reads_nothing(client, db, pulls):
     doc["current_lease_id"] = "lease_parent_2"
     response = call(client, attempt)
     assert response.status_code == 409, response.text
-    assert response.json()["code"] == "context_fenced"
+    assert response.json()["code"] == "child_submit_fenced"
     assert "run_other" not in response.text
     assert pulls.calls == []
 
@@ -226,11 +229,11 @@ def test_a_released_lease_and_a_cancelled_task_are_fenced_too(client, db):
     attempt, doc = running_task(client, db)
     assert call(client, attempt).status_code == 200  # the control
     doc["cancel_requested"] = True
-    assert call(client, attempt).json()["code"] == "context_fenced"
+    assert call(client, attempt).json()["code"] == "child_submit_fenced"
     doc["cancel_requested"] = False
     db.docs[f"leases/{attempt.tuple.lease_id}"]["released_at"] = datetime.now(timezone.utc)
     response = call(client, attempt)
-    assert response.status_code == 409 and response.json()["code"] == "context_fenced"
+    assert response.status_code == 409 and response.json()["code"] == "child_submit_fenced"
 
 
 # --------------------------------------------------------------------------
@@ -242,7 +245,8 @@ def test_an_unsigned_task_is_refused_before_anything_is_read(client, db, pulls):
     attempt, _ = running_task(client, db, sign=False)
     response = call(client, attempt)
     assert response.status_code == 422, response.text
-    assert response.json()["code"] == "spec_unverified"
+    assert response.json()["code"] == "validation_failed"
+    assert "spec_unverified" in response.json()["message"]
     assert pulls.calls == []
 
 
