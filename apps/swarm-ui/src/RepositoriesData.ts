@@ -126,6 +126,39 @@ export interface IndexBackoff {
 }
 
 /**
+ * `index_credential` (`swarm_api/forge.py` `service_credential_view`,
+ * INDEX-CRED): which credential the tenant's index runs clone with -- the
+ * team token (`tenant`), a personal workspace owner's GitHub connection
+ * (`owner`), or none. Owner report 2026-10-13: Try it passed through the
+ * owner's connection while the index runs cloned with a team token the
+ * workspace never had, and the two looked the same. A secret NAME and a
+ * login, never a value.
+ */
+export interface IndexCredential {
+  source: 'tenant' | 'owner' | 'none'
+  secret_name: string | null
+  login: string | null
+}
+
+const LOGIN = /^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})$/
+
+function normIndexCredential(v: unknown): IndexCredential | null {
+  if (!isRec(v)) return null
+  const source = oneOf(v.source, ['tenant', 'owner', 'none'] as const)
+  if (source === null) return null
+  const login = str(v.login)
+  return { source, secret_name: str(v.secret_name), login: login !== null && LOGIN.test(login) ? login : null }
+}
+
+/** "Indexing uses: ..." in words: what the card and Try it both say. */
+export function indexCredentialWords(c: IndexCredential | null): string | null {
+  if (c === null) return null
+  if (c.source === 'owner') return c.login === null ? 'your GitHub connection' : `your GitHub connection (@${c.login})`
+  if (c.source === 'tenant') return 'the team token'
+  return 'none \u2014 connect GitHub'
+}
+
+/**
  * A served line with anything credential-shaped cut: URL user-info, GitHub
  * token shapes. The patterns are built from pieces, so this file is not one.
  */
@@ -242,6 +275,8 @@ export interface RepoRecord {
   last_run: IndexRun | null
   graph: { depth: number | null; min_confidence: number | null }
   selection_policy: { policy: string | null; mode: string | null; inherited_from_tenant: boolean | null }
+  /** Which credential its index runs clone with; null when not served. */
+  index_credential: IndexCredential | null
 }
 
 export interface UsedBy {
@@ -335,6 +370,7 @@ export function normRepo(v: unknown): RepoRecord | null {
       mode: str(pol.mode),
       inherited_from_tenant: bool(pol.inherited_from_tenant),
     },
+    index_credential: normIndexCredential(v.index_credential),
   }
 }
 

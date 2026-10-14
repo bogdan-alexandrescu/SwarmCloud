@@ -14,8 +14,14 @@ spool: no new listener in the agent's reach, and a request survives a
 checkpoint. The worker's half is `agent_worker.handoff`; the exit codes below
 are restated from it and a unit test holds them equal.
 
-`wait` blocks for at most 9 minutes, because claude-code's Bash tool kills a
-command at 10 (#736). Exits:
+`wait` blocks until the hand-off is resolved, for at most 9 minutes per call,
+because claude-code's Bash tool kills a command at 10 (#736). It reads the
+worker's answer every POLL_SECONDS and never faster than MIN_POLL_SECONDS,
+whatever `--poll` says: the helper is never the busy loop. Every answer it
+prints carries `next`, what the agent should do now -- above all, on 0 and
+75, NOT to poll the browser: measured on task_2ac5d7e22a51460995a2, an agent
+ran `curl /json/version` in a loop after `wait` returned (HANDOFF-POLICY).
+Exits:
 
      0  control was returned; a JSON summary is on stdout
     75  still waiting: call `wait` again
@@ -46,8 +52,30 @@ WAIT_SECONDS = 9 * 60
 #: A device switch is answered on the worker's next poll (10 s).
 DEVICE_WAIT_SECONDS = 30
 POLL_SECONDS = 0.5
+#: The floor under `--poll`: a file read every 100 ms is not a busy loop.
+MIN_POLL_SECONDS = 0.1
 MAX_REASON_CHARS = 200
 FINAL = {"returned", "expired", "cancelled", "refused", "unavailable", "applied"}
+
+
+#: What the agent should do on each exit of `wait`, printed as `next`.
+NEXT = {
+    EXIT_RETURNED: (
+        "Control is back. Look at the page once (browser_snapshot) and carry on "
+        "with the task; do not poll the browser or CDP in a loop."
+    ),
+    EXIT_STILL_WAITING: (
+        "Someone may still come. Run `swarm-handoff wait` again now, in the "
+        "foreground; do not poll the browser or CDP meanwhile -- it is paused "
+        "for the person."
+    ),
+    EXIT_EXPIRED: (
+        "Nobody came in time. Write where you stopped into $SWARM_HANDOFF/notes.md "
+        "now and stop; the task is parked until a person is ready."
+    ),
+    EXIT_CANCELLED: "The task is being cancelled. Stop now.",
+    EXIT_REFUSED: "Refused. Carry on without help, or fail with this reason.",
+}
 
 
 def _out(document):
@@ -56,7 +84,7 @@ def _out(document):
 
 
 def _refuse(code, message):
-    _out({"outcome": "refused", "code": code, "message": message})
+    _out({"outcome": "refused", "code": code, "message": message, "next": NEXT[EXIT_REFUSED]})
     return EXIT_REFUSED
 
 
@@ -99,6 +127,7 @@ def _await(root, request_id, seconds, poll):
     """The worker's final answer for `request_id`, or None after `seconds`."""
     path = root / "responses" / (request_id + ".json")
     deadline = time.monotonic() + seconds
+    poll = max(MIN_POLL_SECONDS, poll)
     while True:
         answer = _read(path)
         if answer is not None and answer.get("outcome") in FINAL:
@@ -145,10 +174,12 @@ def cmd_wait(args, root):
         return _refuse("no_request", "nothing to wait for: run `swarm-handoff request` first")
     answer = _await(root, request_id, args.max_seconds, args.poll)
     if answer is None:
-        _out({"request_id": request_id, "outcome": "waiting"})
+        _out({"request_id": request_id, "outcome": "waiting",
+              "next": NEXT[EXIT_STILL_WAITING]})
         return EXIT_STILL_WAITING
-    _out(answer)
-    return _exit_for(answer)
+    code = _exit_for(answer)
+    _out({**answer, "next": NEXT[code]})
+    return code
 
 
 def cmd_status(args, root):

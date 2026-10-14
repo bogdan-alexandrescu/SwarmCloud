@@ -112,6 +112,7 @@ from .errors import ApiError, Conflict, Gone, NotFound, UpstreamUnavailable, Val
 from .forge import (
     GITHUB_API_HOST,
     MAX_RESPONSE_BYTES,
+    FirestoreSlotIndex,
     ForgeReadError,
     ForgeTokens,
     GitHubIssues,
@@ -121,6 +122,7 @@ from .forge import (
     github_headers,
     is_pinned_host,
     neutral_line,
+    service_slot,
     urllib_probe_send,
 )
 from . import indexfailure
@@ -2193,8 +2195,10 @@ class RepoIndex:
         try:
             choice = self._choose(tenant_id, repo_id, sha, kind)
             # A service submission (owner's D4 for automation, 2026-10-07): the
-            # index runs with the tenant token whoever registered the
-            # repository, so it does not stop when they hold no grant (#780 OB7).
+            # index runs with the tenant's own slot whoever registered the
+            # repository, so it does not stop when they hold no grant (#780
+            # OB7) -- its `-git` token, or in a personal workspace with none
+            # its owner's GitHub connection (`forge.service_slot`, INDEX-CRED).
             submission = self._submissions.submit_tasks(
                 auth, [indexer_task(record, sha, choice.kind, base_sha=choice.base_sha)],
                 service_submission=True,
@@ -2958,10 +2962,14 @@ class RepoIndex:
 
     # -- failures and the poll's back-off (INDEX-FAIL) ----------------------
     def _credential_mark(self, tenant_id: str) -> str | None:
-        """`indexfailure.credential_mark` of the tenant's git tokens, or None
-        when they cannot be read (which never lifts a back-off)."""
+        """`indexfailure.credential_mark` of the tenant's git tokens and of
+        the slot its index runs clone with (`forge.service_slot`, the rule
+        `SubmissionService._resolve_forge` applies to them), or None when
+        they cannot be read (which never lifts a back-off)."""
         try:
-            return indexfailure.credential_mark(GitTokens(self._db, now=self._now).list(tenant_id))
+            slot = service_slot(self.tenant(tenant_id), FirestoreSlotIndex(self._db))
+            return indexfailure.credential_mark(
+                GitTokens(self._db, now=self._now).list(tenant_id), slot=slot.provider)
         except Exception as failed:
             log.warning("repo index credential mark tenant=%s error=%s",
                         tenant_id, type(failed).__name__)

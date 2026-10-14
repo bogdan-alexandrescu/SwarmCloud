@@ -119,6 +119,9 @@ class Viewer:
     tenant_id: str
     is_admin: bool = False
     is_owner: bool = False
+    #: A personal workspace's member, who reads only their own tasks
+    #: (`AuthContext.member_scope`): no tenant-wide source reaches past that.
+    member_scope: bool = False
 
 
 @dataclass
@@ -311,21 +314,60 @@ def _own_in_state(reading: Reading, state: TaskState) -> list[Any]:
     return [t for t in page.items if t.tenant_id == reading.viewer.tenant_id and t.state == state]
 
 
+#: The open hand-off's title (owner decision 2026-10-13, HANDOFF-POLICY).
+HANDOFF_TITLE = "Agent needs you"
+
+
+def _opened_to_members(reading: Reading, wait: Mapping[str, Any]) -> bool:
+    """"Let any member take control" on the waiting attempt's live session
+    (`live.LiveService.open_to_members`). Its tenant is checked again: a
+    session of another tenant's task never opens anything here."""
+    from .live import LIVE_SESSIONS, session_id_for
+
+    attempt = wait.get("attempt_id")
+    if not isinstance(attempt, str) or not attempt:
+        return False
+    snap = reading.db.collection(LIVE_SESSIONS).document(session_id_for(attempt)).get()
+    session = snap.to_dict() if snap.exists else None
+    return bool(session and session.get("tenant_id") == reading.viewer.tenant_id
+                and session.get("open_to_members"))
+
+
 def handoffs(reading: Reading) -> list[dict[str, Any]]:
-    """The caller's tasks whose agent waits for them in the live browser: a
-    RUNNING task holding a hand-off (`Task.human_wait`, docs/design/
-    live-browser.md §4.1), and one PARKED `HUMAN_REQUIRED` after its hold
-    expired (§4.3), which only a person promotes. Both link to the Browser tab."""
+    """Tasks whose agent waits for a person in the live browser: a RUNNING
+    task holding a hand-off (`Task.human_wait`, docs/design/live-browser.md
+    §4.1), and one of the caller's PARKED `HUMAN_REQUIRED` after its hold
+    expired (§4.3), which only a person promotes. Both link to the Browser tab.
+
+    An open hand-off is "Agent needs you" for everyone who may take control
+    of it (`handoff.may_control`, §5.1): its submitter, and the tenant's
+    members while the submitter has "Let any member take control" on (or the
+    task has no human owner). That is the bell parking fast relies on: the
+    hold lasts a minute unless someone opens the view. Each request is its
+    own id, so a second hand-off in one attempt is unread again."""
+    from .handoff import may_control
+
     items = []
-    for task in _own_in_state(reading, TaskState.RUNNING):
+    scope = reading.viewer.email if reading.viewer.member_scope else None
+    page = reading.store.list_tasks(reading.viewer.tenant_id, state=TaskState.RUNNING,
+                                    limit=SCAN, submitted_by=scope)
+    for task in page.items:
+        if task.tenant_id != reading.viewer.tenant_id or task.state != TaskState.RUNNING:
+            continue
         wait = task.human_wait if isinstance(task.human_wait, dict) else None
         if not wait:
             continue
+        own = (task.submitted_by or "").strip().lower() == reading.email
+        if not own and not may_control(task, reading.email, reading.db,
+                                       opened_to_members=_opened_to_members(reading, wait)):
+            continue
         generation = wait.get("generation") or task.current_generation
+        request = wait.get("request_id")
+        suffix = f":{request}" if isinstance(request, str) and request else ""
         items.append(_item(
-            f"task:handoff:{task.id}:{generation}", TASK, True,
-            "Your agent is waiting for you in its browser", wait.get("reason"),
-            f"/agents/live/{task.id}/browser", wait.get("requested_at") or task.updated_at))
+            f"task:handoff:{task.id}:{generation}{suffix}", TASK, True, HANDOFF_TITLE,
+            wait.get("reason"), f"/agents/live/{task.id}/browser",
+            wait.get("requested_at") or task.updated_at))
     for task in _own_in_state(reading, TaskState.PARKED):
         if task.park_reason != ParkReason.HUMAN_REQUIRED:
             continue

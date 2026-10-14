@@ -206,14 +206,23 @@ two-factor prompt, a CAPTCHA -- ask for help instead of guessing:
     swarm-handoff wait
 
 `--reason` (at most 200 characters) is shown to the person; never put a
-secret in it. `--expect` is the bare host they should sign in on. While you
-wait, your browser connection is paused: a person is using it.
+secret in it. `--expect` is the bare host they should sign in on. The person
+is notified at once. While you wait, your browser connection is paused: a
+person is using it.
 
-`wait` blocks for up to 9 minutes and exits:
+WAIT, DO NOT POLL. `swarm-handoff wait` blocks until the hand-off is
+resolved, for up to 9 minutes per call; run it in the foreground and do
+nothing else meanwhile. Do not poll the browser or CDP (`curl /json/version`,
+snapshots, screenshots) in a loop: it is paused, and every poll is wasted.
+If nobody opens the live view within a minute the hold ends and the task
+parks; while someone watches or is in control it keeps holding (up to 30
+minutes).
+
+`wait` exits:
 
   0   control was returned; a JSON summary (url, title, held_seconds) is on stdout.
-      Look at the page and continue: you are signed in.
-  75  still waiting: call `swarm-handoff wait` again.
+      Look at the page once and continue: you are signed in.
+  75  still waiting (someone is watching): run `swarm-handoff wait` again, at once.
   3   nobody came in time. Write where you stopped into $SWARM_HANDOFF/notes.md
       now (what is done, what is next); the task is parked until a person is
       ready, then started again on your restored files, and your next attempt
