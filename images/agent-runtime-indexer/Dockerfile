@@ -98,11 +98,23 @@ ARG GOPLS_VERSION=0.24.0-pre.1
 ARG X_MOD_VERSION=0.41.0
 ARG X_TEXT_VERSION=0.42.0
 
+# EVERY DOWNLOAD HERE RETRIES (2026-10-14, PR 1281's flake table): `curl -fsSL
+# --retry 5 --retry-all-errors --retry-connrefused`, 1+2+4+8+16 s of backoff at
+# most. --retry-all-errors is what makes an HTTP error (curl's exit 22, which
+# failed one main build of agent-runtime-base in run 38245452463) retry at all. A
+# file that is really gone still fails, ~31 s later, and every download is
+# still checked against its pinned checksum after it lands.
+# The Go module fetches retry too: `go mod download` and `go get` read
+# proxy.golang.org, whose stream reset (INTERNAL_ERROR) failed one pull
+# request's build of this image (run 38518513292). build_server runs up to
+# three times, 15 and 30 s apart, from a clean source copy each time; a real
+# failure -- a pin that did not land -- fails all three and is reported as
+# itself.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
  && apt-get install --no-install-recommends -y ca-certificates curl \
  && rm -rf /var/lib/apt/lists/*
-RUN curl -fsSL -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
+RUN curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/go.tar.gz "https://go.dev/dl/go${GO_VERSION}.linux-amd64.tar.gz" \
  && echo "${GO_SHA256}  /tmp/go.tar.gz" | sha256sum -c - \
  && tar -C /usr/local -xzf /tmp/go.tar.gz \
  && rm -rf /tmp/go.tar.gz /usr/local/go/test
@@ -123,7 +135,15 @@ RUN export PATH="/usr/local/go/bin:${PATH}" GOPATH=/tmp/gopath GOCACHE=/tmp/goca
       done; \
       chmod 0755 "${out}"; \
     }; \
-    build_server golang.org/x/tools/gopls "${GOPLS_VERSION}" /usr/local/bin/gopls \
+    three_tries() { \
+      local attempt; for attempt in 1 2 3; do \
+        "$@" && return 0; \
+        [ "${attempt}" -lt 3 ] || return 1; \
+        echo "$1 $2: try ${attempt} of 3 failed; retrying in $((15 * attempt)) s" >&2; \
+        sleep $((15 * attempt)); \
+      done; \
+    }; \
+    three_tries build_server golang.org/x/tools/gopls "${GOPLS_VERSION}" /usr/local/bin/gopls \
       "golang.org/x/mod@v${X_MOD_VERSION}" "golang.org/x/text@v${X_TEXT_VERSION}" \
  && rm -rf /tmp/src /tmp/gopath /tmp/gocache \
  && /usr/local/bin/gopls version

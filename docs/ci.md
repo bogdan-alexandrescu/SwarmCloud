@@ -38,7 +38,7 @@ Three reasons, in the order they cost the most:
 
 | workflow | runs on | jobs |
 |---|---|---|
-| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
+| `application.yml` | push to `main`; **every** pull request (no path filter since 2026-10-07: its `ci-gate` job is the required check). Its `what this change reaches` job skips every other job unless the change touches `apps/`, `images/`, `kubernetes/`, `scripts/`, `tests/`, `docs/`, `Makefile`, `pyproject.toml`, `uv.lock`, `README.md`, `CLAUDE.md`, `CONTRACT.md`, `release.yml`, `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml`, `auto-merge.yml`, `.dockerignore`, `.gcloudignore` or the workflow itself ([below](#the-merge-pipelines-wall-time)) | `what this change reaches` · `shellcheck` · `release workflow wiring (actionlint)` (also lints `accept.yml`, `iam-refusal-probe.yml`, `ci-fix.yml` and `auto-merge.yml`) · `ruff check` ([below](#ruff-lint-is-the-house-python-linter-and-formatting-is-not-adopted)) · `format / unit tests` (stands for `lock / contract / format / bridge install` and the four `unit tests (k/4)` shards) · `swarm-ui typecheck / component tests` (stands for `swarm-ui typecheck / build` and the four `swarm-ui component tests (k/4)` shards) · `integration tests (emulator)` · `kubernetes manifests` · `build images` (**push to `main` only** — the one build of each commit) · `build changed images without pushing` (**pull requests only** — [below](#images-are-built-on-a-pull-request-without-pushing)) · `record the tested tree` (every run but main's: what it passed, keyed by its tree, which main's push run reuses — [below](#main-reuses-the-tested-tree)) · `ci-gate` — `needs` every job above but the two name-keepers `format / unit tests` and `swarm-ui typecheck / component tests` (whose own `needs` it holds; [below](#where-pull-request-ci-time-goes-2026-10-09)) and passes only when each passed or was skipped by its own `if:`, then waits for this commit's `terraform.yml` run ([below](#the-ruleset-on-main-and-ci-gate)) |
 | `terraform.yml` | push to `main`; pull requests touching `terraform/`, `tests/terraform/`, the plan guard, the destroy guard, the unlabelable-type list or the workflow itself | `fmt / validate / tflint` · `terraform test` · `checkov` · `plan` (**not** on a pull request) · `plan (not run on a pull request)` |
 | `security.yml` | every pull request; push to `main`; Mondays 06:00 UTC | `trivy (repo)` · `secret scan` · `checkov (terraform + kubernetes)` · `platform policy assertions` · `trivy (published images)` (schedule / dispatch only) |
 | `release.yml` | push to `main` touching `apps/`, `images/`, `terraform/`, `kubernetes/`, `scripts/` or the workflow; or manual dispatch with an environment | `verify` (**dispatch only** — on a push CI proved the same SHA, [below](#the-release-timeline)) · `images and scan` (reuses `application.yml`'s build of the commit; moves nothing) · `approval` (the one job naming `dev` or `prod` — prod waits here) · `promote` · `terraform apply` · `terraform apply, IAM (dev-iam)` (dev only, and only when the plan changes IAM — the owner approves it [below](#a-dev-release-that-changes-iam-waits-for-the-owner)) · `deploy` (verifies the digests; **on prod** also warms, smokes and proves GKE) — the apply and deploy jobs only after `approval` succeeded, and on prod only in the attempt it succeeded in · `prod approval is from an earlier attempt` (runs only on a partial re-run of prod, and fails it) |
@@ -3088,6 +3088,150 @@ vitest ids its log names. It is read-only. Then:
 2. otherwise file an issue, add the line to `tests/flaky.txt`, and link the
    issue to the line; the fix removes the line.
 
+## Main reuses the tested tree
+
+**Owner decision 2026-10-14 (the delivery speed plan, B1).** Measured over the
+last 150 pull requests: `application.yml`'s pull-request run took a median
+7.6 min, main's push run 12.8 min, and merge to deployed 26.7 min -- the
+release waits for the push run's `build images` (6.5 min), which waited
+behind about 5 min of unit shards that re-tested **the exact tree the pull
+request had already tested**. With strict up-to-date merging, a squash merge
+commits the tree of the pull request's merge commit, and that merge commit is
+what the pull request's run checked out.
+
+So every run but main's own -- a pull request, a merge-train branch, a queue
+entry -- ends with `record the tested tree`, which uploads the artifact
+`tested-tree-<tree hash>`: the tree, the commit, the event, the `changes`
+job's python mode and every test job that concluded `success`
+([`scripts/lib/ci_reuse.py`](../scripts/lib/ci_reuse.py) `record`). It is in
+`ci-gate`'s `needs`, so the record exists before the pull request can merge.
+
+On a push to main, the `changes` job's `reuse` step looks the commit's tree up
+(`ci_reuse.py find`) and writes `reused`, the JSON list of jobs this run
+skips; each test job's `if:` ends in
+`!contains(fromJSON(needs.changes.outputs.reused || '[]'), '<job>')`. A job
+skipped by its own `if:` reads as passed to `format / unit tests`, to `build
+images` and to `ci-gate`, so `build images` starts as soon as what was not
+reused has passed -- with nothing reused, exactly as before. The summary says
+`reused from run N` and lists the jobs.
+
+**Exact or nothing.** A job is reused only when all of these hold, and any
+doubt -- no record, an API that cannot be read, a record that disagrees --
+reuses nothing:
+
+* a record of **this exact tree hash**, from a run of
+  `.github/workflows/application.yml` in this repository (never a fork's),
+  whose conclusion is `success`;
+* the run is tied to this commit: a `pull_request` run **at the head of the
+  pull request this commit merged**, as the API names it; or a `push` (a
+  merge-train branch) or `merge_group` run whose own commit has this tree, as
+  git computes it in the job;
+* the job concluded `success` in the record **and** in the API's list of that
+  run's jobs, every shard of a matrix job 1..N with none missing; a job the
+  run skipped (a pull request that did not reach the UI) runs again;
+* for the unit shards, the run ran **the whole suite** (`python=all`). A pull
+  request's selected subset ([below](#a-pull-request-runs-the-unit-tests-its-change-reaches))
+  is never main's full run. So main reuses the unit shards from a merge-train
+  run, a queue entry, or a pull request whose selection fell back to the
+  whole suite; it reuses the other jobs from any up-to-date pull request.
+
+**Not done, and why: pull-request images tagged by tree.** The plan's better
+form had a pull request's final-head run push its images tagged by tree hash,
+and the release scan and promote those. A pull request has no Google identity
+(owner decision 2026-10-05, [below](#why-there-is-no-pull-request-identity)), so
+it cannot push anything, and giving it one is the change that section exists
+to refuse. Main still builds -- only the images its commit changed
+([above](#main-builds-only-the-images-a-commit-changed)) -- and the release
+still promotes exactly what main built, including the per-release OS-package
+refresh of PR 1279.
+
+## A pull request runs the unit tests its change reaches
+
+**Owner decision 2026-10-14 (the delivery speed plan, B2).** On a pull request
+whose change reaches beyond `docs/` and `apps/swarm-ui/` (`python=all`), the
+`changes` job's `select` step narrows the unit shards to `python=selected`:
+the files [`scripts/lib/select_unit_tests.py`](../scripts/lib/select_unit_tests.py)
+says the change reaches, which are
+
+* everything `scripts/changed-guards.sh --list` selects for the same diff --
+  the repository-wide guard set and every test whose text names a changed
+  path, the same selection a SwarmCloud agent runs before it finishes;
+* every test that imports a changed module through any chain of imports under
+  `apps/`, `scripts/` and `tests/unit` (relative imports resolved; a changed
+  `__init__.py` reaches every importer of its package);
+* every test naming a script that sources a changed script, transitively
+  (a change to `scripts/lib/common.sh` reaches the tests of every script that
+  sources it), and a generic basename (`Dockerfile`, `__init__.py`) only
+  beside one of its directories' names;
+* when the change also touches `docs/` or `apps/swarm-ui/`, the pick step's
+  own area readers, as a docs-only change picks them.
+
+**It falls back to the whole suite**, and says why in the job summary, when a
+selection is not one it can vouch for: a workflow, composite action,
+`conftest.py`, `pyproject.toml`, `uv.lock`, `tests/flaky.txt` or the
+quarantine module changed (each changes how every test runs); the frozen
+contract changed (every component imports it); more than 40 paths changed
+(of the last 150 merged pull requests, measured 2026-10-14: median 7 files,
+p95 23, one over 40); or the
+selection is already half the suite, when the rest costs little and a whole
+run is one main can reuse ([above](#main-reuses-the-tested-tree)).
+
+**A miss costs a red main, never an untested release.** Main's push run, a
+merge-train run and a queue entry pass the diff's `python=all` straight
+through and run every file, and main reuses unit shards only from a run of the
+whole suite. `lock / contract / format / bridge install` still runs on a
+selected pull request.
+
+## A pull request scans the images it builds
+
+**Owner decision 2026-10-14 (the delivery speed plan, C3).** Two release
+blockers were first seen after a merge: PR 1276 merged without its tool-mirror
+object uploaded, so main's Cloud Build failed at its `tool-mirror` step; and a
+Debian curl CVE stopped every release at the promotion scan for hours.
+
+**The scan.** `build changed images without pushing` installs trivy at
+`release.yml`'s pin (a test holds the two equal) and passes
+`BUILD_ONLY_SCAN=scripts/scan-image-layout.sh` to `build-images.sh
+--build-only --local`. Each image the replay builds is exported to an OCI
+layout and scanned as soon as it is built, with the release's own policy --
+fixable HIGH and CRITICAL findings, `.trivyignore.yaml` honoured -- read from
+[`scripts/lib/image-scan.sh`](../scripts/lib/image-scan.sh), which
+`push-images.sh --scan` reads too, so the two scans cannot drift. A finding
+fails the build and names the image; a leaf's layout is removed after its
+scan.
+
+**The tool mirror.** `refresh-build-mirror.sh --check` reads the bucket, which
+a pull request cannot. The job instead runs the offline check that holds
+`images/agent-runtime-base/tool-mirror.sha256` equal to the Dockerfiles' pins,
+and names every row the pull request **adds** -- a warning annotation and a
+line in its summary -- as an object the operator uploads with
+`scripts/refresh-build-mirror.sh --tools-only` before the merge
+([runbook](runbooks/build-mirror.md)). It is a warning, not a failure: the
+job cannot see whether the upload happened.
+
+**Main fills the bucket itself (owner decision 2026-10-14, on PR 1298).**
+Main's `build images` job, which holds the deployer's identity, runs
+`scripts/refresh-build-mirror.sh --tools-only` before it builds. That uploads
+every manifest object the bucket lacks, each downloaded from its upstream URL
+and checked against its pinned sha256 first. A mismatch is refused and fails
+the step, naming the object. An object already there is left alone, nothing
+is ever deleted, and no image is pulled through (`--tools-only`). The step
+never runs on a pull request or a queue entry, where the job itself is
+skipped. So a merged manifest row no longer fails main's build; the PR
+warning above says the object will be uploaded from upstream at the merge.
+
+**The scan blocks (owner decision 2026-10-14).** A fixable HIGH or CRITICAL
+finding fails the pull request's image job, the same rule as the release's
+promotion scan, even when the CVE is new upstream and unrelated to the change.
+
+**Download retries.** The three fetches PR 1281 measured failing runs now
+retry, bounded: every `curl -fsSL` in a Dockerfile carries `--retry 5
+--retry-all-errors --retry-connrefused` (the `build images` exit 22 was an
+HTTP error, which curl retries only with `--retry-all-errors`); the indexer's
+`build_server` -- `go mod download` and `go get` against proxy.golang.org --
+runs up to three times, 15 and 30 s apart; and the Firestore emulator install
+in `integration tests (emulator)` tries four times, 10, 20 and 40 s apart.
+
 ## Merging through the merge queue
 
 **Owner decision, 2026-10-08 (observer proposal G).** Since 2026-10-07, main
@@ -3593,9 +3737,11 @@ when files are named explicitly, which is how the pre-publish gate
 on a lane's changed Python -- without it every lane touching Python would be
 told to reformat what it touched. `tests/unit/scripts/test_ruff_config.py`
 holds the pin, the lock, the rule set and the format exclusion. The CI job
-that runs `ruff check` lands in the CI lane: the operator adds it to
-`application.yml`; until then ruff runs only in the pre-publish gate and by
-hand.
+that runs it is `ruff check` in `application.yml` (SPEED-B, 2026-10-14):
+`uv run --frozen --only-dev ruff check --output-format github .`, which
+installs the dev group alone -- the pinned ruff with it -- so it takes
+seconds, and annotates each finding on its line. It is in `ci-gate`'s
+`needs`, so it is required the way every job there is.
 
 ## The finishing sequence
 

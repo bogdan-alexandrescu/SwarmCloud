@@ -93,7 +93,7 @@ jobs:
     runs-on: ubuntu-24.04
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
-    if: needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'shell')
     # Job-level permissions REPLACE the workflow's, so contents: read is
     # restated. actions: read is for the plugin-tag check's `gh run list` of
     # release.yml; nothing here mints a cloud token, so no id-token.
@@ -346,7 +346,7 @@ jobs:
     runs-on: ubuntu-24.04
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
-    if: needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'workflows')
     # release.yml runs only on main, so NOTHING on a pull request ever parses
     # it: a mistyped `needs.` reference, a step output that does not exist or
     # an input an action does not take would first fail during a release. Now
@@ -421,6 +421,35 @@ jobs:
             .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
             .github/workflows/auto-merge.yml
 
+  ruff:
+    # THE HOUSE PYTHON LINTER IN CI (owner decision 2026-10-14; docs/ci.md
+    # "ruff lint is the house Python linter"). PR 1289 pinned ruff 0.17.0 in
+    # the root pyproject's dev group with a lint-only rule set (E4, E7, E9, F)
+    # and made the repository pass it; until this job it ran only in the
+    # pre-publish gate and by hand. `--only-dev` installs the dev group alone
+    # -- the pinned ruff with it -- not the project, so this takes seconds.
+    # `--output-format github` turns each finding into an annotation on its
+    # line. Required through ci-gate's `needs`, like every job here.
+    name: ruff check
+    runs-on: ubuntu-24.04
+    needs: changes
+    if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ruff')
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: ruff check
+        run: uv run --frozen --only-dev ruff check --output-format github .
+
   changes:
     # WHAT THIS CHANGE CAN REACH, decided once for every job below (owner
     # request 2026-10-07; it grew out of the swarm-ui gate of #605, which it
@@ -460,12 +489,27 @@ jobs:
     # path-filter matrix (docs-only, UI-only, both, neither, a near miss).
     name: what this change reaches
     runs-on: ubuntu-24.04
+    # Job-level permissions REPLACE the workflow's. actions: read lists the
+    # `tested-tree-<tree>` records and the runs that wrote them, and
+    # pull-requests: read names the pull request a push to main merged (the
+    # `reuse` step, main only). Nothing here writes or mints a cloud token.
+    permissions:
+      contents: read
+      actions: read
+      pull-requests: read
     outputs:
       app: ${{ steps.diff.outputs.app }}
-      python: ${{ steps.diff.outputs.python }}
-      areas: ${{ steps.diff.outputs.areas }}
+      # `select` passes the diff's python and areas through unchanged, except
+      # on a pull request with python=all, where it narrows them (B2).
+      python: ${{ steps.select.outputs.python }}
+      areas: ${{ steps.select.outputs.areas }}
+      tests: ${{ steps.select.outputs.tests }}
       ui: ${{ steps.diff.outputs.ui }}
       images: ${{ steps.images.outputs.images }}
+      # The JSON list of job ids main's push run skips because a run of the
+      # identical tree passed them (B1). Empty everywhere else; every job
+      # reads it as `fromJSON(needs.changes.outputs.reused || '[]')`.
+      reused: ${{ steps.reuse.outputs.reused }}
     steps:
       - uses: actions/checkout@v5
         with:
@@ -636,6 +680,80 @@ jobs:
             emit true subset "${areas}" "${ui}"
           fi
 
+      - name: which unit tests the change reaches
+        id: select
+        # B2 (owner decision 2026-10-14, docs/ci.md "A pull request runs the
+        # unit tests its change reaches"). On a pull request the diff step
+        # says python=all for any change outside docs/ and apps/swarm-ui/,
+        # and every shard ran every file. Here, for that case only, the
+        # change is narrowed to the files it reaches:
+        # scripts/changed-guards.sh's selection (the repository-wide guards
+        # and every test naming a changed path) plus every test that imports
+        # a changed module, through any chain, in scripts/lib/select_unit_tests.py,
+        # which also says when it cannot vouch for a selection and keeps
+        # python=all: a workflow, conftest, pyproject or uv.lock change, the
+        # frozen contract, more than 40 changed paths, or a selection that
+        # is half the suite anyway.
+        #
+        # Every other case passes the diff step's answer through: a push to
+        # main, a merge-train branch, a queue entry or a dispatch runs the
+        # WHOLE suite, as it always has -- that run is what catches a test
+        # this selection missed, one merge later.
+        env:
+          EVENT: ${{ github.event_name }}
+          PYTHON: ${{ steps.diff.outputs.python }}
+          AREAS: ${{ steps.diff.outputs.areas }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          passthrough() {
+            { echo "python=${PYTHON}"; echo "areas=${AREAS}"; echo "tests="; } >> "$GITHUB_OUTPUT"
+            echo "python=${PYTHON}: $1"
+          }
+          if [ "${EVENT}" != "pull_request" ] || [ "${PYTHON}" != "all" ]; then
+            passthrough "not narrowed here"
+            exit 0
+          fi
+          if ! git diff --name-only "${BASE_SHA}...${HEAD_SHA}" > "${RUNNER_TEMP}/select-changed"; then
+            passthrough "could not diff ${BASE_SHA}...${HEAD_SHA}; running the whole suite"
+            exit 0
+          fi
+          # changed-guards.sh's own selection, read from the same diff. Its
+          # stdout lists the test files; a failure of it runs everything.
+          if ! ./scripts/changed-guards.sh --files "${RUNNER_TEMP}/select-changed" --list \
+               > "${RUNNER_TEMP}/select-guards"; then
+            passthrough "changed-guards.sh --list failed; running the whole suite"
+            exit 0
+          fi
+          python3 scripts/lib/select_unit_tests.py --changed "${RUNNER_TEMP}/select-changed" \
+            --guards "${RUNNER_TEMP}/select-guards" \
+            --github-output "${GITHUB_OUTPUT}" --summary "${GITHUB_STEP_SUMMARY}"
+
+      - name: reuse what a run of this exact tree already passed
+        id: reuse
+        # B1 (owner decision 2026-10-14, docs/ci.md "Main reuses the tested
+        # tree"). Main's push run only. Every other run RECORDS what it passed
+        # (the `tested-tree` job at the bottom); this looks up the record of
+        # this commit's tree and lists the test jobs main may skip. Exact or
+        # nothing: the same tree hash, a run of this workflow in this
+        # repository tied to this commit (the merged pull request's head, or a
+        # train or queue commit with this tree), every reused job `success` in
+        # the API -- and the unit shards only from a run of the WHOLE suite.
+        # Any doubt, any API error: `[]`, and every job runs.
+        # `build images` still needs `python`, `shell` and `manifests`; a
+        # reused job is skipped by its own `if:`, so the build starts as soon
+        # as what was not reused has passed.
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/ci_reuse.py find --repo "${REPO}" --sha "${SHA}" \
+            --github-output "${GITHUB_OUTPUT}" --summary "${GITHUB_STEP_SUMMARY}"
+
       - name: does the change reach an image
         id: images
         # `images`: `true` when `build changed images without pushing` has
@@ -691,7 +809,7 @@ jobs:
     name: lock / contract / format / bridge install
     runs-on: ubuntu-24.04
     needs: changes
-    if: needs.changes.outputs.python == 'all'
+    if: (needs.changes.outputs.python == 'all' || needs.changes.outputs.python == 'selected') && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-checks')
     steps:
       - uses: actions/checkout@v5
 
@@ -824,7 +942,7 @@ jobs:
     # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
     runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
-    if: needs.changes.outputs.python != 'none'
+    if: needs.changes.outputs.python != 'none' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'python-unit')
     strategy:
       # One red shard must not cancel the others: the next push wants every
       # failure, not the first.
@@ -928,6 +1046,8 @@ jobs:
           SHARDS: ${{ strategy.job-total }}
           PYTHON_MODE: ${{ needs.changes.outputs.python }}
           PYTHON_AREAS: ${{ needs.changes.outputs.areas }}
+          # python=selected: the test files the change reaches (B2), space-separated.
+          PYTHON_TESTS: ${{ needs.changes.outputs.tests }}
           DURATIONS: tests/unit/scripts/unit_test_durations.json
           SHARD_FILES: ${{ runner.temp }}/shard-files
         run: |
@@ -949,39 +1069,50 @@ jobs:
           tests = [p for p in modules if is_test(p)]
           if not tests:
               sys.exit("::error::no test files under tests/unit: the checkout is not the repository")
-          if mode == "subset":
-              def names_dir(d):
-                  # `REPO / "docs"`, "docs/ci.md", Path("docs"), joinpath(.., "docs") --
-                  # a path, not the word: `state["docs"]` is a Firestore fake.
-                  q = "[\"']"
-                  return rf"/\s*{q}{d}{q}|{q}(?:\./)?{d}/|(?:Path|joinpath)\(\s*{q}{d}{q}|,\s*{q}{d}{q}\s*[,)]"
-              reads = {"docs": names_dir("docs"), "swarm-ui": names_dir("swarm-ui") + r"|[\"'](?:\./)?apps/swarm-ui/"}
-              if not areas or any(a not in reads for a in areas):
-                  sys.exit(f"::error::python=subset with areas {areas!r}; known: {sorted(reads)}")
-              pattern = re.compile("|".join(reads[a] for a in areas))
-              text = {p: p.read_text(errors="replace") for p in modules}
-              # The names each module imports: every word of its import
-              # statements, so `from .fakes import X`, `from control_plane.
-              # test_nav_headings_agree import Y` and `from . import fakes` all
-              # name their module. A word in prose names nothing.
-              imports = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)|import[ \t]+([^\n]+))", re.M)
-              words = {p: {w for m in imports.finditer(text[p]) for g in m.groups() if g for w in re.findall(r"\w+", g)}
-                       for p in modules}
-              reach = {p for p in modules if pattern.search(text[p])}
-              todo = sorted(reach)
-              while todo:
-                  module = todo.pop()
-                  if module.name == "conftest.py":
-                      more = {p for p in modules if module.parent in p.parents}
-                  elif module.name == "__init__.py":
-                      more = set()
-                  else:
-                      more = {p for p in modules if module.stem in words[p]}
-                  todo.extend(sorted(more - reach))
-                  reach |= more
-              tests = [p for p in tests if p in reach]
+          if mode in ("subset", "selected"):
+              # selected (B2): the files the `changes` job chose for this
+              # change, plus -- when it touches docs/ or apps/swarm-ui/ --
+              # the area readers below, exactly as subset picks them.
+              chosen = set()
+              if mode == "selected":
+                  listed = set(os.environ.get("PYTHON_TESTS", "").split())
+                  if not listed:
+                      sys.exit("::error::python=selected with no test file listed")
+                  chosen |= {p for p in tests if str(p) in listed}
+              if mode == "subset" or areas:
+                  def names_dir(d):
+                      # `REPO / "docs"`, "docs/ci.md", Path("docs"), joinpath(.., "docs") --
+                      # a path, not the word: `state["docs"]` is a Firestore fake.
+                      q = "[\"']"
+                      return rf"/\s*{q}{d}{q}|{q}(?:\./)?{d}/|(?:Path|joinpath)\(\s*{q}{d}{q}|,\s*{q}{d}{q}\s*[,)]"
+                  reads = {"docs": names_dir("docs"), "swarm-ui": names_dir("swarm-ui") + r"|[\"'](?:\./)?apps/swarm-ui/"}
+                  if not areas or any(a not in reads for a in areas):
+                      sys.exit(f"::error::python=subset with areas {areas!r}; known: {sorted(reads)}")
+                  pattern = re.compile("|".join(reads[a] for a in areas))
+                  text = {p: p.read_text(errors="replace") for p in modules}
+                  # The names each module imports: every word of its import
+                  # statements, so `from .fakes import X`, `from control_plane.
+                  # test_nav_headings_agree import Y` and `from . import fakes` all
+                  # name their module. A word in prose names nothing.
+                  imports = re.compile(r"^[ \t]*(?:from[ \t]+([\w.]+)[ \t]+import[ \t]+(\([^)]*\)|[^\n]*)|import[ \t]+([^\n]+))", re.M)
+                  words = {p: {w for m in imports.finditer(text[p]) for g in m.groups() if g for w in re.findall(r"\w+", g)}
+                           for p in modules}
+                  reach = {p for p in modules if pattern.search(text[p])}
+                  todo = sorted(reach)
+                  while todo:
+                      module = todo.pop()
+                      if module.name == "conftest.py":
+                          more = {p for p in modules if module.parent in p.parents}
+                      elif module.name == "__init__.py":
+                          more = set()
+                      else:
+                          more = {p for p in modules if module.stem in words[p]}
+                      todo.extend(sorted(more - reach))
+                      reach |= more
+                  chosen |= {p for p in tests if p in reach}
+              tests = [p for p in tests if p in chosen]
           elif mode != "all":
-              sys.exit(f"::error::python={mode!r}: this job runs only on all or subset")
+              sys.exit(f"::error::python={mode!r}: this job runs only on all, selected or subset")
           weights = json.loads(Path(os.environ["DURATIONS"]).read_text())
           known = sorted(weights.values())
           default = known[len(known) // 2] if known else 1.0
@@ -1144,7 +1275,7 @@ jobs:
     # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
     runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
-    if: needs.changes.outputs.ui == 'true'
+    if: needs.changes.outputs.ui == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-build')
     steps:
       - uses: actions/checkout@v5
 
@@ -1259,7 +1390,7 @@ jobs:
     # the one tests/unit/scripts/test_fork_prs_off_self_hosted.py enforces.
     runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: changes
-    if: needs.changes.outputs.ui == 'true'
+    if: needs.changes.outputs.ui == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'ui-tests')
     strategy:
       fail-fast: false
       matrix:
@@ -1377,7 +1508,7 @@ jobs:
     runs-on: ${{ (github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository && 'ubuntu-latest' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
-    if: needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'integration')
     steps:
       - uses: actions/checkout@v5
 
@@ -1401,7 +1532,25 @@ jobs:
       - uses: google-github-actions/setup-gcloud@v3
 
       - name: install the emulator
-        run: gcloud components install cloud-firestore-emulator --quiet
+        # RETRIED, BOUNDED (2026-10-14, the flake PR 1281 measured in run
+        # 38124880207: the component download failed once and the job went
+        # red on a fetch, not on a test). Four tries, 10, 20 and 40 s apart:
+        # at most 70 s of waiting before the last failure is reported as
+        # itself. Nothing but the download is retried.
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4; do
+            if gcloud components install cloud-firestore-emulator --quiet; then
+              exit 0
+            fi
+            if [ "${attempt}" -eq 4 ]; then
+              echo "::error::the Firestore emulator did not install in 4 tries"
+              exit 1
+            fi
+            delay=$((10 * (1 << (attempt - 1))))
+            echo "::warning::the emulator download failed (try ${attempt} of 4); retrying in ${delay} s"
+            sleep "${delay}"
+          done
 
       - name: sync
         run: uv sync --frozen --all-extras --dev
@@ -1475,7 +1624,7 @@ jobs:
     runs-on: ubuntu-24.04
     # Skipped when the change reaches nothing in this workflow (`changes`).
     needs: changes
-    if: needs.changes.outputs.app == 'true'
+    if: needs.changes.outputs.app == 'true' && !contains(fromJSON(needs.changes.outputs.reused || '[]'), 'manifests')
     steps:
       - uses: actions/checkout@v5
 
@@ -1565,6 +1714,11 @@ jobs:
     env:
       # As main builds it: swarm-ui bakes its environment in at build time.
       ENVIRONMENT: dev
+      # The scanner the release's promotion runs, at the SAME pin
+      # (release.yml's TRIVY_VERSION; tests/unit/scripts/test_pr_image_scan.py
+      # holds the two equal): a pull request's scan that could disagree with
+      # the release's would say nothing about whether the release will pass.
+      TRIVY_VERSION: "0.74.0"
     steps:
       # Before the checkout, so a fork's pull request is done in seconds.
       - name: is this pull request built here
@@ -1671,10 +1825,68 @@ jobs:
         if: steps.plan.outputs.build == 'true'
         run: python3 -m pip install --quiet pyyaml
 
+      - name: the tool mirror holds what this pull request pins
+        # C3 (owner decision 2026-10-14). PR 1276 added a row to
+        # images/agent-runtime-base/tool-mirror.sha256 and merged before the
+        # operator had uploaded its object, so main's Cloud Build failed at
+        # its `tool-mirror` step. `refresh-build-mirror.sh --check` reads the
+        # bucket, which this job cannot: it holds no Google identity (owner
+        # decision 2026-10-05). So, offline: the manifest and the
+        # Dockerfiles' pins agree (test_build_mirror_switch.py, the check that
+        # holds them), and every row this pull request ADDS is named here as the
+        # object the operator must upload before merging -- a warning
+        # annotation on the pull request and a line in this job's summary.
+        if: steps.plan.outputs.build == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          manifest=images/agent-runtime-base/tool-mirror.sha256
+          git diff "${BASE_SHA}...${HEAD_SHA}" -- "${manifest}" \
+            | sed -nE 's/^\+([0-9a-f]{64})[[:space:]]+(.+)$/\2/p' > "${RUNNER_TEMP}/mirror-added"
+          python3 -m pip install --quiet pytest pyyaml
+          python3 -m pytest -q -p no:cacheprovider \
+            'tests/unit/scripts/test_build_mirror_switch.py::test_the_manifest_is_every_file_the_base_reads_at_its_pinned_sha256'
+          count="$(grep -c . "${RUNNER_TEMP}/mirror-added" || true)"
+          if [ "${count:-0}" -gt 0 ]; then
+            {
+              echo "### New tool-mirror objects"
+              echo
+              echo "This pull request adds ${count} row(s) to \`${manifest}\`. Main's \`build images\` uploads each missing one from upstream, sha256-checked, before it builds (\`scripts/refresh-build-mirror.sh --tools-only\`); an upstream that is down or a sha256 that does not match then fails main's build, so check the URLs below are reachable (docs/runbooks/build-mirror.md):"
+              echo
+              sed 's/^/- `/; s/$/`/' "${RUNNER_TEMP}/mirror-added"
+            } >> "$GITHUB_STEP_SUMMARY"
+            while IFS= read -r obj; do
+              echo "::warning file=${manifest},title=new tool-mirror object::${obj} is new: main's build uploads it from https://${obj} after checking its sha256 (refresh-build-mirror.sh --tools-only)"
+            done < "${RUNNER_TEMP}/mirror-added"
+          else
+            echo "no tool-mirror row added; the manifest and the Dockerfiles' pins agree"
+          fi
+
+      - name: install trivy, at the release's pin
+        if: steps.plan.outputs.build == 'true'
+        # The release installs it the same way (.github/actions/release-images),
+        # with bounded retries here because a failed download is not a finding.
+        run: |
+          set -euo pipefail
+          curl -sSfL --retry 5 --retry-all-errors -o "${RUNNER_TEMP}/trivy-install.sh" \
+            "https://raw.githubusercontent.com/aquasecurity/trivy/v${TRIVY_VERSION}/contrib/install.sh"
+          for attempt in 1 2 3; do
+            if sh "${RUNNER_TEMP}/trivy-install.sh" -b /usr/local/bin "v${TRIVY_VERSION}"; then break; fi
+            [ "${attempt}" -lt 3 ] || exit 1
+            sleep $((10 * attempt))
+          done
+          trivy --version
+
       - name: build with docker buildx, pushing nothing
         if: steps.plan.outputs.build == 'true'
         env:
           IMAGES: ${{ steps.plan.outputs.images }}
+          # C3: each image is scanned as soon as it is built, with the
+          # release's policy (scripts/lib/image-scan.sh); a fixable HIGH or
+          # CRITICAL finding fails this job, as it would fail the release.
+          BUILD_ONLY_SCAN: scripts/scan-image-layout.sh
         run: |
           set -euo pipefail
           read -r -a images <<<"${IMAGES}"
@@ -1790,6 +2002,20 @@ jobs:
 
       - uses: google-github-actions/setup-gcloud@v3
 
+      - name: fill the tool mirror with what this commit pins
+        # OWNER DECISION 2026-10-14 (PR 1298; docs/ci.md "A pull request scans
+        # the images it builds"). PR 1276 merged a new tool-mirror row before
+        # anyone uploaded its object, and this build failed at its
+        # `tool-mirror` step. A pull request cannot see the bucket (it has no
+        # Google identity), so it only warns; this job can, so it fills it.
+        # `--tools-only` uploads every manifest object the bucket lacks, each
+        # downloaded from upstream and checked against its pinned sha256
+        # first (a mismatch is refused and fails the step, naming it); an
+        # object already there is left alone; nothing is ever deleted; no
+        # image is pulled through. Main only: this job never runs on a pull
+        # request or a queue entry (its `if:` above).
+        run: ./scripts/refresh-build-mirror.sh --tools-only
+
       - name: build with Cloud Build
         # Never a local docker build: the targets are amd64 and Cloud Build is
         # also where the build service account lives.
@@ -1871,6 +2097,57 @@ jobs:
           # that a dispatched release builds the commit again.
           retention-days: 30
 
+  tested-tree:
+    # WHAT THIS RUN PROVED, KEYED BY THE TREE IT TESTED (B1, owner decision
+    # 2026-10-14; docs/ci.md "Main reuses the tested tree"). Every run but
+    # main's own -- a pull request, a merge-train branch, a queue entry --
+    # uploads `tested-tree-<tree>`: the tree hash of the commit it checked
+    # out (a pull request's merge commit, which is the tree its squash merge
+    # commits to main when it is up to date), the event, the `changes` job's
+    # python mode and every test job that concluded success.
+    # scripts/lib/ci_reuse.py writes it, and on main reads it back and
+    # checks every fact against the GitHub API and git before skipping
+    # anything (the `changes` job's `reuse` step).
+    #
+    # IN CI-GATE'S `needs`, so the record exists before the pull request can
+    # merge: a record uploaded after the merge would race main's lookup.
+    # Writing it is strict -- a broken record is a bug to see -- but its
+    # upload is not: a failed upload costs main one full run, never a merge.
+    name: record the tested tree
+    runs-on: ubuntu-24.04
+    needs: [changes, shell, workflows, ruff, python-checks, python-unit, ui-build, ui-tests, integration, manifests]
+    if: always() && needs.changes.result == 'success' && github.ref != 'refs/heads/main' && github.event_name != 'workflow_dispatch'
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: write the record
+        id: record
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+          PYTHON: ${{ needs.changes.outputs.python }}
+          EVENT: ${{ github.event_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 scripts/lib/ci_reuse.py record --needs "${NEEDS}" --python "${PYTHON}" \
+            --event "${EVENT}" --sha "${SHA}" --out-dir "${RUNNER_TEMP}/tested-tree" \
+            --github-output "${GITHUB_OUTPUT}"
+
+      - name: upload the record
+        continue-on-error: true
+        uses: actions/upload-artifact@v6
+        with:
+          name: tested-tree-${{ steps.record.outputs.tree }}
+          path: ${{ runner.temp }}/tested-tree/
+          if-no-files-found: error
+          # A re-run of a failed job writes the record again; it replaces this one.
+          overwrite: true
+          retention-days: 7
+
   ci-gate:
     # THE ONE CHECK MAIN'S RULESET REQUIRES FOR THIS WORKFLOW AND terraform.yml
     # (ruleset main-protection, id 24160219; owner decision 2026-09-29). Its
@@ -1915,7 +2192,7 @@ jobs:
     # the gate's.
     name: ci-gate
     runs-on: ubuntu-24.04
-    needs: [shell, workflows, changes, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build]
+    needs: [shell, workflows, ruff, changes, python-checks, python-unit, ui-build, ui-tests, integration, manifests, build-check, build, tested-tree]
     if: always()
     # The script gives up at 90 minutes (CI_GATE_WAIT) and says what was still
     # pending; this is only the backstop behind it.
