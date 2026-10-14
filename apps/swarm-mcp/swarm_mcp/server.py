@@ -3579,8 +3579,20 @@ def _workflow_merge_pr(client: SwarmClient, args: dict[str, Any]) -> str:
 def _workflow_created(
     envelope: dict[str, Any], *, placed: dict[str, Any], repository: dict[str, Any],
     digest: str | None = None, expected_digest: Any = None,
+    given: list[str] | None = None,
 ) -> str:
-    """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`."""
+    """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`.
+
+    `given` is the step ids this bridge submitted. Each reply step then says
+    whether SwarmCloud ADDED it (`added`): swarm-api appends a re-review and a
+    merge the spec never named (`swarm_api.service._with_merge_step`), and
+    /sc:swarmcloud starts a row for every step the server marks so, instead of
+    predicting the server's merge rules and refusing the reply when the
+    prediction missed (SPEED-D5, measured 2026-10-14 on plugin sc 0.5.27: a
+    3-step spec came back with 5 and no row started). The comparison is made
+    here because this is the one place that holds both the spec submitted and
+    the reply; no relay retyped either.
+    """
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")
     if not workflow_id:
@@ -3599,6 +3611,7 @@ def _workflow_created(
                 "runner_profile": step.get("runner_profile"),
                 "depends_on": step.get("depends_on") or [],
                 "input_from": step.get("input_from") or {},
+                **({} if given is None else {"added": step.get("step_id") not in given}),
             },
             step,
         )
@@ -4081,7 +4094,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             merge=fields.get("merge"),
         )
         reply = _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
-                                  digest=digest, expected_digest=expected_digest)
+                                  digest=digest, expected_digest=expected_digest,
+                                  given=[str(step.get("step_id")) for step in fields["steps"]])
         if not territory and not checks:
             return reply
         created = json.loads(reply)

@@ -332,6 +332,12 @@ class GitTools:
         self._calls: deque[float] = deque()
         self._pushes: deque[float] = deque()
         self.origin = _Origin()
+        #: The commit the latest `git_rebase_onto` rebased the clone onto: a
+        #: sha this relay fetched itself, so origin has it. The end-of-task
+        #: publish diffs from it when HEAD still descends from it
+        #: (`lifecycle.Worker._adopt_rebase_base`, SPEED-D1), so a lane rebased
+        #: onto a newer base does not republish the base's commits as its own.
+        self.rebased_onto: str | None = None
         if cfg.clone_base != EMPTY_CLONE_BASE:
             self.origin.learn(cfg.clone_base)
 
@@ -564,6 +570,9 @@ class GitTools:
                                  "(or --abort) first")
         fetched = self.fetch(ref, request_id=request_id)
         onto = fetched["resolved_sha"]
+        # Recorded before the rebase runs: a conflicted one the agent then
+        # continues lands on it too, and the publish checks that HEAD descends.
+        self.rebased_onto = onto
         name, email = self.cfg.author
         code, _ = self._clone_git(
             ["-c", f"user.name={name}", "-c", f"user.email={email}",
