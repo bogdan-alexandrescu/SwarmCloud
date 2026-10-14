@@ -265,10 +265,14 @@ describe('the graph: a picked node\'s card is scrolled to', () => {
     // its card, and the arrival pick itself is not scrolled to (QA G3-28).
     // Queried AFTER the arrival pick has landed: the canvas redraws its nodes
     // then, and a node taken before it is a detached element a click misses.
-    await waitFor(() => expect(document.querySelector('.wf-canvas button.node.is-picked')).not.toBeNull())
+    // The arrival pick waits on the run's reads and a canvas layout; on a
+    // loaded CI shard that took longer than waitFor's 1s default (#1299).
+    await waitFor(() => expect(document.querySelector('.wf-canvas button.node.is-picked')).not.toBeNull(), {
+      timeout: 5000,
+    })
     const node = document.querySelector<HTMLButtonElement>('.wf-canvas button.node:not(.is-picked)')!
     expect(node).not.toBeNull()
     fireEvent.click(node)
-    await waitFor(() => expect(seen.some((el) => el.classList.contains('wf-panel'))).toBe(true))
+    await waitFor(() => expect(seen.some((el) => el.classList.contains('wf-panel'))).toBe(true), { timeout: 5000 })
   })
 })
