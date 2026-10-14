@@ -10,8 +10,10 @@ workflow or task line in the details". Held here:
   and everything past it stays in `not_followed`. The bridge reads the option
   (`config.max_live_rows`) and hands it to run.js as each copy's `max_rows`;
   run.js clamps it the same way and defaults to the same 30.
-* THE WORKSPACE. Every run title is `SC · [<workspace>] <name> · N steps`
-  (the name is cut, never the workspace or the count, at most 150), every
+* THE WORKSPACE. run.js's Result title is `SC · [<workspace>] <name> · N
+  steps` (the name is cut, never the workspace or the count, at most 150) --
+  the launched copy's meta.name has no workspace since SC-WS-DESC, its
+  description leads with it (test_sc_workspace_in_description) -- every
   row label is `[SwarmCloud] [<workspace>] ...`, and every result object and
   summary line carries it -- read off the API's workflow and task documents
   (`tenant_id`), never off the session's configured tenant.
@@ -138,8 +140,8 @@ def test_a_long_title_cuts_the_name_never_the_workspace_or_the_step_count():
 
 
 def test_the_run_js_title_is_the_bridges_title(tmp_path):
-    """The copy's meta.name (the bridge's) and the Result's title (run.js's)
-    are one string, workspace and cut included."""
+    """run.js's Result title is workflow_title's, workspace and cut included
+    (the launched copy's meta.name drops the workspace: SC-WS-DESC)."""
     name = "a very long workflow name " * 8
     got = _run(tmp_path, {"attach": "wf_a", "title": name, "workspace": "u-bogdan"}, {
         "ATTACH\nworkflow_id: wf_a": {
@@ -304,7 +306,8 @@ def test_launch_all_honours_the_30_cap_and_names_each_workspace(_plugin_root, mo
     assert out["max_live_rows"] == 30
     assert len(out["launches"]) == 30 and len(out["not_followed"]) == 5
     first = out["launches"][0]
-    assert first["title"] == "SC · [eng] flow 00 · 3 steps"
+    # SC-WS-DESC: the run's name has no workspace; its description leads with it.
+    assert first["title"] == "SC · flow 00 · 3 steps"
     assert first["workspace"] == "eng"
     assert first["args"] == {"attach": "wf_00", "title": "flow 00", "workspace": "eng"}
     assert out["not_followed"][0] == {"workflow_id": "wf_30", "workspace": "eng", "title": "flow 30",
@@ -322,7 +325,7 @@ def test_launch_all_honours_the_plugin_option(_plugin_root, monkeypatch):
     assert len(workflow_launches) == 4
     assert len(task_launch["task_ids"]) == 4 and task_launch["args"]["max_rows"] == 4
     assert all(r["workspace"] == "eng" for r in task_launch["args"]["attach_tasks"])
-    assert task_launch["title"] == "SC · [eng] lane 0 +3 · 4 tasks"
+    assert task_launch["title"] == "SC · lane 0 +3 · 4 tasks"
     assert len(out["not_followed"]) == 2 + 3
 
 
