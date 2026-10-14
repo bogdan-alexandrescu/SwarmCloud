@@ -301,11 +301,15 @@ def test_a_shards_workers_steal_rather_than_split_up_front():
     """xdist's default `load` schedule left shard 3 ~45 % over its floor: its
     long sleep-bound tests landed on one worker (docs/ci.md, "Where
     pull-request CI time goes (2026-10-09)"). MUTATION: drop `--dist
-    worksteal`, or let a second pytest run in the job without it."""
+    worksteal`, or let a second pytest run in the job without it.
+
+    Two runs since 2026-10-14: the gating one and the quarantined tests'
+    (tests/flaky.txt), which reports and never fails the gate."""
     runs = [str(s.get("run", "")) for s in _jobs()["python-unit"]["steps"]]
     pytests = [r for r in runs if "uv run pytest" in r]
-    assert len(pytests) == 1, pytests
-    assert re.search(r"uv run pytest\b[^\n]*-n auto --dist worksteal\b", pytests[0]), pytests[0]
+    assert len(pytests) == 2, pytests
+    for run in pytests:
+        assert re.search(r"uv run pytest\b[^\n]*-n auto --dist worksteal\b", run), run
 
 
 @pytest.mark.parametrize("mode, areas", [("none", ""), ("subset", ""), ("subset", "terraform"), ("bogus", "")])

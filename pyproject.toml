@@ -63,6 +63,9 @@ dev = [
 [tool.pytest.ini_options]
 markers = [
     "serial: measures elapsed time or process liveness; must not run under -n",
+    # Applied at collection from tests/flaky.txt (tests/unit/conftest.py), never
+    # written on a test by hand: the list is the one place a quarantine lives.
+    "flaky: quarantined in tests/flaky.txt; CI runs it in a step that never fails the gate",
 ]
 testpaths = ["tests/unit"]
 # No -q here (observer P32, owner decision 2026-10-06): callers add their own, and
