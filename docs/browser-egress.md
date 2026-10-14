@@ -685,6 +685,20 @@ loading) or fall back to direct mid-attempt?**
 
 ---
 
+### 7.1 Decisions (owner, 2026-10-13 ~21:10 PDT)
+
+| # | question | answer |
+|---|---|---|
+| Q1 | Vendor for the pilot | **Bright Data.** Its residential pool needs a human-reviewed company KYC, which the owner completes; its ISP proxies need none. |
+| Q2 | Rotating residential or ISP/static | **Trial both** in phase 1, against the direct baseline, and keep the one with the lower measured /sorry rate per dollar. |
+| Q3 | Monthly budget cap | **$150 pilot**, set as the vendor sub-user traffic limit. |
+| Q4 | Where the vendor credential lives | **Only in the platform forwarder `swarm-egress`.** Pods carry a ticket scoped to one attempt. |
+| Q5 | Proxy, search API, or both | **Not yet decided.** Asked separately; the build does not depend on it. |
+| Q6 | Exit country | **US**, for the whole platform. |
+| Q7 | Kill switch | **Fail closed.** |
+
+The owner holds the Bright Data account, KYC and credential. The credential is stored with `scripts/create-secrets.sh --stdin` and is never written anywhere else. The build ships with the flag off.
+
 ## 8. Not decided here, and not verified
 
 * **That a residential or ISP IP actually lowers Google's `/sorry` rate for
