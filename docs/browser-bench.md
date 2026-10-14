@@ -27,6 +27,12 @@ chosen **only** by the sentence put in front of it:
 |---|---|
 | `playwright-mcp` | Use the Playwright MCP browser tools for every browser action. |
 | `dev-browser` | Use the dev-browser CLI for every browser action. |
+| `jev` (opt-in) | Use the jev browser tools (browser_do, browser_read and the other `jev` tools) for every browser action. |
+
+`jev` (JEV-RUNNER) is not in a default plan. Its tools exist only for a
+submitter or tenant with a TypeSafe key
+([design/live-browser.md §3.2.2](design/live-browser.md)), and each run also
+spends TypeSafe credits. Name it: `--tools playwright-mcp,dev-browser,jev`.
 
 No API input selects the tool. A caller picks a runner profile by name and
 sends a prompt (invariant 10); a "tool" field would be a backend parameter
@@ -103,6 +109,8 @@ many are unfinished, and is run again later.
 * dev-browser becomes the default only if, in addition, it is **at least as
   reliable** as Playwright MCP (success rate not lower) **and** its median
   $/task **and** median turns are **lower**.
+
+The same bar holds `jev` against Playwright MCP, with its own verdict line.
 
 `summary.md` ends with a verdict line computed from those rules: `BAR MET`,
 `KEEP PLAYWRIGHT MCP` with the reasons, or `NOT DECIDED` when a figure the bar

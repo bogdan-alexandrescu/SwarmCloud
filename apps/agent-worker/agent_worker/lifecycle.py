@@ -152,6 +152,7 @@ from . import gitops as gitops_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
+from . import jevkey as jevkey_mod
 from . import questions as questions_mod
 from . import redact as redact_mod
 from . import standalone_outputs as standalone_mod
@@ -7290,6 +7291,20 @@ class Worker:
         # The hand-off spool, on a live-browser attempt (live-browser §4.1):
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))
+        # The jev MCP server's TypeSafe key, on a live-browser attempt with a
+        # key (JEV-RUNNER, `jevkey`): the PATH of a 0600 file in private/,
+        # never the key, which reaches only that server's process. Never
+        # fatal: no key, or no read, is an attempt without the jev tools.
+        base.update(jevkey_mod.prepare(
+            endpoint=base.get(jevkey_mod.CDP_ENDPOINT_ENV),
+            db=self.db,
+            client=self.secret_client,
+            tenant_id=self.cfg.tenant_id,
+            submitted_by=(self._task or {}).get("submitted_by"),
+            private_dir=ws.private,
+            logger=self.log,
+            call_options=self.control.call_options("tenant"),
+        ))
         return ws.child_env(base)
 
     # -- the account pool --------------------------------------------------

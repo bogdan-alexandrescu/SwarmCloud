@@ -6,11 +6,13 @@ UX/UI and in the claude code plugin /sc in a safe way"*. This document covers
 the API half (lane KEYS-API). The console form (`apps/swarm-ui`) and the `/sc`
 command (`apps/swarm-mcp`, `plugin/`) are follow-on lanes.
 
-**Nothing uses these keys yet.** Jev itself is not being built (owner: later,
-gated). No runner profile names `typesafe`, no secret here is mounted into any
-runner, and nothing sends page content anywhere. The API stores a key, says
-whether one is set, and says which one a task *would* use. `GET` status
-answers `consumed_by: []` so nobody reads the resolution as a live wiring.
+**What uses these keys (JEV-RUNNER, 2026-10-14).** A live-browser task's
+`jev` MCP server (jev-browser, which sends page text and labels to
+`api.typesafe.ai`; the owner accepted that). The worker resolves the key by
+the order in §2 and hands it to that one server process
+([design/live-browser.md §3.2.2](design/live-browser.md)). No runner
+profile names `typesafe` and no Job mounts the secret. `GET` status answers
+`consumed_by: ["jev"]`.
 
 Code: `apps/swarm-api/swarm_api/provider_keys.py` (record, audit, links,
 resolution) and `apps/swarm-api/swarm_api/routes/provider_keys.py` (routes).
@@ -84,11 +86,17 @@ frozen slug drops the domain: `alice@partner.com` derives `u-alice` too. `DELETE
 name this email: a person whose workspace has left `ready` can still destroy
 their own key.
 
-**What a future consumer must not do.** A task alice submits in a group tenant
+**A personal key on a group task.** A task alice submits in a group tenant
 runs as the group's account, which cannot read `swarm-tenant-u-alice-*`. The
-fix is **not** to grant the group account on alice's secret; that would give her
-key to every member. The consumer lane has to fetch it through a path that acts
-for the submitter. That design is still open and belongs to that lane.
+worker then logs `jev_key_unreadable` and uses the tenant key if one is set.
+Granting the group account on alice's secret gives her key to **every**
+member's tasks, so it is never a prefix and never a default. It is one row
+per (group, person) in `terraform/bootstrap/typesafe_user_keys.tf`
+(`typesafe_user_key_readers`), applied by the owner, and the row is the
+person's consent: the same trade the owner accepted for GitHub user slots
+(#780 D7 U1). A path that acts only for the submitter, with swarm-api reading
+the key on their behalf, would need a route that serves a credential, which
+`test_no_route_serves_credentials.py` forbids. That is still open.
 
 ## 3. The one-time link
 

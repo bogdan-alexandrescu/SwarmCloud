@@ -4,7 +4,7 @@
 # part of #1030).
 #
 #   scripts/browser-bench.sh [--batch NAME] [--repeats 3] [--prompts a,b]
-#                            [--tools playwright-mcp,dev-browser]
+#                            [--tools playwright-mcp,dev-browser[,jev]]
 #                            [--usd-per-task 0.66] [--dry-run]
 #   scripts/browser-bench.sh --collect NAME
 #
@@ -12,6 +12,10 @@
 # default; this benchmark is what decides any flip. docs/browser-bench.md has
 # the ten prompts, each one's machine-checkable success criterion, the pass
 # bar, what a batch costs and why egress must not change between the arms.
+#
+# jev (JEV-RUNNER) is a third arm, chosen by its own sentence the same way and
+# only when named in --tools: its tools exist only for a submitter or tenant
+# with a TypeSafe key, and each run also spends TypeSafe credits.
 #
 # SUBMIT (the default). One `claude-code-browser` task per run -- 10 prompts x
 # 2 tools x 3 repeats = 60 by default, arms interleaved -- through the same

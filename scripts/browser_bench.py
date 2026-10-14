@@ -23,6 +23,13 @@ live-browser success), and a hand-off prompt must show the hand-off come back
 (`human_control_returned`). "Not reported" is never 0: a figure the API did not
 serve is None here and "not measured" in the TSV.
 
+JEV IS A THIRD ARM, OPT-IN (JEV-RUNNER, owner decision 2026-10-14). The
+`jev` arm is chosen by its own sentence like the other two; it is not in a
+default plan, because its tools exist only for a submitter or tenant with a
+TypeSafe key and every run spends TypeSafe credits as well as the task's.
+Name it: `--tools playwright-mcp,dev-browser,jev`. Each challenger is held to
+the same bar against Playwright MCP, with its own verdict line.
+
     browser_bench.py plan --batch B [--repeats 3] [--prompts a,b] [--tools a,b]
                           [--usd-per-task 0.66] [--bodies DIR]
     browser_bench.py collect --dir BATCH_DIR
@@ -50,7 +57,15 @@ PROFILE = "claude-code-browser"
 TOOLS: dict[str, str] = {
     "playwright-mcp": "Use the Playwright MCP browser tools for every browser action.",
     "dev-browser": "Use the dev-browser CLI for every browser action.",
+    "jev": ("Use the jev browser tools (browser_do, browser_read and the other `jev` "
+            "tools) for every browser action."),
 }
+
+#: The arms a plan has when `--tools` is not given: jev is opt-in (docstring).
+DEFAULT_TOOLS: tuple[str, ...] = ("playwright-mcp", "dev-browser")
+
+#: The arm every other one is measured against: today's default.
+BASELINE = "playwright-mcp"
 
 #: The measured median cost of one task, in USD (docs/browser-bench.md shows
 #: the arithmetic). An estimate, never a measurement: `--collect` reports what
@@ -247,7 +262,7 @@ def plan(batch: str, *, prompt_ids: Iterable[str] | None = None,
     unknown = [p for p in chosen if p not in PROMPTS_BY_ID]
     if unknown:
         raise ValueError(f"unknown prompt(s) {unknown}; the prompts are {sorted(PROMPTS_BY_ID)}")
-    arms = list(tools) if tools is not None else list(TOOLS)
+    arms = list(tools) if tools is not None else list(DEFAULT_TOOLS)
     bad = [t for t in arms if t not in TOOLS]
     if bad or not arms:
         raise ValueError(f"unknown tool(s) {bad}; the tools are {sorted(TOOLS)}")
@@ -461,30 +476,37 @@ def summarize(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return out
 
 
-def verdict(summary: dict[str, dict[str, Any]]) -> str:
-    """The pass bar (docs/browser-bench.md), as data says it. The owner decides."""
-    mcp, devb = summary.get("playwright-mcp"), summary.get("dev-browser")
+def verdict(summary: dict[str, dict[str, Any]], challenger: str = "dev-browser") -> str:
+    """The pass bar (docs/browser-bench.md) for `challenger` against
+    Playwright MCP, as data says it. The owner decides."""
+    mcp, devb = summary.get(BASELINE), summary.get(challenger)
     if not mcp or not devb or not mcp["runs"] or not devb["runs"]:
         return "NOT DECIDED: both arms need finished runs"
     if devb["prompts_seen"] < len(PROMPTS):
-        return f"NOT DECIDED: dev-browser finished {devb['prompts_seen']}/{len(PROMPTS)} prompts"
+        return f"NOT DECIDED: {challenger} finished {devb['prompts_seen']}/{len(PROMPTS)} prompts"
     missing = [k for k in ("median_cost_usd", "median_turns")
                if mcp[k] is None or devb[k] is None]
     if missing:
         return f"NOT DECIDED: {', '.join(missing)} not measured on both arms"
     reasons = []
     if devb["prompts_passed"] < 8:
-        reasons.append(f"dev-browser passed {devb['prompts_passed']}/10 prompts in the live "
+        reasons.append(f"{challenger} passed {devb['prompts_passed']}/10 prompts in the live "
                        "browser (bar: >= 8/10)")
     if devb["success_rate"] < mcp["success_rate"]:
-        reasons.append("dev-browser is less reliable than Playwright MCP")
+        reasons.append(f"{challenger} is less reliable than Playwright MCP")
     if devb["median_cost_usd"] >= mcp["median_cost_usd"]:
-        reasons.append("dev-browser's median $/task is not lower")
+        reasons.append(f"{challenger}'s median $/task is not lower")
     if devb["median_turns"] >= mcp["median_turns"]:
-        reasons.append("dev-browser's median turns are not lower")
+        reasons.append(f"{challenger}'s median turns are not lower")
     if reasons:
         return "KEEP PLAYWRIGHT MCP: " + "; ".join(reasons)
-    return "BAR MET: dev-browser may become the default (the owner's decision)"
+    return f"BAR MET: {challenger} may become the default (the owner's decision)"
+
+
+def challengers(summary: dict[str, dict[str, Any]]) -> list[str]:
+    """The arms measured against Playwright MCP, in TOOLS order; dev-browser
+    always, so a batch without it still says it was not decided."""
+    return [t for t in TOOLS if t != BASELINE and (t in summary or t == "dev-browser")]
 
 
 # ---------------------------------------------------------------------------
@@ -528,7 +550,7 @@ def _usd(value: Any) -> str:
 
 
 def render_markdown(summary: dict[str, dict[str, Any]], rows: list[dict[str, Any]]) -> str:
-    out = ["# Browser benchmark: Playwright MCP vs dev-browser", "",
+    out = ["# Browser benchmark: Playwright MCP vs " + " and ".join(challengers(summary)), "",
            "| tool | runs | unfinished | successes | prompts passed | live-browser runs "
            "| median $/task | total $ | median turns | median duration s | input tok "
            "| output tok | cache read tok | cache write tok | hand-offs requested "
@@ -545,7 +567,11 @@ def render_markdown(summary: dict[str, dict[str, Any]], rows: list[dict[str, Any
             _cell(s["cache_read_input_tokens"]), _cell(s["cache_creation_input_tokens"]),
             _cell(s["handoffs_requested"]), _cell(s["handoffs_returned"]), refused,
             _cell(s["google_sorry"])]) + " |")
-    out += ["", f"**Verdict:** {verdict(summary)}", "", "## Per prompt", "",
+    out.append("")
+    for challenger in challengers(summary):
+        label_ = "" if challenger == "dev-browser" else f" ({challenger})"
+        out.append(f"**Verdict{label_}:** {verdict(summary, challenger)}")
+    out += ["", "## Per prompt", "",
             "| prompt | kind | " + " | ".join(summary) + " |",
             "|---|---|" + "---|" * len(summary)]
     for prompt in PROMPTS:
