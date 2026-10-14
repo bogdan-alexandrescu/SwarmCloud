@@ -31,6 +31,7 @@ import {
   type LiveStatus,
 } from './api'
 import { SaveAsLoginOffer } from './BrowserLogins'
+import { BrowserBadges, browserStatusOf } from './BrowserBadges'
 import { Button } from './components'
 import { HandoffStrip } from './Handoff'
 import { LiveToolMenu } from './LiveToolMenu'
@@ -161,7 +162,17 @@ export function presetLabel(name: string): string {
 export type LiveState =
   | { status: 'idle' }
   | { status: 'loading' }
-  | { status: 'ok'; liveBrowser: boolean; session: LiveSession | null }
+  | {
+      status: 'ok'
+      liveBrowser: boolean
+      session: LiveSession | null
+      /**
+       * The read's `browser` object (BSTATUS-STRIP), unparsed: the tool,
+       * egress and Jev badges read it with `browserStatusOf`, here or on
+       * `session.browser`, and draw nothing when an older API serves none.
+       */
+      browser?: unknown
+    }
   | { status: 'error'; message: string }
 
 /**
@@ -172,6 +183,11 @@ export function liveReadOf(answer: unknown): LiveRead | null {
   if (typeof answer !== 'object' || answer === null) return null
   const a = answer as Partial<LiveRead>
   return typeof a.live_browser === 'boolean' && 'session' in a ? (a as LiveRead) : null
+}
+
+/** The read's top-level `browser` object, if it serves one (BSTATUS-STRIP). */
+function browserOfRead(read: LiveRead): unknown {
+  return (read as LiveRead & { browser?: unknown }).browser
 }
 
 /** Read the session again; given a control route's answer, draw it at once first. */
@@ -195,7 +211,7 @@ export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveS
     (answer?: unknown) => {
       const read = liveReadOf(answer)
       if (read !== null) {
-        setGot({ taskId, state: { status: 'ok', liveBrowser: read.live_browser === true, session: read.session ?? null } })
+        setGot({ taskId, state: { status: 'ok', liveBrowser: read.live_browser === true, session: read.session ?? null, browser: browserOfRead(read) } })
       }
       setTick((n) => n + 1)
     },
@@ -209,7 +225,10 @@ export function useLiveSession(taskId: string, inFlight: boolean): { live: LiveS
     void loadLiveSession(taskId).then((r) => {
       if (gone) return
       if (r.status === 'ok' || r.status === 'stale') {
-        setGot({ taskId, state: { status: 'ok', liveBrowser: r.data.live_browser === true, session: r.data.session ?? null } })
+        setGot({
+          taskId,
+          state: { status: 'ok', liveBrowser: r.data.live_browser === true, session: r.data.session ?? null, browser: browserOfRead(r.data) },
+        })
       } else if (r.status === 'error') {
         // A failed re-read keeps the session it had: a blip must not tear the
         // canvas down under someone typing into it.
@@ -669,6 +688,11 @@ export function LiveBrowserPane({
   const mine = isController(session)
   const verdict = stripVerdict(session)
   const o = session.origin
+  // The tool, egress and Jev badges (BSTATUS-STRIP): the API may serve the
+  // object on the session or beside it; either, and none from an older one.
+  const tools = browserStatusOf(
+    (session as LiveSession & { browser?: unknown }).browser ?? (live.status === 'ok' ? live.browser : undefined),
+  )
   const theater: TheaterSession = {
     taskId: task.id,
     tenantId: task.tenant_id,
@@ -700,6 +724,7 @@ export function LiveBrowserPane({
               ? 'You are in control.'
               : `${session.controller.email} is in control.`}
         </span>
+        <BrowserBadges status={tools} />
         {unused && <AgentUnused task={task} />}
       </div>
   )

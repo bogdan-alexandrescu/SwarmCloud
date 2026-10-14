@@ -317,7 +317,12 @@ describe('4. the Browser tab', () => {
 
   it('keeps the hand-off banner and the strip warning beside the badges', () => {
     const s = session(status(), {
-      human_wait: { reason: 'sign in', expect: 'accounts.google.com', requested_at: null, deadline: null },
+      human_wait: {
+        reason: 'sign in',
+        expect: 'accounts.google.com',
+        requested_at: new Date(NOW - 60_000).toISOString(),
+        deadline: new Date(NOW + 600_000).toISOString(),
+      },
     })
     render(pane(s))
     const strip = document.querySelector<HTMLElement>('.live-strip')!
