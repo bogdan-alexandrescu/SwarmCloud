@@ -39,13 +39,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from test_live_stream_smooth import COPY_RECT, NOVNC, Viewer, _BoxMask, _gate, _pair
-
 from agent_worker.livegate import __main__ as gate_main
 from agent_worker.livegate import rfb
 from agent_worker.livegate.capture import Frame
 from agent_worker.livegate.mask import MASK_RGB
 from agent_worker.livegate.presets import resolve
+from test_live_stream_smooth import COPY_RECT, NOVNC, Viewer, _BoxMask, _gate, _pair
 
 DESKTOP_SIZE = -223
 CURSOR = -239
@@ -67,7 +66,7 @@ TYPED = (0x61, 0xFFE1, 0x41, 0xFF0D, 0xFF08)
 class Screen:
     """Xvfb's framebuffer, at the current device's screen size, changing every grab."""
 
-    def __init__(self, devices: "Devices") -> None:
+    def __init__(self, devices: Devices) -> None:
         self._devices = devices
         self.grabs = 0
 
@@ -138,7 +137,7 @@ class NoVnc(Viewer):
         while (left := end - loop.time()) > 0:
             try:
                 rects = await self.read_update(left)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 break
             updates.append(rects)
             self.request(True)
@@ -153,7 +152,7 @@ class Rig:
         self.session: rfb.RfbSession | None = None
 
     @classmethod
-    async def start(cls, tmp: Path, injector: Injector, device: str = "desktop") -> tuple["Rig", NoVnc]:
+    async def start(cls, tmp: Path, injector: Injector, device: str = "desktop") -> tuple[Rig, NoVnc]:
         gate = _gate(tmp)
         devices = Devices(device)
         gate.devices = devices

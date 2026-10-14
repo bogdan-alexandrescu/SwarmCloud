@@ -82,6 +82,27 @@ being encoded. zlib and the byte compares release or barely hold the GIL.
 One encode per connection at a time, so a connection's zlib stream is only
 ever touched by one thread.
 
+INPUT NEVER HOLDS UP THE STREAM (STREAM-STALL; part of #1030). The read loop
+only reads, checks and queues: an admitted key, pointer event or paste goes
+on the connection's input queue, and `_inject_loop` injects it, in order, on
+a task of its own. MEASURED 2026-10-14 (pod swarm-84cb2038aa704c829d48-5-lqs4k):
+the owner's 188 s in control closed with `keys=0 pointer=87 updates=8
+input_to_frame_ms p50=9777`, because the read loop awaited each injection --
+on a touch preset `Input.dispatchTouchEvent`, which Chromium answers only once
+the renderer has handled it -- and read nothing behind it: not the next
+FramebufferUpdateRequest, so no update was sent, and not the keys, still
+unread when the connection closed. A move waiting in the queue is replaced by
+the next move, so a slow page gets the latest point and not every one; one
+injection that takes longer than `INJECT_TIMEOUT_SECONDS`, or fails (the
+page's session went), is counted as dropped and the next is injected. Control
+is checked again when an event leaves the queue: nothing queued before a
+revoke reaches the display after it.
+
+A STALL IS SAID. A connection sent no update for `STALL_SECONDS` while the
+published frame kept changing is logged as a warning, once until it is sent
+one again, with whether a request is pending and how much input waits;
+`stalls=` is in its close line.
+
 INPUT TO FRAME. `SessionCounts.input_to_frame_ms` holds, per connection, the
 time from a controller's input reaching the gate to the first update sent
 from a frame captured after it that changed anything -- the latency the
@@ -113,7 +134,7 @@ import zlib
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Any, Callable
 
 from .capture import Frame
 from .inject import MAX_TYPED_CHARS, Injector
@@ -180,6 +201,20 @@ MAX_INPUT_EVENTS_PER_SECOND = 200
 #: dropped (module docstring). 60 is a display's refresh; noVNC itself sends
 #: at most one move per 17 ms.
 MAX_MOTION_PER_SECOND = 60
+#: Admitted input waiting to be injected, at most; above it an event is
+#: dropped (counted). Moves coalesce in the queue, so only keys, clicks and
+#: pastes fill it: 512 is over two seconds of the input limit, reached only
+#: when injection has stopped answering.
+MAX_QUEUED_INPUT = 512
+#: The longest one injection may take before it is given up (counted as
+#: dropped) and the next is injected: a CDP touch event whose page never
+#: answers must not hold every key behind it. Chromium acknowledges a touch
+#: in milliseconds when the renderer is responsive.
+INJECT_TIMEOUT_SECONDS = 5.0
+#: No update for this long while the published frame changed is a stall,
+#: logged as a warning (module docstring). The capture sends 10 frames a
+#: second to a watcher, so 5 s is 50 frames nobody was sent.
+STALL_SECONDS = 5.0
 
 #: A ClientCutText longer than this is not read into memory; the connection
 #: is closed. A paste longer than `MAX_TYPED_CHARS` is read and discarded.
@@ -238,6 +273,9 @@ class FrameHub:
         blank = Frame.blank(width, height, UNAVAILABLE_RGB)
         self._current = MaskedFrame(blank, Outcome.UNAVAILABLE, _token=_MASKED)
         self.version = 0
+        #: How many published frames differed from the one before: what a
+        #: stalled connection is measured against (module docstring).
+        self.changes = 0
         self._waiters: set[asyncio.Event] = set()
         #: Where the pointer last was, in this frame's coordinates (module docstring).
         self.pointer = PointerTracker(on_move=self._pointer_moved)
@@ -249,6 +287,11 @@ class FrameHub:
     def publish(self, frame: MaskedFrame) -> None:
         if not isinstance(frame, MaskedFrame):
             raise TypeError("only a MaskedFrame may be published: apply the mask with rfb.masked()")
+        old, new = self._current.frame, frame.frame
+        # One memcmp of the masked pixels: a static page, or the mask's
+        # fill frame after frame, is not a change.
+        if (old.width, old.height, old.stride) != (new.width, new.height, new.stride) or old.pixels != new.pixels:
+            self.changes += 1
         self._current = frame
         self._wake_all()
 
@@ -330,6 +373,8 @@ class SessionCounts:
     dropped: int = 0
     updates: int = 0
     bytes_sent: int = 0
+    #: Times the connection went `STALL_SECONDS` without an update while the frame changed.
+    stalls: int = 0
     #: Input to the first changed frame after it, in ms (module docstring).
     input_to_frame_ms: deque[float] = field(default_factory=lambda: deque(maxlen=_LATENCY_SAMPLES))
 
@@ -590,6 +635,10 @@ class RfbSession:
         self._buttons = 0  # the button mask last injected for this connection
         self._held: tuple[int, int] | None = None  # a coalesced move waiting for the limit
         self._held_task: asyncio.Task[None] | None = None
+        # Admitted input, in order, for `_inject_loop` (module docstring).
+        self._inputs: deque[tuple[Any, ...]] = deque()
+        self._inputs_ready = asyncio.Event()
+        self._injecting = False  # an injection is awaiting its answer: the injector is behind
         self.counts = SessionCounts()
         self._format: _Format | None = None  # the viewer's; None until ServerInit
         self._encodings: tuple[int, ...] = (ENCODING_RAW,)
@@ -608,6 +657,7 @@ class RfbSession:
         self._input_at: float | None = None
         self._sent_version = -1
         self._pending: bool | None = None  # None: no request; else incremental?
+        self._requested_at: float | None = None  # when the last request was read
         self._wake = asyncio.Event()
 
     # -- lifecycle --------------------------------------------------------
@@ -615,13 +665,12 @@ class RfbSession:
     async def serve(self) -> None:
         """Run the connection until either side ends it."""
         self._hub.subscribe(self._wake)
-        reader: asyncio.Task[None] | None = None
-        writer: asyncio.Task[None] | None = None
+        loops: list[asyncio.Task[None]] = []
         try:
             await self._handshake()
-            reader = asyncio.create_task(self._read_loop())
-            writer = asyncio.create_task(self._write_loop())
-            done, _ = await asyncio.wait({reader, writer}, return_when=asyncio.FIRST_COMPLETED)
+            loops = [asyncio.create_task(self._read_loop()), asyncio.create_task(self._write_loop()),
+                     asyncio.create_task(self._inject_loop()), asyncio.create_task(self._watch_stall())]
+            done, _ = await asyncio.wait(loops, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 exc = task.exception()
                 if exc is not None and not isinstance(exc, (asyncio.IncompleteReadError, ConnectionError)):
@@ -632,7 +681,8 @@ class RfbSession:
             pass
         finally:
             self._held = None
-            tasks = (reader, writer, self._held_task)
+            self._inputs.clear()
+            tasks = (*loops, self._held_task)
             for task in tasks:
                 if task is not None and not task.done():
                     task.cancel()
@@ -643,8 +693,8 @@ class RfbSession:
             c = self.counts
             p50, p95 = c.latency(50), c.latency(95)
             log.info("live rfb: conn=%s closed keys=%d pointer=%d pastes=%d dropped=%d updates=%d "
-                     "bytes=%d input_to_frame_ms p50=%s p95=%s", self.conn_id, c.key_events,
-                     c.pointer_events, c.pastes, c.dropped, c.updates, c.bytes_sent,
+                     "bytes=%d stalls=%d input_to_frame_ms p50=%s p95=%s", self.conn_id, c.key_events,
+                     c.pointer_events, c.pastes, c.dropped, c.updates, c.bytes_sent, c.stalls,
                      "-" if p50 is None else f"{p50:.0f}", "-" if p95 is None else f"{p95:.0f}")
 
     async def _handshake(self) -> None:
@@ -697,22 +747,22 @@ class RfbSession:
                 incremental = (await read(9))[0] != 0
                 # A full request wins over an incremental one still pending.
                 self._pending = incremental if self._pending is None else (self._pending and incremental)
+                self._requested_at = time.monotonic()
                 self._wake.set()
             elif kind == _KEY_EVENT:
                 down, keysym = struct.unpack(">BxxI", await read(7))
                 if self._admit(1):
-                    self.counts.key_events += 1
                     self._input()
-                    await self._injector.key(keysym, bool(down))
+                    self._queue(("key", keysym, bool(down)))
             elif kind == _POINTER_EVENT:
                 buttons, x, y = struct.unpack(">BHH", await read(5))
-                await self._pointer(buttons, x, y)
+                self._pointer(buttons, x, y)
             elif kind == _CLIENT_CUT_TEXT:
                 (length,) = struct.unpack(">xxxI", await read(7))
                 if length > MAX_CUT_TEXT_BYTES:
                     raise RfbError("cut text too long")
                 text = (await read(length)).decode("latin-1")
-                await self._paste(text)
+                self._paste(text)
             else:
                 raise RfbError(f"unknown client message type {kind}")
 
@@ -723,7 +773,7 @@ class RfbSession:
             return False
         return True
 
-    async def _pointer(self, buttons: int, x: int, y: int) -> None:
+    def _pointer(self, buttons: int, x: int, y: int) -> None:
         """One PointerEvent: a button change through the input limit, a move
         through the motion limit, coalesced above it (module docstring)."""
         if not self._control.holds(self.conn_id):
@@ -738,21 +788,21 @@ class RfbSession:
         elif not self._admit(1):
             return
         self._held = None  # this event is newer than any held move
-        await self._inject_pointer(buttons, x, y)
+        self._inject_pointer(buttons, x, y)
 
     def _input(self) -> None:
         """The controller's input reached the display: time it to the frame that shows it."""
         if self._input_at is None:
             self._input_at = time.monotonic()
 
-    async def _inject_pointer(self, buttons: int, x: int, y: int) -> None:
-        self.counts.pointer_events += 1
+    def _inject_pointer(self, buttons: int, x: int, y: int) -> None:
         self._input()
         w, h = self._hub.current.frame.width, self._hub.current.frame.height
         x, y = min(x, w - 1), min(y, h - 1)
+        kind = "move" if buttons == self._buttons else "pointer"
         self._buttons = buttons
         self._hub.pointer.move(x, y)
-        await self._injector.pointer_event(buttons, x, y)
+        self._queue((kind, buttons, x, y))
 
     async def _send_held(self) -> None:
         """The held move, once the motion limit has room for it."""
@@ -767,21 +817,80 @@ class RfbSession:
                     return
                 if self._motion.take(1):
                     (x, y), self._held = self._held, None
-                    await self._inject_pointer(self._buttons, x, y)
+                    self._inject_pointer(self._buttons, x, y)
         finally:
             self._held_task = None
 
-    async def _paste(self, text: str) -> None:
+    def _paste(self, text: str) -> None:
         if not self._control.holds(self.conn_id) or not text or len(text) > MAX_TYPED_CHARS:
             self.counts.dropped += 1
             return
         if not self._admit(len(text)):
             return
         self._input()
-        if await self._injector.type_text(text):
-            self.counts.pastes += 1
-        else:
+        self._queue(("paste", text))
+
+    # -- injection, off the read loop ---------------------------------------
+
+    def _queue(self, event: tuple[Any, ...]) -> None:
+        """Hand an admitted event to `_inject_loop`. While an injection is
+        waiting on its answer, a move replaces a move still queued: a slow page
+        gets the latest point. An injector that keeps up gets every point the
+        motion limit let through."""
+        inputs = self._inputs
+        if event[0] == "move" and self._injecting and inputs and inputs[-1][0] == "move":
+            inputs[-1] = event
+        elif len(inputs) >= MAX_QUEUED_INPUT:
             self.counts.dropped += 1
+            return
+        else:
+            inputs.append(event)
+        self._inputs_ready.set()
+
+    async def _inject_loop(self) -> None:
+        """Inject the queued input in order, each bounded by `INJECT_TIMEOUT_SECONDS` (module docstring)."""
+        while True:
+            await self._inputs_ready.wait()
+            self._inputs_ready.clear()
+            while self._inputs:
+                event = self._inputs.popleft()
+                if not self._control.holds(self.conn_id):
+                    # Control went while it waited: it reaches nothing now.
+                    self.counts.dropped += 1
+                    continue
+                try:
+                    # A deadline, not `wait_for`: no task per event, so an
+                    # injector that answers at once drains the queue in one go.
+                    self._injecting = True
+                    async with asyncio.timeout(INJECT_TIMEOUT_SECONDS):
+                        injected = await self._inject(event)
+                except TimeoutError:
+                    injected = False
+                    log.warning("live rfb: conn=%s an injection took over %.0fs; given up",
+                                self.conn_id, INJECT_TIMEOUT_SECONDS)
+                except Exception as exc:  # noqa: BLE001 -- the page or display refused it; the next may land
+                    injected = False
+                    log.info("live rfb: conn=%s an injection failed (%s)", self.conn_id, type(exc).__name__)
+                finally:
+                    self._injecting = False
+                if not injected:
+                    self.counts.dropped += 1
+
+    async def _inject(self, event: tuple[Any, ...]) -> bool:
+        """One event into the display, counted as it is sent. False if it was refused."""
+        kind = event[0]
+        if kind == "key":
+            self.counts.key_events += 1
+            await self._injector.key(event[1], event[2])
+            return True
+        if kind == "paste":
+            if not await self._injector.type_text(event[1]):
+                return False
+            self.counts.pastes += 1
+            return True
+        self.counts.pointer_events += 1
+        await self._injector.pointer_event(event[1], event[2], event[3])
+        return True
 
     def _set_pixel_format(self, body: bytes) -> None:
         bpp, _depth, big, true_colour, rmax, gmax, bmax, rs, gs, bs = _PIXEL_FORMAT.unpack(body)
@@ -853,6 +962,27 @@ class RfbSession:
         if changed and self._input_at is not None and current.at >= self._input_at:
             self.counts.input_to_frame_ms.append((time.monotonic() - self._input_at) * 1000)
             self._input_at = None
+
+    async def _watch_stall(self) -> None:
+        """Warn when the frame changed for `STALL_SECONDS` and this connection was sent nothing."""
+        changes, updates, stalled = self._hub.changes, self.counts.updates, False
+        while True:
+            await asyncio.sleep(STALL_SECONDS)
+            now_changes, now_updates = self._hub.changes, self.counts.updates
+            if now_updates != updates:
+                if stalled:
+                    log.info("live rfb: conn=%s updates resumed", self.conn_id)
+                stalled = False
+            elif now_changes != changes and not stalled:
+                stalled = True
+                self.counts.stalls += 1
+                since = (None if self._requested_at is None
+                         else time.monotonic() - self._requested_at)
+                log.warning("live rfb: conn=%s stalled: no update in %.0fs while the frame changed "
+                            "request_pending=%s last_request_s=%s input_queued=%d", self.conn_id,
+                            STALL_SECONDS, self._pending is not None,
+                            "-" if since is None else f"{since:.1f}", len(self._inputs))
+            changes, updates = now_changes, now_updates
 
     def _write_update(self, rects: list[bytes]) -> None:
         message = struct.pack(">BxH", _FRAMEBUFFER_UPDATE, len(rects)) + b"".join(rects)
