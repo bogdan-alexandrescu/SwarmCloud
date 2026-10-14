@@ -252,6 +252,31 @@ def test_a_controller_whose_pointer_injects_slowly_still_gets_a_steady_stream_an
     asyncio.run(main())
 
 
+def test_a_viewer_who_never_takes_control_gets_a_steady_stream_for_seconds(tmp_path: Path) -> None:
+    """The field's other connection (v-ed21ad71c324331c: keys=0 pointer=0
+    updates=1): a person who only watches, sending no input at all, still gets
+    frames for as long as the page changes -- not a first frame and then
+    nothing."""
+
+    async def main() -> None:
+        rig, viewer = await Rig.start(tmp_path, Injector())
+        seconds = 1.5
+        for second in ("first", "second"):
+            updates = await viewer.follow(seconds)
+            rate = len(updates) / seconds
+            # Half: with nobody in control the capture target IS `WATCH_FPS`,
+            # so shared CI cores land just under it. The field read 1 in 40 s.
+            assert rate >= MIN_UPDATES_PER_SECOND / 2, (
+                f"{rate:.1f} updates a second in the {second} {seconds}s to a viewer with no input "
+                "while the page changed")
+        session = rig.session
+        assert session is not None
+        assert session.counts.key_events == session.counts.pointer_events == 0
+        await rig.close()
+
+    asyncio.run(main())
+
+
 def test_a_pointer_event_the_page_refused_does_not_end_the_connection(tmp_path: Path) -> None:
     """A touch on a page that went (CdpError) used to raise out of the read loop and close the stream."""
 
@@ -269,6 +294,9 @@ def test_a_pointer_event_the_page_refused_does_not_end_the_connection(tmp_path: 
         assert len(updates) >= MIN_UPDATES_PER_SECOND // 2, "the stream went on"
         session = rig.session
         assert session is not None and session.counts.dropped >= 1
+        # Counted as dropped, and as nothing else: a refused event is not one the page got.
+        assert session.counts.pointer_events == 0
+        assert await _until(lambda: session.counts.key_events == 2, 3)
         await rig.close()
 
     asyncio.run(main())
@@ -289,6 +317,10 @@ def test_a_pointer_event_never_answered_does_not_hold_input_for_ever(
         updates = await viewer.follow(1.0)
         assert len(updates) >= MIN_UPDATES_PER_SECOND // 2, "the stream went on"
         assert await _until(lambda: injector.keys == [(0x61, True), (0x61, False)], 3), injector.keys
+        session = rig.session
+        assert session is not None
+        assert await _until(lambda: session.counts.key_events == 2, 3)
+        assert session.counts.pointer_events == 0, "a timed-out event is counted as dropped only"
         await rig.close()
 
     asyncio.run(main())

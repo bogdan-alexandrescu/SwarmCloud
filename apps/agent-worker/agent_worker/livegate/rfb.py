@@ -877,19 +877,21 @@ class RfbSession:
                     self.counts.dropped += 1
 
     async def _inject(self, event: tuple[Any, ...]) -> bool:
-        """One event into the display, counted as it is sent. False if it was refused."""
+        """One event into the display, counted once the injector has taken it,
+        so an event that times out or raises is counted as dropped and nothing
+        else. False if it was refused."""
         kind = event[0]
         if kind == "key":
-            self.counts.key_events += 1
             await self._injector.key(event[1], event[2])
+            self.counts.key_events += 1
             return True
         if kind == "paste":
             if not await self._injector.type_text(event[1]):
                 return False
             self.counts.pastes += 1
             return True
-        self.counts.pointer_events += 1
         await self._injector.pointer_event(event[1], event[2], event[3])
+        self.counts.pointer_events += 1
         return True
 
     def _set_pixel_format(self, body: bytes) -> None:
