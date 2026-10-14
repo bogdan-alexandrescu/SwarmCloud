@@ -88,7 +88,9 @@ relay's `{"type": "ready"}`, every tunnel message is binary:
             never logged, and dropped with its session. A gate from
             LIVE-UNUSED adds a third, `agent` (whether the agent is driving
             this browser, report.py `agent_report`); it is optional, so a
-            gate that sends only the two is kept as before.
+            gate that sends only the two is kept as before. A gate from
+            BSTATUS-API adds `browser` (the browser tool and the egress,
+            report.py `browser_report`), optional in the same way.
 
 A viewer's websocket carries that viewer's RFB bytes as binary messages, and
 swarm-api's control messages as text: `{"type": "control"|"release",
@@ -215,8 +217,9 @@ _RFB_INPUT = frozenset({4, 5, 6})
 #: 253-character host and a device fit in well under half of it.
 MAX_REPORT_BYTES = 4096
 _REPORT_KEYS = frozenset({"origin", "device"})
-#: Keys a report MAY carry besides those (LIVE-UNUSED): passed on when present.
-_REPORT_OPTIONAL = frozenset({"agent"})
+#: Keys a report MAY carry besides those (LIVE-UNUSED, BSTATUS-API): passed
+#: on when present.
+_REPORT_OPTIONAL = frozenset({"agent", "browser"})
 
 #: Websocket close codes. Every ticket refusal is CLOSE_REFUSED ("404").
 CLOSE_REFUSED = 4404

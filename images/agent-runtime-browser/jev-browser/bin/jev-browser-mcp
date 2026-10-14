@@ -45,6 +45,12 @@ MSG
 fi
 
 unset JEV_BROWSER_PROFILE JEV_BROWSER_HEADED JEV_API_URL JEV_MODEL
+# The client tag (BSTATUS-API; agent_worker/browser_tools.py `tag_endpoint`):
+# the gate attributes this connection to jev and strips the tag before
+# anything reaches Chromium. Only a bare http origin is tagged.
+if [[ "${endpoint}" =~ ^https?://[^/?#]+/?$ ]]; then
+  endpoint="${endpoint%/}/client/jev"
+fi
 export JEV_BROWSER_CDP_ENDPOINT="${endpoint}"
 export JEV_BROWSER_NO_INSTALL=1
 export PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1

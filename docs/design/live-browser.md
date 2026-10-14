@@ -281,6 +281,99 @@ Puppeteer sends when it opens a page. So dev-browser cannot open a page
 through the gate yet. That policy change is a separate lane and is not part
 of this one.
 
+### 3.2.2 Choosing and seeing the browser tool
+
+Owner decision 2026-10-14 (BSTATUS-API, part of #1030): "Picker on Submit,
+Auto by default". A `claude-code-browser` task names its tool in
+`input.browser_tool`, one of four names the frozen catalogue declares
+(contract request 77): `auto` (the default), `playwright`, `dev-browser` or
+`jev`. A NAME, never a command, an MCP config or a URL (invariant 10): the
+runner and the image's wrappers own what each name runs.
+
+**What each name registers** (`agent_worker/browser_tools.py`, `choose`):
+
+| `browser_tool` | registered | note names first |
+|---|---|---|
+| `auto` | Playwright MCP, dev-browser, and jev when it can run | every tool, each with its strength |
+| `playwright` | Playwright MCP only | Playwright |
+| `dev-browser` | dev-browser first, Playwright MCP as fallback | dev-browser |
+| `jev` | jev MCP first, Playwright MCP as fallback | jev |
+
+Playwright MCP is registered on every choice because it is the one tool
+that has worked through the gate since L2: a choice must never leave the
+agent with no working tool. Jev runs only when the image carries its
+wrapper and the runner has a TypeSafe key; otherwise the attempt runs
+without it and says why (`no_key`, `not_installed`). It does not fail: a
+key deleted between submission and run must not cost the attempt.
+
+**The API refuses what cannot run.** A `jev` submission with no TypeSafe key
+for its submitter or its tenant (the resolution `GET
+/v1/provider-keys/typesafe` serves), or on a deployment whose image has no
+jev (`BROWSER_JEV_INSTALLED=false`), is refused 422
+`browser_tool_unavailable`. It is a new refusal, so it ships switched off
+(`REFUSAL_BROWSER_TOOL_UNAVAILABLE`): until the Submit form disables Jev when
+no key resolves, the refusal is logged and the task runs on Playwright.
+
+**How the console learns which tool is in use.** Three parties each know
+one part, and none can see the others' part:
+
+* the RUNNER knows what it registered. It writes `browser.json` to the
+  hand-off spool before the CLI starts;
+* the WORKER's hand-off poll forwards that file to the gate over ctl.sock
+  (`browser_tools`), checked again, because the spool is in the agent's
+  reach. The spool's copy is removed at every attempt's start, so a restored
+  checkpoint never speaks for a new attempt;
+* the GATE knows which tool drove the browser last. Each tool connects with
+  a CLIENT TAG on the endpoint, `http://127.0.0.1:9222/client/<tool>`: the
+  runner gives Playwright MCP its tag in `--cdp-endpoint`, and the dev-browser
+  and jev wrappers add theirs. The tag is a path segment, not a query,
+  because a client that builds `/json/version` by string concatenation turns
+  `?client=x` into `?client=x/json/version/`. The CDP proxy reads the tag,
+  echoes it into the websocket URL it hands back, and STRIPS it: nothing of
+  it reaches Chromium. An untagged connection, such as `swarm_browser.live()`
+  from the agent's Python, works as before and is attributed to no tool.
+
+The gate puts it all in its report as `browser`: the registration, the last
+tool and when, and the egress. The relay passes the key on, and swarm-api
+checks it key by key (`clean_browser`): an unknown key anywhere in it drops
+the whole of it.
+
+**The egress state** is the forwarder's (§ "browser egress",
+docs/browser-egress.md): `residential` or `direct`; `ok`, `failing` or `off`;
+and `last_error`, one of the gate's FIXED sentences for the forwarder's
+cause word. The forwarder never reads a vendor's answer past its status and
+a cause word, so no vendor's text can reach the console. A refusal of one
+request (a destination the policy refuses, a rate) does not make the path
+`failing`; a refusal of the path (the vendor unreachable, a budget used up)
+does, until the next connection is served. The exit country is not the
+gate's to know: swarm-api adds it from `BROWSER_EGRESS_COUNTRY`, the setting
+that mints the ticket.
+
+**What the console reads** is `browser` on `GET
+/v1/tasks/{id}/live/session`, beside `live_browser`, served for a live-browser
+task before, during and after its session:
+
+```json
+{"tool_selected": "auto",
+ "tools_available": ["playwright", "dev-browser", "jev"],
+ "tool_last_used": {"name": "dev-browser", "at": "2026-10-14T15:02:11+00:00"},
+ "jev": {"enabled": true, "reason": null, "key_scope": "user"},
+ "egress": {"mode": "residential", "country": "us", "state": "ok", "last_error": null}}
+```
+
+`tool_selected` is the task's own input, so it is there from submission.
+`tools_available` is empty and `egress` null until the current attempt's gate
+reports them: never invented. `jev.key_scope` says whose TypeSafe key jev runs
+on while it is registered, and is null otherwise.
+
+**Not verified here.** That dev-browser's `--connect` and jev's
+`connectOverCDP` keep the path of a tagged endpoint was not run against the
+real binaries, nor was Playwright MCP's: recent Playwright appends
+`json/version/` to the endpoint URL's path, which keeps the tag, but that was
+not checked against the pinned 1.63 here. A tool that drops the path still
+connects, untagged, and is attributed to nothing; the proxy also reads a
+`client=` query, for a client that keeps a query and not a path.
+
 ### 3.3 The path to the console: outbound only, through a relay
 
 No inbound port on the pod and no public endpoint: the gate **dials out**.

@@ -121,6 +121,8 @@ from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
 from .codec import event_to_firestore
 from .errors import ApiError, NotFound, ValidationFailed
+from .provider_keys import task_key_scope
+from .validation import BROWSER_TOOL_INPUT_KEY, TYPESAFE_PROVIDER
 from .handoff import (
     HUMAN_HANDOFFS_METADATA_KEY,
     HUMAN_HOLD_MAX_SECONDS,
@@ -682,6 +684,50 @@ class LiveYou(_Wire):
     can_switch_device: bool
 
 
+class LiveToolUse(_Wire):
+    """The tool whose tagged CDP connection sent the last command, and when."""
+
+    name: Literal["playwright", "dev-browser", "jev"]
+    at: str
+
+
+class LiveJev(_Wire):
+    """Whether jev is registered on this attempt, why not, and whose
+    TypeSafe key it runs on (`user`, `tenant`; null when it is not on)."""
+
+    enabled: bool
+    reason: Literal["no_key", "not_installed", "not_selected"] | None
+    key_scope: Literal["user", "tenant"] | None
+
+
+class LiveEgress(_Wire):
+    """The live browser's egress as the gate last reported it. `country` is
+    this deployment's exit country while residential, else null;
+    `last_error` one of the gate's fixed sentences, never a vendor's."""
+
+    mode: Literal["residential", "direct"]
+    country: str | None
+    state: Literal["ok", "failing", "off"]
+    last_error: str | None
+
+
+class LiveBrowserTool(_Wire):
+    """WHICH BROWSER TOOL, AND THE EGRESS (BSTATUS-API; part of #1030).
+
+    `tool_selected` is the task's own `input.browser_tool` (contract request
+    77; `auto` when it named none), served from submission on.
+    `tools_available` is what the runner registered for it on the current
+    attempt, empty until the gate has reported it; `tool_last_used` the
+    tool whose tagged connection last drove the browser, null until one has;
+    `egress` null until the gate's first report. Never invented."""
+
+    tool_selected: Literal["auto", "playwright", "dev-browser", "jev"]
+    tools_available: list[Literal["playwright", "dev-browser", "jev"]]
+    tool_last_used: LiveToolUse | None
+    jev: LiveJev
+    egress: LiveEgress | None
+
+
 class LiveSessionView(_Wire):
     session_id: str
     state: Literal["open", "closed"]
@@ -718,6 +764,9 @@ class LiveRead(_Wire):
 
     live_browser: bool
     session: LiveSessionView | None
+    #: The browser tool and the egress (BSTATUS-API): null for a task with
+    #: no live browser, served for one before, during and after its session.
+    browser: LiveBrowserTool | None = None
 
 
 class LiveTicketView(_Wire):
@@ -901,23 +950,108 @@ def clean_agent(raw: Any) -> dict[str, Any] | None:
     return {"connected_at": connected, "connections": count, "first_frame_at": frame}
 
 
+#: The browser tools and the jev reasons (BSTATUS-API). The tools are the
+#: catalogue's `browser_tool` choices but `auto` (contract request 77); the
+#: reasons are `agent_worker.browser_tools.JEV_REASONS`, restated because this
+#: image does not carry the worker, and held equal by the parity script.
+BROWSER_TOOL_CHOICES: tuple[str, ...] = tuple(
+    RUNNER_PROFILES["claude-code-browser"].inputs["browser_tool"].choices)
+BROWSER_TOOLS: tuple[str, ...] = tuple(c for c in BROWSER_TOOL_CHOICES if c != "auto")
+JEV_REASONS: tuple[str, ...] = ("no_key", "not_installed", "not_selected")
+#: The longest egress error kept (the gate's report.MAX_EGRESS_ERROR_CHARS).
+MAX_EGRESS_ERROR_CHARS = 200
+
+
+def _clean_tools(raw: Any) -> dict[str, Any] | None:
+    """The runner's registration (`browser_tools.Choice.state()`), or None."""
+    if not isinstance(raw, dict) or set(raw) != {"tool_selected", "tools_available", "jev"}:
+        return None
+    selected, tools, jev = raw["tool_selected"], raw["tools_available"], raw["jev"]
+    if selected not in BROWSER_TOOL_CHOICES or not isinstance(tools, list) or not tools \
+            or len(tools) > len(BROWSER_TOOLS) or len(set(map(str, tools))) != len(tools) \
+            or not all(isinstance(t, str) and t in BROWSER_TOOLS for t in tools) \
+            or "playwright" not in tools or (selected == "playwright" and tools != ["playwright"]):
+        return None
+    if not isinstance(jev, dict) or set(jev) != {"enabled", "reason"} or not isinstance(jev["enabled"], bool):
+        return None
+    enabled, reason = jev["enabled"], jev["reason"]
+    if enabled != ("jev" in tools) or (enabled and reason is not None) \
+            or (not enabled and reason not in JEV_REASONS):
+        return None
+    return {"tool_selected": selected, "tools_available": list(tools),
+            "jev": {"enabled": enabled, "reason": reason}}
+
+
+def _clean_egress(raw: Any) -> dict[str, Any] | None:
+    """The gate's `{mode, state, last_error}`, or None. Direct is off and
+    carries no error; residential is ok without an error or failing with one,
+    printable, at most `MAX_EGRESS_ERROR_CHARS`, and redacted again."""
+    if not isinstance(raw, dict) or set(raw) != {"mode", "state", "last_error"}:
+        return None
+    mode, state, error = raw["mode"], raw["state"], raw["last_error"]
+    if mode == "direct":
+        return {"mode": mode, "state": "off", "last_error": None} \
+            if state == "off" and error is None else None
+    if mode != "residential" or state not in ("ok", "failing"):
+        return None
+    if error is not None and (not isinstance(error, str) or not 0 < len(error) <= MAX_EGRESS_ERROR_CHARS
+                              or not _printable(error)):
+        return None
+    if (state == "ok") != (error is None):
+        return None
+    return {"mode": mode, "state": state, "last_error": None if error is None else redact_text(error).text}
+
+
+def clean_browser(raw: Any) -> dict[str, Any] | None:
+    """The report's `browser` (the gate's report.py `browser_report`,
+    BSTATUS-API) as `{tools, tool_last_used, egress}` -- `tool_last_used.at`
+    a UTC datetime -- or None when it does not hold together. Key by key:
+    an unknown key anywhere refuses the whole of it."""
+    if not isinstance(raw, dict) or set(raw) != {"tools", "tool_last_used", "egress"}:
+        return None
+    tools = None if raw["tools"] is None else _clean_tools(raw["tools"])
+    if raw["tools"] is not None and tools is None:
+        return None
+    used = raw["tool_last_used"]
+    last: dict[str, Any] | None = None
+    if used is not None:
+        if not isinstance(used, dict) or set(used) != {"name", "at"} or used["name"] not in BROWSER_TOOLS:
+            return None
+        at = _epoch(used["at"])
+        if at is None:
+            return None
+        last = {"name": used["name"], "at": at}
+    egress = _clean_egress(raw["egress"])
+    if egress is None:
+        return None
+    return {"tools": tools, "tool_last_used": last, "egress": egress}
+
+
+#: Keys a report MAY carry besides `type`, `origin` and `device`.
+_REPORT_OPTIONAL = frozenset({"agent", "browser"})
+
+
 def parse_report(text: Any) -> dict[str, Any] | None:
     """A relay text message as `{"origin", "device"}`, each checked (null when
     it fails), or None when the message is not a well-formed report at all.
     A report that carries `agent` (LIVE-UNUSED) has it too, checked by
-    `clean_agent`; one that does not is read exactly as before."""
+    `clean_agent`, and one that carries `browser` (BSTATUS-API) has it,
+    checked by `clean_browser`; one that carries neither is read exactly as
+    before. Any other key refuses the report."""
     if not isinstance(text, str) or len(text) > MAX_REPORT_CHARS:
         return None
     try:
         message = json.loads(text)
     except ValueError:
         return None
-    if not isinstance(message, dict) or set(message) - {"agent"} != {"type", "origin", "device"} \
+    if not isinstance(message, dict) or set(message) - _REPORT_OPTIONAL != {"type", "origin", "device"} \
             or message["type"] != REPORT_TYPE:
         return None
     report = {"origin": clean_origin(message["origin"]), "device": clean_device(message["device"])}
     if "agent" in message:
         report["agent"] = clean_agent(message["agent"])
+    if "browser" in message:
+        report["browser"] = clean_browser(message["browser"])
     return report
 
 
@@ -1589,12 +1723,14 @@ class LiveService:
         `closed_reason`, so the tab can say why the browser went away."""
         live_browser = profile_is_live(getattr(task, "runner_profile", None))
         if plan is None or plan.session is None:
-            return {"live_browser": live_browser, "session": None}
+            return {"live_browser": live_browser, "session": None,
+                    "browser": self._browser_view(task, None) if live_browser else None}
         state = plan.state
         current = plan.controller
         wait = plan.wait
         return {
             "live_browser": live_browser,
+            "browser": self._browser_view(task, state) if live_browser else None,
             "session": {
                 "session_id": state.get("id"),
                 "state": "open" if state.get("state") == "open" else "closed",
@@ -1615,6 +1751,40 @@ class LiveService:
                 "agent_connected_at": _iso(_stored_time(state.get("agent_connected_at"))),
                 "agent_connections": _stored_count(state.get("agent_connections")),
                 "first_frame_at": _iso(_stored_time(state.get("first_frame_at"))),
+            },
+        }
+
+    def _browser_view(self, task: Task, state: Mapping[str, Any] | None) -> dict[str, Any]:
+        """`LiveBrowserTool`: the task's choice, and what the gate last
+        reported for the current attempt's session (`record_report`)."""
+        raw = (getattr(task, "input", None) or {}).get(BROWSER_TOOL_INPUT_KEY)
+        selected = raw if raw in BROWSER_TOOL_CHOICES else "auto"
+        reported = clean_browser((state or {}).get("browser"))
+        # A stored report is checked again on the way out, as every field is:
+        # an `at` read back from Firestore is an aware datetime already.
+        tools = reported["tools"] if reported else None
+        used = reported["tool_last_used"] if reported else None
+        egress = reported["egress"] if reported else None
+        if tools is not None:
+            enabled, reason = tools["jev"]["enabled"], tools["jev"]["reason"]
+        else:
+            enabled = False
+            reason = "not_selected" if selected in ("playwright", "dev-browser") else None
+        scope = None
+        if enabled:
+            # Whose key jev runs on: the resolution the key page serves
+            # (KEYS-API), asked only while jev is registered.
+            scope = task_key_scope(self._db, self._store, task.tenant_id, task.submitted_by,
+                                   TYPESAFE_PROVIDER, now=self._now)
+        return {
+            "tool_selected": selected,
+            "tools_available": list(tools["tools_available"]) if tools else [],
+            "tool_last_used": None if used is None else {"name": used["name"], "at": _iso(used["at"])},
+            "jev": {"enabled": enabled, "reason": reason, "key_scope": scope},
+            "egress": None if egress is None else {
+                **egress,
+                "country": (str(self._s("browser_egress_country", "us")) or None)
+                if egress["mode"] == "residential" else None,
             },
         }
 
@@ -2262,6 +2432,9 @@ class LiveService:
                                ("first_frame_at", frame)):
                 if session.get(key) != value:
                     update[key] = value
+        browser = clean_browser(report.get("browser"))
+        if browser is not None and session.get("browser") != browser:
+            update["browser"] = browser
         ready = self._ready_to_first_frame(session, update)
         if not update:
             return False

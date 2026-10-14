@@ -43,6 +43,18 @@ from. Numbers only, read off the proxy and the capture, never off the page.
 The key is left out when the caller gives no `agent`, so a report reads as it
 did before for anything that does not send one.
 
+WHICH BROWSER TOOL, AND THE EGRESS (BSTATUS-API; part of #1030), as
+`browser`: what the runner registered for the task's `browser_tool`
+(`tool_selected`, `tools_available`, `jev`: forwarded by the worker from the
+hand-off spool, null until it has been), the tool whose tagged CDP
+connection sent the last command and when (`tool_last_used`, cdpproxy
+`split_client`), and the browser's egress: `mode` residential or direct,
+`state` ok, failing or off, and `last_error`, one of egress.py's FIXED
+sentences for the forwarder's cause word -- never a vendor's answer, which
+the forwarder never reads past its status and a cause word. The exit country
+is not the gate's to know; swarm-api adds it from the same setting that
+mints the ticket. Left out when the caller gives no `browser`.
+
 THE PAGE IS UNTRUSTED. Every field is length-limited here, and the relay and
 swarm-api check the report again; nothing in it is logged.
 """
@@ -140,12 +152,39 @@ def agent_report(*, connected_at: float | None, connections: int,
             "first_frame_at": first_frame_at}
 
 
+#: The longest `last_error` reported: egress.py's sentences are under 100.
+MAX_EGRESS_ERROR_CHARS = 200
+
+
+def egress_report(*, proxied: bool, ok: bool, error: str | None) -> dict[str, Any]:
+    """The report's `browser.egress`: `off` when the browser goes direct."""
+    if not proxied:
+        return {"mode": "direct", "state": "off", "last_error": None}
+    text = error[:MAX_EGRESS_ERROR_CHARS] if isinstance(error, str) and error else None
+    return {"mode": "residential", "state": "ok" if ok else "failing",
+            "last_error": None if ok else text}
+
+
+def browser_report(*, tools: dict[str, Any] | None, last_used: tuple[str, float] | None,
+                   egress: dict[str, Any]) -> dict[str, Any]:
+    """The report's `browser` (BSTATUS-API). `tools` is
+    `browser_tools.Choice.state()` as the worker forwarded it, or None."""
+    return {
+        "tools": tools,
+        "tool_last_used": None if last_used is None else {"name": last_used[0], "at": last_used[1]},
+        "egress": egress,
+    }
+
+
 def encode_report(origin: dict[str, Any] | None, device: dict[str, Any] | None,
-                  agent: dict[str, Any] | None = None) -> bytes:
+                  agent: dict[str, Any] | None = None,
+                  browser: dict[str, Any] | None = None) -> bytes:
     """One `OP_REPORT` payload: the latest of all of them, never a delta."""
     message: dict[str, Any] = {"origin": origin, "device": device}
     if agent is not None:
         message["agent"] = agent
+    if browser is not None:
+        message["browser"] = browser
     raw = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(raw) > MAX_REPORT_BYTES:
         raise ValueError("report too large")

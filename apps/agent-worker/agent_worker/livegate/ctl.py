@@ -76,8 +76,11 @@ KEY_BYTES = 32
 #:   can be had (`failed`); the gate's local forwarder presents it to
 #:   swarm-egress on every CONNECT and refuses all of them without it
 #:   (egress.py, docs/browser-egress.md §2.5; EGRESS-GATE).
+#: * `browser_tools` -- what the runner registered for the task's browser
+#:   tool, forwarded from the hand-off spool, which the gate reports
+#:   (agent_worker/browser_tools.py; BSTATUS-API).
 OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status",
-                 "egress_ticket"}) | SESSION_OPS
+                 "egress_ticket", "browser_tools"}) | SESSION_OPS
 
 #: The first start's marker, in the sidecar's own /tmp (§3.1; the dispatcher
 #: mounts that volume in the sidecar only). Directly in /tmp, not a subdirectory:

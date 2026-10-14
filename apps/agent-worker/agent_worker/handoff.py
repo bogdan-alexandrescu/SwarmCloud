@@ -16,6 +16,9 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
       unavailable          this worker's: present when this attempt has no live path
       egress.md            this worker's: present while the proxied browser has no
                            egress (egress_ticket.py; the agent's prompt carries it)
+      browser.json         the runner's: the browser tools it registered for the
+                           task's `browser_tool`, which this worker forwards to the
+                           gate (`browser_tools` on ctl.sock; browser_tools.py)
       README.md            this worker's: the guide the agent reads
 
 WHY A SPOOL. As the child-task spool (`children.py`): no listener in the
@@ -87,6 +90,7 @@ from swarm_common.profiles import RUNNER_PROFILES, url_refusal
 from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
 from swarm_redaction import redact as redact_text
 
+from . import browser_tools
 from .egress_ticket import BrowserEgress
 from .errors import ExitCode
 from .hardening import PROTECTED
@@ -192,7 +196,7 @@ NO_LIVE_SESSION = "no_live_session"
 #: channel is `end_control` with `wipe: true`, which the gate's handler must
 #: honour by closing Chromium and removing the profile. Reported on the PR.
 GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status",
-                      "egress_ticket"})
+                      "egress_ticket", "browser_tools"})
 
 #: EGRESS-GATE: the agent's notice that its proxied browser has no egress
 #: (`egress_ticket.notice`), in the spool while that is so; the claude-code
@@ -588,6 +592,8 @@ class HandoffPath:
         #: and the note `setup` was given, for a failure found on a later poll.
         self.egress = BrowserEgress(cfg, logger=logger, wall=wall)
         self._note: Callable[[dict[str, Any]], Any] | None = None
+        #: The browser-tool state last forwarded to the gate (BSTATUS-API).
+        self._browser_tools_sent: dict[str, Any] | None = None
 
     # -- what the lifecycle asks ---------------------------------------------
 
@@ -791,6 +797,9 @@ class HandoffPath:
         # Rewritten every attempt, as `unavailable` is: present only while
         # THIS attempt's proxied browser has no egress.
         self._write_egress_notice(root)
+        # This attempt's runner writes its own; a restored checkpoint's is
+        # an earlier attempt's registration, never forwarded as this one's.
+        (root / browser_tools.STATE_NAME).unlink(missing_ok=True)
         env = {HANDOFF_ENV: str(root)}
         if self.offered:
             env.update(self._passthrough)
@@ -872,6 +881,7 @@ class HandoffPath:
             self.log.warning("browser egress upkeep failed", error=type(exc).__name__)
         try:
             self._answer_devices(root)
+            self._forward_browser_tools(root)
             if self.active is None:
                 self._answer_requests(root)
             if self.active is not None:
@@ -1125,6 +1135,25 @@ class HandoffPath:
             if not settled:
                 return
             self.startup_noted.add(step)
+
+    def _forward_browser_tools(self, root: Path) -> None:
+        """The runner's `browser.json`, to the gate, once per change (BSTATUS-API).
+
+        The file is in the agent's reach, so it is checked
+        (`browser_tools.read_state`) and a file that does not hold together
+        is not sent. A refused or lost gate is tried again on the next poll."""
+        if not self.offered or self.gate is None:
+            return
+        state = browser_tools.read_state(root)
+        if state is None or state == self._browser_tools_sent:
+            return
+        try:
+            self.gate.call(browser_tools.CTL_OP, state)
+        except (GateRefused, GateLost):
+            return
+        self._browser_tools_sent = state
+        self.log.info("browser tools told to the gate", tool_selected=state["tool_selected"],
+                      tools=",".join(state["tools_available"]))
 
     def _answer_devices(self, root: Path) -> None:
         devices = root / "devices"
