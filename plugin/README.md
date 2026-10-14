@@ -970,12 +970,41 @@ of the project running at the time.
   expression can say), and remembers it for the project in
   `<config dir>/sc-watch/<sha256 of the project directory>.json`, never in
   the repository. Where CronCreate is not available, `/loop 30m /sc check`
-  does the same. **`/sc watch off`** cancels it and forgets it.
+  does the same. **`/sc watch off`** cancels it and saves "off" for the
+  project.
 * CronCreate's jobs end with the session (and a recurring one after 7 days),
   so the **SessionStart hook** reads the saved preference — locally, before
   and without the bridge — and asks each new session in the project to run
   `/sc watch <N>m` first, beside the attach or on its own, even with
   `auto_attach` off.
+
+### The watch arms itself (SC-AUTO-WATCH)
+
+Owner request 2026-10-14: "/sc watch should automatically be set if there is
+at least one workflow being worked on in sc that is attached here or if and
+when we start a new workflow ... Also this should run when we attach manually
+either one or --all".
+
+* `/sc run` (a spec submitted), `/sc run --issue` once its workflow exists,
+  `/sc attach <wf_id>`, `/sc attach --all` and a `/sc check` that attached
+  something each END by arming the watch. The tools say so themselves:
+  `swarm_workflow_launch` (spec and attach), `swarm_workflow` and the issue-run
+  tools answer `arm_watch` — the CronCreate call at the project's saved
+  interval, else 30 minutes, with the `swarm_check_schedule` call that
+  remembers it. The skill runs CronList first and makes no call when a
+  `/sc check` job exists, so a session never holds two watches.
+* `arm_watch` is null when nothing was attached, when no workflow exists yet,
+  and when the project's watch was turned off: **an explicit `/sc watch off`
+  is saved** (`"watch": "off"` in the same file) and wins until `/sc watch`
+  again, so an attach does not undo it.
+* At session start, when the bridge finds running workflows or single tasks
+  of yours and no interval was ever saved, its context asks the session to
+  arm the watch beside the attach; the hook hands an explicit off over as
+  `SWARM_SC_WATCH_MINUTES=off` and then nothing is asked. Nothing running,
+  nothing asked.
+* `/sc check` that finds nothing running for the project says so
+  (`nothing_running`) and leaves the job armed: one read per interval is
+  cheap, and the next workflow is watched without re-arming.
 
 ### What a row shows, and what it costs
 
