@@ -218,7 +218,7 @@ class ModelChromium:
             state["auto"] = params if params.get("autoAttach") else None
             for page in list(self.pages):
                 if not any(s["parent"] == sid and s["target"] == page for s in self.sessions.values()):
-                    self._auto_attach(sid, page) if sid is not None else None
+                    self._auto_attach(sid, page)
             return {}
         if method == "Target.attachToTarget":
             return {"sessionId": self._attach(sid, "page", params["targetId"], False)}
@@ -405,16 +405,18 @@ class PuppeteerClient(Client):
             if step["method"] in ("Page.navigate", "Runtime.callFunctionOn", "Page.captureScreenshot"):
                 break
             if step["session"] == "browser":
-                session = None
+                sessions: list[str | None] = [None]
             elif step["session"] == "tab":
-                session = next(p["sessionId"] for _s, p in reversed(self.attached) if p["targetInfo"]["type"] == "tab")
+                # TargetManager#onAttachedToTarget runs for every tab it attaches.
+                sessions = [p["sessionId"] for _s, p in self.attached if p["targetInfo"]["type"] == "tab"]
             else:
                 sid, target = self.last_page_session()
-                session = sid
+                sessions = [sid]
             params = json.loads(json.dumps(step["params"]).replace("{frame}", target))
-            reply = await self.call(step["method"], params, session)
-            if step["fatal"]:
-                assert "error" not in reply, (step["method"], reply)
+            for session in sessions:
+                reply = await self.call(step["method"], params, session)
+                if step["fatal"]:
+                    assert "error" not in reply, (step["method"], reply)
         return sid, target
 
     async def evaluate(self, sid: str, frame: str, world: str = "main") -> dict[str, Any]:
@@ -549,6 +551,15 @@ def test_no_audits_event_ever_reaches_the_agent(tmp_path):
 # --------------------------------------------------------------------------- #
 
 
+async def _on_form(w: World, client: Client, sid: str, frame: str) -> str:
+    """The client's page on the form; Puppeteer's is the one its newPage()
+    opened on about:blank, Playwright's the one it attached to."""
+    if w.chromium.pages[frame]["url"] != "https://example.com/form":
+        reply = await client.call("Page.navigate", {"url": "https://example.com/form", "frameId": frame}, sid)
+        assert "error" not in reply, reply
+    return frame
+
+
 async def _hand_off(w: World, target: str, *urls: str) -> None:
     """Control starts, the person navigates through `urls`, control ends."""
     await w.proxy.pause()
@@ -565,10 +576,10 @@ async def _hand_off(w: World, target: str, *urls: str) -> None:
 def test_the_agents_first_evaluate_after_return_succeeds_in_a_live_context(tmp_path, kind):
     async def body():
         w = World(tmp_path)
-        target = w.chromium.new_page("https://example.com/form")
+        w.chromium.new_page("https://example.com/form")
         client = await w.client(kind)
         sid, frame = await client.connect()
-        assert frame == target
+        target = await _on_form(w, client, sid, frame)
         before = client.context(sid, frame, "main")
         assert "error" not in await client.evaluate(sid, frame)
 
@@ -596,9 +607,10 @@ def test_the_agents_utility_world_is_back_after_a_navigation_in_control(tmp_path
 
     async def body():
         w = World(tmp_path)
-        target = w.chromium.new_page("https://example.com/form")
+        w.chromium.new_page("https://example.com/form")
         client = await w.client(kind)
         sid, frame = await client.connect()
+        target = await _on_form(w, client, sid, frame)
         assert "error" not in await client.evaluate(sid, frame, "utility")
 
         await _hand_off(w, target, "https://example.com/signed-in")
@@ -614,9 +626,10 @@ def test_the_agents_utility_world_is_back_after_a_navigation_in_control(tmp_path
 def test_the_agent_learns_where_the_page_is_now_and_never_where_it_passed(tmp_path, kind):
     async def body():
         w = World(tmp_path)
-        target = w.chromium.new_page("https://example.com/form")
+        w.chromium.new_page("https://example.com/form")
         client = await w.client(kind)
         sid, frame = await client.connect()
+        target = await _on_form(w, client, sid, frame)
         code = secrets.token_hex(12)
         passed = f"https://example.com/callback?code={code}"
 
@@ -635,9 +648,10 @@ def test_a_hand_off_without_a_navigation_leaves_the_agents_contexts_alone(tmp_pa
 
     async def body():
         w = World(tmp_path)
-        target = w.chromium.new_page("https://example.com/form")
+        w.chromium.new_page("https://example.com/form")
         client = await w.client(kind)
         sid, frame = await client.connect()
+        target = await _on_form(w, client, sid, frame)
         before = client.context(sid, frame, "main")
         events = len([m for m in client.sent if "id" not in m])
 

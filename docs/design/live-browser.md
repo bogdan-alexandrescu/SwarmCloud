@@ -986,6 +986,29 @@ back to raw CDP. The gate now rewrites the path of an `allow` or
 (`cdppolicy.confine`), so Chromium still writes only where the worker reads,
 and the agent's path never reaches Chromium.
 
+**Puppeteer opens pages through the policy too** (DEVB-GATE, part of #1030).
+dev-browser v1 drives Chromium with puppeteer-core 25.8.0, and its `newPage()`
+fails outright when `Performance.enable` or `Audits.enable` errors
+(`CdpPage#initialize`, `FrameManager.initialize`; the sequence for connect,
+newPage, goto, evaluate and screenshot is pinned in
+`tests/unit/worker/fixtures/puppeteer-core-25.8.0-*.json`). So:
+
+* `Performance.enable`, `getMetrics` and `disable` are allowed: the domain
+  reports counters, a name and a number each, and nothing of a page's content;
+* `Audits.enable` and `Audits.disable` are **answered by the gate** with `{}`
+  and never reach Chromium, and no `Audits.*` event reaches the agent
+  whatever enabled it. `Audits.issueAdded`'s cookie details carry
+  `rawCookieLine`, which the protocol definition (devtools-protocol
+  0.0.1666840, checked 2026-10-14) describes as "the raw Set-Cookie header
+  string" when no valid cookie could be made from it -- a header with its
+  value, which would undo the cookie rule below (LB-7). The domain's other
+  methods stay refused: `getEncodedResponse` returns a response body;
+* `WebMCP.enable` and `Network.emulateNetworkConditionsByRule` stay refused,
+  but Puppeteer catches both and goes on, so recording them on every page was
+  noise (ANALYSIS issue 19). They are counted and logged at debug instead of
+  recorded as `cdp_method_refused`; the action log still shows them as
+  refused.
+
 The allowlist is the control and the denylist is its documentation: a method
 Chromium adds next year is refused because it is not on the list, not because
 someone remembered to deny it. A Playwright call that needs a refused method
