@@ -1198,7 +1198,7 @@ def test_the_websocket_routes_refuse_a_bad_ticket_and_splice_a_good_one():
     # `with`: one event loop for every socket, as in the relay process. Without
     # it the test client gives each websocket its own loop thread.
     with TestClient(create_app(relay)) as client:
-        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0}
+        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0, "controlled": 0}
         with client.websocket_connect("/v1/tunnel") as ws:
             ws.send_text("not-a-ticket")
             with pytest.raises(WebSocketDisconnect) as e:
@@ -1243,7 +1243,7 @@ def test_post_internal_close_drops_a_connected_viewer():
                 with pytest.raises(WebSocketDisconnect) as e:
                     viewer.receive_bytes()
                 assert e.value.code == CLOSE_ENDED
-        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0}
+        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0, "controlled": 0}
 
 
 # ---------------------------------------------------------------- start-up (decisions (b), (c))
@@ -1272,7 +1272,7 @@ def test_the_relay_starts_and_serves_with_no_firestore_client_and_no_certificate
         monkeypatch.delenv(gone, raising=False)
 
     with TestClient(relay_main.create_app()) as client:
-        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0}
+        assert client.get("/healthz").json() == {"ok": True, "tunnels": 0, "viewers": 0, "controlled": 0}
         with client.websocket_connect("/v1/tunnel") as gate:
             gate.send_text(mint_ticket(key, session_id=SESSION, tenant_id=TENANT, task_id=TASK,
                                        attempt_id=ATTEMPT, generation=GEN, role="tunnel"))
@@ -1280,9 +1280,20 @@ def test_the_relay_starts_and_serves_with_no_firestore_client_and_no_certificate
     assert asked == [version]
 
     served: dict = {}
-    monkeypatch.setitem(sys.modules, "uvicorn", type(sys)("uvicorn"))
-    sys.modules["uvicorn"].run = lambda *a, **kw: served.update(kw)
+    fake = type(sys)("uvicorn")
+
+    class Server:
+        def __init__(self, config) -> None:
+            self.config = config
+
+        def run(self) -> None:
+            served["ran"] = True
+
+    fake.Config = lambda app, **kw: served.update(kw) or kw
+    fake.Server = Server
+    monkeypatch.setitem(sys.modules, "uvicorn", fake)
     relay_main.main()
+    assert served["ran"]
     assert served["port"] == relay_main.PORT == 8080
     assert not [k for k in served if k.startswith("ssl")]
 

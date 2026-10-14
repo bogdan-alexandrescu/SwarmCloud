@@ -1,0 +1,147 @@
+{
+ "_about": "Responses of Saga's internal decision API (Internal Jev, /jev/v1/decide) in the shape and with the values the operator measured over Tailscale on 2026-10-14: noul -> {\"noul\": p}; choice -> {choice, confidence, probabilities} keyed by the criteria's keys (the TypeSafe shape), confidence 0.98 on an element pick. Laid out as the three calls jev-browser's decide() makes for the pages compat-probe.mjs builds: a one-stage pick on a 3-element page, then the group and target stages on a 250-element page. Not a byte capture: the measurement recorded shapes and values, not bodies (JUDGE-ADAPT, part of #1030).",
+ "single": {
+  "answers": {
+   "done": {
+    "noul": 0.02
+   },
+   "done_change": {
+    "noul": 0.02
+   },
+   "blocked": {
+    "noul": 0.01
+   },
+   "error": {
+    "noul": 0.01
+   },
+   "login": {
+    "noul": 0.01
+   },
+   "irreversible": {
+    "noul": 0.03
+   },
+   "tool": {
+    "choice": "click",
+    "confidence": 0.98,
+    "probabilities": {
+     "click": 0.98,
+     "type": 0.001818,
+     "press_enter": 0.001818,
+     "press_key": 0.001818,
+     "select": 0.001818,
+     "hover": 0.001818,
+     "right_click": 0.001818,
+     "drag": 0.001818,
+     "upload": 0.001818,
+     "scroll": 0.001818,
+     "wait": 0.001818,
+     "none": 0.001818
+    }
+   },
+   "target": {
+    "choice": "2",
+    "confidence": 0.98,
+    "probabilities": {
+     "0": 0.01,
+     "1": 0.01,
+     "2": 0.98
+    }
+   }
+  }
+ },
+ "group": {
+  "answers": {
+   "done": {
+    "noul": 0.02
+   },
+   "done_change": {
+    "noul": 0.02
+   },
+   "blocked": {
+    "noul": 0.01
+   },
+   "error": {
+    "noul": 0.01
+   },
+   "login": {
+    "noul": 0.01
+   },
+   "irreversible": {
+    "noul": 0.03
+   },
+   "tool": {
+    "choice": "click",
+    "confidence": 0.98,
+    "probabilities": {
+     "click": 0.98,
+     "type": 0.001818,
+     "press_enter": 0.001818,
+     "press_key": 0.001818,
+     "select": 0.001818,
+     "hover": 0.001818,
+     "right_click": 0.001818,
+     "drag": 0.001818,
+     "upload": 0.001818,
+     "scroll": 0.001818,
+     "wait": 0.001818,
+     "none": 0.001818
+    }
+   },
+   "group": {
+    "choice": "4",
+    "confidence": 0.97,
+    "probabilities": {
+     "0": 0.00375,
+     "1": 0.00375,
+     "2": 0.00375,
+     "3": 0.00375,
+     "4": 0.97,
+     "5": 0.00375,
+     "6": 0.00375,
+     "7": 0.00375,
+     "8": 0.00375
+    }
+   }
+  }
+ },
+ "target": {
+  "answers": {
+   "target": {
+    "choice": "137",
+    "confidence": 0.98,
+    "probabilities": {
+     "120": 0.00069,
+     "121": 0.00069,
+     "122": 0.00069,
+     "123": 0.00069,
+     "124": 0.00069,
+     "125": 0.00069,
+     "126": 0.00069,
+     "127": 0.00069,
+     "128": 0.00069,
+     "129": 0.00069,
+     "130": 0.00069,
+     "131": 0.00069,
+     "132": 0.00069,
+     "133": 0.00069,
+     "134": 0.00069,
+     "135": 0.00069,
+     "136": 0.00069,
+     "137": 0.98,
+     "138": 0.00069,
+     "139": 0.00069,
+     "140": 0.00069,
+     "141": 0.00069,
+     "142": 0.00069,
+     "143": 0.00069,
+     "144": 0.00069,
+     "145": 0.00069,
+     "146": 0.00069,
+     "147": 0.00069,
+     "148": 0.00069,
+     "149": 0.00069
+    }
+   }
+  }
+ }
+}

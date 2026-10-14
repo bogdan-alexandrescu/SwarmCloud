@@ -18,6 +18,7 @@ Once per deployment, roughly in the order they are done.
 - [Step-spec signing: rollout, rotation and revocation](spec-signing-rollout.md): rolling out step-spec signing from `legacy` to `enforce` (before 2026-10-20); return to it to rotate the signing key or revoke a version.
 - [Onboarding acceptance: the four checks of #780](onboarding-acceptance.md): the owner, once the release carrying OB10 is in dev, to prove a new user from the console and from `/sc` works as themselves in two orgs, an unchosen repository is refused and removing an org revokes access; again after a change to onboarding, grants or the forge credential.
 - [Fill and check the build mirrors](build-mirror.md): once, after the apply that creates `swarm-mirror-ghcr`, `swarm-mirror-dockerhub` and the `swarm-build-mirror-<project>` bucket and before the change that points the Dockerfiles at them merges; again whenever a pinned release file in `images/agent-runtime-base/tool-mirror.sha256` changes, or a build fails naming a missing mirror object.
+- [Turn on the merge train](merge-train.md): the owner, once, after a dry-run train has gone green, to set `MERGE_TRAIN=on` and turn strict up-to-date off in ruleset 24160219 in favour of the train's `merge-train` status; again to roll it back.
 - [Prove the destroy guard against a real terraform plan](destroy-guard-real-plan-proof.md): before trusting `make destroy` in an environment for the first time; again after changing the destroy guard, the plan guard, the deny-list or the unlabelable types, or when the recorded plan no longer matches the real infrastructure.
 
 ## Day-to-day
@@ -30,4 +31,5 @@ Once per deployment, roughly in the order they are done.
 
 - [Apply the GKE dispatcher RBAC and redispatch](gke-dispatch-redispatch.md): `browser` tasks fail with `jobs.batch is forbidden`, or you are landing the GKE dispatch fix for the first time.
 - [The Cloud Run Jobs start-time support case](cloud-run-start-support-case.md): the owner is filing the Google Cloud support case decided on 2026-10-07 (#625), or a Cloud Run profile's DISPATCHED -> STARTING has jumped again with nothing of ours changed.
+- [Raising a throttled tenant](quota-throttled-tenant.md): a tenant queues behind `provider:<p>:tenant:<t> full` with its pool's `hard_limit` and quota's `configured_hard_max` well above what runs, because a 429 halved its AIMD target and it has not climbed back; a platform admin resets the target, clamped and audited.
 - [Browser pods the reconciler evicts](browser-eviction.md): a browser task was re-queued or failed with `stuck_no_progress`, a task's timeline shows a `generation_fenced` event with `finding: left_running`, or you want to know whether the reconciler is evicting browser pods, and why.

@@ -25,7 +25,9 @@ and the agent had to export `SWARM_HANDOFF` itself (MEASURED 2026-10-13,
 task_1f28d5bfa5a14f618f83; LB-POLISH, part of #1030). On an attempt resumed
 after a hand-off park, the worker's summary of the earlier attempts'
 hand-offs, `$SWARM_HANDOFF/resumed.md`, follows the caller's prompt
-(`resume_summary`; RESUME-PROGRESS). Nothing else crosses. The credential is the tenant's secret, or a pool
+(`resume_summary`; RESUME-PROGRESS), and on an attempt whose proxied browser
+has no egress, `$SWARM_HANDOFF/egress.md` says so (`egress_notice`;
+EGRESS-GATE). Nothing else crosses. The credential is the tenant's secret, or a pool
 account's OAuth token when the attempt holds an account, and it is passed in
 exactly one variable: `ANTHROPIC_API_KEY` (metered API access) or
 `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token from
@@ -94,6 +96,13 @@ same expected-outputs check and the same publish credential scan
 the session for up to two repair turns, naming each missing file's path or
 each flagged `path:line rule` -- never the matched text (`repair_checks`).
 
+WHY A PRE-PUBLISH GATE (SPEED-D1, owner decision 2026-10-14). 0.52 red CI
+runs per pull request, and 128 of 150 needed an update from main. After the
+repair turns the runner rebases the lane onto the current base through the git
+tools (one conflict turn) and runs the repository's own checks on what the
+diff touches (one fix turn); what still fails is published with its output in
+the pull request body (`agent_worker.prepublish`, `prepublish`).
+
 WHY A BROWSER NOTE ON agent-runtime-browser (contract request 67, owner
 2026-10-11). `claude-code-browser` runs this runner on the browser image, so
 an agent can render and screenshot pages. The image installs Chromium under
@@ -147,6 +156,14 @@ note gains `LIVE_BROWSER_SEARCH_NOTE`. With the flag off the note says nothing
 about a search tool, because an agent told to use a tool it does not have
 loses turns looking for it.
 
+THE GRAPH TOOLS (docs/design/context-quality.md §4.4, lane CTXQ-S). When the
+worker staged the repository's graph snapshot (`graphstage.prepare`, decided
+by the stored setting, never the caller) it sets `SWARM_GRAPH_SNAPSHOT`, and
+only then this runner names `swarm-graph` (`agent_worker.graphmcp`) in the
+same `--mcp-config`. When the setting asked for context and none could be
+staged it sets `SWARM_GRAPH_UNSTAGED` instead, and the prompt gains one line
+saying so. The server reads only the staged directory: no network, no key.
+
 WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
 that read stdin with nothing attached sat until the Bash timeout killed it:
 the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
@@ -166,12 +183,13 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from .. import graphstage
 from ..children import git_shim_argv, search_shim_argv
 from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
 from ..searchmcp.server import SERVER_NAME as SEARCH_MCP_SERVER_NAME
 from ..searchmcp.server import SPOOL_ENV as SEARCH_SPOOL_ENV
-from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV, RESUME_NAME
+from ..handoff import AGENT_PASSTHROUGH_ENV, EGRESS_NOTICE_NAME, HANDOFF_ENV, RESUME_NAME
 from .base import RunnerContext, run_runner
 from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
 
@@ -242,7 +260,11 @@ LIVE_BROWSER_NOTE = (
     "or a sign-in, do not try to get around it and do not switch to a "
     "different site than the one asked for: run `swarm-handoff request "
     "--reason \"<what the person should do>\" --expect <domain>`, then "
-    "`swarm-handoff wait`, and carry on once control comes back. Until then: "
+    "`swarm-handoff wait`, and carry on once control comes back -- reading the "
+    "page again from the tab the person left (in Python a fresh `live()` and "
+    "`swarm_browser.handoff_page(context)`; with the tools, browser_tabs to "
+    "select it, then browser_snapshot), never from a handle, snapshot or value "
+    "taken before the hand-off. Until then: "
     "wait, do not poll the browser -- run `swarm-handoff wait` "
     "in the foreground and nothing else (no `curl /json/version`, no "
     "snapshots in a loop); on exit 75 run it again, on exit 3 (nobody came) "
@@ -326,6 +348,26 @@ def _write_private(path: Path, text: str) -> None:
 #: The most of the worker's resume summary a prompt carries. The worker
 #: bounds what it writes well under this; a larger file is not its.
 MAX_RESUME_BYTES = 16 * 1024
+
+
+def _spool_text(spool: str, name: str) -> str | None:
+    if not spool:
+        return None
+    path = Path(spool) / name
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_RESUME_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text or None
+
+
+def egress_notice(spool: str) -> str | None:
+    """EGRESS-GATE: the worker's notice that this attempt's proxied browser has
+    no egress (`handoff.EGRESS_NOTICE_NAME`, written by `HandoffPath.prepare`
+    before this runner starts, and absent otherwise), or None."""
+    return _spool_text(spool, EGRESS_NOTICE_NAME)
 
 
 def resume_summary(spool: str) -> str | None:
@@ -416,10 +458,13 @@ def write_mcp_config(
     *,
     git_spool: str | None = None,
     search_spool: str | None = None,
+    graph_snapshot: str | None = None,
+    graph_workdir: str | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
     browser when `endpoint` is given, the `swarm-git` shim when `git_spool` is,
-    the `swarm-search` shim when `search_spool` is.
+    the `swarm-search` shim when `search_spool` is, `swarm-graph` when
+    `graph_snapshot` (the staged directory) is.
 
     Beside the settings file, in `work/` (never the checkout), mode 0600 and
     replaced rather than followed, for the same reasons (`_write_private`).
@@ -442,6 +487,9 @@ def write_mcp_config(
     if search_spool:
         command, *args = search_shim_argv(search_spool)
         servers[SEARCH_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+    if graph_snapshot:
+        command, *args = graphstage.server_argv(graph_snapshot, graph_workdir)
+        servers[graphstage.SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
     config = {"mcpServers": servers}
     path = directory / MCP_CONFIG_NAME
     _write_private(path, json.dumps(config, indent=2) + "\n")
@@ -517,6 +565,11 @@ SPEC = CliAgentSpec(
     # credential scan run against the tree, and a failure is resumed for up
     # to two repair turns naming what failed (#624; `cliagent.REPAIR_MAX_TURNS`).
     repair_checks=True,
+    # Then the pre-publish gate (SPEED-D1, owner decision 2026-10-14): a
+    # rebase onto the current base, with one conflict turn, and the
+    # repository's own checks on what the diff touches, with one fix turn
+    # (`agent_worker.prepublish`).
+    prepublish=True,
     # The CLI warns on EVERY headless run that it ignores the settings' allow
     # list because the workspace is untrusted ("Ignoring 23 permissions.allow
     # entries from .claude/settings.json: this workspace has not been trusted.
@@ -570,16 +623,31 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     search_spool = os.environ.get(SEARCH_SPOOL_ENV, "").strip()
     if search_spool:
         env[SEARCH_SPOOL_ENV] = search_spool
+    # The staged graph (`graphstage.prepare`): its directory goes to the agent
+    # for CONTEXT.md, the snapshot only to the server's argv.
+    graph_snapshot = os.environ.get(graphstage.SNAPSHOT_ENV, "").strip()
+    if graph_snapshot and os.environ.get(graphstage.CONTEXT_ENV, "").strip():
+        env[graphstage.CONTEXT_ENV] = os.environ[graphstage.CONTEXT_ENV].strip()
     live_endpoint = ""
     browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
     prompt = ctx.payload.get("prompt")
     spec = SPEC
+    unstaged = graphstage.unstaged_note(os.environ)
+    if unstaged and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{unstaged}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
     # A resumed live-browser attempt: what the earlier one did, after the
     # caller's prompt (RESUME-PROGRESS; `resume_summary`). A new dict, as below.
     resumed = resume_summary(env.get(HANDOFF_ENV, ""))
     if resumed and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{resumed}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # A proxied browser with no egress (EGRESS-GATE): the agent is told before
+    # it tries, rather than reading connection errors.
+    stopped = egress_notice(env.get(HANDOFF_ENV, ""))
+    if stopped and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{stopped}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
     if browsers:
         spec = dataclasses.replace(SPEC, path_prefix=(VENV_BIN,))
@@ -601,9 +669,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
     # ONE `--mcp-config` for every server this attempt has (module docstring).
-    if live_endpoint or git_spool or search_spool:
-        mcp = write_mcp_config(Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
-                               git_spool=git_spool or None, search_spool=search_spool or None)
+    if live_endpoint or git_spool or search_spool or graph_snapshot:
+        mcp = write_mcp_config(
+            Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
+            git_spool=git_spool or None, search_spool=search_spool or None,
+            graph_snapshot=graph_snapshot or None,
+            graph_workdir=str(ctx.repo_dir) if graph_snapshot and ctx.repo_dir else None)
         extra += ["--mcp-config", str(mcp)]
     return run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
 

@@ -60,9 +60,16 @@ FINAL = {"returned", "expired", "cancelled", "refused", "unavailable", "applied"
 
 #: What the agent should do on each exit of `wait`, printed as `next`.
 NEXT = {
+    # LB-RETURN: MEASURED on 4+ acceptance runs, the agent's read after a
+    # return came back empty -- it read the first tab, or a value from before.
     EXIT_RETURNED: (
-        "Control is back. Look at the page once (browser_snapshot) and carry on "
-        "with the task; do not poll the browser or CDP in a loop."
+        "Control is back, and the person may have changed the page: read it FRESH, "
+        "once. Do not reuse a page handle, snapshot or value from before the hand-off. "
+        "From Python: connect again (`playwright, browser, context = live()`) and take "
+        "`swarm_browser.handoff_page(context)` -- the tab at this `url`, not "
+        "`context.pages[0]`. With the browser_* tools: browser_tabs, select the tab at "
+        "this `url`, then browser_snapshot. Then carry on with the task; do not poll the "
+        "browser or CDP in a loop."
     ),
     EXIT_STILL_WAITING: (
         "Someone may still come. Run `swarm-handoff wait` again now, in the "

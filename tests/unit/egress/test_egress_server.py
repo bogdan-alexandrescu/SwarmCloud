@@ -104,7 +104,7 @@ class Harness:
         self.password = secrets.token_hex(12)
         self.username = "brd-customer-c1-zone-res"
         self.credential = parse_credential(json.dumps({
-            "vendor": "brightdata", "host": "brd.superproxy.io", "port": 33335, "tls": False,
+            "vendor": "brightdata", "host": "brd.superproxy.io", "port": 44445, "tls": False,
             "zones": {
                 "residential": {"username": self.username, "password": self.password,
                                 "sticky": "attempt"},
@@ -261,7 +261,7 @@ def test_a_good_ticket_gets_a_tunnel_through_the_vendor_with_the_credential_and_
         writer.close()
 
     harness = run(tmp_path, scenario)
-    assert harness.dialled == [("brd.superproxy.io", 33335, False)]
+    assert harness.dialled == [("brd.superproxy.io", 44445, False)]
     head = harness.vendor.heads[0]
     assert head.startswith(f"CONNECT {TARGET} HTTP/1.1\r\n")
     auth = [line for line in head.split("\r\n") if line.lower().startswith("proxy-authorization:")]

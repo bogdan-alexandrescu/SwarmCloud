@@ -177,6 +177,14 @@ CONTENTS_WRITE = "contents: write"
 CHECKS_READ = "checks: read"
 STATUSES_READ = "statuses: read"
 RULES_READ = "metadata: read"
+#: Re-running a failed Actions job (lane SPEED-D2: a flake costs no agent).
+ACTIONS_WRITE = "actions: write"
+#: A pull request's file list, and a comparison of two commits.
+PULLS_READ = "pull_requests: read"
+CONTENTS_READ = "contents: read"
+#: Pages of a pull request's files read: GitHub serves at most 3000, and a
+#: conflict round's prompt names far fewer than the 300 these hold.
+MAX_FILE_PAGES = 3
 
 #: Pages of check runs read at one sha. A head with more than 500 check runs
 #: is read as far as that, which is far past any repository's CI.
@@ -718,6 +726,55 @@ class GitHubWriter:
         if not isinstance(entries, list):
             raise ForgeWriteError(f"GitHub's answer for {what} is not a list of statuses")
         return [entry for entry in entries if isinstance(entry, dict)]
+
+    def rerun_job(self, ref: IssueRef, job_id: int, token: str) -> None:
+        """Ask GitHub to re-run one Actions job at the same commit (SPEED-D2).
+
+        An Actions check run's id is its job's id. GitHub answers 201 and
+        makes a new check run of the same name at the same sha, which
+        `check_runs` (`filter=latest`) then reads in place of the failed one.
+        """
+        self._call(
+            "POST", self._url(ref, f"actions/jobs/{int(job_id)}/rerun"), token,
+            f"a re-run of Actions job {int(job_id)}", needs=ACTIONS_WRITE,
+            payload={}, ok=(201, 204),
+        )
+
+    def pull_files(self, ref: IssueRef, number: int, token: str) -> list[str]:
+        """The paths pull request `number` changes, up to MAX_FILE_PAGES pages."""
+        what = f"the files of {ref.repository}#{int(number)}"
+        names: list[str] = []
+        for page in range(1, MAX_FILE_PAGES + 1):
+            data = self._call(
+                "GET", self._url(ref, f"pulls/{int(number)}/files?per_page={PAGE_SIZE}&page={page}"),
+                token, what, needs=PULLS_READ,
+            )
+            if not isinstance(data, list):
+                raise ForgeWriteError(f"GitHub's answer for {what} is not a list")
+            names += [str(f["filename"]) for f in data
+                      if isinstance(f, dict) and isinstance(f.get("filename"), str)]
+            if len(data) < PAGE_SIZE:
+                break
+        return names
+
+    def compare_files(self, ref: IssueRef, base: str, head: str, token: str) -> list[str]:
+        """The paths changed from the merge base of `base` and `head` to `head`.
+
+        GitHub's three-dot comparison, so `compare_files(ref, pr_head, base_branch)`
+        is what the base branch changed since the pull request's branch left it.
+        """
+        what = f"the comparison {base[:40]}...{head[:200]} of {ref.repository}"
+        data = self._call(
+            "GET",
+            self._url(ref, f"compare/{quote(base, safe='')}...{quote(head, safe='/')}"
+                           f"?per_page={PAGE_SIZE}"),
+            token, what, needs=CONTENTS_READ,
+        )
+        files = data.get("files") if isinstance(data, dict) else None
+        if not isinstance(files, list):
+            raise ForgeWriteError(f"GitHub's answer for {what} lists no files")
+        return [str(f["filename"]) for f in files
+                if isinstance(f, dict) and isinstance(f.get("filename"), str)]
 
     def check_annotations(self, ref: IssueRef, check_run_id: int, token: str) -> list[dict[str, Any]]:
         """Up to MAX_ANNOTATIONS annotations of one check run."""

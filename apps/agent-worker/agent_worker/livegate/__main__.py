@@ -43,6 +43,19 @@ and the device and touch toggle are applied again. At most `RELAUNCH_LIMIT`
 times in `RELAUNCH_WINDOW_SECONDS`; past that the browser stays closed and the
 timeline says `browser_gave_up`. `status` says `restarting` meanwhile.
 
+PROXIED EGRESS (EGRESS-GATE; part of #1030; docs/browser-egress.md §2.2-§2.5).
+With `SWARM_BROWSER_EGRESS=proxy` in the sidecar's environment the gate starts
+its local CONNECT forwarder (egress.py) after the display and BEFORE Chromium,
+and Chromium is launched -- and relaunched -- with `--proxy-server` pointing at
+it. The forwarder refuses every CONNECT until the worker hands over the
+attempt's egress ticket on ctl.sock (`egress_ticket`), and again whenever the
+worker reports that none can be had, the ticket expires or swarm-egress is
+unreachable: FAIL CLOSED (owner decision Q7). A forwarder that cannot listen
+is a fatal setup error, so Chromium is never started without the proxy. When
+egress is unavailable the gate opens a page saying why, which the person
+watching sees and the agent reads; `status` carries the route and its state.
+Without the variable nothing here changes.
+
 A GATE THAT RESTARTS keeps Chromium closed (ctl.py): when the first start's
 marker is already in /tmp, only ctl.sock is served -- it refuses every
 registration and records `gate_restarted` -- and nothing else starts.
@@ -76,7 +89,7 @@ import sys
 import time
 from collections import deque
 from collections.abc import Awaitable, Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -87,6 +100,7 @@ from .cdppolicy import PolicyPaths
 from .cdpproxy import AgentConnection, AgentLink, CdpError, CdpProxy, PipeTransport, serve_agents
 from .ctl import DEFAULT_MARKER, CtlServer
 from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
+from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, notice_url
 from .inject import InjectError, XInjector, display_socket
 from .mask import REASON_SWITCHING, MaskCdp, MaskState
 from .pointer import css_to_frame
@@ -258,6 +272,10 @@ class GateConfig:
     #: PLAYWRIGHT_BROWSERS_PATH (images/agent-runtime-browser/Dockerfile), read
     #: rather than copied here so the path is written down once.
     browsers_path: str = ""
+    #: Proxied egress (egress.py): off unless the dispatcher set SWARM_BROWSER_EGRESS=proxy.
+    egress: EgressSettings = EgressSettings()
+    #: The local forwarder's port once it listens; Chromium's `--proxy-server`.
+    egress_port: int | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> "GateConfig":
@@ -273,6 +291,10 @@ class GateConfig:
             url = relay_url(env)
         except ValueError as exc:
             raise SetupError(str(exc)) from None
+        try:
+            egress = EgressSettings.from_env(env)
+        except EgressConfigError as exc:
+            raise SetupError(str(exc)) from None
         return cls(
             ctl_path=env["SWARM_GATE_CTL"],
             profile_dir=Path(env["SWARM_BROWSER_PROFILE_DIR"]),
@@ -283,6 +305,7 @@ class GateConfig:
             relay_url=url,
             display=env.get("DISPLAY") or ":0",
             browsers_path=env.get("PLAYWRIGHT_BROWSERS_PATH") or "",
+            egress=egress,
         )
 
 
@@ -421,8 +444,16 @@ def chromium_args(cfg: GateConfig) -> list[str]:
     "only for automated testing" infobar took 56 rows of the page area
     `presets.BROWSER_UI_HEIGHT` measures without it (LB-R3, 2026-10-12). The
     window is one pixel past the display each way (`device.WINDOW_OVERHANG`).
+
+    With proxied egress on, the proxy flags (egress.py `chromium_proxy_args`)
+    come before the first page, and with no listening forwarder this raises
+    SetupError: there is no way to render these arguments without the proxy.
     """
     desktop = resolve(DEFAULT_PRESET)
+    try:
+        egress = chromium_proxy_args(cfg.egress, cfg.egress_port)
+    except EgressConfigError as exc:
+        raise SetupError(str(exc)) from None
     return [
         "--remote-debugging-pipe",
         f"--user-data-dir={cfg.profile_dir}",
@@ -433,6 +464,7 @@ def chromium_args(cfg: GateConfig) -> list[str]:
         "--window-position=0,0",
         "--disable-infobars",
         f"--window-size={desktop.display_width + WINDOW_OVERHANG},{desktop.display_height + WINDOW_OVERHANG}",
+        *egress,
         "about:blank",
     ]
 
@@ -501,6 +533,17 @@ async def serve_cdp(proxy: CdpProxy, host: str, port: int) -> Any:
         raise SetupError(f"the CDP proxy cannot listen on {host}:{port}: {exc.strerror}") from None
 
 
+async def start_egress(cfg: GateConfig, record: Callable[[str, Mapping[str, Any]], None],
+                       on_unavailable: Callable[[str], None]) -> LocalForwarder:
+    """The local CONNECT forwarder on 127.0.0.1, on an ephemeral port."""
+    forwarder = LocalForwarder(cfg.egress, record=record, on_unavailable=on_unavailable)
+    try:
+        await forwarder.start()
+    except OSError as exc:
+        raise SetupError(f"the egress forwarder cannot listen: {exc.strerror}") from None
+    return forwarder
+
+
 @dataclass
 class Deps:
     """What touches the operating system. Tests replace each with a fake."""
@@ -513,6 +556,8 @@ class Deps:
     open_framebuffer: Callable[[GateConfig], Any] = open_framebuffer
     #: The tunnel's connector; None is tunnel.WebSocketClient.connect.
     connect_relay: Callable[[str], Awaitable[Any]] | None = None
+    #: The proxied-egress forwarder, started only when egress is on.
+    start_egress: Callable[..., Awaitable[Any]] = start_egress
 
 
 # --------------------------------------------------------------------------
@@ -1140,6 +1185,8 @@ class LiveGate:
         self.framebuffer: Any = None
         self.tunnel: Tunnel | None = None
         self.mux: StreamMux | None = None
+        #: The proxied-egress forwarder (egress.py); None when egress is off.
+        self.egress: Any = None
         self.wiped = False
         #: Chromium's pipe closed (a wipe, or a crash, until a relaunch is up):
         #: nothing needing it is served.
@@ -1206,6 +1253,7 @@ class LiveGate:
             await self.start_ctl()
             return
         await self.start_display()
+        await self.start_egress()
         await self.start_browser()
         await self.start_ctl()
         await self.start_view()
@@ -1216,6 +1264,22 @@ class LiveGate:
         self.injector = await self.deps.open_injector(
             self.cfg, self.desktop.display_width, self.desktop.display_height)
         log.info("live gate: display %s up", self.cfg.display)
+
+    async def start_egress(self) -> None:
+        """1b. With proxied egress on, the local forwarder, before any Chromium.
+
+        Its port goes into the configuration Chromium's flags are rendered
+        from, so a relaunch is proxied exactly as the first start was.
+        """
+        if not self.cfg.egress.proxy:
+            return
+        self.egress = await self.deps.start_egress(self.cfg, self.record, self._egress_unavailable)
+        port = getattr(self.egress, "port", None)
+        if not isinstance(port, int) or port <= 0:
+            raise SetupError("the egress forwarder is not listening; Chromium is not started without the proxy")
+        self.cfg = replace(self.cfg, egress_port=port)
+        self.record("egress_route", {"route": "proxy"})
+        log.info("live gate: browser egress is proxied; forwarder on 127.0.0.1:%d", port)
 
     async def start_browser(self) -> None:
         """2. Headed Chromium on the pipe, and the CDP proxy on 127.0.0.1:9222."""
@@ -1274,6 +1338,10 @@ class LiveGate:
         worker asked for (not a person's unasked take, which ended with the
         browser) the new proxy holds it too, until the worker resumes.
         """
+        if self.cfg.egress.proxy and (self.egress is None or not self.cfg.egress_port):
+            # Fail closed (owner decision Q7): never a browser without its proxy.
+            raise SetupError("browser egress is on and its forwarder is not listening; "
+                             "Chromium is not started without the proxy")
         browser = self.browser = await self.deps.start_chromium(self.cfg)
         self.proxy = GateProxy(
             self.browser.transport.send,
@@ -1639,7 +1707,55 @@ class LiveGate:
             return await self.end_control(args)
         if op == "device":
             return await self._need(self.devices).handle_ctl(args)
+        if op == "egress_ticket":
+            return await self.egress_ticket(args)
         raise ValueError("not an operation of the gate")
+
+    # -- proxied egress (egress.py) ---------------------------------------------
+
+    async def egress_ticket(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The worker's `egress_ticket`: a ticket to present, or why none can be had.
+
+        `{"ticket": ..., "expires_in": seconds}` arms the forwarder, after
+        which swarm-egress is probed (a TCP connect, no byte sent): when it
+        cannot be reached the answer says `failed` with
+        `forwarder_unreachable`, and every CONNECT stays refused.
+        `{"failed": cause}` -- the mint was refused, no attempt key, ... --
+        leaves every CONNECT refused with that cause. Either way the browser
+        is never sent direct. Refused when egress is off for this browser.
+        """
+        forwarder = self.egress
+        if forwarder is None:
+            raise ValueError("browser egress is off for this browser")
+        failed = args.get("failed")
+        if failed is not None:
+            forwarder.fail(str(failed))
+            return {"egress": "failed", "cause": forwarder.cause}
+        forwarder.set_ticket(args.get("ticket"), args.get("expires_in"))
+        if not await forwarder.probe():
+            self.record("egress_refused", {"cause": "forwarder_unreachable"})
+            self._egress_unavailable("forwarder_unreachable")
+            return {"egress": "failed", "cause": "forwarder_unreachable"}
+        return {"egress": "ready"}
+
+    def _egress_unavailable(self, cause: str) -> None:
+        """Proxied egress is unavailable: put a page on screen that says why.
+
+        The forwarder calls this once per cause. The page is a data: URL, so
+        it loads with no network; it is what the person watching sees and
+        what the agent reads when it looks at the browser.
+        """
+        self._spawn(self._show_egress_notice(cause))
+
+    async def _show_egress_notice(self, cause: str) -> None:
+        proxy = self.proxy
+        if proxy is None or self.browser_closed or self.wiped:
+            return
+        try:
+            await proxy.call("Target.createTarget", {"url": notice_url(cause)})
+            self.record("egress_notice", {"cause": cause})
+        except Exception as exc:  # noqa: BLE001 -- the refusals themselves still fail closed
+            self.record("egress_notice_failed", {"cause": cause, "error": type(exc).__name__})
 
     def _need(self, component: Any) -> Any:
         if component is None or self.wiped or self.browser_closed:
@@ -1660,6 +1776,9 @@ class LiveGate:
             "paused": bool(self.proxy is not None and self.proxy.paused),
             "in_control": self._episode is not None,
             "tunnel": tunnel,
+            # RELAY-ROLL: 1012 from a restarting relay is reopened at once
+            # by the worker (handoff.HandoffPath._keep_tunnel).
+            "tunnel_close_code": getattr(self.tunnel, "close_code", None),
             "viewers": self.viewers,
             "device": device.name,
             "orientation": device.orientation,
@@ -1671,6 +1790,9 @@ class LiveGate:
             # holds now.
             "agent_connected_at": self.agent_connected_at,
             "agent_connections": self.agent_report()["connections"],
+            # EGRESS-GATE: the browser's route and, when proxied, its state
+            # and counts (egress.py `stats`); never the ticket.
+            "egress": self.egress.stats() if self.egress is not None else {"route": "direct"},
         }
 
     async def open_tunnel(self, args: Mapping[str, Any]) -> dict[str, Any]:
@@ -2066,6 +2188,7 @@ class LiveGate:
             ("injector", self._stop_injector),
             ("chromium", self._stop_browser),
             ("xvfb", self._stop_xvfb),
+            ("egress", self._stop_egress),
         ]
         for name, step in steps:
             try:
@@ -2114,6 +2237,10 @@ class LiveGate:
     async def _stop_xvfb(self) -> None:
         if self.xvfb is not None:
             await self.xvfb.stop()
+
+    async def _stop_egress(self) -> None:
+        if self.egress is not None:
+            await self.egress.close()
 
 
 # --------------------------------------------------------------------------
