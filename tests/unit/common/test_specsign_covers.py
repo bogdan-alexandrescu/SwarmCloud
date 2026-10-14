@@ -113,11 +113,15 @@ def test_every_metadata_key_the_worker_reads_is_signed():
     # tick: reserved from callers, and read only to count refunds and carry
     # `first_parked_at` from park to park. And the live-browser hand-off's
     # park-refund counter (lane LB-L4), read by the HUMAN_REQUIRED park exactly
-    # as the await park reads `child_await_resumes`.
+    # as the await park reads `child_await_resumes`. And the person's return
+    # that park reads (LB-RETURN), with the "I'm ready" mark it writes in its
+    # place: both written while the attempt runs, never at submission.
     unsigned = worker_metadata_keys() - set(SIGNED_METADATA_KEYS) - {
         "child_await_resumes",
         "child_cascade",
         "human_wait_resumes",
+        "human_returned",
+        "human_ready",
         "merge_wait",
     }
     assert not unsigned, (
@@ -138,7 +142,8 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: (docs/schedules.md §2.7, lane S2): no worker acts on it. And the
 #: live-browser hand-off's three (docs/design/live-browser.md §4.3, lane
 #: LB-L10): the park-refund counter, the "a person is ready" mark and the
-#: per-attempt hand-off count, each written during or between attempts.
+#: per-attempt hand-off count, each written during or between attempts; and
+#: a person's return during an attempt, which its park reads (LB-RETURN).
 #: And the reconciler's `start_problem` (F1-POD), written while a pod fails to
 #: start and read only by swarm-api. And the owner's answers to the agent's
 #: questions (TASK-ANSWERS), written by swarm-api after the attempt asked them.
@@ -149,6 +154,7 @@ UNSIGNED_PLATFORM_KEYS = {
     "human_wait_resumes",
     "human_ready",
     "human_handoffs",
+    "human_returned",
     "startup_refunds",
     "disk_evictions",
     "child_await_resumes",
@@ -175,6 +181,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         STARTUP_REFUNDS_METADATA_KEY,
         HUMAN_HANDOFFS_METADATA_KEY,
         HUMAN_READY_METADATA_KEY,
+        HUMAN_RETURNED_METADATA_KEY,
         HUMAN_WAIT_RESUMES_METADATA_KEY,
         START_PROBLEM_METADATA_KEY,
         OWNER_ANSWERS_METADATA_KEY,
@@ -184,6 +191,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
     assert {
         HUMAN_HANDOFFS_METADATA_KEY,
         HUMAN_READY_METADATA_KEY,
+        HUMAN_RETURNED_METADATA_KEY,
         HUMAN_WAIT_RESUMES_METADATA_KEY,
         STARTUP_REFUNDS_METADATA_KEY,
         CHILD_AWAIT_RESUMES_METADATA_KEY,

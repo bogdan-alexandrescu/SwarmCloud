@@ -77,7 +77,10 @@ describe('the timeline in words', () => {
       'Your control ended: nobody used the browser for too long',
     )
     expect(actionWords(line({ event: 'ended', cause: 'page_closed' }))).toBe('The browser ended control: the page closed')
-    expect(actionWords(line({ event: 'handoff_resolved', outcome: 'expired' }))).toBe('Hand-off ended: nobody finished in time')
+    // LB-RETURN: an expired hand-off PARKS, and a person's I'm ready resumes it -- it is not over.
+    expect(actionWords(line({ event: 'handoff_resolved', outcome: 'expired' }))).toBe(
+      'Hand-off parked: nobody took control in time · press I’m ready to resume',
+    )
     expect(actionWords(line({ event: 'control_opened_to_members', by: 'a@b', you: true }))).toBe('You let any member take control')
   })
 
