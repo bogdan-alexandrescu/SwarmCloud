@@ -1,0 +1,47 @@
+# The proxied browser's one extra path out of a tenant namespace: TCP 3128 to
+# swarm-egress, from a pod the dispatcher labelled for proxied egress, and
+# nothing else (docs/browser-egress.md §2.5; lane EGRESS-SVC, part of #1030).
+#
+# Built exactly like `swarm-allow-live-egress` (allow-live-egress.yaml), for
+# the same reason: the internet rule in `allow-egress.yaml` is an ipBlock, and
+# "Pod traffic is never covered by an ipBlock rule", so reaching a pod in
+# swarm-system needs a pod selector naming ONE destination.
+#
+# WHY A LABEL. `swarm-egress: proxy` is set by the dispatcher on a live-browser
+# pod whose tenant and profile are switched on (lane EGRESS-DISPATCH), never
+# by a caller (invariant 10). A pod without it simply has no proxy path; its
+# DNS and direct internet still come from the existing policy. NetworkPolicies
+# are unions, so this adds exactly that path and removes nothing.
+#
+# WHAT THIS DOES NOT DO. It does not make swarm-egress trust the pod.
+# swarm-egress serves a CONNECT only with an attempt ticket swarm-api minted
+# for this tenant, task, attempt and generation; this policy only decides who
+# may knock. The agent shares the pod's network namespace, so it can open the
+# socket too -- and holds no ticket, which reaches the gate over ctl.sock and
+# is never in an environment variable, a file or `work/`.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: swarm-allow-egress-proxy
+  namespace: __NAMESPACE__
+  labels:
+    managed-by: swarm-terraform
+    swarm-tenant: __TENANT_ID__
+spec:
+  podSelector:
+    matchLabels:
+      swarm-egress: "proxy"
+  policyTypes:
+    - Egress
+  egress:
+    # ONE peer with BOTH selectors: the swarm-egress pods in swarm-system.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: swarm-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: swarm-egress
+      ports:
+        - protocol: TCP
+          port: 3128

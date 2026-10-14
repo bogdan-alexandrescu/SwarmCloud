@@ -10,7 +10,9 @@
 #                         # creates the namespace), then its TCP 8080 from
 #                         # labelled tenant pods and swarm-api's Direct VPC
 #                         # egress range, read from the service
-#                         # (docs/design/live-browser.md §3.3, §8.3)
+#                         # (docs/design/live-browser.md §3.3, §8.3), then
+#                         # swarm-egress from `swarm_egress_manifest` when
+#                         # terraform renders one (docs/browser-egress.md)
 #   kubernetes/apply.sh --tenant eng --spec-verify-keys keys.json --confirm
 #                         # ... with the step-spec public keys ConfigMap, from
 #                         # `terraform output -json spec_verify_keys_configmap`
@@ -579,6 +581,37 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
     fi
     info "relay manifest  terraform output swarm_live_manifest (admits ${TF_EGRESS_CIDR})"
   fi
+
+  # SWARM-EGRESS, FROM TERRAFORM, AFTER THE RELAY (docs/browser-egress.md;
+  # lane EGRESS-SVC). terraform/infra/egress.tf's `swarm_egress_manifest`:
+  # kubernetes/swarm-system/swarm-egress.yaml with the image digest, the two
+  # secrets' version references and the browser egress setting filled in.
+  # OPTIONAL, unlike the relay's: null while enable_browser_egress is off,
+  # and then nothing about egress is applied. Present, it gets the relay's
+  # three checks before anything sees a cluster.
+  EGRESS_MANIFEST=""
+  if tf -chdir="${TF_DIR}" output -raw swarm_egress_manifest >"${RELAY_WORK}/egress.yaml" 2>"${RELAY_WORK}/egress.err" \
+      && [[ -s "${RELAY_WORK}/egress.yaml" ]]; then
+    if grep -Eo '__[A-Z0-9_]+__' "${RELAY_WORK}/egress.yaml" >"${RELAY_WORK}/egress-placeholders"; then
+      PLACEHOLDER="$(head -n 1 "${RELAY_WORK}/egress-placeholders")"
+      rm -rf "${RELAY_WORK}"
+      die "the swarm-egress manifest carries an unrendered placeholder (${PLACEHOLDER}); nothing was applied."
+    fi
+    if grep -Eq '^kind:[[:space:]]*(Cluster)?Role(Binding)?[[:space:]]*$' "${RELAY_WORK}/egress.yaml"; then
+      rm -rf "${RELAY_WORK}"
+      die "the swarm-egress manifest carries Kubernetes RBAC; swarm-egress holds none. Nothing was applied."
+    fi
+    if grep -E '^[[:space:]]+namespace:[[:space:]]' "${RELAY_WORK}/egress.yaml" \
+        | grep -Ev '^[[:space:]]+namespace:[[:space:]]+swarm-system[[:space:]]*$' >"${RELAY_WORK}/egress-foreign"; then
+      redact <"${RELAY_WORK}/egress-foreign" | sed -n '1,5p' | sed 's/^/     /' >&2
+      rm -rf "${RELAY_WORK}"
+      die "the swarm-egress manifest names a namespace other than swarm-system (above); nothing was applied."
+    fi
+    EGRESS_MANIFEST="$(cat "${RELAY_WORK}/egress.yaml")"
+    info "egress manifest terraform output swarm_egress_manifest"
+  else
+    info "no swarm-egress manifest (enable_browser_egress is off); nothing about browser egress is applied"
+  fi
   rm -rf "${RELAY_WORK}"
 
   if ! "${KUBECTL}" "${KUBECTL_ARGS[@]+"${KUBECTL_ARGS[@]}"}" get namespace swarm-system -o name >/dev/null 2>&1; then
@@ -595,6 +628,10 @@ elif [[ "${MODE}" == "swarm-system" ]]; then
   if [[ -n "${RELAY_MANIFEST}" ]]; then
     MANIFEST="${RELAY_MANIFEST}"$'\n---\n'"${POLICIES}"
     info "rendering the live relay, then swarm-system's ingress policies"
+    if [[ -n "${EGRESS_MANIFEST}" ]]; then
+      MANIFEST="${MANIFEST}"$'\n---\n'"${EGRESS_MANIFEST}"
+      info "and swarm-egress after them"
+    fi
   else
     MANIFEST="${POLICIES}"
     info "rendering swarm-system's ingress policies"
