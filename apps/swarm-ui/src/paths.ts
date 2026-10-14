@@ -107,6 +107,10 @@ export const FIXED: Readonly<Record<string, string>> = {
   // admin, the tenant's. Not a section: reached from the panel's foot by the
   // person's name. Its one-time link is KEY_LINK_PATH, above.
   'settings/keys': '/settings/keys',
+  // CTXQ-UI: Settings › Workspace, the selected workspace's own settings
+  // (Code intelligence). Beside API keys at the panel's foot, for the same
+  // reason: set once, not worked in.
+  'settings/workspace': '/settings/workspace',
   [HELP_ROUTE]: '/help',
   reference: '/api-reads',
 }

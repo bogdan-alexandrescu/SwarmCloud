@@ -645,14 +645,31 @@ KG5 was waiting on request A′, a `repo_index` runner input in
 | `context` (local pack and MCP) | **on** for every registered repository with a format-3 index | Nothing leaves the platform |
 | `code_intelligence.jev` (sending code to Jev) | **off** for every workspace; **on** for SwarmCloud's own repository, per the owner's decision | Whether Jev ever sees code |
 
-**Where the workspace setting lives.** In a swarm-api-owned
-`tenant_settings/{tenant_id}` document, not on `swarm_common.models.Tenant`,
-which is frozen. The per-repository override goes on the registration
-(`RepositoryPatch`), as `merge_policy` already does, with `inherit` clearing
-it.
+**Where the workspace setting lives.** As the `code_intelligence` field of the
+workspace's one settings document, `workspace_settings/{tenant_id}`, beside
+JUDGE-SELECT's `judgment_backend` and TRAIN-WS's `merge`, and written with a
+merge so it never touches the other fields. Not on
+`swarm_common.models.Tenant`, which is frozen, and not in a `tenant_settings`
+collection of its own: **owner decision 2026-10-14**, every per-workspace
+setting lives in that one document, one field per feature. The per-repository
+override goes on the registration (`RepositoryPatch`), as `merge_policy`
+already does, with `inherit` clearing it.
 
-That is a **new Firestore document shape**. Per CLAUDE.md "Issues", it gets its
-own issue before CTXQ-S builds it.
+So the shape is decided and adds no collection: a new field of an existing
+document, not a new document shape needing an issue of its own.
+
+**What the console offers (CTXQ-UI).** Settings › Workspace
+(`/settings/workspace`) shows the Jev switch, off by default, with what is
+sent when it is on (§5.4), what never is, and where it goes: the workspace's
+judgment backend, by name (Settings › API keys). Only the workspace's owner or
+a platform admin sees it enabled. A repository's Settings tab offers `context`
+as Inherit, On or Off, and says local context sends nothing off the platform.
+The client calls are coded against the CTXQ-SET row, all in
+`apps/swarm-ui/src/api.ts`: `GET /v1/code-intelligence` (the selected
+workspace: `tenant_id`, `can_edit`, `code_intelligence.{jev, context, set_at,
+set_by}`), `PUT /v1/workspaces/{tenant_id}/code-intelligence` with
+`{code_intelligence: {jev}}`, and `PATCH /v1/repositories/{repo_id}` with
+`{context: on | off | inherit}`.
 
 ---
 
@@ -902,8 +919,8 @@ that reopen a file run only after the earlier lane has merged.
 | **CTXQ-I** | 2 | in-flight route and the `in_flight` remote tool | new `swarm_api/attemptcontext.py`, new `swarm_api/routes/attemptcontext.py`, `swarm_api/main.py` (router line), `agent_worker/graphmcp/remote.py` (new) | unproven is 403; fenced is 409; another tenant's lane is never listed; no network gives `UNKNOWN` |
 | **CTXQ-PL** | 2 | planner: layer I and H in `plancontext`; a NOT_READY `duplicate` kind | `swarm_api/plancontext.py`, `swarm_api/issueruns.py` | #1094, #1136 and #1080 replayed as fixtures: the planner prompt lists the colliding lane; the 24 KiB allowance holds |
 | **CTXQ-RV** | 2 | review and fix: callers and tests outside the diff, the sibling idiom, earlier fixes of the same test (H) | `swarm_api/reviewcontext.py`, `swarm_api/issueci.py` | #1181's sibling sort is listed; the second time-bomb fixer is shown the first fix |
-| **CTXQ-SET** | 3 | settings API: `tenant_settings` code intelligence, repository `context` override | new `swarm_api/codeintel.py`, `swarm_api/repositories.py` (`RepositoryPatch`), `swarm_api/routes/repositories.py` | off by default; only an admin sets the workspace default; `inherit` clears; an audit row is written in the same transaction |
-| **CTXQ-UI** | 3 | Settings › Workspace › Code intelligence, and the repository Settings tab override | `apps/swarm-ui/src/` (new `CodeIntelligence.tsx`, `RepositoriesDetail.tsx`, `api.ts`, `paths.ts`) | vitest: the toggle shows off by default and says what leaves the platform; the issue-forms test follows if a nav entry changes |
+| **CTXQ-SET** | 3 | settings API: `workspace_settings/{tenant_id}.code_intelligence` (one field of the workspace's settings document, owner decision 2026-10-14), repository `context` override | new `swarm_api/codeintel.py`, `swarm_api/repositories.py` (`RepositoryPatch`), `swarm_api/routes/repositories.py` | off by default; only an admin sets the workspace default; `inherit` clears; an audit row is written in the same transaction |
+| **CTXQ-UI** | 3 | Settings › Workspace › Code intelligence, and the repository Settings tab override | `apps/swarm-ui/src/` (new `CodeIntelligence.tsx`, `RepositoriesDetail.tsx`, `api.ts`, `paths.ts`; `App.tsx` and `Spine.tsx` for the new `/settings/workspace` page and its link), the issue forms' "Where" list and `test_issue_forms.py` | vitest: the toggle shows off by default and says what leaves the platform; only an owner or admin sees it enabled; the repository tab writes on/off/inherit; the issue-forms test follows the new nav entry |
 | **CTXQ-J** | 3 | Jev client in the worker: §5.2 shapes, §5.4 redaction, §5.5 breaker, budget, audit | new `agent_worker/judge/` package | fake Jev: timeout, 429 and malformed answers fall back; a credential-shaped excerpt (built at runtime) is dropped, not masked; the denied paths send names only; no key, no call |
 | **CTXQ-JW** | 4 | J1 into the pack, J2 and J5 into the planner post-step, J3 into the review post-step, J4 into the gate | `contextpack/rank.py`, `prepublish.py`, `agent_worker/verdict.py` (annotation only) | advisory outputs never change `verdict`; auto-merge ignores them; a Jev outage leaves every output identical to the local-only run |
 | **CTXQ-E** | 4 | replay harness and scoring workflow | new `scripts/ctxq-replay.sh`, new `scripts/lib/ctxq_replay.py`, new `tests/unit/scripts/test_ctxq_replay.py` | branches are `replay/*` only, with no PR opened; scoring reads historic-red tests from a fixture body; the pairing is stable |
@@ -923,7 +940,10 @@ option B), A′ is filed as written in knowledge-graph.md §7.4, and CTXQ-S wait
 on it.
 
 **Separate issues this design needs before building**, per CLAUDE.md "Issues":
-* the `tenant_settings` Firestore document shape (CTXQ-SET);
+* ~~the `tenant_settings` Firestore document shape (CTXQ-SET)~~ — decided by
+  the owner on 2026-10-14 instead: no new collection. Code intelligence is the
+  `code_intelligence` field of `workspace_settings/{tenant_id}`, the one
+  per-workspace settings document (§4.7), so it needs no issue of its own;
 * the Jev data-flow decision record (what §5.4 sends) for the security epic
   #476's review, because credentials and tenant isolation get a review.
 

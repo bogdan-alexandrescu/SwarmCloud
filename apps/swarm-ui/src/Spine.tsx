@@ -1567,8 +1567,8 @@ export function SkyShell({
         {/* SETTINGS › API KEYS (KEYS-UI): the person's own keys, so it sits
             under their name rather than among the sections (App.tsx SETTINGS). */}
         <a
-          className={`sk-pset${place.startsWith('/settings/') ? ' is-on' : ''}`}
-          aria-current={place.startsWith('/settings/') ? 'page' : undefined}
+          className={`sk-pset${place.startsWith('/settings/keys') ? ' is-on' : ''}`}
+          aria-current={place.startsWith('/settings/keys') ? 'page' : undefined}
           href={addressToPath('settings/keys')}
           onClick={(e) => {
             if (!routedClick(e)) return
@@ -1577,6 +1577,20 @@ export function SkyShell({
           }}
         >
           Settings › API keys
+        </a>
+        {/* SETTINGS › WORKSPACE (CTXQ-UI): the selected workspace's own
+            settings, Code intelligence first (App.tsx WORKSPACE_TAB). */}
+        <a
+          className={`sk-pset${place === '/settings/workspace' ? ' is-on' : ''}`}
+          aria-current={place === '/settings/workspace' ? 'page' : undefined}
+          href={addressToPath('settings/workspace')}
+          onClick={(e) => {
+            if (!routedClick(e)) return
+            e.preventDefault()
+            nav('settings/workspace')
+          }}
+        >
+          Settings › Workspace
         </a>
         <ThemeToggle />
       </div>
