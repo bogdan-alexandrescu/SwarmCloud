@@ -44,6 +44,7 @@ from ..deps import AppContext, admin_auth, get_context, paged_limit
 from ..errors import Forbidden, NotFound, ValidationFailed
 from ..heartbeats import heartbeat_grace_seconds
 from ..mergewake import wake_tenant
+from ..prgate import wake_tenant as wake_after_prs
 from ..purge import HistoryPurge, parse_query
 from ..verdictpublish import on_task_finished
 from ..waker import TASK_FINISHED
@@ -949,6 +950,13 @@ def wake_merges(
     # how its fix step ended (`cifix.postback_tenant`); it never moves a task.
     postback = postback_ci_fixes(ctx, tenant_id, limit=paged_limit(ctx, limit))
     ctx.metrics.admin_actions.labels(action="ci_fix_postback").inc()
+    # Lane SPEED-D3 rides it too, for the same reasons: workflows submitted
+    # with `after` wait, PARKED, for pull requests of their own repository to
+    # merge; this reads each with the same tenant's token and marks the gate
+    # merged or closed (`prgate.wake_tenant`). It never moves a task: the
+    # scheduler's dependency sweep promotes or ends the root.
+    gates = wake_after_prs(ctx, tenant_id, limit=paged_limit(ctx, limit))
+    ctx.metrics.admin_actions.labels(action="after_prs_wake").inc()
     return {
         "tenant_id": tenant_id,
         "report": report.to_api(),
@@ -957,6 +965,8 @@ def wake_merges(
         "failures": report.failures,
         "ci_fix": postback.to_api(),
         "ci_fix_failures": postback.failures,
+        "after_prs": gates.to_api(),
+        "after_prs_failures": gates.failures,
     }
 
 

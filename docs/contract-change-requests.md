@@ -83,6 +83,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 72 | `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist | proposed |
 | 74 | `states.py`: `EventType.STARTUP_PROGRESS`, the browser agent's start-up steps (STARTUP-API) | ACCEPTED by the owner 2026-10-13 and APPLIED by the pull request that adds this line |
 | 75 | `models.py`: `Workflow.fix_rounds` and `WorkflowStep.spawned_by`, a merge step's fix rounds as workflow fields (SPEED-D2) | proposed; worked around |
+| 76 | `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING`, a workflow that waits for pull requests to merge (SPEED-D3) | proposed; worked around |
 
 ---
 
@@ -11332,3 +11333,80 @@ for the rollup to read it; until they do, the step-id rule stays.
 
 **1-3** untouched: a field records a decision; a round is an ordinary task
 admitted like any other. 4-10 unchanged.
+
+## 76. `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING` (SPEED-D3)
+
+**Status:** proposed, and worked around without it by the pull request that
+adds this entry (lane SPEED-D3, owner decision 2026-10-14, delivery speed
+plan D3). Nothing under `apps/common/swarm_common/` was edited.
+
+### Why
+
+A workflow spec may now say `"after": {"pr": 41}` (or a list): no step starts
+until each named pull request of the workflow's own repository has merged,
+and one closed without merging fails the workflow (docs/workflows.md
+"Waiting for a pull request: `after`"). Two facts about that have no home in
+the frozen contract:
+
+1. **What the workflow waits for.** `Workflow` carries no metadata, so the
+   numbers live on each ROOT step's task as `metadata.after_prs`
+   (`swarm_api.prgate`), with the gate's state (`waiting`, `merged`,
+   `closed`). A reader of the workflow alone cannot say what it waits for;
+   the API reads it back off the step tasks (`codec.workflow_to_api`'s
+   `after_pull_requests`).
+2. **Why a root step is parked.** No `ParkReason` says "waiting for a pull
+   request", so a gated root is parked on `DEPENDENCY_INCOMPLETE` with no
+   `depends_on`. Every reader that promotes that reason had to learn the
+   gate: the scheduler's dependency sweep (`scheduler.loop.after_prs_hold`)
+   and the reconciler's DEPENDENCIES_MET rule
+   (`reconciler.model.held_for_pull_requests`), which would otherwise have
+   promoted a root that "depends on no step" after its grace. Each restates
+   the key and the `merged` state, held equal by
+   tests/unit/control_plane/test_workflow_after_pr.py. A third promoter added
+   later without that check would start a held workflow.
+
+### The change
+
+```python
+# states.py
+class ParkReason(str, Enum):
+    ...
+    #: A workflow submitted with `after` waits for pull requests of its own
+    #: repository to merge. Marked by swarm-api's wake tick, promoted by the
+    #: scheduler on the mark; never promoted by the dependency rule.
+    PULL_REQUEST_PENDING = "PULL_REQUEST_PENDING"
+
+# models.py
+@dataclass
+class Workflow:
+    ...
+    #: Pull request numbers of the workflow's repository that must merge
+    #: before any step starts; empty for a workflow without `after`.
+    after: list[int] = field(default_factory=list)
+```
+
+The gate's state would stay on the root tasks (it is written per task, in a
+guarded transaction, by the tick); only the park reason and the declaration
+move.
+
+### Rollback
+
+Delete the reason and the field. Every park written with the reason would
+need rewriting to `DEPENDENCY_INCOMPLETE` first, which is the workaround
+above.
+
+### What it would break
+
+A new `ParkReason` value is read by every surface that names park reasons:
+the console's state pills and blockers (`apps/swarm-ui/src/types.ts`), the
+bridge's progress text (`swarm_mcp.progress`, `swarm_mcp.compact`) and
+`test_every_park_has_an_unparker.py`, which requires a sweep for each. The
+field is defaulted and decodes old documents unchanged.
+
+### Invariants
+
+**1** kept either way: a gated root is PARKED, holding no lease, no pool
+count and no execution. **3** untouched: nothing is counted before LEASED.
+**9**: the tick reads with the named tenant's own `-git` token, only that
+tenant's parks. 2, 4-8 and 10 unchanged.
+

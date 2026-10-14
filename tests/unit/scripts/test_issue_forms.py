@@ -433,6 +433,11 @@ def _nav_options() -> dict[str, str]:
     m = re.search(r"\?\? \(at\.sectionId === HELP \? '([^']+)'", app)
     assert m is not None, "could not read the name the head prints for the Help screen"
     out[paths[help_route]] = f"{UI}{m.group(1)} ({paths[help_route]})"
+    # Settings › API keys (KEYS-UI): not a section, reached from the panel's
+    # foot beside the person's name. Read from the constants the router, the
+    # link and the page title use.
+    keys = f"{_const(app, 'SETTINGS')}/{_const(app, 'KEYS_TAB')}"
+    out[paths[keys]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'KEYS_LABEL')} ({paths[keys]})"
     return out
 
 

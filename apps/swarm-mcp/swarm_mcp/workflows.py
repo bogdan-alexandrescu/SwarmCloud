@@ -136,8 +136,51 @@ SPEC_KEYS = frozenset(
         # `metadata.merge`, for the reason `title` is; swarm-api checks the
         # value (`validation.MERGE_CHOICES`) and derives the steps.
         "merge",
+        # The pull requests of the workflow's own repository that must merge
+        # before any step starts (SPEED-D3): `{"pr": 41}` or a list of them.
+        # Sent as the top-level `after` WorkflowCreate takes; checked for
+        # shape by `check_after`, and for everything else by swarm-api.
+        "after",
     }
 )
+
+#: The most pull requests `after` may name: swarm-api's
+#: `schemas.MAX_AFTER_PRS`, which this package cannot import;
+#: tests/unit/mcp/test_spec_after_pr.py holds the two equal.
+MAX_AFTER_PRS = 10
+
+
+def check_after(value: Any, *, where: str = "the workflow spec") -> list[dict[str, int]] | None:
+    """A spec's `after`, as the list the API takes; None when it names none.
+
+    THE SHAPE ONLY: one `{"pr": <integer >= 1>}` or a non-empty list of them,
+    at most MAX_AFTER_PRS. Whether the workflow has a GitHub repository for
+    the numbers to be pull requests of is swarm-api's rule
+    (`prgate.resolve_after`) and is not restated here.
+    """
+    if value is None:
+        return None
+    entries = [value] if isinstance(value, dict) else value
+    shape = (
+        f'{where}: after must be {{"pr": <pull request number>}} or a list of them, '
+        f"at most {MAX_AFTER_PRS} -- the pull requests of the workflow's own repository "
+        "that must merge before any of its steps starts"
+    )
+    if not isinstance(entries, list) or not entries or len(entries) > MAX_AFTER_PRS:
+        raise SwarmError(shape)
+    out: list[dict[str, int]] = []
+    for entry in entries:
+        number = entry.get("pr") if isinstance(entry, dict) else None
+        if (
+            not isinstance(entry, dict)
+            or set(entry) != {"pr"}
+            or not isinstance(number, int)
+            or isinstance(number, bool)
+            or number < 1
+        ):
+            raise SwarmError(shape)
+        out.append({"pr": number})
+    return out
 
 DEFAULT_PROFILE = "claude-code"
 
@@ -416,6 +459,7 @@ def read_spec(document: Any, *, where: str = "the workflow spec") -> dict[str, A
         "label": document.get("label"),
         "title": title,
         "merge": document.get("merge"),
+        "after": check_after(document.get("after"), where=where),
     }
 
 
@@ -433,6 +477,7 @@ def submit(
     title: str | None = None,
     merge_pr: dict[str, Any] | None = None,
     merge: str | None = None,
+    after: list[dict[str, int]] | None = None,
 ) -> dict[str, Any]:
     """`POST /v1/workflows`. Returns the route's envelope, not just the workflow.
 
@@ -465,6 +510,8 @@ def submit(
         body["priority"] = int(priority)
     if merge_pr is not None:
         body["merge_pr"] = merge_pr
+    if after:
+        body["after"] = after
     envelope = _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")
     _remember_launch(envelope["workflow"])
     return envelope
