@@ -1222,6 +1222,20 @@ def run_cli_agent(
         from .. import children as children_mod  # lazy: the runner rarely needs it
 
         prompt = f"{prompt}\n\n{children_mod.prompt_line(spool)}"
+    # REPOSITORY CONTEXT (docs/design/context-quality.md §4.4, lane CTXQ-P).
+    # When the stager put a graph snapshot beside the checkout, the pack is
+    # built from it now -- `work/.swarm-context/CONTEXT.md`, outside the
+    # checkout, so the publish never commits it -- and one line names it.
+    # Nothing staged, no line; a pack that cannot be built is one line saying
+    # so, and the agent starts all the same (`contextpack.prepare` never
+    # raises). Not on a resume: the session already holds the line, and the
+    # file is still where it said.
+    if cwd != ctx.work_dir and not os.environ.get(RESUME_SESSION_ENV, "").strip():
+        from .. import contextpack  # lazy: most starts have nothing staged
+
+        context_line = contextpack.prepare(ctx, cwd)
+        if context_line:
+            prompt = f"{prompt}\n\n{context_line}"
     # A RESUMED SESSION (S13/S14). The worker moved this attempt to another
     # account at a turn boundary and restarted this runner to continue the
     # session it stopped: `--resume <id>` and one short user message, in the

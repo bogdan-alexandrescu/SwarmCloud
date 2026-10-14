@@ -379,6 +379,10 @@ TENANT_FILES = (
     # After the live path, for the same reason: everything before it renders
     # as it did before browser egress existed.
     "network-policies/allow-egress-proxy.yaml",
+    # The internal judge's path to the tailnet forwarder (lane JUDGE-NET,
+    # kubernetes/swarm-system/tailscale-egress.yaml). Last, for the same
+    # reason: everything before it renders as it did before.
+    "network-policies/allow-judge-egress.yaml",
 )
 
 #: The older worker identity -- LEGACY_KSA_NAME's ServiceAccount and the

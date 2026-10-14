@@ -5782,6 +5782,80 @@ export async function deleteProviderKey(provider: string, scope: ProviderKeyScop
 }
 
 // ---------------------------------------------------------------------------
+// The workspace's Jev judgment backend (JUDGE-SELECT; swarm_api/judgment.py).
+// Internal Jev is the default; Internal Laya and TypeSafe are the others. The
+// backend is chosen BY NAME: no URL or key goes in the PUT body.
+// ---------------------------------------------------------------------------
+
+export type JevBackend = 'internal-jev' | 'internal-laya' | 'typesafe'
+
+export const JEV_BACKENDS: readonly JevBackend[] = ['internal-jev', 'internal-laya', 'typesafe']
+
+export interface JevOption {
+  backend: JevBackend
+  label: string
+  available: boolean
+  /** Why not, in the API's words; null when available. */
+  reason: string | null
+}
+
+/** The `jev` object: the chosen backend, whether it can run, and every option. */
+export interface JevStatus extends JevOption {
+  default: JevBackend
+  set_at: string | null
+  set_by: string | null
+  options: JevOption[]
+}
+
+/** `GET /v1/judgment` and `GET|PUT /v1/workspaces/{id}/judgment-backend`. */
+export interface Judgment {
+  tenant_id: string
+  can_edit: boolean
+  jev: JevStatus
+}
+
+function jevBackend(v: unknown): JevBackend {
+  return v === 'internal-laya' || v === 'typesafe' ? v : 'internal-jev'
+}
+
+function normJevOption(raw: unknown): JevOption {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  return {
+    backend: jevBackend(r.backend),
+    label: keyField(r.label) ?? '',
+    available: r.available === true,
+    reason: keyField(r.reason),
+  }
+}
+
+function normJudgment(raw: unknown): Judgment {
+  const r = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>
+  const jev = (typeof r.jev === 'object' && r.jev !== null ? r.jev : {}) as Record<string, unknown>
+  const options = Array.isArray(jev.options) ? jev.options.map(normJevOption) : []
+  return {
+    tenant_id: keyField(r.tenant_id) ?? '',
+    can_edit: r.can_edit === true,
+    jev: {
+      ...normJevOption(jev),
+      default: jevBackend(jev.default),
+      set_at: keyField(jev.set_at),
+      set_by: keyField(jev.set_by),
+      options: JEV_BACKENDS.map((b) => options.find((o) => o.backend === b) ?? { backend: b, label: b, available: false, reason: null }),
+    },
+  }
+}
+
+/** `GET /v1/judgment`: the selected workspace's Jev backend and what is available. */
+export async function loadJudgment(): Promise<Result<Judgment>> {
+  return readAs(route('/v1/judgment'), normJudgment)
+}
+
+/** `PUT /v1/workspaces/{tenant_id}/judgment-backend`: the owner's or an admin's choice. */
+export async function putJudgmentBackend(tenantId: string, backend: JevBackend): Promise<Result<unknown>> {
+  return writeTo(route('/v1/workspaces/{tenant_id}/judgment-backend', { tenant_id: tenantId }), 'PUT', { judgment_backend: backend })
+}
+
+// ---------------------------------------------------------------------------
 // Connect GitHub (#780, OB3): the SwarmCloud GitHub App's user authorisation.
 //
 // The routes are swarm_api/routes/forgeapp.py and routes/onboarding.py. NONE

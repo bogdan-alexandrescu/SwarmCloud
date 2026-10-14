@@ -78,7 +78,14 @@ FROM ${MIRROR_DOCKER_HUB}/library/${ALPINE_IMAGE}
 # the fixture patch was byte-correct and still reported FAIL. This is not the
 # gcloud/Cloud-SDK tradeoff above: git alone, with no Python dependency chain,
 # carries no comparable CVE surface.
-RUN apk add --no-cache bash curl jq coreutils ca-certificates python3 git
+# sed (GNU) because `redact` in scripts/lib/common.sh is one sed -E program
+# with `#` delimiters and back-references that busybox sed refuses to compile
+# ("sed: unmatched '#'"). Without it every acceptance reason piped through
+# redact came out EMPTY: 13 of the 14 failed live-browser runs read on
+# 2026-10-14 printed that error once per check (lane SPEED-C2). It fails
+# closed -- nothing leaked, the reason was lost -- which is still a check
+# that cannot say why it failed.
+RUN apk add --no-cache bash curl jq coreutils ca-certificates python3 git sed
 
 WORKDIR /swarm
 

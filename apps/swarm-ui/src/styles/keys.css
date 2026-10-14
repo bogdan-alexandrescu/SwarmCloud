@@ -19,8 +19,26 @@
 .pk-saved { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
 .pk-ask { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; max-width: 520px; }
 
+/* THE JEV BACKEND (lane JUDGE-SELECT; JudgmentBackend.tsx). One row per
+   option: the native radio, then its name and where page text goes. Rows
+   stack at every width, so a phone reads the same list a desktop does. An
+   option the platform cannot serve is dimmed but its reason stays legible. */
+.jb-choice { display: flex; flex-direction: column; gap: var(--ctl-s2); min-width: 0; }
+.jb-options { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; max-width: 640px; }
+.jb-option { display: flex; align-items: flex-start; gap: var(--ctl-s2); padding: var(--ctl-s2) var(--ctl-s3); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; min-width: 0; }
+.jb-option.is-on { border-color: var(--text); }
+.jb-option.is-off { cursor: default; }
+.jb-option.is-off .jb-name { color: var(--text-dim); }
+.jb-option > input[type='radio'] { margin-top: 3px; flex: none; }
+.jb-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.jb-name { font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; }
+.jb-default { font-weight: 400; color: var(--text-dim); }
+.jb-note { font-size: var(--t-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+
 @media (max-width: 719px) {
   .pk-input { flex-basis: 100%; max-width: none; }
   .pk-form-row > .c-btn { flex: 1 1 auto; }
   .pk-ask { max-width: none; }
+  .jb-options { max-width: none; }
+  .jb-option { padding: var(--ctl-s2); }
 }

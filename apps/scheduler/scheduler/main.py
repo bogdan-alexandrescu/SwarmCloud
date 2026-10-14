@@ -141,7 +141,7 @@ def build_scheduler(
     return Scheduler(
         settings=settings,
         store=SchedulerStore(db),
-        router=router or build_router(settings, pool=pool),
+        router=router or build_router(settings, pool=pool, db=db),
         metrics=metrics or SchedulerMetrics(),
         pool=pool,
     )

@@ -554,6 +554,14 @@ locals {
   # serves nothing yet, so it is not a link either.
   console_url = var.enable_frontend && var.frontend_hostname != "" ? "https://${var.frontend_hostname}" : ""
 
+  # Saga's decision API through the cluster's ONE Tailscale egress Service in
+  # swarm-system (JUDGE-NET; owner decision 2026-10-14). Non-empty is what
+  # makes the internal Jev judgment backends available (swarm_api.judgment)
+  # and what the scheduler builds a live-browser pod's JEV_API_URL from
+  # (scheduler.judgment). Empty while var.internal_decision_api_enabled is
+  # off, so no workspace's Jev is offered a backend the cluster cannot reach.
+  internal_decision_api_url = var.internal_decision_api_enabled ? "http://decision-api.swarm-system.svc.cluster.local" : ""
+
   # swarm-api's address for the live relay (live.tf, LB-L8d). PLAIN ws on 8080,
   # on the internal load balancer's reserved address: owner decision
   # 2026-10-11 (b) proxies every browser through swarm-api, so this hop never
@@ -799,6 +807,10 @@ locals {
       # built from (swarm_api.settings `console_url`). See local.console_url.
       SWARM_CONSOLE_URL = local.console_url
 
+      # Whether the internal Jev judgment backends are available
+      # (swarm_api.judgment). See local.internal_decision_api_url.
+      INTERNAL_DECISION_API_URL = local.internal_decision_api_url
+
       # The audience the child routes pin a worker's ID token to
       # (swarm_api.settings `child_audience`, routes/children.py): the custom
       # audience this service accepts, and the value the scheduler hands each
@@ -923,6 +935,11 @@ locals {
       # serves.
       SWARM_CONSOLE_URL      = local.console_url
       SWARM_PR_CONSOLE_LINKS = tostring(var.pr_console_links)
+
+      # A live-browser pod's JEV_API_URL for a workspace that judges with an
+      # internal backend (scheduler.judgment, JUDGE-SELECT). See
+      # local.internal_decision_api_url.
+      INTERNAL_DECISION_API_URL = local.internal_decision_api_url
 
       # Child tasks (child_tasks.tf): passed through to a worker the scheduler
       # also mints a registration nonce for -- only when it holds

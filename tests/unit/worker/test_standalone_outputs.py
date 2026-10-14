@@ -114,6 +114,8 @@ QUESTIONS_LINE = (
 #: How every copy of the line starts, and ends once the directory is named.
 LINE_START = "Files written to "
 LINE_END = "/artifacts ($SWARM_ARTIFACTS_DIR) are uploaded and shown in Artifacts."
+#: `contextpack.prepare`'s line when the stager staged nothing (§4.4).
+CONTEXT_LINE_START = "No repository context was staged for this step: "
 
 
 #: A stand-in for `claude --print`. Its plan is the JSON value the prompt starts
@@ -936,15 +938,23 @@ def test_a_repository_task_is_unchanged(db, tmp_path, monkeypatch, worker_factor
     assert prompt.startswith(json.dumps(plan)), prompt
     appended = prompt[len(json.dumps(plan)):]
     lines = [line for line in appended.splitlines() if line.strip()]
+    # The context pack's line (context-quality.md §4.4, CTXQ-P) comes first
+    # when a stager left a stage.json: this file:// repository is not on
+    # github.com, so the stager stages nothing and says so in one line. It
+    # names no destination for a deliverable; it is set aside here, and the
+    # "write" check below still reads it.
+    context = [line for line in lines if line.startswith(CONTEXT_LINE_START)]
+    assert len(context) <= 1 and (not context or lines[0] == context[0]), lines
+    rest = lines[len(context):]
     # The line, then the questions sentence (2026-10-05), which is about a
     # decision for the owner, not about where the deliverable goes; then the
     # publish paragraph (Proposal A, 2026-10-08), which says the worker
     # publishes the committed branch -- the deliverable stays the diff, and
     # only the pull request's title and body go to the artifacts folder.
-    assert len(lines) == 3, appended
-    assert lines[0].startswith(LINE_START) and lines[0].endswith(LINE_END), lines[0]
-    assert lines[1] == QUESTIONS_LINE, lines[1]
-    assert lines[2] == cliagent.PUBLISH_PARAGRAPH, lines[2]
+    assert len(rest) == 3, appended
+    assert rest[0].startswith(LINE_START) and rest[0].endswith(LINE_END), rest[0]
+    assert rest[1] == QUESTIONS_LINE, rest[1]
+    assert rest[2] == cliagent.PUBLISH_PARAGRAPH, rest[2]
     assert "Write deliverables" not in prompt, prompt
     assert not any(line.lstrip().lower().startswith("write") for line in lines), lines
 

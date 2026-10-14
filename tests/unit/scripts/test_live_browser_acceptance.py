@@ -554,3 +554,48 @@ def test_an_agent_that_never_asked_is_a_failure(tmp_path, monkeypatch):
                {"/live/session": (200, {"available": False}),
                 "/answer": (200, {"status": "ok", "content": "done"})})
     assert got["handoff"] == "FAIL"
+
+
+# --------------------------------------------------------------------------
+# Harness defects the scheduled runs showed (lane SPEED-C2, 2026-10-14)
+# --------------------------------------------------------------------------
+
+ATTEMPT = "tenants/smoke/tasks/task_1/attempts/"
+
+
+@pytest.mark.parametrize("name", [
+    # The worker's live log tails (agent_worker/runners/streams.py): under the
+    # attempt's logs/live/, not the recording's live/. 8 of the 14 failed
+    # live-browser runs read 2026-10-12..14 failed `recording` on exactly these
+    # two objects ("2 object(s) under live/ are not recording segments").
+    ATTEMPT + "att_1/logs/live/agent_stdout.tail.log",
+    ATTEMPT + "att_1/logs/live/agent_stderr.tail.log",
+    ATTEMPT + "att_1/live/rec-1760000000000.live.webm",
+    ATTEMPT + "att_1/live/actions-1760000000000.live.jsonl",
+    ATTEMPT + "att_1/artifacts/live/notes.txt",
+])
+def test_only_the_recording_s_own_live_directory_is_judged_for_strays(name):
+    """MUTATION: go back to `"/live/" in name`. The log tails read as strays
+    and `recording` fails on every run that streamed its logs."""
+    assert lb.stray_live_objects(ATTEMPT, [name]) == []
+
+
+@pytest.mark.parametrize("name", [
+    ATTEMPT + "att_1/live/rec-1760000000000.webm",
+    ATTEMPT + "att_1/live/frames/0001.png",
+    ATTEMPT + "att_1/live/password.txt",
+])
+def test_anything_else_in_the_recording_s_live_directory_is_a_stray(name):
+    assert lb.stray_live_objects(ATTEMPT, [name]) == [name]
+
+
+def test_the_swarm_verify_image_carries_gnu_sed_for_redact():
+    """`redact` (scripts/lib/common.sh) is a sed -E program with `#`
+    delimiters that busybox sed cannot compile ("sed: unmatched '#'"), and the
+    swarm-verify image is Alpine. 13 of the 14 failed live-browser logs read
+    2026-10-12..14 print that error once per check, and every verdict reason
+    the group pipes through redact came out empty. MUTATION: drop `sed` from
+    the apk line."""
+    dockerfile = (ROOT / "images" / "swarm-verify" / "Dockerfile").read_text()
+    (line,) = [l for l in dockerfile.splitlines() if l.startswith("RUN apk add")]
+    assert "sed" in line.split(), line
