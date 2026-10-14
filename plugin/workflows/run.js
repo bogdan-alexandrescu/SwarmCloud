@@ -128,9 +128,12 @@ export const meta = {
 //     swarm_mcp.workflows.spec_digest) and the agent passes it beside the
 //     spec: swarm_workflow refuses, before sending anything, a spec that
 //     arrived different;
-//   * the reply must carry that digest back, the spec's step ids exactly, each
-//     step's depends_on exactly, and one distinct task per step -- or no row
-//     starts;
+//   * the reply must carry that digest back, every one of the spec's step ids
+//     (none dropped, none renamed), each spec step's depends_on exactly, and
+//     one distinct task per step -- or no row starts. A step the reply names
+//     beyond the spec is SwarmCloud's addition, and gets a row, when the
+//     bridge marked it `added` or it hangs off the spec's steps (serverAdded);
+//     any other extra step is refused;
 //   * each sc:step row passes its step_id to swarm_follow, which will not
 //     follow a task that is a different step.
 //
@@ -195,6 +198,10 @@ const SUBMITTED = {
           task_id: { type: ['string', 'null'] },
           depends_on: { type: 'array', items: { type: 'string' } },
           console: CONSOLE,
+          // The bridge's mark: true for a step SwarmCloud added to the spec
+          // it submitted (a re-review, a merge), false for a spec step. Not
+          // required: a bridge before 0.5.32 sends none (SPEED-D5).
+          added: { type: ['boolean', 'null'] },
         },
         required: ['step_id', 'task_id', 'depends_on', 'console'],
       },
@@ -359,20 +366,25 @@ const TERMINAL = ['SUCCEEDED', 'FAILED', 'CANCELLED', 'DEAD_LETTERED']
 // step's state but not its answer, cost, duration or pull request, and it is
 // one more relay row returning StructuredOutput, the very thing that failed.
 //
-// Only `state` is required, and every other field also takes a null
-// (ROW-SKIP, part of #1194; measured 2026-10-12). Re-review and merge rows
+// Nothing is required, and every field also takes a null (SPEED-D5,
+// 2026-10-14). ROW-SKIP (part of #1194; measured 2026-10-12) loosened every
+// field but `state`: Re-review and merge rows
 // whose agent was SKIPPED -- no answer, no artifacts -- ran out of their five
 // StructuredOutput attempts on "must have required property 'answer_excerpt',
 // 'pr_url', 'artifacts', 'last_error', 'console'" and on a missing root
 // `state`, and the row ended in row_error over a step that had finished. The
 // empty fields carry nothing stepAnswer() needs: it reads a missing or null
 // text back as null, a missing or null list as [], and the root `state` only
-// when `result.state` is absent. The step's state is the one field the row
-// exists to return, so that one stays required.
+// when `result.state` is absent. Rows on plugin 0.5.27 still ran out of their
+// five attempts on a missing `state`, and others ended "subagent completed
+// without calling StructuredOutput" -- an error row over a finished step. So
+// `state` is optional too, `result` may be null, and a row that answers with
+// no state, or throws, takes its state from one swarm_workflow_status read
+// (rowFromStatus) instead of ending as an error row.
 const STEP_FIELDS = {
-  type: 'object',
+  type: ['object', 'null'],
   properties: {
-    state: { type: 'string' },
+    state: { type: ['string', 'null'] },
     answer_excerpt: { type: ['string', 'null'] },
     cost_usd: { type: ['number', 'null'] },
     duration_s: { type: ['number', 'null'] },
@@ -382,7 +394,7 @@ const STEP_FIELDS = {
     console: { type: ['string', 'null'] },
     questions: { type: ['array', 'null'] },
   },
-  required: ['state'],
+  required: [],
 }
 
 const STEP_RESULT = {
@@ -391,16 +403,20 @@ const STEP_RESULT = {
     state: { type: ['string', 'null'] },
     result: STEP_FIELDS,
   },
-  required: ['result'],
+  required: [],
 }
 
 // A row's `{state, result}` as the flat step result: an empty text is null, a
 // figure left out is null (not recorded, never 0), and a link is kept only
 // when there is one. The bridge's own `result.state` wins over the row's copy
-// of it. An answer already flat (a row from before 0.5.17) is taken as it is.
+// of it. An answer already flat (a row from before 0.5.17) is taken as it is;
+// one whose `result` is null is read from its root `state` alone.
 function stepAnswer(answer) {
-  if (!answer || typeof answer !== 'object' || !answer.result || typeof answer.result !== 'object') return answer
-  const given = answer.result
+  if (!answer || typeof answer !== 'object') return answer
+  if (!answer.result || typeof answer.result !== 'object') {
+    if (!Object.prototype.hasOwnProperty.call(answer, 'result')) return answer
+  }
+  const given = answer.result && typeof answer.result === 'object' ? answer.result : {}
   const text = (value) => (typeof value === 'string' && value !== '' ? value : null)
   const figure = (value) => (typeof value === 'number' && isFinite(value) ? value : null)
   const flat = {
@@ -726,6 +742,9 @@ function narrate(stepId, result, submittedLink) {
     const why = result && result.row_error ? ': ' + clip(result.row_error, 100) : ''
     return stepId + ' · its row stopped before the task finished' + why + ' -- the SwarmCloud task is unaffected' + link
   }
+  if (result.state_from) {
+    return stepId + ' ' + result.state + ' (from the ' + result.state_from + '; its row could not answer: ' + clip(result.row_note, 100) + ')' + link
+  }
   const parts = [stepId + ' ' + (result.state || 'UNKNOWN'), duration(result.duration_s), money(result.cost_usd)]
   const pr = pullRequest(result.pr_url)
   if (pr) parts.push(pr)
@@ -754,8 +773,10 @@ function sameSet(left, right) {
 // The choice is the spec's `merge`, else the repository's registered
 // merge_policy ("off" | "on_merge_verdict"), else the platform's
 // merge_by_default ("on"). The last two are not visible from here, so a spec
-// that says nothing accepts any one of the shapes they could produce, and
-// nothing else.
+// that says nothing could get any one of the shapes they produce. Since
+// SPEED-D5 these shapes gate nothing -- serverAdded() decides which extra steps
+// are the server's -- they only order a recognised shape's rows and name its
+// reason in the log.
 const MERGE_STEP_ID = 'merge'
 const REREVIEW_STEP_ID = 're-review'
 const MERGE_ON_VERDICT = 'on_merge_verdict'
@@ -835,6 +856,46 @@ function appendedShape(spec, submitted) {
   return appendable(spec).filter((shape) => sameSet(shape.map((step) => step.step_id), extra))[0] || null
 }
 
+// THE STEPS SWARMCLOUD ADDED (SPEED-D5, owner decision 2026-10-14). Measured
+// on plugin 0.5.27: a 3-step spec came back with 5 -- swarm-api had appended a
+// re-review and a merge -- and the run ended SUBMITTED_UNVERIFIED because the
+// reply named steps `appendable` did not predict. Predicting the server's
+// merge rules from here is a copy that drifts, so the prediction no longer
+// gates anything: it only names the reason in the log. A step the reply names
+// beyond the spec is the server's when
+//   * the bridge marked it `added: true` -- it compared the reply with the
+//     spec it submitted itself (swarm_mcp.server._workflow_created), or
+//   * it carries no mark (a bridge before 0.5.32) and every step it depends
+//     on is a spec step or another of the server's steps, at least one.
+// `added: false` on a step the spec lacks, or an unmarked step tied to no
+// spec step, is refused: that is a relay inventing or renaming a step. A spec
+// step missing from the reply is refused in mismatches() whatever is added.
+// Returns {added: [reply steps, in reply order], refused: [step ids]}.
+function serverAdded(spec, submitted) {
+  const given = {}
+  for (const step of spec.steps) given[step.step_id] = true
+  const extras = (submitted.steps || []).filter((step) => step && !given[step.step_id])
+  const ours = {}
+  for (const step of extras) if (step.added === true) ours[step.step_id] = true
+  // Unmarked steps join one at a time, so a chain of them is accepted only
+  // when it starts on the spec's own steps.
+  for (let grew = true; grew;) {
+    grew = false
+    for (const step of extras) {
+      if (ours[step.step_id] || step.added === true || step.added === false) continue
+      const deps = step.depends_on || []
+      if (deps.length > 0 && deps.every((dep) => given[dep] || ours[dep])) {
+        ours[step.step_id] = true
+        grew = true
+      }
+    }
+  }
+  return {
+    added: extras.filter((step) => ours[step.step_id]),
+    refused: extras.filter((step) => !ours[step.step_id]).map((step) => step.step_id),
+  }
+}
+
 // Every way the Submit reply can differ from the spec this script was given.
 // Empty means the relay carried both directions faithfully.
 function mismatches(spec, submitted, digest) {
@@ -849,11 +910,10 @@ function mismatches(spec, submitted, digest) {
   if (submitted.error) problems.push('the reply names a workflow and also an error: ' + clip(submitted.error, 160))
   const given = {}
   for (const step of spec.steps) given[step.step_id] = step
-  // The steps SwarmCloud appended for the merge, checked as the server builds
-  // them; any other step the spec does not have is still refused.
-  const appended = {}
-  const shape = appendedShape(spec, submitted)
-  for (const step of shape || []) appended[step.step_id] = step
+  // The steps SwarmCloud added (serverAdded); any other step the spec does
+  // not have is refused.
+  const refused = {}
+  for (const id of serverAdded(spec, submitted).refused) refused[id] = true
   const seen = {}
   const owner = {}
   for (const step of submitted.steps || []) {
@@ -863,14 +923,14 @@ function mismatches(spec, submitted, digest) {
       continue
     }
     seen[id] = true
-    const expected = given[id] || appended[id]
-    if (!expected) {
+    if (refused[id]) {
       problems.push('the reply names a step the spec does not have: ' + id)
       continue
     }
-    if (!sameSet(step.depends_on, expected.depends_on)) {
-      const where = given[id] ? 'in the spec' : 'as SwarmCloud appends it for ' + expected.why
-      problems.push('step ' + id + ' depends on [' + (step.depends_on || []).join(', ') + '] in the reply and on [' + (expected.depends_on || []).join(', ') + '] ' + where)
+    // A spec step's dependencies are the spec's; an added step's are the
+    // server's, and the rows follow them as served.
+    if (given[id] && !sameSet(step.depends_on, given[id].depends_on)) {
+      problems.push('step ' + id + ' depends on [' + (step.depends_on || []).join(', ') + '] in the reply and on [' + (given[id].depends_on || []).join(', ') + '] in the spec')
     }
     if (typeof step.task_id !== 'string' || !step.task_id) {
       problems.push('the reply names no task for step ' + id)
@@ -883,13 +943,14 @@ function mismatches(spec, submitted, digest) {
   for (const step of spec.steps) {
     if (!seen[step.step_id]) problems.push('step ' + step.step_id + ' is in the spec and missing from the reply')
   }
-  // The spec's own merge choice appends steps for certain: a reply without
-  // them is not what SwarmCloud built.
+  // The spec's own merge choice ("on", "on_merge_verdict") makes SwarmCloud
+  // append steps or refuse the spec, so a reply naming NO step beyond the spec
+  // lost the server's steps on the way. Their exact shape is the server's to
+  // decide: any added step satisfies this, predicted or not.
   const shapes = appendable(spec)
-  if (!shape && shapes.length === 1) {
-    for (const step of shapes[0]) {
-      if (!seen[step.step_id]) problems.push('step ' + step.step_id + ' is appended by SwarmCloud for ' + step.why + ' and missing from the reply')
-    }
+  const added = serverAdded(spec, submitted).added
+  if (added.length === 0 && shapes.length === 1 && shapes[0].length > 0) {
+    problems.push('the reply names no step beyond the spec, and SwarmCloud appends ' + shapes[0].map((step) => step.step_id).join(', ') + ' for ' + shapes[0][0].why)
   }
   return problems
 }
@@ -1007,7 +1068,10 @@ async function followRow(wf, step, prompt, opts) {
     try {
       result = stepAnswer(await agent(prompt, opts))
     } catch (error) {
-      return { row_error: failureText(error) }
+      return await rowFromStatus(wf, step, failureText(error), opts.phase)
+    }
+    if (result && !(typeof result.state === 'string' && result.state)) {
+      return await rowFromStatus(wf, step, 'the row answered with no state', opts.phase)
     }
     if (!bridgeDown(result)) return result
     if (tried < BRIDGE_TRIES) {
@@ -1016,6 +1080,32 @@ async function followRow(wf, step, prompt, opts) {
     }
   }
   return Object.assign({}, result, { last_error: result.last_error + ' · resume: /sc attach ' + wf.id })
+}
+
+// A step row that threw -- "StructuredOutput retry cap (5) exceeded", "subagent
+// completed without calling StructuredOutput" -- or answered with no state
+// (SPEED-D5, measured on plugin 0.5.27). The task is SwarmCloud's and ran on
+// regardless, so one swarm_workflow_status read, made at once for this row,
+// says how it ended: a step SwarmCloud names as finished becomes a row with
+// that state, `state_from` saying where it came from and `row_note` what the
+// row failed with. A step still running, or not named, or a read that failed
+// too, stays the row_error it was, which finish() re-attaches while the
+// workflow runs on: nothing here guesses a state.
+async function rowFromStatus(wf, step, why, phaseName) {
+  const read = await readStatus(wf.id, setupLabel(wf.name, [step.step_id], 'status'), phaseName)
+  const state = statusSteps(read.final)[step.step_id]
+  if (!state || TERMINAL.indexOf(state) < 0) return { row_error: why }
+  return {
+    state: state,
+    state_from: 'workflow status',
+    row_note: why,
+    answer_excerpt: null,
+    cost_usd: null,
+    duration_s: null,
+    pr_url: null,
+    artifacts: [],
+    last_error: null,
+  }
 }
 
 // The prompt of one sc:task row: its task and the link the dispatch or the
@@ -1122,11 +1212,11 @@ async function followSteps(wf, steps, parentTasksOf) {
 
 // The status read: ONE swarm_workflow_status call by one agent, the cheapest
 // read there is of the state SwarmCloud derived.
-async function readStatus(workflowId, label) {
+async function readStatus(workflowId, label, phaseName) {
   try {
     const final = await agent('STATUS\nworkflow_id: ' + workflowId, {
       label: label,
-      phase: 'Result',
+      phase: phaseName || 'Result',
       agentType: 'sc:workflow',
       schema: WORKFLOW_STATE,
     })
@@ -1490,11 +1580,14 @@ if (submitted.follow_error) return followRefused(submitted.workflow_id, submitte
 
 // The steps in the SPEC's order, which is the order SwarmCloud serves them in
 // and so the console's; the reply's own order is the relay's.
-// The steps SwarmCloud appended for the merge come last, as the server
-// appends them, and get a row each: the console counts them as steps.
+// The steps SwarmCloud added come last, as the server appends them, and get a
+// row each: the console counts them as steps. In the order of the merge shape
+// the script recognises when they are exactly that shape, else the reply's.
 const replied = {}
 for (const step of submitted.steps) replied[step.step_id] = step
-const appendedSteps = appendedShape(spec, submitted) || []
+const addedSteps = serverAdded(spec, submitted).added
+const knownShape = appendedShape(spec, submitted)
+const appendedSteps = knownShape || addedSteps
 const wf = workflowView(
   submitted.workflow_id,
   titleName([spec.title, spec.label, submitted.workflow_id]),
@@ -1507,8 +1600,10 @@ log(wf.title + ' · ' + submitted.workflow_id)
 // Every inference note the bridge made, verbatim: it exists only in this
 // reply, and this is the one place a session watching the workflow can see it.
 for (const note of submitted.repository_notes || []) log(submitted.workflow_id + ' repository note: ' + note)
-if (appendedSteps.length > 0) {
-  log(submitted.workflow_id + ' · SwarmCloud appended ' + appendedSteps.map((step) => step.step_id).join(', ') + ' for ' + appendedSteps[0].why)
+if (knownShape && knownShape.length > 0) {
+  log(submitted.workflow_id + ' · SwarmCloud appended ' + knownShape.map((step) => step.step_id).join(', ') + ' for ' + knownShape[0].why)
+} else if (addedSteps.length > 0) {
+  log(submitted.workflow_id + ' · SwarmCloud added ' + addedSteps.map((step) => step.step_id).join(', '))
 }
 
 // Just submitted, so no parent has finished: every row is handed all of its

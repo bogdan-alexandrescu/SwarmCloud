@@ -234,6 +234,7 @@ from .gitops import (
     retry_clone,
     shallow_clone,
     summarize_work,
+    validate_ref,
     verify_worker_authorship,
 )
 # The helpers every function in `gitops` builds its git commands from. Borrowed
@@ -507,6 +508,12 @@ TITLE_MISSING_PREFIX = "[title missing] "
 #: `Worker._agent_pull_request_text`.
 PR_TITLE_FILE = "pr-title.txt"
 PR_BODY_FILE = "pr-body.md"
+#: The runner's pre-publish section (SPEED-D1; `prepublish.PR_SECTION_NAME` and
+#: `prepublish.PR_SECTION_HEADING`, restated because the runner never imports
+#: the worker; tests/unit/worker/test_prepublish_gate.py holds them equal).
+PREPUBLISH_SECTION_FILE = "prepublish-checks.md"
+PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
+PREPUBLISH_SECTION_MAX_CHARS = 20000
 #: One line, at most this many characters: GitHub's own title field is 256.
 PR_TITLE_MAX_CHARS = 256
 #: At most this many bytes of the agent's body, before the platform's block. A
@@ -808,6 +815,10 @@ class Worker:
         # in this process, or the base a previous attempt's worker recorded in
         # the checkpoint manifest. `EMPTY_CLONE_BASE` for an empty repository.
         self._publish_base: str | None = None
+        # The base BRANCH the runner rebases the lane onto before it publishes
+        # (SPEED-D1, `agent_worker.prepublish`), when that is safe for this
+        # step (`_prepublish_rebase_ref`); None, and no rebase, otherwise.
+        self._prepublish_rebase: str | None = None
         # What `metadata.input_from` put in the workspace. Kept so the result
         # summary can report which upstream artifact this attempt actually ran
         # on -- the question every debugging of a wrong workflow output starts
@@ -4616,6 +4627,12 @@ class Worker:
         # manifest from here on, so a resumed attempt can trust it too.
         self._publish_base = clone.commit or (EMPTY_CLONE_BASE if clone.empty else None)
         self.checkpoints.clone_base = self._publish_base
+        self._prepublish_rebase = self._prepublish_rebase_ref(
+            ref=ref,
+            checkout=Path(destination),
+            fixed_base=bool(pr_branch or continued or builds_on or carried)
+            or pinned_sha is not None,
+        )
         self._write_clone_base(clone.commit)
         info: dict[str, Any] = {
             "path": REPO_DIR_NAME,
@@ -4640,6 +4657,121 @@ class Worker:
         if refusal:
             info["git_token_refused"] = refusal
         return info
+
+    def _prepublish_rebase_ref(
+        self, *, ref: str | None, checkout: Path, fixed_base: bool
+    ) -> str | None:
+        """The branch the runner may rebase this lane onto before publishing, or None.
+
+        SPEED-D1 (owner decision 2026-10-14): 128 of 150 merged pull requests
+        needed an update from main, because a lane's branch is cut from the
+        commit it started on. The runner rebases onto the base's CURRENT tip
+        through the git tools (`agent_worker.prepublish`), and the publish
+        then diffs from where it landed (`_adopt_rebase_base`). Only where a
+        moved base breaks nothing:
+
+        * an AUTHOR of its own pull request -- `direct-pr`, or `single-pr`'s
+          author. `collect` stages its patch onto a downstream step's pinned
+          base, an amender only fast-forwards the author's branch, an
+          integrator merges contributors onto their base;
+        * cloned from the repository's branch, not from a continued, built-on,
+          carried or author's branch (`fixed_base`), whose pushed tip a
+          rewritten history would no longer fast-forward, and not pinned to an
+          upstream step's base, which a downstream patch must apply to;
+        * no `carrier: branches`, whose checkpoints already pushed the branch;
+        * a BRANCH: a ref that is a sha has no newer tip.
+
+        The default branch, when the task names no ref, is read from the
+        clone's own HEAD file, which this process wrote before any agent ran.
+        """
+        if fixed_base or self._dispatch_carrier() == "branches":
+            return None
+        role = self._pr_role()
+        if role:
+            if role != "author":
+                return None
+        elif self._dispatch_strategy() != "direct-pr":
+            return None
+        name = (ref or "").strip()
+        if not name:
+            try:
+                head = (checkout / ".git" / "HEAD").read_text(encoding="utf-8").strip()
+            except OSError:
+                return None
+            prefix = "ref: refs/heads/"
+            name = head[len(prefix):] if head.startswith(prefix) else ""
+        if not name or re.fullmatch(r"[0-9a-f]{7,40}", name):
+            return None
+        try:
+            validate_ref(name)
+        except GitError:
+            return None
+        return name
+
+    def _adopt_rebase_base(self, publish_repo: Path, floor: str | None) -> str | None:
+        """The commit the publish diffs from after a pre-publish rebase, or None.
+
+        The runner rebased the lane onto the base's newer tip
+        (`agent_worker.prepublish`), so `floor..HEAD` holds every commit the
+        base gained since the clone; replayed as the lane's, they would be
+        republished under the worker's name. The commit the rebase landed on
+        is a sha the git tools' relay fetched itself (`GitTools.rebased_onto`),
+        so origin has it, and it becomes the publish base when, in the
+        worker's own clean repository, the floor is its ancestor and HEAD
+        descends from it -- an aborted or undone rebase fails the second test
+        and the floor stands.
+        """
+        onto = self.children.rebased_onto
+        base = (floor or "").strip()
+        if not onto or not _FULL_SHA_RE.fullmatch(onto) or not _FULL_SHA_RE.fullmatch(base) \
+                or onto == base:
+            return None
+        ws = self.ws
+        assert ws is not None
+        g = ["git", *_NO_HOOKS]
+        for older, newer, slug in ((base, onto, "publish-rebase-floor"),
+                                   (onto, "HEAD", "publish-rebase-head")):
+            code, _ = _git_text(
+                [*g, "merge-base", "--is-ancestor", older, newer],
+                repo=Path(publish_repo), private_dir=ws.private, logs_dir=ws.logs, slug=slug,
+                timeout_seconds=self.cfg.git_harvest_timeout_seconds, logger=self.log,
+            )
+            if code != 0:
+                self.log.warning(
+                    "the lane was rebased but its head no longer stands on that base; "
+                    "the publish diffs from the clone base",
+                    onto=onto, base=base, failed=slug,
+                )
+                return None
+        self.log.info("the lane was rebased before publishing; the publish diffs from "
+                      "where it landed", onto=onto, base=base)
+        return onto
+
+    def _prepublish_section(self) -> str:
+        """The runner's "Pre-publish checks failed" section, or "" (SPEED-D1).
+
+        Written into the artifacts folder by the runner (`prepublish.Gate`)
+        only when a check still failed after the agent's fix turn, or a
+        rebase conflict was not resolved: the branch is published anyway and
+        this tells the operator what is red. Read after the pre-publish reap,
+        like the agent's own body; scrubbed again here, and capped.
+        """
+        ws = self.ws
+        if ws is None:
+            return ""
+        path = ws.artifacts / PREPUBLISH_SECTION_FILE
+        try:
+            if path.is_symlink() or not path.is_file():
+                return ""
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        text = str(self._scrub(redact_text(text).text)).strip()
+        if not text.startswith(PREPUBLISH_SECTION_HEADING):
+            return ""
+        if len(text) > PREPUBLISH_SECTION_MAX_CHARS:
+            text = text[:PREPUBLISH_SECTION_MAX_CHARS].rstrip() + "\n\n_[cut by the worker]_"
+        return text
 
     def _fail_clone_unreachable(self, reason: str, tries: int) -> Outcome:
         """A retryable failure before the agent ran: the clone's forge did not answer.
@@ -7043,6 +7175,12 @@ class Worker:
         clone_base = self._publish_base or self._clone_base
         if clone_base:
             base[CLONE_BASE_ENV] = clone_base
+        # THE BRANCH THE RUNNER REBASES ONTO BEFORE PUBLISHING (SPEED-D1), set
+        # only when that is safe for this step (`_prepublish_rebase_ref`).
+        # The runner rebases through the git tools, so without them it is
+        # recorded and skipped. Set by the worker, never from `input`.
+        if self._prepublish_rebase:
+            base[PREPUBLISH_BASE_ENV] = self._prepublish_rebase
         # WHAT THE IMAGE SETS THAT THE RUNNER NEEDS, carried by EXACT NAME.
         # Everything else in the worker's environment stays behind; see
         # `workspace.child_env` for why this environment is built rather than
@@ -9915,6 +10053,15 @@ class Worker:
         )
         try:
             publish_repo = self._build_clean_repo(repo, floor=floor, allow_unknown_base=True)
+            # A lane the runner rebased onto the base's newer tip (SPEED-D1)
+            # is described, scanned and published from where it landed.
+            rebased = self._adopt_rebase_base(publish_repo, self._publish_base)
+            if rebased is not None:
+                out["rebased_from"] = self._publish_base
+                out["rebased_onto"] = rebased
+                self._publish_base = rebased
+                self.checkpoints.clone_base = rebased
+                fetched_base = rebased
             work = summarize_work(
                 repo=publish_repo,
                 base=fetched_base,
@@ -10684,6 +10831,12 @@ class Worker:
         )
         agent_title, agent_body, refused = self._agent_pull_request_text()
         title = agent_title or self._generated_pull_request_title()
+        # WHAT THE PRE-PUBLISH GATE COULD NOT CLEAR (SPEED-D1): published
+        # anyway, never dropped, and said where the operator reads first.
+        prepublish = self._prepublish_section()
+        if prepublish:
+            generated = f"{prepublish}\n\n{generated}"
+            out["prepublish_checks_failed"] = True
         body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
         # The generated block quotes the step's prompt, which is anyone's
         # text too; the whole body is neutralised, so no part of what the
@@ -10711,6 +10864,7 @@ class Worker:
                 self._pull_request_amendment(
                     agent_body=agent_body, branch=branch, head=str(pushed or work_head or "")
                 )
+                + (f"\n\n{prepublish}" if prepublish else "")
             ),
             origin=cfg.console_url,
             task_id=cfg.task_id,
@@ -12316,6 +12470,9 @@ SCAN_OVERLAP_CHARS = 64 * 1024
 #: secret was outside its diff (#470's review). A description of the work,
 #: never trusted for the push: the publish keeps reading `_publish_base`.
 CLONE_BASE_ENV = "SWARM_CLONE_BASE"
+#: The branch the runner rebases onto before publishing (SPEED-D1;
+#: `prepublish.PREPUBLISH_BASE_ENV`, held equal by test_prepublish_gate.py).
+PREPUBLISH_BASE_ENV = "SWARM_PREPUBLISH_BASE"
 
 
 class CredentialHit(NamedTuple):

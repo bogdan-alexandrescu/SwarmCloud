@@ -376,17 +376,46 @@ jobs:
     # request.
     env:
       ACTIONLINT_VERSION: "1.7.7"
+      # actionlint_1.7.7_linux_amd64.tar.gz in the release's
+      # actionlint_1.7.7_checksums.txt. A version bump changes both lines.
+      ACTIONLINT_SHA256: "023070a287cd8cccd71515fedc843f1985bf96c436b7effaecce67290e7e0757"
     steps:
       - uses: actions/checkout@v5
+
+      # THE BINARY IS PINNED BY DIGEST AND CACHED (2026-10-14). This step
+      # used to fetch rhysd's download-actionlint.bash and let it curl the
+      # release tarball into tar. That curl has no -f and no retry, so when
+      # GitHub's release download answered an error page -- 92 bytes on
+      # run 38261213312, 1,812 bytes after 19 s on run 38205803599 -- tar
+      # read it as the archive ("gzip: stdin: not in gzip format") and the
+      # job failed; both passed on a rerun at the same commit. Now the tarball
+      # comes from the release URL directly, with -f and retries on any
+      # error, its sha256 must equal the one rhysd's checksums file lists for
+      # this version, and the cache below means most runs download nothing.
+      - name: restore the pinned actionlint
+        id: actionlint-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/actionlint-bin
+          key: actionlint-${{ env.ACTIONLINT_VERSION }}-${{ env.ACTIONLINT_SHA256 }}
+
+      - name: download the pinned actionlint
+        if: steps.actionlint-cache.outputs.cache-hit != 'true'
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL --retry 5 --retry-all-errors --retry-delay 3 --connect-timeout 20 --max-time 120 \
+            -o "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          mkdir -p "${RUNNER_TEMP}/actionlint-bin"
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}/actionlint-bin" actionlint
 
       - name: actionlint release.yml, hotfix.yml, accept.yml, application.yml, iam-refusal-probe.yml, ci-fix.yml and auto-merge.yml
         run: |
           set -euo pipefail
-          curl -sSfL "https://raw.githubusercontent.com/rhysd/actionlint/v${ACTIONLINT_VERSION}/scripts/download-actionlint.bash" \
-            -o "${RUNNER_TEMP}/download-actionlint.bash"
-          bash "${RUNNER_TEMP}/download-actionlint.bash" "${ACTIONLINT_VERSION}" "${RUNNER_TEMP}"
-          "${RUNNER_TEMP}/actionlint" -version
-          "${RUNNER_TEMP}/actionlint" -shellcheck= -pyflakes= \
+          "${RUNNER_TEMP}/actionlint-bin/actionlint" -version
+          "${RUNNER_TEMP}/actionlint-bin/actionlint" -shellcheck= -pyflakes= \
             .github/workflows/release.yml .github/workflows/hotfix.yml \
             .github/workflows/accept.yml .github/workflows/application.yml \
             .github/workflows/iam-refusal-probe.yml .github/workflows/ci-fix.yml \
@@ -990,7 +1019,37 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < "${SHARD_FILES}"
-          uv run pytest -q -n auto --dist worksteal -o junit_family=xunit1 --junitxml="${JUNIT}" "${files[@]}"
+          uv run pytest -q -n auto --dist worksteal -m "not flaky" -o junit_family=xunit1 --junitxml="${JUNIT}" "${files[@]}"
+
+      - name: quarantined unit tests (report only, never fail the gate)
+        # THE FLAKY-TEST QUARANTINE (owner decision 2026-10-14, docs/ci.md
+        # "Flaky tests and the quarantine"). tests/flaky.txt lists tests that
+        # failed and passed at the same commit and whose cause is not fixed
+        # yet; tests/unit/conftest.py marks each `flaky`, the step above
+        # deselects them (`-m "not flaky"`), and this one still runs them, so
+        # the day one starts failing every time is visible here rather than
+        # hidden by a skip. It never fails the job: a failure is a warning
+        # annotation and a line in the step summary. Exit 5 is pytest's "no
+        # test selected": this shard holds no quarantined test.
+        # Not `--junitxml`: the shard weights are the gating run's.
+        if: ${{ !cancelled() && steps.pick.outputs.count != '0' }}
+        continue-on-error: true
+        env:
+          SWARM_REQUIRE_REAL_REAP: "1"
+          SHARD_FILES: ${{ runner.temp }}/shard-files
+        run: |
+          set -euo pipefail
+          mapfile -t files < "${SHARD_FILES}"
+          rc=0
+          uv run pytest -q -n auto --dist worksteal -m flaky "${files[@]}" || rc=$?
+          case "${rc}" in
+            0) line="every quarantined test in this shard passed" ;;
+            5) line="no quarantined test in this shard" ;;
+            *) line="a quarantined test failed (pytest exit ${rc}); see this step's log and tests/flaky.txt"
+               echo "::warning title=quarantined test failed::${line}" ;;
+          esac
+          echo "${line}"
+          echo "quarantined unit tests: ${line}" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: record this shard's measured durations
         # The weights the pick step splits by go stale as tests are added and
