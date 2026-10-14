@@ -199,13 +199,26 @@ def test_no_workspace_reported_says_so_rather_than_omitting_it(_plugin_root):
     assert description.startswith("Workspace: not reported · SC · lane-a · task")
 
 
+#: The Claude Code session these listings were submitted by: `/sc attach
+#: --all` attaches only that session's work (SC-SESSION-SCOPE; the scope
+#: itself is held in tests/unit/mcp/test_sc_session_scope.py).
+SESSION = "11111111-2222-4333-8444-555555555555"
+
+
+@pytest.fixture(autouse=True)
+def _this_session(monkeypatch):
+    monkeypatch.setenv("CLAUDE_CODE_SESSION_ID", SESSION)
+
+
 def test_attach_all_names_runs_alone_and_describes_each_workspace(_plugin_root, monkeypatch):
     monkeypatch.setattr(sc, "running_workflows", lambda client: {"count": 2, "complete": True, "workflows": [
-        {"workflow_id": "wf_00", "workspace": "eng", "title": "flow 00", "label": None, "steps_total": 3},
-        {"workflow_id": "wf_01", "workspace": "u-bogdan", "title": "flow 01", "label": None, "steps_total": 1},
+        {"workflow_id": "wf_00", "workspace": "eng", "title": "flow 00", "label": None, "steps_total": 3,
+         "claude_session": SESSION},
+        {"workflow_id": "wf_01", "workspace": "u-bogdan", "title": "flow 01", "label": None, "steps_total": 1,
+         "claude_session": SESSION},
     ]})
     monkeypatch.setattr(sc, "running_tasks", lambda client: {"count": 1, "tasks": [
-        {"task_id": "task_a", "label": "lane-a", "workspace": "eng"}]})
+        {"task_id": "task_a", "label": "lane-a", "workspace": "eng", "claude_session": SESSION}]})
     client = types.SimpleNamespace(tenants_mine=lambda: [{"tenant_id": "eng", "display_name": "eng@saga.xyz"}])
     out = launch.for_all(client)
     got = [(l["title"], _meta(l["script_path"])[1].split(" · SC · ")[0]) for l in out["launches"]]
