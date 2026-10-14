@@ -8,8 +8,10 @@ docs/design/context-quality.md §4.7 and §5.4. Owner decisions 2026-10-14:
   * OFF BY DEFAULT: with nothing stored, Jev sees no code (`jev: false`) and
     local context is whatever the platform default is (`inherit`);
   * only the workspace's owner (a personal workspace's principal) or a
-    platform admin changes it, as for `judgment_backend`: a member is 403, a
-    caller outside the workspace 404, and nothing is written for either;
+    platform admin changes it, as for `judgment_backend`: a member is 403
+    once the switched `code_intelligence_owner_required` is on (it ships
+    off, report-only), a caller outside the workspace 404 whatever the
+    switch, and nothing is written for either;
   * every change is one `admin_audit` row written in the SAME transaction: a
     failed write writes neither the setting nor the row.
 
@@ -18,7 +20,7 @@ And the reads CTXQ-S's gate (`agent_worker.graphstage.decide`) and CTXQ-J's
 API writes, so the field names cannot drift apart unnoticed.
 
 MUTATION: drop the owner/admin check in `routes/codeintel.py` and
-`test_a_member_cannot_change_it` fails; write the audit outside the
+`test_a_member_cannot_change_it_once_the_switch_is_on` fails; write the audit outside the
 transaction and `test_a_failed_write_writes_neither_the_setting_nor_its_audit`
 fails; replace the document instead of the field and
 `test_writing_it_leaves_judgment_backend_and_merge_unchanged` fails.
@@ -34,7 +36,7 @@ import pytest
 
 from agent_worker import graphstage
 from agent_worker.judge.settings import JudgeSettings
-from swarm_api import codeintel, judgment, mergesettings
+from swarm_api import codeintel, judgment, mergesettings, refusals
 from swarm_api.repositories import repo_id_for
 from swarm_common.identity import tenant_id_for_user
 
@@ -149,13 +151,25 @@ def test_a_platform_admin_changes_any_workspace(client, db, seeded):
     assert all(_block(db, t)["jev"] is True for t in ("eng", "research", CAROL_TENANT))
 
 
-def test_a_member_cannot_change_it(client, db, seeded):
+def test_a_member_cannot_change_it_once_the_switch_is_on(client, db, seeded, monkeypatch):
     # alice is a member of eng, neither its owner (a group has none) nor an admin.
+    monkeypatch.setenv(refusals.env_name(codeintel.OwnerRequired.code), "on")
     response = _put(client, "eng", "alice", {"jev": True})
     assert response.status_code == 403, response.text
     assert response.json()["code"] == codeintel.OwnerRequired.code
     assert _document(db, "eng") is None
     assert _audit(db) == []
+
+
+def test_the_owner_refusal_is_a_switched_refusal_that_ships_off(client, db, seeded, monkeypatch):
+    switch = refusals.SWITCHES[codeintel.OwnerRequired.code]
+    assert switch.default is False
+    monkeypatch.delenv(switch.env, raising=False)
+    # Report-only: the change goes through, and it is audited as anyone's is.
+    response = _put(client, "eng", "alice", {"jev": True})
+    assert response.status_code == 200, response.text
+    (entry,) = _audit(db)
+    assert entry["by"] == "alice@saga.xyz"
 
 
 def test_another_workspace_is_not_found_and_nothing_is_written(client, db, seeded):

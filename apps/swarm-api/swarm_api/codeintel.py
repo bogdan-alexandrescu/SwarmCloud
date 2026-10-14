@@ -39,8 +39,10 @@ the two equal.
 WHO. Exactly as JUDGE-SELECT gates `judgment_backend`: the owner of a
 personal workspace -- `kind: user`, its principal the caller's verified
 email -- or a platform admin (`require_admin`, which answers 503 rather than
-403 when the directory could not be asked). A member who is neither is 403
-`code_intelligence_owner_required`. A caller who is not a member at all is
+403 when the directory could not be asked). A member who is neither is
+refused `code_intelligence_owner_required` (403) through `refusals.refuse`, a
+SWITCHED refusal that ships report-only (refusals.py): off, the change goes
+through and is audited under the caller's name. A caller who is not a member at all is
 the established 404: another workspace's setting is neither served nor
 confirmed to exist, and nothing a non-member sends is written (invariant 9).
 
@@ -74,6 +76,7 @@ from .auth import AuthContext, require_admin
 from .errors import Forbidden, NotFound
 from .judgment import SETTINGS_COLLECTION
 from .mergesettings import is_member, is_owner
+from .refusals import refuse
 from .repositories import COLLECTION as REPOSITORIES
 from .repositories import CONTEXT_INHERIT, context_of
 from .schemas import StrictModel
@@ -169,8 +172,9 @@ def authorize(auth: AuthContext, tenant: Tenant | None, tenant_id: str, *, write
     """The workspace, when the caller may read it (and, `write`, change it).
 
     Not a member, not the owner, not an admin: the established 404, the same
-    as a workspace that does not exist. A member who may not change it: 403
-    (503 when the directory could not say whether they are an admin)."""
+    as a workspace that does not exist. A member who may not change it: the
+    switched 403, which off lets the change through and logs it (503 when the
+    directory could not say whether they are an admin)."""
     if tenant is None:
         raise NotFound(f"workspace {tenant_id!r} not found")
     admin = bool(auth.is_admin)
@@ -187,16 +191,17 @@ def require_owner_or_admin(auth: AuthContext, tenant: Tenant | None) -> str:
 
     Also the gate on a repository's `context` override
     (routes/repositories.py): the workspace default and the override over it
-    are the same person's decision."""
+    are the same person's decision. Who is neither meets the switched
+    refusal; with it off, their email is returned and the change is theirs."""
     if tenant is None or not is_owner(auth, tenant):
         try:
             require_admin(auth)
         except Forbidden:
-            raise OwnerRequired(
+            refuse(OwnerRequired(
                 "Only the workspace's owner or a platform admin may change its code "
                 "intelligence settings. Nothing was changed.",
                 detail={"tenant_id": tenant.tenant_id if tenant is not None else None},
-            ) from None
+            ))
     return (auth.email or "").strip().lower()
 
 

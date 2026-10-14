@@ -7,7 +7,8 @@ caller's choice. What these tests hold:
 
   * a registration starts with no override (`inherit`);
   * the workspace's owner or a platform admin sets it; a member is 403 with
-    nothing written;
+    nothing written once `code_intelligence_owner_required` is on, and is let
+    through and audited while that switched refusal ships off;
   * `inherit` clears it -- stored null, the workspace's value again, which is
     what `agent_worker.graphstage.decide` then reads;
   * each change is one `admin_audit` row written in the same transaction as
@@ -16,7 +17,7 @@ caller's choice. What these tests hold:
   * anything but the three words is a 422.
 
 MUTATION: drop the owner/admin gate on `context` in `patch_repository` and
-`test_a_member_cannot_set_it` fails; skip the audit and
+`test_a_member_cannot_set_it_once_the_switch_is_on` fails; skip the audit and
 `test_the_owner_sets_it_and_it_is_audited_in_the_same_transaction` fails.
 """
 
@@ -27,7 +28,7 @@ from datetime import datetime, timezone
 import pytest
 
 from agent_worker import graphstage
-from swarm_api import repositories
+from swarm_api import codeintel, refusals, repositories
 from swarm_api.repositories import repo_id_for
 from swarm_common.identity import tenant_id_for_user
 
@@ -96,14 +97,24 @@ def test_a_platform_admin_sets_it(client, db, seeded):
     assert entry["by"] == "root@saga.xyz"
 
 
-def test_a_member_cannot_set_it(client, db, seeded):
+def test_a_member_cannot_set_it_once_the_switch_is_on(client, db, seeded, monkeypatch):
     # alice is a member of eng: she may PATCH its schedule, not this.
+    monkeypatch.setenv(refusals.env_name(codeintel.OwnerRequired.code), "on")
     response = _patch(client, ENG_WIDGETS, {"context": "off"}, "alice")
     assert response.status_code == 403, response.text
     assert "context" not in db.docs[f"repositories/{ENG_WIDGETS}"]
     assert _audit(db) == []
     # CONTROL: the same member's PATCH of a member's field still goes through.
     assert _patch(client, ENG_WIDGETS, {"paused": True}, "alice").status_code == 200
+
+
+def test_a_member_sets_it_while_the_switch_is_off(client, db, seeded, monkeypatch):
+    monkeypatch.delenv(refusals.env_name(codeintel.OwnerRequired.code), raising=False)
+    response = _patch(client, ENG_WIDGETS, {"context": "off"}, "alice")
+    assert response.status_code == 200, response.text
+    assert db.docs[f"repositories/{ENG_WIDGETS}"]["context"] == "off"
+    (entry,) = _audit(db)
+    assert entry["by"] == "alice@saga.xyz"
 
 
 def test_another_workspaces_repository_is_not_found(client, db, seeded):

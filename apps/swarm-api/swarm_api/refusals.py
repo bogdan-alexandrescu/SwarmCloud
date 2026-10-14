@@ -270,6 +270,18 @@ SWITCHES: dict[str, Switch] = {
         "On once the console's Settings > Workspace > Merging (TRAIN-WS-UI) offers the "
         "change only to those who may make it, and the log shows no member relying on it",
     ),
+    # Lane CTXQ-SET (codeintel.py): a member of a workspace who is neither its
+    # owner nor a platform admin changing its code-intelligence setting, or a
+    # repository's `context` override. Off, the change goes through and is
+    # audited under the caller's name. A non-member is the established 404.
+    "code_intelligence_owner_required": Switch(
+        code="code_intelligence_owner_required",
+        why="a member of a workspace who is neither its owner (a personal workspace's "
+        "principal) nor a platform admin is refused 403 when changing its code-intelligence "
+        "setting or a repository's context override. On once the console offers the change "
+        "only to those who may make it (the setting's can_edit), and the log shows no member "
+        "relying on it",
+    ),
     # The browser tool a submission names (BSTATUS-API, contract request 77):
     # `jev` with no TypeSafe key for the submitter or the tenant, or with no
     # jev in the image. Off, the task runs and its runner falls back to
