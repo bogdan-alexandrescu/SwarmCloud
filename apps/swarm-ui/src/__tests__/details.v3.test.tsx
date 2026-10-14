@@ -24,7 +24,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useState } from 'react'
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
 
 import { HELP } from '../help'
 import type { AgentRun } from '../api'
@@ -283,6 +283,15 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
   }
 
   it('a running agent: memory with % of its limit, CPU against its cores, cost small and pending', () => {
+    // ONE CLOCK for the fixture and the render. `ago(1)` and the strip's
+    // "so far · 1m ago" each read Date.now(); on a slower runner the two reads
+    // straddled the minute and the sub read `59s ago` (PR 1184, run
+    // 38552512519). Only Date is faked: nothing here waits on a timer.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-14T12:00:00Z'))
+    onTestFinished(() => {
+      vi.useRealTimers()
+    })
     const a = attempt(1, {
       created_at: ago(15),
       started_at: ago(14),
