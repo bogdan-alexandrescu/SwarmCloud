@@ -44,6 +44,7 @@ WHAT THIS CANNOT PROVE: that the image built in Cloud Build installs
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -172,7 +173,10 @@ def test_a_release_rebuilds_them_even_from_a_record_ci_built_whole_for_this_comm
     head = box.commit("anything", box.append("apps/swarm-ui/src/App.tsx", "export const z = 3;\n"))
     record = json.loads(box.record(head).read_text())
     for entry in record["images"]:
-        entry["apt_refresh"] = "ci-run"
+        # The digest the sandbox's fake gcloud reports for <image>:<tag>, as
+        # Artifact Registry would for what CI pushed at this commit's tag.
+        digest = "sha256:" + hashlib.sha256(f"built {entry['image']}:{head[:12]}".encode()).hexdigest()
+        entry.update(apt_refresh="ci-run", digest=digest, ref=f"{entry['image']}@{digest}")
 
     proc, manifest, events = box.release(record)
     assert proc.returncode == 0, proc.stderr[-4000:]
@@ -181,6 +185,7 @@ def test_a_release_rebuilds_them_even_from_a_record_ci_built_whole_for_this_comm
     offered = {e["name"]: e for e in record["images"]}
     for name in NO_UPGRADE:
         assert by_name[name]["digest"] == offered[name]["digest"], f"{name} was not kept as CI built it"
+        assert by_name[name]["reused"] is True, by_name[name]
     for name in REBUILT:
         assert by_name[name]["reused"] is False and by_name[name]["built_from"] == head, by_name[name]
 

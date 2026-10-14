@@ -405,6 +405,10 @@ check does too, even from a record CI built whole for the same commit. An
 image built FROM one is rebuilt with it. One that upgrades nothing
 (swarm-verify) is still reused. Which images upgrade is read from their
 Dockerfiles (`upgrades_os_packages`), not listed.
+A digest CI built from the commit being released is that commit's own
+build, not a reuse: the 7-day age limit and the unrecorded-build-args rule are
+not asked of it, and it is not re-tagged (it already carries the tag), so a
+release rebuilds only the OS-upgrading images and those built FROM them.
 
 The cause it removes: releases 38535875750 and 38540997006 refused
 workspace-apply over curl/libcurl4t64 `8.14.1-2+deb13u5` (CVE-2026-8286, HIGH,

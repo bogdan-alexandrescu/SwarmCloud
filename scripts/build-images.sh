@@ -731,8 +731,18 @@ plan_incremental() {
        || ! git -C "${REPO_ROOT}" merge-base --is-ancestor "${from}" "${COMMIT}" 2>/dev/null; then
       plan_full "${t}'s digest was built from '${from}', which is not an ancestor of ${COMMIT} in this checkout"; return 0
     fi
-    age_ok="$(jq -rn --arg at "${at}" --argjson days "${REUSE_MAX_AGE_DAYS}" '
-        try (if (now - ($at | fromdateiso8601)) <= ($days * 86400) then "yes" else "no" end) catch "unreadable"')"
+    # A digest built FROM THIS COMMIT is this commit's own build -- what a
+    # release finds in CI's record -- not a reuse, so the age limit, which is
+    # about how long a reused digest may go without base-image patches, is
+    # not asked of it. Its OS packages are refreshed by the APT_REFRESH rule
+    # below. (Before every release ran this plan, such a record was promoted
+    # without it; asking its age made a record older than a week rebuild every
+    # image, swarm-verify included.)
+    age_ok=yes
+    if [[ "${from}" != "${COMMIT}" ]]; then
+      age_ok="$(jq -rn --arg at "${at}" --argjson days "${REUSE_MAX_AGE_DAYS}" '
+          try (if (now - ($at | fromdateiso8601)) <= ($days * 86400) then "yes" else "no" end) catch "unreadable"')"
+    fi
     case "${age_ok}" in
       yes) ;;
       no) plan_full "${t}'s digest was built at ${at}, more than ${REUSE_MAX_AGE_DAYS} days ago, so base-image patches are due"; return 0 ;;
@@ -754,9 +764,11 @@ plan_incremental() {
     why="$(rebuild_why "${t}" "${from}" "${diff_list}")"
     # A record written before the manifest named build args says nothing; an
     # image that bakes none has nothing to disagree with, one that bakes any
-    # is rebuilt once, and records them from then on.
+    # is rebuilt once, and records them from then on. A digest built from
+    # this commit was built by this script with this commit's args, so an
+    # unrecorded set is not a reason to build it again.
     args="$(baked_build_args_json "${t}")"
-    if [[ "${prev_args}" == null && "${args}" != '[]' ]]; then
+    if [[ "${prev_args}" == null && "${args}" != '[]' && "${from}" != "${COMMIT}" ]]; then
       why=$'build\tits baked build args were not recorded'
     elif [[ "${prev_args}" != null && "$(jq -c . <<<"${prev_args}")" != "${args}" ]]; then
       why=$'build\tits baked build args changed'
@@ -945,6 +957,14 @@ if [[ -n "${INCREMENTAL}" ]]; then
     if [[ -n "${prereq}" ]] && row="$(plan_row "${prereq}")" && [[ "${P_ACTION[$row]}" == build ]]; then
       P_ACTION[i]=build; P_WHY[i]="built FROM ${prereq}, which is rebuilt"
       TARGETS+=("${target}")
+      continue
+    fi
+    # A digest built from this commit was pushed as :${TAG} by that build (a
+    # release reusing CI's record of its own commit): there is nothing to
+    # re-tag, and the read-back below still checks :${TAG} names it.
+    if [[ "${P_FROM[$i]}" == "${COMMIT}" ]]; then
+      ok "${target}: reused ${P_DIGEST[$i]}, built from this commit as :${TAG}"
+      REUSED+=("${target}")
       continue
     fi
     tag_err=""
