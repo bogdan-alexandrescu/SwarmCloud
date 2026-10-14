@@ -176,7 +176,10 @@ jobs:
   # images` job `needs: [python, shell, manifests]`. On a push `build` below
   # takes CI's image record with `--reuse-ci only` and refuses to build its
   # own, so the record this release ships CANNOT EXIST unless those checks
-  # passed on this very commit. Running them again here was 26.4 min p50 of
+  # passed on this very commit -- or, since 2026-10-14 (B1, docs/ci.md "Main
+  # reuses the tested tree"), on a run of its IDENTICAL tree: the pull
+  # request this commit merged, a merge-train branch or a queue entry, each
+  # checked job by job against the GitHub API before main skips it. Running them again here was 26.4 min p50 of
   # the `release-dev` lock (22 successful runs, measured 2026-10-08) proving
   # what CI had already proven. On a workflow_dispatch -- every prod release,
   # and a dev dispatch that may build its own images (`or-build`), or redeploy

@@ -1,0 +1,107 @@
+diff --git a/node_modules/jev-browser/bin/jev-browser-mcp.mjs b/node_modules/jev-browser/bin/jev-browser-mcp.mjs
+index 7ee0517..1aa263b 100755
+--- a/node_modules/jev-browser/bin/jev-browser-mcp.mjs
++++ b/node_modules/jev-browser/bin/jev-browser-mcp.mjs
+@@ -13,7 +13,7 @@ import { promisify } from "node:util";
+ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+ import { z } from "zod";
+-import { JevBrowser } from "../src/session.mjs";
++import { JevBrowser, LAUNCH_REFUSED } from "../src/session.mjs";
+ import { formatRead } from "../src/prune.mjs";
+ 
+ process.env.JEV_BROWSER_MCP = "1";   // src/jev.mjs: don't read the working directory's .env
+@@ -23,6 +23,8 @@ const { version } = require("../package.json");
+ // Installed through npx or as a plugin, nothing has downloaded Chromium yet: do it on first launch,
+ // with the Playwright this package depends on so the browser build matches.
+ async function installChromium() {
++  // swarm: never download a browser; the only browser here is the live one, attached over CDP.
++  throw new Error(LAUNCH_REFUSED);
+   const cli = join(dirname(require.resolve("playwright/package.json")), "cli.js");
+   process.stderr.write("jev-browser: Chromium for Playwright is missing, installing it (one time, a few hundred MB)\n");
+   await promisify(execFile)(process.execPath, [cli, "install", "chromium"], { timeout: 600_000 });
+diff --git a/node_modules/jev-browser/src/index.mjs b/node_modules/jev-browser/src/index.mjs
+index 9012aad..a08c21b 100644
+--- a/node_modules/jev-browser/src/index.mjs
++++ b/node_modules/jev-browser/src/index.mjs
+@@ -1,4 +1,4 @@
+-export { JevBrowser, TOOLS, KEYS } from "./session.mjs";
++export { JevBrowser, TOOLS, KEYS, LAUNCH_REFUSED } from "./session.mjs";
+ export { runFlow } from "./flow.mjs";
+ export { jev, apiKey } from "./jev.mjs";
+ export { brief, pageDiff, formatPage, formatDiff, redactPage } from "./page-model.mjs";
+diff --git a/node_modules/jev-browser/src/session.mjs b/node_modules/jev-browser/src/session.mjs
+index 14d2ec3..e1c3a69 100644
+--- a/node_modules/jev-browser/src/session.mjs
++++ b/node_modules/jev-browser/src/session.mjs
+@@ -35,6 +35,8 @@ export const TOOLS = {
+ // Offered only when the page registered WebMCP tools (see src/webmcp.mjs).
+ export const WEBMCP_ACTION = "Call one of the page's own agent tools in `page.webmcp_tools`. The site provides them for agents and one call does the whole step (no typing into fields, no submit button), so when a tool does what the next step needs, choose this over click or type";
+ // `back` is not offered to Jev (it proposed it after successful steps); callers can still use it via act().
++// swarm: the refusal every launch in this image ends in (JEV_BROWSER_CDP_ENDPOINT unset).
++export const LAUNCH_REFUSED = "jev-browser here drives only the live browser the person watches: it attaches over CDP to $JEV_BROWSER_CDP_ENDPOINT (the wrapper sets it from $SWARM_CDP_ENDPOINT) and never launches a browser of its own. Starting a separate Chromium is refused here: nobody could see it.";
+ export const KEYS = ["Escape", "Tab", "Space", "Backspace", "Delete", "ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "PageDown", "PageUp", "Home", "End"];
+ const TARGETED = new Set(["click", "type", "press_enter", "select", "hover", "right_click", "drag", "upload"]);
+ const GUARDED = new Set(["click", "press_enter", "press_key"]);
+@@ -74,6 +76,10 @@ export class JevBrowser {
+   // userDataDir -> persistent profile (logins survive restarts); browser -> share one Chromium.
+   // highlight -> outline each target with Jev's decision before acting (for watching a headed run).
+   static async launch({ headed = false, slowMo = 0, viewport = { width: 1280, height: 800 }, storageState, browser, userDataDir, highlight = false } = {}) {
++    // swarm: this image never launches a browser. With JEV_BROWSER_CDP_ENDPOINT set, attach to the
++    // one that is already running (the live browser the person watches); without it, refuse.
++    if (process.env.JEV_BROWSER_CDP_ENDPOINT) return JevBrowser.attach(process.env.JEV_BROWSER_CDP_ENDPOINT, { highlight });
++    throw new Error(LAUNCH_REFUSED);
+     let context, own = false;
+     try {
+     if (userDataDir) {
+@@ -93,8 +99,26 @@ export class JevBrowser {
+     return b;
+   }
+ 
+-  constructor(browser, context, ownBrowser) {
+-    this.browser = browser; this.context = context; this.ownBrowser = ownBrowser;
++  // Attach to a browser that is already running, over CDP, and drive its EXISTING default context:
++  // no new context, no viewport, no device emulation, so the pages are the tabs the browser shows
++  // at the size it shows them. close() then only disconnects; the browser keeps running.
++  // The WebMCP init script is not installed on an attached browser (it rewrites
++  // document/navigator.modelContext in every page the browser loads, the person's included).
++  static async attach(endpoint, { highlight = false, timeout = 30_000 } = {}) {
++    const browser = await chromium.connectOverCDP(endpoint, { timeout });
++    const context = browser.contexts()[0];
++    if (!context) {
++      await browser.close().catch(() => {});
++      throw new Error(`the browser at the CDP endpoint has no default context to attach to`);
++    }
++    const b = new JevBrowser(browser, context, false, { attached: true });
++    b.highlight = highlight;
++    b.page = context.pages()[0] ?? await context.newPage();
++    return b;
++  }
++
++  constructor(browser, context, ownBrowser, { attached = false } = {}) {
++    this.browser = browser; this.context = context; this.ownBrowser = ownBrowser; this.attached = attached;
+     this.inflight = new Map(); this.events = []; this.frames = new Map(); this.lastPage = null;
+     this.shown = null;               // the page whose element numbers the caller last saw
+     this.dialogPolicy = SAFE_DIALOGS;
+@@ -105,7 +129,7 @@ export class JevBrowser {
+       const go = () => mo.observe(document, { subtree: true, childList: true, attributes: true, characterData: true });
+       document ? go() : addEventListener("DOMContentLoaded", go);
+     });
+-    context.addInitScript(WEBMCP_INIT);
++    if (!attached) context.addInitScript(WEBMCP_INIT);
+     const track = r => ["fetch", "xhr", "document"].includes(r.resourceType()) && this.inflight.set(r, Date.now());
+     const untrack = r => this.inflight.delete(r);
+     context.on("request", track); context.on("requestfinished", untrack); context.on("requestfailed", untrack);
+@@ -738,5 +762,11 @@ export class JevBrowser {
+   }
+ 
+   async screenshot({ path, fullPage = false } = {}) { return this.page.screenshot({ path, fullPage }); }
+-  async close() { await this.context.close().catch(() => {}); if (this.ownBrowser) await this.browser.close().catch(() => {}); }
++  async close() {
++    // Attached: disconnect only. For a connectOverCDP browser, browser.close() closes the CDP
++    // connection and leaves the browser, its context and its tabs running; context.close() on the
++    // default context would close the browser itself.
++    if (this.attached) { await this.browser.close().catch(() => {}); return; }
++    await this.context.close().catch(() => {}); if (this.ownBrowser) await this.browser.close().catch(() => {});
++  }
+ }

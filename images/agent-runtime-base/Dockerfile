@@ -384,13 +384,13 @@ RUN BE_DIR=/usr/local/lib/node_modules/npm/node_modules/brace-expansion \
  && UNDICI_TGZ="/tmp/undici-${UNDICI_VERSION}.tgz" \
  && TAR_TGZ="/tmp/tar-${TAR_VERSION}.tgz" \
  && IPADDR_TGZ="/tmp/ip-address-${IP_ADDRESS_VERSION}.tgz" \
- && curl -fsSL -o "${BE_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${BE_TGZ}" \
       "https://registry.npmjs.org/brace-expansion/-/brace-expansion-${BRACE_EXPANSION_VERSION}.tgz" \
- && curl -fsSL -o "${UNDICI_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${UNDICI_TGZ}" \
       "https://registry.npmjs.org/undici/-/undici-${UNDICI_VERSION}.tgz" \
- && curl -fsSL -o "${TAR_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${TAR_TGZ}" \
       "https://registry.npmjs.org/tar/-/tar-${TAR_VERSION}.tgz" \
- && curl -fsSL -o "${IPADDR_TGZ}" \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o "${IPADDR_TGZ}" \
       "https://registry.npmjs.org/ip-address/-/ip-address-${IP_ADDRESS_VERSION}.tgz" \
  && echo "${BRACE_EXPANSION_SHA512}  ${BE_TGZ}" | sha512sum -c - \
  && echo "${UNDICI_SHA512}  ${UNDICI_TGZ}" | sha512sum -c - \
@@ -506,6 +506,12 @@ COPY --from=builder /opt/venv /opt/venv
 # bash with pipefail from here on: every `echo <sha> <file> | sha256sum -c -`
 # below is a pipe, and so is the smoke step's output, and a pipe whose first
 # command failed must not pass on the last one's exit status.
+# EVERY DOWNLOAD HERE RETRIES (2026-10-14, PR 1281's flake table): `curl -fsSL
+# --retry 5 --retry-all-errors --retry-connrefused`, 1+2+4+8+16 s of backoff at
+# most. --retry-all-errors is what makes an HTTP error (curl's exit 22, which
+# failed one main build of this image in run 38245452463) retry at all. A
+# file that is really gone still fails, ~31 s later, and every download is
+# still checked against its pinned checksum after it lands.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Google Cloud: gcloud, the GKE auth plugin, kubectl.
@@ -559,11 +565,11 @@ ARG KUBECTL_SHA256=33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b4302486
 # ldconfig and start-stop-daemon, which live there and which the runtime PATH
 # deliberately omits; /usr/local/bin is there for the postinst's python3.
 RUN mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/google-cloud-cli.deb \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/google-cloud-cli.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli_${GCLOUD_VERSION}-0_amd64_${GCLOUD_POOL_ID}.deb" \
- && curl -fsSL -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
- && curl -fsSL -o /tmp/toolbox/kubectl \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/kubectl \
       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
  && echo "${GCLOUD_SHA256}  /tmp/toolbox/google-cloud-cli.deb" | sha256sum -c - \
  && echo "${GKE_PLUGIN_SHA256}  /tmp/toolbox/gke-gcloud-auth-plugin.deb" | sha256sum -c - \
@@ -609,9 +615,9 @@ ARG DOCKER_CLI_VERSION=29.8.2
 ARG DOCKER_CLI_SHA256=ff99352d3b95ebaaf94bcdf65026714a1a72a44a999a9fc83f1386c3f30f33d6
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
     mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/gh.tar.gz \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gh.tar.gz \
       "file:///tmp/tool-mirror/github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" \
- && curl -fsSL -o /tmp/toolbox/docker-ce-cli.deb \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/docker-ce-cli.deb \
       "https://download.docker.com/linux/debian/dists/bookworm/pool/stable/amd64/docker-ce-cli_${DOCKER_CLI_VERSION}-1~debian.12~bookworm_amd64.deb" \
  && echo "${GH_SHA256}  /tmp/toolbox/gh.tar.gz" | sha256sum -c - \
  && echo "${DOCKER_CLI_SHA256}  /tmp/toolbox/docker-ce-cli.deb" | sha256sum -c - \
@@ -685,20 +691,20 @@ ARG TFLINT_VERSION=0.64.0
 ARG TFLINT_SHA256=cca9d13e2e1d7a2c627af60ff899a3c9b74212899416aeb96ec764d2ef954537
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
     mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/terraform.zip \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/terraform.zip \
       "file:///tmp/tool-mirror/releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
  && echo "${TERRAFORM_SHA256}  /tmp/toolbox/terraform.zip" | sha256sum -c - \
  && unzip -q /tmp/toolbox/terraform.zip terraform -d /tmp/toolbox \
  && install -o root -g root -m 0755 /tmp/toolbox/terraform /usr/local/bin/terraform \
  && if [ "${INSTALL_TOFU}" = "1" ]; then \
-      curl -fsSL -o /tmp/toolbox/tofu.tar.gz \
+      curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/tofu.tar.gz \
         "file:///tmp/tool-mirror/github.com/opentofu/opentofu/releases/download/v${TOFU_VERSION}/tofu_${TOFU_VERSION}_linux_amd64.tar.gz" \
       && echo "${TOFU_SHA256}  /tmp/toolbox/tofu.tar.gz" | sha256sum -c - \
       && tar -xzf /tmp/toolbox/tofu.tar.gz -C /tmp/toolbox tofu \
       && install -o root -g root -m 0755 /tmp/toolbox/tofu /usr/local/bin/tofu ; \
     fi \
  && if [ "${INSTALL_TFLINT}" = "1" ]; then \
-      curl -fsSL -o /tmp/toolbox/tflint.zip \
+      curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/tflint.zip \
         "file:///tmp/tool-mirror/github.com/terraform-linters/tflint/releases/download/v${TFLINT_VERSION}/tflint_linux_amd64.zip" \
       && echo "${TFLINT_SHA256}  /tmp/toolbox/tflint.zip" | sha256sum -c - \
       && unzip -q /tmp/toolbox/tflint.zip tflint -d /tmp/toolbox \
@@ -729,13 +735,13 @@ ARG TRIVY_VERSION=0.75.0
 ARG TRIVY_SHA256=c6e65abddb348e25f10549df887045629cf28cc72453cd1c63acb717316b3f3f
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
     mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/shellcheck.tar.gz \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/shellcheck.tar.gz \
       "file:///tmp/tool-mirror/github.com/koalaman/shellcheck/releases/download/v${SHELLCHECK_VERSION}/shellcheck-v${SHELLCHECK_VERSION}.linux.x86_64.tar.gz" \
  && echo "${SHELLCHECK_SHA256}  /tmp/toolbox/shellcheck.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/toolbox/shellcheck.tar.gz -C /tmp/toolbox --strip-components=1 \
       "shellcheck-v${SHELLCHECK_VERSION}/shellcheck" \
  && install -o root -g root -m 0755 /tmp/toolbox/shellcheck /usr/local/bin/shellcheck \
- && curl -fsSL -o /tmp/toolbox/trivy.tar.gz \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/trivy.tar.gz \
       "file:///tmp/tool-mirror/github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" \
  && echo "${TRIVY_SHA256}  /tmp/toolbox/trivy.tar.gz" | sha256sum -c - \
  && tar -xzf /tmp/toolbox/trivy.tar.gz -C /tmp/toolbox trivy \

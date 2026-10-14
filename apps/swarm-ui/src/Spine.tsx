@@ -33,6 +33,8 @@ import { addressToPath } from './paths'
 import { shortcut, typedIntoField } from './shortcuts'
 import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
+import { SignOutButton, SignedBackIn } from './SignOut'
+import { iapFronted } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 
@@ -1041,6 +1043,10 @@ export function SkyShell({
     who === null ? null : servedEnvironment(who),
   )
   const t = envTreatment(env)
+  // SIGN OUT (owner 2026-10-14) only where there is an IAP session to end:
+  // never on `npm run dev` (signoutState.ts `iapFronted`), and never before the
+  // identity it would sign out has been read.
+  const canSignOut = who !== null && iapFronted(typeof window === 'undefined' ? '' : window.location.hostname)
   const meter = meterOf(dataOf(cap))
   // The Approvals page carries the inbox count the Automate section does (§6.1).
   const counts = waiting === null ? panelCounts(stats, cap, fromList) : { ...panelCounts(stats, cap, fromList), approvals: waiting }
@@ -1503,6 +1509,8 @@ export function SkyShell({
         </button>
       )}
       {foot}
+      {/* Collapsed, the avatar is the person: Sign out sits beside it, as an icon. */}
+      {collapsed && !drawer && canSignOut && <SignOutButton email={who.principal.email} compact />}
       <span className="sk-av" title={who?.principal.email ?? 'not read'} aria-hidden>
         {initials(who?.principal.email ?? '')}
         {fault !== null && <i className="sk-av-dot" />}
@@ -1552,6 +1560,7 @@ export function SkyShell({
         <span className="sk-pfrow">
           <b title={who?.principal.email.split('@')[0]}>{who === null ? (me.status === 'loading' ? 'reading…' : 'not read') : who.principal.email.split('@')[0]}</b>
           {admin && <span className="sk-adm">admin</span>}
+          {canSignOut && <SignOutButton email={who.principal.email} />}
         </span>
         {/* One line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
         {who !== null && <small title={who.principal.email}>{who.principal.email}</small>}
@@ -1715,6 +1724,7 @@ export function SkyShell({
           ) : (
             <>
               {keptBanner}
+              {who !== null && <SignedBackIn key={who.principal.email} email={who.principal.email} />}
               {/* Keyed on the chosen tenant: a switch is a fresh screen, every
                   read of it made again with the new X-Swarm-Tenant -- except
                   a kept form, which re-reads in place. */}
