@@ -144,6 +144,16 @@ def submit(
 
 
 class GitServer:
+    """The stdio loop over one spool. The class attributes are the server's
+    whole vocabulary, so another spool-backed shim (`agent_worker.searchmcp`)
+    is this loop with its own name and tools, never a second copy of it."""
+
+    name: str = SERVER_NAME
+    instructions: str = INSTRUCTIONS
+    tools: list[dict[str, Any]] = TOOLS
+    arguments: dict[str, frozenset[str]] = ARGUMENTS
+    required: dict[str, frozenset[str]] = REQUIRED
+
     def __init__(self, spool: Path, *, submitter: Callable[..., dict[str, Any]] = submit) -> None:
         self.spool = Path(spool)
         self._submit = submitter
@@ -167,13 +177,13 @@ class GitServer:
             return _result(ident, {
                 "protocolVersion": version,
                 "capabilities": {"tools": {"listChanged": False}},
-                "serverInfo": {"name": SERVER_NAME, "version": __version__},
-                "instructions": INSTRUCTIONS,
+                "serverInfo": {"name": self.name, "version": __version__},
+                "instructions": self.instructions,
             })
         if method == "ping":
             return _result(ident, {})
         if method == "tools/list":
-            return _result(ident, {"tools": TOOLS})
+            return _result(ident, {"tools": self.tools})
         if method == "tools/call":
             name = params.get("name")
             if not isinstance(name, str):
@@ -188,19 +198,19 @@ class GitServer:
 
         Only the shape is checked here, for a fast answer; the worker checks
         everything again, because the spool is writable without this shim."""
-        if name not in TOOL_NAMES:
+        if name not in self.arguments:
             return _dumps({"refused": {"code": "unknown_tool",
-                                       "message": f"tools are {', '.join(TOOL_NAMES)}"}}), True
+                                       "message": f"tools are {', '.join(self.arguments)}"}}), True
         args = arguments if arguments is not None else {}
         if not isinstance(args, dict):
             return _dumps({"refused": {"code": "request_invalid",
                                        "message": "arguments must be an object"}}), True
-        unknown = sorted(set(args) - ARGUMENTS[name])
-        missing = sorted(REQUIRED[name] - set(args))
+        unknown = sorted(set(args) - self.arguments[name])
+        missing = sorted(self.required[name] - set(args))
         if unknown or missing:
             return _dumps({"refused": {
                 "code": "request_invalid",
-                "message": f"{name} takes {sorted(ARGUMENTS[name])}; unknown {unknown}, "
+                "message": f"{name} takes {sorted(self.arguments[name])}; unknown {unknown}, "
                            f"missing {missing}"}}), True
         answer = self._submit(self.spool, name, args)
         return _dumps(answer), "refused" in answer
@@ -218,7 +228,7 @@ class GitServer:
                 try:
                     response = self.handle(message)
                 except Exception as exc:  # one bad call must not end the session
-                    print(f"swarm-git: {type(exc).__name__} answering a request", file=sys.stderr)
+                    print(f"{self.name}: {type(exc).__name__} answering a request", file=sys.stderr)
                     ident = message.get("id") if isinstance(message, dict) else None
                     response = _error(ident, -32603, f"internal error: {type(exc).__name__}")
             if response is not None:
