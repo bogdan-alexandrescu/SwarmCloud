@@ -76,7 +76,7 @@ import urllib.request
 from typing import Any, Callable, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
-from .errors import Forbidden, UpstreamUnavailable, ValidationFailed
+from .errors import Conflict, Forbidden, UpstreamUnavailable, ValidationFailed
 
 log = logging.getLogger(__name__)
 
@@ -237,6 +237,20 @@ class AccountPool(Protocol):
         start: str | None,
         end: str | None,
         cursor: str | None,
+    ) -> dict[str, Any]: ...
+
+    # THE ONE QUOTA ROUTE this API calls (QUOTA-RESET, 2026-10-14): a platform
+    # admin's reset of a tenant's AIMD target, proxied so the broker stays the
+    # only writer of quota documents. Only `routes/admin.py` calls it.
+    def set_adaptive_target(
+        self,
+        provider: str,
+        tenant_id: str,
+        *,
+        target: int,
+        reason: str,
+        clear_cooldown: bool,
+        requested_by: str,
     ) -> dict[str, Any]: ...
 
 
@@ -554,6 +568,29 @@ class BrokerClient:
             params={"from": start or "", "to": end or "", "cursor": cursor or ""},
         )
 
+    def set_adaptive_target(
+        self,
+        provider: str,
+        tenant_id: str,
+        *,
+        target: int,
+        reason: str,
+        clear_cooldown: bool,
+        requested_by: str,
+    ) -> dict[str, Any]:
+        return self._call(
+            "PUT",
+            f"/v1/quota/{quote(provider, safe='')}/{quote(tenant_id, safe='')}/adaptive-target",
+            payload={
+                "target": int(target),
+                "reason": reason,
+                "clear_cooldown": bool(clear_cooldown),
+                # The admin this service verified. The broker records it next
+                # to the identity it verified itself -- this service's.
+                "requested_by": requested_by,
+            },
+        )
+
     # ----------------------------------------------------------------- plumbing
 
     def _call(
@@ -667,6 +704,10 @@ class BrokerClient:
                 "PLATFORM_SERVICE_ACCOUNTS, and the ID token audience must match "
                 "the broker's BROKER_AUDIENCE"
             )
+        if broker_said and status == 409:
+            # The request was allowed and well-formed; the state it acts on
+            # refuses it (an EXHAUSTED quota reset without clear_cooldown).
+            raise Conflict(message or "the quota broker refused this change in the current state")
         if broker_said and status == 422:
             # BrokerValidationError -- "the thing you named does not exist", or
             # a credential with no refresh token, refused at paste time.

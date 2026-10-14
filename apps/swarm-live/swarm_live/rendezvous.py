@@ -227,6 +227,12 @@ CLOSE_BUSY = 4409
 CLOSE_ENDED = 4410
 CLOSE_FULL = 4429
 CLOSE_SLOW = 4408
+#: The relay is restarting (RELAY-ROLL): reconnect now. RFC 6455's 1012
+#: "Service Restart", the code uvicorn itself closes with on SIGTERM and the
+#: one swarm-api already closes a viewer with when its relay link ends, so the
+#: gate, swarm-api and the console all read one code. Unlike CLOSE_ENDED it
+#: says nothing about the session: that is still open, on the next relay.
+CLOSE_RESTARTING = 1012
 
 _TICKET_FIELDS = ("session_id", "tenant_id", "task_id", "attempt_id", "generation",
                   "role", "exp", "nonce", "email")
@@ -683,6 +689,9 @@ class Rendezvous:
         #: session_id -> when it may be forgotten (CLOSED_MEMORY_SECONDS).
         self._closed: dict[str, float] = {}
         self._lock = asyncio.Lock()
+        #: Set by `restarting()`: every connection is told to reconnect, and
+        #: every new one is refused with CLOSE_RESTARTING until the process ends.
+        self._restarting = False
 
     # -- counts --------------------------------------------------------
 
@@ -693,6 +702,10 @@ class Rendezvous:
         return sum(len(t.viewers) for t in self._tunnels.values()
                    if (task_id is None or t.session.task_id == task_id)
                    and (tenant_id is None or t.session.tenant_id == tenant_id))
+
+    def controlled_count(self) -> int:
+        """Sessions a person is in control of here: what a relay roll waits for."""
+        return sum(1 for t in self._tunnels.values() if t.controller is not None)
 
     def controller(self, session_id: str) -> str | None:
         tunnel = self._tunnels.get(session_id)
@@ -724,6 +737,9 @@ class Rendezvous:
         cannot both pass the ledger. Matching it to its session is the
         caller's: a tunnel ticket defines the session, every other names it.
         """
+        if self._restarting:
+            # Before the ticket is spent: the next relay may still admit it.
+            raise Refused("relay_restarting", CLOSE_RESTARTING)
         now = self._clock()
         ticket = verify_ticket(self._key, raw, now=now)
         self._ledger.spend(ticket, now)
@@ -838,8 +854,10 @@ class Rendezvous:
         tunnel.closed = True
         if self._tunnels.get(tunnel.session.session_id) is tunnel:
             del self._tunnels[tunnel.session.session_id]
+        # A restart is said to the viewers too: their session is not over.
+        viewer_code = CLOSE_RESTARTING if code == CLOSE_RESTARTING else CLOSE_ENDED
         for viewer in list(tunnel.viewers.values()):
-            await self._drop_viewer(viewer, CLOSE_ENDED, reason, tell_gate=False)
+            await self._drop_viewer(viewer, viewer_code, reason, tell_gate=False)
         rec, tunnel.recording = tunnel.recording, None
         if rec is not None:
             await self._stop_recording(tunnel, rec)
@@ -1080,6 +1098,25 @@ class Rendezvous:
                     await viewer.outbox.join()
             await asyncio.sleep(0)
 
+    async def restarting(self) -> int:
+        """The relay is going (SIGTERM, a roll): tell every gate and viewer to
+        reconnect now, with CLOSE_RESTARTING, and refuse every new connection
+        the same way. Each tunnel's queue is drained first and its recording's
+        last segment written. The number of connections told.
+
+        WHY THE RELAY SAYS IT, AND NOT ONLY UVICORN. uvicorn also closes every
+        socket with 1012 on SIGTERM, but by cutting it: what was queued to a
+        viewer is lost, the recorder's last segment is not written, and a gate
+        or viewer that dials in during the drain is admitted to a process about
+        to exit. RELAY-ROLL, 2026-10-13: 40 restarts in ~48 h, each one this."""
+        self._restarting = True
+        tunnels = list(self._tunnels.values())
+        told = sum(1 + len(t.viewers) for t in tunnels)
+        # Together: each drain may wait 2 s, and the pod's grace is 30 s.
+        await asyncio.gather(*(self._end_tunnel(t, CLOSE_RESTARTING, "relay_restarting") for t in tunnels))
+        if told:
+            log.info("live relay: restarting; %d connection(s) told to reconnect", told)
+        return told
+
     async def shutdown(self) -> None:
-        for tunnel in list(self._tunnels.values()):
-            await self._end_tunnel(tunnel, CLOSE_ENDED, "relay_stopping")
+        await self.restarting()

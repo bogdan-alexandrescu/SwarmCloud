@@ -49,6 +49,7 @@ from swarm_api.groups import CloudIdentityGroups
 from swarm_api.handoff import LIVE_AUDIT
 from swarm_api.live import (
     LIVE_SESSIONS,
+    LiveLimits,
     ROLE_TUNNEL,
     ROLE_VIEWER,
     TicketRefused,
@@ -59,6 +60,7 @@ from swarm_api.live import (
 )
 from swarm_api.main import create_app
 from swarm_api.metrics import ApiMetrics
+from swarm_api.ratelimit import TokenBucketLimiter
 from swarm_api.waker import NullWaker
 
 from .conftest import ENG_GROUP, PROJECT, RESEARCH_GROUP, api_settings, seed_task, seed_tenant
@@ -959,6 +961,12 @@ def test_a_ticket_for_someone_else_is_refused_on_the_socket(client, ldb, live, r
 
 
 def test_viewer_tickets_are_rate_limited_per_person(client, ldb, live):
+    # The bucket refills at 30/min on the real monotonic clock: 31 requests
+    # that take over 2 s on a loaded CI runner earn a token back and the 31st
+    # is admitted. A stopped clock tests the burst alone.
+    limits = LiveLimits(client.app.state.ctx.settings)
+    limits.tickets = TokenBucketLimiter(30 / 60.0, 30, clock=lambda: 0.0)
+    client.app.state.live_limits = limits
     codes = [client.post(f"/v1/tasks/{TASK}/live/ticket", headers=bearer("root")).status_code
              for _ in range(31)]
     assert codes[:30] == [200] * 30 and codes[30] == 429

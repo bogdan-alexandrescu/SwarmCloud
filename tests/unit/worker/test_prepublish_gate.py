@@ -176,7 +176,8 @@ def test_the_check_set_is_limited_to_the_kinds_of_file_the_diff_touches(tmp_path
     assert chosen() == []
     assert chosen("docs/a.md") == ["changed-guards"]
     assert chosen("docs/a.md", "scripts/x.sh") == ["changed-guards", "shellcheck"]
-    assert chosen("terraform/infra/main.tf") == ["changed-guards", "checkov-terraform", "tflint"]
+    assert chosen("terraform/infra/main.tf") == ["changed-guards", "checkov-terraform", "tflint",
+                                                "terraform-fmt"]
     assert chosen("kubernetes/job.yaml") == ["changed-guards", "checkov-kubernetes"]
     assert chosen("apps/w/x.py") == ["changed-guards", "ruff-format", "ruff-check"]
     assert chosen("images/agent-runtime-base/Dockerfile") == ["changed-guards", "build-mirror"]

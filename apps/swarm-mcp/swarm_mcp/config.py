@@ -100,7 +100,22 @@ PLUGIN_CLIENT_SECRET = "oauth_client_secret"
 #: BUILD_PROMPT_V2 2.5). The same name is the config file's key, so a terminal
 #: and a plugin session read one setting under one name.
 PLUGIN_TARGET = "default_target"
-PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET, PLUGIN_TARGET)
+#: How many SwarmCloud workflows, and how many single tasks, `/sc attach
+#: --all` follows as live rows (SC-ROWS, owner request 2026-10-14: "increase
+#: live rows to 30"). Read by the bridge, which caps `swarm_workflow_launch
+#: {attach: "all"}` with it and hands it to run.js in each copy's args as
+#: `max_rows`; anything past it is listed in `not_followed`.
+PLUGIN_MAX_LIVE_ROWS = "max_live_rows"
+PLUGIN_KEYS = (PLUGIN_URL, PLUGIN_CLIENT_ID, PLUGIN_CLIENT_SECRET, PLUGIN_TARGET, PLUGIN_MAX_LIVE_ROWS)
+
+#: The live-row cap when nothing sets one: 30, the owner's number. Every
+#: followed workflow's unfinished step is one row, an agent of its own, so the
+#: cap stays a cap: MAX_LIVE_ROWS_LIMIT is the most it can be set to, and 1
+#: the least. plugin/workflows/run.js restates all three
+#: (`DEFAULT_LIVE_ROWS`, `MAX_LIVE_ROWS_LIMIT`, `liveRowCap`) and
+#: test_sc_rows_workspace_and_cap.py holds the two equal.
+DEFAULT_MAX_LIVE_ROWS = 30
+MAX_LIVE_ROWS_LIMIT = 50
 
 #: The three places a unit of work can be sent (S8). `cloud` dispatches it,
 #: `local` sends nothing and says the work stays in this session, and `hybrid`
@@ -143,6 +158,41 @@ def is_unset(value: str | None) -> bool:
 def _env(environ: Mapping[str, str], name: str) -> str:
     value = environ.get(name, "")
     return "" if is_unset(value) else value.strip()
+
+
+def clamp_live_rows(value: Any) -> int:
+    """`value` as a live-row cap: a whole number held to 1..MAX_LIVE_ROWS_LIMIT;
+    DEFAULT_MAX_LIVE_ROWS for anything unset or not a number. A setting of 0
+    or below is 1, never "follow nothing": a cap that hid every row would read
+    as nothing running."""
+    if isinstance(value, bool):
+        return DEFAULT_MAX_LIVE_ROWS
+    if isinstance(value, str):
+        text = "" if is_unset(value) else value.strip()
+        try:
+            value = float(text)
+        except ValueError:
+            return DEFAULT_MAX_LIVE_ROWS
+    if not isinstance(value, (int, float)) or value != value or value in (float("inf"), float("-inf")):
+        return DEFAULT_MAX_LIVE_ROWS
+    return max(1, min(MAX_LIVE_ROWS_LIMIT, int(value)))
+
+
+#: Where the SessionStart hook finds the same setting: Claude Code hands a
+#: plugin's options to its hooks as CLAUDE_PLUGIN_OPTION_<KEY>, and the hook
+#: runs `sc`, not the bridge.
+HOOK_MAX_LIVE_ROWS = "CLAUDE_PLUGIN_OPTION_MAX_LIVE_ROWS"
+
+
+def max_live_rows(environ: Mapping[str, str] | None = None) -> int:
+    """The sc plugin's `max_live_rows` (SWARM_PLUGIN_MAX_LIVE_ROWS for the
+    bridge, CLAUDE_PLUGIN_OPTION_MAX_LIVE_ROWS for the hook), clamped."""
+    environ = os.environ if environ is None else environ
+    for name in (plugin_env(PLUGIN_MAX_LIVE_ROWS), HOOK_MAX_LIVE_ROWS):
+        given = _env(environ, name)
+        if given:
+            return clamp_live_rows(given)
+    return DEFAULT_MAX_LIVE_ROWS
 
 
 def repo_mode(environ: Mapping[str, str] | None = None) -> bool:

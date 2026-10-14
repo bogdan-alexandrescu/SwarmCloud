@@ -36,6 +36,33 @@ A manifest without `format_version` is format 2 and is read with those lists
 empty; `tokenize` and `bm25_search` below are the one implementation the
 extractor indexes with and readers query with.
 
+CONTEXT LAYERS (lane CTXQ-H, docs/design/context-quality.md §4.2). The
+manifest also carries `context_shards`, the history and rules layers
+`repo_index_history.py` mines from the index run's own clone, and `context`,
+what that clone covered and why a layer is missing:
+
+  history       per file, the merged PRs that touched it    by file directory
+  co_change     a file and the tests or guards that change with it
+  test_fixes    per test, the earlier commits that fixed it  by test directory
+  rules         the docs, house rules and guards policing a path: by the
+                file's directory, or by the directory a directory rule
+                names, so a reader of a path reads its directory and every
+                ancestor (`context_keys`, `rule_reaches`)
+  cannot_push   `.github/workflows/**` and frozen paths, one shard keyed `*`
+  test_runners  per JS/TS test file, the command that runs it
+
+A THIRD key, not `index_shards`, for the reason format 3 did not touch
+`shards`: swarm-api's `territory._index_table` refuses a manifest whose
+`index_shards` names a layer it does not know, so a context layer there
+would make every new graph unreadable to the impact, territory and plan
+routes. Every reader ignores a top-level key it does not know, so the format
+stays 3. The writer finds the clone at `--repo`, by default `repo/` beside
+the `--graph` file: the worker writes `work/repo-graph.json` beside its
+clone `work/repo` (agent_worker.indexrun GRAPH_FILE, workspace.REPO_DIR_NAME).
+Without a clone, or when mining fails, the graph is written exactly as
+before, with `context.available` false and the reason: a context layer is
+never worth a graph.
+
 CONTENT-ADDRESSED. A blob is named by the sha256 of its stored bytes, so a
 reader checks a blob BEFORE it decompresses it, and an unchanged shard of the
 next commit is the same blob: an incremental commit writes the shards whose
@@ -52,7 +79,10 @@ The manifest names its `compression`, so a later zstd writer is a new value,
 not a format break. Measured on this repository (lane RI9): gzip -9 holds
 the graph to about a seventh of its JSON-lines size.
 
-THE 256 MiB CEILING (§2.5). Over it, symbol edges below confidence 0.4 are
+THE 256 MiB CEILING (§2.5). Over it, the context layers go first (they are
+advisory, and rebuilt from the clone on every run): history, co-change, test
+fixes and test runners (`context:history` in `truncated`), then rules
+(`context:rules`); `cannot_push` stays. Still over, symbol edges below confidence 0.4 are
 dropped first (`call_edges:below_0.4` in `truncated`); still over, every
 symbol edge goes and the module-level `import` edges stay
 (`call_edges:symbol`); still over, nothing is written and the run says why.
@@ -133,6 +163,7 @@ import base64
 import functools
 import gzip
 import hashlib
+import importlib.util
 import json
 import math
 import os
@@ -202,6 +233,20 @@ INDEX_LAYERS = {"communities": "communities", "terms": "terms", "signatures": "s
 #: The key of a layer stored as one shard. Not a directory `module_of` can
 #: produce: a module is a path or `.`.
 WHOLE = "*"
+#: The context layers (lane CTXQ-H), under `context_shards`, and the version
+#: of their row shapes, recorded as `context.version`. Restated from
+#: repo_index_history.LAYERS so this module still reads and sweeps a manifest
+#: without that file; a test holds the two equal.
+CONTEXT_LAYERS = ("history", "co_change", "test_fixes", "rules", "cannot_push", "test_runners")
+CONTEXT_VERSION = 1
+#: Over the ceiling, the context layers dropped first, then next, each group
+#: named in `truncated`. `cannot_push` is never dropped: it is a handful of
+#: rows, and the miss it prevents (a lane editing a workflow file) costs the
+#: whole lane (context-quality.md §3, class W).
+CONTEXT_DROP = (("context:history", ("history", "co_change", "test_fixes", "test_runners")),
+                ("context:rules", ("rules",)))
+#: The history module, beside this file in the image (/opt/repo-index/).
+HISTORY_MODULE = "repo_index_history"
 #: Term buckets are the first TERM_BUCKET_CHARS hex characters of the term's
 #: sha256: 256 buckets. A query of a handful of terms reads that many shards,
 #: and a one-file change rewrites only the buckets of the terms it touched.
@@ -683,6 +728,18 @@ def _check_graph(document: Any) -> None:
             raise ValueError(f"the graph's {key} is not a list")
 
 
+_RULE_RANK = {"house_rule": 0, "guard": 1, "doc": 2}
+
+
+def _epoch(value: Any) -> int:
+    """An ISO-8601 UTC stamp as seconds; 0 when it is not one."""
+    try:
+        return int(datetime.strptime(str(value), "%Y-%m-%dT%H:%M:%SZ")
+                   .replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        return 0
+
+
 _ORDER: dict[str, Callable[[dict], tuple]] = {
     "symbols": lambda s: (str(s.get("path")), s.get("start_line") or 0, str(s.get("id"))),
     "callers": lambda e: (str(e.get("to")), str(e.get("from")), str(e.get("kind"))),
@@ -694,6 +751,17 @@ _ORDER: dict[str, Callable[[dict], tuple]] = {
     "signatures": lambda r: (str(r.get("symbol")),),
     "signature_changes": lambda r: (str(r.get("symbol")),),
     "flows": lambda f: (str(f.get("entry")),),
+    "history": lambda r: (str(r.get("path")),),
+    "co_change": lambda r: (str(r.get("path")), -int(r.get("commits") or 0),
+                            str(r.get("partner"))),
+    # Newest fix first, as the fixer reads them.
+    "test_fixes": lambda r: (str(r.get("test")), -_epoch(r.get("date")), str(r.get("sha"))),
+    # Strongest rule first: house rule, guard, doc (repo_index_history.KIND_RANK).
+    "rules": lambda r: (str(r.get("path")), _RULE_RANK.get(str(r.get("kind")), 9),
+                        -float(r.get("confidence") or 0), str(r.get("source")),
+                        str(r.get("evidence")), int(r.get("line") or 0)),
+    "cannot_push": lambda r: (str(r.get("pattern")),),
+    "test_runners": lambda r: (str(r.get("test")),),
 }
 
 
@@ -709,6 +777,50 @@ def _index_layers(document: dict) -> dict[str, dict[str, list[dict]]]:
             grouped[layer].setdefault(module_of(str(row.get("symbol"))), []).append(row)
     for row in document.get("flows") or []:
         grouped["flows"].setdefault(module_of(str(row.get("entry"))), []).append(row)
+    return grouped
+
+
+def context_key(layer: str, row: dict) -> str:
+    """The shard a context row is stored in: the directory a reader looks it up by.
+
+    A file's rows go under the file's directory, a directory rule under the
+    directory it names, and `cannot_push` under `WHOLE`: a reader of a path
+    reads `context_keys(path)` and finds every rule that reaches it.
+    """
+    if layer == "cannot_push":
+        return WHOLE
+    if layer == "rules" and row.get("target") == "dir":
+        return str(row.get("path") or ".")
+    return module_of(str(row.get("test") if layer in ("test_fixes", "test_runners")
+                         else row.get("path")))
+
+
+def context_keys(path: str) -> list[str]:
+    """The shard keys a reader of `path` reads: its directory, each ancestor, then `.`."""
+    keys = []
+    current = posixpath.dirname(path.strip("/"))
+    while current:
+        keys.append(current)
+        current = posixpath.dirname(current)
+    return keys + ["."]
+
+
+def rule_reaches(row: dict, path: str) -> bool:
+    """Whether a `rules` row applies to `path`: its own file, or a directory above it."""
+    if row.get("target") != "dir":
+        return row.get("path") == path
+    root = str(row.get("path") or ".")
+    return root == "." or path == root or path.startswith(root + "/")
+
+
+def _context_layers(layers: dict[str, list[dict]]) -> dict[str, dict[str, list[dict]]]:
+    grouped: dict[str, dict[str, list[dict]]] = {}
+    for layer in CONTEXT_LAYERS:
+        if layer not in layers:
+            continue
+        grouped[layer] = {}
+        for row in layers[layer]:
+            grouped[layer].setdefault(context_key(layer, row), []).append(row)
     return grouped
 
 
@@ -749,22 +861,42 @@ def _encode_layers(grouped: dict[str, dict[str, list[dict]]], blobs: dict[str, b
     return table
 
 
-def _shard_all(document: dict, edges: list[dict]
-               ) -> tuple[dict, dict, dict[str, bytes], int, int]:
-    """(manifest shards, index shards, blobs by hex digest, stored bytes, raw bytes)."""
+def _shard_all(document: dict, edges: list[dict], context: dict[str, list[dict]]
+               ) -> tuple[dict, dict, dict, dict[str, bytes], int, int]:
+    """(manifest shards, index shards, context shards, blobs by hex digest,
+    stored bytes, raw bytes)."""
     blobs: dict[str, bytes] = {}
     table = _encode_layers(_layers(document, edges), blobs)
     index_table = _encode_layers(_index_layers(document), blobs)
+    context_table = _encode_layers(_context_layers(context), blobs)
     stored_total = sum(len(b) for b in blobs.values())
-    raw_total = sum(entry["raw_bytes"] for tab in (table, index_table)
+    raw_total = sum(entry["raw_bytes"] for tab in (table, index_table, context_table)
                     for layer in tab.values() for entry in layer.values())
-    return table, index_table, blobs, stored_total, raw_total
+    return table, index_table, context_table, blobs, stored_total, raw_total
+
+
+def _context_meta(context: dict | None) -> tuple[dict[str, list[dict]], dict]:
+    """(layers, the manifest's `context`) from `repo_index_history.build_context`'s answer."""
+    if context is None:
+        return {}, {"version": CONTEXT_VERSION, "available": False,
+                    "reason": "no clone was given to the writer; history and rules are not known"}
+    layers = {layer: list(rows) for layer, rows in (context.get("layers") or {}).items()
+              if layer in CONTEXT_LAYERS and isinstance(rows, list)}
+    meta = dict(context.get("meta") or {})
+    meta["version"] = CONTEXT_VERSION
+    meta.setdefault("available", bool(layers))
+    meta.setdefault("reason", None)
+    return layers, meta
 
 
 def build(document: dict, *, tenant_id: str, repo_id: str,
           max_commit_bytes: int = MAX_COMMIT_BYTES,
-          graph_digest: str | None = None) -> tuple[str, bytes, dict[str, bytes]]:
+          graph_digest: str | None = None,
+          context: dict | None = None) -> tuple[str, bytes, dict[str, bytes]]:
     """(manifest key, manifest bytes, blobs by hex digest). Writes nothing.
+
+    `context` is `repo_index_history.build_context`'s answer, stored as
+    `context_shards`; None stores none and says so in `context`.
 
     Raises ValueError for a document that is not a graph, an unsafe tenant or
     repo id, or a graph still over the ceiling with only module-level edges.
@@ -773,16 +905,28 @@ def build(document: dict, *, tenant_id: str, repo_id: str,
     key = manifest_key(tenant_id, repo_id, document["commit_sha"])
     edges = list(document["call_edges"])
     truncated = set(str(t) for t in document.get("truncated") or [])
-    table, index_table, blobs, stored, raw = _shard_all(document, edges)
+    layers, context_meta = _context_meta(context)
+    table, index_table, context_table, blobs, stored, raw = _shard_all(document, edges, layers)
+    # The context layers first: advisory, and mined again on every run.
+    for name, dropped in CONTEXT_DROP:
+        if stored <= max_commit_bytes:
+            break
+        if any(layer in layers for layer in dropped):
+            layers = {k: v for k, v in layers.items() if k not in dropped}
+            truncated.add(name)
+            table, index_table, context_table, blobs, stored, raw = _shard_all(
+                document, edges, layers)
     if stored > max_commit_bytes:
         edges = [e for e in edges if e.get("kind") == "import"
                  or float(e.get("confidence") or 0) >= CEILING_MIN_CONFIDENCE]
         truncated.add("call_edges:below_0.4")
-        table, index_table, blobs, stored, raw = _shard_all(document, edges)
+        table, index_table, context_table, blobs, stored, raw = _shard_all(
+            document, edges, layers)
     if stored > max_commit_bytes:
         edges = [e for e in edges if e.get("kind") == "import"]
         truncated.add("call_edges:symbol")
-        table, index_table, blobs, stored, raw = _shard_all(document, edges)
+        table, index_table, context_table, blobs, stored, raw = _shard_all(
+            document, edges, layers)
     if stored > max_commit_bytes:
         raise ValueError(
             f"the graph of {document['commit_sha']} is {stored} bytes stored with only "
@@ -814,6 +958,10 @@ def build(document: dict, *, tenant_id: str, repo_id: str,
         "bytes": {"stored": stored, "raw": raw},
         "shards": table,
         "index_shards": index_table,
+        # Counted after the ceiling: a dropped layer is absent, not zero.
+        "context": {**context_meta,
+                    "counts": {layer: len(rows) for layer, rows in sorted(layers.items())}},
+        "context_shards": context_table,
     }
     return key, canonical(manifest) + b"\n", blobs
 
@@ -881,7 +1029,7 @@ def _carried_shards(store: Store, manifest: bytes, *, tenant_id: str, repo_id: s
         return {}, set()
     ours = json.loads(manifest)
     counts: dict[str, tuple[int, int]] = {}
-    for key in ("shards", "index_shards"):
+    for key in ("shards", "index_shards", "context_shards"):
         carried = rewritten = 0
         for layer, modules in (ours.get(key) or {}).items():
             before = (base.get(key) or {}).get(layer) or {}
@@ -896,7 +1044,8 @@ def _carried_shards(store: Store, manifest: bytes, *, tenant_id: str, repo_id: s
 
 def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
                 max_commit_bytes: int = MAX_COMMIT_BYTES,
-                graph_digest: str | None = None, base_commit: str | None = None) -> dict:
+                graph_digest: str | None = None, base_commit: str | None = None,
+                context: dict | None = None) -> dict:
     """Shard `document` into `store`: blobs first (never clobbered), manifest last.
 
     RESUMABLE: a blob already at its path with our bytes counts as written
@@ -912,7 +1061,8 @@ def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
     checked and uploaded.
     """
     key, manifest, blobs = build(document, tenant_id=tenant_id, repo_id=repo_id,
-                                 max_commit_bytes=max_commit_bytes, graph_digest=graph_digest)
+                                 max_commit_bytes=max_commit_bytes, graph_digest=graph_digest,
+                                 context=context)
     blob_prefix = f"{graph_root(tenant_id, repo_id)}/blobs/"
     expected = {blob_key(tenant_id, repo_id, hexdigest): data
                 for hexdigest, data in blobs.items()}
@@ -962,9 +1112,12 @@ def write_graph(document: dict, store: Store, *, tenant_id: str, repo_id: str,
         # meaning for a reader of the report.
         carried, rewritten = counts.get("shards", (0, 0))
         index_carried, index_rewritten = counts.get("index_shards", (0, 0))
+        context_carried, context_rewritten = counts.get("context_shards", (0, 0))
         report.update(base_commit=base_commit, shards_carried=carried,
                       shards_rewritten=rewritten, index_shards_carried=index_carried,
-                      index_shards_rewritten=index_rewritten)
+                      index_shards_rewritten=index_rewritten,
+                      context_shards_carried=context_carried,
+                      context_shards_rewritten=context_rewritten)
     return report
 
 
@@ -1059,6 +1212,41 @@ def read_graph(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
     return document
 
 
+def read_context(store: Store, *, tenant_id: str, repo_id: str, commit_sha: str,
+                 layer: str, path: str | None = None,
+                 manifest_digest: str | None = None) -> list[dict]:
+    """A context layer's rows: every row, or those that reach `path`.
+
+    For a path, the shards of its directory and each ancestor are read
+    (`context_keys`), and `rules` keeps the rows `rule_reaches` says apply;
+    the other per-path layers keep the rows naming the path itself. Each blob
+    is checked against its name before it is decompressed, as `read_graph`
+    does. A manifest without `context_shards` answers nothing.
+    """
+    if layer not in CONTEXT_LAYERS:
+        raise ValueError(f"{layer!r} is not a context layer")
+    manifest = read_manifest(store, tenant_id=tenant_id, repo_id=repo_id,
+                             commit_sha=commit_sha, manifest_digest=manifest_digest)
+    entries = _context_shards(manifest).get(layer) or {}
+    keys = sorted(entries) if path is None or layer == "cannot_push" \
+        else [k for k in context_keys(path) if k in entries]
+    digests = [entries[k]["blob"].split(":", 1)[1] for k in keys]
+    fetched = _get_many(store, [blob_key(tenant_id, repo_id, h) for h in digests])
+    rows: list[dict] = []
+    for hexdigest in digests:
+        data = fetched.get(blob_key(tenant_id, repo_id, hexdigest))
+        if data is None or hashlib.sha256(data).hexdigest() != hexdigest:
+            raise ValueError(f"blob {hexdigest} does not hold the bytes its name is the "
+                             "digest of; the context is not read")
+        rows.extend(decode_shard(data))
+    if path is None or layer == "cannot_push":
+        return rows
+    if layer == "rules":
+        return [r for r in rows if rule_reaches(r, path)]
+    name = "test" if layer in ("test_fixes", "test_runners") else "path"
+    return [r for r in rows if r.get(name) == path]
+
+
 def manifest_format(manifest: dict) -> int:
     """The shard format a manifest was written in: 2 when it does not say."""
     value = manifest.get("format_version")
@@ -1078,6 +1266,19 @@ def _index_shards(manifest: dict) -> dict[str, dict]:
     return table
 
 
+def _context_shards(manifest: dict) -> dict[str, dict]:
+    """The context layers (lane CTXQ-H), checked; `{}` for a manifest without them."""
+    table = manifest.get("context_shards")
+    if table is None:
+        return {}
+    if not isinstance(table, dict):
+        raise ValueError("the manifest's context_shards is not an object")
+    for layer, entries in table.items():
+        if layer not in CONTEXT_LAYERS or not isinstance(entries, dict):
+            raise ValueError(f"the manifest names an unknown context layer {layer!r}")
+    return table
+
+
 # --- the sweep ----------------------------------------------------------------
 
 def referenced_blobs(manifest: dict) -> set[str]:
@@ -1088,9 +1289,10 @@ def referenced_blobs(manifest: dict) -> set[str]:
     if not isinstance(shards, dict):
         raise ValueError("the manifest has no shards")
     found: set[str] = set()
-    # The sweep deletes what no manifest names: an index layer's blob left out
-    # here would be deleted under a live manifest.
-    for layer in [*shards.values(), *_index_shards(manifest).values()]:
+    # The sweep deletes what no manifest names: an index or context layer's
+    # blob left out here would be deleted under a live manifest.
+    for layer in [*shards.values(), *_index_shards(manifest).values(),
+                  *_context_shards(manifest).values()]:
         if not isinstance(layer, dict):
             raise ValueError("a manifest layer is not an object")
         for entry in layer.values():
@@ -1231,6 +1433,44 @@ def sweep(store: Store, *, tenant_id: str, repo_id: str, now: datetime | None = 
 
 # --- the CLI ------------------------------------------------------------------
 
+def _history_module() -> Any:
+    """repo_index_history, from beside this file.
+
+    Loaded by path: the image runs this file as `python3.11 -I`, which puts
+    no script directory on `sys.path`.
+    """
+    loaded = sys.modules.get(HISTORY_MODULE)
+    if loaded is not None:
+        return loaded
+    path = Path(__file__).resolve().with_name(HISTORY_MODULE + ".py")
+    spec = importlib.util.spec_from_file_location(HISTORY_MODULE, path)
+    if spec is None or spec.loader is None or not path.is_file():
+        raise OSError(f"{path.name} is not installed beside the writer")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[HISTORY_MODULE] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def mine_context(repo: Path, document: dict) -> dict:
+    """The history and rules layers of the clone at `repo`, or why there are none.
+
+    Never raises: the graph is written whatever happens here, and the
+    manifest's `context` says what did.
+    """
+    if not repo.is_dir():
+        return {"layers": {}, "meta": {"available": False,
+                                       "reason": f"no clone at {repo}; history and rules "
+                                                 "are not known"}}
+    try:
+        return _history_module().build_context(repo, commit_sha=document["commit_sha"],
+                                               files=document.get("files") or [])
+    except Exception as exc:  # noqa: BLE001 -- a context layer is never worth the graph
+        return {"layers": {}, "meta": {"available": False,
+                                       "reason": f"mining the clone failed: "
+                                                 f"{type(exc).__name__}"}}
+
+
 def self_test() -> int:
     """Shard and sweep a two-symbol graph in a scratch directory."""
     commit = hashlib.sha1(b"self-test").hexdigest()
@@ -1247,13 +1487,24 @@ def self_test() -> int:
                        "tokenizer": TOKENIZER_VERSION},
     }
     with tempfile.TemporaryDirectory(prefix="repo-graph-self-test-") as scratch:
-        store = LocalStore(scratch)
-        first = write_graph(document, store, tenant_id="t", repo_id="r")
-        second = write_graph(document, store, tenant_id="t", repo_id="r")
+        # The history module mines a two-file checkout: it is installed, and a
+        # doc naming a path is a rule the sweep keeps.
+        checkout = Path(scratch) / "repo"
+        (checkout / "a").mkdir(parents=True)
+        (checkout / "a" / "b.py").write_text("def f():\n    return 1\n")
+        (checkout / "README.md").write_text("Start at `a/b.py`.\n")
+        context = mine_context(checkout, {**document, "files": [
+            {"path": "a/b.py"}, {"path": "README.md"}]})
+        store = LocalStore(str(Path(scratch) / "store"))
+        first = write_graph(document, store, tenant_id="t", repo_id="r", context=context)
+        second = write_graph(document, store, tenant_id="t", repo_id="r", context=context)
         swept = sweep(store, tenant_id="t", repo_id="r", grace=timedelta(0))
         back = read_graph(store, tenant_id="t", repo_id="r", commit_sha=commit)
+        rules = read_context(store, tenant_id="t", repo_id="r", commit_sha=commit,
+                             layer="rules", path="a/b.py")
     if (first["manifest_digest"] != second["manifest_digest"] or second["blobs_written"]
-            or swept["deleted"] or swept["refused"] or back["terms"] != document["terms"]):
+            or swept["deleted"] or swept["refused"] or back["terms"] != document["terms"]
+            or [r.get("source") for r in rules] != ["README.md"]):
         print("repo-graph self-test: failed", file=sys.stderr)
         return 1
     print("repo-graph self-test: ok")
@@ -1354,6 +1605,10 @@ def main(argv: list[str] | None = None) -> int:
     write.add_argument("--no-sweep", action="store_true", help="skip the sweep after writing")
     write.add_argument("--base-commit",
                        help="incremental: the base's commit, to count the shards carried")
+    write.add_argument("--repo",
+                       help="the clone the graph was extracted from, mined for the history "
+                            "and rules layers (default: repo/ beside the --graph file, the "
+                            "worker's work/repo)")
     for command in (write, sweeper):
         command.add_argument("--keep-commit", action="append", metavar="SHA",
                              help="a commit whose index version is kept (repeat it); with any, "
@@ -1390,9 +1645,15 @@ def main(argv: list[str] | None = None) -> int:
         else:
             raw = Path(args.graph).read_bytes()
             document = json.loads(raw)
+            _check_graph(document)
+            repo = Path(args.repo) if args.repo else Path(args.graph).resolve().parent / "repo"
+            context = mine_context(repo, document)
             report = write_graph(document, store, tenant_id=tenant,
                                  repo_id=args.repo_id, max_commit_bytes=args.max_commit_bytes,
-                                 graph_digest=digest_of(raw), base_commit=args.base_commit)
+                                 graph_digest=digest_of(raw), base_commit=args.base_commit,
+                                 context=context)
+            report["context"] = {"available": bool(context["meta"].get("available")),
+                                 "reason": context["meta"].get("reason")}
             if args.index:
                 index_path = Path(args.index)
                 index = json.loads(index_path.read_bytes())

@@ -1,4 +1,14 @@
-"""The six tools, their schemas, and the 4 KiB answer with paging (§4.2, §7.7).
+"""The eight tools, their schemas, and the 4 KiB answer with paging (§4.2, §7.7).
+
+KG4's six, and two from docs/design/context-quality.md §4.4 (lane CTXQ-T),
+both offline, over the snapshot's layers H and R (`snapshot.py` documents
+their rows): `similar_changes` lists the merged PRs, fix commits and
+co-changing files of the files asked about -- precedent, and fixes not to
+make a second time -- and `rules_for` the paths a lane cannot push, the guard
+tests that police the files and the docs that name them. Zero rows from
+either is `UNKNOWN`, as zero callers is: a history the indexer did not read
+that far back, or a rule nobody wrote down, is not "no precedent" or
+"unconstrained". A snapshot indexed before those layers says so in its note.
 
 EVERY ANSWER IS ONE JSON OBJECT, AT MOST `ANSWER_CAP` BYTES:
 
@@ -26,8 +36,10 @@ the answer says so in `in_flight` rather than leaving it out silently.
 
 from __future__ import annotations
 
+import functools
 import json
 import posixpath
+import re
 from typing import Any, Callable
 
 from agent_worker.graphmcp.freshness import Observation
@@ -53,8 +65,21 @@ NEIGHBOUR_FILES = 12
 RESOLVE_CANDIDATES = 200
 SHOWN_CANDIDATES = 10
 
+#: Files of a past PR one `similar_changes` row lists; the rest are counted.
+SHOWN_FILES = 8
+#: Characters of a rule's `why` or a commit's subject one row carries.
+SHOWN_TEXT = 200
+#: `rules_for`'s order: what the lane must not do, then what will police it.
+RULE_ORDER = {"cannot_push": 0, "guard": 1, "doc": 2}
+
 UNKNOWN_CALLERS = ("zero resolved callers is UNKNOWN, never safe: a call through a "
                    "dynamic dispatch, a string or a module object can be invisible")
+NO_HISTORY = ("zero recorded changes is UNKNOWN, never 'no precedent': the history "
+              "holds merged PRs only, as far back as the indexer read")
+NO_RULES = ("zero matching rules is UNKNOWN, never 'unconstrained': CLAUDE.md and the "
+            "guard set still apply")
+NO_HISTORY_LAYER = "this snapshot has no history layer (indexed before layer H)"
+NO_RULES_LAYER = "this snapshot has no rules layer (indexed before layer R)"
 IN_FLIGHT = "not in a snapshot: in-flight steps and lanes come from swarm-api (phase 3)"
 
 _CURSOR = {"type": "string", "description": "next_cursor of the previous page"}
@@ -93,6 +118,17 @@ TOOLS: list[dict[str, Any]] = [
          "symbol": _SYMBOL, "cursor": _CURSOR}}},
     {"name": "territory",
      "description": "For files: community, fan-in and the files depending on them.",
+     "inputSchema": {"type": "object", "required": ["files"], "properties": {
+         "files": _FILES, "cursor": _CURSOR}}},
+    {"name": "similar_changes",
+     "description": "Earlier merged PRs, fix commits and co-changing files for files or "
+                    "symbols: precedent to follow, fixes not to repeat.",
+     "inputSchema": {"type": "object", "properties": {
+         "files": _FILES, "symbols": {"type": "array", "items": {"type": "string"}},
+         "cursor": _CURSOR}}},
+    {"name": "rules_for",
+     "description": "For files: paths a lane cannot push, guard tests policing them, "
+                    "docs naming them.",
      "inputSchema": {"type": "object", "required": ["files"], "properties": {
          "files": _FILES, "cursor": _CURSOR}}},
 ]
@@ -519,6 +555,167 @@ def tool_territory(snap: Snapshot, obs: Observation, args: dict) -> str:
     return page(obs, head, file_rows + dependants, _cursor(args))
 
 
+def _text(value: Any) -> str | None:
+    return None if value is None else str(value)[:SHOWN_TEXT]
+
+
+def tool_similar_changes(snap: Snapshot, obs: Observation, args: dict) -> str:
+    args = _args(args, {"files", "symbols", "cursor"}, set())
+    files = [_file_arg(f) for f in _strings(args, "files")]
+    names = _strings(args, "symbols")
+    if not files and not names:
+        raise ToolInputError("give files, symbols or both")
+    unknown: list[str] = []
+    for name in names:
+        try:
+            files.append(path_of(resolve(snap, name)))
+        except _Unresolved:
+            unknown.append(name)
+    inputs = list(dict.fromkeys(files))
+    head: dict[str, Any] = {"inputs": len(inputs) + len(unknown)}
+    if unknown:
+        head["unknown"] = unknown[:SHOWN_CANDIDATES]
+    if not snap.has_layer("history"):
+        head.update(history="UNKNOWN", note=f"{NO_HISTORY_LAYER}: {NO_HISTORY}")
+        return page(obs, head, [], _cursor(args))
+    changes: dict[str, dict] = {}
+    fixes: dict[str, dict] = {}
+    co_changes: dict[str, dict] = {}
+    silent: list[str] = []
+    for path in inputs:
+        found = snap.history(path)
+        if not found:
+            silent.append(path)
+        for row in found:
+            kind = row.get("kind")
+            if kind == "change":
+                key = str(row.get("pr") if row.get("pr") is not None else row.get("sha"))
+                have = changes.get(key)
+                if have is None:
+                    touched = [str(f) for f in row.get("files") or []]
+                    have = changes[key] = {
+                        "rel": "change", "pr": row.get("pr"), "title": _text(row.get("title")),
+                        "merged_at": row.get("merged_at"),
+                        "fix_round": bool(row.get("fix_round")), "touches": [],
+                        "files": touched[:SHOWN_FILES], "files_total": len(touched)}
+                    if row.get("pr") is None:
+                        have["sha"] = row.get("sha")
+                if path not in have["touches"]:
+                    have["touches"].append(path)
+            elif kind == "fix":
+                key = str(row.get("sha"))
+                if key not in fixes:
+                    fixes[key] = {"rel": "fix", "sha": row.get("sha"),
+                                  "subject": _text(row.get("subject")), "path": path}
+                    for extra in ("pr", "test"):
+                        if row.get(extra) is not None:
+                            fixes[key][extra] = row[extra]
+            elif kind == "co_change":
+                other = str(row.get("other"))
+                support = int(row.get("support") or 0)
+                if other in inputs or support <= co_changes.get(other, {}).get("support", -1):
+                    continue
+                co_changes[other] = {"rel": "co_change", "path": other, "with": path,
+                                     "support": support, "confidence": row.get("confidence")}
+    for change in changes.values():
+        change["touches"].sort()
+    change_rows = sorted(changes.values(), reverse=True,
+                         key=lambda r: (len(r["touches"]), str(r.get("merged_at") or ""),
+                                        int(r.get("pr") or 0)))
+    co_rows = sorted(co_changes.values(), key=lambda r: (-r["support"],
+                                                         -(r.get("confidence") or 0),
+                                                         r["path"]))
+    rows = list(fixes.values()) + change_rows + co_rows
+    head.update(changes=len(change_rows), fixes=len(fixes), co_changes=len(co_rows))
+    if silent:
+        head["no_history"] = silent[:SHOWN_CANDIDATES]
+    if not rows:
+        head.update(history="UNKNOWN", note=NO_HISTORY)
+    return page(obs, head, rows, _cursor(args))
+
+
+@functools.lru_cache(maxsize=4096)
+def _glob(pattern: str) -> re.Pattern[str]:
+    """`**` crosses directories, `*` and `?` do not; a trailing `/` is the directory."""
+    if pattern.endswith("/"):
+        pattern += "**"
+    out: list[str] = []
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**/", index):
+            out.append("(?:.*/)?")
+            index += 3
+        elif pattern.startswith("**", index):
+            out.append(".*")
+            index += 2
+        elif pattern[index] == "*":
+            out.append("[^/]*")
+            index += 1
+        elif pattern[index] == "?":
+            out.append("[^/]")
+            index += 1
+        else:
+            out.append(re.escape(pattern[index]))
+            index += 1
+    return re.compile("".join(out))
+
+
+def glob_match(pattern: str, path: str) -> bool:
+    clean = pattern.strip()
+    while clean.startswith("./"):
+        clean = clean[2:]
+    return bool(clean) and _glob(clean.lstrip("/")).fullmatch(path) is not None
+
+
+def tool_rules_for(snap: Snapshot, obs: Observation, args: dict) -> str:
+    args = _args(args, {"files", "cursor"}, {"files"})
+    files = list(dict.fromkeys(_file_arg(f) for f in _strings(args, "files")))
+    if not files:
+        raise ToolInputError("files must name at least one path")
+    head: dict[str, Any] = {"files": len(files)}
+    if not snap.has_layer("rules"):
+        head.update(rules="UNKNOWN", note=f"{NO_RULES_LAYER}: {NO_RULES}")
+        return page(obs, head, [], _cursor(args))
+    found: dict[tuple[str, str], dict] = {}
+    matched: set[str] = set()
+    for rule in snap.rules():
+        pattern = str(rule.get("glob") or rule.get("path") or "")
+        hits = [f for f in files if glob_match(pattern, f)]
+        if not hits:
+            continue
+        kind = str(rule.get("kind") or "rule")
+        key = (kind, str(rule.get("ref")))
+        have = found.get(key)
+        if have is None:
+            have = found[key] = {"rel": kind, "ref": rule.get("ref"),
+                                 "why": _text(rule.get("why")), "glob": pattern,
+                                 "files": [], "confidence": rule.get("confidence")}
+            if rule.get("evidence") is not None:
+                have["evidence"] = rule["evidence"]
+        have["files"] += [f for f in hits if f not in have["files"]]
+        have["confidence"] = max(have.get("confidence") or 0, rule.get("confidence") or 0)
+        matched.update(hits)
+    blocked = sorted({f for row in found.values() if row["rel"] == "cannot_push"
+                      for f in row["files"]})
+    rows = sorted(found.values(), key=lambda r: (RULE_ORDER.get(r["rel"], len(RULE_ORDER)),
+                                                 -len(r["files"]),
+                                                 -(r.get("confidence") or 0), str(r["ref"])))
+    for row in rows:
+        row["files_total"] = len(row["files"])
+        row["files"] = sorted(row["files"])[:SHOWN_FILES]
+    head.update(cannot_push=blocked[:SHOWN_CANDIDATES],
+                guards=sum(1 for r in rows if r["rel"] == "guard"),
+                docs=sum(1 for r in rows if r["rel"] == "doc"))
+    if len(blocked) > SHOWN_CANDIDATES:
+        head["cannot_push_count"] = len(blocked)
+    silent = [f for f in files if f not in matched]
+    if silent:
+        head["no_rules"] = silent[:SHOWN_CANDIDATES]
+    if not rows:
+        head.update(rules="UNKNOWN", note=NO_RULES)
+    return page(obs, head, rows, _cursor(args))
+
+
 HANDLERS: dict[str, Callable[[Snapshot, Observation, Any], str]] = {
     "search": tool_search,
     "context": tool_context,
@@ -526,6 +723,8 @@ HANDLERS: dict[str, Callable[[Snapshot, Observation, Any], str]] = {
     "tests_for": tool_tests_for,
     "neighbours": tool_neighbours,
     "territory": tool_territory,
+    "similar_changes": tool_similar_changes,
+    "rules_for": tool_rules_for,
 }
 
 

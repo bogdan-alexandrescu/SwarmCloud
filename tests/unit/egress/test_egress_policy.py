@@ -128,7 +128,7 @@ def _secret(**over) -> bytes:
     body = {
         "vendor": "brightdata",
         "host": "brd.superproxy.io",
-        "port": 33335,
+        "port": 44445,
         "tls": False,
         "zones": {
             "residential": {"username": "brd-customer-c1-zone-res", "password": password,
@@ -149,6 +149,16 @@ def test_the_bright_data_username_carries_the_us_exit_and_the_session():
     user, password = base64.b64decode(encoded).decode().split(":", 1)
     assert user == "brd-customer-c1-zone-res-country-us-session-abc123"
     assert password == credential.zones["residential"].password
+
+
+@pytest.mark.parametrize("port", [44445, 33335, 22225])
+def test_the_vendor_endpoint_is_the_credentials_not_a_constant(port):
+    # The owner's zone answers on brd.superproxy.io:44445 (2026-10-14); Bright
+    # Data's other documented ports are 33335 and 22225. Whichever the
+    # credential names is the one dialled: nothing here, in policy.py or in
+    # the swarm-system manifests pins one (lane EGRESS-DISPATCH checked).
+    credential = parse_credential(_secret(port=port))
+    assert (credential.host, credential.port) == ("brd.superproxy.io", port)
 
 
 def test_the_credential_never_shows_its_password_or_username():

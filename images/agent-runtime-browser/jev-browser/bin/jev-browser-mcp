@@ -25,6 +25,12 @@
 #     to TypeSafe's own API (api.typesafe.ai), the one destination the owner
 #     accepted on 2026-10-14. TYPESAFE_API_KEY is passed through untouched and
 #     never printed.
+#   * JEV_API_COMPAT is passed through (JUDGE-ADAPT): `internal` makes the
+#     patched jev() reshape each request for Saga's internal decision API and
+#     send a placeholder key instead of TYPESAFE_API_KEY. Whoever points
+#     JEV_API_URL at an internal backend (JUDGE-SELECT) must set it too. While
+#     this wrapper still drops JEV_API_URL, `internal` would aim at TypeSafe,
+#     and the patched jev() refuses that rather than sending it.
 #
 # This is guidance, not a sandbox: the agent can run node on the package by
 # its path, and the pod and the gate are the boundary

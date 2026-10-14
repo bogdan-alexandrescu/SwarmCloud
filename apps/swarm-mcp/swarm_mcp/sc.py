@@ -723,9 +723,11 @@ WORKFLOW_PAGE_SIZE = 50
 
 #: Running workflows read in detail (one `GET /v1/workflows/{id}` each, for the
 #: label and the current steps). Beyond this many the list still names them,
-#: says they were not read, and costs nothing more; `/sc attach --all` follows
-#: at most 10 anyway.
-WORKFLOW_DETAIL_READS = 20
+#: says they were not read, and costs nothing more. 30 (20 before SC-ROWS):
+#: `/sc attach --all` follows up to `max_live_rows`, 30 unless set, and a
+#: workflow followed without its detail read is titled by its id instead of
+#: its name. A `max_live_rows` above 30 follows the rest titled that way.
+WORKFLOW_DETAIL_READS = 30
 
 #: How many workflows the session-start context names one by one.
 SESSION_START_NAMED = 10
@@ -758,10 +760,32 @@ def pull_request_wait(workflow: dict[str, Any]) -> str | None:
     return text if isinstance(text, str) and text else None
 
 
-def _running_entry(workflow: dict[str, Any], now: datetime) -> dict[str, Any]:
+def group_by_workspace(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """`entries` (newest first) grouped by their `workspace`, STABLY: each
+    workspace's entries keep their newest-first order, and the workspaces come
+    in the order of their newest entry. So a list of 30 rows reads as one
+    block per workspace without a row moving within its block between two
+    reads (SC-ROWS, owner 2026-10-14: "stable order: newest first, grouped by
+    workspace"). plugin/workflows/run.js's `groupByWorkspace` is the same."""
+    order: list[Any] = []
+    groups: dict[Any, list[dict[str, Any]]] = {}
+    for entry in entries:
+        key = entry.get("workspace")
+        if key not in groups:
+            order.append(key)
+            groups[key] = []
+        groups[key].append(entry)
+    return [entry for key in order for entry in groups[key]]
+
+
+def _running_entry(workflow: dict[str, Any], now: datetime, tenant: Any = None) -> dict[str, Any]:
+    from . import workflows
+
     created = render.parse_time(workflow.get("created_at"))
     entry: dict[str, Any] = {
         "workflow_id": workflow.get("workflow_id"),
+        # The workspace it runs in, from its own document (SC-ROWS).
+        "workspace": workflows.workspace_of(workflow, fallback=tenant),
         "label": None,
         "title": None,
         "state": workflow.get("state"),
@@ -788,6 +812,13 @@ def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
         entry["state"] = workflow["state"]
     entry["waiting_for"] = pull_request_wait(workflow)
     entry["label"] = _label_of(envelope)
+    # The repository its steps clone (SC-WATCH): the frozen `Workflow` has
+    # none of its own, so `/sc check` scopes a project's workflows by this.
+    entry["repository_url"] = next(
+        (t["repository_url"] for t in envelope.get("tasks") or []
+         if isinstance(t, dict) and isinstance(t.get("repository_url"), str) and t["repository_url"]),
+        None,
+    )
     # The spec's short name, when it gave one: what /sc attach --all titles
     # each workflow's run with (`workflows.title_name`).
     entry["title"] = workflows.stored_names(envelope)["title"]
@@ -856,7 +887,7 @@ def running_workflows(
         unfinished = 0
         for workflow in page["workflows"]:
             if isinstance(workflow, dict) and workflow.get("state") not in _TERMINAL_VALUES:
-                found.append(_running_entry(workflow, now))
+                found.append(_running_entry(workflow, now, page.get("tenant_id")))
                 unfinished += 1
         token = page.get("next_page_token") or None
         filtered = page.get("filter")
@@ -873,7 +904,7 @@ def running_workflows(
         entry["steps_unread_because"] = (
             f"only the newest {detail_reads} running workflows are read step by step"
         )
-    listed = [entry for entry in found if entry.get("state") not in _TERMINAL_VALUES]
+    listed = group_by_workspace([entry for entry in found if entry.get("state") not in _TERMINAL_VALUES])
     out: dict[str, Any] = {
         "tenant_id": tenant,
         "count": len(listed),
@@ -921,17 +952,22 @@ def _task_label(task: dict[str, Any]) -> str | None:
     return None
 
 
-def _single_task_entry(task: dict[str, Any], now: datetime) -> dict[str, Any]:
+def _single_task_entry(task: dict[str, Any], now: datetime, tenant: Any = None) -> dict[str, Any]:
+    from . import workflows
     from .client import task_id_of
 
     created = render.parse_time(task.get("created_at"))
     entry: dict[str, Any] = {
         "task_id": task_id_of(task),
+        # The workspace it runs in, from its own document (SC-ROWS).
+        "workspace": workflows.workspace_of(task, fallback=tenant),
         "label": _task_label(task),
         "state": task.get("state"),
         "runner_profile": task.get("runner_profile"),
         "created_at": task.get("created_at"),
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
+        # What it clones (SC-WATCH): `/sc check` attaches only this project's.
+        "repository_url": task.get("repository_url"),
     }
     if task.get("park_reason"):
         entry["park_reason"] = task["park_reason"]
@@ -989,7 +1025,7 @@ def running_tasks(
         if not complete:
             short.append(state)
         for task in tasks:
-            entry = _single_task_entry(task, now)
+            entry = _single_task_entry(task, now, page_tenant)
             task_id = entry["task_id"]
             if (
                 not task_id
@@ -1002,6 +1038,7 @@ def running_tasks(
             seen.add(task_id)
             found.append(entry)
     found.sort(key=lambda entry: str(entry.get("created_at") or ""), reverse=True)
+    found = group_by_workspace(found)
     out: dict[str, Any] = {
         "tenant_id": tenant,
         "count": len(found),
@@ -1040,6 +1077,8 @@ def _steps_text(entry: dict[str, Any]) -> str:
 def session_start_context(
     listing: dict[str, Any] | None,
     tasks: dict[str, Any] | None = None,
+    *,
+    watch_minutes: int | None = None,
 ) -> str | None:
     """What the SessionStart hook tells the session, or None when nothing runs.
 
@@ -1047,11 +1086,18 @@ def session_start_context(
     may be None when it could not be read, and the other is still named. A
     hook cannot start a Workflow; the context makes the session's first action
     the attach, and says how to turn this off.
+
+    `watch_minutes` (SC-WATCH): the project's remembered `/sc watch`
+    interval, handed over by the hook. Claude Code's scheduled prompts end
+    with a session, so the context also asks for `/sc watch <N>m` -- and says
+    so even when nothing runs.
     """
+    from . import watch
+
     running = (listing or {}).get("workflows") or []
     singles = (tasks or {}).get("tasks") or []
     if not running and not singles:
-        return None
+        return watch.rearm_sentence(watch_minutes) if watch_minutes else None
     tenant_id = (listing or {}).get("tenant_id") or (tasks or {}).get("tenant_id")
     tenant = f" for tenant {tenant_id}" if tenant_id else ""
     parts = []
@@ -1062,7 +1108,7 @@ def session_start_context(
         for entry in running[:SESSION_START_NAMED]:
             label = f' "{entry["label"]}"' if entry.get("label") else ""
             named.append(
-                f"{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
+                f"{_workspace_tag(entry)}{entry.get('workflow_id')}{label} ({entry.get('state')}; {_steps_text(entry)}; "
                 f"{_age_text(entry.get('age_seconds'))})"
             )
         if count > SESSION_START_NAMED:
@@ -1079,7 +1125,7 @@ def session_start_context(
         for entry in singles[:SESSION_START_TASKS_NAMED]:
             label = f' "{entry["label"]}"' if entry.get("label") else ""
             named.append(
-                f"{entry.get('task_id')}{label} ({entry.get('state')}; "
+                f"{_workspace_tag(entry)}{entry.get('task_id')}{label} ({entry.get('state')}; "
                 f"{_age_text(entry.get('age_seconds'))})"
             )
         if count > SESSION_START_TASKS_NAMED:
@@ -1088,14 +1134,29 @@ def session_start_context(
             f"{count} SwarmCloud {noun} running{tenant}, in no workflow, and not shown "
             "in this session: " + "; ".join(named) + "."
         )
-    return (
+    from . import config
+
+    cap = config.max_live_rows()
+    text = (
         " ".join(parts)
         + " Before anything else, run `/sc attach --all` to show them as live "
         "[SwarmCloud] rows: it submits nothing, starts one slim row per unfinished "
-        "workflow step and one per single task, and follows at most 10 workflows "
-        "and 10 single tasks. (This notice comes from the sc plugin's SessionStart "
-        "hook; turn off its `auto_attach` option to stop it.)"
+        f"workflow step and one per single task, and follows at most {cap} workflows "
+        f"and {cap} single tasks (the plugin's `max_live_rows`). (This notice comes "
+        "from the sc plugin's SessionStart hook; turn off its `auto_attach` option "
+        "to stop it.)"
     )
+    if watch_minutes:
+        text += " Then: " + watch.rearm_sentence(watch_minutes)
+    return text
+
+
+def _workspace_tag(entry: dict[str, Any]) -> str:
+    """`[<workspace>] ` for a listed workflow or task, "" when the API named
+    none (SC-ROWS: every line starts with the workspace it runs in)."""
+    from .workflows import workspace_tag
+
+    return workspace_tag(entry.get("workspace"))
 
 
 def _quietly(read: Callable[[], dict[str, Any]]) -> dict[str, Any] | None:
@@ -1117,7 +1178,11 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             with ThreadPoolExecutor(max_workers=2) as pool:
                 workflows_read = pool.submit(_quietly, lambda: running_workflows(client))
                 tasks_read = pool.submit(_quietly, lambda: running_tasks(client))
-                context = session_start_context(workflows_read.result(), tasks_read.result())
+                from .watch import rearm_minutes
+
+                context = session_start_context(
+                    workflows_read.result(), tasks_read.result(), watch_minutes=rearm_minutes(),
+                )
         except Exception:  # noqa: BLE001 - nothing may stop a session starting
             return EXIT_OK
         if context:
@@ -1134,10 +1199,19 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             )
         return EXIT_OK
 
+    from .launch import named_workspaces
+    from .workflows import workspace_names
+
     listing, failure = _attempt(lambda: running_workflows(client))
     # The caller's running single tasks beside them (#830): `/sc attach --all`
     # gives each a row too, so the list names what it would follow.
     singles, singles_failure = _attempt(lambda: running_tasks(client))
+    # Each workspace by its display name where the API gives one (SC-ROWS).
+    names = workspace_names(client) if listing is not None or singles is not None else {}
+    if listing is not None:
+        named_workspaces(listing["workflows"], names)
+    if singles is not None:
+        named_workspaces(singles["tasks"], names)
     if args.json:
         payload = dict(listing) if listing is not None else {"error": str(failure)}
         if singles is not None:
@@ -1157,7 +1231,7 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
     for entry in running:
         label = f"  {entry['label']}" if entry.get("label") else ""
         lines.append(
-            f"  {entry.get('workflow_id')}{label}  {entry.get('state')}  "
+            f"  {_workspace_tag(entry)}{entry.get('workflow_id')}{label}  {entry.get('state')}  "
             f"{_age_text(entry.get('age_seconds'))}"
         )
         lines.append(f"    now: {_steps_text(entry)}")
@@ -1188,7 +1262,7 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             label = f"  {entry['label']}" if entry.get("label") else ""
             link = f"  console: {entry['console']}" if entry.get("console") else ""
             lines.append(
-                f"  {entry.get('task_id')}{label}  {entry.get('state')}  "
+                f"  {_workspace_tag(entry)}{entry.get('task_id')}{label}  {entry.get('state')}  "
                 f"{_age_text(entry.get('age_seconds'))}{link}"
             )
         if not singles.get("complete"):

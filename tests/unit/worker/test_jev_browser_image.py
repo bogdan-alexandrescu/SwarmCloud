@@ -127,6 +127,9 @@ def test_the_patch_touches_only_the_pinned_package():
         "node_modules/jev-browser/src/session.mjs",
         "node_modules/jev-browser/src/index.mjs",
         "node_modules/jev-browser/bin/jev-browser-mcp.mjs",
+        # JUDGE-ADAPT: the internal decision API's request adapter, and jev()'s call to it.
+        "node_modules/jev-browser/src/jev.mjs",
+        "node_modules/jev-browser/src/internal-compat.mjs",
     }
     patches = sorted(p.name for p in (JEV_DIR / "patches").iterdir())
     assert patches == [PATCH.name]
@@ -178,7 +181,8 @@ def test_the_mcp_server_never_downloads_a_browser_and_the_module_exports_the_ref
 FAKE_NODE = """#!{python}
 import json, os, sys
 keep = ("JEV_BROWSER_CDP_ENDPOINT", "JEV_BROWSER_NO_INSTALL", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
-        "JEV_BROWSER_PROFILE", "JEV_BROWSER_HEADED", "JEV_API_URL", "JEV_MODEL", "TYPESAFE_API_KEY")
+        "JEV_BROWSER_PROFILE", "JEV_BROWSER_HEADED", "JEV_API_URL", "JEV_MODEL", "TYPESAFE_API_KEY",
+        "JEV_API_COMPAT")
 print(json.dumps({{"argv": sys.argv[1:], "env": {{k: os.environ.get(k) for k in keep}}}}))
 """
 
@@ -238,6 +242,15 @@ def test_the_wrapper_drops_what_would_launch_or_redirect_and_forbids_downloads(w
     assert env["JEV_BROWSER_NO_INSTALL"] == "1"
     assert env["PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD"] == "1"
     assert env["TYPESAFE_API_KEY"] == key  # passed through, never printed by the wrapper
+
+
+def test_the_wrapper_passes_the_backend_compat_switch_through(wrapper):
+    # JUDGE-ADAPT: the dispatcher sets JEV_API_COMPAT=internal beside an internal JEV_API_URL.
+    # While the wrapper still drops JEV_API_URL, the patched jev() refuses internal toward
+    # TypeSafe's URL (tests/unit/worker/test_jev_internal_compat.py), so passing it is safe.
+    seen = _passed(_wrap(wrapper, env={"SWARM_CDP_ENDPOINT": ENDPOINT, "JEV_API_COMPAT": "internal"}))
+    assert seen["env"]["JEV_API_COMPAT"] == "internal"
+    assert "JEV_API_COMPAT" in WRAPPER.read_text()  # and the wrapper says why
 
 
 def test_the_wrapper_is_a_house_script():

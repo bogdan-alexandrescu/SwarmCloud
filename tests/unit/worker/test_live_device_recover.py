@@ -203,6 +203,7 @@ class FakeTunnel:
     """The tunnel, as far as the timeline and the report go."""
 
     closed = False
+    close_code: int | None = None
 
     def __init__(self) -> None:
         self.actions: list[dict[str, Any]] = []
