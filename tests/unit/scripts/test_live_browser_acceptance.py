@@ -222,6 +222,9 @@ class _Injector:
 
 
 class _Mask:
+    # `rfb.masked` reads `MaskState.reason`; None says the frame is the whole page.
+    reason = None
+
     def apply(self, frame):
         from agent_worker.livegate.mask import Outcome
 
