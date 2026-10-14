@@ -514,6 +514,13 @@ class ChildPath:
         return self._git is not None
 
     @property
+    def rebased_onto(self) -> str | None:
+        """The sha the latest `git_rebase_onto` rebased the clone onto, or None
+        (`gittools.GitTools.rebased_onto`; read by the publish, SPEED-D1)."""
+        onto = getattr(self._git, "rebased_onto", None) if self._git is not None else None
+        return onto if isinstance(onto, str) and onto else None
+
+    @property
     def search_offered(self) -> bool:
         """Whether this attempt has the search tool: `$SWARM_SEARCH` and its relay."""
         return self._search is not None
