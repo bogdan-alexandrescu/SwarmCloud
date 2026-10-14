@@ -369,10 +369,10 @@ cmd_state_get() {
   [[ -f "${body}" ]] || die "state-get: no --body file"
   [[ " ${STATE_KEYS} " == *" ${key} "* ]] || die "state-get: unknown key: ${key}"
   local block value count
-  block="$(awk -v open="${STATE_OPEN}" -v close="${STATE_CLOSE}" '
+  block="$(awk -v open_mark="${STATE_OPEN}" -v close_mark="${STATE_CLOSE}" '
     { sub(/\r$/, "") }
-    $0 == open { inside = 1; blocks++; next }
-    inside && $0 == close { inside = 0; next }
+    $0 == open_mark { inside = 1; blocks++; next }
+    inside && $0 == close_mark { inside = 0; next }
     inside { print }
     END { if (blocks != 1) exit 3 }' "${body}")" || die "state-get: the body carries no single merge-train state block"
   count="$(printf '%s\n' "${block}" | grep -c "^${key}=" || true)"
@@ -691,8 +691,8 @@ handle_train() {
   if [[ "${train_on}" != "true" ]]; then
     dry=true
   fi
-  local members="" pair
-  for pair in ${pairs}; do members="${members:+${members} }${pair%%:*}"; done
+  local train_prs="" pair
+  for pair in ${pairs}; do train_prs="${train_prs:+${train_prs} }${pair%%:*}"; done
 
   local cr="${WORK}/check-runs.json" st="${WORK}/status.json" verdict_file="${WORK}/verdict.tsv"
   gh api "repos/${GH_REPO}/commits/${head}/check-runs?per_page=100" >"${cr}"
@@ -706,15 +706,15 @@ handle_train() {
   case "${verdict}" in
     pending)
       if [[ "${age}" -gt $((MAX_AGE_MINUTES * 60)) ]]; then
-        finish_train "${number}" "${branch}" "Abandoned: still pending after $((age / 60)) minutes, past the ${MAX_AGE_MINUTES}-minute limit. $(hash_list "${members}") stay \`ready\` and board a new train."
+        finish_train "${number}" "${branch}" "Abandoned: still pending after $((age / 60)) minutes, past the ${MAX_AGE_MINUTES}-minute limit. $(hash_list "${train_prs}") stay \`ready\` and board a new train."
         [[ "${dry}" == "true" ]] || start_train false "" ""
       else
-        summary "train ${id} ($(hash_list "${members}")) is still running its checks, $((age / 60)) minutes in"
+        summary "train ${id} ($(hash_list "${train_prs}")) is still running its checks, $((age / 60)) minutes in"
       fi
       ;;
     green)
       if [[ "${dry}" == "true" ]]; then
-        finish_train "${number}" "${branch}" "Green. **Dry run:** nothing landed. A live train would have landed $(hash_list "${members}"), each squashed under its own title."
+        finish_train "${number}" "${branch}" "Green. **Dry run:** nothing landed. A live train would have landed $(hash_list "${train_prs}"), each squashed under its own title."
         return 0
       fi
       local rc=0
@@ -733,7 +733,7 @@ handle_train() {
       esac
       local next=""
       if [[ "${rc}" -eq 0 ]]; then
-        next="$(cmd_plan --verdict green --train "${members}" --suspects "${suspects}" | sed -n 's/^next=//p')"
+        next="$(cmd_plan --verdict green --train "${train_prs}" --suspects "${suspects}" | sed -n 's/^next=//p')"
       fi
       list_open_prs "${WORK}/prs.json"
       start_train false "${next}" ""
@@ -745,7 +745,7 @@ handle_train() {
         return 0
       fi
       local plan eject next held
-      plan="$(cmd_plan --verdict red --train "${members}" --suspects "${suspects}")"
+      plan="$(cmd_plan --verdict red --train "${train_prs}" --suspects "${suspects}")"
       eject="$(sed -n 's/^eject=//p' <<<"${plan}")"
       next="$(sed -n 's/^next=//p' <<<"${plan}")"
       held="$(sed -n 's/^suspects=//p' <<<"${plan}")"
