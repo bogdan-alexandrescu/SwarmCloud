@@ -93,6 +93,10 @@ SHORT_FORM_WORKFLOWS: dict[str, str] = {
         "starts only from a completed release on main (workflow_run) or by hand "
         "(workflow_dispatch): never from any pull request"
     ),
+    "merge-train.yml": (
+        "starts only on schedule, workflow_run of a train/ branch, or dispatch: "
+        "never from a pull request"
+    ),
     "auto-merge.yml": (
         "runs on pull_request_target (the base branch's workflow file, with no "
         "checkout of the pull request: test_auto_merge_workflow.py), workflow_run, "
@@ -456,6 +460,7 @@ SECRETS_ON_VMS = "owner decision 2026-10-14: secrets on ephemeral self-hosted VM
 GUARDED_SECRETS: dict[str, tuple[frozenset[str], str]] = {
     "auto-merge.yml:enable": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
     "auto-merge.yml:disable": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
+    "merge-train.yml:tick": (frozenset({"MERGE_APP_PRIVATE_KEY"}), SECRETS_ON_VMS),
     "accept.yml:sandbox": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
     "accept.yml:sandbox-results": (frozenset({"SWARM_SANDBOX_GITHUB_TOKEN"}), SECRETS_ON_VMS),
 }

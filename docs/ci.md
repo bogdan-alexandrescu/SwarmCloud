@@ -89,8 +89,9 @@ ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || gi
 * **A fork's pull request never reaches the VMs** (owner decision 2026-10-12).
   The repository is public, and a returning contributor's fork PR runs
   without approval.
-**The short form, for two workflows no fork can start.** accept.yml and
-auto-merge.yml spell `runs-on` without the fork clause:
+**The short form, for three workflows no fork can start.** accept.yml,
+auto-merge.yml and merge-train.yml (schedule, `workflow_run` of a `train/`
+branch, dispatch; no `pull_request`) spell `runs-on` without the fork clause:
 
 ```
 ${{ vars.SELF_HOSTED_CI == 'off' && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
@@ -124,8 +125,9 @@ the fork clause back.
 **Secrets on the VMs: the residual risk, accepted.** Two kinds of job hold a
 repository secret and run on the pool all the same:
 
-* auto-merge.yml `enable` and `disable` hold the merge App's private key
-  (`secrets.MERGE_APP_PRIVATE_KEY`, with `vars.MERGE_APP_ID`);
+* auto-merge.yml `enable` and `disable`, and merge-train.yml `tick`, hold the
+  merge App's private key (`secrets.MERGE_APP_PRIVATE_KEY`, with
+  `vars.MERGE_APP_ID`);
 * accept.yml `sandbox` and `sandbox-results` hold `SWARM_SANDBOX_GITHUB_TOKEN`.
 
 While such a job runs, its secret is in the VM's memory and on its disk.
