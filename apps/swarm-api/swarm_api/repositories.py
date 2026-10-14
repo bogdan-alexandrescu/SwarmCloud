@@ -67,6 +67,15 @@ WHAT A REGISTRATION IS, AND WHY EACH RULE:
     admin" is a role this API does not have yet (routes/repositories.py), so
     it is a platform admin acting in their own tenant, as for `platform` --
     and each change is an `admin_audit` entry in the same transaction.
+  * `context` (CTXQ-SET, docs/design/context-quality.md §4.7): `on` or
+    `off`, whether a step on this repository is staged with graph context,
+    over the workspace's code-intelligence default (`swarm_api.codeintel`).
+    A STORED setting, never a caller's choice (invariant 10), which
+    `agent_worker.graphstage` reads at staging. A PATCH may send `inherit`
+    (`CONTEXT_INHERIT`), which clears it -- stored null, the workspace's
+    value again. Only the workspace's owner or a platform admin may change
+    it, as for the workspace default -- the route checks -- and each change
+    is an `admin_audit` entry in the same transaction.
 
 Kept in its own collection, read and written here only -- not through
 `store.py` or `codec.py` -- for the reason `issueruns` gives: the shape is not
@@ -190,6 +199,18 @@ AUDIT_READABLE_BY_TASKS_SET = "repository_readable_by_tasks_set"
 #: than a JSON null, because a PATCH field sent as null means "unchanged"
 #: here, as for every other field of `RepositoryPatch`.
 MERGE_POLICY_INHERIT = "inherit"
+
+#: The registration's graph-context override (CTXQ-SET): the field
+#: `agent_worker.graphstage.REPOSITORY_CONTEXT_FIELD` reads, and its words.
+#: `inherit` is never stored, for `MERGE_POLICY_INHERIT`'s reason: null is
+#: "no override", and a PATCH field sent as null means "unchanged".
+CONTEXT_FIELD = "context"
+CONTEXT_ON = "on"
+CONTEXT_OFF = "off"
+CONTEXT_INHERIT = "inherit"
+CONTEXT_OVERRIDES = (CONTEXT_INHERIT, CONTEXT_ON, CONTEXT_OFF)
+#: The `admin_audit` action for a change of `context`, a clear included.
+AUDIT_CONTEXT_SET = "repository_context_set"
 
 #: A branch name, conservatively: git's own ref rules (`git check-ref-format`)
 #: narrowed to the characters a GitHub branch name is seen with. The value is
@@ -363,6 +384,13 @@ def merge_policy_of(data: Mapping[str, Any]) -> str | None:
     return value if value in MERGE_POLICIES else None
 
 
+def context_of(data: Mapping[str, Any]) -> str | None:
+    """A registration's `context` override, or None (inherit). A stored value
+    that is not `on` or `off` reads as none: the workspace then decides."""
+    value = data.get(CONTEXT_FIELD)
+    return value if value in (CONTEXT_ON, CONTEXT_OFF) else None
+
+
 def registered_merge_policy(
     db: Any, now: Callable[[], datetime], tenant_id: str, owner: str, repo: str,
 ) -> str | None:
@@ -389,6 +417,24 @@ def _merge_policy_audit(
             "tenant_id": data.get("tenant_id"),
             "repository": f"{data.get('owner')}/{data.get('repo')}",
             "merge_policy": {"from": merge_policy_of(data), "to": to},
+        },
+    })
+
+
+def _context_audit(
+    txn: Any, db: Any, data: Mapping[str, Any], *, to: str | None, by: str, at: datetime,
+) -> None:
+    """One `admin_audit` entry for a change of `context`, inside `txn`."""
+    ref = db.collection(AUDIT_COLLECTION).document()
+    txn.set(ref, {
+        "action": AUDIT_CONTEXT_SET,
+        "target_repo_id": data.get("repo_id"),
+        "by": by,
+        "at": at,
+        "detail": {
+            "tenant_id": data.get("tenant_id"),
+            "repository": f"{data.get('owner')}/{data.get('repo')}",
+            "context": {"from": context_of(data), "to": to},
         },
     })
 
@@ -506,7 +552,8 @@ class RepositoryPatch(_Body):
     """What repo-index.md §6.1 lets a PATCH change: schedule, trigger,
     `allowed_profiles`, `default_branch`, `paused`; and the hard stops'
     `platform` (a platform admin's only) and `hard_stop_paths`
-    (docs/schedules.md §4.4); and `merge_policy` (a platform admin's only).
+    (docs/schedules.md §4.4); `merge_policy` (a platform admin's only); and
+    `context` (the workspace owner's or a platform admin's, CTXQ-SET).
     Never the repository, the tenant or anything an index run writes."""
 
     default_branch: str | None = Field(default=None, min_length=1, max_length=255)
@@ -520,6 +567,8 @@ class RepositoryPatch(_Body):
     merge_policy: Literal["off", "on_merge_verdict", "inherit"] | None = None
     #: An admin's only, as `platform` is: the private-read allowlist.
     readable_by_tasks: StrictBool | None = None
+    #: The graph-context override; "inherit" clears it (`CONTEXT_INHERIT`).
+    context: Literal["on", "off", "inherit"] | None = None
 
     @field_validator("default_branch")
     @classmethod
@@ -539,7 +588,7 @@ class RepositoryPatch(_Body):
     @model_validator(mode="after")
     def _changes_something(self) -> "RepositoryPatch":
         top = (self.default_branch, self.allowed_profiles, self.paused, self.platform,
-               self.hard_stop_paths, self.merge_policy, self.readable_by_tasks)
+               self.hard_stop_paths, self.merge_policy, self.readable_by_tasks, self.context)
         if all(value is None for value in top) and (
             self.index is None or not self.index.changes()
         ):
@@ -656,6 +705,8 @@ def to_api(data: Mapping[str, Any]) -> dict[str, Any]:
         # None: the platform's `merge_by_default` decides.
         "merge_policy": merge_policy_of(data),
         "readable_by_tasks": readable_by_tasks_of(data),
+        # "inherit": the workspace's code-intelligence setting decides.
+        "context": context_of(data) or CONTEXT_INHERIT,
         "created_by": data.get("created_by"),
         "created_at": _iso(data.get("created_at")),
         "updated_at": _iso(data.get("updated_at")),
@@ -801,19 +852,22 @@ class Repositories:
     def patch(
         self, tenant_id: str, repo_id: str, body: RepositoryPatch, *,
         platform_by: str | None = None, merge_policy_by: str | None = None,
-        readable_by: str | None = None,
+        readable_by: str | None = None, context_by: str | None = None,
     ) -> dict[str, Any]:
         """The settings a PATCH may change, in one transaction, tenant re-checked.
 
         `platform` changes only with `platform_by`, the admin the route
         checked, and its `admin_audit` entry is written in this transaction;
-        `readable_by_tasks` likewise with `readable_by`."""
+        `readable_by_tasks` likewise with `readable_by`, and `context` with
+        `context_by`, the workspace owner or admin the route checked."""
         if body.platform is not None and not platform_by:
             raise Forbidden("only a platform admin may set or clear platform")
         if body.readable_by_tasks is not None and not readable_by:
             raise Forbidden("only an admin may change readable_by_tasks")
         if body.merge_policy is not None and not merge_policy_by:
             raise Forbidden("only a platform admin may set merge_policy")
+        if body.context is not None and not context_by:
+            raise Forbidden("only the workspace's owner or a platform admin may set context")
         if not _REPO_ID.match(repo_id or ""):
             raise self.not_found((repo_id or "")[:64])
         ref = self._ref(repo_id)
@@ -852,6 +906,13 @@ class Repositories:
                 changes["merge_policy"] = to
                 _merge_policy_audit(txn, self._db, data, to=to,
                                     by=str(merge_policy_by), at=changes["updated_at"])
+            context = None if body.context == CONTEXT_INHERIT else body.context
+            if body.context is not None and (
+                    context != context_of(data)
+                    or (context is None and data.get(CONTEXT_FIELD) is not None)):
+                changes[CONTEXT_FIELD] = context
+                _context_audit(txn, self._db, data, to=context,
+                               by=str(context_by), at=changes["updated_at"])
             txn.update(ref, changes)
             merged = dict(data)
             merged.update(changes)
