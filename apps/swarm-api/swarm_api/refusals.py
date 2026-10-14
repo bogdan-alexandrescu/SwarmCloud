@@ -247,6 +247,18 @@ SWITCHES: dict[str, Switch] = {
         "not the tenant's worker service account. Off, 403 forbidden with the same message. "
         "On with egress_off",
     ),
+    # The one-time key-form link (KEYS-API, docs/provider-keys.md §3). The
+    # link proves only that a write came through the /sc flow; the caller's
+    # own console session authorises it, and the admin and personal-workspace
+    # checks run before it whatever this switch says. Off, a bad link is
+    # logged and the write goes through on that session, as a direct visit to
+    # the settings page does.
+    "KEY_LINK_INVALID": Switch(
+        code="KEY_LINK_INVALID",
+        why="a key write that presents a one-time link refuses one that is unknown, used, "
+        "expired, minted by someone else or for another scope. On once the console's "
+        "settings/keys form (the swarm-ui lane) sends the link token it was opened with",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

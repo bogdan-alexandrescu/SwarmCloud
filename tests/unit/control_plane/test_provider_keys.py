@@ -33,7 +33,7 @@ from fastapi.testclient import TestClient
 
 from swarm_api import refusals
 from swarm_api.admins import AUDIT_COLLECTION
-from swarm_api.auth import StaticTokenVerifier
+from swarm_api.auth import TENANT_HEADER, StaticTokenVerifier
 from swarm_api.credentials import InMemoryCredentials
 from swarm_api.deps import build_context
 from swarm_api.groups import StaticGroups
@@ -53,7 +53,15 @@ from swarm_api.validation import (
 )
 from swarm_api.waker import NullWaker
 
-from .conftest import NoForgeTokens, api_settings, auth_header, seed_tenant
+from .conftest import (
+    ADMIN_GROUP,
+    ENG_GROUP,
+    RESEARCH_GROUP,
+    NoForgeTokens,
+    api_settings,
+    auth_header,
+    seed_tenant,
+)
 from .fakes import FakeFirestore
 
 CONSOLE = "https://console.example.test"
@@ -75,6 +83,19 @@ def seed_personal(db: FakeFirestore, user: str, *, principal: str | None = None,
     db.docs[f"workspaces/{tenant_id}"] = {
         "tenant_id": tenant_id, "workspace_id": f"w-{user[:6]:0<6}",
         "principal": owner, "state": state,
+    }
+
+
+@pytest.fixture
+def group_map() -> dict[str, tuple[str, ...]]:
+    """alice and dave in eng, bob in research, root an admin in eng; carol in
+    no group."""
+    return {
+        "alice@saga.xyz": (ENG_GROUP,),
+        "bob@saga.xyz": (RESEARCH_GROUP,),
+        "carol@saga.xyz": (),
+        "dave@saga.xyz": (ENG_GROUP,),
+        "root@saga.xyz": (ADMIN_GROUP, ENG_GROUP),
     }
 
 
@@ -112,16 +133,25 @@ def seeded(db: FakeFirestore) -> FakeFirestore:
     return db
 
 
-def put_user(client, user: str, key: str, **extra):
-    return client.put(f"{BASE}/user", headers=auth_header(user), json={"api_key": key, **extra})
+def as_(who: str, tenant: str | None = None) -> dict[str, str]:
+    headers = auth_header(who)
+    if tenant is not None:
+        headers[TENANT_HEADER] = tenant
+    return headers
 
 
-def put_tenant(client, user: str, key: str, **extra):
-    return client.put(f"{BASE}/tenant", headers=auth_header(user), json={"api_key": key, **extra})
+def put_user(client, who: str, key: str, **extra):
+    return client.put(f"{BASE}/user", headers=as_(who), json={"api_key": key, **extra})
 
 
-def status_of(client, user: str) -> dict:
-    response = client.get(BASE, headers=auth_header(user))
+def put_tenant(client, who: str, key: str, **extra):
+    return client.put(f"{BASE}/tenant", headers=as_(who), json={"api_key": key, **extra})
+
+
+def status_of(client, who: str, tenant: str | None = None) -> dict:
+    """`tenant` selects a group: a person's ready personal workspace is their
+    DEFAULT tenant (#1200), so a group's key is read with the header."""
+    response = client.get(BASE, headers=as_(who, tenant))
     assert response.status_code == 200, response.text
     return response.json()
 
@@ -183,7 +213,7 @@ def test_resolution_prefers_the_persons_own_key_then_the_tenants(user_set, tenan
         present.add("swarm-tenant-u-alice-typesafe")
     if tenant_set:
         present.add("swarm-tenant-eng-typesafe")
-    assert resolve_provider_key("eng", "alice@saga.xyz", TYPESAFE, present) == expected
+    assert resolve_provider_key("eng", "u-alice", TYPESAFE, present) == expected
 
 
 @pytest.mark.parametrize("present,expected", [
@@ -191,24 +221,28 @@ def test_resolution_prefers_the_persons_own_key_then_the_tenants(user_set, tenan
     (set(), None),
 ])
 def test_resolution_in_the_persons_own_tenant_is_their_own_key(present, expected):
-    assert resolve_provider_key("u-alice", "alice@saga.xyz", TYPESAFE, present) == expected
+    assert resolve_provider_key("u-alice", "u-alice", TYPESAFE, present) == expected
 
 
-@pytest.mark.parametrize("submitter", [None, "", "ci-bot@saga-agents-staging.iam.gserviceaccount.com"])
-def test_resolution_without_a_person_falls_to_the_tenant_key(submitter):
-    present = {"swarm-tenant-eng-typesafe", "swarm-tenant-u-ci-bot-typesafe"}
-    assert resolve_provider_key("eng", submitter, TYPESAFE, present) == "swarm-tenant-eng-typesafe"
-    assert resolve_provider_key("eng", submitter, TYPESAFE, set()) is None
+@pytest.mark.parametrize("submitter_tenant", [None, ""])
+def test_resolution_without_a_confirmed_personal_tenant_falls_to_the_tenant_key(submitter_tenant):
+    """A service identity, or a person whose `u-` tenant is unconfirmed --
+    including a namesake whose slug is another person's -- has no own key."""
+    present = {"swarm-tenant-eng-typesafe", "swarm-tenant-u-alice-typesafe"}
+    assert resolve_provider_key("eng", submitter_tenant, TYPESAFE, present) == \
+        "swarm-tenant-eng-typesafe"
+    assert resolve_provider_key("eng", submitter_tenant, TYPESAFE,
+                                {"swarm-tenant-u-alice-typesafe"}) is None
 
 
 def test_resolution_never_picks_another_persons_key():
     present = {"swarm-tenant-u-bob-typesafe"}
-    assert resolve_provider_key("eng", "alice@saga.xyz", TYPESAFE, present) is None
+    assert resolve_provider_key("eng", "u-alice", TYPESAFE, present) is None
 
 
 def test_resolution_refuses_a_provider_outside_the_allow_list():
     with pytest.raises(ValueError):
-        resolve_provider_key("eng", "alice@saga.xyz", FORGE_PROVIDER, set())
+        resolve_provider_key("eng", "u-alice", FORGE_PROVIDER, set())
 
 
 # -- the person's own key ----------------------------------------------------
@@ -224,7 +258,7 @@ def test_a_person_stores_their_own_key_in_their_personal_tenant(client, seeded, 
     assert credentials._bindings["swarm-tenant-u-alice-typesafe"].startswith(
         "swarm-agent-worker-u-alice@")
 
-    status = status_of(client, "alice")
+    status = status_of(client, "alice", "eng")
     assert status["user"]["set"] is True
     assert status["user"]["set_by"] == "alice@saga.xyz"
     assert status["user"]["version"].endswith("/versions/1")
@@ -252,7 +286,23 @@ def test_a_personal_tenant_named_for_someone_else_is_not_the_callers(client, see
     derive u-alice too. The tenant document's principal decides whose it is."""
     seed_personal(seeded, "carol", principal="carol@partner.com")
     assert put_user(client, "carol", fake_key()).status_code == 404
+    assert client.delete(f"{BASE}/user", headers=as_("carol")).status_code == 404
     assert credentials._versions == {}
+
+
+def test_a_namesakes_key_is_never_resolved_for_the_caller(client, seeded):
+    """dave@saga.xyz is in eng; `u-dave` belongs to dave@partner.com, who has
+    a key in it. The frozen slug derives `u-dave` for both, so a resolver fed
+    the email would hand the partner's key to dave's tasks in eng."""
+    seed_personal(seeded, "dave", principal="dave@partner.com")
+    seeded.docs["provider_keys/swarm-tenant-u-dave-typesafe"] = {
+        "tenant_id": "u-dave", "provider": TYPESAFE, "scope": "user", "set": True,
+        "set_at": datetime.now(timezone.utc), "set_by": "dave@partner.com",
+        "version": "projects/local/secrets/swarm-tenant-u-dave-typesafe/versions/1",
+    }
+    status = status_of(client, "dave", "eng")
+    assert status["user"]["available"] is False and status["user"]["set"] is False
+    assert status["resolution"] == {"tenant_id": "eng", "uses": "none", "secret_id": None}
 
 
 def test_the_user_key_body_names_no_user_or_tenant(client, seeded, credentials):
@@ -273,6 +323,27 @@ def test_a_person_deletes_their_own_key(client, seeded, credentials):
     assert status["resolution"]["uses"] == "none"
 
 
+def test_a_person_whose_workspace_left_ready_can_still_delete_their_key(client, seeded,
+                                                                       credentials):
+    put_user(client, "alice", fake_key())
+    seeded.docs["workspaces/u-alice"]["state"] = "suspended"
+    assert put_user(client, "alice", fake_key("y")).status_code == 404
+    response = client.delete(f"{BASE}/user", headers=auth_header("alice"))
+    assert response.status_code == 200, response.text
+    assert credentials._destroyed == {"swarm-tenant-u-alice-typesafe": 1}
+
+
+def test_a_tenant_key_is_never_written_into_a_personal_workspace(client, seeded, credentials):
+    """In an admin's own workspace the "tenant" key would be the admin's own
+    key under the wrong scope; that is the user route's."""
+    seed_personal(seeded, "root")
+    response = client.put(f"{BASE}/tenant", headers=as_("root", "u-root"),
+                          json={"api_key": fake_key()})
+    assert response.status_code == 422, response.text
+    assert client.delete(f"{BASE}/tenant", headers=as_("root", "u-root")).status_code == 422
+    assert credentials._versions == {}
+
+
 def test_deleting_a_key_that_was_never_set_is_a_404(client, seeded):
     assert client.delete(f"{BASE}/user", headers=auth_header("alice")).status_code == 404
 
@@ -288,12 +359,12 @@ def test_only_an_admin_sets_or_deletes_the_tenant_key(client, seeded, credential
     assert credentials._versions == {"swarm-tenant-eng-typesafe": 1}
 
     assert client.delete(f"{BASE}/tenant", headers=auth_header("alice")).status_code == 403
-    assert status_of(client, "alice")["tenant"]["set"] is True
+    assert status_of(client, "alice", "eng")["tenant"]["set"] is True
 
 
 def test_the_tenant_key_is_used_until_the_person_sets_their_own(client, seeded):
     put_tenant(client, "root", fake_key())
-    status = status_of(client, "alice")
+    status = status_of(client, "alice", "eng")
     assert status["tenant"] == {
         "available": True, "set": True, "set_by": "root@saga.xyz",
         "set_at": status["tenant"]["set_at"], "version": status["tenant"]["version"],
@@ -301,13 +372,15 @@ def test_the_tenant_key_is_used_until_the_person_sets_their_own(client, seeded):
     }
     assert status["resolution"]["uses"] == "tenant"
     put_user(client, "alice", fake_key("y"))
-    assert status_of(client, "alice")["resolution"]["uses"] == "user"
+    assert status_of(client, "alice", "eng")["resolution"]["uses"] == "user"
+    # In her own workspace the tenant key IS her own key: one secret.
+    assert status_of(client, "alice")["resolution"]["secret_id"] == "swarm-tenant-u-alice-typesafe"
 
 
 def test_another_tenants_member_learns_nothing_about_this_tenants_key(client, seeded):
     put_tenant(client, "root", fake_key())
     put_user(client, "alice", fake_key("y"))
-    status = status_of(client, "bob")
+    status = status_of(client, "bob", "research")
     assert status["tenant"]["tenant_id"] == "research"
     assert status["tenant"]["set"] is False
     assert status["user"]["set"] is False
@@ -320,7 +393,7 @@ def test_an_admin_deletes_the_tenant_key(client, seeded, credentials):
     response = client.delete(f"{BASE}/tenant", headers=auth_header("root"))
     assert response.status_code == 200, response.text
     assert credentials._destroyed == {"swarm-tenant-eng-typesafe": 1}
-    assert status_of(client, "alice")["tenant"]["set"] is False
+    assert status_of(client, "alice", "eng")["tenant"]["set"] is False
 
 
 def test_a_malformed_key_is_refused_and_nothing_is_written(client, seeded, credentials):
@@ -363,7 +436,7 @@ def test_the_key_never_reaches_a_log_a_response_or_a_document(client, seeded, ca
     url = mint(client, "alice", "user")
     bodies.append(put_user(client, "alice", key, link_token=token_of(url)).text)
     bodies.append(put_tenant(client, "root", key).text)
-    bodies.append(client.get(BASE, headers=auth_header("alice")).text)
+    bodies.append(client.get(BASE, headers=as_("alice", "eng")).text)
     bodies.append(client.get("/v1/tenants/me", headers=auth_header("alice")).text)
     # A refused write, too: the error path is where a value is echoed by accident.
     bodies.append(put_user(client, "carol", key).text)

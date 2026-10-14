@@ -135,6 +135,20 @@ APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset(
 ) | RETIRED_APP_CREDENTIAL_PROVIDERS
 
 
+#: TypeSafe (docs.typesafe.ai), which serves the Jev judgment models. Its key
+#: is stored by `swarm_api.provider_keys` (KEYS-API, docs/provider-keys.md).
+TYPESAFE_PROVIDER = "typesafe"
+
+#: Providers whose key is set through `/v1/provider-keys/{provider}`: a
+#: person's own key in their personal tenant, or a tenant key an ADMIN sets.
+#: DELIBERATELY NOT IN `known_providers()`. That set is what
+#: `POST /v1/tenants/me/credentials` accepts from ANY tenant member, and what
+#: the admin limit, drain and enable routes accept as a quota pool. A
+#: TypeSafe tenant key is an admin's to set and has no pool, so either use
+#: would be a second, unguarded way in. It is not a forge or App key
+#: either: the tenant's worker account IS the reader it is bound to.
+PROVIDER_KEY_PROVIDERS: frozenset[str] = frozenset({TYPESAFE_PROVIDER})
+
 def validate_runner_profile(name: str) -> RunnerProfile:
     profile = RUNNER_PROFILES.get(name)
     if profile is None:
