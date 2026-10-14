@@ -34,7 +34,7 @@ import { shortcut, typedIntoField } from './shortcuts'
 import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
 import { SignOutButton, SignedBackIn } from './SignOut'
-import { iapFronted } from './signout'
+import { iapFronted } from './signoutState'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
 import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 
@@ -1044,7 +1044,7 @@ export function SkyShell({
   )
   const t = envTreatment(env)
   // SIGN OUT (owner 2026-10-14) only where there is an IAP session to end:
-  // never on `npm run dev` (signout.ts `iapFronted`), and never before the
+  // never on `npm run dev` (signoutState.ts `iapFronted`), and never before the
   // identity it would sign out has been read.
   const canSignOut = who !== null && iapFronted(typeof window === 'undefined' ? '' : window.location.hostname)
   const meter = meterOf(dataOf(cap))

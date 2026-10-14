@@ -1,5 +1,5 @@
 /**
- * The Sign out control and the return-trip notice (signout.ts has the why).
+ * The Sign out control and the return-trip notice (signoutState.ts has the why).
  *
  * The button is drawn twice by Spine.tsx: on the panel's name row, as an icon
  * and the word (the word is dropped below 760px, styles.css `.sk-out-l`), and
@@ -10,7 +10,7 @@
 import { useState } from 'react'
 
 import { Banner, Button, ButtonLink } from './components'
-import { accountChooserUrl, forgetSignOut, returnedAs, signOut } from './signout'
+import { accountChooserUrl, forgetSignOut, returnedAs, signOut } from './signoutState'
 
 /** A door with an arrow leaving it, in the spine's 24px stroke style. */
 function OutIcon() {

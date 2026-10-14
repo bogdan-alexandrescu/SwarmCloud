@@ -257,7 +257,7 @@ becomes a hard break the day `ENVIRONMENT` is not `dev`.
    - `403 forbidden` / *"tenant `<x>` is disabled"* (`service.py:97-98`).
 
 **SIGNING OUT, AND SIGNING IN AS SOMEONE ELSE** (owner request 2026-10-14, built in
-`apps/swarm-ui/src/signout.ts` and `SignOut.tsx`). The panel's footer has a **Sign out**
+`apps/swarm-ui/src/signoutState.ts` and `SignOut.tsx`). The panel's footer has a **Sign out**
 button on the name row, above the Light/Dark/System switch: icon and word at desktop
 width, the icon alone (named "Sign out" to assistive technology) below 760px and beside
 the avatar on the collapsed spine. It has no confirmation, because signing back in is one

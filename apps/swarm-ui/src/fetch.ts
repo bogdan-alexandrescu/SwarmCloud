@@ -987,7 +987,7 @@ function arrive(url: string, tenant: string | null, signal: AbortSignal | undefi
 
 /**
  * Drop every kept answer and abandon every read in flight: sign-out
- * (signout.ts). The page is about to be left, but a read that lands in the
+ * (signoutState.ts). The page is about to be left, but a read that lands in the
  * moment before is one person's data, and nothing of it should be handed to a
  * caller after they asked to leave. Bumping `writes` keys every later read
  * apart from anything asked before.

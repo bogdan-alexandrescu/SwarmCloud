@@ -29,7 +29,7 @@ import {
   iapFronted,
   leave,
   returnedAs,
-} from '../signout'
+} from '../signoutState'
 import { painted } from './marks'
 
 const EMAIL = 'bogdan@saga.xyz' // the fixture `GET /v1/tenants/me` principal (api.ts fixtureMe)
@@ -202,7 +202,7 @@ describe('the storage this console owns', () => {
   // sign-out) or a per-browser display preference (kept). A new key that is
   // neither fails here, so nobody adds per-user state that outlives sign-out
   // by forgetting this list.
-  const sources = import.meta.glob(['../**/*.ts', '../**/*.tsx', '!../__tests__/**', '!../signout.ts'], {
+  const sources = import.meta.glob(['../**/*.ts', '../**/*.tsx', '!../__tests__/**', '!../signoutState.ts'], {
     query: '?raw',
     import: 'default',
     eager: true,
