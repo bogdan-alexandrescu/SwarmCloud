@@ -143,7 +143,9 @@ async def serve(env: Mapping[str, str] = os.environ,
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        with contextlib.suppress(NotImplementedError):
+        # Signal handlers exist on Unix event loops only; on others the
+        # attribute call fails the same way, so catch it by shape, not name.
+        with contextlib.suppress(AttributeError, RuntimeError, ValueError):
             loop.add_signal_handler(sig, stop.set)
     tasks = [asyncio.create_task(watch_config()), asyncio.create_task(watch_secrets()),
              asyncio.create_task(server.supervise(SUPERVISE_SECONDS))]

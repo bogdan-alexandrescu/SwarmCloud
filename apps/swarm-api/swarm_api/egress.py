@@ -44,7 +44,8 @@ from swarm_common.states import TaskState
 
 from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _lease_is_live, parse_body
-from .errors import ApiError, ValidationFailed
+from . import refusals
+from .errors import ApiError, Conflict, Forbidden, ValidationFailed
 from .live import LiveSessionOpen, profile_is_live
 from .store import ATTEMPTS, LEASES, TASKS
 
@@ -85,6 +86,18 @@ class EgressUnproven(ApiError):
 class EgressFenced(ApiError):
     status_code = 409
     code = "egress_fenced"
+
+
+def _refuse(error: ApiError, established: type[ApiError]) -> ApiError:
+    """A NEW refusal ships off (observer proposal I; swarm_api.refusals). The
+    egress codes are switched: with a switch on, `error` is raised with its own
+    code. With it off (the default), `refusals.refuse` logs what would have been
+    said and returns, and the caller gets the same status and message under the
+    ESTABLISHED code `established` (`conflict` 409, `forbidden` 403), which every
+    client already handles. The route itself stays off by default
+    (`browser_egress_enabled`), so nothing changes either way until both are on."""
+    refusals.refuse(error)
+    return established(error.message)
 
 
 class EgressTicketRefused(Exception):
@@ -168,9 +181,10 @@ class EgressService:
         except ApiError as exc:
             if exc.status_code == 429:
                 raise
-            raise EgressUnauthenticated(
-                "only this tenant's worker service account may call this route") from None
-        unproven = EgressUnproven("the attempt proof did not verify for this attempt")
+            raise _refuse(EgressUnauthenticated(
+                "only this tenant's worker service account may call this route"),
+                Forbidden) from None
+        unproven = _refuse(EgressUnproven("the attempt proof did not verify for this attempt"), Forbidden)
         if not proof or not timestamp or not re.fullmatch(r"\d{1,12}", timestamp):
             raise unproven
         if abs(self._clock() - int(timestamp)) > int(self._s("child_proof_skew_seconds", 120)):
@@ -184,12 +198,12 @@ class EgressService:
 
     def _switch(self, tenant_id: str, profile: Any) -> None:
         if not self._s("browser_egress_enabled", False):
-            raise EgressOff("browser egress is disabled for this platform; run direct")
+            raise _refuse(EgressOff("browser egress is disabled for this platform; run direct"), Conflict)
         if tenant_id not in tuple(self._s("browser_egress_tenants", ())):
-            raise EgressOff("browser egress is tenant_off for this tenant; run direct")
+            raise _refuse(EgressOff("browser egress is tenant_off for this tenant; run direct"), Conflict)
         profiles = tuple(self._s("browser_egress_profiles", ()))
         if str(profile or "") not in profiles or not profile_is_live(profile):
-            raise EgressOff("browser egress is profile_off for this profile; run direct")
+            raise _refuse(EgressOff("browser egress is profile_off for this profile; run direct"), Conflict)
 
     def mint(self, authorization: str | None, attempt_id: str, raw: bytes, *, path: str,
              proof: str | None, timestamp: str | None) -> dict[str, Any]:
@@ -218,12 +232,14 @@ class EgressService:
             or task.get("cancel_requested")
             or not _lease_is_live(task, lease, attempt, self._now())
         ):
-            raise EgressFenced(
+            raise _refuse(EgressFenced(
                 "the task is not RUNNING under this attempt's live lease, or a cancel was "
-                "requested; no egress ticket was minted")
+                "requested; no egress ticket was minted"), Conflict)
         backend = (attempt_snap.to_dict() or {}).get("backend") if attempt_snap.exists else None
         if backend != Backend.GKE_AUTOPILOT.value:
-            raise EgressOff("browser egress is profile_off: this attempt is not on GKE; run direct")
+            raise _refuse(
+                EgressOff("browser egress is profile_off: this attempt is not on GKE; run direct"),
+                Conflict)
         self._switch(attempt.tenant_id, task.get("runner_profile"))
 
         seconds = ticket_seconds(self._s("egress_ticket_seconds", 600))
