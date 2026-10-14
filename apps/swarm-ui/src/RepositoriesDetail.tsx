@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, runRepositoryIndex, type RepoDetailRead, type RepoHardStops } from './api'
+import {
+  loadRepository, loadRepositoryIndex, loadRepositoryLanguages, loadResolvedToken, patchRepositoryContext, runRepositoryIndex,
+  type RepoContext, type RepoDetailRead, type RepoHardStops,
+} from './api'
 import { Banner, Button, Card, Chip, Dash, EmptyState, NamedMark, StatePill, ToneMark, routedClick } from './components'
 import { addressToPath } from './paths'
 import {
@@ -64,7 +67,7 @@ function tabOf(t: string | null): TabKey {
 
 /** The route these settings change through; named on the element, not in the words (walkthrough E). */
 const PATCH_ROUTE = 'PATCH /v1/repositories/{repo_id}'
-const PATCH_WHY = 'These settings cannot be changed from this console yet: the controls show the served values.'
+const PATCH_WHY = 'Except Code intelligence, these settings cannot be changed from this console yet: the controls show the served values.'
 
 /** Where an absent `index_runs` / `used_by` would have been served (repo-index.md §6.1). */
 const DETAIL_ROUTE = 'GET /v1/repositories/{repo_id}'
@@ -266,7 +269,10 @@ function DetailBody({
           <RunList runs={d.index_runs} />
         </Card>
       )}
-      {tab === 'settings' && <SettingsTab r={r} langs={langs} langsRetry={langs.fromDoc ? index.reload : langRoute.reload} go={go} stops={d.hard_stops ?? null} />}
+      {tab === 'settings' && (
+        <SettingsTab r={r} langs={langs} langsRetry={langs.fromDoc ? index.reload : langRoute.reload} go={go} stops={d.hard_stops ?? null}
+          context={d.context} onWrite={onRead} />
+      )}
       {tab === 'used-by' && (
         <Card title="Used by">
           <UsedByList used={d.used_by} go={go} />
@@ -774,12 +780,16 @@ function SettingsTab({
   langsRetry,
   go,
   stops,
+  context,
+  onWrite,
 }: {
   r: RepoRecord
   langs: LanguagesRead
   langsRetry: () => void
   go: (to: string) => void
   stops: RepoHardStops | null
+  context: RepoContext
+  onWrite: () => void
 }) {
   const resolved = useUrRead(() => loadResolvedToken(r.repo_id), `token:${r.repo_id}`)
   const pol = r.selection_policy
@@ -831,6 +841,7 @@ function SettingsTab({
               </span>
             </div>
           </Card>
+          <CodeIntelligenceCard repoId={r.repo_id} served={context} onWrite={onWrite} go={go} />
           <Card
             title="Selection policy"
             className="ur-policy"
@@ -902,6 +913,68 @@ function SettingsTab({
     </>
   )
 }
+
+/**
+ * CODE INTELLIGENCE, THIS REPOSITORY'S OVERRIDE (CTXQ-UI;
+ * docs/design/context-quality.md §4.7). Whether a step on this repository is
+ * staged with its graph context -- the local pack and the graph tools, which
+ * send nothing off the platform. `inherit` follows the workspace's Code
+ * intelligence setting; on and off override it. The one control on this tab
+ * that writes (PATCH_WHY is about the others): `inherit` is sent as itself,
+ * because that is what clears the override, as `merge_policy` does. Whether
+ * Jev is ever sent code is NOT here -- it is the workspace's switch, on
+ * Settings › Workspace, and a repository cannot turn it on for itself.
+ */
+const CONTEXT_OPTIONS: readonly { key: RepoContext; label: string }[] = [
+  { key: 'inherit', label: 'Inherit' },
+  { key: 'on', label: 'On' },
+  { key: 'off', label: 'Off' },
+]
+
+function CodeIntelligenceCard({ repoId, served, onWrite, go }: { repoId: string; served: RepoContext; onWrite: () => void; go: (to: string) => void }) {
+  // What the control shows: the served value, or the one being saved.
+  const [picked, setPicked] = useState<RepoContext>(served)
+  const [busy, setBusy] = useState(false)
+  const [failed, setFailed] = useState<string | null>(null)
+  useEffect(() => {
+    if (!busy) setPicked(served)
+  }, [served, busy])
+
+  async function choose(next: RepoContext) {
+    if (busy || next === picked) return
+    const was = picked
+    setPicked(next)
+    setBusy(true)
+    setFailed(null)
+    const res = await patchRepositoryContext(repoId, next)
+    setBusy(false)
+    if (res.status === 'error') {
+      setPicked(was)
+      setFailed(`Code intelligence was not changed: ${writeFailure(res.error)}`)
+      return
+    }
+    onWrite()
+  }
+
+  return (
+    <Card title="Code intelligence" className="ur-codeintel">
+      <UrRadio label="Code intelligence" value={picked} options={CONTEXT_OPTIONS} disabled={busy} onChange={(k) => void choose(k)} />
+      <p className="ur-hint">
+        {picked === 'inherit' ? "Follows this workspace's setting. " : picked === 'on' ? 'On for this repository. ' : 'Off for this repository. '}
+        Steps here get the repository&rsquo;s graph context: a ranked pack and the graph tools, built from its index.
+        Nothing leaves the platform. Whether Jev is ever sent code is the workspace&rsquo;s switch, on{' '}
+        <UrLink to={WORKSPACE_SETTINGS} go={go}>
+          Settings › Workspace
+        </UrLink>
+        .
+      </p>
+      {failed !== null && <Banner tone="bad" title={failed} role="alert" />}
+    </Card>
+  )
+}
+
+/** Settings › Workspace, where the workspace's Code intelligence switch is. */
+const WORKSPACE_SETTINGS = 'settings/workspace'
 
 /**
  * The hard stops' two registration fields (docs/schedules.md §4.4). Shown,

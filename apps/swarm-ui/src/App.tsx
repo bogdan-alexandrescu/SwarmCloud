@@ -33,6 +33,7 @@ import { HELP as HELP_TOPICS, HELP_GROUPS, HELP_ROUTE, TOPIC_IDS, type TopicId }
 import { GITHUB_CALLBACK_ADDRESS, KEY_LINK_ADDRESS, SUBMIT_ADDRESS, addressToPath, agentListSearch, isLegacyHash, keyLinkScope, keyLinkToken, pathToAddress } from './paths'
 import { GitHubCallbackScreen } from './GitHubConnect'
 import { ProviderKeysScreen } from './ProviderKeys'
+import { WorkspaceSettingsScreen } from './CodeIntelligence'
 import { NotFound, nearestPath } from './NotFound'
 import { fmtLatency } from './panes'
 import { Icon, SkyShell, type SpineSection } from './Spine'
@@ -546,6 +547,16 @@ const KEY_LINK_TAB = KEY_LINK_ADDRESS.slice(SETTINGS.length + 1)
 const SETTINGS_LABEL = 'Settings'
 /** The page's `<h1>` and the second half of its name in the issue forms. */
 const KEYS_LABEL = 'API keys'
+/**
+ * SETTINGS › WORKSPACE (CTXQ-UI; docs/design/context-quality.md §4.7): the
+ * selected workspace's own settings -- Code intelligence, OFF by default for
+ * Jev, and what leaves the platform when it is on. Beside API keys and not a
+ * section, for the reason API keys is not one. One exact address, like the
+ * keys page: `#settings/<anything else>` still lands on Pool limits.
+ */
+const WORKSPACE_TAB = 'workspace'
+/** The page's `<h1>` and the second half of its name in the issue forms. */
+const WORKSPACE_LABEL = 'Workspace'
 
 /**
  * The utility button's label AND the heading of the screen it opens. One
@@ -903,6 +914,7 @@ export function fromAddress(full: string): Route {
   // Settings › API keys and its one-time link, before LEGACY reads `settings`
   // as the eleven-item nav's Pool limits. Only the link's scope is kept.
   if (hash === `${SETTINGS}/${KEYS_TAB}`) return { sectionId: SETTINGS, tab: KEYS_TAB, ...blank }
+  if (hash === `${SETTINGS}/${WORKSPACE_TAB}`) return { sectionId: SETTINGS, tab: WORKSPACE_TAB, ...blank }
   if (hash === KEY_LINK_ADDRESS) {
     const scope = keyLinkScope(query)
     return { sectionId: SETTINGS, tab: KEY_LINK_TAB, ...blank, ...(scope === null ? {} : { view: `scope=${scope}` }) }
@@ -1312,7 +1324,9 @@ export function App() {
           : at.sectionId === GITHUB_CALLBACK
             ? 'Connect GitHub'
             : at.sectionId === SETTINGS
-              ? KEYS_LABEL
+              ? at.tab === WORKSPACE_TAB
+                ? WORKSPACE_LABEL
+                : KEYS_LABEL
               : (tabDef?.label ?? section?.label ?? 'SwarmCloud')
   const object = at.missing ? null : documentObjectOf(at)
   useEffect(() => {
@@ -1397,6 +1411,8 @@ export function App() {
                   <SubmitChooser go={go} />
                 ) : at.sectionId === GITHUB_CALLBACK ? (
                   <GitHubCallbackScreen go={go} />
+                ) : at.sectionId === SETTINGS && at.tab === WORKSPACE_TAB ? (
+                  <WorkspaceSettingsScreen />
                 ) : at.sectionId === SETTINGS ? (
                   <ProviderKeysScreen link={at.tab === KEY_LINK_TAB ? { scope: keyLinkScope(at.view ?? ''), token: keyLink.current } : null} />
                 ) : (

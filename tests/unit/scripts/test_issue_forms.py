@@ -438,6 +438,10 @@ def _nav_options() -> dict[str, str]:
     # link and the page title use.
     keys = f"{_const(app, 'SETTINGS')}/{_const(app, 'KEYS_TAB')}"
     out[paths[keys]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'KEYS_LABEL')} ({paths[keys]})"
+    # Settings › Workspace (CTXQ-UI): the workspace's own settings, beside API
+    # keys at the panel's foot. The same constants, for the same reason.
+    workspace = f"{_const(app, 'SETTINGS')}/{_const(app, 'WORKSPACE_TAB')}"
+    out[paths[workspace]] = f"{UI}{_const(app, 'SETTINGS_LABEL')} › {_const(app, 'WORKSPACE_LABEL')} ({paths[workspace]})"
     return out
 
 
