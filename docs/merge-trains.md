@@ -66,7 +66,7 @@ workspace's mode otherwise (`mergesettings.effective_mode`). The workspace
 settings are stored in `workspace_settings/{tenant_id}` (field `merge`, beside JUDGE-SELECT's `judgment_backend`). The override is the
 registration's `merge_mode` field (`repositories/{repo_id}`), and `inherit`
 is stored as null. Neither is in the frozen contract:
-`Tenant` has no field for it, and contract change request 77 asks for one.
+`Tenant` has no field for it, and contract change request 78 asks for one.
 
 ### 3.2 Who may change it
 
@@ -280,5 +280,5 @@ is a fenced transaction, so a superseded attempt writes nothing
 - **A group-admin role** (§3.2).
 - **Migrating this repository** from the PR 1294 workflow to the platform
   train (§2).
-- **Contract change request 77**: the setting on `Tenant` and a park reason
+- **Contract change request 78**: the setting on `Tenant` and a park reason
   of its own.

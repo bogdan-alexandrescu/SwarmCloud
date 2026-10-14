@@ -109,7 +109,15 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+# The client tag (BSTATUS-API; agent_worker/browser_tools.py `tag_endpoint`):
+# the gate attributes this connection to dev-browser, for the console's
+# "last used" and strips the tag before anything reaches Chromium. Only a bare
+# http origin is tagged; anything else is passed as it is.
 if [[ -n "${endpoint}" ]]; then
-  exec "${REAL}" --connect "${endpoint}" ${args[@]+"${args[@]}"}
+  connect="${endpoint}"
+  if [[ "${endpoint}" =~ ^https?://[^/?#]+/?$ ]]; then
+    connect="${endpoint%/}/client/dev-browser"
+  fi
+  exec "${REAL}" --connect "${connect}" ${args[@]+"${args[@]}"}
 fi
 exec "${REAL}" ${args[@]+"${args[@]}"}

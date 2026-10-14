@@ -1226,6 +1226,26 @@ _CLI_AGENT_INPUTS: dict[str, RunnerInput] = {
     ),
 }
 
+#: CONTRACT REQUEST 77, accepted by the owner 2026-10-14 ("Picker on Submit,
+#: Auto by default"): which browser tool the live-browser agent is given. A
+#: NAMED option, never a command (invariant 10); the claude-code runner maps
+#: each name to what it registers (`agent_worker.browser_tools`). Absent is
+#: `auto`. Only `claude-code-browser` declares it: no other profile has a
+#: browser to choose a tool for.
+_CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    "browser_tool": RunnerInput(
+        "string",
+        choices=("auto", "playwright", "dev-browser", "jev"),
+        means=(
+            "the live browser's tool: auto (every tool available; the default), "
+            "playwright (the Playwright MCP tools only), dev-browser (the dev-browser "
+            "CLI first, Playwright as fallback) or jev (the jev MCP tools, which send "
+            "page text to TypeSafe and need a TypeSafe key; Playwright as fallback)"
+        ),
+    ),
+}
+
 
 #: Why the three #295 profiles are refused, served to a caller who names one.
 _DISABLED_UNTIL_342 = (
@@ -1462,7 +1482,8 @@ RUNNER_PROFILES: dict[str, RunnerProfile] = {
         secrets=("ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN"),
         secrets_any_of=True,
         timeout_seconds=7200,
-        inputs=_CLI_AGENT_INPUTS,
+        # Contract request 77: claude-code's inputs plus `browser_tool`.
+        inputs=_CLAUDE_CODE_BROWSER_INPUTS,
         # Contract request 71 (LB-D): the one live-browser profile.
         live_browser=True,
     ),

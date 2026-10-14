@@ -270,6 +270,17 @@ SWITCHES: dict[str, Switch] = {
         "On once the console's Settings > Workspace > Merging (TRAIN-WS-UI) offers the "
         "change only to those who may make it, and the log shows no member relying on it",
     ),
+    # The browser tool a submission names (BSTATUS-API, contract request 77):
+    # `jev` with no TypeSafe key for the submitter or the tenant, or with no
+    # jev in the image. Off, the task runs and its runner falls back to
+    # Playwright, which the live session's `browser.jev.reason` says.
+    "browser_tool_unavailable": Switch(
+        code="browser_tool_unavailable",
+        why="a claude-code-browser submission naming browser_tool jev is refused when no "
+        "TypeSafe key resolves for its submitter or tenant, or jev is not installed. On once "
+        "the Submit form disables Jev when GET /v1/provider-keys/typesafe resolves none, so "
+        "the form never offers what is refused",
+    ),
     "CONSECUTIVE_FAILURES": Switch(
         code="CONSECUTIVE_FAILURES",
         why="a schedule pauses after N failed or refused firings in a row (§4.4, default "

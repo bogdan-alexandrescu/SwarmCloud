@@ -59,7 +59,8 @@ from .continuation import (
     with_merge_pr_label,
 )
 from .access import MODES, grant_id_for, org_id_for, via_token
-from .errors import Forbidden, NotFound, ValidationFailed
+from . import refusals
+from .errors import BrowserToolUnavailable, Forbidden, NotFound, ValidationFailed
 from .browser_logins import refuse_unless_personal
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
 from .forge import (
@@ -72,6 +73,7 @@ from .forge import (
 from .forgeapp import GRANTS, ORGS, Caller
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .metrics import ApiMetrics
+from .provider_keys import task_key_scope
 from .repositories import Repositories, merge_policy_of, repo_id_for
 from .mergesettings import MergeSettingsStore
 from .runnerinputs import input_contract
@@ -83,7 +85,9 @@ from .store import Store, derived_service_account
 from .task_accounts import ACCOUNT_TOKEN_ENV
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
+    BROWSER_TOOL_INPUT_KEY,
     CONFLICT_ROUND_METADATA_KEY,
+    TYPESAFE_PROVIDER,
     DISPATCH_METADATA_KEY,
     FORGE_SOURCE_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
@@ -512,6 +516,11 @@ class SubmissionService:
             profile, spec.input, step_id=step_id,
             repository_url=repository_url or spec.repository_url,
         )
+        # The browser tool it names can run for it (BSTATUS-API): after the
+        # declaration, which has already refused a name outside the enum.
+        self._refuse_unavailable_browser_tool(
+            profile, spec.input, tenant.tenant_id, submitted_by, step_id=step_id,
+        )
         # After the declaration, so a declared key out of range is refused
         # naming its bound; this is the store's own limit, for every profile.
         validate_storable(spec.input, step_id=step_id)
@@ -588,6 +597,42 @@ class SubmissionService:
             step_id=step_id,
             depends_on=list(depends_on),
         )
+
+    def _refuse_unavailable_browser_tool(
+        self, profile: Any, payload: Mapping[str, Any], tenant_id: str,
+        submitted_by: str | None, *, step_id: str | None = None,
+    ) -> None:
+        """`browser_tool: jev` with nothing to run it on: refused through its
+        switch (`browser_tool_unavailable`, default off), never silently.
+
+        Jev needs the image to carry it (`browser_jev_installed`) and a
+        TypeSafe key for the submitter or the tenant -- the resolution
+        `GET /v1/provider-keys/typesafe` serves (`task_key_scope`). Every
+        other name runs on what every live-browser attempt has. Off, the
+        task is admitted and the runner falls back to Playwright, saying why.
+        """
+        if payload.get(BROWSER_TOOL_INPUT_KEY) != "jev" or BROWSER_TOOL_INPUT_KEY not in profile.inputs:
+            return
+        if not getattr(self._settings, "browser_jev_installed", True):
+            reason = "not_installed"
+            message = ("browser_tool 'jev' cannot run: this deployment's browser image has no "
+                       "jev-browser; pick auto, playwright or dev-browser")
+        else:
+            db = getattr(self._store, "db", None)
+            scope = task_key_scope(db, self._store, tenant_id, submitted_by, TYPESAFE_PROVIDER,
+                                   now=self._now) if db is not None else None
+            if scope is not None:
+                return
+            reason = "no_key"
+            message = ("browser_tool 'jev' needs a TypeSafe key, and none is set for you or for "
+                       "this tenant: add one on the console's key page, or pick auto, "
+                       "playwright or dev-browser")
+        detail: dict[str, Any] = {"runner_profile": profile.name, "key": BROWSER_TOOL_INPUT_KEY,
+                                  "browser_tool": "jev", "reason": reason}
+        if step_id is not None:
+            detail["step_id"] = step_id
+            message = f"step {step_id!r}: {message}"
+        refusals.refuse(BrowserToolUnavailable(message, detail=detail))
 
     def submit_tasks(
         self, ctx: AuthContext, specs: Sequence[TaskCreate], *, service_submission: bool = False

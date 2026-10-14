@@ -84,7 +84,8 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 74 | `states.py`: `EventType.STARTUP_PROGRESS`, the browser agent's start-up steps (STARTUP-API) | ACCEPTED by the owner 2026-10-13 and APPLIED by the pull request that adds this line |
 | 75 | `models.py`: `Workflow.fix_rounds` and `WorkflowStep.spawned_by`, a merge step's fix rounds as workflow fields (SPEED-D2) | proposed; worked around |
 | 76 | `models.py`/`states.py`: `Workflow.after` and `ParkReason.PULL_REQUEST_PENDING`, a workflow that waits for pull requests to merge (SPEED-D3) | proposed; worked around |
-| 77 | `models.py` / `states.py`: a workspace's merge mode on `Tenant`, and a park reason for a merge step waiting on its merge train (TRAIN-WS) | proposed; worked around |
+| 77 | `profiles.py`: `claude-code-browser` declares the input `browser_tool` (auto, playwright, dev-browser, jev), the live browser's tool picked by name (BSTATUS-API) | ACCEPTED by the owner 2026-10-14 ("Picker on Submit, Auto by default"), APPLIED by this PR |
+| 78 | `models.py` / `states.py`: a workspace's merge mode on `Tenant`, and a park reason for a merge step waiting on its merge train (TRAIN-WS) | proposed; worked around |
 
 ---
 
@@ -11411,8 +11412,76 @@ count and no execution. **3** untouched: nothing is counted before LEASED.
 **9**: the tick reads with the named tenant's own `-git` token, only that
 tenant's parks. 2, 4-8 and 10 unchanged.
 
+---
 
-## 77. `models.py` / `states.py`: a workspace's merge mode, and a merge-train park reason (TRAIN-WS)
+## 77. `profiles.py`: `claude-code-browser` declares the input `browser_tool` (BSTATUS-API)
+
+**Status:** ACCEPTED by the owner 2026-10-14 ("Picker on Submit, Auto by
+default"), APPLIED by this PR (lane BSTATUS-API, part of #1030).
+
+### Why
+
+The live-browser agent can drive its browser with three tools: the
+Playwright MCP server (`browser_*` tools), the dev-browser CLI (DEVB-INSTALL)
+and the jev-browser MCP server (JEV-IMAGE, JEV-RUNNER). Each is better at
+something different, and jev sends page text to TypeSafe, which a person may
+not want for a given task. The owner's decision: the Submit form offers
+"Browser tool: Auto / Playwright / dev-browser / Jev", Auto by default. What
+a caller may send a runner is the catalogue's declaration (contract request
+25), so the choice has to be declared here or the API refuses it as an
+undeclared key.
+
+### The change
+
+In `apps/common/swarm_common/profiles.py`, `claude-code-browser` takes
+`_CLAUDE_CODE_BROWSER_INPUTS` instead of `_CLI_AGENT_INPUTS`: claude-code's
+inputs plus one key.
+
+```python
+_CLAUDE_CODE_BROWSER_INPUTS: dict[str, RunnerInput] = {
+    **_CLI_AGENT_INPUTS,
+    "browser_tool": RunnerInput(
+        "string",
+        choices=("auto", "playwright", "dev-browser", "jev"),
+        means="the live browser's tool: auto (every tool available; the default), ...",
+    ),
+}
+```
+
+Absent means `auto`. Nothing else in `swarm_common` changes.
+
+The non-frozen follow-ups, in the same pull request: the runner's mapping
+from name to registration (`agent_worker/browser_tools.py`,
+`runners/claude_code.py`); the API's refusal of `jev` when no TypeSafe key
+resolves or jev is not installed (`browser_tool_unavailable`, behind its
+switch); the client tag the three wrappers put on the CDP endpoint and the
+gate's attribution; the `browser` object on the live-session read; and a
+section in `scripts/lib/check-contract-parity.sh` that holds every
+restatement of the four names (the runner's, the API's, the gate's tags and
+the wrappers') to these choices.
+
+### Rollback
+
+Put `inputs=_CLI_AGENT_INPUTS` back. A task stored with `browser_tool`
+keeps it in its input; the runner reads only the names it knows and falls
+back to `auto` for anything else, so an old task still runs.
+
+### What it would break
+
+Nothing that exists: a new optional key on one profile. The Submit form's
+`SUGGESTED` table may now offer it (section 13 of the parity script allows
+any declared key). A caller who already sent `browser_tool` was refused with
+422 `invalid_input`; now it is accepted.
+
+### Invariants
+
+**10** is the point: a caller names one of four options, never a command, a
+binary, an MCP config or a URL; the image's wrappers and the runner own what
+each name runs. 1-9 unchanged: the same profile, image, class, backend and
+secrets.
+
+
+## 78. `models.py` / `states.py`: a workspace's merge mode, and a merge-train park reason (TRAIN-WS)
 
 **Status:** proposed, and worked around without it by the pull request that
 adds this entry (lane TRAIN-WS, owner decision 2026-10-14: "the merge train

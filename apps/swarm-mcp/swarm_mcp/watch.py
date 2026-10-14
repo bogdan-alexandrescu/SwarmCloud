@@ -26,6 +26,19 @@ repository. The project is the git top level of the session's directory
 symlinks resolved, so a session opened in a subdirectory is the same
 project. The hook derives the same key the same way, in bash
 (`tests/unit/mcp/test_sc_watch.py` holds the two together).
+
+IT ARMS ITSELF (SC-AUTO-WATCH, owner request 2026-10-14): "/sc watch should
+automatically be set if there is at least one workflow being worked on in sc
+that is attached here or if and when we start a new workflow". Every tool
+reply that puts SwarmCloud work in front of the session -- a spec launched or
+submitted, an issue run whose workflow exists, an attach -- carries
+`arm_watch` (`arm_call`): the CronCreate call at the saved interval, else the
+default, which the skill makes after CronList shows no `/sc check` job. So the
+file now has THREE states: absent (never set: arm at the default when work is
+attached), an interval (arm at it), and `"watch": "off"` -- an explicit `/sc
+watch off` is SAVED rather than forgotten, because forgetting it would let the
+next attach arm the watch the developer just turned off. It wins until `/sc
+watch` again overwrites it.
 """
 
 from __future__ import annotations
@@ -54,7 +67,10 @@ STATE_DIR = "sc-watch"
 PROJECT_DIR_ENV = "CLAUDE_PROJECT_DIR"
 #: How the hook hands the remembered interval to `sc workflows
 #: --session-start`, so one context names both the attach and the re-arm.
+#: `off` there is the explicit `/sc watch off`: the context then asks for no
+#: arming at all.
 REARM_ENV = "SWARM_SC_WATCH_MINUTES"
+HANDED_OFF = "off"
 
 #: The intervals a cron expression can say evenly.
 _MINUTE_STEPS = (5, 6, 10, 12, 15, 20, 30)
@@ -164,12 +180,16 @@ def save(project: Path, minutes: int, environ: Mapping[str, str] | None = None) 
     """Write the preference atomically. ONE LINE, `"interval_minutes": N`
     first, so the hook reads it with sed rather than a JSON parser."""
     path = state_path(project, environ)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    body = json.dumps({
+    _write(path, json.dumps({
         "interval_minutes": minutes,
         "project": str(project),
         "enabled_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-    })
+    }))
+    return path
+
+
+def _write(path: Path, body: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(prefix=".sc-watch-", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -178,15 +198,70 @@ def save(project: Path, minutes: int, environ: Mapping[str, str] | None = None) 
     except BaseException:
         Path(temporary).unlink(missing_ok=True)
         raise
+
+
+def save_off(project: Path, environ: Mapping[str, str] | None = None) -> Path:
+    """Record an explicit `/sc watch off`. ONE LINE, `"watch": "off"` first and
+    no `interval_minutes`, so the hook's sed finds no interval and its grep
+    finds the off."""
+    path = state_path(project, environ)
+    _write(path, json.dumps({
+        "watch": HANDED_OFF,
+        "project": str(project),
+        "disabled_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+    }))
     return path
 
 
-def clear(project: Path, environ: Mapping[str, str] | None = None) -> bool:
+def preference(project: Path, environ: Mapping[str, str] | None = None) -> str | None:
+    """`"on"` (an interval is saved), `"off"` (an explicit `/sc watch off`), or
+    None (never set, or unreadable)."""
+    if read(project, environ) is not None:
+        return "on"
     try:
-        state_path(project, environ).unlink()
-    except FileNotFoundError:
-        return False
-    return True
+        data = json.loads(state_path(project, environ).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return HANDED_OFF if isinstance(data, dict) and data.get("watch") == HANDED_OFF else None
+
+
+def arm_call(environ: Mapping[str, str] | None = None) -> dict[str, Any] | None:
+    """The CronCreate call that arms this project's watch, or None when the
+    project's watch is explicitly off. At the saved interval, else the
+    default. It is an instruction, not a schedule: only the session can see
+    its own jobs, so `unless` tells it to look first and never make a second."""
+    project = project_dir(environ)
+    if preference(project, environ) == HANDED_OFF:
+        return None
+    saved = read(project, environ)
+    minutes = int(saved["interval_minutes"]) if saved else DEFAULT_INTERVAL_MINUTES
+    if minutes not in _SAYABLE:
+        minutes = DEFAULT_INTERVAL_MINUTES
+    return {
+        "unless": (
+            "CronList first: if a job whose prompt is `/sc check` exists, the watch is already "
+            "armed in this session -- make neither call, never a second job"
+        ),
+        "save_with": {"tool": "swarm_check_schedule", "args": {"interval": interval_text(minutes)}},
+        "tool": "CronCreate",
+        "args": {"cron": cron_for(minutes), "prompt": CHECK_PROMPT, "recurring": True},
+        "then_say": f"the watch is armed: a `/sc check` every {minutes} minutes (`/sc watch off` stops it)",
+    }
+
+
+#: What a reply carries beside `arm_watch: null` when the project turned the
+#: watch off, so the session says why it armed nothing.
+OFF_NOTE = "the watch is off for this project (`/sc watch off`); `/sc watch` turns it on again"
+
+
+def arm_fields(armed: bool, environ: Mapping[str, str] | None = None) -> dict[str, Any]:
+    """`{arm_watch}` for a reply: the call when `armed` (work was attached or
+    started) and the project's watch is not off; null otherwise, with
+    `arm_watch_off` saying it was the preference."""
+    if not armed:
+        return {"arm_watch": None}
+    call = arm_call(environ)
+    return {"arm_watch": call} if call is not None else {"arm_watch": None, "arm_watch_off": OFF_NOTE}
 
 
 def rearm_minutes(environ: Mapping[str, str] | None = None) -> int | None:
@@ -197,6 +272,23 @@ def rearm_minutes(environ: Mapping[str, str] | None = None) -> int | None:
         return None
     minutes = int(text)
     return minutes if minutes in _SAYABLE else None
+
+
+def handed_off(environ: Mapping[str, str] | None = None) -> bool:
+    """Whether the hook said this project's watch is explicitly off."""
+    environ = os.environ if environ is None else environ
+    return environ.get(REARM_ENV, "").strip() == HANDED_OFF
+
+
+def arm_sentence() -> str:
+    """What the SessionStart context asks when work runs and no watch was
+    ever set for the project (SC-AUTO-WATCH)."""
+    return (
+        "Then arm the sc plugin's watch for this project, since SwarmCloud work of yours is "
+        f"running: CronList first, and unless a job whose prompt is `{CHECK_PROMPT}` already "
+        f"exists, run `/sc watch` (a `{CHECK_PROMPT}` every {DEFAULT_INTERVAL_MINUTES} minutes; "
+        "`/sc watch off` turns it off for this project)."
+    )
 
 
 def rearm_sentence(minutes: int) -> str:
@@ -224,11 +316,14 @@ def tool(args: dict[str, Any], environ: Mapping[str, str] | None = None) -> dict
     if off and args.get("interval") is not None:
         raise SwarmError("swarm_check_schedule takes `interval` OR `off: true`, not both. Nothing was changed")
     if off:
-        removed = clear(project, environ)
+        was_on = read(project, environ) is not None
+        # Saved, not forgotten: an attach after this must not arm it again.
+        save_off(project, environ)
         return {
             "watch": "off",
             "project": str(project),
-            "was_on": removed,
+            "was_on": was_on,
+            "saved": "off until `/sc watch` again: no attach or run arms it in the meantime",
             "cancel_with": (
                 "CronList, then CronDelete {id} for every job whose prompt is `/sc check`; a "
                 "`/loop ... /sc check` started by hand ends with Esc"
@@ -237,7 +332,11 @@ def tool(args: dict[str, Any], environ: Mapping[str, str] | None = None) -> dict
     if args.get("interval") is None and "interval" not in args:
         saved = read(project, environ)
         if saved is None:
+            explicitly_off = preference(project, environ) == HANDED_OFF
             return {"watch": "off", "project": str(project),
+                    "explicitly_off": explicitly_off,
+                    "note": ("turned off with `/sc watch off`: nothing arms it until `/sc watch`" if explicitly_off
+                             else "never set: the next attach or run arms it at the default"),
                     "turn_on_with": f"/sc watch [interval] (default {interval_text(DEFAULT_INTERVAL_MINUTES)})"}
         minutes = int(saved["interval_minutes"])
         return {"watch": "on", "project": str(project), "interval_minutes": minutes,

@@ -1,4 +1,5 @@
 {
   "live_browser": false,
-  "session": null
+  "session": null,
+  "browser": null
 }

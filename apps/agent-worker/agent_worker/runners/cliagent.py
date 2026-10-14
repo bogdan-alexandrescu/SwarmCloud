@@ -81,7 +81,10 @@ TRANSCRIPT_MAX_CHARS = 4_000_000
 #: harmless. `NO_PROXY` and `NODE_EXTRA_CA_CERTS` are a host list and a path,
 #: never a secret, so they are passed through without being redacted -- a path
 #: appearing in output is diagnostic information worth keeping readable.
-_SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY")
+#: TYPESAFE_API_KEY is the jev-browser MCP server's key (BSTATUS-API; the
+#: server inherits the CLI's environment, and no key is written into its MCP
+#: config). Present only when the worker was given one; redacted like the rest.
+_SENSITIVE_PASSTHROUGH: tuple[str, ...] = ("HTTPS_PROXY", "HTTP_PROXY", "TYPESAFE_API_KEY")
 #: GIT_AUTHOR_* and GIT_COMMITTER_* name the person who dispatched the task
 #: (P37, `agent_worker.gitidentity`): the worker sets them from the task
 #: document, so an agent's `git commit` names that person instead of failing
