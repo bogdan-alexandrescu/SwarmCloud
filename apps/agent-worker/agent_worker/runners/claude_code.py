@@ -127,6 +127,14 @@ And on the browser image the CLI's PATH puts `VENV_BIN` first, so the agent's
 `python` is the one with Playwright and the helper. Without the endpoint the
 browser image behaves as before: the real browsers and the headless note.
 
+THE GIT TOOLS (docs/runner-git-tools.md §1.3, lane G6). When the worker
+offers the attempt the runner git tools it sets `SWARM_GIT`, the spool, and
+only then: this runner names the `swarm-git` shim (`agent_worker.gitmcp`) in
+`--mcp-config`. With the live browser too, both servers go in ONE config file
+(`write_mcp_config`), because the CLI takes the servers of one `--mcp-config`
+and a second flag is a second reading of the same option. The shim holds
+nothing: no token, no key, no network. It writes requests the worker answers.
+
 WHY BASH STDIN IS /dev/null (#750, owner decision 2026-10-06). A Bash command
 that read stdin with nothing attached sat until the Bash timeout killed it:
 the CLI adds `< /dev/null` itself only to a command with no heredoc and no `<`
@@ -146,6 +154,9 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..children import git_shim_argv
+from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
+from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
 from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV, RESUME_NAME
 from .base import RunnerContext, run_runner
 from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
@@ -353,25 +364,31 @@ def write_headless_settings(directory: Path) -> Path:
     return path
 
 
-def write_mcp_config(directory: Path, endpoint: str) -> Path:
-    """Write the CLI's `--mcp-config`: Playwright MCP on the live browser; return it.
+def write_mcp_config(
+    directory: Path, endpoint: str | None = None, *, git_spool: str | None = None
+) -> Path:
+    """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
+    browser when `endpoint` is given, the `swarm-git` shim when `git_spool` is.
 
     Beside the settings file, in `work/` (never the checkout), mode 0600 and
     replaced rather than followed, for the same reasons (`_write_private`).
-    The endpoint is the dispatcher's loopback address, never caller input.
+    The endpoint is the dispatcher's loopback address and the spool the
+    worker's path, never caller input.
     """
     if directory.is_symlink():
         directory.unlink()
     directory.mkdir(mode=0o700, parents=True, exist_ok=True)
-    config = {
-        "mcpServers": {
-            MCP_SERVER_NAME: {
-                "type": "stdio",
-                "command": PLAYWRIGHT_MCP_BIN,
-                "args": ["--cdp-endpoint", endpoint],
-            }
+    servers: dict[str, Any] = {}
+    if endpoint:
+        servers[MCP_SERVER_NAME] = {
+            "type": "stdio",
+            "command": PLAYWRIGHT_MCP_BIN,
+            "args": ["--cdp-endpoint", endpoint],
         }
-    }
+    if git_spool:
+        command, *args = git_shim_argv(git_spool)
+        servers[GIT_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
+    config = {"mcpServers": servers}
     path = directory / MCP_CONFIG_NAME
     _write_private(path, json.dumps(config, indent=2) + "\n")
     return path
@@ -489,6 +506,13 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         value = os.environ.get(name, "").strip()
         if value:
             env[name] = value
+    # The git tools' spool, which the worker sets only for an attempt offered
+    # them (`children.ChildPath.prepare`). Passed on as well as named in the
+    # config, so the CLI form of the shim works from the agent's Bash tool.
+    git_spool = os.environ.get(GIT_SPOOL_ENV, "").strip()
+    if git_spool:
+        env[GIT_SPOOL_ENV] = git_spool
+    live_endpoint = ""
     browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
     prompt = ctx.payload.get("prompt")
@@ -506,14 +530,18 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             # The live browser exists: the agent's own launch finds only the
             # stub, and its browser tools are the live browser's (docstring).
             env[BROWSERS_PATH_ENV] = AGENT_BROWSERS_PATH
-            mcp = write_mcp_config(Path(ctx.work_dir) / SETTINGS_DIR_NAME, endpoint)
-            extra += ["--mcp-config", str(mcp)]
+            live_endpoint = endpoint
             note = LIVE_BROWSER_NOTE
         else:
             env[BROWSERS_PATH_ENV] = browsers
         # A new dict on the same context: `run_runner` holds this object.
         if isinstance(prompt, str) and prompt.strip():
             ctx.payload = {**ctx.payload, "prompt": f"{prompt.rstrip()}\n\n{note}"}
+    # ONE `--mcp-config` for every server this attempt has (module docstring).
+    if live_endpoint or git_spool:
+        mcp = write_mcp_config(Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
+                               git_spool=git_spool or None)
+        extra += ["--mcp-config", str(mcp)]
     return run_cli_agent(ctx, spec, extra_args=extra, extra_env=env)
 
 
