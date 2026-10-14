@@ -144,6 +144,16 @@ class GitHubWrites:
         #: a pull request opened from an already-pushed branch reads and makes.
         self.default_branch = "main"
         self.branches: dict[str, str] = {}
+        #: Lane SPEED-D2: the Actions jobs a re-run was asked of
+        #: (`actions/jobs/<id>/rerun`), in order, and what that route answers
+        #: -- 403 by default, a credential without `actions: write`, so a
+        #: test that never asked for a re-run sees the round it always did.
+        self.reruns: list[int] = []
+        self.rerun_answer = 403
+        #: The files each pull request changes, and the files its base
+        #: changed since the branch left it (`compare/<head>...<base>`).
+        self.pull_file_names: dict[int, list[str]] = {}
+        self.base_changed: list[str] = []
 
     def writes(self) -> list[tuple[str, str]]:
         return [(m, urlparse(u).path) for m, u, _, _ in self.calls if m != "GET"]
@@ -256,6 +266,19 @@ class GitHubWrites:
         query = parse_qs(parsed.query)
         page = int(query.get("page", ["1"])[0])
         per_page = int(query.get("per_page", ["30"])[0])
+        if rest[:2] == ["actions", "jobs"] and len(rest) == 4 and rest[3] == "rerun":
+            if method != "POST":
+                return 404, b"{}"
+            if self.rerun_answer != 201:
+                return self.rerun_answer, json.dumps({"message": "refused"}).encode()
+            self.reruns.append(int(rest[2]))
+            return 201, b"{}"
+        if rest[:1] == ["pulls"] and len(rest) == 3 and rest[2] == "files":
+            names = self.pull_file_names.get(int(rest[1]), [])
+            chunk = names[(page - 1) * per_page: page * per_page]
+            return 200, json.dumps([{"filename": n} for n in chunk]).encode()
+        if rest[:1] == ["compare"] and len(rest) >= 2:
+            return 200, json.dumps({"files": [{"filename": n} for n in self.base_changed]}).encode()
         if rest[:2] == ["rules", "branches"]:
             return 200, json.dumps(self.rules).encode()
         if rest[:1] == ["commits"] and len(rest) == 3 and rest[2] == "check-runs":

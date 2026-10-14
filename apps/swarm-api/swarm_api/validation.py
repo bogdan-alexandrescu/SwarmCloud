@@ -135,6 +135,20 @@ APP_CREDENTIAL_PROVIDERS: frozenset[str] = frozenset(
 ) | RETIRED_APP_CREDENTIAL_PROVIDERS
 
 
+#: TypeSafe (docs.typesafe.ai), which serves the Jev judgment models. Its key
+#: is stored by `swarm_api.provider_keys` (KEYS-API, docs/provider-keys.md).
+TYPESAFE_PROVIDER = "typesafe"
+
+#: Providers whose key is set through `/v1/provider-keys/{provider}`: a
+#: person's own key in their personal tenant, or a tenant key an ADMIN sets.
+#: DELIBERATELY NOT IN `known_providers()`. That set is what
+#: `POST /v1/tenants/me/credentials` accepts from ANY tenant member, and what
+#: the admin limit, drain and enable routes accept as a quota pool. A
+#: TypeSafe tenant key is an admin's to set and has no pool, so either use
+#: would be a second, unguarded way in. It is not a forge or App key
+#: either: the tenant's worker account IS the reader it is bound to.
+PROVIDER_KEY_PROVIDERS: frozenset[str] = frozenset({TYPESAFE_PROVIDER})
+
 def validate_runner_profile(name: str) -> RunnerProfile:
     profile = RUNNER_PROFILES.get(name)
     if profile is None:
@@ -662,8 +676,10 @@ MERGE_STEP_ID = "merge"
 #: continuation before the merge step refuses `checks_failed` (MS7 spends
 #: them). NOT reserved: the caller writes it, and it is stored as written.
 MERGE_FIX_ROUNDS_KEY = "merge_fix_rounds"
-#: Absent means 0: a red check refuses at once, which is what the built step
-#: does. 5 bounds what one pull request can spend on fix agents before a
+#: Absent ON A STORED MERGE TASK means 0: a red check refuses at once, which
+#: is what the built step did before SPEED-D2. Submission now stamps every
+#: merge task with `resolve_fix_rounds` (2 for a lane by default), so 0 is
+#: what an older task, or one whose key was deleted, reads as. 5 bounds what one pull request can spend on fix agents before a
 #: person looks at it; each round is a full agent attempt.
 MERGE_FIX_ROUNDS_DEFAULT = 0
 MERGE_FIX_ROUNDS_MAX = 5
@@ -701,6 +717,82 @@ def resolve_merge_fix_rounds(
             detail={"field": field, "accepted": bounds, "merge_step": False},
         )
     return value
+
+
+#: The fix rounds a workflow with a merge step gets when neither its spec's
+#: `fix_rounds` nor its `metadata.merge_fix_rounds` names a number (lane
+#: SPEED-D2, owner decision 2026-10-14 "Auto fix rounds"). Two, measured: of
+#: the last 150 merged pull requests 0.52 runs per PR came back red and the
+#: operator dispatched a fixer by hand five times in one day, and the PR-side
+#: fixer's own bound is two (`cifix.DEFAULT_MAX_ATTEMPTS`). A second red at
+#: the head a round pushed is a question for a person, not a third agent.
+#: Not 0, which is `MERGE_FIX_ROUNDS_DEFAULT`: that is what an ABSENT key on
+#: a stored merge task reads as, and every merge task this resolution stamps
+#: carries the number, so the two never meet.
+LANE_FIX_ROUNDS_DEFAULT = 2
+#: The workflow metadata key an issue run's workflows carry
+#: (`issueci.merge_workflow`, `issueruns.compile_plan`). An issue run fixes
+#: red CI with its own loop (`--fix-rounds`, `issueci._start_round`) before it
+#: submits its merge, so its merge step keeps no rounds of its own unless
+#: asked: two loops on one pull request would race each other's pushes.
+ISSUE_RUN_METADATA_KEY = "issue_run"
+
+
+def resolve_fix_rounds(
+    fix_rounds: int | None, metadata: Mapping[str, Any], *, merge_step: bool,
+    named_pull: bool = False,
+) -> int | None:
+    """The fix rounds a workflow's merge step may spend, or None with no merge step.
+
+    `fix_rounds` is the spec's field (`WorkflowCreate.fix_rounds`, 0-5,
+    typed there); `metadata` the workflow's, whose `merge_fix_rounds`
+    (`resolve_merge_fix_rounds`, checked per step) says the same thing the
+    older way. Both given and different is refused, rather than one quietly
+    winning. Neither given: `LANE_FIX_ROUNDS_DEFAULT`, or 0 for an issue
+    run's workflow. `fix_rounds` with no merge step is refused, as the
+    metadata key is. A `merge_pr` workflow (`named_pull`, #352) gets 0 and
+    refuses any other number, as `continuation.resolve_merge_pr` refuses the
+    metadata key: its branch is no SwarmCloud task's, so no round could push
+    to it, and rounds asked for and never possible would park the worker on
+    `ci_fix_pending` until its six-hour bound.
+
+    The number lives on the merge TASK as `metadata.merge_fix_rounds`, which
+    the wake tick and the worker already read: the frozen `Workflow` has no
+    field for it (docs/contract-change-requests.md entry 75).
+    """
+    stated = resolve_merge_fix_rounds(metadata, merge_step=merge_step)
+    explicit = MERGE_FIX_ROUNDS_KEY in metadata
+    if fix_rounds is not None and not merge_step:
+        raise DispatchOptionError(
+            f"fix_rounds is {fix_rounds}, but this workflow has no merge step to spend "
+            f"fix rounds before. Set metadata.{MERGE_METADATA_KEY} to 'on', or remove "
+            "fix_rounds.",
+            detail={"field": "fix_rounds", "merge_step": False},
+        )
+    if fix_rounds is not None and explicit and fix_rounds != stated:
+        raise DispatchOptionError(
+            f"fix_rounds is {fix_rounds} and metadata.{MERGE_FIX_ROUNDS_KEY} is {stated}: "
+            "they name the same budget. Give one of them.",
+            detail={"field": "fix_rounds", "metadata": f"metadata.{MERGE_FIX_ROUNDS_KEY}"},
+        )
+    if not merge_step:
+        return None
+    if named_pull:
+        if fix_rounds:
+            raise DispatchOptionError(
+                f"merge_pr takes no fix_rounds (it is {fix_rounds}): a fix round continues "
+                "the task whose branch the pull request is on, and a named pull request's "
+                "branch is no task's. Remove fix_rounds, or set it to 0.",
+                detail={"field": "fix_rounds", "merge_pr": True},
+            )
+        return MERGE_FIX_ROUNDS_DEFAULT
+    if fix_rounds is not None:
+        return fix_rounds
+    if explicit:
+        return stated
+    if ISSUE_RUN_METADATA_KEY in metadata:
+        return MERGE_FIX_ROUNDS_DEFAULT
+    return LANE_FIX_ROUNDS_DEFAULT
 
 
 def merge_repository(repository_url: str | None) -> tuple[str, str] | None:

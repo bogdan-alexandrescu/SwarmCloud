@@ -425,6 +425,8 @@ def test_a_rebase_conflict_leaves_the_rebase_in_progress_and_lists_the_paths(wor
     result = answer["result"]
     assert result["conflicts"] == ["README.md"]
     assert result["in_progress"] is True and result["head"] is None
+    # Recorded before the rebase ran: the agent may still continue it.
+    assert world.tools.rebased_onto == result["onto"]
     assert (world.clone / ".git" / "rebase-merge").is_dir()
     status = _git(world.clone, "status", "--porcelain")
     assert "UU README.md" in status
@@ -439,6 +441,8 @@ def test_a_clean_rebase_ends_on_top_of_the_fetched_tip(world: World):
     result = world.spool("git_rebase_onto", {"ref": "main"})["result"]
     assert result["onto"] == onto and result["conflicts"] == []
     assert _git(world.clone, "rev-parse", "HEAD~1") == onto
+    # The publish diffs from here (SPEED-D1, `Worker._adopt_rebase_base`).
+    assert world.tools.rebased_onto == onto
     assert _git(world.clone, "log", "-1", "--format=%cn <%ce>") == f"{PERSON[0]} <{PERSON[1]}>"
 
 

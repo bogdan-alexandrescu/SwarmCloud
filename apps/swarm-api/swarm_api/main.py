@@ -45,6 +45,7 @@ from .routes import (
     notifications,
     onboarding,
     outcomes,
+    provider_keys,
     people,
     platform,
     repositories,
@@ -159,6 +160,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The caller's own tenant; the App's settings link for admins only.
     app.include_router(forgeperms.router)
     app.include_router(tenants.router)
+    # Provider keys a person or a tenant admin sets, TypeSafe first
+    # (docs/provider-keys.md, lane KEYS-API): write-only, a person's own key in
+    # their personal tenant, the tenant key for admins, one-time form links.
+    app.include_router(provider_keys.router)
     # The account pool. Every route on it PROXIES to the quota broker, which is
     # the platform's single writer of subscription credentials; this service
     # supplies the caller's tenant and nothing else.

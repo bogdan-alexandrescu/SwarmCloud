@@ -82,6 +82,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 71 | `profiles.py`: `RunnerProfile.live_browser`, True only on `claude-code-browser`, valid only on a GKE_AUTOPILOT profile (LB-D) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
 | 72 | `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist | proposed |
 | 74 | `states.py`: `EventType.STARTUP_PROGRESS`, the browser agent's start-up steps (STARTUP-API) | ACCEPTED by the owner 2026-10-13 and APPLIED by the pull request that adds this line |
+| 75 | `models.py`: `Workflow.fix_rounds` and `WorkflowStep.spawned_by`, a merge step's fix rounds as workflow fields (SPEED-D2) | proposed; worked around |
 
 ---
 
@@ -11269,3 +11270,65 @@ step only inside a transaction that finds the task still on the lease and
 generation the pod was read for, and the worker writes only while it is not
 fenced; the route serves only the current attempt's generation. 4, 6-10
 unchanged.
+
+## 75. `models.py`: `Workflow.fix_rounds` and `WorkflowStep.spawned_by` (SPEED-D2)
+
+**Status:** proposed, and worked around without it by the pull request that
+adds this entry (lane SPEED-D2, owner decision 2026-10-14 "Auto fix rounds").
+Nothing under `apps/common/swarm_common/` was edited.
+
+### Why
+
+A lane workflow's merge step now spends up to `fix_rounds` agent rounds (2 by
+default) on a red or conflicting pull request, and each round is shown as a
+step of the lane's workflow (docs/merge-step.md "Revised 2026-10-14"). Two
+facts about that have no home in the frozen `Workflow`:
+
+1. **The budget.** `Workflow` carries no metadata, so the spec's `fix_rounds`
+   is stored only on the merge TASK (`metadata.merge_fix_rounds`, which the
+   wake tick and the worker read). A reader of the workflow alone cannot say
+   how many rounds it was given.
+2. **Which steps the platform appended.** A round's step is an ordinary
+   `WorkflowStep`. The rollup must not let a round's FAILED fail a workflow
+   whose merge then succeeded, so it has to tell a round from a caller's step.
+   Today it does so by the step id's shape, `ci-fix:<n>` / `conflict-fix:<n>`
+   (`swarm_rollup.FIX_ROUND_STEP_RE`), which works only because a caller's
+   step id may not hold `:` (`WorkflowStepCreate.step_id`'s pattern). The
+   input could not carry the mark: the reconciler decodes steps without it.
+
+### The change
+
+```python
+@dataclass
+class WorkflowStep:
+    ...
+    #: The step id of the platform step that appended this one (a merge
+    #: step's fix round names the merge step), or None for a submitted step.
+    spawned_by: str | None = None
+
+@dataclass
+class Workflow:
+    ...
+    #: Agent fix rounds the merge step may spend on a red pull request;
+    #: None when the workflow has no merge step.
+    fix_rounds: int | None = None
+```
+
+`swarm_rollup.is_fix_round_step` would then read `spawned_by`, and the
+step-id shape would stop carrying meaning.
+
+### Rollback
+
+Delete the two fields; both default to None, and the workaround above is
+what would remain.
+
+### What it would break
+
+Nothing: two defaulted fields. `codec.workflow_from_dict` and
+`reconciler.model.WorkflowView.from_doc` would have to decode `spawned_by`
+for the rollup to read it; until they do, the step-id rule stays.
+
+### Invariants
+
+**1-3** untouched: a field records a decision; a round is an ordinary task
+admitted like any other. 4-10 unchanged.
