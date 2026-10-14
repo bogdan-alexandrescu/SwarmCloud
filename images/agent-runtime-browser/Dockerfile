@@ -201,6 +201,55 @@ RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
  && install -o root -g root -m 0555 /tmp/swarm-browser-build/live-browser-only /opt/swarm/dev-browser/live-browser-only \
  && rm -rf /tmp/dev-browser
 
+# JEV-BROWSER, ATTACH ONLY (JEV-IMAGE, owner decision 2026-10-14, part of
+# #1030). TypeSafe's jev-browser -- an MCP server over Playwright where the
+# model "Jev" picks each step -- beside the Playwright MCP server and
+# dev-browser. The owner accepted that it sends page text and element labels
+# to TypeSafe (api.typesafe.ai). Upstream it only ever launches a browser of
+# its own, so:
+#
+#   * npm ci from the committed images/agent-runtime-browser/jev-browser/
+#     package.json and package-lock.json into /opt/swarm/jev-browser, off PATH.
+#     Every package resolves from registry.npmjs.org with its sha512, as
+#     @playwright/mcp above does (the build mirror is for images and GitHub
+#     release files; the npm registry is read directly). `--ignore-scripts`:
+#     none of the 98 packages has an install script, and none may run one.
+#     Playwright is held to 1.63.0 by an override, the PLAYWRIGHT_VERSION
+#     above, so its Chromium revision is the one /opt/playwright already
+#     holds; PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 besides, so no second Chromium
+#     arrives.
+#   * jev-browser 0.2.0 is pinned exactly. It was released 2026-10-13, the day
+#     before this; the repository has no minimum-age rule for a dependency
+#     (none in docs/, scripts/ or the workflows, checked 2026-10-14), and 0.2.0
+#     is the release the owner named. 0.1.2 (2026-10-08) is no older than two
+#     weeks either.
+#   * patches/jev-browser+0.2.0.patch (patch-package's format, applied by
+#     `git apply`, which needs no extra package) adds the attach:
+#     JEV_BROWSER_CDP_ENDPOINT -> `chromium.connectOverCDP`, the browser's
+#     existing default context (never `newContext`: the gate refuses
+#     Emulation.setDeviceMetricsOverride, which a context with a viewport
+#     sends), no viewport, the WebMCP init script off (it rewrites
+#     `modelContext` in every page the browser loads, the person's included),
+#     and close() disconnecting only. Without the endpoint every launch, and
+#     the MCP server's Chromium download, is refused. A version bump fails
+#     here, at `git apply`, until the patch is redone for it.
+#   * bin/jev-browser-mcp is the wrapper the runner registers: it refuses to
+#     start without SWARM_CDP_ENDPOINT and makes that the attach endpoint.
+#
+# SIZE: +47 MiB on disk (`du -sh node_modules` after this `npm ci`, measured
+# 2026-10-14; playwright-core 14 MiB of it), 7.4 MiB as `tar | gzip -6`.
+ARG JEV_BROWSER_VERSION=0.2.0
+RUN --mount=type=bind,source=images/agent-runtime-browser/jev-browser,target=/tmp/jev-browser-build \
+    scratch="$(mktemp -d)" \
+ && install -d -m 0755 /opt/swarm/jev-browser /opt/swarm/jev-browser/bin \
+ && install -o root -g root -m 0444 /tmp/jev-browser-build/package.json /tmp/jev-browser-build/package-lock.json /opt/swarm/jev-browser/ \
+ && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm_config_cache="${scratch}/npm" \
+      npm ci --prefix /opt/swarm/jev-browser --omit=dev --ignore-scripts --no-audit --no-fund \
+ && git -C /opt/swarm/jev-browser apply --verbose "/tmp/jev-browser-build/patches/jev-browser+${JEV_BROWSER_VERSION}.patch" \
+ && install -o root -g root -m 0555 /tmp/jev-browser-build/bin/jev-browser-mcp /opt/swarm/jev-browser/bin/jev-browser-mcp \
+ && chmod -R a+rX,a-w /opt/swarm/jev-browser \
+ && rm -rf "${scratch}"
+
 USER swarm:swarm
 # NO `WORKDIR /workspace` HERE: the base sets it and this image inherits it.
 # Restating it wrote BuildKit's empty layer (sha256:4f4fb700ef54...) a second
@@ -216,13 +265,15 @@ USER swarm:swarm
 # helper and the MCP server are there, that codex is not and every other tool
 # of the base is, and that the display sidecar's pieces
 # are where the dispatcher expects them, and that `dev-browser` is the wrapper
-# over the pinned binary and refuses a browser of its own, rather than
-# discovering any of it at 3am in a tenant's attempt. selftest.py lists each
-# check; it is bind-mounted, not shipped. DEV_BROWSER_VERSION is the ARG above,
-# which every RUN of this stage sees: the version the binary must report.
+# over the pinned binary and refuses a browser of its own, and that
+# jev-browser attaches to a running Chromium over CDP and launches nothing,
+# rather than discovering any of it at 3am in a tenant's attempt. selftest.py
+# lists each check; it is bind-mounted, not shipped. DEV_BROWSER_VERSION and
+# JEV_BROWSER_VERSION are the ARGs above, which every RUN of this stage sees:
+# the versions the installed tools must report.
 RUN --mount=type=bind,source=images/agent-runtime-browser,target=/tmp/swarm-browser-build \
     scratch="$(mktemp -d)" \
- && TMPDIR="${scratch}" DEV_BROWSER_VERSION="${DEV_BROWSER_VERSION}" \
+ && TMPDIR="${scratch}" DEV_BROWSER_VERSION="${DEV_BROWSER_VERSION}" JEV_BROWSER_VERSION="${JEV_BROWSER_VERSION}" \
       python /tmp/swarm-browser-build/selftest.py /opt/swarm/live-browser-only \
  && rm -rf "${scratch}"
 
