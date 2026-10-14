@@ -100,12 +100,13 @@ from .cdppolicy import PolicyPaths
 from .cdpproxy import AgentConnection, AgentLink, CdpError, CdpProxy, PipeTransport, serve_agents
 from .ctl import DEFAULT_MARKER, CtlServer
 from .device import WINDOW_OVERHANG, DeviceController, XRandrDisplay, captured
-from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, notice_url
+from .. import browser_tools
+from .egress import EgressConfigError, EgressSettings, LocalForwarder, chromium_proxy_args, describe, notice_url
 from .inject import InjectError, XInjector, display_socket
 from .mask import REASON_SWITCHING, MaskCdp, MaskState
 from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
-from .report import agent_report, device_report, encode_report, page_origin
+from .report import agent_report, browser_report, device_report, egress_report, encode_report, page_origin
 from .rfb import ControlState, FrameHub, RfbSession, masked
 from .rfb import metrics_log as rfb_metrics_log
 from .session import OPS as SESSION_OPS
@@ -579,8 +580,8 @@ class GateProxy(CdpProxy):
     on_tab_switch: Callable[[], None] | None = None
     on_tab_switched: Callable[[], None] | None = None
 
-    async def connect_agent(self, link: AgentLink) -> AgentConnection | None:
-        connection = await super().connect_agent(link)
+    async def connect_agent(self, link: AgentLink, client: str | None = None) -> AgentConnection | None:
+        connection = await super().connect_agent(link, client)
         if connection is not None:
             self.agent_seen = True
         return connection
@@ -1232,6 +1233,12 @@ class LiveGate:
         #: `agent_connected` has been put on the timeline, which happens once.
         self.agent_connected_at: float | None = None
         self._agent_connected_told = False
+        #: WHICH BROWSER TOOL (BSTATUS-API; part of #1030): what the runner
+        #: registered, as the worker forwarded it (`browser_tools`), and the
+        #: tool whose tagged connection sent the last command, by any proxy
+        #: this gate has run (cdpproxy `split_client`). Both None until known.
+        self.browser_tools: dict[str, Any] | None = None
+        self.tool_last_used: tuple[str, float] | None = None
         #: One relay device choice applied at a time. Latest wins: a choice
         #: still waiting when a newer one arrives is dropped (`_device_seq`),
         #: so a burst of switches cannot apply one after another in turn.
@@ -1273,7 +1280,7 @@ class LiveGate:
         """
         if not self.cfg.egress.proxy:
             return
-        self.egress = await self.deps.start_egress(self.cfg, self.record, self._egress_unavailable)
+        self.egress = await self.deps.start_egress(self.cfg, self._egress_record, self._egress_unavailable)
         port = getattr(self.egress, "port", None)
         if not isinstance(port, int) or port <= 0:
             raise SetupError("the egress forwarder is not listening; Chromium is not started without the proxy")
@@ -1319,6 +1326,26 @@ class LiveGate:
         self._agent_connected_told = True
         self._queue_action({"kind": "control", "event": "agent_connected"})
 
+    def _tool_used(self, tool: str, at: float) -> None:
+        """The CDP proxy's `on_tool`: a tagged tool sent a command (BSTATUS-API)."""
+        self.tool_last_used = (tool, at)
+        self._report_due.set()
+
+    def egress_report(self) -> dict[str, Any]:
+        """The report's `browser.egress`: the forwarder's state, or `off`."""
+        if not self.cfg.egress.proxy:
+            return egress_report(proxied=False, ok=True, error=None)
+        forwarder = self.egress
+        if forwarder is None:
+            return egress_report(proxied=True, ok=False, error=describe("forwarder_unreachable"))
+        ok, cause = forwarder.healthy()
+        return egress_report(proxied=True, ok=ok, error=None if ok else describe(cause or ""))
+
+    def browser_report(self) -> dict[str, Any]:
+        """The report's `browser` (report.py `browser_report`)."""
+        return browser_report(tools=self.browser_tools, last_used=self.tool_last_used,
+                              egress=self.egress_report())
+
     def agent_report(self) -> dict[str, Any]:
         """The report's `agent` (report.py `agent_report`)."""
         proxy = self.proxy
@@ -1351,6 +1378,7 @@ class LiveGate:
             on_action=self._queue_action,
             on_pointer=self._agent_pointer,
             on_agents=self._agents_changed,
+            on_tool=self._tool_used,
             wall=self._wall,
         )
         # A refused agent connection says when the gate takes control back.
@@ -1685,9 +1713,11 @@ class LiveGate:
             await self._report_due.wait()
             self._report_due.clear()
             try:
-                payload = encode_report(self.origin, self.device_reported, self.agent_report())
+                payload = encode_report(self.origin, self.device_reported, self.agent_report(),
+                                        self.browser_report())
             except ValueError:  # cannot happen within report.py's limits; never send a part
-                payload = encode_report(None, self.device_reported, self.agent_report())
+                payload = encode_report(None, self.device_reported, self.agent_report(),
+                                        self.browser_report())
             await tunnel.report(payload)
 
     # -- ctl.sock -------------------------------------------------------------
@@ -1709,7 +1739,23 @@ class LiveGate:
             return await self._need(self.devices).handle_ctl(args)
         if op == "egress_ticket":
             return await self.egress_ticket(args)
+        if op == browser_tools.CTL_OP:
+            return self.set_browser_tools(args)
         raise ValueError("not an operation of the gate")
+
+    def set_browser_tools(self, args: Mapping[str, Any]) -> dict[str, Any]:
+        """The worker's `browser_tools`: what the runner registered (BSTATUS-API).
+
+        Checked again here (`browser_tools.clean_state`): it came from a file
+        in the agent's reach. Reported on the next report; refused when it
+        does not hold together."""
+        state = browser_tools.clean_state(args)
+        if state is None:
+            raise ValueError("not a browser tool state")
+        if state != self.browser_tools:
+            self.browser_tools = state
+            self._report_due.set()
+        return {"browser_tools": "recorded"}
 
     # -- proxied egress (egress.py) ---------------------------------------------
 
@@ -1732,11 +1778,18 @@ class LiveGate:
             forwarder.fail(str(failed))
             return {"egress": "failed", "cause": forwarder.cause}
         forwarder.set_ticket(args.get("ticket"), args.get("expires_in"))
+        self._report_due.set()
         if not await forwarder.probe():
+            forwarder.unreachable()
             self.record("egress_refused", {"cause": "forwarder_unreachable"})
             self._egress_unavailable("forwarder_unreachable")
             return {"egress": "failed", "cause": "forwarder_unreachable"}
         return {"egress": "ready"}
+
+    def _egress_record(self, event: str, fields: Mapping[str, Any]) -> None:
+        """The forwarder's records, and a report: its state may have changed."""
+        self.record(event, fields)
+        self._report_due.set()
 
     def _egress_unavailable(self, cause: str) -> None:
         """Proxied egress is unavailable: put a page on screen that says why.

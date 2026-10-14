@@ -78,5 +78,28 @@
     "agent_connected_at": "2026-10-11T23:39:12+00:00",
     "agent_connections": 1,
     "first_frame_at": "2026-10-11T23:39:05+00:00"
+  },
+  "browser": {
+    "tool_selected": "auto",
+    "tools_available": [
+      "playwright",
+      "dev-browser",
+      "jev"
+    ],
+    "tool_last_used": {
+      "name": "dev-browser",
+      "at": "2026-10-11T23:41:30+00:00"
+    },
+    "jev": {
+      "enabled": true,
+      "reason": null,
+      "key_scope": "user"
+    },
+    "egress": {
+      "mode": "residential",
+      "country": "us",
+      "state": "ok",
+      "last_error": null
+    }
   }
 }

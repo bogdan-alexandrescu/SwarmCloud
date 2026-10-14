@@ -186,7 +186,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from .. import graphstage
+from .. import browser_tools, graphstage
 from ..children import git_shim_argv, search_shim_argv
 from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
@@ -300,6 +300,68 @@ LIVE_BROWSER_DEV_BROWSER_NOTE = (
     "`swarm-handoff wait` returns, run `dev-browser stop` before your next "
     "script, so it re-attaches to the pages as the person left them."
 )
+
+#: THE BROWSER TOOL (BSTATUS-API, contract request 77, owner decision
+#: 2026-10-14 "Picker on Submit, Auto by default"). `input.browser_tool` names
+#: one of `browser_tools.SELECTIONS`; `browser_tools.choose` says what that
+#: registers, and the note NAMES THE SELECTED TOOL FIRST, then the live
+#: browser's rules (`LIVE_BROWSER_NOTE`), then each registered tool's
+#: strength, in the choice's order. Playwright MCP is registered on every
+#: choice: alone for `playwright`, as the fallback for `dev-browser` and `jev`.
+#:
+#: jev-browser (JEV-IMAGE): the image's wrapper, off PATH, registered as an
+#: MCP server only when it is installed and a TypeSafe key is in this
+#: runner's environment (the key's delivery is lane JEV-RUNNER's).
+JEV_MCP_BIN = "/opt/swarm/jev-browser/bin/jev-browser-mcp"
+JEV_MCP_SERVER_NAME = "jev"
+JEV_KEY_ENV = "TYPESAFE_API_KEY"
+
+#: The first sentence of the live-browser note, per selection.
+BROWSER_TOOL_LEAD = {
+    "auto": (
+        "Browser tools for this task (auto, chosen at submission): every tool "
+        "available here -- pick the one that suits each step."
+    ),
+    "playwright": (
+        "Browser tool for this task (chosen at submission): Playwright, the "
+        "browser_* tools. Use only those."
+    ),
+    "dev-browser": (
+        "Browser tool for this task (chosen at submission): dev-browser. Use it "
+        "first; the browser_* tools are the fallback."
+    ),
+    "jev": (
+        "Browser tool for this task (chosen at submission): jev, the jev MCP "
+        "tools. Use them first; the browser_* tools are the fallback."
+    ),
+}
+
+#: Each tool's strength, appended in the choice's order.
+BROWSER_TOOL_STRENGTH = {
+    "playwright": (
+        "The browser_* tools (Playwright MCP) are best for step-by-step work: "
+        "read the page with browser_snapshot, then act on the element it names."
+    ),
+    "jev": (
+        "The jev tools (jev-browser MCP) are best for reading and judging a page "
+        "as a whole -- finding what matters on it, checking it looks right. They "
+        "send the page's text and element labels to TypeSafe (api.typesafe.ai) "
+        "to do so; do not use them on a page whose content must not leave "
+        "SwarmCloud."
+    ),
+}
+
+#: Said when `jev` was chosen and cannot run on this attempt.
+JEV_UNAVAILABLE_NOTE = {
+    browser_tools.NO_KEY: (
+        "jev was chosen for this task but no TypeSafe key is available to this "
+        "attempt, so it is not registered: use the browser_* tools."
+    ),
+    browser_tools.NOT_INSTALLED: (
+        "jev was chosen for this task but is not installed in this image, so it "
+        "is not registered: use the browser_* tools."
+    ),
+}
 
 #: Appended to `LIVE_BROWSER_NOTE` only when the search tool is offered
 #: (`SWARM_SEARCH` is set). Owner decision 2026-10-13, "Both: search tool +
@@ -461,13 +523,19 @@ def write_mcp_config(
     *,
     git_spool: str | None = None,
     search_spool: str | None = None,
+    jev: bool = False,
     graph_snapshot: str | None = None,
     graph_workdir: str | None = None,
 ) -> Path:
     """Write the CLI's `--mcp-config` and return it: Playwright MCP on the live
-    browser when `endpoint` is given, the `swarm-git` shim when `git_spool` is,
-    the `swarm-search` shim when `search_spool` is, `swarm-graph` when
+    browser when `endpoint` is given, and jev-browser beside it when `jev` is
+    (BSTATUS-API), the `swarm-git` shim when `git_spool` is, the
+    `swarm-search` shim when `search_spool` is, `swarm-graph` when
     `graph_snapshot` (the staged directory) is.
+
+    Playwright MCP connects with its client tag on the endpoint
+    (`browser_tools.tag_endpoint`), so the gate can say which tool drove the
+    browser last; jev's wrapper adds its own tag.
 
     Beside the settings file, in `work/` (never the checkout), mode 0600 and
     replaced rather than followed, for the same reasons (`_write_private`).
@@ -482,8 +550,12 @@ def write_mcp_config(
         servers[MCP_SERVER_NAME] = {
             "type": "stdio",
             "command": PLAYWRIGHT_MCP_BIN,
-            "args": ["--cdp-endpoint", endpoint],
+            "args": ["--cdp-endpoint", browser_tools.tag_endpoint(endpoint, "playwright")],
         }
+        if jev:
+            # No `env`: the wrapper reads SWARM_CDP_ENDPOINT and the key from
+            # the CLI's environment, so no key is ever written to this file.
+            servers[JEV_MCP_SERVER_NAME] = {"type": "stdio", "command": JEV_MCP_BIN, "args": []}
     if git_spool:
         command, *args = git_shim_argv(git_spool)
         servers[GIT_MCP_SERVER_NAME] = {"type": "stdio", "command": command, "args": args}
@@ -594,6 +666,19 @@ SPEC = CliAgentSpec(
 )
 
 
+def live_browser_note(choice: browser_tools.Choice, *, search: bool) -> str:
+    """The note an agent with the live browser is given: the selected tool
+    first, then the live browser's rules, then each tool's strength."""
+    parts = [BROWSER_TOOL_LEAD[choice.selected], LIVE_BROWSER_NOTE]
+    for tool in choice.tools:
+        parts.append(LIVE_BROWSER_DEV_BROWSER_NOTE if tool == "dev-browser" else BROWSER_TOOL_STRENGTH[tool])
+    if choice.selected == "jev" and not choice.jev_enabled and choice.jev_reason in JEV_UNAVAILABLE_NOTE:
+        parts.append(JEV_UNAVAILABLE_NOTE[choice.jev_reason])
+    if search:
+        parts.append(LIVE_BROWSER_SEARCH_NOTE)
+    return " ".join(parts)
+
+
 def body(ctx: RunnerContext) -> dict[str, Any]:
     extra: list[str] = []
     max_turns = ctx.payload.get("max_turns")
@@ -632,6 +717,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     if graph_snapshot and os.environ.get(graphstage.CONTEXT_ENV, "").strip():
         env[graphstage.CONTEXT_ENV] = os.environ[graphstage.CONTEXT_ENV].strip()
     live_endpoint = ""
+    jev = False
     browsers = os.environ.get(BROWSERS_PATH_ENV, "").strip()
     endpoint = os.environ.get(CDP_ENDPOINT_ENV, "").strip()
     prompt = ctx.payload.get("prompt")
@@ -663,9 +749,16 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
             env[DEV_BROWSER_CHROME_ENV] = DEV_BROWSER_CHROME
             env[DEV_BROWSER_SKIP_DOWNLOAD_ENV] = "1"
             live_endpoint = endpoint
-            note = f"{LIVE_BROWSER_NOTE} {LIVE_BROWSER_DEV_BROWSER_NOTE}"
-            if search_spool:
-                note = f"{note} {LIVE_BROWSER_SEARCH_NOTE}"
+            # The browser tool the task named (contract request 77), and what
+            # this attempt registers for it; the gate is told through the spool.
+            choice = browser_tools.choose(
+                ctx.payload.get("browser_tool"),
+                jev_installed=Path(JEV_MCP_BIN).is_file(),
+                jev_key=bool(os.environ.get(JEV_KEY_ENV, "").strip()),
+            )
+            jev = choice.jev_enabled
+            browser_tools.write_state(env.get(HANDOFF_ENV, ""), choice)
+            note = live_browser_note(choice, search=bool(search_spool))
         else:
             env[BROWSERS_PATH_ENV] = browsers
         # A new dict on the same context: `run_runner` holds this object.
@@ -676,6 +769,7 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
         mcp = write_mcp_config(
             Path(ctx.work_dir) / SETTINGS_DIR_NAME, live_endpoint or None,
             git_spool=git_spool or None, search_spool=search_spool or None,
+            jev=jev,
             graph_snapshot=graph_snapshot or None,
             graph_workdir=str(ctx.repo_dir) if graph_snapshot and ctx.repo_dir else None)
         extra += ["--mcp-config", str(mcp)]

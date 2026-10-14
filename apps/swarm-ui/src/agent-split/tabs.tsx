@@ -1,0 +1,355 @@
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+
+import { offersChildren } from '../AgentChildren'
+import type { TaskPane } from '../App'
+import { checkpointsSay, type CheckpointCount } from '../CheckpointsPane'
+import { questionCount } from '../QuestionsCard'
+import type { Task } from '../types'
+import { changesCount } from '../WorkflowChanges'
+import { Tabs, type TabDef } from '../components'
+
+// THE SPLIT'S TAB BAR (moved out of AgentSplit.tsx by SPEED-D4A, 2026-10-14,
+// unchanged): each tab's name, which tabs the agent offers with their counts,
+// and the bar that fits them, with More for the ones that do not.
+
+/** Each tab's name, which is also its address segment (QA12-17): `/agents/<tab>/<id>/<name>`. */
+export const PANE_LABELS: Readonly<Record<TaskPane, string>> = {
+  detail: 'Details',
+  browser: 'Browser',
+  logs: 'Logs',
+  changes: 'Changes',
+  children: 'Children',
+  attempts: 'Attempts',
+  artifacts: 'Artifacts',
+  checkpoints: 'Checkpoints',
+}
+
+/** One tab of the split: its pane, its name, its count and the count's reason, and its address. */
+export type PaneTab = { id: TaskPane; label: string; count: number | string | null; say: string | null; to: string }
+
+/**
+ * The tabs the agent offers, in their order, with their counts. Built from
+ * the split's own reads; nothing here reads anything.
+ */
+export function paneTabs({
+  task,
+  base,
+  hasBrowser,
+  sessionOpen,
+  childCount,
+  runs,
+  ckpt,
+  ckptCount,
+}: {
+  task: Task | null
+  base: string
+  hasBrowser: boolean
+  sessionOpen: boolean
+  childCount: number | null
+  runs: number | null
+  ckpt: CheckpointCount | null
+  ckptCount: number | string | null
+}): PaneTab[] {
+  return [
+    // THE QUESTIONS' COUNT (part of #1206): the agent's questions for its
+    // owner lead Details, so the tab says how many; no badge when none.
+    {
+      id: 'detail',
+      label: PANE_LABELS.detail,
+      count: questionCount(task) || null,
+      say: questionCount(task) > 0 ? `The agent asked you ${questionCount(task)} question(s); they are at the top of Details.` : null,
+      to: base,
+    },
+    // DETAILS, BROWSER, LOGS (the mockup, owner decision 2026-10-12): Browser
+    // sits second, and says LIVE while its session is open.
+    ...(hasBrowser
+      ? [
+          {
+            id: 'browser' as const,
+            label: PANE_LABELS.browser,
+            count: sessionOpen ? 'LIVE' : null,
+            say: sessionOpen ? 'The agent’s browser session is open.' : null,
+            to: `${base}/browser`,
+          },
+        ]
+      : []),
+    { id: 'logs', label: PANE_LABELS.logs, count: null, say: null, to: `${base}/logs` },
+    // THE COUNT IS THE FILE COUNT (`git.files`, DIFF4), and a dash with its
+    // reason where the summary does not say it -- never a 0 nobody measured.
+    { id: 'changes', label: PANE_LABELS.changes, ...changesCount(task), to: `${base}/changes` },
+    // CHILDREN HAS AN ADDRESS (U10a D36): `<agent>/children`, as every
+    // other pane has one, so the tab moves the URL and a link can open it.
+    ...(task !== null && offersChildren(task)
+      ? [
+          {
+            id: 'children' as const,
+            label: PANE_LABELS.children,
+            count: childCount,
+            say: childCount === null ? 'The children read has not answered, so their count is not known.' : null,
+            to: `${base}/children`,
+          },
+        ]
+      : []),
+    {
+      id: 'attempts',
+      label: PANE_LABELS.attempts,
+      count: runs,
+      say: task === null ? 'The task has not been read yet.' : null,
+      to: `${base}/attempts`,
+    },
+    {
+      id: 'artifacts',
+      label: PANE_LABELS.artifacts,
+      count: artifactCount(task),
+      say:
+        artifactCount(task) === null
+          ? 'Files are listed when an attempt ends: this task has no result summary yet, so the count is not known.'
+          : null,
+      to: `${base}/artifacts`,
+    },
+    {
+      id: 'checkpoints',
+      label: PANE_LABELS.checkpoints,
+      count: ckptCount,
+      say: checkpointsSay(ckpt),
+      to: `${base}/checkpoints`,
+    },
+  ]
+}
+
+/**
+ * WHICH TABS STAY ON THE BAR (QA12-18): every one when they fit; otherwise a
+ * leading run of them that fits beside More, and the open tab always, in its
+ * own place in the order. Nothing measured (`room` 0: not laid out) is
+ * everything fitting -- a bar is never emptied into More by a missing read.
+ *
+ * THE GAPS ARE PART OF THE BAR (QA14-UI, owner QA 2026-10-13): on a parked
+ * browser agent at 1440 the tabs summed to 529 in a 533 strip, and the six
+ * 2 px gaps between seven tabs made 541 -- `Artifacts` was cut under More
+ * and the strip scrolled. `gap` is the strip's own gap between two tabs.
+ */
+export function fitTabs(
+  keys: readonly string[],
+  widths: readonly number[],
+  room: number,
+  moreWidth: number,
+  current: string,
+  gap = 0,
+): string[] {
+  const total = widths.reduce((n, w) => n + w, 0) + gap * Math.max(0, keys.length - 1)
+  if (room <= 0 || total <= room) return [...keys]
+  const open = keys.indexOf(current)
+  const shown = new Set<string>(open === -1 ? [] : [current])
+  let used = open === -1 ? 0 : (widths[open] ?? 0)
+  for (let i = 0; i < keys.length; i++) {
+    if (i === open) continue
+    const w = (widths[i] ?? 0) + (shown.size > 0 ? gap : 0)
+    if (used + w > room - moreWidth) break
+    used += w
+    shown.add(keys[i]!)
+  }
+  return keys.filter((k) => shown.has(k))
+}
+
+/**
+ * THE TAB BAR FITS (QA12-18, live-browser QA p12): at 1440 with the list open
+ * the bar was cut at `C ›` -- eight tabs with counts in a column a third of
+ * the page wide. The tabs that do not fit go into More at the bar's end, and
+ * the open tab is never one of them. Measured, never guessed: each tab's width
+ * as drawn on the bar, with its count, and the box's width is the room.
+ * Measured on every draw (counts land a read later, WA-17) and on resize.
+ *
+ * THE TABS SAY WHEN THERE ARE MORE OF THEM (U10a D39, owner QA at 390px,
+ * 2026-10-04): on a phone the strip was cut at `Che…` and nothing said it
+ * scrolls. The strip still scrolls sideways (Q4) if it ever must; this marks
+ * which of its ends has more beyond it, `data-more="start end"`, and the
+ * sheet fades that edge with a chevron. Measured on scroll and on resize.
+ */
+export function AgTabsEdge({
+  tabs,
+  current,
+  onSelect,
+}: {
+  tabs: readonly TabDef[]
+  current: string
+  onSelect: (key: string) => void
+}) {
+  const box = useRef<HTMLDivElement>(null)
+  const [more, setMore] = useState('')
+  // The keys on the bar, or null for all of them.
+  const [shownKeys, setShownKeys] = useState<string | null>(null)
+  // Each tab's width as last drawn on the bar, keyed with its label and
+  // count so a count that lands is measured again; and More's own.
+  const widths = useRef(new Map<string, number>())
+  const moreWidth = useRef(0)
+  // The strip's gap, read once: it is the stylesheet's, and `getComputedStyle`
+  // on every fit -- which every strip mutation now runs -- held the panes'
+  // first reads back by seconds in jsdom (walk.agent, reads.dedup).
+  const gapPx = useRef<number | null>(null)
+  const onBar = shownKeys === null ? null : new Set(shownKeys.split('\n'))
+  const barTabs = onBar === null ? tabs : tabs.filter((t) => onBar.has(t.key))
+  const moreTabs = onBar === null ? [] : tabs.filter((t) => !onBar.has(t.key))
+  const sizeKey = (t: TabDef) => `${t.key}\t${t.label}\t${t.count ?? ''}`
+  const fit = useRef(() => {})
+  fit.current = () => {
+    const b = box.current
+    if (b === null) return
+    const strip = b.querySelector<HTMLElement>(':scope > .c-tabs')
+    const drawn = b.querySelectorAll<HTMLElement>(':scope > .c-tabs > [role="tab"]')
+    barTabs.forEach((t, i) => {
+      const w = drawn[i]?.offsetWidth
+      if (w === undefined) return
+      // A LABEL THAT CHANGED REPLACES ITS OLD WIDTH (QA14-UI): Browser
+      // losing LIVE is a narrower tab, and the wider one must not be the
+      // width it falls back to once it is in More.
+      for (const k of [...widths.current.keys()]) if (k.startsWith(`${t.key}\t`)) widths.current.delete(k)
+      widths.current.set(sizeKey(t), w)
+    })
+    // Nothing laid out (\`clientWidth\` 0) fits everything, so the gap is only read once there is a width to fit.
+    if (gapPx.current === null && strip !== null && b.clientWidth > 0) {
+      gapPx.current = parseFloat(getComputedStyle(strip).columnGap) || 0
+    }
+    const gap = gapPx.current ?? 0
+    const m = b.querySelector<HTMLElement>(':scope > .ag-tabs-more-host')
+    if (m !== null) moreWidth.current = m.offsetWidth
+    // A tab not drawn since its count changed keeps its last width (or its
+    // label's), and is measured again the first time it is back on the bar.
+    const last = (t: TabDef) =>
+      widths.current.get(sizeKey(t)) ??
+      [...widths.current].find(([k]) => k.startsWith(`${t.key}\t`))?.[1] ??
+      0
+    const shown = fitTabs(tabs.map((t) => t.key), tabs.map(last), b.clientWidth, moreWidth.current, current, gap)
+    const next = shown.length === tabs.length ? null : shown.join('\n')
+    setShownKeys((was) => (was === next ? was : next))
+  }
+  // Every draw is measured before it is painted; it settles in a draw or two
+  // because a fit is only set when it differs from the last.
+  useLayoutEffect(() => fit.current())
+  useEffect(() => {
+    const b = box.current
+    if (b === null) return
+    const measure = () => fit.current()
+    globalThis.addEventListener?.('resize', measure)
+    const seen = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    seen?.observe(b)
+    return () => {
+      globalThis.removeEventListener?.('resize', measure)
+      seen?.disconnect()
+    }
+  }, [])
+
+  // THE OPEN TAB IS ALWAYS IN VIEW (V148): on a phone the strip is one row
+  // that scrolls, so a tab chosen by address (`/changes`, `/checkpoints`) can
+  // sit past the edge. The STRIP is scrolled, never the page:
+  // `scrollIntoView` would move every scroller above it as well.
+  useEffect(() => {
+    const strip = box.current?.querySelector<HTMLElement>(':scope > .c-tabs')
+    const on = strip?.querySelector<HTMLElement>('[aria-selected="true"], [aria-current="page"]')
+    if (strip === null || strip === undefined || on === null || on === undefined) return
+    const s = strip.getBoundingClientRect()
+    const t = on.getBoundingClientRect()
+    if (t.left < s.left) strip.scrollLeft -= s.left - t.left
+    else if (t.right > s.right) strip.scrollLeft += t.right - s.right
+  }, [current])
+  useEffect(() => {
+    const strip = box.current?.querySelector<HTMLElement>(':scope > .c-tabs')
+    if (strip === null || strip === undefined) return
+    const measure = () => {
+      const over = strip.scrollWidth - strip.clientWidth
+      const at = strip.scrollLeft
+      setMore([over > 1 && at > 1 ? 'start' : '', over > 1 && at < over - 1 ? 'end' : ''].filter(Boolean).join(' '))
+    }
+    measure()
+    strip.addEventListener('scroll', measure, { passive: true })
+    globalThis.addEventListener?.('resize', measure)
+    const seen = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(measure)
+    seen?.observe(strip)
+    // THE TABS GROW AFTER THE STRIP IS MEASURED (live QA WA-17, 1000x800):
+    // the counts land a read later, the labels widen and the strip's own box
+    // does not change size, so the ResizeObserver never fired and the
+    // overlay's strip was cut at `Checkpo` with no `›`. A change to what the
+    // strip holds measures it again.
+    // A label or count that changed is fitted again too (QA14-UI).
+    const grew =
+      typeof MutationObserver === 'undefined'
+        ? null
+        : new MutationObserver(() => {
+            fit.current()
+            measure()
+          })
+    grew?.observe(strip, { childList: true, subtree: true, characterData: true })
+    return () => {
+      strip.removeEventListener('scroll', measure)
+      globalThis.removeEventListener?.('resize', measure)
+      seen?.disconnect()
+      grew?.disconnect()
+    }
+  }, [])
+  return (
+    <div className="ag-tabs-edge" ref={box} data-more={more || undefined}>
+      <Tabs className="ag-split-tabs" label="Agent panes" current={current} tabs={barTabs} onSelect={onSelect} />
+      {moreTabs.length > 0 && <MoreTabs tabs={moreTabs} onSelect={onSelect} />}
+    </div>
+  )
+}
+
+/**
+ * MORE: the tabs that did not fit, as a disclosure like `Menu`
+ * (components/Overlay.tsx) -- a labelled group of buttons, not an ARIA menu,
+ * which would promise arrow-key roving. Each says its count as the bar does.
+ * Escape and a press outside close it; choosing a tab opens it and closes.
+ */
+function MoreTabs({ tabs, onSelect }: { tabs: readonly TabDef[]; onSelect: (key: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const host = useRef<HTMLSpanElement>(null)
+  useEffect(() => {
+    if (!open) return
+    const away = (e: Event) => {
+      if (e.target instanceof Node && host.current?.contains(e.target)) return
+      setOpen(false)
+    }
+    document.addEventListener('pointerdown', away)
+    return () => document.removeEventListener('pointerdown', away)
+  }, [open])
+  return (
+    <span
+      className="c-menu-host ag-tabs-more-host"
+      ref={host}
+      onKeyDown={(e) => {
+        if (e.key === 'Escape' && open) {
+          e.stopPropagation()
+          setOpen(false)
+          host.current?.querySelector<HTMLButtonElement>('.ag-tabs-more')?.focus()
+        }
+      }}
+    >
+      <button type="button" className="ag-tabs-more" aria-expanded={open} onClick={() => setOpen((v) => !v)}>
+        More <em>{tabs.length}</em> <span aria-hidden="true">▾</span>
+      </button>
+      {open && (
+        <div className="c-menu ag-tabs-menu" role="group" aria-label="More agent panes">
+          {tabs.map((t) => (
+            <button
+              key={t.key}
+              type="button"
+              className="c-menu-item"
+              onClick={() => {
+                setOpen(false)
+                onSelect(t.key)
+              }}
+            >
+              <span className="c-tab-label">{t.label}</span>
+              {t.count !== undefined && <em title={t.why}>{t.count === null ? '—' : t.count}</em>}
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
+  )
+}
+
+/** The Artifacts tab's count: the manifest's files once a summary is written, else unknown. */
+function artifactCount(task: Task | null): number | null {
+  const a = (task?.result_summary as Record<string, unknown> | null | undefined)?.artifacts
+  return Array.isArray(a) ? a.length : null
+}

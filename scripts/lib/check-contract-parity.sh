@@ -1937,6 +1937,72 @@ else:
         emit("OK", "cloud_run_fallback_profiles",
              "names none of the live-browser profiles %s" % " ".join(live_profiles))
 
+# -- 16. the browser tool names (contract request 77, BSTATUS-API) --------
+# `claude-code-browser` declares `browser_tool` with four choices: auto and
+# three tools. Each tool name is restated where Python cannot import the
+# catalogue or must not: the worker module that maps a name to what is
+# registered (agent_worker/browser_tools.py `TOOLS`), the API models the
+# console reads (apps/swarm-api/swarm_api/live.py, `LiveToolUse.name` and
+# `LiveBrowserTool.tool_selected`), the client tag each wrapper puts on the
+# CDP endpoint (images/agent-runtime-browser/dev-browser and
+# jev-browser/bin/jev-browser-mcp), and the tag the runner gives Playwright
+# MCP (runners/claude_code.py). A name renamed in one place and not the
+# others is a tool the gate never attributes, or a choice the API serves and
+# the console cannot draw. The jev reasons are restated by swarm-api from
+# the worker module, and compared here too.
+# Parentheses in patterns are built from chr, for the reason section 13 gives.
+LP, RP = re.escape(chr(40)), re.escape(chr(41))
+declared_inputs = getattr(frozen_profiles.RUNNER_PROFILES.get("claude-code-browser"), "inputs", {}) or {}
+browser_tool = declared_inputs.get("browser_tool")
+if browser_tool is None:
+    emit("MISSING", "browser_tool choices",
+         "claude-code-browser declares no browser_tool input, so there is nothing "
+         "for the runner, the API or the wrappers to be compared against")
+else:
+    choices = tuple(browser_tool.choices)
+    tools = [c for c in choices if c != "auto"]
+    wrong = []
+    worker = TEXT.get("apps/agent-worker/agent_worker/browser_tools.py", "")
+    found = re.search(r"^TOOLS = " + LP + r"([^\n]*)" + RP + r"\s*$", worker, re.M)
+    worker_tools = re.findall(r"\"([^\"]+)\"", found.group(1)) if found else None
+    if worker_tools is None:
+        wrong.append("agent_worker/browser_tools.py no longer declares TOOLS as a one-line tuple")
+    elif worker_tools != tools:
+        wrong.append("agent_worker/browser_tools.py TOOLS is %s, the catalogue offers %s"
+                     % (worker_tools, tools))
+    reasons = dict(re.findall(r"^(NO_KEY|NOT_INSTALLED|NOT_SELECTED) = \"([a-z_]+)\"", worker, re.M))
+    api = TEXT.get("apps/swarm-api/swarm_api/live.py", "")
+    api_reasons = re.search(r"^JEV_REASONS: [^=]+= " + LP + r"([^\n]*)" + RP, api, re.M)
+    listed = re.findall(r"\"([^\"]+)\"", api_reasons.group(1)) if api_reasons else None
+    if len(reasons) != 3 or listed is None:
+        wrong.append("the jev reasons are no longer where this scan reads them")
+    elif sorted(reasons.values()) != sorted(listed):
+        wrong.append("swarm_api.live JEV_REASONS is %s, the worker sends %s"
+                     % (sorted(listed), sorted(reasons.values())))
+    for model, field, expected in (("LiveToolUse", "name", tools),
+                                   ("LiveBrowserTool", "tool_selected", list(choices))):
+        block = re.search(r"^class " + model + LP + r"_Wire" + RP + r":\n(.*?)\n\n\n", api, re.M | re.S)
+        literal = re.search(r"^    " + field + r": Literal\[([^\]]*)\]", block.group(1), re.M) if block else None
+        names = re.findall(r"\"([^\"]+)\"", literal.group(1)) if literal else None
+        if names != expected:
+            wrong.append("swarm_api.live %s.%s offers %s, the catalogue %s" % (model, field, names, expected))
+    for rel, tool in (("images/agent-runtime-browser/dev-browser", "dev-browser"),
+                      ("images/agent-runtime-browser/jev-browser/bin/jev-browser-mcp", "jev"),
+                      ("apps/agent-worker/agent_worker/runners/claude_code.py", "playwright")):
+        text = TEXT.get(rel, "")
+        tagged = ("/client/" + tool + chr(34)) in text or ("tag_endpoint" + chr(40) + "endpoint, \"" + tool + "\"") in text
+        if tool not in tools:
+            wrong.append("%s tags its connection %s, which the catalogue does not offer" % (rel, tool))
+        elif not tagged:
+            wrong.append("%s no longer tags its CDP connection as %s" % (rel, tool))
+    if wrong:
+        for line in wrong:
+            emit("DRIFT", "browser_tool names", line)
+    else:
+        emit("OK", "browser_tool names",
+             "the worker, the API models, the jev reasons and the three client tags "
+             "match the catalogue choices %s" % " ".join(choices))
+
 print("\n".join(REPORT))
 PY
 )"; then
