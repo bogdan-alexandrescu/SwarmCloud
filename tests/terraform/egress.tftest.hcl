@@ -13,7 +13,12 @@
 #     setting alike, and swarm-api carries no key reference while off;
 #   * the $150 pilot cap (owner decision Q3) becomes the byte cap swarm-egress
 #     enforces, at the conservative per-GB price;
-#   * every labelable resource carries managed-by=swarm-terraform.
+#   * every labelable resource carries managed-by=swarm-terraform;
+#   * enable_browser_egress with a swarm-egress digest in image_refs renders
+#     the manifest, and without one renders none and fails its check
+#     (EGRESS-BUILD: the release now builds that digest);
+#   * dev turns it on for u-bogdan's claude-code-browser only, US exit, the
+#     $150 cap (owner decision 2026-10-14), held against dev.tfvars' text.
 #
 # The infra root's setup is live.tftest.hcl's.
 
@@ -57,6 +62,8 @@ override_data {
 variables {
   project_id  = "saga-agents-staging"
   environment = "dev"
+  # Read by the dev run's assertions only (live.tftest.hcl does the same).
+  tf_root = "../../terraform/infra"
 
   spec_signature_mode      = "legacy"
   spec_legacy_cutover      = "2026-10-01T12:00:00Z"
@@ -262,4 +269,108 @@ run "the_switch_without_the_service_is_refused" {
   }
 
   expect_failures = [check.browser_egress_switch_needs_the_service]
+}
+
+# EGRESS-BUILD. The order egress.tf states: the image is built and its digest
+# is in image_refs (step 3) BEFORE enable_browser_egress (step 4). On without
+# a digest renders no manifest -- there is nothing kubernetes/apply.sh could
+# apply -- and fails the check that says so. The same map as the file's,
+# minus swarm-egress: a run's variables replace the whole map.
+run "on_without_a_swarm_egress_digest_renders_no_manifest_and_fails_its_check" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_browser_egress = true
+    image_refs = {
+      "swarm-api"             = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-api@sha256:1111111111111111111111111111111111111111111111111111111111111111"
+      "swarm-scheduler"       = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-scheduler@sha256:2222222222222222222222222222222222222222222222222222222222222222"
+      "swarm-quota-broker"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-quota-broker@sha256:3333333333333333333333333333333333333333333333333333333333333333"
+      "swarm-reconciler"      = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-reconciler@sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      "swarm-ui"              = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-ui@sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      "swarm-verify"          = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-verify@sha256:6666666666666666666666666666666666666666666666666666666666666666"
+      "swarm-live"            = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/swarm-live@sha256:7777777777777777777777777777777777777777777777777777777777777777"
+      "agent-runtime-base"    = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-base@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      "agent-runtime-browser" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-browser@sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "agent-runtime-indexer" = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/agent-runtime-indexer@sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    }
+  }
+
+  expect_failures = [check.browser_egress_has_an_image]
+
+  assert {
+    condition     = output.swarm_egress_manifest == null
+    error_message = "with no swarm-egress digest there is no manifest to apply, never one naming an empty image"
+  }
+}
+
+# dev, as committed (owner decision 2026-10-14): residential egress through
+# Bright Data, US exit, the $150/month cap, for u-bogdan's claude-code-browser
+# and nothing else. A terraform test cannot load a tfvars file into a run, so
+# the run sets dev's values and the first two assertions hold dev.tfvars' text
+# to them (live.tftest.hcl's "dev_turns_the_live_browser_on_end_to_end" does
+# the same). With the file's swarm-egress digest, the manifest renders.
+run "dev_turns_browser_egress_on_for_u_bogdans_live_browser_only" {
+  command = plan
+
+  module {
+    source = "../../terraform/infra"
+  }
+
+  variables {
+    enable_gke_autopilot  = true
+    enable_browser_egress = true
+    browser_egress = {
+      enabled  = true
+      tenants  = ["u-bogdan"]
+      profiles = ["claude-code-browser"]
+      country  = "us"
+    }
+  }
+
+  assert {
+    condition     = length(regexall("(?m)^enable_browser_egress\\s*=\\s*true\\b", file("${var.tf_root}/../environments/dev/dev.tfvars"))) == 1
+    error_message = "terraform/environments/dev/dev.tfvars sets enable_browser_egress = true (EGRESS-BUILD, owner decision 2026-10-14)"
+  }
+
+  assert {
+    # The block as dev.tfvars writes it, whitespace aside: exactly these four
+    # attributes, so a fifth (a raised cap, another tenant) fails here first.
+    condition = (
+      length(regexall("(?ms)^browser_egress\\s*=\\s*\\{\\s*enabled\\s*=\\s*true\\s+tenants\\s*=\\s*\\[\\s*\"u-bogdan\"\\s*\\]\\s+profiles\\s*=\\s*\\[\\s*\"claude-code-browser\"\\s*\\]\\s+country\\s*=\\s*\"us\"\\s*\\}", file("${var.tf_root}/../environments/dev/dev.tfvars"))) == 1
+    )
+    error_message = "terraform/environments/dev/dev.tfvars sets browser_egress = { enabled = true, tenants = [\"u-bogdan\"], profiles = [\"claude-code-browser\"], country = \"us\" } and nothing more"
+  }
+
+  assert {
+    condition = (
+      output.browser_egress.enabled && output.browser_egress.switch_on
+      && output.swarm_egress_manifest != null
+      && strcontains(output.swarm_egress_manifest, "swarm-egress@sha256:8888")
+    )
+    error_message = "dev renders swarm-egress deployed and switched on, with a manifest naming the release's digest"
+  }
+
+  assert {
+    condition = (
+      local.service_env["swarm-api"]["BROWSER_EGRESS_ENABLED"] == "true"
+      && local.service_env["swarm-api"]["BROWSER_EGRESS_TENANTS"] == "u-bogdan"
+      && local.service_env["swarm-api"]["BROWSER_EGRESS_PROFILES"] == "claude-code-browser"
+      && local.service_env["swarm-scheduler"]["BROWSER_EGRESS_TENANTS"] == "u-bogdan"
+      && local.service_env["swarm-scheduler"]["BROWSER_EGRESS_PROFILES"] == "claude-code-browser"
+      && join(",", local.egress_config.tenants) == "u-bogdan"
+      && local.egress_config.default_zone == "residential"
+      && local.egress_config.country == "us"
+    )
+    error_message = "dev proxies u-bogdan's claude-code-browser only, through the residential zone, US exit"
+  }
+
+  assert {
+    # $150 at the conservative $8/GB: the default, which dev does not raise.
+    condition     = local.egress_config.monthly_cap_bytes == 18750000000
+    error_message = "dev's monthly cap is the owner's $150 (18.75 GB at $8/GB)"
+  }
 }

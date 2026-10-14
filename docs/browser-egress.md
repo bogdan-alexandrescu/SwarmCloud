@@ -362,7 +362,7 @@ CLAUDE.md the build PRs get a review. These are the points that review checks.
   Workload Identity principal; not swarm-api, not the scheduler, not a tenant
   GSA). That is the same pattern as `swarm-live-key` in `terraform/infra/live.tf`.
   **The value is added only by `scripts/create-secrets.sh`**, through a new
-  `--browser-egress` slot that reads **stdin only**, as `--github-app` does. It
+  `--browser-egress` slot (built as `--egress-credential`, §9.3) that reads **stdin only**, as `--github-app` does. It
   is never in a tfvars file, an environment variable, a Job spec, a log or
   this repository, and the repository is public (CLAUDE.md, owner rule
   2026-09-25).
@@ -376,7 +376,7 @@ CLAUDE.md the build PRs get a review. These are the points that review checks.
   through `swarm_redaction`. A test pins that no record carries a field named
   after any of those.
 * **Rotation.** Change the vendor password, add a version with
-  `create-secrets.sh --browser-egress`, and `swarm-egress` picks it up. Open
+  `create-secrets.sh --egress-credential --stdin` (§9.3), and `swarm-egress` picks it up. Open
   CONNECTs finish, and new ones use the new password. No pod is involved.
 * **The attempt ticket** is short-lived (minutes, renewed by the worker), is
   bound to the attempt and generation, and is refused by `swarm-egress` once
@@ -813,30 +813,77 @@ browser attempt runs direct.
   vendor username, a ticket, the CONNECT host or the vendor host. Refusals
   also carry `X-Swarm-Egress-Refused: <cause>` so the gate can record why.
 
-### 9.3 Turning it on (the owner's steps; nothing here was applied)
+### 9.3 Turning it on (the owner's steps, and what the release now does)
 
-1. `make tf-plan tf-apply` as is. Both secret containers exist, nobody reads
-   the credential, and the switch is off.
-2. Add the ticket key, generated and never shown:
-   `openssl rand -hex 48 | tr -d '\n' | gcloud secrets versions add swarm-egress-key --project saga-agents-staging --data-file=-`
-3. Add the vendor credential **on stdin only**, as the JSON object
-   `apps/swarm-egress/swarm_egress/vendor.py` documents. Use one zone per
-   Bright Data zone and the vendor's TLS proxy endpoint if it offers one
-   (`"tls": true`, section 3.2). Run
-   `gcloud secrets versions add swarm-egress-credential --project saga-agents-staging --data-file=-`
-   and paste, or redirect from a file you then delete. A `create-secrets.sh`
-   slot for each of the two is not built: `scripts/` was outside this lane,
-   and the PR asks for it.
+Steps 1-3 were **done on 2026-10-14**, by the owner, outside the repository.
+
+1. **Done 2026-10-14.** The bootstrap apply of `egress.tf` ran. Both secret
+   containers exist with `managed-by=swarm-terraform`. Nobody reads the
+   credential, and the switch was off.
+2. **Done 2026-10-14.** `swarm-egress-key` has version 1, generated and never
+   shown. From now on, add a version with
+   `scripts/create-secrets.sh --egress-key`. It generates the key as
+   `--live-key` does: nothing is typed, read or printed.
+3. **Done 2026-10-14.** `swarm-egress-credential` has version 1, the JSON
+   object `apps/swarm-egress/swarm_egress/vendor.py` documents. From now on,
+   add a version with
+   `scripts/create-secrets.sh --egress-credential --stdin < credential.json`,
+   then delete the file. The value is read **on stdin only**. It is refused as
+   an argument (`--egress-credential VALUE` or `--egress-credential=VALUE`,
+   and the refusal does not repeat the value) and refused as `--from-file`.
+   Its outline is checked before anything is stored.
+
+   Both secrets already have an enabled version, and `swarm-egress` reads
+   `latest`, so either slot adds a version only after a **typed
+   confirmation**: the secret's own name. Pass it as
+   `--overwrite swarm-egress-credential` (or `--overwrite swarm-egress-key`),
+   or type it at the terminal. `SWARM_ASSUME_YES` does not count as a
+   confirmation. Neither slot ever creates a container, because terraform
+   owns them and their readers. `swarm-egress` re-reads both every 5 minutes
+   (`SECRET_POLL_SECONDS`), so a rotation does not restart it. swarm-api
+   resolves the key reference when an instance starts. Disable the old
+   version by hand once both run on the new one.
 4. In the Bright Data dashboard, set the sub-user's traffic limit to the
-   $150 budget. That limit is the hard stop.
-5. Build the `swarm-egress` image (`apps/swarm-egress/Dockerfile`) and put its
-   digest in `image_refs`. The release does not build it yet, because
-   `scripts/build-images.sh` `ALL_TARGETS` was outside this lane, and the PR
-   asks for it.
-6. Set `enable_browser_egress = true` and apply, then run
-   `kubernetes/apply.sh --swarm-system --confirm`.
-7. Only after EGRESS-GATE and EGRESS-DISPATCH have merged, name the operator's
-   tenant in `browser_egress.tenants` and set `enabled = true` (phase 1).
+   $150 budget. That limit is the hard stop. It is the owner's step, and this
+   repository cannot check it.
+5. **Built by EGRESS-BUILD: every release builds the image.**
+   `swarm-egress` (`apps/swarm-egress/Dockerfile`) is in `ALL_TARGETS` of
+   `scripts/build-images.sh` and `scripts/push-images.sh`, beside
+   `swarm-live`. The data path is the relay's:
+   * `build-images.sh` builds it. It is rebuilt whenever `apps/swarm-egress/`,
+     `apps/common/` or `apps/redaction/` changes, and by every build anyway,
+     because it upgrades OS packages.
+   * `push-images.sh` scans and promotes it into the promotion manifest.
+   * `scripts/lib/image-refs.sh --manifest` writes that manifest's digests into
+     `image_refs`, the variable `egress.tf` renders `swarm_egress_manifest`
+     from.
+6. **dev turns it on** in `terraform/environments/dev/dev.tfvars` (owner
+   decision 2026-10-14). The settings are `enable_browser_egress = true` and
+   `browser_egress = { enabled = true, tenants = ["u-bogdan"], profiles = ["claude-code-browser"], country = "us" }`.
+   That is residential egress through Bright Data, US exit, for the owner's
+   personal tenant's live browser only. The $150/month cap is the
+   `monthly_cap_usd` default, which comes to 18.75 GB at $8/GB.
+   `tests/terraform/egress.tftest.hcl` holds dev.tfvars to exactly these
+   values. The release's apply renders the manifest, and **the release's
+   `deploy` job rolls it**. The step is "roll swarm-egress to this release's
+   image" in `.github/workflows/release.yml`, and it runs right after "roll
+   the live relay to this release's image". It runs
+   `scripts/roll-egress.sh --tf-init --get-credentials --confirm`, which is
+   `scripts/roll-live-relay.sh --component egress`. That script uses the same
+   implementation as the relay's roll:
+   * it applies through `kubernetes/apply.sh --swarm-system --confirm`, which
+     applies the relay, swarm-system's policies and swarm-egress in one stream;
+   * it refuses the shared `agents-staging` cluster by the deny-list in
+     `scripts/lib/common.sh`, whether that cluster arrives by flag, by context
+     or by terraform's own output;
+   * it waits for `rollout status statefulset/swarm-egress`;
+   * it fails unless the pods run the rendered digest.
+
+   With `enable_browser_egress` off, the step is a notice. On with no
+   swarm-egress digest, it fails. Run by hand, the same command is
+   `scripts/roll-egress.sh --confirm`. `apply.sh` needs the relay's manifest
+   to apply anything in swarm-system, so swarm-egress rolls only where
+   `enable_live_browser` is on too, which it is in dev.
 
 **Stopping it.** Set `browser_egress.enabled = false` and apply. In an
 emergency, run
@@ -856,6 +903,30 @@ the Bright Data dashboard.
   measurement.
 * Whether Autopilot's default StorageClass serves the ledger's 1 GiB
   `ReadWriteOnce` claim in `swarm-system` has not been checked on the cluster.
+* **EGRESS-BUILD, as of 2026-10-14.** The build, promotion, `image_refs`
+  path and roll are proven offline only. The tests drive
+  `build-images.sh --affected-by`/`--inputs`, `image-refs.sh --manifest`,
+  `roll-egress.sh` against a fake cluster, terraform and gcloud,
+  `create-secrets.sh` against a fake gcloud, and `terraform test` with a mock
+  provider. Not yet observed:
+  * no release has built a `swarm-egress` image;
+  * no release has run the egress roll step. The `workflow:` commit that adds
+    it has to be pushed by the operator, because SwarmCloud lanes cannot push
+    `.github/workflows/`;
+  * no pod has started on swarm-autopilot;
+  * no CONNECT has gone out through Bright Data.
+
+  The first release after this merges is the first measurement.
+* **A plan that is not a deploy drops the digest.** `scripts/plan.sh` and
+  terraform.yml's plan pin `image_refs` from terraform's `image_refs` output
+  (`image-refs.sh --applied`). That output lists `local.deployed_images`
+  (`terraform/infra/locals.tf`), which adds `swarm-live` while the relay is on
+  but does not add `swarm-egress`. So outside a release, such a plan renders
+  `swarm_egress_manifest` as null and warns on the check
+  `browser_egress_has_an_image`. A release is unaffected, because it pins from
+  its promotion manifest. The fix is `egress_images` beside `live_images` in
+  `locals.tf`. It was outside this lane, which could only read
+  `terraform/infra`, and the PR asks for it.
 
 ## 10. As built: the gate side (lane EGRESS-GATE, 2026-10-14)
 
