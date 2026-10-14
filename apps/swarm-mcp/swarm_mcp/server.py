@@ -44,7 +44,7 @@ from urllib.parse import urlsplit
 
 from swarm_common.profiles import RESOURCE_CLASSES
 
-from . import checkout, compact, config, progress
+from . import checkout, compact, config, keys, progress
 from . import profiles as catalogue
 from . import workflows
 from .client import (
@@ -1738,6 +1738,55 @@ TOOLS: list[dict[str, Any]] = [
             "with its mode and last checks. `text` is what to show."
         ),
         "inputSchema": {"type": "object", "properties": {}},
+    },
+    # -- provider keys (KEYS-PLUGIN, docs/provider-keys.md) -----------------
+    #
+    # THE KEY NEVER PASSES THROUGH CLAUDE (owner, 2026-10-14): not as a tool
+    # argument, not in a reply. So there is no tool that SETS a key -- only
+    # status and a one-time link to the console form, where the person pastes
+    # it. Both schemas are enums and `additionalProperties: false`: no field a
+    # key fits in, and an argument not in the schema is refused unsent
+    # (`_refuse_unknown_arguments`). tests/unit/mcp/test_provider_keys_bridge.py.
+    {
+        "name": "swarm_keys",
+        "description": (
+            "Whether a TypeSafe key is set for YOU and for your selected tenant, "
+            "and which one a task you submit there would use (your own key wins "
+            "over the tenant's). Status only -- set, version, who set it and when; "
+            "never a key, its length or any part of it. `text` is what to show. "
+            "Read-only. To set a key, call swarm_key_set_link; never ask the person "
+            "for the key itself."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provider": {"type": "string", "enum": list(keys.PROVIDERS),
+                             "default": "typesafe"},
+            },
+        },
+    },
+    {
+        "name": "swarm_key_set_link",
+        "description": (
+            "A one-time console link where the person pastes their TypeSafe key "
+            "themselves: answers ONLY `url` and `expires_at` (ten minutes, one use, "
+            "valid only in their own console session). There is deliberately no "
+            "argument for the key: never ask for it, never accept it in chat. Give "
+            "the person the url and tell them to open it. scope `user` (default) is "
+            "their own key, which wins over the tenant's; `tenant` is the selected "
+            "tenant's key and needs an admin. In their own terminal, the sc CLI's "
+            "`key set` does the same at a hidden prompt; tell them, never run it."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "provider": {"type": "string", "enum": list(keys.PROVIDERS)},
+                "scope": {"type": "string", "enum": list(keys.SCOPES), "default": "user"},
+            },
+            "required": ["provider"],
+        },
     },
     # -- cluster state -----------------------------------------------------
     #
@@ -3913,6 +3962,17 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         # the cluster cannot be reached, from the copy, labelled
         # `catalogue_source` -- see `catalogue.served_catalogue`.
         return json.dumps(catalogue.served_catalogue(client), indent=2)
+
+    if name == "swarm_keys":
+        view = keys.key_status(client, args.get("provider", "typesafe"))
+        return json.dumps({**view, "text": keys.status_text(view)}, indent=2)
+
+    if name == "swarm_key_set_link":
+        # The url and its expiry, nothing else: `keys.key_set_link` copies
+        # those two fields, so not even the API's `path` reaches a transcript.
+        return json.dumps(
+            keys.key_set_link(client, args.get("provider"), args.get("scope", "user")), indent=2
+        )
 
     if name == "swarm_tenants":
         # Two GETs. A `tenant` setting the caller is not a member of comes back

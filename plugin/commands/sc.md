@@ -68,6 +68,14 @@ every later call reaches, so they are theirs to run. Tell them the command
 is granted each view by name, not `sc` as a whole, for exactly that reason, so
 running one of those would stop at a permission prompt anyway.
 
+If the arguments are `key set ...` or `keys set ...`, do **not** run them.
+They store a TypeSafe key, and the key never passes through this session: tell
+the operator to run `uv run sc key set typesafe` (`--tenant` for the tenant's
+key, `--stdin` to pipe it) in their own terminal, where it asks for the key at
+a hidden prompt and prints only `stored: version N` -- or use the `sc` skill's
+`keys set` verb, which hands them a one-time console link instead. Never ask
+for the key.
+
 Then read the output using the rules in the `sc` skill, which matter more than
 the numbers themselves:
 
