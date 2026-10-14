@@ -1,9 +1,9 @@
 # Browser egress: routing the live browser through a residential or ISP proxy
 
-**Status: the PLATFORM side is built and ships OFF** (lane EGRESS-SVC,
-2026-10-14; section 9 records what was built and how it differs from this
-design). The gate and Chromium side (EGRESS-GATE) and the dispatcher's label
-(EGRESS-DISPATCH) are not built, so nothing is proxied yet. Designed in lane
+**Status: the PLATFORM side and the GATE side are built and ship OFF** (lanes
+EGRESS-SVC and EGRESS-GATE, 2026-10-14; sections 9 and 10 record what was
+built and how it differs from this design). The dispatcher's label and
+environment (EGRESS-DISPATCH) are not built, so no pod is proxied yet. Designed in lane
 EGRESS-PROXY, owner decision 2026-10-13 (~20:40 PDT), part of #1030.
 
 ## 0. Why this exists
@@ -289,6 +289,9 @@ from one template per vendor. It is never built in the pod.
   tenant is switched off), the gate falls back to **direct for the whole
   attempt** and records `egress_direct` with the cause. The attempt always
   runs, and it is never proxied for part of its life.
+  **Superseded by the owner's decision Q7 (fail closed), as built in
+  section 10:** a browser the dispatcher marked proxied is never sent direct.
+  With no ticket every CONNECT is refused and the browser shows why.
 * **NetworkPolicy.** Today the tenant egress policy allows the internet minus
   every private range, so it **excludes `swarm-system`**. "Pod traffic is
   never covered by an ipBlock rule" (allow-egress.yaml). So the forwarder
@@ -726,10 +729,10 @@ The owner holds the Bright Data account, KYC and credential. The credential is s
 
 Built: `swarm-egress`, swarm-api's ticket route, the Terraform for the two
 secrets and their readers, the Kubernetes objects and both NetworkPolicies.
-**Not built:** the gate's local forwarder with its peer-uid check, the
-`egress_ticket` ctl op, the Chromium flags and policies, and the worker's
-renewal (EGRESS-GATE, after CONTROL-LAPSE, because both edit `livegate`). Also
-not built: the dispatcher's `swarm-egress: proxy` label, its environment and
+**Not built by this lane:** the gate's local forwarder with its peer-uid
+check, the `egress_ticket` ctl op, the Chromium flags and policies, and the
+worker's renewal (EGRESS-GATE, built since: section 10). Also not built: the
+dispatcher's `swarm-egress: proxy` label, its environment and
 bypass hosts, and the console's route line (EGRESS-DISPATCH). Until those
 land, no pod carries the label, so no pod can reach `swarm-egress`, and every
 browser attempt runs direct.
@@ -852,6 +855,84 @@ the Bright Data dashboard.
   measurement.
 * Whether Autopilot's default StorageClass serves the ledger's 1 GiB
   `ReadWriteOnce` claim in `swarm-system` has not been checked on the cluster.
+
+## 10. As built: the gate side (lane EGRESS-GATE, 2026-10-14)
+
+Built: the gate's local forwarder, the `egress_ticket` ctl operation, the
+Chromium launch flags, the worker's ticket client and its renewal, and what
+the agent and the live view are told when egress is unavailable. **Not
+built:** the dispatcher's side (EGRESS-DISPATCH), so no pod carries
+`SWARM_BROWSER_EGRESS=proxy` yet and every browser still runs direct, exactly
+as before this lane.
+
+### 10.1 What exists
+
+| Piece | Where | What it does |
+|---|---|---|
+| The switch, as the sidecar reads it | `livegate/egress.py` `EgressSettings` | `SWARM_BROWSER_EGRESS=proxy` turns it on; unset, empty or `direct` changes nothing. Any other value is a fatal setup error, so a typo never reads as direct. `SWARM_EGRESS_FORWARDER` (`host:port`, default `swarm-egress.swarm-system.svc.cluster.local:3128`) and `SWARM_EGRESS_BYPASS` (extra hosts, comma- or semicolon-separated) are optional. |
+| Chromium's flags | `livegate/__main__.py` `chromium_args` | With egress on: `--proxy-server=http://127.0.0.1:<P>`, `--proxy-bypass-list=<local>;github.com;*.github.com;*.githubusercontent.com;<extra>`, and `--force-webrtc-ip-handling-policy=disable_non_proxied_udp`. With egress on and no listening forwarder, the arguments cannot be rendered (`SetupError`), and `_launch` checks it a second time. A relaunch uses the same flags. |
+| The local forwarder | `livegate/egress.py` `LocalForwarder` | A CONNECT-only server on `127.0.0.1`, on an ephemeral port. It starts after Xvfb and **before** Chromium. It serves a connection only when the peer socket's owner in `/proc/net/tcp` is the gate's own uid (`peer_uid` otherwise). It forwards each CONNECT to swarm-egress with the ticket in the proxy authorization header, under the bearer scheme, and none of Chromium's headers, then relays the bytes and counts them. |
+| The ctl operation | `livegate/ctl.py` `OPS`, `LiveGate.egress_ticket` | `{"ticket", "expires_in"}` arms the forwarder, then probes swarm-egress with a TCP connect that sends no byte, and answers `ready` or `failed: forwarder_unreachable`. `{"failed": cause}` makes every CONNECT refused with that cause. On a gate whose egress is off, the operation is refused. |
+| The worker's client | `agent_worker/egress_ticket.py`, called from `handoff.HandoffPath` | Once the gate's slot is taken, the worker reads `status.egress.route`. If it is `proxy`, it asks `POST /v1/attempts/{id}/egress-ticket`, signed under `swarm-egress-ticket-request/v1`, before the agent exists, and hands the ticket to the gate. It renews the ticket when a third of its life is left, on the hand-off poll. A transient failure is retried with a backoff and changes nothing while the ticket in hand still works. A direct browser is never asked about egress. |
+| Status | `status.egress` | `{"route": "direct"}`, or `{"route": "proxy", "state": waiting/ready/expired/failed, "cause", "expires_at", "connects", "refused", "bytes_up", "bytes_down"}`. It never carries the ticket. |
+
+### 10.2 Fail closed, and who is told
+
+Chromium is never started without the proxy flag while egress is on. A
+forwarder that cannot listen is a fatal setup error, and the gate exits before
+any browser exists. Once Chromium is up, the forwarder refuses every CONNECT
+in each of these cases, and it never dials anything but swarm-egress:
+
+* `no_ticket`: the worker has not handed over a ticket yet;
+* `failed`: the worker reported why no ticket can be had. The causes are
+  `egress_off`, `egress_fenced`, `egress_unavailable`, `mint_refused`,
+  `mint_failed`, `no_attempt_key` and `worker_unprotected`;
+* `ticket_expired`: the ticket ran out and was not renewed;
+* `forwarder_unreachable`: swarm-egress does not answer;
+* any refusal from swarm-egress, recorded by its `X-Swarm-Egress-Refused`
+  cause.
+
+Chromium is answered 502 or 503, **never 407**, because a 407 would make it
+ask for a proxy password. Anything but CONNECT is answered 405, so a plain
+`http:` page never crosses a residential peer in clear. That is also why the
+`HttpsOnlyMode` policy of §2.3 is not added: the forwarder and swarm-egress
+(port 443 only) already refuse plain HTTP.
+
+**Who is told:**
+
+* **The live view.** The gate opens a page on screen (a `data:` URL, which
+  loads with no network) that names the cause and says SwarmCloud does not
+  fall back to direct. It does this once per cause.
+* **The agent.** When the failure is known before the agent starts, the
+  worker writes `$SWARM_HANDOFF/egress.md` and the claude-code runner appends
+  it to the prompt. Later failures rewrite the same file. The agent also sees
+  the page above when it reads the browser.
+* **The attempt's events.** A `live_browser_unavailable` mark with phase
+  `browser_egress` and the cause.
+
+### 10.3 What EGRESS-DISPATCH must set
+
+On the `display` container of a switched-on attempt, set
+`SWARM_BROWSER_EGRESS=proxy`, and set `SWARM_EGRESS_BYPASS` to the console's
+hostname plus `extra_bypass_hosts` (the same values `egress.tf` gives
+swarm-egress). On the pod, set the label `swarm-egress: "proxy"`, which is
+what `allow-egress-proxy.yaml` selects. That NetworkPolicy already opens TCP
+3128 to swarm-egress, and this lane did not change it.
+
+### 10.4 Not verified
+
+* No proxied browser has run on the cluster. The tests drive the real
+  forwarder against a recording upstream, and against the real swarm-egress
+  server with a fake vendor, all over loopback.
+* That the agent's uid differs from the `display` sidecar's uid in the
+  running pod. The peer-uid check rests on that, and it is set by the image
+  and the dispatcher, not here.
+* §8's open item, that a CDP-created browser context inherits
+  `--proxy-server`, is still not checked against a real Chromium. If it does
+  not, such a context would go direct. The CDP policy already refuses a
+  context that names its own proxy (`cdppolicy.py`, outside this lane).
+* That Chromium honours `--force-webrtc-ip-handling-policy` in the image's
+  Chrome for Testing build.
 
 ## Sources (read 2026-10-14)
 

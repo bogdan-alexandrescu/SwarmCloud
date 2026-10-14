@@ -25,7 +25,9 @@ and the agent had to export `SWARM_HANDOFF` itself (MEASURED 2026-10-13,
 task_1f28d5bfa5a14f618f83; LB-POLISH, part of #1030). On an attempt resumed
 after a hand-off park, the worker's summary of the earlier attempts'
 hand-offs, `$SWARM_HANDOFF/resumed.md`, follows the caller's prompt
-(`resume_summary`; RESUME-PROGRESS). Nothing else crosses. The credential is the tenant's secret, or a pool
+(`resume_summary`; RESUME-PROGRESS), and on an attempt whose proxied browser
+has no egress, `$SWARM_HANDOFF/egress.md` says so (`egress_notice`;
+EGRESS-GATE). Nothing else crosses. The credential is the tenant's secret, or a pool
 account's OAuth token when the attempt holds an account, and it is passed in
 exactly one variable: `ANTHROPIC_API_KEY` (metered API access) or
 `CLAUDE_CODE_OAUTH_TOKEN` (a Claude subscription token from
@@ -178,7 +180,7 @@ from ..gitmcp.server import SERVER_NAME as GIT_MCP_SERVER_NAME
 from ..gitmcp.server import SPOOL_ENV as GIT_SPOOL_ENV
 from ..searchmcp.server import SERVER_NAME as SEARCH_MCP_SERVER_NAME
 from ..searchmcp.server import SPOOL_ENV as SEARCH_SPOOL_ENV
-from ..handoff import AGENT_PASSTHROUGH_ENV, HANDOFF_ENV, RESUME_NAME
+from ..handoff import AGENT_PASSTHROUGH_ENV, EGRESS_NOTICE_NAME, HANDOFF_ENV, RESUME_NAME
 from .base import RunnerContext, run_runner
 from .cliagent import CliAgentSpec, agent_working_directory, run_cli_agent
 
@@ -333,6 +335,26 @@ def _write_private(path: Path, text: str) -> None:
 #: The most of the worker's resume summary a prompt carries. The worker
 #: bounds what it writes well under this; a larger file is not its.
 MAX_RESUME_BYTES = 16 * 1024
+
+
+def _spool_text(spool: str, name: str) -> str | None:
+    if not spool:
+        return None
+    path = Path(spool) / name
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_RESUME_BYTES:
+            return None
+        text = path.read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return text or None
+
+
+def egress_notice(spool: str) -> str | None:
+    """EGRESS-GATE: the worker's notice that this attempt's proxied browser has
+    no egress (`handoff.EGRESS_NOTICE_NAME`, written by `HandoffPath.prepare`
+    before this runner starts, and absent otherwise), or None."""
+    return _spool_text(spool, EGRESS_NOTICE_NAME)
 
 
 def resume_summary(spool: str) -> str | None:
@@ -592,6 +614,12 @@ def body(ctx: RunnerContext) -> dict[str, Any]:
     resumed = resume_summary(env.get(HANDOFF_ENV, ""))
     if resumed and isinstance(prompt, str) and prompt.strip():
         prompt = f"{prompt.rstrip()}\n\n{resumed}"
+        ctx.payload = {**ctx.payload, "prompt": prompt}
+    # A proxied browser with no egress (EGRESS-GATE): the agent is told before
+    # it tries, rather than reading connection errors.
+    stopped = egress_notice(env.get(HANDOFF_ENV, ""))
+    if stopped and isinstance(prompt, str) and prompt.strip():
+        prompt = f"{prompt.rstrip()}\n\n{stopped}"
         ctx.payload = {**ctx.payload, "prompt": prompt}
     if browsers:
         spec = dataclasses.replace(SPEC, path_prefix=(VENV_BIN,))

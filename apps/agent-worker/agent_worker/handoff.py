@@ -14,6 +14,8 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
       notes.md             the agent's: where it stopped, for the attempt after a park
       resumed.md           this worker's: what a resumed attempt is told (below)
       unavailable          this worker's: present when this attempt has no live path
+      egress.md            this worker's: present while the proxied browser has no
+                           egress (egress_ticket.py; the agent's prompt carries it)
       README.md            this worker's: the guide the agent reads
 
 WHY A SPOOL. As the child-task spool (`children.py`): no listener in the
@@ -85,6 +87,7 @@ from swarm_common.profiles import RUNNER_PROFILES, url_refusal
 from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
 from swarm_redaction import redact as redact_text
 
+from .egress_ticket import BrowserEgress
 from .errors import ExitCode
 from .hardening import PROTECTED
 
@@ -180,7 +183,13 @@ NO_LIVE_SESSION = "no_live_session"
 #: gate `wipe` at every attempt end; the closest faithful version on L3's
 #: channel is `end_control` with `wipe: true`, which the gate's handler must
 #: honour by closing Chromium and removing the profile. Reported on the PR.
-GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status"})
+GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status",
+                      "egress_ticket"})
+
+#: EGRESS-GATE: the agent's notice that its proxied browser has no egress
+#: (`egress_ticket.notice`), in the spool while that is so; the claude-code
+#: runner puts it in the prompt.
+EGRESS_NOTICE_NAME = "egress.md"
 
 #: The browser's start-up steps the gate dates in its `status` (`startup`, in
 #: epoch seconds), in order, for the console's progress bar (STARTUP-API,
@@ -563,6 +572,10 @@ class HandoffPath:
         self._tunnel_retry_at = 0.0
         self._tunnel_backoff = float(TUNNEL_RETRY_SECONDS)
         self._tunnel_ended = False
+        #: The proxied browser's egress ticket (EGRESS-GATE; egress_ticket.py),
+        #: and the note `setup` was given, for a failure found on a later poll.
+        self.egress = BrowserEgress(cfg, logger=logger, wall=wall)
+        self._note: Callable[[dict[str, Any]], Any] | None = None
 
     # -- what the lifecycle asks ---------------------------------------------
 
@@ -596,8 +609,11 @@ class HandoffPath:
         except (GateLost, ImportError, OSError) as exc:
             return self._refuse(note, GATE_UNAVAILABLE, type(exc).__name__)
         self.gate = gate
+        self._note = note
         if getattr(self._memory, "status", None) != PROTECTED:
             # §5.4.1: no tunnel ticket and no hand-off. The slot stays taken.
+            # No egress ticket either; a proxied browser fails closed.
+            self._egress_failed(note, self.egress.unavailable(gate, WORKER_UNPROTECTED))
             return self._refuse(note, WORKER_UNPROTECTED, "the worker's heap is not protected")
         key = getattr(self._children, "_key", None)
         api = getattr(self._children, "_api", None)
@@ -607,13 +623,18 @@ class HandoffPath:
                 or getattr(self._children, "unavailable", None)
                 or "no attempt key registered"
             )
+            self._egress_failed(note, self.egress.unavailable(gate, NO_ATTEMPT_KEY))
             return self._refuse(note, NO_ATTEMPT_KEY, str(why))
         try:
             self._open_tunnel(gate, key, api)
         except NoTunnelTicket as exc:
+            # The browser runs without a live view; its egress is set up all the same.
+            self._egress_failed(note, self.egress.start(gate, key, api))
             return self._refuse(note, NO_LIVE_SESSION, exc.code)
         except GateLost as exc:
             return self._refuse(note, GATE_UNAVAILABLE, type(exc).__name__)
+        # EGRESS-GATE: a proxied browser's first ticket, still before the agent exists.
+        self._egress_failed(note, self.egress.start(gate, key, api))
         self.unavailable = None
         self.log.info("live path open for this attempt")
 
@@ -650,6 +671,37 @@ class HandoffPath:
             gate.call("tunnel_ticket", {"ticket": ticket, "session_id": session_id})
         finally:
             ticket = None
+
+    def _egress_failed(self, note: Callable[[dict[str, Any]], Any] | None, cause: str | None) -> None:
+        """A proxied browser has no egress: say so on the attempt's events. Never raises."""
+        if cause is None or note is None:
+            return
+        try:
+            note({"phase": "browser_egress", "live_path": "egress_failed_closed",
+                  "reason": f"browser egress {cause}: pages do not load, and there is no direct fallback"})
+        except Exception:  # a note must never stop the attempt
+            pass
+
+    def _keep_egress(self, root: Path) -> None:
+        """Renew the egress ticket when due, and keep the agent's notice current."""
+        if self.gate is None or self._wiped:
+            return
+        key = getattr(self._children, "_key", None)
+        api = getattr(self._children, "_api", None)
+        self._egress_failed(self._note, self.egress.keep(self.gate, key, api))
+        self._write_egress_notice(root)
+
+    def _write_egress_notice(self, root: Path) -> None:
+        target = root / EGRESS_NOTICE_NAME
+        text = self.egress.notice()
+        if text is None:
+            target.unlink(missing_ok=True)
+            return
+        root.mkdir(parents=True, exist_ok=True)
+        tmp = root / f".{EGRESS_NOTICE_NAME}.tmp"
+        tmp.unlink(missing_ok=True)
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, target)
 
     def _keep_tunnel(self, status: Mapping[str, Any]) -> None:
         """Reopen the gate's tunnel when its `status` says it closed (§3.3, LB-R6). Never raises.
@@ -724,6 +776,9 @@ class HandoffPath:
         tmp.write_text(AGENT_GUIDE, encoding="utf-8")
         os.replace(tmp, guide)
         self._prepare_resume(root)
+        # Rewritten every attempt, as `unavailable` is: present only while
+        # THIS attempt's proxied browser has no egress.
+        self._write_egress_notice(root)
         env = {HANDOFF_ENV: str(root)}
         if self.offered:
             env.update(self._passthrough)
@@ -799,6 +854,10 @@ class HandoffPath:
         if not self.spooled:
             return None
         root = self.spool(work)
+        try:
+            self._keep_egress(root)
+        except Exception as exc:  # egress upkeep never crashes the attempt
+            self.log.warning("browser egress upkeep failed", error=type(exc).__name__)
         try:
             self._answer_devices(root)
             if self.active is None:
