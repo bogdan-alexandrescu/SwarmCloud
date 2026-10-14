@@ -102,6 +102,12 @@ env:
   REGION: ${{ vars.GCP_REGION }}
   TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
 
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud, deploy or
+# App credential runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# `runs-on` expression: a fork's pull request, or the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
+# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
   # -------------------------------------------------------------------------
   # What dev runs, and whether this run should judge it.

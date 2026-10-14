@@ -157,6 +157,12 @@ env:
   # runs of the same commit.
   TRIVY_VERSION: "0.74.0"
 
+# RUNNERS (owner decision 2026-10-14). A job that holds no cloud, deploy or
+# App credential runs on the self-hosted `bogdan-ci` VMs through the one guarded
+# `runs-on` expression: a fork's pull request, or the repo variable
+# SELF_HOSTED_CI set to `off` (the capacity escape hatch), sends it to
+# GitHub-hosted ubuntu-24.04 instead. Every job that stays hosted is listed,
+# with why, in tests/unit/scripts/test_fork_prs_off_self_hosted.py.
 jobs:
   # -------------------------------------------------------------------------
   # Gate. Nothing is built or applied until the cheap checks pass -- a release
@@ -180,7 +186,7 @@ jobs:
   # -------------------------------------------------------------------------
   verify:
     name: verify
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     if: github.event_name == 'workflow_dispatch'
     steps:
       - uses: actions/checkout@v5
@@ -232,7 +238,7 @@ jobs:
   # -------------------------------------------------------------------------
   plugin-tag:
     name: tag the plugin's bridge (sc-v<version>)
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [verify, build]
     # AFTER A PROVEN COMMIT. On a dispatch that is `verify`. On a push `verify`
     # is skipped (see its header) and the proof is `build`: it found CI's image
@@ -389,7 +395,7 @@ jobs:
   # -------------------------------------------------------------------------
   approval:
     name: approval (${{ github.event.inputs.environment || 'dev' }})
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [verify, build]
     # !cancelled(), not always(): it runs past a `build` that skip_build
     # skipped, and a cancelled run asks nobody to approve anything.
@@ -1000,7 +1006,7 @@ jobs:
   # -------------------------------------------------------------------------
   stale-approval:
     name: prod approval is from an earlier attempt
-    runs-on: ubuntu-24.04
+    runs-on: ${{ (vars.SELF_HOSTED_CI == 'off' || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target') && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-24.04' || fromJSON('["self-hosted","linux","x64","bogdan-ci"]') }}
     needs: [approval, promote, infrastructure, deploy]
     if: ${{ !cancelled() && github.event.inputs.environment == 'prod' && needs.approval.result == 'success' && needs.approval.outputs.attempt != github.run_attempt }}
     env:
