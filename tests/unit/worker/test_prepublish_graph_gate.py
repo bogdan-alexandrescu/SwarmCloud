@@ -47,6 +47,7 @@ from test_prepublish_gate import (
 )
 from test_publish_after_prepublish_rebase import _cloned
 from test_strategy_end_to_end import (  # noqa: F401 - fixtures are used by name
+    _the_agent_titles_its_pull_request,
     forge,
     local_urls,
     origin,
@@ -132,6 +133,10 @@ def test_a_changed_tsx_selects_its_vitest_file_through_the_graph(tmp_path):
     env = _env(tmp_path, _tools(tmp_path, ()))
     checks = _by_name(prepublish.select_checks(repo, ["apps/ui/src/Widget.tsx"], base=base,
                                                env=env, snapshot=_snap(tmp_path)))
+    # The graph's tests layer chose it (the sibling rule would also find this
+    # one; the graph is asked first and says why).
+    assert prepublish.select_tests(repo, ["apps/ui/src/Widget.tsx"], _snap(tmp_path)) == {
+        "apps/ui/src/Widget.test.tsx": "graph"}
     vitest = checks["vitest"]
     assert vitest.run is not None and vitest.files == ("apps/ui/src/Widget.test.tsx",)
     ran = prepublish.run_checks(repo, [vitest], env=env)
@@ -158,7 +163,7 @@ def test_a_failing_vitest_file_is_sent_to_the_agent_and_fixed(tmp_path):
     _node_bins(repo, "apps/ui", ("vitest",))
     _change(repo, "apps/ui/src/Widget.test.tsx", WIDGET_TEST + "// BAD\n")
     env = {**_env(tmp_path, _tools(tmp_path, ())), prepublish.CLONE_BASE_ENV: base}
-    turns = Turns(lambda: _change(repo, "apps/ui/src/Widget.test.tsx", WIDGET_TEST))
+    turns = Turns(lambda: _change(repo, "apps/ui/src/Widget.test.tsx", WIDGET_TEST + "// ok\n"))
     record = _gate(repo, tmp_path, env, turns).run()
     assert len(turns.prompts) == 1 and "## vitest" in turns.prompts[0]
     assert record["fix_turn"] is True and record["failed"] == []

@@ -514,6 +514,13 @@ PR_BODY_FILE = "pr-body.md"
 PREPUBLISH_SECTION_FILE = "prepublish-checks.md"
 PREPUBLISH_SECTION_HEADING = "## Pre-publish checks failed"
 PREPUBLISH_SECTION_MAX_CHARS = 20000
+#: The runner's advisory section (CTXQ-G; `prepublish.ADVISORY_SECTION_NAME`
+#: and `_HEADING`, held equal by tests/unit/worker/test_prepublish_graph_gate.py):
+#: test reach, the agent's self-check, what the graph selected. Appended for
+#: the reader; no merge path reads it, and it never marks the checks failed.
+PREPUBLISH_ADVISORY_FILE = "prepublish-advisory.md"
+PREPUBLISH_ADVISORY_HEADING = "## Advisory signals (not a gate)"
+PREPUBLISH_ADVISORY_MAX_CHARS = 10000
 #: One line, at most this many characters: GitHub's own title field is 256.
 PR_TITLE_MAX_CHARS = 256
 #: At most this many bytes of the agent's body, before the platform's block. A
@@ -4750,6 +4757,30 @@ class Worker:
         self.log.info("the lane was rebased before publishing; the publish diffs from "
                       "where it landed", onto=onto, base=base)
         return onto
+
+    def _prepublish_advisory(self) -> str:
+        """The runner's "Advisory signals (not a gate)" section, or "" (CTXQ-G).
+
+        Read, scrubbed and capped exactly like `_prepublish_section`, and only
+        when it carries the runner's heading, so no other file in the
+        artifacts folder reaches the pull request's body this way.
+        """
+        ws = self.ws
+        if ws is None:
+            return ""
+        path = ws.artifacts / PREPUBLISH_ADVISORY_FILE
+        try:
+            if path.is_symlink() or not path.is_file():
+                return ""
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        text = str(self._scrub(redact_text(text).text)).strip()
+        if not text.startswith(PREPUBLISH_ADVISORY_HEADING):
+            return ""
+        if len(text) > PREPUBLISH_ADVISORY_MAX_CHARS:
+            text = text[:PREPUBLISH_ADVISORY_MAX_CHARS].rstrip() + "\n\n_[cut by the worker]_"
+        return text
 
     def _prepublish_section(self) -> str:
         """The runner's "Pre-publish checks failed" section, or "" (SPEED-D1).
@@ -10848,6 +10879,11 @@ class Worker:
         if prepublish:
             generated = f"{prepublish}\n\n{generated}"
             out["prepublish_checks_failed"] = True
+        # WHAT THE GATE ADVISES (CTXQ-G): test reach and the self-check, for
+        # the reader. It sets nothing in `out` that a merge path reads.
+        advisory = self._prepublish_advisory()
+        if advisory:
+            generated = f"{generated}\n\n{advisory}"
         body = f"{agent_body}\n\n---\n\n{generated}" if agent_body else generated
         # The generated block quotes the step's prompt, which is anyone's
         # text too; the whole body is neutralised, so no part of what the
