@@ -1192,3 +1192,118 @@ def test_return_on_a_resumed_attempt_ends_the_episode_with_no_input(client, ldb)
         "returned", 0, 0)
     assert session_doc(ldb)["controller"] is None
     assert ldb.docs[f"tasks/{TASK}"]["human_wait"] is None
+
+
+# --------------------------------------------------------------------------
+# HANDOFF-POLICY (part of #1030): the hold extends while someone watches
+# --------------------------------------------------------------------------
+
+
+def _wait_opened_at(db, clock: Clock, *, unwatched: int = 60) -> dict[str, Any]:
+    """What `HandoffService.request` writes, at the service's clock."""
+    wait = {
+        "reason": "Sign in", "expect": "github.com", "requested_at": clock(),
+        "deadline": clock() + timedelta(seconds=unwatched), "controller": None,
+        "watched_at": None, "request_id": "signin-1", "attempt_id": ATTEMPT, "generation": 1,
+    }
+    db.docs[f"tasks/{TASK}"]["human_wait"] = wait
+    return wait
+
+
+def _service(db, clock: Clock, **settings: Any):
+    from swarm_api.live import LiveService
+    from swarm_api.store import Store
+
+    return LiveService(settings=api_settings(**{"live_key": LIVE_KEY, **settings}), db=db,
+                       store=Store(db), authenticator=None, now=clock)
+
+
+def _admission(user: str = "alice"):
+    from swarm_api.live import Admission
+
+    return Admission(email=f"{user}@saga.xyz", tenant_id="eng", task_id=TASK, session_id=SESSION,
+                     attempt_id=ATTEMPT, generation=1, ticket="t-" + secrets.token_hex(8))
+
+
+def _deadline(db) -> datetime:
+    return db.docs[f"tasks/{TASK}"]["human_wait"]["deadline"]
+
+
+def test_a_connected_viewer_extends_the_hold_and_the_extension_is_capped(ldb, live, clock):
+    """Owner decision 2026-10-13: 7 of 42 hand-offs expired AFTER the person
+    pressed "I'm ready" -- they were there, watching. While a viewer is
+    connected the hold keeps moving `human_unwatched_seconds` ahead of now, up
+    to `human_hold_max_seconds` (30 min) from the request."""
+    wait = _wait_opened_at(ldb, clock)
+    requested = wait["requested_at"]
+    service = _service(ldb, clock)
+    clock.advance(30)
+    assert service.watched(_admission()) is True
+    assert _deadline(ldb) == clock() + timedelta(seconds=60)
+    assert ldb.docs[f"tasks/{TASK}"]["human_wait"]["watched_at"] == clock()
+    # Watched past the old 10-minute hold, every 45 s, and never past the cap.
+    while clock() < requested + timedelta(minutes=29, seconds=30):
+        clock.advance(45)
+        service.watched(_admission())
+        assert clock() < _deadline(ldb) <= requested + timedelta(minutes=30)
+    assert _deadline(ldb) == requested + timedelta(minutes=30)
+    # Still RUNNING, still holding its lease: watching is not a park.
+    assert ldb.docs[f"tasks/{TASK}"]["state"] == "RUNNING"
+
+
+def test_a_viewer_does_not_revive_a_hold_that_already_ran_out(ldb, live, clock):
+    """The worker may already be parking: a deadline in the past is final."""
+    _wait_opened_at(ldb, clock)
+    before = _deadline(ldb)
+    clock.advance(61)
+    assert _service(ldb, clock).watched(_admission()) is False
+    assert _deadline(ldb) == before
+
+
+def test_watching_needs_an_open_hand_off_of_this_sessions_attempt(ldb, live, clock):
+    service = _service(ldb, clock)
+    assert service.watched(_admission()) is False  # nothing is waiting
+    wait = _wait_opened_at(ldb, clock)
+    wait["attempt_id"] = "att_other"
+    before = _deadline(ldb)
+    clock.advance(10)
+    assert service.watched(_admission()) is False
+    assert _deadline(ldb) == before
+
+
+def test_control_extends_the_hold_up_to_the_same_cap(client, ldb, live, clock):
+    wait = _wait_opened_at(ldb, clock)
+    requested = wait["requested_at"]
+    assert take(client, "alice").status_code == 200
+    assert _deadline(ldb) == clock() + timedelta(seconds=300)
+    for _ in range(40):
+        clock.advance(50)
+        assert client.post(f"/v1/tasks/{TASK}/live/control/renew",
+                           headers=bearer("alice")).status_code in (200, 409)
+        service = _service(ldb, clock)
+        service.record_input(_admission(), keys=1, pointers=0)
+        assert _deadline(ldb) <= requested + timedelta(minutes=30)
+    assert _deadline(ldb) == requested + timedelta(minutes=30)
+
+
+def test_the_viewer_socket_extends_the_hold_while_it_is_open(
+    ldb, people, groups, objects, clock, relay
+):
+    """The wiring: swarm-api's proxied viewer socket is the "someone is
+    watching" signal, written on join and every `live_watch_flush_seconds`."""
+    client = make_client(ldb, people, groups, objects, clock, relay,
+                         live_watch_flush_seconds=0.02)
+    attempt = Attempt()
+    seed_running(client, ldb, attempt)
+    assert open_session(client, attempt).status_code == 201
+    _wait_opened_at(ldb, clock)
+    before = _deadline(ldb)
+    clock.advance(20)
+    ticket = ticket_for(client, "alice")
+    with client.websocket_connect(SOCKET, headers=bearer("alice")) as ws:
+        ws.send_text(json.dumps({"ticket": ticket}))
+        assert ws.receive_json()["type"] == "status"
+        assert wait_until(lambda: _deadline(ldb) == clock() + timedelta(seconds=60))
+        assert _deadline(ldb) > before
+        clock.advance(30)
+        assert wait_until(lambda: _deadline(ldb) == clock() + timedelta(seconds=60))
