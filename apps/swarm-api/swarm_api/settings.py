@@ -497,6 +497,27 @@ class ApiSettings:
     live_watch_flush_seconds: float = 15.0
     #: §5.10: hand-off requests per attempt, read by `swarm_api.handoff`.
     max_handoffs_per_attempt: int = 3
+    #: BROWSER EGRESS (docs/browser-egress.md §2.2, §6.1; lane EGRESS-SVC).
+    #: `swarm-egress-key`, from SWARM_EGRESS_KEY by Secret Manager reference
+    #: (terraform/infra/egress.tf): what the attempt egress ticket is MAC'd
+    #: with. Empty means no proxied browsing: the route answers 503 and the
+    #: worker runs the attempt direct. Excluded from the repr, as `live_key` is.
+    egress_key: str = field(default="", repr=False)
+    #: An egress ticket's life. The worker renews it before it expires, so
+    #: this is how long a ticket copied out of a compromised renderer keeps
+    #: working; clamped to swarm-egress's MAX_TICKET_SECONDS (900).
+    egress_ticket_seconds: int = 600
+    #: THE SWITCH (§6.1), off by default: a ticket is minted only when this is
+    #: on AND the task's tenant is in `browser_egress_tenants` AND its profile
+    #: is in `browser_egress_profiles` and is a live-browser profile. Rendered
+    #: by egress.tf from var.browser_egress, the same setting swarm-egress
+    #: reads, so the two cannot disagree about who is switched on.
+    browser_egress_enabled: bool = False
+    browser_egress_tenants: tuple[str, ...] = ()
+    browser_egress_profiles: tuple[str, ...] = ("claude-code-browser",)
+    #: The exit country (owner decision Q6: US), returned with the ticket so
+    #: the take-control dialog can say where sites see the browser from.
+    browser_egress_country: str = "us"
 
     # --- stopping a cancelled task's execution (#627) ----------------------
     #: Whether the cancel routes ask for the execution to be stopped
@@ -681,4 +702,11 @@ class ApiSettings:
             human_hold_max_seconds=_int("HUMAN_HOLD_MAX_SECONDS", 1800),
             live_watch_flush_seconds=float(_int("LIVE_WATCH_FLUSH_SECONDS", 15)),
             max_handoffs_per_attempt=_int("MAX_HANDOFFS_PER_ATTEMPT", 3),
+            egress_key=os.environ.get("SWARM_EGRESS_KEY", "").strip(),
+            egress_ticket_seconds=_int("EGRESS_TICKET_SECONDS", 600),
+            browser_egress_enabled=_bool("BROWSER_EGRESS_ENABLED", False),
+            browser_egress_tenants=_csv("BROWSER_EGRESS_TENANTS"),
+            browser_egress_profiles=_csv("BROWSER_EGRESS_PROFILES", "claude-code-browser"),
+            browser_egress_country=os.environ.get("BROWSER_EGRESS_COUNTRY", "us").strip().lower()
+            or "us",
         )

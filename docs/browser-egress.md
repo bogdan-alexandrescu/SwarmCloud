@@ -1,8 +1,10 @@
 # Browser egress: routing the live browser through a residential or ISP proxy
 
-**Status: DESIGN, for the owner to approve. Nothing here is built.** No code,
-no Terraform, no vendor account. Lane EGRESS-PROXY, owner decision 2026-10-13
-(~20:40 PDT), part of #1030.
+**Status: the PLATFORM side is built and ships OFF** (lane EGRESS-SVC,
+2026-10-14; section 9 records what was built and how it differs from this
+design). The gate and Chromium side (EGRESS-GATE) and the dispatcher's label
+(EGRESS-DISPATCH) are not built, so nothing is proxied yet. Designed in lane
+EGRESS-PROXY, owner decision 2026-10-13 (~20:40 PDT), part of #1030.
 
 ## 0. Why this exists
 
@@ -716,6 +718,137 @@ The owner holds the Bright Data account, KYC and credential. The credential is s
 * **The 26-task analysis itself** is on the operator's laptop. This document
   relies on its quoted finding (3 of 3 searches answered 429 `/sorry`) and on
   the NAT configuration measured in the 2026-10-09 incident, not on a re-run.
+
+## 9. As built: the platform side (lane EGRESS-SVC, 2026-10-14)
+
+Built: `swarm-egress`, swarm-api's ticket route, the Terraform for the two
+secrets and their readers, the Kubernetes objects and both NetworkPolicies.
+**Not built:** the gate's local forwarder with its peer-uid check, the
+`egress_ticket` ctl op, the Chromium flags and policies, and the worker's
+renewal (EGRESS-GATE, after CONTROL-LAPSE, because both edit `livegate`). Also
+not built: the dispatcher's `swarm-egress: proxy` label, its environment and
+bypass hosts, and the console's route line (EGRESS-DISPATCH). Until those
+land, no pod carries the label, so no pod can reach `swarm-egress`, and every
+browser attempt runs direct.
+
+### 9.1 What exists
+
+| Piece | Where | What it does |
+|---|---|---|
+| The forwarder | `apps/swarm-egress/swarm_egress/` | An asyncio CONNECT server on TCP **3128** (`main.PORT`). It checks the attempt ticket, the switch, the tenant, the target and the caps, then sends `CONNECT` to the vendor with the credential and the sticky US session, and from there only relays bytes. |
+| Ticket mint | `POST /v1/attempts/{attempt_id}/egress-ticket` (`apps/swarm-api/swarm_api/egress.py`, route in `routes/live.py`) | The worker asks with the attempt-key signature `/live-session` uses, under its own purpose (`swarm-egress-ticket-request/v1`). The fence is the same as `/live-session`'s. It answers `201 {route: "proxy", ticket, expires_in, country}`, or `409 egress_off` naming `disabled`, `tenant_off` or `profile_off`, after which the attempt runs direct. |
+| Secrets and IAM | `terraform/infra/egress.tf` | `swarm-egress-credential`: its **only** reader is `swarm-egress`'s KSA principal, and it has none while the service is off. `swarm-egress-key`: read by swarm-api and swarm-egress. Both are containers with no version. Every labelable resource carries `managed-by=swarm-terraform`. |
+| The switch | `var.browser_egress` in `egress.tf` | One setting, rendered into swarm-api's `BROWSER_EGRESS_*` and into swarm-egress's ConfigMap, so the two cannot disagree. Defaults: `enabled = false`, `tenants = []`, `country = "us"`, `profiles = ["claude-code-browser"]`. |
+| Manifest | `kubernetes/swarm-system/swarm-egress.yaml` → `terraform output -raw swarm_egress_manifest` | A one-replica StatefulSet with `requests == limits`, the restricted pod standard, no RBAC and no API token. It gets its secrets as version references only. It has a ConfigMap and a 1 GiB volume for the byte ledger. `kubernetes/apply.sh --swarm-system` applies it after the relay when terraform renders it. |
+| Network | the manifest's `swarm-egress-ingress`; `kubernetes/network-policies/allow-egress-proxy.yaml` (in `render.py` `TENANT_FILES`) | TCP 3128 is open only from a pod labelled `swarm-egress: proxy` in a tenant namespace, as one peer with both selectors. Nothing else can reach it. |
+
+### 9.2 Decisions taken in the build
+
+* **The credential's secret is `swarm-egress-credential`**, not the
+  `swarm-browser-egress` that section 3.1 proposed.
+  `tests/terraform/browser_logins.tftest.hcl` reserves the `-browser-`
+  spelling anywhere under `terraform/` for browser-session grants, which are
+  made in one file it watches.
+* **The ticket.** Its claims are exactly `tenant_id`, `task_id`, `attempt_id`,
+  `generation`, `exp` and `nonce`. It is MAC'd under `swarm-egress-key` with
+  its own domain (`swarm-egress-ticket/v1`), so it never verifies as a live
+  ticket. It lives 600 s by default, clamped by swarm-api to 60-900 s, and
+  swarm-egress refuses a ticket claiming more than 900 s. It is presented in
+  the CONNECT's proxy authorization header, under the bearer scheme, on every
+  CONNECT, and is not one-use.
+* **Fencing in swarm-egress.** swarm-egress has no Firestore, as the relay has
+  none (live.tf says why). It fences in memory instead. It remembers the
+  highest generation it has seen per task, refuses a lower one with
+  `stale_generation`, and closes the older generation's open tunnels as soon
+  as a newer one appears. A tunnel also closes when its ticket expires, so a
+  stale worker that swarm-api will not renew loses egress within one ticket
+  life. A restart forgets the highest generation. After a restart the bound
+  is the ticket's expiry and swarm-api's refusal to renew.
+* **The caps.** The ledger counts bytes in both directions, for the platform
+  and the tenant per UTC month and for the attempt. It is written atomically
+  to the StatefulSet's volume every second and on shutdown. A ledger file
+  that exists and cannot be read **fails closed** (`ledger_unreadable`). The
+  owner's $150 (Q3) becomes bytes at **$8.00/GB**, Bright Data's residential
+  list price and the highest figure in section 1.2, which gives 18.75 GB. With
+  that price, swarm-egress stops at or before the budget whatever the
+  contracted price is. Lower `price_per_gb_usd` once an invoice shows the real
+  one. The attempt cap is 1 GB (section 3.5). Reaching a cap closes the
+  tunnel mid-stream and refuses the next CONNECT. **The vendor's own sub-user
+  traffic limit, set to $150, is still the hard stop**, and it is set in the
+  vendor dashboard, not here.
+* **The kill switch fails closed (Q7).** swarm-egress re-reads its mounted
+  ConfigMap every 5 s, and the kubelet refreshes it in about a minute.
+  `enabled = false`, a tenant removed from the list, a missing file, a file
+  that is not JSON, or an unknown key each refuse every new CONNECT
+  (`egress_disabled` or `tenant_off`) and close the open tunnels at the next
+  supervisor tick (1 s). It never falls back to direct.
+* **What swarm-egress refuses to carry** (`policy.py`). It refuses the bypass
+  list (`github.com`, `.github.com`, `.githubusercontent.com`, the console's
+  hostname, and `extra_bypass_hosts`), because those go direct and a CONNECT
+  for one means the gate forgot `--proxy-bypass-list`. It refuses
+  single-label names, cluster and LAN suffixes, and addresses that are not
+  public. It refuses **any port but 443**. `chromium_bypass_list()` renders
+  the same list in Chromium's syntax for EGRESS-GATE.
+* **Zones.** The owner trials both ISP and residential (Q2), so the credential
+  secret holds named Bright Data zones, and `browser_egress.default_zone` and
+  `tenant_zones` pick one per tenant. On a zone marked `sticky: "task"` (ISP)
+  the session id hashes `(tenant, task)`, so a resumed attempt keeps its
+  address. On `sticky: "attempt"` (residential) it hashes
+  `(tenant, task, attempt)`. Either way the id is an opaque 24-hex-character
+  string, and two tenants never share one.
+* **Its own egress is not pinned.** swarm-egress can reach the internet as
+  swarm-system can today, and its code dials only the host in the credential.
+  GKE FQDN network policy is still not evaluated on this cluster (section 8).
+* **Logs** are JSON event lines (`egress_refused`, `egress_tunnel_open`,
+  `egress_tunnel_closed`, `egress_vendor_refused`, `egress_config`, ...)
+  carrying causes, statuses, ids and byte counts, and each line goes through
+  `swarm_redaction`. A test fails if any record carries the password, the
+  vendor username, a ticket, the CONNECT host or the vendor host. Refusals
+  also carry `X-Swarm-Egress-Refused: <cause>` so the gate can record why.
+
+### 9.3 Turning it on (the owner's steps; nothing here was applied)
+
+1. `make tf-plan tf-apply` as is. Both secret containers exist, nobody reads
+   the credential, and the switch is off.
+2. Add the ticket key, generated and never shown:
+   `openssl rand -hex 48 | tr -d '\n' | gcloud secrets versions add swarm-egress-key --project saga-agents-staging --data-file=-`
+3. Add the vendor credential **on stdin only**, as the JSON object
+   `apps/swarm-egress/swarm_egress/vendor.py` documents. Use one zone per
+   Bright Data zone and the vendor's TLS proxy endpoint if it offers one
+   (`"tls": true`, section 3.2). Run
+   `gcloud secrets versions add swarm-egress-credential --project saga-agents-staging --data-file=-`
+   and paste, or redirect from a file you then delete. A `create-secrets.sh`
+   slot for each of the two is not built: `scripts/` was outside this lane,
+   and the PR asks for it.
+4. In the Bright Data dashboard, set the sub-user's traffic limit to the
+   $150 budget. That limit is the hard stop.
+5. Build the `swarm-egress` image (`apps/swarm-egress/Dockerfile`) and put its
+   digest in `image_refs`. The release does not build it yet, because
+   `scripts/build-images.sh` `ALL_TARGETS` was outside this lane, and the PR
+   asks for it.
+6. Set `enable_browser_egress = true` and apply, then run
+   `kubernetes/apply.sh --swarm-system --confirm`.
+7. Only after EGRESS-GATE and EGRESS-DISPATCH have merged, name the operator's
+   tenant in `browser_egress.tenants` and set `enabled = true` (phase 1).
+
+**Stopping it.** Set `browser_egress.enabled = false` and apply. In an
+emergency, run
+`kubectl --context <swarm-autopilot> -n swarm-system edit configmap swarm-egress-config`
+and set `"enabled": false`; it takes effect within about a minute, with no
+restart. If our code is wrong, disable the sub-user or rotate its password in
+the Bright Data dashboard.
+
+### 9.4 Not verified
+
+* No `swarm-egress` has run against Bright Data or on the cluster. The tests
+  drive the real server against a fake vendor over loopback.
+* Bright Data's username form (`<zone user>-country-us-session-<id>`) and
+  whether it offers a TLS proxy endpoint have not been checked against a live
+  zone.
+* The resource size (250m CPU, 512 MiB) is a starting point, not a
+  measurement.
+* Whether Autopilot's default StorageClass serves the ledger's 1 GiB
+  `ReadWriteOnce` claim in `swarm-system` has not been checked on the cluster.
 
 ## Sources (read 2026-10-14)
 

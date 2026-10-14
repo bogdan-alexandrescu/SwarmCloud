@@ -902,7 +902,10 @@ def test_no_route_takes_a_ticket_in_its_url(client):
     from swarm_api.routes import live as live_routes
 
     for route in live_routes.router.routes:
-        assert "ticket" not in route.path_format.replace("/live/ticket", "")
+        # Two routes MINT a ticket into their response body and are named for
+        # it; neither takes one in its URL (the parameter check below).
+        minted = route.path_format.replace("/live/ticket", "").replace("/egress-ticket", "")
+        assert "ticket" not in minted
         dependant = getattr(route, "dependant", None)
         if dependant is not None:
             for param in dependant.query_params + dependant.path_params:

@@ -61,6 +61,7 @@ from starlette.websockets import WebSocketDisconnect, WebSocketState
 from ..auth import AuthContext, require_continuation_route
 from ..children import PROOF_HEADER, TIMESTAMP_HEADER, ChildService, parse_body
 from ..deps import AppContext, current_auth, get_context, submission_scope, tenant_scope
+from ..egress import EgressService
 from ..errors import ApiError, NotFound, ValidationFailed
 from ..live import (
     Admission,
@@ -236,6 +237,37 @@ async def open_live_session(
     if not created:
         response.status_code = status.HTTP_200_OK
     return answer
+
+
+@router.post("/attempts/{attempt_id}/egress-ticket", status_code=status.HTTP_201_CREATED)
+async def mint_egress_ticket(
+    attempt_id: str,
+    request: Request,
+    authorization: str | None = Header(default=None, alias="Authorization"),
+    serverless_authorization: str | None = Header(
+        default=None, alias="X-Serverless-Authorization"
+    ),
+    proof: str | None = Header(default=None, alias=PROOF_HEADER),
+    timestamp: str | None = Header(default=None, alias=TIMESTAMP_HEADER),
+    ctx: AppContext = Depends(get_context),
+    children: ChildService = Depends(child_service),
+) -> dict:
+    """WORKER ONLY: the attempt egress ticket the gate presents to swarm-egress
+    on every CONNECT (docs/browser-egress.md §2.2, §2.5), under the same proof
+    and fence as `/live-session`. 409 `egress_off` when the platform, the
+    tenant or the profile is not switched on: the attempt then runs direct."""
+    raw = await request.body()
+    service = EgressService(settings=ctx.settings, db=ctx.db, children=children, now=ctx.now)
+    return await run_in_threadpool(
+        lambda: service.mint(
+            serverless_authorization or authorization,
+            attempt_id,
+            raw,
+            path=request.url.path,
+            proof=proof,
+            timestamp=timestamp,
+        )
+    )
 
 
 # --------------------------------------------------------------------------
