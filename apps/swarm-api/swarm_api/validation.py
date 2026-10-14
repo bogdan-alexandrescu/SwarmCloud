@@ -1002,6 +1002,12 @@ HUMAN_HANDOFFS_METADATA_KEY = "human_handoffs"
 #: set it would turn a park into a free re-queue.
 HUMAN_RETURNED_METADATA_KEY = "human_returned"
 
+#: The pull requests a workflow's root step waits for before it may start
+#: (`after`, lane SPEED-D3, `swarm_api.prgate`): written by `submit_workflow`
+#: from the spec's `after` and then only by the wake tick. A caller who set
+#: it would start a held workflow early or hold one nobody asked to.
+AFTER_PRS_METADATA_KEY = "after_prs"
+
 #: Every key inside `task.metadata` this service writes and a caller may not,
 #: in the order a refusal names them. One tuple, checked by one function, so a
 #: caller who sent several is told about all of them in one 422 rather than one
@@ -1025,6 +1031,7 @@ RESERVED_METADATA_KEYS = (
     START_PROBLEM_METADATA_KEY,
     OWNER_ANSWERS_METADATA_KEY,
     FORGE_SOURCE_METADATA_KEY,
+    AFTER_PRS_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -1727,6 +1734,12 @@ _RESERVED_BECAUSE = {
         f"metadata.{FORGE_SOURCE_METADATA_KEY} is reserved: it says whose GitHub "
         "credential a service submission runs with, written only by submission. "
         "Drop the key from metadata."
+    ),
+    AFTER_PRS_METADATA_KEY: (
+        f"metadata.{AFTER_PRS_METADATA_KEY} is reserved: it records the pull "
+        "requests a workflow waits for, written from the spec's `after` and then "
+        "only by the platform's wake tick. Name them in `after` instead, e.g. "
+        '"after": {"pr": 41}.'
     ),
 }
 

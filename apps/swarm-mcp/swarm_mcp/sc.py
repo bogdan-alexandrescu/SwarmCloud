@@ -744,6 +744,20 @@ def _label_of(envelope: dict[str, Any]) -> str | None:
     return None
 
 
+def pull_request_wait(workflow: dict[str, Any]) -> str | None:
+    """"waiting for PR #41 to merge", or why it will not start; None otherwise.
+
+    The API's sentence (`workflow.after_pull_requests.text`, SPEED-D3), read
+    only while the workflow waits for its `after` pull requests or after one
+    closed unmerged. A released wait says nothing: its steps say the rest.
+    """
+    wait = workflow.get("after_pull_requests")
+    if not isinstance(wait, dict) or wait.get("state") not in ("waiting", "closed"):
+        return None
+    text = wait.get("text")
+    return text if isinstance(text, str) and text else None
+
+
 def _running_entry(workflow: dict[str, Any], now: datetime) -> dict[str, Any]:
     created = render.parse_time(workflow.get("created_at"))
     entry: dict[str, Any] = {
@@ -755,6 +769,7 @@ def _running_entry(workflow: dict[str, Any], now: datetime) -> dict[str, Any]:
         "age_seconds": max(0, int((now - created).total_seconds())) if created else None,
         "steps_total": len(workflow.get("steps") or []),
         "current_steps": None,
+        "waiting_for": pull_request_wait(workflow),
     }
     return with_console(entry, workflow)
 
@@ -771,6 +786,7 @@ def _read_detail(client: SwarmClient, entry: dict[str, Any]) -> dict[str, Any]:
     workflow = envelope["workflow"]
     if workflow.get("state"):
         entry["state"] = workflow["state"]
+    entry["waiting_for"] = pull_request_wait(workflow)
     entry["label"] = _label_of(envelope)
     # The spec's short name, when it gave one: what /sc attach --all titles
     # each workflow's run with (`workflows.title_name`).
@@ -1145,6 +1161,8 @@ def cmd_workflows(client: SwarmClient, args, out) -> int:
             f"{_age_text(entry.get('age_seconds'))}"
         )
         lines.append(f"    now: {_steps_text(entry)}")
+        if entry.get("waiting_for"):
+            lines.append(f"    {entry['waiting_for']}")
         if entry.get("console"):
             lines.append(f"    console: {entry['console']}")
         # Each unfinished step on its own line, with the link the API served

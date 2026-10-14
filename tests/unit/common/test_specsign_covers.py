@@ -149,6 +149,9 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: questions (TASK-ANSWERS), written by swarm-api after the attempt asked them.
 #: And whose GitHub credential a service submission runs with (INDEX-CRED): a
 #: label only swarm-api's codec reads, beside the signed `forge_credential`.
+#: And the pull requests a workflow waits for (`after`, SPEED-D3): rewritten
+#: by swarm-api's wake tick while the step is parked, read by the scheduler
+#: and swarm-api, acted on by no worker.
 UNSIGNED_PLATFORM_KEYS = {
     "schedule",
     "human_wait_resumes",
@@ -164,11 +167,13 @@ UNSIGNED_PLATFORM_KEYS = {
     "start_problem",
     "owner_answers",
     "forge_credential_source",
+    "after_prs",
 }
 
 
 def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
     from swarm_api.validation import (
+        AFTER_PRS_METADATA_KEY,
         CHILD_AWAIT_RESUMES_METADATA_KEY,
         CHILD_CASCADE_METADATA_KEY,
         CHILD_REQUEST_ID_METADATA_KEY,
@@ -203,6 +208,7 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         START_PROBLEM_METADATA_KEY,
         OWNER_ANSWERS_METADATA_KEY,
         FORGE_SOURCE_METADATA_KEY,
+        AFTER_PRS_METADATA_KEY,
     } == UNSIGNED_PLATFORM_KEYS
 
 

@@ -333,6 +333,9 @@ def test_every_service_written_key_is_reserved_in_one_place():
         "owner_answers",
         # Whose GitHub credential a service submission runs with (INDEX-CRED).
         "forge_credential_source",
+        # The pull requests a workflow waits for, and the tick's reading of
+        # them (`after`, SPEED-D3).
+        "after_prs",
     )
 
 
