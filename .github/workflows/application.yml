@@ -887,12 +887,26 @@ jobs:
         # fails instead. This relaxes the restriction on this job's VM only,
         # which GitHub discards when the job ends. Guarded, so an image that
         # does not have the setting simply skips the step.
+        #
+        # ON THE bogdan-ci RUNNERS (PR 1184) the job runs as the image's
+        # `runner` user, and in run 38267927535 all four shards stopped here on
+        # `sudo: a password is required`. The image now grants that user
+        # passwordless sudo (sagaxyz/ai-studio deploy/ci-runners/vm/
+        # provision-image.sh, as GitHub's own image does), and `sudo -n` makes
+        # an image without it fail HERE, by name, instead of waiting on a
+        # password prompt. A knob already at 0 needs no sudo at all.
         run: |
+          set -euo pipefail
           knob=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
-          if [ -e "$knob" ]; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          else
+          if [ ! -e "$knob" ]; then
             echo "no $knob on this image; nothing to relax"
+          elif [ "$(cat "$knob")" = 0 ]; then
+            echo "$knob is already 0 on this runner; nothing to relax"
+          elif sudo -n true 2>/dev/null; then
+            sudo -n sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          else
+            echo "::error::$knob is $(cat "$knob") and user $(id -un) on runner ${RUNNER_NAME:-?} has no passwordless sudo to relax it; the real-kill reap test (tests/unit/worker/test_procman_reap.py) cannot run here"
+            exit 1
           fi
 
       - name: pick this shard's test files
