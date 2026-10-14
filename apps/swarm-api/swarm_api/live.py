@@ -96,7 +96,14 @@ from .childkey import AttemptTuple, verify_proof
 from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
 from .codec import event_to_firestore
 from .errors import ApiError, NotFound, ValidationFailed
-from .handoff import LIVE_AUDIT, control_owner, resolution_writes
+from .handoff import (
+    HUMAN_HOLD_MAX_SECONDS,
+    HUMAN_UNWATCHED_SECONDS,
+    LIVE_AUDIT,
+    control_owner,
+    extended_deadline,
+    resolution_writes,
+)
 from .objects import ObjectAbsent, ObjectUnreadable
 from .store import ATTEMPTS, EVENTS, LEASES, TASKS, Store
 
@@ -1569,19 +1576,55 @@ class LiveService:
 
     def _extended_deadline(self, plan: _Plan, idle: int) -> datetime | None:
         """§4.3: control moves the hold's deadline to min(now + idle, the
-        attempt's own deadline), and never earlier than it already was."""
+        request + `human_hold_max_seconds`, the attempt's own deadline), and
+        never earlier than it already was."""
         wait = plan.wait
         if wait is None:
             return None
-        current = wait.get("deadline")
-        target = plan.now + timedelta(seconds=idle)
-        started = plan.task.get("started_at")
-        timeout = plan.task.get("timeout_seconds")
-        if isinstance(started, datetime) and isinstance(timeout, int):
-            target = min(target, started + timedelta(seconds=timeout))
-        if isinstance(current, datetime):
-            target = max(current, target)
-        return target
+        return extended_deadline(
+            plan.now, plan.task, wait, seconds=idle,
+            max_seconds=int(self._s("human_hold_max_seconds", HUMAN_HOLD_MAX_SECONDS)))
+
+    def watched(self, admission: Admission) -> bool:
+        """HANDOFF-POLICY: a viewer is connected to this session, so the open
+        hand-off's hold moves to now + `human_unwatched_seconds`, capped at
+        the request + `human_hold_max_seconds` and the attempt's deadline
+        (§4.3). Called by the viewer socket on join and every
+        `live_watch_flush_seconds`; the worker reads the deadline on its poll.
+
+        True when the deadline was written. False, writing nothing, when no
+        hand-off of this session's attempt is open, the session is not this
+        socket's open one, or the hold has already run out: an expired hold is
+        never revived, because the worker may already be parking on it.
+        A cheap read first, so a socket on a task nobody asked for help on
+        costs no transaction."""
+        snap = self._db.collection(TASKS).document(admission.task_id).get()
+        task = snap.to_dict() if snap.exists else None
+        if not task or not isinstance(task.get("human_wait"), dict):
+            return False
+        unwatched = int(self._s("human_unwatched_seconds", HUMAN_UNWATCHED_SECONDS))
+        cap = int(self._s("human_hold_max_seconds", HUMAN_HOLD_MAX_SECONDS))
+
+        def change(plan: _Plan) -> bool:
+            wait = plan.wait
+            if (
+                wait is None
+                or plan.state.get("id") != admission.session_id
+                or plan.state.get("generation") != admission.generation
+                or wait.get("attempt_id") != plan.state.get("attempt_id")
+            ):
+                return False
+            deadline = extended_deadline(plan.now, plan.task, wait, seconds=unwatched,
+                                         max_seconds=cap, revive=False)
+            if deadline is None:
+                return False
+            plan.task_update["human_wait"] = {**wait, "deadline": deadline,
+                                              "watched_at": plan.now}
+            return True
+
+        _, moved = self._transact(admission.tenant_id, admission.task_id, change,
+                                  session_id=admission.session_id)
+        return bool(moved)
 
     def _controller_change(self, tenant_id: str, task_id: str, email: str,
                            submitted_by: str | None, change: Callable[[_Plan, dict], None]
