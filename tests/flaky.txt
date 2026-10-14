@@ -1,0 +1,18 @@
+# The flaky-test quarantine (docs/ci.md, "Flaky tests and the quarantine").
+#
+# A test listed here still runs on every pull request, in the unit job's
+# `quarantined unit tests` step, which reports and never fails the gate. It
+# leaves the gating run until its issue is fixed; the fix removes its line.
+#
+# The operator edits this file, never CI. scripts/flaky-report.sh prints
+# candidates: a job that failed and then passed at the same commit.
+#
+# One test per line, three whitespace-separated fields:
+#   <pytest node id from the repository root>   #<issue>   <YYYY-MM-DD added>
+# e.g.
+#   tests/unit/worker/test_example.py::test_it_settles   #1234   2026-10-14
+# tests/unit/scripts/test_flaky_quarantine.py fails when an entry here names a
+# test that does not exist.
+#
+# Empty on 2026-10-14: the two unit tests measured flaking that day were fixed
+# at their cause in the same change that added this list.
