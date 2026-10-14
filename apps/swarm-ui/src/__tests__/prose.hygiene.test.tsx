@@ -19,7 +19,7 @@ import { render } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
 
 import APP from '../App.tsx?raw'
-import SPLIT from '../AgentSplit.tsx?raw'
+import SPLIT from '../agent-split/tabs.tsx?raw'
 import STYLES from '../styles.css?raw'
 import { HelpCard } from '../HelpCard'
 import { LivenessBadge } from '../Liveness'

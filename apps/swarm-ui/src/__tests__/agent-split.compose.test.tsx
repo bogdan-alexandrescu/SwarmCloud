@@ -36,6 +36,7 @@ const split = await import('../AgentSplit')
 const tabs = await import('../agent-split/tabs')
 const head = await import('../agent-split/head')
 const divider = await import('../agent-split/divider')
+const group = await import('../agent-split/group')
 const { resetListSnap } = await import('../listSnap')
 
 const ID = 'task_0123456789abcdef0123'
@@ -121,5 +122,6 @@ describe('AgentSplit keeps its exported API, re-exported from the panels', () =>
     expect(split.AgHeadMeta).toBe(head.AgHeadMeta)
     expect(split.holdPageScroll).toBe(divider.holdPageScroll)
     expect(split.HOLD_SCROLL_MS).toBe(divider.HOLD_SCROLL_MS)
+    expect(split.agentTabOf).toBe(group.agentTabOf)
   })
 })
