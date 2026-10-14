@@ -480,7 +480,7 @@ def test_a_failed_build_is_reported_and_never_rebuilt(tmp_path, if_absent):
     assert not [e for e in events if e["event"] == "download"]
     summary = _last_line(proc)
     assert "failed" in summary and "failure" in summary, summary
-    assert f"/actions/runs/103/job/" in summary, f"the last line does not link the failed job: {summary!r}"
+    assert "/actions/runs/103/job/" in summary, f"the last line does not link the failed job: {summary!r}"
 
 
 def cancelled_before_it_started(run_id: int) -> dict:

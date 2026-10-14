@@ -7,11 +7,9 @@ produced, reports what it used and gives the slot back -- in that order.
 
 from __future__ import annotations
 
-import json
 import threading
 import time
 
-import pytest
 from fakes import FakeSecretClient
 
 from agent_worker.errors import ExitCode

@@ -328,7 +328,7 @@ def test_the_form_treats_an_unread_contract_as_unread_and_not_as_permission():
     assert "return null" in contract.group(0), (
         "requiredInputKeys must return null for an API that did not say, not []"
     )
-    send = _send_body()
+    _send_body()  # still raises if SubmitWorkflow.tsx loses either slice
     # WHERE the null is handled moved; THAT it is handled has not. The ternary
     # used to sit in `send`; it is now the first line of `missingRequired`
     # (Submit.tsx), which both screens call -- so the rule is stated once
