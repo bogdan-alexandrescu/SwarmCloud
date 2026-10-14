@@ -326,9 +326,11 @@ def test_the_declaring_profiles_and_no_declaration_names_execution_detail():
     ], declaring
     # claude-code-review is claude-code under its own Job (contract request 36);
     # indexer is claude-code on the indexer image (contract request 48), and
-    # claude-code-browser on the browser image (contract request 67).
-    for name in ("claude-code", "claude-code-browser", "claude-code-review", "codex", "indexer"):
+    # claude-code-browser on the browser image (contract request 67), which
+    # also declares the live browser's tool by name (contract request 77).
+    for name in ("claude-code", "claude-code-review", "codex", "indexer"):
         assert set(_declared(name)) == {"issue"}, (name, _declared(name))
+    assert set(_declared("claude-code-browser")) == {"issue", "browser_tool"}
     for name in RUNNER_PROFILES:
         named = set(_declared(name)) & set(_NEVER)
         if name == "generic":
