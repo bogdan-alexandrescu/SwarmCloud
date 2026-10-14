@@ -112,7 +112,9 @@
 #   lib/common.sh, lib/ci-built-images.sh, application.yml); there is no
 #   ancestor record, or it cannot be trusted; a reused digest is older than
 #   BUILD_REUSE_MAX_AGE_DAYS (default 7), so base-image patches arrive; the
-#   working tree is dirty; --full-build; or the environment is prod.
+#   working tree is dirty; --full-build; or the environment is prod. An image
+#   whose Dockerfile upgrades OS packages is also rebuilt, on its own, by every
+#   build and every release (APT_REFRESH, below).
 #
 # Usage: scripts/build-images.sh [TARGET...] [--tag SHA] [--parallel N]
 #                                [--create-repo] [--async] [--digests-only]
@@ -483,6 +485,81 @@ target_build_args() {
   esac
 }
 
+# THE OS-PACKAGE LAYER IS REBUILT BY EVERY BUILD AND EVERY RELEASE (owner
+# decision 2026-10-14, "force a fresh apt layer", then "every release").
+# Releases 38535875750 (2c7bbea5) and 38540997006 (cc6353d0) refused
+# workspace-apply over curl/libcurl4t64 8.14.1-2+deb13u5 (CVE-2026-8286, HIGH,
+# fixed in +deb13u7). Its Dockerfile already runs `apt-get upgrade`; the image
+# was simply never BUILT again. No input of it had changed, so main's
+# incremental build re-tagged the digest made from 346f2725 on 2026-10-13 --
+# before Debian shipped the fix -- and the release's reuse check, which
+# compares inputs only, promoted it to the scan. A pinned base plus `apt-get
+# upgrade` is only as fresh as the moment the RUN ran, and nothing in the tree
+# changes when Debian publishes a fix.
+#
+# So APT_REFRESH names THIS build: the commit and the GitHub run (id and
+# attempt), or the commit and the time outside Actions. Every image whose
+# recipe upgrades OS packages (upgrades_os_packages, read from its Dockerfile,
+# never listed here) is built with --build-arg APT_REFRESH=<it>, which its
+# apt RUN line names so no layer cache can serve an older upgrade, and the
+# manifest records it as the image's `apt_refresh`. plan_incremental, and so
+# the release's reuse check, reuses such a digest only when its recorded
+# apt_refresh IS this build's, which a new run never matches: every main build
+# and every release rebuilds them, and the images built FROM them (build_after).
+# An image that upgrades nothing (swarm-verify) is still reused. The owner
+# chose this knowing the cost, about 7 extra minutes per release. The scan
+# stays strict: nothing is ignored or pinned.
+#
+# BUILD_APT_REFRESH overrides the value: the tests pin it so a record they
+# write counts as this build's, and an operator can pin it to repeat a build.
+if [[ -n "${BUILD_APT_REFRESH:-}" ]]; then
+  APT_REFRESH="${BUILD_APT_REFRESH}"
+elif [[ -n "${GITHUB_RUN_ID:-}" ]]; then
+  APT_REFRESH="${COMMIT:0:12}-run${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT:-1}"
+else
+  APT_REFRESH="${COMMIT:0:12}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
+fi
+APT_REFRESH="${APT_REFRESH#-}"
+[[ "${APT_REFRESH}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
+  || die "BUILD_APT_REFRESH must be letters, digits, '.', '_' and '-', not '${APT_REFRESH}'"
+
+# True when image $1's Dockerfile runs `apt-get upgrade` or `apk upgrade` (a
+# RUN line, not a comment). agent-runtime-base-nocodex reads the base's
+# Dockerfile, workspace-apply the one beside its checked-in cloudbuild.yaml.
+#
+# ONE awk, NO PIPE. The first version was `grep -v '^#' | grep -Eq`: grep -q
+# exits at its first match, the writer then dies of SIGPIPE, and under
+# pipefail the function answered "no" for exactly the long Dockerfiles
+# (agent-runtime-base, workspace-apply) -- CI run 38545464833.
+upgrades_os_packages() {
+  local dockerfile
+  dockerfile="$(recipe_dockerfile "$1")" || return 1
+  awk '
+    /^[[:space:]]*#/ { next }
+    /(apt-get|apk)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*upgrade([[:space:]]|$)/ { found = 1 }
+    END { exit !found }
+  ' "${REPO_ROOT}/${dockerfile}"
+}
+
+# The targets upgrades_os_packages answers yes for, as a JSON array.
+os_upgrading_targets_json() {
+  local t
+  for t in "${ALL_TARGETS[@]}"; do
+    if upgrades_os_packages "${t}"; then printf '%s\n' "${t}"; fi
+  done | jq -R . | jq -sc .
+}
+
+# APT_REFRESH as YAML list items for a docker step's args, for an image that
+# upgrades OS packages; nothing for any other. Not one of target_build_args:
+# it changes every build, and the reuse decision reads it from the record's
+# `apt_refresh` (plan_incremental), not as a baked value whose change would
+# read as "its baked build args changed".
+apt_build_args() {
+  if upgrades_os_packages "$1"; then
+    printf '%s\n' "      - --build-arg" "      - APT_REFRESH=${APT_REFRESH}"
+  fi
+}
+
 # target_build_args' values, one KEY=VALUE a line: what an image bakes in
 # beyond GIT_SHA and BUILD_TIME, and what the manifest records per image as
 # `build_args`. Read from target_build_args' own output, so an arg added there
@@ -607,7 +684,7 @@ rebuild_why() {
 }
 
 plan_incremental() {
-  local prev="$1" t i row digest from at img why prereq grew age_ok logic diff_list prev_args args
+  local prev="$1" t i row digest from at img why prereq grew age_ok logic diff_list prev_args args prev_apt
   if [[ -n "${FULL_BUILD_REASON}" ]]; then plan_full "${FULL_BUILD_REASON}"; return 0; fi
   if [[ "${ENVIRONMENT}" == prod ]]; then plan_full "prod is always built whole"; return 0; fi
   if [[ "${prev}" == none || ! -f "${prev}" ]]; then
@@ -637,12 +714,12 @@ plan_incremental() {
     # A digest is the previous record's; the commit and time it was BUILT are
     # the image's own when the previous build reused it too, so a chain of
     # reuses still diffs from, and ages from, the build that made the digest.
-    IFS=$'\t' read -r img digest from at prev_args < <(jq -r --arg n "${t}" '
+    IFS=$'\t' read -r img digest from at prev_args prev_apt < <(jq -r --arg n "${t}" '
         . as $r | [ .images[] | select(.name == $n) ] as $m
-        | if ($m | length) != 1 then ["-", "-", "-", "-", "null"]
+        | if ($m | length) != 1 then ["-", "-", "-", "-", "null", "-"]
           else [ ($m[0].image // "-"), ($m[0].digest // "-"),
                  ($m[0].built_from // $r.commit // "-"), ($m[0].built_at // $r.built_at // "-"),
-                 ($m[0].build_args // null | tojson) ] end
+                 ($m[0].build_args // null | tojson), ($m[0].apt_refresh // "-") ] end
         | @tsv' "${prev}")
     if [[ "${img}" != "${IMAGE_REPO}/${t}" ]]; then
       plan_full "the previous build records ${t} as ${img}, not ${IMAGE_REPO}/${t}"; return 0
@@ -654,8 +731,18 @@ plan_incremental() {
        || ! git -C "${REPO_ROOT}" merge-base --is-ancestor "${from}" "${COMMIT}" 2>/dev/null; then
       plan_full "${t}'s digest was built from '${from}', which is not an ancestor of ${COMMIT} in this checkout"; return 0
     fi
-    age_ok="$(jq -rn --arg at "${at}" --argjson days "${REUSE_MAX_AGE_DAYS}" '
-        try (if (now - ($at | fromdateiso8601)) <= ($days * 86400) then "yes" else "no" end) catch "unreadable"')"
+    # A digest built FROM THIS COMMIT is this commit's own build -- what a
+    # release finds in CI's record -- not a reuse, so the age limit, which is
+    # about how long a reused digest may go without base-image patches, is
+    # not asked of it. Its OS packages are refreshed by the APT_REFRESH rule
+    # below. (Before every release ran this plan, such a record was promoted
+    # without it; asking its age made a record older than a week rebuild every
+    # image, swarm-verify included.)
+    age_ok=yes
+    if [[ "${from}" != "${COMMIT}" ]]; then
+      age_ok="$(jq -rn --arg at "${at}" --argjson days "${REUSE_MAX_AGE_DAYS}" '
+          try (if (now - ($at | fromdateiso8601)) <= ($days * 86400) then "yes" else "no" end) catch "unreadable"')"
+    fi
     case "${age_ok}" in
       yes) ;;
       no) plan_full "${t}'s digest was built at ${at}, more than ${REUSE_MAX_AGE_DAYS} days ago, so base-image patches are due"; return 0 ;;
@@ -677,12 +764,19 @@ plan_incremental() {
     why="$(rebuild_why "${t}" "${from}" "${diff_list}")"
     # A record written before the manifest named build args says nothing; an
     # image that bakes none has nothing to disagree with, one that bakes any
-    # is rebuilt once, and records them from then on.
+    # is rebuilt once, and records them from then on. A digest built from
+    # this commit was built by this script with this commit's args, so an
+    # unrecorded set is not a reason to build it again.
     args="$(baked_build_args_json "${t}")"
-    if [[ "${prev_args}" == null && "${args}" != '[]' ]]; then
+    if [[ "${prev_args}" == null && "${args}" != '[]' && "${from}" != "${COMMIT}" ]]; then
       why=$'build\tits baked build args were not recorded'
     elif [[ "${prev_args}" != null && "$(jq -c . <<<"${prev_args}")" != "${args}" ]]; then
       why=$'build\tits baked build args changed'
+    fi
+    # A digest whose OS packages were upgraded by another build carries
+    # whatever Debian or Alpine had not fixed yet then (APT_REFRESH, above).
+    if [[ "${why%%$'\t'*}" == reuse && "${prev_apt}" != "${APT_REFRESH}" ]] && upgrades_os_packages "${t}"; then
+      why=$'build\t'"it upgrades OS packages, and every build and release refreshes them (APT_REFRESH=${APT_REFRESH}, the digest's ${prev_apt})"
     fi
     P_NAME+=("${t}"); P_DIGEST+=("${digest}"); P_FROM+=("${from}"); P_AT+=("${at}")
     P_ACTION+=("${why%%$'\t'*}"); P_WHY+=("${why#*$'\t'} since ${from:0:12}")
@@ -737,7 +831,11 @@ if [[ -n "${REUSE_CI}" ]]; then
     --out "${BUILD_DIR}/images-${ENVIRONMENT}.json" --if-absent "${if_absent}" || reuse_rc=$?
   case "${reuse_rc}" in
     0)
-      if jq -e --arg c "${COMMIT}" 'all(.images[]; (.built_from // $c) == $c)' \
+      # ...and only when every image that upgrades OS packages was built by
+      # THIS run (APT_REFRESH): a release rebuilds them otherwise, below.
+      if jq -e --arg c "${COMMIT}" --arg a "${APT_REFRESH}" --argjson up "$(os_upgrading_targets_json)" '
+           all(.images[]; (.built_from // $c) == $c)
+           and all(.images[]; (.name as $n | $up | index($n)) == null or .apt_refresh == $a)' \
            "${BUILD_DIR}/images-${ENVIRONMENT}.json" >/dev/null; then
         hr
         ok "reused CI's build of ${COMMIT}: every image was built from it, no Cloud Build submitted"
@@ -792,7 +890,7 @@ if [[ -n "${INCREMENTAL}" ]]; then
       info "manifest: ${BUILD_DIR}/images-${ENVIRONMENT}.json"
       exit 0
     fi
-    warn "CI's record of ${COMMIT} offers ${#TARGETS[@]} digest(s) built from inputs this commit has changed: ${TARGETS[*]}. Building them here; nothing stale is promoted."
+    warn "CI's record of ${COMMIT} offers ${#TARGETS[@]} digest(s) this release rebuilds -- inputs this commit has changed, or OS packages every release refreshes (APT_REFRESH): ${TARGETS[*]}. Building them here; nothing stale is promoted."
     if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
       echo "**Images:** CI's record of \`${COMMIT:0:12}\` reused digests built before this commit changed their inputs; this run rebuilt ${TARGETS[*]}." \
         >>"${GITHUB_STEP_SUMMARY}"
@@ -859,6 +957,14 @@ if [[ -n "${INCREMENTAL}" ]]; then
     if [[ -n "${prereq}" ]] && row="$(plan_row "${prereq}")" && [[ "${P_ACTION[$row]}" == build ]]; then
       P_ACTION[i]=build; P_WHY[i]="built FROM ${prereq}, which is rebuilt"
       TARGETS+=("${target}")
+      continue
+    fi
+    # A digest built from this commit was pushed as :${TAG} by that build (a
+    # release reusing CI's record of its own commit): there is nothing to
+    # re-tag, and the read-back below still checks :${TAG} names it.
+    if [[ "${P_FROM[$i]}" == "${COMMIT}" ]]; then
+      ok "${target}: reused ${P_DIGEST[$i]}, built from this commit as :${TAG}"
+      REUSED+=("${target}")
       continue
     fi
     tag_err=""
@@ -942,6 +1048,7 @@ ${buildkit}
       - --build-arg
       - BUILD_TIME=$(iso_now)
 $(target_build_args "${target}")
+$(apt_build_args "${target}")
       - .
 ${push_block}
 YAML
@@ -988,6 +1095,7 @@ ${mirror_step}
       - --build-arg
       - BUILD_TIME=$(iso_now)
 $(target_build_args "${prereq}")
+$(apt_build_args "${prereq}")
       - .
   - id: build-${target}
     name: gcr.io/cloud-builders/docker
@@ -1008,6 +1116,7 @@ $(target_build_args "${prereq}")
       - --build-arg
       - BUILD_TIME=$(iso_now)
 $(target_build_args "${target}")
+$(apt_build_args "${target}")
       - .
 YAML
 }
@@ -1121,6 +1230,7 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
     elif [[ "${kind}" == config ]]; then
       strip_push "${REPO_ROOT}/${path}" "${config}"
       subs="_IMAGE=${image},_TAG=${TAG},_TARGET=${target}"
+      if upgrades_os_packages "${target}"; then subs+=",_APT_REFRESH=${APT_REFRESH}"; fi
       info "${target}: checked-in ${path}, without its push"
     else
       generate_config "${path}" "${image}" "${config}" "${target}"
@@ -1148,6 +1258,7 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
       # it made docker try to parse the YAML as a Dockerfile ("unknown
       # instruction: TIMEOUT:"). The config declares its own _DOCKERFILE default.
       subs="_IMAGE=${image},_TAG=${TAG},_TARGET=${target}"
+      if upgrades_os_packages "${target}"; then subs+=",_APT_REFRESH=${APT_REFRESH}"; fi
       info "${target}: using checked-in ${path}"
       ;;
     dockerfile)
@@ -1435,8 +1546,8 @@ build_locally() {
     why="${state}/${target}.why"
     info "${target}: building $(basename "${T_CONFIG[$i]}") with docker buildx"
     rc=0
-    LOCAL_SUBS="$(jq -cn --arg i "${LOCAL_IMAGE}/${target}" --arg t "${TAG}" --arg n "${target}" \
-      '{_IMAGE: $i, _TAG: $t, _TARGET: $n}')" \
+    LOCAL_SUBS="$(jq -cn --arg i "${LOCAL_IMAGE}/${target}" --arg t "${TAG}" --arg n "${target}" --arg a "${APT_REFRESH}" \
+      '{_IMAGE: $i, _TAG: $t, _TARGET: $n, _APT_REFRESH: $a}')" \
       MIRROR_UPSTREAMS_JSON="${MIRROR_UPSTREAMS_JSON}" \
       "${python}" -c "${LOCAL_REPLAY}" "${T_CONFIG[$i]}" "${REPO_ROOT}" "${target}" "${builder}" \
         "${state}" "${report}" "${why}" 2>&1 \
@@ -1870,8 +1981,9 @@ for target in ${BUILT[@]+"${BUILT[@]}"} ${REUSED[@]+"${REUSED[@]}"}; do
   entries="$(jq -c --arg n "${target}" --arg i "${image}" --arg t "${TAG}" --arg d "${digest}" \
     --arg from "${built_from}" --arg at "${built_at}" --argjson reused "${reused}" \
     --argjson args "$(baked_build_args_json "${target}")" \
+    --argjson apt "$(if upgrades_os_packages "${target}"; then jq -n --arg a "${APT_REFRESH}" '$a'; else echo null; fi)" \
     '. + [{name:$n, image:$i, tag:$t, digest:$d, ref:($i + "@" + $d),
-           built_from:$from, built_at:$at, reused:$reused, build_args:$args}]' <<<"${entries}")"
+           built_from:$from, built_at:$at, reused:$reused, build_args:$args, apt_refresh:$apt}]' <<<"${entries}")"
 done
 
 if [[ "${#MISSING[@]}" -gt 0 ]]; then
