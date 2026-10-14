@@ -248,6 +248,12 @@ def test_a_lapse_reaches_the_gate_through_the_real_relay_within_two_seconds(
 
 
 def test_the_relay_closer_posts_a_control_request_to_the_internal_route(monkeypatch):
+    request = api.mint_control(LIVE_KEY, {
+        "session_id": SESSION, "tenant_id": "eng", "task_id": TASK, "attempt_id": ATTEMPT,
+        "generation": 1, "email": "alice@saga.xyz", "action": "revoke", "cause": "idle",
+    }, now=time.time())
+    # Unreachable: logged, never raised (the gate's lease is the backstop).
+    assert api.HttpRelayCloser("ws://127.0.0.1:9", LIVE_KEY, timeout=0.2).send_control(request) is False
     posted: list[tuple[str, bytes]] = []
 
     class Response:
@@ -267,17 +273,11 @@ def test_the_relay_closer_posts_a_control_request_to_the_internal_route(monkeypa
 
     monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     closer = api.HttpRelayCloser("ws://10.10.0.42:8080", LIVE_KEY)
-    request = api.mint_control(LIVE_KEY, {
-        "session_id": SESSION, "tenant_id": "eng", "task_id": TASK, "attempt_id": ATTEMPT,
-        "generation": 1, "email": "alice@saga.xyz", "action": "revoke", "cause": "idle",
-    }, now=time.time())
     assert closer.send_control(request) is True
     ((url, body),) = posted
     assert url == "http://10.10.0.42:8080/internal/control"
     verified = rz.verify_control(LIVE_KEY.encode(), body.decode(), now=time.time())
     assert (verified.action, verified.cause, verified.email) == ("revoke", "idle", "alice@saga.xyz")
-    # Unreachable: logged, never raised (the gate's lease is the backstop).
-    assert api.HttpRelayCloser("ws://127.0.0.1:9", LIVE_KEY, timeout=0.2).send_control(request) is False
 
 
 # --------------------------------------------------------------------------
