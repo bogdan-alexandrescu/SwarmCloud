@@ -2333,6 +2333,7 @@ def fold_agent_commits(
     timeout_seconds: int,
     logger: Any,
     git_binary: str = "git",
+    merged: str = "",
 ) -> int:
     """Replace every commit made since `base` with ONE commit the worker makes.
 
@@ -2365,6 +2366,13 @@ def fold_agent_commits(
     `EMPTY_CLONE_BASE` is not unknown. The repository had no commits when it
     was cloned, so every commit in it is the agent's, and they are replaced by
     one worker commit with no parent.
+
+    `merged`, when given, is the default branch's commit the agent's work
+    merged, proven on the forge by the caller (`Worker._scan_floor`). The one
+    commit then has it as its SECOND PARENT, so a lane that merged `main` --
+    a merge step's conflict fix round above all -- is still a merge once
+    folded, and its pull request's merge base moves to `main` (#1321). It is
+    ignored unless HEAD contains it and `base` does not.
 
     `keep` is left alone only when it is the sole commit AND it reads back as
     the worker's. The sha alone does not prove that: a commit that concludes a
@@ -2436,13 +2444,40 @@ def fold_agent_commits(
         if code != 0:
             raise GitError("could not move the branch to the worker's commit")
     else:
+        merged = merged.strip()
+        if merged:
+            if not _SHA_RE.match(merged):
+                merged = ""
+            else:
+                code, _ = run([*g, "merge-base", "--is-ancestor", merged, "HEAD"],
+                              "publish-fold-merged")
+                inside, _ = run([*g, "merge-base", "--is-ancestor", merged, base],
+                                "publish-fold-redundant")
+                if code != 0 or inside == 0:
+                    merged = ""
         code, _ = run([*g, "reset", "--soft", base], "publish-fold-reset")
         if code != 0:
             raise GitError("could not rewind to the clone base to replace the agent's commits")
 
         # Commits that add up to no change leave nothing staged; HEAD is the base.
         code, _ = run([*g, "diff", "--cached", "--quiet"], "publish-fold-staged")
-        if code != 0:
+        if merged:
+            # A merge of the default branch: one commit with two parents, so
+            # `git commit` (one parent) is not enough. The tree is the index,
+            # everything the agent left, exactly as the commit below takes it.
+            code, tree = run([*g, "write-tree"], "publish-fold-tree")
+            if code != 0 or not tree.strip():
+                raise GitError("could not write the agent's work as a tree")
+            code, made = run(
+                [*g, "commit-tree", tree.strip(), "-p", base, "-p", merged, "-m", message],
+                "publish-fold-merge",
+            )
+            if code != 0 or not _SHA_RE.match(made.strip()):
+                raise GitError("could not commit the agent's work as the worker")
+            code, _ = run([*g, "reset", "--soft", made.strip()], "publish-fold-reset")
+            if code != 0:
+                raise GitError("could not move the branch to the worker's commit")
+        elif code != 0:
             code, _ = run(
                 [
                     *g, "commit", "--no-verify", _author_option(author_name, author_email),
@@ -2454,6 +2489,92 @@ def fold_agent_commits(
                 raise GitError("could not commit the agent's work as the worker")
     logger.info("folded the agent's commits into one worker commit", replaced=count)
     return count
+
+
+def verify_merged_default_branch(
+    *,
+    repo: Path,
+    base: str | None,
+    tip: str | None,
+    default_branch: str,
+    private_dir: Path,
+    logs_dir: Path,
+    timeout_seconds: int,
+    logger: Any,
+    git_binary: str = "git",
+) -> str:
+    """Refuse a merge step's conflict fix round that did not merge the default branch (#1321).
+
+    Returns the merge base it accepted. Raises `GitError` naming the merge
+    base it found otherwise.
+
+    A conflict fix round exists to move its pull request's merge base to the
+    default branch's head: `git merge-base <tip> HEAD` must be `tip`, the
+    head fetched from the FORGE (`Worker._default_branch_tip`), never the
+    agent's `origin/main`. Measured 2026-10-14 (PR 1316, PR 1304): rounds
+    whose "Merge ... origin/main" commit had one parent left the merge base at
+    the branch's fork point, GitHub still saw the conflict and listed every
+    file main had changed, and the step failed after spending both rounds.
+
+    ONE OTHER ANSWER IS ACCEPTED: `main` moved on while the round ran. Then
+    the merge base is the main commit the round merged -- a parent, after the
+    first, of a merge on HEAD's first-parent line since `base` -- and the
+    branch stands on main as the round found it; whether main's newer
+    commits conflict too is the merge step's next reading, not this round's
+    failure.
+
+    `repo` is the worker's publish repository, after the replay or the fold:
+    what is checked is what would be pushed.
+    """
+    g = [git_binary, *_NO_HOOKS]
+    repo = Path(repo)
+
+    def run(argv: list[str], slug: str) -> tuple[int, str]:
+        return _git_text(
+            argv,
+            repo=repo,
+            private_dir=private_dir,
+            logs_dir=logs_dir,
+            slug=slug,
+            timeout_seconds=timeout_seconds,
+            logger=logger,
+        )
+
+    tip = (tip or "").strip()
+    if not _SHA_RE.match(tip):
+        raise GitError(
+            f"refusing to publish a conflict fix round: {default_branch}'s head could not "
+            "be read from the forge, so the worker cannot show that this round merged it "
+            "(its merge base is unknown)"
+        )
+    code, found = run([*g, "merge-base", tip, "HEAD"], "publish-round-merge-base")
+    merge_base = found.strip() if code == 0 else ""
+    if merge_base == tip:
+        logger.info("the conflict fix round's branch stands on the default branch's head",
+                    merge_base=merge_base)
+        return merge_base
+    floor = (base or "").strip()
+    if merge_base and _SHA_RE.match(floor):
+        code, text = run(
+            [*g, "rev-list", "--first-parent", "--merges", "--parents", f"{floor}..HEAD"],
+            "publish-round-merges",
+        )
+        merged = {
+            other for line in (text.splitlines() if code == 0 else [])
+            for other in line.split()[2:]
+        }
+        if merge_base in merged:
+            logger.info("the conflict fix round merged the default branch, which has moved on "
+                        "since", merge_base=merge_base, tip=tip)
+            return merge_base
+    shown = merge_base[:12] if merge_base else "none"
+    raise GitError(
+        f"refusing to publish a conflict fix round whose branch is not on {default_branch}: "
+        f"its merge base with {default_branch}'s head {tip[:12]} is {shown}, so the pull "
+        f"request would still conflict. Merge {default_branch} with `git merge --no-ff "
+        f"origin/{default_branch}` -- a real two-parent merge, not a squash, rebase or "
+        "cherry-pick -- and commit it"
+    )
 
 
 #: The clone base recorded for a repository that had NO commits when it was
