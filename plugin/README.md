@@ -1242,6 +1242,27 @@ the onboarding tools, by name. Disabling an org
 confirmation and ignore `SWARM_ASSUME_YES`. `tests/unit/mcp/test_setup_and_access.py`
 holds the flow against a fake API, including that no secret is printed.
 
+## Your TypeSafe key: set it without Claude seeing it
+
+TypeSafe serves the Jev judgment models. A person's own key wins over the
+tenant's, which an admin sets ([docs/provider-keys.md](../docs/provider-keys.md)
+is the API). **The key never passes through Claude** (owner, 2026-10-14): no
+MCP tool takes it as an argument and no reply carries it, so there is no tool
+that sets a key at all.
+
+| Surface | See what is set | Set it |
+|---|---|---|
+| `/sc` | `/sc keys` | `/sc keys set typesafe [--tenant]`: a one-time console link (ten minutes, one use, only in your own console session); you paste the key into the console form |
+| MCP | `swarm_keys` (read-only: set, version, who, when; never a value) | `swarm_key_set_link` (answers only `url` and `expires_at`; its schema has no field a key fits in) |
+| terminal | — | `uv run sc key set typesafe [--tenant] [--stdin]`: a hidden prompt, or one piped line; prints only `stored: version N` |
+
+`sc key set` refuses a key given as an argument, before sending anything and
+without repeating it, because an argument lands in shell history and `ps`.
+No skill is granted it. Until the deployment's owner applies the KEYS-IAM
+bootstrap role, storing a key answers 503 and `sc key set` says
+`keys can't be saved yet: <the API's reason>`. Nothing reads these keys yet.
+`tests/unit/mcp/test_provider_keys_bridge.py` holds all of this.
+
 ## What keeps these honest
 
 Eight files, all in `make test`, all offline — bar one test, which CI runs:

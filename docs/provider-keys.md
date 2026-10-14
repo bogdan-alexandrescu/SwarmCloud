@@ -152,17 +152,111 @@ Every set and delete writes `provider_keys/{secret_id}` (the status) and one
 transaction: `{by, at, target_secret_id, detail: {tenant_id, provider, scope,
 version, via_link}}`. The value never appears in either.
 
-## 6. Deployment: the API's Secret Manager grant is not verified
+## 6. Deployment: swarm-api's Secret Manager grant (KEYS-IAM)
 
 These routes write through the same `credentials.SecretManagerCredentials` as
-`POST /v1/tenants/me/credentials`, which needs `secrets.create`,
-`secrets.getIamPolicy`, `secrets.setIamPolicy` and `versions.add` on
-`swarm-tenant-*`. Delete also needs `versions.list` and `versions.destroy`.
-[web-ui/06-accounts.md](web-ui/06-accounts.md) already records that
-`terraform/modules/iam/bindings.tf` grants swarm-api none of these, and no
-grant for them was found in `terraform/bootstrap` either. Until an owner-applied
-bootstrap role grants them, scoped by name to the platform's own tenant
-secrets (as `browser_logins.tf` scopes its roles), a live `PUT` would get 503
-"could not create the tenant secret" rather than store a key. This lane
-(KEYS-API) does not touch IAM. The unit tests run against in-memory and fake
-Secret Manager clients, so they cannot catch a missing grant.
+`POST /v1/tenants/me/credentials`. KEYS-API found that swarm-api's account held
+none of the permissions that write needs
+([web-ui/06-accounts.md](web-ui/06-accounts.md) records the same of
+`terraform/modules/iam/bindings.tf`), so a deployed `PUT` answered 503 "could
+not create the tenant secret". Owner decision 2026-10-14: *"Yes, scoped
+bootstrap role"*.
+
+`terraform/bootstrap/provider_keys.tf`, switched on by `enable_provider_keys`
+(set in `terraform/bootstrap/terraform.tfvars`), defines
+**`swarmProviderKeyWriter`** and grants it to swarm-api under one condition. The
+owner applies it; CI cannot (below).
+
+### The permissions are credentials.py's calls, and nothing else
+
+| call in `credentials.py` | permission |
+|---|---|
+| `create_secret` | `secretmanager.secrets.create` |
+| `get_iam_policy` | `secretmanager.secrets.getIamPolicy` |
+| `set_iam_policy` | `secretmanager.secrets.setIamPolicy` |
+| `add_secret_version` | `secretmanager.versions.add` |
+| `list_secret_versions` | `secretmanager.versions.list` |
+| `destroy_secret_version` | `secretmanager.versions.destroy` |
+
+Not `secrets.get`: the module never reads a secret's metadata. Storing a second
+key is `create_secret` answering `ALREADY_EXISTS`, which `create` authorises on
+the project. Not `versions.access`: there is no read path (the module
+docstring, point 3). Not `secrets.delete`: delete destroys versions and keeps
+the secret (§5). `tests/terraform/provider_keys.tftest.hcl` reads
+`credentials.py` and fails when a Secret Manager call is added or removed there
+without the role following. So a new call cannot ship and then 403 in
+production.
+
+### The condition, and why `create` is not narrowed
+
+```
+resource.type == "cloudresourcemanager.googleapis.com/Project"
+  || resource.name.startsWith("projects/209012342332/secrets/swarm-tenant-")
+```
+
+* **The name arm uses the project NUMBER.** IAM evaluates Secret Manager names
+  with the number, and the project ID "can't be substituted" there. The ID
+  spelling also passes `lintPolicy`, but it would match nothing. 209012342332
+  is `gcloud projects describe saga-agents-staging --format='value(projectNumber)'`,
+  read 2026-10-14. getIamPolicy, setIamPolicy and the three `versions.*`
+  permissions are checked on the secret or version, so this arm limits them to
+  `swarm-tenant-*`. They never reach `swarm-github-app-*` or the other team's
+  `agents-*` / `promptlab-*`.
+* **A resource-name condition cannot gate `secrets.create`.** Create is
+  evaluated on the parent project, whose name has no secret id in it. With the
+  name arm alone every create would be refused and the routes would still 503.
+  The project arm lets create through, so the residual is that **swarm-api may
+  create an empty secret with any name**. It cannot read, version or set IAM on
+  any secret outside the name arm. While `enable_forge_user_slots` is on,
+  swarm-api already holds an unconditioned `secrets.create`
+  (`swarmForgeSlotCreator`), so this grant adds nothing there.
+* **Pre-created secrets would remove that residual, but they cannot work
+  here.** Terraform would have to name every key's secret. A personal tenant
+  `u-<user>` is created by the workspace job outside Terraform, and
+  `PUT /v1/provider-keys/typesafe/user` writes into exactly those tenants.
+  `credentials.py` would also have to stop creating secrets.
+
+**What the name arm still reaches.** Every `swarm-tenant-*` secret, not only
+provider keys: a tenant's forge token (`-git`), its GitHub user and repository
+slots, and its browser sessions. On any of these, swarm-api can add a version,
+destroy versions and rewrite the IAM policy. setIamPolicy amounts to
+`versions.access`, because swarm-api can grant read to anyone, itself included.
+The guard against misuse is in the code: before calling Secret Manager,
+swarm-api refuses the forge and App providers
+(`credentials.refuse_unbindable_provider`), and it only ever names
+`Tenant.secret_name(provider)` for an allow-listed provider. A narrower
+condition, limited to the provider suffixes, would repeat validation's provider
+lists in Terraform with nothing to keep the two in sync. That is the owner's
+call, asked in the KEYS-IAM pull request.
+
+**Why bootstrap and not terraform/infra.** A custom role cannot be defined in
+terraform/infra (#79). Adding a role that carries `secrets.setIamPolicy` to the
+CI deployer's grantable list would let CI grant itself rewrite access to any
+secret's policy in the shared project (#69). `hasOnly()` limits which roles can
+be granted. It does not limit who receives them.
+
+### Applying it (the owner, dev-iam)
+
+Lint the condition first. On 2026-10-14 it linted clean (`{}`), and a
+deliberately broken expression came back as a `ConditionCompileCheck` ERROR,
+so the clean result means something:
+
+```bash
+curl -sS -X POST \
+  --oauth2-bearer "$(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" -H "x-goog-user-project: saga-agents-staging" \
+  https://iam.googleapis.com/v1/iamPolicies:lintPolicy \
+  --data '{"fullResourceName":"//cloudresourcemanager.googleapis.com/projects/saga-agents-staging","condition":{"title":"swarm tenant provider keys","expression":"resource.type == \"cloudresourcemanager.googleapis.com/Project\" || resource.name.startsWith(\"projects/209012342332/secrets/swarm-tenant-\")"}}'
+```
+
+Then plan and apply `terraform/bootstrap`. The plan is **2 to add, 0 to change,
+0 to destroy**: `google_project_iam_custom_role.provider_key_writer[0]` and
+`google_project_iam_member.provider_key_writer[0]`. The `provider_key_grants`
+output shows the condition to read the plan against. After applying, the check
+is a live `PUT /v1/provider-keys/typesafe/user` that answers 200 instead of
+503.
+
+**Not verified live:** how IAM evaluates the name forms and the create
+resource type (the header of `provider_keys.tf`). The unit tests run against
+in-memory and fake Secret Manager clients, and the Terraform tests use a mock
+provider. Neither can show what IAM itself answers.
