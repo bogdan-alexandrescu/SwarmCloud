@@ -330,10 +330,12 @@ egress on. The worker passes both variables to the CLI
 *unavailable*, not TypeSafe: the pod gets no URL, and `jev-browser-mcp` refuses
 to start rather than let jev-browser use its TypeSafe default. The wrapper
 passes `JEV_API_URL` through only when it is exactly the egress Service's path
-for the chosen backend. For an internal backend it sends **no TypeSafe key**:
-upstream jev-browser 0.2.0 refuses to start without `TYPESAFE_API_KEY` and sends
-it as a Bearer token, so the wrapper replaces it with a fixed marker that is not
-a key. A stored value the code does not know, or a settings read that fails, is
+for the chosen backend, and sets `JEV_API_COMPAT=internal` with it, so the
+patched jev-browser reshapes each request for the internal API (§3.2.3). For an
+internal backend it sends **no TypeSafe key**: upstream jev-browser 0.2.0
+refuses to start without `TYPESAFE_API_KEY` and sends it as a Bearer token, so
+the wrapper replaces it with a fixed marker that is not a key, and the adapter
+sends its own placeholder in its place on every request. A stored value the code does not know, or a settings read that fails, is
 read as the default -- the backend that sends nothing outside Saga.
 
 **The code-context work reuses this setting.** The context-quality design
@@ -342,11 +344,88 @@ same per-workspace `judgment_backend` and its availability rather than adding a
 second switch, so a workspace that chose to keep page text inside Saga keeps
 its code there too.
 
-**Not verified here.** No unit test can reach the tailnet. That the decision
-API accepts jev-browser's body (`{state, model, questions}` -- it adds `model`
-to the `{state, questions}` the API documents) and ignores the marker Bearer
-token is the owner's description of the API, unmeasured until JUDGE-NET's
-egress is up.
+**Not verified here.** No unit test can reach the tailnet. The decision API
+does not accept jev-browser's body as upstream sends it; the operator's
+measurement and the adapter that reshapes it are §3.2.3. That the reshaped body
+is accepted end to end from a pod is unmeasured until JUDGE-NET's egress is up.
+
+### 3.2.3 jev-browser: the internal request adapter (JUDGE-ADAPT)
+
+jev-browser (pinned 0.2.0, patched to attach over CDP: JEV-IMAGE) is an MCP
+server where a model, "Jev", picks each step of a browsing task. It asks only
+two kinds of question: `noul` (a yes/no probability) and `choice` (one option
+of several). On 2026-10-14 the owner made the backend selectable: **Internal
+Jev** (the default), **Internal Laya** or **TypeSafe**. The network path and
+the setting belong to lanes JUDGE-NET and JUDGE-SELECT. This section is about
+the request shape (JUDGE-ADAPT).
+
+Upstream jev-browser speaks TypeSafe's API. Saga's internal decision API
+(`decision-api-staging` on the tailnet, `/jev` or `/laya` +
+`/v1/decide`) answers in the same shape (`choice`, `probabilities`,
+`confidence`, `noul`), but it is **not wire-compatible on the request side**.
+The operator measured it over Tailscale from the laptop on 2026-10-14:
+
+| check | `/jev` | `/laya` |
+|---|---|---|
+| `noul`, string `state` | 200, 0.3-0.4 s | 200, 1.7-5 s |
+| `state` as an object (what jev-browser sends) | 400 `state: Input should be a valid string` | 400 |
+| `choice` with criteria | 200, 0.34 s, TypeSafe's shape, correct pick, confidence 0.98 | 200, 2.9 s, same shape, confidence 0.04 on the same question |
+| `choice` without criteria (jev-browser's element and group picks) | 400 `criteria Field required` | same validator expected |
+| `score`, criteria as a dict | 400 `criteria Input should be a valid list` | 500 `predict failed` |
+
+The internal API ignores `model` and `Authorization`. jev-browser, however,
+refuses to make any call without a non-empty `TYPESAFE_API_KEY`.
+
+**The adapter.** The image's patch adds `src/internal-compat.mjs` to the
+package, plus two lines in `src/jev.mjs` that pass every request through it.
+That one function is where every request leaves, so this is the smallest
+change. Wrapping `fetch` from the MCP wrapper would mean preloading a module
+into node that rewrites every HTTP call the process makes. With
+`JEV_API_COMPAT` unset, the request is returned untouched, so TypeSafe sees
+exactly what upstream sends. With `JEV_API_COMPAT=internal`:
+
+* an object `state` is sent as JSON with sorted keys and no whitespace, so the
+  same page always makes the same request;
+* a `choice` option without a description is described from the page the
+  question names: `page.elements` by `i` as `"<role> <name>"`, cut at 80
+  characters, or `page.groups` by `g` as the group's summary. jev-browser's
+  picks send only the keys (`{"7": null}`). A described option keeps its
+  description. A keys-only choice that names neither (dropdown options,
+  keyboard keys) is described by its own key, which is the option's whole
+  text. A choice with no criteria at all that names neither, or an option that
+  is not on the page, **fails that call with its reason**. Nothing is guessed;
+* a `score` with dict criteria is refused, because the list's element shape
+  was never measured and jev-browser asks no `score`;
+* the key sent is the fixed, non-secret placeholder
+  `internal-backend-takes-no-key`. `TYPESAFE_API_KEY` is never sent to an
+  internal backend, even when it is set;
+* `answers` are passed through unchanged;
+* `internal` together with TypeSafe's URL is refused. The reshaped body and
+  the placeholder never go to TypeSafe.
+
+**Who sets it.** `JEV_API_COMPAT=internal` must be set by whatever sets
+`JEV_API_URL` to an internal backend. That is the wrapper
+(`bin/jev-browser-mcp`): for `internal-jev` or `internal-laya` (§3.2.2) it
+passes the egress Service's URL through and sets `JEV_API_COMPAT=internal`
+beside it. For TypeSafe it drops `JEV_API_URL` and passes `JEV_API_COMPAT`
+through as it came, so a stray `internal` fails loudly instead of reaching
+TypeSafe.
+
+**Why Internal Jev is the default.** On one element-pick probe, Laya was 8x
+slower than Jev (2.9 s against 0.34 s) and far less confident (0.04 against
+0.98). That is one probe, not a benchmark, but it supports the owner's choice
+of Internal Jev as the default.
+
+**What proves it.** `tests/unit/worker/test_jev_internal_compat.py` takes the
+module out of the patch and runs each transform with node on the exact shapes
+the internal API refused. The image's self-test (`selftest.py` `jev_compat`,
+through `jev-browser/compat-probe.mjs`) runs the installed package's own
+`decide()` and `resolve()` over `jev-browser/fixtures/internal-decide.json`.
+That fixture holds the internal API's answers in the shape and with the values
+the measurement recorded. It is not a byte capture: the measurement kept shapes
+and values, not bodies. The self-test checks that a one-stage and a two-stage
+pick both come back as numeric element indexes, that the TypeSafe path is
+unchanged, and that `internal` with no key does not throw.
 
 ### 3.3 The path to the console: outbound only, through a relay
 

@@ -12,7 +12,8 @@
 #     swarm-live-key: the forwarder that can verify an egress ticket must not
 #     be able to mint a live viewer ticket, nor the reverse;
 #   * swarm-api's side of the switch: SWARM_EGRESS_KEY by reference, and the
-#     BROWSER_EGRESS_* settings it mints by (swarm_api.egress);
+#     BROWSER_EGRESS_* settings it mints by (swarm_api.egress), which the
+#     scheduler also dispatches by (scheduler.dispatch, lane EGRESS-DISPATCH);
 #   * swarm-egress's manifest, kubernetes/swarm-system/swarm-egress.yaml,
 #     rendered as `swarm_egress_manifest` with the image, the two secrets'
 #     version references and the platform setting.
@@ -170,6 +171,21 @@ locals {
     BROWSER_EGRESS_TENANTS  = join(",", var.browser_egress.tenants)
     BROWSER_EGRESS_PROFILES = join(",", var.browser_egress.profiles)
     BROWSER_EGRESS_COUNTRY  = var.browser_egress.country
+  }
+
+  # The scheduler's side of the same switch (docs/browser-egress.md §10.3;
+  # lane EGRESS-DISPATCH): it labels a switched-on live-browser pod
+  # `swarm-egress: proxy` and sets SWARM_BROWSER_EGRESS=proxy on its display
+  # sidecar (scheduler.dispatch `browser_egress_on`). The SAME three values
+  # swarm-api mints by, so the dispatcher never routes a pod swarm-api would
+  # refuse a ticket (that browser fails closed) nor leaves direct one it would
+  # mint for. BROWSER_EGRESS_BYPASS is swarm-egress's own bypass list, so the
+  # browser's --proxy-bypass-list and the forwarder's refusal agree.
+  scheduler_browser_egress_env = {
+    BROWSER_EGRESS_ENABLED  = local.api_browser_egress_env.BROWSER_EGRESS_ENABLED
+    BROWSER_EGRESS_TENANTS  = local.api_browser_egress_env.BROWSER_EGRESS_TENANTS
+    BROWSER_EGRESS_PROFILES = local.api_browser_egress_env.BROWSER_EGRESS_PROFILES
+    BROWSER_EGRESS_BYPASS   = join(",", local.egress_bypass_hosts)
   }
 
   # swarm-egress-key for swarm-api, BY REFERENCE, once the service is on (a

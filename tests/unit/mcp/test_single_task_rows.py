@@ -239,7 +239,7 @@ def test_a_task_launch_titles_its_run_and_rows_from_the_labels(_plugin_root):
     assert out["args"] == {"attach_tasks": [
         {"task_id": "task_a", "title": "lane-a", "console": "https://c.test/agents/task_a"},
         {"task_id": "task_b", "title": "task_b"},
-    ]}
+    ], "max_rows": launch.MAX_ATTACHED_TASKS}
     assert Path(out["script_path"]).is_file()
     assert launch.for_tasks([{"task_id": "task_a", "label": "lane-a"}])["title"] == "SC · lane-a · task"
 
@@ -248,7 +248,8 @@ def test_a_task_launch_follows_at_most_the_cap(_plugin_root):
     entries = [{"task_id": f"task_{n:02d}"} for n in range(launch.MAX_ATTACHED_TASKS + 2)]
     out = launch.for_tasks(entries)
     assert len(out["args"]["attach_tasks"]) == launch.MAX_ATTACHED_TASKS
-    assert [e["task_id"] for e in out["not_followed"]] == ["task_10", "task_11"]
+    cap = launch.MAX_ATTACHED_TASKS
+    assert [e["task_id"] for e in out["not_followed"]] == [f"task_{cap:02d}", f"task_{cap + 1:02d}"]
 
 
 def test_attach_all_launches_one_more_run_for_my_single_tasks(_plugin_root, swarm, api, db):  # noqa: F811
@@ -358,7 +359,7 @@ def test_attach_all_by_name_returns_the_call_for_my_single_tasks(tmp_path):
     assert result["task_call"] == {"attach_tasks": [
         {"task_id": "task_a", "title": "lane-a"},
         {"task_id": "task_b", "title": "task_b", "console": "https://c.test/agents/task_b"},
-    ]}
+    ], "max_rows": 30}
 
 
 def test_attach_all_with_only_single_tasks_running_is_not_nothing_running(tmp_path):

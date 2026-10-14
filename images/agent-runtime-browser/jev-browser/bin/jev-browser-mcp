@@ -28,14 +28,19 @@
 #         cluster's Tailscale egress Service. JEV_API_URL is passed through
 #         ONLY when it is exactly that Service's /jev or /laya /v1/decide; any
 #         other value, or none (the egress is off), is refused, so page text
-#         is never sent to TypeSafe in its place. No TypeSafe key goes with
-#         it: upstream refuses to start without TYPESAFE_API_KEY and sends it
-#         as a Bearer token, so it is replaced by a fixed marker that is not a
-#         key, and the internal API needs none;
+#         is never sent to TypeSafe in its place. JEV_API_COMPAT=internal is
+#         set with it (JUDGE-ADAPT), so the patched jev() reshapes each request
+#         for the internal API, which is not wire-compatible with TypeSafe's on
+#         the request side, and sends its placeholder instead of any key. No
+#         TypeSafe key goes with it: upstream refuses to start without
+#         TYPESAFE_API_KEY and sends it as a Bearer token, so it is replaced by
+#         a fixed marker that is not a key, and the internal API needs none;
 #       - typesafe, or unset (a pod from a scheduler older than JUDGE-SELECT):
 #         JEV_API_URL is dropped, so judgments go only to TypeSafe's own API
 #         (api.typesafe.ai), and TYPESAFE_API_KEY is passed through untouched
-#         and never printed.
+#         and never printed. JEV_API_COMPAT is passed through as it came: a
+#         stray `internal` aimed at TypeSafe's URL makes the patched jev()
+#         refuse the call rather than send the reshaped body there.
 #
 # This is guidance, not a sandbox: the agent can run node on the package by
 # its path, and the pod and the gate are the boundary
@@ -71,6 +76,7 @@ case "${backend}" in
     fi
     export JEV_API_URL="${want}"
     export TYPESAFE_API_KEY="${NO_TYPESAFE_KEY}"
+    export JEV_API_COMPAT=internal
     ;;
   "" | typesafe)
     unset JEV_API_URL

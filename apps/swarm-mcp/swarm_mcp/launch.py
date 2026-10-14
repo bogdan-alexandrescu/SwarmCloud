@@ -65,16 +65,27 @@ DESCRIPTION_OPEN = "  description: '"
 #: dialog and the workflow list, not a paragraph.
 DESCRIPTION_CHARS = 300
 
-#: The same cap run.js puts on `{attach: "all"}` (MAX_ATTACHED_WORKFLOWS):
-#: every unfinished step is a live row, and past 10 workflows /workflows is
-#: no longer readable. The rest are listed with the call that attaches each.
-MAX_ATTACHED_WORKFLOWS = 10
+#: The DEFAULT cap on `{attach: "all"}`, and run.js's (MAX_ATTACHED_WORKFLOWS):
+#: 30 since SC-ROWS (owner request 2026-10-14: "increase live rows to 30"),
+#: 10 before. Every unfinished step is a live row, an agent of its own in the
+#: session, so it stays a cap: the plugin's `max_live_rows` option moves it
+#: within 1..50 (`config.max_live_rows`, read per launch by `max_live_rows()`
+#: below). The rest are listed in `not_followed` with the call that attaches
+#: each.
+MAX_ATTACHED_WORKFLOWS = config.DEFAULT_MAX_LIVE_ROWS
 
-#: The cap on single-task rows in one copy: each is an agent of its own in
-#: the session for as long as its task runs, like a step row, and run.js
-#: holds the same number (MAX_ATTACHED_TASKS). The rest are listed with the
-#: command that shows them.
-MAX_ATTACHED_TASKS = 10
+#: The default cap on single-task rows in one copy: each is an agent of its
+#: own in the session for as long as its task runs, like a step row, and
+#: run.js holds the same number (MAX_ATTACHED_TASKS). The same option moves
+#: it. The rest are listed with the command that shows them.
+MAX_ATTACHED_TASKS = config.DEFAULT_MAX_LIVE_ROWS
+
+
+def max_live_rows() -> int:
+    """The live-row cap this launch uses: the sc plugin's `max_live_rows`,
+    held to 1..50, else 30. Read per launch, so the copies and run.js (which
+    each copy's args hand it as `max_rows`) agree on one number."""
+    return config.max_live_rows()
 
 #: Where the copies go: the system's temporary directory, one file per run.
 RUN_DIR = "sc-swarmcloud-runs"
@@ -199,14 +210,35 @@ def _launch(title: str, description: str, args: dict[str, Any] | None) -> dict[s
     return out
 
 
-def for_spec(document: dict[str, Any]) -> dict[str, Any]:
+def _submitting_workspace(client: SwarmClient | None) -> str | None:
+    """The workspace a spec about to be submitted will run in: the tenant the
+    API says this client acts as (`GET /v1/tenants/me`, the API's answer, not
+    this session's setting), with its display name when it gives one. None
+    when it cannot be read: the title then has no workspace, and every row
+    still gets the one the submission's reply names."""
+    if client is None:
+        return None
+    from .render import tenant_of
+
+    try:
+        me = client.request("GET", "/v1/tenants/me")
+    except Exception:  # noqa: BLE001 - a title is never worth a failed launch
+        return None
+    tenant = tenant_of(me)
+    record = me.get("tenant") if isinstance(me, dict) and isinstance(me.get("tenant"), dict) else me
+    shown = record.get("display_name") if isinstance(record, dict) else None
+    return workflows.workspace_of({"tenant_id": tenant}, {tenant: shown} if tenant and isinstance(shown, str) else None)
+
+
+def for_spec(document: dict[str, Any], client: SwarmClient | None = None) -> dict[str, Any]:
     """The titled copy for a spec about to be submitted. The workflow id is not
     known yet, so the title has none; the run's first row and its Result row
-    carry it once SwarmCloud has answered."""
+    carry it once SwarmCloud has answered. The workspace is the tenant the API
+    says `client` acts as, which is where the workflow will be stored."""
     spec = workflows.read_spec(document, where="the spec")
     steps = len(spec["steps"])
     name = workflows.title_name(title=spec["title"], label=spec["label"])
-    title = workflows.workflow_title(name, steps)
+    title = workflows.workflow_title(name, steps, _submitting_workspace(client))
     description = (
         f"{title}: each step runs in SwarmCloud and is shown here as one [SwarmCloud] row, "
         "by the console's stage, with its console link"
@@ -220,14 +252,20 @@ def for_spec(document: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def _attach_launch(workflow_id: str, name: str, steps: int) -> dict[str, Any]:
-    title = workflows.workflow_title(name, steps)
+def _attach_launch(workflow_id: str, name: str, steps: int, workspace: str | None = None) -> dict[str, Any]:
+    title = workflows.workflow_title(name, steps, workspace)
     description = (
         f"{title}: attached to SwarmCloud workflow {workflow_id}; each unfinished step is shown "
         "here as one [SwarmCloud] row, by the console's stage. Nothing is submitted"
     )
-    out = _launch(title, description, {"attach": workflow_id, "title": name})
+    args: dict[str, Any] = {"attach": workflow_id, "title": name}
+    if workspace:
+        # The workspace the API's document names, so the attach row is
+        # labelled with it before the workflow is read again.
+        args["workspace"] = workspace
+    out = _launch(title, description, args)
     out["workflow_id"] = workflow_id
+    out["workspace"] = workspace
     return out
 
 
@@ -237,7 +275,10 @@ def for_attach(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
     envelope = workflows.fetch(client, workflow_id)
     stored = workflows.stored_names(envelope)
     name = workflows.title_name(stored=stored["title"] or stored["label"], workflow_id=workflow_id)
-    out = _attach_launch(workflow_id, name, len(envelope["workflow"].get("steps") or []))
+    workspace = workflows.workspace_of(
+        envelope["workflow"], workflows.workspace_names(client), fallback=envelope.get("tenant_id"),
+    )
+    out = _attach_launch(workflow_id, name, len(envelope["workflow"].get("steps") or []), workspace)
     out["launch_with"] = "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
     return out
 
@@ -246,15 +287,26 @@ def _task_name(entry: dict[str, Any]) -> str:
     return workflows.title_name(stored=entry.get("label") or entry.get("title"), workflow_id=entry.get("task_id"))
 
 
+def _tasks_workspace(entries: list[dict[str, Any]]) -> str | None:
+    """The workspace(s) the tasks run in, in order of first appearance and
+    joined with `, ` when there are several; None when no entry names one."""
+    seen: list[str] = []
+    for entry in entries:
+        workspace = entry.get("workspace")
+        if isinstance(workspace, str) and workspace.strip() and workspace.strip() not in seen:
+            seen.append(workspace.strip())
+    return ", ".join(seen) or None
+
+
 def tasks_title(entries: list[dict[str, Any]]) -> str:
-    """`SC · <label> · task` for one task, `SC · <first label> +N · N tasks`
-    for several, at most workflows.TITLE_CHARS: the name is cut, never the
-    count."""
+    """`SC · [<workspace>] <label> · task` for one task, `SC · [<workspace>]
+    <first label> +N · N tasks` for several, at most workflows.TITLE_CHARS:
+    the name is cut, never the workspace or the count."""
     count = len(entries)
     name = _task_name(entries[0]) if entries else "tasks"
     if count > 1:
         name = f"{name} +{count - 1}"
-    title = workflows.workflow_title(name, count)
+    title = workflows.workflow_title(name, count, _tasks_workspace(entries))
     # workflow_title ends in ` · N step(s)`; a single task is a task.
     head, _, _ = title.rpartition(" · ")
     return head + (" · task" if count == 1 else f" · {count} tasks")
@@ -262,13 +314,17 @@ def tasks_title(entries: list[dict[str, Any]]) -> str:
 
 def for_tasks(entries: list[dict[str, Any]]) -> dict[str, Any]:
     """ONE titled copy that starts an `sc:task` row per task in `entries` --
-    each `{task_id, label?, console?}` -- up to MAX_ATTACHED_TASKS. The rest
-    come back in `not_followed`. Reads nothing and submits nothing."""
+    each `{task_id, label?, console?, workspace?}` -- up to the live-row cap
+    (`max_live_rows()`, 30 unless the plugin's option says otherwise). The
+    rest come back in `not_followed`. Reads nothing and submits nothing."""
+    cap = max_live_rows()
     wanted = [e for e in entries if isinstance(e, dict) and e.get("task_id")]
-    follow = wanted[:MAX_ATTACHED_TASKS]
+    follow = wanted[:cap]
     rows = []
     for entry in follow:
         row: dict[str, Any] = {"task_id": str(entry["task_id"]), "title": _task_name(entry)}
+        if isinstance(entry.get("workspace"), str) and entry["workspace"].strip():
+            row["workspace"] = entry["workspace"].strip()
         if isinstance(entry.get("console"), str) and entry["console"].strip():
             row["console"] = entry["console"].strip()
         rows.append(row)
@@ -277,18 +333,33 @@ def for_tasks(entries: list[dict[str, Any]]) -> dict[str, Any]:
         f"{title}: each SwarmCloud single task is shown here as one [SwarmCloud] row, "
         "titled from its label, with its console link. Nothing is submitted"
     )
-    out = _launch(title, description, {"attach_tasks": rows})
+    # `max_rows`: the cap this bridge used, so run.js -- which caps the rows
+    # it starts too, at 30 when told nothing -- follows every task handed it.
+    out = _launch(title, description, {"attach_tasks": rows, "max_rows": cap})
     out["task_ids"] = [row["task_id"] for row in rows]
     out["not_followed"] = [
-        {"task_id": str(e["task_id"]), "label": e.get("label"), "follow_with": "swarm_follow"}
-        for e in wanted[MAX_ATTACHED_TASKS:]
+        {"task_id": str(e["task_id"]), "workspace": e.get("workspace"), "label": e.get("label"),
+         "follow_with": "swarm_follow"}
+        for e in wanted[cap:]
     ]
     out["launch_with"] = "the Workflow tool with {scriptPath: <script_path>, args: <args>}"
     return out
 
 
+def named_workspaces(entries: list[dict[str, Any]], names: dict[str, str]) -> list[dict[str, Any]]:
+    """`entries` with each `workspace` (a tenant id, as the listing read it off
+    the API's documents) shown as its display name where `names` -- the API's
+    `GET /v1/tenants/mine` -- gives one that fits. The same entries, changed in
+    place, in the same order."""
+    for entry in entries:
+        if entry.get("workspace"):
+            entry["workspace"] = workflows.workspace_of({"tenant_id": entry["workspace"]}, names)
+    return entries
+
+
 def for_all(client: SwarmClient) -> dict[str, Any]:
-    """One titled copy per running workflow, newest first, up to the cap, and
+    """One titled copy per running workflow, newest first and grouped by
+    workspace (`sc.group_by_workspace`), up to the live-row cap, and
     one more for the caller's running single tasks (#830)."""
     from . import sc
 
@@ -300,18 +371,23 @@ def for_all(client: SwarmClient) -> dict[str, Any]:
     except SwarmError as exc:
         singles, singles_error = None, str(exc)
     listing = sc.running_workflows(client)
-    entries = [e for e in listing.get("workflows") or [] if isinstance(e, dict) and e.get("workflow_id")]
+    names = workflows.workspace_names(client)
+    cap = max_live_rows()
+    entries = sc.group_by_workspace(named_workspaces(
+        [e for e in listing.get("workflows") or [] if isinstance(e, dict) and e.get("workflow_id")], names,
+    ))
     launches = []
-    for entry in entries[:MAX_ATTACHED_WORKFLOWS]:
+    for entry in entries[:cap]:
         workflow_id = str(entry["workflow_id"])
         name = workflows.title_name(stored=entry.get("title") or entry.get("label"), workflow_id=workflow_id)
-        launches.append(_attach_launch(workflow_id, name, int(entry.get("steps_total") or 0)))
+        launches.append(_attach_launch(workflow_id, name, int(entry.get("steps_total") or 0), entry.get("workspace")))
     not_followed = [
-        {"workflow_id": e["workflow_id"], "title": e.get("title") or e.get("label"),
+        {"workflow_id": e["workflow_id"], "workspace": e.get("workspace"), "title": e.get("title") or e.get("label"),
          "attach_with": f"/sc attach {e['workflow_id']}"}
-        for e in entries[MAX_ATTACHED_WORKFLOWS:]
+        for e in entries[cap:]
     ]
     out: dict[str, Any] = {
+        "max_live_rows": cap,
         "count": len(entries),
         "launches": launches,
         "not_followed": not_followed,
@@ -326,7 +402,7 @@ def for_all(client: SwarmClient) -> dict[str, Any]:
     if singles_error is not None:
         out["single_tasks_error"] = singles_error
     elif singles and singles["tasks"]:
-        task_launch = for_tasks(singles["tasks"])
+        task_launch = for_tasks(sc.group_by_workspace(named_workspaces(singles["tasks"], names)))
         launches.append(task_launch)
         out["single_tasks"] = len(singles["tasks"])
         not_followed.extend(task_launch.pop("not_followed"))

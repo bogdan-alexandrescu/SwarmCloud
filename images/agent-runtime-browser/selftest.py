@@ -35,7 +35,15 @@ attempt at 3am:
      module exports the attach and refuses a launch, the attach drives a real
      Chromium's existing context over CDP without one method the live gate
      refuses and leaves the browser running when it closes, and the MCP
-     server lists its tools through the wrapper (JEV-IMAGE, part of #1030).
+     server lists its tools through the wrapper (JEV-IMAGE, part of #1030);
+ 10. the patched jev-browser exports its backend adapter; unset
+     JEV_API_COMPAT leaves TypeSafe's request untouched (object state, the
+     TypeSafe key, TypeSafe's URL); JEV_API_COMPAT=internal with no
+     TYPESAFE_API_KEY does not throw, sends a string state, described choice
+     criteria and the placeholder key -- never the TypeSafe key, even when
+     one is set -- and jev-browser's own decide()/resolve() turn the recorded
+     internal-API answers into a numeric element index, one stage and two;
+     internal toward TypeSafe's URL is refused (JUDGE-ADAPT, part of #1030).
 """
 
 from __future__ import annotations
@@ -45,6 +53,7 @@ import json
 import os
 import pwd
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -81,6 +90,9 @@ JEV_ROOT = "/opt/swarm/jev-browser"
 JEV_WRAPPER = f"{JEV_ROOT}/bin/jev-browser-mcp"
 JEV_PACKAGE = f"{JEV_ROOT}/node_modules/jev-browser"
 JEV_PROBE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jev-browser", "attach-probe.mjs")
+#: The backend adapter's probe (JUDGE-ADAPT) and the internal API's recorded answers it replays.
+JEV_COMPAT_PROBE = os.path.join(os.path.dirname(JEV_PROBE), "compat-probe.mjs")
+JEV_COMPAT_FIXTURE = os.path.join(os.path.dirname(JEV_PROBE), "fixtures", "internal-decide.json")
 JEV_REFUSAL = "jev-browser here drives only the live browser the person watches"
 #: The MCP server's tools, as jev-browser 0.2.0 registers them.
 JEV_TOOLS = {
@@ -375,6 +387,56 @@ def jev_browser(version: str) -> None:
         proc.wait(timeout=30)
 
 
+def _compat_probe(env: dict[str, str]) -> subprocess.CompletedProcess:
+    return subprocess.run(["node", JEV_COMPAT_PROBE, f"{JEV_PACKAGE}/src/index.mjs", JEV_COMPAT_FIXTURE],
+                          env=env, capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+
+
+def jev_compat() -> None:
+    base = {k: v for k, v in os.environ.items() if not k.startswith(("JEV_", "TYPESAFE_"))}
+    base["HOME"] = tempfile.mkdtemp()
+    key = "ts-" + secrets.token_hex(12)  # built at run time: nothing here looks like a credential
+    internal_url = "http://internal.invalid/jev/v1/decide"
+
+    def run(env: dict[str, str], what: str) -> dict:
+        done = _compat_probe({**base, **env})
+        check(done.returncode == 0, f"{what}: the compat probe ran (exit {done.returncode}) {done.stderr[-600:]!r}")
+        return json.loads(done.stdout.strip().splitlines()[-1])
+
+    typesafe = run({"TYPESAFE_API_KEY": key}, "TypeSafe")
+    check(typesafe["mode"] == "typesafe" and [(s["url"], s["auth"], s["state_type"]) for s in typesafe["sent"]]
+          == [("https://api.typesafe.ai/v1/systemone", "typesafe_key", "object")],
+          f"JEV_API_COMPAT unset: TypeSafe's URL, its key, the object state, untouched: {typesafe['sent']}")
+
+    for env, what in (({"JEV_API_COMPAT": "internal", "JEV_API_URL": internal_url}, "internal, no TypeSafe key"),
+                      ({"JEV_API_COMPAT": "internal", "JEV_API_URL": internal_url, "TYPESAFE_API_KEY": key},
+                       "internal, a TypeSafe key set")):
+        out = run(env, what)
+        sent = out["sent"]
+        check(out["key"] == "placeholder" and len(sent) == 4 and {s["auth"] for s in sent} == {"placeholder"},
+              f"{what}: apiKey() does not throw and only the placeholder is sent: {[s['auth'] for s in sent]}")
+        check(all(s["url"] == internal_url and s["state_type"] == "string" and s["state_parses"] for s in sent),
+              f"{what}: every request is a JSON-string state to the internal URL")
+        check(all(isinstance(v, str) and v for s in sent for c in s["choices"].values() for v in c.values()),
+              f"{what}: every choice option is described")
+        check(sent[1]["choices"]["target"] == {"0": "a Home", "1": "input:text Search", "2": "button Go"},
+              f"{what}: the element pick is described from page.elements: {sent[1]['choices'].get('target')}")
+        check(sorted(sent[2]["choices"]["group"], key=int) == [str(g) for g in range(9)]
+              and sent[2]["choices"]["group"]["4"].startswith("Item 120 | Item 121"),
+              f"{what}: the group pick is described from page.groups")
+        check(out["single"] == {"stages": 1, "tool": "click", "target": 2, "target_type": "number", "p_target": 0.98},
+              f"{what}: decide()/resolve() read the internal answer as element 2: {out['single']}")
+        check(out["grouped"] == {"stages": 2, "groups_considered": [4], "tool": "click", "target": 137,
+                                 "target_type": "number", "p_target": 0.98},
+              f"{what}: the two-stage pick reads as element 137: {out['grouped']}")
+        check("names neither `page.elements` nor `page.groups`" in out["undescribable"] and out["undescribable_sent"] == 0,
+              f"{what}: a choice nothing describes fails and sends nothing: {out['undescribable']!r}")
+
+    done = _compat_probe({**base, "JEV_API_COMPAT": "internal", "TYPESAFE_API_KEY": key})
+    check(done.returncode != 0 and "the API URL is TypeSafe's" in done.stderr and key not in done.stderr + done.stdout,
+          f"internal toward TypeSafe's URL is refused: {done.returncode} {done.stderr[-300:]!r}")
+
+
 if __name__ == "__main__":
     real_browser()
     stub_launches(sys.argv[1])
@@ -383,4 +445,5 @@ if __name__ == "__main__":
     no_codex()
     dev_browser(sys.argv[1], os.environ.get("DEV_BROWSER_VERSION", ""))
     jev_browser(os.environ.get("JEV_BROWSER_VERSION", ""))
+    jev_compat()
     print("browser image self-test passed")

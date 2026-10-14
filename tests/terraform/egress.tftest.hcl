@@ -141,6 +141,16 @@ run "off_by_default_nothing_reads_the_credential_and_nothing_is_proxied" {
     condition     = local.egress_config.enabled == false && length(local.egress_config.tenants) == 0
     error_message = "swarm-egress's setting ships OFF with no tenant named (§6.1)"
   }
+
+  assert {
+    # The dispatcher's side (lane EGRESS-DISPATCH): off, so no browser pod is
+    # labelled for the proxy path or told to route through it.
+    condition = (
+      local.service_env["swarm-scheduler"]["BROWSER_EGRESS_ENABLED"] == "false"
+      && local.service_env["swarm-scheduler"]["BROWSER_EGRESS_TENANTS"] == ""
+    )
+    error_message = "the switch ships OFF on the scheduler too: no pod is dispatched with SWARM_BROWSER_EGRESS=proxy"
+  }
 }
 
 run "on_only_swarm_egress_reads_the_credential" {
@@ -190,6 +200,20 @@ run "on_only_swarm_egress_reads_the_credential" {
       && local.api_secret_env["SWARM_EGRESS_KEY"].secret == "swarm-egress-key"
     )
     error_message = "swarm-api reads the same switch swarm-egress does, and the key by reference"
+  }
+
+  assert {
+    # The dispatcher reads the SAME switch, so it never routes a pod swarm-api
+    # would refuse a ticket, nor leaves direct a pod swarm-api would mint for
+    # (docs/browser-egress.md §10.3). The bypass list is swarm-egress's.
+    condition = (
+      local.service_env["swarm-scheduler"]["BROWSER_EGRESS_ENABLED"] == local.service_env["swarm-api"]["BROWSER_EGRESS_ENABLED"]
+      && local.service_env["swarm-scheduler"]["BROWSER_EGRESS_TENANTS"] == local.service_env["swarm-api"]["BROWSER_EGRESS_TENANTS"]
+      && local.service_env["swarm-scheduler"]["BROWSER_EGRESS_PROFILES"] == local.service_env["swarm-api"]["BROWSER_EGRESS_PROFILES"]
+      && local.service_env["swarm-scheduler"]["BROWSER_EGRESS_ENABLED"] == "true"
+      && local.service_env["swarm-scheduler"]["BROWSER_EGRESS_BYPASS"] == join(",", local.egress_config.bypass_hosts)
+    )
+    error_message = "the scheduler dispatches by the switch swarm-api mints by, with swarm-egress's bypass list"
   }
 
   # $150 at $8/GB is 18.75 GB: the cap swarm-egress answers with before the

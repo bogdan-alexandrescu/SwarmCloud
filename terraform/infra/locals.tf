@@ -834,7 +834,10 @@ locals {
       # relay is off, which swarm_api.settings reads as "no relay".
       SWARM_LIVE_URL = local.live_relay_url
     })
-    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, {
+    "swarm-scheduler" = merge(local.common_env, local.spec_worker_env, local.scheduler_browser_egress_env, {
+      # local.scheduler_browser_egress_env: the browser egress switch the
+      # dispatcher labels and routes a live-browser pod by (egress.tf).
+      #
       # local.spec_worker_env, merged in above: the four step-spec settings
       # (contract request 34), which the scheduler passes VERBATIM onto every
       # Cloud Run Job it creates itself (#353, scheduler.dispatch.spec_job_env),

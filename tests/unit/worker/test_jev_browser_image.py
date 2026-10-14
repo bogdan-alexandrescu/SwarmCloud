@@ -135,6 +135,9 @@ def test_the_patch_touches_only_the_pinned_package():
         "node_modules/jev-browser/src/session.mjs",
         "node_modules/jev-browser/src/index.mjs",
         "node_modules/jev-browser/bin/jev-browser-mcp.mjs",
+        # JUDGE-ADAPT: the internal decision API's request adapter, and jev()'s call to it.
+        "node_modules/jev-browser/src/jev.mjs",
+        "node_modules/jev-browser/src/internal-compat.mjs",
     }
     patches = sorted(p.name for p in (JEV_DIR / "patches").iterdir())
     assert patches == [PATCH.name]
@@ -187,7 +190,7 @@ FAKE_NODE = """#!{python}
 import json, os, sys
 keep = ("JEV_BROWSER_CDP_ENDPOINT", "JEV_BROWSER_NO_INSTALL", "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD",
         "JEV_BROWSER_PROFILE", "JEV_BROWSER_HEADED", "JEV_API_URL", "JEV_MODEL", "TYPESAFE_API_KEY",
-        "SWARM_JEV_BACKEND")
+        "SWARM_JEV_BACKEND", "JEV_API_COMPAT")
 print(json.dumps({{"argv": sys.argv[1:], "env": {{k: os.environ.get(k) for k in keep}}}}))
 """
 
@@ -265,6 +268,8 @@ def test_an_internal_backend_passes_its_url_through_and_no_typesafe_key(wrapper,
     # Bearer token: here that is a fixed marker, never the TypeSafe key.
     assert env["TYPESAFE_API_KEY"] != key and key not in json.dumps(seen)
     assert env["TYPESAFE_API_KEY"] == "swarm-internal-no-typesafe-key"
+    # JUDGE-ADAPT: the patched jev() reshapes each request for the internal API.
+    assert env["JEV_API_COMPAT"] == "internal"
     assert env["JEV_MODEL"] is None
 
 
@@ -299,6 +304,16 @@ def test_an_unknown_backend_is_refused(wrapper):
     done = _wrap(wrapper, env={"SWARM_CDP_ENDPOINT": ENDPOINT, "SWARM_JEV_BACKEND": "openai"})
     assert done.returncode == 2 and done.stdout == ""
     assert "unknown judgment backend" in done.stderr
+
+
+def test_the_wrapper_passes_the_backend_compat_switch_through(wrapper):
+    # JUDGE-ADAPT: the wrapper sets JEV_API_COMPAT=internal itself for an internal backend.
+    # On the TypeSafe path it drops JEV_API_URL and passes the switch as it came, and the
+    # patched jev() refuses internal toward TypeSafe's URL
+    # (tests/unit/worker/test_jev_internal_compat.py), so passing it is safe.
+    seen = _passed(_wrap(wrapper, env={"SWARM_CDP_ENDPOINT": ENDPOINT, "JEV_API_COMPAT": "internal"}))
+    assert seen["env"]["JEV_API_COMPAT"] == "internal"
+    assert "JEV_API_COMPAT" in WRAPPER.read_text()  # and the wrapper says why
 
 
 def test_the_wrapper_is_a_house_script():
