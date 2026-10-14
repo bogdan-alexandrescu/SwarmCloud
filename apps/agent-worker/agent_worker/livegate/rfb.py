@@ -120,6 +120,22 @@ is back. The console's strip shows it (LiveBrowser.tsx `gateReason`).
 MEASURED 2026-10-13 on release 1e86c37e: a flat page area for ten minutes on
 Google's reCAPTCHA page, and nothing on the console said why.
 
+WHAT A VIEWER WAS SHOWN IS MEASURED (LIVE-MEASURE; part of #1030). Owner
+decision 2026-10-13: Phase 1 of the live-browser plan is "measure", and
+whether to keep warm pods is decided from these numbers. Each connection has
+a `ViewerMetrics`, fed by the hub with every published frame and by the
+session with every input and update, and logs it as ONE JSON line on the
+`agent_worker.livegate.metrics` logger (`event=live_viewer_metrics`) when it
+closes and every `METRICS_INTERVAL_SECONDS` while it is open. The gate writes
+that logger's lines to stderr as bare JSON, so Cloud Logging parses them into
+jsonPayload and scripts/live-report.sh can query them. The line holds frames
+captured and changed, updates, the update rate in the seconds the page
+changed, the longest a changed frame waited for an update, the time the frame
+was the unavailable (#555) or page-blanked (#222) fill, input-to-frame p50
+and p95 for the inputs a changed frame followed within
+`INPUT_CHANGE_WINDOW_SECONDS` (a key that changed nothing is not timed to a
+later, unrelated change), and the input counts. Numbers only, as above.
+
 THE POINTER (LB-CURSOR; part of #1030). Xvfb's framebuffer never holds the X
 pointer, and noVNC hides its own over the canvas, so without this the person
 in control clicks blind. A viewer that lists the Cursor pseudo-encoding (-239,
@@ -137,6 +153,8 @@ local cursor is not painted one too: it would trail its own pointer.
 from __future__ import annotations
 
 import asyncio
+import bisect
+import json
 import logging
 import statistics
 import struct
@@ -156,6 +174,9 @@ from .pointer import WIDTH as CURSOR_WIDTH
 from .pointer import PointerTracker, bitmask, paint, shape
 
 log = logging.getLogger(__name__)
+#: The per-connection metrics line's logger: bare JSON on stderr in the gate
+#: (`__main__.configure_metrics_logging`), so Cloud Logging reads its fields.
+metrics_log = logging.getLogger(__name__.rsplit(".", 1)[0] + ".metrics")
 
 PROTOCOL_VERSION = b"RFB 003.008\n"
 _SECURITY_NONE = 1
@@ -205,6 +226,23 @@ _TIGHT_MIN_TO_COMPRESS = 12
 _ENCODE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="live-rfb")
 #: How many input-to-frame samples a connection keeps for its close log.
 _LATENCY_SAMPLES = 512
+
+#: An open connection's metrics line, this often (module docstring). The
+#: close line covers what is left; a minute keeps a long session queryable
+#: while it runs without a line per frame.
+METRICS_INTERVAL_SECONDS = 60.0
+#: A changed frame captured this long after an input is taken to be that
+#: input's doing; an input no change followed within it changed nothing and is
+#: not timed (module docstring). Two seconds is ten capture intervals watched
+#: and longer than a page takes to echo a key, so a slow STREAM still counts
+#: in full: the wait is measured to the update, not to the capture.
+INPUT_CHANGE_WINDOW_SECONDS = 2.0
+#: The input-to-frame histogram's upper bounds, in ms; the last bucket is
+#: everything above. Per-connection percentiles cannot be pooled, a histogram
+#: can, and 200 is a bound so the Phase-2 target (p95 < 200 ms) is read exactly.
+INPUT_TO_FRAME_BOUNDS_MS = (50, 100, 150, 200, 300, 500, 1000, 2000, 5000)
+#: `jsonPayload.event` of the metrics line: scripts/live-report.sh filters on it.
+VIEWER_METRICS_EVENT = "live_viewer_metrics"
 
 #: §5.10: controller input events per second, dropped above.
 MAX_INPUT_EVENTS_PER_SECOND = 200
@@ -303,6 +341,8 @@ class FrameHub:
         #: stalled connection is measured against (module docstring).
         self.changes = 0
         self._waiters: set[asyncio.Event] = set()
+        #: Every open connection's `ViewerMetrics`, told of each published frame.
+        self._metrics: set[ViewerMetrics] = set()
         #: Where the pointer last was, in this frame's coordinates (module docstring).
         self.pointer = PointerTracker(on_move=self._pointer_moved)
 
@@ -316,9 +356,15 @@ class FrameHub:
         old, new = self._current.frame, frame.frame
         # One memcmp of the masked pixels: a static page, or the mask's
         # fill frame after frame, is not a change.
-        if (old.width, old.height, old.stride) != (new.width, new.height, new.stride) or old.pixels != new.pixels:
+        changed = ((old.width, old.height, old.stride) != (new.width, new.height, new.stride)
+                   or old.pixels != new.pixels)
+        if changed:
             self.changes += 1
         self._current = frame
+        if self._metrics:
+            now = time.monotonic()
+            for metrics in self._metrics:
+                metrics.frame(now, changed=changed, outcome=frame.outcome, at=frame.at)
         self._wake_all()
 
     def _pointer_moved(self) -> None:
@@ -335,6 +381,12 @@ class FrameHub:
 
     def unsubscribe(self, event: asyncio.Event) -> None:
         self._waiters.discard(event)
+
+    def measure(self, metrics: ViewerMetrics) -> None:
+        self._metrics.add(metrics)
+
+    def unmeasure(self, metrics: ViewerMetrics) -> None:
+        self._metrics.discard(metrics)
 
 
 class ControlState:
@@ -410,6 +462,179 @@ class SessionCounts:
         if len(samples) < 2:
             return samples[0] if samples else None
         return statistics.quantiles(samples, n=100, method="inclusive")[q - 1]
+
+
+class ViewerMetrics:
+    """What one connection was shown, measured (LIVE-MEASURE, module docstring).
+
+    Fed with explicit `time.monotonic()` readings: `frame` by the hub for every
+    published frame, `input` and `update` by the session. `snapshot` is the
+    log line. Constant memory: per-second counters, not a list of frames.
+    """
+
+    def __init__(self, conn_id: str, *, now: float, outcome: Outcome) -> None:
+        self.conn_id = conn_id
+        self._opened = now
+        self.frames_captured = 0
+        self.frames_changed = 0
+        self.updates = 0
+        # The update rate while the page changed: whole seconds since the
+        # connection opened, the one being counted and the closed ones' totals.
+        self._second = 0
+        self._second_changed = False
+        self._second_updates = 0
+        self._changing_seconds = 0
+        self._updates_while_changing = 0
+        # The latest changed frame: (its capture time, when it was published).
+        self._last_change: tuple[float, float] | None = None
+        # The oldest change this viewer has not been sent: (captured, published).
+        self._owed: tuple[float, float] | None = None
+        self._longest_gap = 0.0
+        self._outcome = outcome
+        self._outcome_since = now
+        self._unavailable = 0.0
+        self._page_blanked = 0.0
+        # The input being timed, and the capture time of the change it caused.
+        self._input_at: float | None = None
+        self._input_change_at: float | None = None
+        self.input_to_frame_ms: deque[float] = deque(maxlen=_LATENCY_SAMPLES)
+        self._input_hist = [0] * (len(INPUT_TO_FRAME_BOUNDS_MS) + 1)
+        self.inputs_unchanged = 0
+        #: KeyEvents read while this connection held control: what `keys`
+        #: (injected) is measured against, so a lost key shows.
+        self.keys_read = 0
+
+    def _tick(self, now: float) -> None:
+        second = int(now - self._opened)
+        if second != self._second:
+            if self._second_changed:
+                self._changing_seconds += 1
+                self._updates_while_changing += self._second_updates
+            self._second, self._second_changed, self._second_updates = second, False, 0
+
+    def _expire_input(self, now: float) -> None:
+        """An input no change followed within the window changed nothing."""
+        if (self._input_at is not None and self._input_change_at is None
+                and now - self._input_at > INPUT_CHANGE_WINDOW_SECONDS):
+            self.inputs_unchanged += 1
+            self._input_at = None
+
+    def frame(self, now: float, *, changed: bool, outcome: Outcome, at: float) -> None:
+        """The hub published a frame (`changed`: its pixels differ from the last)."""
+        self._tick(now)
+        self.frames_captured += 1
+        if outcome is not self._outcome:
+            self._close_outcome(now)
+            self._outcome = outcome
+        if not changed:
+            return
+        self.frames_changed += 1
+        self._second_changed = True
+        self._last_change = (at, now)
+        if self._owed is None:
+            self._owed = self._last_change
+        self._expire_input(now)
+        if self._input_at is not None and self._input_change_at is None and at >= self._input_at:
+            self._input_change_at = at
+
+    def input(self, now: float) -> None:
+        """The controller's input reached the display."""
+        self._expire_input(now)
+        if self._input_at is None:
+            self._input_at, self._input_change_at = now, None
+
+    def update(self, now: float, *, sent_at: float) -> None:
+        """An update was sent, rendered from the frame captured at `sent_at`."""
+        self._tick(now)
+        self.updates += 1
+        self._second_updates += 1
+        owed, last = self._owed, self._last_change
+        if owed is not None and last is not None and owed[0] <= sent_at:
+            # It carried the oldest change owed. One published while it
+            # rendered is still owed, from when it was published.
+            self._longest_gap = max(self._longest_gap, now - owed[1])
+            self._owed = None if last[0] <= sent_at else last
+        if self._input_change_at is not None and self._input_change_at <= sent_at:
+            assert self._input_at is not None
+            waited = (now - self._input_at) * 1000
+            self.input_to_frame_ms.append(waited)
+            self._input_hist[bisect.bisect_left(INPUT_TO_FRAME_BOUNDS_MS, waited)] += 1
+            self._input_at = self._input_change_at = None
+
+    def _close_outcome(self, now: float) -> None:
+        held = now - self._outcome_since
+        if self._outcome is Outcome.UNAVAILABLE:
+            self._unavailable += held
+        elif self._outcome is Outcome.PAGE_BLANKED:
+            self._page_blanked += held
+        self._outcome_since = now
+
+    def snapshot(self, now: float, counts: SessionCounts, *, final: bool) -> dict[str, Any]:
+        """The log line's fields as of `now`; reads the open second and gap
+        without closing them, so a periodic line changes nothing."""
+        self._expire_input(now)
+        changing, updates = self._changing_seconds, self._updates_while_changing
+        if self._second_changed:
+            changing, updates = changing + 1, updates + self._second_updates
+        gap = self._longest_gap
+        if self._owed is not None:
+            gap = max(gap, now - self._owed[1])
+        unavailable, blanked = self._unavailable, self._page_blanked
+        if self._outcome is Outcome.UNAVAILABLE:
+            unavailable += now - self._outcome_since
+        elif self._outcome is Outcome.PAGE_BLANKED:
+            blanked += now - self._outcome_since
+        samples = sorted(self.input_to_frame_ms)
+
+        def pct(q: int) -> float | None:
+            if not samples:
+                return None
+            if len(samples) == 1:
+                return round(samples[0], 1)
+            return round(statistics.quantiles(samples, n=100, method="inclusive")[q - 1], 1)
+
+        return {
+            "event": VIEWER_METRICS_EVENT,
+            "conn": self.conn_id,
+            # The relay's recorder connects as "rec-...", a person as "v-...".
+            "role": "recorder" if self.conn_id.startswith("rec-") else "viewer",
+            "final": final,
+            "seconds": round(now - self._opened, 3),
+            "frames_captured": self.frames_captured,
+            "frames_changed": self.frames_changed,
+            "updates": self.updates,
+            "bytes": counts.bytes_sent,
+            "changing_seconds": changing,
+            "updates_while_changing": updates,
+            "fps_while_changing": round(updates / changing, 2) if changing else None,
+            "longest_gap_ms": round(gap * 1000, 1),
+            "unavailable_ms": round(unavailable * 1000, 1),
+            "page_blanked_ms": round(blanked * 1000, 1),
+            "blank_ms": round((unavailable + blanked) * 1000, 1),
+            "input_samples": len(samples),
+            "inputs_unchanged": self.inputs_unchanged,
+            "input_to_frame_p50_ms": pct(50),
+            "input_to_frame_p95_ms": pct(95),
+            "input_to_frame_bounds_ms": list(INPUT_TO_FRAME_BOUNDS_MS),
+            "input_to_frame_hist": list(self._input_hist),
+            "keys_read": self.keys_read,
+            "keys": counts.key_events,
+            "pointer": counts.pointer_events,
+            "pastes": counts.pastes,
+            "dropped": counts.dropped,
+            "stalls": counts.stalls,
+        }
+
+
+def log_viewer_metrics(line: dict[str, Any]) -> None:
+    """One metrics line, as a JSON object Cloud Logging reads as jsonPayload."""
+    payload = {
+        "severity": "INFO",
+        "message": (f"live viewer metrics conn={line.get('conn')} final={line.get('final')} "
+                    f"updates={line.get('updates')} fps_while_changing={line.get('fps_while_changing')}"),
+        **line,
+    }
+    metrics_log.info(json.dumps(payload, sort_keys=True))
 
 
 class _Bucket:
@@ -666,6 +891,7 @@ class RfbSession:
         self._inputs_ready = asyncio.Event()
         self._injecting = False  # an injection is awaiting its answer: the injector is behind
         self.counts = SessionCounts()
+        self.metrics = ViewerMetrics(conn_id, now=time.monotonic(), outcome=hub.current.outcome)
         self._format: _Format | None = None  # the viewer's; None until ServerInit
         self._encodings: tuple[int, ...] = (ENCODING_RAW,)
         self._cursor_due = False  # send the cursor shape with the next update
@@ -692,11 +918,13 @@ class RfbSession:
     async def serve(self) -> None:
         """Run the connection until either side ends it."""
         self._hub.subscribe(self._wake)
+        self._hub.measure(self.metrics)
         loops: list[asyncio.Task[None]] = []
         try:
             await self._handshake()
             loops = [asyncio.create_task(self._read_loop()), asyncio.create_task(self._write_loop()),
-                     asyncio.create_task(self._inject_loop()), asyncio.create_task(self._watch_stall())]
+                     asyncio.create_task(self._inject_loop()), asyncio.create_task(self._watch_stall()),
+                     asyncio.create_task(self._report_metrics())]
             done, _ = await asyncio.wait(loops, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 exc = task.exception()
@@ -715,6 +943,7 @@ class RfbSession:
                     task.cancel()
             await asyncio.gather(*(t for t in tasks if t is not None), return_exceptions=True)
             self._hub.unsubscribe(self._wake)
+            self._hub.unmeasure(self.metrics)
             await self._control.connection_closed(self.conn_id)
             self._writer.close()
             c = self.counts
@@ -723,6 +952,13 @@ class RfbSession:
                      "bytes=%d stalls=%d input_to_frame_ms p50=%s p95=%s", self.conn_id, c.key_events,
                      c.pointer_events, c.pastes, c.dropped, c.updates, c.bytes_sent, c.stalls,
                      "-" if p50 is None else f"{p50:.0f}", "-" if p95 is None else f"{p95:.0f}")
+            log_viewer_metrics(self.metrics.snapshot(time.monotonic(), c, final=True))
+
+    async def _report_metrics(self) -> None:
+        """The metrics line every `METRICS_INTERVAL_SECONDS` while the connection is open."""
+        while True:
+            await asyncio.sleep(METRICS_INTERVAL_SECONDS)
+            log_viewer_metrics(self.metrics.snapshot(time.monotonic(), self.counts, final=False))
 
     async def _handshake(self) -> None:
         self._writer.write(PROTOCOL_VERSION)
@@ -778,6 +1014,8 @@ class RfbSession:
                 self._wake.set()
             elif kind == _KEY_EVENT:
                 down, keysym = struct.unpack(">BxxI", await read(7))
+                if self._control.holds(self.conn_id):
+                    self.metrics.keys_read += 1
                 if self._admit(1):
                     self._input()
                     self._queue(("key", keysym, bool(down)))
@@ -821,6 +1059,7 @@ class RfbSession:
         """The controller's input reached the display: time it to the frame that shows it."""
         if self._input_at is None:
             self._input_at = time.monotonic()
+        self.metrics.input(time.monotonic())
 
     def _inject_pointer(self, buttons: int, x: int, y: int) -> None:
         self._input()
@@ -993,6 +1232,7 @@ class RfbSession:
             return
         self._write_update(rects)
         await self._writer.drain()
+        self.metrics.update(time.monotonic(), sent_at=current.at)
         if changed and self._input_at is not None and current.at >= self._input_at:
             self.counts.input_to_frame_ms.append((time.monotonic() - self._input_at) * 1000)
             self._input_at = None
