@@ -315,3 +315,57 @@ describe('the phone', () => {
     expect(screen.getByRole('button', { name: /Close notifications/ })).toBeTruthy()
   })
 })
+
+// QA14-UI (owner QA 2026-10-13): "Your agent asked 1 question" named only the
+// task id. The item shows the first open question's text, read from
+// `GET /v1/tasks/{id}/questions`, and the feed's detail names the step.
+// MUTATION: drop the question read from the bell's item.
+describe('an agent-questions item', () => {
+  const asked = (question: string, answered = false) => ({
+    question,
+    options: [],
+    recommended: null,
+    context: null,
+    answer: answered ? { question_index: 0, question, choice: 'a', text: null, by: 'a@x', at: minutesAgo(1), history: [] } : null,
+  })
+
+  it('shows the first open question under its title', async () => {
+    const items = [
+      note('task:questions:task_q', {
+        needs_you: true,
+        title: 'Your agent asked 2 questions',
+        detail: 'fix-heartbeat · Task task_q',
+        href: '/agents/recent/task_q#questions',
+      }),
+    ]
+    const extra: Handler = (m, url) =>
+      m === 'GET' && url.split('?')[0] === '/v1/tasks/task_q/questions'
+        ? {
+            status: 200,
+            body: {
+              task_id: 'task_q',
+              count: 2,
+              status: 'ok',
+              questions: [asked('Which branch should I base it on?', true), asked('Should the retry cap be 3 or 5?')],
+              redacted: false,
+              redaction_count: 0,
+            },
+          }
+        : null
+    await mountBell(notifications(() => feed(items), extra))
+    const p = await openPanel()
+    await waitFor(() => expect(p.querySelector('.nt-question')?.textContent).toContain('Should the retry cap be 3 or 5?'), WAIT)
+    expect(visible(p.querySelector('.nt-detail'))).toContain('fix-heartbeat')
+  })
+
+  it('cuts a long question on a word, and says nothing for an item that is no question', async () => {
+    const { firstQuestion, QUESTION_CHARS } = await import('../Notifications')
+    const long = 'Should I '.concat('rewrite the scheduler tick loop '.repeat(6), 'now?')
+    const read = { task_id: 't', count: 1, status: 'ok' as const, questions: [asked(long)], redacted: false, redaction_count: 0 }
+    const cut = firstQuestion(read)!
+    expect(cut.length).toBeLessThanOrEqual(QUESTION_CHARS)
+    expect(cut.endsWith('…')).toBe(true)
+    expect(long.startsWith(cut.slice(0, -1))).toBe(true)
+    expect(firstQuestion({ ...read, questions: [] })).toBeNull()
+  })
+})

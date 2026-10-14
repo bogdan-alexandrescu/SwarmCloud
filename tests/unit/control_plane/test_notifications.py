@@ -276,6 +276,17 @@ def test_an_agents_questions_are_a_needs_you_item(db):
     assert items[0]["href"] == "/agents/recent/task_q#questions"
 
 
+def test_a_questions_item_names_the_step_not_only_the_task_id(db):
+    """QA14-UI (owner QA 2026-10-13): the item said "Task <id>" and nothing
+    about which agent asked. It leads with the step's name, or the runner
+    profile when the task is no workflow step."""
+    _task(db, "task_step", result_summary={"questions": 1}, step_id="fix-heartbeat")
+    _task(db, "task_lone", result_summary={"questions": 1}, step_id=None)
+    by_id = {i["id"]: i for i in notif.agent_questions(_reading(db, _viewer()))}
+    assert by_id["task:questions:task_step"]["detail"] == "fix-heartbeat · Task task_step"
+    assert by_id["task:questions:task_lone"]["detail"] == "mock · Task task_lone"
+
+
 def test_a_task_whose_every_question_is_answered_is_no_longer_listed(db):
     """TASK-ANSWERS (part of #1206): an answer is stored on the task as
     `metadata.owner_answers`; the bell asks only while a question is open."""

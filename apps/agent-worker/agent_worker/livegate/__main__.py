@@ -93,6 +93,7 @@ from .pointer import css_to_frame
 from .presets import DEFAULT_PRESET, MAX_DISPLAY_HEIGHT, MAX_DISPLAY_WIDTH, Device, UnknownPreset, resolve
 from .report import agent_report, device_report, encode_report, page_origin
 from .rfb import ControlState, FrameHub, RfbSession, masked
+from .rfb import metrics_log as rfb_metrics_log
 from .session import OPS as SESSION_OPS
 from .session import SessionCarry
 from .touch import TouchInjector
@@ -1822,6 +1823,20 @@ async def run(cfg: GateConfig, deps: Deps | None = None, *, stop: asyncio.Event 
             loop.remove_signal_handler(sig)
 
 
+def configure_metrics_logging(stream: Any = None) -> None:
+    """The per-viewer metrics line (rfb.py, LIVE-MEASURE) as the bare JSON
+    object `rfb.log_viewer_metrics` formats, nothing in front of it. Cloud
+    Logging parses a container's line into jsonPayload only when the whole
+    line is JSON, and scripts/live-report.sh queries its fields; every other
+    gate line keeps the text format `main` sets."""
+    handler = logging.StreamHandler(sys.stderr if stream is None else stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    metrics = logging.getLogger(rfb_metrics_log.name)
+    metrics.handlers = [handler]
+    metrics.setLevel(logging.INFO)
+    metrics.propagate = False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m agent_worker.livegate",
@@ -1833,6 +1848,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, stream=sys.stderr,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    configure_metrics_logging()
     try:
         cfg = GateConfig.from_env(os.environ)
     except SetupError as exc:
