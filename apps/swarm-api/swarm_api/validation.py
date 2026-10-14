@@ -149,6 +149,11 @@ TYPESAFE_PROVIDER = "typesafe"
 #: either: the tenant's worker account IS the reader it is bound to.
 PROVIDER_KEY_PROVIDERS: frozenset[str] = frozenset({TYPESAFE_PROVIDER})
 
+#: The live browser's tool, a `claude-code-browser` input (contract request
+#: 77, BSTATUS-API). Its names are the catalogue's `choices`; nothing here
+#: restates them.
+BROWSER_TOOL_INPUT_KEY = "browser_tool"
+
 def validate_runner_profile(name: str) -> RunnerProfile:
     profile = RUNNER_PROFILES.get(name)
     if profile is None:

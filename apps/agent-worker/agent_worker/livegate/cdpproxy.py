@@ -152,6 +152,19 @@ wall time the FIRST agent connection was accepted (None until one is), and
 `agent_connections` how many are open now. `on_agents` is told the count on
 every accept and close, so the gate can report it to the console the moment
 it changes rather than on a poll.
+
+WHICH TOOL DROVE IT (BSTATUS-API; part of #1030). Each of the agent's browser
+tools connects with a CLIENT TAG on its endpoint
+(`agent_worker.browser_tools.tag_endpoint`): `http://127.0.0.1:9222/client/<tool>`.
+`split_client` reads the tag off the path (or a `client=` query) and STRIPS
+it: the version answer and the websocket path are matched on the bare path,
+and nothing of the tag is ever sent to Chromium. The version answer echoes it
+into the websocket URL it hands back, so the connection that follows carries
+it too. A tagged connection is that tool's; each command it sends dates
+`tool_last_used`, and `on_tool` is told on a change of tool and at most every
+`TOOL_REPORT_SECONDS` otherwise, so a busy agent is not a report per command.
+An untagged connection, or a tag naming no tool, is served exactly as before
+and attributed to nothing.
 """
 
 from __future__ import annotations
@@ -171,6 +184,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
+from .. import browser_tools
 from . import cdppolicy
 from .cdppolicy import PolicyPaths
 from .scripts import ADD_BINDING, ADD_SCRIPT, REMOVE_BINDING, REMOVE_SCRIPT, ScriptRegistry
@@ -198,6 +212,25 @@ MAX_ACTION_PATH = 256
 #: How long a refused agent connection is asked to wait before it tries
 #: again (`Retry-After`): long enough not to spin, short next to a hand-off.
 RETRY_AFTER_SECONDS = 5
+#: How often a tool still in use is reported again (module docstring).
+TOOL_REPORT_SECONDS = 15.0
+#: A client tag as the path carries it, and the rest of the path after it.
+_CLIENT_PATH = re.compile(r"/" + browser_tools.CLIENT_SEGMENT + r"/([A-Za-z0-9_-]{1,32})(/.*)?")
+
+
+def split_client(target: str) -> tuple[str, str | None]:
+    """A request target's bare path (no tag, no query) and the tool its client
+    tag names, or None when there is no tag or it names no tool."""
+    path, _, query = target.partition("?")
+    tag: str | None = None
+    found = _CLIENT_PATH.fullmatch(path)
+    if found is not None:
+        tag, path = found.group(1), found.group(2) or "/"
+    for pair in query.split("&") if query else ():
+        name, _, value = pair.partition("=")
+        if name == browser_tools.CLIENT_SEGMENT:
+            tag = value
+    return path, tag if tag in browser_tools.TOOLS else None
 
 #: Why the proxy refused an agent method, as the timeline names it: the method
 #: policy (cdppolicy.py), a session the agent's connection does not own, or a
@@ -277,6 +310,8 @@ class AgentConnection:
     sessions: dict[str, str] = field(default_factory=dict)  # child session -> targetId
     auto_attach: bool = False
     closed: bool = False
+    #: The tool its client tag named (`split_client`), or None.
+    client: str | None = None
     #: Held while the return's resync is sent, so a live event cannot land
     #: between its messages (`_replay`).
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -426,6 +461,7 @@ class CdpProxy:
         on_action: Callable[[dict[str, Any]], None] | None = None,
         on_pointer: Callable[[float, float], None] | None = None,
         on_agents: Callable[[int], None] | None = None,
+        on_tool: Callable[[str, float], None] | None = None,
         wall: Callable[[], float] = time.time,
     ) -> None:
         self._send = send_to_chromium
@@ -435,7 +471,12 @@ class CdpProxy:
         self._on_action = on_action
         self._on_pointer = on_pointer
         self._on_agents = on_agents
+        self._on_tool = on_tool
         self._wall = wall
+        #: The tool that sent the last command, and when (epoch seconds):
+        #: None until a tagged connection has (module docstring).
+        self.tool_last_used: tuple[str, float] | None = None
+        self._tool_told_at = 0.0
         #: Wall time (epoch seconds) the first agent connection was accepted;
         #: None until one is. Never cleared: an agent that connected and left
         #: did use this browser.
@@ -493,6 +534,19 @@ class CdpProxy:
     def _agents_changed(self) -> None:
         if self._on_agents is not None:
             self._on_agents(self.agent_connections)
+
+    def _tool_used(self, tool: str | None) -> None:
+        """`tool` sent something now: dated, and told on a change or when due."""
+        if tool is None:
+            return
+        now = self._wall()
+        before = self.tool_last_used
+        self.tool_last_used = (tool, now)
+        if self._on_tool is None:
+            return
+        if before is None or before[0] != tool or now - self._tool_told_at >= TOOL_REPORT_SECONDS:
+            self._tool_told_at = now
+            self._on_tool(tool, now)
 
     # ------------------------------------------------------- the gate's calls
 
@@ -560,8 +614,10 @@ class CdpProxy:
         held = int(self._wall() - since) if since is not None else None
         self._record("cdp_connection_refused", {"cause": cause, "held_seconds": held})
 
-    async def connect_agent(self, link: AgentLink) -> AgentConnection | None:
-        """A new agent connection, or None while the agent is held (`refusal` says why)."""
+    async def connect_agent(self, link: AgentLink, client: str | None = None) -> AgentConnection | None:
+        """A new agent connection, or None while the agent is held (`refusal` says why).
+
+        `client` is the tool its tag named (`split_client`), or None."""
         if self._mode != _OPEN:
             self._refuse_agent()
             return None
@@ -571,12 +627,14 @@ class CdpProxy:
             await self._post("Target.detachFromTarget", {"sessionId": session}, None)
             self._refuse_agent()
             return None
-        connection = AgentConnection(link=link, browser_session=session)
+        connection = AgentConnection(link=link, browser_session=session,
+                                     client=client if client in browser_tools.TOOLS else None)
         self._owner[session] = connection
         self._connections.append(connection)
         if self.agent_connected_at is None:
             self.agent_connected_at = self._wall()
         self._agents_changed()
+        self._tool_used(connection.client)
         return connection
 
     async def disconnect_agent(self, connection: AgentConnection) -> None:
@@ -647,6 +705,7 @@ class CdpProxy:
     async def on_agent_message(self, connection: AgentConnection, message: Mapping[str, Any]) -> None:
         if connection.closed:
             return
+        self._tool_used(connection.client)
         method = message.get("method")
         if "id" not in message:
             return
@@ -1318,7 +1377,9 @@ async def _serve_one(proxy: CdpProxy, reader: asyncio.StreamReader, writer: asyn
     if len(parts) != 3 or parts[0] != "GET":
         _respond(writer, "405 Method Not Allowed")
         return
-    path = parts[1]
+    # The client tag is read and stripped here, before any path is matched
+    # (`split_client`); nothing of it reaches Chromium.
+    path, client = split_client(parts[1])
     headers: dict[str, str] = {}
     for line in lines[1:]:
         if ":" in line:
@@ -1330,9 +1391,12 @@ async def _serve_one(proxy: CdpProxy, reader: asyncio.StreamReader, writer: asyn
     if host not in loopback or "origin" in headers:
         _respond(writer, "403 Forbidden")
         return
-    if path.split("?")[0] in ("/json/version", "/json/version/"):
+    if path in ("/json/version", "/json/version/"):
+        # The tag rides on into the websocket URL, so the connection is attributed.
+        tagged = f"?{browser_tools.CLIENT_SEGMENT}={client}" if client else ""
         body = json.dumps(
-            {"Browser": "swarm-live-gate", "Protocol-Version": "1.3", "webSocketDebuggerUrl": f"ws://{host}{browser_path}"}
+            {"Browser": "swarm-live-gate", "Protocol-Version": "1.3",
+             "webSocketDebuggerUrl": f"ws://{host}{browser_path}{tagged}"}
         ).encode()
         _respond(writer, "200 OK", body, "application/json")
         return
@@ -1340,7 +1404,7 @@ async def _serve_one(proxy: CdpProxy, reader: asyncio.StreamReader, writer: asyn
         _respond(writer, "404 Not Found")
         return
     link = _WebSocketLink(writer)
-    connection = await proxy.connect_agent(link)
+    connection = await proxy.connect_agent(link, client=client)
     if connection is None:
         # Playwright puts the status line and the body in its error, so the
         # agent reads why and for how long (`CdpProxy.refusal`).

@@ -1037,3 +1037,38 @@ def test_a_hold_a_viewer_revived_before_the_expiry_landed_is_not_parked(
     assert seen["steps"][1]["exit"] == handoff_mod.EXIT_RETURNED, seen["steps"][1]
     # The worker said which deadline it judged expired, so the refusal is exact.
     assert sent and sent[0]["outcome"] == "expired" and sent[0].get("seen_deadline")
+
+
+def test_the_runners_browser_tools_reach_the_gate_once_and_only_when_they_hold_together(
+        tmp_path, db, trace, gate):
+    """BSTATUS-API: the runner's `browser.json` is forwarded as `browser_tools`
+    on ctl.sock, once per change; a file the agent bent out of shape is not."""
+    from agent_worker import browser_tools
+
+    path, routes, work = _bare(tmp_path, db, trace, gate)
+    spool = work / handoff_mod.SPOOL_DIR_NAME
+    fetch = lambda: db.doc("tasks/task_1")  # noqa: E731
+    path.tick(work, fetch)
+    assert "browser_tools" not in gate.names()
+
+    (spool / browser_tools.STATE_NAME).write_text(json.dumps(
+        {"tool_selected": "playwright", "tools_available": ["playwright", "jev"],
+         "jev": {"enabled": True, "reason": None}}))
+    path.tick(work, fetch)
+    assert "browser_tools" not in gate.names()
+
+    choice = browser_tools.choose("dev-browser", jev_installed=True, jev_key=False)
+    assert browser_tools.write_state(spool, choice) is not None
+    path.tick(work, fetch)
+    path.tick(work, fetch)
+    assert [args for op, args in gate.ops if op == "browser_tools"] == [choice.state()]
+
+
+def test_a_restored_browser_json_is_never_forwarded_as_this_attempts(tmp_path, db, trace, gate):
+    from agent_worker import browser_tools
+
+    path, routes, work = _bare(tmp_path, db, trace, gate)
+    spool = work / handoff_mod.SPOOL_DIR_NAME
+    browser_tools.write_state(spool, browser_tools.choose("auto", jev_installed=True, jev_key=True))
+    path.prepare(work)
+    assert not (spool / browser_tools.STATE_NAME).exists()

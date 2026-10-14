@@ -69,5 +69,16 @@
     "agent_connected_at": null,
     "agent_connections": 0,
     "first_frame_at": "2026-10-11T23:39:05+00:00"
+  },
+  "browser": {
+    "tool_selected": "auto",
+    "tools_available": [],
+    "tool_last_used": null,
+    "jev": {
+      "enabled": false,
+      "reason": null,
+      "key_scope": null
+    },
+    "egress": null
   }
 }

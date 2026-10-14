@@ -738,6 +738,12 @@ def _navigated(rig: Rig, url: str, registrable: str, *, parent: str | None = Non
                                             "params": {"frame": frame, "type": "Navigation"}})
 
 
+#: The report's `browser` (BSTATUS-API) before the worker has forwarded the
+#: runner's tools or any tagged tool has connected, on a gate with no egress proxy.
+NO_BROWSER_TOOLS = {"tools": None, "tool_last_used": None,
+                    "egress": {"mode": "direct", "state": "off", "last_error": None}}
+
+
 def test_the_gate_reports_the_top_frames_origin_and_the_device_over_its_tunnel(short_tmp):
     """LB-DEV-A: what the console's origin strip and device bar draw is what
     the gate read from Chromium -- the origin on every committed navigation of
@@ -754,7 +760,9 @@ def test_the_gate_reports_the_top_frames_origin_and_the_device_over_its_tunnel(s
         assert _reports(rig)[-1] == {"origin": None,
                                      "device": {"preset": "desktop", "orientation": "landscape", "touch": False},
                                      # LIVE-UNUSED: no agent has connected, and no frame was published.
-                                     "agent": {"connected_at": None, "connections": 0, "first_frame_at": None}}
+                                     "agent": {"connected_at": None, "connections": 0, "first_frame_at": None},
+                                     # BSTATUS-API: nothing registered or used yet; no proxy, so direct.
+                                     "browser": NO_BROWSER_TOOLS}
 
         _navigated(rig, "https://accounts.github.com/login?return_to=%2Fsettings", "github.com")
         await _until(lambda: _reports(rig)[-1]["origin"] is not None)
@@ -776,7 +784,8 @@ def test_the_gate_reports_the_top_frames_origin_and_the_device_over_its_tunnel(s
         assert _reports(rig)[-1] == {
             "origin": _reports(rig)[count - 1]["origin"],
             "device": {"preset": "iphone-15", "orientation": "landscape", "touch": True},
-            "agent": {"connected_at": None, "connections": 0, "first_frame_at": None}}
+            "agent": {"connected_at": None, "connections": 0, "first_frame_at": None},
+            "browser": NO_BROWSER_TOOLS}
         client.close()
         stop.set()
         assert await task == 0
