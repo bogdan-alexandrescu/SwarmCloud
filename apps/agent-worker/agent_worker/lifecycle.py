@@ -149,6 +149,7 @@ from . import continuation as continuation_mod
 from . import egress as egress_mod
 from . import expected_outputs as expected_mod
 from . import gitops as gitops_mod
+from . import graphstage as graphstage_mod
 from . import handoff as handoff_mod
 from . import inputs as inputs_mod
 from . import issue as issue_mod
@@ -722,6 +723,9 @@ class Worker:
         self.secret_client = deps.secret_client
         self.memory = deps.memory
         self.ws: workspace_mod.Workspace | None = None
+        #: The staged graph's runner variables (CTXQ-S), decided once per
+        #: attempt: a credential reload rebuilds the env and must not restage.
+        self._graph_env: dict[str, str] | None = None
         self.checkpoints = CheckpointManager(
             store=deps.store,
             tenant_id=config.tenant_id,
@@ -7325,7 +7329,27 @@ class Worker:
         # The hand-off spool, on a live-browser attempt (live-browser §4.1):
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))
+        base.update(self._graph_context_env(ws, clone_base))
         return ws.child_env(base)
+
+    def _graph_context_env(self, ws: Any, clone_base: str | None) -> dict[str, str]:
+        """The staged graph snapshot's variables (docs/design/context-quality.md
+        §4.7, lane CTXQ-S): decided by the stored setting, once per attempt.
+        A staging failure is a reason in `stage.json`, never this attempt's."""
+        if self._graph_env is None:
+            try:
+                self._graph_env = graphstage_mod.prepare(
+                    ws.work, profile_name=self.cfg.runner_profile,
+                    runner_argv=self.cfg.profile.runner_argv, db=self.db, store=self.store,
+                    tenant_id=self.cfg.tenant_id, repository_url=self._repo_url,
+                    task_id=self.cfg.task_id,
+                    checkout=ws.checkout() if self._repo_url else None,
+                    base_sha=clone_base, call_options=self.control.call_options(),
+                    log=self.log)
+            except Exception as exc:  # noqa: BLE001 -- never fails the attempt
+                self.log.warning("graph context not staged", error=type(exc).__name__)
+                self._graph_env = {}
+        return dict(self._graph_env)
 
     # -- the account pool --------------------------------------------------
     def _pool_credential_env(self, profile: Any) -> dict[str, str] | None:

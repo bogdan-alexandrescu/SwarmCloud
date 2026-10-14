@@ -1,0 +1,512 @@
+"""Graph snapshot staging and the stored-setting gate (lane CTXQ-S).
+
+docs/design/context-quality.md §4.4, §4.7 and §7 (CTXQ-S's row): staged only
+for a format >= 3 graph whose commit is an ancestor of the step's base;
+`swarm-graph` is named in the agent's MCP configuration only when staged; the
+A/B arm is deterministic; a staging failure never fails the attempt.
+
+Offline: a LocalObjectStore, the worker's FakeFirestore and a local git repo.
+"""
+
+from __future__ import annotations
+
+import gzip
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from agent_worker import graphstage, indexrun, lifecycle
+from agent_worker.errors import ExitCode
+from agent_worker.graphmcp import server as graph_server
+from agent_worker.graphmcp.freshness import Freshness
+from agent_worker.graphmcp.snapshot import Snapshot, load_freshness_record
+
+from worker_seeds import TENANT, seed_attempt
+
+URL = "https://github.com/acme/widgets"
+REPO_ID = indexrun.repo_id_for(TENANT, "acme", "widgets")
+ROOT = f"tenants/{TENANT}/repos/{REPO_ID}/graph"
+
+
+# --------------------------------------------------------------------------
+# fixtures: a clone, a promoted graph, a registration
+# --------------------------------------------------------------------------
+
+
+def _git(repo: Path, *args: str) -> str:
+    done = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, check=True,
+                          env={"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com",
+                               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com",
+                               "PATH": "/usr/bin:/bin:/usr/local/bin", "HOME": str(repo)})
+    return done.stdout.decode().strip()
+
+
+def _commit(repo: Path, name: str, text: str) -> str:
+    (repo / name).write_text(text)
+    _git(repo, "add", name)
+    _git(repo, "commit", "-q", "-m", f"add {name}")
+    return _git(repo, "rev-parse", "HEAD")
+
+
+@pytest.fixture
+def clone(tmp_path: Path) -> tuple[Path, str, str]:
+    """work/repo with two commits: (checkout, first, second)."""
+    repo = tmp_path / "work" / "repo"
+    repo.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main")
+    first = _commit(repo, "a.py", "def f():\n    return 1\n")
+    second = _commit(repo, "b.py", "def g():\n    return 2\n")
+    return repo, first, second
+
+
+def _promote(db: Any, store: Any, sha: str, *, fmt: int = 3, current: bool = True,
+             tenant: str = TENANT, relation: dict | None = None,
+             registration: dict | None = None) -> str:
+    """Upload a graph of `sha` as KG2 writes one and record its version; its digest."""
+    row = {"id": "a.py#f", "path": "a.py", "name": "f", "kind": "function", "line": 1}
+    blob = gzip.compress(json.dumps(row, sort_keys=True).encode() + b"\n", mtime=0)
+    hexdigest = hashlib.sha256(blob).hexdigest()
+    manifest = {
+        "schema": "swarm.repo-graph-manifest/v1", "tenant_id": TENANT, "repo_id": REPO_ID,
+        "commit_sha": sha, "format_version": fmt, "compression": "gzip",
+        "blob_suffix": ".jsonl.gz", "term_stats": {},
+        "shards": {"symbols": {".": {"blob": f"sha256:{hexdigest}"}}},
+        "index_shards": {},
+    }
+    data = json.dumps(manifest, sort_keys=True).encode() + b"\n"
+    digest = "sha256:" + hashlib.sha256(data).hexdigest()
+    store.upload_bytes(f"{ROOT}/{sha}/manifest.json", data)
+    store.upload_bytes(f"{ROOT}/blobs/{hexdigest}.jsonl.gz", blob)
+    index: dict[str, Any] = {"current_sha": sha if current else None}
+    if relation is not None:
+        index["head_relation"] = relation
+    db.seed(f"repositories/{REPO_ID}", {"tenant_id": tenant, "repo_id": REPO_ID,
+                                         "index": index, **(registration or {})})
+    db.seed(f"repositories/{REPO_ID}/index_versions/{sha}", {
+        "commit_sha": sha, "graph_digest": digest, "built_at": "2026-10-14T00:00:00Z"})
+    return digest
+
+
+def _stage(db: Any, store: Any, checkout: Path, base: str, *,
+           task_id: str = "task_b") -> graphstage.StageResult:
+    return graphstage.stage(db=db, store=store, tenant_id=TENANT, repository_url=URL,
+                            task_id=task_id, checkout=checkout, base_sha=base,
+                            context_dir=checkout.parent / graphstage.CONTEXT_DIR_NAME)
+
+
+def _arm_task(arm: str) -> str:
+    return next(f"task_{i}" for i in range(1000) if graphstage.assign_arm(f"task_{i}") == arm)
+
+
+def _no_ab(db: Any) -> None:
+    db.seed(f"tenant_settings/{TENANT}", {"code_intelligence": {"context_ab": "off"}})
+
+
+# --------------------------------------------------------------------------
+# staged only for format >= 3 and an ancestor sha
+# --------------------------------------------------------------------------
+
+
+def test_a_format_3_graph_of_an_ancestor_is_staged_beside_the_checkout(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    digest = _promote(db, store, first)
+
+    result = _stage(db, store, checkout, second)
+
+    assert result.staged, result.reason
+    snapshot = checkout.parent / graphstage.CONTEXT_DIR_NAME / graphstage.SNAPSHOT_DIR_NAME
+    assert result.snapshot == snapshot
+    # Outside the checkout: nothing staged reaches the harvested patch.
+    assert checkout not in snapshot.parents
+    record = load_freshness_record(snapshot)
+    assert record == {"index_sha": first, "base_sha": second, "behind_by": 1,
+                      "manifest_digest": digest, "basis": "git", "changed": ["b.py"]}
+    # What swarm-graph opens, it can read: the manifest checked against the
+    # digest, the blob against its name.
+    graph = Snapshot(snapshot, manifest_digest=record["manifest_digest"])
+    assert graph.format_version == 3
+    assert graph.symbol("a.py#f")["name"] == "f"
+    fresh = Freshness.establish(graph.commit_sha, workdir=checkout, record=record)
+    assert fresh.basis == "staged" and fresh.behind_by == 1
+
+
+def test_a_format_2_graph_is_not_staged(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first, fmt=2)
+
+    result = _stage(db, store, checkout, second)
+
+    assert not result.staged
+    assert "format 2" in result.reason
+    assert not (checkout.parent / graphstage.CONTEXT_DIR_NAME / "snapshot").exists()
+
+
+def test_a_graph_of_a_commit_that_is_not_an_ancestor_is_never_staged(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _git(checkout, "checkout", "-q", "-b", "rewritten", first)
+    other = _commit(checkout, "c.py", "x = 3\n")
+    _git(checkout, "checkout", "-q", "main")
+    _promote(db, store, other)
+
+    result = _stage(db, store, checkout, second)
+
+    assert not result.staged
+    assert "not an ancestor" in result.reason
+
+
+def test_ancestry_that_cannot_be_shown_is_not_staged_and_a_recorded_compare_shows_it(
+        db, store, clone):
+    """A depth-1 lane clone lacks the index commit: the compare swarm-api
+    recorded for exactly this index and this base is the proof, and nothing
+    less is."""
+    checkout, _first, second = clone
+    _no_ab(db)
+    absent = "e" * 40
+    _promote(db, store, absent)
+    result = _stage(db, store, checkout, second)
+    assert not result.staged and "cannot be shown" in result.reason
+
+    _promote(db, store, absent, relation={"base": absent, "head": second, "status": "ahead",
+                                          "ahead_by": 4, "files": ["b.py"]})
+    result = _stage(db, store, checkout, second)
+    assert result.staged, result.reason
+    assert result.facts["basis"] == "recorded" and result.facts["behind_by"] == 4
+
+    _promote(db, store, absent, relation={"base": absent, "head": second,
+                                          "status": "diverged", "ahead_by": 4, "files": []})
+    result = _stage(db, store, checkout, second)
+    assert not result.staged and "not an ancestor" in result.reason
+
+
+def test_the_base_commit_itself_is_staged_with_nothing_changed(db, store, clone):
+    checkout, _first, second = clone
+    _no_ab(db)
+    _promote(db, store, second)
+    result = _stage(db, store, checkout, second)
+    assert result.staged, result.reason
+    assert load_freshness_record(result.snapshot)["changed"] == []
+
+
+@pytest.mark.parametrize("damage", ["manifest", "blob"])
+def test_a_rewritten_manifest_or_blob_is_refused_not_staged(db, store, clone, damage):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    if damage == "manifest":
+        key = f"{ROOT}/{first}/manifest.json"
+        store.upload_bytes(key, store.download_bytes(key).replace(b'"gzip"', b'"gzip" '))
+    else:
+        (key,) = [k for k in store.list_keys(f"{ROOT}/blobs/")]
+        store.upload_bytes(key, gzip.compress(b'{"id": "other"}\n'))
+
+    result = _stage(db, store, checkout, second)
+
+    assert not result.staged
+    assert "match" in result.reason
+    assert not (checkout.parent / graphstage.CONTEXT_DIR_NAME / "snapshot").exists()
+
+
+def test_another_tenants_registration_is_never_read_from(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first, tenant="other")
+    result = _stage(db, store, checkout, second)
+    assert not result.staged and "not this tenant's" in result.reason
+
+
+# --------------------------------------------------------------------------
+# the stored setting (§4.7, owner decision Q1)
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("override,workspace,expected,source", [
+    (None, None, "on", "default"),
+    ("inherit", None, "on", "default"),
+    (None, "off", "off", "workspace"),
+    ("inherit", "off", "off", "workspace"),
+    ("off", "on", "off", "repository"),
+    ("on", "off", "on", "repository"),
+    ("sometimes", "maybe", "on", "default"),
+])
+def test_the_repository_override_wins_over_the_workspace_default(
+        override, workspace, expected, source):
+    settings = {"code_intelligence": {"context": workspace, "context_ab": "off"}}
+    decision = graphstage.decide(repository_override=override, workspace_settings=settings,
+                                 task_id="task_x")
+    assert (decision.context, decision.source) == (expected, source)
+    assert decision.stage is (expected == "on")
+    assert decision.arm is None
+
+
+def test_a_repository_turned_off_stages_nothing_and_says_nothing(db, store, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first, registration={"context": "off"})
+    env = graphstage.prepare(checkout.parent, profile_name="claude-code",
+                             runner_argv=["python", "-m", "agent_worker.runners.claude_code"],
+                             db=db, store=store, tenant_id=TENANT, repository_url=URL,
+                             task_id="task_b", checkout=checkout, base_sha=second)
+    assert env == {}
+    record = json.loads((checkout.parent / graphstage.CONTEXT_DIR_NAME /
+                         graphstage.STAGE_RECORD_NAME).read_text())
+    assert record["staged"] is False and record["decision"]["source"] == "repository"
+
+
+def test_nothing_in_the_task_input_is_read_by_the_decision():
+    """Invariant 10: `decide` takes the two stored documents and the task id."""
+    import inspect
+
+    assert set(inspect.signature(graphstage.decide).parameters) == {
+        "repository_override", "workspace_settings", "task_id"}
+
+
+# --------------------------------------------------------------------------
+# the A/B arm (§6.2)
+# --------------------------------------------------------------------------
+
+
+def test_arm_assignment_is_deterministic_and_splits_the_tasks():
+    ids = [f"task_{i:04d}" for i in range(400)]
+    first = [graphstage.assign_arm(i) for i in ids]
+    assert first == [graphstage.assign_arm(i) for i in ids]
+    # sha256(task_id) mod 2, computed independently.
+    assert first == ["B" if int(hashlib.sha256(i.encode()).hexdigest(), 16) % 2 else "A"
+                     for i in ids]
+    assert 150 < first.count("A") < 250
+
+
+def test_under_the_ab_arm_a_stages_nothing_and_arm_b_stages(db, store, clone):
+    checkout, first, second = clone
+    db.seed(f"tenant_settings/{TENANT}", {"code_intelligence": {"context_ab": "ab"}})
+    _promote(db, store, first)
+    argv = ["python", "-m", "agent_worker.runners.claude_code"]
+
+    def prepare(task_id: str) -> tuple[dict[str, str], dict]:
+        env = graphstage.prepare(checkout.parent, profile_name="claude-code",
+                                 runner_argv=argv, db=db, store=store, tenant_id=TENANT,
+                                 repository_url=URL, task_id=task_id, checkout=checkout,
+                                 base_sha=second)
+        stage = json.loads((checkout.parent / graphstage.CONTEXT_DIR_NAME /
+                            graphstage.STAGE_RECORD_NAME).read_text())
+        return env, stage
+
+    env, record = prepare(_arm_task("A"))
+    # Arm A is today's runner: no server, and no line saying one is missing.
+    assert env == {}
+    assert record["decision"]["arm"] == "A" and record["staged"] is False
+    assert not (checkout.parent / graphstage.CONTEXT_DIR_NAME / "snapshot").exists()
+
+    env, record = prepare(_arm_task("B"))
+    assert env[graphstage.SNAPSHOT_ENV].endswith("/.swarm-context/snapshot")
+    assert record["decision"]["arm"] == "B" and record["staged"] is True
+
+
+def test_the_default_runs_the_ab_until_the_thresholds_pass():
+    decision = graphstage.decide(repository_override=None, workspace_settings=None,
+                                 task_id=_arm_task("A"))
+    assert graphstage.DEFAULT_CONTEXT == "on" and graphstage.DEFAULT_AB == "ab"
+    assert decision.arm == "A" and decision.stage is False
+
+
+# --------------------------------------------------------------------------
+# a staging failure never fails the attempt
+# --------------------------------------------------------------------------
+
+
+class _Unreachable:
+    def collection(self, name: str) -> Any:
+        raise RuntimeError("firestore unavailable")
+
+
+class _BrokenStore:
+    def download_bytes(self, key: str) -> bytes:
+        raise OSError("gcs unavailable")
+
+
+def test_an_unreachable_firestore_stages_nothing_and_raises_nothing(clone, store):
+    checkout, _first, second = clone
+    env = graphstage.prepare(checkout.parent, profile_name="claude-code",
+                             runner_argv=["python", "-m", "agent_worker.runners.codex"],
+                             db=_Unreachable(), store=store, tenant_id=TENANT,
+                             repository_url=URL, task_id="task_b", checkout=checkout,
+                             base_sha=second)
+    assert env == {}
+
+
+def test_an_unreadable_graph_says_so_in_one_prompt_line(db, clone):
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, _store_for_seed(checkout), first)
+    env = graphstage.prepare(checkout.parent, profile_name="claude-code",
+                             runner_argv=["python", "-m", "agent_worker.runners.claude_code"],
+                             db=db, store=_BrokenStore(), tenant_id=TENANT,
+                             repository_url=URL, task_id="task_b", checkout=checkout,
+                             base_sha=second)
+    assert set(env) == {graphstage.UNSTAGED_ENV}
+    note = graphstage.unstaged_note(env)
+    assert note is not None and "OSError" in note and "\n" not in note
+
+
+def _store_for_seed(checkout: Path) -> Any:
+    from agent_worker.objectstore import LocalObjectStore
+
+    return LocalObjectStore(checkout.parent.parent / "seed-gcs")
+
+
+@pytest.mark.parametrize("profile,argv,checkout", [
+    ("indexer", ["python", "-m", "agent_worker.runners.claude_code"], True),
+    ("mock", ["python", "-m", "agent_worker.runners.mock"], True),
+    ("claude-code", ["python", "-m", "agent_worker.runners.claude_code"], False),
+])
+def test_an_index_run_another_runner_or_no_checkout_stages_nothing(
+        db, store, clone, profile, argv, checkout):
+    repo, first, second = clone
+    _promote(db, store, first)
+    env = graphstage.prepare(repo.parent, profile_name=profile, runner_argv=argv, db=db,
+                             store=store, tenant_id=TENANT, repository_url=URL,
+                             task_id="task_b", checkout=repo if checkout else None,
+                             base_sha=second)
+    assert env == {}
+    assert not (repo.parent / graphstage.CONTEXT_DIR_NAME).exists()
+
+
+def test_a_staging_error_in_the_lifecycle_does_not_fail_the_attempt(
+        db, worker_factory, monkeypatch):
+    calls: list[str] = []
+
+    def explode(*_args: Any, **_kwargs: Any) -> dict[str, str]:
+        calls.append("prepare")
+        raise RuntimeError("staging exploded")
+
+    monkeypatch.setattr(lifecycle.graphstage_mod, "prepare", explode)
+    seed_attempt(db)
+    worker, _, _ = worker_factory()
+    assert worker.run() == ExitCode.OK, db.doc("tasks/task_1").get("last_error")
+    assert calls == ["prepare"], "the lifecycle never asked to stage"
+
+
+# --------------------------------------------------------------------------
+# the runners name swarm-graph only when staged
+# --------------------------------------------------------------------------
+
+
+def _ctx(work: Path, repo: Path | None = None):
+    from agent_worker.runners.base import RunnerContext
+
+    return RunnerContext(
+        work_dir=work, artifacts_dir=work / "artifacts", input_path=work / "input.json",
+        result_path=work / "result.json", quota_path=work / "quota.json",
+        payload={"prompt": "Implement it."}, repo_dir=repo)
+
+
+def _run_body(module: Any, monkeypatch: pytest.MonkeyPatch, work: Path,
+              env: dict[str, str]) -> dict[str, Any]:
+    seen: dict[str, Any] = {}
+
+    def fake_run(ctx, spec, *, extra_args=(), extra_env=None):
+        seen["args"] = list(extra_args)
+        seen["env"] = dict(extra_env or {})
+        seen["prompt"] = ctx.payload.get("prompt")
+        return {}
+
+    monkeypatch.setattr(module, "run_cli_agent", fake_run)
+    for name in ("SWARM_GIT", "SWARM_SEARCH", "PLAYWRIGHT_BROWSERS_PATH", "SWARM_CDP_ENDPOINT",
+                 graphstage.SNAPSHOT_ENV, graphstage.CONTEXT_ENV, graphstage.UNSTAGED_ENV):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    repo = work / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    module.body(_ctx(work, repo))
+    return seen
+
+
+def _mcp_servers(seen: dict[str, Any]) -> dict[str, Any] | None:
+    args = seen["args"]
+    if "--mcp-config" not in args:
+        return None
+    path = Path(args[args.index("--mcp-config") + 1])
+    return json.loads(path.read_text())["mcpServers"]
+
+
+def test_claude_code_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
+    from agent_worker.runners import claude_code
+
+    work = tmp_path / "work"
+    snapshot = str(work / ".swarm-context" / "snapshot")
+    seen = _run_body(claude_code, monkeypatch, work, {
+        graphstage.SNAPSHOT_ENV: snapshot, graphstage.CONTEXT_ENV: str(work / ".swarm-context")})
+    servers = _mcp_servers(seen)
+    assert servers == {graphstage.SERVER_NAME: {
+        "type": "stdio", "command": sys.executable,
+        "args": ["-I", "-m", "agent_worker.graphmcp", "--snapshot", snapshot,
+                 "--workdir", str(work / "repo")]}}
+    assert seen["env"][graphstage.CONTEXT_ENV] == str(work / ".swarm-context")
+    assert seen["prompt"] == "Implement it."
+
+    # The control: nothing staged, no server and no config at all.
+    seen = _run_body(claude_code, monkeypatch, work, {})
+    assert _mcp_servers(seen) is None
+    assert graphstage.CONTEXT_ENV not in seen["env"]
+
+
+def test_claude_code_says_in_one_line_when_the_setting_asked_and_nothing_was_staged(
+        monkeypatch, tmp_path):
+    from agent_worker.runners import claude_code
+
+    seen = _run_body(claude_code, monkeypatch, tmp_path / "work",
+                     {graphstage.UNSTAGED_ENV: "the graph is format 2"})
+    assert _mcp_servers(seen) is None
+    assert seen["prompt"].startswith("Implement it.\n\nNo repository graph was staged")
+    assert "the graph is format 2" in seen["prompt"]
+
+
+def test_codex_names_swarm_graph_only_when_staged(monkeypatch, tmp_path):
+    from agent_worker.runners import codex
+
+    work = tmp_path / "work"
+    snapshot = str(work / ".swarm-context" / "snapshot")
+    seen = _run_body(codex, monkeypatch, work, {graphstage.SNAPSHOT_ENV: snapshot})
+    overrides = [seen["args"][i + 1] for i, a in enumerate(seen["args"]) if a == "-c"]
+    argv = ["-I", "-m", "agent_worker.graphmcp", "--snapshot", snapshot,
+            "--workdir", str(work / "repo")]
+    assert overrides == [
+        f"mcp_servers.{graphstage.SERVER_NAME}.command={json.dumps(sys.executable)}",
+        f"mcp_servers.{graphstage.SERVER_NAME}.args={json.dumps(argv)}"]
+
+    seen = _run_body(codex, monkeypatch, work, {})
+    assert seen["args"] == [] and seen["prompt"] == "Implement it."
+
+    seen = _run_body(codex, monkeypatch, work, {graphstage.UNSTAGED_ENV: "no index"})
+    assert seen["args"] == [] and "staged for this step (no index)" in seen["prompt"]
+
+
+def test_the_server_name_is_the_servers_own():
+    assert graphstage.SERVER_NAME == graph_server.SERVER_NAME
+
+
+def test_the_configured_command_answers_mcp_over_the_staged_snapshot(db, store, clone):
+    """Not only a name in a file: the argv the CLI runs serves the staged graph."""
+    checkout, first, second = clone
+    _no_ab(db)
+    _promote(db, store, first)
+    result = _stage(db, store, checkout, second)
+    assert result.staged, result.reason
+    argv = graphstage.server_argv(str(result.snapshot), str(checkout))
+    request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                          "params": {"name": "context", "arguments": {"symbol": "a.py#f"}}})
+    done = subprocess.run(argv, input=(request + "\n").encode(), capture_output=True,
+                          timeout=60, check=False, cwd=str(checkout),
+                          env={"PYTHONPATH": ":".join(sys.path), "PATH": "/usr/bin:/bin"})
+    assert done.returncode == 0, done.stderr.decode()
+    answer = json.loads(done.stdout.decode().splitlines()[0])
+    text = answer["result"]["content"][0]["text"]
+    assert first in text
