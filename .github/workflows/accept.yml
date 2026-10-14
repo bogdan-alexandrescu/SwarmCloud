@@ -68,14 +68,15 @@
 # is in the bootstrap layer, which the owner applies: until it is, `what dev
 # runs` fails at authentication, and `report` files that as the red group.
 #
-# HOW THE SUITE IS SPLIT. The six groups run as matrix jobs, one swarm-verify
-# execution each, in TWO WAVES rather than six at once: the smoke tenant's
+# HOW THE SUITE IS SPLIT. The seven groups run as matrix jobs, one swarm-verify
+# execution each, in TWO WAVES rather than seven at once: the smoke tenant's
 # ceiling is 20 concurrent tasks (terraform/environments/dev/dev.tfvars,
 # tenants.smoke, max_active = capacity_units = 20), and the groups' peaks
-# summed are about 32 (mock submits 12 tasks and a workflow at once, generic
-# 8, workflow 4 roots, claude-code 3, browser 3, live-browser 1). Wave 1 is the three longest
-# or heaviest -- mock, workflow, browser, a peak of ~20 -- and wave 2 the
-# rest -- generic, claude-code, live-browser, ~12. Over the ceiling a task QUEUES (invariant
+# summed are about 37 (mock submits 12 tasks and a workflow at once, generic
+# 8, workflow 4 roots, claude-code 3, browser 3, live-browser 1, git-tools 5).
+# Wave 1 is the three longest or heaviest -- mock, workflow, browser, a peak
+# of ~20 -- and wave 2 the rest -- generic, claude-code, live-browser,
+# git-tools, ~17. Over the ceiling a task QUEUES (invariant
 # 1: queued costs nothing), so a burst would not fail outright, but every
 # check has a settle deadline and the queue would eat into it. So acceptance
 # takes about the longest of wave 1 (workflow, ~13 min) plus the longest of
@@ -433,7 +434,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [generic, claude-code, live-browser]
+        group: [generic, claude-code, live-browser, git-tools]
     steps:
       - uses: actions/checkout@v5
         with:

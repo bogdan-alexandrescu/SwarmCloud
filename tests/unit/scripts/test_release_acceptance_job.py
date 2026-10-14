@@ -70,7 +70,7 @@ ACCEPT_JOBS = ("acceptance", "acceptance-2")
 #: lane, which cannot push .github/workflows/: the operator adds it to wave 2's
 #: matrix (its PR body carries the change). A group added here may be missing
 #: from accept.yml; any other missing group is red.
-PENDING_IN_ACCEPT_YML: frozenset[str] = frozenset({"git-tools"})
+PENDING_IN_ACCEPT_YML: frozenset[str] = frozenset()  # git-tools added to wave 2 on 2026-10-14
 
 
 def _accept() -> dict:
