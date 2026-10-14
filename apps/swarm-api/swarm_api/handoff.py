@@ -37,9 +37,10 @@ is redacted before it is stored (§4.1 step 1).
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from datetime import datetime, timedelta
-from typing import Any, Callable, Literal
+from typing import Any, Callable, Literal, Mapping
 
 from google.cloud import firestore
 from pydantic import Field
@@ -66,15 +67,27 @@ from .validation import (  # noqa: F401 - re-exported: the keys this module writ
 #: The hand-off's signing purpose (§5.4.1). The worker restates it (lane L4).
 HANDOFF_PURPOSE = "swarm-handoff/v1"
 
+log = logging.getLogger(__name__)
+
 #: The append-only audit (§5.8). Lane L9 owns the collection and writes the
 #: control entries; this lane writes `handoff_requested` and `handoff_resolved`
 #: in the same transaction as the change each records.
 LIVE_AUDIT = "live_audit"
 
-#: §4.3, Q3: how long a pod holds for a person before it parks. A constant
-#: until lane L9 adds the setting; read through `getattr` so it lands without
-#: a change here.
-HUMAN_HOLD_SECONDS = 600
+#: §4.3, HANDOFF-POLICY (owner decision 2026-10-13, "notify, park fast, extend
+#: while watched"): how long a hold lasts with NOBODY watching -- from the
+#: request, and from the last moment a viewer was seen. Was a flat 10 minutes
+#: (Q3); MEASURED over 26 browser tasks, 25 of 42 hand-offs expired, 13 of
+#: them with nobody present, each holding a 2-unit browser lease and its pod
+#: for the full 10 minutes (~4.2 pod-hours). A person who is coming opens the
+#: live view within a minute of the bell; one who is not costs a minute.
+HUMAN_UNWATCHED_SECONDS = 60
+#: The ceiling on a hold that viewers and a controller keep extending, from
+#: the request. 7 of the 42 expired AFTER the person pressed "I'm ready" --
+#: they were there, on a slow or frozen view -- so a watched hold outlives the
+#: old 10 minutes; bounded so a tab left open does not hold an 8-vCPU pod for
+#: an afternoon (invariant 4).
+HUMAN_HOLD_MAX_SECONDS = 30 * 60
 #: §5.10: hand-off requests per attempt, enforced by the worker AND here, from
 #: the task document, so a worker that miscounts cannot pester people.
 MAX_HANDOFFS_PER_ATTEMPT = 3
@@ -96,6 +109,59 @@ _HOST = re.compile(r"^[a-z0-9.-]{1,253}$")
 
 #: How a hand-off ended, as the worker reports it.
 OUTCOMES = ("returned", "expired", "cancelled", "unavailable")
+
+#: THE HAND-OFF FUNNEL (LIVE-MEASURE; part of #1030). Owner decision
+#: 2026-10-13: Phase 1 is "measure". Of 42 hand-offs 25 expired, and which
+#: step lost the person -- opening the view, taking control, typing -- was
+#: recorded nowhere. The first time each happened is written onto the wait
+#: (`Task.human_wait` is a free-form dict in the frozen model), by
+#: `LiveService.watched`, `take` and `record_input`, under these keys; the
+#: wait's end (`resolution_writes`) turns them into seconds from the request
+#: on the resolved event's `detail.funnel`, and logs it once committed.
+FUNNEL_MILESTONES = (("first_viewer_at", "first_viewer_s"),
+                     ("control_taken_at", "control_taken_s"),
+                     ("first_input_at", "first_input_s"))
+#: `jsonPayload.event` of the funnel's log line, and of "I'm ready" -> the
+#: resumed attempt's first frame (`LiveService.record_report`):
+#: scripts/live-report.sh filters on them.
+FUNNEL_EVENT = "live_handoff_funnel"
+READY_FRAME_EVENT = "live_ready_first_frame"
+
+
+def first_time(wait: Mapping[str, Any], key: str, now: datetime) -> dict[str, Any]:
+    """`wait` with `key` set to `now` unless it is already set: a milestone is
+    the FIRST time it happened, never moved later by a repeat."""
+    return dict(wait) if isinstance(wait.get(key), datetime) else {**wait, key: now}
+
+
+def handoff_funnel(wait: Mapping[str, Any], *, outcome: str, now: datetime) -> dict[str, Any]:
+    """The wait's milestones as whole seconds from its request; None for a step
+    that never happened. `person_present`: a viewer joined at some point."""
+    requested = wait.get("requested_at")
+
+    def since(at: Any) -> int | None:
+        if not isinstance(requested, datetime) or not isinstance(at, datetime):
+            return None
+        return max(0, int((at - requested).total_seconds()))
+
+    funnel: dict[str, Any] = {"outcome": outcome}
+    for key, name in FUNNEL_MILESTONES:
+        funnel[name] = since(wait.get(key))
+    funnel["resolved_s"] = since(now)
+    funnel["person_present"] = isinstance(wait.get("first_viewer_at"), datetime)
+    return funnel
+
+
+def log_funnel(task: Mapping[str, Any], detail: Mapping[str, Any]) -> None:
+    """The funnel as one structured line, after its transaction committed:
+    names and numbers only, never the reason or a person's address."""
+    funnel = detail.get("funnel") if isinstance(detail.get("funnel"), Mapping) else {}
+    log.info(
+        "live hand-off funnel task=%s outcome=%s", task.get("id"), funnel.get("outcome"),
+        extra={"event": FUNNEL_EVENT, "task_id": task.get("id"), "tenant_id": task.get("tenant_id"),
+               "attempt_id": detail.get("attempt_id"), "request_id": detail.get("request_id"),
+               **funnel},
+    )
 
 
 class HandoffUnavailable(ApiError):
@@ -214,12 +280,16 @@ def resolution_writes(
     now: datetime,
     by: str | None = None,
     lease_id: str | None = None,
+    recorded: list[dict[str, Any]] | None = None,
 ) -> bool:
     """Clear `human_wait` and record why, inside the caller's transaction.
 
     One shape for both writers: the worker's `resolve` and lane L9's return of
     control. False, and nothing written, when nothing is waiting. `lease_id` is
-    the caller's, for the event: the wait does not store one.
+    the caller's, for the event: the wait does not store one. The detail is
+    appended to `recorded`, for the caller to `log_funnel` once the
+    transaction has committed: logged here, a retried transaction would log
+    one hand-off twice.
     """
     wait = task.get("human_wait")
     if not isinstance(wait, dict):
@@ -233,7 +303,10 @@ def resolution_writes(
         "attempt_id": wait.get("attempt_id"),
         "generation": wait.get("generation"),
         "held_seconds": int(held) if held is not None else None,
+        "funnel": handoff_funnel(wait, outcome=outcome, now=now),
     }
+    if recorded is not None:
+        recorded.append(detail)
     event = TaskEvent(
         event_id=new_id("ev"),
         task_id=task["id"],
@@ -280,6 +353,55 @@ def _audit(
             "detail": detail,
         },
     )
+
+
+def attempt_deadline(task: Mapping[str, Any]) -> datetime | None:
+    """When the attempt itself times out (`started_at + timeout_seconds`), or
+    None when the task does not say. No hold outlives it (§4.3)."""
+    started = task.get("started_at")
+    timeout = task.get("timeout_seconds")
+    if isinstance(started, datetime) and isinstance(timeout, int) and not isinstance(timeout, bool):
+        return started + timedelta(seconds=timeout)
+    return None
+
+
+def opening_deadline(now: datetime, task: Mapping[str, Any], *,
+                     unwatched_seconds: int = HUMAN_UNWATCHED_SECONDS) -> datetime:
+    """The deadline a new hold opens with: `unwatched_seconds` from now, never
+    past the attempt's own deadline and never before now. Nobody is watching
+    yet; a viewer or a controller moves it (`extended_deadline`)."""
+    deadline = now + timedelta(seconds=unwatched_seconds)
+    end = attempt_deadline(task)
+    if end is not None:
+        deadline = max(now, min(deadline, end))
+    return deadline
+
+
+def extended_deadline(now: datetime, task: Mapping[str, Any], wait: Mapping[str, Any], *,
+                      seconds: int, max_seconds: int = HUMAN_HOLD_MAX_SECONDS,
+                      revive: bool = True) -> datetime | None:
+    """§4.3: someone is watching or in control, so the hold's deadline moves to
+    `now + seconds` -- capped at `requested_at + max_seconds` and the attempt's
+    own deadline, and never earlier than it already was.
+
+    None when there is nothing to move, or when `revive` is False and the
+    deadline has already passed: the worker may be parking on it, and a viewer
+    arriving a second late must not race that (a controller's input keeps the
+    rule it always had, since `_settle` ends control on an expired hold first).
+    """
+    current = wait.get("deadline")
+    if not revive and isinstance(current, datetime) and current < now:
+        return None
+    target = now + timedelta(seconds=seconds)
+    requested = wait.get("requested_at")
+    if isinstance(requested, datetime):
+        target = min(target, requested + timedelta(seconds=max_seconds))
+    end = attempt_deadline(task)
+    if end is not None:
+        target = min(target, end)
+    if isinstance(current, datetime):
+        target = max(current, target)
+    return target
 
 
 def _wait_to_api(wait: dict[str, Any]) -> dict[str, Any]:
@@ -384,7 +506,7 @@ class HandoffService:
             if why:
                 raise ValidationFailed(f"expect is not a host a hand-off may name: {why}")
 
-        hold = int(getattr(self._settings, "human_hold_seconds", HUMAN_HOLD_SECONDS))
+        unwatched = int(getattr(self._settings, "human_unwatched_seconds", HUMAN_UNWATCHED_SECONDS))
         cap = int(getattr(self._settings, "max_handoffs_per_attempt", MAX_HANDOFFS_PER_ATTEMPT))
         task_ref = self._db.collection(TASKS).document(task_id)
         lease_ref = self._db.collection(LEASES).document(attempt.lease_id)
@@ -423,18 +545,18 @@ class HandoffService:
             if used >= cap:
                 raise HandoffLimit(f"this attempt has asked for help {used} times; the cap is {cap}")
 
-            deadline = now + timedelta(seconds=hold)
-            started = task.get("started_at")
-            timeout = task.get("timeout_seconds")
-            if isinstance(started, datetime) and isinstance(timeout, int):
-                # Never past the attempt's own deadline (§4.3).
-                deadline = max(now, min(deadline, started + timedelta(seconds=timeout)))
+            # Park fast (HANDOFF-POLICY): a minute unless someone opens the
+            # live view (`LiveService.watched`) or takes control.
+            deadline = opening_deadline(now, task, unwatched_seconds=unwatched)
             wait = {
                 "reason": reason,
                 "expect": expect,
                 "requested_at": now,
                 "deadline": deadline,
                 "controller": None,
+                # The last moment a viewer was seen on the live view; None
+                # until one is. The bell and the console read it.
+                "watched_at": None,
                 "request_id": body.request_id,
                 "attempt_id": attempt.attempt_id,
                 "generation": attempt.generation,
@@ -494,13 +616,17 @@ class HandoffService:
         task_ref = self._db.collection(TASKS).document(task_id)
         lease_ref = self._db.collection(LEASES).document(attempt.lease_id)
         now = self._now()
+        recorded: list[dict[str, Any]] = []
+        resolved: dict[str, Any] = {}
 
         @firestore.transactional
         def _apply(txn: Any) -> bool:
+            recorded.clear()  # a retried transaction starts again
             task_snap = _snapshot(txn.get(task_ref))
             lease_snap = _snapshot(txn.get(lease_ref))
             task = task_snap.to_dict() if task_snap.exists else None
             lease = lease_snap.to_dict() if lease_snap.exists else None
+            resolved.update(task or {})
             # A cancel does not fence this: the cancel path resolves (§4.4).
             if (
                 task is None
@@ -515,9 +641,12 @@ class HandoffService:
             ):
                 return False
             return resolution_writes(txn, self._db, task, outcome=body.outcome, now=now,
-                                     lease_id=attempt.lease_id)
+                                     lease_id=attempt.lease_id, recorded=recorded)
 
-        return _apply(self._db.transaction())
+        written = _apply(self._db.transaction())
+        for detail in recorded:
+            log_funnel(resolved, detail)
+        return written
 
     # -- §4.3: a person says they are ready ---------------------------------
 

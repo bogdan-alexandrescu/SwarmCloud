@@ -39,6 +39,8 @@ from .validation import (
     DEFAULT_CARRIER,
     DEFAULT_STRATEGY,
     DISPATCH_METADATA_KEY,
+    FORGE_SOURCE_METADATA_KEY,
+    OWNER_ANSWERS_METADATA_KEY,
     START_PROBLEM_METADATA_KEY,
 )
 
@@ -242,20 +244,26 @@ def _forge_access(value: Any) -> str | None:
 
 
 #: What `task_to_api` says a task's `forge_credential` is, by its prefix.
-#: `git` is only ever a service submission's (`SubmissionService._resolve_forge`).
+#: `git` is only ever a service submission's (`SubmissionService._resolve_forge`);
+#: so, in a personal tenant with no `-git` slot, is its owner's `git-u-` slot,
+#: which `metadata.forge_credential_source` = `owner` tells apart (INDEX-CRED).
 _FORGE_SOURCES = (
     ("git-u-", "the submitter's GitHub credential"),
     ("git-r-", "the repository's token"),
 )
 
 
-def forge_credential_source(value: str | None) -> str | None:
+def forge_credential_source(value: str | None, source: Any = None) -> str | None:
     """The words for a task's forge credential, or None when it names none
-    (no repository, not GitHub, or submitted before #780)."""
+    (no repository, not GitHub, or submitted before #780). `source` is the
+    task's `metadata.forge_credential_source`: `owner` on a user slot is the
+    owner's connection run on the tenant's behalf, not the submitter's own."""
     if value is None:
         return None
     if value == "git":
         return "tenant token, service submission"
+    if source == "owner" and value.startswith("git-u-"):
+        return "owner's GitHub connection, service submission"
     for prefix, words in _FORGE_SOURCES:
         if value.startswith(prefix):
             return words
@@ -323,6 +331,64 @@ def start_problem_to_api(task: Task, masking: TaskMasking) -> dict[str, Any] | N
         }
     )
     return masked
+
+
+def owner_answers_by_index(metadata: dict[str, Any] | None) -> dict[int, dict[str, Any]]:
+    """The owner's answers stored on a task (`metadata.owner_answers`), by question index.
+
+    Written only by `agent_questions.answer_question` (TASK-ANSWERS). A
+    document can hold anything, so an entry that is not a map or has no
+    non-negative integer `question_index` is skipped, never guessed at.
+    """
+    raw = (metadata or {}).get(OWNER_ANSWERS_METADATA_KEY)
+    out: dict[int, dict[str, Any]] = {}
+    for entry in raw if isinstance(raw, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        index = entry.get("question_index")
+        if isinstance(index, bool) or not isinstance(index, int) or index < 0:
+            continue
+        out[index] = entry
+    return out
+
+
+def owner_answer_to_api(entry: dict[str, Any], masking: TaskMasking) -> dict[str, Any]:
+    """One stored answer as it is served, every string masked by the task's masker.
+
+    The free text was redacted before it was stored; it is masked again here
+    as every collected text is (`task_input.COLLECTED_METADATA_KEYS`).
+    """
+
+    def text(value: Any) -> str | None:
+        return value if isinstance(value, str) else None
+
+    def one(e: dict[str, Any]) -> dict[str, Any]:
+        at = e.get("at")
+        return {
+            "choice": text(e.get("choice")),
+            "text": text(e.get("text")),
+            "by": text(e.get("by")),
+            "at": at.isoformat() if isinstance(at, datetime) else text(at),
+        }
+
+    history = entry.get("history") if isinstance(entry.get("history"), list) else []
+    masked, _ = masking.leaves(
+        {
+            "question_index": entry.get("question_index"),
+            "question": text(entry.get("question")),
+            **one(entry),
+            "history": [one(h) for h in history if isinstance(h, dict)],
+        }
+    )
+    return masked
+
+
+def owner_answers_to_api(task: Task, masking: TaskMasking) -> list[dict[str, Any]]:
+    """The owner's answers to the agent's questions, in question order; `[]` for none."""
+    return [
+        owner_answer_to_api(entry, masking)
+        for _, entry in sorted(owner_answers_by_index(task.metadata).items())
+    ]
 
 
 def workflow_dispatch(tasks: Any) -> dict[str, Any]:
@@ -481,7 +547,8 @@ def task_to_api(
         # D4 for automation (2026-10-07): "the task says so".
         "forge_credential": task.forge_credential,
         "forge_access": task.forge_access,
-        "forge_credential_source": forge_credential_source(task.forge_credential),
+        "forge_credential_source": forge_credential_source(
+            task.forge_credential, (task.metadata or {}).get(FORGE_SOURCE_METADATA_KEY)),
         "cancel_requested": task.cancel_requested,
         "metadata": masked_metadata,
         "metadata_redaction_count": metadata_count,
@@ -494,6 +561,11 @@ def task_to_api(
         # list is where a stuck "dispatched" row is first seen. Null when the
         # reconciler recorded nothing. Also inside `metadata`, masked there too.
         "start_problem": start_problem_to_api(task, masking),
+        # TASK-ANSWERS (part of #1206): the owner's answers to the agent's
+        # questions, lifted out of `metadata.owner_answers` as `start_problem`
+        # is, so whoever launched the work reads them from the task it already
+        # reads. `[]` when none is answered. Also inside `metadata`, masked.
+        "owner_answers": owner_answers_to_api(task, masking),
         "repository_url": repository_url,
         "repository_url_redaction_count": repository_url_count,
         "repository_ref": task.repository_ref,

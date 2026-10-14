@@ -44,8 +44,10 @@ to disagree with it.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
+import threading
 from typing import Any, Callable
 
 from . import profiles as catalogue
@@ -463,7 +465,9 @@ def submit(
         body["priority"] = int(priority)
     if merge_pr is not None:
         body["merge_pr"] = merge_pr
-    return _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")
+    envelope = _envelope(client.request("POST", "/v1/workflows", payload=body), "submitting")
+    _remember_launch(envelope["workflow"])
+    return envelope
 
 
 # --------------------------------------------------------------------------
@@ -617,9 +621,67 @@ def stored_names(envelope: dict[str, Any]) -> dict[str, str | None]:
     return found
 
 
+#: The tenant each workflow THIS BRIDGE launched was stored under, from the
+#: launch response's `workflow.tenant_id`. Bounded, oldest dropped first: a
+#: bridge lives for a session, and a workflow launched that long ago is read
+#: through the tenant switcher like any other.
+_LAUNCHED: dict[str, str] = {}
+_LAUNCHED_CAP = 512
+_LAUNCHED_LOCK = threading.Lock()
+
+
+def _remember_launch(workflow: dict[str, Any]) -> None:
+    workflow_id, tenant_id = workflow.get("workflow_id"), workflow.get("tenant_id")
+    if not (isinstance(workflow_id, str) and workflow_id
+            and isinstance(tenant_id, str) and tenant_id):
+        return
+    with _LAUNCHED_LOCK:
+        _LAUNCHED.pop(workflow_id, None)
+        _LAUNCHED[workflow_id] = tenant_id
+        while len(_LAUNCHED) > _LAUNCHED_CAP:
+            del _LAUNCHED[next(iter(_LAUNCHED))]
+
+
+def launch_tenant(workflow_id: str) -> str | None:
+    """The tenant this bridge launched `workflow_id` in, or None if it did not."""
+    with _LAUNCHED_LOCK:
+        return _LAUNCHED.get(workflow_id)
+
+
 def fetch(client: SwarmClient, workflow_id: str) -> dict[str, Any]:
+    """`GET /v1/workflows/{id}`; a workflow this bridge launched is re-read with
+    the launch's tenant when the first read answers 404.
+
+    WHY (docs/runner-git-tools.md §6.3). Three coordinator status reads answered
+    404 while the workflows' steps kept running, and the coordinator re-ran the
+    review locally, opening duplicate pull requests. The tenant a request
+    resolves to can move under a running bridge: with no `X-Swarm-Tenant` the
+    API picks the personal workspace once it is ready (#1204), and before that
+    the first group. A 404 for a workflow this process launched therefore means
+    "look in the launch's tenant", not "gone" -- the API now says so with
+    `workflow_not_in_tenant`; an older API's bare `not_found` is treated the
+    same, since the launch is the evidence the workflow exists.
+
+    The re-read goes through a COPY of the client naming that tenant, never by
+    setting `client.tenant`: the bridge serves tool calls on several threads,
+    and every other call on this client must keep the tenant it was given. The
+    header only selects among the caller's verified memberships, so the re-read
+    can reach nothing the caller could not name themselves. A workflow this
+    bridge did not launch is not re-read anywhere: it has no tenant of record.
+    """
+    try:
+        return _envelope(
+            client.request("GET", f"/v1/workflows/{workflow_id}"), f"reading {workflow_id}"
+        )
+    except SwarmError as exc:
+        launched_in = launch_tenant(workflow_id)
+        if exc.status != 404 or exc.edge or launched_in is None or launched_in == client.tenant:
+            raise
+    reader = copy.copy(client)
+    reader.tenant = launched_in
     return _envelope(
-        client.request("GET", f"/v1/workflows/{workflow_id}"), f"reading {workflow_id}"
+        reader.request("GET", f"/v1/workflows/{workflow_id}"),
+        f"reading {workflow_id} in tenant {launched_in}",
     )
 
 

@@ -1,10 +1,11 @@
-"""Schedules lane S9: the seed that replaces lane SWEEP's job, and the job paused, not deleted.
+"""Schedules lane S9: the seed that replaced lane SWEEP's job, and the job gone.
 
-docs/schedules.md §8.1-§8.2, and the owner's decision of 2026-10-11 that
-narrows S9 to its reversible half: create the schedules, PAUSE SWEEP's Cloud
-Scheduler job, and delete nothing -- the job, its route, SWEEP_ENABLED and the
-tenant settings stay until a second change, after the owner has watched the
-schedules fire.
+docs/schedules.md §8.1-§8.2. The owner's decision of 2026-10-11 narrowed S9
+to its reversible half: create the schedules and PAUSE SWEEP's Cloud
+Scheduler job. The second change (SWEEP-RM, owner-approved 2026-10-12, the
+7-day watch waived) deleted the job, its route, SWEEP_ENABLED and the tenant
+document's `issue_sweep` settings; the last tests here hold that they stay
+deleted.
 
 `docs/schedules-migration.json` holds the `POST /v1/schedules` bodies an
 operator posts. Each one is built here through `schedules.build_schedule`,
@@ -29,6 +30,10 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 SEED = REPO_ROOT / "docs" / "schedules-migration.json"
 JOBS_TF = REPO_ROOT / "terraform" / "modules" / "scheduler" / "jobs.tf"
 SCHEDULER_VARS = REPO_ROOT / "terraform" / "modules" / "scheduler" / "variables.tf"
+INFRA = REPO_ROOT / "terraform" / "infra"
+#: SWEEP's job ran at :07 and :37 (the deleted var.issue_sweep_schedule's
+#: default, owner decision 2026-10-08); the schedule kept that cadence.
+SWEEP_CRON = "7,37 * * * *"
 
 NOW = datetime(2026, 10, 11, 12, 0, tzinfo=timezone.utc)
 MEMBER = "member@example.com"
@@ -58,13 +63,6 @@ def _built() -> list[dict]:
     return docs
 
 
-def _sweep_job_block() -> str:
-    text = JOBS_TF.read_text()
-    start = text.index('resource "google_cloud_scheduler_job" "issue_sweep"')
-    end = text.index("\n}\n", start)
-    return text[start:end]
-
-
 def test_every_seeded_body_is_one_the_create_route_accepts_from_a_member():
     docs = _built()
     assert len(docs) == len(_seed()) >= 2
@@ -81,11 +79,7 @@ def test_the_sweep_schedule_keeps_sweeps_cadence_scope_and_values():
     sweeps = [d for d in _built() if d["type"] == "issue-sweep"]
     assert [d["tenant_id"] for d in sweeps] == ["eng"]
     sweep = sweeps[0]
-    default = re.search(
-        r'variable "issue_sweep_schedule" \{.*?default\s*=\s*"([^"]+)"', SCHEDULER_VARS.read_text(), re.S
-    )
-    assert default is not None
-    assert sweep["cron"] == default.group(1) == "7,37 * * * *"
+    assert sweep["cron"] == SWEEP_CRON
     assert sweep["timezone"] == "UTC"
     assert sweep["scope"] == {"mode": "all", "repo_ids": []}
     assert sweep["params"]["max_live_runs"] == 8
@@ -121,19 +115,26 @@ def test_a_second_schedule_of_index_refresh_or_observer_is_seeded():
     assert others and all(d["state"] == "enabled" for d in others)
 
 
-def test_sweeps_job_is_paused_by_itself_and_not_deleted():
-    """§8.1 step 3, owner decision 2026-10-11: `paused = true` on the job, with
-    a dated comment, and NOT var.paused (which would pause every tick)."""
-    block = _sweep_job_block()
-    assert re.search(r"^\s*paused\s*=\s*true\s*$", block, re.M)
-    assert not re.search(r"^\s*paused\s*=\s*var\.paused", block, re.M)
-    assert "2026-10-11" in block and "S9" in block
+def test_sweeps_job_is_deleted_with_its_schedule_variable():
+    """The second S9 change (2026-10-12): no `issue_sweep` Cloud Scheduler job
+    and no `issue_sweep_schedule` variable. The control: its neighbour, the
+    stranded-PR sweep, is still declared in the same file."""
+    jobs = JOBS_TF.read_text()
+    assert 'resource "google_cloud_scheduler_job" "issue_sweep"' not in jobs
+    assert 'resource "google_cloud_scheduler_job" "stranded_pr_sweep"' in jobs
+    assert 'variable "issue_sweep_schedule"' not in SCHEDULER_VARS.read_text()
+    assert "/v1/admin/issues/sweep" not in jobs
 
 
-@pytest.mark.parametrize("kept", ["route", "switch"])
-def test_the_reversible_half_deletes_nothing(kept: str):
-    """The deletions are the second S9 change, held for the owner."""
-    if kept == "route":
-        assert ("POST", "/v1/admin/issues/sweep") in auth.ROLLUP_SWEEPER_ROUTES
+@pytest.mark.parametrize("deleted", ["route", "switch", "variable"])
+def test_the_second_change_deleted_the_route_and_the_switch(deleted: str):
+    """The deletions the 2026-10-11 decision held back, made on 2026-10-12."""
+    if deleted == "route":
+        assert ("POST", "/v1/admin/issues/sweep") not in auth.ROLLUP_SWEEPER_ROUTES
+        assert ("POST", "/v1/admin/runs/advance") in auth.ROLLUP_SWEEPER_ROUTES
+    elif deleted == "switch":
+        assert "SWEEP_ENABLED" not in (INFRA / "locals.tf").read_text()
     else:
-        assert "SWEEP_ENABLED" in (REPO_ROOT / "terraform" / "infra" / "locals.tf").read_text()
+        assert 'variable "enable_issue_sweep"' not in (INFRA / "variables.tf").read_text()
+        for tfvars in sorted((REPO_ROOT / "terraform" / "environments").glob("*/*.tfvars")):
+            assert not re.search(r"^\s*enable_issue_sweep\s*=", tfvars.read_text(), re.M), tfvars

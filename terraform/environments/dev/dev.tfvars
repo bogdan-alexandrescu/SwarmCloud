@@ -645,14 +645,6 @@ groups_impersonate_user = "bogdan@saga.xyz"
 # bootstrap output github_deployer_service_account.
 deployer_service_account = "swarm-tf-deployer@saga-agents-staging.iam.gserviceaccount.com"
 
-# The in-platform issue sweeper (swarm-api SWEEP_ENABLED), on in dev from
-# 2026-10-09. Owner decision 2026-10-08: switch it on once PR 898 is deployed
-# (it was, 2026-10-09 02:28Z). This is the platform switch only; the tenant's
-# own switch, its cap of 8 live runs and submit_as are set per tenant through
-# PUT /v1/admin/tenants/eng/issue-sweep, not here (docs/issue-runs.md "Turning
-# it on, for tenant eng"). Left off in prod.
-enable_issue_sweep = true
-
 # Personal-workspace publishing (swarm-api WORKSPACE_APPLY_PUBLISH, #847).
 # ON in dev from 2026-10-11 (owner): the swarm-workspace-apply topic exists, and
 # an approval now reaches the Cloud Run job swarm-workspace-apply through
@@ -662,3 +654,12 @@ enable_issue_sweep = true
 # (publishing_off). If the job path breaks, turning this off again stops new
 # dispatches; the sweep and the stuck alert keep reporting waiting records.
 workspace_apply_publish = true
+
+# The live browser's search tool (swarm-api SEARCH_TOOL_ENABLED /
+# SEARCH_PROVIDER, docs/search-tool.md, #1030). OFF in dev as of 2026-10-14:
+# the owner chose Brave and "add it (off by default)" on 2026-10-13. It turns on
+# once the Brave key is stored with
+# `scripts/create-secrets.sh --search-api-key --stdin` -- on without the key,
+# every search answers 503 search_unconfigured. search_provider stays at
+# its default, "brave".
+search_tool_enabled = false

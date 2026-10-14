@@ -17,11 +17,13 @@ Once per deployment, roughly in the order they are done.
 - [Prove, once, that the deployer is refused a role it does not hand out](iam-refusal-probe.md): the owner, once, after PR #73's bootstrap apply, IAM propagation and the release after it.
 - [Step-spec signing: rollout, rotation and revocation](spec-signing-rollout.md): rolling out step-spec signing from `legacy` to `enforce` (before 2026-10-20); return to it to rotate the signing key or revoke a version.
 - [Onboarding acceptance: the four checks of #780](onboarding-acceptance.md): the owner, once the release carrying OB10 is in dev, to prove a new user from the console and from `/sc` works as themselves in two orgs, an unchosen repository is refused and removing an org revokes access; again after a change to onboarding, grants or the forge credential.
+- [Fill and check the build mirrors](build-mirror.md): once, after the apply that creates `swarm-mirror-ghcr`, `swarm-mirror-dockerhub` and the `swarm-build-mirror-<project>` bucket and before the change that points the Dockerfiles at them merges; again whenever a pinned release file in `images/agent-runtime-base/tool-mirror.sha256` changes, or a build fails naming a missing mirror object.
 - [Prove the destroy guard against a real terraform plan](destroy-guard-real-plan-proof.md): before trusting `make destroy` in an environment for the first time; again after changing the destroy guard, the plan guard, the deny-list or the unlabelable types, or when the recorded plan no longer matches the real infrastructure.
 
 ## Day-to-day
 
 - [Re-apply the tenant network policies to every tenant namespace](tenant-network-policies.md): a tenant namespace lacks one of the tenant NetworkPolicies (the live browser cannot reach its relay), or a policy file was added and the release that applies it has not run.
+- [Roll the live relay to the release's image](live-relay-rollout.md): the live browser reports origin/device "Not reported" after a release that changed `apps/swarm-live`, or the release's relay rollout step is red.
 - [Offboard a tenant](tenant-offboarding.md): a tenant (a Google group, or a personal `u-<user>` tenant) is leaving the platform and everything provisioned for it has to go.
 
 ## Incidents

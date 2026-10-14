@@ -26,6 +26,7 @@ import STYLES from '../styles.css?raw'
 import { App } from '../App'
 import type { Result } from '../fetch'
 import type { Me, TaskPage } from '../types'
+import type { NotificationFeed } from '../api'
 import { cascade, type CascadeEnv, type Declared } from './cssgate'
 import { expandLocal, painted, TABLES } from './marks'
 import { task } from './runfixture'
@@ -492,7 +493,14 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
     // The agents read answers this test alone: a scoped mock and a fresh App,
     // since a file-wide `vi.mock` outlives `shellAs`'s `resetModules`.
     vi.resetModules()
-    vi.doMock('../api', async (importOriginal) => ({ ...(await importOriginal<typeof import('../api')>()), loadTasks: () => Promise.resolve(page) }))
+    // And the notification feed answers (#1206), so the header bar is drawn
+    // with its bell -- the tallest the chrome above the row can be.
+    const feed = { status: 'ok', data: { items: [], unread_needs_you: 0, unread_updates: 0, admin_pending: 0, read_at: new Date().toISOString() }, fetchedAt: Date.now() } satisfies Result<NotificationFeed>
+    vi.doMock('../api', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../api')>()),
+      loadTasks: () => Promise.resolve(page),
+      loadNotifications: () => Promise.resolve(feed),
+    }))
     const { App: Stubbed } = await import('../App')
     const c = await at('/agents', Stubbed)
     const row = await waitFor(() => {
@@ -501,6 +509,7 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
       return el!
     })
     expect(row.textContent, 'the first row is not the stubbed live agent').toContain('phone139')
+    await waitFor(() => expect(c.querySelector('.ctl-bar .nt-bell'), 'the header bar drew no bell').not.toBeNull())
     const app = c.querySelector<HTMLElement>('.sk-app')!
     expect(app.contains(row)).toBe(true)
 
@@ -528,13 +537,15 @@ describe('#139 at 390: the first Agents row starts above the midpoint', () => {
     // tabs strip and the list's own toolbar. A box added above the first row
     // fails here before it can slip into the sum unnoticed. The skip link
     // (CH-15) is absolute, off-screen until focused, and counted as 0px.
-    expect(above).toEqual(['.sk-skip', '.sk-pbar', '.sk-side', '.c-phead', '.c-count-note', '.ag-list-tabs', '.ctl-toolbar'])
+    // The header bar with the bell (#1206, proposal A) is on every page,
+    // the phone included, and is counted like any other block.
+    expect(above).toEqual(['.sk-skip', '.sk-pbar', '.sk-side', '.ctl-bar', '.c-phead', '.c-count-note', '.ag-list-tabs', '.ctl-toolbar'])
     // The row's margin, 7 ancestors' top edges (.rows, its list, .work, .app,
-    // .ctl-scroll, .sk-main, .sk-app) and the 7 boxes above, the skip link's 0px among them.
-    expect(blocks.length, 'the walk did not visit every block above the row').toBe(15)
+    // .ctl-scroll, .sk-main, .sk-app) and the 8 boxes above, the skip link's 0px among them.
+    expect(blocks.length, 'the walk did not visit every block above the row').toBe(16)
     for (const b of blocks) expect(Number.isFinite(b.px) && b.px >= 0, `${b.what} came to ${b.px}`).toBe(true)
     // The ones that carry the budget must have come to something.
-    for (const what of ['header.sk-pbar', 'div.c-phead', 'div.ag-list-tabs']) {
+    for (const what of ['header.sk-pbar', 'header.ctl-bar', 'div.c-phead', 'div.ag-list-tabs']) {
       expect(blocks.find((b) => b.what === what)?.px ?? 0, `${what} counted as nothing`).toBeGreaterThan(0)
     }
 

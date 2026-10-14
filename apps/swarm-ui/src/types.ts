@@ -549,6 +549,26 @@ export interface HumanWait {
 }
 
 /** `task_to_api` in codec.py. Trimmed to what the UI actually renders. */
+/** One answer the owner gave to an agent's question, as stored on the task (TASK-ANSWERS). */
+export interface OwnerAnswerVersion {
+  /** One of the question's option labels, or null for a free-text answer. */
+  choice: string | null
+  /** The owner's own words ("Other…"), redacted, or null. */
+  text: string | null
+  by: string | null
+  at: string | null
+}
+
+/**
+ * The owner's answer to one question (`codec.owner_answer_to_api`), with the
+ * answers it replaced, oldest first.
+ */
+export interface OwnerAnswer extends OwnerAnswerVersion {
+  question_index: number
+  question: string | null
+  history: OwnerAnswerVersion[]
+}
+
 /**
  * `Task.start_problem` as `codec.start_problem_to_api` serves it (F1-POD):
  * the worst container of a pod that is not starting. `message` is kubelet's,
@@ -598,7 +618,7 @@ export interface Task {
   forge_credential?: string | null
   /** `read` or `write`; null when the task names no GitHub credential. */
   forge_access?: 'read' | 'write' | null
-  /** "the submitter's GitHub credential", "tenant token, service submission", or null. */
+  /** "the submitter's GitHub credential", "tenant token, service submission", "owner's GitHub connection, service submission" (INDEX-CRED), or null. */
   forge_credential_source?: string | null
   cancel_requested: boolean
   repository_url: string | null
@@ -664,6 +684,14 @@ export interface Task {
    * send it. Drawn by `PodStartProblem`.
    */
   start_problem?: StartProblem | null
+  /**
+   * TASK-ANSWERS (part of #1206): the owner's answers to the agent's
+   * questions, in question order, lifted by the API out of
+   * `metadata.owner_answers`; `[]` when none is answered. OPTIONAL: an older
+   * API does not send it. The card reads them from `GET /questions` instead,
+   * beside each question.
+   */
+  owner_answers?: OwnerAnswer[]
   /**
    * Contract request 23 (#217). Written by every terminal writer beside
    * `completed_at`. Null on SUCCEEDED and on a task that ended before this
@@ -2638,7 +2666,7 @@ export const REASON_COPY: Readonly<Record<string, string>> = {
   CI_PENDING: 'Waiting for the pull request checks to finish. Holds no capacity.',
   BUDGET_EXHAUSTED: 'The budget for this work is spent.',
   CREDENTIAL_MISSING: 'No provider key is registered for this tenant.',
-  HUMAN_REQUIRED: 'The agent asked a person to sign in and nobody came in time. Holds no capacity until someone is ready.',
+  HUMAN_REQUIRED: 'The agent asked for a person and nobody came in time. Holds no capacity until someone says they are ready.',
   POOL_LIMIT_UNSET: 'This pool has no limit set, so it admits nothing. Nobody set it to 0: somebody has to set a limit.',
 }
 
@@ -5330,7 +5358,19 @@ export interface PersonClaudeAccount {
   own: number
   lent: number
   lent_by: string[]
+  /** Which accounts are lent to them, and by whom (PEOPLE-LOAN-VIEW). Absent from an older API. */
+  lent_accounts?: PersonLentAccount[]
   provider_key: boolean
+}
+
+/** One account lent to a person: ids and names only, never the account's secret. */
+export interface PersonLentAccount {
+  account_id: string
+  label: string | null
+  owner_tenant: string
+  /** The owner tenant's display name, or its id when it has none. */
+  owner_name: string | null
+  state: string | null
 }
 
 /** One row of `GET /v1/admin/people` (`people._row`). */
@@ -5340,7 +5380,12 @@ export interface PersonRow {
   github: 'connected' | 'expired' | 'none'
   workspace: AdminWorkspaceView
   claude_account: PersonClaudeAccount
-  loan_request: { state: string | null; requested_at: string | null } | null
+  /**
+   * `state` is `requested`, `lent` or `declined` (LOAN-DECLINE). A decided
+   * request carries when, and a declined one the reason the person is shown;
+   * never who decided (the audit says).
+   */
+  loan_request: { state: string | null; requested_at: string | null; decided_at?: string | null; reason?: string | null } | null
   first_seen: string | null
   last_seen: string | null
   last_submitted: string | null
@@ -5419,6 +5464,13 @@ export interface WorkspaceLoanAnswer {
   owner_tenant: string
   lent: boolean
   changed: boolean
+}
+
+/** `POST /v1/admin/people/{workspace_id}/loan/decline` (`people.People.decline_loan`). */
+export interface LoanDeclineAnswer {
+  workspace_id: string
+  state: 'declined'
+  reason: string | null
 }
 
 /** `PUT /v1/admin/admins/{email}` (`admins._to_api`). */

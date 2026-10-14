@@ -102,9 +102,10 @@ def test_an_empty_choice_is_no_choice(wire, blank):
 
 
 def test_the_client_does_not_read_swarm_tenant_itself(wire, monkeypatch):
-    """The choice is made ONCE, by the CLI or at server start, and handed in.
-    A client that read the environment on its own would make `sc` -- which
-    never offered the option -- act as another tenant without saying so."""
+    """The choice is made ONCE -- by the CLI, by `sc`, or at server start --
+    and handed in. A client that read the environment on its own would let a
+    caller that chose explicitly (`sc login` checking a sign-in, a test naming
+    an address) be moved without saying so."""
     monkeypatch.setenv("SWARM_TENANT", "team-b")
     SwarmClient(base_url="http://api.invalid").request("GET", "/v1/tasks/t1")
     assert "x-swarm-tenant" not in wire[0]["headers"]

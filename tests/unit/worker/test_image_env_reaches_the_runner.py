@@ -281,8 +281,10 @@ def _pinned_upstream() -> tuple[str, str]:
     """The upstream image the base's runtime stage is built FROM: (ref, digest).
 
     Read from the Dockerfile rather than assumed, and the runtime stage is
-    required to be `FROM ${PYTHON_IMAGE}` -- otherwise the recorded upstream ENV
-    would be attached to an image that is not the base's parent at all.
+    required to be `FROM ${PYTHON_IMAGE}`, pulled through the Docker Hub build
+    mirror (docs/runbooks/build-mirror.md), which serves the same digest --
+    otherwise the recorded upstream ENV would be attached to an image that is
+    not the base's parent at all.
     """
     text = BASE_DOCKERFILE.read_text()
     arg = re.search(r"^ARG PYTHON_IMAGE=(\S+)@(sha256:[0-9a-f]{64})\s*$", text, re.M)
@@ -291,8 +293,8 @@ def _pinned_upstream() -> tuple[str, str]:
         "digest; the upstream ENV below cannot be tied to an image"
     )
     runtime_from = re.search(r"^FROM\s+(\S+)\s+[Aa][Ss]\s+runtime\s*$", text, re.M)
-    assert runtime_from and runtime_from.group(1) == "${PYTHON_IMAGE}", (
-        "the base's runtime stage is no longer built FROM ${PYTHON_IMAGE}; "
+    assert runtime_from and runtime_from.group(1) == "${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE}", (
+        "the base's runtime stage is no longer built FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE}; "
         f"it is FROM {runtime_from.group(1) if runtime_from else '<not found>'}"
     )
     return arg.group(1), arg.group(2)

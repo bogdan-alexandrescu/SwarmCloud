@@ -23,7 +23,11 @@
 # (scripts/lib/ci-built-images.sh, and docs/ci.md for the decision):
 #
 #   --reuse-ci only       use what CI built for this commit, waiting for it if
-#                         it is still building; fail if CI never built it
+#                         it is still building; fail if CI never built it.
+#                         A digest CI's record reused from an earlier commit
+#                         whose image inputs this commit has changed is built
+#                         here (both modes): what is promoted is compared with
+#                         the commit that built each digest, never HEAD~1
 #   --reuse-ci or-build   the same, but build here when CI never built this
 #                         commit for this environment -- a release dispatched
 #                         by hand, or any prod release (swarm-ui bakes its
@@ -66,6 +70,15 @@
 #                         a local OCI layout -- never pulled -- and every build
 #                         is uncached, so every RUN self-test runs. Nothing is
 #                         pushed, loaded, tagged in a registry or logged in to.
+#
+# BUILDS READ THE PROJECT'S MIRRORS, NOT GHCR.IO, DOCKER HUB OR GITHUB
+# (OPS-MIRROR, lib/build-mirror.sh, docs/runbooks/build-mirror.md). Every
+# FROM names a remote Artifact Registry repository; agent-runtime-base's
+# release files come from gs://${BUILD_MIRROR_BUCKET}, copied in by a
+# `tool-mirror` step this script puts first in that image's Cloud Build, and
+# a missing object fails that step by name. `--local` reads upstream instead,
+# against the same sha256 list, because a pull request has no identity to
+# read either mirror with.
 #
 # MAIN REBUILDS ONLY WHAT A COMMIT CHANGED (owner decision 2026-10-08,
 # observer proposal H; docs/ci.md "Main builds only the images a commit
@@ -115,13 +128,35 @@ set -euo pipefail
 # shellcheck source-path=SCRIPTDIR
 # shellcheck source=lib/common.sh
 source "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/lib/common.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib/build-mirror.sh
+source "${REPO_ROOT}/scripts/lib/build-mirror.sh"
 
-ALL_TARGETS=(agent-runtime-base agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live workspace-apply)
+ALL_TARGETS=(agent-runtime-base agent-runtime-base-nocodex agent-runtime-browser agent-runtime-indexer swarm-api swarm-scheduler swarm-quota-broker swarm-reconciler swarm-ui swarm-verify swarm-live workspace-apply)
+
+# The target whose recipe an image is built from. Every image is its own,
+# except agent-runtime-base-nocodex: agent-runtime-base's Dockerfile built
+# again with INSTALL_CODEX=0 (target_build_args), the base agent-runtime-browser
+# is built FROM (BROWSER-NO-CODEX, owner decision 2026-10-13,
+# docs/browser-startup-speed.md §2.3). codex is 129.7 MB in the base's npm
+# layer, and a derived image cannot drop an inherited layer, so the browser
+# needs a base built without it. Its own image name, not a second tag of
+# agent-runtime-base, so the build record, the promotion, the size and
+# duplicate-layer gates (scripts/image-sizes.sh) and terraform's image_refs --
+# all keyed by image name -- cover it as the image it is. Its recipe directory
+# is the base's, so it reads the base's inputs and is rebuilt with it.
+recipe_target() {
+  case "$1" in
+    agent-runtime-base-nocodex) printf '%s' "agent-runtime-base" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
 
 # Find the build recipe for a target. Track B owns images/ and the service
 # Dockerfiles, so both layouts are accepted rather than assumed.
 find_recipe() {
-  local target="$1" candidate
+  local target candidate
+  target="$(recipe_target "$1")"
   for candidate in \
     "images/${target}/cloudbuild.yaml" \
     "apps/${target}/cloudbuild.yaml"; do
@@ -139,10 +174,11 @@ find_recipe() {
 # The images that must wait for another to FINISH building before they may be
 # SUBMITTED.
 #
-# images/agent-runtime-browser/cloudbuild.yaml pulls agent-runtime-base:<tag>
-# in its first step and builds FROM that digest, so submitting it before the
-# base has been pushed fails with manifest-unknown. images/agent-runtime-indexer/
-# cloudbuild.yaml does the same (#625). When builds ran one at a
+# images/agent-runtime-browser/cloudbuild.yaml pulls
+# agent-runtime-base-nocodex:<tag> in its first step and builds FROM that
+# digest, so submitting it before that base has been pushed fails with
+# manifest-unknown. images/agent-runtime-indexer/cloudbuild.yaml does the same
+# with agent-runtime-base:<tag> (#625). When builds ran one at a
 # time this was satisfied by ALL_TARGETS happening to list the base first --
 # which a targeted `build-images.sh agent-runtime-browser agent-runtime-base`
 # did not, and which concurrency would not either.
@@ -152,7 +188,7 @@ find_recipe() {
 # new `FROM <another target>` cannot be added without it.
 build_after() {
   case "$1" in
-    agent-runtime-browser) printf '%s' "agent-runtime-base" ;;
+    agent-runtime-browser) printf '%s' "agent-runtime-base-nocodex" ;;
     agent-runtime-indexer) printf '%s' "agent-runtime-base" ;;
     *) : ;;
   esac
@@ -271,6 +307,8 @@ AFFECTED_BY=""
 LIST_INPUTS=0
 INCREMENTAL=""
 FULL_BUILD_REASON=""
+# 1 when --incremental was set by --reuse-ci, to check the record CI made.
+REUSE_CHECK=0
 
 # HOW MANY BUILDS AT ONCE, and why the default is 4 rather than "all of them".
 #
@@ -406,31 +444,6 @@ BUILD_MACHINE="${BUILD_MACHINE:-E2_HIGHCPU_8}"
 # Empty outside a git checkout, which a reuse then refuses.
 COMMIT="$(git -C "${REPO_ROOT}" rev-parse HEAD 2>/dev/null || true)"
 
-# ---------------------------------------------------------------------------
-# Reuse what CI built for this commit, rather than build it a second time.
-# ---------------------------------------------------------------------------
-if [[ -n "${REUSE_CI}" ]]; then
-  [[ "${COMMIT}" =~ ^[0-9a-f]{40}$ ]] \
-    || die "--reuse-ci needs a git checkout: CI's build is found by the commit it was made from"
-  if_absent=fail
-  if [[ "${REUSE_CI}" == or-build ]]; then if_absent=build; fi
-  reuse_rc=0
-  "${SWARM_LIB_DIR}/ci-built-images.sh" --sha "${COMMIT}" --environment "${ENVIRONMENT}" \
-    --out "${BUILD_DIR}/images-${ENVIRONMENT}.json" --if-absent "${if_absent}" || reuse_rc=$?
-  case "${reuse_rc}" in
-    0)
-      hr
-      ok "reused CI's build of ${COMMIT}: no Cloud Build submitted"
-      info "manifest: ${BUILD_DIR}/images-${ENVIRONMENT}.json"
-      exit 0 ;;
-    3)
-      # The same build CI would have made: same targets, same tag, same
-      # manifest. Nothing below knows it was reached this way.
-      info "building ${COMMIT} here, as CI would have: every image, tag ${TAG}" ;;
-    *)
-      exit "${reuse_rc}" ;;
-  esac
-fi
 
 # ---------------------------------------------------------------------------
 # --incremental: which images this commit changed, offline (git and jq only).
@@ -449,7 +462,7 @@ BUILD_LOGIC=(scripts/build-images.sh scripts/lib/common.sh scripts/lib/ci-built-
 # even on a part of the tree nobody touches.
 REUSE_MAX_AGE_DAYS="${BUILD_REUSE_MAX_AGE_DAYS:-7}"
 
-# PER-TARGET BUILD ARGS, as YAML list items for a docker step's args. Only swarm-ui takes one, and it has to be a BUILD
+# PER-TARGET BUILD ARGS, as YAML list items for a docker step's args. swarm-ui's has to be a BUILD
 # arg rather than a Cloud Run env var: Vite inlines `import.meta.env.VITE_*`
 # when the bundle is compiled, so by the time a container starts, a static
 # bundle has already decided what environment it thinks it is in.
@@ -457,10 +470,17 @@ REUSE_MAX_AGE_DAYS="${BUILD_REUSE_MAX_AGE_DAYS:-7}"
 # ENVIRONMENT is exported by lib/common.sh, so this carries dev to a dev
 # build and prod to a prod one without a second place to keep in step.
 # Defined here, above plan_incremental, because baked_build_args reads it.
+#
+# agent-runtime-base-nocodex is agent-runtime-base's Dockerfile (recipe_target)
+# with INSTALL_CODEX=0, and this is the ONE place that argument is passed: the
+# base, and so every runner profile but the browser's, keeps codex.
 target_build_args() {
-  if [[ "$1" == "swarm-ui" ]]; then
-    printf '%s\n' "      - --build-arg" "      - VITE_SWARM_ENV=${ENVIRONMENT}"
-  fi
+  case "$1" in
+    swarm-ui)
+      printf '%s\n' "      - --build-arg" "      - VITE_SWARM_ENV=${ENVIRONMENT}" ;;
+    agent-runtime-base-nocodex)
+      printf '%s\n' "      - --build-arg" "      - INSTALL_CODEX=0" ;;
+  esac
 }
 
 # target_build_args' values, one KEY=VALUE a line: what an image bakes in
@@ -685,6 +705,66 @@ plan_incremental() {
   done
 }
 
+# ---------------------------------------------------------------------------
+# Reuse what CI built for this commit, rather than build it a second time.
+# ---------------------------------------------------------------------------
+# Below plan_incremental, because a reused record is checked with it.
+#
+# A RECORD IS PROMOTED ONLY IF EVERY DIGEST IN IT WAS BUILT FROM THIS COMMIT'S
+# INPUTS (lane REL-SKIP, part of #1194; owner-approved 2026-10-12). CI's
+# record of an incremental build names some digests it re-tagged rather than
+# built, each with the `built_from` commit that made it. Those are checked
+# here against THIS commit, image by image, by the same plan main's build
+# uses: `git diff <built_from> <this commit>` over each image's inputs. So
+# what a release promotes is compared with what made each digest -- never
+# with HEAD~1, the previous release, or which releases were cancelled,
+# superseded or failed in between. Release 38273482069 (f816e09b, 2026-10-12)
+# failed, and nothing at the release side asked whether the digests on offer
+# matched the commit. A digest whose inputs this commit has changed is built
+# here, by --incremental with CI's record as the previous build: exactly the
+# stale images and the ones built FROM them, every other digest kept. That
+# is a build CI got wrong, not the duplicate --reuse-ci exists to avoid, so
+# it is made under `only` too. A record whose every image was built from this
+# commit (a full build, or one written before records named `built_from`)
+# needs no git at all.
+if [[ -n "${REUSE_CI}" ]]; then
+  [[ "${COMMIT}" =~ ^[0-9a-f]{40}$ ]] \
+    || die "--reuse-ci needs a git checkout: CI's build is found by the commit it was made from"
+  if_absent=fail
+  if [[ "${REUSE_CI}" == or-build ]]; then if_absent=build; fi
+  reuse_rc=0
+  "${SWARM_LIB_DIR}/ci-built-images.sh" --sha "${COMMIT}" --environment "${ENVIRONMENT}" \
+    --out "${BUILD_DIR}/images-${ENVIRONMENT}.json" --if-absent "${if_absent}" || reuse_rc=$?
+  case "${reuse_rc}" in
+    0)
+      if jq -e --arg c "${COMMIT}" 'all(.images[]; (.built_from // $c) == $c)' \
+           "${BUILD_DIR}/images-${ENVIRONMENT}.json" >/dev/null; then
+        hr
+        ok "reused CI's build of ${COMMIT}: every image was built from it, no Cloud Build submitted"
+        info "manifest: ${BUILD_DIR}/images-${ENVIRONMENT}.json"
+        exit 0
+      fi
+      # The check needs the history back to each `built_from`; a release's
+      # checkout is one commit deep. Without it plan_incremental cannot tell
+      # an ancestor and rebuilds everything, which is correct, only slower.
+      if [[ "$(git -C "${REPO_ROOT}" rev-parse --is-shallow-repository 2>/dev/null || true)" == true ]]; then
+        info "this checkout is shallow; fetching the history each reused digest is checked against"
+        git -C "${REPO_ROOT}" fetch --quiet --unshallow </dev/null 2>&1 | redact >&2 \
+          || warn "could not fetch the history, so every image is rebuilt"
+      fi
+      cp -f "${BUILD_DIR}/images-${ENVIRONMENT}.json" "${BUILD_DIR}/ci-images-${ENVIRONMENT}.json"
+      INCREMENTAL="${BUILD_DIR}/ci-images-${ENVIRONMENT}.json"
+      REUSE_CHECK=1
+      info "CI's build of ${COMMIT} reuses digests built from earlier commits; checking each against this commit's inputs" ;;
+    3)
+      # The same build CI would have made: same targets, same tag, same
+      # manifest. Nothing below knows it was reached this way.
+      info "building ${COMMIT} here, as CI would have: every image, tag ${TAG}" ;;
+    *)
+      exit "${reuse_rc}" ;;
+  esac
+fi
+
 if [[ -n "${INCREMENTAL}" ]]; then
   require_cmd git
   step "Incremental build"
@@ -703,6 +783,21 @@ if [[ -n "${INCREMENTAL}" ]]; then
     printf '  %-22s %-7s %s\n' "${P_NAME[$i]}" "${P_ACTION[$i]}" "${P_WHY[$i]}" >&2
     [[ "${P_ACTION[$i]}" == reuse ]] || TARGETS+=("${P_NAME[$i]}")
   done
+  if [[ "${REUSE_CHECK}" -eq 1 ]]; then
+    if [[ "${#TARGETS[@]}" -eq 0 ]]; then
+      # CI's record is promoted exactly as fetched: nothing below runs.
+      rm -f "${INCREMENTAL}"
+      hr
+      ok "reused CI's build of ${COMMIT}: every reused digest was built from inputs this commit still has, no Cloud Build submitted"
+      info "manifest: ${BUILD_DIR}/images-${ENVIRONMENT}.json"
+      exit 0
+    fi
+    warn "CI's record of ${COMMIT} offers ${#TARGETS[@]} digest(s) built from inputs this commit has changed: ${TARGETS[*]}. Building them here; nothing stale is promoted."
+    if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+      echo "**Images:** CI's record of \`${COMMIT:0:12}\` reused digests built before this commit changed their inputs; this run rebuilt ${TARGETS[*]}." \
+        >>"${GITHUB_STEP_SUMMARY}"
+    fi
+  fi
 fi
 
 # Advisory only. The check that can actually stop a bad image is the one made
@@ -788,10 +883,33 @@ if [[ -n "${INCREMENTAL}" ]]; then
   info "${#TARGETS[@]} image(s) to build, ${#REUSED[@]} reused"
 fi
 
+# The Cloud Build step that stages the tool mirror (lib/build-mirror.sh), for
+# a build of any of the Dockerfiles given that bind-mounts it -- or nothing.
+# A pull request's local build stages it from upstream instead
+# (build_locally), because it can read no bucket, so it gets no step.
+mirror_step_for() {
+  local df
+  [[ "${LOCAL_BUILD}" -eq 0 ]] || return 0
+  for df in "$@"; do
+    if dockerfile_uses_tool_mirror "${df}"; then
+      tool_mirror_step_yaml
+      return
+    fi
+  done
+}
+
 # A Dockerfile with no cloudbuild.yaml gets a generated one. It is written to
 # build/ and kept, so a failed build can be reproduced exactly.
+#
+# A Dockerfile that bind-mounts the tool mirror is built with BuildKit
+# explicitly: `RUN --mount` is BuildKit's, and the legacy builder refuses it.
 generate_config() {
-  local dockerfile="$1" image="$2" out="$3" target="${4:-}"
+  local dockerfile="$1" image="$2" out="$3" target="${4:-}" mirror_step buildkit=""
+  mirror_step="$(mirror_step_for "${dockerfile}")" || exit 1
+  if dockerfile_uses_tool_mirror "${dockerfile}"; then
+    buildkit="    env:
+      - DOCKER_BUILDKIT=1"
+  fi
   # --build-only lists no `images:`, so Cloud Build pushes nothing; the image
   # it builds lives and dies on the build worker.
   local push_block="images:
@@ -808,7 +926,9 @@ options:
   # is absent and when a user-specified build service account is in use.
   logging: CLOUD_LOGGING_ONLY
 steps:
+${mirror_step}
   - name: gcr.io/cloud-builders/docker
+${buildkit}
     args:
       - build
       - --platform
@@ -829,16 +949,17 @@ YAML
 
 # --build-only, for an image built FROM another: build both, in ONE Cloud
 # Build, the second FROM the first. Main's recipe for agent-runtime-browser
-# pulls agent-runtime-base:<tag> from the registry, which a build-only run never
-# pushed -- and building the base here is also the point: a pull request that
+# pulls agent-runtime-base-nocodex:<tag> from the registry, which a build-only
+# run never pushed -- and building the base here is also the point: a pull request that
 # breaks the base's self-tests is caught by either image's build. The second
 # image takes the first as BASE_IMAGE, as the checked-in recipe passes it.
 generate_chain_config() {
-  local target="$1" prereq="$2" out="$3" base_df target_df base_image
+  local target="$1" prereq="$2" out="$3" base_df target_df base_image mirror_step
   base_df="$(recipe_dockerfile "${prereq}")" \
     || die "${target} is built FROM ${prereq}, which has no Dockerfile to build it from here"
   target_df="$(recipe_dockerfile "${target}")" \
     || die "${target}: no Dockerfile beside its recipe to build without pushing"
+  mirror_step="$(mirror_step_for "${base_df}" "${target_df}")" || exit 1
   base_image="${LOCAL_IMAGE}/${prereq}:${TAG}"
   cat >"${out}" <<YAML
 # Generated by scripts/build-images.sh --build-only on $(iso_now). Pushes
@@ -849,6 +970,7 @@ options:
   machineType: ${BUILD_MACHINE}
   logging: CLOUD_LOGGING_ONLY
 steps:
+${mirror_step}
   - id: build-${prereq}
     name: gcr.io/cloud-builders/docker
     env:
@@ -1129,6 +1251,29 @@ def repo_of(ref):
     return name.rsplit(":", 1)[0] if ":" in name.rsplit("/", 1)[-1] else name
 
 
+UPSTREAMS = json.loads(os.environ.get("MIRROR_UPSTREAMS_JSON") or "{}")
+
+
+def upstream_args(dockerfile, args):
+    """This runner can read neither build mirror (scripts/lib/build-mirror.sh),
+    so each MIRROR_* argument names the registry it stands in for, and a
+    `# syntax=` frontend named through a mirror is replaced, by
+    BUILDKIT_SYNTAX, with the same reference -- digest and all -- upstream."""
+    given = {a.split("=", 1)[0] for a in flag(args, "--build-arg")}
+    out = []
+    for name, m in UPSTREAMS.items():
+        if name not in given:
+            out += ["--build-arg", f"{name}={m['upstream']}"]
+    if "BUILDKIT_SYNTAX" not in given and os.path.isfile(dockerfile):
+        with open(dockerfile) as fh:
+            syntax = re.match(r"#\s*syntax\s*=\s*(\S+)", fh.readline())
+        parts = syntax.group(1).split("/", 3) if syntax else []
+        for m in UPSTREAMS.values():
+            if len(parts) == 4 and parts[0].endswith("-docker.pkg.dev") and parts[2].endswith(m["suffix"]):
+                out += ["--build-arg", f"BUILDKIT_SYNTAX={m['upstream']}/{parts[3]}"]
+    return out
+
+
 def run_steps(dockerfile):
     """Each RUN instruction's line number and first line, read as Docker
     reads the file: continuations joined, heredoc bodies skipped."""
@@ -1209,6 +1354,7 @@ for sid, step, name, args, is_build in parsed:
             extra += ["--build-context", f"{pinned}=oci-layout://{layout}@{digest}"]
     dockerfile = (flag(rest, "-f") or flag(rest, "--file") or [os.path.join(rest[-1], "Dockerfile")])[0]
     dockerfile = dockerfile if os.path.isabs(dockerfile) else os.path.join(cwd, dockerfile)
+    rest = rest[:-1] + upstream_args(dockerfile, rest) + rest[-1:]
 
     if tag in from_refs:
         layout = os.path.join(state, safe(tag) + ".oci")
@@ -1249,6 +1395,7 @@ PY
 
 build_locally() {
   local i target log why state report python builder rc failed=() notes=()
+  local prereq t df need_mirror=0
   python="${SWARM_PYTHON:-python3}"
   "${python}" -c 'import yaml' 2>/dev/null \
     || die "--local reads each build config with PyYAML; ${python} cannot import yaml (set SWARM_PYTHON to one that can)"
@@ -1268,6 +1415,20 @@ build_locally() {
   mkdir -p "${state}" "${log}"
   printf '%s\n\n' "Built at ${TAG} with docker buildx, uncached, pushing nothing. Every RUN step listed ran and passed unless its image is marked FAILED." >"${report}"
 
+  # The tool mirror, from upstream: this runner can read no bucket. The same
+  # files at the same sha256 the Cloud Build step checks (lib/build-mirror.sh),
+  # and nothing is built if one fails.
+  for target in "${T_NAME[@]}"; do
+    prereq="$(build_after "${target}")"
+    for t in "${target}" ${prereq:+"${prereq}"}; do
+      df="$(recipe_dockerfile "${t}")" || continue
+      if dockerfile_uses_tool_mirror "${df}"; then need_mirror=1; fi
+    done
+  done
+  if [[ "${need_mirror}" -eq 1 ]]; then
+    tool_mirror_stage_upstream
+  fi
+
   step "Build ${#T_NAME[@]} image build(s) here, one at a time, pushing nothing"
   for ((i = 0; i < ${#T_NAME[@]}; i++)); do
     target="${T_NAME[$i]}"
@@ -1276,6 +1437,7 @@ build_locally() {
     rc=0
     LOCAL_SUBS="$(jq -cn --arg i "${LOCAL_IMAGE}/${target}" --arg t "${TAG}" --arg n "${target}" \
       '{_IMAGE: $i, _TAG: $t, _TARGET: $n}')" \
+      MIRROR_UPSTREAMS_JSON="${MIRROR_UPSTREAMS_JSON}" \
       "${python}" -c "${LOCAL_REPLAY}" "${T_CONFIG[$i]}" "${REPO_ROOT}" "${target}" "${builder}" \
         "${state}" "${report}" "${why}" 2>&1 \
       | redact | tee "${log}/${target}.log" | awk -v p="[${target}] " '{ print p $0; fflush() }' >&2 \

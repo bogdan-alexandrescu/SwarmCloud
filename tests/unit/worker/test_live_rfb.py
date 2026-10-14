@@ -42,6 +42,8 @@ from agent_worker.livegate.capture import Frame
 from agent_worker.livegate.mask import UNAVAILABLE_RGB, MaskState
 
 LIVEGATE_LOGGER = "agent_worker.livegate"
+#: The Cursor pseudo-encoding (RFC 6143 §7.8.1), spelled here so a renamed constant cannot hide it.
+CURSOR = -239
 
 
 @pytest.fixture()
@@ -154,6 +156,9 @@ class Viewer:
             elif enc == 6:
                 (length,) = struct.unpack(">I", await self.reader.readexactly(4))
                 data = await self.reader.readexactly(length)
+            elif enc == CURSOR:
+                # RFC 6143 §7.8.1: the shape's pixels, then its bitmask.
+                data = await self.reader.readexactly(w * h * 4 + (w + 7) // 8 * h)
             else:
                 data = b""
             rects.append((x, y, w, h, enc, data))
@@ -319,15 +324,17 @@ def test_controller_input_above_the_rate_limit_is_dropped() -> None:
         gate = Gate()
         person = await gate.connect("person-1", clock=lambda: now[0])
         await gate.control.grant("person-1")
+        # Keys and clicks are dropped above the limit; a move is coalesced
+        # instead (test_live_cursor2.py, LB-CURSOR2).
         for i in range(rfb.MAX_INPUT_EVENTS_PER_SECOND + 50):
-            person.pointer(0, i % 60, 1)
+            person.key(0x61, i % 2 == 0)
         await person.flush()
-        assert len(gate.injector.pointer) == rfb.MAX_INPUT_EVENTS_PER_SECOND
+        assert len(gate.injector.keys) == rfb.MAX_INPUT_EVENTS_PER_SECOND
         assert gate.sessions["person-1"].counts.dropped == 50
         now[0] += 1.0
-        person.pointer(0, 1, 1)
+        person.key(0x61, False)
         await person.flush()
-        assert len(gate.injector.pointer) == rfb.MAX_INPUT_EVENTS_PER_SECOND + 1
+        assert len(gate.injector.keys) == rfb.MAX_INPUT_EVENTS_PER_SECOND + 1
         await gate.close()
 
     asyncio.run(main())
@@ -341,8 +348,9 @@ def test_a_paste_that_does_not_fit_the_rate_limit_is_dropped_whole() -> None:
         gate = Gate()
         person = await gate.connect("person-1", clock=lambda: now[0])
         await gate.control.grant("person-1")
-        for _ in range(rfb.MAX_INPUT_EVENTS_PER_SECOND - 3):
-            person.pointer(0, 1, 1)
+        # Spend the input limit on keys (moves have a limit of their own).
+        for i in range(rfb.MAX_INPUT_EVENTS_PER_SECOND - 3):
+            person.key(0x61, i % 2 == 0)
         person.cut_text(secrets.token_hex(8))
         await person.flush()
         assert gate.injector.typed == []
@@ -1022,3 +1030,204 @@ def test_ctl_logs_no_ticket(short_dir: Path, caplog: pytest.LogCaptureFixture) -
     asyncio.run(main())
     _assert_absent(caplog, [ticket])
     assert ticket not in json.dumps(rig.records)
+
+
+# --------------------------------------------------------------------------
+# The pointer (LB-CURSOR; part of #1030): a shape for the controller's noVNC,
+# a mark in every other viewer's frame and in the recording
+# --------------------------------------------------------------------------
+#
+# Measured 2026-10-12 on task_4e0cf1c649634b949703: noVNC's canvas had
+# `cursor: none`, the gate never offered -239, and Xvfb's -fbdir file never
+# holds the X pointer, so the person in control clicked blind.
+
+_NOVNC_RGBX = {"big_endian": False, "shifts": (0, 8, 16)}
+_BACKGROUND = (10, 20, 30)
+
+
+def _cursor_rects(rects: list[tuple[int, int, int, int, int, bytes]]) -> list[tuple[int, int, int, int, int, bytes]]:
+    return [r for r in rects if r[4] == CURSOR]
+
+
+def _rgbx_at(data: bytes, width: int, x: int, y: int) -> tuple[int, int, int]:
+    at = (y * width + x) * 4
+    return (data[at], data[at + 1], data[at + 2])
+
+
+def test_a_viewer_that_lists_the_cursor_encoding_is_sent_the_arrow_with_its_bitmask() -> None:
+    async def main() -> None:
+        from agent_worker.livegate import pointer
+        gate = Gate()
+        gate.hub.publish(rfb.masked(_frame(), _unmasking()))
+        viewer = await gate.connect("person-1", encodings=(0, rfb.ENCODING_DESKTOP_SIZE, CURSOR))
+        viewer.set_pixel_format(**_NOVNC_RGBX)
+        viewer.request(incremental=False)
+        await viewer.flush()
+        rects = await viewer.read_update()
+        [(x, y, w, h, _enc, data)] = _cursor_rects(rects)
+        assert (x, y) == pointer.HOTSPOT
+        assert (w, h) == (pointer.WIDTH, pointer.HEIGHT)
+        mask_len = (w + 7) // 8 * h
+        assert len(data) == w * h * 4 + mask_len
+        pixels, bitmask = data[:w * h * 4], data[w * h * 4:]
+        assert bitmask == pointer.bitmask()
+        # The tip is the outline, the inside is the fill, both in the viewer's RGBX.
+        assert _rgbx_at(pixels, w, 0, 0) == pointer.OUTLINE_RGB
+        assert _rgbx_at(pixels, w, 1, 2) == pointer.FILL_RGB
+        assert bitmask[0] & 0x80, "the tip is transparent"
+        assert not bitmask[0] & 0x40, "the right of the tip on its first row is drawn"
+        # The frame itself still arrives with it.
+        assert [r[4] for r in rects if r[4] != CURSOR] == [0]
+        # Sent once: the next update carries the frame alone.
+        changed = _frame()
+        changed.fill(0, 5, 64, 6, (1, 2, 3))
+        gate.hub.publish(rfb.masked(changed, _unmasking()))
+        viewer.request(incremental=True)
+        await viewer.flush()
+        assert _cursor_rects(await viewer.read_update()) == []
+        await gate.close()
+
+    asyncio.run(main())
+
+
+def test_a_viewer_that_does_not_list_the_cursor_encoding_is_sent_no_cursor() -> None:
+    async def main() -> None:
+        gate = Gate()
+        gate.hub.publish(rfb.masked(_frame(), _unmasking()))
+        viewer = await gate.connect("recorder", encodings=(6, 0, rfb.ENCODING_DESKTOP_SIZE))
+        viewer.request(incremental=False)
+        await viewer.flush()
+        rects = await viewer.read_update()
+        assert [r[4] for r in rects] == [6]
+        await gate.close()
+
+    asyncio.run(main())
+
+
+def test_the_cursor_is_sent_again_after_every_desktop_size_change() -> None:
+    async def main() -> None:
+        gate = Gate(width=64, height=40)
+        gate.hub.publish(rfb.masked(_frame(64, 40), _unmasking()))
+        viewer = await gate.connect("person-1", encodings=(0, rfb.ENCODING_DESKTOP_SIZE, CURSOR))
+        viewer.request(incremental=False)
+        await viewer.flush()
+        assert len(_cursor_rects(await viewer.read_update())) == 1
+        gate.hub.publish(rfb.masked(_frame(32, 48), _unmasking()))
+        viewer.request(incremental=True)
+        await viewer.flush()
+        [(_x, _y, w, h, enc, _)] = await viewer.read_update()
+        assert (w, h, enc) == (32, 48, rfb.ENCODING_DESKTOP_SIZE)
+        viewer.width, viewer.height = 32, 48
+        viewer.request(incremental=False)
+        await viewer.flush()
+        rects = await viewer.read_update()
+        assert len(_cursor_rects(rects)) == 1
+        assert [(r[2], r[3]) for r in rects if r[4] == 0] == [(32, 48)]
+        await gate.close()
+
+    asyncio.run(main())
+
+
+def _xwd(width: int, height: int, rgb: tuple[int, int, int]) -> bytes:
+    """An XWD file of one colour, laid out as Xvfb's -fbdir screen file."""
+    header = struct.pack(">25I", 100, 7, 2, 24, width, height, 0, 0, 32, 0, 32, 32, width * 4,
+                         4, 0xFF0000, 0x00FF00, 0x0000FF, 8, 256, 0, width, height, 0, 0, 0)
+    value = (rgb[0] << 16) | (rgb[1] << 8) | rgb[2]
+    return header + value.to_bytes(4, "little") * (width * height)
+
+
+def test_a_watcher_sees_the_pointer_where_the_controller_moved_it_and_xvfbs_buffer_is_untouched() -> None:
+    async def main() -> None:
+        from agent_worker.livegate import pointer
+        from agent_worker.livegate.capture import XvfbFramebuffer
+        with tempfile.TemporaryDirectory() as tmp:
+            screen = Path(tmp) / "Xvfb_screen0"
+            screen.write_bytes(_xwd(64, 40, _BACKGROUND))
+            before = screen.read_bytes()
+            with XvfbFramebuffer(screen) as fb:
+                gate = Gate(width=64, height=40)
+                gate.hub.publish(rfb.masked(fb.grab(), _unmasking()))
+                watcher = await gate.connect("watcher", encodings=(0, CURSOR))
+                watcher.set_pixel_format(**_NOVNC_RGBX)
+                person = await gate.connect("person-1", encodings=(0, CURSOR))
+                await gate.control.grant("person-1")
+                person.pointer(0, 20, 10)
+                await person.flush()
+                watcher.request(incremental=False)
+                await watcher.flush()
+                [(_x, _y, w, _h, _enc, data)] = [r for r in await watcher.read_update() if r[4] == 0]
+                for dx, dy, rgb in pointer.opaque():
+                    if 20 + dx < 64 and 10 + dy < 40:
+                        assert _rgbx_at(data, w, 20 + dx, 10 + dy) == rgb
+                # Away from the arrow, the frame as it was.
+                assert _rgbx_at(data, w, 5, 5) == _BACKGROUND
+                assert _rgbx_at(data, w, 19, 10) == _BACKGROUND
+                # Painted on a copy: the published frame and Xvfb's file never are.
+                hub = gate.hub.current.frame
+                assert all(hub.rgb_at(x, y) == _BACKGROUND for y in range(40) for x in range(64))
+                assert screen.read_bytes() == before
+                await gate.close()
+
+    asyncio.run(main())
+
+
+def test_the_agents_pointer_reaches_a_watcher_too() -> None:
+    async def main() -> None:
+        from agent_worker.livegate import pointer
+        gate = Gate(width=64, height=40)
+        gate.hub.publish(rfb.masked(_frame(rgb=_BACKGROUND), _unmasking()))
+        watcher = await gate.connect("watcher", encodings=(0,))
+        watcher.set_pixel_format(**_NOVNC_RGBX)
+        gate.hub.pointer.move(40, 30)
+        watcher.request(incremental=False)
+        await watcher.flush()
+        [(_x, _y, w, _h, _enc, data)] = await watcher.read_update()
+        tip = pointer.opaque()[0]
+        assert _rgbx_at(data, w, 40 + tip[0], 30 + tip[1]) == tip[2]
+        # A move with no new capture still reaches a waiting viewer.
+        watcher.request(incremental=True)
+        await watcher.flush()
+        gate.hub.pointer.move(5, 5)
+        [(_x, y, _w, h, _enc, band)] = await asyncio.wait_for(watcher.read_update(), 2)
+        assert y <= 5 < y + h
+        await gate.close()
+
+    asyncio.run(main())
+
+
+def test_the_pointer_never_reveals_what_the_mask_covered() -> None:
+    async def main() -> None:
+        from agent_worker.livegate import pointer
+        gate = Gate(width=64, height=40)
+        # The mask is down: the whole frame is the "unavailable" fill (§5.3.2).
+        gate.hub.publish(rfb.masked(_frame(rgb=(200, 100, 50)), MaskState()))
+        watcher = await gate.connect("watcher", encodings=(0,))
+        watcher.set_pixel_format(**_NOVNC_RGBX)
+        gate.hub.pointer.move(10, 10)
+        watcher.request(incremental=False)
+        await watcher.flush()
+        [(_x, _y, w, h, _enc, data)] = await watcher.read_update()
+        allowed = {UNAVAILABLE_RGB, pointer.OUTLINE_RGB, pointer.FILL_RGB}
+        seen = {_rgbx_at(data, w, x, y) for y in range(h) for x in range(w)}
+        assert seen <= allowed
+        assert pointer.OUTLINE_RGB in seen
+        await gate.close()
+
+    asyncio.run(main())
+
+
+def test_the_controller_with_a_local_cursor_is_not_sent_a_second_lagging_one() -> None:
+    async def main() -> None:
+        gate = Gate(width=64, height=40)
+        gate.hub.publish(rfb.masked(_frame(rgb=_BACKGROUND), _unmasking()))
+        person = await gate.connect("person-1", encodings=(0, CURSOR))
+        person.set_pixel_format(**_NOVNC_RGBX)
+        await gate.control.grant("person-1")
+        person.pointer(0, 20, 10)
+        person.request(incremental=False)
+        await person.flush()
+        [(_x, _y, w, h, _enc, data)] = [r for r in await person.read_update() if r[4] == 0]
+        assert {_rgbx_at(data, w, x, y) for y in range(h) for x in range(w)} == {_BACKGROUND}
+        await gate.close()
+
+    asyncio.run(main())

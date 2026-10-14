@@ -12,8 +12,16 @@ WHAT IS REPORTED, AND WHAT IS NOT. The origin is the scheme, host and port of
 the URL Chromium committed in the top frame, and the registrable domain
 Chromium itself computed from the public suffix list
 (`Page.Frame.domainAndRegistry`); nothing here keeps a suffix list of its own.
-Never the path, the query, the fragment or a user name or password in the
-URL: the console shows a site, and the report crosses two services. A page
+Beside it, `path`: the top frame's path, for the caption under the device
+("<device> · <W>×<H> · <path>", design §6 item 11). Until LB-R6 the report
+carried no path, and every live session's caption read "path not reported"
+(re-QA pass 8, 2026-10-12); the owner's call was that a live session reports
+its path. The path is redacted with `swarm_redaction` before it leaves the
+gate (a reset link's token is a path segment), and cut at `MAX_PATH_CHARS`.
+Never the query, the fragment or a user name or password in the URL: those
+carry state and secrets far more often than a path does, and the report
+crosses two services. Whoever watches the live view already sees the page,
+so the path tells them nothing the pixels do not. A page
 with no web origin (about:blank, chrome://, data:, file:, an error page) is
 reported as null. `cert_error` is null -- unknown -- because the page the
 console shows is followed by the mask's session, which does not watch the
@@ -25,6 +33,15 @@ invariant 10's spirit, as presets.py keeps it -- a name, never a size.
 `touch` is what the person in control gets: the preset's touch AND their
 touch toggle (touch.py `TouchInjector.set_touch`, LB-DEV-B), so a phone with
 touch turned off reports false and a desktop never reports true.
+
+WHETHER THE AGENT IS USING THIS BROWSER (LIVE-UNUSED; part of #1030), as
+`agent`: `connected_at`, the epoch seconds the CDP proxy accepted the agent's
+first connection (null until it has); `connections`, how many it holds now;
+and `first_frame_at`, when the gate first published a frame (null until it
+has), which the console times its "the agent isn't using this browser yet"
+from. Numbers only, read off the proxy and the capture, never off the page.
+The key is left out when the caller gives no `agent`, so a report reads as it
+did before for anything that does not send one.
 
 THE PAGE IS UNTRUSTED. Every field is length-limited here, and the relay and
 swarm-api check the report again; nothing in it is logged.
@@ -38,6 +55,8 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+from swarm_redaction import redact
+
 from .presets import Device
 
 #: The largest report the relay keeps (swarm_live.rendezvous.MAX_REPORT_BYTES;
@@ -49,6 +68,10 @@ MAX_REPORT_BYTES = 4096
 MAX_URL_CHARS = 8192
 #: RFC 1035's limit on a host name.
 MAX_HOST_CHARS = 253
+#: The longest path reported (swarm_api.live.MAX_PATH_CHARS, held equal by
+#: test_live_session_path.py's limits): a caption, not a URL to follow. A
+#: longer one is cut and ends in "…", so it never reads as the whole path.
+MAX_PATH_CHARS = 256
 
 _SCHEMES = {"http": 80, "https": 443}
 _HOST = re.compile(r"[a-z0-9_]([a-z0-9_-]{0,62})(\.[a-z0-9_]([a-z0-9_-]{0,62}))*\.?")
@@ -91,7 +114,16 @@ def page_origin(url: Any, registrable: Any = None) -> dict[str, Any] | None:
         "scheme": scheme + ":",
         "ip_literal": ip_literal,
         "cert_error": None,
+        "path": page_path(parts.path),
     }
+
+
+def page_path(path: str) -> str:
+    """The caption's path: `path` (the root when empty), redacted, at most `MAX_PATH_CHARS`."""
+    shown = redact(path or "/").text
+    if len(shown) > MAX_PATH_CHARS:
+        shown = shown[:MAX_PATH_CHARS - 1] + "\u2026"
+    return shown
 
 
 def device_report(device: Device, touch_on: bool = True) -> dict[str, Any]:
@@ -101,10 +133,20 @@ def device_report(device: Device, touch_on: bool = True) -> dict[str, Any]:
             "touch": bool(device.touch and touch_on)}
 
 
-def encode_report(origin: dict[str, Any] | None, device: dict[str, Any] | None) -> bytes:
-    """One `OP_REPORT` payload: the latest of both, never a delta."""
-    raw = json.dumps({"origin": origin, "device": device}, separators=(",", ":"),
-                     ensure_ascii=False).encode("utf-8")
+def agent_report(*, connected_at: float | None, connections: int,
+                 first_frame_at: float | None) -> dict[str, Any]:
+    """The report's `agent`: whether the agent is driving this browser (LIVE-UNUSED)."""
+    return {"connected_at": connected_at, "connections": max(0, int(connections)),
+            "first_frame_at": first_frame_at}
+
+
+def encode_report(origin: dict[str, Any] | None, device: dict[str, Any] | None,
+                  agent: dict[str, Any] | None = None) -> bytes:
+    """One `OP_REPORT` payload: the latest of all of them, never a delta."""
+    message: dict[str, Any] = {"origin": origin, "device": device}
+    if agent is not None:
+        message["agent"] = agent
+    raw = json.dumps(message, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
     if len(raw) > MAX_REPORT_BYTES:
         raise ValueError("report too large")
     return raw

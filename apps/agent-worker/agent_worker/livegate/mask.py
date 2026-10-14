@@ -45,11 +45,26 @@ its text fields, which while a person holds control are what they type. Log
 lines from this module carry counts and outcomes only (§5.3.3).
 
 GEOMETRY. The display holds one maximised Chromium window (§3.1), so the page
-area is the bottom-left `innerWidth x innerHeight` CSS pixels times the
-device scale (`scale`; 1 on the desktop preset, the preset's factor when
-lane L3b resizes the display to a device, §6.1) and the browser's own UI is
-the band above it. Page rectangles are layout-viewport client rectangles; the
-top frame's visual viewport (pinch zoom) maps them onto the screen. A child
+area is at the bottom-left, the browser's own UI the band above it, and its
+size is the top frame's VISUAL VIEWPORT in CSS px (`visualViewport.width` x
+`height`) times the page scale (`visualViewport.scale`) times the screen scale
+(`scale`: `Device.screen_scale`, one screen pixel per CSS pixel on every
+preset -- headed Chromium draws an emulated device scale factor at that size,
+presets.py, §6.1). Page rectangles are layout-viewport client rectangles; the
+visual viewport's offset and scale map them onto the screen.
+
+WHY THE PAGE SCALE IS IN THE PAGE'S SIZE (QA12-01, 2026-10-13). A phone or
+tablet preset is emulated with `mobile: true`, so Chromium zooms a page laid
+out wider than the device -- 980 CSS px without a `<meta name=viewport>`, its
+content's width when that overflows -- out to fit, as a phone does. Then
+`innerWidth` x `innerHeight` are the visible area in CSS px (980 x 2123 on
+iPhone 15 portrait) and `visualViewport.scale` is 393 / 980. Sizing the page
+as `innerWidth * scale` called it 980 screen px on a 393 px frame and blanked
+every frame grey: iPhone 15 and iPad portrait showed #555 for as long as the
+page was up, while iPad landscape (1080, no zoom) and the desktop (never
+`mobile`) drew. A page drawn at the window's own metrics before the device
+override lands is still wider than the frame at scale 1, so it is still
+unavailable. A child
 frame's rectangles are offset by its owner element's content box, which the
 parent frame's own report carries, linked by `MaskCdp.link`.
 """
@@ -176,6 +191,11 @@ class _Report:
     visual_x: float
     visual_y: float
     visual_scale: float
+    #: The visual viewport's size in CSS px: `visualViewport.width` x
+    #: `height`, or `innerWidth` x `innerHeight` (the same area, floored) from
+    #: an observer without it.
+    visual_width: float
+    visual_height: float
     fields: tuple[_Field, ...]
     texts: tuple[_Text, ...]
     owners: dict[int, _Box]
@@ -233,10 +253,11 @@ def _parse(payload: str) -> tuple[str, str, int, _Report | None]:
     if kind != "report":
         raise MalformedReport("unknown kind")
     viewport = message.get("vp")
-    if not isinstance(viewport, list) or len(viewport) != 5:
-        raise MalformedReport("viewport is not [w, h, vx, vy, vs]")
-    width, height, visual_x, visual_y, visual_scale = (_number(v) for v in viewport)
-    if width < 0 or height < 0 or visual_scale <= 0:
+    if not isinstance(viewport, list) or len(viewport) not in (5, 7):
+        raise MalformedReport("viewport is not [w, h, vx, vy, vs, vw, vh]")
+    width, height, visual_x, visual_y, visual_scale = (_number(v) for v in viewport[:5])
+    visual_width, visual_height = (_number(v) for v in viewport[5:]) if len(viewport) == 7 else (width, height)
+    if width < 0 or height < 0 or visual_width < 0 or visual_height < 0 or visual_scale <= 0:
         raise MalformedReport("viewport out of range")
     fields = tuple(
         _Field(
@@ -258,7 +279,7 @@ def _parse(payload: str) -> tuple[str, str, int, _Report | None]:
     if not isinstance(truncated, bool):
         raise MalformedReport("truncation flag missing")
     report = _Report(doc, epoch, width, height, visual_x, visual_y, visual_scale,
-                     fields, texts, owners, truncated)
+                     visual_width, visual_height, fields, texts, owners, truncated)
     return kind, doc, epoch, report
 
 
@@ -416,8 +437,13 @@ class MaskState:
         if (not self._session or top is None or top.url is None or top.report is None):
             return self._unavailable(frame)
         report = top.report
-        page_w = report.width * self._scale
-        page_h = report.height * self._scale
+        # The visible area times the page scale: the device's viewport however
+        # the page is zoomed (GEOMETRY in the module docstring). Not
+        # `innerWidth` alone, which is 980 on a phone showing a page zoomed out
+        # to fit, and half the phone under a 2x pinch (QA12-01).
+        k = report.visual_scale * self._scale
+        page_w = report.visual_width * k
+        page_h = report.visual_height * k
         if page_w <= 0 or page_h <= 0 or page_w > frame.width + 1 or page_h > frame.height + 1:
             return self._unavailable(frame)
         page = _Box(0, frame.height - page_h, page_w, frame.height)

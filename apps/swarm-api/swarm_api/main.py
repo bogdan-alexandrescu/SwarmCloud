@@ -37,10 +37,12 @@ from .routes import (
     forgeapp,
     forgeperms,
     gittokens,
+    gittools,
     health,
     issues,
     leases,
     live,
+    notifications,
     onboarding,
     outcomes,
     people,
@@ -48,6 +50,7 @@ from .routes import (
     repositories,
     runs,
     schedule_tick,
+    search,
     strandedprs,
     schedules,
     tasks,
@@ -184,6 +187,12 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.
     app.include_router(children.router)
+    # The runner git tools (docs/runner-git-tools.md, lane G5): worker-only,
+    # authenticated as the child routes are, plus the audit's tenant read.
+    app.include_router(gittools.router)
+    # The search tool (docs/search-tool.md, lane SEARCH-TOOL): worker-only,
+    # authenticated as the git tools are; a 404 while SEARCH_TOOL_ENABLED is off.
+    app.include_router(search.router)
     # Named browser logins and the workflow carry (docs/design/live-browser.md
     # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
     # routes that authenticate as the child routes do.
@@ -196,6 +205,10 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # tunnel ticket, a member's view and control, and the socket proxied to
     # swarm-live. Tenant-scoped through the same authenticator as every route.
     app.include_router(live.router)
+    # The notification feed (#1206, NOTIF-API; docs/notifications.md): the
+    # caller's own items, derived on each read from the records above, and
+    # one document of read marks per person.
+    app.include_router(notifications.router)
 
     @app.middleware("http")
     async def observe(request: Request, call_next):

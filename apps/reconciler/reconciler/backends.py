@@ -76,6 +76,7 @@ from swarm_common.identity import _TENANT_SAFE as _NAME_SAFE
 from .detect import sanitised
 from .model import ExecutionPhase, ExecutionView, JobResourceView, Termination, as_datetime
 from .startproblem import StartProblem, pods_start_problem
+from .startsteps import StartRead, pods_start_steps
 
 MANAGED_LABEL = "managed-by"
 #: The marker this service itself would stamp. Other components stamp their own.
@@ -1662,6 +1663,17 @@ class GkeBackend:
         no pod exists yet, or when the namespace is not a tenant's. Raises when
         the call fails; the caller then records and clears nothing.
         """
+        found = self.start_read(execution)
+        return found.problem if found is not None else None
+
+    def start_read(self, execution: ExecutionView) -> StartRead | None:
+        """The Job's pod read once: its start problem and its start-up steps (F1-POD, STARTUP-API).
+
+        One `pods list` serves both `start_problem` and the `startup_progress`
+        steps (`startsteps.pods_start_steps`), so the progress bar costs the
+        reconciler no second read of a starting pod. None when no pod exists
+        yet or the namespace is not a tenant's; raises when the call fails.
+        """
         namespace = execution.namespace
         if not namespace or not namespace.startswith(self._prefix):
             return None
@@ -1672,7 +1684,7 @@ class GkeBackend:
             )
             pods = list(getattr(listed, "items", None) or [])
             if pods:
-                return pods_start_problem(pods)
+                return StartRead(problem=pods_start_problem(pods), steps=pods_start_steps(pods))
         return None
 
     def _job_view(self, job: Any, namespace: str) -> ExecutionView | None:

@@ -140,7 +140,10 @@ def test_every_metadata_key_the_worker_reads_is_signed():
 #: LB-L10): the park-refund counter, the "a person is ready" mark and the
 #: per-attempt hand-off count, each written during or between attempts.
 #: And the reconciler's `start_problem` (F1-POD), written while a pod fails to
-#: start and read only by swarm-api.
+#: start and read only by swarm-api. And the owner's answers to the agent's
+#: questions (TASK-ANSWERS), written by swarm-api after the attempt asked them.
+#: And whose GitHub credential a service submission runs with (INDEX-CRED): a
+#: label only swarm-api's codec reads, beside the signed `forge_credential`.
 UNSIGNED_PLATFORM_KEYS = {
     "schedule",
     "human_wait_resumes",
@@ -153,6 +156,8 @@ UNSIGNED_PLATFORM_KEYS = {
     "child_request_id",
     "merge_wait",
     "start_problem",
+    "owner_answers",
+    "forge_credential_source",
 }
 
 
@@ -163,13 +168,16 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         CHILD_REQUEST_ID_METADATA_KEY,
         DISK_EVICTIONS_METADATA_KEY,
         MERGE_WAIT_METADATA_KEY,
+        OWNER_ANSWERS_METADATA_KEY,
         RESERVED_METADATA_KEYS,
         SCHEDULE_METADATA_KEY,
+        FORGE_SOURCE_METADATA_KEY,
         STARTUP_REFUNDS_METADATA_KEY,
         HUMAN_HANDOFFS_METADATA_KEY,
         HUMAN_READY_METADATA_KEY,
         HUMAN_WAIT_RESUMES_METADATA_KEY,
         START_PROBLEM_METADATA_KEY,
+        OWNER_ANSWERS_METADATA_KEY,
     )
 
     assert set(SIGNED_METADATA_KEYS) == set(RESERVED_METADATA_KEYS) - UNSIGNED_PLATFORM_KEYS
@@ -185,6 +193,8 @@ def test_the_signed_keys_are_swarm_apis_reserved_keys_but_the_counters():
         DISK_EVICTIONS_METADATA_KEY,
         SCHEDULE_METADATA_KEY,
         START_PROBLEM_METADATA_KEY,
+        OWNER_ANSWERS_METADATA_KEY,
+        FORGE_SOURCE_METADATA_KEY,
     } == UNSIGNED_PLATFORM_KEYS
 
 

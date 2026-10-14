@@ -10,6 +10,9 @@ end of ctl.sock is `agent_worker.livegate.ctl` (lane L3).
       devices/<id>.json    the agent's, through `swarm-handoff device <preset>`
       responses/<id>.json  this worker's: {"outcome": ..., "exit": N, ...}
       status.json          this worker's: the last control episode, for `status`
+      history.json         this worker's: every hand-off of the task and its outcome
+      notes.md             the agent's: where it stopped, for the attempt after a park
+      resumed.md           this worker's: what a resumed attempt is told (below)
       unavailable          this worker's: present when this attempt has no live path
       README.md            this worker's: the guide the agent reads
 
@@ -39,6 +42,21 @@ Then, on every poll while the wait is open, it reads the task:
     `max_human_resumes` have been, release, exit (§4.3, invariant 4);
   * a cancel (the lifecycle's control poll) -> the agent's `wait` exits 4,
     the gate ends control and wipes, and the ordinary cancel path runs (§4.4).
+
+A RESUMED ATTEMPT CARRIES ON (RESUME-PROGRESS, QA12-14). The park wipes the
+browser and ends the CLI, and the CLI has no conversation to resume across
+attempts, so the next attempt's agent starts from its prompt and `work/`.
+MEASURED 2026-10-13 on task_4defa61c5eea4a5c87f5: generation 2 asked for the
+hand-off generation 1 had already finished, then the one that had parked it --
+nothing told it what had been done, so without a person it would loop. So the
+worker keeps a LEDGER of every hand-off in the spool (`history.json`: the
+request, its redacted reason, its outcome), which travels in the checkpoint
+with the rest of `work/`; and on an attempt whose ledger holds an earlier
+attempt's hand-offs, `prepare` writes `resumed.md` -- which were done, which
+were not, and the agent's own `notes.md`, redacted -- and the claude-code
+runner puts it in the agent's prompt. The ledger is in the agent's reach, so
+it is read as untrusted: shape-checked, bounded, redacted again, and only ever
+told back to the same task's agent.
 
 A WORKER THAT CANNOT PROTECT ITS HEAP GETS NO LIVE PATH (§5.4.1): no tunnel
 ticket and no hand-off; the agent's `swarm-handoff` exits 5. It still takes
@@ -122,6 +140,19 @@ EXPIRY_NOTES_SECONDS = 30
 #: §4.4: how long the agent's `wait` gets to read "cancelled" before the
 #: ordinary cancel path stops it.
 CANCEL_ANSWER_SECONDS = 3
+#: §3.3: "A relay restart drops every live session for the seconds it takes
+#: to come back; both ends reconnect." The gate's end reconnects through the
+#: worker, the only holder of the attempt key that proves a tunnel ticket:
+#: when the gate's `status` says its tunnel closed, the worker asks swarm-api
+#: for a fresh ticket and hands it over (LB-R6). A refused ask is tried again
+#: after TUNNEL_RETRY_SECONDS, doubling to TUNNEL_RETRY_MAX_SECONDS, so a relay
+#: that stays down costs a route call a minute rather than one every poll.
+TUNNEL_RETRY_SECONDS = 5
+TUNNEL_RETRY_MAX_SECONDS = 60
+#: swarm-api's answers that end the live path for this attempt for good (a
+#: closed session, a stale generation, a profile with no live browser): no
+#: later ticket will come, so the worker stops asking.
+TUNNEL_ENDED_CODES = frozenset({"live_session_closed", "live_fenced", "live_not_available"})
 
 #: `swarm-handoff`'s exit codes (§4.1). The command restates them.
 EXIT_RETURNED = 0
@@ -151,6 +182,18 @@ NO_LIVE_SESSION = "no_live_session"
 #: honour by closing Chromium and removing the profile. Reported on the PR.
 GATE_OPS = frozenset({"tunnel_ticket", "pause", "resume", "end_control", "device", "status"})
 
+#: The browser's start-up steps the gate dates in its `status` (`startup`, in
+#: epoch seconds), in order, for the console's progress bar (STARTUP-API,
+#: contract request 74). They follow the pod's four, which the reconciler
+#: writes (`reconciler.startsteps.POD_STARTUP_STEPS`); the worker writes these
+#: three, because the gate holds no credential to write anything.
+#:
+#: `first_frame` is the first frame the gate's capture published to its
+#: stream hub, which it does only while an RFB stream -- a viewer, or the
+#: relay's recorder -- is open: the nearest point to "the live stream sent its
+#: first frame" either side of the tunnel can observe.
+GATE_STARTUP_STEPS: tuple[str, ...] = ("browser_launching", "browser_ready", "first_frame")
+
 #: The guide the agent reads, written into the spool by `prepare`.
 GUIDE_NAME = "README.md"
 AGENT_GUIDE = """\
@@ -163,20 +206,34 @@ two-factor prompt, a CAPTCHA -- ask for help instead of guessing:
     swarm-handoff wait
 
 `--reason` (at most 200 characters) is shown to the person; never put a
-secret in it. `--expect` is the bare host they should sign in on. While you
-wait, your browser connection is paused: a person is using it.
+secret in it. `--expect` is the bare host they should sign in on. The person
+is notified at once. While you wait, your browser connection is paused: a
+person is using it.
 
-`wait` blocks for up to 9 minutes and exits:
+WAIT, DO NOT POLL. `swarm-handoff wait` blocks until the hand-off is
+resolved, for up to 9 minutes per call; run it in the foreground and do
+nothing else meanwhile. Do not poll the browser or CDP (`curl /json/version`,
+snapshots, screenshots) in a loop: it is paused, and every poll is wasted.
+If nobody opens the live view within a minute the hold ends and the task
+parks; while someone watches or is in control it keeps holding (up to 30
+minutes).
+
+`wait` exits:
 
   0   control was returned; a JSON summary (url, title, held_seconds) is on stdout.
-      Look at the page and continue: you are signed in.
-  75  still waiting: call `swarm-handoff wait` again.
-  3   nobody came in time. Write everything you need to continue into your
-      working files now; the task is parked until a person is ready, then
-      started again on your restored files. The browser session is NOT kept.
+      Look at the page once and continue: you are signed in.
+  75  still waiting (someone is watching): run `swarm-handoff wait` again, at once.
+  3   nobody came in time. Write where you stopped into $SWARM_HANDOFF/notes.md
+      now (what is done, what is next); the task is parked until a person is
+      ready, then started again on your restored files, and your next attempt
+      is told which hand-offs were done and given those notes. The browser
+      session is NOT kept.
   4   the task is being cancelled: stop.
   5   refused (no live path, the limit of 3 requests, or an invalid request):
       carry on without help, or fail with that reason.
+
+Keep $SWARM_HANDOFF/notes.md current as you go, and always before you ask:
+it is what you continue from if this attempt is parked.
 
 `swarm-handoff status` prints the last control episode in the same shape as
 `wait`. `swarm-handoff device <preset>` switches the browser to a device
@@ -184,6 +241,130 @@ preset by name (desktop, iphone-15, pixel-8, iphone-se, ipad-7).
 
 Never copy cookies or a storage state into your files: they are refused.
 """
+
+#: The worker's ledger of the task's hand-offs, every attempt's (RESUME-PROGRESS).
+HISTORY_NAME = "history.json"
+#: The agent's notes, which the guide asks it to keep; told back on a resume.
+NOTES_NAME = "notes.md"
+#: What a resumed attempt is told, written by `prepare` on every attempt that
+#: has an earlier one's hand-offs to tell, and removed on every other: a file
+#: at this name that `prepare` did not write this attempt is never read. The
+#: claude-code runner puts it in the agent's prompt (`runners.claude_code`).
+RESUME_NAME = "resumed.md"
+#: The ledger keeps the newest entries; a task asks at most
+#: `max_handoffs_per_attempt` per attempt over a few attempts.
+MAX_HISTORY = 20
+#: How much of the agent's notes a summary carries, and how much it reads.
+MAX_NOTES_CHARS = 4000
+MAX_HISTORY_BYTES = 64 * 1024
+#: The summary's first line, and how each hand-off is marked in it.
+RESUME_HEADLINE = (
+    "YOU ARE RESUMING THIS TASK. DO NOT START IT OVER: carry on from where the "
+    "earlier attempt stopped."
+)
+MARK_DONE = "DONE"
+MARK_NOT_DONE = "NOT DONE"
+#: Each outcome the ledger records, as the summary says it.
+_OUTCOME_TEXT = {
+    "returned": (
+        f"{MARK_DONE} -- a person took control and returned it. Do not ask for "
+        "this again; carry on from the step after it."
+    ),
+    "expired": (
+        f"{MARK_NOT_DONE} -- nobody took control before the hold ran out, and "
+        "the task was parked until a person said they were ready. If this step "
+        "still needs a person, ask for it again when you reach it."
+    ),
+    "cancelled": f"{MARK_NOT_DONE} -- the attempt was being cancelled while it waited.",
+    "unavailable": f"{MARK_NOT_DONE} -- it ended without a person ({{cause}}).",
+    "waiting": f"{MARK_NOT_DONE} -- the attempt ended while it was still waiting.",
+}
+
+
+def _clean(value: Any, limit: int) -> str:
+    """One line of ledger text, bounded and redacted: the ledger is in the
+    agent's reach, so what it holds is never told back as it was found."""
+    text = " ".join(str(value or "").split())[:limit]
+    return redact_text(text).text[:limit]
+
+
+def _load_history(root: Path) -> list[dict[str, Any]]:
+    """The ledger's entries, oldest first; [] for a missing or broken one."""
+    path = root / HISTORY_NAME
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_HISTORY_BYTES:
+            return []
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, ValueError):
+        return []
+    if not isinstance(data, list):
+        return []
+    return [
+        entry for entry in data
+        if isinstance(entry, dict)
+        and isinstance(entry.get("request_id"), str)
+        and isinstance(entry.get("attempt_id"), str)
+    ][-MAX_HISTORY:]
+
+
+def _read_notes(root: Path) -> str:
+    path = root / NOTES_NAME
+    try:
+        if path.is_symlink() or not path.is_file():
+            return ""
+        with path.open("r", encoding="utf-8", errors="replace") as handle:
+            text = handle.read(MAX_NOTES_CHARS + 1)
+    except OSError:
+        return ""
+    clipped = len(text) > MAX_NOTES_CHARS
+    text = redact_text(text[:MAX_NOTES_CHARS].strip()).text
+    return f"{text}\n[... cut at {MAX_NOTES_CHARS} characters]" if clipped else text
+
+
+def resume_summary(entries: list[dict[str, Any]], attempt_id: str, notes: str = "") -> str | None:
+    """What a resumed attempt's agent is told, or None when no earlier attempt
+    asked for help (a first attempt, or one resumed from a park that had
+    nothing to do with a person)."""
+    earlier = [entry for entry in entries if entry.get("attempt_id") != attempt_id]
+    if not earlier:
+        return None
+    lines = [
+        RESUME_HEADLINE,
+        "",
+        "An earlier attempt of this task stopped part-way and was parked; this "
+        "attempt starts on its working files, restored as they were. The browser "
+        "is a new one: the earlier attempt's pages and sign-ins are gone, so if a "
+        "page you need now asks you to sign in again, ask for help then.",
+        "",
+        "The hand-offs to a person so far, oldest first, as the platform recorded them:",
+        "",
+    ]
+    for number, entry in enumerate(earlier, start=1):
+        outcome = str(entry.get("outcome") or "waiting")
+        text = _OUTCOME_TEXT.get(outcome, _OUTCOME_TEXT["waiting"])
+        text = text.replace("{cause}", _clean(entry.get("cause"), 40) or "no cause given")
+        line = f'{number}. "{_clean(entry.get("reason"), MAX_REASON_CHARS)}": {text}'
+        url = public_url(entry.get("url")) if outcome == "returned" else None
+        if url:
+            title = _clean(entry.get("title"), 200)
+            line += f" It ended on {url}" + (f' ("{title}").' if title else ".")
+        lines.append(line)
+    if notes:
+        lines += ["", f"Your notes from before you stopped ($SWARM_HANDOFF/{NOTES_NAME}):", "", notes]
+    lines += [
+        "",
+        "Before you act, check your working files for what else is already done, "
+        "and continue from the first step that is not.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+class NoTunnelTicket(Exception):
+    """swarm-api gave no tunnel ticket. `code` is its error code, or why there was none."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
 
 
 class GateLost(Exception):
@@ -300,7 +481,7 @@ def public_url(value: Any) -> str | None:
     return redact_text(f"{parts.scheme}://{host}{parts.path or '/'}").text
 
 
-def _write_atomic(path: Path, document: Mapping[str, Any]) -> None:
+def _write_atomic(path: Path, document: Mapping[str, Any] | list[Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(f".{path.name}.tmp")
     tmp.unlink(missing_ok=True)
@@ -345,8 +526,14 @@ class HandoffPath:
         environ: Mapping[str, str] | None = None,
         now: Callable[[], datetime] = utcnow,
         wall: Callable[[], float] = time.time,
+        progress: Callable[[str, datetime], bool] | None = None,
     ) -> None:
         self.cfg = cfg
+        #: Writes one `startup_progress` step; True once it is settled (written,
+        #: or not this attempt's to write), False to try again on a later tick.
+        self._progress = progress
+        #: The gate's start-up steps already settled, each once per attempt.
+        self.startup_noted: set[str] = set()
         self.log = logger
         self._memory = memory
         self._children = children
@@ -369,6 +556,13 @@ class HandoffPath:
         self.max_handoffs = int(getattr(cfg, "max_handoffs_per_attempt", MAX_HANDOFFS_PER_ATTEMPT))
         self.max_resumes = int(getattr(cfg, "max_human_resumes", MAX_HUMAN_RESUMES))
         self._wiped = False
+        #: The tunnel's upkeep (§3.3, LB-R6): reopened how often, when it may
+        #: next be asked for, the wait after the next refusal, and whether
+        #: swarm-api has said the session is over.
+        self.tunnel_reopens = 0
+        self._tunnel_retry_at = 0.0
+        self._tunnel_backoff = float(TUNNEL_RETRY_SECONDS)
+        self._tunnel_ended = False
 
     # -- what the lifecycle asks ---------------------------------------------
 
@@ -408,8 +602,29 @@ class HandoffPath:
         key = getattr(self._children, "_key", None)
         api = getattr(self._children, "_api", None)
         if key is None or api is None:
-            why = getattr(self._children, "unavailable", None) or "no attempt key registered"
+            why = (
+                getattr(self._children, "unavailable_reason", None)
+                or getattr(self._children, "unavailable", None)
+                or "no attempt key registered"
+            )
             return self._refuse(note, NO_ATTEMPT_KEY, str(why))
+        try:
+            self._open_tunnel(gate, key, api)
+        except NoTunnelTicket as exc:
+            return self._refuse(note, NO_LIVE_SESSION, exc.code)
+        except GateLost as exc:
+            return self._refuse(note, GATE_UNAVAILABLE, type(exc).__name__)
+        self.unavailable = None
+        self.log.info("live path open for this attempt")
+
+    def _open_tunnel(self, gate: Gate, key: Any, api: Any) -> None:
+        """§3.3 steps 1-2: a tunnel ticket from swarm-api, handed to the gate.
+
+        The route checks the fence (RUNNING under this lease and generation,
+        no cancel) each time, and answers an attempt's open session with a
+        fresh one-use ticket for it -- which is what a reopen needs. Raises
+        `NoTunnelTicket` (the route's code) or `GateLost`.
+        """
         body = json.dumps(
             {
                 "tenant_id": self.cfg.tenant_id,
@@ -424,29 +639,65 @@ class HandoffPath:
             headers = sign_headers(key, LIVE_SESSION_PURPOSE, "POST", path, body, now=self._wall())
             _, payload = api.call("POST", path, body=body, headers=headers)
         except Exception as exc:
-            code = getattr(exc, "code", None) or type(exc).__name__
-            return self._refuse(note, NO_LIVE_SESSION, str(code))
+            raise NoTunnelTicket(str(getattr(exc, "code", None) or type(exc).__name__)) from None
         ticket = payload.get("ticket") if isinstance(payload, dict) else None
         session_id = payload.get("session_id") if isinstance(payload, dict) else None
         if not isinstance(ticket, str) or not ticket:
-            return self._refuse(note, NO_LIVE_SESSION, "no ticket in the answer")
+            raise NoTunnelTicket("no ticket in the answer")
         try:
             # The ticket goes to the gate and nowhere else: not a log line,
             # not the environment, not a file (§3.3 step 2).
             gate.call("tunnel_ticket", {"ticket": ticket, "session_id": session_id})
-        except GateLost as exc:
-            return self._refuse(note, GATE_UNAVAILABLE, type(exc).__name__)
         finally:
             ticket = None
-        self.unavailable = None
-        self.log.info("live path open for this attempt")
+
+    def _keep_tunnel(self, status: Mapping[str, Any]) -> None:
+        """Reopen the gate's tunnel when its `status` says it closed (§3.3, LB-R6). Never raises.
+
+        The relay restarting, a rollout, or a link the relay dropped ends the
+        tunnel while the session stays open: swarm-api still serves its last
+        origin and device, the console draws LIVE over them, and every viewer
+        the relay is asked to admit has no tunnel to meet (re-QA pass 8,
+        2026-10-12). Reads the status the poll already made; at most one route
+        call, and only past the backoff.
+        """
+        if (not self.offered or self.gate is None or self._wiped or self._tunnel_ended
+                or status.get("tunnel") != "closed" or status.get("browser") != "running"
+                or self._wall() < self._tunnel_retry_at):
+            return
+        key = getattr(self._children, "_key", None)
+        api = getattr(self._children, "_api", None)
+        if key is None or api is None:
+            return
+        try:
+            self._open_tunnel(self.gate, key, api)
+        except NoTunnelTicket as exc:
+            if exc.code in TUNNEL_ENDED_CODES:
+                self._tunnel_ended = True
+                self.log.info("live tunnel not reopened: the session has ended", code=exc.code)
+                return
+            self._tunnel_backoff_after(exc.code)
+            return
+        except GateLost as exc:
+            self._tunnel_backoff_after(type(exc).__name__)
+            return
+        self._tunnel_retry_at = 0.0
+        self._tunnel_backoff = float(TUNNEL_RETRY_SECONDS)
+        self.tunnel_reopens += 1
+        self.log.info("live tunnel reopened", reopened=self.tunnel_reopens)
+
+    def _tunnel_backoff_after(self, code: str) -> None:
+        self._tunnel_retry_at = self._wall() + self._tunnel_backoff
+        self.log.warning("live tunnel not reopened; trying again", code=code,
+                         retry_seconds=int(self._tunnel_backoff))
+        self._tunnel_backoff = min(self._tunnel_backoff * 2, float(TUNNEL_RETRY_MAX_SECONDS))
 
     def _refuse(self, note: Callable[[dict[str, Any]], Any] | None, code: str, why: str) -> None:
         self.unavailable = code
         self.log.warning("no live path for this attempt", live_path=code, reason=why)
         if note is not None:
             try:
-                note({"phase": "live_session", "live_path": code})
+                note({"phase": "live_session", "live_path": code, "reason": why})
             except Exception:  # a note must never stop the attempt
                 pass
 
@@ -472,10 +723,69 @@ class HandoffPath:
         tmp.unlink(missing_ok=True)
         tmp.write_text(AGENT_GUIDE, encoding="utf-8")
         os.replace(tmp, guide)
+        self._prepare_resume(root)
         env = {HANDOFF_ENV: str(root)}
         if self.offered:
             env.update(self._passthrough)
         return env
+
+    def _prepare_resume(self, root: Path) -> None:
+        """RESUME-PROGRESS: tell a resumed attempt what the earlier ones did.
+
+        Writes `resumed.md` when the restored ledger holds an earlier
+        attempt's hand-offs, and removes it otherwise, so the file is this
+        attempt's answer or absent. And an earlier attempt's answers in
+        `responses/` are removed: they are in the ledger, and a `wait` on the
+        same id must not read an old `expired` as its own. Never raises.
+        """
+        try:
+            entries = _load_history(root)
+            summary = resume_summary(entries, str(self.cfg.attempt_id), _read_notes(root))
+            target = root / RESUME_NAME
+            if summary is None:
+                target.unlink(missing_ok=True)
+            else:
+                tmp = root / f".{RESUME_NAME}.tmp"
+                tmp.unlink(missing_ok=True)
+                tmp.write_text(summary, encoding="utf-8")
+                os.replace(tmp, target)
+            stale = {
+                entry["request_id"] for entry in entries
+                if entry["attempt_id"] != self.cfg.attempt_id and REQUEST_ID.fullmatch(entry["request_id"])
+            }
+            for request_id in stale:
+                (root / "responses" / f"{request_id}.json").unlink(missing_ok=True)
+            last = root / ".last"
+            if last.is_file() and not last.is_symlink() and last.read_text(encoding="utf-8").strip() in stale:
+                last.unlink()
+            if summary is not None:
+                self.log.info("resumed attempt told of earlier hand-offs",
+                              handoffs=sum(1 for e in entries if e["attempt_id"] != self.cfg.attempt_id))
+        except Exception as exc:  # never costs the attempt
+            self.log.warning("could not prepare the resume summary", error=type(exc).__name__)
+
+    def _record(self, root: Path, request_id: str, fields: Mapping[str, Any]) -> None:
+        """Add or update this attempt's entry for `request_id` in the ledger. Never raises."""
+        try:
+            entries = _load_history(root)
+            attempt_id = str(self.cfg.attempt_id)
+            entry = next(
+                (e for e in entries if e["attempt_id"] == attempt_id and e["request_id"] == request_id),
+                None,
+            )
+            if entry is None:
+                entry = {
+                    "request_id": request_id,
+                    "attempt_id": attempt_id,
+                    "generation": self.cfg.generation,
+                }
+                entries.append(entry)
+            entry.update(
+                {k: (v.isoformat() if isinstance(v, datetime) else v) for k, v in fields.items()}
+            )
+            _write_atomic(root / HISTORY_NAME, entries[-MAX_HISTORY:])
+        except Exception as exc:  # the ledger never costs the attempt
+            self.log.warning("could not record the hand-off in the ledger", error=type(exc).__name__)
 
     # -- the poll --------------------------------------------------------------
 
@@ -495,7 +805,10 @@ class HandoffPath:
                 self._answer_requests(root)
             if self.active is not None:
                 return self._watch(root, fetch_task)
-            self._note_last_episode(root)
+            if self.offered:
+                self._note_last_episode(root)
+            else:
+                self._poll_startup()
         except Exception as exc:  # the hand-off never crashes the attempt
             self.log.warning("hand-off poll failed", error=type(exc).__name__)
         return None
@@ -592,6 +905,10 @@ class HandoffPath:
             root, request_id,
             {"outcome": "waiting", "deadline": deadline.isoformat() if deadline else None},
         )
+        self._record(
+            root, request_id,
+            {"reason": reason, "expect": expect, "requested_at": now, "outcome": "waiting"},
+        )
         self.log.info("hand-off opened; the agent's browser is paused for a person")
 
     def _route(self, path: str, fields: Mapping[str, Any]) -> tuple[int, dict[str, Any]]:
@@ -614,8 +931,9 @@ class HandoffPath:
     def _watch(self, root: Path, fetch_task: Callable[[], Mapping[str, Any]]) -> str | None:
         active = self.active
         assert active is not None and self.gate is not None
+        status: Mapping[str, Any] = {}
         try:
-            self.gate.call("status", {})
+            status = self.gate.call("status", {})
         except GateRefused:
             pass
         except GateLost:
@@ -624,6 +942,9 @@ class HandoffPath:
             # hold had expired.
             self.unavailable = GATE_UNAVAILABLE
             return GATE_LOST
+        self.note_startup(status)
+        # A person is being waited for: exactly when the view must be there.
+        self._keep_tunnel(status)
         task = fetch_task() or {}
         wait = task.get("human_wait")
         if not isinstance(wait, dict) or wait.get("request_id") != active["request_id"]:
@@ -658,6 +979,7 @@ class HandoffPath:
         }
         self._respond(root, active["request_id"], summary)
         _write_atomic(root / "status.json", summary)
+        self._record(root, active["request_id"], {**summary, "ended_at": self._now()})
         self.active = None
         self.log.info("hand-off returned; the agent's browser is resumed",
                       held_seconds=summary["held_seconds"])
@@ -671,6 +993,8 @@ class HandoffPath:
             result = self.gate.call("status", {})
         except GateLost:
             return
+        self.note_startup(result)
+        self._keep_tunnel(result)
         episode = result.get("last_episode")
         if not isinstance(episode, dict):
             return
@@ -683,6 +1007,53 @@ class HandoffPath:
                 "title": redact_text(str(episode.get("title") or "")[:200]).text,
             },
         )
+
+    # -- the browser's start-up steps (STARTUP-API) -----------------------------
+
+    def _startup_outstanding(self) -> list[str]:
+        """The gate's steps still to settle. Without a live path there is no
+        tunnel, so no stream and no first frame: only the browser's two."""
+        wanted = GATE_STARTUP_STEPS if self.offered else GATE_STARTUP_STEPS[:2]
+        return [step for step in wanted if step not in self.startup_noted]
+
+    def _poll_startup(self) -> None:
+        """One `status` read for the start-up steps, on a gate with no live
+        path (whose tick reads no status otherwise). Stops once they are settled."""
+        if self.gate is None or self._progress is None or not self._startup_outstanding():
+            return
+        try:
+            self.note_startup(self.gate.call("status", {}))
+        except GateLost:
+            return
+
+    def note_startup(self, status: Any) -> None:
+        """Write each start-up step the gate's `status` dates, once per attempt. Never raises.
+
+        The time written is the gate's own (`startup`, epoch seconds), so a
+        tick that reads it late still records when the step happened. A step
+        whose write fails is tried again on the next tick's status.
+        """
+        if self._progress is None or not isinstance(status, Mapping):
+            return
+        times = status.get("startup")
+        if not isinstance(times, Mapping):
+            return
+        for step in self._startup_outstanding():
+            value = times.get(step)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                continue
+            try:
+                at = datetime.fromtimestamp(float(value), tz=timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                continue
+            try:
+                settled = self._progress(step, at)
+            except Exception as exc:  # a progress mark never costs the attempt
+                self.log.warning("could not record a start-up step", step=step, error=type(exc).__name__)
+                return
+            if not settled:
+                return
+            self.startup_noted.add(step)
 
     def _answer_devices(self, root: Path) -> None:
         devices = root / "devices"
@@ -732,6 +1103,7 @@ class HandoffPath:
                     document = {"outcome": outcome, "exit": code, "cause": cause}
                     self._respond(root, active["request_id"], document)
                     _write_atomic(root / "status.json", document)
+                    self._record(root, active["request_id"], {**document, "ended_at": self._now()})
                 except OSError as exc:
                     self.log.warning("could not answer the agent's wait", error=type(exc).__name__)
             try:

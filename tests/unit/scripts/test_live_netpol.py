@@ -55,6 +55,7 @@ REPO = Path(__file__).resolve().parents[3]
 KUBERNETES = REPO / "kubernetes"
 APPLY = KUBERNETES / "apply.sh"
 LIVE_EGRESS_FILE = "network-policies/allow-live-egress.yaml"
+PROXY_EGRESS_FILE = "network-policies/allow-egress-proxy.yaml"
 SYSTEM_FILE = "network-policies/swarm-system-live.yaml"
 
 #: A swarm-api subnet range that appears nowhere in the repository, so a
@@ -230,12 +231,20 @@ def test_the_existing_policies_render_byte_identical():
 
 def test_the_live_policy_is_purely_appended_to_the_tenant_render():
     values = _tenant_values()
-    assert _render().TENANT_FILES[-1] == LIVE_EGRESS_FILE
-    before = _render().render_files(_render().TENANT_FILES[:-1], values)
+    files = _render().TENANT_FILES
+    at = files.index(LIVE_EGRESS_FILE)
+    # Only browser egress's policy (docs/browser-egress.md §2.5) may follow it,
+    # appended the same way, so everything before the live path still renders
+    # as it did before L6.
+    assert files[at + 1:] == (PROXY_EGRESS_FILE,)
+    before = _render().render_files(files[:at], values)
     assert hashlib.sha256(before.encode()).hexdigest() == PRE_L6_TENANT_RENDER
-    after = _render().render_files(_render().TENANT_FILES, values)
+    with_live = _render().render_files(files[:at + 1], values)
     live = _render().render_files((LIVE_EGRESS_FILE,), values)
-    assert after == before.rstrip("\n") + "\n---\n" + live
+    assert with_live == before.rstrip("\n") + "\n---\n" + live
+    after = _render().render_files(files, values)
+    proxy = _render().render_files((PROXY_EGRESS_FILE,), values)
+    assert after == with_live.rstrip("\n") + "\n---\n" + proxy
 
 
 def test_the_workspace_deployer_may_write_the_new_tenant_policy():
@@ -505,7 +514,8 @@ esac
 LEAKY = (
     "PROJECT_ID", "REGION", "ZONE", "ENVIRONMENT", "GKE_CLUSTER", "GKE_LOCATION", "API_SERVICE",
     "KUBECTL", "SWARM_KUBECTL", "KUBECONFIG", "SWARM_ENV_FILE", "GITHUB_ACTIONS",
-    "CLOUDSDK_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS", "SWARM_TERRAFORM",
+    "CLOUDSDK_CONFIG", "GOOGLE_APPLICATION_CREDENTIALS", "SWARM_TERRAFORM", "TF_DATA_DIR",
+    "TF_STATE_BUCKET", "TF_STATE_PREFIX",
 )
 
 
@@ -537,12 +547,16 @@ def cluster(tmp_path: Path) -> dict[str, Any]:
     (d / "subnet.json").write_text(json.dumps({"name": FAKE_SUBNET, "ipCidrRange": FAKE_API_CIDR}))
     (d / "relay.yaml").write_text(_relay_manifest())
     (d / "live_relay.json").write_text(json.dumps({"enabled": True, "port": 8080, "swarm_api_egress_cidr": FAKE_API_CIDR}))
+    # terraform/infra counts as initialised when its data directory exists;
+    # TF_DATA_DIR is terraform's own override for where that is.
+    (tmp_path / "tfdata").mkdir()
     env = {k: v for k, v in os.environ.items() if k not in LEAKY}
     env.update(
         PATH=f"{b}:{env.get('PATH', '')}",
         FAKE_CLUSTER_DIR=str(d),
         SWARM_KUBECTL=str(b / "kubectl"),
         SWARM_TERRAFORM=str(b / "terraform"),
+        TF_DATA_DIR=str(tmp_path / "tfdata"),
         SWARM_ENV_FILE=str(tmp_path / "no.env"),
         HOME=str(tmp_path),
     )
@@ -698,3 +712,45 @@ def test_apply_refuses_a_relay_manifest_that_reaches_past_swarm_system(cluster, 
     assert result.returncode != 0
     assert said in result.stderr, result.stderr
     assert not (cluster["dir"] / "applied.yaml").exists()
+
+
+# --- apply.sh --swarm-system checks its preconditions first (OPS-SMALL, #1194) -
+
+
+def test_an_uninitialised_terraform_root_is_refused_first_with_the_init_command(cluster, tmp_path):
+    """Measured 2026-10-12: from a checkout whose terraform/infra was never
+    initialised, --swarm-system failed late, after kubectl and gcloud, or (a
+    stale checkout) with an unrelated "--tenant is required". It now says what
+    is missing, with the exact command, before it contacts anything."""
+    cluster["env"]["TF_DATA_DIR"] = str(tmp_path / "never-initialised")
+    result = _apply(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "terraform/infra is not initialised" in result.stderr, result.stderr
+    assert (
+        "init -input=false -reconfigure -backend-config=bucket=swarm-tfstate-saga-agents-staging"
+        " -backend-config=prefix=infra/dev"
+    ) in result.stderr, result.stderr
+    assert "--tenant" not in out, out
+    for tool in ("kubectl", "gcloud", "terraform"):
+        assert not (cluster["dir"] / f"{tool}.log").exists(), f"{tool} ran before the precondition check"
+
+
+def test_a_missing_relay_manifest_is_refused_before_gcloud_is_asked_anything(cluster):
+    """terraform is initialised but has no swarm_live_manifest: --confirm
+    refuses with one actionable line, before swarm-api is described."""
+    (cluster["dir"] / "relay.yaml").unlink()
+    result = _apply(cluster, "--confirm")
+    out = result.stdout + result.stderr
+    assert result.returncode != 0, out
+    assert "terraform output swarm_live_manifest is missing" in result.stderr, result.stderr
+    assert "enable_live_browser" in result.stderr, result.stderr
+    assert "--tenant" not in out, out
+    assert not (cluster["dir"] / "gcloud.log").exists(), "swarm-api was described before the precondition check"
+    assert not (cluster["dir"] / "applied.yaml").exists()
+
+
+def test_swarm_system_never_asks_for_a_tenant(cluster):
+    result = _apply(cluster)
+    assert result.returncode == 0, result.stderr
+    assert "--tenant" not in result.stdout + result.stderr

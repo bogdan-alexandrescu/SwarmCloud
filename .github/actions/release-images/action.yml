@@ -42,6 +42,12 @@ outputs:
 runs:
   using: composite
   steps:
+    # uv, for build-images.sh's check of CI's record (lane REL-SKIP): a digest
+    # CI reused across a uv.lock change is kept only if the image's own `uv
+    # export` is unchanged, which needs uv. Without it that image is rebuilt
+    # here -- correct, but a Cloud Build CI had already judged unnecessary.
+    - uses: astral-sh/setup-uv@v7
+
     - name: the images CI built for this commit
       id: images
       # NO SECOND CLOUD BUILD ON A PUSH. `--reuse-ci only` waits for
@@ -55,6 +61,12 @@ runs:
       # built this commit (someone cancelled it), this step fails and says
       # which, with the URL and the re-runs that would ship THIS commit; it
       # does not quietly build instead.
+      #
+      # ONE BUILD IT DOES MAKE, in both modes (lane REL-SKIP, part of #1194):
+      # a digest in that record which CI re-tagged from an earlier commit,
+      # when this commit has changed that image's inputs since the commit that
+      # built it. Only those images (and the ones built FROM them) are built;
+      # the step's log and summary name them.
       #
       # That record is also why a hotfix may skip `verify`: application.yml's
       # `build images` needs [python, shell, manifests], so a record for this
@@ -116,6 +128,22 @@ runs:
       # promotion refuses a minute after the approval.
       shell: bash
       run: ./scripts/push-images.sh --manifest "build/images-${ENVIRONMENT}.json" --channel "${ENVIRONMENT}" --scan-only
+
+    - name: refuse an image that repeats a layer (nothing is promoted yet)
+      # IMG-STREAM, owner decision 2026-10-13 (docs/browser-startup-speed.md
+      # §2.4, §9): GKE does not stream an image with a duplicate layer, so its
+      # pods pull it whole -- 42 s of the browser's 88 s cold start. Every image
+      # the record names is read by digest from Artifact Registry, and one that
+      # lists a layer twice, or that cannot be read, fails this job, so the
+      # record never reaches the promotion and no channel tag moves. The error
+      # names the image, the layer and where it sits.
+      #
+      # It HOLDS the release, unlike the size record after the promotion
+      # (continue-on-error there). `timeout` because a composite step has no
+      # timeout-minutes. NO NEW IAM: one manifest GET per image, which the
+      # scan above already makes; the token reaches curl on stdin.
+      shell: bash
+      run: timeout 300 ./scripts/image-sizes.sh --duplicate-layers "build/images-${ENVIRONMENT}.json"
 
     - name: hand the scanned record to the promotion
       # The record the step above scanned, uploaded only once it passed, so

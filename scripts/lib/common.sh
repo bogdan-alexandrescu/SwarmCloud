@@ -173,6 +173,12 @@ load_env() {
   # the bucket under its real name, and the next run says the same thing.
   ARTIFACT_BUCKET="${ARTIFACT_BUCKET:-swarm-artifacts-${PROJECT_ID}}"
   ARTIFACT_REGISTRY="${ARTIFACT_REGISTRY:-swarm-images}"
+  # The release files image builds read instead of GitHub downloads, matching
+  # terraform/infra/build_mirror.tf:
+  #   name = "${var.name_prefix}-build-mirror-${var.project_id}"
+  # Filled by scripts/refresh-build-mirror.sh; read by build-images.sh's
+  # Cloud Build step (lib/build-mirror.sh, docs/runbooks/build-mirror.md).
+  BUILD_MIRROR_BUCKET="${BUILD_MIRROR_BUCKET:-swarm-build-mirror-${PROJECT_ID}}"
   # The swarm's OWN state bucket, created by terraform/bootstrap. Deliberately
   # not saga-agents-terraform-state-staging: that bucket belongs to another team
   # (it is on the deny-list below) and putting our state in it would make our
@@ -215,7 +221,7 @@ load_env() {
   IMAGE_REPO="${IMAGE_REPO:-${IMAGE_HOST}/${PROJECT_ID}/${ARTIFACT_REGISTRY}}"
 
   export PROJECT_ID REGION ZONE ENVIRONMENT FIRESTORE_DATABASE ARTIFACT_BUCKET
-  export ARTIFACT_REGISTRY TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
+  export ARTIFACT_REGISTRY BUILD_MIRROR_BUCKET TF_STATE_BUCKET TF_STATE_PREFIX TF_BOOTSTRAP_STATE_PREFIX GKE_CLUSTER GKE_LOCATION
   export PUBSUB_TOPIC SCHEDULER_JOB API_SERVICE SCHEDULER_SERVICE QUOTA_SERVICE RECONCILER_SERVICE
   export API_PREFIX HTTP_TIMEOUT API_HOST IMAGE_HOST IMAGE_REPO
 
@@ -626,6 +632,29 @@ tf_root() {
   local dir="${REPO_ROOT}/terraform/infra"
   [[ -d "${dir}" ]] || die "no terraform root: ${dir}"
   printf '%s' "${dir}"
+}
+
+# Where terraform keeps a root's initialised state (backend config, providers):
+# `.terraform` under the root, unless TF_DATA_DIR says otherwise -- terraform's
+# own override, relative to the root when it is not absolute.
+tf_data_dir() {
+  local root
+  root="$(tf_root)"
+  case "${TF_DATA_DIR:-}" in
+    "") printf '%s/.terraform' "${root}" ;;
+    /*) printf '%s' "${TF_DATA_DIR}" ;;
+    *)  printf '%s/%s' "${root}" "${TF_DATA_DIR}" ;;
+  esac
+}
+
+tf_initialised() { [[ -d "$(tf_data_dir)" ]]; }
+
+# The exact command that initialises terraform/infra for this environment, as
+# `make tf-init` runs it: this environment's state, in the swarm's own bucket.
+# Printed for an operator to run, so it names the root relative to the repo.
+tf_init_command() {
+  printf 'terraform -chdir=terraform/infra init -input=false -reconfigure -backend-config=bucket=%s -backend-config=prefix=%s' \
+    "${TF_STATE_BUCKET}" "${TF_STATE_PREFIX}"
 }
 
 # The variables for this environment. Absent is fatal rather than defaulted:

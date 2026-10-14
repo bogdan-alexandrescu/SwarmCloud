@@ -148,7 +148,7 @@ from __future__ import annotations
 
 import logging
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping
 from urllib.parse import quote
 
@@ -166,7 +166,14 @@ from .forgechecks import (
     evaluate,
     required_status_checks,
 )
-from .forgewrite import ForgeWriteNotFound, GitHubWriter, PullSnapshot
+from .forge import NoForgeCredential
+from .forgewrite import (
+    ForgeWriteNotFound,
+    GitHubWriter,
+    PullSnapshot,
+    is_credential_refusal,
+    is_transient,
+)
 from .issueruns import (
     FIX_STEP,
     IMPLEMENT_PREFIX,
@@ -232,6 +239,14 @@ NO_CHECKS_SECONDS = 600
 #: back the same day. A green `auto_merge` run is not timed out: it waits on its
 #: merge, or a person's merge approval, and both end it (`_awaiting_merge`).
 CHECKING_DEADLINE_SECONDS = 12 * 3600
+#: WRITEBACK (2026-10-12): a CI read GitHub could not answer -- unreachable, a
+#: timeout, a 5xx, a rate limit (`forgewrite.is_transient`) -- is tried again
+#: CI_READ_SECONDS later, then twice as long after each further failure, up to
+#: this. run_0d784c412dbc421a98ec was read every 30 s for 12 hours against a
+#: GitHub that answered none of it; a quarter hour between tries still gives
+#: ~45 attempts inside CHECKING_DEADLINE_SECONDS, and stops a stuck run adding
+#: to a rate limit that may be the reason it is stuck.
+READ_BACKOFF_MAX_SECONDS = 15 * 60
 #: A round claimed (FIXING) whose workflow id was never recorded -- the
 #: submission died between the claim and the record -- is FAILED after this.
 LOST_ROUND_SECONDS = 600
@@ -858,6 +873,54 @@ def _read_ci(
     return pull, reading
 
 
+def _read_backoff(attempts: int) -> timedelta:
+    """How long after its `attempts`-th transient failure a read is tried again."""
+    doubled = CI_READ_SECONDS * 2 ** min(max(attempts, 1) - 1, 16)
+    return timedelta(seconds=min(doubled, READ_BACKOFF_MAX_SECONDS))
+
+
+def _minute(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%MZ")
+
+
+def _attempts(n: int) -> str:
+    return f"{n} attempt" + ("" if n == 1 else "s")
+
+
+def _read_failure(
+    current: IssueRun, now: datetime, reason: str, *, transient: bool
+) -> dict[str, Any]:
+    """The `pull_request` patch of a failed CI read: the reason, since when
+    reads have been failing and how many have, and -- for a transient failure
+    -- when the next is tried. `read_error` says all of it in one line, which
+    is what the run page shows, and what the deadline's failure quotes."""
+    pull = dict(current.pull_request or {})
+    previous = pull.get("read_attempts")
+    attempts = (previous if isinstance(previous, int) and not isinstance(previous, bool) else 0) + 1
+    since = _aware(pull.get("read_failing_since")) or now
+    return {"pull_request": {
+        **pull,
+        "checked_at": now,
+        "read_attempts": attempts,
+        "read_failing_since": since,
+        "read_retry_at": now + _read_backoff(attempts) if transient else None,
+        "read_transient": transient,
+        "read_error": failure_text(
+            f"GitHub writeback failing since {_minute(since)}: {reason} ({_attempts(attempts)})"
+        ),
+    }}
+
+
+#: What a read that worked clears.
+_READ_CLEAR = {
+    "read_error": None,
+    "read_attempts": None,
+    "read_failing_since": None,
+    "read_retry_at": None,
+    "read_transient": None,
+}
+
+
 def checking_since(run: IssueRun) -> datetime | None:
     """When the run last entered CHECKING: its newest history move there.
 
@@ -874,9 +937,17 @@ def checking_since(run: IssueRun) -> datetime | None:
 
 def _awaiting_merge(run: IssueRun) -> bool:
     """A green `auto_merge` run with nothing failing to read: it waits on its
-    merge continuation or on a merge approval, which a person gives."""
+    merge continuation or on a merge approval, which a person gives.
+
+    A TRANSIENT read failure after the green reading does not end that wait
+    (WRITEBACK, 2026-10-12): the checks were green on GitHub, and the wire to
+    GitHub being down for a while is not a reason to fail the run's merge
+    decision. The read keeps being retried, with backoff, and says why."""
     pull = run.pull_request or {}
-    return bool(run.auto_merge) and pull.get("checks") == GREEN and not pull.get("read_error")
+    return (
+        bool(run.auto_merge) and pull.get("checks") == GREEN
+        and (not pull.get("read_error") or pull.get("read_transient") is True)
+    )
 
 
 def checking_expired(run: IssueRun, now: datetime) -> str | None:
@@ -937,6 +1008,10 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
     checked_at = _aware(recorded.get("checked_at"))
     if checked_at is not None and now - checked_at < timedelta(seconds=CI_READ_SECONDS):
         return run
+    retry_at = _aware(recorded.get("read_retry_at"))
+    if retry_at is not None and now < retry_at:
+        # Backing off a transient failure: GitHub is not asked again yet.
+        return run
     if keyword_pending(run):
         # The last write of the block failed: write it again, at the CI
         # read's cadence, before anything below can call the run DONE.
@@ -953,12 +1028,33 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
         except Exception as exc:
             code = exc.code if isinstance(exc, ApiError) else type(exc).__name__
             message = exc.message if isinstance(exc, ApiError) else f"the CI read failed ({code})"
-            log.warning("issue run %s tenant=%s: CI not read (%s)", run.id, run.tenant_id, code)
-            return runs.patch(tenant_id, run.id, lambda current: {"pull_request": {
-                **(current.pull_request or {}),
-                "checked_at": now,
-                "read_error": failure_text(f"{code}: {message}"),
-            }})
+            reason = f"{code}: {message}"
+            if is_credential_refusal(exc) or isinstance(exc, NoForgeCredential):
+                # WRITEBACK (2026-10-12): GitHub refused the credential itself
+                # (401, a 403 that is not a rate limit) or there is none. That
+                # does not change until a person changes it, so the run fails
+                # now with the cause instead of holding its slot for
+                # CHECKING_DEADLINE_SECONDS and then saying the same thing.
+                log.warning(
+                    "issue run %s tenant=%s: CI not read, credential refused (%s)",
+                    run.id, run.tenant_id, code,
+                )
+                error = failure_text(f"could not read the repository's checks: {reason}")
+                return runs.transition(
+                    tenant_id, run.id, RunState.FAILED, by=ACTOR, from_states={RunState.CHECKING},
+                    patch={"error": error, "pull_request": {
+                        **recorded, **_READ_CLEAR, "checked_at": now, "read_error": error,
+                    }},
+                )
+            transient = is_transient(exc) or isinstance(exc, UpstreamUnavailable)
+            log.warning(
+                "issue run %s tenant=%s: CI not read (%s%s)",
+                run.id, run.tenant_id, code, ", will retry with backoff" if transient else "",
+            )
+            return runs.patch(
+                tenant_id, run.id,
+                lambda current: _read_failure(current, now, reason, transient=transient),
+            )
 
         head = pull.head_sha
         seen_since = _aware(recorded.get("head_since"))
@@ -976,7 +1072,7 @@ def _visit_checking(ctx: Any, tenant_id: str, run: IssueRun, owner_auth: OwnerAu
             "checked_at": now,
             "head_seen": head,
             "head_since": seen_since,
-            "read_error": None,
+            **_READ_CLEAR,
         }
 
         # THE READING IS NEVER LOST TO WHAT COMES AFTER IT (RT-4, 2026-10-11).

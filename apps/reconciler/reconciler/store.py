@@ -58,6 +58,7 @@ from .model import (
 )
 from .model import as_datetime as _as_datetime
 from .startproblem import START_PROBLEM_KEY, START_PROBLEM_STATES
+from .startsteps import STARTUP_STEP_STATES, startup_event_id
 
 
 class FirestoreTransactionRunner:
@@ -471,6 +472,71 @@ class ControlStore:
                     return False
                 metadata[START_PROBLEM_KEY] = dict(record)
             txn.update(task_ref, {"metadata": metadata})
+            return True
+
+        return bool(self._txn.run(_apply))
+
+    def record_startup_step(
+        self,
+        task_id: str,
+        *,
+        tenant_id: str,
+        lease_id: str,
+        attempt_id: str,
+        generation: int,
+        step: str,
+        at: datetime,
+    ) -> bool:
+        """Write one `startup_progress` event for a pod step (STARTUP-API). True if written.
+
+        ONCE PER ATTEMPT AND STEP: the event's id is the attempt's and the
+        step's (`startsteps.startup_event_id`), and it is written only when no
+        document has that id yet, so a pass that reads the same pod again, or
+        two reconciler instances reading it at once, write it once.
+
+        FENCED (invariant 5): in a transaction that re-reads the task and
+        writes only while it is still DISPATCHED, STARTING or RUNNING on the
+        lease AND the generation the pod was read for. A step of an attempt
+        the task has moved past is not written.
+
+        Only the event is written. Never the task, a lease or a pool: this is
+        a record, not a transition (invariants 1-3).
+        """
+        task_ref = self._db.collection("tasks").document(task_id)
+        event_id = startup_event_id(attempt_id, step)
+        event_ref = task_ref.collection("events").document(event_id)
+
+        def _apply(txn: Any) -> bool:
+            snap = _snapshot(txn.get(task_ref))
+            if not snap.exists:
+                return False
+            data = snap.to_dict() or {}
+            try:
+                state = TaskState(data.get("state"))
+            except ValueError:
+                return False
+            if (
+                state not in STARTUP_STEP_STATES
+                or data.get("current_lease_id") != lease_id
+                or _generation_of(data) != generation
+            ):
+                return False
+            if _snapshot(txn.get(event_ref)).exists:
+                return False
+            txn.set(
+                event_ref,
+                {
+                    "event_id": event_id,
+                    "task_id": task_id,
+                    "tenant_id": tenant_id,
+                    "type": EventType.STARTUP_PROGRESS.value,
+                    "at": at,
+                    "attempt_id": attempt_id,
+                    "lease_id": lease_id,
+                    "generation": generation,
+                    "detail": {"step": step, "attempt_id": attempt_id, "generation": generation},
+                },
+            )
             return True
 
         return bool(self._txn.run(_apply))

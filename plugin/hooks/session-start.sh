@@ -50,6 +50,15 @@
 # The plugin's settings reach a hook as CLAUDE_PLUGIN_OPTION_<KEY>; the bridge
 # reads them as SWARM_PLUGIN_<KEY> (swarm_mcp.config), so they are handed on
 # under that name. Nothing here prints any of them.
+#
+# THE TENANT IS THE BRIDGE'S TENANT (SC-TENANT, owner 2026-10-12). The
+# `tenant` option reaches the MCP server as SWARM_TENANT, behind a SWARM_TENANT
+# already in Claude Code's environment (plugin.json's
+# `${SWARM_TENANT:-${user_config.tenant}}`), and `sc` reads SWARM_TENANT. So
+# this hook hands the option on as SWARM_TENANT under the same rule -- a
+# SWARM_TENANT that is SET, even empty, wins, exactly as Claude Code's `:-`
+# expansion lets it win for the server -- and the workflows it names are the
+# ones the session's tools will act on.
 set -euo pipefail
 
 trap 'exit 0' ERR
@@ -99,6 +108,11 @@ for key in OAUTH_CLIENT_ID DEFAULT_TARGET OAUTH_CLIENT_SECRET; do
     export "$wanted=${!given}"
   fi
 done
+
+# The tenant under the variable every client reads, unless one is already set.
+if [ -z "${SWARM_TENANT+set}" ] && [ -n "${CLAUDE_PLUGIN_OPTION_TENANT:-}" ]; then
+  export SWARM_TENANT="$CLAUDE_PLUGIN_OPTION_TENANT"
+fi
 
 # A timeout in bash 3.2 terms: macOS ships no `timeout`. The watchdog's output
 # goes nowhere, so a sleep it leaves behind holds no pipe Claude Code reads.

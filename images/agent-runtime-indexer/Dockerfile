@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # agent-runtime-indexer -- agent-runtime-base plus the repository index's
 # toolchain: the tree-sitter extractor (`swarm-repo-index`), the graph shard
@@ -39,6 +39,14 @@
 # another Debian from the image its output lands in. A test holds the two
 # equal (tests/unit/scripts/test_indexer_image_split.py).
 ARG PYTHON_IMAGE=python:3.11-slim-bookworm@sha256:528257d48c1da0dcecc2e725d1ae34498d60c965f1241e39cd6a85a8859bdf84
+# Every base is pulled through this project's Artifact Registry mirrors,
+# never from Docker Hub or ghcr.io directly: on 2026-10-12 three release
+# builds failed inside Cloud Build on ghcr.io timeouts and a github.com 504.
+# Remote repositories (terraform/infra/build_mirror.tf) serve the same
+# digests. A pull request's local build, which has no Google identity,
+# passes the upstream registries here instead (scripts/lib/build-mirror.sh).
+# docs/runbooks/build-mirror.md.
+ARG MIRROR_DOCKER_HUB=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub
 ARG BASE_IMAGE
 
 # ---------------------------------------------------------------------------
@@ -47,7 +55,7 @@ ARG BASE_IMAGE
 # npm servers (pyright, typescript-language-server) are installed in the
 # runtime stage below from images/agent-runtime-indexer/repo-index/lsp/package-lock.json.
 # ---------------------------------------------------------------------------
-FROM ${PYTHON_IMAGE} AS languageservers
+FROM ${MIRROR_DOCKER_HUB}/library/${PYTHON_IMAGE} AS languageservers
 
 # Go 1.27.1 (2026-10-05, the newest stable on https://go.dev/dl/?mode=json,
 # whose sha256 for go1.27.1.linux-amd64.tar.gz this is). gopls needs the
@@ -213,17 +221,24 @@ RUN cp /opt/repo-index/lsp/package.json /opt/repo-index/lsp/package-lock.json /o
     done
 
 USER swarm:swarm
-WORKDIR /workspace
-
+# NO `WORKDIR /workspace` HERE, and ONE RUN for the three self-tests below.
+# GKE does not stream an image with a duplicate layer (docs/browser-startup-
+# speed.md §2.4), and both wrote one: restating the base's WORKDIR wrote
+# BuildKit's empty layer a second time, and each check-only RUN leaves a
+# ~100-byte layer holding only the etc/ and tmp/ directory entries -- the SAME
+# layer when two of them finish in the same second, as 7 of the 30 newest
+# digests of this image did (read 2026-10-13). The release refuses such an
+# image (scripts/image-sizes.sh --duplicate-layers);
+# tests/unit/scripts/test_image_streaming.py holds this file to it.
+#
 # The repository-index extractor must load all five grammars and parse one
 # file with each, as the agent user, or the indexer step would find out
-# instead of the build.
-RUN swarm-repo-index --self-test
-# And each installed language server must start, as the agent user, and
-# resolve one call across two files -- not merely start.
-RUN swarm-repo-index --lsp-self-test
-# And the shard writer must shard, rewrite and sweep a graph in a scratch dir.
-RUN swarm-repo-graph --self-test
+# instead of the build. And each installed language server must start, as the
+# agent user, and resolve one call across two files -- not merely start. And
+# the shard writer must shard, rewrite and sweep a graph in a scratch dir.
+RUN swarm-repo-index --self-test \
+ && swarm-repo-index --lsp-self-test \
+ && swarm-repo-graph --self-test
 
 # The base's, restated because a derived image that sets nothing inherits it
 # but a reader of this file should not have to know that.

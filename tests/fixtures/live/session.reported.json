@@ -11,7 +11,8 @@
       "registrable_domain": "github.com",
       "scheme": "https:",
       "ip_literal": false,
-      "cert_error": null
+      "cert_error": null,
+      "path": "/login"
     },
     "human_wait": {
       "reason": "Sign in to GitHub so I can open the pull request",
@@ -73,6 +74,9 @@
       "can_preempt": true,
       "can_open": true,
       "can_switch_device": false
-    }
+    },
+    "agent_connected_at": "2026-10-11T23:39:12+00:00",
+    "agent_connections": 1,
+    "first_frame_at": "2026-10-11T23:39:05+00:00"
   }
 }

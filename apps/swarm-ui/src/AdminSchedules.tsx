@@ -1,8 +1,18 @@
 /**
- * ADMIN › SCHEDULES (docs/schedules.md §5.3, §6.1-§6.2, §8.4, lane S7): every
- * tenant's schedules in one table with a tenant column (§6.2 variant A),
- * because sorting by tier, spend or failures across tenants is the admin's
- * question; the schedule tick's last hour; and the platform's own ticks.
+ * AUTOMATE › SCHEDULES, ALL TENANTS (docs/schedules.md §5.3, §6.1-§6.2, lane
+ * S7): every tenant's schedules in one table with a tenant column (§6.2
+ * variant A), because sorting by tier, spend or failures across tenants is the
+ * admin's question; and the schedule tick's last hour.
+ *
+ * NOT A PAGE OF ITS OWN ANY MORE (SCHED-ONE-PAGE, owner decision 2026-10-13).
+ * This was Admin › Schedules, and the owner asked "why do I have schedules in
+ * Admin and also in Automate?" -- two nav entries for one noun. It is now the
+ * "All tenants" side of the one Schedules page (`Schedules.tsx` draws the
+ * switch, for an admin only, and owns `?scope=all`); this file keeps the
+ * cross-tenant read and the admin's actions so they are not copied there.
+ * `/admin/schedules` lands on `/automate/schedules?scope=all`. The platform's
+ * own ticks (§8.4) went to Admin › Platform counts (`PlatformCounts.tsx`):
+ * they belong to no tenant, so they do not sit behind "Mine | All tenants".
  *
  * WHAT AN ADMIN MAY DO HERE, AND WHAT NOT. Pause, disable and re-enable any
  * schedule, and pause all of one tenant's, typed with that tenant's id --
@@ -18,7 +28,7 @@
  * A pause never cancels a tenant's live runs from here: that is the tenant's
  * `:pause` with `cancel_live`, or an admin's ordinary cancel of the work.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import {
   adminPauseTenantSchedules,
   adminScheduleAction,
@@ -35,34 +45,6 @@ import { Screen, timeAgo } from './Shell'
 import { pluralise } from './types'
 import { useNow } from './useNow'
 import './styles/schedules.css'
-
-/**
- * §8.4: the platform's machinery, which no tenant manages and which stays in
- * Terraform (`terraform/modules/scheduler/jobs.tf`). A static list, so an
- * admin sees every recurring thing in one place; what each does is its Cloud
- * Scheduler job's own description. Nothing here is read from GCP.
- *
- * EVERY JOB, IN jobs.tf's ORDER (live QA ADM-6, 2026-10-11): the list said
- * "every recurring thing" and held 7 of the 12, schedule_tick among the
- * missing though its own report heads this page. `name` is the job's
- * resource name in jobs.tf and `job` its name after the prefix, `<tenant>`
- * for a per-tenant job; `adminSchedules.test.tsx` reads jobs.tf and fails
- * when the two disagree.
- */
-export const PLATFORM_TICKS: readonly { name: string; job: string; does: string }[] = [
-  { name: 'safety_tick', job: 'scheduler-tick', does: 'A one-minute safety tick for the scheduler’s drain loop.' },
-  { name: 'reconciler', job: 'reconciler-tick', does: 'Reclaims expired leases and garbage-collects unused Job resources.' },
-  { name: 'quota_refresh', job: 'quota-refresh', does: 'Recomputes provider quota state and adaptive pool targets.' },
-  { name: 'workflow_rollup', job: 'workflow-rollup-<tenant>', does: 'Converges the stored state of each tenant’s workflows nobody reads.' },
-  { name: 'issue_run_advance', job: 'issue-run-advance-<tenant>', does: 'Advances each tenant’s issue runs nobody is reading.' },
-  { name: 'issue_sweep', job: 'issue-sweep-<tenant>', does: 'Starts issue runs for each tenant’s ready-looking open issues, up to its live-run cap.' },
-  { name: 'stranded_pr_sweep', job: 'stranded-pr-sweep-<tenant>', does: 'Finds each tenant’s SwarmCloud pull requests nothing is going to merge, and logs them.' },
-  { name: 'repo_index_poll', job: 'repo-index-poll-<tenant>', does: 'Reads each tenant’s registered repositories’ heads and queues their index runs.' },
-  { name: 'merge_wake', job: 'merge-wake-<tenant>', does: 'Every minute, marks each tenant’s CI-waiting merge steps whose checks have settled.' },
-  { name: 'forge_refresh', job: 'forge-refresh', does: 'Refreshes GitHub user access tokens before they expire.' },
-  { name: 'schedule_tick', job: 'schedule-tick', does: 'Fires every tenant’s due schedules, one firing per slot (the tick reported above).' },
-  { name: 'workspace_sweep', job: 'workspace-sweep', does: 'Re-dispatches approved personal workspaces nobody built, and logs each one still waiting.' },
-]
 
 type Action = 'pause' | 'disable' | 'enable'
 
@@ -81,6 +63,20 @@ function actionsFor(state: AdminScheduleRow['state']): Action[] {
   return ['pause', 'disable']
 }
 
+/**
+ * THE TICK'S LATENESS IS A DURATION (QA14-UI, owner QA 2026-10-13): the
+ * server's float was printed as it came, "lateness 182.216849 s at most".
+ * Under a minute it is whole seconds; from a minute, whole minutes; from an
+ * hour, hours and minutes.
+ */
+export function latenessWords(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds))
+  if (s < 60) return `${s} s`
+  const m = Math.round(s / 60)
+  if (m < 60) return `${m} min`
+  return m % 60 === 0 ? `${Math.floor(m / 60)} h` : `${Math.floor(m / 60)} h ${m % 60} min`
+}
+
 function TickHealth({ tick }: { tick: ScheduleTickHealth }) {
   if (tick.ticks === 0) {
     return (
@@ -94,7 +90,7 @@ function TickHealth({ tick }: { tick: ScheduleTickHealth }) {
       Last {tick.window_minutes} min: {pluralise(tick.ticks, 'tick')}, {tick.fired} fired, {pluralise(tick.errors, 'error')}
       {tick.disabled > 0 ? `, ${tick.disabled} with schedules switched off` : ''}
       {tick.truncated > 0 ? `, ${tick.truncated} cut short` : ''} · lateness{' '}
-      {tick.max_lateness_seconds === null ? <i className="ctl-em">&mdash; none measured</i> : `${tick.max_lateness_seconds} s at most`}
+      {tick.max_lateness_seconds === null ? <i className="ctl-em">&mdash; none measured</i> : `${latenessWords(tick.max_lateness_seconds)} at most`}
     </p>
   )
 }
@@ -308,39 +304,17 @@ function Rows({ rows, onChanged, go }: { rows: AdminScheduleRow[]; onChanged: ()
   )
 }
 
-function PlatformTicks() {
-  return (
-    <div className="sc-table-wrap">
-      <table className="sc-table is-ticks" data-testid="as-platform-ticks">
-        <thead>
-          <tr>
-            <th scope="col" data-col="name">Tick</th>
-            <th scope="col" data-col="job">Cloud Scheduler job</th>
-            <th scope="col" data-col="does">What it does</th>
-          </tr>
-        </thead>
-        <tbody>
-          {PLATFORM_TICKS.map((t) => (
-            <tr key={t.name} className="sc-row" data-tick={t.name}>
-              <td data-label="Tick"><span className="mono">{t.name}</span></td>
-              <td data-label="Cloud Scheduler job"><span className="mono">{t.job}</span></td>
-              <td data-label="What it does">{t.does}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  )
-}
-
 function AdminSchedulesBody({
   first,
   onChanged,
   go,
+  scopeSwitch,
 }: {
   first: { schedules: AdminScheduleRow[]; next_page_token: string | null; tick: ScheduleTickHealth }
   onChanged: () => void
   go: (to: string) => void
+  /** The page's "Mine | All tenants" switch, drawn by `Schedules.tsx`. */
+  scopeSwitch: ReactNode
 }) {
   const [more, setMore] = useState<AdminScheduleRow[]>([])
   const [token, setToken] = useState<string | null>(first.next_page_token)
@@ -361,6 +335,7 @@ function AdminSchedulesBody({
   }
   return (
     <div className="sc-list">
+      <div className="c-acts sc-acts">{scopeSwitch}</div>
       <h2 className="sc-h2">The schedule tick</h2>
       <TickHealth tick={first.tick} />
       <h2 className="sc-h2">Every tenant’s schedules</h2>
@@ -382,23 +357,26 @@ function AdminSchedulesBody({
           <PauseTenant tenants={tenants} onDone={onChanged} />
         </>
       )}
-      <h2 className="sc-h2">Platform ticks</h2>
-      <p className="sb-note">The platform’s own machinery. No tenant manages these; they are set in Terraform, and listed here so every recurring thing is in one place.</p>
-      <PlatformTicks />
     </div>
   )
 }
 
-export function AdminSchedulesScreen({ go }: { go: (to: string) => void }) {
+/**
+ * The All tenants view of Automate › Schedules. Mounted by `SchedulesScreen`
+ * only for a session that is an admin, or whose session read failed -- and
+ * `GET /v1/admin/schedules` is `is_admin` on the server either way, so a
+ * refusal is the API's answer, drawn as the Screen's failure.
+ */
+export function AllTenantsSchedules({ go, scopeSwitch }: { go: (to: string) => void; scopeSwitch: ReactNode }) {
   const [round, setRound] = useState(0)
   return (
     <Screen
-      key={`admin-schedules:${round}`}
+      key={`all-tenants-schedules:${round}`}
       title="Schedules"
       load={() => loadAdminSchedules()}
       summary={(d) => `${pluralise(d.schedules.length, 'schedule')}${d.next_page_token === null ? '' : ' on the first page'} · every tenant`}
     >
-      {(d) => <AdminSchedulesBody first={d} onChanged={() => setRound((n) => n + 1)} go={go} />}
+      {(d) => <AdminSchedulesBody first={d} onChanged={() => setRound((n) => n + 1)} go={go} scopeSwitch={scopeSwitch} />}
     </Screen>
   )
 }

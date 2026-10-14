@@ -352,6 +352,26 @@ def update(world: dict, path: str, fields: dict, mask: list[str] | None) -> None
     world.setdefault("writes", []).append(path)
 
 
+def storage_upload(world: dict, method: str, url, body: str) -> tuple[int, dict]:
+    """The Storage JSON API's simple upload, as A5's marker uses it: a 412 when
+    ifGenerationMatch=0 meets an object that is there, and never a replace."""
+    rule = injected(world, "curl", [method, url.path])
+    if rule:
+        code = rule.get("status", 503)
+        return code, {"error": {"code": code, "message": "injected"}}
+    bucket = url.path.removeprefix("/upload/storage/v1/b/").removesuffix("/o")
+    query = dict(parse_qsl(url.query))
+    if method != "POST" or not url.path.startswith("/upload/storage/v1/b/") or query.get("uploadType") != "media":
+        return 400, {"error": {"code": 400, "message": "not a simple upload"}}
+    name = f"gs://{bucket}/{query['name']}"
+    if name in world["objects"]:
+        if query.get("ifGenerationMatch") == "0":
+            return 412, {"error": {"code": 412, "message": "At least one of the pre-conditions you specified did not hold."}}
+        return 403, {"error": {"code": 403, "message": "replacing an object needs storage.objects.delete"}}
+    world["objects"][name] = body
+    return 200, {"bucket": bucket, "name": query["name"], "generation": "1"}
+
+
 def curl(world: dict, argv: list[str]) -> int:
     pos, flags = parse(argv, CURL_VALUE_FLAGS)
     method = flag(flags, "-X", "--request", default="POST" if "--data-binary" in flags else "GET")
@@ -361,7 +381,9 @@ def curl(world: dict, argv: list[str]) -> int:
     docs = world["firestore"]
     status, answer = 200, {}
     full = url.path
-    if not full.startswith(base):
+    if url.netloc == "storage.googleapis.com":
+        status, answer = storage_upload(world, method, url, flag(flags, "--data-binary"))
+    elif not full.startswith(base):
         status, answer = 404, {"error": {"code": 404, "status": "NOT_FOUND", "message": "wrong database"}}
     else:
         rest = unquote(full[len(base):])

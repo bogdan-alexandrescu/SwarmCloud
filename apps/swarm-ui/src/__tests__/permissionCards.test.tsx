@@ -15,6 +15,14 @@
 //   * an org whose installation could not be read shows its `error` on its
 //     own card, open, while the other cards still draw;
 //   * the repository page shows its own org's card;
+//   * FP-DETAIL (owner report 2026-10-12: "all granted" said nothing): an
+//     all-granted card's collapsed header carries "6 of 6 needed · Push, ..."
+//     and a "6/6 granted" chip; expanded it is a table of what SwarmCloud
+//     needs (plain words + GitHub's name, needed, granted, a mark, what for),
+//     the grants it does not use folded under "Also granted", what it covers,
+//     the installation it came through with "Manage on GitHub", and when it
+//     was checked; a User installation is an "account", not an "org"; a
+//     missing card still opens with its fix link and shows the same table;
 //   * loading and the empty state (no connected org).
 //
 // Fixtures only; no network. Nothing here is token-shaped.
@@ -31,6 +39,13 @@ const TOKEN_REPO = 'repo_2222222222222222'
 
 const STATUSES = { permission: 'statuses', access: 'read', needed_for: "merges can't see CI, so they fail", capabilities: ['merge', 'ci'] }
 const CONTENTS = { permission: 'contents', access: 'write', needed_for: "runs can't push their branch, and merges can't land", capabilities: ['push', 'merge'] }
+const PULLS = { permission: 'pull_requests', access: 'write', needed_for: "runs can't open or update pull requests, or merge them", capabilities: ['pull_request', 'merge'] }
+const CHECKS = { permission: 'checks', access: 'read', needed_for: "merges and CI fixes can't see check runs", capabilities: ['merge', 'ci'] }
+const ISSUES = { permission: 'issues', access: 'write', needed_for: "issue runs and the observer can't read or comment on issues", capabilities: ['issues'] }
+const ACTIONS = { permission: 'actions', access: 'read', needed_for: "ci-flake-hunter and release-health can't read workflow runs", capabilities: ['actions'] }
+const REQUIRED = [CONTENTS, PULLS, STATUSES, CHECKS, ISSUES, ACTIONS]
+// What GitHub answered for a fully granted installation: the six, plus two SwarmCloud does not use.
+const GRANTED = { contents: 'write', pull_requests: 'write', statuses: 'read', checks: 'read', issues: 'write', actions: 'read', metadata: 'read', workflows: 'write' }
 const ALL_TRUE = { push: true, pull_request: true, merge: true, ci: true, issues: true, actions: true }
 
 function org(over: Record<string, unknown> = {}) {
@@ -38,7 +53,7 @@ function org(over: Record<string, unknown> = {}) {
     org: 'example-org',
     account_type: 'Organization',
     installation_id: 42,
-    granted: {},
+    granted: GRANTED,
     missing: [],
     pending_update: false,
     pending: [],
@@ -50,12 +65,17 @@ function org(over: Record<string, unknown> = {}) {
 
 function answer({ gap = false, settingsUrl = null as string | null, orgs = null as unknown[] | null, appMissing = [] as unknown[] } = {}) {
   const theOrg = gap
-    ? org({ missing: [{ ...STATUSES, granted: null }], pending_update: true, pending: [{ permission: 'statuses', requested: 'read', granted: null }] })
+    ? org({
+        granted: Object.fromEntries(Object.entries(GRANTED).filter(([k]) => k !== 'statuses')),
+        missing: [{ ...STATUSES, granted: null }],
+        pending_update: true,
+        pending: [{ permission: 'statuses', requested: 'read', granted: null }],
+      })
     : org()
   return {
     tenant_id: 'eng',
     checked_at: new Date().toISOString(),
-    required: [CONTENTS, STATUSES],
+    required: REQUIRED,
     app: { configured: true, slug: 'swarmcloud-saga', granted: {}, requested: {}, missing: appMissing, settings_url: settingsUrl, error: null },
     orgs: orgs ?? [theOrg],
     repositories: [
@@ -107,13 +127,15 @@ afterEach(() => {
 })
 
 describe('Setup › GitHub: one card for the App and one per org', () => {
-  it('draws a fully granted org collapsed, saying all granted', async () => {
+  it('draws a fully granted org collapsed, with a count chip and what it enables in the header', async () => {
     routes(() => answer())
     await mountSection()
     await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
     const card = cardNamed('example-org')!
     expect(card.classList.contains('is-ok')).toBe(true)
-    expect(visible(card.querySelector('.c-chip'))).toBe('all granted')
+    expect(visible(card.querySelector('.c-chip'))).toBe('6/6 granted')
+    expect(visible(card.querySelector('.fp-summary'))).toBe('6 of 6 needed · Push, Pull requests, Merge, CI, Issues, Actions')
+    expect(visible(card.querySelector('h3 small'))).toBe('org')
     expect(card.querySelector('.fp-body')).toBeNull()
     expect(card.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false')
     expect(cardNamed('swarmcloud-saga')).toBeDefined()
@@ -140,7 +162,93 @@ describe('Setup › GitHub: one card for the App and one per org', () => {
     await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
     const card = cardNamed('example-org')!
     fireEvent.click(card.querySelector('button[aria-expanded]')!)
-    expect(visible(card.querySelector('.fp-body'))).toContain('GitHub grants everything SwarmCloud needs here.')
+    expect(card.querySelector('.fp-body')).not.toBeNull()
+    expect(card.querySelector('button[aria-expanded]')?.getAttribute('aria-expanded')).toBe('true')
+    fireEvent.click(card.querySelector('button[aria-expanded]')!)
+    expect(card.querySelector('.fp-body')).toBeNull()
+  })
+
+  it('expands an all-granted card to the table of what SwarmCloud needs, what GitHub granted and what each is for', async () => {
+    routes(() => answer())
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org')!
+    fireEvent.click(card.querySelector('button[aria-expanded]')!)
+    const heads = Array.from(card.querySelectorAll('.fp-grants thead th')).map(visible)
+    expect(heads).toEqual(['GitHub permission', 'Needs', 'Granted', '', 'For'])
+    const rows = Array.from(card.querySelectorAll<HTMLElement>('.fp-grants tbody tr'))
+    expect(rows.map((r) => r.getAttribute('data-permission'))).toEqual(['contents', 'pull_requests', 'statuses', 'checks', 'issues', 'actions'])
+    const statuses = rows[2]!
+    const cells = Array.from(statuses.querySelectorAll('td')).map(visible)
+    expect(cells[0]).toBe('Commit statuses statuses')
+    expect(cells[1]).toBe('read')
+    expect(cells[2]).toBe('read')
+    expect(statuses.getAttribute('data-ok')).toBe('true')
+    expect(cells[4]).toContain("merges can't see CI, so they fail")
+    expect(cells[4]).toContain('Merge, CI')
+    expect(rows.every((r) => r.getAttribute('data-ok') === 'true')).toBe(true)
+  })
+
+  it('folds the grants SwarmCloud does not use under "Also granted"', async () => {
+    routes(() => answer())
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org')!
+    fireEvent.click(card.querySelector('button[aria-expanded]')!)
+    const extra = card.querySelector<HTMLElement>('.fp-extra')!
+    expect(extra.tagName).toBe('DETAILS')
+    expect(extra.hasAttribute('open')).toBe(false)
+    expect(visible(extra.querySelector('summary'))).toBe('Also granted (not used by SwarmCloud): 2')
+    expect(visible(extra)).toContain('metadata: read')
+    expect(visible(extra)).toContain('workflows: write')
+    // A grant SwarmCloud needs is in the table, not among the extras.
+    expect(visible(extra)).not.toContain('contents')
+  })
+
+  it('says which repositories the installation covers, the installation it came through, and when it was checked', async () => {
+    const body = answer()
+    const first = body.repositories[0]!
+    body.repositories.push({ ...first, repo_id: TOKEN_REPO, repo: 'example-org/example-web' })
+    body.repositories.push({ ...first, repo_id: 'repo_3333333333333333', repo: 'other-org/elsewhere', installation_id: 99 })
+    routes(() => body)
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')).toBeDefined(), WAIT)
+    const card = cardNamed('example-org')!
+    fireEvent.click(card.querySelector('button[aria-expanded]')!)
+    expect(visible(card.querySelector('.fp-covers'))).toBe('Covers: 2 registered repositories (example-org/example-api, example-org/example-web)')
+    expect(visible(card.querySelector('.fp-via'))).toContain('Via: SwarmCloud GitHub App installation 42')
+    const manage = Array.from(card.querySelectorAll('a')).find((a) => visible(a) === 'Manage on GitHub')!
+    expect(manage.getAttribute('href')).toBe('https://github.com/organizations/example-org/settings/installations/42')
+    expect(manage.getAttribute('target')).toBe('_blank')
+    expect(visible(card.querySelector('.fp-when'))).toBe('Checked just now')
+    // And beside the section's Re-check.
+    expect(visible(document.querySelector('.fp-head .fp-when'))).toBe('Checked just now')
+  })
+
+  it('names a User installation an account, and an Organization an org', async () => {
+    const user = org({ org: 'example-person', account_type: 'User', installation_id: 43, review_url: 'https://github.com/settings/installations/43/permissions/update' })
+    routes(() => answer({ orgs: [org(), user] }))
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-person')).toBeDefined(), WAIT)
+    expect(visible(cardNamed('example-person')!.querySelector('h3 small'))).toBe('account')
+    expect(visible(cardNamed('example-org')!.querySelector('h3 small'))).toBe('org')
+    const card = cardNamed('example-person')!
+    fireEvent.click(card.querySelector('button[aria-expanded]')!)
+    const manage = Array.from(card.querySelectorAll('a')).find((a) => visible(a) === 'Manage on GitHub')!
+    expect(manage.getAttribute('href')).toBe('https://github.com/settings/installations/43')
+  })
+
+  it('shows the same table on a missing card, open, with the gap marked and its fix link', async () => {
+    routes(() => answer({ gap: true }))
+    await mountSection()
+    await waitFor(() => expect(cardNamed('example-org')?.querySelector('.fp-body')).not.toBeNull(), WAIT)
+    const card = cardNamed('example-org')!
+    expect(visible(card.querySelector('.fp-summary'))).toBe('5 of 6 needed · Push, Pull requests, Issues, Actions · blocked: Merge, CI')
+    const row = card.querySelector<HTMLElement>('.fp-grants tr[data-permission="statuses"]')!
+    expect(row.getAttribute('data-ok')).toBe('false')
+    expect(visible(row.querySelectorAll('td')[2] ?? null)).toBe('none')
+    expect(card.querySelectorAll('.fp-grants tr[data-ok="false"]').length).toBe(1)
+    expect(Array.from(card.querySelectorAll('a')).find((a) => visible(a) === 'Review on GitHub')?.getAttribute('href')).toBe(REVIEW)
   })
 
   it('never draws Add to App for a member, even if a URL were served', async () => {

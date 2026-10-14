@@ -14,8 +14,10 @@ becomes touch, sent from the gate's own session on the controlled page
   CSS pixels against the wheel's direction, as a finger scrolls a page.
 
 Everything else -- keys, a paste, a pointer on the browser's own UI above the
-page (the address bar is not a touch surface), the pointer on a desktop
-preset or with touch off -- goes to the X injector as before.
+page (the address bar is not a touch surface; a mobile frame no longer shows
+it, LB-R5, but a drag held past the frame's edge still clamps as below), the
+pointer on a desktop preset or with touch off -- goes to the X injector as
+before.
 
 `TouchInjector` is an injector in the shape `livegate.rfb` injects through
 (`inject.Injector`: `key`, `pointer_event`, `type_text`, `release_all`), so
@@ -25,12 +27,20 @@ pointer, until the gate has said which page is under control (`begin`), and
 nothing after `end`. In view mode no input is sent at all, even if a caller
 upstream got the controller wrong.
 
-COORDINATES. The display is the page at its device scale plus the browser's
-UI band above it (presets.py), and the page is anchored at the bottom-left, as
+COORDINATES. The display is the page at `Device.screen_scale` (one screen
+pixel per CSS pixel, NOT the device scale factor: presets.py) plus the
+browser's UI band above it, and the page is anchored at the bottom-left, as
 the mask places it. A screen point in the page area is
-`((x - 0) / scale, (y - page_top) / scale)` CSS pixels, which is what
+`((x - 0) / screen_scale, (y - page_top) / screen_scale)` CSS pixels, which is what
 `dispatchTouchEvent` takes. A drag that leaves the page area is clamped to its
 edge rather than turned into a mouse event half-way through.
+
+THE FRAME IS NOT ALWAYS THE SCREEN. On a mobile preset the viewer is sent the
+page alone, from `Device.frame_top` down (LB-R5, presets.py), so the pointer
+arrives in that frame's coordinates. `pointer_event` moves it down by
+`frame_top` first, once, and everything after it -- the page test, the CSS
+mapping, the X injector -- works in screen pixels. On the desktop
+`frame_top` is 0 and the pointer is where the frame says.
 
 NOTHING HERE IS LOGGED BUT COUNTS (section 5.3.3): no coordinate, keysym or
 gesture position is a log argument.
@@ -113,8 +123,10 @@ class TouchInjector:
 
     async def end(self) -> None:
         """Control ended: lift a finger still down, release what is held, send nothing more."""
-        await self.release_all()
-        self._target = None
+        try:
+            await self.release_all()
+        finally:
+            self._target = None
         log.info("live touch: control ended touch_events=%d gestures=%d dropped=%d",
                  self.touch_events, self.gestures, self.dropped)
 
@@ -154,6 +166,7 @@ class TouchInjector:
             self.dropped += 1
             return
         device = self._devices.device
+        y += device.frame_top  # the frame's coordinates to the screen's (module docstring)
         session = self._devices.session_for(self._target)
         if not (self._touch_on and device.touch and session is not None):
             await self._lift("touchCancel")
@@ -183,8 +196,8 @@ class TouchInjector:
 
     @staticmethod
     def _css(device: Device, x: int, y: int) -> tuple[float, float]:
-        cx = min(max(x, 0), device.page_width - 1) / device.scale
-        cy = min(max(y - device.page_top, 0), device.page_height - 1) / device.scale
+        cx = min(max(x, 0), device.page_width - 1) / device.screen_scale
+        cy = min(max(y - device.page_top, 0), device.page_height - 1) / device.screen_scale
         return (cx, cy)
 
     async def _send(self, session: str, kind: str, points: list[dict[str, Any]]) -> None:
@@ -200,7 +213,10 @@ class TouchInjector:
             return
         session = self._touching[0]
         self._touching = None
-        await self._send(session, kind, [])
+        try:
+            await self._send(session, kind, [])
+        except Exception as exc:  # noqa: BLE001 -- the finger's session went with its page: nothing to lift
+            log.info("live touch: lift not sent (%s)", type(exc).__name__)
 
     async def _wheel(self, session: str, device: Device, wheel: int, point: tuple[float, float]) -> None:
         if self._control_down:

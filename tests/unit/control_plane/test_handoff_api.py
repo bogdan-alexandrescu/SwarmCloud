@@ -254,6 +254,59 @@ def test_a_signed_request_sets_human_wait_and_records_it(live_client, db):
     assert entries[0]["task_id"] == TASK and entries[0]["tenant_id"] == "eng"
 
 
+# --------------------------------------------------------------------------
+# HANDOFF-POLICY (part of #1030): notify, park fast, extend while watched
+# --------------------------------------------------------------------------
+
+
+def test_an_unwatched_hand_off_holds_for_one_minute_not_ten(live_client, db):
+    """MEASURED on 26 live-browser tasks (2026-10-13): of 42 hand-offs 25
+    expired, 13 of them with nobody there, each holding a 2-unit browser lease
+    and its pod for the whole 10 minutes. The hold now opens at
+    `human_unwatched_seconds` (60) and only a viewer or a controller moves it."""
+    from swarm_api.handoff import HUMAN_HOLD_MAX_SECONDS, HUMAN_UNWATCHED_SECONDS
+
+    assert HUMAN_UNWATCHED_SECONDS == 60
+    assert HUMAN_HOLD_MAX_SECONDS == 30 * 60
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    doc = running(live_client, db, attempt)
+    assert request_handoff(live_client, attempt).status_code == 201
+    wait = doc["human_wait"]
+    assert wait["deadline"] - wait["requested_at"] == timedelta(seconds=60)
+    assert wait["watched_at"] is None
+
+
+def test_the_unwatched_hold_never_passes_the_attempts_own_deadline(live_client, db):
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    doc = running(live_client, db, attempt,
+                  started_at=datetime.now(timezone.utc) - timedelta(seconds=3590))
+    assert request_handoff(live_client, attempt).status_code == 201
+    wait = doc["human_wait"]
+    assert wait["deadline"] <= doc["started_at"] + timedelta(seconds=3600)
+    assert wait["deadline"] >= wait["requested_at"]
+
+
+def test_a_request_puts_agent_needs_you_in_the_submitters_bell(live_client, db):
+    """Notify: the submitter's feed has an unread needs-you item linking to the
+    task's Browser tab as soon as the hand-off is recorded."""
+    seed_tenant(db, "eng")
+    attempt = Attempt()
+    running(live_client, db, attempt)
+    before = live_client.get("/v1/notifications", headers=auth_header("alice"))
+    assert before.status_code == 200, before.text
+    assert not [i for i in before.json()["items"] if i["id"].startswith("task:handoff:")]
+    assert request_handoff(live_client, attempt).status_code == 201
+    feed = live_client.get("/v1/notifications", headers=auth_header("alice")).json()
+    (item,) = [i for i in feed["items"] if i["id"].startswith("task:handoff:")]
+    assert item["title"] == "Agent needs you"
+    assert item["needs_you"] is True and item["read"] is False
+    assert item["href"] == f"/agents/live/{TASK}/browser"
+    assert item["id"].endswith(":signin-1")
+    assert feed["unread_needs_you"] >= 1
+
+
 def test_the_reason_is_redacted_before_it_is_stored(live_client, db):
     """§4.1 step 1: the redaction filter runs before the reason is stored or shown."""
     seed_tenant(db, "eng")

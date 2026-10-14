@@ -46,7 +46,7 @@ from .test_release_reuses_ci_images import _code, _needs, _workflow
 ROOT = Path(__file__).resolve().parents[3]
 ACCEPTANCE = ROOT / "scripts" / "acceptance"
 REPORT_SH = ROOT / "scripts" / "accept-report.sh"
-GROUPS = ("mock", "generic", "claude-code", "workflow", "browser", "live-browser")
+GROUPS = ("mock", "generic", "claude-code", "workflow", "browser", "live-browser", "git-tools")
 #: What is run rather than sourced. lib.sh and the group files are sourced by
 #: run.sh and checked through it (-x); on their own they would report every
 #: variable common.sh and lib.sh set.
@@ -56,17 +56,21 @@ ENTRY_SCRIPTS = ("run.sh", *(f"{g}.sh" for g in GROUPS), "github-cleanup.sh", "g
 #: 2026-10-08: mock submits twelve tasks and a two-step workflow before it
 #: waits; generic one task per command row (8); workflow four workflow roots;
 #: claude-code and browser three tasks each; live-browser (LB-L13) one, which it
-#: waits on before it ends. accept.yml's header states the same numbers; a
-#: group that grows past them should move waves.
-PEAK = {"mock": 13, "generic": 8, "workflow": 4, "claude-code": 3, "browser": 3, "live-browser": 1}
+#: waits on before it ends; git-tools (G7, #1225) five -- its lane and its
+#: two-step build workflow, then the build pair still running beside the
+#: rebase lane and the reader (groups/git-tools.sh's header). accept.yml's
+#: header states the same numbers; a group that grows past them should move waves.
+PEAK = {"mock": 13, "generic": 8, "workflow": 4, "claude-code": 3, "browser": 3, "live-browser": 1,
+        "git-tools": 5}
 
 ACCEPT_JOBS = ("acceptance", "acceptance-2")
 
 #: Groups the suite has that accept.yml does not run YET, for a lane that cannot
-#: push workflow files. Nothing is pending: live-browser (LB-L13, part of #1030)
-#: now runs in wave 2. A group added here may be missing from accept.yml; any
-#: other missing group is red.
-PENDING_IN_ACCEPT_YML: frozenset[str] = frozenset()
+#: push workflow files. git-tools (G7, part of #1225) is written by a SwarmCloud
+#: lane, which cannot push .github/workflows/: the operator adds it to wave 2's
+#: matrix (its PR body carries the change). A group added here may be missing
+#: from accept.yml; any other missing group is red.
+PENDING_IN_ACCEPT_YML: frozenset[str] = frozenset()  # git-tools added to wave 2 on 2026-10-14
 
 
 def _accept() -> dict:

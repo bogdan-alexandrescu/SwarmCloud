@@ -1002,7 +1002,11 @@ class Worker:
         # unless the profile is a live-browser one; signs with the child
         # path's attempt key, so it needs that registered.
         self.handoff = handoff_mod.HandoffPath(
-            config, logger=deps.logger, memory=deps.memory, children=self.children
+            config,
+            logger=deps.logger,
+            memory=deps.memory,
+            children=self.children,
+            progress=self._emit_startup_progress,
         )
         self._account_broker = deps.account_broker
         if self._account_broker is None and config.quota_broker_url:
@@ -2303,8 +2307,11 @@ class Worker:
         # STEP 2b: the live path (live-browser §3.3, §5.4.2), once RUNNING --
         # the live-session route checks the fence on RUNNING -- and long before
         # the agent exists, so the gate's one registration is this worker's.
-        # Never raises; an attempt without a live path runs without one.
-        self.handoff.setup()
+        # Never raises; an attempt without a live path runs without one -- but
+        # never SILENTLY: a live profile whose path did not open says so on the
+        # task's events, where the console shows it beside an empty Browser
+        # tab (task_23cc2e82178640709a45, 2026-10-12, LB-KEYRACE).
+        self.handoff.setup(self._live_browser_unavailable)
 
         # THE FIRST HEARTBEAT GOES HERE, BEFORE ANY SLOW WORK.
         #
@@ -3479,6 +3486,13 @@ class Worker:
             unreachable = self._publish_unreachable(summary)
             if unreachable is not None:
                 return self._fail_for_publish_unreachable(unreachable, summary, exit_code=0)
+            # After the outage, which stays retryable: anything else that left
+            # a skip-path step without its branch fails it now (PUB-SKIP).
+            unpushed = self._skipped_publish_missing(summary)
+            if unpushed is not None:
+                self._mark_publish(summary, failed=str(self._scrub(unpushed)))
+                return self._fail_for_published_nothing(unpushed, summary, exit_code=0)
+            self._mark_publish(summary)
             # LAST before the success, so an attempt that fails above never
             # leaves a write-once verdict behind it for its retry to meet.
             unpublished = self._publish_review_verdict(summary)
@@ -4164,13 +4178,23 @@ class Worker:
         # `attempt_count`, so the attempt after it can read 1 and still be a
         # resume. Counted back here; a tenant that can write the counter can
         # write `attempt_count` itself, so this adds no reach (see below).
+        #
+        # A refunded HAND-OFF park (live-browser §4.3) takes one off the same
+        # way, and is counted back the same way (RESUME-PROGRESS, QA12-14).
+        # It was not: MEASURED 2026-10-13 on task_4defa61c5eea4a5c87f5, the
+        # attempt after a hand-off park read `attempt_count` 1, was taken for
+        # the task's first, restored nothing, and its agent started the task
+        # over -- asking again for the hand-off already done.
         metadata = task.get("metadata") if isinstance(task.get("metadata"), dict) else {}
-        resumes = metadata.get(CHILD_AWAIT_RESUMES_METADATA_KEY)
-        resumes = resumes if isinstance(resumes, int) and not isinstance(resumes, bool) else 0
+        resumes = 0
+        for key in (CHILD_AWAIT_RESUMES_METADATA_KEY, handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY):
+            value = metadata.get(key)
+            if isinstance(value, int) and not isinstance(value, bool):
+                resumes += max(0, value)
         if (
             isinstance(count, bool)
             or not isinstance(count, int)
-            or count + max(0, resumes) <= 1
+            or count + resumes <= 1
         ):
             refuse(reason="first attempt of this task", attempt_count=count)
             return None
@@ -6271,7 +6295,9 @@ class Worker:
         `single-pr` author. NOT an `integrate` contributor (its branch is its
         deliverable), a `single-pr` reader or amender, a `collect` task or a
         worker action: for those, changing nothing is a correct outcome -- a
-        review that edits no file is a review that did its job.
+        review that edits no file is a review that did its job. A contributor,
+        an amender and a `carrier: branches` step still owe their BRANCH when
+        they changed something: `_deliverable_branch` (G1, #1225).
 
         The strategy is read raw, not through `_dispatch_strategy`, which
         reads `single-pr` as `collect` (`_publish_git` reads its role through
@@ -6289,6 +6315,47 @@ class Worker:
             role = block.get("pr_role")
             return isinstance(role, str) and role.strip().lower() == "author"
         return False
+
+    def _deliverable_branch(self) -> str:
+        """Why this step's PUSHED BRANCH is what it delivers, or "" (G1, #1225).
+
+        Wider than `_opens_pull_request`, which stays what it says: a step
+        that owes a pull request. A branch is also the deliverable of
+
+          * an `integrate` contributor: the integrator merges `swarm/<its id>`
+            and a review that `builds_on` it clones that branch;
+          * a `carrier: branches` step, under any strategy but a `single-pr`
+            reader's: the branch is where the next step finds the work;
+          * a `single-pr` amender: its fast-forward push IS the pull
+            request's update.
+
+        A step another step `builds_on` is one of these already: swarm-api
+        accepts `builds_on` only under `direct-pr` and `integrate`
+        (`validation._EVERY_STEP_PUSHES_STRATEGIES`), where every step that
+        runs an agent opens a pull request or is a contributor. Measured
+        (#1225, wf_e55610ded71c4d9d9fae, wf_0260c920acf8414395b2): a review
+        failed cloning "Remote branch swarm/task_... not found" behind a build
+        step that ended SUCCEEDED having pushed nothing.
+        """
+        if self._opens_pull_request():
+            return "the step was to open a pull request"
+        pr_role = self._pr_role()
+        if pr_role == "amender":
+            return (
+                "the step is the 'single-pr' amender, whose push to the author's "
+                "branch is its update of the pull request"
+            )
+        if pr_role in ("reader", "none"):
+            # `_publish_git` pushes nothing for these, whatever the carrier.
+            return ""
+        if self._dispatch_carrier() == "branches":
+            return "the step carries its work on its branch (carrier: branches)"
+        if self._dispatch_strategy() == "integrate" and self._dispatch_role() == "contributor":
+            return (
+                "the step is an 'integrate' contributor, whose branch the integrator "
+                "merges and a step that builds on it clones"
+            )
+        return ""
 
     def _published_nothing(self, summary: dict[str, Any]) -> str | None:
         """Why a pull-request step that ran clean delivered nothing, or None.
@@ -6337,25 +6404,53 @@ class Worker:
         return None
 
     def _publish_failed(self, summary: dict[str, Any]) -> str | None:
-        """Why a pull-request step's push failed, naming the patch, or None (#872).
+        """Why a step whose branch is its deliverable ended without pushing it,
+        naming where the work is, or None (#872; G1, #1225).
 
         `_publish_git` sets `publish_failed` when git failed the publish --
         the push itself, or the commit, fold or authorship check before it.
         Measured 2026-10-08 (task_6a0c9afdbaea449eb53d): the push failed with
         exit 1, the agent had exited 0, and the step and its workflow read
-        SUCCEEDED with the work only in `swarm-work.patch`. A step whose job is
-        to open a pull request (`_opens_pull_request`) has not delivered, so
-        it ends FAILED, and the error says where the work is so it can be
-        recovered with `swarm_apply`. A step that publishes nothing by design
-        -- a review, an `integrate` contributor, a `collect` step, a step with
-        no repository -- never reaches here: it is not a pull-request step.
+        SUCCEEDED with the work only in `swarm-work.patch`.
+
+        #872 covered only a step that opens a pull request. G1 (#1225) widens
+        it to every step whose branch is its deliverable
+        (`_deliverable_branch`), and to every way such a step can end with
+        work and no pushed branch, not only a git failure: a publish that
+        declined for a token that cannot push (`can_push` false), a refused
+        git token, a forge this worker cannot publish to, publishing
+        disabled, a harvest that failed or met survivors of the reap, or the
+        catch-all in `_publish_checked`. Each read SUCCEEDED, and the step
+        that builds on it then failed cloning a branch that was never there.
+
+        Not here: a step that changed nothing (`published_nothing`, and the
+        allowed empty diff), which had no branch to push and whose dependants
+        already step past it; a shut verdict gate's step, which
+        `_skipped_publish_missing` answers; a forge outage, which
+        `_publish_unreachable` fails retryably. The forge-write refusal and
+        the final-tree leak are answered before this is asked. A `collect`
+        step without a carrier, a `single-pr` reader and a step with no
+        repository deliver no branch and never reach here.
         """
-        if not self._opens_pull_request():
+        why = self._deliverable_branch()
+        if not why:
             return None
         git = summary.get("git")
-        if not isinstance(git, dict) or git.get(PUBLISH_FAILED_FIELD) is not True:
+        if not isinstance(git, dict):
             return None
-        cause = str(git.get("publish_reason") or "the push failed")
+        # `_publish_git` says `published: true` only once the push returned.
+        if git.get("published") is True:
+            return None
+        if git.get(PUBLISH_FAILED_FIELD) is not True:
+            if summary.get(expected_mod.NO_CHANGE_SUMMARY_KEY) is True:
+                return None
+            if published_nothing(summary):
+                return None
+            if self._verdict is not None and not self._verdict.get("agent_ran", True):
+                return None
+            if isinstance(git.get(PUBLISH_UNREACHABLE_FIELD), dict):
+                return None
+        cause = str(git.get("publish_reason") or git.get("error") or "the push failed")
         patch = next(
             (
                 entry.get("uri")
@@ -6375,9 +6470,75 @@ class Worker:
                 + (f" ({git['patch_note']})" if git.get("patch_note") else "")
                 + "; the work is in the attempt's final checkpoint."
             )
+        return f"publish_failed: {why} and its branch was not pushed: {cause}. {where}"
+
+    def _skipped_publish_missing(self, summary: dict[str, Any]) -> str | None:
+        """Why a step whose verdict gate skipped its agent pushed no branch, or None (PUB-SKIP).
+
+        Measured 2026-10-12 (wf_18f0b5e64639417f83d6, task_58ecd704c73a433b9782):
+        the review said MERGE, the fix step skipped its agent and ended
+        SUCCEEDED with no push and no error, and the re-review that builds on
+        it failed cloning its branch. On the skip path the step's only
+        deliverable is the reviewed branch, published, and `_published_nothing`
+        exempts a shut gate -- so every way the publish can decline (a token
+        that may not push, a refused git token, a forge this worker cannot
+        publish to, a harvest that returned early) read as success. Now a
+        skip-path step that owes a pull request (`_shut_gate_owes_publish`)
+        and did not push its branch has this reason, quoting the publish's
+        own, and ends FAILED. A step whose agent ran is unchanged.
+        """
+        if not self._shut_gate_owes_publish():
+            return None
+        git = summary.get("git")
+        if isinstance(git, dict) and git.get("published") is True and git.get("branch"):
+            return None
+        if not isinstance(git, dict):
+            cause = "no repository was harvested, so there was nothing to push"
+        else:
+            cause = str(
+                git.get("publish_reason") or git.get("error")
+                or "the publish recorded no reason"
+            )
         return (
-            f"publish_failed: the step was to open a pull request and its branch "
-            f"was not pushed: {cause}. {where}"
+            f"publish_failed: the review verdict was {self._verdict['verdict']}, so this "
+            f"step's agent did not run and the step was to publish the reviewed work, "
+            f"but its branch was not pushed: {cause}"
+        )
+
+    def _mark_publish(self, summary: dict[str, Any], *, failed: str | None = None) -> None:
+        """`published` or `publish_failed` on the task's events (PUB-SKIP).
+
+        `published` when this attempt's publish pushed its branch: the branch,
+        the head pushed and the pull request, if one was opened or reused, on
+        both paths, so a reader of the events alone can tell a step that
+        delivered from one that only said SUCCEEDED. `publish_failed`, with the
+        reason, when the finish fails the step for a publish that did not
+        happen. A RUNNING mark with a `cause`, as every other note here is
+        (`_emit_startup_mark`): the frozen `EventType` has no note-only type.
+        """
+        verdict = self._verdict
+        agent_ran = True if verdict is None else bool(verdict.get("agent_ran", True))
+        if failed is not None:
+            self._emit_startup_mark(
+                "publish_failed", {"reason": failed, "agent_ran": agent_ran}
+            )
+            return
+        git = summary.get("git")
+        if not (isinstance(git, dict) and git.get("published") is True and git.get("branch")):
+            return
+        pull = git.get("pull_request")
+        self._emit_startup_mark(
+            "published",
+            {
+                "branch": git.get("branch"),
+                "head": git.get("pushed_head"),
+                "pull_request": (
+                    {"number": pull.get("number"), "url": pull.get("url"),
+                     "created": pull.get("created")}
+                    if isinstance(pull, dict) else None
+                ),
+                "agent_ran": agent_ran,
+            },
         )
 
     def _publish_unreachable(self, summary: dict[str, Any]) -> dict[str, Any] | None:
@@ -6389,14 +6550,19 @@ class Worker:
         rate-limit 403 at the probe or at `open_pull_request`. A forge that
         ANSWERED (a 422 refusal, a 404, a plain 403) is not here: the refusal
         is `_published_nothing`'s, and the rest stay the publish's recorded
-        reason. Only a step that owes a pull request (`_opens_pull_request`)
-        is failed for it; any other step's deliverable is its branch or its
-        artifacts, which an outage at the forge's API does not touch.
+        reason. Only a step whose branch is its deliverable
+        (`_deliverable_branch`, widened from `_opens_pull_request` by G1,
+        #1225) is failed for it: one that owes a pull request, or one whose
+        outage at the probe kept its branch from being pushed. Any other
+        step's deliverable is its artifacts, which an outage at the forge's
+        API does not touch.
         """
-        if not self._opens_pull_request():
+        if not self._deliverable_branch():
             return None
         git = summary.get("git")
         if not isinstance(git, dict):
+            return None
+        if not self._opens_pull_request() and git.get("published") is True:
             return None
         marker = git.get(PUBLISH_UNREACHABLE_FIELD)
         return marker if isinstance(marker, dict) else None
@@ -6966,8 +7132,21 @@ class Worker:
                 base.update(self._session_channel_env())
         # The child-task spool, when this attempt has a child path: the one
         # variable an agent needs to submit and await helpers (child tasks,
-        # §3.1). A path, never a credential: the attempt key stays here.
-        base.update(self.children.prepare(ws.work))
+        # §3.1). And the git tools' spool, when it is offered them
+        # (docs/runner-git-tools.md §1.3, lane G6): read from the VERIFIED
+        # task, the checkout and the clone base this worker recorded. Paths,
+        # never a credential: the attempt key stays here, and no forge token
+        # is in this process while the agent runs (§0).
+        base.update(self.children.prepare(
+            ws.work,
+            task=self._task,
+            checkout=ws.checkout() if self._repo_url else None,
+            repository_url=self._repo_url,
+            clone_base=clone_base,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            store=self.store,
+        ))
         # The hand-off spool, on a live-browser attempt (live-browser §4.1):
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))
@@ -7590,6 +7769,45 @@ class Worker:
                 account_id=account.account_id,
                 error=f"{type(exc).__name__}: {exc}",
             )
+
+    def _live_browser_unavailable(self, note: dict[str, Any]) -> None:
+        """`live_browser_unavailable`: a live profile ran with no live session.
+
+        `note` is `HandoffPath._refuse`'s: the code (`live_path`) and a reason
+        that is a swarm-api error code, an exception's class name or a fixed
+        sentence -- never a ticket, a key or a response body.
+        """
+        reason = note.get("reason") or note.get("live_path") or "unknown"
+        self._emit_startup_mark(
+            "live_browser_unavailable",
+            {
+                "phase": note.get("phase", "live_session"),
+                "live_path": note.get("live_path"),
+                "reason": reason,
+                "message": f"live browser unavailable: {reason}",
+            },
+        )
+
+    def _emit_startup_progress(self, step: str, at: datetime) -> bool:
+        """`startup_progress`: one of the browser's start-up steps, at the gate's time (STARTUP-API).
+
+        Called by `handoff.HandoffPath.note_startup` once per step and
+        attempt, for the console's progress bar (contract request 74). Never
+        on a fenced exit or a tenant mismatch (invariant 5: the stream is not
+        this attempt's to write then), which settles the step unwritten; a
+        control-plane outage leaves it for a later tick. A write that fails
+        raises, and the caller tries it again. Holds and moves nothing.
+        """
+        if self._fenced_exit or self._writes_forbidden:
+            return True
+        if self._control_plane_down:
+            return False
+        self.control.emit(
+            EventType.STARTUP_PROGRESS,
+            {"step": step, "attempt_id": self.cfg.attempt_id, "generation": self.cfg.generation},
+            at=at,
+        )
+        return True
 
     def _emit_startup_mark(self, cause: str, detail: dict[str, Any]) -> None:
         """One startup mark on the task's events: RUNNING, with `cause`.
@@ -9775,7 +9993,16 @@ class Worker:
         # It was invisible because it depended on whether the integrator's
         # agent happened to touch a file. Found by running the strategy against
         # a real repository, not by reading it.
-        if work.is_empty and not self._integration_is_pending():
+        # A SHUT VERDICT GATE IS THE SAME KIND OF EXCEPTION (PUB-SKIP,
+        # 2026-10-12). Its agent never ran, so "changed nothing" is the gate's
+        # doing, and the reviewed work is the branch it cloned: a step that
+        # owes a pull request still pushes that branch and opens it, and
+        # `_skipped_publish_missing` fails the step if it could not.
+        if (
+            work.is_empty
+            and not self._integration_is_pending()
+            and not self._shut_gate_owes_publish()
+        ):
             out["published"] = False
             out["publish_reason"] = "the agent changed nothing in the repository"
             return out
@@ -9817,7 +10044,13 @@ class Worker:
             )
         except Exception as exc:  # pragma: no cover - defensive; teardown path
             self.log.exception("the publish raised; continuing without it", exc)
-            result = {"published": False, "publish_reason": "the publish failed unexpectedly"}
+            # Marked failed (G1, #1225): a step whose branch is its deliverable
+            # did not push it, and `_publish_failed` ends it FAILED for that.
+            result = {
+                "published": False,
+                "publish_reason": "the publish failed unexpectedly",
+                PUBLISH_FAILED_FIELD: True,
+            }
         git.update(self._scrub(result))
 
     def _integration_is_pending(self) -> bool:
@@ -9832,6 +10065,16 @@ class Worker:
             self._dispatch_strategy() == "integrate"
             and self._dispatch_role() == "integrator"
             and bool(self._dispatch_integrates())
+        )
+
+    def _shut_gate_owes_publish(self) -> bool:
+        """True when this step's verdict gate kept its agent from running and
+        the step owes a pull request (`_opens_pull_request`): the one ending
+        whose only deliverable is the reviewed branch, published (PUB-SKIP)."""
+        return (
+            self._verdict is not None
+            and not self._verdict.get("agent_ran", True)
+            and self._opens_pull_request()
         )
 
     def _build_clean_repo(

@@ -577,7 +577,8 @@ locals {
 
   # Every Secret Manager reference swarm-api's environment carries, merged
   # once so main.tf and tests/terraform/live.tftest.hcl read one value.
-  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env)
+  # SWARM_EGRESS_KEY joins them once swarm-egress is deployed (egress.tf).
+  api_secret_env = merge(local.child_key_secret_env, local.live_key_secret_env, local.egress_key_secret_env)
 
   # The swarm-api refusal switches (swarm_api.refusals; docs/api-refusals.md).
   # A refusal added to swarm-api ships off; var.api_refusals turns one on.
@@ -590,7 +591,8 @@ locals {
   }
 
   service_env = {
-    "swarm-api" = merge(local.common_env, local.api_refusal_env, {
+    # local.api_browser_egress_env: the browser egress switch (egress.tf).
+    "swarm-api" = merge(local.common_env, local.api_refusal_env, local.api_browser_egress_env, {
       # DISPATCH_TOPIC, not WAKE_TOPIC. Both apps read `DISPATCH_TOPIC`
       # (swarm_api.settings, scheduler.settings); terraform set `WAKE_TOPIC`,
       # which nothing has ever read. swarm_api.deps falls back to NullWaker()
@@ -697,18 +699,23 @@ locals {
       # reads it and no route consults it, so it changes nothing the API does.
       SCHEDULE_TICK_USERS = module.scheduler.schedule_tick_email
 
-      # The issue sweeper's platform switch (swarm_api.issuesweep, owner
-      # decisions 2026-10-08): POST /v1/admin/issues/sweep starts nothing
-      # while it is off, whatever a tenant's own `issue_sweep.enabled` says.
-      # Off unless the environment's tfvars sets var.enable_issue_sweep.
-      SWEEP_ENABLED = var.enable_issue_sweep ? "true" : "false"
-
       # D4's refusal of a person's task on a repository they have not chosen
       # (swarm_api.settings `repository_grants_enforced`, #780 OB10). Until
       # OB10 it reached swarm-api only by hand, so an apply put it back to
       # off. Off unless the environment's tfvars sets
       # var.repository_grants_enforced; service submissions are never refused.
       REPOSITORY_GRANTS_ENFORCED = var.repository_grants_enforced ? "true" : "false"
+
+      # The live browser's search tool (swarm_api.settings
+      # `search_tool_enabled`, `search_provider`; docs/search-tool.md, lane
+      # SEARCH-TF, #1030). Off unless the environment's tfvars sets
+      # var.search_tool_enabled, so turning it on is a tfvars change an apply
+      # keeps rather than a hand edit the next apply puts back. Off, the route
+      # is a 404 and no agent is offered the tool. The provider's key is not
+      # here: it is a platform secret read per call from Secret Manager
+      # (scripts/create-secrets.sh --search-api-key --stdin).
+      SEARCH_TOOL_ENABLED = var.search_tool_enabled ? "true" : "false"
+      SEARCH_PROVIDER     = var.search_provider
 
       # The personal-workspace job's trigger (docs/workspaces.md §2.1-2.2,
       # #847): approve, retry and the dispatch sweep publish a workspace id to

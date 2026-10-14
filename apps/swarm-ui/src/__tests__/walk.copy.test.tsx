@@ -79,6 +79,10 @@ function findings(text: string): string[] {
     for (const m of text.matchAll(g)) {
       const hit = m[0].trim()
       if (what === 'a code identifier' && TOKENS.has(hit)) continue
+      // A task or workflow id is the user's data, as the header says. The
+      // demo's ids are words (`task_wf_plan`), not hex, and the Recent list
+      // a finished agent's page now opens beside it (QA12-26) prints them.
+      if (what === 'a code identifier' && /^(?:task|wf)_/.test(hit)) continue
       const at = m.index ?? 0
       out.push(`${what}: "${hit}" in "…${text.slice(Math.max(0, at - 50), at + 60).trim()}…"`)
     }

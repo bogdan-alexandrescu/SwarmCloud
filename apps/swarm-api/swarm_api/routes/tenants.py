@@ -53,25 +53,38 @@ def get_me(
 
 @router.get("/mine")
 def get_mine(auth: AuthContext = Depends(current_auth)) -> list[dict]:
-    """Every tenant the caller may select with `X-Swarm-Tenant`, admin order.
+    """Every tenant the caller may select with `X-Swarm-Tenant`, default first.
 
-    Exactly `AuthContext.tenant_choices`: the registered tenant groups Cloud
-    Identity confirmed for this request, computed by the same pass that
-    resolved the default tenant -- not a second membership check that could
-    disagree with it. Nothing is read from or written to Firestore, so a
-    tenant listed here need not have a tenant document yet; selecting it on
-    a submit creates one exactly as a first submit by its default member does.
+    Exactly `AuthContext.tenant_choices`, computed by the same pass that
+    resolved the default tenant -- not a second check that could disagree with
+    it -- so the first entry IS the tenant a request without the header acts in.
 
-    `display_name` is the group email: it is what an admin registered, it is
-    unique where the tenant id is not, and it needs no read.
+    FIRST, when it is ready, the caller's OWN personal workspace (#1200, owner
+    decision 2026-10-12: personal by default, groups are what you switch to):
+    `kind: user`, named "Your workspace (u-<you>)". Its id is derived from the
+    verified email and confirmed against its tenant document and workspace
+    record (`auth.PersonalTenants`); another person's is never listed, and
+    one that is not `ready` yet is not listed either.
 
-    Empty for a caller whose tenant is personal (in no registered group): a
-    personal tenant is not a membership and cannot be selected.
+    THEN the registered tenant groups Cloud Identity confirmed for this
+    request, in admin order, `kind: group`. Nothing is read for them, so a
+    group listed here need not have a tenant document yet; selecting it on a
+    submit creates one exactly as a first submit by its default member does.
+    Their `display_name` is the group email: it is what an admin registered,
+    it is unique where the tenant id is not, and it needs no read.
+
+    Empty for a caller in no registered group without a ready workspace.
     """
-    return [
-        {"tenant_id": tenant_id, "display_name": group}
-        for tenant_id, group in auth.tenant_choices
-    ]
+    return [_choice(auth, tenant_id, principal) for tenant_id, principal in auth.tenant_choices]
+
+
+def _choice(auth: AuthContext, tenant_id: str, principal: str) -> dict:
+    # The personal entry is the one whose principal is the caller themselves;
+    # `_with_own_workspace` is the only place such an entry is made.
+    if principal == auth.email:
+        return {"tenant_id": tenant_id, "display_name": f"Your workspace ({tenant_id})",
+                "kind": "user"}
+    return {"tenant_id": tenant_id, "display_name": principal, "kind": "group"}
 
 
 @router.post("/me/credentials", status_code=status.HTTP_201_CREATED)

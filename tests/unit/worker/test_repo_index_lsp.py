@@ -685,5 +685,6 @@ def test_the_image_installs_the_four_servers_pinned(lsp: Any) -> None:
         assert spec.command[0] in checked, spec.command[0]
     assert "go" in checked  # gopls runs `go list`
     # The build proves each server starts and resolves, as the agent user.
-    assert "RUN swarm-repo-index --lsp-self-test" in text
+    # Part of the indexer's one self-test RUN (test_image_streaming.py says why).
+    assert " && swarm-repo-index --lsp-self-test" in text
     assert "COPY images/agent-runtime-indexer/repo-index/lsp/ /opt/repo-index/lsp/" in text

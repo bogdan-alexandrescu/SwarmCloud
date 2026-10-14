@@ -5,13 +5,13 @@ docs/design/live-browser.md section 6.1. The gate owns Chromium's pipe
 the agent's: for every page, the gate attaches a session of its own and sends
 
 * `Emulation.setDeviceMetricsOverride` -- the preset's CSS viewport, device
-  scale factor, `mobile` and screen orientation;
+  scale factor, `mobile`, screen size and orientation, and NO `scale`;
 * `Emulation.setUserAgentOverride` -- the preset's user agent, platform and
   client hints;
 * `Emulation.setTouchEmulationEnabled` -- touch on for a phone or tablet.
 
-and it resizes the virtual display to the preset's frame (`Device`), so the
-frames carry no letterbox. The agent's own calls to those methods are refused
+and it resizes the virtual display to the preset's frame (`Device`) and fits
+every Chromium window to it, so the frames carry no letterbox. The agent's own calls to those methods are refused
 by the method policy (`cdppolicy.DENIED`, section 5.4.4); an agent picks a
 preset through the gate (`swarm-handoff device <preset>`, the `device`
 operation on ctl.sock), by name.
@@ -32,10 +32,32 @@ set on every page, the mask told the new scale (which makes every report stale
 injector told the new bounds. A failure part-way is recorded and raised; the
 next change starts again from the name.
 
+WHY NO `scale`, AND THE DISPLAY AT CSS SIZE. Headed Chromium draws an
+emulated device at one screen pixel per CSS pixel and clips the view there;
+the override's `scale` magnifies the content inside that clip, not the clip.
+Sent with `scale` = the device scale factor on a display `scale` times the
+CSS size, iPhone 15 landscape became an 852 x 393 corner of the page at 3x in
+a 2556 x 1267 frame (re-QA 2026-10-12, task_e8cb274977d545a48710; reproduced
+against the image's Chromium the same day). presets.py records the
+measurement; the page is told the device scale factor, the frame shows it at
+`Device.screen_scale`.
+
+THE WINDOW IS ONE PIXEL LARGER THAN THE SCREEN. Measured on the same
+Chromium: `Browser.setWindowBounds` to exactly the screen's size leaves the
+window one pixel short each way (852 x 481 asked, 851 x 480 got), which is a
+one-pixel black letterbox and a page clipped by a column; any larger size is
+kept as asked. So every window is fitted at the display plus `WINDOW_OVERHANG`,
+and the overhang is off screen. A window narrower than Chromium's minimum
+(500 px: the portrait phones) is wider than the display the same way: the
+page is at the window's left edge, so it is still the whole frame.
+
 NEW PAGES. `Target.setDiscoverTargets` on the gate's root session reports
 every page created; the gate's pipe reader hands those events to `on_event`,
 which schedules the attach on its own task (the reader must never wait on a
-reply, cdpproxy.py). Between a page's creation and the override, the page has
+reply, cdpproxy.py). A page in a window the gate has not fitted yet (a popup
+opened as a window) has that window fitted too. The override belongs to the
+page's target, not its document, so it holds across the page's navigations,
+cross-site ones included (a new renderer under the same target). Between a page's creation and the override, the page has
 the window's own metrics: its viewport is wider than the device's page area,
 and the mask treats a viewport larger than the frame as unplaceable and blanks
 the frame (`Outcome.UNAVAILABLE`). It fails closed; it does not leak.
@@ -48,7 +70,9 @@ started with but never grows it, so the sidecar starts Xvfb at
 `presets.MAX_DISPLAY_WIDTH` x `MAX_DISPLAY_HEIGHT`. Whether Xvfb rewrites its
 `-fbdir` file's header on a resize is not something this lane could measure,
 so `crop` cuts a captured frame to the device's display either way; on a file
-that already shrank it returns the frame unchanged.
+that already shrank it returns the frame unchanged. `captured` is that cut as
+the viewer is sent it: on a mobile preset it also drops the browser's UI band
+above the page (LB-R5, presets.py), so a phone shows the page alone.
 
 NOTHING HERE IS LOGGED BUT NAMES. A device change records the preset name and
 orientation; a page's URL, a session id or a coordinate is never a log
@@ -87,6 +111,9 @@ _RR_ADD_OUTPUT_MODE = 18
 _RR_SET_CRTC_CONFIG = 21
 _RR_GET_SCREEN_RESOURCES_CURRENT = 25
 _RR_ROTATE_0 = 1
+
+#: Screen pixels a window is fitted past the display, each way (module docstring).
+WINDOW_OVERHANG = 1
 
 #: Millimetres are what RandR stores; at 96 dpi, which is what Xvfb assumes.
 _MM_PER_PIXEL = 25.4 / 96
@@ -313,18 +340,27 @@ async def _x_reply(reader: asyncio.StreamReader, seq: int) -> bytes:
             return head + body
 
 
-def crop(frame: Frame, width: int, height: int) -> Frame:
-    """`frame`'s top-left `width` x `height`, copied; `frame` itself when it is no larger."""
-    if frame.width <= width and frame.height <= height:
+def crop(frame: Frame, width: int, height: int, top: int = 0) -> Frame:
+    """`frame`'s `width` x `height` from row `top` at the left edge, copied; `frame` itself when that is all of it.
+
+    A `top` past the frame (a display caught mid-resize) is held to its last row.
+    """
+    top = max(0, min(top, frame.height - 1))
+    if top == 0 and frame.width <= width and frame.height <= height:
         return frame
-    width, height = min(width, frame.width), min(height, frame.height)
+    width, height = min(width, frame.width), min(height, frame.height - top)
     row = width * BYTES_PER_PIXEL
     pixels = bytearray(row * height)
     for y in range(height):
-        at = y * frame.stride
+        at = (top + y) * frame.stride
         pixels[y * row:(y + 1) * row] = frame.pixels[at:at + row]
     return Frame(width, height, row, pixels, frame.red_mask, frame.green_mask, frame.blue_mask,
                  frame.little_endian)
+
+
+def captured(frame: Frame, device: Device) -> Frame:
+    """What the viewer is sent of a captured screen: `device`'s frame, from `Device.frame_top` down."""
+    return crop(frame, device.display_width, device.frame_height, top=device.frame_top)
 
 
 # ------------------------------------------------------------ the controller
@@ -346,6 +382,7 @@ class DeviceController:
         self._on_change = on_change
         self._device = resolve(DEFAULT_PRESET)
         self._pages: dict[str, str] = {}  # targetId -> the gate's session on it
+        self._windows: set[Any] = set()  # windowIds fitted to the current display
         self._browser: tuple[str, str] | None = None  # (user agent, version)
         self._lock = asyncio.Lock()
         self._tasks: set[asyncio.Task[None]] = set()
@@ -365,7 +402,7 @@ class DeviceController:
         async with self._lock:
             for info in targets:
                 if info.get("type") == "page" and isinstance(info.get("targetId"), str):
-                    await self._attach(info["targetId"])
+                    await self._attach(info["targetId"], fit=False)
             await self._apply_display(self._device)
         if self._on_change is not None:
             self._on_change(self._device)
@@ -388,8 +425,8 @@ class DeviceController:
         async with self._lock:
             try:
                 await self._apply_display(device)
-                for target, session in list(self._pages.items()):
-                    await self._apply_page(device, target, session)
+                for target in list(self._pages):
+                    await self._apply_page_again(device, target)
             except Exception as exc:
                 self._record("device_failed", {"preset": device.name, "orientation": device.orientation,
                                                "cause": type(exc).__name__})
@@ -422,11 +459,20 @@ class DeviceController:
             target = params.get("targetId")
             if isinstance(target, str):
                 self._pages.pop(target, None)
-        elif method == "Target.detachedFromTarget":
+        elif method == "Target.detachedFromTarget" and message.get("sessionId") is None:
             session = params.get("sessionId")
             for target, held in list(self._pages.items()):
                 if held == session:
                     del self._pages[target]
+                    # The overrides went with the session; the page may not
+                    # have (a renderer swap). A closed page fails the attach
+                    # quietly, its `targetDestroyed` right behind.
+                    self._spawn(self._attach_quietly(target))
+
+    def _spawn(self, work: Any) -> None:
+        task = asyncio.get_running_loop().create_task(work)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
 
     async def _attach_quietly(self, target_id: str) -> None:
         try:
@@ -434,13 +480,51 @@ class DeviceController:
         except Exception as exc:  # a page that closed before the attach answered
             log.info("live device: page attach failed (%s)", type(exc).__name__)
 
-    async def _attach(self, target_id: str) -> None:
+    async def _attach(self, target_id: str, *, fit: bool = True) -> None:
         session = self._pages.get(target_id)
+        if session is not None:
+            try:
+                await self._apply_page(self._device, target_id, session)
+            except Exception:  # noqa: BLE001 -- a session that went: attach again, below
+                if self._pages.get(target_id) == session:
+                    del self._pages[target_id]
+                session = None
         if session is None:
             result = await self._cdp.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
             session = str(result["sessionId"])
             self._pages[target_id] = session
-        await self._apply_page(self._device, target_id, session)
+            await self._apply_page(self._device, target_id, session)
+        if fit:
+            await self._fit_window(self._device, target_id)
+
+    async def _apply_page_again(self, device: Device, target_id: str) -> None:
+        """`device` on one page, through a fresh session when its own went.
+
+        A device switch never fails because one page's session is gone
+        (DEVICE-RECOVER; part of #1030). MEASURED 2026-10-13: a switch that met
+        a session Chromium had dropped raised "Session with given id not
+        found" out of `select`, the whole change was refused, and the dead
+        session stayed in `_pages` to fail the next switch the same way. A
+        page that is gone for good is dropped, not an error: its
+        `targetDestroyed` is on the way.
+        """
+        session = self._pages.get(target_id)
+        if session is not None:
+            try:
+                await self._apply_page(device, target_id, session)
+                return
+            except Exception as exc:  # noqa: BLE001 -- attach again, below
+                log.info("live device: page session lost (%s); attaching again", type(exc).__name__)
+                if self._pages.get(target_id) == session:
+                    del self._pages[target_id]
+        try:
+            result = await self._cdp.call("Target.attachToTarget", {"targetId": target_id, "flatten": True})
+            session = str(result["sessionId"])
+            self._pages[target_id] = session
+            await self._apply_page(device, target_id, session)
+        except Exception as exc:  # noqa: BLE001 -- the page closed; nothing to apply to
+            self._pages.pop(target_id, None)
+            self._record("device_page_lost", {"preset": device.name, "cause": type(exc).__name__})
 
     async def _browser_version(self) -> tuple[str, str]:
         if self._browser is None:
@@ -452,17 +536,27 @@ class DeviceController:
 
     async def _apply_display(self, device: Device) -> None:
         await self._display.resize(device.display_width, device.display_height)
-        self._mask.set_scale(device.scale)
+        self._mask.set_scale(device.screen_scale)
         if self._on_resize is not None:
             self._on_resize(device)
+        self._windows.clear()
         for target in list(self._pages):
-            window = await self._cdp.call("Browser.getWindowForTarget", {"targetId": target})
-            await self._cdp.call("Browser.setWindowBounds", {
-                "windowId": window["windowId"],
-                "bounds": {"left": 0, "top": 0, "width": device.display_width,
-                           "height": device.display_height, "windowState": "normal"},
-            })
-            break  # one window (section 3.1)
+            try:
+                await self._fit_window(device, target)
+            except Exception as exc:  # noqa: BLE001 -- a page that closed: the next one fits the window
+                log.info("live device: window not fitted (%s)", type(exc).__name__)
+
+    async def _fit_window(self, device: Device, target_id: str) -> None:
+        """The window holding `target_id` at the display's size plus the overhang, once per display size."""
+        window = (await self._cdp.call("Browser.getWindowForTarget", {"targetId": target_id}))["windowId"]
+        if window in self._windows:
+            return  # one window (section 3.1): every page after the first is in it
+        await self._cdp.call("Browser.setWindowBounds", {
+            "windowId": window,
+            "bounds": {"left": 0, "top": 0, "width": device.display_width + WINDOW_OVERHANG,
+                       "height": device.display_height + WINDOW_OVERHANG, "windowState": "normal"},
+        })
+        self._windows.add(window)
 
     async def _apply_page(self, device: Device, target_id: str, session: str) -> None:
         user_agent, version = await self._browser_version()
@@ -471,9 +565,9 @@ class DeviceController:
             "height": device.height,
             "deviceScaleFactor": device.scale,
             "mobile": device.mobile,
-            # The view is drawn at `scale` screen pixels per CSS pixel, so the
-            # page fills the display and the mask's mapping holds.
-            "scale": device.scale,
+            # No `scale`: it magnifies the page inside a view Chromium still
+            # clips at the CSS size (module docstring). The page fills the
+            # display because the display IS the CSS size.
             "screenWidth": device.width,
             "screenHeight": device.height,
             "screenOrientation": device.screen_orientation(),

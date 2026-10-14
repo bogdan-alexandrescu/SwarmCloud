@@ -123,6 +123,13 @@ NOT_SWITCHABLE_CODES = frozenset({
     "WORKSPACE_WRONG_STATE",
     "ACCOUNT_NOT_LENDABLE",
     "ACCOUNT_IS_THEIRS",
+    # The loan decline (LOAN-DECLINE, docs/workspaces.md §6.4), as the
+    # workspace codes above: raised only by the POST
+    # /v1/admin/people/{workspace_id}/loan/decline that change introduces, so
+    # no existing caller can be refused by it. Continuing past it is the
+    # breach itself: a request already lent against, or never made, written
+    # as `declined` out of its state machine.
+    "LOAN_REQUEST_NOT_OPEN",
     # The live-browser hand-off (LB-L10, docs/design/live-browser.md §4), as
     # the workspace codes above: raised only by the three routes that change
     # introduces (POST /tasks/{id}/handoff, /handoff/resolve, /human-ready),
@@ -182,6 +189,26 @@ NOT_SWITCHABLE_CODES = frozenset({
     "control_not_eligible",
     "control_held",
     "not_controller",
+    # The runner git tools (G5, docs/runner-git-tools.md §1.2-§1.4), as the
+    # live codes above: raised only by the route that change introduces
+    # (POST /v1/attempts/{id}/git/{tool}), so no existing caller can be
+    # refused by them. Continuing past any of them is the breach itself: an
+    # unproven caller handed a tenant's forge token, a stale generation
+    # pushing past its fence (invariant 5), or a push or private read the
+    # signed spec's policy or the tenant's allowlist does not admit.
+    "git_tool_unproven",
+    "git_fenced",
+    "git_tool_refused",
+    # The search tool (SEARCH-TOOL, docs/search-tool.md), as the git tools'
+    # codes above: raised only by the route that change introduces (POST
+    # /v1/attempts/{id}/search), which is a 404 while SEARCH_TOOL_ENABLED is
+    # off, so no existing caller can be refused by them. Continuing past any
+    # of them is the breach itself: an unproven caller spending the
+    # platform's provider key, a stale generation searching past its fence
+    # (invariant 5), or a tenant past the daily cap the owner's budget sets.
+    "search_unproven",
+    "search_fenced",
+    "search_refused",
 })
 
 #: What the guard lets through without a switch.

@@ -383,6 +383,9 @@ def _slim_outcome(full: dict[str, Any]) -> dict[str, Any]:
         # The agent's questions for the owner, whole: they are the reason a
         # person reads this step's result (`progress.owner_questions`).
         "questions": list(full.get("questions") or []),
+        # And the owner's answers to them, stored on the task in the console
+        # (TASK-ANSWERS, `progress.owner_answers`).
+        "owner_answers": list(full.get("owner_answers") or []),
     }
     if full.get("questions_unavailable_because"):
         out["questions_unavailable_because"] = clip(full["questions_unavailable_because"], 300)
@@ -435,6 +438,52 @@ def step_result(row: dict[str, Any]) -> dict[str, Any]:
     # left out, so this object still holds no null. `[]` when it asked none.
     result["questions"] = [_no_null_question(q) for q in found.get("questions") or [] if isinstance(q, dict)]
     return result
+
+
+#: The park a merge step waits out on its pull request's CI
+#: (`agent_worker.control.ControlPlane.park_ci_pending`).
+_CI_PARK = "CI_PENDING"
+
+
+def _parked_on_ci(task: dict[str, Any]) -> bool:
+    """Whether a task read back PARKED on its pull request's CI."""
+    return task.get("read") == "ok" and task.get("state") == "PARKED" and task.get("park_reason") == _CI_PARK
+
+
+def ci_park_result(task_id: str, task: dict[str, Any], link: str | None) -> dict[str, Any]:
+    """A step row's answer for a merge PARKED on CI: `step_result`'s shape, no null.
+
+    WHY (ROW-SKIP, part of #1194; measured 2026-10-12). A merge step parked on
+    `CI_PENDING` is woken and parked again for as long as the pull request's
+    CI runs -- hours, on a slow pipeline -- so its `sc:step` row held call
+    after call, wrote a line per wake, and ended at its turn budget with no
+    StructuredOutput at all. The workflow was fine; the row was the defect.
+    So a STEP row is told the park, with its reason, and stops: the task
+    holds no capacity while it waits (invariant 1), it resumes on its own
+    when CI settles, and `swarm follow` or `/sc attach` picks it up again.
+    """
+    wait = ((task.get("metadata") or {}).get("merge_wait")) or {}
+    on: list[str] = []
+    number = wait.get("pull_request")
+    if isinstance(number, int) and not isinstance(number, bool):
+        on.append(f"PR #{number}")
+    pending = [str(name) for name in wait.get("pending") or [] if name]
+    if pending:
+        on.append("pending " + clip(", ".join(pending), 120))
+    detail = f" ({'; '.join(on)})" if on else ""
+    return {
+        "state": "PARKED",
+        "answer_excerpt": "",
+        "pr_url": "",
+        "artifacts": [],
+        "last_error": (
+            f"PARKED on {_CI_PARK}: waiting for the pull request's checks{detail}. It holds no "
+            f"capacity and resumes on its own when they settle; nothing was cancelled. "
+            f"Resume with: swarm follow {task_id}"
+        ),
+        "console": _text(link),
+        "questions": [],
+    }
 
 
 def _no_null_question(question: dict[str, Any]) -> dict[str, Any]:
@@ -531,10 +580,13 @@ def watch_progress(
         moved = any(
             latest[t]["read"] == "ok" and _wake_key(latest[t]) != wake_before[t] for t in task_ids
         )
+        # A step row's merge parked on its pull request's CI ends the hold:
+        # the row answers PARKED rather than waiting the CI out (`ci_park_result`).
+        ci_parked = step_id is not None and _parked_on_ci(latest[task_ids[0]])
         if parents:
-            if settled or not held_by_parents:
+            if settled or ci_parked or not held_by_parents:
                 break
-        elif first_call or settled or moved:
+        elif first_call or settled or moved or ci_parked:
             break
         remaining = deadline - clock()
         if remaining <= 0:
@@ -562,6 +614,8 @@ def watch_progress(
         link = console_link(task) if task["read"] == "ok" else None
         if link is not None:
             row["console"] = link
+        if task["read"] == "ok" and task.get("state") == "PARKED" and task.get("park_reason"):
+            row["park_reason"] = task["park_reason"]
         abandoned = None
         if step_id is not None and task["read"] == "ok" and task.get("step_id") is None:
             # A single task handed to a step row (#830).
@@ -622,9 +676,13 @@ def watch_progress(
                 except SwarmError as exc:
                     row["outcome"] = None
                     row["outcome_unavailable_because"] = clip(f"the finished task could not be re-read: {exc}", 200)
+        if step_id is not None and not abandoned and _parked_on_ci(task):
+            row["parked_on_ci"] = True
         rows.append(row)
 
-    stop = bool(rows) and all(r.get("abandoned") or (r["terminal"] and r.get("outcome")) for r in rows)
+    stop = bool(rows) and all(
+        r.get("abandoned") or r.get("parked_on_ci") or (r["terminal"] and r.get("outcome")) for r in rows
+    )
     reply = {
         "progress": progress,
         "changed": bool(progress),
@@ -638,5 +696,8 @@ def watch_progress(
     if stop and len(rows) == 1:
         # The step's answer, ready-made (`step_result`): the row returns it as
         # given rather than retyping `outcome` field by field.
-        reply["result"] = step_result(rows[0])
+        if rows[0].get("parked_on_ci"):
+            reply["result"] = ci_park_result(rows[0]["task_id"], latest[rows[0]["task_id"]], rows[0].get("console"))
+        else:
+            reply["result"] = step_result(rows[0])
     return reply

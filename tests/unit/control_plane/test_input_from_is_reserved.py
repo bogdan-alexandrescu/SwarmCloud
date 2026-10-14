@@ -327,6 +327,10 @@ def test_every_service_written_key_is_reserved_in_one_place():
         "human_handoffs",
         # Why the pod is not starting, the reconciler's record (F1-POD).
         "start_problem",
+        # The owner's answers to the agent's questions (TASK-ANSWERS).
+        "owner_answers",
+        # Whose GitHub credential a service submission runs with (INDEX-CRED).
+        "forge_credential_source",
     )
 
 

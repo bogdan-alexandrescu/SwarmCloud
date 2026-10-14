@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# syntax=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-dockerhub/docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 #
 # workspace-apply -- the image of the personal-workspace job, and the code it
 # runs (docs/workspaces.md §2.1-2.2; lane W4 of #847 made the toolbox, lane
@@ -83,9 +83,17 @@ ARG GCLOUD_IMAGE=gcr.io/google.com/cloudsdktool/google-cloud-cli:587.0.0-stable@
 # The uv every other image copies in, for the same reason they give
 # (images/swarm-api/Dockerfile): 0.12.15 is the release whose static Rust
 # dependencies pass the promote scan.
-ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
+ARG UV_IMAGE=astral-sh/uv:0.12.15@sha256:62f8c047d0a0e9ece6b53fc63df902585a67a47a7f318ddec4a37db586edc8e3
+# Every base is pulled through this project's Artifact Registry mirrors,
+# never from Docker Hub or ghcr.io directly: on 2026-10-12 three release
+# builds failed inside Cloud Build on ghcr.io timeouts and a github.com 504.
+# Remote repositories (terraform/infra/build_mirror.tf) serve the same
+# digests. A pull request's local build, which has no Google identity,
+# passes the upstream registries here instead (scripts/lib/build-mirror.sh).
+# docs/runbooks/build-mirror.md.
+ARG MIRROR_GHCR=us-central1-docker.pkg.dev/saga-agents-staging/swarm-mirror-ghcr
 
-FROM ${UV_IMAGE} AS uvbin
+FROM ${MIRROR_GHCR}/${UV_IMAGE} AS uvbin
 
 FROM ${GCLOUD_IMAGE} AS runtime
 

@@ -204,6 +204,12 @@ class CliAgentSpec:
     #: (`codex.latest_session`); claude-code's stream-json names it on every
     #: event, so it needs none.
     session_locator: Callable[[Path, float], str | None] | None = None
+    #: Directories put BEFORE `BASE_PATH` in the CLI's PATH, which its tools
+    #: inherit. Platform constants from the runner module, never caller input.
+    #: claude-code on the browser image puts /opt/venv/bin first, so the
+    #: agent's `python` is the venv holding Playwright and `swarm_browser`
+    #: (BROWSER-ENFORCE, part of #1030; `claude_code.VENV_BIN`).
+    path_prefix: tuple[str, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -1296,7 +1302,7 @@ def run_cli_agent(
     stderr_path = ctx.artifacts_dir / files.stderr
 
     env = {
-        "PATH": BASE_PATH,
+        "PATH": ":".join((*spec.path_prefix, BASE_PATH)),
         # HOME IS THE ATTEMPT'S OWN `work/`, NEVER THE CHECKOUT, even when the
         # agent starts in the checkout (#226, owner decision of 2026-09-26).
         # The CLI writes its own state under HOME (`.claude.json`, `.claude/`,

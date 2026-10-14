@@ -61,8 +61,10 @@ What it settles, one line each:
   and every firing uses that tenant's identity, secrets, prefix and ceilings.
   Admins get a cross-tenant view that can pause but cannot edit or approve.
 * **A new spine section, Automate** (Overview, Work, Automate, Capacity,
-  Admin), holding Schedules and the Approvals inbox, and an admin view under
-  Admin (§6, SD1). Also a REST API, MCP tools and `sc schedules`
+  Admin), holding Schedules and the Approvals inbox (§6, SD1). An admin's
+  cross-tenant view is the same Schedules page switched to "All tenants"
+  (owner decision 2026-10-13, §6.1); it was a second page under Admin until
+  then. Also a REST API, MCP tools and `sc schedules`
   (§7).
 
 `eng` is an example tenant and `example-org/example-api` an example repository.
@@ -259,6 +261,10 @@ in the code, so they are measured here:
 | the `NOT_READY` verdict and run state | `RunState.NOT_READY` in `issueruns.py`, a terminal state |
 | territory guard `routes/runs.py` `territory_conflict` | the same, with `_territory_hold` writing the hold `territory_overlap: <run id>`, and `issueruns.territory_overlap` |
 | job `google_cloud_scheduler_job.issue_sweep` | the same: one per tenant in `var.rollup_tenant_ids`, named `<prefix>-issue-sweep-<t>`, at `var.issue_sweep_schedule` (default `7,37 * * * *`), as the rollup sweeper's OIDC identity |
+
+(This table is the 2026-10-08 measurement. Every SWEEP-only name in it --
+the route, `SWEEP_ENABLED`, the tenant settings and their routes, the job --
+was deleted on 2026-10-12: §8.1 step 4.)
 
 Where the code differs from §8.1, S6 and S9 follow the code (§8.1's rule):
 
@@ -1482,6 +1488,12 @@ for that tenant's secret only.
 
 ### 5.3 The admin view
 
+**Where it is drawn (owner decision 2026-10-13, re-deciding the 2026-10-08
+placement under Admin; §6.1).** Automate › Schedules, switched from "Mine" to
+"All tenants" (`/automate/schedules?scope=all`). The switch is drawn only for
+an admin, and the server still decides: everything below is `is_admin` on the
+API, whatever the console shows.
+
 `GET /v1/admin/schedules` (`is_admin`) lists every tenant's schedules. Each row
 shows:
 
@@ -1571,8 +1583,35 @@ The alternatives, drawn and not chosen:
 * **P2, inside Runs**, as a segmented control: "Issue runs | Schedules |
   Approvals". Runs today means issue runs, and a schedule is not a run.
 
-The admin cross-tenant view is **Admin › Schedules** (`admin: true`), beside
-Tenants.
+~~The admin cross-tenant view is **Admin › Schedules** (`admin: true`), beside
+Tenants.~~ **Re-decided by the owner 2026-10-13 (SCHED-ONE-PAGE): schedules are
+one page, with an admin toggle.** The owner asked "why do I have schedules in
+Admin and also in Automate?": two nav entries named Schedules, one per
+audience, read as two different things, and an admin had to know which one
+held which half. So:
+
+* **Automate › Schedules is the only Schedules page.** An admin sees a
+  segmented switch, **Mine | All tenants**; anyone else sees no switch. "All
+  tenants" is §5.3's view: the table with a Tenant column, the schedule tick's
+  last hour, per-row Pause, Disable and Re-enable, and pausing every enabled
+  schedule of one tenant, typed with its id. The switch is in the address,
+  `/automate/schedules?scope=all`, so it can be linked. A non-admin following
+  that link gets their own list, and the admin read is never made for them;
+  the API still refuses it if it were (`is_admin`, §5.3).
+* **Admin › Schedules is gone.** `/admin/schedules` lands on
+  `/automate/schedules?scope=all`. Admin's question lost its schedules clause.
+* **The platform's own ticks (§8.4) moved to Admin › Platform counts**, under
+  their own "Platform ticks" heading with the same intro sentence. They belong
+  to no tenant, so they do not sit behind a "Mine | All tenants" switch, and
+  Platform counts is already the admin's read of what the platform itself is
+  doing.
+
+Why a toggle rather than a second page: the noun is one thing, a schedule,
+and the admin's question about it ("what is every tenant scheduled to run?")
+is the tenant's question with a wider scope, not a different question. A
+scope belongs on the page, as Capacity's "Ceilings | By runner profile" does,
+not in the nav. Two pages also meant two places to keep one row's words, and
+a reader who found one did not learn the other existed.
 
 Adding a section changes `SECTIONS` in `apps/swarm-ui/src/App.tsx`. So the
 build lane (S7) also updates the issue forms' "Where" list, which
@@ -1608,6 +1647,14 @@ Admin › Schedules (`AdminSchedules.tsx`, `/admin/schedules`) joined Admin as
 its fifth tab, with the schedule tick's last hour and §8.4's "Platform ticks".
 That widened Admin's question by one clause ("and what is every tenant
 scheduled to run?"), changed in `SECTIONS` and in redesign.md §2 together.
+
+**Moved by SCHED-ONE-PAGE, 2026-10-13** (the re-decision above). The Admin ›
+Schedules tab, its `SectionBody` case, its panel entry and its "Where" option
+in both issue forms are gone; `AdminSchedules.tsx` keeps the cross-tenant read
+and actions, mounted by `Schedules.tsx` as the All tenants view; the platform
+ticks are in `PlatformCounts.tsx`. Admin's question now reads "...how many
+tasks are in each state, what does the platform run on its own, and who is
+waiting for a workspace?", in `SECTIONS` and redesign.md §2 together.
 
 ### 6.2 Screens
 
@@ -1751,6 +1798,25 @@ The migration keeps SWEEP's logic and moves its trigger and configuration:
    entry in `ROLLUP_SWEEPER_ROUTES`, `SWEEP_ENABLED` and the tenant document's
    `issue_sweep` settings, and points SWEEP's docs here.
 
+   **Done on 2026-10-12, early (lane SWEEP-RM).** The owner approved the
+   deletion that day, the day after `sch_6ecbe1307511` first fired
+   (2026-10-11 19:40Z), and waived the 7-day watch. Deleted together: the job with its
+   `issue_sweep_schedule` variable and output; `POST /v1/admin/issues/sweep`
+   and its `ROLLUP_SWEEPER_ROUTES` entry; `GET`/`PUT
+   /v1/admin/tenants/{tenant_id}/issue-sweep`; `SWEEP_ENABLED`
+   (`ApiSettings.sweep_enabled`, `var.enable_issue_sweep`, dev's `true`); and
+   `issuesweep.sweep_tenant`, `get_config`/`set_config` and the `submit_as`
+   check, which only the route used. Kept: everything the schedule types call
+   -- `issuesweep.collect_candidates`, `skip_reason`, `claimed_issues`,
+   `SweepConfig`, `SweepReport`, `TRUSTED_AUTHORS` -- unchanged in
+   behaviour. Why not keep the paused job as a fallback: un-pausing it would
+   be a second trigger of the same sweep, and the route auto-merged with no
+   person's gate, which is what the schedule's default `merge: approve`
+   replaced. `test_issue_sweep.py`, `test_schedules_migration_seed.py` and
+   `tests/terraform/scheduler.tftest.hcl` hold the absence;
+   [issue-runs.md](issue-runs.md#removed-2026-10-12-the-job-the-route-and-the-switch)
+   records what each setting became.
+
 If SWEEP's merged names differ from the above, S6 follows SWEEP's code and
 records the difference in this document. That is the rule for when another
 lane's layout contradicts this one.
@@ -1795,9 +1861,11 @@ tick. The owner chose not to.
 
 `workflow_rollup`, `issue_run_advance`, `merge_wake`, `forge_refresh`,
 `quota_refresh`, `reconciler` and `safety_tick` are **platform machinery**.
-They are not jobs a tenant manages, and they stay in Terraform. The admin view
-lists them read-only, as "Platform ticks", from a static list in the S7 lane,
-so an admin sees every recurring thing in one place.
+They are not jobs a tenant manages, and they stay in Terraform. Admin ›
+Platform counts lists them read-only, as "Platform ticks", from a static list
+(`PLATFORM_TICKS` in `PlatformCounts.tsx`, held to `jobs.tf` by a test), so an
+admin sees every recurring thing in one place. They were on Admin › Schedules
+until the owner folded that page into Automate › Schedules (2026-10-13, §6.1).
 
 ---
 
@@ -1956,6 +2024,16 @@ Changed: the summary, §6.1 and the §6.2 table, §9's S7 lane and acceptance
 (`SECTIONS` gains a section, so `test_issue_forms.py`'s "Where" list follows),
 the mock-ups (P3 marked as the pick) and
 [PICKS.md](web-ui/mockups/PICKS.md).
+
+**Re-decided 2026-10-13 (owner, SCHED-ONE-PAGE), for the admin half only.**
+Automate stands. The admin's cross-tenant view, placed under Admin by §5.3 and
+§6.1, is now Automate › Schedules' "All tenants" switch, shown to admins only,
+at `?scope=all`; Admin › Schedules is removed and `/admin/schedules` redirects
+there, and the platform ticks moved to Admin › Platform counts. Why: the owner
+asked "why do I have schedules in Admin and also in Automate?" and chose "One
+page, admin toggle" -- two Schedules entries were confusing. Changed: the
+summary, §5.3, §6.1, §8.4, `SECTIONS` (Admin's tab and question),
+redesign.md §2 and the issue forms' "Where" lists.
 
 ### SD2. Which types are built first?
 

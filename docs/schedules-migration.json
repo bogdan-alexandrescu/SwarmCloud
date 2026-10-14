@@ -3,7 +3,7 @@
   "schedules": [
     {
       "tenant_id": "eng",
-      "post_as": "the tenant's issue_sweep.submit_as member (GET /v1/admin/tenants/eng/issue-sweep)",
+      "post_as": "the member that was the tenant's issue_sweep.submit_as; since 2026-10-12, when that setting and its route were removed, the posted schedule's own owner (GET /v1/schedules/<id>)",
       "replaces": ["google_cloud_scheduler_job.issue_sweep[\"eng\"] (swarm-issue-sweep-eng)", "session cron bdb47d30"],
       "body": {
         "name": "issue-sweep (was SWEEP)",

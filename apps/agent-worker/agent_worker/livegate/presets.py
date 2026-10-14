@@ -18,22 +18,48 @@ WHAT A PRESET FIXES, and where each value goes (device.py applies them):
   preset is the browser as it is;
 * touch -> `Emulation.setTouchEmulationEnabled`, and whether the console's
   pointer becomes touch (touch.py);
-* the display: `Device.display_width` x `display_height` screen pixels.
+* the display: `Device.display_width` x `display_height` screen pixels, and
+  the Chromium window fitted to it (device.py).
 
-THE DISPLAY IS THE PAGE AT ITS DEVICE SCALE, PLUS THE BROWSER'S OWN UI.
-`livegate.mask` maps a page's CSS rectangles to the screen by multiplying by
-the device scale factor (`MaskState.set_scale`) and anchors the page at the
-bottom-left of the frame, with the address bar in the band above it. So the
-page area is `ceil(css * scale)` screen pixels each way, and the display is
-that plus `BROWSER_UI_HEIGHT` rows for the tab strip and the address bar, which
-stay visible because they are part of the anti-phishing design (section 5.7).
-A display sized like this carries no letterbox.
+THE DISPLAY IS THE PAGE AT ONE SCREEN PIXEL PER CSS PIXEL, PLUS THE BROWSER'S
+OWN UI. The device scale factor is what the PAGE is told (`devicePixelRatio`,
+the resolution images and media queries pick); it is not how large headed
+Chromium draws the page on Xvfb. Measured on 2026-10-12 against the image's
+own Chromium (Playwright 1.63.0, chromium-1243) on Xvfb at 96 dpi: with
+`deviceScaleFactor: 3` the emulated view is drawn and CLIPPED at one screen
+pixel per CSS pixel, 852 x 393 for iPhone 15 landscape, whatever the window
+size. The previous design sized the display at `css * scale` (2556 x 1267)
+and asked Chromium to stretch the view with the override's `scale: 3`; the
+stretch magnified the page's content but not the clip, so the frame was an
+852 x 393 corner of the page at 3x ("This dom", clipped) beside 2556 x 1267
+of empty window: the defect LB-R3 fixes. So `SCREEN_SCALE` is 1, the page
+area is the CSS viewport exactly, and `livegate.mask` and touch.py map CSS to
+the screen by `screen_scale`, never by the device scale factor. The page sits
+at the bottom-left of the frame with the tab strip and the address bar in the
+band above it, which stay visible because they are part of the anti-phishing
+design (section 5.7). A display sized like this carries no letterbox.
 
-`BROWSER_UI_HEIGHT` IS A STARTING VALUE, NOT A MEASUREMENT: the height of
-Chromium's tab strip and toolbar at scale 1 on Linux with the default theme.
-If it is too small the page is clipped at the bottom by the difference; too
-large and a strip of desktop shows above the tab strip. Neither leaks, because
-the mask places the page from the bottom edge and blanks what it cannot place.
+A MOBILE PRESET IS SHOWN AS THE PAGE ALONE (LB-R5). Re-QA on 2026-10-12
+(task_3fda0f52db4640c6a91e) found iPhone 15 laid out correctly but framed
+with Chrome's desktop tab strip and omnibox inside the phone outline, which
+looks nothing like a phone browser. The owner decided a phone or tablet shows
+only the page: the console's origin strip reads the top frame's origin over
+CDP (section 5.7, point 1), so the URL is still on screen, and still outside
+anything a page can draw. The display and the window are NOT changed for it:
+Chromium still draws its UI band above the page, the agent's CDP targets are
+the same, and the mask still places the page from the bottom edge. Only the
+captured frame is cut, from `Device.frame_top` (the page's first row on a
+mobile preset, 0 on the desktop) to the display's bottom, and the person's
+pointer, which arrives in that frame's coordinates, is moved back down by
+`frame_top` before it reaches the screen (touch.py). The desktop preset
+keeps its tab strip and address bar, which section 5.7 point 3 relies on.
+
+`BROWSER_UI_HEIGHT` IS A MEASUREMENT of that Chromium: 87 rows from the top of
+the window to the first page row, with `--disable-infobars` (without it the
+Chrome-for-Testing infobar takes 56 more rows of the page). If a new Chromium
+changes it, too small clips the page at the bottom by the difference and too
+large shows a strip of white below it. Neither leaks, because the mask places
+the page from the bottom edge and blanks what it cannot place.
 
 The user agents are the strings each device's own browser sends (Safari on
 iOS and iPadOS, Chrome on Android in its reduced form, where the model is in
@@ -52,9 +78,14 @@ PORTRAIT = "portrait"
 LANDSCAPE = "landscape"
 ORIENTATIONS = (PORTRAIT, LANDSCAPE)
 
-#: The tab strip and toolbar above the page, in screen pixels. A starting
-#: value (see the module docstring), not a measurement.
-BROWSER_UI_HEIGHT = 88
+#: The tab strip and toolbar above the page, in screen pixels: measured on the
+#: image's Chromium with `--disable-infobars` (see the module docstring).
+BROWSER_UI_HEIGHT = 87
+
+#: Screen pixels per CSS pixel on the display, on every preset. Not the device
+#: scale factor: headed Chromium draws an emulated device at one screen pixel
+#: per CSS pixel on Xvfb's 96 dpi screen (see the module docstring).
+SCREEN_SCALE = 1.0
 
 #: How many simultaneous touch points a touch preset reports
 #: (`navigator.maxTouchPoints`); what current phones and tablets report.
@@ -149,13 +180,18 @@ class Device:
         return self.preset.touch
 
     @property
+    def screen_scale(self) -> float:
+        """Screen pixels per CSS pixel in the frame (`SCREEN_SCALE`), which the mask and touch map by."""
+        return SCREEN_SCALE
+
+    @property
     def page_width(self) -> int:
         """The page area's width in screen pixels."""
-        return math.ceil(self.width * self.scale)
+        return math.ceil(self.width * self.screen_scale)
 
     @property
     def page_height(self) -> int:
-        return math.ceil(self.height * self.scale)
+        return math.ceil(self.height * self.screen_scale)
 
     @property
     def display_width(self) -> int:
@@ -169,6 +205,20 @@ class Device:
     def page_top(self) -> int:
         """The screen row the page starts on: the page is anchored at the bottom, as the mask places it."""
         return self.display_height - self.page_height
+
+    @property
+    def frame_top(self) -> int:
+        """The screen row the viewer's frame starts on: the page's on a mobile preset, 0 on the desktop.
+
+        A phone or tablet is shown as the page alone (LB-R5, see the module
+        docstring); the desktop keeps its tab strip and address bar.
+        """
+        return self.page_top if self.mobile else 0
+
+    @property
+    def frame_height(self) -> int:
+        """The viewer's frame's height in screen pixels: the display from `frame_top` down."""
+        return self.display_height - self.frame_top
 
     def screen_orientation(self) -> dict[str, Any]:
         """`Emulation.ScreenOrientation` for this orientation."""

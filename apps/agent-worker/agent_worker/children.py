@@ -24,6 +24,15 @@ event. A worker that cannot protect its heap registers a TOMBSTONE in the slot
 instead, so the nonce the agent can read from /proc/1/environ is spent, and
 offers no child path (§5 F12).
 
+THE SAME KEY SIGNS THE RUNNER GIT TOOLS (docs/runner-git-tools.md §1.3,
+§1.4; lane G6). Their relay (`gittools.GitTools`) lives inside this object,
+the one holder of the key, rather than beside it: `prepare` composes its spool
+(`$SWARM_GIT`) and `has_requests`/`tick` answer it, so the lifecycle's existing
+calls carry it and its fenced exit is the child path's. HAVING A KEY AND BEING
+OFFERED THE CHILD PATH ARE SEPARATE: a child task is keyed for its git tools
+(the scheduler issues it a nonce, lane G2) but is never given `SWARM_CHILDREN`,
+because a child may not submit children.
+
 WHAT THE AGENT GETS BACK. A child's id when it is created, and -- only after
 `await` parks the parent and the scheduler promotes it -- every child's end in
 `results/children.json`. There is no channel that reports a running child's
@@ -39,6 +48,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -51,7 +61,9 @@ from swarm_common.profiles import RUNNER_PROFILES
 from swarm_common.states import TERMINAL_STATES, TaskState
 
 from .accountlease import BrokerUnavailable, fetch_identity_token
-from .errors import InputUnavailable
+from .continuation import TASK_ID_RE, publish_branch
+from .errors import InputUnavailable, WorkerError
+from .gitidentity import BOT_GIT_IDENTITY, commit_identity
 from .hardening import PROTECTED
 from . import inputs as inputs_mod
 
@@ -155,6 +167,133 @@ If you exit 0 while children are still running, you are made to wait anyway:
 a task never succeeds over running children. If you exit non-zero, this
 attempt fails as usual and the children keep running for the next attempt.
 """
+
+
+#: The runners the `swarm-git` shim is named in: claude-code's `--mcp-config`,
+#: codex's MCP configuration (docs/runner-git-tools.md §7, lane G6).
+#: `scheduler.dispatch.GIT_TOOL_RUNNERS`, restated (this image does not carry
+#: the scheduler); tests/unit/worker/test_git_tools_wiring.py holds them equal,
+#: so the scheduler issues a child its nonce exactly when this worker offers it
+#: the tools the nonce is for.
+GIT_TOOL_RUNNERS = ("agent_worker.runners.claude_code", "agent_worker.runners.codex")
+#: The shim's module, as the runners name it.
+GIT_SHIM_MODULE = "agent_worker.gitmcp"
+#: Git requests answered per control poll. ONE: a push mirrors, scans and
+#: bundles before its signed call, and the tick runs under the run loop's
+#: `_heartbeat_meanwhile`, so one call per poll keeps every tick short. The
+#: shim waits minutes for its answer (`gitmcp.server.WAIT_SECONDS`), and the
+#: agent's own budget is 60 calls an hour (`gittools.CALLS_PER_HOUR`), far
+#: below one per ten-second poll.
+GIT_REQUESTS_PER_TICK = 1
+
+
+def offers_git_tools(profile_name: str) -> bool:
+    """Whether a task on this profile is offered the runner git tools.
+
+    `scheduler.dispatch.offers_git_tools`, restated: read from the frozen
+    catalogue, so a new profile on one of these runners is covered. A worker
+    action runs no agent; the mock, generic and browser runners have no MCP
+    configuration to name the shim in.
+    """
+    profile = RUNNER_PROFILES.get(profile_name)
+    if profile is None or profile.worker_action is not None:
+        return False
+    return any(part in GIT_TOOL_RUNNERS for part in profile.runner_argv)
+
+
+def git_shim_argv(spool: str) -> list[str]:
+    """The command a CLI runs as the `swarm-git` MCP server.
+
+    This runner's own interpreter, so the shim is the installed package's.
+    `-I` keeps the agent's working directory -- the checkout, where the CLI
+    starts the server -- off `sys.path`, so a module the agent wrote there is
+    never what runs as the shim. The spool is named, not inherited: the CLI
+    builds its servers' environment itself.
+    """
+    return [sys.executable, "-I", "-m", GIT_SHIM_MODULE, "--spool", spool]
+
+
+#: The search tool's runner (docs/search-tool.md, lane SEARCH-TOOL): claude-code
+#: only, the runner whose `--mcp-config` the live browser's tools are in.
+SEARCH_TOOL_RUNNERS = ("agent_worker.runners.claude_code",)
+#: The search shim's module, as the runner names it.
+SEARCH_SHIM_MODULE = "agent_worker.searchmcp"
+#: Search requests answered per control poll. One call is one HTTP round trip
+#: to swarm-api (and its provider's, bounded at 10 s there), so a tick stays short.
+SEARCH_REQUESTS_PER_TICK = 2
+
+
+def offers_search_tool(profile_name: str) -> bool:
+    """Whether a task on this profile may be offered the search tool.
+
+    A live-browser profile (`RunnerProfile.live_browser`, read from the frozen
+    catalogue) whose runner is claude-code: the tool is for an agent that opens
+    its results in the live browser. swarm-api checks the same property of the
+    task's profile on every call (`swarm_api.search.offers_search`); whether
+    the deployment offers it at all is swarm-api's flag, answered at key
+    registration (`ChildPath.search_flag`).
+    """
+    profile = RUNNER_PROFILES.get(profile_name)
+    if profile is None or profile.worker_action is not None or not profile.live_browser:
+        return False
+    return any(part in SEARCH_TOOL_RUNNERS for part in profile.runner_argv)
+
+
+def search_shim_argv(spool: str) -> list[str]:
+    """The command a CLI runs as the `swarm-search` MCP server: `git_shim_argv`'s
+    shape, for the same reasons (this interpreter, `-I`, the spool named)."""
+    return [sys.executable, "-I", "-m", SEARCH_SHIM_MODULE, "--spool", spool]
+
+
+def _word(value: Any) -> str:
+    return value.strip().lower() if isinstance(value, str) else ""
+
+
+def git_push_policy(
+    task: Any, *, task_id: str, branch_prefix: str
+) -> tuple[bool, tuple[str, ...]]:
+    """(whether this task's strategy pushes, the branches it may push).
+
+    From the task's SIGNED dispatch block, the way the end-of-task publish
+    reads it (`Worker._publish_git`): an unknown strategy is `collect` and an
+    unknown `single-pr` role is `reader`, the readings that push nothing; an
+    amender pushes its author's branch, a `direct-pr` continuation the branch
+    it continues, everything else `<prefix><own task id>`. A name that is not
+    a task id gives NO branch, never a guessed one, so the worker refuses the
+    push locally as `not_this_tasks_branch`. swarm-api derives the same set
+    (`swarm_api.gittools.push_policy`) and its answer is the one that counts;
+    tests/unit/worker/test_git_tools_wiring.py holds the two equal.
+    """
+    metadata = task.get("metadata") if isinstance(task, dict) else None
+    block = metadata.get("dispatch") if isinstance(metadata, dict) else None
+    block = block if isinstance(block, dict) else {}
+    if _word(block.get("strategy")) == "single-pr":
+        role = _word(block.get("pr_role"))
+        role = role if role in ("author", "reader", "amender", "none") else "reader"
+        if role in ("reader", "none"):
+            return False, ()
+        if role == "amender":
+            author = block.get("pr_author")
+            if isinstance(author, str) and TASK_ID_RE.match(author.strip()):
+                return True, (f"{branch_prefix}{author.strip()}",)
+            return True, ()
+        return True, (f"{branch_prefix}{task_id}",)
+    strategy = _word(block.get("strategy"))
+    strategy = strategy if strategy in ("collect", "direct-pr", "integrate") else "collect"
+    if strategy == "collect" and _word(block.get("carrier")) != "branches":
+        return False, ()
+    try:
+        return True, (publish_branch(metadata, branch_prefix, task_id),)
+    except WorkerError:
+        return True, ()
+
+
+def _repository_name(url: str) -> str:
+    """`owner/name` from a repository URL, for the relay's record only."""
+    path = url.rstrip("/").split("://", 1)[-1].split(":", 1)[-1]
+    parts = [p for p in path.split("/") if p]
+    name = "/".join(parts[-2:]) if len(parts) >= 2 else path
+    return name[:-4] if name.endswith(".git") else name
 
 
 def prompt_line(spool: str) -> str:
@@ -310,7 +449,9 @@ class Refusal:
 
 
 class ChildPath:
-    """One attempt's child path: registration, the spool, the await, the staging."""
+    """One attempt's attempt key, and what it signs: the child path
+    (registration, the spool, the await, the staging) and the runner git tools'
+    relay."""
 
     def __init__(
         self,
@@ -335,11 +476,47 @@ class ChildPath:
         self._key: AttemptKey | None = None
         #: Why this attempt has no child path, once decided; None while it has one.
         self.unavailable: str | None = "not_registered"
+        #: WHY there is no child path, as swarm-api's code or the worker's own
+        #: sentence (`_note`'s `why`): what the live path's "live browser
+        #: unavailable" event names, since no key means no live session.
+        self.unavailable_reason: str | None = None
+        #: The task is itself a child (`parent_task_id`), learnt from the
+        #: verified task in `prepare`: keyed for its git tools, never offered
+        #: the child path (§1.4 of docs/runner-git-tools.md).
+        self.is_child = False
+        #: The git tools' relay (`gittools.GitTools`), built once by `prepare`
+        #: when the attempt is offered them; None otherwise.
+        self._git: Any = None
+        #: Why this attempt has no git tools, once decided; None while it has them.
+        self.git_unavailable: str | None = "not_prepared"
+        #: Whether swarm-api answered the key registration with `search_tool:
+        #: true` -- SEARCH_TOOL_ENABLED is on there (docs/search-tool.md).
+        self.search_flag = False
+        #: The search tool's relay (`searchtools.SearchTools`), built once by
+        #: `prepare` when the attempt is offered it; None otherwise.
+        self._search: Any = None
+        #: Why this attempt has no search tool, once decided; None while it has it.
+        self.search_unavailable: str | None = "not_prepared"
+
+    @property
+    def keyed(self) -> bool:
+        """Whether this attempt registered an attempt key: what both paths sign with."""
+        return self._key is not None and self.unavailable is None
 
     @property
     def offered(self) -> bool:
         """Whether this attempt has a child path: the variable and the spool exist."""
-        return self._key is not None and self.unavailable is None
+        return self.keyed and not self.is_child
+
+    @property
+    def git_offered(self) -> bool:
+        """Whether this attempt has the runner git tools: `$SWARM_GIT` and its relay."""
+        return self._git is not None
+
+    @property
+    def search_offered(self) -> bool:
+        """Whether this attempt has the search tool: `$SWARM_SEARCH` and its relay."""
+        return self._search is not None
 
     @property
     def configured(self) -> bool:
@@ -377,7 +554,7 @@ class ChildPath:
             body.update({"key": None, "refused": WORKER_UNPROTECTED})
         path = f"/v1/attempts/{quote(self.cfg.attempt_id, safe='')}/child-key"
         try:
-            self._with_retry(
+            answer = self._with_retry(
                 lambda: self._api.call("POST", path, body=json.dumps(body).encode("utf-8"))
             )
         except ChildApiError as exc:
@@ -390,9 +567,14 @@ class ChildPath:
             return
         self._key = key
         self.unavailable = None
+        # The search flag is swarm-api's, answered here so that a deployment
+        # with it off names no search tool to any agent (docs/search-tool.md).
+        payload = answer[1] if isinstance(answer, tuple) and len(answer) == 2 else None
+        self.search_flag = isinstance(payload, dict) and payload.get("search_tool") is True
         self.log.info("child path registered for this attempt")
 
     def _note(self, note: Callable[[dict[str, Any]], Any], what: str, why: str) -> None:
+        self.unavailable_reason = why
         self.log.warning("no child path for this attempt", child_path=what, reason=why)
         try:
             note({"phase": "child_key", "child_path": what, "reason": why})
@@ -431,8 +613,78 @@ class ChildPath:
         """`Workspace.children_dir`, from the work directory alone."""
         return work / SPOOL_DIR_NAME
 
-    def prepare(self, work: Path) -> dict[str, str]:
-        """Create the spool and return the agent's variable, or nothing."""
+    def prepare(
+        self,
+        work: Path,
+        *,
+        task: dict[str, Any] | None = None,
+        checkout: Path | None = None,
+        repository_url: str | None = None,
+        clone_base: str | None = None,
+        private_dir: Path | None = None,
+        logs_dir: Path | None = None,
+        store: Any = None,
+    ) -> dict[str, str]:
+        """Create the spools this attempt is offered; return the agent's variables.
+
+        `SWARM_CHILDREN` when the attempt has the child path, `SWARM_GIT` when
+        it has the git tools (`_prepare_git`), both, or neither. `task` is the
+        VERIFIED task document, read for `parent_task_id` and the signed
+        dispatch block only; everything else is the worker's own.
+        """
+        if isinstance(task, dict) and task.get("parent_task_id"):
+            self.is_child = True
+        env = self._prepare_children(work)
+        env.update(self._prepare_git(
+            work, task=task, checkout=checkout, repository_url=repository_url,
+            clone_base=clone_base, private_dir=private_dir, logs_dir=logs_dir, store=store,
+        ))
+        env.update(self._prepare_search(work))
+        return env
+
+    def _prepare_search(self, work: Path) -> dict[str, str]:
+        """The search tool's spool, when this attempt is offered it.
+
+        Offered when the attempt is keyed (every call is signed with the key),
+        swarm-api's flag is on (`search_flag`) and the profile is a live-browser
+        claude-code one (`offers_search_tool`). Built once, so the relay's rate
+        window survives the credential reload's rebuild of the environment.
+        """
+        if self._search is not None:
+            return self._search.prepare(work)
+        if not self.keyed or self._api is None:
+            why: str | None = "no_attempt_key"
+        elif not self.search_flag:
+            why = "search_tool_disabled"
+        elif not offers_search_tool(self.cfg.runner_profile):
+            why = "profile_has_no_search_tool"
+        else:
+            why = None
+        if why is not None:
+            self.search_unavailable = why
+            return {}
+        assert self._key is not None and self._api is not None
+        from . import searchtools  # lazy: searchtools imports this module
+
+        self._search = searchtools.SearchTools(
+            searchtools.SearchToolsConfig(
+                tenant_id=self.cfg.tenant_id,
+                task_id=self.cfg.task_id,
+                attempt_id=self.cfg.attempt_id,
+                lease_id=self.cfg.lease_id,
+                generation=int(self.cfg.generation),
+            ),
+            key=self._key,
+            api=self._api,
+            logger=self.log,
+            clock=self._clock,
+            wall=self._wall,
+        )
+        self.search_unavailable = None
+        self.log.info("search tool offered for this attempt")
+        return self._search.prepare(work)
+
+    def _prepare_children(self, work: Path) -> dict[str, str]:
         if not self.offered:
             return {}
         root = self.spool(work)
@@ -446,6 +698,112 @@ class ChildPath:
         tmp.write_text(AGENT_GUIDE, encoding="utf-8")
         os.replace(tmp, guide)
         return {CHILDREN_ENV: str(root)}
+
+    def _prepare_git(
+        self,
+        work: Path,
+        *,
+        task: dict[str, Any] | None,
+        checkout: Path | None,
+        repository_url: str | None,
+        clone_base: str | None,
+        private_dir: Path | None,
+        logs_dir: Path | None,
+        store: Any,
+    ) -> dict[str, str]:
+        """The git tools' spool, when this attempt is offered them (lane G6).
+
+        Offered when the attempt is keyed, its profile's runner names the shim
+        (`offers_git_tools`), and it has a checkout whose clone base the worker
+        recorded -- the one sha it trusts origin to have before any call
+        (`gittools` module docstring). Built ONCE: the credential reload
+        rebuilds the runner's environment mid-run, and the relay's rate window
+        and what it learnt origin has must survive that.
+        """
+        if self._git is not None:
+            # The values registered since (a reloaded credential) are scanned
+            # for too: the relay's leak gate reads the registered set.
+            self._git._secrets = self._registered_secrets()
+            return self._git.prepare(work)
+        why = self._git_refusal(task, checkout, repository_url, clone_base, private_dir,
+                                logs_dir)
+        if why is not None:
+            self.git_unavailable = why
+            return {}
+        assert self._key is not None and self._api is not None and task is not None
+        from . import gittools  # lazy: gittools imports this module
+
+        pushes, pushable = git_push_policy(
+            task, task_id=self.cfg.task_id, branch_prefix=self.cfg.git_branch_prefix
+        )
+        bot = (self.cfg.git_author_name, self.cfg.git_author_email)
+        person = commit_identity(task)
+        config = gittools.GitToolsConfig(
+            tenant_id=self.cfg.tenant_id,
+            task_id=self.cfg.task_id,
+            attempt_id=self.cfg.attempt_id,
+            lease_id=self.cfg.lease_id,
+            generation=int(self.cfg.generation),
+            repository=_repository_name(str(repository_url)),
+            clone_base=str(clone_base),
+            pushable=pushable,
+            # The identity the end-of-task publish writes as
+            # (`Worker._publish_identity`), and the worker's own beside it.
+            author=bot if person == BOT_GIT_IDENTITY else person,
+            also_own=(bot,),
+            pushes=pushes,
+            branch_prefix=self.cfg.git_branch_prefix,
+            timeout_seconds=int(self.cfg.git_clone_timeout_seconds),
+        )
+        self._git = gittools.GitTools(
+            config,
+            key=self._key,
+            api=self._api,
+            clone=Path(checkout),  # type: ignore[arg-type]
+            private_dir=Path(private_dir) / "gittools",  # type: ignore[arg-type]
+            logs_dir=Path(logs_dir),  # type: ignore[arg-type]
+            logger=self.log,
+            secrets=self._registered_secrets(),
+            store=store,
+            clock=self._clock,
+            wall=self._wall,
+        )
+        self.git_unavailable = None
+        self.log.info("git tools offered for this attempt", pushes=pushes,
+                      branches=list(pushable), child=self.is_child)
+        return self._git.prepare(work)
+
+    def _git_refusal(
+        self,
+        task: Any,
+        checkout: Path | None,
+        repository_url: str | None,
+        clone_base: str | None,
+        private_dir: Path | None,
+        logs_dir: Path | None,
+    ) -> str | None:
+        """Why this attempt is not offered the git tools, or None."""
+        if not isinstance(task, dict):
+            return "no_verified_task"
+        if not self.keyed or self._api is None:
+            return "no_attempt_key"
+        if not offers_git_tools(self.cfg.runner_profile):
+            return "profile_has_no_git_tools"
+        if not repository_url or checkout is None or not Path(checkout).is_dir():
+            return "no_repository"
+        if not clone_base:
+            return "clone_base_unknown"
+        if private_dir is None or logs_dir is None:
+            return "no_private_directory"
+        return None
+
+    def _registered_secrets(self) -> tuple[str, ...]:
+        """The values this worker's logger redacts: the task's registered secrets.
+
+        Shared by reference across every bound logger (`logs.StructuredLogger
+        .bind`), so this is the whole set, whichever logger was handed here.
+        """
+        return tuple(sorted(getattr(self.log, "_secrets", None) or ()))
 
     def known_children(self, work: Path) -> list[str]:
         """Child ids this task's attempts were answered with, from the spool."""
@@ -469,7 +827,14 @@ class ChildPath:
             pass
 
     def has_requests(self, work: Path) -> bool:
-        """Whether the agent has spooled anything; a cheap listing, no read."""
+        """Whether the agent has spooled anything, on either path; a cheap listing."""
+        return (
+            self._has_child_requests(work)
+            or (self._git is not None and self._git.has_requests(work))
+            or (self._search is not None and self._search.has_requests(work))
+        )
+
+    def _has_child_requests(self, work: Path) -> bool:
         requests = self.spool(work) / "requests"
         return self.offered and requests.is_dir() and any(requests.glob("*.json"))
 
@@ -480,7 +845,36 @@ class ChildPath:
         limit: int | None | object = PER_TICK,
         deadline: float | None = None,
     ) -> int:
-        """Answer up to `limit` outstanding requests. Returns how many were answered.
+        """Answer the child requests (`_tick_children`), then the git requests.
+
+        Git requests are answered `GIT_REQUESTS_PER_TICK` at a time, after the
+        children's, and only while the tick's deadline has not passed. A git
+        call this attempt is fenced on raises `gittools.GitToolFenced` -- a
+        `ChildSubmitFenced` -- after the agent is answered `fenced`, so the
+        lifecycle ends the attempt through the same fenced exit
+        (`Worker._exit_fenced_mid_run`), never releasing the lease
+        (invariant 5).
+        """
+        own = self._retry_deadline()
+        deadline = own if deadline is None else min(deadline, own)
+        answered = self._tick_children(work, limit=limit, deadline=deadline)
+        if self._git is not None and self._clock() < deadline:
+            answered += self._git.tick(work, limit=GIT_REQUESTS_PER_TICK)
+        # The search tool's requests, last, on the same budget. A fenced search
+        # raises `searchtools.SearchToolFenced`, a `ChildSubmitFenced`: the
+        # same fenced exit as the git tools' (invariant 5).
+        if self._search is not None and self._clock() < deadline:
+            answered += self._search.tick(work, limit=SEARCH_REQUESTS_PER_TICK)
+        return answered
+
+    def _tick_children(
+        self,
+        work: Path,
+        *,
+        limit: int | None | object = PER_TICK,
+        deadline: float | None = None,
+    ) -> int:
+        """Answer up to `limit` outstanding child requests. Returns how many were answered.
 
         `limit` is `max_child_requests_per_tick` by default (`PER_TICK`), a
         number, or None for every request in the spool (the drain before a
@@ -539,9 +933,9 @@ class ChildPath:
         deadline = self._retry_deadline()
         answered = 0
         while self._clock() < deadline:
-            done = self.tick(work, limit=None, deadline=deadline)
+            done = self._tick_children(work, limit=None, deadline=deadline)
             answered += done
-            if not done or not self.has_requests(work):
+            if not done or not self._has_child_requests(work):
                 break
         root = self.spool(work)
         for path in sorted((root / "requests").glob("*.json")):

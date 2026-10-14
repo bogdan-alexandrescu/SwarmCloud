@@ -20,7 +20,7 @@ import {
   type CallGraph, type ImpactPlan, type ModuleGraph, type SymbolSearch, type SymbolTests,
 } from './RepoGraphData'
 import type {
-  ArtifactContent, ArtifactListing, LogStream, LogStreamName, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
+  ArtifactContent, ArtifactListing, LogStream, LogStreamName, OwnerAnswer, TaskAnswer, TaskInputCopy, TaskTranscript, TranscriptStep,
   CheckpointsPage, TaskLogs,
   Capacity, DispatchControl, Me, ProvidersPage, Stats, Task, TaskEvent, TaskPage,
   AdminPool, AttemptRow, AttemptsPage, TaskEventsPage, TaskAccount, LeaseHeartbeat, LeaseHeartbeatPage, LeasePage, LeaseRow, Pool, ProfileAdmission, QuotaState, ResourceClassSpec,
@@ -32,7 +32,7 @@ import type {
   IssuePreviewRead, IssueRefDoc, IssueRun, IssueRunPage, IssueRunRead, IssueRunSummaryPage, RunCreateBody, RunPlan,
   GitHubAuthorization, GitHubAuthorizeSurface, GitHubDisconnectResponse, GitHubExchangeBody, GitHubExchangeResponse, OnboardingDoc,
   OnboardingDismissal, OwnerTokenResponse, AccessInstallRequestResponse,
-  AdminGrantAnswer, AdminRemoveAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
+  AdminGrantAnswer, AdminRemoveAnswer, LoanDeclineAnswer, LoanRequestAnswer, PeopleDoc, WorkspaceActionAnswer, WorkspaceLimitsAnswer, WorkspaceLoanAnswer, WorkspaceView,
   AccessCheckName, AccessDisableResponse, AccessEnableResponse, AccessGrantResponse, AccessMembers, AccessMode, AccessOverview,
   AccessOwners, AccessRepositoryPage, AccessRevokeResponse, AccessVerifyResponse,
 } from './types'
@@ -43,6 +43,7 @@ import type {
 // task page with no tasks are both non-empty objects.
 
 export type { Result, ApiError } from './fetch'
+export type { OwnerAnswer, OwnerAnswerVersion } from './types'
 
 /** Fixtures, so the UI can be worked on before DNS resolves. Exported so a
  *  component that keeps its own loaders (CheckpointBrowser.tsx) reads this one
@@ -1037,6 +1038,84 @@ export async function loadAnswer(taskId: string, options: { attemptId?: string }
   const query = new URLSearchParams()
   if (options.attemptId) query.set('attempt_id', options.attemptId)
   return read<TaskAnswer>(route('/v1/tasks/{id}/answer', { id: taskId }, query), () => false)
+}
+
+/** One option of an agent's question, as the worker validated it. */
+export interface QuestionOption {
+  label: string | null
+  description: string | null
+}
+
+/** One question an agent asked its owner (`questions.json`). */
+export interface AgentQuestion {
+  question: string | null
+  options: QuestionOption[]
+  /** One of the options' labels, or null when the agent recommended none. */
+  recommended: string | null
+  context: string | null
+  /** The owner's stored answer; null or absent when unanswered (or from an API older than answers). */
+  answer?: OwnerAnswer | null
+}
+
+/**
+ * `GET /v1/tasks/{id}/questions`. `status` is `ok`, `none` (asked none --
+ * `questions: []`, never a 404) or `unavailable` (the worker counted some
+ * and they could not be read; `unavailable_because` says why).
+ */
+export interface TaskQuestions {
+  task_id: string
+  count: number
+  status: 'ok' | 'none' | 'unavailable'
+  questions: AgentQuestion[]
+  attempt_id?: string | null
+  unavailable_because?: string
+  redacted: boolean
+  redaction_count: number
+  /** Whether this viewer may answer: the task's submitter or an admin. Absent from an API older than answers. */
+  may_answer?: boolean
+  /** Why not, when `may_answer` is false. */
+  may_answer_because?: string | null
+}
+
+/** `POST /v1/tasks/{id}/answers`: an option label, free text, or both. */
+export interface AnswerChoice {
+  question_index: number
+  choice: string | null
+  text: string | null
+}
+
+/**
+ * What the task's agent asked its owner: `GET /v1/tasks/{id}/questions`, the
+ * file the worker validated, redacted by the artifact read (part of #1206).
+ */
+export async function loadQuestions(taskId: string): Promise<Result<TaskQuestions>> {
+  if (USE_FIXTURES) {
+    noteFixtureProbe(route('/v1/tasks/{id}/questions', { id: taskId }), 0, true)
+    return {
+      status: 'ok',
+      fetchedAt: Date.now(),
+      data: { task_id: taskId, count: 0, status: 'none', questions: [], redacted: false, redaction_count: 0 },
+    }
+  }
+  return read<TaskQuestions>(route('/v1/tasks/{id}/questions', { id: taskId }), () => false)
+}
+
+/**
+ * The owner answers one of the agent's questions: `POST /v1/tasks/{id}/answers`
+ * (TASK-ANSWERS, owner decision 2026-10-13). Stored on the task, where whoever
+ * launched the work reads it; answers with the questions as they now read.
+ * Re-answering replaces the answer, and the API keeps the replaced one.
+ */
+export async function answerQuestion(taskId: string, answer: AnswerChoice): Promise<Result<TaskQuestions>> {
+  const target = route('/v1/tasks/{id}/answers', { id: taskId })
+  if (USE_FIXTURES) {
+    noteFixtureProbe(target, 0, false)
+    return {
+      status: 'error',
+      error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build stores no answers.' },
+    }
+  }
+  return (await write(target, 'POST', answer)) as Result<TaskQuestions>
 }
 
 /**
@@ -2291,15 +2370,19 @@ export async function loadMe(options: { frame?: boolean } = {}): Promise<Result<
 /** One tenant the caller may select: an entry of `GET /v1/tenants/mine`. */
 export interface TenantChoice {
   tenant_id: string
-  /** The registered group's email -- unique where the tenant id is not. */
+  /** The registered group's email -- unique where the tenant id is not; "Your workspace (u-…)" for your own. */
   display_name: string
+  /** `user` for the caller's own personal workspace, `group` for a tenant group (#1200). Absent from an older API. */
+  kind?: 'user' | 'group'
 }
 
 /**
- * `GET /v1/tenants/mine`: every registered tenant group the caller is a
- * VERIFIED member of, in the admin order -- the only values `X-Swarm-Tenant`
- * can select. A frame read, like `loadMe`. An empty list is a caller in no
- * tenant group (a personal tenant), which is an answer, not a failure.
+ * `GET /v1/tenants/mine`: the caller's own ready personal workspace FIRST
+ * (#1200: it is the default), then every registered tenant group the caller
+ * is a VERIFIED member of, in the admin order -- the only values
+ * `X-Swarm-Tenant` can select. A frame read, like `loadMe`. An empty list is
+ * a caller in no tenant group without a ready workspace, which is an answer,
+ * not a failure.
  */
 export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
   if (USE_FIXTURES) {
@@ -2309,6 +2392,71 @@ export async function loadMyTenants(): Promise<Result<TenantChoice[]>> {
     return { status: 'empty', fetchedAt: Date.now() }
   }
   return read<TenantChoice[]>(route('/v1/tenants/mine'), (rows) => rows.length === 0, { frame: true })
+}
+
+/**
+ * ONE ENTRY OF THE NOTIFICATION FEED (#1206, proposal A). `id` is stable: the
+ * same underlying thing has the same id on every read, so "read" survives a
+ * re-read. A `needs_you` item is DERIVED from live state, not stored, and
+ * leaves the feed once that state is resolved -- a handled request clears
+ * itself without anyone marking it.
+ */
+export interface NotificationItem {
+  id: string
+  group: 'admin' | 'approval' | 'task' | 'account' | 'finished'
+  needs_you: boolean
+  title: string
+  detail: string | null
+  /** A console path, `/admin/people` or `/agents/live/<task>/browser`. */
+  href: string
+  at: string
+  read: boolean
+}
+
+/** `GET /v1/notifications`: needs-you items, then at most 50 updates from the last 7 days. */
+export interface NotificationFeed {
+  items: NotificationItem[]
+  unread_needs_you: number
+  unread_updates: number
+  /** Requests waiting on any admin; 0 for a non-admin. */
+  admin_pending: number
+  read_at: string
+}
+
+/**
+ * `GET /v1/notifications`, read by the frame on every page. A FRAME read: the
+ * header's data age is the page's, and the bell's poll is not the page's data.
+ *
+ * The fixture build serves no feed, so it answers the 404 an API without the
+ * route would, and the bell hides exactly as it does there. It records NO
+ * probe: the fixture build makes no request, and a failing row for it on API
+ * reads -- on every page of every fixture session -- would be a failure that
+ * never happened, pushed above the ones being demonstrated.
+ */
+export async function loadNotifications(): Promise<Result<NotificationFeed>> {
+  const target = route('/v1/notifications')
+  if (USE_FIXTURES) return { status: 'error', error: { kind: 'not_found', httpStatus: 404, code: null, message: 'The fixture build serves no notification feed.' } }
+  const r = await read<NotificationFeed>(target, () => false, { frame: true })
+  // A 200 with no list is not an empty feed, and drawing "Nothing needs you"
+  // over an answer nobody could read would be a claim; it is a failure.
+  if ((r.status === 'ok' || r.status === 'stale') && !Array.isArray(r.data.items)) {
+    return { status: 'error', error: { kind: 'server_error', httpStatus: 200, code: null, message: 'The notifications answer carried no list of items.' } }
+  }
+  return r
+}
+
+/** `POST /v1/notifications/read {"ids": [...]}`. */
+export async function markNotificationsRead(ids: readonly string[]): Promise<Result<unknown>> {
+  const target = route('/v1/notifications/read')
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST', { ids })
+}
+
+/** `POST /v1/notifications/read-all`. */
+export async function markAllNotificationsRead(): Promise<Result<unknown>> {
+  const target = route('/v1/notifications/read-all')
+  if (USE_FIXTURES) return scheduleNotServed(target)
+  return write(target, 'POST')
 }
 
 /**
@@ -5640,6 +5788,11 @@ export interface ForgeOrgCard {
   org: string
   account_type: string | null
   installation_id: number
+  /**
+   * GitHub's permission map for the installation (`contents: write`), the
+   * ones SwarmCloud does not use included; null when it was not read.
+   */
+  granted: Record<string, string> | null
   missing: ForgeGap[] | null
   pending: ForgePending[] | null
   review_url: string | null
@@ -5689,6 +5842,15 @@ function fpGitHubUrl(v: unknown): string | null {
   return s !== null && s.startsWith('https://github.com/') ? s : null
 }
 
+/** A permission map, keeping only string levels; not an object at all is null (not read), never `{}` (nothing granted). */
+function fpPermMap(v: unknown): Record<string, string> | null {
+  const o = fpObj(v)
+  if (o === null) return null
+  const out: Record<string, string> = {}
+  for (const [k, level] of Object.entries(o)) if (typeof level === 'string' && level !== '') out[k] = level
+  return out
+}
+
 function fpGap(o: Record<string, unknown>): ForgeGap | null {
   const why = fpStr(o.needed_for)
   if (why === null) return null
@@ -5717,6 +5879,7 @@ export function normForgePermissions(raw: unknown): ForgePermissionsDoc {
       org,
       account_type: fpStr(o.account_type),
       installation_id: o.installation_id,
+      granted: fpPermMap(o.granted),
       missing: fpGaps(o.missing),
       pending: Array.isArray(o.pending)
         ? fpList(o.pending).flatMap((p) => {
@@ -5825,6 +5988,17 @@ export async function setWorkspaceCeiling(workspaceId: string, maxActive: number
 export async function setWorkspaceLoan(workspaceId: string, accountId: string, lend: boolean): Promise<Result<WorkspaceLoanAnswer>> {
   return writeTo(route('/v1/admin/people/{workspace_id}/loan', { workspace_id: workspaceId }), 'PUT', { account_id: accountId, lend }) as Promise<
     Result<WorkspaceLoanAnswer>
+  >
+}
+
+/**
+ * `POST /v1/admin/people/{workspace_id}/loan/decline` (admin): close the person's open loan
+ * request without lending. The reason is optional and shown to them; none sends `{}`.
+ */
+export async function declineLoanRequest(workspaceId: string, reason: string): Promise<Result<LoanDeclineAnswer>> {
+  const text = reason.trim()
+  return writeTo(route('/v1/admin/people/{workspace_id}/loan/decline', { workspace_id: workspaceId }), 'POST', text === '' ? {} : { reason: text }) as Promise<
+    Result<LoanDeclineAnswer>
   >
 }
 
@@ -6424,6 +6598,13 @@ export interface LiveOrigin {
   ip_literal?: boolean
   /** True while the page reports a certificate error; the gate refuses control (§5.4.4). */
   cert_error?: boolean
+  /**
+   * The top frame's path, redacted, no query or fragment (LB-R6): the
+   * caption under the device reads it, the strip never does. Null or absent
+   * when the gate reported none (a gate that predates it, or a path
+   * swarm-api refused).
+   */
+  path?: string | null
 }
 
 /** `Task.human_wait` as the session read serves it (§4.1 step 3). */
@@ -6472,7 +6653,10 @@ export interface LiveSession {
   human_wait: LiveHumanWait | null
   /** The person in control, or null in view mode. One at a time, always (§4.2). */
   controller: { email: string; since: string } | null
-  /** Whether the submitter opened control to every member of the tenant (§5.1, Q1). */
+  /**
+   * Whether the submitter opened control to every member of the tenant (§5.1,
+   * Q1). The task's setting, carried into each new attempt's session (QA12-11).
+   */
   open_to_members: boolean
   /**
    * The device the gate applied, or null while nothing reports it to
@@ -6489,11 +6673,21 @@ export interface LiveSession {
     can_control: boolean
     /** May take control from someone who holds it: the submitter only (§5.1). */
     can_preempt: boolean
-    /** May open control to every member: the submitter only (§5.1). */
+    /** May open control to every member, and close it again: the submitter only (§5.1). */
     can_open: boolean
     /** May switch the device, rotate it and turn touch on or off: the person in control only (§6.1, Q13; LB-DEV-B). */
     can_switch_device: boolean
   }
+  /**
+   * WHETHER THE AGENT IS USING THIS BROWSER (LIVE-UNUSED, #1030), as the
+   * gate's CDP proxy reported it: when the agent first connected (null until
+   * it has), how many connections it holds now (null while no gate has
+   * reported it -- never read as "none"), and when the gate published its
+   * first frame. Optional: an older API serves none of them.
+   */
+  agent_connected_at?: string | null
+  agent_connections?: number | null
+  first_frame_at?: string | null
 }
 
 /**
@@ -6523,6 +6717,48 @@ export async function loadLiveSession(taskId: string): Promise<Result<LiveRead>>
     return { status: 'ok', fetchedAt: Date.now(), data: { live_browser: false, session: null } }
   }
   return read<LiveRead>(target, () => false)
+}
+
+/** A step of a browser agent's start-up: lane STARTUP-API's `startup_progress` steps, in order. */
+export type StartupStepName =
+  | 'pod_scheduled'
+  | 'image_pulling'
+  | 'image_pulled'
+  | 'container_started'
+  | 'browser_launching'
+  | 'browser_ready'
+  | 'first_frame'
+
+/**
+ * `GET /v1/tasks/{task_id}/startup` (lane STARTUP-API, owner request
+ * 2026-10-13): the CURRENT attempt's start-up, oldest step first --
+ * `lease_acquired`, `dispatched`, `starting`, `running` and every
+ * `startup_progress` step. `estimate` is the median seconds from `dispatched`
+ * to each step over the profile's last 20 completed start-ups; `{}` with
+ * `sample_size` 0 when there is no history, and the bar then shows no time.
+ */
+export interface StartupRead {
+  attempt_id: string | null
+  generation: number | null
+  steps: { step: string; at: string }[]
+  estimate: Partial<Record<string, number>>
+  sample_size: number
+  /** `first_frame` seen, or the task is no longer starting or running. */
+  done: boolean
+}
+
+/**
+ * A 404 IS "NOT DEPLOYED YET", not a failure of the agent: the route ships in
+ * a parallel lane, and StartupProgress then draws the bar from the task's own
+ * events (`useStartup`). No empty predicate: a start-up with no step yet is a
+ * real answer.
+ */
+export async function loadStartup(taskId: string): Promise<Result<StartupRead>> {
+  const target = route('/v1/tasks/{id}/startup', { id: taskId })
+  // The fixture build has no browser agent to start: answered as the route
+  // not being served, so the fixture exercises the events fallback.
+  if (USE_FIXTURES) return liveNotServed(target)
+  return read<StartupRead>(target, () => false)
 }
 
 /**
@@ -6587,6 +6823,27 @@ export interface RawLiveSocket {
   close(): void
 }
 
+/**
+ * The relay's word that it refused a control message on this link
+ * (`{"type": "refused", "reason": "control", "cause": ...}`, swarm_live
+ * rendezvous.py `viewer_text`): the cause, such as `wrong_session` or
+ * `session_closed`, or `unknown` from a relay that names none. Null for any
+ * other frame. Without it, a console whose control the relay turned away drew
+ * "you are in control" over a browser that ignored every move (LB-CURSOR2).
+ */
+export function liveRefusal(text: string): string | null {
+  let msg: unknown
+  try {
+    msg = JSON.parse(text)
+  } catch {
+    return null
+  }
+  if (typeof msg !== 'object' || msg === null) return null
+  const m = msg as Record<string, unknown>
+  if (m.type !== 'refused' || m.reason !== 'control') return null
+  return typeof m.cause === 'string' && /^[a-z_]{1,64}$/.test(m.cause) ? m.cause : 'unknown'
+}
+
 function liveStatus(text: string): LiveStatus | null {
   let msg: unknown
   try {
@@ -6631,7 +6888,12 @@ export class LiveChannel {
   onclose: ((ev: CloseEvent) => void) | null = null
   onerror: ((ev: Event) => void) | null = null
 
-  constructor(private readonly raw: RawLiveSocket, ticket: string, onStatus?: (status: LiveStatus) => void) {
+  constructor(
+    private readonly raw: RawLiveSocket,
+    ticket: string,
+    onStatus?: (status: LiveStatus) => void,
+    onRefused?: (cause: string) => void,
+  ) {
     raw.binaryType = 'arraybuffer'
     raw.onopen = (ev) => {
       raw.send(JSON.stringify({ ticket }))
@@ -6641,6 +6903,10 @@ export class LiveChannel {
       if (typeof ev.data === 'string') {
         const status = liveStatus(ev.data)
         if (status !== null) onStatus?.(status)
+        else {
+          const refused = liveRefusal(ev.data)
+          if (refused !== null) onRefused?.(refused)
+        }
         return
       }
       this.onmessage?.({ data: ev.data as ArrayBuffer | Blob })
@@ -6675,8 +6941,13 @@ export class LiveChannel {
 }
 
 /** Open the session's live socket as a `LiveChannel`: the ticket first, then binary frames only. */
-export function openLiveChannel(sessionId: string, ticket: string, onStatus?: (status: LiveStatus) => void): LiveChannel {
-  return new LiveChannel(new WebSocket(liveSocketUrl(sessionId)), ticket, onStatus)
+export function openLiveChannel(
+  sessionId: string,
+  ticket: string,
+  onStatus?: (status: LiveStatus) => void,
+  onRefused?: (cause: string) => void,
+): LiveChannel {
+  return new LiveChannel(new WebSocket(liveSocketUrl(sessionId)), ticket, onStatus, onRefused)
 }
 
 /**
@@ -6700,9 +6971,10 @@ export function openLiveSocket<T>(
   ticket: string,
   attach: (channel: LiveChannel) => T,
   onStatus?: (status: LiveStatus) => void,
+  onRefused?: (cause: string) => void,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
-    const channel = openLiveChannel(sessionId, ticket, onStatus)
+    const channel = openLiveChannel(sessionId, ticket, onStatus, onRefused)
     channel.onerror = () => reject(new Error('The live connection did not open.'))
     channel.onclose = () => reject(new Error('The live connection closed before it opened.'))
     channel.onopen = () => {
@@ -6771,13 +7043,25 @@ export async function setLiveDevice(
 
 /**
  * `POST /v1/tasks/{task_id}/live/open-to-members`: the submitter opens control
- * to every member (§5.1, audited). One way only: swarm-api serves no route that
- * closes it again, so the console offers no uncheck.
+ * to every member (§5.1, audited). The TASK's setting (owner decision
+ * 2026-10-13, QA12-11): swarm-api keeps it on the task and every later
+ * attempt's session starts with it, until `closeLiveToMembers` turns it off.
  */
 export async function openLiveToMembers(taskId: string): Promise<Result<unknown>> {
   const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
   if (USE_FIXTURES) return liveNotServed(target)
   return write(target, 'POST')
+}
+
+/**
+ * `DELETE /v1/tasks/{task_id}/live/open-to-members`: the submitter turns member
+ * control off again, for this attempt and the task's later ones (QA12-11,
+ * audited). Whoever holds control now keeps it until they return it.
+ */
+export async function closeLiveToMembers(taskId: string): Promise<Result<unknown>> {
+  const target = route('/v1/tasks/{id}/live/open-to-members', { id: taskId })
+  if (USE_FIXTURES) return liveNotServed(target)
+  return write(target, 'DELETE')
 }
 
 /**

@@ -439,7 +439,10 @@ TOOLS: list[dict[str, Any]] = [
             "since `since`, `changed`, and a finished task's `outcome`; the "
             "reply that says `stop: true` also carries `result`, the step's "
             "answer with no null in it, to return as given -- a few "
-            "hundred bytes a call. A call holds up to `wait_seconds` (max "
+            "hundred bytes a call. With `step_id`, a task PARKED on "
+            "`CI_PENDING` (a merge waiting on its pull request's checks) also "
+            "says `stop: true`, with a `PARKED` `result` naming the park and "
+            "how to resume, rather than holding hour after hour. A call holds up to `wait_seconds` (max "
             f"{compact.MAX_WAIT_SECONDS}) and returns early only when a task's "
             "STATE changes -- waiting, parked (and why), holding capacity, or "
             "finished; progress inside one state does not end it. With "
@@ -648,7 +651,13 @@ TOOLS: list[dict[str, Any]] = [
             "is absent when the agent asked none, and a file the worker rejected "
             "is never served. `questions_unavailable_because` means the worker "
             "counted questions this read could not get. They are for a person "
-            "to answer: show them; never pick an option yourself."
+            "to answer: show them; never pick an option yourself.\n"
+            "\n"
+            "`owner_answers` is what the owner answered, in the console, to "
+            "those questions: [{question_index, question, choice, text, by, at, "
+            "history}] -- `choice` one of the question's option labels or null, "
+            "`text` their own words or null. Absent until one is answered. Read "
+            "it as the owner's decision for the follow-up work."
         ),
         "inputSchema": {
             "type": "object",
@@ -2830,6 +2839,12 @@ def _result_of(client: Any, task_id: str, task: dict[str, Any]) -> dict[str, Any
         described["owner_questions"] = asked["questions"]
     if asked.get("questions_unavailable_because"):
         described["questions_unavailable_because"] = asked["questions_unavailable_because"]
+    # WHAT THE OWNER ANSWERED (TASK-ANSWERS, owner decision 2026-10-13): the
+    # answers stored on the task in the console, as the task read served them.
+    # No key until one is answered, as `owner_questions` has none until asked.
+    answered = progress.owner_answers(task)
+    if answered:
+        described["owner_answers"] = answered
     # WHAT THE WHOLE TASK COST (lane review P1): every attempt's cost and time,
     # as the API served them, the last attempt's beside them, and `cost` --
     # the total in words, `at least` when an attempt recorded none.
@@ -3564,8 +3579,20 @@ def _workflow_merge_pr(client: SwarmClient, args: dict[str, Any]) -> str:
 def _workflow_created(
     envelope: dict[str, Any], *, placed: dict[str, Any], repository: dict[str, Any],
     digest: str | None = None, expected_digest: Any = None,
+    given: list[str] | None = None,
 ) -> str:
-    """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`."""
+    """`swarm_workflow`'s answer to an accepted submission, spec or `merge_pr`.
+
+    `given` is the step ids this bridge submitted. Each reply step then says
+    whether SwarmCloud ADDED it (`added`): swarm-api appends a re-review and a
+    merge the spec never named (`swarm_api.service._with_merge_step`), and
+    /sc:swarmcloud starts a row for every step the server marks so, instead of
+    predicting the server's merge rules and refusing the reply when the
+    prediction missed (SPEED-D5, measured 2026-10-14 on plugin sc 0.5.27: a
+    3-step spec came back with 5 and no row started). The comparison is made
+    here because this is the one place that holds both the spec submitted and
+    the reply; no relay retyped either.
+    """
     workflow = envelope["workflow"]
     workflow_id = workflow.get("workflow_id")
     if not workflow_id:
@@ -3584,6 +3611,7 @@ def _workflow_created(
                 "runner_profile": step.get("runner_profile"),
                 "depends_on": step.get("depends_on") or [],
                 "input_from": step.get("input_from") or {},
+                **({} if given is None else {"added": step.get("step_id") not in given}),
             },
             step,
         )
@@ -4066,7 +4094,8 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             merge=fields.get("merge"),
         )
         reply = _workflow_created(envelope, placed=placed, repository=repository.as_dict(),
-                                  digest=digest, expected_digest=expected_digest)
+                                  digest=digest, expected_digest=expected_digest,
+                                  given=[str(step.get("step_id")) for step in fields["steps"]])
         if not territory and not checks:
             return reply
         created = json.loads(reply)

@@ -417,7 +417,8 @@ def test_run_js_prints_the_console_links_on_submit_step_and_result_lines(tmp_pat
     # The row answers `{state, result}` (B2, 2026-10-05); the link is in `result`.
     assert all(c["schema"] == ["state", "result"] for c in got["calls"] if c["agentType"] == "sc:step")
     source = plugin._RUN_JS.read_text()
-    assert "    console: { type: 'string' }," in source[source.index("const STEP_FIELDS = {"):source.index("const STEP_RESULT = {")]
+    # A null is taken too (ROW-SKIP, 2026-10-12): a skipped step's relay sent one.
+    assert "    console: { type: ['string', 'null'] }," in source[source.index("const STEP_FIELDS = {"):source.index("const STEP_RESULT = {")]
 
 
 def test_run_js_prints_no_console_link_when_none_was_served(tmp_path):

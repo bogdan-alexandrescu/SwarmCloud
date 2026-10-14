@@ -8,7 +8,9 @@
 //     (LB-DEV-B): a preset by name, rotate and touch through setLiveDevice;
 //   * a page off the hand-off's named site turns the strip red, and Take
 //     control asks twice;
-//   * keys reach the agent's browser only while its canvas has focus;
+//   * keys reach the agent's browser only while its canvas has focus, and the
+//     pointer from the moment this person holds control (LB-CURSOR2);
+//   * a control refusal from the relay is said under the canvas;
 //   * touch reaches it only in control, with touch on.
 //
 // noVNC is replaced by `FakeRfb` and the socket by `FakeSocket`: jsdom has no
@@ -19,8 +21,8 @@
 // MUTATIONS, one per block: put the ticket in the socket URL's query; drop
 // the `can_control` check in LiveControl; enable the device chips for every
 // viewer (or decide it from `controller` instead of `you.can_switch_device`);
-// send a size instead of a preset name; skip the second ask on a mismatch; set `viewOnly` from control
-// alone, ignoring focus; let touches through whenever in control; await
+// send a size instead of a preset name; skip the second ask on a mismatch; gate `viewOnly` on canvas
+// focus again (moves before the first click are then dropped, LB-CURSOR2); let touches through whenever in control; await
 // anything between the socket's 'open' and noVNC's construction (the server's
 // first frame is then lost); construct noVNC outside the retry.
 
@@ -49,6 +51,7 @@ const api = vi.hoisted(() => ({
   returnLiveControl: vi.fn(),
   renewLiveControl: vi.fn(),
   openLiveToMembers: vi.fn(),
+  closeLiveToMembers: vi.fn(),
   setLiveDevice: vi.fn(),
 }))
 
@@ -65,6 +68,10 @@ const rfb = vi.hoisted(() => {
     scaleViewport = false
     resizeSession = true
     focusOnClick = false
+    showDotCursor = false
+    // noVNC 1.4.0's own defaults.
+    qualityLevel = 6
+    compressionLevel = 2
     readonly canvas: HTMLCanvasElement
     /** Touches that reached noVNC's own canvas listener. */
     touches = 0
@@ -140,7 +147,7 @@ class FakeSocket extends EventTarget {
 }
 
 const { AgentSplit } = await import('../AgentSplit')
-const { LiveBrowserPane, LiveControl } = await import('../LiveBrowser')
+const { LiveBrowserPane, LiveControl, crispAt } = await import('../LiveBrowser')
 const { resetListSnap } = await import('../listSnap')
 
 const ID = 'task_0123456789abcdef0456'
@@ -343,6 +350,31 @@ describe('the ticket goes in the first message, never the URL', () => {
     expect(r.channel.readyState).toBe(1)
   })
 
+  it('turns on noVNC\'s dot cursor, so a pointer shows even when the gate sends no cursor shape (LB-CURSOR)', async () => {
+    // Measured 2026-10-12: the canvas had `cursor: none`, so the person in control clicked blind.
+    pane(session())
+    const r = await connected()
+    expect(r.showDotCursor).toBe(true)
+  })
+
+  it('asks the gate for a lossless picture at the zlib level the gate was measured at (STREAM-SMOOTH)', async () => {
+    // The gate never sends JPEG (livegate/rfb.py); quality 9 says so to noVNC too, and
+    // compression 1 is rfb.py ZLIB_LEVEL, chosen from livegate.bench.
+    pane(session())
+    const r = await connected()
+    expect(r.qualityLevel).toBe(9)
+    expect(r.compressionLevel).toBe(1)
+  })
+
+  it('draws the frame pixel for pixel at a whole scale, and smooths it at a fractional fit (STREAM-SMOOTH)', () => {
+    expect(crispAt(1440, 1440, 1)).toBe(true) // 1:1
+    expect(crispAt(1440, 1440, 2)).toBe(true) // 1:1 on a 2x screen: 2x2 device pixels each
+    expect(crispAt(786, 393, 1)).toBe(true) // a phone drawn at twice its size
+    expect(crispAt(1000, 1440, 1)).toBe(false) // fitted down: nearest-neighbour would drop rows of text
+    expect(crispAt(1000, 1440, 1.5)).toBe(false)
+    expect(crispAt(0, 1440, 1)).toBe(false) // not laid out yet
+  })
+
   it('has noVNC reading the socket before the relay\'s first frame can arrive', async () => {
     const version = new TextEncoder().encode('RFB 003.008\n').buffer as ArrayBuffer
     FakeSocket.greeting = [JSON.stringify({ type: 'status', open: true, in_control: false, controller: null }), version]
@@ -484,19 +516,22 @@ describe('the person in control switches the device (LB-DEV-B)', () => {
 })
 
 describe('the submitter opens control to members through the served route', () => {
-  it('posts open-to-members when the box is ticked, and offers no uncheck once open', () => {
+  // Both ways since the owner's decision of 2026-10-13 (QA12-11): the confirm
+  // and the carry-over are held by live.tab.test.tsx.
+  it('posts open-to-members once the box is ticked and the confirm said yes', () => {
     pane(mine())
     const box = screen.getByRole('checkbox', { name: /let any member take control/i }) as HTMLInputElement
     expect(box.disabled).toBe(false)
     fireEvent.click(box)
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'Let any member take control' }))
     expect(api.openLiveToMembers).toHaveBeenCalledWith(ID)
   })
 
-  it('disables the box once control is open to members', () => {
+  it('keeps the box enabled once control is open to members, so it can be turned off', () => {
     pane(mine({ open_to_members: true }))
     const box = screen.getByRole('checkbox', { name: /let any member take control/i }) as HTMLInputElement
     expect(box.checked).toBe(true)
-    expect(box.disabled).toBe(true)
+    expect(box.disabled).toBe(false)
   })
 })
 
@@ -553,6 +588,24 @@ describe('a mismatched origin turns the strip red and asks twice', () => {
     )
   })
 
+  it('one take is one request: the header opens the ask, the ask posts once, however often it is pressed (LB-R4)', async () => {
+    let settle: (v: unknown) => void = () => {}
+    api.takeLiveControl.mockReturnValue(new Promise((r) => (settle = r)))
+    render(<LiveControl taskId={ID} session={session({ human_wait: wait('github.com') })} reload={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: 'Take control' }))
+    expect(api.takeLiveControl).not.toHaveBeenCalled()
+    const yes = within(screen.getByRole('dialog')).getByRole('button', { name: 'Take control' })
+    fireEvent.click(yes)
+    fireEvent.click(yes)
+    // The header button again while the first request is in flight.
+    fireEvent.click(screen.getByRole('button', { name: /Take control|Taking control/ }))
+    const again = screen.queryByRole('dialog')
+    if (again !== null) fireEvent.click(within(again).getByRole('button', { name: 'Take control' }))
+    expect(api.takeLiveControl).toHaveBeenCalledTimes(1)
+    await act(async () => settle(ok(null)))
+    expect(api.takeLiveControl).toHaveBeenCalledTimes(1)
+  })
+
   it('asks once on the named site', async () => {
     render(<LiveControl taskId={ID} session={session({ human_wait: wait('github.com') })} reload={() => {}} />)
     fireEvent.click(screen.getByRole('button', { name: 'Take control' }))
@@ -563,14 +616,28 @@ describe('a mismatched origin turns the strip red and asks twice', () => {
 })
 
 describe('keys are captured only with canvas focus', () => {
-  it('keeps the connection view-only until the person in control focuses the canvas, and again once it loses focus', async () => {
+  it('opens input for the person in control before any click, so a move reaches the agent’s page (LB-CURSOR2)', async () => {
+    // MEASURED 2026-10-13: 20 moves, a click and two keys on the canvas reached the gate as two
+    // pointer events. noVNC sends no move while view-only, and it was view-only until a click focused it.
     pane(mine())
     const r = await connected()
-    expect(r.viewOnly).toBe(true)
+    expect(r.viewOnly, 'a move before the first click is dropped by noVNC').toBe(false)
     act(() => r.canvas.focus())
     expect(r.viewOnly).toBe(false)
     act(() => r.canvas.blur())
-    expect(r.viewOnly).toBe(true)
+    expect(r.viewOnly, 'clicking outside the canvas does not take the pointer back').toBe(false)
+  })
+
+  it('says under the canvas when the relay refused this connection’s control, with its cause (LB-CURSOR2)', async () => {
+    const reload = vi.fn()
+    pane(mine(), reload)
+    await connected()
+    const raw = FakeSocket.made.at(-1)!
+    expect(screen.queryByText(/refused this connection’s control/)).toBeNull()
+    act(() =>
+      raw.onmessage?.(new MessageEvent('message', { data: JSON.stringify({ type: 'refused', reason: 'control', cause: 'wrong_session' }) })),
+    )
+    expect(screen.getByText(/The relay refused this connection’s control \(wrong_session\)/)).toBeTruthy()
   })
 
   it('keeps a viewer’s connection view-only even with the canvas focused', async () => {

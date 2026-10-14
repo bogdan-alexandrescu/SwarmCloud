@@ -191,6 +191,9 @@ class FakePipe:
         self.methods: list[str] = []
         self.closed = False
         self._sessions = 0
+        # What `Target.getTargetInfo` and `Security.enable` report for a page.
+        self.page_url = "https://example.test/signin"
+        self.security = "secure"
 
     def _session(self) -> str:
         self._sessions += 1
@@ -213,7 +216,7 @@ class FakePipe:
             result = {"frameTree": {"frame": {"id": "PAGE1", "url": "about:blank", "domainAndRegistry": ""}}}
         elif method == "Target.getTargetInfo":
             result = {"targetInfo": {"targetId": message["params"]["targetId"], "type": "page",
-                                     "url": "https://example.test/signin", "title": "Sign in"}}
+                                     "url": self.page_url, "title": "Sign in"}}
         elif method == "Target.createBrowserContext":
             result = {"browserContextId": "CTX1"}
         elif method == "Target.createTarget":
@@ -225,7 +228,7 @@ class FakePipe:
         self.queue.put_nowait({"id": message["id"], "result": result})
         if method == "Security.enable":
             self.queue.put_nowait({"method": "Security.visibleSecurityStateChanged", "sessionId": session,
-                                   "params": {"visibleSecurityState": {"securityState": "secure"}}})
+                                   "params": {"visibleSecurityState": {"securityState": self.security}}})
 
     async def run(self, sink: Any) -> None:
         while True:
@@ -298,7 +301,7 @@ class FakeFramebuffer:
 
     def grab(self) -> Frame:
         self.grabs += 1
-        return Frame.blank(1440, 988, (255, 255, 255))
+        return Frame.blank(1440, 987, (255, 255, 255))
 
     def close(self) -> None:
         self.calls.append(("framebuffer.close",))
@@ -485,7 +488,7 @@ def test_main_starts_the_components_in_the_designs_order(short_tmp):
         assert "Page.addScriptToEvaluateOnNewDocument" in methods
         assert rig.gate.pages.current == "PAGE1"
         # The default device was applied to the display.
-        assert rig.display.sizes and rig.display.sizes[-1] == (1440, 988)
+        assert rig.display.sizes and rig.display.sizes[-1] == (1440, 987)
         stop.set()
         assert await task == 0
 
@@ -608,7 +611,8 @@ def test_the_worker_drives_the_gate_over_ctl_sock(short_tmp):
         assert rig.relay_urls == [rig.cfg.relay_url]
         assert rig.relay.texts == [ticket], "the ticket is the tunnel's first message"
 
-        paused = await asyncio.to_thread(client.call, "pause", {"request_id": "r1", "expect": "example.test"})
+        paused = await asyncio.to_thread(
+            client.call, "pause", {"request_id": "r1", "expect": "example.test", "fresh_page": True})
         assert paused == {"paused": True, "fresh_page": True}
         assert "Target.createBrowserContext" in rig.browser.transport.methods
 
@@ -673,6 +677,55 @@ def test_a_viewer_sees_rfb_and_control_is_granted_then_released(short_tmp):
     asyncio.run(body())
 
 
+def test_the_agents_mouse_events_move_the_pointer_watchers_see(short_tmp):
+    """LB-CURSOR (part of #1030): the proxy's `on_pointer` is the gate's, and
+    it lands in the hub's frame coordinates for the device on screen."""
+    from agent_worker.livegate.pointer import css_to_frame
+
+    async def body() -> None:
+        rig = Rig(short_tmp)
+        stop, task = await _started(rig)
+        gate = rig.gate
+        assert gate.hub.pointer.position is None
+        gate.proxy._on_pointer(100.0, 50.0)
+        assert gate.hub.pointer.position == css_to_frame(gate.devices.device, 100.0, 50.0)
+        stop.set()
+        assert await task == 0
+
+    asyncio.run(body())
+
+
+def test_one_take_on_about_blank_is_one_granted_line_and_no_refusal(short_tmp):
+    """LB-R4 (part of #1030). MEASURED 2026-10-12: one take on the agent's page
+    before its first navigation read "You took control" and then "Taking
+    control was refused: the page is not on a secure https connection". The
+    gate now grants it: one control line, `granted`, which the timeline folds
+    into the audit's "You took control" (live.py `_DUPLICATED`)."""
+    async def body() -> None:
+        rig = Rig(short_tmp)
+        stop, task = await _started(rig)
+        rig.browser.transport.page_url = "about:blank"
+        rig.browser.transport.security = "neutral"
+        gate = rig.gate
+        await gate.open_tunnel({"ticket": "t." + secrets.token_urlsafe(8)})
+        rig.relay.push(tunnel.OP_OPEN, "v1")
+        await _until(lambda: gate.viewers == 1)
+
+        rig.relay.push(tunnel.OP_CONTROL, "v1")
+        await _until(lambda: gate.control.controller == "v1")
+        assert gate.proxy.in_control
+        actions = [json.loads(f[2]) for f in rig.relay.frames if f[0] == tunnel.OP_ACTION]
+        control = [a for a in actions if a.get("kind") == "control"]
+        assert [(a["event"], a.get("cause")) for a in control] == [("granted", None)]
+
+        rig.relay.push(tunnel.OP_CONTROL, "")
+        await _until(lambda: gate.control.controller is None and not gate.proxy.paused)
+        stop.set()
+        assert await task == 0
+
+    asyncio.run(body())
+
+
 def _reports(rig: Rig) -> list[dict[str, Any]]:
     return [json.loads(f[2]) for f in rig.relay.frames if f[0] == tunnel.OP_REPORT]
 
@@ -699,16 +752,18 @@ def test_the_gate_reports_the_top_frames_origin_and_the_device_over_its_tunnel(s
 
         await _until(lambda: len(_reports(rig)) >= 1)
         assert _reports(rig)[-1] == {"origin": None,
-                                     "device": {"preset": "desktop", "orientation": "landscape", "touch": False}}
+                                     "device": {"preset": "desktop", "orientation": "landscape", "touch": False},
+                                     # LIVE-UNUSED: no agent has connected, and no frame was published.
+                                     "agent": {"connected_at": None, "connections": 0, "first_frame_at": None}}
 
         _navigated(rig, "https://accounts.github.com/login?return_to=%2Fsettings", "github.com")
         await _until(lambda: _reports(rig)[-1]["origin"] is not None)
         assert _reports(rig)[-1]["origin"] == {
             "origin": "https://accounts.github.com", "host": "accounts.github.com",
             "display_host": "accounts.github.com", "registrable_domain": "github.com",
-            "scheme": "https:", "ip_literal": False, "cert_error": None}
+            "scheme": "https:", "ip_literal": False, "cert_error": None, "path": "/login"}
         sent = json.dumps(_reports(rig))
-        assert "login" not in sent and "return_to" not in sent, "an origin, never a path or a query"
+        assert "return_to" not in sent, "an origin and its path (LB-R6), never a query"
 
         # A child frame navigating is not the top frame's origin.
         count = len(_reports(rig))
@@ -720,7 +775,8 @@ def test_the_gate_reports_the_top_frames_origin_and_the_device_over_its_tunnel(s
         await _until(lambda: _reports(rig)[-1]["device"]["preset"] == "iphone-15")
         assert _reports(rig)[-1] == {
             "origin": _reports(rig)[count - 1]["origin"],
-            "device": {"preset": "iphone-15", "orientation": "landscape", "touch": True}}
+            "device": {"preset": "iphone-15", "orientation": "landscape", "touch": True},
+            "agent": {"connected_at": None, "connections": 0, "first_frame_at": None}}
         client.close()
         stop.set()
         assert await task == 0

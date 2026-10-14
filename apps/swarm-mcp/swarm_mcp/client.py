@@ -737,9 +737,18 @@ def chosen_tenant(flag: str | None, environ: Any = None) -> str | None:
     THE FLAG WINS, as every other option here beats its variable. Blank is no
     choice at all -- `SWARM_TENANT=` in a shell profile must not become an
     empty header, which is a difference on the wire for nothing. Read by the
-    CLI per invocation and by the MCP server once at start; `SwarmClient`
-    never reads it itself, so `sc`, which offers no such option, is not
-    quietly moved to another tenant.
+    CLI and by `sc` once per invocation, and by the MCP server once at start;
+    `SwarmClient` never reads it itself, so a caller that names its tenant (or
+    deliberately none) is never moved behind its back.
+
+    `sc` READS IT TOO (SC-TENANT, owner decision 2026-10-12: "sc reads
+    SWARM_TENANT"). Once #1204 made a person's ready personal workspace their
+    default tenant, a tool that sends no header moved off the group it had
+    always read; `sc` sending none would have split one person's view
+    between their personal workspace (`sc`) and their group (the bridge, the
+    plugin, `swarm`). The sc plugin's `tenant` option reaches the bridge and
+    its SessionStart hook as this same variable, and a SWARM_TENANT already in
+    Claude Code's environment wins over that option.
     """
     env = os.environ if environ is None else environ
     for value in (flag, env.get("SWARM_TENANT")):

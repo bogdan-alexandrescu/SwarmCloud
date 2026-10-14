@@ -613,6 +613,17 @@ def test_one_controller_at_a_time_and_only_the_submitter_preempts(client, ldb, l
     assert take(client, "root", preempt=True).status_code == 409
 
 
+def test_one_take_writes_one_control_audit_row_even_posted_twice(client, ldb, live):
+    """LB-R4 (part of #1030): one take is one `control_taken` row, and the
+    only control row -- the timeline draws a line per row. A second POST from
+    the person already in control (a double click, a retry) renews and
+    audits nothing."""
+    assert take(client, "alice").status_code == 200
+    assert take(client, "alice").status_code == 200
+    control = [r for r in audit(ldb) if r["entry"].startswith("control_")]
+    assert [(r["entry"], r["email"]) for r in control] == [("control_taken", "alice@saga.xyz")]
+
+
 def test_return_resolves_the_hand_off_and_only_the_controller_returns(client, ldb, live):
     _ask_for_help(ldb)
     assert take(client, "alice").status_code == 200
@@ -789,6 +800,9 @@ def test_the_open_socket_is_re_checked_and_closed_when_membership_lapses(
         with pytest.raises(WebSocketDisconnect) as closed:
             while True:
                 ws.receive_json()
+        # Inside the session: the app writes `viewer_left` after the close, and
+        # leaving the `with` cancels it (see the viewer-socket hold test below).
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
     assert closed.value.code == 4403
     assert wait_until(lambda: session_doc(ldb)["controller"] is None)
     ended = audit(ldb, "control_ended")
@@ -802,6 +816,88 @@ def test_the_open_socket_is_re_checked_and_closed_when_membership_lapses(
     assert "0x61" not in json.dumps(audit(ldb), default=str)
 
 
+def _key_event(down: int, keysym: int) -> bytes:
+    """One RFB KeyEvent (RFC 6143 §7.5.4): type 4, down-flag, padding, keysym."""
+    return bytes([4, down, 0, 0]) + keysym.to_bytes(4, "big")
+
+
+def _pointer_event(buttons: int, x: int, y: int) -> bytes:
+    return bytes([5, buttons]) + x.to_bytes(2, "big") + y.to_bytes(2, "big")
+
+
+@pytest.mark.parametrize("returned_by", ["delete", "post"])
+def test_every_key_event_of_an_episode_is_on_its_returned_event(
+    ldb, people, groups, objects, clock, relay, returned_by
+):
+    """LB-POLISH (part of #1030). MEASURED 2026-10-13 on
+    task_1f28d5bfa5a14f618f83: `human_control_returned` said `keys: 0` on two
+    episodes in which a person visibly typed ("qa-first"; "example.com" and
+    Enter), while `pointer_events` said 17 and 22. The socket batches its
+    counts into the controller record every `live_input_flush_seconds` (15 s);
+    input after the last batch was thrown away when the Return press ended
+    the episode -- and typing is what a person does last, right before Return.
+
+    The rule, the same for both counts: every RFB message is one event. A
+    KeyEvent is sent on the press AND on the release, so typing "qa-first"
+    is 16 key events; a PointerEvent is sent on a move, a press and a release.
+    Here nothing is flushed before Return (a minute's batch), and the episode
+    still reports keys == N."""
+    client = make_client(ldb, people, groups, objects, clock, relay,
+                         live_input_flush_seconds=60.0)
+    attempt = Attempt()
+    seed_running(client, ldb, attempt)
+    assert open_session(client, attempt).status_code == 201
+    _ask_for_help(ldb)
+    ticket = ticket_for(client, "alice")
+    with client.websocket_connect(SOCKET, headers=bearer("alice")) as ws:
+        ws.send_text(json.dumps({"ticket": ticket}))
+        assert ws.receive_json()["type"] == "status"
+        assert wait_until(lambda: len(relay.links) == 1)
+        link = relay.links[0]
+        assert take(client, "alice").status_code == 200
+        assert wait_until(lambda: any(m.get("type") == "control" for m in link.texts()))
+        frames = [_pointer_event(0, 10, 10), _pointer_event(1, 10, 10), _pointer_event(0, 10, 10)]
+        for char in "qa-first":
+            frames += [_key_event(1, ord(char)), _key_event(0, ord(char))]
+        frames += [_key_event(1, 0xFF0D), _key_event(0, 0xFF0D)]  # Enter
+        for frame in frames:
+            ws.send_bytes(frame)
+        assert wait_until(lambda: sum(isinstance(m, bytes) for m in link.sent) == len(frames))
+        if returned_by == "delete":
+            returned = client.delete(f"/v1/tasks/{TASK}/live/control", headers=bearer("alice"))
+        else:
+            returned = client.post(f"/v1/tasks/{TASK}/live/control/return", headers=bearer("alice"))
+        assert returned.status_code == 200, returned.text
+
+        def returned_event() -> dict[str, Any]:
+            return next(d for p, d in ldb.docs.items()
+                        if p.startswith(f"tasks/{TASK}/events/")
+                        and d["type"] == "human_control_returned")
+
+        assert wait_until(lambda: returned_event()["detail"]["keys"] == 18), returned_event()
+        assert returned_event()["detail"]["pointer_events"] == 3
+        (row,) = audit(ldb, "control_returned")
+        assert (row["detail"]["keys"], row["detail"]["pointer_events"]) == (18, 3)
+        # After the episode, nothing more is its: a key typed with no control is not counted.
+        ws.send_bytes(_key_event(1, ord("x")))
+        time.sleep(0.1)
+        # The server ends the socket (a retry's new generation), as the other
+        # socket tests do: a client-side close cancels the app mid-flush.
+        ldb.docs[f"tasks/{TASK}"].update(
+            {"current_lease_id": "lease_live_2", "current_generation": 2})
+        with pytest.raises(WebSocketDisconnect):
+            while True:
+                ws.receive_json()
+        # Inside the session: the app writes `viewer_left` after the close, and
+        # leaving the `with` cancels it (see the viewer-socket hold test below).
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)
+    assert returned_event()["detail"]["keys"] == 18
+    (row,) = audit(ldb, "control_returned")
+    assert row["detail"]["keys"] == 18
+    # Counts, never content.
+    assert '"qa-first"' not in json.dumps(audit(ldb), default=str)
+
+
 # --------------------------------------------------------------------------
 # No ticket in a URL (§5.2)
 # --------------------------------------------------------------------------
@@ -811,7 +907,10 @@ def test_no_route_takes_a_ticket_in_its_url(client):
     from swarm_api.routes import live as live_routes
 
     for route in live_routes.router.routes:
-        assert "ticket" not in route.path_format.replace("/live/ticket", "")
+        # Two routes MINT a ticket into their response body and are named for
+        # it; neither takes one in its URL (the parameter check below).
+        minted = route.path_format.replace("/live/ticket", "").replace("/egress-ticket", "")
+        assert "ticket" not in minted
         dependant = getattr(route, "dependant", None)
         if dependant is not None:
             for param in dependant.query_params + dependant.path_params:
@@ -959,8 +1058,8 @@ def test_a_ticket_the_relay_refuses_closes_the_console_socket(
     assert refusing.links and refusing.links[0].closed
 
 
-def test_a_new_attempts_session_closes_the_last_ones_at_the_relay(client, ldb, live, relay):
-    relay.closed.clear()
+def _second_attempt(client, ldb):
+    """The task's attempt 2 registered and RUNNING, its session not yet open."""
     second = Attempt(generation=2)
     second.tuple = AttemptTuple("eng", TASK, "att_live_2", "lease_live_2", 2)
     ldb.docs[f"tasks/{TASK}"].update({"current_lease_id": "lease_live_2", "current_generation": 2,
@@ -983,10 +1082,79 @@ def test_a_new_attempts_session_closes_the_last_ones_at_the_relay(client, ldb, l
     assert registered.status_code == 201, registered.text
     ldb.docs[f"tasks/{TASK}"]["state"] = "RUNNING"
     ldb.docs["leases/lease_live_2"]["state"] = "RUNNING"
+    return second
+
+
+def test_a_new_attempts_session_closes_the_last_ones_at_the_relay(client, ldb, live, relay):
+    relay.closed.clear()
+    second = _second_attempt(client, ldb)
     response = open_session(client, second)
     assert response.status_code == 201, response.text
     assert relay.closed == [SESSION]
     assert session_doc(ldb)["state"] == "closed"
+
+
+# --------------------------------------------------------------------------
+# Member control is the task's: it carries over, and it can be turned off
+# (owner decision 2026-10-13, QA12-11; lane LIVE-TAB, part of #1030)
+# --------------------------------------------------------------------------
+
+
+def test_member_control_carries_over_to_the_next_attempts_session(client, ldb, live):
+    """MEASURED in QA p12 on task_4defa61c5eea4a5c87f5: "Let any member take
+    control" reset on the resumed attempt, because it lived on attempt 1's
+    session alone. It is the task's setting now."""
+    assert client.post(f"/v1/tasks/{TASK}/live/open-to-members",
+                       headers=bearer("alice")).status_code == 200
+    assert ldb.docs[f"tasks/{TASK}"]["live_open_to_members"] is True
+    second = _second_attempt(client, ldb)
+    assert open_session(client, second).status_code == 201
+    fresh = ldb.docs[f"{LIVE_SESSIONS}/{session_id_for('att_live_2')}"]
+    assert fresh["open_to_members"] is True
+    assert fresh["opened_to_members_by"] == "alice@saga.xyz"
+    view = client.get(f"/v1/tasks/{TASK}/live/session", headers=bearer("root")).json()
+    assert view["session"]["open_to_members"] is True
+    # Carried, not re-chosen: the session's opening says so, and no second
+    # "let any member" line is written for a choice nobody made again.
+    opened = [r for r in audit(ldb, "session_opened") if r["attempt_id"] == "att_live_2"]
+    assert opened[0]["detail"]["open_to_members"] is True
+    assert len(audit(ldb, "control_opened_to_members")) == 1
+    _ask_for_help(ldb)
+    assert take(client, "root").status_code == 200
+
+
+def test_the_submitter_turns_member_control_off_and_it_stays_off(client, ldb, live):
+    assert client.post(f"/v1/tasks/{TASK}/live/open-to-members",
+                       headers=bearer("alice")).status_code == 200
+    # Only the submitter may turn it off, as only they may turn it on.
+    refused = client.delete(f"/v1/tasks/{TASK}/live/open-to-members", headers=bearer("root"))
+    assert refused.status_code == 403
+    assert refused.json()["code"] == "control_not_eligible"
+    closed = client.delete(f"/v1/tasks/{TASK}/live/open-to-members", headers=bearer("alice"))
+    assert closed.status_code == 200, closed.text
+    assert closed.json()["session"]["open_to_members"] is False
+    assert session_doc(ldb)["open_to_members"] is False
+    assert ldb.docs[f"tasks/{TASK}"]["live_open_to_members"] is False
+    assert [r["email"] for r in audit(ldb, "control_closed_to_members")] == ["alice@saga.xyz"]
+    # Twice is once: no second audit row.
+    assert client.delete(f"/v1/tasks/{TASK}/live/open-to-members",
+                         headers=bearer("alice")).status_code == 200
+    assert len(audit(ldb, "control_closed_to_members")) == 1
+    _ask_for_help(ldb)
+    assert take(client, "root").status_code == 403
+    # Off is carried over as well as on.
+    second = _second_attempt(client, ldb)
+    assert open_session(client, second).status_code == 201
+    assert ldb.docs[f"{LIVE_SESSIONS}/{session_id_for('att_live_2')}"]["open_to_members"] is False
+
+
+def test_turning_member_control_off_is_on_the_timeline(client, ldb, live):
+    from swarm_api.live import audit_lines
+
+    client.post(f"/v1/tasks/{TASK}/live/open-to-members", headers=bearer("alice"))
+    client.delete(f"/v1/tasks/{TASK}/live/open-to-members", headers=bearer("alice"))
+    events = [line["event"] for line in audit_lines(audit(ldb), None)]
+    assert events == ["control_opened_to_members", "control_closed_to_members"]
 
 
 def test_the_relay_closer_posts_to_the_internal_close_route_on_the_same_address():
@@ -1007,3 +1175,161 @@ def test_swarm_api_reads_the_relay_address_from_swarm_live_url(monkeypatch):
     monkeypatch.setenv("SWARM_LIVE_URL", RELAY_URL)
     monkeypatch.delenv("SWARM_LIVE_RELAY_URL", raising=False)
     assert ApiSettings.from_env().live_relay_url == RELAY_URL
+
+
+def test_return_on_a_resumed_attempt_ends_the_episode_with_no_input(client, ldb):
+    """LB-CURSOR2 (part of #1030). MEASURED 2026-10-13 on
+    task_50f0b9841b9f46db871a: attempt 2 (generation 2) resumed from a
+    HUMAN_REQUIRED park, the owner took control and pressed Return, and no
+    `human_control_returned` was written. Return always ends the episode --
+    on a resumed attempt, under a hand-off its earlier attempt asked for, with
+    no key or pointer counted -- and the event carries the zero counts."""
+    attempt = Attempt(generation=2)
+    seed_running(client, ldb, attempt, attempt_count=2)
+    assert open_session(client, attempt).status_code == 201
+    _ask_for_help(ldb)
+    ldb.docs[f"tasks/{TASK}"]["human_wait"].update({"attempt_id": "att_parked", "generation": 1})
+    taken = take(client, "alice")
+    assert taken.status_code == 200, taken.text
+    returned = client.delete(f"/v1/tasks/{TASK}/live/control", headers=bearer("alice"))
+    assert returned.status_code == 200, returned.text
+    events = {d["type"]: d for p, d in ldb.docs.items() if p.startswith(f"tasks/{TASK}/events/")}
+    back = events["human_control_returned"]
+    assert back["generation"] == 2
+    assert (back["detail"]["cause"], back["detail"]["keys"], back["detail"]["pointer_events"]) == (
+        "returned", 0, 0)
+    assert session_doc(ldb)["controller"] is None
+    assert ldb.docs[f"tasks/{TASK}"]["human_wait"] is None
+
+
+# --------------------------------------------------------------------------
+# HANDOFF-POLICY (part of #1030): the hold extends while someone watches
+# --------------------------------------------------------------------------
+
+
+def _wait_opened_at(db, clock: Clock, *, unwatched: int = 60) -> dict[str, Any]:
+    """What `HandoffService.request` writes, at the service's clock."""
+    wait = {
+        "reason": "Sign in", "expect": "github.com", "requested_at": clock(),
+        "deadline": clock() + timedelta(seconds=unwatched), "controller": None,
+        "watched_at": None, "request_id": "signin-1", "attempt_id": ATTEMPT, "generation": 1,
+    }
+    db.docs[f"tasks/{TASK}"]["human_wait"] = wait
+    return wait
+
+
+def _service(db, clock: Clock, **settings: Any):
+    from swarm_api.live import LiveService
+    from swarm_api.store import Store
+
+    return LiveService(settings=api_settings(**{"live_key": LIVE_KEY, **settings}), db=db,
+                       store=Store(db), authenticator=None, now=clock)
+
+
+def _admission(user: str = "alice"):
+    from swarm_api.live import Admission
+
+    return Admission(email=f"{user}@saga.xyz", tenant_id="eng", task_id=TASK, session_id=SESSION,
+                     attempt_id=ATTEMPT, generation=1, ticket="t-" + secrets.token_hex(8))
+
+
+def _deadline(db) -> datetime:
+    return db.docs[f"tasks/{TASK}"]["human_wait"]["deadline"]
+
+
+def test_a_connected_viewer_extends_the_hold_and_the_extension_is_capped(ldb, live, clock):
+    """Owner decision 2026-10-13: 7 of 42 hand-offs expired AFTER the person
+    pressed "I'm ready" -- they were there, watching. While a viewer is
+    connected the hold keeps moving `human_unwatched_seconds` ahead of now, up
+    to `human_hold_max_seconds` (30 min) from the request."""
+    wait = _wait_opened_at(ldb, clock)
+    requested = wait["requested_at"]
+    service = _service(ldb, clock)
+    clock.advance(30)
+    assert service.watched(_admission()) is True
+    assert _deadline(ldb) == clock() + timedelta(seconds=60)
+    assert ldb.docs[f"tasks/{TASK}"]["human_wait"]["watched_at"] == clock()
+    # Watched past the old 10-minute hold, every 45 s, and never past the cap.
+    while clock() < requested + timedelta(minutes=29, seconds=30):
+        clock.advance(45)
+        service.watched(_admission())
+        assert clock() < _deadline(ldb) <= requested + timedelta(minutes=30)
+    assert _deadline(ldb) == requested + timedelta(minutes=30)
+    # Still RUNNING, still holding its lease: watching is not a park.
+    assert ldb.docs[f"tasks/{TASK}"]["state"] == "RUNNING"
+
+
+def test_a_viewer_does_not_revive_a_hold_that_already_ran_out(ldb, live, clock):
+    """The worker may already be parking: a deadline in the past is final."""
+    _wait_opened_at(ldb, clock)
+    before = _deadline(ldb)
+    clock.advance(61)
+    assert _service(ldb, clock).watched(_admission()) is False
+    assert _deadline(ldb) == before
+
+
+def test_watching_needs_an_open_hand_off_of_this_sessions_attempt(ldb, live, clock):
+    service = _service(ldb, clock)
+    assert service.watched(_admission()) is False  # nothing is waiting
+    wait = _wait_opened_at(ldb, clock)
+    wait["attempt_id"] = "att_other"
+    before = _deadline(ldb)
+    clock.advance(10)
+    assert service.watched(_admission()) is False
+    assert _deadline(ldb) == before
+
+
+def test_control_extends_the_hold_up_to_the_same_cap(client, ldb, live, clock):
+    wait = _wait_opened_at(ldb, clock)
+    requested = wait["requested_at"]
+    assert take(client, "alice").status_code == 200
+    assert _deadline(ldb) == clock() + timedelta(seconds=300)
+    for _ in range(40):
+        clock.advance(50)
+        assert client.post(f"/v1/tasks/{TASK}/live/control/renew",
+                           headers=bearer("alice")).status_code in (200, 409)
+        service = _service(ldb, clock)
+        service.record_input(_admission(), keys=1, pointers=0)
+        assert _deadline(ldb) <= requested + timedelta(minutes=30)
+    assert _deadline(ldb) == requested + timedelta(minutes=30)
+
+
+def test_the_viewer_socket_extends_the_hold_while_it_is_open(
+    ldb, people, groups, objects, clock, relay
+):
+    """The wiring: swarm-api's proxied viewer socket is the "someone is
+    watching" signal, written on join and every `live_watch_flush_seconds`."""
+    client = make_client(ldb, people, groups, objects, clock, relay,
+                         live_watch_flush_seconds=0.02)
+    attempt = Attempt()
+    seed_running(client, ldb, attempt)
+    assert open_session(client, attempt).status_code == 201
+    _wait_opened_at(ldb, clock)
+    before = _deadline(ldb)
+    clock.advance(20)
+    ticket = ticket_for(client, "alice")
+    with client.websocket_connect(SOCKET, headers=bearer("alice")) as ws:
+        ws.send_text(json.dumps({"ticket": ticket}))
+        assert ws.receive_json()["type"] == "status"
+        assert wait_until(lambda: _deadline(ldb) == clock() + timedelta(seconds=60))
+        assert _deadline(ldb) > before
+        clock.advance(30)
+        assert wait_until(lambda: _deadline(ldb) == clock() + timedelta(seconds=60))
+        # The server ends the socket (a retry's new generation), as the other
+        # socket tests do: a client-side close cancels the app mid-write, and
+        # the TestClient's portal then raises CancelledError on exit.
+        ldb.docs[f"tasks/{TASK}"].update(
+            {"current_lease_id": "lease_live_2", "current_generation": 2})
+        with pytest.raises(WebSocketDisconnect):
+            while True:
+                ws.receive_json()
+        # INSIDE the session, not after it (flake fixed 2026-10-14; failed PRs
+        # 1267 and 1268 with CancelledError at this `with`). The close reaches
+        # the client before the app has finished: `_Proxy.run` still writes the
+        # `viewer_left` audit after closing the socket. Leaving the `with` makes
+        # the TestClient cancel the app's task, so a test that left as soon as
+        # it read the close cancelled that teardown mid-await -- surfacing as
+        # CancelledError from the portal, or as a missing audit. The app's
+        # last write is its `viewer_left` row: once it is there, nothing of the
+        # app is left to cancel.
+        assert wait_until(lambda: len(audit(ldb, "viewer_left")) == 1)

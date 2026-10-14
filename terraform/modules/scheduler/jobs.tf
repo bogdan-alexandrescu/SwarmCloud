@@ -141,12 +141,12 @@ module "service_account_ids" {
 # NO create_ignore_already_exists, for the reason modules/iam gives for
 # swarm-tick (#334): a release that meets a 409 should fail rather than adopt
 # an account somebody else made under this name, with their keys and policy.
-# The provider caps description at 256 characters; this one is at 249.
+# The provider caps description at 256 characters; this one is at 237.
 resource "google_service_account" "rollup_sweeper" {
   project      = var.project_id
   account_id   = module.service_account_ids.rollup_sweeper_id
   display_name = "Swarm Workflow Rollup Sweeper"
-  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup, issue-run-advance, issue-sweep, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep jobs and task_finished push; those nine /v1/admin routes only. No roles."
+  description  = "managed-by=swarm-terraform; OIDC identity of the workflow-rollup, issue-run-advance, stranded-pr-sweep, repo-index-poll, merge-wake, forge-refresh, workspace-sweep jobs and task_finished push; those eight /v1/admin routes only. No roles."
 }
 
 locals {
@@ -249,84 +249,18 @@ resource "google_cloud_scheduler_job" "issue_run_advance" {
   }
 }
 
-# --- The issue sweeper (owner decisions 2026-10-08) ---------------------------
+# --- The issue sweeper: removed 2026-10-12 ---------------------------------
 #
-# PAUSED SINCE 2026-10-11: superseded by the `issue-sweep` schedule (see the
-# `paused` line below and docs/schedules.md §8.1). What follows describes the
-# job as it ran until then, and as it would run again if un-paused.
-#
-# POST /v1/admin/issues/sweep (apps/swarm-api/swarm_api/routes/admin.py,
-# swarm_api.issuesweep.sweep_tenant) lists one tenant's registered
-# repositories' open issues with that tenant's token and starts an issue run
-# -- plan_approval auto, auto_merge, two fix rounds -- for each candidate,
-# oldest-updated first, until the tenant has its cap of live runs (default 8).
-# Whether an issue is ready is the planner's call (NOT_READY); the sweep only
-# skips what it can decide from the listing (docs/issue-runs.md "Sweeper").
-#
-# EVERY 30 MINUTES, OFF THE HOUR AND THE HALF HOUR (var.issue_sweep_schedule):
-# a planner runs for minutes and a run for hours, so a fresh candidate waiting
-# up to half an hour costs nothing anyone sees, while each sweep reads every
-# registered repository's open issues and pull requests. :07 and :37 keep it
-# clear of whatever else an operator schedules on :00 and :30.
-#
-# OFF UNTIL TWO SWITCHES SAY ON, neither of them this job: swarm-api's
-# SWEEP_ENABLED (terraform/infra var.enable_issue_sweep) and the tenant's own
-# `issue_sweep.enabled`. Until then each call answers which switch is off and
-# starts nothing, so the job can exist from the start.
-#
-# SAME TENANTS AND SAME IDENTITY as the jobs above: the route takes exactly one
-# tenant_id, and swarm-api admits the rollup-sweeper account to it by name
-# (swarm_api.auth.ROLLUP_SWEEPER_ROUTES) -- and, like the repository poll,
-# admits nobody else. Its one grant, run.invoker on swarm-api, is already the
-# rollup's (terraform/infra main.tf, rollup_sweeper_invokes_api), so this job
-# adds no IAM member. A run it starts is submitted as the registration's
-# creator in that tenant (routes/admin.py registration_owner_auth), never as
-# this account.
-
-resource "google_cloud_scheduler_job" "issue_sweep" {
-  for_each = var.rollup_tenant_ids
-
-  project = var.project_id
-  region  = var.region
-  name    = "${var.name_prefix}-issue-sweep-${each.key}"
-
-  description = "managed-by=swarm-terraform; issue_sweep: starts issue runs for tenant ${each.key}'s ready-looking open issues, up to its live-run cap (docs/issue-runs.md Sweeper)"
-  schedule    = var.issue_sweep_schedule
-  time_zone   = var.time_zone
-
-  # PAUSED 2026-10-11 (Schedules S9, docs/schedules.md §8.1 step 3; owner
-  # decision 2026-10-11): the tenant's `issue-sweep` SCHEDULE replaces this job,
-  # so two triggers of one sweep never run side by side. A literal, not
-  # var.paused: that variable pauses every job in this module, and only this
-  # one is being retired. Paused, NOT deleted: the job, its route in
-  # auth.ROLLUP_SWEEPER_ROUTES, SWEEP_ENABLED and the tenant's `issue_sweep`
-  # settings stay until the owner has watched the schedule fire for 7 days
-  # without an auto-pause, and a second S9 change then deletes them together.
-  # To fall back to SWEEP in the meantime, set this to var.paused again and
-  # pause the schedule (`sc schedules pause`).
-  paused = true
-
-  # The route stops starting work at 240 s (issuesweep.SWEEP_BUDGET_SECONDS)
-  # and reports what it did not reach, so it answers inside this deadline.
-  attempt_deadline = "300s"
-
-  http_target {
-    http_method = "POST"
-    uri         = "${trimsuffix(var.api_endpoint, "/")}/v1/admin/issues/sweep?tenant_id=${urlencode(each.key)}"
-
-    oidc_token {
-      service_account_email = local.rollup_sweeper_email
-      audience              = coalesce(var.api_audience, trimsuffix(var.api_endpoint, "/"))
-    }
-  }
-
-  # No retry: a retry would read every repository again, and the next sweep
-  # is half an hour away. A live run is never started twice for one issue --
-  # the sweep skips an issue with a live run -- so an overlap only re-reads.
-  retry_config {
-    retry_count = 0
-  }
-}
+# A per-tenant `issue_sweep` job (swarm-issue-sweep-<tenant>) lived here from
+# 2026-10-08, calling swarm-api's issue-sweep admin route at :07 and :37 as
+# the rollup sweeper. Schedules S9 paused it on 2026-10-11 when the tenant's
+# `issue-sweep` SCHEDULE took over (docs/schedules.md §8.1), and the second
+# S9 change deleted it on 2026-10-12, with its issue_sweep_schedule variable,
+# the route, swarm-api's SWEEP_ENABLED and the tenant document's
+# `issue_sweep` settings. The owner waived the planned 7-day watch. Do not
+# bring the job back beside the schedule: two triggers of one sweep would
+# start runs side by side. The schedule tick (`schedule_tick`, below) fires
+# the sweep now, through swarm_api/schedtypes/issue_sweep.py.
 
 # --- The stranded-PR sweep (part of #295) -------------------------------------
 #
@@ -346,8 +280,9 @@ resource "google_cloud_scheduler_job" "issue_sweep" {
 # logs, and submits nothing.
 #
 # EVERY 30 MINUTES, AT :19 AND :49 (var.stranded_pr_sweep_schedule): clear of
-# :00 and :30, where schedules bunch, and of the issue sweep's :07 and :37, so
-# the two reads of every registered repository with one tenant token do not
+# :00 and :30, where schedules bunch, and of eng's `issue-sweep` schedule at
+# :07 and :37 (the cadence it kept from the deleted issue_sweep job), so the
+# two reads of every registered repository with one tenant token do not
 # land in the same minute. A pull request is stranded only after two hours, so
 # half an hour more before anyone is told costs nothing anyone sees.
 #

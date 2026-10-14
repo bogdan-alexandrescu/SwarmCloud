@@ -81,6 +81,7 @@ These are requests for a person to decide. Nothing in this file is a plan.
 | 70 | `models.py`: `Task.human_wait`, the hand-off a holding task waits on, as a field and not a new state (LB-C) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
 | 71 | `profiles.py`: `RunnerProfile.live_browser`, True only on `claude-code-browser`, valid only on a GKE_AUTOPILOT profile (LB-D) | ACCEPTED by the owner 2026-10-11 (#1030) and APPLIED by the pull request that adds this line |
 | 72 | `profiles.py`: the `post-verdict` and `claude-code-review` comments name per-tenant accounts that no longer exist | proposed |
+| 74 | `states.py`: `EventType.STARTUP_PROGRESS`, the browser agent's start-up steps (STARTUP-API) | ACCEPTED by the owner 2026-10-13 and APPLIED by the pull request that adds this line |
 
 ---
 
@@ -11202,3 +11203,69 @@ The record stays in `metadata.start_problem`, which is what ships.
 **1-3** unchanged: it is a record, not a state; nothing that writes it moves
 a state, a lease or a pool. **9**: it is on the tenant's own task and served
 only through the tenant-scoped task routes, masked. 4-8 and 10 unchanged.
+
+---
+
+## 74. `states.py`: `EventType.STARTUP_PROGRESS`, the browser agent's start-up steps (STARTUP-API)
+
+**Status:** ACCEPTED by the owner 2026-10-13 ("we should put a progress bar
+when the browser agent is starting up the browser so you get a sense of
+progress as it comes up"; detail "Stages + real pod steps", carried as "One
+new event type"), and APPLIED by the pull request that adds this entry (lane
+STARTUP-API).
+
+### Why
+
+A `claude-code-browser` attempt spends a minute or more between `dispatched`
+and a first picture in the Browser tab: the pod is scheduled, the image is
+pulled, the `display` sidecar launches Chromium and waits for CDP, the worker
+container starts, and only then does the live stream paint. The task's state
+history shows none of it -- the task reads DISPATCHED, then STARTING, then
+RUNNING -- so the console had nothing to draw a progress bar from. The steps
+are moments in one attempt, not states (the task does not change state for
+any of them), so they are events, as the hand-off moments of entry 69 are.
+
+### The change
+
+```python
+class EventType(str, Enum):
+    ...
+    STARTUP_PROGRESS = "startup_progress"
+```
+
+`detail` is `{"step": <step>, "attempt_id": ..., "generation": ...}`, the
+steps in order `pod_scheduled`, `image_pulling`, `image_pulled`,
+`container_started` (written by the reconciler from the GKE pod's status,
+`reconciler.startsteps`), then `browser_launching`, `browser_ready`,
+`first_frame` (written by the worker from the live gate's `status`,
+`agent_worker.handoff.HandoffPath.note_startup`). Each step at most once per
+attempt; a step from a generation that is no longer the task's is not
+written. One type with the step in `detail`, not seven types: the existing
+`lease_acquired`, `dispatched`, `starting` and `running` events stay as they
+are and are the bar's first stages. swarm-api serves the steps of the current
+attempt with a per-profile estimate at `GET /v1/tasks/{id}/startup`.
+
+### Rollback
+
+Delete the member. Events already stored with this value would then fail to
+decode in `swarm_api.codec.event_from_dict` (`EventType(data["type"])`), so a
+rollback must first delete the stored `startup_progress` events, or ship a
+decoder that skips unknown types.
+
+### What it would break
+
+Nothing: a new member, written by code that ships with it. No reader matches
+every type exhaustively (`reconciler.progress` reads named types only, and
+the stuck rule's clock starts at `starting`/`running`/`checkpoint_restored`,
+never at this). No shell, jq or TypeScript copy of `EventType` exists to keep
+in step (`scripts/lib/check-contract-parity.sh` restates none; the console's
+`TaskEvent.type` is a plain string).
+
+### Invariants
+
+**1-3** untouched: an event is a record; writing it creates no demand, holds
+nothing and moves no state, lease or pool. **5**: the reconciler writes a pod
+step only inside a transaction that finds the task still on the lease and
+generation the pod was read for, and the worker writes only while it is not
+fenced; the route serves only the current attempt's generation. 4, 6-10
+unchanged.

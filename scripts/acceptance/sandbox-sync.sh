@@ -24,6 +24,13 @@
 #     all gets it opened -- as #1, the first number GitHub hands out, which is
 #     config.sh's default. Any other mismatch is refused, naming what to
 #     change: a renumbered issue would make that check read the wrong text.
+#   * the git-tools group's base branch, acceptance/git-tools-base: pointed
+#     (force-updated: a fixture ref outside swarm/, which no task can push)
+#     at the parent of the newest commit on ACC_REF that ADDED
+#     tests/acceptance/fixtures/git-tools/planted.txt. A lane cut from it adds
+#     its own planted.txt, so its pull request conflicts with main -- the
+#     conflict the rebase check resolves (docs/acceptance.md, "git-tools").
+#     No commit is made for it: the base is main's own history.
 #
 # THE TOKEN never reaches argv, a URL or a log: git asks for it through
 # GIT_ASKPASS, which reads it from the environment, and curl reads its header
@@ -126,16 +133,44 @@ cp -R "${REPO_ROOT}/${FIXTURES}" "${clone}/${FIXTURES}"
 git -C "${clone}" add -A -- "${FIXTURES}"
 if git -C "${clone}" diff --cached --quiet; then
   ok "${FIXTURES}/ on ${ACC_GITHUB_REPO}@${ACC_REF} already matches this commit"
+else
+  source_sha="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
+  git -C "${clone}" -c user.name="swarm-acceptance" -c user.email="swarm-acceptance@users.noreply.github.com" \
+    commit --quiet -m "Acceptance fixtures as of ${source_sha}"
+  git -C "${clone}" push --quiet origin "HEAD:refs/heads/${ACC_REF}" 2>"${WORK}/git.err" \
+    || die "could not push ${FIXTURES}/ to ${ACC_GITHUB_REPO}@${ACC_REF}: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
+  if git -C "${clone}" rev-parse -q --verify HEAD~1 >/dev/null; then
+    pushed="$(git -C "${clone}" diff --stat HEAD~1 HEAD | tail -n 1)"
+  else
+    pushed="the sandbox's first commit"
+  fi
+  ok "pushed ${FIXTURES}/ as of ${source_sha} to ${ACC_GITHUB_REPO}@${ACC_REF} (${pushed})"
+fi
+
+# --- 3. The git-tools base branch ---------------------------------------------
+# The parent of the newest commit that ADDED planted.txt has no planted.txt,
+# so a lane cut from it that adds its own conflicts with main's. Found in
+# main's history, so the clone is deepened first (the sandbox holds fixtures
+# only; its history is small). A sandbox whose first commit already held the
+# file has no such parent: said, and the git-tools rebase check FAILs naming
+# this branch, rather than a conflict being planted some other way.
+GIT_TOOLS_BASE="acceptance/git-tools-base"
+planted="${FIXTURES}/git-tools/planted.txt"
+git -C "${clone}" fetch --quiet --unshallow origin "${ACC_REF}" 2>/dev/null \
+  || git -C "${clone}" fetch --quiet origin "${ACC_REF}" 2>"${WORK}/git.err" \
+  || die "could not read ${ACC_GITHUB_REPO}@${ACC_REF}'s history: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
+added="$(git -C "${clone}" log --format=%H --diff-filter=A -n 1 HEAD -- "${planted}")"
+[[ -n "${added}" ]] || die "${planted} is not on ${ACC_GITHUB_REPO}@${ACC_REF} after the sync: the git-tools fixture is missing from this checkout"
+base="$(git -C "${clone}" rev-parse -q --verify "${added}^" 2>/dev/null || true)"
+if [[ -z "${base}" ]]; then
+  warn "${planted} arrived in ${ACC_GITHUB_REPO}'s first commit: no commit lacks it for ${GIT_TOOLS_BASE}, so the git-tools rebase check will FAIL"
   exit 0
 fi
-source_sha="$(git -C "${REPO_ROOT}" rev-parse --short HEAD 2>/dev/null || printf 'unknown')"
-git -C "${clone}" -c user.name="swarm-acceptance" -c user.email="swarm-acceptance@users.noreply.github.com" \
-  commit --quiet -m "Acceptance fixtures as of ${source_sha}"
-git -C "${clone}" push --quiet origin "HEAD:refs/heads/${ACC_REF}" 2>"${WORK}/git.err" \
-  || die "could not push ${FIXTURES}/ to ${ACC_GITHUB_REPO}@${ACC_REF}: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
-if git -C "${clone}" rev-parse -q --verify HEAD~1 >/dev/null; then
-  pushed="$(git -C "${clone}" diff --stat HEAD~1 HEAD | tail -n 1)"
-else
-  pushed="the sandbox's first commit"
+current="$(git -C "${clone}" ls-remote origin "refs/heads/${GIT_TOOLS_BASE}" 2>/dev/null | awk '{print $1}')"
+if [[ "${current}" == "${base}" ]]; then
+  ok "${GIT_TOOLS_BASE} on ${ACC_GITHUB_REPO} is ${base:0:12}, the commit before ${planted} was added"
+  exit 0
 fi
-ok "pushed ${FIXTURES}/ as of ${source_sha} to ${ACC_GITHUB_REPO}@${ACC_REF} (${pushed})"
+git -C "${clone}" push --quiet --force origin "${base}:refs/heads/${GIT_TOOLS_BASE}" 2>"${WORK}/git.err" \
+  || die "could not point ${GIT_TOOLS_BASE} at ${base:0:12} on ${ACC_GITHUB_REPO}: $(redact <"${WORK}/git.err" | head -n 3 | tr '\n' ' ')"
+ok "pointed ${GIT_TOOLS_BASE} on ${ACC_GITHUB_REPO} at ${base:0:12} (was ${current:-absent}), the commit before ${planted} was added"

@@ -14,6 +14,7 @@ import { WorkspaceRefusalBanner, workspaceRefusal } from './WorkspaceRefusal'
 import { apiHeaders, chosenTenant, classifyFailure, dropRefusedTenant, isPaused, type ApiError } from './fetch'
 import { HELP } from './help'
 import { HelpCard } from './HelpCard'
+import { clearTaskPrefill, peekTaskPrefill } from './submitPrefill'
 import { Mark } from './primitives'
 import { RoomFact, RunnerPicker, useProviderKeys } from './RunnerPicker'
 import { FailedPanel, Screen, useSubmitAs } from './Shell'
@@ -959,14 +960,25 @@ function Form({ capacity }: { capacity: Capacity }) {
   // EMPTY, AND IT STAYS EMPTY UNTIL SOMEBODY PICKS (#118/#119, submit.html
   // decided 2026-10-01). No runner is preselected: `blocked` below holds the
   // button while this is '', so an untouched form cannot send anything.
-  const [chosen, setChosen] = useState('')
-  const [fields, setFields] = useState<InputField[]>([])
+  // THE ONE EXCEPTION: a task another screen handed over (GT-GUIDE, the Git
+  // tokens page's "Run a test task"; submitPrefill.ts). It is a pick the
+  // person made there, of a runner this catalogue serves; the button still
+  // waits for their press here.
+  const [handed] = useState(() => peekTaskPrefill())
+  useEffect(() => clearTaskPrefill(), [])
+  const handedProfile = handed !== null && capacity.runner_profiles[handed.profile] !== undefined ? handed.profile : ''
+  const [chosen, setChosen] = useState(handedProfile)
+  const [fields, setFields] = useState<InputField[]>(() =>
+    handed === null || handed.prompt === ''
+      ? []
+      : seedFields([field({ name: 'prompt', kind: 'text', text: handed.prompt })], requiredInputKeys(capacity.runner_profiles[handedProfile] ?? undefined)),
+  )
   // Seeded with the API's own defaults, so a caller who touches nothing sends
   // the dispatch they would have got before this control existed.
   const [dispatch, setDispatch] = useState<DispatchDraft>({
     strategy: DEFAULT_STRATEGY,
     carrier: DEFAULT_CARRIER,
-    repositoryUrl: '',
+    repositoryUrl: handed?.repositoryUrl ?? '',
   })
   const [outcome, setOutcome] = useState<Outcome>({ kind: 'idle' })
   // Whether this tenant holds each provider's key, for every row of the picker.

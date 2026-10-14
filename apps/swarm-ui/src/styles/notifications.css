@@ -1,0 +1,153 @@
+/* ---- the header bar and its bell (#1206, proposal A) ------------------------
+   48px, at the top of the content area on every page, over the page AND an
+   open agent beside it -- so it carries `.app`'s own width and gutter. The
+   trail and the frame's age sit on the left (`.ctl-head`, drawn only where
+   the page head has not already taken them); the bell is always the last
+   thing on the right. It sticks to the top of the scroller, so the bell is
+   one click away from anywhere on a long page. */
+.ctl-bar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  gap: var(--ctl-s3);
+  height: 48px;
+  max-width: var(--app-max);
+  margin: 0 auto;
+  padding: 0 var(--app-pad);
+  background: var(--bg);
+}
+/* NOTHING TO HOLD, NO STRIP: on a section page against an API that does not
+   serve the feed (the bell hides on its 404) the bar would be 48px of empty
+   ground on every page. */
+.ctl-bar:empty { display: none; }
+/* The trail fills the bar's left; it already holds one line (CH-15). */
+.ctl-bar > .ctl-head { flex: 1 1 auto; min-width: 0; min-height: 0; margin: 0; }
+.ctl-bar > .nt { margin-left: auto; }
+
+.nt { position: relative; flex: none; }
+.nt-bell {
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 1px solid transparent;
+  border-radius: var(--r-ctl);
+  background: none;
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.nt-bell:hover, .nt-bell.is-open { background: var(--surface-2); color: var(--text); }
+.nt-bell:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; }
+.nt-bell-ic { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+.nt-count {
+  position: absolute;
+  top: 1px;
+  right: 0;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: var(--s-warn);
+  color: var(--bg);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--mono);
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+/* THE DROP-DOWN, ~392px, anchored under the bell's right edge. */
+.nt-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  width: 392px;
+  max-height: min(70vh, 640px);
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  background: var(--surface);
+  box-shadow: var(--sk-sh);
+  color: var(--text);
+}
+.nt-panel:focus { outline: none; }
+.nt-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px; border-bottom: 1px solid var(--line-soft); }
+.nt-h { margin: 0; font-size: var(--t-body); font-weight: 600; }
+.nt-chip {
+  padding: 1px 8px;
+  border-radius: var(--r-pill);
+  background: var(--s-warnb);
+  color: var(--s-warn);
+  font: 600 var(--t-micro)/var(--lh-micro) var(--font);
+}
+.nt-all {
+  margin-left: auto;
+  border: 0;
+  background: none;
+  color: var(--sk-ac);
+  font: inherit;
+  font-size: var(--t-meta);
+  cursor: pointer;
+}
+.nt-all:disabled { color: var(--text-faint); cursor: default; }
+.nt-close { border: 0; background: none; color: var(--text); font-size: var(--t-title); cursor: pointer; padding: 0 6px 0 0; }
+.nt-why { margin: 0; padding: 8px 14px; font-size: var(--t-meta); color: var(--text-dim); border-bottom: 1px solid var(--line-soft); }
+.nt-body { overflow: auto; }
+.nt-group > h3 {
+  margin: 0;
+  padding: 10px 14px 4px;
+  font: 600 var(--t-micro)/var(--lh-micro) var(--font);
+  color: var(--text-faint);
+}
+.nt-group > ul { list-style: none; margin: 0; padding: 0 0 6px; }
+.nt-item {
+  display: grid;
+  grid-template-columns: 8px 28px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+  padding: 8px 14px 8px 8px;
+}
+.nt-item:hover { background: var(--surface-2); }
+.nt-dot { width: 6px; height: 6px; margin-top: 10px; border-radius: 50%; }
+.nt-item.is-unread .nt-dot { background: var(--sk-ac); }
+.nt-ic { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 8px; background: var(--s-neub); color: var(--s-neu); }
+.nt-ic-svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* Tinted by group: what waits on a person is amber, a block is red-free amber
+   too (it is a wait, not a failure), finished work is green. */
+.nt-item.is-admin .nt-ic, .nt-item.is-approval .nt-ic { background: var(--s-warnb); color: var(--s-warn); }
+.nt-item.is-task .nt-ic { background: var(--s-parkb); color: var(--s-park); }
+.nt-item.is-account .nt-ic { background: var(--sk-acs); color: var(--sk-ac); }
+.nt-item.is-finished .nt-ic { background: var(--s-liveb); color: var(--s-live); }
+.nt-main { display: flex; flex-direction: column; gap: 2px; min-width: 0; color: inherit; text-decoration: none; }
+.nt-main:focus-visible { outline: 2px solid var(--sk-ac); outline-offset: 2px; border-radius: 4px; }
+.nt-title { font-size: var(--t-body); color: var(--text-dim); overflow-wrap: anywhere; }
+.nt-item.is-unread .nt-title { font-weight: 600; color: var(--text); }
+.nt-detail { font-size: var(--t-meta); color: var(--text-dim); overflow-wrap: anywhere; }
+.nt-question { font-size: var(--t-meta); color: var(--text); overflow-wrap: anywhere; }
+.nt-dest { font-size: var(--t-meta); color: var(--sk-ac); }
+.nt-side { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; font: var(--t-micro)/var(--lh-micro) var(--mono); color: var(--text-faint); white-space: nowrap; }
+.nt-mark { border: 0; padding: 0; background: none; color: var(--sk-ac); font: inherit; cursor: pointer; }
+.nt-empty { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 28px 20px; text-align: center; }
+.nt-empty-ic { width: 28px; height: 28px; fill: none; stroke: var(--s-live); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.nt-empty-h { margin: 4px 0 0; font-weight: 600; }
+.nt-empty-p { margin: 0; font-size: var(--t-meta); color: var(--text-dim); }
+.nt-foot { margin: 0; padding: 8px 14px; border-top: 1px solid var(--line-soft); font-size: var(--t-micro); color: var(--text-faint); text-align: center; }
+
+/* THE PHONE: a full-screen Notifications page, not a drop-down a 390px
+   screen cannot hold. */
+.nt-panel.is-page {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  width: auto;
+  max-height: none;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+.nt-panel.is-page .nt-body { flex: 1 1 auto; }
+@media (max-width: 759px) {
+  .ctl-bar { height: 44px; }
+}

@@ -27,7 +27,7 @@ class AnyTenantTokens:
         self.asked: list[str] = []
         self.issued: dict[str, str] = {}
 
-    def token_for(self, tenant) -> str:
+    def token_for(self, tenant, *, person=None) -> str:
         secret_id = tenant.secret_name(forge.GIT_PROVIDER)
         self.asked.append(secret_id)
         if secret_id in self.missing:
@@ -119,6 +119,10 @@ class GitHubWrites:
         #: `(method, path)` -> the status that one route answers instead, so a
         #: test can refuse one write (closing an issue) and not the others.
         self.refuse: dict[tuple[str, str], int] = {}
+        #: A method, or one `(method, path)`, whose request RAISES this
+        #: instead of answering -- GitHub unreachable (a `URLError`, a
+        #: timeout), which the shipped client maps, not the test.
+        self.raise_for: dict[Any, BaseException] = {}
         self.comments: dict[int, dict[str, Any]] = {}
         self.pulls: dict[int, dict[str, Any]] = {}
         #: Each issue an `already_on_main` run closed (#646), by number: the
@@ -161,6 +165,9 @@ class GitHubWrites:
         if method in self.status:
             return self.status[method], json.dumps({"message": "refused"}).encode()
         parsed = urlparse(url)
+        for key in (method, (method, parsed.path)):
+            if key in self.raise_for:
+                raise self.raise_for[key]
         if (method, parsed.path) in self.refuse:
             return self.refuse[(method, parsed.path)], json.dumps({"message": "refused"}).encode()
         parts = parsed.path.strip("/").split("/")  # repos/o/r/...

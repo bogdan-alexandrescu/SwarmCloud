@@ -169,11 +169,117 @@ Four reasons, each a requirement elsewhere in this document:
 
 What the agent loses is the choice of browser flags. `claude-code-browser`
 does not need them; the profile's agent instructions point Playwright at the
-CDP endpoint. **A Chromium the agent starts itself, headless, is not shown and
-cannot be prevented**: the live view shows the platform's browser. The worker
-sets no `DISPLAY` in the agent's environment (`Workspace.child_env`,
+CDP endpoint. The worker sets no `DISPLAY` in the agent's environment
+(`Workspace.child_env`,
 `apps/agent-worker/agent_worker/workspace.py::Workspace.child_env`), so a headed launch fails
 loudly rather than drawing somewhere nobody sees.
+
+**The agent's own Chromium is refused, not merely unshown** (BROWSER-ENFORCE,
+owner decision 2026-10-13, part of #1030). This section used to accept that a
+headless Chromium the agent started itself was not shown and could not be
+prevented, and task_7cda0d5335f049b4b442 showed what that costs: the agent launched one with
+Playwright, did its work there, and the person watching the live browser saw
+nothing. Now, whenever the live browser exists (`SWARM_CDP_ENDPOINT` is set),
+the claude-code runner (`runners/claude_code.py::body`):
+
+* points the **agent's** `PLAYWRIGHT_BROWSERS_PATH` at
+  `/opt/swarm/live-browser-only`, a directory in which every Chromium
+  Playwright would launch is the stub `images/agent-runtime-browser/live-browser-only`.
+  `chromium.launch()` and `launch_persistent_context()`, headless or not,
+  fail at once with *"This agent's browser is the live browser the person
+  watches: connect with
+  chromium.connect_over_cdp(os.environ['SWARM_CDP_ENDPOINT'])"*. Only the
+  agent's variable changes: the image's ENV, which the gate
+  (`livegate/__main__.py::find_chromium`) and the `browser` runner read, is
+  still `/opt/playwright`, so the stub cannot reach the platform's own
+  Chromium. A `sitecustomize` wrapping `BrowserType.launch` was the
+  alternative; the stub directory was chosen because it also holds for
+  Node's Playwright and for any interpreter, and needs no code in the
+  agent's process. The image's build-time self-test (`selftest.py`) proves
+  each launch form ends in that message;
+* registers the Playwright MCP server (`@playwright/mcp`, pinned in the
+  Dockerfile) through `--mcp-config` with `--cdp-endpoint
+  $SWARM_CDP_ENDPOINT`, so `browser_navigate`, `browser_tabs` and the rest
+  act on the live browser, and the tabs they open are the ones the console
+  shows. It connects; it launches nothing;
+* tells the agent so, and names `from swarm_browser import live`, which
+  returns `(playwright, browser, context)` connected over CDP to the
+  browser's existing context.
+
+On the browser image the CLI's PATH also puts `/opt/venv/bin` first, so the
+agent's `python` is the venv that has Playwright and `swarm_browser`.
+
+What this does **not** stop: an agent that names a binary itself
+(`executable_path=` pointing into `/opt/playwright`) still gets a hidden
+browser. The stub turns the default path, the one an agent reaches for, into
+an instruction; it is not a sandbox, and the pod remains the boundary.
+
+### 3.2.1 dev-browser (opt-in)
+
+Owner decision 2026-10-14 (DEVB-INSTALL, part of #1030): the browser image
+carries [dev-browser](https://github.com/SawyerHood/dev-browser) v1
+(`1.0.0-rc.3`, npm dist-tag `next`) as an **opt-in** CLI beside the
+Playwright MCP server, which stays registered and stays the default. It is for
+scripted multi-step browsing: a Puppeteer script per call, named pages that
+outlive the call. Whether it ever becomes the default is for a benchmark to
+decide, not this lane.
+
+**Attach only, never launch.** dev-browser's normal mode starts its own
+Chrome, found on PATH, in `~/.cache/ms-playwright`, in its own Chrome for
+Testing download (`dev-browser install`) or at `DEV_BROWSER_CHROME`, and it
+can start it headless. Any of those is the hidden browser
+task_7cda0d5335f049b4b442 used, which the person watching never saw. The
+stub directory above does not cover it: dev-browser never reads
+`PLAYWRIGHT_BROWSERS_PATH` (the string is not in the binary; checked
+2026-10-14). So it is used only in ATTACH mode, `--connect
+$SWARM_CDP_ENDPOINT`, which reaches the same browser the console shows,
+through the gate. Its own launch is closed off in two places:
+
+* `dev-browser` on PATH is a wrapper
+  (`images/agent-runtime-browser/dev-browser`). It passes `--connect
+  "$SWARM_CDP_ENDPOINT"` on every call. It refuses `install`, `chrome`,
+  `--headless` and any `--connect` other than the live browser's: a bare
+  `--connect` probes 127.0.0.1:9222-9229, which could reach Chromium's own
+  port behind the gate. It also refuses every call when the agent's
+  `PLAYWRIGHT_BROWSERS_PATH` is the stub directory but the endpoint is gone.
+  The real binary is at `/opt/swarm/dev-browser/dev-browser-bin`, off PATH.
+* `DEV_BROWSER_CHROME`, which dev-browser reads before any other lookup, is
+  a copy of the `live-browser-only` stub. The claude-code runner sets it for
+  the agent's whole environment, so even the real binary, run by its path,
+  fails a launch with the stub's message.
+
+**Why a wrapper, and what it is not.** The wrapper is guidance,
+not a sandbox. It turns the paths an agent reaches for into an instruction that
+names the live browser. An agent can still run the real binary with a
+`--connect` of its choosing. As this section already says of
+`executable_path=`, the pod is the boundary, not the wrapper.
+
+**The runner** (`runners/claude_code.py::body`), only when
+`SWARM_CDP_ENDPOINT` is set:
+
+* puts `DEV_BROWSER_HOME` at `work/.dev-browser`, so the daemon's socket and
+  the named-page map travel with the workspace across a park. The checkpoint
+  skips the socket and keeps the map;
+* adds one paragraph to the note: dev-browser is available, it drives the
+  same live browser, and after every `swarm-handoff wait` the agent runs
+  `dev-browser stop` before its next script. On an attached browser `stop`
+  only disconnects, and the next call re-attaches its named pages by target
+  id, as the person left them.
+
+**What it costs.** The binary is the upstream release's standalone Bun
+build, with puppeteer-core 25.8.0 inside. It needs libc only, so no Node is
+added. It is 96,442,496 bytes (92.0 MiB) uncompressed and 36,429,474 bytes
+(34.7 MiB) gzip-compressed, which is about what the new layer adds to a pull.
+That figure was measured on the file, not on a pushed image: CI's image-size
+report for this change is the number to trust. The build reads it from the
+tool mirror at its pinned sha256, like the base's release files
+(docs/runbooks/build-mirror.md).
+
+**Not yet working through the gate.** Until the gate's CDP policy lane
+lands, the gate refuses `Performance.enable` and `Audits.enable`, which
+Puppeteer sends when it opens a page. So dev-browser cannot open a page
+through the gate yet. That policy change is a separate lane and is not part
+of this one.
 
 ### 3.3 The path to the console: outbound only, through a relay
 
@@ -295,7 +401,20 @@ most one pod; a Cloud Run service with `max_instances = 1` does not (two
 revisions overlap during a rollout, and the two ends can land on different
 revisions). A relay restart drops every live session for the seconds it takes
 to come back; both ends reconnect, and nothing about the task changes because
-the relay holds no task state. Scale-out, when measured to be needed, is sharding by
+the relay holds no task state. The console reconnects with a new viewer
+ticket. The gate cannot mint its own -- only the worker holds the attempt key
+that proves one -- so the WORKER reconnects it: when the gate's `status` says
+its tunnel closed, the worker asks the live-session route again (an open
+session is answered with a fresh one-use ticket, counted in `tunnel_tickets`)
+and hands it over, backing off to one try a minute and stopping when swarm-api
+says the session is over (`agent_worker.handoff.HandoffPath._keep_tunnel`).
+The gate closes a link the relay has been silent on for 75 s, its pings
+included, so a relay pod that vanished without a FIN is noticed rather than
+waited on (`livegate.tunnel.SILENT_SECONDS`). Until LB-R6 neither existed, and
+a dropped tunnel stayed dropped for the rest of the attempt: its session stayed
+open, still serving the last origin and device, so the console drew LIVE, the
+strip and the device chips over a frame no viewer could be painted into --
+what re-QA pass 8 (2026-10-12) saw on a resumed attempt. Scale-out, when measured to be needed, is sharding by
 `session_id` across named replicas with the shard written on the session
 document.
 
@@ -330,7 +449,7 @@ values. noVNC renders nothing a page wrote.
 
 ```
 agent: swarm-handoff request --reason "Sign in to GitHub as the bot account" --expect github.com
-agent: swarm-handoff wait            # blocks up to 9 minutes, then says "still waiting" (exit 75)
+agent: swarm-handoff wait            # blocks until resolved, up to 9 minutes a call, then "still waiting" (exit 75)
 ```
 
 `swarm-handoff` is a small command in the browser image. Like the child-task
@@ -343,11 +462,27 @@ because claude-code's Bash tool kills a command at 10 (`#736`, recorded in
 
 | exit | meaning | what the agent should do |
 |---|---|---|
-| 0 | control was returned; a JSON summary is on stdout (section 5.9) | look at the page and continue |
-| 75 | still waiting | call `wait` again |
+| 0 | control was returned; a JSON summary is on stdout (section 5.9) | look at the page once and continue |
+| 75 | still waiting | call `wait` again, at once |
 | 3 | the wait expired; the worker is checkpointing and parking | write its notes into `work/` and stop; the worker ends it either way |
 | 4 | the task is being cancelled | stop |
 | 5 | refused (rate limit, no live path, reason invalid) | carry on without help, or fail with that reason |
+
+**Wait, do not poll (HANDOFF-POLICY, 2026-10-13).** Measured on
+task_2ac5d7e22a51460995a2: while it waited, the agent ran `curl
+/json/version` against CDP in a loop after `wait` returned. Polling a paused
+browser learns nothing and spends the agent's turns. So every answer `wait`
+prints carries `next`, the instruction for that exit -- on 0 "look once and
+carry on", on 75 "run `wait` again; do not poll the browser" -- and the
+helper itself reads the worker's answer no faster than every 100 ms
+(`MIN_POLL_SECONDS`, whatever `--poll` says). The agent is told the same
+twice before it ever asks: the claude-code runner's browser note
+(`LIVE_BROWSER_NOTE`, `apps/agent-worker/agent_worker/runners/claude_code.py`:
+"wait, do not poll the browser") and the spool's guide (`AGENT_GUIDE`,
+`apps/agent-worker/agent_worker/handoff.py`). A command that "blocks until
+resolved" still cannot outlive the Bash tool's 10 minutes, and a watched hold
+may last 30 (section 4.3); exit 75 is that seam, and `next` is what keeps the
+agent on it instead of in a loop of its own.
 
 The **worker** picks the request up on its control poll (10 seconds,
 `WorkerConfig.control_poll_seconds`,
@@ -368,11 +503,24 @@ The **worker** picks the request up on its control poll (10 seconds,
 The task **stays `RUNNING`** (section 4.3 says why that is the recommendation,
 and Q2 asks the owner).
 
-**Notification.** Phase 1 notifies in the console only: a banner on the
-Overview's "Needs a look", a badge on the agent's row, and the browser tab's
-title. The platform has no outbound notification channel today (no mail or
-chat integration in `apps/swarm-api` or `apps/reconciler`), so "optional
-notification" is a new integration, and Q8 asks whether it is wanted.
+**Notification (HANDOFF-POLICY, owner decision 2026-10-13: "notify, park
+fast, extend while watched").** The moment the wait is recorded, the
+notification feed (`GET /v1/notifications`,
+`apps/swarm-api/swarm_api/notifications.py::handoffs`) derives an unread
+**"Agent needs you"** item -- the redacted reason as its detail, a link to the
+task's Browser tab, and a count on the bell's badge (`unread_needs_you`). It
+goes to everyone who may take control (section 5.1, `handoff.may_control`):
+the submitter, and every member of the tenant while "Let any member take
+control" is on for the attempt's session (or when the task has no human
+owner). A personal workspace's member-scoped reader is told of their own
+tasks only, and nothing crosses a tenant (invariant 9). The item is derived,
+not stored (docs/notifications.md): it is gone on the next read once the
+hand-off resolves, and its id carries the request id, so a second hand-off in
+the same attempt is unread again. The parking-fast rule below depends on this
+bell: a person who is coming now hears about it within a feed poll.
+
+There is still no outbound channel (no mail or chat integration in
+`apps/swarm-api` or `apps/reconciler`); Q8 asks whether one is wanted.
 
 ### 4.2 Take control, sign in, return control
 
@@ -422,27 +570,65 @@ RUNNING (human_wait set, lease HELD) --hold expires, nobody in control-->
            park(HUMAN_REQUIRED), bounded attempt refund, release lease, exit
 PARKED (HUMAN_REQUIRED, NO capacity) --a person presses "I'm ready to sign in"-->
 READY --admission--> LEASED -> ... -> RUNNING (new attempt, new generation)
-   worker restores work/, starts the agent; console shows "starting your browser"
-   agent re-opens the page and asks again; the person is already there
+   worker restores work/, tells the agent which hand-offs were done (resumed.md),
+   starts it; console shows "starting your browser"
+   agent carries on from its notes, re-opens the page and asks again only for
+   what was not done; the person is already there
 PARKED (HUMAN_REQUIRED) past human_park_max_seconds --> DEAD_LETTERED, end_cause human_wait_expired
 ```
 
-**Phase H, the hold: `RUNNING` with `human_wait` set, lease held, default 10
-minutes (`human_hold_seconds`, Q3).** The browser and its half-finished state
-are alive, which is the whole point of the feature: a sign-in has to happen in
-the browser that will use the session. Capacity is exactly what it is for any
-`RUNNING` browser task: the lease holds the `browser` resource class's 2 units
-and the backend and provider pools
+**Phase H, the hold: `RUNNING` with `human_wait` set, lease held -- one
+minute unless someone is watching, up to 30 while they are (HANDOFF-POLICY,
+owner decision 2026-10-13, replacing Q3's flat 10 minutes).** The browser and
+its half-finished state are alive, which is the whole point of the feature: a
+sign-in has to happen in the browser that will use the session. Capacity is
+exactly what it is for any `RUNNING` browser task: the lease holds the
+`browser` resource class's 2 units and the backend and provider pools
 (`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`), and the pod costs 8
 vCPU and 16 GiB per minute, idle or not, because `requests == limits`
-(invariant 7). The hold is bounded so that an unattended request costs ten
-pod-minutes, not an afternoon. A person who is **in control** extends nothing
-past the hold except while they are actively in control (renewed, not idle),
-up to the attempt's own timeout: the hold's deadline is
-`min(requested_at + human_hold_seconds, attempt deadline)` and taking control
-moves it to `min(now + control_idle_seconds, attempt deadline)` on every input,
-so a person mid-sign-in is not parked under their fingers, and a person who
-walks away is.
+(invariant 7).
+
+*Why the flat 10 minutes went.* Measured over 26 live-browser tasks
+(2026-10-13): 42 hand-offs, 16 returned, 25 expired (60%), 1 cancelled. 13 of
+the expiries had nobody present (`person_waiting` false on the request event),
+and each held its 2-unit lease and pod for the full 10 minutes -- about 4.2
+pod-hours for nobody. And 7 expired AFTER the person had pressed "I'm ready":
+they were there, on a slow or frozen view, and the clock ran out under them.
+One fixed number was wrong in both directions.
+
+*The rule.* swarm-api owns the deadline (`Task.human_wait.deadline`); the
+worker reads it on every control poll and parks when it passes, exactly as
+before (`agent_worker.handoff.HandoffPath._watch`).
+
+* **Park fast.** A request opens the hold at `min(requested_at +
+  human_unwatched_seconds, attempt deadline)`; `human_unwatched_seconds` is 60
+  (`apps/swarm-api/swarm_api/handoff.py::opening_deadline`). If nobody opens
+  the live view in that minute, the worker parks: wipe, checkpoint,
+  `PARKED(HUMAN_REQUIRED)`, release the lease, exit (invariant 4) -- within a
+  control poll (10 s) of the minute, instead of after ten.
+* **Extend while watched.** swarm-api's proxied viewer socket is the "someone
+  is watching" signal: on join and every `live_watch_flush_seconds` (15) it
+  calls `LiveService.watched`, which moves the deadline to `now +
+  human_unwatched_seconds` and stamps `human_wait.watched_at`. So a watched
+  hold is always about a minute ahead of now, and parks about a minute after
+  the last viewer leaves. Taking control and every flush of a controller's
+  input move it to `now + control_idle_seconds` as before, so a person
+  mid-sign-in is not parked under their fingers.
+* **Capped.** Every extension, watched or controlled, stops at
+  `requested_at + human_hold_max_seconds` (1800, 30 minutes) and the
+  attempt's own deadline (`handoff.extended_deadline`), and never moves the
+  deadline earlier. A tab left open on a walked-away desk costs half an hour,
+  not an afternoon.
+* **Never revived.** A viewer who arrives after the deadline passed changes
+  nothing: the worker may already be parking, and racing it would leave a
+  hold with no pod behind it. That person presses "I'm ready" (below), which
+  is unchanged.
+
+Who is counted as watching is any member admitted to the view (section 5.2),
+not only someone who may take control: the submitter watching from a second
+device, or a member waiting for control to be opened to them, is a person the
+pod is worth holding for. The ticket alone is not counted -- a ticket nobody
+connects with is not a person at the screen.
 
 **Phase P, the park: `PARKED` with `ParkReason.HUMAN_REQUIRED`, no capacity.**
 Invariant 4 forbids sleeping through a long wait, and a person's lunch is a
@@ -462,11 +648,47 @@ would be re-admitted with nobody there to sign in. So it is a new `ParkReason` (
 **What the park costs.** The browser is gone: its session, its tabs, its
 history (section 5.5 says why they are not checkpointed). The claude-code
 agent has no conversation resume (`docs/design/child-tasks.md` (`the CLI runners have no conversation resume`)), so the next attempt starts the agent again on
-the restored `work/`; the agent must keep its plan there, which
-`claude-code-browser`'s instructions say. And the person waits for a cold start
+the restored `work/`. And the person waits for a cold start
 -- admission plus a GKE pod start -- before the browser is back. That is the
-price of giving the capacity back, and it is paid only when nobody came within
-the hold.
+price of giving the capacity back, and it is paid only when nobody opened the
+view within the minute, or the last viewer left.
+
+**What the resumed attempt is told (RESUME-PROGRESS, QA12-14).** Measured
+2026-10-13 on task_4defa61c5eea4a5c87f5: an agent asked for QA1 (returned),
+then QA2 (nobody came; parked); generation 2 asked for QA1 again, then QA2.
+Two things were missing, and both are now in place:
+
+* *The restore.* The park's refund takes `attempt_count` back down, so the
+  next lease read 1 and the worker took it for the task's first attempt,
+  which restores nothing (`Worker._recorded_checkpoint`). The agent's notes
+  and work were never put back. `human_wait_resumes` is now counted back
+  exactly as `child_await_resumes` is, so the attempt after a hand-off park
+  restores the checkpoint the park wrote.
+* *A record of what was done.* The worker keeps a ledger of every hand-off,
+  `$SWARM_HANDOFF/history.json` (request, redacted reason, outcome, the
+  §5.9 summary), which travels in the checkpoint with the rest of `work/`.
+  On an attempt whose restored ledger holds an earlier attempt's hand-offs,
+  the worker writes `$SWARM_HANDOFF/resumed.md` before the agent starts --
+  each hand-off marked DONE or NOT DONE, oldest first, then the agent's own
+  `$SWARM_HANDOFF/notes.md`, redacted -- and the claude-code runner puts it
+  in the agent's prompt, after the caller's
+  (`apps/agent-worker/agent_worker/handoff.py::resume_summary`,
+  `apps/agent-worker/agent_worker/runners/claude_code.py::resume_summary`). The
+  agent's guide asks it to keep `notes.md` current, and to write it on exit
+  3. The ledger is in the agent's reach, so it is read as untrusted: shape-
+  checked, bounded and redacted again, and only ever told to the same task's
+  agent; a `resumed.md` the worker did not write this attempt is removed, and
+  an earlier attempt's answers in `responses/` are cleared so a `wait` cannot
+  read an old `expired` as its own.
+
+Continuing the CLI's own conversation (`claude --resume`) across the park was
+considered and not done: the transcript is in the checkpoint
+(`work/.claude/`), but it is keyed by the working directory, which is
+per-attempt (`<workspace_root>/<attempt_id>/work`), and every absolute path
+the old conversation used points into a workspace that no longer exists. The
+summary needs no CLI internals and no contract change. Invariants 4 and 8 are
+untouched: the park still checkpoints, releases and exits; the resume only
+changes what the next attempt restores and is told.
 
 **Promotion is a person's.** `POST /v1/tasks/{task_id}/human-ready`
 (eligible as for taking control, section 5.1) moves `PARKED(HUMAN_REQUIRED) ->
@@ -555,6 +777,19 @@ credentials into it is a decision the submitter should make. The submitter can
 open control to any member of the tenant for this task with one toggle,
 audited. "Any member may control" as the default is simpler and is the
 alternative offered.
+
+**The toggle is the task's, and it goes both ways (owner decision 2026-10-13,
+"Carry over, with a confirm"; QA12-11).** QA pass p12 found it one way, with no
+word of what it did, and back off on a resumed attempt, because it lived on one
+attempt's `live_sessions` document. swarm-api now keeps it on the task document
+as well (`live_open_to_members`, `live_opened_to_members_by`; swarm-api's own
+fields, which the frozen `Task` model does not read) and copies it into each new
+attempt's session when the session opens, saying so in that session's
+`session_opened` audit entry. Turning it on asks once, explaining that it
+carries over; `DELETE /v1/tasks/{task_id}/live/open-to-members` turns it off,
+submitter only, audited as `control_closed_to_members`. Turning it off takes no
+control away: whoever holds it keeps it until they return it or it lapses, and
+the submitter can take it over.
 
 ### 5.2 Every connection is checked, and keeps being checked
 
@@ -688,6 +923,22 @@ live-browser attempt. **A worker that cannot protect its heap gets no live
 path**: no tunnel ticket, no hand-off; the console says "live view unavailable
 for this attempt" and the agent's `swarm-handoff` exits 5.
 
+**A slow pod is not a dead lease (LB-KEYRACE, 2026-10-12).** The key is
+registered, and the live session opened, before the worker's first heartbeat.
+A lease is written with `heartbeat_at: None` and `expires_at = created_at +
+lease_timeout_seconds` (120 s), so a GKE pod that took longer than that to
+reach STARTING was refused `child_key_window_closed` on a lease the reconciler
+still judged live by its dispatch deadline: task_23cc2e82178640709a45 took
+154 s, registered no key, and ran with no live browser. swarm-api's
+`_lease_is_live` (`apps/swarm-api/swarm_api/children.py`) now uses the
+reconciler's own clock for a never-beaten lease — live until
+`dispatch_deadline` — and nothing else about the fence moved: the task must be
+STARTING, at this lease and generation, the lease unreleased, the slot unused.
+Whatever still refuses the live path is never silent: the worker writes a
+RUNNING event with `cause: live_browser_unavailable`, the code, the reason and
+`message: "live browser unavailable: <reason>"`, which the console's event list
+shows.
+
 #### 5.4.2 The worker talks to the gate on a channel the agent cannot use
 
 `ctl.sock` sits on a volume both containers mount, so the agent can connect to
@@ -734,16 +985,23 @@ control mode it:
   `Page.addScriptToEvaluateOnNewDocument` and `Runtime.addBinding` it has seen
   the agent make, tracked by identifier -- and restores them on return, so a
   page loaded during control runs no agent-installed listener;
-* offers the person **"start from a fresh page"**, the default for a
-  hand-off: the gate creates **its own browser context**
+* can **"start from a fresh page"** when asked for it by name (`pause` with
+  `fresh_page: true`): the gate creates **its own browser context**
   (`Target.createBrowserContext` on the gate's session, with no proxy
   parameters and downloads set to `downloads/`) and opens the hand-off's
   `expect` host in it, so the sign-in happens on a document no agent script
   has touched, in a context whose network settings no agent call set. On
   return the gate hands that context to the agent (the proxy then forwards the
-  agent's attach to its targets), and the agent continues there, signed in. A
-  page loaded before control, in the agent's own context, may carry listeners
-  the agent installed; the console says so, and recommends the fresh page.
+  agent's attach to its targets), and the agent continues there, signed in.
+  **It is not the default** (owner decision 2026-10-13, LB-CURSOR2): opened on
+  every hand-off with an `expect`, it put a second tab in front of the agent's
+  -- measured on task_1d1785b21d5b4e1f894e, the agent's form tab sat hidden
+  and empty while the stream and the person's input went to the new
+  `https://httpbin.org/` tab. Taking control now keeps the agent's current
+  tab, brings it to the front, and routes input to it. A page loaded before
+  control, in the agent's own context, may carry listeners the agent
+  installed; the scripts it added are removed for the window (above), and its
+  held commands cannot act on what the person types.
 
 Holding commands during control does not undo state the agent set **before**
 it asked for help, so the proxy also enforces section 5.4.4 at all times.
@@ -783,7 +1041,40 @@ browser trusts or routes traffic:
 | every `Security.*` method (`setIgnoreCertificateErrors`, `handleCertificateError`, `setOverrideCertificateErrors`) | lets a man-in-the-middle certificate pass, so TLS no longer protects what the person types |
 | `Page.setBypassCSP` | turns off the site's own script defences on the page the person will type into |
 | `Network.setExtraHTTPHeaders` | adds headers the agent chose to every request, the person's included |
-| `Browser.setDownloadBehavior` / `Page.setDownloadBehavior` with a path outside `downloads/` | writes files where the gate, not the worker, reads them |
+| `Browser.setDownloadBehavior` / `Page.setDownloadBehavior` with a behaviour other than `deny`, `default`, `allow` or `allowAndName` | a behaviour Chromium does not name; with a path outside `downloads/` it would write files where the gate, not the worker, reads them |
+
+**A download path outside `downloads/` is confined, not refused** (LB-POLISH,
+part of #1030). Playwright's `connect_over_cdp` sends
+`Browser.setDownloadBehavior` with its own artifacts directory, a mkdtemp on
+the client's side, for the default context; refusing it refused the whole
+connection, and the QA agent on 2026-10-13 (task_1f28d5bfa5a14f618f83) fell
+back to raw CDP. The gate now rewrites the path of an `allow` or
+`allowAndName` to `downloads/` before the command is held or forwarded
+(`cdppolicy.confine`), so Chromium still writes only where the worker reads,
+and the agent's path never reaches Chromium.
+
+**Puppeteer opens pages through the policy too** (DEVB-GATE, part of #1030).
+dev-browser v1 drives Chromium with puppeteer-core 25.8.0, and its `newPage()`
+fails outright when `Performance.enable` or `Audits.enable` errors
+(`CdpPage#initialize`, `FrameManager.initialize`; the sequence for connect,
+newPage, goto, evaluate and screenshot is pinned in
+`tests/unit/worker/fixtures/puppeteer-core-25.8.0-*.json`). So:
+
+* `Performance.enable`, `getMetrics` and `disable` are allowed: the domain
+  reports counters, a name and a number each, and nothing of a page's content;
+* `Audits.enable` and `Audits.disable` are **answered by the gate** with `{}`
+  and never reach Chromium, and no `Audits.*` event reaches the agent
+  whatever enabled it. `Audits.issueAdded`'s cookie details carry
+  `rawCookieLine`, which the protocol definition (devtools-protocol
+  0.0.1666840, checked 2026-10-14) describes as "the raw Set-Cookie header
+  string" when no valid cookie could be made from it -- a header with its
+  value, which would undo the cookie rule below (LB-7). The domain's other
+  methods stay refused: `getEncodedResponse` returns a response body;
+* `WebMCP.enable` and `Network.emulateNetworkConditionsByRule` stay refused,
+  but Puppeteer catches both and goes on, so recording them on every page was
+  noise (ANALYSIS issue 19). They are counted and logged at debug instead of
+  recorded as `cdp_method_refused`; the action log still shows them as
+  refused.
 
 The allowlist is the control and the denylist is its documentation: a method
 Chromium adds next year is refused because it is not on the list, not because
@@ -1098,7 +1389,7 @@ the page there (section 5.4.3).
 | Replaying a captured stream or ticket | TLS from the console to swarm-api's load balancer; tickets one-use, 30-60 s, bound to session, person, role and generation, and refused after their session closes. Past the load balancer the hops are plain ws inside the VPC (decision (b), section 3.3): only swarm-api's egress range and the tenant gates may connect to the relay, and a connection without a fresh ticket is closed. Capturing those hops needs a foothold inside the VPC; that is the accepted cost of having no certificate on the relay. A recording is a stored object behind the same tenant check, not a re-stream. |
 | A stale worker (old generation) keeps streaming | The ticket carries the generation; swarm-api closes the session when the lease's generation moves (invariant 5) and POSTs the relay's `/internal/close`, and the relay drops the tunnel and its viewers (section 5.2). |
 | The agent keylogs the person | No display access (§3.1); CDP held and scripts removed during control (§5.4.3); postData stripped after. |
-| The agent sets traffic-routing or trust state before asking for help (a context with its own `proxyServer`, `Security.setIgnoreCertificateErrors`, `Page.setBypassCSP`, extra headers), so the sign-in passes through it | The proxy's method policy refuses those calls from the first command, not only in control (§5.4.4); the fresh page opens in a gate-owned context; the gate refuses or ends control while the page has a certificate error. |
+| The agent sets traffic-routing or trust state before asking for help (a context with its own `proxyServer`, `Security.setIgnoreCertificateErrors`, `Page.setBypassCSP`, extra headers), so the sign-in passes through it | The proxy's method policy refuses those calls from the first command, not only in control (§5.4.4) -- since 2026-10-13 the only layer on the agent's own tab, which is now the one taken by default (§5.4.3); the fresh page, when asked for, opens in a gate-owned context; the gate refuses or ends control while the page has a certificate error. |
 | The gate restarts mid-attempt and the agent registers on `ctl.sock` first | A restarted gate accepts no registration; the live path ends for that attempt (§5.4.2). |
 | The agent or an escaped process drives the browser during control | The proxy holds every command; there is no other path. |
 | The agent spams hand-offs to pester people or hold the pod | 3 per attempt; each hold bounded; the park gives capacity back. |
@@ -1216,7 +1507,8 @@ and a bullet above disagree, this list wins.
 **Kept as built (3):**
 
 27. The "Let any member take control" checkbox stays in the Browser tab's
-    toolbar, after ⤢ Theater.
+    toolbar, after ⤢ Theater. (Since 2026-10-13 it can be unticked, and
+    ticking it asks first: §5.1.)
 28. The rail has no needs-you dot. This supersedes the "dot on Agents in the
     rail" in the hand-off bullet above.
 29. "Save as login" keeps its current offer logic, unchanged
@@ -1510,8 +1802,9 @@ not in the frozen models.
    an ordinary admission.
 3. Concurrency from `LEASED`: unchanged; no new capacity-holding state (unless
    Q2 chooses one, in which case LB-C adds it to `CONCURRENCY_STATES`).
-4. No sleeping through a long wait: the hold is bounded at 10 minutes by
-   default, then checkpoint, park, release, exit.
+4. No sleeping through a long wait: the hold is bounded -- one minute with
+   nobody watching, at most 30 while someone is (section 4.3) -- then
+   checkpoint, park, release, exit.
 5. Fencing: the tunnel ticket, the gate's control channel and every worker
    route carry the generation; a stale generation's session is closed, and a
    stale worker's hand-off is refused.
@@ -1603,7 +1896,8 @@ routes these lanes introduced. `claude-code-browser` already names
 
 **Answered 2026-10-11, recorded on #1030.** The owner took every
 recommendation below: Q1 the submitter, with a per-task "open to the tenant"
-toggle; Q2 the field; Q3 10 minutes; Q4 24 hours; Q5 no; Q6 yes, the submitter
+toggle; Q2 the field; Q3 10 minutes (superseded 2026-10-13 by HANDOFF-POLICY:
+one minute unwatched, extended while watched up to 30, section 4.3); Q4 24 hours; Q5 no; Q6 yes, the submitter
 only; Q7 sign in again; Q8 console only in phase 1; Q9 R2; Q10 on; Q11 yes, at
 1 fps; Q12 accept; Q13 the agent and the person in control. The owner also
 approved the mockup of §6 as drawn.

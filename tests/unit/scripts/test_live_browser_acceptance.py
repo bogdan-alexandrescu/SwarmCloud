@@ -324,8 +324,13 @@ def test_the_viewer_keeps_the_gate_s_frame_and_types_only_in_control():
         from agent_worker.livegate import rfb
 
         hub.publish(rfb.masked(changed, _Mask()))
-        await pump(lambda: client.updates > before)
+        # The pointer event above is news too (LB-CURSOR): the gate may already
+        # have sent this viewer an update with the pointer painted in, so the
+        # first update after `before` need not be the published frame. Wait for
+        # the frame itself; pump() fails on its deadline if it never arrives.
         at = (155 * 320 + 205) * 4
+        await pump(lambda: tuple(client.fb[at:at + 3]) == (0xAA, 0xBB, 0xCC))
+        assert client.updates > before
         assert tuple(client.fb[at:at + 3]) == (0xAA, 0xBB, 0xCC)
 
     asyncio.run(_session(handler))

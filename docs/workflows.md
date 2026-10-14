@@ -531,11 +531,29 @@ line of a `format: "progress"` row says `? N question(s) for the owner`, and a
 carries `questions` with `""` for a missing text, keeping its no-null rule, and
 `plugin/agents/step.md` tells the row to put them in its result as given.
 
-**Data for the operator, never a channel to the platform.** Nothing executes,
-answers or acts on the file. No state, retry, dispatch, merge or verdict reads
-it, and no part of the platform takes an instruction from it. The agent asks,
-and a person decides. If the answer changes the work, that is a new task,
-dispatched by a person.
+**The owner answers on the task** (owner decision 2026-10-13, "Yes, pick an
+option on the task"; TASK-ANSWERS). The console's "Questions for you" card
+offers each question's options, with the recommended one marked, and an
+"Other…" box for the person's own words. Answering posts
+`POST /v1/tasks/{id}/answers` with `{question_index, choice, text}`. Only the
+task's submitter or an admin may answer. Another member of the tenant gets a
+403, and the card says why. Another tenant's task is a 404. `choice` must be one
+of that question's option labels, and `text` is at most 2,000 characters,
+redacted before it is stored. The answer is stored on the task as
+`metadata.owner_answers`. It is a reserved platform key, as `start_problem` is,
+so it needs no change to the frozen `Task`. Each question has one answer.
+Answering again replaces it and moves the replaced answer, with who gave it and
+when, into that answer's `history`. A question can change at most 20 times;
+after that a change is refused rather than dropping history. The task read
+serves the answers as `owner_answers`. `GET /questions` puts each one beside
+its question, and `swarm_result`, the follow outcome and `sc task` show them.
+That is how whoever launched the work reads the decision.
+
+**Data for the operator, never a channel to the platform.** Nothing executes or
+acts on the file or on the answers. No state, retry, dispatch, merge or verdict
+reads them, and no part of the platform takes an instruction from them. The
+agent asks, and a person decides. If the answer changes the work, that is a new
+task, dispatched by whoever reads the answer.
 
 ## Dependencies and state
 
@@ -628,9 +646,40 @@ names the uploaded `swarm-work.patch` uri, so the work can be recovered with
 attempt's final checkpoint. It is not retried: a refused push meets the same
 refusal on the same branch. The end cause is `outputs_missing`, as for
 `published_nothing:`, because the frozen contract has no publish-failed cause
-and no new `TaskState` was added for it. A step that publishes nothing by
-design -- a review, an `integrate` contributor, a `collect` step, a step with
-no repository -- is unaffected.
+and no new `TaskState` was added for it.
+
+**A step whose branch is its deliverable is FAILED when the branch was not
+pushed (G1, part of #1225).** #872 covered only a step that opens a pull
+request, and the gap it left was measured on 2026-10-12
+(`wf_e55610ded71c4d9d9fae`, `wf_0260c920acf8414395b2`): a review failed
+cloning "Remote branch swarm/task_... not found" behind a build step that had
+ended SUCCEEDED without pushing. That build step was an `integrate`
+contributor, whose branch is what the integrator merges and what a step that
+`builds_on` it clones. So the rule is now about the branch, not the pull
+request (`Worker._deliverable_branch`). It covers a step that opens a pull
+request, an `integrate` contributor, a `carrier: branches` step under any
+strategy, and a `single-pr` amender. A step another step `builds_on` is one of
+these already, because `builds_on` is accepted only under `direct-pr` and
+`integrate`. Such a step ends FAILED `publish_failed:` when it changed
+something and its branch was not pushed, by any path, not only a git failure:
+a publish that declined because the token cannot push (`can_push` false), a
+refused git token, a forge the worker cannot publish to, publishing disabled,
+a harvest that failed or met processes that survived the reap, or a publish
+that raised. Each of these used to read SUCCEEDED. A forge that could not be
+reached at the probe fails the attempt retryably instead (`forge_unreachable`),
+as it already did for a pull-request step. A push whose stderr says the forge
+did not answer (a reset connection, a 5xx, a timeout; git's own words, read by
+`gitops.transient_git_failure`) is tried once more after 5 s
+(`gitops.push_branch`). A refusal is not retried. A second transient failure
+ends the step FAILED as above.
+
+These steps still SUCCEED without a branch: one that changed nothing (its
+dependants already step past it), one that declared `allow_empty_diff` or
+wrote `verification.md`, and one whose verdict gate kept its agent from
+running. The skip path has its own rule (PUB-SKIP). Steps that deliver no
+branch at all are unaffected: a `collect` step without a carrier, a
+`single-pr` reader, a review that edits nothing, and a step with no
+repository.
 
 ## An empty diff can succeed: `allow_empty_diff`
 

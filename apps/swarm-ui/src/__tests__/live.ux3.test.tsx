@@ -2,10 +2,12 @@
 // docs/design/live-browser.md §6 and §6.1) on the Agents list, the Overview's
 // hand-off card and the phone's Browser tab.
 //
-//   * the Agents list's Live tab carries an "All | Live N" switch (N = live
-//     browser agents), not a "Live browsers" checkbox; Live lists them
-//     needs-you first, each with a device outline read from its session, and
-//     "⤢ theater all" opens the first row's Browser tab with ?theater=1;
+//   * the Agents list's Live tab carries an "All | Browsers N" switch (N =
+//     browser agents, running and starting; it said "Live" until live-browser
+//     QA p12, QA12-20), not a "Live browsers" checkbox; Browsers lists them
+//     needs-you first, then running, then starting, each running one with a
+//     device outline read from its session, and "⤢ theater all" opens the
+//     first row's Browser tab with ?theater=1;
 //   * the Overview's "Needs a look" hand-off card offers Take control beside
 //     "browse →" only when the session read says you may (`can_control`),
 //     asks as the header's button asks, and then opens the Browser tab;
@@ -186,7 +188,7 @@ afterEach(() => {
 // 1. The Agents list
 // ---------------------------------------------------------------------------
 
-describe('the Agents list: All | Live N', () => {
+describe('the Agents list: All | Browsers N', () => {
   const rows = (): Task[] => [
     task('task_browser0000000000001', 'RUNNING', { runner_profile: BROWSER, created_at: iso(NOW - 60_000) }),
     task('task_coder000000000000001', 'RUNNING', { created_at: iso(NOW - 120_000) }),
@@ -209,28 +211,32 @@ describe('the Agents list: All | Live N', () => {
     return view
   }
 
-  it('is a switch, not a checkbox, and N counts the RUNNING browser agents only', async () => {
+  it('is a switch, not a checkbox, and N counts the browser agents, the starting one too', async () => {
     await mount()
     expect(screen.queryByRole('checkbox', { name: /live browsers/i })).toBeNull()
-    const sw = screen.getByRole('group', { name: /live browser agents/i })
+    const sw = screen.getByRole('group', { name: /browser agents/i })
     const all = within(sw).getByRole('button', { name: /^All/ })
-    const live = within(sw).getByRole('button', { name: /^Live/ })
+    const browsers = within(sw).getByRole('button', { name: /^Browsers/ })
     expect(all.getAttribute('aria-pressed')).toBe('true')
-    // Three RUNNING browser agents (the STARTING one has no browser yet).
-    expect(live.textContent).toMatch(/Live\s*3/)
+    // Three RUNNING browser agents and the STARTING one (QA12-20).
+    expect(browsers.textContent).toMatch(/Browsers\s*4/)
   })
 
-  it('Live lists them needs-you first, each with its device outline, and theater all opens the first', async () => {
+  it('Browsers lists them needs-you first, each with its device outline, and theater all opens the first', async () => {
     const { container } = await mount()
     expect(screen.queryByRole('link', { name: /theater all/i })).toBeNull()
-    fireEvent.click(within(screen.getByRole('group', { name: /live browser agents/i })).getByRole('button', { name: /^Live/ }))
+    fireEvent.click(within(screen.getByRole('group', { name: /browser agents/i })).getByRole('button', { name: /^Browsers/ }))
     await waitFor(() =>
       expect([...container.querySelectorAll('.rows .row.clickable')].map((r) => r.getAttribute('data-task-id'))).toEqual([
         'task_needsyou00000000001',
         'task_browser0000000000001',
         'task_tablet0000000000001',
+        'task_starting00000000001',
       ]),
     )
+    // The starting one has no browser yet: a mark, not an outline.
+    expect(container.querySelector('[data-task-id="task_starting00000000001"] .ag-device')).toBeNull()
+    expect(container.querySelector('[data-task-id="task_starting00000000001"] .cr-starting')).not.toBeNull()
     const device = (id: string) => container.querySelector(`[data-task-id="${id}"] .ag-device`)
     await waitFor(() => expect(device('task_needsyou00000000001')?.getAttribute('data-device')).toBe('phone'))
     expect(device('task_needsyou00000000001')?.getAttribute('data-orientation')).toBe('portrait')
@@ -266,10 +272,10 @@ describe("the Overview's hand-off card: Take control", () => {
     })
     render(<HandoffCards tasks={[holding(ID)]} now={NOW} onOpen={() => {}} />)
     const banner = document.querySelector('.c-banner') as HTMLElement
-    // The card keeps its reason, site and time left, and browse →.
+    // The card keeps its reason, site and time left, and its Open →.
     expect(banner.textContent).toContain('Sign in to GitHub as the bot account')
     expect(banner.textContent).toContain('github.com')
-    expect(banner.textContent).toContain('9m 00s left')
+    expect(banner.textContent).toContain('9:00 left')
     expect(within(banner).getByRole('link', { name: /→/ })).toBeTruthy()
 
     const take = await within(banner).findByRole('button', { name: /^Take control$/ })

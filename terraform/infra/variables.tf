@@ -821,19 +821,6 @@ variable "enable_quota_refresh" {
   default     = true
 }
 
-variable "enable_issue_sweep" {
-  description = <<-EOT
-    swarm-api's SWEEP_ENABLED: whether POST /v1/admin/issues/sweep -- the
-    per-tenant issue_sweep Cloud Scheduler job, every 30 minutes -- may start
-    issue runs at all (docs/issue-runs.md "Sweeper"). OFF by default, by the
-    new-refusals-ship-off rule: a swept run auto-approves its plan and
-    auto-merges its pull request. A tenant is swept only when this AND its own
-    `issue_sweep.enabled` (PUT /v1/admin/tenants/<id>/issue-sweep) are on.
-  EOT
-  type        = bool
-  default     = false
-}
-
 variable "repository_grants_enforced" {
   description = <<-EOT
     swarm-api's REPOSITORY_GRANTS_ENFORCED (#780 D4, docs/onboarding.md):
@@ -848,6 +835,38 @@ variable "repository_grants_enforced" {
   EOT
   type        = bool
   default     = false
+}
+
+variable "search_tool_enabled" {
+  description = <<-EOT
+    swarm-api's SEARCH_TOOL_ENABLED (docs/search-tool.md, #1030): whether
+    POST /v1/attempts/{id}/search exists and live-browser agents are offered
+    the `search` tool. OFF by default (owner decision 2026-10-13), as
+    swarm_api.settings is: every query is billed to the platform, and the
+    provider's key must be stored first with
+    scripts/create-secrets.sh --search-api-key --stdin. Off, the route is a
+    404 and no agent is told the tool exists.
+  EOT
+  type        = bool
+  default     = false
+}
+
+variable "search_provider" {
+  description = <<-EOT
+    swarm-api's SEARCH_PROVIDER: which swarm_api.search.PROVIDERS entry
+    answers a search. "brave" is the owner's choice (2026-10-13) and the only
+    provider implemented. Validated here against the same names because
+    swarm-api refuses to START on an unknown one, which a plan should catch
+    before a revision does; add a name here in the change that adds it to
+    PROVIDERS.
+  EOT
+  type        = string
+  default     = "brave"
+
+  validation {
+    condition     = contains(["brave"], var.search_provider)
+    error_message = "search_provider must name a swarm_api.search.PROVIDERS entry: brave."
+  }
 }
 
 variable "workspace_apply_publish" {
@@ -914,4 +933,10 @@ variable "api_refusals" {
     condition     = alltrue([for code in keys(var.api_refusals) : can(regex("^[A-Za-z][A-Za-z0-9_]*$", code))])
     error_message = "api_refusals keys are swarm-api error codes: letters, digits and underscores."
   }
+}
+
+variable "mirror_kms_key_name" {
+  description = "Customer-managed key for the pull-through mirror repositories (build_mirror.tf); empty keeps Google-managed encryption, as modules/artifact_registry does for kms_key_name."
+  type        = string
+  default     = ""
 }

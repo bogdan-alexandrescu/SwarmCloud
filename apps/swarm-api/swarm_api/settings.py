@@ -479,12 +479,45 @@ class ApiSettings:
     #: per person per task per minute. In-process, as the API's limiter is.
     live_viewer_tickets_per_minute: int = 30
     live_takes_per_minute: int = 6
-    #: §4.3, Q3 (owner: 10 minutes): how long a pod holds for a person before it
-    #: parks. Read by `swarm_api.handoff`, which carried it as a constant until
-    #: this setting existed.
-    human_hold_seconds: int = 600
+    #: §4.3, HANDOFF-POLICY (owner decision 2026-10-13, replacing Q3's flat 10
+    #: minutes, `human_hold_seconds`): how long a hand-off holds its pod with
+    #: NOBODY watching -- from the request, and past the last moment a viewer
+    #: was seen. 60: 13 of 42 measured hand-offs expired with nobody there,
+    #: each holding a 2-unit lease for 10 minutes. `swarm_api.handoff`.
+    human_unwatched_seconds: int = 60
+    #: The ceiling, from the request, on a hold that viewers and a controller
+    #: keep extending. 1800: 7 of the 42 expired after the person said they
+    #: were ready, so a watched hold outlives 10 minutes -- but not an
+    #: afternoon (invariant 4).
+    human_hold_max_seconds: int = 1800
+    #: How often an open viewer socket tells swarm-api "someone is watching",
+    #: which moves the hold's deadline to now + `human_unwatched_seconds`.
+    #: Must stay well under that, or a watched hold lapses between writes; one
+    #: write per socket per flush, and only while a hand-off is open.
+    live_watch_flush_seconds: float = 15.0
     #: §5.10: hand-off requests per attempt, read by `swarm_api.handoff`.
     max_handoffs_per_attempt: int = 3
+    #: BROWSER EGRESS (docs/browser-egress.md §2.2, §6.1; lane EGRESS-SVC).
+    #: `swarm-egress-key`, from SWARM_EGRESS_KEY by Secret Manager reference
+    #: (terraform/infra/egress.tf): what the attempt egress ticket is MAC'd
+    #: with. Empty means no proxied browsing: the route answers 503 and the
+    #: worker runs the attempt direct. Excluded from the repr, as `live_key` is.
+    egress_key: str = field(default="", repr=False)
+    #: An egress ticket's life. The worker renews it before it expires, so
+    #: this is how long a ticket copied out of a compromised renderer keeps
+    #: working; clamped to swarm-egress's MAX_TICKET_SECONDS (900).
+    egress_ticket_seconds: int = 600
+    #: THE SWITCH (§6.1), off by default: a ticket is minted only when this is
+    #: on AND the task's tenant is in `browser_egress_tenants` AND its profile
+    #: is in `browser_egress_profiles` and is a live-browser profile. Rendered
+    #: by egress.tf from var.browser_egress, the same setting swarm-egress
+    #: reads, so the two cannot disagree about who is switched on.
+    browser_egress_enabled: bool = False
+    browser_egress_tenants: tuple[str, ...] = ()
+    browser_egress_profiles: tuple[str, ...] = ("claude-code-browser",)
+    #: The exit country (owner decision Q6: US), returned with the ticket so
+    #: the take-control dialog can say where sites see the browser from.
+    browser_egress_country: str = "us"
 
     # --- stopping a cancelled task's execution (#627) ----------------------
     #: Whether the cancel routes ask for the execution to be stopped
@@ -508,14 +541,6 @@ class ApiSettings:
     #: way. This default stays off so a test or a local run refuses nothing.
     repository_grants_enforced: bool = False
 
-    # --- the issue sweeper (owner decisions 2026-10-08) ----------------------
-    #: Whether POST /v1/admin/issues/sweep starts issue runs at all
-    #: (`swarm_api.issuesweep`). OFF by default (SWEEP_ENABLED), by the
-    #: new-refusals-ship-off rule of PR 873: a sweep starts planners, then
-    #: auto-approved workflows whose pull requests auto-merge, in a tenant's
-    #: repositories, so it starts only once an operator has chosen it -- and
-    #: then only for a tenant whose own `issue_sweep.enabled` is also on.
-    sweep_enabled: bool = False
     #: The topic the reconciler stops executions from (EXECUTION_CANCEL_TOPIC,
     #: terraform's `<prefix>-execution-cancel`). The reconciler, not this
     #: service, holds the stop permissions. Empty means a cancel is left to the
@@ -537,6 +562,29 @@ class ApiSettings:
     #: publishes it once this is turned on (§2.2). Tests inject a fake
     #: publisher instead of turning it on.
     workspace_apply_publish: bool = False
+
+    # --- the search tool (docs/search-tool.md, lane SEARCH-TOOL, #1030) ----
+    #: Whether `POST /v1/attempts/{id}/search` exists, and whether a worker is
+    #: told to name the `search` tool to its agent (the child-key answer's
+    #: `search_tool`). OFF by default (owner decision 2026-10-13): the
+    #: provider key is a platform secret the operator stores first, and every
+    #: query is billed to the platform. Off, the route is a 404 and no agent
+    #: is offered the tool. A feature flag, not a refusal switch: its off
+    #: position is "no such tool", never "let the request through".
+    search_tool_enabled: bool = False
+    #: Which `swarm_api.search.PROVIDERS` entry answers (SEARCH_PROVIDER).
+    #: Brave: the first implementation, pending the owner's choice
+    #: (questions.json of lane SEARCH-TOOL).
+    search_provider: str = "brave"
+    #: The Secret Manager secret holding the provider's key: a PLATFORM
+    #: secret, stored with `scripts/create-secrets.sh --search-api-key
+    #: --stdin`, read per call, never an environment variable.
+    search_api_key_secret: str = "swarm-search-api-key"
+    #: Queries a tenant may make per UTC day, all its attempts together.
+    #: 200: at Brave's $5 per 1,000 (read 2026-10-14) a tenant can cost at
+    #: most $1 a day, and the 26 analysed browser tasks made at most a handful
+    #: of searches each, so 200 is room for dozens of tasks.
+    search_daily_queries_per_tenant: int = 200
 
     @property
     def project_id(self) -> str:
@@ -580,6 +628,15 @@ class ApiSettings:
             raise ValueError(
                 "PLATFORM_OWNER and ADMIN_POOL_USERS both name the same address; "
                 "a pool admin is a narrower role than the owner, not a second one"
+            )
+        # An unknown provider is refused here, at start, not at the first query.
+        from .search import PROVIDERS as SEARCH_PROVIDERS
+
+        search_provider = os.environ.get("SEARCH_PROVIDER", "brave").strip().lower() or "brave"
+        if search_provider not in SEARCH_PROVIDERS:
+            raise ValueError(
+                f"SEARCH_PROVIDER must be one of {', '.join(sorted(SEARCH_PROVIDERS))}, "
+                f"got {search_provider!r}"
             )
         sweepers = {u.lower() for u in rollup_sweeper_users}
         for name, values in (
@@ -625,7 +682,6 @@ class ApiSettings:
             dispatch_topic=os.environ.get("DISPATCH_TOPIC", "").strip(),
             execution_cancel_enabled=_bool("EXECUTION_CANCEL_ENABLED", True),
             repository_grants_enforced=_bool("REPOSITORY_GRANTS_ENFORCED", False),
-            sweep_enabled=_bool("SWEEP_ENABLED", False),
             execution_cancel_topic=os.environ.get("EXECUTION_CANCEL_TOPIC", "").strip(),
             workspace_apply_topic=os.environ.get(
                 "WORKSPACE_APPLY_TOPIC", "swarm-workspace-apply"
@@ -674,6 +730,21 @@ class ApiSettings:
             live_input_flush_seconds=float(_int("LIVE_INPUT_FLUSH_SECONDS", 15)),
             live_viewer_tickets_per_minute=_int("LIVE_VIEWER_TICKETS_PER_MINUTE", 30),
             live_takes_per_minute=_int("LIVE_TAKES_PER_MINUTE", 6),
-            human_hold_seconds=_int("HUMAN_HOLD_SECONDS", 600),
+            human_unwatched_seconds=_int("HUMAN_UNWATCHED_SECONDS", 60),
+            human_hold_max_seconds=_int("HUMAN_HOLD_MAX_SECONDS", 1800),
+            live_watch_flush_seconds=float(_int("LIVE_WATCH_FLUSH_SECONDS", 15)),
             max_handoffs_per_attempt=_int("MAX_HANDOFFS_PER_ATTEMPT", 3),
+            egress_key=os.environ.get("SWARM_EGRESS_KEY", "").strip(),
+            egress_ticket_seconds=_int("EGRESS_TICKET_SECONDS", 600),
+            browser_egress_enabled=_bool("BROWSER_EGRESS_ENABLED", False),
+            browser_egress_tenants=_csv("BROWSER_EGRESS_TENANTS"),
+            browser_egress_profiles=_csv("BROWSER_EGRESS_PROFILES", "claude-code-browser"),
+            browser_egress_country=os.environ.get("BROWSER_EGRESS_COUNTRY", "us").strip().lower()
+            or "us",
+            search_tool_enabled=_bool("SEARCH_TOOL_ENABLED", False),
+            search_provider=search_provider,
+            search_api_key_secret=os.environ.get(
+                "SEARCH_API_KEY_SECRET", "swarm-search-api-key").strip()
+            or "swarm-search-api-key",
+            search_daily_queries_per_tenant=_int("SEARCH_DAILY_QUERIES_PER_TENANT", 200),
         )

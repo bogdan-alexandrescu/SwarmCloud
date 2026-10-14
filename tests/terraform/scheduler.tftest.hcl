@@ -297,12 +297,13 @@ run "the_issue_run_tick_runs_per_tenant_every_minute_as_the_sweeper" {
   }
 }
 
-# The issue sweeper (owner decisions 2026-10-08, docs/issue-runs.md "Sweeper"):
-# one job per registered tenant, every 30 minutes on a minute that is neither
-# :00 nor :30, presenting the rollup sweeper -- the same invoker identity and
-# OIDC audience as issue_run_advance -- which swarm-api admits to
-# POST /v1/admin/issues/sweep by name (swarm_api.auth.ROLLUP_SWEEPER_ROUTES).
-run "the_issue_sweep_runs_per_tenant_every_half_hour_off_the_hour_as_the_sweeper" {
+# The issue sweeper's job is GONE (Schedules S9, second change, 2026-10-12):
+# the tenant's `issue-sweep` schedule replaced it, and the job, its
+# issue_sweep_schedule variable and the route it called were deleted together
+# (docs/schedules.md §8.1 step 4). Asserted through the names the module
+# exports, since a deleted resource cannot be named here; the control is that
+# the same output still lists the per-tenant ticks that remain.
+run "the_issue_sweep_job_no_longer_exists" {
   command = plan
 
   module {
@@ -315,84 +316,18 @@ run "the_issue_sweep_runs_per_tenant_every_half_hour_off_the_hour_as_the_sweeper
   }
 
   assert {
-    condition     = toset(keys(google_cloud_scheduler_job.issue_sweep)) == toset(["eng", "research"])
-    error_message = "every registered tenant gets exactly one issue sweep, keyed by its tenant id"
+    condition     = length([for n in output.scheduler_job_names : n if strcontains(n, "issue-sweep")]) == 0
+    error_message = "no swarm-issue-sweep-<tenant> job is planned: the issue-sweep schedule replaced it on 2026-10-12"
   }
 
   assert {
-    condition     = google_cloud_scheduler_job.issue_sweep["eng"].http_target[0].uri == "https://swarm-api-abcdef-uc.a.run.app/v1/admin/issues/sweep?tenant_id=eng"
-    error_message = "the sweep must call the route swarm_api/routes/admin.py serves, with the tenant as the query parameter it requires"
+    condition     = contains(output.scheduler_job_names, "swarm-issue-run-advance-eng") && contains(output.scheduler_job_names, "swarm-stranded-pr-sweep-research")
+    error_message = "the control: the per-tenant ticks that remain are still listed, so the absence above proves something"
   }
 
   assert {
-    condition     = google_cloud_scheduler_job.issue_sweep["research"].http_target[0].http_method == "POST"
-    error_message = "the sweep route is a POST"
-  }
-
-  assert {
-    condition = alltrue([
-      for t, job in google_cloud_scheduler_job.issue_sweep :
-      job.http_target[0].oidc_token[0].service_account_email == google_cloud_scheduler_job.issue_run_advance[t].http_target[0].oidc_token[0].service_account_email
-      && job.http_target[0].oidc_token[0].audience == google_cloud_scheduler_job.issue_run_advance[t].http_target[0].oidc_token[0].audience
-      && job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
-      && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
-      && job.http_target[0].oidc_token[0].audience == "https://swarm-api-abcdef-uc.a.run.app"
-    ])
-    error_message = "the issue sweep presents exactly issue_run_advance's identity and audience: the rollup sweeper, for the API's own URL, never the platform tick"
-  }
-
-  assert {
-    condition = alltrue([
-      for t, job in google_cloud_scheduler_job.issue_sweep : job.schedule == "7,37 * * * *"
-    ]) && output.issue_sweep_schedule == "7,37 * * * *"
-    error_message = "the issue sweep runs every 30 minutes at :07 and :37 by default"
-  }
-
-  assert {
-    condition = alltrue([
-      for t, job in google_cloud_scheduler_job.issue_sweep :
-      !contains(split(",", split(" ", job.schedule)[0]), "0") && !contains(split(",", split(" ", job.schedule)[0]), "30")
-    ])
-    error_message = "the issue sweep never runs on :00 or :30"
-  }
-
-  assert {
-    condition = alltrue([
-      for t, job in google_cloud_scheduler_job.issue_sweep :
-      startswith(job.description, "managed-by=swarm-terraform;")
-    ])
-    error_message = "every issue sweep carries managed-by=swarm-terraform in its description, the label a scheduler job can carry"
-  }
-
-  assert {
-    condition = alltrue([
-      for t, job in google_cloud_scheduler_job.issue_sweep :
-      job.attempt_deadline == "300s" && job.retry_config[0].retry_count == 0
-    ])
-    error_message = "the sweep answers inside 300 s (it stops starting work at 240 s) and is not retried: the next sweep is the retry"
-  }
-
-  # Schedules S9 (docs/schedules.md §8.1 step 3, 2026-10-11): the issue-sweep
-  # SCHEDULE replaces this job, so the job is paused on its own -- with
-  # var.paused false, as here -- while every other per-tenant tick still runs.
-  # Paused, not deleted: the job still exists for every tenant (asserted above).
-  assert {
-    condition = alltrue([
-      for t, job in google_cloud_scheduler_job.issue_sweep : job.paused == true
-      ]) && alltrue([
-      for t, job in google_cloud_scheduler_job.issue_run_advance : job.paused == false
-    ])
-    error_message = "SWEEP's job is paused by itself (S9): the issue-sweep schedule replaces it, and pausing it must not pause the other ticks through var.paused"
-  }
-
-  assert {
-    condition     = strcontains(google_service_account.rollup_sweeper.description, "issue-sweep")
-    error_message = "the sweeper account's description names every job that presents it"
-  }
-
-  assert {
-    condition     = contains(output.scheduler_job_names, "swarm-issue-sweep-eng") && contains(output.scheduler_job_names, "swarm-issue-sweep-research")
-    error_message = "scheduler_job_names must list every issue sweep"
+    condition     = !strcontains(google_service_account.rollup_sweeper.description, "issue-sweep")
+    error_message = "the sweeper account's description names only the jobs that present it, and no issue-sweep job does"
   }
 }
 
@@ -436,12 +371,12 @@ run "the_stranded_pr_sweep_runs_per_tenant_every_half_hour_as_the_sweeper_withou
   assert {
     condition = alltrue([
       for t, job in google_cloud_scheduler_job.stranded_pr_sweep :
-      job.http_target[0].oidc_token[0].service_account_email == google_cloud_scheduler_job.issue_sweep[t].http_target[0].oidc_token[0].service_account_email
-      && job.http_target[0].oidc_token[0].audience == google_cloud_scheduler_job.issue_sweep[t].http_target[0].oidc_token[0].audience
+      job.http_target[0].oidc_token[0].service_account_email == google_cloud_scheduler_job.issue_run_advance[t].http_target[0].oidc_token[0].service_account_email
+      && job.http_target[0].oidc_token[0].audience == google_cloud_scheduler_job.issue_run_advance[t].http_target[0].oidc_token[0].audience
       && job.http_target[0].oidc_token[0].service_account_email == "swarm-rollup-sweeper@saga-agents-staging.iam.gserviceaccount.com"
       && job.http_target[0].oidc_token[0].service_account_email != var.tick_service_account
     ])
-    error_message = "the stranded-PR sweep presents the issue sweep's identity and audience -- the rollup sweeper, which swarm-api admits to the route -- never swarm-tick, which it would refuse"
+    error_message = "the stranded-PR sweep presents issue_run_advance's identity and audience -- the rollup sweeper, which swarm-api admits to the route -- never swarm-tick, which it would refuse"
   }
 
   assert {
@@ -483,21 +418,6 @@ run "the_stranded_pr_sweep_schedule_refuses_the_hour_and_the_half_hour" {
   }
 
   expect_failures = [var.stranded_pr_sweep_schedule]
-}
-
-# A schedule on :00 or :30, or a step that lands on them, is refused.
-run "the_issue_sweep_schedule_refuses_the_hour_and_the_half_hour" {
-  command = plan
-
-  module {
-    source = "../../terraform/modules/scheduler"
-  }
-
-  variables {
-    issue_sweep_schedule = "*/30 * * * *"
-  }
-
-  expect_failures = [var.issue_sweep_schedule]
 }
 
 # docs/repo-index.md §3.3 (lane RI4): every five minutes, per registered tenant,
@@ -700,11 +620,6 @@ run "no_registered_tenant_means_no_rollup_job" {
   assert {
     condition     = length(google_cloud_scheduler_job.issue_run_advance) == 0
     error_message = "an issue-run tick for a tenant nobody registered advances nothing"
-  }
-
-  assert {
-    condition     = length(google_cloud_scheduler_job.issue_sweep) == 0
-    error_message = "an issue sweep for a tenant nobody registered sweeps nothing"
   }
 
   assert {

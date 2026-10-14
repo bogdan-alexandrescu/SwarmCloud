@@ -5,21 +5,22 @@
 //   * a non-admin's read (403, admin_auth's sentence) draws the admin gate
 //     and no table, no button;
 //   * `requested` rows sort first, the server's order otherwise;
-//   * Approve asks once, in §6.4's words, then posts the approve route by
-//     WORKSPACE ID -- no email in any workspace route;
+//   * the Waiting card's Approve posts the approve route by WORKSPACE ID --
+//     no email in any workspace route; the drawer's Approve of a denied
+//     record asks once, in §6.4's words (#1206 moved both out of the row);
 //   * Deny without a reason posts nothing; with one, posts `{reason}`;
-//   * a failed row has Retry; a needs_owner row says it waits for the platform
-//     owner and names the step the guard stopped at;
-//   * a ceiling save sends `{max_active}` and nothing else;
-//   * Lend posts `{account_id, lend: true}` for the account chosen;
+//   * a failed person's drawer has Retry; a needs_owner row says it waits for
+//     the platform owner and names the step the guard stopped at;
+//   * a ceiling save (in the drawer) sends `{max_active}` and nothing else;
+//   * Lend (in the drawer) posts `{account_id, lend: true}` for the account chosen;
 //   * the API's refusal for the last admin is shown as it came;
 //   * zero pending is prose, `none pending`, with "measured" in its accessible
 //     name and no `real zero` mark (owner, 2026-10-09); an unread lendable list as
 //     not read, never as an empty one;
 //   * the layout seen live at 1456 on 2026-10-09: the table has its own scroll
-//     container inside the card and no action control has a width of its own
-//     wider than its cell; a workspace id has no break opportunity; a label
-//     sits a token's gap from its field; below 560px a record per person;
+//     container inside the card and, since #1206, no control in it at all; a
+//     workspace id has no break opportunity; a label sits a token's gap from
+//     its field; below 560px a short record per person;
 //   * the Admins card lists who the admins are, the owner first and marked,
 //     and Remove acts on a listed admin.
 //
@@ -124,6 +125,13 @@ async function mount(body: Json, writes: Record<string, (body: unknown) => { sta
 }
 
 const rowOf = (email: string) => document.querySelector<HTMLElement>(`tr[data-email="${email}"]`)!
+/** A request's row in the Waiting for you card (#1206). */
+const reqOf = (kind: string, email: string) => document.querySelector<HTMLElement>(`.pp-waiting li[data-kind="${kind}"][data-email="${email}"]`)!
+/** Open a person's Manage drawer (#1206), where the ceiling, loans, Retry and a denied row's Approve now live. */
+async function manage(email: string): Promise<HTMLElement> {
+  fireEvent.click(within(rowOf(email)).getByRole('button', { name: 'Manage' }))
+  return screen.findByRole('dialog', { name: `Manage ${email}` }, WAIT)
+}
 const writesOf = (calls: { method: string; url: string; body: unknown }[]) => calls.filter((c) => c.method !== 'GET')
 
 afterEach(() => {
@@ -195,8 +203,8 @@ describe('the people table', () => {
     expect(order).toEqual(['alice@example.com', 'bob@example.com', 'dan@example.com', 'erin@example.com', 'carol@example.com'])
     expect(visible(rowOf('bob@example.com'))).toContain('own (2)')
     expect(visible(rowOf('bob@example.com'))).toContain('w-91c0de')
-    // A person with no record has no action on a workspace.
-    expect(within(rowOf('carol@example.com')).queryByRole('button')).toBeNull()
+    // A row holds no action but Manage (#1206).
+    expect(within(rowOf('carol@example.com')).getAllByRole('button').map((b) => b.textContent)).toEqual(['Manage'])
   })
 
   it('a failed row has Retry; a needs_owner row waits for the owner at its step', async () => {
@@ -205,9 +213,12 @@ describe('the people table', () => {
     })
     await waitFor(() => expect(rowOf('dan@example.com')).not.toBeNull(), WAIT)
     expect(visible(rowOf('dan@example.com'))).toContain('failed w-d4n000 (Namespace)')
-    expect(within(rowOf('erin@example.com')).queryByRole('button', { name: 'Retry' })).toBeNull()
     expect(visible(rowOf('erin@example.com'))).toContain('Waiting for the platform owner · stopped at Access')
-    fireEvent.click(within(rowOf('dan@example.com')).getByRole('button', { name: 'Retry' }))
+    const erin = await manage('erin@example.com')
+    expect(within(erin).queryByRole('button', { name: 'Retry' })).toBeNull()
+    fireEvent.click(within(erin).getByRole('button', { name: 'Close' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    fireEvent.click(within(await manage('dan@example.com')).getByRole('button', { name: 'Retry' }))
     await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
     expect(writesOf(calls)[0]).toMatchObject({ method: 'POST', url: '/v1/admin/workspaces/w-d4n000/retry' })
   })
@@ -218,6 +229,7 @@ describe('the people table', () => {
     await mount(people([held, auto]))
     await waitFor(() => expect(rowOf('gus@example.com')).not.toBeNull(), WAIT)
     expect(within(rowOf('gus@example.com')).queryByRole('button', { name: /Approve|Deny/ })).toBeNull()
+    expect(document.querySelector('.pp-waiting'), 'a held request is waiting on an admin').toBeNull()
     expect(visible(rowOf('gus@example.com'))).toContain('Being migrated by the platform owner')
     expect(visible(rowOf('hal@example.com'))).toContain('approved automatically (admin)')
   })
@@ -228,11 +240,15 @@ describe('the people table', () => {
       'POST /v1/admin/workspaces/w-fa1000/approve': () => ({ status: 200, body: { workspace: ws('approved', 'w-fa1000'), dispatch: { published: true, mode: 'create', reason: null } } }),
     })
     await waitFor(() => expect(rowOf('fay@example.com')).not.toBeNull(), WAIT)
-    const row = rowOf('fay@example.com')
-    expect(visible(row)).toContain('“Use the eng space.”')
-    expect(within(row).queryByRole('button', { name: 'Retry' })).toBeNull()
-    fireEvent.click(within(row).getByRole('button', { name: 'Approve' }))
-    fireEvent.click(within(await screen.findByRole('dialog', {}, WAIT)).getByRole('button', { name: 'Approve' }))
+    expect(visible(rowOf('fay@example.com'))).toContain('“Use the eng space.”')
+    const drawer = await manage('fay@example.com')
+    expect(within(drawer).queryByRole('button', { name: 'Retry' })).toBeNull()
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Approve' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Approve this workspace' }, WAIT)
+    // Nothing beside the drawer's Approve says what it creates, so it asks in §6.4's words.
+    expect(visible(dialog)).toContain('Create a workspace for fay@example.com with 8 agents? A CI job will create its identity and namespace.')
+    expect(writesOf(calls), 'it posted before the confirmation').toHaveLength(0)
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
     expect(writesOf(calls)[0]).toMatchObject({ method: 'POST', url: '/v1/admin/workspaces/w-fa1000/approve' })
   })
@@ -249,24 +265,23 @@ describe('the people table', () => {
   it('draws an unread lendable list as not read, never as an empty one', async () => {
     await mount(people([ROWS[2]!], { lendable_accounts: null, lendable_error: 'upstream_unavailable' }))
     await waitFor(() => expect(rowOf('alice@example.com')).not.toBeNull(), WAIT)
-    const row = rowOf('alice@example.com')
-    expect(row.querySelector('.ctl-mark.is-unread')).not.toBeNull()
-    expect(visible(row)).toContain('upstream_unavailable')
-    expect(row.querySelector('.ctl-mark.is-zero')).toBeNull()
+    const section = (await manage('alice@example.com')).querySelector<HTMLElement>('[data-section="claude"]')!
+    expect(section.querySelector('.ctl-mark.is-unread')).not.toBeNull()
+    expect(visible(section)).toContain('upstream_unavailable')
+    expect(section.querySelector('.ctl-mark.is-zero')).toBeNull()
+    expect(within(section).queryByRole('button', { name: /Lend|Reclaim/ })).toBeNull()
   })
 })
 
 describe('approve and deny', () => {
-  it('Approve asks once in §6.4\'s words, then posts the approve route by workspace id', async () => {
+  it('the card\'s Approve, beside the limits it gives, posts the approve route by workspace id', async () => {
     const { calls } = await mount(people(ROWS), {
       'POST /v1/admin/workspaces/w-3f9a2c/approve': () => ({ status: 200, body: { workspace: ws('approved', 'w-3f9a2c'), dispatch: { published: true, mode: 'create', reason: null } } }),
     })
-    await waitFor(() => expect(rowOf('alice@example.com')).not.toBeNull(), WAIT)
-    fireEvent.click(within(rowOf('alice@example.com')).getByRole('button', { name: 'Approve' }))
-    const dialog = await screen.findByRole('dialog', {}, WAIT)
-    expect(visible(dialog)).toContain('Create a workspace for alice@example.com with 8 agents? A CI job will create its identity and namespace.')
-    expect(writesOf(calls), 'it posted before the confirmation').toHaveLength(0)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(reqOf('workspace', 'alice@example.com')).not.toBeNull(), WAIT)
+    const item = reqOf('workspace', 'alice@example.com')
+    expect(visible(item)).toContain('8 agents at once')
+    fireEvent.click(within(item).getByRole('button', { name: 'Approve' }))
     await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
     expect(writesOf(calls)[0]).toMatchObject({ method: 'POST', url: '/v1/admin/workspaces/w-3f9a2c/approve' })
     for (const c of writesOf(calls)) expect(c.url, 'an email reached a workspace route').not.toContain('@')
@@ -276,8 +291,8 @@ describe('approve and deny', () => {
     const { calls } = await mount(people(ROWS), {
       'POST /v1/admin/workspaces/w-3f9a2c/deny': () => ({ status: 200, body: { workspace: ws('denied', 'w-3f9a2c') } }),
     })
-    await waitFor(() => expect(rowOf('alice@example.com')).not.toBeNull(), WAIT)
-    const row = rowOf('alice@example.com')
+    await waitFor(() => expect(reqOf('workspace', 'alice@example.com')).not.toBeNull(), WAIT)
+    const row = reqOf('workspace', 'alice@example.com')
     fireEvent.click(within(row).getByRole('button', { name: 'Deny' }))
     const send = within(row).getAllByRole('button', { name: 'Deny' }).at(-1)! as HTMLButtonElement
     expect(send.disabled).toBe(true)
@@ -300,12 +315,12 @@ describe('ceiling and loans', () => {
       }),
     })
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
-    const row = rowOf('bob@example.com')
+    const row = await manage('bob@example.com')
     const field = within(row).getByLabelText('Ceiling for bob@example.com') as HTMLInputElement
     expect(field.value).toBe('8')
     fireEvent.change(field, { target: { value: '12' } })
     fireEvent.click(within(row).getByRole('button', { name: 'Save' }))
-    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    const dialog = await screen.findByRole('dialog', { name: 'Change this ceiling' }, WAIT)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Set to 12' }))
     await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
     expect(writesOf(calls)[0]).toEqual({ method: 'PUT', url: '/v1/admin/workspaces/w-91c0de/limits', body: { max_active: 12 } })
@@ -317,12 +332,12 @@ describe('ceiling and loans', () => {
       'PUT /v1/admin/people/w-91c0de/loan': () => ({ status: 200, body: { workspace_id: 'w-91c0de', account_id: 'acct-eng-1', owner_tenant: 'eng', lent: true, changed: true } }),
     })
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
-    const row = rowOf('bob@example.com')
+    const row = await manage('bob@example.com')
     const lend = within(row).getByRole('button', { name: 'Lend' }) as HTMLButtonElement
     expect(lend.disabled, 'Lend is live with no account chosen').toBe(true)
     fireEvent.change(within(row).getByLabelText('Account to lend to bob@example.com'), { target: { value: 'acct-eng-1' } })
     fireEvent.click(lend)
-    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    const dialog = await screen.findByRole('dialog', { name: 'Lend this account' }, WAIT)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Lend' }))
     await waitFor(() => expect(writesOf(calls)).toHaveLength(1), WAIT)
     expect(writesOf(calls)[0]).toEqual({ method: 'PUT', url: '/v1/admin/people/w-91c0de/loan', body: { account_id: 'acct-eng-1', lend: true } })
@@ -340,19 +355,19 @@ describe('live QA admin: nothing writes on the first click', () => {
   it('ADM-1: Lend asks first, naming the account, its owner tenant and the person, and Cancel sends nothing', async () => {
     const { calls } = await mount(people(ROWS))
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
-    const row = rowOf('bob@example.com')
+    const row = await manage('bob@example.com')
     choose(row, 'acct-eng-1')
     fireEvent.click(within(row).getByRole('button', { name: 'Lend' }))
-    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    const dialog = await screen.findByRole('dialog', { name: 'Lend this account' }, WAIT)
     // MUTATION: call setWorkspaceLoan from the Lend button's onClick.
     expect(writesOf(calls)).toHaveLength(0)
     expect(visible(dialog)).toContain('Lend eng shared (eng) to bob@example.com?')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Lend this account' })).toBeNull(), WAIT)
     expect(writesOf(calls)).toHaveLength(0)
   })
 
-  it('ADM-2: Reclaim is off for an account not lent to this person, and on, behind a confirm, for one that is', async () => {
+  it('ADM-2: Reclaim offers only an account lent to this person, and reclaims it behind a confirm', async () => {
     const lentRow = person('bob@example.com', ws('ready', 'w-91c0de'), {
       claude_account: { source: 'lent', own: 0, lent: 1, lent_by: ['eng'], provider_key: false },
     })
@@ -361,15 +376,15 @@ describe('live QA admin: nothing writes on the first click', () => {
       'PUT /v1/admin/people/w-91c0de/loan': () => ({ status: 200, body: { workspace_id: 'w-91c0de', account_id: 'acct-eng-1', owner_tenant: 'eng', lent: false, changed: true } }),
     })
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
-    const row = rowOf('bob@example.com')
+    const row = await manage('bob@example.com')
     const reclaim = () => within(row).getByRole('button', { name: 'Reclaim' }) as HTMLButtonElement
-    choose(row, 'acct-ops-1')
-    // MUTATION: enable Reclaim whenever an account is chosen.
-    expect(reclaim().disabled, 'Reclaim is live for an account ops never lent them').toBe(true)
-    choose(row, 'acct-eng-1')
+    // MUTATION: list every lendable account under Reclaim. One lent account
+    // is said as text beside Reclaim, not an empty select (PEOPLE-LOAN-VIEW).
+    expect(row.querySelector('select'), 'Reclaim offers an account ops never lent them').toBeNull()
+    expect(row.querySelector('[data-testid="pp-loan-one"]')?.textContent).toContain('acct-eng-1 (eng shared)')
     expect(reclaim().disabled).toBe(false)
     fireEvent.click(reclaim())
-    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    const dialog = await screen.findByRole('dialog', { name: 'Reclaim this account' }, WAIT)
     expect(writesOf(calls)).toHaveLength(0)
     expect(visible(dialog)).toContain('Reclaim eng shared (eng) from bob@example.com?')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Reclaim' }))
@@ -381,29 +396,29 @@ describe('live QA admin: nothing writes on the first click', () => {
     const paused = { ...ACCOUNT, account_id: 'acct-eng-2', label: 'eng paused', state: 'PAUSED' }
     await mount(people(ROWS, { lendable_accounts: [ACCOUNT, paused] }))
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
-    const row = rowOf('bob@example.com')
+    const row = await manage('bob@example.com')
     const option = within(row).getByRole('option', { name: /eng paused/ })
     expect(option.textContent).toContain('starts no new agent')
     choose(row, 'acct-eng-2')
     fireEvent.click(within(row).getByRole('button', { name: 'Lend' }))
-    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    const dialog = await screen.findByRole('dialog', { name: 'Lend this account' }, WAIT)
     expect(within(dialog).getByTestId('pp-loan-idle').textContent).toContain('PAUSED')
   })
 
   it('ADM-3: a ceiling Save asks first with old → new and the change, and an unchanged value has nothing to save', async () => {
     const { calls } = await mount(people(ROWS))
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
-    const row = rowOf('bob@example.com')
+    const row = await manage('bob@example.com')
     const save = within(row).getByRole('button', { name: 'Save' }) as HTMLButtonElement
     expect(save.disabled, 'Save is live with the value it already holds').toBe(true)
     fireEvent.change(within(row).getByLabelText('Ceiling for bob@example.com'), { target: { value: '6' } })
     fireEvent.click(save)
-    const dialog = await screen.findByRole('dialog', {}, WAIT)
+    const dialog = await screen.findByRole('dialog', { name: 'Change this ceiling' }, WAIT)
     // MUTATION: call setWorkspaceCeiling from Save's onClick.
     expect(writesOf(calls)).toHaveLength(0)
     expect(within(dialog).getByTestId('pp-ceiling-change').textContent).toBe('8 → 6 · −25%')
     fireEvent.click(within(dialog).getByRole('button', { name: 'Keep 8' }))
-    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull(), WAIT)
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Change this ceiling' })).toBeNull(), WAIT)
     expect(writesOf(calls)).toHaveLength(0)
   })
 
@@ -443,6 +458,8 @@ describe('live QA admin: nothing writes on the first click', () => {
     })
     const audit = [purged(0), purged(1), ...Array.from({ length: 48 }, (_, i) => purged(i + 2))]
     await mount(people(ROWS, { audit }))
+    // Housekeeping is folded away until asked for (#1206).
+    fireEvent.click(await screen.findByRole('button', { name: 'Show housekeeping' }, WAIT))
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
     const lines = [...document.querySelectorAll<HTMLElement>('.pp-audit-list li')]
     // MUTATION: draw one line per entry.
@@ -453,6 +470,7 @@ describe('live QA admin: nothing writes on the first click', () => {
 
   it('ADM-5: a single task-scoped entry shows its target_id, never a bare ?', async () => {
     await mount(people(ROWS, { audit: [{ action: 'history_purged', target_kind: 'task', target_id: 'task_0001', by: 'bob@example.com', at: now(), detail: { tenant_id: 'smoke' } }] }))
+    fireEvent.click(await screen.findByRole('button', { name: 'Show housekeeping' }, WAIT))
     await waitFor(() => expect(document.querySelector('.pp-audit-list')).not.toBeNull(), WAIT)
     const line = visible(document.querySelector('.pp-audit-list'))
     expect(line).toContain('history_purged task_0001 · smoke by bob@example.com')
@@ -461,14 +479,12 @@ describe('live QA admin: nothing writes on the first click', () => {
 })
 
 describe('the layout fits the card (seen live at 1456, 2026-10-09)', () => {
-  it('gives the table its own scroll container, and no action control a width wider than its cell', async () => {
-    // MUTATION: put `ten-table` back on the table (seven equal fixed columns),
-    // drop the `.table-wrap` around it, or give the Deny textarea back its
-    // `min-width: 220px` -- each is what pushed Deny and the select off the card.
+  it('gives the table its own scroll container, holds no control in it, and keeps the card\'s Deny form in its row', async () => {
+    // MUTATION: put `ten-table` back on the table (equal fixed columns), drop
+    // the `.table-wrap` around it, or give the Deny textarea a width of its own.
     media(false)
     await mount(people(ROWS))
     await waitFor(() => expect(rowOf('alice@example.com')).not.toBeNull(), WAIT)
-    fireEvent.click(within(rowOf('alice@example.com')).getByRole('button', { name: 'Deny' }))
     const table = document.querySelector<HTMLElement>('.pp-people table')!
     const wrap = table.parentElement!
     expect(wrap.classList.contains('table-wrap'), 'the table has no container of its own').toBe(true)
@@ -476,25 +492,13 @@ describe('the layout fits the card (seen live at 1456, 2026-10-09)', () => {
     expect(wrap.closest('.pp-people'), 'the container is not inside the card').not.toBeNull()
     expect(painted(wrap, 'overflow-x', WIDE)).toBe('auto')
     expect(painted(table, 'table-layout', WIDE) ?? 'auto', 'a fixed layout splits the columns evenly').toBe('auto')
-
-    const cells = [...document.querySelectorAll<HTMLElement>('td.pp-acts-cell')]
-    expect(cells.length, 'no Actions cell was drawn').toBe(ROWS.length)
-    const floor = fixedPx(painted(cells[0]!, 'min-width', WIDE))
-    expect(floor, 'the Actions column has no floor').not.toBeNull()
-    const controls = cells.flatMap((c) => [...c.querySelectorAll<HTMLElement>('*')])
-    expect(controls.some((el) => el.tagName === 'TEXTAREA'), 'the open Deny form was not drawn').toBe(true)
-    expect(controls.some((el) => el.tagName === 'SELECT'), 'the Account select was not drawn').toBe(true)
-    for (const el of controls) {
-      for (const prop of ['width', 'min-width']) {
-        const px = fixedPx(painted(el, prop, WIDE))
-        if (px === null) continue
-        expect(px, `<${el.tagName.toLowerCase()} class="${el.className}"> ${prop} is wider than its cell`).toBeLessThanOrEqual(floor!)
-      }
-    }
-    for (const el of document.querySelectorAll<HTMLElement>('.pp-acts select, .pp-acts textarea')) {
-      expect(painted(el, 'width', WIDE), `${el.tagName} is not the cell's width`).toBe('100%')
-      expect(painted(el, 'min-width', WIDE)).toBe('0')
-    }
+    // THE ACTIONS COLUMN IS GONE (#1206): it took 653 of 1260px.
+    expect(document.querySelector('td.pp-acts-cell, .pp-acts')).toBeNull()
+    expect(table.querySelector('select, textarea, input')).toBeNull()
+    fireEvent.click(within(reqOf('workspace', 'alice@example.com')).getByRole('button', { name: 'Deny' }))
+    const reason = reqOf('workspace', 'alice@example.com').querySelector<HTMLElement>('textarea')!
+    expect(painted(reason, 'width', WIDE)).toBe('100%')
+    expect(painted(reason, 'min-width', WIDE)).toBe('0')
   })
 
   it('keeps a workspace id on one line, in mono, with no break opportunity', async () => {
@@ -521,7 +525,7 @@ describe('the layout fits the card (seen live at 1456, 2026-10-09)', () => {
     // `.c-field` without its gap.
     await mount(people(ROWS))
     await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
-    const ceiling = within(rowOf('bob@example.com')).getByLabelText('Ceiling for bob@example.com')
+    const ceiling = within(await manage('bob@example.com')).getByLabelText('Ceiling for bob@example.com')
     const email = within(document.querySelector<HTMLElement>('.pp-admins')!).getByLabelText('Email')
     for (const field of [ceiling, email]) {
       const label = field.closest('label')!
@@ -533,7 +537,7 @@ describe('the layout fits the card (seen live at 1456, 2026-10-09)', () => {
     }
   })
 
-  it('is a record per person on a phone, every cell named', async () => {
+  it('is a short record per person on a phone, every cell named, Manage opening the sheet', async () => {
     // MUTATION: a literal `is-scroll` on the wrapper, or a cell without its
     // `data-label` (its value would sit under no name in the record).
     media(true)
@@ -544,7 +548,8 @@ describe('the layout fits the card (seen live at 1456, 2026-10-09)', () => {
     expect(painted(wrap, 'overflow-x', PHONE)).toBe('visible')
     for (const tr of document.querySelectorAll<HTMLElement>('.pp-people tbody tr')) {
       expect(tr.firstElementChild?.matches('th[scope="row"]'), 'the record has no name').toBe(true)
-      for (const td of tr.querySelectorAll('td')) expect(td.getAttribute('data-label'), 'a cell with no name').toBeTruthy()
+      const labels = [...tr.querySelectorAll('td')].map((td) => td.getAttribute('data-label'))
+      expect(labels, 'the phone record is the person, their workspace and Manage').toEqual(['Workspace', 'Manage'])
       expect(painted(tr.querySelector('td')!, 'display', PHONE)).toBe('grid')
     }
   })
@@ -637,10 +642,8 @@ describe('workspace building off in this deployment', () => {
         body: { workspace: waiting('w-3f9a2c'), dispatch: { published: false, mode: 'create', reason: 'publishing_off' }, sent_for_building: false, message: said },
       }),
     })
-    await waitFor(() => expect(rowOf('alice@example.com')).not.toBeNull(), WAIT)
-    fireEvent.click(within(rowOf('alice@example.com')).getByRole('button', { name: 'Approve' }))
-    const dialog = await screen.findByRole('dialog', {}, WAIT)
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Approve' }))
+    await waitFor(() => expect(reqOf('workspace', 'alice@example.com')).not.toBeNull(), WAIT)
+    fireEvent.click(within(reqOf('workspace', 'alice@example.com')).getByRole('button', { name: 'Approve' }))
     await screen.findByText(said, {}, WAIT)
   })
 })
@@ -650,16 +653,18 @@ describe('workspace building off in this deployment', () => {
 describe('visual QA (VQA-L06)', () => {
   const LONG = `${'a'.repeat(64)}@example.com`
 
-  it('V021: a long email or login breaks anywhere and is capped, so it widens no column', async () => {
-    // MUTATION: drop `.pp-who`'s `overflow-wrap: anywhere` or its `max-width`
-    // -- one unbroken address scrolled the page sideways at 400px.
-    await mount(people([...ROWS, person(LONG, ws('requested', 'w-10a000'), { github: `@${'g'.repeat(60)}` })]))
+  it('V021: a long email is capped, so it widens no column, and is cut rather than broken (#1206)', async () => {
+    // MUTATION: drop `.pp-who`'s `max-width`, or put back `overflow-wrap:
+    // anywhere`, which is what broke `devops@saga.xyz` as `devops@saga. xyz`.
+    await mount(people([...ROWS, person(LONG, ws('requested', 'w-10a000'))]))
     await waitFor(() => expect(rowOf(LONG)).not.toBeNull(), WAIT)
     const who = [...rowOf(LONG).querySelectorAll<HTMLElement>('.pp-who')]
-    expect(who.map((w) => w.textContent)).toEqual([LONG, `@${'g'.repeat(60)}`])
+    expect(who.map((w) => w.textContent)).toEqual([LONG])
     for (const el of who) {
+      expect(el.getAttribute('title'), 'the cut address is not readable in full').toBe(LONG)
       for (const env of [WIDE, PHONE]) {
-        expect(painted(el, 'overflow-wrap', env), `the address does not break at ${env.width}`).toBe('anywhere')
+        expect(painted(el, 'overflow-wrap', env) ?? 'normal', `the address breaks mid-word at ${env.width}`).toBe('normal')
+        expect(painted(el, 'text-overflow', env)).toBe('ellipsis')
         expect(painted(el, 'display', env)).toBe('block')
         const cap = fixedPx(painted(el, 'max-width', env))
         expect(cap, `the address has no cap at ${env.width}`).not.toBeNull()
@@ -671,13 +676,14 @@ describe('visual QA (VQA-L06)', () => {
   it('V028: opening Deny focuses the reason, and Cancel gives focus back to Deny', async () => {
     // MUTATION: drop the focus effect in `Deny`.
     await mount(people(ROWS))
-    await waitFor(() => expect(rowOf('alice@example.com')).not.toBeNull(), WAIT)
-    fireEvent.click(within(rowOf('alice@example.com')).getByRole('button', { name: 'Deny' }))
-    const reason = rowOf('alice@example.com').querySelector('textarea')
+    await waitFor(() => expect(reqOf('workspace', 'alice@example.com')).not.toBeNull(), WAIT)
+    const item = () => reqOf('workspace', 'alice@example.com')
+    fireEvent.click(within(item()).getByRole('button', { name: 'Deny' }))
+    const reason = item().querySelector('textarea')
     expect(reason).not.toBeNull()
     await waitFor(() => expect(document.activeElement).toBe(reason))
-    fireEvent.click(within(rowOf('alice@example.com')).getByRole('button', { name: 'Cancel' }))
-    const deny = within(rowOf('alice@example.com')).getByRole('button', { name: 'Deny' })
+    fireEvent.click(within(item()).getByRole('button', { name: 'Cancel' }))
+    const deny = within(item()).getByRole('button', { name: 'Deny' })
     await waitFor(() => expect(document.activeElement).toBe(deny))
   })
 
@@ -690,19 +696,18 @@ describe('visual QA (VQA-L06)', () => {
     for (const env of [WIDE, PHONE]) expect(painted(head, 'min-height', env)).toBe('var(--h-ctl)')
   })
 
-  it('V080: the action groups flow side by side, and Lend and Reclaim are drawn alike', async () => {
-    // MUTATION: `.pp-acts` back to `display: grid` (one group per line), or
-    // Reclaim back to `kind="ghost"` (a disabled ghost loses its border).
+  it('V080: a request\'s decisions flow side by side, and the drawer never draws Lend and Reclaim together', async () => {
+    // MUTATION: `.pp-req-acts` to `display: grid` (one control per line), or
+    // the drawer drawing both verbs, one of them disabled.
     await mount(people(ROWS))
-    await waitFor(() => expect(rowOf('bob@example.com')).not.toBeNull(), WAIT)
-    const acts = rowOf('bob@example.com').querySelector<HTMLElement>('.pp-acts')!
+    await waitFor(() => expect(reqOf('workspace', 'alice@example.com')).not.toBeNull(), WAIT)
+    const acts = reqOf('workspace', 'alice@example.com').querySelector<HTMLElement>('.pp-req-acts')!
     expect(painted(acts, 'display', WIDE)).toBe('flex')
     expect(painted(acts, 'flex-wrap', WIDE)).toBe('wrap')
-    const lend = within(acts).getByRole('button', { name: 'Lend' })
-    const reclaim = within(acts).getByRole('button', { name: 'Reclaim' })
-    expect(lend.hasAttribute('disabled') && reclaim.hasAttribute('disabled')).toBe(true)
-    expect(reclaim.className).toBe(lend.className)
-    expect(reclaim.classList.contains('is-ghost')).toBe(false)
+    const drawer = await manage('bob@example.com')
+    const verbs = within(drawer).queryAllByRole('button', { name: /^(Lend|Reclaim)$/ })
+    expect(verbs.map((b) => b.textContent)).toEqual(['Lend'])
+    expect(verbs[0]!.classList.contains('is-ghost')).toBe(false)
   })
 
   it('V081: a job step label wraps in its own column, its state does not, and a request id is one token', async () => {

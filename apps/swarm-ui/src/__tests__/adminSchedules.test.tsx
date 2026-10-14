@@ -1,13 +1,15 @@
-// ADMIN › SCHEDULES (docs/schedules.md §5.3, §6.1-§6.2, §8.4, lane S7):
-// every tenant's schedules, the schedule tick's last hour, the platform ticks.
+// AUTOMATE › SCHEDULES, ALL TENANTS (docs/schedules.md §5.3, §6.1-§6.2,
+// §8.4; lane S7, moved by SCHED-ONE-PAGE, owner decision 2026-10-13): every
+// tenant's schedules and the schedule tick's last hour, on the one Schedules
+// page at `?scope=all`. Admin › Schedules is gone; the switch, the redirect
+// and the platform ticks' new home are schedules.onepage.test.tsx's.
 //
 // WHAT EACH CASE HOLDS:
-//   * Admin › Schedules is an admin tab at `/admin/schedules`, beside the
-//     other admin pages;
+//   * the platform ticks Admin › Platform counts lists are every Cloud
+//     Scheduler job jobs.tf declares;
 //   * one table with a tenant column draws `_admin_row`'s fields; a spend some
 //     attempt never reported carries `Mark kind="partial"` and the count;
-//   * a platform with no schedule in any tenant is the `Absent` state, and the
-//     platform ticks are still listed; a tick that reported nothing in its
+//   * a platform with no schedule in any tenant is the `Absent` state; a tick that reported nothing in its
 //     window is said, not drawn as zeros;
 //   * pause, disable and re-enable go to the admin routes with the reason;
 //     pausing all of a tenant's is typed with its id;
@@ -22,10 +24,9 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { serve, visible } from './repofixture'
+import { Routed } from './screenroute'
 import type { CascadeEnv } from './cssgate'
 import { painted } from './marks'
-import { SECTIONS } from '../App'
-import { addressToPath, pathToAddress } from '../paths'
 
 /**
  * `terraform/modules/scheduler/jobs.tf`'s Cloud Scheduler jobs, in file order:
@@ -86,9 +87,9 @@ async function mount(handler: Handler) {
   const calls = serve(handler)
   vi.stubEnv('VITE_LIVE', '1')
   vi.resetModules()
-  const { AdminSchedulesScreen } = await import('../AdminSchedules')
+  const { SchedulesScreen } = await import('../Schedules')
   const go = vi.fn()
-  const utils = render(<AdminSchedulesScreen go={go} />)
+  const utils = render(<Routed Screen={SchedulesScreen} section="automate/schedules" start="scope=all" spy={go} />)
   await screen.findByRole('heading', { name: 'Schedules', level: 1 }, WAIT)
   return { ...utils, calls, go }
 }
@@ -116,14 +117,7 @@ afterEach(() => {
   vi.unstubAllGlobals()
 })
 
-describe('Admin › Schedules', () => {
-  it('is an admin tab at /admin/schedules', () => {
-    const admin = SECTIONS.find((s) => s.id === 'admin')!
-    expect(admin.tabs.find((t) => t.id === 'schedules')).toMatchObject({ label: 'Schedules', admin: true })
-    expect(addressToPath('admin/schedules')).toBe('/admin/schedules')
-    expect(pathToAddress('/admin/schedules')?.address).toBe('admin/schedules')
-  })
-
+describe('Automate › Schedules, All tenants', () => {
   it('draws every tenant’s schedules in one table with a tenant column, and the tick’s last hour', async () => {
     await mount(routes(() => null))
     await waitFor(() => expect(rowOf('sch_b')).not.toBeNull(), WAIT)
@@ -149,23 +143,21 @@ describe('Admin › Schedules', () => {
     expect(visible(cell)).toContain('2 attempts unreported')
   })
 
-  it('is the Absent state when no tenant has a schedule, and still lists the platform ticks', async () => {
+  it('is the Absent state when no tenant has a schedule, and says the tick reported nothing', async () => {
     await mount(routes(() => null, [], { ...TICK, ticks: 0, fired: 0, max_lateness_seconds: null }))
     await screen.findByText('No schedules in any tenant', undefined, WAIT)
     // MUTATION: draw "0 ticks, 0 fired" for a window with no report.
     expect(screen.getByText('No tick reported')).toBeTruthy()
-    const ticks = screen.getByTestId('as-platform-ticks')
-    const names = [...ticks.querySelectorAll<HTMLElement>('tr[data-tick]')].map((r) => r.dataset.tick)
-    // Every Cloud Scheduler job jobs.tf declares, in its order (live QA ADM-6).
-    expect(names).toEqual(jobsTf().map((j) => j.name))
   })
 
   it('ADM-6: lists every Cloud Scheduler job in jobs.tf, by resource and job name, and nothing else', async () => {
-    const { PLATFORM_TICKS } = await import('../AdminSchedules')
+    const { PLATFORM_TICKS } = await import('../PlatformCounts')
     const declared = jobsTf()
-    // A control: the parse found the jobs the live QA counted, so an empty
-    // or broken read cannot pass as agreement.
-    expect(declared.length).toBeGreaterThanOrEqual(12)
+    // A control: the parse found the jobs the live QA counted (12), less the
+    // issue_sweep job deleted on 2026-10-12 (Schedules S9, second change), so
+    // an empty or broken read cannot pass as agreement.
+    expect(declared.length).toBeGreaterThanOrEqual(11)
+    expect(declared.map((j) => j.name)).not.toContain('issue_sweep')
     expect(declared.map((j) => j.name)).toContain('schedule_tick')
     // MUTATION: drop any entry from PLATFORM_TICKS.
     expect(PLATFORM_TICKS.map((t) => ({ name: t.name, job: t.job }))).toEqual(declared)
@@ -243,11 +235,12 @@ describe('live QA: automate, admin schedules', () => {
       return a!
     }, WAIT)
     expect(link.getAttribute('href')).toBe('/automate/schedules/sch_a')
-    fireEvent.click(link)
-    expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
     // Another tenant's schedule: its page would read as the working tenant and 404.
     expect(rowOf('sch_b')!.querySelector('td[data-label="Name · type"] a')).toBeNull()
     expect(rowOf('sch_b')!.querySelector('.sc-name')!.getAttribute('title')).toContain('switch the console to tenant research')
+    // Last: the page is one route now, so the click opens the schedule's page.
+    fireEvent.click(link)
+    expect(go).toHaveBeenCalledWith('automate/schedules?schedule=sch_a')
   })
 
   it('links nothing while the working tenant is not read', async () => {

@@ -21,6 +21,9 @@ Lane W7 (docs/workspaces.md §6.3-§6.4):
     PUT  /v1/admin/workspaces/{workspace_id}/limits      the ceiling; body {max_active}
     PUT  /v1/admin/people/{workspace_id}/loan            lend or reclaim; body
                                                          {account_id, lend}
+    POST /v1/admin/people/{workspace_id}/loan/decline    decline the open loan
+                                                         request; body {reason?}
+                                                         (LOAN-DECLINE)
     POST /v1/admin/workspaces/sweep                      the dispatch sweep: an
                                                          admin, or the swarm-tick
                                                          scheduler identity
@@ -43,7 +46,7 @@ from ..admins import AdminRoles, build_admin_roles
 from ..auth import AuthContext
 from ..brokerclient import AccountPool
 from ..deps import AppContext, admin_auth, get_context
-from ..people import MAX_CEILING, MAX_REASON, MIN_CEILING, People
+from ..people import MAX_CEILING, MAX_LOAN_REASON, MAX_REASON, MIN_CEILING, People
 from ..publish_workspace import WorkspacePublisher, publisher_for
 from ..schemas import StrictModel
 from .accounts import account_pool
@@ -106,6 +109,11 @@ class LoanRequest(StrictModel):
     lend: bool
 
 
+class LoanDeclineRequest(StrictModel):
+    #: Optional, and shown to the person in their notification feed.
+    reason: str | None = Field(default=None, max_length=MAX_LOAN_REASON)
+
+
 def workspace_publisher(request: Request,
                         ctx: AppContext = Depends(get_context)) -> WorkspacePublisher:
     """Built once per process from the settings; a test sets
@@ -122,7 +130,8 @@ def people_service(
     publisher: WorkspacePublisher = Depends(workspace_publisher),
 ) -> People:
     return People(ctx.db, publisher=publisher, now=ctx.now,
-                  console_url=ctx.settings.console_url)
+                  console_url=ctx.settings.console_url,
+                  project_id=ctx.settings.project_id)
 
 
 @router.get("/people")
@@ -158,12 +167,23 @@ def list_people(
 
 @router.post("/workspaces/sweep")
 def sweep_workspaces(
+    request: Request,
     auth: AuthContext = Depends(admin_auth),
+    ctx: AppContext = Depends(get_context),
     people: People = Depends(people_service),
 ) -> dict:
-    """§2.2's dispatch sweep. Declared before the `{workspace_id}` routes so
-    the literal path is never read as a workspace id."""
-    return people.sweep()
+    """§2.2's dispatch sweep, and the pending loans of every workspace now
+    ready (LOAN-NEW). Declared before the `{workspace_id}` routes so the
+    literal path is never read as a workspace id. The broker client is built
+    here rather than as a dependency so that a deployment whose broker is
+    misconfigured still gets its dispatch and its stuck reports; the loans
+    then wait, and `loans_error` says why."""
+    try:
+        pool = account_pool(request, ctx)
+        pool_error = None
+    except Exception as exc:  # noqa: BLE001 - the loans wait, the sweep runs
+        pool, pool_error = None, getattr(exc, "code", None) or type(exc).__name__
+    return {**people.sweep(pool), "loans_error": pool_error}
 
 
 @router.post("/workspaces/{workspace_id}/approve")
@@ -224,3 +244,17 @@ def set_workspace_loan(
 ) -> dict:
     return people.set_loan(workspace_id, by=auth.email, account_id=body.account_id,
                            lend=body.lend, pool=pool, store=ctx.store)
+
+
+@router.post("/people/{workspace_id}/loan/decline")
+def decline_workspace_loan(
+    workspace_id: str,
+    body: LoanDeclineRequest | None = None,
+    auth: AuthContext = Depends(admin_auth),
+    people: People = Depends(people_service),
+) -> dict:
+    """Close the person's open loan request without lending (LOAN-DECLINE).
+    The body may be omitted; 409 `LOAN_REQUEST_NOT_OPEN` when no request is
+    open. No broker call: nothing was lent, so there is nothing to undo."""
+    return people.decline_loan(workspace_id, by=auth.email,
+                               reason=body.reason if body is not None else None)

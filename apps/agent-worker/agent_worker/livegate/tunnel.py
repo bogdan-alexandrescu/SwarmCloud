@@ -28,6 +28,16 @@ pod's resolver has no search path (scheduler.dispatch GKE_POD_DNS_CONFIG), so
 the name is fully qualified. The relay trusts nothing but swarm-api's MAC'd
 ticket; the address only decides where the gate knocks.
 
+A SILENT RELAY IS A CLOSED TUNNEL (LB-R6). A relay pod that vanished sends
+no FIN, and a tunnel that waits on it for ever is one the worker never
+reopens -- the session stays open with its last report, and every viewer the
+new relay admits has no gate to meet. The relay's server pings every 20 s
+(uvicorn's default `ws_ping_interval`, swarm_live.main) and the recorder asks
+for frames at least once a second, so `Tunnel.run` closes a link it has heard
+nothing on -- not a frame, not a ping -- for `SILENT_SECONDS`. The gate's
+`status` then says `closed` and the worker hands it a fresh ticket
+(handoff.HandoffPath._keep_tunnel).
+
 NOTHING CARRIED HERE IS LOGGED. The ticket admits whoever holds it, and DATA
 is a person's keystrokes (§5.3.3). Log lines carry close codes, conn ids and
 counts.
@@ -42,6 +52,7 @@ import json
 import logging
 import os
 import struct
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 from urllib.parse import urlsplit
@@ -65,6 +76,10 @@ MAX_MESSAGE = 16 * 1024 * 1024
 
 #: How long the relay has to say `ready` after the ticket.
 READY_SECONDS = 10.0
+#: How long the relay may say nothing at all -- not a frame, not a ping --
+#: before the gate takes the link for dead and closes it. Over three of the
+#: relay's 20-second pings, so one lost ping is not a dead relay.
+SILENT_SECONDS = 75.0
 
 _WS_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
 _TEXT, _BINARY, _CLOSE, _PING, _PONG, _CONTINUATION = 0x1, 0x2, 0x8, 0x9, 0xA, 0x0
@@ -119,6 +134,8 @@ class WebSocketClient:
         self._writer = writer
         self._lock = asyncio.Lock()
         self.close_code: int | None = None
+        #: `time.monotonic()` when the relay last sent anything, a ping included.
+        self.last_heard = time.monotonic()
 
     @classmethod
     async def connect(cls, url: str, *, timeout: float = 10.0) -> "WebSocketClient":
@@ -193,6 +210,7 @@ class WebSocketClient:
                 payload = await self._reader.readexactly(n)
             except (asyncio.IncompleteReadError, ConnectionError):
                 return None
+            self.last_heard = time.monotonic()
             if key:
                 payload = _mask(payload, key)
             op = b0 & 0x0F
@@ -233,9 +251,11 @@ Connector = Callable[[str], Awaitable[Any]]
 class Tunnel:
     """One session's tunnel: the ticket, the relay's `ready`, then frames to `on_frame`."""
 
-    def __init__(self, url: str, *, connect: Connector | None = None) -> None:
+    def __init__(self, url: str, *, connect: Connector | None = None,
+                 silent_seconds: float = SILENT_SECONDS) -> None:
         self._url = url
         self._connect = connect or WebSocketClient.connect
+        self._silent = silent_seconds
         self._ws: Any = None
         self.closed = False
 
@@ -288,6 +308,7 @@ class Tunnel:
     async def run(self, on_frame: Callable[[int, str, bytes], Awaitable[None]]) -> int | None:
         """Deliver every frame until the relay closes; returns its close code."""
         assert self._ws is not None, "open() first"
+        watchdog = asyncio.create_task(self._watch_silence())
         try:
             while True:
                 message = await self._ws.receive()
@@ -304,6 +325,24 @@ class Tunnel:
                 await on_frame(op, conn_id, payload)
         finally:
             self.closed = True
+            watchdog.cancel()
+
+    async def _watch_silence(self) -> None:
+        """Close the link once the relay has been silent for `silent_seconds`.
+
+        Closing, not cancelling the read: a read cancelled half-way through a
+        frame would lose bytes. The close ends `receive()`, and `run` with it.
+        A connection that does not say when it last heard (a test double) is
+        never judged silent.
+        """
+        check = max(0.01, min(self._silent / 4, 5.0))
+        while not self.closed:
+            await asyncio.sleep(check)
+            heard = getattr(self._ws, "last_heard", None)
+            if isinstance(heard, (int, float)) and time.monotonic() - heard > self._silent:
+                log.warning("live tunnel: the relay has been silent for %ds; closing", int(self._silent))
+                await self._ws.close(1001)
+                return
 
     async def close(self) -> None:
         self.closed = True
@@ -348,7 +387,7 @@ class StreamMux:
     """Routes the relay's frames to one `serve(conn_id, reader, writer)` per stream."""
 
     def __init__(self, tunnel: Tunnel, serve: Callable[[str, asyncio.StreamReader, TunnelWriter], Awaitable[None]],
-                 on_control: Callable[[str], Awaitable[None]],
+                 on_control: Callable[..., Awaitable[None]],
                  on_device: Callable[[bytes], Awaitable[None]] | None = None) -> None:
         self._tunnel = tunnel
         self._serve = serve
@@ -377,7 +416,12 @@ class StreamMux:
             if stream is not None:
                 stream[0].feed_eof()
         elif op == OP_CONTROL:
-            await self._on_control(conn_id)
+            # A revoke's cause rides in the payload (rendezvous.py); a plain
+            # grant or release has none, and is passed as before.
+            if payload:
+                await self._on_control(conn_id, payload)
+            else:
+                await self._on_control(conn_id)
         elif op == OP_DEVICE and self._on_device is not None:
             await self._on_device(payload)
 

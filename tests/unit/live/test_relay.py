@@ -626,7 +626,8 @@ def test_a_control_ticket_for_the_session_with_another_generation_is_refused():
 
     run(go())
     assert relay.controller(SESSION) is None
-    assert [json.loads(t) for t in a.text][-1] == {"type": "refused", "reason": "control"}
+    assert [json.loads(t) for t in a.text][-1] == {"type": "refused", "reason": "control",
+                                                  "cause": "wrong_generation"}
 
 
 def test_a_tunnel_that_drops_closes_its_viewers():
@@ -694,6 +695,44 @@ def test_a_report_that_is_not_two_objects_or_is_too_large_is_dropped(payload):
     """Origin is untrusted page data: the relay keeps a report only when it is
     a small JSON object of `origin` and `device`, each an object or null.
     swarm-api validates every field again before it stores one."""
+    key, clock, relay = build()
+    gate, a = Endpoint(), Endpoint()
+
+    async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), gate)
+        await relay.open_viewer(ticket(key, clock, "viewer"), a)
+        await relay.from_tunnel(tunnel, encode_frame(rz.OP_REPORT, "", payload))
+        await relay.flush()
+        return relay.report(SESSION)
+
+    assert run(go()) is None
+    assert _reports(a) == []
+
+
+def test_a_report_with_the_agents_connection_is_kept_and_passed_on():
+    """LIVE-UNUSED (#1030): a gate reports whether the agent is driving its
+    browser as a third key, `agent`. The relay keeps and passes it like the
+    other two; a report without it is kept as before (an older gate)."""
+    key, clock, relay = build()
+    gate, a = Endpoint(), Endpoint()
+    agent = {"connected_at": None, "connections": 0, "first_frame_at": 1_791_900_000.0}
+
+    async def go():
+        tunnel = await relay.open_tunnel(ticket(key, clock), gate)
+        await relay.open_viewer(ticket(key, clock, "viewer"), a)
+        await relay.from_tunnel(tunnel, _report(origin=ORIGIN, device=DEVICE, agent=agent))
+        await relay.flush()
+        return relay.report(SESSION)
+
+    assert run(go()) == {"origin": ORIGIN, "device": DEVICE, "agent": agent}
+    assert _reports(a) == [{"type": "report", "agent": agent, "origin": ORIGIN, "device": DEVICE}]
+
+
+@pytest.mark.parametrize("payload", [
+    json.dumps({"origin": ORIGIN, "agent": None}).encode(),
+    json.dumps({"origin": ORIGIN, "device": DEVICE, "agent": "connected"}).encode(),
+])
+def test_an_agent_key_does_not_let_a_report_without_origin_or_device_or_a_bad_agent_through(payload):
     key, clock, relay = build()
     gate, a = Endpoint(), Endpoint()
 

@@ -12,7 +12,11 @@ with a record:
     limits    the record's ceiling, the tenant's max_active AND capacity_units
               together, and, for a ready workspace, a `limits` run
     loan      lend or reclaim a pool account: only one owned by a group tenant
-              or by the acting admin's own personal tenant
+              or by the acting admin's own personal tenant. A lend to a
+              workspace that is not `ready` is recorded PENDING and applied
+              by the sweep once it is (LOAN-NEW, below)
+    decline   close a person's open loan request without lending, with an
+              optional reason they are shown (LOAN-DECLINE, below)
     sweep     publish again an `approved` record nobody claimed in 10 minutes,
               and report every `approved` record nothing is advancing
               (`workspace_stuck`), even when publishing is off
@@ -29,6 +33,37 @@ the account is written by the quota broker, the pool's single writer (see
 `routes/accounts.py`), so its audit entry is written in the transaction that
 records the loan on swarm-api's side, AFTER the broker answered. A broker
 failure therefore writes no audit entry for a change that did not happen.
+
+A LOAN TO A WORKSPACE STILL BEING SET UP IS PENDING, NOT REFUSED (LOAN-NEW,
+part of #1194). The broker grants a borrower's worker account,
+`swarm-agent-worker-<tenant>`, read access to the account's secret BEFORE it
+lists the borrower, and that account is created by the workspace job. Until
+the job marks the workspace `ready` the account may not exist, and IAM refuses
+a member that does not exist: on 2026-10-13 a lend to w-7f9285, approved an
+hour earlier and still provisioning, answered 422 "...InvalidArgument.
+Lending is unchanged." So a lend to a workspace that is not `ready` calls the
+broker not at all; it writes `pending_loans/{tenant_id}` and its audit entry
+(`lend_pending`) in one transaction, read against the record's state in that
+same transaction, and the answer says it will apply when the workspace is
+ready. The sweep (every 10 minutes) applies each pending loan of a `ready`
+workspace through the same broker call a direct lend makes, and only after
+the broker answered removes it, closes the loan request and writes `lend` --
+so a loan is either pending, or lent and audited, never half of each. A grant
+that fails on a READY workspace is an error naming the member and the
+broker's reason (`LOAN_GRANT_FAILED`): there, the member should exist.
+
+A LOAN REQUEST MAY BE DECLINED (LOAN-DECLINE, owner 2026-10-12, part of
+#1206). Before, a request closed only when an account was lent against it, so
+one an admin would not grant sat in "Waiting for you" for ever. `decline_loan`
+moves an open (`requested`) request to `declined`, with `{verdict, by, at,
+reason}` in its decision and a `loan_declined` audit entry, in one
+transaction; anything else is `LOAN_REQUEST_NOT_OPEN` (409), so a declined or
+lent request is not declined again. The reason is optional and short, and it
+is shown to the person (the notification feed's `account` item); the audit
+keeps its length, as a denial's does. The person may ask again: a new request
+re-opens the document as `requested` and keeps the declined one in `history`
+(`workspaces.request_loan`). Declining does not touch `pending_loans`: a
+pending loan is a lending already decided, and only a reclaim cancels it.
 
 swarm-api NEVER WRITES `ready`. Nothing here does: the job's final check is
 the only writer (§1.2).
@@ -62,12 +97,13 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from swarm_common.admission import _snapshot
+from swarm_common.identity import worker_service_account_id
 from swarm_common.models import Tenant
 
 from . import refusals
 from . import workspaces as ws
 from .admins import AUDIT_COLLECTION
-from .errors import Conflict, NotFound, ValidationFailed, WorkspaceMigrating
+from .errors import ApiError, Conflict, NotFound, ValidationFailed, WorkspaceMigrating
 from .gittokens import COLLECTION as GIT_TOKENS
 from .publish_workspace import MODE_CREATE, MODE_LIMITS, WorkspacePublisher
 from .store import TENANTS
@@ -140,6 +176,37 @@ AUTO_APPROVE_REASON = "requester is an admin"
 
 #: The loan request's state once an admin has lent an account against it.
 LOAN_LENT = "lent"
+#: ... and once an admin has declined it (LOAN-DECLINE). The person may ask again.
+LOAN_DECLINED = "declined"
+#: A decline's reason is optional and SHORT: one line the person reads in the
+#: notification feed, not a denial's paragraph (MAX_REASON).
+MAX_LOAN_REASON = 200
+
+#: Loans an admin made to a workspace that was not `ready` yet, one document
+#: per tenant: `{tenant_id, workspace_id, loans: [{account_id, owner_tenant,
+#: by, at, last_error, last_attempt_at}]}`. Its own collection, not a field on
+#: the workspace record, because the workspace job writes that record too.
+PENDING_LOANS = "pending_loans"
+#: The `state` of a loan answer: granted now, recorded for later, or reclaimed.
+LOAN_APPLIED = "applied"
+LOAN_PENDING = "pending"
+LOAN_RECLAIMED = "reclaimed"
+
+
+def worker_member(tenant_id: str, project_id: str) -> str:
+    """The IAM member the broker grants for a borrower: its worker account."""
+    account = worker_service_account_id(tenant_id)
+    if project_id:
+        account = f"{account}@{project_id}.iam.gserviceaccount.com"
+    return f"serviceAccount:{account}"
+
+
+def pending_message(state: str) -> str:
+    return (
+        f"Recorded as pending: the loan will apply when the workspace is ready. It is "
+        f"{state} now, and its worker account is made by the workspace setup, so IAM would "
+        "refuse a grant to it today. The workspace sweep applies the loan within 10 "
+        "minutes of the workspace becoming ready; reclaiming before then cancels it.")
 
 
 class WorkspaceNotFound(NotFound):
@@ -156,6 +223,19 @@ class AccountNotLendable(NotFound):
 
 class AccountIsTheirs(Conflict):
     code = "ACCOUNT_IS_THEIRS"
+
+
+class LoanRequestNotOpen(Conflict):
+    """There is no open loan request to decline: none was made, or it was
+    lent against or declined already (LOAN-DECLINE)."""
+    code = "LOAN_REQUEST_NOT_OPEN"
+
+
+class LoanGrantFailed(ValidationFailed):
+    """The broker refused a lend to a READY workspace (LOAN-NEW). The
+    message names the member it was asked to grant and the broker's reason;
+    the broker changed nothing, so neither does swarm-api."""
+    code = "LOAN_GRANT_FAILED"
 
 
 def ceiling_limits(max_active: int) -> dict[str, int]:
@@ -192,11 +272,13 @@ class People:
         publisher: WorkspacePublisher,
         now: Callable[[], datetime],
         console_url: str = "",
+        project_id: str = "",
     ) -> None:
         self._db = db
         self._publisher = publisher
         self._now = now
         self._console_url = console_url
+        self._project_id = project_id
 
     # -- addressing ------------------------------------------------------------
 
@@ -556,7 +638,7 @@ class People:
             log.warning("workspace dispatch not recorded workspace=%s: %s",
                         record.get("workspace_id"), type(exc).__name__)
 
-    def sweep(self) -> dict[str, Any]:
+    def sweep(self, pool: Any = None) -> dict[str, Any]:
         """§2.2's dispatch sweep, and the detector for a record nothing is
         advancing.
 
@@ -573,7 +655,12 @@ class People:
         WHY THE WALK RUNS WITH PUBLISHING OFF: it returned early there until
         2026-10-10, and w-752763 then sat approved for 19 hours with nobody
         told. Publishing off is the one state in which no build will ever
-        come, so it is the state that most needs reporting."""
+        come, so it is the state that most needs reporting.
+
+        With a `pool` it then applies the pending loans of every workspace
+        now `ready` (`apply_pending_loans`, LOAN-NEW): the job that marks a
+        workspace ready runs no swarm-api code, so this walk is what notices.
+        Without one (the broker client could not be built) `loans` is null."""
         publishing = bool(self._publisher.enabled)
         now = self._now()
         query = self._db.collection(ws.WORKSPACES).where(
@@ -613,7 +700,8 @@ class People:
         return {"publishing": publishing, "considered": considered, "published": published,
                 "failed": failed, "recent": recent, "stuck": stuck,
                 "stuck_reported": reported, "stuck_reasons": reasons,
-                "workspaces": touched}
+                "workspaces": touched,
+                "loans": None if pool is None else self.apply_pending_loans(pool)}
 
     def _report_stuck(self, record: Mapping[str, Any], reason: str, now: datetime) -> bool:
         """One `workspace_stuck` entry for a stuck record, unless one was
@@ -699,7 +787,11 @@ class People:
         `workspace_id`. The account must be one `lendable` lists for THIS
         admin; anything else is one 404, so the route confirms nothing about
         another tenant's account. A person's own account is refused: its
-        owner keeps `PUT /v1/accounts/{id}/lending`."""
+        owner keeps `PUT /v1/accounts/{id}/lending`.
+
+        A lend to a workspace that is not `ready` is recorded pending and
+        calls no IAM (the module docstring, LOAN-NEW); a reclaim cancels a
+        pending loan as well as the lending itself."""
         by = by.strip().lower()
         record = self.record(workspace_id)
         tenant_id = str(record["tenant_id"])
@@ -712,40 +804,278 @@ class People:
         if account["owner_tenant"] == tenant_id:
             raise AccountIsTheirs(
                 "this is the person's own account; its owner changes its lending, not People")
+        answer = {"workspace_id": workspace_id, "account_id": account_id,
+                  "owner_tenant": account["owner_tenant"], "lent": lend}
         current = list(account["lend_to"])
+        if lend and tenant_id not in current:
+            held = self._hold_unless_ready(workspace_id, by=by, account=account)
+            if held is not None:
+                changed, state = held
+                log.info("workspace loan pending workspace=%s changed=%s", workspace_id, changed)
+                return {**answer, "changed": changed, "state": LOAN_PENDING,
+                        "message": pending_message(state)}
+        cancelled = False if lend else self._cancel_pending(workspace_id, by=by, account=account)
         wanted = ([*current, tenant_id] if tenant_id not in current else current) if lend \
             else [t for t in current if t != tenant_id]
         changed = wanted != current
         if changed:
-            pool.set_lending(account_id, lend_to=wanted)
+            self._set_lending(pool, record, account, wanted)
         self._record_loan(record, by=by, account=account, lend=lend, changed=changed)
         log.info("workspace loan workspace=%s lend=%s changed=%s", workspace_id, lend, changed)
-        return {"workspace_id": workspace_id, "account_id": account_id,
-                "owner_tenant": account["owner_tenant"], "lent": lend, "changed": changed}
+        return {**answer, "changed": changed or cancelled,
+                "state": LOAN_APPLIED if lend else LOAN_RECLAIMED}
+
+    def _set_lending(self, pool: Any, record: Mapping[str, Any], account: Mapping[str, Any],
+                     lend_to: list[str]) -> None:
+        """The broker call. Its 422 on a lend -- the grant refused -- becomes
+        an error naming the member and the broker's reason. The broker grants
+        before it writes, so after a refusal nothing changed anywhere."""
+        tenant_id = str(record["tenant_id"])
+        try:
+            pool.set_lending(account["account_id"], lend_to=lend_to)
+        except ValidationFailed as exc:
+            if tenant_id not in lend_to:
+                raise
+            member = worker_member(tenant_id, self._project_id)
+            reason = exc.message
+            refusals.refuse(LoanGrantFailed(
+                f"could not lend {account['account_id']} to workspace "
+                f"{record.get('workspace_id')}: the quota broker refused to grant {member} "
+                f"read access to the account's secret ({reason}). The workspace is ready, so "
+                "that service account should exist; check it in IAM. Nothing was changed.",
+                detail={"workspace_id": record.get("workspace_id"),
+                        "account_id": account["account_id"], "member": member,
+                        "reason": reason}))
+            # Switched off, the refusal is only logged: serve the broker's
+            # own refusal, which is what this call raised before LOAN_GRANT_FAILED.
+            raise
+
+    def _pending_ref(self, tenant_id: str) -> Any:
+        return self._db.collection(PENDING_LOANS).document(tenant_id)
+
+    def _hold_unless_ready(self, workspace_id: str, *, by: str,
+                           account: Mapping[str, Any]) -> tuple[bool, str] | None:
+        """None when the workspace is `ready` (lend now). Otherwise the loan
+        is recorded pending with its audit entry, read against the record's
+        state in the same transaction, and this returns (changed, state)."""
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> tuple[bool, str] | None:
+            _, record = self._resolve(txn, workspace_id)
+            state = ws.state_of(record)
+            if state == ws.READY:
+                return None
+            tenant_id = str(record["tenant_id"])
+            ref = self._pending_ref(tenant_id)
+            snap = _snapshot(txn.get(ref))
+            loans = list(((snap.to_dict() or {}) if snap.exists else {}).get("loans") or [])
+            if any(loan.get("account_id") == account["account_id"] for loan in loans):
+                return False, state
+            loans.append({"account_id": account["account_id"],
+                          "owner_tenant": account["owner_tenant"], "by": by,
+                          "at": self._now(), "last_error": None, "last_attempt_at": None})
+            txn.set(ref, {"tenant_id": tenant_id, "workspace_id": workspace_id,
+                          "loans": loans})
+            self._audit(txn, "lend_pending", workspace_id, by, {
+                "account_id": account["account_id"],
+                "owner_tenant": account["owner_tenant"]})
+            return True, state
+
+        return _apply(transaction)
+
+    def _cancel_pending(self, workspace_id: str, *, by: str,
+                        account: Mapping[str, Any]) -> bool:
+        """A reclaim drops the account's pending loan, if there is one, with
+        its audit entry (`reclaim_pending`). True when one was dropped."""
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> bool:
+            _, record = self._resolve(txn, workspace_id)
+            ref = self._pending_ref(str(record["tenant_id"]))
+            snap = _snapshot(txn.get(ref))
+            loans = list(((snap.to_dict() or {}) if snap.exists else {}).get("loans") or [])
+            kept = [loan for loan in loans if loan.get("account_id") != account["account_id"]]
+            if len(kept) == len(loans):
+                return False
+            txn.update(ref, {"loans": kept})
+            self._audit(txn, "reclaim_pending", workspace_id, by, {
+                "account_id": account["account_id"],
+                "owner_tenant": account["owner_tenant"]})
+            return True
+
+        return _apply(transaction)
 
     def _record_loan(self, record: Mapping[str, Any], *, by: str, account: Mapping[str, Any],
-                     lend: bool, changed: bool) -> None:
+                     lend: bool, changed: bool, pending_since: datetime | None = None) -> None:
         """The audit entry, and on a lend the person's open loan request
-        closed, in one transaction. An unchanged call writes nothing."""
-        if not changed:
+        closed, in one transaction. An unchanged call writes nothing --
+        except that a pending loan being applied (`pending_since`) is always
+        removed from `pending_loans` here, so once the broker has answered
+        the loan is never both pending and lent."""
+        if not changed and pending_since is None:
             return
         workspace_id = str(record.get("workspace_id"))
-        loan_ref = self._db.collection(ws.LOAN_REQUESTS).document(str(record["tenant_id"]))
+        tenant_id = str(record["tenant_id"])
+        loan_ref = self._db.collection(ws.LOAN_REQUESTS).document(tenant_id)
+        pending_ref = self._pending_ref(tenant_id)
         transaction = self._db.transaction()
 
         @firestore.transactional
         def _apply(txn: Any) -> None:
             loan = _snapshot(txn.get(loan_ref))
+            pending = _snapshot(txn.get(pending_ref)) if pending_since is not None else None
             now = self._now()
             if lend and loan.exists and (loan.to_dict() or {}).get("state") == ws.REQUESTED:
                 txn.update(loan_ref, {"state": LOAN_LENT, "decision": {
                     "by": by, "at": now, "account_id": account["account_id"],
                     "owner_tenant": account["owner_tenant"]}})
-            self._audit(txn, "lend" if lend else "reclaim", workspace_id, by, {
-                "account_id": account["account_id"],
-                "owner_tenant": account["owner_tenant"]})
+            if pending is not None and pending.exists:
+                loans = list((pending.to_dict() or {}).get("loans") or [])
+                txn.update(pending_ref, {"loans": [
+                    p for p in loans if p.get("account_id") != account["account_id"]]})
+            if not changed:
+                return
+            detail = {"account_id": account["account_id"],
+                      "owner_tenant": account["owner_tenant"]}
+            if pending_since is not None:
+                detail["pending_since"] = pending_since
+            self._audit(txn, "lend" if lend else "reclaim", workspace_id, by, detail)
 
         _apply(transaction)
+
+    def decline_loan(self, workspace_id: str, *, by: str,
+                     reason: str | None = None) -> dict[str, Any]:
+        """requested -> declined, for the person behind `workspace_id`
+        (LOAN-DECLINE). The reason is optional, at most `MAX_LOAN_REASON`
+        characters, and shown to the person; blank is none. Refused with
+        `LOAN_REQUEST_NOT_OPEN` when no request is open."""
+        by = by.strip().lower()
+        text = " ".join((reason or "").split()) or None
+        if text is not None and len(text) > MAX_LOAN_REASON:
+            raise ValidationFailed(
+                f"a decline's reason is at most {MAX_LOAN_REASON} characters")
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            _, record = self._resolve(txn, workspace_id)
+            ref = self._db.collection(ws.LOAN_REQUESTS).document(str(record["tenant_id"]))
+            snap = _snapshot(txn.get(ref))
+            loan = (snap.to_dict() or {}) if snap.exists else {}
+            state = loan.get("state")
+            if state != ws.REQUESTED:
+                raise LoanRequestNotOpen(
+                    f"workspace {workspace_id} has no open loan request to decline"
+                    + (f"; its last one is {state}" if state else ""),
+                    detail={"workspace_id": workspace_id, "state": state})
+            txn.update(ref, {"state": LOAN_DECLINED, "decision": {
+                "verdict": LOAN_DECLINED, "by": by, "at": self._now(), "reason": text}})
+            self._audit(txn, "loan_declined", workspace_id, by, {
+                "request_id": loan.get("request_id"), "reason_length": len(text or "")})
+
+        _apply(transaction)
+        log.info("loan request declined workspace=%s", workspace_id)
+        return {"workspace_id": workspace_id, "state": LOAN_DECLINED, "reason": text}
+
+    def apply_pending_loans(self, pool: Any) -> dict[str, int]:
+        """The sweep's second half: every pending loan of a `ready`
+        workspace is lent through the same broker call a direct lend makes.
+        A loan whose account is gone, or no longer its owner's, is dropped
+        (`lend_pending_dropped`); one the broker refuses stays pending with
+        the reason in `last_error`, and is tried again next sweep."""
+        applied = failed = waiting = dropped = 0
+        for snap in self._db.collection(PENDING_LOANS).limit(MAX_PEOPLE).stream():
+            loans = list((snap.to_dict() or {}).get("loans") or [])
+            if not loans:
+                continue
+            record_snap = self._record_ref(snap.id).get()
+            record = record_snap.to_dict() if record_snap.exists else None
+            if not record or ws.state_of(record) != ws.READY:
+                waiting += len(loans)
+                continue
+            for loan in loans:
+                try:
+                    if self._apply_pending(pool, record, loan):
+                        applied += 1
+                    else:
+                        dropped += 1
+                except Exception as exc:  # noqa: BLE001 - one loan, never the sweep
+                    failed += 1
+                    self._note_pending_failure(snap.id, str(record.get("workspace_id")), loan, exc)
+        if applied or failed or dropped:
+            log.info("pending loans applied=%d failed=%d waiting=%d dropped=%d",
+                     applied, failed, waiting, dropped)
+        return {"applied": applied, "failed": failed, "waiting": waiting, "dropped": dropped}
+
+    def _apply_pending(self, pool: Any, record: Mapping[str, Any],
+                       loan: Mapping[str, Any]) -> bool:
+        """One pending loan, on a ready workspace. False when it was dropped."""
+        tenant_id = str(record["tenant_id"])
+        workspace_id = str(record.get("workspace_id"))
+        owner = str(loan.get("owner_tenant") or "")
+        account_id = str(loan.get("account_id") or "")
+        by = str(loan.get("by") or "")
+        listed = pool.list_accounts(owner).get("accounts") or []
+        found = next((a for a in listed if isinstance(a, dict)
+                      and a.get("account_id") == account_id
+                      and a.get("owner_tenant") == owner), None)
+        if found is None or owner == tenant_id:
+            self._drop_pending(record, loan)
+            log.warning("pending loan dropped workspace=%s: the account is no longer its "
+                        "owner's to lend", workspace_id)
+            return False
+        account = {"account_id": account_id, "owner_tenant": owner}
+        current = list(found.get("lend_to") or [])
+        changed = tenant_id not in current
+        if changed:
+            self._set_lending(pool, record, account, [*current, tenant_id])
+        self._record_loan(record, by=by, account=account, lend=True, changed=changed,
+                          pending_since=loan.get("at") or self._now())
+        log.info("pending loan applied workspace=%s changed=%s", workspace_id, changed)
+        return True
+
+    def _drop_pending(self, record: Mapping[str, Any], loan: Mapping[str, Any]) -> None:
+        ref = self._pending_ref(str(record["tenant_id"]))
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            loans = list(((snap.to_dict() or {}) if snap.exists else {}).get("loans") or [])
+            txn.update(ref, {"loans": [
+                p for p in loans if p.get("account_id") != loan.get("account_id")]})
+            self._audit(txn, "lend_pending_dropped", str(record.get("workspace_id")),
+                        str(loan.get("by") or ""), {
+                            "account_id": loan.get("account_id"),
+                            "owner_tenant": loan.get("owner_tenant")})
+
+        _apply(transaction)
+
+    def _note_pending_failure(self, tenant_id: str, workspace_id: str,
+                              loan: Mapping[str, Any], exc: Exception) -> None:
+        """The reason a pending loan was not applied, on the loan itself,
+        where the People row shows it. The log line names the type only:
+        the message names the member, and the member names the person."""
+        reason = exc.message if isinstance(exc, ApiError) else type(exc).__name__
+        log.warning("pending loan not applied workspace=%s: %s", workspace_id,
+                    type(exc).__name__)
+        ref = self._pending_ref(tenant_id)
+        transaction = self._db.transaction()
+
+        @firestore.transactional
+        def _apply(txn: Any) -> None:
+            snap = _snapshot(txn.get(ref))
+            loans = list(((snap.to_dict() or {}) if snap.exists else {}).get("loans") or [])
+            txn.update(ref, {"loans": [
+                {**p, "last_error": reason, "last_attempt_at": self._now()}
+                if p.get("account_id") == loan.get("account_id") else p for p in loans]})
+
+        try:
+            _apply(transaction)
+        except Exception as note_exc:  # noqa: BLE001 - the next sweep tries again
+            log.warning("pending loan failure not recorded: %s", type(note_exc).__name__)
 
     # -- the list (§6.4 part 1) ------------------------------------------------------
 
@@ -790,16 +1120,31 @@ class People:
         last = _later(person.get("last_seen"), last_submitted)
         loan = self._db.collection(ws.LOAN_REQUESTS).document(tenant_id).get()
         loan_data = loan.to_dict() if loan.exists else None
+        pending = self._pending_ref(tenant_id).get()
+        pending_loans = list((pending.to_dict() or {}).get("loans") or []) \
+            if pending.exists else []
         return {
             "email": email,
             "teams": list(person.get("teams") or []),
             "github": self._github(email),
             "workspace": self._admin_view(record),
-            "claude_account": self._claude_account(tenant_id, tenant),
+            "claude_account": self._claude_account(tenant_id, tenant, store=store),
+            # A decision's time and reason, never its `by`: the audit names
+            # the admin. The reason is the one the person is shown.
             "loan_request": None if not loan_data else {
                 "state": loan_data.get("state"),
                 "requested_at": _iso(loan_data.get("requested_at")),
+                "decided_at": _iso((loan_data.get("decision") or {}).get("at")),
+                "reason": (loan_data.get("decision") or {}).get("reason"),
             },
+            # Loans recorded while the workspace was not ready (LOAN-NEW).
+            # Never `by`, like the decision: the audit names the admin.
+            "pending_loans": [{
+                "account_id": p.get("account_id"),
+                "owner_tenant": p.get("owner_tenant"),
+                "since": _iso(p.get("at")),
+                "last_error": p.get("last_error"),
+            } for p in pending_loans],
             "first_seen": _iso(person.get("first_seen")),
             "last_seen": _iso(person.get("last_seen")),
             "last_submitted": _iso(last_submitted),
@@ -837,21 +1182,43 @@ class People:
             return "expired"
         return "none"
 
-    def _claude_account(self, tenant_id: str, tenant: Tenant | None) -> dict[str, Any]:
+    def _claude_account(self, tenant_id: str, tenant: Tenant | None, *,
+                        store: Any) -> dict[str, Any]:
         """§5.1 (3), with who lent it: `own`, `lent`, `provider_key` or
-        `none`. The counts are `Workspaces.claude_accounts`'s rule."""
+        `none`. The counts are `Workspaces.claude_accounts`'s rule.
+
+        `lent_accounts` names WHICH accounts are lent (PEOPLE-LOAN-VIEW, owner
+        2026-10-13): `lent_by` is only the owner tenants, so the console said
+        "lent by eng" and an admin could not see what they had lent. Each is
+        the account's id, label, owner and state, and the owner's display
+        name; never the document as it is, which names its secret."""
         counts = ws.Workspaces(self._db, now=self._now, gate=False).claude_accounts(
             tenant_id, tenant)
-        lenders: list[str] = []
+        lent: list[dict[str, Any]] = []
         if counts["lent"]:
             query = self._db.collection(ws.ACCOUNTS).where(
                 filter=FieldFilter("lend_to", "array_contains", tenant_id)).limit(20)
-            lenders = sorted({str((s.to_dict() or {}).get("owner_tenant") or "")
-                              for s in query.stream()} - {"", tenant_id})
+            names: dict[str, str] = {}
+            for snap in query.stream():
+                data = snap.to_dict() or {}
+                owner = str(data.get("owner_tenant") or "")
+                if not owner or owner == tenant_id:
+                    continue
+                if data.get("provider", ws.CLAUDE_PROVIDER) != ws.CLAUDE_PROVIDER:
+                    continue
+                if owner not in names:
+                    owner_tenant = store.get_tenant(owner)
+                    names[owner] = getattr(owner_tenant, "display_name", None) or owner
+                lent.append({"account_id": str(data.get("account_id") or snap.id),
+                             "label": data.get("label"), "owner_tenant": owner,
+                             "owner_name": names[owner], "state": data.get("state")})
+            lent.sort(key=lambda a: (a["owner_tenant"], a["account_id"]))
+        lenders = sorted({a["owner_tenant"] for a in lent})
         source = "own" if counts["own"] else "lent" if counts["lent"] else \
             "provider_key" if counts["provider_key"] else "none"
         return {"source": source, "own": counts["own"], "lent": counts["lent"],
-                "lent_by": lenders, "provider_key": counts["provider_key"]}
+                "lent_by": lenders, "lent_accounts": lent,
+                "provider_key": counts["provider_key"]}
 
     def _admin_view(self, record: Mapping[str, Any] | None) -> dict[str, Any]:
         """What an admin is shown of a record: the person's view (W1's

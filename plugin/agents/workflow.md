@@ -99,9 +99,12 @@ Then call `StructuredOutput` with, all read from the REPLY of `swarm_workflow`:
 * `console` — the reply's `console`, copied character for character; null
   when the reply has none. It is the workflow's console link as SwarmCloud's
   API served it: never build one, never guess one
-* `steps` — for each entry of the reply's `steps`: its `step_id`, `task_id`
-  and `depends_on`, copied character for character, and its `console` (null
-  when that entry has none)
+* `steps` — for each entry of the reply's `steps`, every one, in the reply's
+  order: its `step_id`, `task_id` and `depends_on`, copied character for
+  character, its `console` (null when that entry has none) and its `added`
+  (null when that entry has none). `added: true` marks a step SwarmCloud
+  added to the spec -- a `re-review`, a `merge` -- and it belongs in `steps`
+  like any other: never drop a step because the spec did not name it
 * `repository` — the reply's `repository.url` (null when it is null)
 * `repository_notes` — the reply's `repository.notes` (empty list when it is
   absent). Uncommitted changes not visible to the remote agent, the branch's

@@ -34,6 +34,7 @@ import { shortcut, typedIntoField } from './shortcuts'
 import type { Capacity, Me, Stats, TaskState } from './types'
 import { ThemeToggle } from './ThemeToggle'
 import { AppTakeover, OfflineBanner, wholeAppFault, useOnline } from './AppStates'
+import { feedData, notificationsSnapshot, subscribeNotifications } from './notificationFeed'
 
 export type SpineSection = 'overview' | 'work' | 'automate' | 'capacity' | 'admin' | 'help' | 'api' | null
 
@@ -121,8 +122,8 @@ export const PANEL_PAGES: Readonly<Record<PanelSection, PanelPage[]>> = {
     // missing here, so an admin reached it only by typing /admin/people --
     // the Runs defect visual QA Q7 caught, again.
     { key: 'people', label: 'People', icon: 'people', to: 'admin/people' },
-    // docs/schedules.md §5.3: every tenant's schedules, beside Tenants.
-    { key: 'schedules', label: 'Schedules', icon: 'schedules', to: 'admin/schedules' },
+    // No Schedules here since SCHED-ONE-PAGE (owner decision 2026-10-13):
+    // every tenant's schedules are Automate › Schedules, All tenants.
   ],
 }
 
@@ -139,7 +140,7 @@ const SUBMIT_PAGES: readonly { tab: string; label: string; icon: string; to: str
 ]
 
 /** Each panel's heading: its spine section's label. */
-const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
+export const PANEL_TITLE: Readonly<Record<PanelSection, string>> = { work: 'Work', automate: 'Automate', capacity: 'Capacity', admin: 'Admin' }
 
 /** Which panel row a route's tab belongs to: a child's tab belongs to its parent. */
 function rowFor(section: PanelSection, tab: string): string {
@@ -312,14 +313,19 @@ export interface NamedTenantChoice extends TenantChoice {
   group: string
 }
 
+/** What the switcher calls the caller's own personal workspace (#1200), whatever its tenant document says. */
+export const OWN_WORKSPACE_LABEL = 'Your workspace'
+
 /**
  * The one name the shell draws for a tenant: the current tenant's from `me`,
  * another's as `me` last gave it in this browser, and the group email only
- * for a tenant never acted as here. The id is always the secondary line.
+ * for a tenant never acted as here. The caller's own personal workspace
+ * (`kind: user`) is always "Your workspace". The id is always the secondary line.
  */
 export function nameTenants(choices: readonly TenantChoice[], me: Me | null): NamedTenantChoice[] {
   const known = knownTenantNames()
   return choices.map((c) => {
+    if (c.kind === 'user') return { tenant_id: c.tenant_id, display_name: OWN_WORKSPACE_LABEL, group: OWN_WORKSPACE_LABEL }
     const current = me !== null && me.tenant.tenant_id === c.tenant_id ? me.tenant.display_name || null : null
     return { tenant_id: c.tenant_id, display_name: current ?? known[c.tenant_id] ?? c.display_name, group: c.display_name }
   })
@@ -901,6 +907,14 @@ const ICONS: Readonly<Record<string, ReactNode>> = {
     </>
   ),
   swap: <path d="m7 9 5-5 5 5M7 15l5 5 5-5" />,
+  // #1206: the header bar's bell, and the tick its empty state and a finished update draw.
+  bell: (
+    <>
+      <path d="M6 16.5V11a6 6 0 0 1 12 0v5.5l1.5 2h-15z" />
+      <path d="M10 20.5a2 2 0 0 0 4 0" />
+    </>
+  ),
+  check: <path d="m5 12.5 4.5 4.5L19 7.5" />,
   search: (
     <>
       <circle cx="11" cy="11" r="6.5" />
@@ -1015,6 +1029,10 @@ export function SkyShell({
   // Once a minute: the inbox route syncs the tenant's held firings as it reads.
   const [inbox] = useFrameRead(loadFrameApprovals, 60_000, tenant ?? '')
   const waiting = approvalsBadge(inbox)
+  // #1206: the notification feed's admin count, from the store the header's
+  // bell reads too (notificationFeed.ts), so the two never disagree.
+  const notes = useSyncExternalStore(subscribeNotifications, notificationsSnapshot, notificationsSnapshot)
+  const adminPending = feedData(notes)?.admin_pending ?? 0
   const who = dataOf(me)
   const admin = who?.principal.is_admin === true
   const env = classifyEnvironment(
@@ -1374,7 +1392,8 @@ export function SkyShell({
     (to: TenantChoice) => {
       setPicker(null)
       if (who === null || to.tenant_id === who.tenant.tenant_id) return
-      const from = { id: who.tenant.tenant_id, name: who.tenant.display_name ?? who.tenant.tenant_id }
+      const named = choices.find((c) => c.tenant_id === who.tenant.tenant_id)
+      const from = { id: who.tenant.tenant_id, name: named?.display_name ?? who.tenant.display_name ?? who.tenant.tenant_id }
       noteTenantSwitch({ from, to: { id: to.tenant_id, name: to.display_name }, kept: keepOnSwitch })
       chooseTenant(to.tenant_id)
       // A TOAST, because it acknowledges what the viewer just did -- and it
@@ -1392,7 +1411,7 @@ export function SkyShell({
         },
       )
     },
-    [who, keepOnSwitch],
+    [who, keepOnSwitch, choices],
   )
 
   const spine = (
@@ -1460,6 +1479,14 @@ export function SkyShell({
             {s.key === 'automate' && waiting !== null && (
               <i className={waiting.n === null ? 'sk-badge is-unread' : 'sk-badge'} title={waiting.why} aria-label={waiting.why}>
                 {waiting.n === null ? '—' : waiting.n}
+              </i>
+            )}
+            {/* #1206: requests waiting on ANY admin, as a pill at the item's
+                top-right. Gated on the session read as well as the count: a
+                pill is never drawn over a locked Admin. */}
+            {s.key === 'admin' && admin && adminPending > 0 && (
+              <i className="sk-badge sk-apill" title={`${adminPending} waiting for an admin`} aria-label={`${adminPending} waiting for an admin`}>
+                {adminPending}
               </i>
             )}
             {locked && <Icon name="lock" className="sk-ic sk-lkd" />}
@@ -1783,8 +1810,9 @@ function TenantBlock({
       () => setSaid('copy refused; select the id instead'),
     )
   }
-  const name = who.tenant.display_name ?? id
   const choices = dataOf(mine) ?? []
+  const own = choices.some((c) => c.kind === 'user' && c.tenant_id === id)
+  const name = own ? OWN_WORKSPACE_LABEL : (who.tenant.display_name ?? id)
   const copyId = (
     <>
       <button type="button" className="sk-cp" aria-label={`Copy tenant id ${id}`} title={id} onClick={copy}>

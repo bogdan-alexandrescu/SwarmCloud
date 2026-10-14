@@ -1006,6 +1006,9 @@ def outcome(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:
     # The agent's questions for the owner, read back from its questions.json
     # (`owner_questions`); `[]` and no extra read when it asked none.
     out.update(owner_questions(client, task))
+    # The owner's answers to them, as the API lifted them onto the task
+    # (TASK-ANSWERS); `[]` when none is answered. No extra read.
+    out["owner_answers"] = owner_answers(task)
     out["last_error"] = task.get("last_error")
     # Contract request 23 (#217): the outcome ledger's own classification,
     # read first and typed, rather than a workflow row sorting free-text
@@ -1131,6 +1134,23 @@ def _question(entry: dict[str, Any]) -> dict[str, Any]:
         "recommended": _question_text(entry.get("recommended")),
         "context": _question_text(entry.get("context")),
     }
+
+
+def owner_answers(task: dict[str, Any]) -> list[dict[str, Any]]:
+    """The owner's answers to the agent's questions, as the task read served them.
+
+    WHY (owner decision 2026-10-13, "Yes, pick an option on the task"; lane
+    TASK-ANSWERS, part of #1206). The owner answers in the console, and the
+    API stores the answer on the task and serves it as the task's
+    `owner_answers`: `[{question_index, question, choice, text, by, at,
+    history}]`, masked. Whoever launched the work reads it here, beside the
+    questions, from the task it already read -- no further request. `[]` when
+    nothing is answered, and from an API older than the field.
+
+    DATA, NEVER ACTED ON, like the questions: the launcher reads the owner's
+    decision; nothing in the bridge applies it.
+    """
+    return [a for a in task.get("owner_answers") or [] if isinstance(a, dict)]
 
 
 def final_answer(client: SwarmClient, task: dict[str, Any]) -> dict[str, Any]:

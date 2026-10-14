@@ -61,7 +61,13 @@ from .access import MODES, grant_id_for, org_id_for, via_token
 from .errors import Forbidden, NotFound, ValidationFailed
 from .browser_logins import refuse_unless_personal
 from .expected_outputs import expected_outputs_by_step, record_expected_outputs
-from .forge import GIT_PROVIDER
+from .forge import (
+    FirestoreSlotIndex,
+    ForgeSlot,
+    NoForgeCredential,
+    no_github_credential,
+    service_slot,
+)
 from .forgeapp import GRANTS, ORGS, Caller
 from .gittokens import Scope, owner_suffix, provider_suffix
 from .metrics import ApiMetrics
@@ -76,6 +82,7 @@ from .task_accounts import ACCOUNT_TOKEN_ENV
 from .validation import (
     APP_CREDENTIAL_PROVIDERS,
     DISPATCH_METADATA_KEY,
+    FORGE_SOURCE_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
     MERGE_METADATA_KEY,
@@ -197,7 +204,7 @@ class SubmissionService:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
 
-    def _resolve_forge(self, tenant_id: str, tasks: Sequence[Task], *, service: bool) -> None:
+    def _resolve_forge(self, tenant: Tenant, tasks: Sequence[Task], *, service: bool) -> None:
         """Set `forge_credential` and `forge_access` on every task (#780 OB7, D4).
 
         BEFORE `_sign`, so the signature covers both (contract request 54).
@@ -207,34 +214,63 @@ class SubmissionService:
         owner through a fallback token, their App slot otherwise; a person with no
         grant on it is refused, every refused task named in one 403
         (`validation.repository_not_granted`), before anything is stored. A
-        service submission runs with the tenant token, `git`, with write. A
-        task with no repository, or not on GitHub, is left with neither.
+        service submission runs, with write, on the slot `forge.service_slot`
+        picks -- the rule every server-side read resolves through: the
+        tenant's `-git` slot when it exists, else a personal tenant's owner's
+        GitHub connection (INDEX-CRED: an index run in a personal workspace
+        clones with what the owner's Try it checked, not a `-git` slot the
+        workspace never had). Which one is recorded in
+        `metadata.forge_credential_source`, so the task says so. A personal
+        workspace with no credential at all has its task on a repository
+        registered as private refused up front (`no_github_credential`)
+        rather than dispatched to a clone that cannot succeed. Only a
+        personal one: its credentials are exactly the records its GitHub
+        connection writes, while a group tenant's `-git` secret can be stored
+        by an operator (`scripts/create-secrets.sh`) with nothing swarm-api
+        reads listing it, and refusing there would stop a clone that works.
+        A task with no repository, or not on GitHub, is left with neither.
 
         Never from the request: `TaskCreate` and `WorkflowCreate` refuse both
         names (`extra="forbid"`), and each task's `submitted_by` is the
         authenticated caller's, a child's parent's, or the stored submitter
         `run_owner_auth` and its kind rebuild (invariant 10).
         """
+        tenant_id = tenant.tenant_id
         refused: list[tuple[str | None, str]] = []
+        uncredentialed: list[str] = []
+        resolved: list[ForgeSlot] = []
+
+        def on_tenants_behalf(task: Task, owner: str, repo: str) -> None:
+            if not resolved:
+                # Resolved once per submission: one rule, one answer per batch.
+                resolved.append(service_slot(tenant, FirestoreSlotIndex(self._store.db)))
+            slot = resolved[0]
+            if (not slot.known and tenant.kind == "user"
+                    and self._registered_private(tenant_id, owner, repo)):
+                uncredentialed.append(f"{owner}/{repo}")
+                return
+            task.forge_credential = slot.provider
+            task.forge_access = SERVICE_FORGE_ACCESS
+            task.metadata[FORGE_SOURCE_METADATA_KEY] = slot.source
+
         for task in tasks:
             named = github_repository(task.repository_url)
             if named is None:
                 continue
-            if service:
-                # The tenant's own slot, the one every task read before #780.
-                task.forge_credential = GIT_PROVIDER
-                task.forge_access = SERVICE_FORGE_ACCESS
-                continue
             owner, repo = named
+            if service:
+                on_tenants_behalf(task, owner, repo)
+                continue
             mode = self._grant_mode(tenant_id, task.submitted_by or "",
                                     repo_id_for(tenant_id, owner, repo))
             if mode is None:
                 if not getattr(self._settings, "repository_grants_enforced", False):
                     # The switch is off (REPOSITORY_GRANTS_ENFORCED, owner
-                    # 2026-10-08): no grant runs with the tenant token, as
-                    # before #780, until the migration turns refusal on.
-                    task.forge_credential = GIT_PROVIDER
-                    task.forge_access = SERVICE_FORGE_ACCESS
+                    # 2026-10-08): no grant runs on the tenant's own slot, as
+                    # before #780, until the migration turns refusal on --
+                    # the service rule, so a personal workspace with no `-git`
+                    # slot runs on its owner's connection.
+                    on_tenants_behalf(task, owner, repo)
                     continue
                 refused.append((task.step_id, f"{owner}/{repo}"))
                 continue
@@ -246,6 +282,27 @@ class SubmissionService:
             log.info("submission refused tenant=%s code=%s repositories=%s",
                      tenant_id, error.code, ",".join(error.detail["repositories"]))
             raise error
+        if uncredentialed:
+            names = sorted(set(uncredentialed), key=str.lower)
+            self._metrics.tasks_rejected.labels(reason=NoForgeCredential.code).inc()
+            log.info("submission refused tenant=%s code=%s repositories=%s",
+                     tenant_id, NoForgeCredential.code, ",".join(names))
+            raise NoForgeCredential(
+                f"{no_github_credential(tenant)}. {', '.join(names)} "
+                f"{'is' if len(names) == 1 else 'are'} private, so a run could not clone "
+                f"{'it' if len(names) == 1 else 'them'}; nothing was queued.",
+                detail={"repositories": names},
+            )
+
+    def _registered_private(self, tenant_id: str, owner: str, repo: str) -> bool:
+        """Whether the tenant registered `owner/repo` and its registration
+        says GitHub served it as private (or internal): read by the id it is
+        stored under and checked on its tenant (`Repositories.find`). An
+        unregistered repository, or one whose visibility was never read, is
+        not refused here -- a public repository clones with no token."""
+        record = Repositories(self._store.db, now=self._now).find(
+            tenant_id, repo_id_for(tenant_id, owner, repo))
+        return (record or {}).get("visibility") in ("private", "internal")
 
     def _person_slot(self, tenant_id: str, email: str, owner: str) -> str:
         """The person's slot for a repository of `owner`: their token for that
@@ -564,7 +621,7 @@ class SubmissionService:
         # #780 OB7: whose GitHub credential each task runs with, before the
         # signature so it covers them.
         self._resolve_forge(
-            tenant.tenant_id, tasks,
+            tenant, tasks,
             service=service_submission or is_service_submitter(ctx.email),
         )
         # Contract request 34: signed over the task as it will be stored.
@@ -639,7 +696,8 @@ class SubmissionService:
             # naming two) and before the dispatch options, because it
             # supplies the repository they require. A continuation-scoped
             # caller was refused above: `merge_pr` carries no continues_task.
-            named_pull = self._named_pull(tenant, spec) if spec.merge_pr else None
+            named_pull = (self._named_pull(tenant, spec, person=ctx.email)
+                          if spec.merge_pr else None)
             # A merge workflow its caller left nameless is stored as "Merge PR
             # <number>" (owner report 2026-10-11), before any step task copies
             # the workflow's metadata.
@@ -900,7 +958,7 @@ class SubmissionService:
         # first: every step's GitHub credential, so the signature covers it,
         # and the whole workflow refused when any step's repository is not
         # granted to the person.
-        self._resolve_forge(tenant.tenant_id, tasks, service=is_service_submitter(ctx.email))
+        self._resolve_forge(tenant, tasks, service=is_service_submitter(ctx.email))
         self._sign(tasks)
         self._store.create_workflow(workflow, tasks, tenant_member=ctx.tenant_member)
         self._metrics.workflows_submitted.labels(tenant=tenant.tenant_id).inc()
@@ -1093,8 +1151,10 @@ class SubmissionService:
             update={"steps": [*with_rereview.steps, WorkflowStepCreate.model_validate(appended)]}
         ), rereview["step_id"]
 
-    def _named_pull(self, tenant: Tenant, spec: WorkflowCreate) -> NamedPull | None:
-        """`spec.merge_pr`, checked (`continuation.resolve_merge_pr`)."""
+    def _named_pull(self, tenant: Tenant, spec: WorkflowCreate, *,
+                    person: str | None = None) -> NamedPull | None:
+        """`spec.merge_pr`, checked (`continuation.resolve_merge_pr`), read
+        with the slot `forge.resolve_forge_slot` picks for `person`."""
         if self._forge_tokens is None or self._forge_writer is None:
             raise DispatchOptionError(
                 "merge_pr reads the pull request from GitHub at submission, and this "
@@ -1106,6 +1166,7 @@ class SubmissionService:
             repositories=Repositories(self._store.db, now=self._now),
             tokens=self._forge_tokens,
             writer=self._forge_writer,
+            person=person,
         )
 
     def _registration(self, tenant_id: str, repository_url: str | None) -> dict[str, Any]:

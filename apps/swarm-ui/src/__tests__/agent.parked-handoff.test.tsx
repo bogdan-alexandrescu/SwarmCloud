@@ -96,7 +96,7 @@ describe('U1: a parked hand-off says so once, in the banner', () => {
   it('draws no park bar, no scheduler-pass bar and no why sentence for HUMAN_REQUIRED', async () => {
     const c = await draw(run(parked('HUMAN_REQUIRED'), [attempt(1)]))
     const top = c.querySelector('.dt-top')!
-    expect(top.textContent).not.toContain('waiting for you to sign in')
+    expect(top.textContent).not.toContain('waiting for you')
     expect(top.textContent).not.toContain('last scheduler pass')
     expect(top.textContent).not.toContain('eligible')
     expect(top.textContent).not.toContain(REASON_COPY.HUMAN_REQUIRED)

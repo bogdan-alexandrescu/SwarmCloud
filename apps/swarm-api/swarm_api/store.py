@@ -92,6 +92,7 @@ from .codec import (
     workflow_from_dict,
     workflow_to_firestore,
 )
+from . import refusals
 from .errors import Conflict, NotFound, Unpageable, ValidationFailed
 from .executioncancel import ExecutionTarget
 
@@ -371,6 +372,17 @@ def decode_cursor(token: str | None) -> datetime | None:
         # would tell a caller their own tasks had disappeared.
         raise ValidationFailed("page_token is not a valid cursor") from None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+class WorkflowNotInTenant(NotFound):
+    """A workflow exists, but not in the tenant this call resolved to.
+
+    Still a 404, so no caller that treats it as absent changes behaviour; the
+    code is what lets a caller that launched it re-read with the launch's
+    tenant (`Store.get_workflow`).
+    """
+
+    code = "workflow_not_in_tenant"
 
 
 @dataclass(frozen=True)
@@ -1587,12 +1599,35 @@ class Store:
     def get_workflow(
         self, tenant_id: str, workflow_id: str, *, submitted_by: str | None
     ) -> Workflow:
-        """One workflow of this tenant; `submitted_by` exactly as on `get_task`."""
+        """One workflow of this tenant; `submitted_by` exactly as on `get_task`.
+
+        ANOTHER TENANT'S WORKFLOW IS `workflow_not_in_tenant`, not a bare
+        `not_found` (docs/runner-git-tools.md §6.3). Three coordinator status
+        reads answered 404 while the workflows' steps kept running, and the
+        coordinator re-ran the review locally: a caller whose resolved tenant
+        had moved (#1204's personal-workspace default, a bridge restarted with
+        another `SWARM_TENANT`) could not tell "gone" from "look elsewhere".
+        The answer names the tenant THE CALL resolved to -- the caller's own
+        choice, so it reveals nothing -- and never the one the workflow is
+        stored under. A missing document and another submitter's workflow keep
+        the bare answer.
+        """
         snap = self._db.collection(WORKFLOWS).document(workflow_id).get()
         if not snap.exists:
             raise NotFound(f"workflow {workflow_id!r} not found")
         data = snap.to_dict()
         if data.get("tenant_id") != tenant_id:
+            # Switched (observer proposal I): a NEW refusal ships report-only.
+            # Off, `refuse` logs and returns, and the answer is the bare
+            # not-found this branch gave before the code existed.
+            refusals.refuse(
+                WorkflowNotInTenant(
+                    f"workflow {workflow_id!r} is not in tenant {tenant_id!r}, the tenant "
+                    "this call resolved to; read it with X-Swarm-Tenant naming the tenant "
+                    "it was launched in",
+                    detail={"workflow_id": workflow_id, "tenant_id": tenant_id},
+                )
+            )
             raise NotFound(f"workflow {workflow_id!r} not found")
         workflow = workflow_from_dict(data)
         if submitted_by is not None and workflow.submitted_by != submitted_by:

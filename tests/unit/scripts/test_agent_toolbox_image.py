@@ -469,7 +469,15 @@ def test_every_download_is_pinned_by_version_and_verified_before_use() -> None:
     for ins, fetch in downloads:
         text = _shell_text(ins)
         out, url = fetch.group(1), fetch.group(2)
-        assert url.startswith("https://"), f"{url} is not HTTPS"
+        # A release file read from the build mirror (docs/runbooks/build-mirror.md)
+        # comes from the bind-mounted tool mirror, and is checked exactly as a
+        # download is.
+        mirrored = url.startswith("file:///tmp/tool-mirror/")
+        assert url.startswith("https://") or mirrored, f"{url} is neither HTTPS nor the tool mirror"
+        if mirrored:
+            assert text.startswith("--mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror "), (
+                f"{url} is read from /tmp/tool-mirror by a RUN that does not bind-mount it"
+            )
         # `latest` and dl.k8s.io's stable*.txt pointers move; a pool path
         # that merely contains `/stable/` (Docker's channel name) does not.
         assert not re.search(r"latest|stable[-.\d]*\.txt", url), f"{url} floats"

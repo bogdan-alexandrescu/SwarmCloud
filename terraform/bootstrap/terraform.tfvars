@@ -154,3 +154,16 @@ frontend_iap_programmatic_clients = [
 # the plan's four kinds of grant against docs/runbooks/github-app.md, step 2,
 # before applying.
 enable_forge_user_slots = true
+
+# W4b (2026-10-11, owner): the workspace job (a Cloud Run job, WD2 re-decided
+# 2026-10-10) is switched on, pinned to the workspace-apply image the release
+# promoted to :dev after W6b (PR 1015) merged.
+enable_workspace_deployer = true
+workspace_apply_image     = "us-central1-docker.pkg.dev/saga-agents-staging/swarm-images/workspace-apply@sha256:037252446c942f86e02887069a9544cb8e1d88825a3925c0037e24bf640af96c"
+
+# L8c (2026-10-12, owner): saved browser logins on. swarm-api provisions each
+# personal tenant's -browser- secret and grants it to that tenant's worker
+# alone (browser_logins.tf). Applied 2026-10-12 15:25 PDT from a plan of
+# 4 adds / 0 changes / 0 destroys whose two conditions linted clean
+# (iamPolicies:lintPolicy). Recorded here so the next bootstrap plan keeps it.
+enable_browser_logins = true

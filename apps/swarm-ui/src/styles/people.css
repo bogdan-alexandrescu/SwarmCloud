@@ -1,0 +1,125 @@
+/* ADMIN › PEOPLE, PROPOSAL A (#1206, lane PEOPLE-A; picked by the owner
+   2026-10-12 17:40 PDT). People.tsx's sheet; the workspace job steps it
+   borrows from the setup checklist keep their rules in onboarding.css.
+
+   WHY THE TABLE HOLDS NO CONTROL. Measured 2026-10-12 at 1260px: the Actions
+   column took 653px, and to make room every other cell broke wherever it
+   could -- `devops@saga. xyz`, `connecte d`. The decisions moved to the
+   Waiting card and the Manage drawer, so the table is facts, laid out by its
+   content inside its own scroll container (`.table-wrap`, Activity.tsx's
+   pattern), and NO CELL BREAKS A WORD: cells wrap at spaces, and an address
+   too long for its cap is cut with an ellipsis, its whole self in `title`. */
+.pp-table > tbody > tr > th,
+.pp-table > tbody > tr > td { vertical-align: top; white-space: normal; overflow-wrap: normal; word-break: normal; }
+.pp-table > tbody > tr > th { font-weight: 500; }
+/* A ROW WITH AN OPEN REQUEST HAS AN AMBER LEFT EDGE, drawn as an inset shadow
+   on its first cell so it costs no layout and moves no column. */
+.pp-table > tbody > tr.is-waiting > th { box-shadow: inset 3px 0 0 var(--warn); }
+.pp-person { display: inline-flex; align-items: center; gap: var(--ctl-s2); min-width: 0; max-width: 100%; }
+/* ONE LONG ADDRESS DOES NOT WIDEN THE TABLE (visual QA V021) AND IS NEVER
+   BROKEN (#1206): one line, capped at 18rem, cut with an ellipsis. */
+.pp-who { display: block; min-width: 0; max-width: 18rem; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; overflow-wrap: normal; }
+.pp-avatar {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 50%;
+  background: var(--surface-2); border: 1px solid var(--line); color: var(--text-dim);
+  font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600;
+}
+.pp-gh { flex: none; display: inline-flex; color: var(--text-dim); }
+.pp-gh.is-expired { color: var(--warn-ink); }
+.pp-claude { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); }
+.pp-manage-cell { text-align: right; }
+/* AN ID IS ONE TOKEN: no break opportunity, at its hyphen or anywhere. The
+   ids the shared workspace bodies print (a request id) are held to the same
+   rule (visual QA V081). */
+.pp-id, .pp-ws code { font-family: var(--mono); white-space: nowrap; overflow-wrap: normal; word-break: normal; }
+/* THE TITLE ROW IS ONE HEIGHT IN EVERY STATE (visual QA V064, People's half). */
+.pp-page > .c-phead { min-height: var(--h-ctl); }
+/* Visually hidden, kept for a screen reader: the Manage column's head and the
+   drawer title's verb. In flow at 1px, clipped (styles.css's stacked-head
+   note says why not `position: absolute`). */
+.pp-page .vh, .pp-drawer .vh { position: relative; display: inline-block; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* WAITING FOR YOU: amber, on top. Each request is a row of three parts --
+   who, what it would get, the decision -- and one column on a phone. */
+.pp-waiting { border-color: var(--warn); background: color-mix(in srgb, var(--warn) 6%, var(--surface)); }
+.pp-reqs { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--ctl-s2); }
+.pp-req {
+  display: grid; grid-template-columns: minmax(10rem, 16rem) minmax(0, 1fr) auto;
+  align-items: center; gap: var(--ctl-s2) var(--ctl-s3);
+  padding: var(--ctl-s2) 0; border-top: 1px solid var(--line-soft);
+}
+.pp-req:first-child { border-top: 0; }
+.pp-req-who { display: flex; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+.pp-req-what { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; }
+.pp-req-acts { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: flex-end; gap: var(--ctl-s2); min-width: 0; }
+.pp-req-acts .ur-hint, .pp-req-acts [role='status'], .pp-req-acts [role='alert'] { flex-basis: 100%; margin: 0; }
+.pp-limits { display: flex; flex-wrap: wrap; gap: var(--ctl-s1); }
+@media (max-width: 560px) {
+  .pp-req { grid-template-columns: minmax(0, 1fr); }
+  .pp-req-acts { justify-content: flex-start; }
+  .pp-req-acts .c-btn, .pp-drawer .c-btn { min-height: 44px; }
+}
+
+/* The controls the card and the drawer share. */
+.pp-deny, .pp-loan { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--ctl-s1) var(--ctl-s2); min-width: 0; }
+.pp-deny { flex: 1 1 100%; }
+.pp-deny > .c-field { flex: 1 1 100%; }
+.pp-deny textarea { display: block; width: 100%; min-width: 0; padding: 6px 10px; resize: vertical; }
+/* A NORMAL-SIZED PICKER (owner, 2026-10-13: "the dropdown is huge"). It was
+   `width: 100%` in a field that grew to fill the drawer, so it took the
+   section's whole width. Now the select is as wide as its longest option up to
+   320px, one control high and one line, with the button inline after it; the
+   group starts at the section's left edge instead of stretching across it. */
+.pp-loan { flex: 0 1 auto; justify-self: start; max-width: 100%; }
+.pp-loan > .c-field { flex: 0 1 auto; min-width: 0; }
+.pp-loan select { width: auto; max-width: 320px; min-width: 0; height: var(--h-ctl); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pp-loan-one { min-width: 0; align-self: center; overflow-wrap: anywhere; }
+.pp-loan .ur-hint, .pp-loan [role='status'], .pp-loan [role='alert'] { flex-basis: 100%; margin: 0; }
+
+/* THE MANAGE DRAWER: from the right, a full sheet on a phone. */
+.pp-scrim { position: fixed; inset: 0; z-index: 40; display: flex; justify-content: flex-end; background: color-mix(in srgb, #06101e 32%, transparent); }
+.pp-drawer {
+  width: 28rem; max-width: 100%; height: 100%; overflow-y: auto;
+  background: var(--surface); border-left: 1px solid var(--line); box-shadow: var(--sk-sh);
+  padding: var(--ctl-s3) var(--ctl-pad-chrome); display: flex; flex-direction: column; gap: var(--ctl-s3);
+}
+.pp-drawer-h { display: flex; align-items: center; justify-content: space-between; gap: var(--ctl-s2); min-width: 0; }
+.pp-drawer-h h2 { margin: 0; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: var(--t-lead); line-height: var(--lh-lead); }
+.pp-dsec { display: grid; gap: var(--ctl-s2); padding-top: var(--ctl-s3); border-top: 1px solid var(--line-soft); }
+.pp-dsec > h3 { margin: 0; font-size: var(--t-body); line-height: var(--lh-body); font-weight: 600; }
+.pp-dsec > p { margin: 0; }
+.pp-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: var(--ctl-s1) var(--ctl-s3); margin: 0; }
+.pp-facts > dt { color: var(--text-dim); }
+.pp-facts > dd { margin: 0; min-width: 0; }
+.pp-ws-acts { justify-content: flex-start; flex-wrap: wrap; margin-top: var(--ctl-s1); }
+.pp-ceiling { display: grid; gap: var(--ctl-s1); }
+.pp-stepper { display: flex; flex-wrap: wrap; align-items: flex-end; gap: var(--ctl-s2); }
+.pp-stepper input { width: 6em; min-height: var(--h-ctl); }
+.pp-switch-row { display: flex; align-items: flex-start; gap: var(--ctl-s2); }
+.pp-switch-row .ur-hint { margin: 0; }
+.pp-switch {
+  flex: none; position: relative; width: 40px; height: 22px; padding: 0; cursor: pointer;
+  border-radius: 11px; border: 1px solid var(--line); background: var(--surface-2);
+}
+.pp-switch.is-on { background: var(--ok); border-color: var(--ok); }
+.pp-switch:disabled { cursor: not-allowed; opacity: 0.6; }
+.pp-switch-knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--surface); border: 1px solid var(--line); }
+.pp-switch.is-on .pp-switch-knob { left: 20px; }
+@media (max-width: 560px) {
+  .pp-drawer { width: 100%; max-width: none; border-left: 0; }
+}
+
+/* ADMINS AND RECENT ADMIN ACTIONS, SIDE BY SIDE where there is room. */
+.pp-side { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ctl-s3); align-items: start; }
+@media (max-width: 899px) {
+  .pp-side { grid-template-columns: minmax(0, 1fr); }
+}
+.pp-admin-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--ctl-s2); }
+.pp-admin-list > li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s1) var(--ctl-s2); min-width: 0; }
+.pp-admin-list .ur-hint { margin: 0; }
+.pp-admin-who { display: inline-flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; overflow-wrap: anywhere; }
+.pp-grant { justify-content: flex-start; align-items: flex-end; margin-top: var(--ctl-s3); }
+.pp-grant > .c-field { flex: 0 1 18rem; }
+.pp-housekeeping { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); }
+.pp-audit-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; font-size: var(--t-meta); line-height: var(--lh-meta); }

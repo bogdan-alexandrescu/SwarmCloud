@@ -843,6 +843,28 @@ DISK_EVICTIONS_METADATA_KEY = "disk_evictions"
 #: tests/unit/reconciler/test_pod_start_problem.py holds them equal.
 START_PROBLEM_METADATA_KEY = "start_problem"
 
+#: The owner's answers to the questions the task's agent asked (lane
+#: TASK-ANSWERS, owner decision 2026-10-13, part of #1206): one entry per
+#: answered question, `{question_index, question, choice, text, by, at,
+#: history}`. Written only by POST /v1/tasks/{task_id}/answers
+#: (`agent_questions.answer_question`); a caller who set it at submission
+#: would put words in the owner's mouth that the launcher then acts on.
+#: In metadata, as `start_problem` is, because the frozen `Task` has no field
+#: for it and an additive key changes no reader that does not want it.
+OWNER_ANSWERS_METADATA_KEY = "owner_answers"
+
+#: Whose slot a service submission's task runs with (INDEX-CRED, part of
+#: #1041): `tenant` (the tenant's `-git` token) or `owner` (a personal
+#: tenant's owner's GitHub connection, `forge.service_slot`). Written only by
+#: `SubmissionService._resolve_forge`, before the spec is signed, and read by
+#: `codec.forge_credential_source`: the slot name alone (`git-u-<hex>`) cannot
+#: tell the owner's connection run on the tenant's behalf from a person's
+#: own task, and a caller who set it would mislabel whose credential ran.
+#: Not signed (`swarm_common.specsign.SIGNED_METADATA_KEYS` is frozen): it is
+#: a label no worker acts on, and it says `owner` only beside a `git-u-`
+#: `forge_credential`, which IS signed.
+FORGE_SOURCE_METADATA_KEY = "forge_credential_source"
+
 #: Child tasks (contract request 14, docs/design/child-tasks.md §6.4). The
 #: agent's `request_id` on a child, written once by the children route and read
 #: by its dedupe; the awaits refunded so far on a parent, written by the
@@ -904,6 +926,8 @@ RESERVED_METADATA_KEYS = (
     HUMAN_READY_METADATA_KEY,
     HUMAN_HANDOFFS_METADATA_KEY,
     START_PROBLEM_METADATA_KEY,
+    OWNER_ANSWERS_METADATA_KEY,
+    FORGE_SOURCE_METADATA_KEY,
 )
 
 #: Strategies and carriers that cannot work without somewhere to push to.
@@ -1591,6 +1615,16 @@ _RESERVED_BECAUSE = {
         f"metadata.{HUMAN_HANDOFFS_METADATA_KEY} is reserved: it counts the "
         "live-browser hand-offs an attempt asked for, written only by the worker's "
         "hand-off route. Drop the key from metadata."
+    ),
+    OWNER_ANSWERS_METADATA_KEY: (
+        f"metadata.{OWNER_ANSWERS_METADATA_KEY} is reserved: it holds the owner's "
+        "answers to the agent's questions, written only by "
+        "POST /v1/tasks/{task_id}/answers. Drop the key from metadata."
+    ),
+    FORGE_SOURCE_METADATA_KEY: (
+        f"metadata.{FORGE_SOURCE_METADATA_KEY} is reserved: it says whose GitHub "
+        "credential a service submission runs with, written only by submission. "
+        "Drop the key from metadata."
     ),
 }
 

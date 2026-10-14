@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# `dev-browser` on claude-code-browser: the pinned dev-browser, attached to the
+# live browser and nothing else (DEVB-INSTALL, owner decision 2026-10-14,
+# part of #1030; docs/design/live-browser.md "dev-browser (opt-in)").
+#
+# The real binary is /opt/swarm/dev-browser/dev-browser-bin, off PATH. This
+# wrapper is what the agent's `dev-browser` runs, and it:
+#
+#   * passes `--connect "$SWARM_CDP_ENDPOINT"` on every call when the live
+#     browser exists, so a script, `pages`, `stop` and the rest act on the
+#     browser the person watches, through the gate;
+#   * refuses to run at all when the agent's PLAYWRIGHT_BROWSERS_PATH is the
+#     live-browser-only stub directory (the claude-code runner sets it only
+#     with the live browser) but the endpoint is gone;
+#   * refuses `install` (a Chrome for Testing download), `chrome` (a Chrome
+#     started as an OS process), `--headless`, and any `--connect` other than
+#     the live browser's -- a bare `--connect` probes 127.0.0.1:9222-9229,
+#     which could reach Chromium's own port behind the gate;
+#   * points DEV_BROWSER_CHROME at a copy of the live-browser-only stub, so
+#     even a launch nobody foresaw fails with the stub's message instead of
+#     starting a hidden Chromium (task_7cda0d5335f049b4b442). It is exported
+#     here, not only in the image's ENV: the CLI's environment is built from
+#     scratch (runners/cliagent.py), so the image's ENV never reaches it.
+#
+# Everything else -- a heredoc on stdin, `-e`, `run FILE`, `stop`, `pages`,
+# `help` -- is passed through unchanged. This is guidance, not a sandbox: the
+# agent can run the real binary by its path, and the pod is the boundary
+# (docs/design/live-browser.md §3.2).
+set -euo pipefail
+
+REAL="/opt/swarm/dev-browser/dev-browser-bin"
+STUB_ROOT="/opt/swarm/live-browser-only"
+export DEV_BROWSER_CHROME="/opt/swarm/dev-browser/live-browser-only"
+export DEV_BROWSER_SKIP_DOWNLOAD=1
+
+endpoint="${SWARM_CDP_ENDPOINT:-}"
+
+refuse() {
+  printf 'dev-browser: refused: %s\n' "$1" >&2
+  cat >&2 <<'MSG'
+dev-browser here drives only the live browser the person watches, at $SWARM_CDP_ENDPOINT. This wrapper
+passes --connect for you: run a script as a heredoc on stdin or with -e, and never pass --connect,
+--headless, `install` or `chrome`. The browser_navigate / browser_snapshot / browser_tabs tools drive
+the same browser. Starting a separate Chromium is refused here: nobody could see it.
+MSG
+  exit 2
+}
+
+# Help and the version need no browser, so they work with or without one.
+case "${1:-}" in
+  -h | --help | help | -V | --version)
+    exec "${REAL}" "$@"
+    ;;
+esac
+
+if [[ -z "${endpoint}" ]] && [[ "${PLAYWRIGHT_BROWSERS_PATH:-}" == "${STUB_ROOT}" ]]; then
+  refuse "SWARM_CDP_ENDPOINT is not set, so there is no live browser to connect to"
+fi
+
+# One pass over the arguments. dev-browser takes flags before or after the
+# subcommand, so both are read the same way; the flags that take a value skip
+# it, so a script passed with -e is never read as a subcommand or a flag. The
+# first positional is the subcommand. A `--connect` naming the live browser
+# itself is dropped, because it is added below.
+args=()
+subcommand=""
+while [[ $# -gt 0 ]]; do
+  arg="$1"
+  shift
+  case "${arg}" in
+    --headless | --headless=*)
+      refuse "--headless would launch a hidden browser"
+      ;;
+    -c | --connect)
+      # `--connect [URL]`: the value is optional, and without one dev-browser
+      # probes local ports. Only the live browser's own endpoint is accepted.
+      if [[ -n "${endpoint}" ]] && [[ $# -gt 0 ]] && [[ "$1" == "${endpoint}" ]]; then
+        shift
+        continue
+      fi
+      refuse "--connect ${1:-} is not the live browser"
+      ;;
+    --connect=*)
+      if [[ -n "${endpoint}" ]] && [[ "${arg#--connect=}" == "${endpoint}" ]]; then
+        continue
+      fi
+      refuse "${arg} is not the live browser"
+      ;;
+    -b | --browser | -t | --timeout | -e | --eval | --idle-timeout)
+      args+=("${arg}")
+      if [[ $# -gt 0 ]]; then
+        args+=("$1")
+        shift
+      fi
+      ;;
+    -*)
+      args+=("${arg}")
+      ;;
+    *)
+      if [[ -z "${subcommand}" ]]; then
+        subcommand="${arg}"
+        case "${subcommand}" in
+          install) refuse "dev-browser install downloads a second Chrome" ;;
+          chrome) refuse "dev-browser chrome starts a Chrome of its own" ;;
+        esac
+      fi
+      args+=("${arg}")
+      ;;
+  esac
+done
+
+if [[ -n "${endpoint}" ]]; then
+  exec "${REAL}" --connect "${endpoint}" ${args[@]+"${args[@]}"}
+fi
+exec "${REAL}" ${args[@]+"${args[@]}"}

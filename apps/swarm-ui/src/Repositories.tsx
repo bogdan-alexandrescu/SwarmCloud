@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import { loadRepositories, loadRepositoryIndex, runRepositoryIndex } from './api'
 import { Banner, Button, Card, Dash, EmptyState, NamedMark } from './components'
-import { HEAD_UNREAD, freshness, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
-import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
+import { HEAD_UNREAD, freshness, indexCredentialWords, repoName, scheduleWords, shortSha, type RepoRecord } from './RepositoriesData'
+import { REGISTER, GT_PAGE, TestsMapped, UrConfirmIndex, UrFreshPill, UrLink, UrNavButton, UrRefresh, UrRegion, repoAddress, useUrRead, writeFailure } from './RepositoriesParts'
 import { RegisterRepository } from './RepositoriesRegister'
 import { RepositoryDetail } from './RepositoriesDetail'
 import { GitTokensPage, PermissionsPage } from './GitTokens'
@@ -203,6 +203,85 @@ function useTestMapCut(r: RepoRecord): boolean {
   return doc?.truncated.includes('test_map') === true
 }
 
+/**
+ * WHY THIS REPOSITORY'S INDEX RUNS FAIL (lane INDEX-FAIL, operator QA p14,
+ * 2026-10-13). Every run of one repository failed on its clone every 15
+ * minutes while this card said "no index" or "indexing now", so nobody knew
+ * there was anything to fix. The line names the last failed run (the API's
+ * sentence for its class, when, and the task), and for an ACCESS failure what
+ * to do: SwarmCloud's GitHub access is granted under Setup › Git tokens. When
+ * the poll stopped re-running the repository (`index.backoff`) it says so,
+ * and that Index now retries. The git line itself is the cause's title: it
+ * is evidence, not something to read on every card.
+ */
+function FailureLine({ r, go }: { r: RepoRecord; go: (to: string) => void }) {
+  const f = r.index.last_failure
+  if (f === null) return null
+  const stopped = r.index.backoff
+  return (
+    <div className="ur-fail" role="status" data-class={f.kind} data-backoff={stopped === null ? undefined : '1'}>
+      <span>
+        <b>Last index run failed</b>
+        {f.at !== null && <> {timeAgo(f.at)}</>}:{' '}
+        <span className="ur-fail-cause" title={f.detail ?? undefined}>
+          {f.cause}
+        </span>{' '}
+        (<UrLink to={`work/task/${f.task_id}`} go={go}>
+          task
+        </UrLink>
+        )
+      </span>
+      {f.kind === 'access' && (
+        <span>
+          {' '}
+          grant it under{' '}
+          <UrLink to={GT_PAGE} go={go}>
+            Setup › Git tokens
+          </UrLink>
+          .
+        </span>
+      )}
+      {stopped !== null && (
+        <span className="ur-fail-stop">
+          {' '}
+          Polling stopped after {stopped.failures ?? 'repeated'} failed runs; Index now retries.
+        </span>
+      )}
+    </div>
+  )
+}
+
+/**
+ * WHICH CREDENTIAL THIS REPOSITORY'S INDEX RUNS CLONE WITH (lane INDEX-CRED,
+ * owner report 2026-10-13: "it says all tests pass for /repositories/tokens
+ * but it can't index the repo in my personal workspace?"). Try it checks the
+ * access a person's own tasks use; an index run is the tenant's, so the card
+ * names the credential it uses -- the team token, the workspace owner's
+ * GitHub connection, or none -- beside the last result, and a passing check
+ * and a failing index never look alike without saying why.
+ */
+function IndexingUses({ r, go }: { r: RepoRecord; go: (to: string) => void }) {
+  const words = indexCredentialWords(r.index_credential)
+  if (words === null) return null
+  const none = r.index_credential?.source === 'none'
+  return (
+    <div className="ur-cmeta ur-cred" data-source={r.index_credential?.source} title={r.index_credential?.secret_name ?? undefined}>
+      <span>
+      Indexing uses <b className={none ? 'ur-bad' : undefined}>{words}</b>
+      {none && (
+        <>
+          {' '}
+          under{' '}
+          <UrLink to={GT_PAGE} go={go}>
+            Setup › Git tokens
+          </UrLink>
+        </>
+      )}
+      </span>
+    </div>
+  )
+}
+
 function RepoCard({
   r,
   go,
@@ -258,6 +337,8 @@ function RepoCard({
         {lastIndexed(r)}
         <span>Schedule {sched === null ? <Dash why="The schedule was not served" /> : <b>{sched}</b>}</span>
       </div>
+      <IndexingUses r={r} go={go} />
+      <FailureLine r={r} go={go} />
       <div className="ur-cacts">
         <UrNavButton to={repoAddress(r.repo_id)} go={go} size="sm">
           Open

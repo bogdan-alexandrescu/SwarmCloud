@@ -18,8 +18,9 @@
 # namespace (owner decisions WD2, re-decided 2026-10-10, and WD3).
 #
 # The Cloud Build trigger this file used to make is gone with WD2's
-# re-decision. The repository connection in cloudbuild_connection.tf stays
-# until the job has shipped (lane W11), and nothing here reads it.
+# re-decision, and so, since the job reached A9 on 2026-10-13 (lane W11), are
+# the two grants to Cloud Build's service agent that let the repository
+# connection store its token.
 #
 # THE ACCEPTED RISK (§2.4, owner, 2026-10-08). A worker account's own IAM
 # policy can only be written by an identity holding
@@ -218,16 +219,28 @@ resource "google_service_account_iam_policy" "workspace_deployer" {
 locals {
   workspace_custom_roles = {
     workspace_account_admin = {
-      title       = "Swarm Workspace Account Admin"
+      title = "Swarm Workspace Account Admin"
+      # It also lists the account's key ids (iam.serviceAccountKeys.list, A2/A9's
+      # squat check, #334). The description below is unchanged: GCP caps a role
+      # description at 300 characters and this one is at the limit.
       description = "managed-by=swarm-terraform; create a person's worker account and write its own Workload Identity and act-as bindings. No delete, disable, key, token, signBlob or actAs. Project-wide because IAM cannot condition it (docs/workspaces.md §2.4); bounded by the call guard and the alert."
-      # Exactly §2.3's five. getIamPolicy and setIamPolicy are what
+      # §2.3's six. getIamPolicy and setIamPolicy are what
       # `gcloud iam service-accounts add-iam-policy-binding` reads and writes.
+      # tests/unit/scripts/test_workspace_deployer_walk.py holds every call of
+      # the workspace job to a grant here or below.
       permissions = [
         "iam.serviceAccounts.create",
         "iam.serviceAccounts.get",
         "iam.serviceAccounts.getIamPolicy",
         "iam.serviceAccounts.list",
         "iam.serviceAccounts.setIamPolicy",
+        # `gcloud iam service-accounts keys list --managed-by=user`: the squat
+        # inspection (#334) that refuses to adopt an account carrying a
+        # user-managed key, in A2 on an account that already exists and in A9
+        # on every run. Key ids and validity dates only -- never key material,
+        # and no create, upload, disable or delete. Missing until WS-WALK
+        # (2026-10-13), so no create could have reached `ready`.
+        "iam.serviceAccountKeys.list",
       ]
     }
 
@@ -263,11 +276,36 @@ locals {
     workspace_firestore = {
       title       = "Swarm Workspace Firestore"
       description = "managed-by=swarm-terraform; read the workspace record and admin_roles, write progress and the tenant and pool documents. No delete. Project-wide: Firestore ignores conditions on the data plane."
+      # One permission per Firestore call of register-tenant.sh --workspace,
+      # from Google's table (firestore/docs/security/iam).
+      # tests/unit/scripts/test_workspace_firestore_permissions.py walks the
+      # script's calls and the guard's (workspace-calls.json) and holds this
+      # list to exactly what they need.
+      #
+      # databases.get was missing until 2026-10-13, so the A1 claim's
+      # beginTransaction 403'd on every execution for w-7f9285.
+      # databases.getMetadata is projects.databases.get, which the job never
+      # calls (its guard refuses it). It STAYS by owner decision 2026-10-12
+      # (adds-only IAM change; removing it is a separate change), and
+      # tests/unit/scripts/test_workspace_firestore_permissions.py allows
+      # exactly that one unused extra.
       permissions = [
+        # Unused (see above); kept by owner decision 2026-10-12.
         "datastore.databases.getMetadata",
+        # beginTransaction (A1 claim) and rollback (a claim that re-admits
+        # nothing). The transaction permission, not the metadata one.
+        "datastore.databases.get",
+        # fs_patch on tenants/<t> and pools/tenant:<t> with no precondition
+        # (A8) is an upsert that creates a missing document; a commit update
+        # with no exists precondition needs it too.
         "datastore.entities.create",
+        # fs_get of workspaces/, tenants/, pools/, admin_roles/<email>; the
+        # claim's transactional GET; runQuery on workspaces (A1) reads docs.
         "datastore.entities.get",
+        # runQuery on workspaces by workspace_id (A1), and on admin_roles.
         "datastore.entities.list",
+        # fs_patch of progress on workspaces/<t>, of tenants/ and pools/
+        # (A8), and the claim's commit (an update, currentDocument.exists).
         "datastore.entities.update",
       ]
     }
@@ -421,6 +459,7 @@ resource "google_storage_bucket_iam_member" "workspace_deployer_marker" {
 # ---------------------------------------------------------------------------
 
 resource "google_pubsub_topic" "workspace_apply" {
+  # checkov:skip=CKV_GCP_83:A message names one approved workspace to provision (workspace id, request id) -- no tenant data, no credential -- and is retained a day. CMEK would need a key ring this platform does not own in a shared project; same reasoning as the scheduler's wake topic.
   count = local.workspace_deployer_on
 
   project = var.project_id

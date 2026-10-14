@@ -336,7 +336,8 @@ def _report(origin: Any = None, device: Any = None, **extra: Any) -> str:
 
 
 ORIGIN = {"origin": "https://github.com", "host": "github.com", "display_host": "github.com",
-          "registrable_domain": "github.com", "scheme": "https:", "ip_literal": False, "cert_error": None}
+          "registrable_domain": "github.com", "scheme": "https:", "ip_literal": False, "cert_error": None,
+          "path": "/"}
 DEVICE = {"preset": "iphone-15", "orientation": "portrait", "touch": True}
 
 
@@ -349,7 +350,6 @@ DEVICE = {"preset": "iphone-15", "orientation": "portrait", "touch": True}
     {**ORIGIN, "display_host": "github.com\u202egnp.exe"},
     {**ORIGIN, "display_host": "x" * 300},
     {**ORIGIN, "ip_literal": "no"},
-    {**ORIGIN, "path": "/login"},
     {**ORIGIN, "host": "h" * 254 + ".com", "origin": "https://" + "h" * 254 + ".com"},
     "https://github.com",
 ])
@@ -392,7 +392,8 @@ def test_a_message_that_is_not_a_report_or_is_too_large_is_none(text):
 
 def test_an_ip_literal_and_punycode_are_accepted_as_the_gate_reports_them():
     ip = {"origin": "https://[2001:db8::1]:8443", "host": "[2001:db8::1]", "display_host": "[2001:db8::1]",
-          "registrable_domain": "", "scheme": "https:", "ip_literal": True, "cert_error": None}
+          "registrable_domain": "", "scheme": "https:", "ip_literal": True, "cert_error": None,
+          "path": "/"}
     puny = {**ORIGIN, "origin": "https://www.xn--bcher-kva.example", "host": "www.xn--bcher-kva.example",
             "display_host": "www.b\u00fccher.example", "registrable_domain": "xn--bcher-kva.example"}
     for origin in (ip, puny):
@@ -512,3 +513,78 @@ def test_a_task_with_nothing_recorded_lists_nothing(client, ldb, live):
     assert _served(client, "GET", "/v1/tasks/{task_id}/live/recordings", "alice")["segments"] == []
     assert _served(client, "GET", "/v1/tasks/{task_id}/live/actions", "alice") == {
         "actions": [], "truncated": False}
+
+
+# --------------------------------------------------------------------------
+# Whether the agent is using this browser (LIVE-UNUSED; part of #1030)
+# --------------------------------------------------------------------------
+#
+# MEASURED 2026-10-13 (task_7cda0d5335f049b4b442): the agent worked in a
+# browser of its own while the live view stayed blank, and the console had no
+# way to know. The gate's CDP proxy knows; its report carries it as `agent`,
+# through the same relay text and `record_report` as the origin.
+
+FRAME_AT = 1_791_900_000.0  # epoch seconds in October 2026, as the gate sends them
+CONNECTED_AT = FRAME_AT + 7.5
+
+
+def _agent(connected_at: Any = None, connections: Any = 0, first_frame_at: Any = FRAME_AT) -> dict[str, Any]:
+    from agent_worker.livegate.report import agent_report
+
+    return agent_report(connected_at=connected_at, connections=connections, first_frame_at=first_frame_at)
+
+
+def test_a_report_with_no_agent_reads_exactly_as_before():
+    """A gate from before LIVE-UNUSED sends two keys: nothing about it changes."""
+    assert live_module.parse_report(_report(ORIGIN, DEVICE)) == {"origin": ORIGIN, "device": DEVICE}
+
+
+def test_the_agent_crosses_the_real_relay_and_is_read_with_utc_times():
+    text = relay_report_text(*GITHUB, agent=_agent(CONNECTED_AT, 1))
+    parsed = live_module.parse_report(text)
+    assert parsed is not None
+    assert parsed["agent"] == {
+        "connected_at": datetime.fromtimestamp(CONNECTED_AT, tz=timezone.utc),
+        "connections": 1,
+        "first_frame_at": datetime.fromtimestamp(FRAME_AT, tz=timezone.utc),
+    }
+
+
+@pytest.mark.parametrize("agent", [
+    {"connected_at": None, "connections": 1, "first_frame_at": FRAME_AT},  # connected now, never connected
+    {"connected_at": None, "connections": -1, "first_frame_at": FRAME_AT},
+    {"connected_at": None, "connections": True, "first_frame_at": FRAME_AT},
+    {"connected_at": None, "connections": 10_000, "first_frame_at": FRAME_AT},
+    {"connected_at": "soon", "connections": 0, "first_frame_at": FRAME_AT},
+    {"connected_at": None, "connections": 0, "first_frame_at": 1e30},
+    {"connected_at": None, "connections": 0},
+    {"connected_at": None, "connections": 0, "first_frame_at": FRAME_AT, "url": "https://x.test/"},
+    "connected",
+])
+def test_an_agent_reading_that_does_not_hold_together_is_none_and_the_rest_is_kept(agent):
+    assert live_module.parse_report(_report(ORIGIN, DEVICE, agent=agent)) == {
+        "origin": ORIGIN, "device": DEVICE, "agent": None}
+
+
+def test_the_agent_is_stored_and_served_and_its_first_connection_is_kept(client, ldb, live, relay):
+    _ask_for_help(ldb)
+    before = _served(client, "GET", "/v1/tasks/{task_id}/live/session", "alice")["session"]
+    # Nothing reported yet: unknown, never "not connected".
+    assert (before["agent_connected_at"], before["agent_connections"], before["first_frame_at"]) == (None, None, None)
+
+    _watch(client, relay, "alice", relay_report_text(*GITHUB, agent=_agent()))
+    waiting = _served(client, "GET", "/v1/tasks/{task_id}/live/session", "alice")["session"]
+    assert waiting["agent_connected_at"] is None and waiting["agent_connections"] == 0
+    assert waiting["first_frame_at"] == datetime.fromtimestamp(FRAME_AT, tz=timezone.utc).isoformat()
+
+    _watch(client, relay, "alice", relay_report_text(*GITHUB, agent=_agent(CONNECTED_AT, 1)))
+    using = _served(client, "GET", "/v1/tasks/{task_id}/live/session", "alice")["session"]
+    connected = datetime.fromtimestamp(CONNECTED_AT, tz=timezone.utc).isoformat()
+    assert using["agent_connected_at"] == connected and using["agent_connections"] == 1
+    assert fits(using, fixture("session.reported.json")["session"]) == []
+
+    # A relaunched gate's report has not seen the agent yet: the first
+    # connection stays on the session, and the count is what it is now.
+    _watch(client, relay, "alice", relay_report_text(*GITHUB, agent=_agent(None, 0)))
+    later = _served(client, "GET", "/v1/tasks/{task_id}/live/session", "alice")["session"]
+    assert later["agent_connected_at"] == connected and later["agent_connections"] == 0

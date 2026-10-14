@@ -7,7 +7,9 @@ production data already exists in the single-tenant shapes.
 **A tenant is a Google group.** `eng@saga.xyz` is one tenant whose members share
 a quota budget, provider keys and artifacts. A user in no registered group falls
 back to a personal tenant `u-<local-part>`, so nobody is ever hard-blocked from
-the platform.
+the platform. A person whose personal workspace is **ready** acts in it by
+default, and their groups are what they switch to (#1200; see the switcher
+below).
 
 ---
 
@@ -155,18 +157,47 @@ would scatter one person's work across two tenants.
 ### The tenant switcher: `X-Swarm-Tenant` selects, it never grants
 
 A person in more than one registered tenant group can work in any of them
-(owner decision 2026-10-01). The first match above is still the **default**,
-unchanged; a request may instead carry
+(owner decision 2026-10-01), and in their own personal workspace beside them
+(#1200, 2026-10-12). A request may carry
 
     X-Swarm-Tenant: <tenant_id>
 
 and the API then acts as that tenant — but **only** if it is one of the
-registered tenant groups Cloud Identity confirmed for this caller on this
-request. Anything else — another group's tenant, a tenant that does not exist,
-a personal `u-` tenant (the caller's own included), an admin group, a near
-miss in case — is a `403` with code `tenant_not_member`, raised in
-authentication before any route body runs, so nothing is read and nothing is
-written. The refusal is identical for "not yours" and "no such tenant", so the
+caller's **choices**:
+
+1. **The caller's own personal workspace, first**, when it is ready: the id is
+   `tenant_id_for_user(<verified email>)` — derived from the token, never from
+   the header — and `auth.PersonalTenants` offers it only when
+   `tenants/u-<you>` is `kind: user` with your email as its principal **and**
+   `workspaces/u-<you>` is `ready` with that same principal. Both principal
+   checks matter: the frozen slug keeps only the local part, so
+   `bob@saga.xyz` and `bob@partner.com` derive the same `u-bob`, and only the
+   principal says whose it is. `approved` is not enough: the build has not made
+   the service account, namespace and secrets yet, and the workspace gate
+   refuses a submit there anyway. A service identity, the schedule tick, the
+   rollup sweeper and a listed service account are never offered one.
+2. **Then every registered tenant group** Cloud Identity confirmed for this
+   caller on this request, in admin order.
+
+**The default — no header — is the first choice** (owner decision 2026-10-12
+15:55 PDT: personal by default, groups are what you switch to). So a person
+with a ready workspace acts in `u-<you>` unless they name a group; a person
+without one acts in the first matching group, exactly as before; a person in no
+group acts in their personal tenant, exactly as before. Every caller that needs
+a group must send the header: the console and the plugin do once a tenant is
+picked; CI, smoke and acceptance call as service accounts, which keep the
+group default.
+
+Anything else — another group's tenant, **another person's `u-` tenant**, your
+own `u-` tenant before its workspace is ready, a tenant that does not exist, an
+admin group, a near miss in case or spacing — is a `403` with code
+`tenant_not_member`, raised in authentication before any route body runs, so
+nothing is written. A header naming neither one of your groups nor your own
+`u-` id is refused before even your own workspace is read. A failed read of
+your workspace is a `503`, never a fall-back to the group: that would file a
+headerless submit in a tenant other than the one you act in by default. A
+request that names one of your groups needs no answer about your workspace and
+goes on in that group. The refusal is identical for "not yours" and "no such tenant", so the
 header is not an oracle for enumerating tenant ids.
 
 Why it selects and never grants. The tenant decides the service account, the
@@ -174,12 +205,16 @@ secrets, the GCS prefix and the namespace a task runs under (invariant 9). A
 header that could *name* a tenant would let any caller pick any of those; a
 header that can only *choose among memberships already proven* changes nothing
 an attacker can reach — every tenant it can reach is one the same caller could
-already reach by being first in that group's priority. So:
+already reach by being first in that group's priority — or, for the personal
+entry, by being the one person its documents name. So:
 
 * **One membership check, not two.** `GET /v1/tenants/mine` lists, and the
   header selects from, `AuthContext.tenant_choices` — the same confirmed
   `member_groups` the default tenant is resolved from, walked in the same admin
-  order (`Authenticator._tenant_choices`). There is no second lookup that could
+  order (`Authenticator._tenant_choices`), with the ready personal workspace
+  put first by `Authenticator._with_own_workspace`. Each entry carries `kind`
+  (`user` for your workspace, named "Your workspace (u-<you>)"; `group` for a
+  group, named by its email). There is no second lookup that could
   disagree with the first. A group whose lookup failed below a confirmed match
   is dropped by `groups_for` and is therefore not selectable: an unverified
   membership is never a choice.
@@ -189,13 +224,19 @@ already reach by being first in that group's priority. So:
   groups whose ids collide (`eng@saga.xyz`, `eng@partner.com`) appear once, as
   the first in admin order — the one the id selects.
 * **Admin is unaffected.** `is_admin`, `is_pool_admin` and the caller's groups
-  are about the person, not the tenant, and the header does not touch them.
+  are about the person, not the tenant, and the header does not touch them. An
+  admin gains no personal tenant but their own.
+* **The answer is cached for 30 seconds per email** (`PersonalTenants`), both
+  ways: a workspace that becomes ready is offered within that window. The
+  cache is keyed by the verified email, so it can delay an offer but never
+  make one to anybody else.
 * **A listed service account** (contract request 30) has no memberships to
   choose among; any header is refused.
 
 The console (`apps/swarm-ui`) shows the spine's tenant block as a switcher
 when `/v1/tenants/mine` lists more than one tenant, and as the static label
-with copy-id otherwise. The pick is stored per browser (`swarm.tenant`), sent
+with copy-id otherwise. Your own workspace is labelled "Your workspace", with
+its `u-` id as the secondary line. The pick is stored per browser (`swarm.tenant`), sent
 from one place (`apiHeaders` in `fetch.ts`, used by every read, write and both
 submit paths), and switching re-reads the screen. A stored pick the caller is no
 longer a member of is dropped on the first `tenant_not_member` 403 and the
@@ -369,10 +410,11 @@ target falls, nobody else's does.
 
 From 2026-10-11 recurring tenant work runs as **schedules**
 ([schedules.md](schedules.md), §5.6 there), not as a Cloud Scheduler job per
-tenant. Lane SWEEP's per-tenant `issue_sweep` job is **paused** and its
-`issue-sweep` schedule replaces it. The job and its route are deleted in a
-later change, held for the owner
-([operations.md §13](operations.md#13-schedules-the-s9-migration-sweep-paused-deletion-pending)).
+tenant. Lane SWEEP's per-tenant `issue_sweep` job was paused on 2026-10-11,
+when its `issue-sweep` schedule replaced it, and the job, its route and
+`SWEEP_ENABLED` were deleted on 2026-10-12, the owner having waived the
+planned 7-day watch
+([operations.md §13](operations.md#13-schedules-the-s9-migration-sweep-removed-2026-10-12)).
 A schedule is a document in `schedules/`, carries its `tenant_id`, and fires
 **as its owner, in its own tenant**. The tick that fires every tenant's
 schedules holds one route and submits nothing as itself. So a schedule's work
@@ -389,7 +431,9 @@ is ordinary tenant work, under every isolation mechanism above:
 Another tenant's schedule id answers 404 on every route, as a task's does. When
 one tenant's schedules crowd the platform, an admin uses what they use today:
 the tenant's ceiling (`PUT /admin/tenants/<t>/limits`), plus pausing the
-schedule from Admin › Schedules.
+schedule from Automate › Schedules, switched to All tenants
+(`/automate/schedules?scope=all`, admins only; it was Admin › Schedules until
+the owner folded the two pages into one on 2026-10-13).
 
 ---
 

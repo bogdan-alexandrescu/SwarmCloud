@@ -40,7 +40,9 @@ In a Claude Code session:
 You are prompted for the deployment URL (required), the OAuth client ID and
 the OAuth client secret. The secret is `sensitive` in the manifest, so Claude
 Code keeps it in your system's secure credential store, never in
-`settings.json`. Then:
+`settings.json`. Two more settings have defaults: `default_target` and
+`auto_attach`, and a third, **`tenant`**, is empty unless you name one — see
+*Acting as one of several tenants*, below. Then:
 
 ```text
 /reload-plugins
@@ -422,9 +424,10 @@ back rather than retyping it.
 
 ### Acting as one of several tenants
 
-A person in more than one registered tenant group acts as the **first**
-matching group, in the order the admin registered them, unless they choose
-another (#447). The choice is sent as `X-Swarm-Tenant` on every request, and
+With no choice made, the API picks your default: your own personal workspace
+when it is **ready**, otherwise the first matching registered group in the
+order the admin registered them (#1200; `docs/multi-tenancy.md`). Your groups
+are what you choose instead (#447). The choice is sent as `X-Swarm-Tenant` on every request, and
 the API honours it only when your verified membership includes that tenant's
 group: the header selects among your memberships, it never grants one. A
 tenant you are not a member of is refused with 403 `tenant_not_member`, and
@@ -433,12 +436,34 @@ that refusal is shown as the API wrote it.
 | Surface | List your tenants | Choose one |
 |---|---|---|
 | terminal | `swarm tenants` (`--json`), the current one marked `*` | `swarm --tenant <id> ...`, or `SWARM_TENANT=<id>`; the flag wins |
-| MCP | `swarm_tenants` (read-only) | `SWARM_TENANT` in the bridge's environment, read once when it starts |
+| `sc` | `sc whoami` / `sc config` show the tenant that answered and which setting chose it | `SWARM_TENANT=<id>`, read once per invocation |
+| MCP | `swarm_tenants` (read-only) | the plugin's **`tenant`** setting, or `SWARM_TENANT` in the environment Claude Code started with — **the environment wins**; read once when the bridge starts |
+| SessionStart hook | — | the same as the MCP server: `SWARM_TENANT` if set, else the `tenant` setting |
 
-Nothing chosen sends no header at all, so behaviour is exactly what it was
-before. The bridge's setting is per session, not per call: a session whose
-calls could each name a tenant would read one tenant's rows and act on
-another's. `sc` does not take a tenant yet; it acts as your default.
+Nothing chosen sends no header at all, and the API's default applies. The
+bridge's setting is per session, not per call: a session whose calls could
+each name a tenant would read one tenant's rows and act on another's.
+
+**`sc` reads `SWARM_TENANT`** (SC-TENANT, owner decision 2026-10-12). Before
+#1200 every tool that sent no header landed in the same first group, so `sc`
+sending none was harmless. Once a ready personal workspace became the default,
+`sc` would have read your personal workspace while the bridge, the plugin's
+tools and `swarm` acted in the group you chose — two views of "your" tasks
+that disagree. `sc` now chooses with the same helper they do
+(`client.chosen_tenant`) and names that tenant on every request.
+
+**The plugin's `tenant` setting** (`/plugin configure sc@swarmcloud`) is how a
+plugin session stays in a group without exporting anything. The manifest
+passes it to the bridge as
+`SWARM_TENANT: ${SWARM_TENANT:-${user_config.tenant}}`: Claude Code
+substitutes the setting first and then expands the variable from its own
+environment, so **a `SWARM_TENANT` in the environment Claude Code was started
+with wins** — set, even empty (empty means your default). The SessionStart
+hook applies the same rule before its `sc workflows`, so the workflows it
+names are the tenant's the session will act on. The setting does **not**
+reach a `uv run sc` the `sc` skill or `/sc` runs through the Bash tool: that
+process sees only the session's environment, so export `SWARM_TENANT` there
+(or start Claude Code with it) to move `sc` as well.
 
 ## Choosing a runner profile
 
@@ -758,15 +783,19 @@ computes the spec's digest (`fnv1a32:` over its sorted-key compact JSON — the
 same function as `swarm_mcp.workflows.spec_digest`, held equal by a test) and
 the agent passes it beside the spec; `swarm_workflow` submits NOTHING when the
 spec it received digests differently. The reply must carry the digest back,
-every step of the spec and no other, each step's `depends_on` as the spec has
-it, and a distinct task per step — or no row starts and the run returns
-`SUBMITTED_UNVERIFIED` with the workflow id and what differed. The one
-exception is the steps SwarmCloud itself appends for a merge: `re-review` and
-`merge` for `"merge": "on_merge_verdict"`, `merge` alone for `"on"`, with the
-`depends_on` swarm-api builds them with. A spec that names no `merge` takes the
-repository's registered `merge_policy`, else the platform default, which the
-script cannot see, so it accepts no appended step or exactly one of the shapes
-those could produce. Appended steps get a row each, after the spec's own, so
+every step of the spec under its own id (none dropped, none renamed), each
+spec step's `depends_on` as the spec has it, and a distinct task per step — or
+no row starts and the run returns `SUBMITTED_UNVERIFIED` with the workflow id
+and what differed. A step the reply names beyond the spec is one SwarmCloud
+added — a `re-review` and a `merge` for the merge choice — and is accepted
+when the bridge marked it `added: true` (it compares the reply with the spec it
+submitted itself) or, from a bridge too old to mark it, when every step it
+depends on is a spec step or another added step. The script no longer has to
+predict the server's merge rules: measured on 0.5.27, a 3-step spec came back
+with 5 steps and the prediction refused it. An extra step marked `added:
+false`, or tied to no spec step, is still refused, and so is a reply that names
+no step beyond a spec whose own `merge` choice makes SwarmCloud append some.
+Appended steps get a row each, after the spec's own, so
 the rows count what the console counts. Each `sc:step`
 row passes its `step_id` to `swarm_follow`, which will not follow a task that
 is a different step.
@@ -781,6 +810,16 @@ is a different step.
 
 A Result row that fails does not lose the steps: the run returns every row with
 `state` null and a `state_note` saying why.
+
+**A step row that cannot answer is not an error row.** Every field of the
+`sc:step` answer is optional and takes a null, and `sc:step` is given the exact
+object to send. A row that still throws — "StructuredOutput retry cap (5)
+exceeded", "subagent completed without calling StructuredOutput" — or answers
+with no state makes one `swarm_workflow_status` read at once, labelled
+`<workflow> · <step> · setup · status`: a step SwarmCloud names as finished
+becomes a row with that state, `state_from: "workflow status"` and the row's
+failure in `row_note`. A step still running, or not named, stays a
+`row_error`, which the Result step re-attaches while the workflow runs on.
 
 All five agents run on **haiku at low effort** (`model` and `effort` in their
 frontmatter), load no `CLAUDE.md`, and can call only the SwarmCloud tools they
@@ -831,7 +870,8 @@ pieces do it, and none of them submits anything.
   read-only, gives up after 10 seconds (`SWARM_SESSION_START_TIMEOUT`), and is
   silent and exits 0 when none run, when the bridge or the API fails, and when
   the plugin's **`auto_attach`** option is off (`/plugin configure
-  sc@swarmcloud`; on by default). The first session after a new plugin version
+  sc@swarmcloud`; on by default). It reads in the session's tenant:
+  `SWARM_TENANT` if set, else the plugin's `tenant` setting. The first session after a new plugin version
   may get no notice while uv fetches the new bridge; `/sc attach --all` works
   by hand at any time.
 

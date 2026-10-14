@@ -39,6 +39,14 @@
 .ur-cards { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: stretch; }
 .ur-card { display: flex; flex-direction: column; gap: 10px; min-width: 0; }
 .ur-card > .ur-cacts { margin-top: auto; }
+/* The last failed index run (INDEX-FAIL): a bad-toned note above the actions.
+   Access failures and a stopped poll are the operator's to fix; a transient
+   one is quieter, it retries on its own. */
+.ur-fail { font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text); border-left: 2px solid var(--bad); padding-left: var(--ctl-s3); margin: 0; overflow-wrap: anywhere; }
+.ur-fail[data-class="transient"] { border-left-color: var(--line); color: var(--text-dim); }
+.ur-fail b { font-weight: 550; }
+.ur-fail-cause { color: var(--bad-ink); }
+.ur-fail[data-class="transient"] .ur-fail-cause { color: inherit; }
 /* A META LINE'S "·" NEVER STARTS A LINE (V117). The dot is drawn in the gap to
    the left of each item, outside the item's box; the item that starts a
    wrapped line starts at the line's left edge, so its dot falls left of the
@@ -214,6 +222,28 @@
 .ur-gh-orgs ul { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .ur-gh-page { max-width: 720px; }
 
+/* ---- Set up GitHub access (GT-GUIDE): three steps, ticked by the onboarding read */
+.ur-steps-count { font-size: var(--t-micro); color: var(--text-dim); white-space: nowrap; }
+.ur-steps-list { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; }
+.ur-step { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 10px; align-items: start; padding: 10px 0; border-top: 1px solid var(--line); }
+.ur-step:first-child { border-top: 0; padding-top: 0; }
+.ur-step-mark {
+  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%;
+  border: 1px solid var(--line); color: var(--text-dim); font-size: var(--t-micro); font-weight: 600;
+}
+.ur-step[data-state="done"] .ur-step-mark { border-color: var(--ok); color: var(--ok-ink); }
+.ur-step[data-state="failed"] .ur-step-mark { border-color: var(--bad); color: var(--bad-ink); }
+.ur-step[data-state="waiting"] { opacity: 0.7; }
+.ur-step-main { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ur-step-h { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; }
+.ur-step-h h3 { margin: 0; font-size: var(--t-body); font-weight: 600; }
+.ur-step-word { font-size: var(--t-micro); color: var(--text-dim); }
+.ur-step-line { margin: 0; font-size: var(--t-meta); overflow-wrap: anywhere; }
+.ur-step-acts { justify-content: flex-end; }
+.ur-gh-orgs li { display: inline-flex; gap: 4px; align-items: center; }
+.ur-discl { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; }
+.ur-discl > .ur-reg { align-self: stretch; }
+
 /* ---- screen 13, Permissions A: tokens × repositories ------------------------ */
 .ur-mx-wide { padding: 0; overflow-x: auto; }
 table.ur-mx { border-collapse: collapse; width: 100%; font-size: var(--t-micro); }
@@ -259,4 +289,7 @@ table.ur-mx tr.ur-grp td { background: var(--surface-2); font-weight: 600; text-
   .ur-pick, .ur-check { min-height: 44px; }
   /* A thumb's reach at 390: Connect, Disconnect and Try again each take the row. */
   .ur-gh-acts { flex-direction: column; align-items: stretch; }
+  /* A step's actions take their own row under its words at 390. */
+  .ur-step { grid-template-columns: 24px minmax(0, 1fr); }
+  .ur-step-acts { grid-column: 2; }
 }

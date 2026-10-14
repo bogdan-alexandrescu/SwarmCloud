@@ -125,6 +125,31 @@ describe('the live socket hands an RFB client binary frames only (LB-STREAM)', (
     expect(statuses).toEqual([{ open: true, in_control: true, controller: who, cause: null }])
   })
 
+  it('hands the relay’s control refusal to its own callback, with its cause, and never to the RFB client (LB-CURSOR2)', async () => {
+    const got: unknown[] = []
+    const refusals: string[] = []
+    const attached = openLiveSocket(
+      'ls_one',
+      ticket(),
+      (ch) => {
+        ;(ch as unknown as Consumer).onmessage = (e) => got.push(e.data)
+      },
+      undefined,
+      (cause) => refusals.push(cause),
+    )
+    const raw = FakeRaw.made[0]!
+    raw.open()
+    await attached
+    raw.text(JSON.stringify({ type: 'refused', reason: 'control', cause: 'wrong_session' }))
+    // An older relay names no cause; anything that is not a code reads as unknown.
+    raw.text(JSON.stringify({ type: 'refused', reason: 'control' }))
+    raw.text(JSON.stringify({ type: 'refused', reason: 'control', cause: '<b>x</b>' }))
+    // A refusal of anything else is not a control refusal.
+    raw.text(JSON.stringify({ type: 'refused', reason: 'malformed' }))
+    expect(refusals).toEqual(['wrong_session', 'unknown', 'unknown'])
+    expect(got).toEqual([])
+  })
+
   it('propagates error and close to the consumer once it holds the channel', async () => {
     const errors: unknown[] = []
     const closes: unknown[] = []

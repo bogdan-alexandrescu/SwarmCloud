@@ -15,8 +15,10 @@ from __future__ import annotations
 import hashlib
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass, replace
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol
 
 from swarm_common.identity import (
     AuthError,
@@ -24,6 +26,7 @@ from swarm_common.identity import (
     assert_allowed_domain,
     resolve_tenant,
     tenant_id_for_group,
+    tenant_id_for_user,
     tenant_member_for,
 )
 
@@ -31,6 +34,8 @@ from .errors import Forbidden, Unauthenticated, UpstreamUnavailable
 from .gitidentity import clean_name
 from .groups import GroupLookupError, MembershipResolver
 from .settings import ApiSettings
+from .store import TENANTS
+from .workspaces import READY, WORKSPACES, is_service_identity, state_of
 
 log = logging.getLogger(__name__)
 
@@ -39,8 +44,9 @@ log = logging.getLogger(__name__)
 #: memberships (the tenant switcher, owner decision 2026-10-01). It SELECTS and
 #: never grants: `Authenticator._select_tenant` honours it only when the named
 #: tenant is among the registered tenant groups Cloud Identity confirmed for
-#: this caller on this request. Absent (or empty), the tenant is today's first
-#: match in the admin-ordered `tenant_groups`.
+#: this caller on this request, or is the caller's OWN ready personal workspace
+#: (#1200). Absent (or empty), the tenant is that personal workspace when it is
+#: ready, else today's first match in the admin-ordered `tenant_groups`.
 TENANT_HEADER = "X-Swarm-Tenant"
 
 #: The same selection as a QUERY parameter, accepted on `TENANT_QUERY_ROUTES`
@@ -123,13 +129,17 @@ class AuthContext:
     #: read by `require_admin` -- `is_admin`/`is_pool_admin` stay False for
     #: every listed account regardless of this field.
     member_scope: str = ""
-    #: Every registered tenant group Cloud Identity CONFIRMED this caller is in,
-    #: as (tenant_id, group email), in the admin order of `tenant_groups` --
-    #: what `GET /v1/tenants/mine` lists and the only values `X-Swarm-Tenant`
-    #: may select. Derived from the same `member_groups` the default tenant is
+    #: Every tenant this caller may act in, as (tenant_id, principal) -- what
+    #: `GET /v1/tenants/mine` lists and the only values `X-Swarm-Tenant` may
+    #: select. FIRST, the caller's OWN personal workspace, (u-<caller>, the
+    #: caller's email), when `PersonalTenants.ready` says it is ready (#1200,
+    #: owner decision 2026-10-12: personal by default, groups are what you
+    #: switch to). Then every registered tenant group Cloud Identity CONFIRMED
+    #: this caller is in, (tenant_id, group email), in the admin order of
+    #: `tenant_groups`. Derived from the same answers the default tenant is
     #: resolved from, so the list and the default can never disagree: when it
-    #: is non-empty its first entry IS the default tenant. Empty for a
-    #: personal tenant and for a listed service account.
+    #: is non-empty its first entry IS the default tenant. Empty for a caller
+    #: in no group without a ready workspace, and for a listed service account.
     tenant_choices: tuple[tuple[str, str], ...] = ()
     #: On `ApiSettings.rollup_sweeper_users`: the identity the per-tenant
     #: Cloud Scheduler rollup jobs present (D17). May call the routes in
@@ -358,6 +368,71 @@ def bearer_token(authorization: str | None) -> str:
     return bearer_tokens(authorization)[0]
 
 
+class PersonalTenants:
+    """Whether a verified caller's OWN personal workspace is ready to act in (#1200).
+
+    Ready means BOTH documents the workspace job leaves agree on this person:
+
+      * `tenants/u-<caller>` exists, is `kind: user`, and its principal is the
+        caller's email -- the frozen slug keeps only the local part, so the id
+        alone does not say whose tenant it is;
+      * `workspaces/u-<caller>` is in state `ready` (docs/workspaces.md §1.1),
+        and its principal is that same email. Not `approved`: the build has
+        not made the service account, namespace and secrets yet, and the
+        workspace gate refuses a submit there anyway, so offering it as the
+        default would move a group member's work into a tenant that refuses it.
+
+    Asked of `email` only, which the caller passes from the verified token.
+
+    Cached per email for `cache_seconds`, both answers, as `AdminRoles` caches
+    a role: two document reads on every request otherwise. A workspace that
+    becomes ready is offered within that window; nothing here can offer one
+    person's tenant to another, so staleness only delays. Raises whatever
+    Firestore raises; `Authenticator` turns that into a 503.
+    """
+
+    def __init__(
+        self,
+        db: Any,
+        *,
+        cache_seconds: float = 30.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._db = db
+        self._cache_seconds = cache_seconds
+        self._clock = clock
+        self._cache: dict[str, tuple[float, bool]] = {}
+        self._lock = threading.Lock()
+
+    def ready(self, email: str) -> bool:
+        email = (email or "").strip().lower()
+        if not email:
+            return False
+        stamp = self._clock()
+        with self._lock:
+            cached = self._cache.get(email)
+        if cached is not None and cached[0] > stamp:
+            return cached[1]
+        answer = self._read(email)
+        with self._lock:
+            self._cache[email] = (stamp + self._cache_seconds, answer)
+        return answer
+
+    def _read(self, email: str) -> bool:
+        tenant_id = tenant_id_for_user(email)
+        tenant_snap = self._db.collection(TENANTS).document(tenant_id).get()
+        tenant = (tenant_snap.to_dict() or {}) if tenant_snap.exists else {}
+        if tenant.get("kind") != "user" or _principal(tenant) != email:
+            return False
+        record_snap = self._db.collection(WORKSPACES).document(tenant_id).get()
+        record = (record_snap.to_dict() or {}) if record_snap.exists else None
+        return state_of(record) == READY and _principal(record or {}) == email
+
+
+def _principal(doc: Mapping[str, Any]) -> str:
+    return str(doc.get("principal") or "").strip().lower()
+
+
 class Authenticator:
     """Turns an Authorization header into an AuthContext."""
 
@@ -368,6 +443,7 @@ class Authenticator:
         groups: MembershipResolver,
         iap: Any = None,
         admin_roles: Any = None,
+        personal: "PersonalTenants | None" = None,
     ) -> None:
         self._settings = settings
         self._verifier = verifier
@@ -377,6 +453,10 @@ class Authenticator:
         # (a hand-built authenticator in a test) means configuration alone
         # decides admin, which is exactly the behaviour before §6.5.
         self.admin_roles = admin_roles
+        # Whether a caller's own personal workspace is ready (#1200). None (a
+        # hand-built authenticator in a test) offers no personal tenant, which
+        # is exactly the behaviour before #1200.
+        self._personal = personal
         # Read once, here, at process start: an address on two lists is
         # refused before the service takes a request (`schedule_tick_users`).
         self._schedule_tick_users = frozenset(schedule_tick_users(settings))
@@ -400,8 +480,67 @@ class Authenticator:
         resolved, and can only narrow the result to one of them -- see
         `_select_tenant`. A refusal raises before any route body runs.
         """
-        return self._select_tenant(
-            self._authenticate(authorization, iap_assertion), tenant
+        ctx = self._authenticate(authorization, iap_assertion)
+        return self._select_tenant(self._with_own_workspace(ctx, tenant), tenant)
+
+    def _with_own_workspace(self, ctx: AuthContext, requested: str | None) -> AuthContext:
+        """Put the caller's OWN ready personal workspace first, as the default (#1200).
+
+        THE ID IS DERIVED FROM THE VERIFIED EMAIL, NEVER FROM THE HEADER: the
+        only personal tenant this can ever add is `tenant_id_for_user(ctx.email)`,
+        and only when `PersonalTenants.ready` confirms that tenant's documents
+        name THIS email -- the frozen slug drops the domain, so `bob@saga.xyz`
+        and `bob@partner.com` derive one id, and the principal is what tells
+        them apart. Another person's `u-` id is never in the list, so
+        `_select_tenant` refuses it exactly as it refuses a group the caller is
+        not in.
+
+        Only an ordinary human caller: the schedule tick, the rollup sweeper, a
+        listed service account and any service identity keep today's tenant,
+        so a CI or acceptance account's headerless default is unchanged.
+
+        A header naming neither a group this caller is in nor their own id is
+        refused below without reading anything, so a refusal still costs no
+        Firestore read. A failed read is a 503, never a guess, when the request
+        would act in the default or in the personal tenant: falling back to the
+        group would run work in a different tenant from the one this caller
+        acts in by default -- another secret, another GCS prefix -- exactly the
+        misfiling `_from_claims` refuses for a failed group lookup. A request
+        that NAMES one of its groups is unaffected by the answer, so it goes on
+        in that group without the personal entry.
+        """
+        if self._personal is None or self._special(ctx):
+            return ctx
+        own = tenant_id_for_user(ctx.email)
+        if requested and requested != own and \
+                requested not in {tenant_id for tenant_id, _ in ctx.tenant_choices}:
+            return ctx
+        try:
+            ready = self._personal.ready(ctx.email)
+        except Exception as exc:  # noqa: BLE001 - any Firestore failure
+            log.warning("personal workspace unresolved (%s)", type(exc).__name__)
+            if requested and requested != own:
+                return ctx
+            raise UpstreamUnavailable(
+                "your personal workspace could not be read; retry shortly"
+            ) from None
+        if not ready:
+            return ctx
+        return replace(
+            ctx,
+            tenant_id=own,
+            tenant_principal=ctx.email,
+            tenant_choices=((own, ctx.email), *(
+                c for c in ctx.tenant_choices if c[0] != own
+            )),
+        )
+
+    @staticmethod
+    def _special(ctx: AuthContext) -> bool:
+        """Callers whose tenant is not a person's: never offered a personal one."""
+        return bool(
+            ctx.is_schedule_tick or ctx.is_rollup_sweeper or ctx.member_scope
+            or ctx.tenant_member or not ctx.email or is_service_identity(ctx.email)
         )
 
     def _authenticate(
@@ -772,10 +911,12 @@ class Authenticator:
 
         THE HEADER SELECTS; IT NEVER GRANTS (invariant 9). The only tenants it
         can name are the ones in `tenant_choices`, which this request's own
-        verified identity produced. Everything else -- another group's tenant,
-        a personal `u-` tenant (the caller's own included), an admin group, a
-        tenant that does not exist -- is one 403, raised here, before any route
-        body runs, so nothing is read and nothing is written.
+        verified identity produced: the caller's confirmed groups and, when it
+        is ready, the caller's OWN personal workspace (`_with_own_workspace`).
+        Everything else -- another group's tenant, another person's `u-`
+        tenant, the caller's own `u-` tenant before its workspace is ready, an
+        admin group, a tenant that does not exist -- is one 403, raised here,
+        before any route body runs, so nothing is written.
 
         `tenant_id` and `tenant_principal` are replaced TOGETHER from one
         entry, so they keep describing the same tenant (`_tenant_principal`'s
@@ -784,8 +925,8 @@ class Authenticator:
         `is_pool_admin` and `principal.groups` are about the caller, not the
         tenant, and stay exactly as resolved.
 
-        Absent or empty: the context is returned untouched -- today's
-        first-match, byte for byte. Matched exactly: tenant ids are lowercase
+        Absent or empty: the context is returned untouched -- the default,
+        which is the first entry of `tenant_choices`. Matched exactly: tenant ids are lowercase
         slugs, and a near miss is a 403 rather than a guess.
         """
         if not requested:
@@ -902,21 +1043,11 @@ ROLLUP_SWEEPER_ROUTES: frozenset[tuple[str, str]] = frozenset(
         # finished task's own tenant's token, for that tenant's gated
         # integrator, and moves only a step it claimed (`verdictpublish`).
         ("POST", "/v1/admin/tasks/finished"),
-        # The issue sweeper (owner decisions 2026-10-08, jobs.tf
-        # `issue_sweep`): lists one tenant's registered repositories' open
-        # issues with that tenant's token and starts issue runs for the
-        # candidates, each as the tenant's `issue_sweep.submit_as` member
-        # (`issuesweep.sweep_tenant`), never as the sweeper.
-        # Off unless SWEEP_ENABLED and the tenant's own switch say otherwise.
-        # Like the repository poll, the sweeper alone may call it.
-        #
-        # PAUSED, NOT REMOVED (Schedules S9, 2026-10-11): the `issue-sweep`
-        # schedule (docs/schedules.md §8.1) replaces the job that calls this,
-        # and the job is paused in jobs.tf. The entry stays until the owner has
-        # watched the schedule fire for 7 days without an auto-pause; the
-        # second S9 change then removes it with the job, SWEEP_ENABLED and the
-        # tenant's `issue_sweep` settings.
-        ("POST", "/v1/admin/issues/sweep"),
+        # NOT the issue sweeper's route: it, its Cloud Scheduler job and
+        # SWEEP_ENABLED were removed on 2026-10-12 (Schedules S9, second
+        # change; docs/schedules.md §8.1 step 4). The tenant's `issue-sweep`
+        # schedule replaced them, and the schedule tick, not this identity,
+        # fires it.
         # The stranded-PR sweep (part of #295, jobs.tf `stranded_pr_sweep`):
         # reads one tenant's registered repositories' open pull requests with
         # that tenant's token, stores the rows and logs `pr_stranded`. It

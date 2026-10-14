@@ -8,7 +8,7 @@ patching a single import.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import logging
@@ -26,6 +26,7 @@ from .auth import (
     Authenticator,
     GoogleTokenVerifier,
     IapAssertionVerifier,
+    PersonalTenants,
     TokenVerifier,
     require_admin,
     require_continuation_route,
@@ -37,7 +38,7 @@ from .executioncancel import (
     NoExecutionCanceller,
     PubSubExecutionCanceller,
 )
-from .forge import ForgeTokens, GitHubIssues, SecretManagerForgeTokens
+from .forge import FirestoreSlotIndex, ForgeTokens, GitHubIssues, SecretManagerForgeTokens
 from .forgewrite import GitHubWriter
 from .groups import CloudIdentityGroups, MembershipResolver
 from .inspect import InspectionService
@@ -49,6 +50,7 @@ from .ratelimit import TokenBucketLimiter
 from .rollup import WorkflowRollups
 from .service import SubmissionService
 from .specsigning import SpecSigner, signer_from_settings
+from .startup import StartupEstimates
 from .settings import ApiSettings
 from .store import Store
 from .waker import SchedulerWaker, waker_for
@@ -103,6 +105,9 @@ class AppContext:
     #: and nothing else (purge.py); `inspection` keeps the read-only reader.
     #: None when no bucket is configured. Builds no client until used.
     artifact_purger: ArtifactPurger | None = None
+    #: `GET /v1/tasks/{id}/startup`'s per-tenant, per-profile estimate, held
+    #: for a few minutes (`swarm_api.startup`). Per app, never at import.
+    startup_estimates: StartupEstimates = field(default_factory=StartupEstimates)
     now: Callable[[], Any] = utcnow
 
     def ready(self) -> tuple[bool, str]:
@@ -191,11 +196,17 @@ def build_context(
     authenticator = Authenticator(
         settings, verifier, groups, iap=iap,
         admin_roles=build_admin_roles(db, settings, now=now),
+        # A person's own ready personal workspace is their default tenant
+        # (#1200); read from the same named database.
+        personal=PersonalTenants(db),
     )
     spec_signer = signer_from_settings(settings) if signer is _MISSING else signer
     # Built before the submissions service, which reads a `merge_pr` workflow's
     # pull request with them (#352), and handed to the context as the same two.
-    forge_tokens = forge_tokens or SecretManagerForgeTokens(settings.project_id)
+    # The slot index lets every read resolve the slot a task would use
+    # (`forge.resolve_forge_slot`): a personal tenant has only its owner's.
+    forge_tokens = forge_tokens or SecretManagerForgeTokens(
+        settings.project_id, index=FirestoreSlotIndex(db))
     forge_writer = forge_writer or GitHubWriter()
     submissions = SubmissionService(
         settings=settings, store=store, waker=waker, metrics=metrics, now=now,
