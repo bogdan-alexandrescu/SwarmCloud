@@ -1,7 +1,7 @@
 ---
 name: sc
-description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 10 followed) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 10); `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. Use when asked "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
-argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run>]"
+description: The SwarmCloud front door, `/sc [verb]`. With no verb, show and interpret SwarmCloud cluster state — the subscription account pool and its 5-hour/7-day quota windows, pool ceilings and which pool binds each runner profile, agents running and queued, and what is wrong right now. `status <id>` reads one workflow or task once; `workflows` lists your tenant's workflows still running in SwarmCloud; `attach <workflow_id>` re-attaches live rows to a workflow still running in SwarmCloud and submits nothing, and `attach --all` does that for every running workflow of your tenant (at most 10 followed) and gives each of your running single tasks — dispatched with swarm_dispatch, in no workflow — one row (at most 10); `run <spec>` submits a workflow spec through /sc:swarmcloud and says so before it does; `run --issue owner/repo#N` plans a GitHub issue (one planner task) and `plan show|approve|edit|reject <run>` reads or acts on that plan, approving only the digest the developer was shown — `run` and `plan approve|edit|reject` are the verbs that write. `keys` says whether a TypeSafe key is set for you and your tenant and which one a task would use; `keys set <provider> [--tenant]` gives the developer a one-time console link to paste the key into themselves — the key never passes through this session. Use when asked "is my TypeSafe key set", "set my TypeSafe key", "what is the swarm doing", "how much quota is left", "why is my task queued", "is anything broken", "which account is nearly full", "where is my workflow", "what workflows are running", "show my workflow's rows again", before dispatching a long batch, to run a spec, or to plan and run a GitHub issue ("work on issue #N", "approve the plan").
+argument-hint: "[status <wf_id|task_id> | workflows | attach <wf_id> | attach --all | run <spec path|JSON> | run --issue owner/repo#N | runs | plan show|approve|edit|reject <run> | keys | keys set <provider> [--tenant]]"
 arguments:
   - verb
   - target
@@ -62,6 +62,8 @@ one action — never a second one the developer did not ask for:
 | `runs` | lists your tenant's issue runs | no |
 | `plan show <run>` | shows a run's plan and its digest | no |
 | `plan approve\|edit\|reject <run>` | acts on that plan, with the digest the developer was shown | **yes** |
+| `keys` | whether a TypeSafe key is set for you and for your tenant, and which one your tasks would use: `swarm_keys`. Never a value | no |
+| `keys set <provider> [--tenant]` | a one-time console link where the developer pastes the key themselves: `swarm_key_set_link`. The key never passes through this session | mints a link; stores nothing |
 | a view name (`accounts`, `agents`, `capacity`, `trouble`, `task <id>`, `whoami`, `config`, `debug <id>`) | that view, as in "Which view" below | no |
 
 Anything else: say which verbs exist and run nothing. `/sc:swarmcloud` keeps
@@ -150,6 +152,43 @@ plugin's SessionStart hook asks a new session to run first when workflows or
 single tasks of yours are running. No hook fires on `/reload-plugins`, so
 after a reload — or whenever a task started outside this session — run it
 by hand; it submits nothing either way.
+
+### `keys`
+
+ONE call to `swarm_keys` (`{provider: "typesafe"}`), and show its `text`:
+whether the developer's own key is set, whether their selected tenant's is,
+and which one a task they submit there would use — their own key wins over
+the tenant's. Status only: `set`, `version`, who set it and when. There is no
+value to show and never a reason to ask for one. `available: false` on their
+own key means they have no ready personal workspace to keep it in: say so,
+and that an admin can set a tenant key instead. Nothing reads TypeSafe keys
+yet (`consumed_by` is empty); do not describe a key as in use.
+
+### `keys set <provider> [--tenant]`
+
+**THE KEY NEVER PASSES THROUGH THIS SESSION** (owner, 2026-10-14): not in
+chat, not as a tool argument, not in a command line. Never ask the developer
+for it, and if they paste one anyway, do not repeat it, do not pass it to any
+tool or command, and tell them to rotate it at TypeSafe, since it is now in
+this transcript.
+
+`<provider>` is `typesafe`, the only one; anything else: say so and stop.
+Call `swarm_key_set_link` with `{provider: "typesafe", scope: "user"}` — or
+`scope: "tenant"` with `--tenant`, which sets the selected tenant's key and
+needs an admin. It answers only `url` and `expires_at`. Give the developer
+the `url` and tell them to **open it and paste the key into the console's
+form**; it works once, for ten minutes, and only in their own console
+session. Then `/sc keys` shows the result. A `null` url comes with a `note`:
+show it verbatim. An error is the API's: report it verbatim (a 404 on `user`
+means no ready personal workspace; a 403 on `tenant` means not an admin).
+
+If the console answers "keys can't be saved yet", the deployment cannot store
+keys until its owner applies the KEYS-IAM bootstrap role; say exactly that,
+and do not retry. In a terminal, the developer can instead run
+`sc key set typesafe [--tenant]` themselves: it asks for the key at a hidden
+prompt and prints only `stored: version N`. Tell them the command; never run
+it — it is not granted to this skill, and it would put the key in front of
+you.
 
 ### `run <spec path|JSON>`
 

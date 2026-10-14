@@ -100,7 +100,7 @@ from typing import Any, Callable, Sequence
 
 from swarm_common.states import CONCURRENCY_STATES, PENDING_STATES, TERMINAL_STATES, TaskState
 
-from . import render
+from . import keys, render
 from .client import SwarmClient, SwarmError, chosen_tenant, outputs_of
 from .follow import with_console
 from .invocation import help_command, terminal_command
@@ -122,6 +122,9 @@ from .render import Finding, Snapshot, Style
 EXIT_OK = 0
 EXIT_FAIL = 1
 EXIT_TROUBLE = 3
+#: The line itself was refused and nothing was sent -- argparse's own code for
+#: a usage error. `sc key set` uses it for a key typed on the command line.
+EXIT_USAGE = 2
 
 
 # --------------------------------------------------------------------------
@@ -2594,6 +2597,96 @@ def cmd_setup_token(client: SwarmClient, args, out) -> int:
     return EXIT_OK
 
 
+# -- provider keys (KEYS-PLUGIN, docs/provider-keys.md) ----------------------
+#
+# `sc key set typesafe [--tenant] [--stdin]` is the ONE place outside the
+# console a TypeSafe key is typed, and it is a person's terminal, never a
+# model's: no skill is granted it, and no MCP tool sets a key. The value is
+# read with getpass (no echo) at a terminal, or one line from stdin with
+# --stdin; it is never an argument -- argv is what shell history and `ps`
+# keep -- so a line that carries anything beyond the provider and the two
+# switches is refused BEFORE anything is sent, without repeating what it
+# carried (`key_set_refusal`, from `main`).
+
+#: What `sc key set` refuses with, whatever extra the line carried.
+KEY_ON_ARGV = (
+    "a key is never taken as a command-line argument: it would land in your shell history "
+    "and in `ps`. Nothing was sent. Run `{command}` and paste it at the hidden prompt, "
+    "or pipe it in with --stdin"
+)
+
+#: The KEYS-IAM bootstrap role is the owner's to apply; until then a deployed
+#: PUT answers 503 (docs/provider-keys.md §6), and it is said as exactly that.
+KEYS_NOT_SAVABLE = "keys can't be saved yet: {reason}"
+
+
+def key_set_refusal(extra: Sequence[str]) -> str | None:
+    """Why this `sc key set` line is refused before anything is read or sent,
+    or None. Never names what it refuses: a stray word on this line is most
+    likely the key itself."""
+    if extra:
+        return KEY_ON_ARGV.format(command=terminal_command("sc key set typesafe"))
+    return None
+
+
+def _unknown_provider(args) -> str | None:
+    """The same, for the provider word, which may be the key typed in its place."""
+    if getattr(args, "provider", None) not in keys.PROVIDERS:
+        return (f"sc key set takes a provider: one of {list(keys.PROVIDERS)}. What was "
+                "given is not repeated, in case it was the key -- a key is never an "
+                "argument, since it would land in your shell history. Nothing was sent")
+    return None
+
+
+def _read_key(stdin_flag: bool) -> str | None:
+    """The key, or None when there is no terminal to ask at and no --stdin."""
+    stdin = sys.stdin
+    if stdin_flag:
+        return (stdin.readline() if stdin is not None else "").strip()
+    if stdin is not None and getattr(stdin, "isatty", lambda: False)():
+        import getpass
+
+        return getpass.getpass("TypeSafe API key (input hidden): ").strip()
+    return None
+
+
+def cmd_key_set(client: SwarmClient, args, out) -> int:
+    """Exit 0 "stored: version N"; 3 the API refused (a 503 is "keys can't be
+    saved yet"); 2 the line or the input was refused and nothing was sent;
+    1 through `main` when the API could not be reached."""
+    refused = (key_set_refusal(getattr(args, "key_extra", None) or [])
+               or _unknown_provider(args))
+    if refused is not None:
+        print(f"sc: {refused}", file=sys.stderr)
+        return EXIT_USAGE
+    scope = "tenant" if args.tenant else "user"
+    value = _read_key(args.stdin)
+    if value is None:
+        print("sc: there is no terminal to read the key at without echo; pipe it in with "
+              f"`{terminal_command('sc key set typesafe --stdin')}`. Nothing was sent",
+              file=sys.stderr)
+        return EXIT_USAGE
+    if not value:
+        print("sc: no key was read; nothing was sent", file=sys.stderr)
+        return EXIT_USAGE
+    try:
+        version = keys.store_key(client, args.provider, scope, value)
+    except SwarmError as exc:
+        answered = exc.status is not None and not exc.edge and exc.status != 401
+        if not answered:
+            raise SwarmError(_without(str(exc), value), status=exc.status, edge=exc.edge,
+                             code=exc.code) from None
+        if exc.status == 503:
+            line = KEYS_NOT_SAVABLE.format(reason=api_message(exc))
+        else:
+            line = f"✕ {api_refusal(exc)}"
+        out.write(_without(line, value) + "\n")
+        out.write("Nothing was stored.\n")
+        return EXIT_TROUBLE
+    out.write(f"stored: version {version if version is not None else '?'}\n")
+    return EXIT_OK
+
+
 def cmd_setup_status(client: SwarmClient, args, out) -> int:
     """The checklist. Exit 0 when ready, 3 when a step failed or is still to
     do; a checklist that could not be read is 1, through `main`."""
@@ -4085,6 +4178,30 @@ def build_parser() -> argparse.ArgumentParser:
     _common(stk, root=False)
     stk.set_defaults(func=cmd_setup_token)
 
+    # KEYS-PLUGIN. NO OPTION AND NO POSITIONAL TAKES THE KEY: anything past the
+    # provider and the switches is refused unsent by `main`, unrepeated.
+    key = sub.add_parser("key", help="provider keys you set: `key set typesafe`")
+    key_sub = key.add_subparsers(dest="key_command", required=True)
+    kset = key_sub.add_parser(
+        "set",
+        help="store your TypeSafe key, typed at a hidden prompt or piped with --stdin "
+             "(exit 0 stored, 3 refused, 2 nothing sent)",
+        description=(
+            "Stores YOUR TypeSafe key (it wins over the tenant's), or with --tenant the "
+            "selected tenant's (admins). The key is read with no echo at a terminal, or one "
+            "line from stdin with --stdin -- never from an argument -- sent once, and never "
+            "printed: the answer is `stored: version N`."
+        ),
+    )
+    kset.add_argument("provider", help=f"one of {', '.join(keys.PROVIDERS)}")
+    kset.add_argument("--tenant", action="store_true",
+                      help="the selected tenant's key, not your own (admins)")
+    kset.add_argument("--stdin", action="store_true",
+                      help="read one line from stdin instead of a hidden prompt")
+    kset.add_argument("--context", default=argparse.SUPPRESS,
+                      help="which configured deployment to use")
+    kset.set_defaults(func=cmd_key_set, key_set=True)
+
     acc = sub.add_parser(
         "access",
         help="the repositories SwarmCloud may use as you: list, grant, revoke, verify",
@@ -4303,7 +4420,18 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None, out=None) -> int:
     from . import config
 
-    args = build_parser().parse_args(argv)
+    parser = build_parser()
+    args, extra = parser.parse_known_args(argv)
+    if getattr(args, "key_set", False):
+        # BEFORE any client: a key typed on the line is refused unsent, and
+        # argparse's own "unrecognized arguments" would have repeated it.
+        args.key_extra = extra
+        refused = key_set_refusal(extra)
+        if refused is not None:
+            print(f"sc: {refused}", file=sys.stderr)
+            return EXIT_USAGE
+    elif extra:
+        parser.error(f"unrecognized arguments: {' '.join(extra)}")
     stream = out or sys.stdout
     # THE SESSION TARGET IS CHECKED AT START-UP (S8), as the MCP server checks
     # it: a config file or plugin setting naming no target stops here, with
