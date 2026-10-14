@@ -671,6 +671,15 @@ set_by}`), `PUT /v1/workspaces/{tenant_id}/code-intelligence` with
 `{code_intelligence: {jev}}`, and `PATCH /v1/repositories/{repo_id}` with
 `{context: on | off | inherit}`.
 
+The two workspace routes are served by `swarm_api/routes/code_intelligence.py`
+(self-contained, so it shares no file with CTXQ-SET's `swarm_api/codeintel.py`):
+`jev` off and `context` on by default; the owner of a personal workspace or a
+platform admin writes; one `admin_audit` entry in the same transaction; the
+field is written with `merge=True` beside `merge` and `judgment_backend`.
+CTXQ-SET may move the store into `codeintel.py` and keep the paths. The
+repository `context` override on `PATCH /v1/repositories/{repo_id}` is still
+CTXQ-SET's.
+
 ---
 
 ## 5. Jev integration
