@@ -7132,8 +7132,21 @@ class Worker:
                 base.update(self._session_channel_env())
         # The child-task spool, when this attempt has a child path: the one
         # variable an agent needs to submit and await helpers (child tasks,
-        # §3.1). A path, never a credential: the attempt key stays here.
-        base.update(self.children.prepare(ws.work))
+        # §3.1). And the git tools' spool, when it is offered them
+        # (docs/runner-git-tools.md §1.3, lane G6): read from the VERIFIED
+        # task, the checkout and the clone base this worker recorded. Paths,
+        # never a credential: the attempt key stays here, and no forge token
+        # is in this process while the agent runs (§0).
+        base.update(self.children.prepare(
+            ws.work,
+            task=self._task,
+            checkout=ws.checkout() if self._repo_url else None,
+            repository_url=self._repo_url,
+            clone_base=clone_base,
+            private_dir=ws.private,
+            logs_dir=ws.logs,
+            store=self.store,
+        ))
         # The hand-off spool, on a live-browser attempt (live-browser §4.1):
         # a path and the gate's loopback CDP address, never a credential.
         base.update(self.handoff.prepare(ws.work))

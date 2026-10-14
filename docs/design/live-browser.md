@@ -382,7 +382,7 @@ values. noVNC renders nothing a page wrote.
 
 ```
 agent: swarm-handoff request --reason "Sign in to GitHub as the bot account" --expect github.com
-agent: swarm-handoff wait            # blocks up to 9 minutes, then says "still waiting" (exit 75)
+agent: swarm-handoff wait            # blocks until resolved, up to 9 minutes a call, then "still waiting" (exit 75)
 ```
 
 `swarm-handoff` is a small command in the browser image. Like the child-task
@@ -395,11 +395,27 @@ because claude-code's Bash tool kills a command at 10 (`#736`, recorded in
 
 | exit | meaning | what the agent should do |
 |---|---|---|
-| 0 | control was returned; a JSON summary is on stdout (section 5.9) | look at the page and continue |
-| 75 | still waiting | call `wait` again |
+| 0 | control was returned; a JSON summary is on stdout (section 5.9) | look at the page once and continue |
+| 75 | still waiting | call `wait` again, at once |
 | 3 | the wait expired; the worker is checkpointing and parking | write its notes into `work/` and stop; the worker ends it either way |
 | 4 | the task is being cancelled | stop |
 | 5 | refused (rate limit, no live path, reason invalid) | carry on without help, or fail with that reason |
+
+**Wait, do not poll (HANDOFF-POLICY, 2026-10-13).** Measured on
+task_2ac5d7e22a51460995a2: while it waited, the agent ran `curl
+/json/version` against CDP in a loop after `wait` returned. Polling a paused
+browser learns nothing and spends the agent's turns. So every answer `wait`
+prints carries `next`, the instruction for that exit -- on 0 "look once and
+carry on", on 75 "run `wait` again; do not poll the browser" -- and the
+helper itself reads the worker's answer no faster than every 100 ms
+(`MIN_POLL_SECONDS`, whatever `--poll` says). The agent is told the same
+twice before it ever asks: the claude-code runner's browser note
+(`LIVE_BROWSER_NOTE`, `apps/agent-worker/agent_worker/runners/claude_code.py`:
+"wait, do not poll the browser") and the spool's guide (`AGENT_GUIDE`,
+`apps/agent-worker/agent_worker/handoff.py`). A command that "blocks until
+resolved" still cannot outlive the Bash tool's 10 minutes, and a watched hold
+may last 30 (section 4.3); exit 75 is that seam, and `next` is what keeps the
+agent on it instead of in a loop of its own.
 
 The **worker** picks the request up on its control poll (10 seconds,
 `WorkerConfig.control_poll_seconds`,
@@ -420,11 +436,24 @@ The **worker** picks the request up on its control poll (10 seconds,
 The task **stays `RUNNING`** (section 4.3 says why that is the recommendation,
 and Q2 asks the owner).
 
-**Notification.** Phase 1 notifies in the console only: a banner on the
-Overview's "Needs a look", a badge on the agent's row, and the browser tab's
-title. The platform has no outbound notification channel today (no mail or
-chat integration in `apps/swarm-api` or `apps/reconciler`), so "optional
-notification" is a new integration, and Q8 asks whether it is wanted.
+**Notification (HANDOFF-POLICY, owner decision 2026-10-13: "notify, park
+fast, extend while watched").** The moment the wait is recorded, the
+notification feed (`GET /v1/notifications`,
+`apps/swarm-api/swarm_api/notifications.py::handoffs`) derives an unread
+**"Agent needs you"** item -- the redacted reason as its detail, a link to the
+task's Browser tab, and a count on the bell's badge (`unread_needs_you`). It
+goes to everyone who may take control (section 5.1, `handoff.may_control`):
+the submitter, and every member of the tenant while "Let any member take
+control" is on for the attempt's session (or when the task has no human
+owner). A personal workspace's member-scoped reader is told of their own
+tasks only, and nothing crosses a tenant (invariant 9). The item is derived,
+not stored (docs/notifications.md): it is gone on the next read once the
+hand-off resolves, and its id carries the request id, so a second hand-off in
+the same attempt is unread again. The parking-fast rule below depends on this
+bell: a person who is coming now hears about it within a feed poll.
+
+There is still no outbound channel (no mail or chat integration in
+`apps/swarm-api` or `apps/reconciler`); Q8 asks whether one is wanted.
 
 ### 4.2 Take control, sign in, return control
 
@@ -481,22 +510,58 @@ READY --admission--> LEASED -> ... -> RUNNING (new attempt, new generation)
 PARKED (HUMAN_REQUIRED) past human_park_max_seconds --> DEAD_LETTERED, end_cause human_wait_expired
 ```
 
-**Phase H, the hold: `RUNNING` with `human_wait` set, lease held, default 10
-minutes (`human_hold_seconds`, Q3).** The browser and its half-finished state
-are alive, which is the whole point of the feature: a sign-in has to happen in
-the browser that will use the session. Capacity is exactly what it is for any
-`RUNNING` browser task: the lease holds the `browser` resource class's 2 units
-and the backend and provider pools
+**Phase H, the hold: `RUNNING` with `human_wait` set, lease held -- one
+minute unless someone is watching, up to 30 while they are (HANDOFF-POLICY,
+owner decision 2026-10-13, replacing Q3's flat 10 minutes).** The browser and
+its half-finished state are alive, which is the whole point of the feature: a
+sign-in has to happen in the browser that will use the session. Capacity is
+exactly what it is for any `RUNNING` browser task: the lease holds the
+`browser` resource class's 2 units and the backend and provider pools
 (`apps/common/swarm_common/profiles.py::RESOURCE_CLASSES`), and the pod costs 8
 vCPU and 16 GiB per minute, idle or not, because `requests == limits`
-(invariant 7). The hold is bounded so that an unattended request costs ten
-pod-minutes, not an afternoon. A person who is **in control** extends nothing
-past the hold except while they are actively in control (renewed, not idle),
-up to the attempt's own timeout: the hold's deadline is
-`min(requested_at + human_hold_seconds, attempt deadline)` and taking control
-moves it to `min(now + control_idle_seconds, attempt deadline)` on every input,
-so a person mid-sign-in is not parked under their fingers, and a person who
-walks away is.
+(invariant 7).
+
+*Why the flat 10 minutes went.* Measured over 26 live-browser tasks
+(2026-10-13): 42 hand-offs, 16 returned, 25 expired (60%), 1 cancelled. 13 of
+the expiries had nobody present (`person_waiting` false on the request event),
+and each held its 2-unit lease and pod for the full 10 minutes -- about 4.2
+pod-hours for nobody. And 7 expired AFTER the person had pressed "I'm ready":
+they were there, on a slow or frozen view, and the clock ran out under them.
+One fixed number was wrong in both directions.
+
+*The rule.* swarm-api owns the deadline (`Task.human_wait.deadline`); the
+worker reads it on every control poll and parks when it passes, exactly as
+before (`agent_worker.handoff.HandoffPath._watch`).
+
+* **Park fast.** A request opens the hold at `min(requested_at +
+  human_unwatched_seconds, attempt deadline)`; `human_unwatched_seconds` is 60
+  (`apps/swarm-api/swarm_api/handoff.py::opening_deadline`). If nobody opens
+  the live view in that minute, the worker parks: wipe, checkpoint,
+  `PARKED(HUMAN_REQUIRED)`, release the lease, exit (invariant 4) -- within a
+  control poll (10 s) of the minute, instead of after ten.
+* **Extend while watched.** swarm-api's proxied viewer socket is the "someone
+  is watching" signal: on join and every `live_watch_flush_seconds` (15) it
+  calls `LiveService.watched`, which moves the deadline to `now +
+  human_unwatched_seconds` and stamps `human_wait.watched_at`. So a watched
+  hold is always about a minute ahead of now, and parks about a minute after
+  the last viewer leaves. Taking control and every flush of a controller's
+  input move it to `now + control_idle_seconds` as before, so a person
+  mid-sign-in is not parked under their fingers.
+* **Capped.** Every extension, watched or controlled, stops at
+  `requested_at + human_hold_max_seconds` (1800, 30 minutes) and the
+  attempt's own deadline (`handoff.extended_deadline`), and never moves the
+  deadline earlier. A tab left open on a walked-away desk costs half an hour,
+  not an afternoon.
+* **Never revived.** A viewer who arrives after the deadline passed changes
+  nothing: the worker may already be parking, and racing it would leave a
+  hold with no pod behind it. That person presses "I'm ready" (below), which
+  is unchanged.
+
+Who is counted as watching is any member admitted to the view (section 5.2),
+not only someone who may take control: the submitter watching from a second
+device, or a member waiting for control to be opened to them, is a person the
+pod is worth holding for. The ticket alone is not counted -- a ticket nobody
+connects with is not a person at the screen.
 
 **Phase P, the park: `PARKED` with `ParkReason.HUMAN_REQUIRED`, no capacity.**
 Invariant 4 forbids sleeping through a long wait, and a person's lunch is a
@@ -518,8 +583,8 @@ history (section 5.5 says why they are not checkpointed). The claude-code
 agent has no conversation resume (`docs/design/child-tasks.md` (`the CLI runners have no conversation resume`)), so the next attempt starts the agent again on
 the restored `work/`. And the person waits for a cold start
 -- admission plus a GKE pod start -- before the browser is back. That is the
-price of giving the capacity back, and it is paid only when nobody came within
-the hold.
+price of giving the capacity back, and it is paid only when nobody opened the
+view within the minute, or the last viewer left.
 
 **What the resumed attempt is told (RESUME-PROGRESS, QA12-14).** Measured
 2026-10-13 on task_4defa61c5eea4a5c87f5: an agent asked for QA1 (returned),
@@ -1647,8 +1712,9 @@ not in the frozen models.
    an ordinary admission.
 3. Concurrency from `LEASED`: unchanged; no new capacity-holding state (unless
    Q2 chooses one, in which case LB-C adds it to `CONCURRENCY_STATES`).
-4. No sleeping through a long wait: the hold is bounded at 10 minutes by
-   default, then checkpoint, park, release, exit.
+4. No sleeping through a long wait: the hold is bounded -- one minute with
+   nobody watching, at most 30 while someone is (section 4.3) -- then
+   checkpoint, park, release, exit.
 5. Fencing: the tunnel ticket, the gate's control channel and every worker
    route carry the generation; a stale generation's session is closed, and a
    stale worker's hand-off is refused.
@@ -1740,7 +1806,8 @@ routes these lanes introduced. `claude-code-browser` already names
 
 **Answered 2026-10-11, recorded on #1030.** The owner took every
 recommendation below: Q1 the submitter, with a per-task "open to the tenant"
-toggle; Q2 the field; Q3 10 minutes; Q4 24 hours; Q5 no; Q6 yes, the submitter
+toggle; Q2 the field; Q3 10 minutes (superseded 2026-10-13 by HANDOFF-POLICY:
+one minute unwatched, extended while watched up to 30, section 4.3); Q4 24 hours; Q5 no; Q6 yes, the submitter
 only; Q7 sign in again; Q8 console only in phase 1; Q9 R2; Q10 on; Q11 yes, at
 1 fps; Q12 accept; Q13 the agent and the person in control. The owner also
 approved the mockup of §6 as drawn.
