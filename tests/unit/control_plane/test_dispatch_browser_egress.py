@@ -235,10 +235,22 @@ def test_a_caller_field_cannot_change_what_egress_on_sets():
             == plain["spec"]["template"]["metadata"]["labels"])
 
 
+def test_browser_egress_on_reads_configuration_only():
+    profile = RUNNER_PROFILES[PROFILE]
+    on = scheduler_settings(**ON)
+    assert browser_egress_on(on, tenant_id="eng", profile=profile)
+    assert not browser_egress_on(on, tenant_id="research", profile=profile)
+    assert not browser_egress_on(on, tenant_id="eng", profile=RUNNER_PROFILES["claude-code"])
+    assert not browser_egress_on(scheduler_settings(**{**ON, "browser_egress_enabled": False}),
+                                 tenant_id="eng", profile=profile)
+
+
 # --- configuration --------------------------------------------------------------------
 
 
 def test_from_env_reads_the_names_egress_tf_renders(monkeypatch):
+    monkeypatch.setenv("PROJECT_ID", PROJECT)
+    monkeypatch.setenv("REGION", "us-central1")
     monkeypatch.setenv("BROWSER_EGRESS_ENABLED", "true")
     monkeypatch.setenv("BROWSER_EGRESS_TENANTS", "eng, research")
     monkeypatch.setenv("BROWSER_EGRESS_PROFILES", "claude-code-browser")
@@ -251,6 +263,8 @@ def test_from_env_reads_the_names_egress_tf_renders(monkeypatch):
 
 
 def test_from_env_defaults_off(monkeypatch):
+    monkeypatch.setenv("PROJECT_ID", PROJECT)
+    monkeypatch.setenv("REGION", "us-central1")
     for name in ("BROWSER_EGRESS_ENABLED", "BROWSER_EGRESS_TENANTS",
                  "BROWSER_EGRESS_PROFILES", "BROWSER_EGRESS_BYPASS"):
         monkeypatch.delenv(name, raising=False)

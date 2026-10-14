@@ -1,9 +1,10 @@
 # Browser egress: routing the live browser through a residential or ISP proxy
 
-**Status: the PLATFORM side is built and ships OFF** (lane EGRESS-SVC,
-2026-10-14; section 9 records what was built and how it differs from this
-design). The gate and Chromium side (EGRESS-GATE) and the dispatcher's label
-(EGRESS-DISPATCH) are not built, so nothing is proxied yet. Designed in lane
+**Status: the PLATFORM side and the DISPATCHER side are built and ship OFF**
+(lanes EGRESS-SVC and EGRESS-DISPATCH, 2026-10-14; sections 9 and 11 record
+what was built and how it differs from this design). The gate and Chromium
+side is EGRESS-GATE (PR 1295, section 10). Until `browser_egress` names a
+tenant and is enabled, no pod is labelled or proxied. Designed in lane
 EGRESS-PROXY, owner decision 2026-10-13 (~20:40 PDT), part of #1030.
 
 ## 0. Why this exists
@@ -852,6 +853,59 @@ the Bright Data dashboard.
   measurement.
 * Whether Autopilot's default StorageClass serves the ledger's 1 GiB
   `ReadWriteOnce` claim in `swarm-system` has not been checked on the cluster.
+
+## 11. As built: the dispatcher side (lane EGRESS-DISPATCH, 2026-10-14)
+
+Built: the scheduler's half of the switch. A GKE pod is dispatched for
+residential egress when **all four** hold, read from the scheduler's own
+environment and never from the task (invariant 10):
+
+* the live-browser sidecar is on (`LIVE_BROWSER_SIDECAR`), so there is a
+  `display` container and a Chromium to route;
+* `BROWSER_EGRESS_ENABLED=true`;
+* the tenant is in `BROWSER_EGRESS_TENANTS`, by exact membership;
+* the profile is in `BROWSER_EGRESS_PROFILES` and has `live_browser`.
+
+Such a pod gets exactly three additions (`scheduler.dispatch`
+`with_browser_egress`): the pod label `swarm-egress: proxy`, and on the
+`display` container `SWARM_BROWSER_EGRESS=proxy` and `SWARM_EGRESS_BYPASS`.
+The worker container gets neither, because Chromium does not run there. Any
+other pod is the manifest the dispatcher rendered before this lane, byte for
+byte, and `tests/unit/control_plane/test_dispatch_browser_egress.py` holds
+that against a render with no egress configuration at all.
+
+**Why the scheduler reads swarm-api's values.** `egress.tf` renders the
+scheduler's `BROWSER_EGRESS_ENABLED`, `_TENANTS` and `_PROFILES` from the
+same `local.api_browser_egress_env` it gives swarm-api, and
+`tests/terraform/egress.tftest.hcl` asserts they are equal. If the two
+disagreed, a pod routed here that swarm-api refuses a ticket would fail
+closed with no browser (section 10.2). A pod left direct that swarm-api would
+mint for would never ask for a ticket.
+
+**The bypass list is swarm-egress's.** `BROWSER_EGRESS_BYPASS` on the
+scheduler is `join(",", local.egress_bypass_hosts)`. That is the list
+swarm-egress refuses a CONNECT for: GitHub, the console's hostname and
+`extra_bypass_hosts`. The gate already adds GitHub itself and drops
+duplicates, so sending the whole list means the browser's bypass and the
+forwarder's refusal cannot drift apart. No forwarder address is set: the
+gate's default is swarm-egress's Service, the one destination
+`allow-egress-proxy.yaml` opens.
+
+**The vendor port is the credential's.** `vendor.py` reads `host` and `port`
+from the `swarm-egress-credential` JSON. Nothing in `policy.py`, the
+swarm-system manifests or their NetworkPolicies names a vendor port, and
+egress from `swarm-system` is not restricted. So the owner's zone,
+`brd.superproxy.io:44445`, needs only `"port": 44445` in that JSON. The
+fixtures now use 44445, and a test holds that whichever port the credential
+names is the one parsed.
+
+### 11.1 Not verified
+
+* No proxied pod has been dispatched on the cluster. The tests render the
+  manifest; nothing was applied.
+* The scheduler takes the new environment from the next `make tf-apply`. A
+  scheduler deployed before it reads no egress configuration and dispatches
+  every pod direct, which is today's behaviour.
 
 ## Sources (read 2026-10-14)
 
