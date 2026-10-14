@@ -393,6 +393,25 @@ summary and the manifest's `incremental.full_build`:
   environment in, and prod is always built whole;
 * the **working tree is dirty**, so git cannot say what changed.
 
+**An image whose Dockerfile upgrades OS packages is rebuilt once per UTC day**
+(owner decision 2026-10-14, "force a fresh apt layer"), on its own and not as
+a full build: when its digest's `built_at` is an earlier day than
+`APT_REFRESH` (today, UTC; `BUILD_APT_REFRESH` overrides it). An image built
+FROM it is rebuilt with it; one that upgrades nothing (swarm-verify) is still
+reused. The cause it removes: releases 38535875750 and 38540997006 refused
+workspace-apply over curl/libcurl4t64 `8.14.1-2+deb13u5` (CVE-2026-8286, HIGH,
+fixed in `+deb13u7`). Its Dockerfile runs `apt-get upgrade`, but its log read
+`workspace-apply reuse no input changed since 346f2725df43`: the digest was
+built on 2026-10-13, before Debian shipped the fix, and nothing in the tree
+changes when Debian does. Within the 7-day age limit above, that digest would
+have failed every release's promote scan. The build passes the day as
+`--build-arg APT_REFRESH` (workspace-apply's recipe as `_APT_REFRESH`), and
+every apt or apk upgrade `RUN` names it, so no layer cache serves an older
+upgrade either. workspace-apply's apt `RUN` also fails its own build when a
+simulated `apt-get dist-upgrade` still has something to install, a package
+`apt-get upgrade` kept back. The scan stays strict: nothing is ignored or
+pinned. `test_build_images_apt_refresh.py` holds all of this.
+
 **What this does not prove.** The tests (`test_build_images_incremental.py`,
 `test_ci_built_images.py`) run the real scripts against a fake `gcloud` that
 remembers tags and a fake `gh`. They cannot show that Artifact Registry moves

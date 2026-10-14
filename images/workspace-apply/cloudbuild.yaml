@@ -77,6 +77,10 @@ steps:
       - linux/amd64
       - -t
       - ${_IMAGE}:${_TAG}
+      # The UTC day the apt layer is built for (scripts/build-images.sh
+      # APT_REFRESH), which the Dockerfile's apt RUN line names.
+      - --build-arg
+      - APT_REFRESH=${_APT_REFRESH}
       - /workspace/workspace-apply-ctx
 
 images:
@@ -88,3 +92,9 @@ options:
   # build-images.sh passes _TARGET to every recipe uniformly; this template has
   # no use for it, and without this Cloud Build refuses the submit.
   substitution_option: ALLOW_LOOSE
+
+# build-images.sh passes _APT_REFRESH, today's UTC date, to this recipe because
+# its Dockerfile upgrades OS packages. The default only names a submit made by
+# hand, without it.
+substitutions:
+  _APT_REFRESH: unset

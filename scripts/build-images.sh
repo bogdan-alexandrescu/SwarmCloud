@@ -112,7 +112,9 @@
 #   lib/common.sh, lib/ci-built-images.sh, application.yml); there is no
 #   ancestor record, or it cannot be trusted; a reused digest is older than
 #   BUILD_REUSE_MAX_AGE_DAYS (default 7), so base-image patches arrive; the
-#   working tree is dirty; --full-build; or the environment is prod.
+#   working tree is dirty; --full-build; or the environment is prod. An image
+#   whose Dockerfile upgrades OS packages is also rebuilt, on its own, when
+#   its digest was built on an earlier UTC day (APT_REFRESH, below).
 #
 # Usage: scripts/build-images.sh [TARGET...] [--tag SHA] [--parallel N]
 #                                [--create-repo] [--async] [--digests-only]
@@ -483,6 +485,55 @@ target_build_args() {
   esac
 }
 
+# THE OS-PACKAGE LAYER IS REBUILT EVERY UTC DAY (owner decision 2026-10-14,
+# "force a fresh apt layer"). Releases 38535875750 (2c7bbea5) and 38540997006
+# (cc6353d0) refused workspace-apply over curl/libcurl4t64 8.14.1-2+deb13u5
+# (CVE-2026-8286, HIGH, fixed in +deb13u7). Its Dockerfile already runs
+# `apt-get upgrade`; the image was simply never BUILT again. No input of it
+# had changed, so main's incremental build re-tagged the digest made from
+# 346f2725 on 2026-10-13 -- before Debian shipped the fix -- and the release's
+# reuse check, which compares inputs only, promoted it to the scan. A pinned
+# base plus `apt-get upgrade` is only as fresh as the day the RUN ran, and
+# nothing in the tree changes when Debian publishes a fix.
+#
+# So every image whose recipe upgrades OS packages (upgrades_os_packages, read
+# from its Dockerfile, never listed here) is rebuilt by plan_incremental when
+# its digest was built on an earlier UTC day than APT_REFRESH, and is built
+# with --build-arg APT_REFRESH=<that day>, which its apt RUN line names so a
+# layer cache cannot serve yesterday's layer either. An image built FROM one
+# (build_after) is rebuilt with it, as for any other change. The scan stays
+# strict: nothing is ignored or pinned.
+#
+# A day, not every build: the services and agent-runtime-base would otherwise
+# be rebuilt on every push, which is the cost owner decision H removed. The
+# first push to main each UTC day pays for the rebuild; the rest of the day
+# reuses it. BUILD_APT_REFRESH overrides the day (YYYY-MM-DD), for the tests
+# and for forcing a refresh by hand.
+APT_REFRESH="${BUILD_APT_REFRESH:-$(date -u +%Y-%m-%d)}"
+[[ "${APT_REFRESH}" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
+  || die "BUILD_APT_REFRESH must be a UTC date, YYYY-MM-DD, not '${APT_REFRESH}'"
+
+# True when image $1's Dockerfile runs `apt-get upgrade` or `apk upgrade` (a
+# RUN line, not a comment). agent-runtime-base-nocodex reads the base's
+# Dockerfile, workspace-apply the one beside its checked-in cloudbuild.yaml.
+upgrades_os_packages() {
+  local dockerfile
+  dockerfile="$(recipe_dockerfile "$1")" || return 1
+  grep -v '^[[:space:]]*#' "${REPO_ROOT}/${dockerfile}" \
+    | grep -Eq '(apt-get|apk)[[:space:]]+(-[^[:space:]]+[[:space:]]+)*upgrade([[:space:]]|$)'
+}
+
+# APT_REFRESH as YAML list items for a docker step's args, for an image that
+# upgrades OS packages; nothing for any other. Not one of target_build_args:
+# the date changes daily, and the reuse decision reads it from the digest's
+# built_at (plan_incremental), not as a baked value whose change would read
+# as "its baked build args changed".
+apt_build_args() {
+  if upgrades_os_packages "$1"; then
+    printf '%s\n' "      - --build-arg" "      - APT_REFRESH=${APT_REFRESH}"
+  fi
+}
+
 # target_build_args' values, one KEY=VALUE a line: what an image bakes in
 # beyond GIT_SHA and BUILD_TIME, and what the manifest records per image as
 # `build_args`. Read from target_build_args' own output, so an arg added there
@@ -683,6 +734,11 @@ plan_incremental() {
       why=$'build\tits baked build args were not recorded'
     elif [[ "${prev_args}" != null && "$(jq -c . <<<"${prev_args}")" != "${args}" ]]; then
       why=$'build\tits baked build args changed'
+    fi
+    # A digest whose OS packages were upgraded on an earlier UTC day carries
+    # whatever Debian or Alpine had not fixed yet that day (APT_REFRESH, above).
+    if [[ "${why%%$'\t'*}" == reuse && "${at:0:10}" < "${APT_REFRESH}" ]] && upgrades_os_packages "${t}"; then
+      why=$'build\t'"its OS packages were upgraded on ${at:0:10}, and the apt layer is rebuilt daily (APT_REFRESH=${APT_REFRESH})"
     fi
     P_NAME+=("${t}"); P_DIGEST+=("${digest}"); P_FROM+=("${from}"); P_AT+=("${at}")
     P_ACTION+=("${why%%$'\t'*}"); P_WHY+=("${why#*$'\t'} since ${from:0:12}")
@@ -942,6 +998,7 @@ ${buildkit}
       - --build-arg
       - BUILD_TIME=$(iso_now)
 $(target_build_args "${target}")
+$(apt_build_args "${target}")
       - .
 ${push_block}
 YAML
@@ -988,6 +1045,7 @@ ${mirror_step}
       - --build-arg
       - BUILD_TIME=$(iso_now)
 $(target_build_args "${prereq}")
+$(apt_build_args "${prereq}")
       - .
   - id: build-${target}
     name: gcr.io/cloud-builders/docker
@@ -1008,6 +1066,7 @@ $(target_build_args "${prereq}")
       - --build-arg
       - BUILD_TIME=$(iso_now)
 $(target_build_args "${target}")
+$(apt_build_args "${target}")
       - .
 YAML
 }
@@ -1121,6 +1180,7 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
     elif [[ "${kind}" == config ]]; then
       strip_push "${REPO_ROOT}/${path}" "${config}"
       subs="_IMAGE=${image},_TAG=${TAG},_TARGET=${target}"
+      if upgrades_os_packages "${target}"; then subs+=",_APT_REFRESH=${APT_REFRESH}"; fi
       info "${target}: checked-in ${path}, without its push"
     else
       generate_config "${path}" "${image}" "${config}" "${target}"
@@ -1148,6 +1208,7 @@ for target in ${TARGETS[@]+"${TARGETS[@]}"}; do
       # it made docker try to parse the YAML as a Dockerfile ("unknown
       # instruction: TIMEOUT:"). The config declares its own _DOCKERFILE default.
       subs="_IMAGE=${image},_TAG=${TAG},_TARGET=${target}"
+      if upgrades_os_packages "${target}"; then subs+=",_APT_REFRESH=${APT_REFRESH}"; fi
       info "${target}: using checked-in ${path}"
       ;;
     dockerfile)
@@ -1435,8 +1496,8 @@ build_locally() {
     why="${state}/${target}.why"
     info "${target}: building $(basename "${T_CONFIG[$i]}") with docker buildx"
     rc=0
-    LOCAL_SUBS="$(jq -cn --arg i "${LOCAL_IMAGE}/${target}" --arg t "${TAG}" --arg n "${target}" \
-      '{_IMAGE: $i, _TAG: $t, _TARGET: $n}')" \
+    LOCAL_SUBS="$(jq -cn --arg i "${LOCAL_IMAGE}/${target}" --arg t "${TAG}" --arg n "${target}" --arg a "${APT_REFRESH}" \
+      '{_IMAGE: $i, _TAG: $t, _TARGET: $n, _APT_REFRESH: $a}')" \
       MIRROR_UPSTREAMS_JSON="${MIRROR_UPSTREAMS_JSON}" \
       "${python}" -c "${LOCAL_REPLAY}" "${T_CONFIG[$i]}" "${REPO_ROOT}" "${target}" "${builder}" \
         "${state}" "${report}" "${why}" 2>&1 \

@@ -177,6 +177,12 @@ class Sandbox:
             "BUILD_PARALLELISM": "8",
             "BUILD_POLL_INTERVAL": "0.05",
             "BUILD_SUBMIT_STAGGER": "0",
+            # The daily OS-package refresh (APT_REFRESH in build-images.sh) is
+            # pinned to a day before every record here, so these tests see
+            # only the input-diff rules whatever the clock says; a record made
+            # at 00:30 UTC is an hour after "yesterday". It is exercised on
+            # its own in test_build_images_apt_refresh.py.
+            "BUILD_APT_REFRESH": "2000-01-01",
         }
         for leak in ("GITHUB_ACTIONS", "GITHUB_STEP_SUMMARY", "GITHUB_OUTPUT", "GH_TOKEN", "GITHUB_TOKEN"):
             self.env.pop(leak, None)

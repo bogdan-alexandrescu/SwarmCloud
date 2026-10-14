@@ -109,13 +109,36 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 # names with `python3 - <<PY`, and gcloud itself runs on it once the bundled
 # interpreter is gone (below). Debian trixie's python3 is 3.13, inside the
 # 3.9-3.14 range gcloud 587's launcher accepts.
-RUN apt-get update -qq \
+#
+# A FRESH LAYER, EVERY UTC DAY (owner decision 2026-10-14). Releases
+# 38535875750 and 38540997006 refused this image over curl and libcurl4t64
+# 8.14.1-2+deb13u5 (CVE-2026-8286, HIGH, fixed in +deb13u7): this RUN had
+# last run on 2026-10-13, and main's incremental build kept re-tagging that
+# digest because none of its inputs changed. scripts/build-images.sh now
+# rebuilds it once its digest is from an earlier UTC day, and passes that day
+# as APT_REFRESH, named here so no layer cache can serve an older upgrade.
+#
+# THE ASSERTION. After the upgrade and the installs, a simulated dist-upgrade
+# must have nothing left to do. `apt-get upgrade` keeps back a package whose
+# fix needs a new dependency, and that package would ship at its vulnerable
+# version and fail the release's promote scan 45 minutes later; here it fails
+# this build, naming the package. No version is pinned and nothing is ignored.
+ARG APT_REFRESH=unset
+RUN echo "apt layer of ${APT_REFRESH}" \
+ && apt-get update -qq \
  && apt-get upgrade -y -qq \
  && apt-get install --no-install-recommends -y -qq \
       ca-certificates \
       curl \
       jq \
       python3 \
+ && apt-get -s dist-upgrade >/tmp/apt-pending.txt \
+ && if grep '^Inst ' /tmp/apt-pending.txt >&2; then \
+      echo "workspace-apply: the packages above still have a newer Debian version after apt-get upgrade (APT_REFRESH=${APT_REFRESH}); the promote scan would refuse this image" >&2; \
+      exit 1; \
+    fi \
+ && rm -f /tmp/apt-pending.txt \
+ && dpkg-query -W curl libcurl4t64 \
  && rm -rf /var/lib/apt/lists/*
 
 # THE BUNDLED INTERPRETER COMES OUT, as it does in agent-runtime-base. gcloud
