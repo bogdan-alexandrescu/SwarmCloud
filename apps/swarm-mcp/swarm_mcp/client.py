@@ -597,6 +597,24 @@ def unwrap_task(payload: Any) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+#: `session.METADATA_KEY`, here because `session` imports `config`, which
+#: imports this module.
+SESSION_KEY = "claude_session"
+
+
+def session_tag() -> dict[str, str]:
+    """`{claude_session: <this Claude Code session>}`, or `{}` when unknown
+    (`session.current`)."""
+    from . import session
+
+    return session.tag()
+
+
+def _refused_field(exc: SwarmError, field: str) -> bool:
+    """A 422 that names `field`: a deployment whose schema forbids it."""
+    return exc.status == 422 and field in str(exc)
+
+
 def task_payload(
     *,
     prompt: str,
@@ -622,7 +640,10 @@ def task_payload(
     payload: dict[str, Any] = {
         "runner_profile": runner_profile,
         "input": {**(inputs or {}), "prompt": prompt},
-        "metadata": {"origin": "swarm-mcp", **(metadata or {})},
+        # The Claude Code session that sent it (SC-SESSION-SCOPE): what makes
+        # `/sc check`, `/sc attach --all` and the watch count it as that
+        # session's own and no other's (`session.tag`, empty when unknown).
+        "metadata": {"origin": "swarm-mcp", **session_tag(), **(metadata or {})},
     }
     if repository_url:
         payload["repository_url"] = repository_url
@@ -1545,9 +1566,28 @@ class SwarmClient:
         }
         if fix_rounds is not None:
             payload["fix_rounds"] = fix_rounds
+        # The session that asked (SC-SESSION-SCOPE). swarm-api copies it onto
+        # the planner task and every workflow the run starts, CI-fix rounds
+        # included, so the whole run counts as this session's own.
+        payload.update(session_tag())
         try:
             data = self.request("POST", "/v1/runs", payload=payload)
         except SwarmError as exc:
+            if SESSION_KEY in payload and _refused_field(exc, SESSION_KEY):
+                # A deployment older than the field refuses it as an extra
+                # (RunCreate forbids extras). The run is still the caller's to
+                # start; it is then untagged, and the answer says so.
+                del payload[SESSION_KEY]
+                try:
+                    data = self.request("POST", "/v1/runs", payload=payload)
+                except SwarmError as again:
+                    raise run_refusal(again) from again
+                run = unwrap_run(data, "POST /v1/runs")
+                run["session_tag"] = (
+                    "not stored: this deployment does not take `claude_session` on a run yet, so "
+                    "the run is untagged and `/sc check` will not count it as this session's"
+                )
+                return run
             raise run_refusal(exc) from exc
         return unwrap_run(data, "POST /v1/runs")
 

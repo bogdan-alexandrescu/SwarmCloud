@@ -181,6 +181,7 @@ from .issueruns import NO_CLOSING_KEYWORD, STEP_PROFILE, failure_text
 from .redaction import redact
 from .repositories import parse_repository
 from .schemas import WorkflowCreate
+from . import sessiontag
 from .validation import (
     CONFLICT_ROUND_METADATA_KEY,
     DISPATCH_METADATA_KEY,
@@ -803,7 +804,10 @@ def _on_red(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: IssueRe
                 "round": round_no,
                 "head_sha": head,
                 "pull_request": ref.number,
-            }},
+            },
+                # The merge task's session (SC-SESSION-SCOPE): a session's own
+                # fix rounds count as its own.
+                **sessiontag.inherit(doc.get("metadata"))},
         )
 
     return _hand_off(ctx, db, tenant, doc, head, read, now, key="rounds", asked=asked,
@@ -831,7 +835,9 @@ def _on_conflict(ctx: Any, db: Any, tenant: Any, doc: Mapping[str, Any], ref: Is
                 "round": round_no,
                 "head_sha": head,
                 "pull_request": ref.number,
-            }},
+            },
+                # The merge task's session (SC-SESSION-SCOPE).
+                **sessiontag.inherit(doc.get("metadata"))},
         )
 
     return _hand_off(ctx, db, tenant, doc, head, read, now, key=CONFLICT_ROUNDS_KEY,

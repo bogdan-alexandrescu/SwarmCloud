@@ -22,6 +22,7 @@ from pydantic import (
     field_validator,
 )
 
+from .sessiontag import PATTERN as SESSION_TAG_PATTERN
 from .validation import (
     DEFAULT_CARRIER,
     DEFAULT_STRATEGY,
@@ -279,6 +280,12 @@ class RunCreate(StrictModel):
     #: the platform's `merge_by_default`; the run records what was resolved.
     auto_merge: bool | None = None
     fix_rounds: int = Field(default=DEFAULT_FIX_ROUNDS, ge=MIN_FIX_ROUNDS, le=MAX_FIX_ROUNDS)
+    #: The Claude Code session that asked (SC-SESSION-SCOPE, `sessiontag`):
+    #: stored on the run and copied onto its planner task and every workflow
+    #: it starts, so the sc plugin counts the run as that session's own. A
+    #: run's caller writes no metadata, so it is a field of its own. Optional:
+    #: any other caller sends none.
+    claude_session: str | None = Field(default=None, pattern=SESSION_TAG_PATTERN)
 
     @field_validator("issue")
     @classmethod

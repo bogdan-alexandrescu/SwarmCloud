@@ -57,10 +57,10 @@ one action — never a second one the developer did not ask for:
 |---|---|---|
 | no verb (empty) | today's cluster state: `uv run sc`, read by the rules below | no |
 | `status <wf_id\|task_id>` | one status read of that workflow or task | no |
-| `workflows` | lists your tenant's workflows still running in SwarmCloud | no |
+| `workflows` | lists your tenant's workflows still running in SwarmCloud, marking `[this session]` the ones this Claude Code session started | no |
 | `attach <wf_id>` | re-attaches live rows to a workflow running in SwarmCloud | no |
-| `attach --all` | live rows for every running workflow of your tenant (at most 30), and one per running single task of yours (at most 30); `max_live_rows` moves both, 1-50 | no |
-| `check` | which of THIS PROJECT's workflows and tasks are stuck or stale, stuck first, each with its reason, evidence, console link and next command: `swarm_check`. Then live rows for every running workflow and single task of the project that has none in this session | no (attaching submits nothing) |
+| `attach --all` | live rows for every running workflow THIS Claude Code session started (at most 30), and one per running single task it dispatched (at most 30); `max_live_rows` moves both, 1-50 | no |
+| `check` | which of THIS SESSION's workflows and tasks in THIS PROJECT are stuck or stale, stuck first, each with its reason, evidence, console link and next command: `swarm_check`. Then live rows for every running workflow and single task of the project that has none in this session | no (attaching submits nothing) |
 | `watch [interval]` | a `check` every interval (default `30m`, at least `5m`) in this session, through Claude Code's CronCreate, remembered for this project so the next session re-arms it: `swarm_check_schedule`. It also arms itself when this session attaches or starts work (see "Arming the watch") | schedules a prompt in this session; nothing in SwarmCloud |
 | `watch off` | cancels this session's watch and saves "off" for the project, so nothing arms it again until `watch` | no |
 | `run <spec path\|JSON>` | submits a workflow spec, and says so first | **yes** |
@@ -124,8 +124,13 @@ its finished steps once, starts a live row for every unfinished step, and ends
 with the workflow's state. This is how a session that restarted gets its rows
 back for a workflow that kept running in SwarmCloud. An unknown or
 other-tenant id ends with the API's error; report it verbatim.
+By hand it attaches ANY workflow your tenant may read, this session's or
+not: when the reply carries `not_this_session` (`this_session: false`), say
+in one line that the workflow is not this session's -- another Claude Code
+session started it, or it carries no session tag -- and that `check` and
+`attach --all` leave it out. It is attached all the same.
 Last, the mandatory final step: [Arming the watch](#arming-the-watch), with
-the reply's `arm_watch`.
+the reply's `arm_watch` -- also when the workflow has already finished.
 
 ### `workflows`
 
@@ -143,14 +148,27 @@ are YOUR running tasks in no workflow (sent with `swarm_dispatch`): report
 each one's workspace first, then its id, label, state, age and console link
 the same way, and
 `single_tasks_error` verbatim when they could not be read. None running is an
-answer, not an error. Never poll; offer `/sc attach --all` when any run.
+answer, not an error. This list is the WHOLE tenant: each entry's
+`this_session` (`[this session]` in `sc workflows`) marks what this Claude
+Code session started; say which. Never poll; offer `/sc attach --all` when
+any of this session's run, and `/sc attach <wf_id>` for another one.
 
 ### `attach --all`
+
+ONLY THIS CLAUDE CODE SESSION'S WORK (owner, 2026-10-14): every submission
+the plugin makes is tagged with the session that made it, and `attach --all`
+attaches only workflows and single tasks tagged with this Claude Code
+session -- never another session's in the same tenant or workspace, and
+never untagged work (submitted before tagging, or by another client). The
+reply's `session.left_out` counts what was left out and why; say it in one
+line when it is not zero, with `/sc attach <wf_id>` for one by hand.
+`session.session_id: null` means the bridge could not tell which session it
+serves: then nothing is a candidate, and `session.scope` says so -- report it.
 
 ONE CLAUDE CODE RUN PER SWARMCLOUD WORKFLOW, never one run over several: each
 workflow keeps its own step count, as the console shows it. Call
 `swarm_workflow_launch` once with `{attach: "all"}`. It lists the caller's
-tenant's running workflows once and, for the newest 30 (the plugin's
+tenant's running workflows once, keeps this session's and, for the newest 30 (the plugin's
 `max_live_rows` option, held to 1-50), grouped by workspace, writes one
 titled script each -- named `SC · <name> · N steps`, its description
 starting `Workspace: <workspace> (<tenant>) · ` -- then make one Workflow call per entry of its `launches`,
@@ -179,8 +197,8 @@ finishes (at most 30, `max_live_rows`; the rest come back in `not_followed`). `s
 `count: 0` and no task launch is an answer: nothing is running. Report each run's `state`
 (`NOT_ATTACHED` with the API's error verbatim) and the `not_followed` list.
 If `swarm_workflow_launch` answers an error, run the `/sc:swarmcloud`
-workflow by name with args `{attach: "all"}`: it lists the running workflows
-and returns `attach_calls`, the exact `{attach: "<wf_id>", title, workspace}` args of
+workflow by name with args `{attach: "all"}`: it lists the running workflows,
+keeps only those `swarm_workflows` marks `this_session`, and returns `attach_calls`, the exact `{attach: "<wf_id>", title, workspace}` args of
 each — run `/sc:swarmcloud` once per entry with those args — and `task_call`,
 the `{attach_tasks: [...]}` args for your running single tasks (null when none
 run): run `/sc:swarmcloud` once more with it. This is what the
@@ -196,9 +214,11 @@ reply's `arm_watch` (null when nothing was launched).
 READ-ONLY: it reports and attaches, and never cancels, retries, releases or
 re-dispatches anything (owner, 2026-10-14: "report only"). Two calls:
 
-1. ONE `swarm_check` call with no arguments: it reads your tenant's running
-   workflows and your running single tasks that clone THIS checkout's
-   `origin` repository (`repository: "all"` for every repository; `tenants:
+1. ONE `swarm_check` call with no arguments: it reads the running workflows
+   and single tasks that this Claude Code session started -- another
+   session's work in the same tenant, and untagged work, is left out
+   (`session.left_out` counts it; never report it as stuck) -- and that clone
+   THIS checkout's `origin` repository (`repository: "all"` for every repository; `tenants:
    "all"` for every tenant you may choose; `stale_minutes` moves the 20-minute
    window). Report `flagged` FIRST, STUCK before STALE as it is ordered, one
    line each that starts with the workspace: `[<workspace>] <workflow_id or
@@ -254,13 +274,17 @@ for the default is `/loop 30m /sc check`, and do not claim a watch is armed.
 The plugin's SessionStart hook reads the saved preference and asks each new
 session in this project to run `/sc watch` again, until `watch off`.
 
+Every firing checks and attaches only what this Claude Code session started
+(see `check`): a watch never reports, or attaches, another session's work.
+
 The watch arms itself, too (owner, 2026-10-14): whenever this session attaches to or
 starts SwarmCloud work -- `run`, `run --issue` once its workflow exists,
-`attach <wf_id>`, `attach --all` and a `check` that attached something --
+a task sent with `swarm_dispatch` (one or `tasks`), `attach <wf_id>` (a
+finished workflow too), `attach --all` and a `check` that attached something --
 the tool's reply carries `arm_watch`, and that verb ends with
-[Arming the watch](#arming-the-watch). So does a new session in which work of
-yours is running: the SessionStart hook asks it to arm the watch beside the
-attach. `/sc watch` by hand is still how to pick another interval.
+[Arming the watch](#arming-the-watch). So does a new session in which work this
+session started is running (a resumed one): the SessionStart hook asks it to
+arm the watch beside the attach. `/sc watch` by hand is still how to pick another interval.
 
 ### Arming the watch
 
@@ -268,7 +292,13 @@ The final step of every verb that attached or started work, and MANDATORY:
 the reply's `arm_watch` says how, and it is null when there is nothing to arm
 -- nothing was attached, no workflow exists yet, or `/sc watch off` turned the
 project's watch off (`arm_watch_off` then says so: say it in one line and arm
-nothing).
+nothing). The verbs: `run` (including a run that ended `SUBMISSION_UNKNOWN`
+or `SUBMITTED_UNVERIFIED` -- work may be running, and the result's own
+`arm_watch` says to arm with `swarm_workflow_launch`'s; only `NOT_SUBMITTED`
+sent nothing), `run --issue` once its workflow exists, every `swarm_dispatch`
+(one task or `tasks`: the reply carries `arm_watch` beside its `rows`),
+`attach <wf_id>` even of a workflow that has already finished, `attach
+--all`, and a `check` that attached something.
 Otherwise:
 
 1. CronList. If a job whose prompt is `/sc check` already exists, the watch
@@ -358,7 +388,9 @@ The one verb that writes: it spends the shared pool, a step at a time.
 4. Report what the workflow returned: its `workflow_id`, its state, and any
    `error` verbatim — `NOT_SUBMITTED`, `SUBMISSION_UNKNOWN`,
    `SUBMITTED_UNVERIFIED` and `FOLLOW_REFUSED` each say what to do next.
-5. Last, the mandatory final step, once a spec was submitted:
+5. Last, the mandatory final step, once a spec was submitted -- every outcome
+   but `NOT_SUBMITTED`, `SUBMISSION_UNKNOWN` and `SUBMITTED_UNVERIFIED`
+   included:
    [Arming the watch](#arming-the-watch), with `swarm_workflow_launch`'s
    `arm_watch` (`swarm_workflow`'s reply carries the same).
 

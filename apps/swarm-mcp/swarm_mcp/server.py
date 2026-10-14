@@ -232,6 +232,11 @@ TOOLS: list[dict[str, Any]] = [
             "swarm_follow with the returned id to watch it work, and "
             "swarm_wait or swarm_result for the outcome.\n"
             "\n"
+            "Every task is tagged with this Claude Code session (`metadata.claude_session`, "
+            "echoed as `claude_session`), so the sc plugin's check, attach-all and watch "
+            "count it as this session's own; the reply carries `arm_watch`, the CronCreate "
+            "call that arms the `/sc check` watch (CronList first, never a second job).\n"
+            "\n"
             "SEVERAL INDEPENDENT TASKS ARE ONE CALL: pass `tasks` -- a list of "
             "{prompt, runner_profile, repo, ref, infer, strategy, label, inputs, files} "
             "-- instead of `prompt` and the fields beside it. They are sent as ONE "
@@ -1120,7 +1125,11 @@ TOOLS: list[dict[str, Any]] = [
             "\n"
             "Pass ONE of `spec` (the spec object), `spec_path` (its file) or "
             "`attach` (a workflow id, read once for its stored name and step "
-            "count; or \"all\": every running workflow of your tenant, one copy "
+            "count -- ANY workflow your tenant may read; `not_this_session` says when "
+            "it is not this Claude Code session's; or \"all\": every running workflow "
+            "THIS Claude Code session started (SC-SESSION-SCOPE: every submission is "
+            "tagged `metadata.claude_session`; other sessions' and untagged work is "
+            "counted in `session.left_out`, never attached), one copy "
             "each, newest first and grouped by workspace, at most the sc plugin's "
             "`max_live_rows` (30 unless set; 1-50) -- one Claude Code run per "
             "SwarmCloud workflow, each launched with the `args` its entry carries; "
@@ -1231,7 +1240,10 @@ TOOLS: list[dict[str, Any]] = [
         "name": "swarm_check",
         "description": (
             "Which SwarmCloud work of THIS PROJECT is stuck or stale -- read-only, it "
-            "cancels, retries and attaches nothing. Scoped to one repository (default: "
+            "cancels, retries and attaches nothing. Only work THIS Claude Code session "
+            "started is checked (SC-SESSION-SCOPE: tagged `metadata.claude_session`); "
+            "other sessions' and untagged work is counted in `session.left_out` and "
+            "never flagged. Scoped to one repository (default: "
             "this checkout's `origin` remote; a workflow belongs to the repository its "
             "steps clone) in your tenant (`tenants: \"all\"` for every tenant you may "
             "choose). `flagged` lists each item with `kind` STUCK or STALE, its `rule`, a "
@@ -2305,6 +2317,22 @@ ROWS_START_NOW = (
 )
 
 
+def _submitted_session_fields() -> dict[str, Any]:
+    """What every reply to a submission carries (SC-SESSION-SCOPE, owner
+    2026-10-14): `claude_session`, the Claude Code session the work was
+    tagged with (null when this bridge knows none, and then nothing it sent
+    counts as this session's), and `arm_watch` -- a task sent with
+    swarm_dispatch arms the watch exactly as a workflow does."""
+    from . import session, watch
+
+    sid = session.current()
+    out: dict[str, Any] = {"claude_session": sid}
+    if not sid:
+        out["claude_session_note"] = session.UNKNOWN_NOTE
+    out.update(watch.arm_fields(True))
+    return out
+
+
 def _dispatch_rows(sent: list[tuple[str, str | None, dict[str, Any]]]) -> dict[str, Any]:
     """The row launch for tasks just dispatched (#830): `swarm_dispatch`'s
     reply hands it back so a dispatched task gets a row without anyone asking
@@ -2955,6 +2983,7 @@ def _dispatch_batch(client: Any, args: dict[str, Any], placed: dict[str, Any]) -
     }
     if limit_note:
         answer["max_batch_size_unread_because"] = limit_note
+    answer.update(_submitted_session_fields())
     answer.update(territory)
     for check in checks:
         _remember_territory(client, check, [(lane["lane"], task_id)
@@ -3448,6 +3477,11 @@ def _run_summary(client: SwarmClient, run: dict[str, Any]) -> dict[str, Any]:
     from . import runs, watch
 
     out = runs.summary(client, run)
+    # The session the run was tagged with (SC-SESSION-SCOPE), as swarm-api
+    # stored it, and why not when a deployment refused the tag.
+    out["claude_session"] = run.get("claude_session")
+    if run.get("session_tag"):
+        out["session_tag"] = run["session_tag"]
     out.update(watch.arm_fields(bool(out.get("attach_with"))))
     return out
 
@@ -3815,9 +3849,7 @@ def _workflow_created(
         created["follow_with"] = "swarm_follow"
         created["follow_live_with"] = follow_command(task_ids)
     # A workflow now exists for this session to follow (SC-AUTO-WATCH).
-    from . import watch
-
-    created.update(watch.arm_fields(True))
+    created.update(_submitted_session_fields())
     return json.dumps(created, indent=2)
 
 
@@ -3929,6 +3961,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             }, task)
         # Its live row, started by the session from this reply (#830).
         reply["rows"] = _dispatch_rows([(task_id, args.get("label") or None, task)])
+        reply.update(_submitted_session_fields())
         reply.update(territory)
         for check in checks:
             _remember_territory(client, check, [(lane["lane"], task_id)])
@@ -4374,13 +4407,20 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
         return json.dumps(watch.tool(args), indent=2)
 
     if name == "swarm_workflows":
-        from .sc import running_tasks, running_workflows
+        from . import session
+        from .sc import mark_session, running_tasks, running_workflows
 
         from .launch import named_workspaces
 
         listing = running_workflows(client)
         names = workflows.workspace_names(client)
         named_workspaces(listing["workflows"], names)
+        # THE WHOLE TENANT, MARKED (SC-SESSION-SCOPE): `this_session` on each
+        # entry is what /sc:swarmcloud's attach-all keeps, and what
+        # `/sc workflows` says is this Claude Code session's.
+        sid = session.current()
+        mark_session(listing["workflows"], sid)
+        listing["session"] = session.describe(sid)
         # The caller's running SINGLE tasks beside them (#830), so the LIST
         # row of `/sc attach --all` can give each a row. A failed read is said,
         # never an empty list.
@@ -4390,7 +4430,7 @@ def _call(client: SwarmClient, name: str, args: dict[str, Any], *, keepalive: bo
             listing["single_tasks"] = []
             listing["single_tasks_error"] = str(exc)
         else:
-            listing["single_tasks"] = named_workspaces(singles["tasks"], names)
+            listing["single_tasks"] = mark_session(named_workspaces(singles["tasks"], names), sid)
             listing["single_tasks_count"] = singles["count"]
             if not singles["complete"]:
                 listing["single_tasks_incomplete_because"] = singles.get("incomplete_because")

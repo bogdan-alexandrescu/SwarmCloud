@@ -190,6 +190,7 @@ from .redaction import redact_detail
 from .schemas import TaskCreate, WorkflowCreate, WorkflowStepCreate
 from swarm_common.profiles import RUNNER_PROFILES
 
+from . import sessiontag
 from .validation import (
     INPUT_LAYOUT_BY_PARENT,
     INPUT_LAYOUT_METADATA_KEY,
@@ -1464,7 +1465,7 @@ def planner_prompt(
 
 def planner_task(
     ref: IssueRef, run_id: str, open_work: Mapping[str, Any] | None = None,
-    context: str | None = None,
+    context: str | None = None, claude_session: str | None = None,
 ) -> TaskCreate:
     """The planner: an ordinary task, signed by `submit_tasks` like any other.
 
@@ -1479,7 +1480,7 @@ def planner_task(
             "issue": ref.number,
         },
         repository_url=ref.repository_url,
-        metadata={"issue_run": run_id},
+        metadata={"issue_run": run_id, **sessiontag.tag(claude_session)},
     )
 
 
@@ -2086,6 +2087,8 @@ def _workflow(run: "IssueRun", steps: list[dict[str, Any]]) -> WorkflowCreate:
             # merge here: an `auto_merge` run merges from the CI loop, once CI
             # is green and its keyword block is written (`issueci._merge`).
             MERGE_METADATA_KEY: "off",
+            # The session that asked for the run (SC-SESSION-SCOPE).
+            **sessiontag.tag(getattr(run, "claude_session", None)),
             "issue_run": {
                 "run_id": run.id,
                 "issue": ref.short,
@@ -2278,6 +2281,10 @@ class IssueRun:
     #: (§2.7): `{schedule_id, firing_id, slot, type}`. Stored under
     #: `metadata.schedule`, the path `IssueRuns.for_firing` queries.
     schedule: dict[str, Any] | None = None
+    #: The Claude Code session that asked for the run (SC-SESSION-SCOPE,
+    #: `sessiontag`), stored as `metadata.claude_session` beside the
+    #: schedule's mark, and copied onto every task and workflow it starts.
+    claude_session: str | None = None
 
     def to_firestore(self) -> dict[str, Any]:
         return {
@@ -2342,7 +2349,10 @@ class IssueRun:
             "approval_hold": dict(self.approval_hold) if self.approval_hold is not None else None,
             "merge_approval": self.merge_approval,
             "merge_approved": dict(self.merge_approved) if self.merge_approved is not None else None,
-            "metadata": {"schedule": dict(self.schedule)} if self.schedule is not None else {},
+            "metadata": {
+                **({"schedule": dict(self.schedule)} if self.schedule is not None else {}),
+                **sessiontag.tag(self.claude_session),
+            },
         }
 
     @classmethod
@@ -2433,6 +2443,7 @@ class IssueRun:
                 else None
             ),
             schedule=_schedule_mark(data.get("metadata")),
+            claude_session=sessiontag.of(data.get("metadata")),
         )
 
     def to_api(self) -> dict[str, Any]:
@@ -2574,6 +2585,8 @@ class IssueRun:
                 }
             ),
             "schedule": None if self.schedule is None else dict(self.schedule),
+            # SC-SESSION-SCOPE: the Claude Code session that asked, or null.
+            "claude_session": self.claude_session,
         }
 
 
