@@ -184,17 +184,22 @@ class EgressService:
             raise _refuse(EgressUnauthenticated(
                 "only this tenant's worker service account may call this route"),
                 Forbidden) from None
-        unproven = _refuse(EgressUnproven("the attempt proof did not verify for this attempt"), Forbidden)
+        def unproven() -> ApiError:
+            # Built only when a check fails: `_refuse` RAISES when the switch is
+            # on, so building it up front refused every request, proven or not.
+            return _refuse(EgressUnproven("the attempt proof did not verify for this attempt"),
+                           Forbidden)
+
         if not proof or not timestamp or not re.fullmatch(r"\d{1,12}", timestamp):
-            raise unproven
+            raise unproven()
         if abs(self._clock() - int(timestamp)) > int(self._s("child_proof_skew_seconds", 120)):
-            raise unproven
+            raise unproven()
         registration = children._registration(attempt)
         if registration is None:
-            raise unproven
+            raise unproven()
         if not verify_proof(registration["public_key"], proof,
                             egress_ticket_message("POST", path, body, timestamp)):
-            raise unproven
+            raise unproven()
 
     def _switch(self, tenant_id: str, profile: Any) -> None:
         if not self._s("browser_egress_enabled", False):
