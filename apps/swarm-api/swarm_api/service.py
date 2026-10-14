@@ -33,7 +33,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Mapping, Sequence
 
 from swarm_common.models import (
     Task,
@@ -85,6 +85,7 @@ from .validation import (
     FORGE_SOURCE_METADATA_KEY,
     INPUT_FROM_METADATA_KEY,
     INPUT_LAYOUT_BY_PARENT,
+    MERGE_FIX_ROUNDS_KEY,
     MERGE_METADATA_KEY,
     MERGE_ON_VERDICT,
     MERGE_STEP_MAX_ATTEMPTS,
@@ -111,6 +112,7 @@ from .validation import (
     resolve_input_layout,
     resolve_integrator_step,
     resolve_merge_choice,
+    resolve_fix_rounds,
     resolve_merge_fix_rounds,
     github_repository,
     is_service_submitter,
@@ -778,6 +780,7 @@ class SubmissionService:
             # inside this try, so a refused step is counted like every other
             # refusal. The size first, as `_build_task` orders them, which
             # checks each step again; by then neither can fail.
+            merge_metadata: Mapping[str, Any] = spec.metadata
             for step in spec.steps:
                 profile = validate_runner_profile(step.runner_profile)
                 validate_input_size(step.input, self._settings.core.max_input_bytes)
@@ -795,9 +798,17 @@ class SubmissionService:
                 # Lane MS1: the CI-fix rounds a merge step may spend, as each
                 # step's task will store them.
                 resolve_merge_fix_rounds(step_metadata, merge_step=merge_plan is not None)
+                if merge_plan is not None and step.step_id == merge_plan.merge_step:
+                    merge_metadata = step_metadata
                 validate_input_size(step_metadata, 16 * 1024, label="metadata")
                 reject_non_finite(step.metadata, label="metadata", step_id=step.step_id)
                 validate_storable(step_metadata, label="metadata", step_id=step.step_id)
+            # Lane SPEED-D2: the fix rounds the merge step may spend, stamped
+            # on the merge task below; None when there is no merge step.
+            fix_rounds = resolve_fix_rounds(
+                spec.fix_rounds, merge_metadata, merge_step=merge_plan is not None,
+                named_pull=named_pull is not None,
+            )
         except ValidationFailed as exc:
             self._metrics.tasks_rejected.labels(reason=exc.code).inc()
             raise
@@ -882,7 +893,15 @@ class SubmissionService:
                     runner_profile=source.runner_profile,
                     input=source.input,
                     priority=spec.priority,
-                    metadata={**spec.metadata, **source.metadata, "workflow_step": step_id},
+                    metadata={
+                        **spec.metadata, **source.metadata, "workflow_step": step_id,
+                        # SPEED-D2: what the wake tick and the worker read as
+                        # the rounds left (`resolve_fix_rounds`), on the merge
+                        # task only.
+                        **({MERGE_FIX_ROUNDS_KEY: fix_rounds}
+                           if fix_rounds is not None and merge_plan is not None
+                           and step_id == merge_plan.merge_step else {}),
+                    },
                     timeout_seconds=source.timeout_seconds,
                     # A merge step waits for CI by failing its attempt while a
                     # required check runs, so it gets more attempts than an

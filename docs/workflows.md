@@ -1676,8 +1676,22 @@ submission, from the workflow's own `metadata`:
   a bool, a float -- is a 422 naming the bounds. So is the key on a workflow
   that ends with no merge step, whatever its value: rounds nothing would
   spend are a request that would silently not happen, as `metadata.merge`
-  `"on"` there is refused. It is stored as written; lane MS7 spends it, and
-  until then it is accepted and changes nothing.
+  `"on"` there is refused. It is stored as written; lane MS7 spends it.
+  **Since SPEED-D2 (2026-10-14) absent means 2, not 0**, and the spec's
+  top-level `fix_rounds` (0-5) says the same thing: see the next bullet.
+* **`fix_rounds`** on the workflow spec (lane SPEED-D2, owner decision
+  2026-10-14 "Auto fix rounds"): how many agent rounds the merge step spends
+  on a pull request whose required checks are red at its head. Absent, a
+  workflow with a merge step gets **2**, an issue run's 0 (it has its own
+  loop). `0` disables them: red refuses `checks_failed` at once, as before.
+  Given with a different `metadata.merge_fix_rounds`, or with no merge step,
+  it is a 422. Before spending a round on a red head the platform re-runs the
+  failing Actions jobs once; a re-run that passes spends nothing. Each round
+  appears as a step of this workflow, `ci-fix:<n>` (or `conflict-fix:<n>`
+  for a conflicting pull request, capped at 2 whatever this says), and a
+  round that failed does not fail a workflow whose merge then succeeded.
+  The why is in
+  [merge-step.md](merge-step.md#revised-2026-10-14-auto-fix-rounds-lane-speed-d2).
 * **The workflow's label is its pull request's fallback title, merge step
   or not.** `metadata.unit`, else `metadata.title`, reaches the gated step as
   the dispatch block's `pr_label`, which the worker uses only as title and
