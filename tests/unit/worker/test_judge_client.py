@@ -339,3 +339,28 @@ def test_j3_and_j4_shapes() -> None:
     gaps = shapes.read_test_gap({"s0": {"choice": "none", "probabilities": {"none": 0.8},
                                         "confidence": 0.8}})
     assert gaps == [0]
+
+
+def test_the_firestore_month_adds_in_a_transaction() -> None:
+    from fakes import FakeFirestore, FakeTransactionRunner
+
+    db = FakeFirestore()
+    monthly = budget.FirestoreMonthlyLedger(db, FakeTransactionRunner(db))
+    assert monthly.used("t1", "2026-10") == 0
+    monthly.add("t1", "2026-10", 500)
+    monthly.add("t1", "2026-10", 250)
+    assert monthly.used("t1", "2026-10") == 750
+    assert monthly.used("t2", "2026-10") == 0
+    assert db.documents[f"{budget.MONTHLY_COLLECTION}/t1_2026-10"]["input_tokens"] == 750
+
+
+def test_a_failed_settle_is_retried_by_the_next_one(tmp_path: Path) -> None:
+    class Down:
+        def add(self, *a: Any) -> None:
+            raise RuntimeError("unavailable")
+
+    jev = _client(tmp_path, FakeJev(_yes(["q"], tokens=400)))
+    jev.decide("J1", {"a": 1}, QUESTIONS)
+    assert budget.settle(jev.ledger, Down(), workspace="t1", month="2026-10") == 0
+    monthly = budget.InMemoryMonthlyLedger()
+    assert budget.settle(jev.ledger, monthly, workspace="t1", month="2026-10") == 400

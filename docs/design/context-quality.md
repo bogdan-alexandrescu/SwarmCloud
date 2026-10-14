@@ -675,6 +675,33 @@ own issue before CTXQ-S builds it.
 * **No Jev MCP tool is given to the agent in this design.** That is option
   §8 Q6.
 
+**Owner override, 2026-10-14 (built by lane CTXQ-J, `agent_worker/judge/`).**
+The owner chose Q6 B as well as the worker's fixed-point calls: the agent also
+gets `jev_decide(state, questions)`, an MCP tool served by `swarm-jev`
+(`agent_worker.judge.mcp`).
+* **When it exists.** `judge.register.register_jev_tool` adds it only when the
+  workspace opted in to Jev for code and the repository's override is not
+  `off`. Lane CTXQ-JW wires that function into the runners.
+* **Same rules as the worker's calls.** It uses the same `JudgeClient`, so
+  §5.4's redaction, §5.5's retries and breaker, and one per-task ledger
+  (`judge.budget.Ledger`, a locked file in the attempt directory) apply to
+  both. Its calls are audited as kind `agent` and count against the same
+  8 calls and 120k tokens.
+* **The backend** comes from the workspace's judgment-backend setting
+  (JUDGE-SELECT):
+  * **Internal Jev** (the default) and **Internal Laya** are the Saga
+    decision API over the tailnet. No credential exists anywhere in the
+    agent's process tree. `state` is sent JSON-stringified, because the API
+    takes a string.
+  * **TypeSafe**: the key is written to `<attempt>/private/jev-key`
+    (mode 0600) for the tool process. **That process is the agent's child,
+    so the agent can read the key.** The owner accepted this residual. The
+    key is never put in the config, the MCP entry, an environment variable, a
+    log or an audit row.
+* **The ledger is a cost control, not a boundary.** The tool process runs
+  as the agent's user, so a hostile agent can rewrite the ledger. The
+  backend's own records are the authority on spend.
+
 ### 5.2 Call shapes
 
 All calls are `POST /v1/systemone`, model `jev-latest`, as `jev.mjs` sends

@@ -188,3 +188,20 @@ def test_serve_answers_line_by_line(tmp_path: Path) -> None:
 def test_main_refuses_a_missing_config(tmp_path: Path, capsys: pytest.CaptureFixture) -> None:
     from agent_worker.judge.__main__ import main
     assert main(["--config", str(tmp_path / "nope.json")]) == 2
+
+
+def test_the_registered_argv_starts_a_server_that_lists_the_tool(tmp_path: Path) -> None:
+    import subprocess
+
+    done, servers = _register(tmp_path, settings.JudgeSettings(code_opt_in=True))
+    entry = servers[mcp.SERVER_NAME]
+    requests = b"".join(json.dumps(m).encode() + b"\n" for m in (
+        {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+        {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+    ))
+    ran = subprocess.run([entry["command"], *entry["args"]], input=requests,
+                         capture_output=True, timeout=60, check=False)
+    assert ran.returncode == 0, ran.stderr
+    replies = [json.loads(x) for x in ran.stdout.splitlines()]
+    assert [r["id"] for r in replies] == [1, 2]
+    assert replies[1]["result"]["tools"][0]["name"] == "jev_decide"
