@@ -415,7 +415,10 @@ where the vendor stores its logs.
   **search API**: Google's own programmable search where it is still offered
   to new customers, or a vendor's SERP API billed per request. It gets search
   results without the browser and without the ToS question. It does not help
-  with sign-ins (section 7, Q5).
+  with sign-ins (section 7, Q5). **Built, switched off:** the owner chose
+  both (Q5), and live-browser agents now get a `search` tool that queries
+  the Brave Search API through swarm-api and opens the results in the live
+  browser. See [search-tool.md](search-tool.md).
 * **The vendor's acceptable use.** Our tenants' agents run arbitrary tasks.
   One agent that credential-stuffs, mass-creates accounts or scrapes a
   forbidden category puts **our** vendor account at risk, and a suspension
@@ -693,7 +696,7 @@ loading) or fall back to direct mid-attempt?**
 | Q2 | Rotating residential or ISP/static | **Trial both** in phase 1, against the direct baseline, and keep the one with the lower measured /sorry rate per dollar. |
 | Q3 | Monthly budget cap | **$150 pilot**, set as the vendor sub-user traffic limit. |
 | Q4 | Where the vendor credential lives | **Only in the platform forwarder `swarm-egress`.** Pods carry a ticket scoped to one attempt. |
-| Q5 | Proxy, search API, or both | **Not yet decided.** Asked separately; the build does not depend on it. |
+| Q5 | Proxy, search API, or both | **Both: search tool + proxy** (answered separately, 2026-10-13 ~21:30 PDT). The search tool is [search-tool.md](search-tool.md); the build here does not depend on it. |
 | Q6 | Exit country | **US**, for the whole platform. |
 | Q7 | Kill switch | **Fail closed.** |
 

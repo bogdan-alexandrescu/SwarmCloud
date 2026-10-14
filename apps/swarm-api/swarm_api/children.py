@@ -462,7 +462,12 @@ class ChildService:
 
         _apply(self._db.transaction())
         # Nothing secret is returned: not the nonce, the attestation or the registration id.
-        return {"registered": "key" if public_key else "tombstone", "attempt_id": attempt_id}
+        # `search_tool`: whether this worker names the search tool to its agent
+        # (docs/search-tool.md). The flag, and a key to sign the calls with; the
+        # route re-checks both, and the profile, on every call.
+        search_tool = bool(public_key) and bool(getattr(self._settings, "search_tool_enabled", False))
+        return {"registered": "key" if public_key else "tombstone", "attempt_id": attempt_id,
+                "search_tool": search_tool}
 
     # -- §6.1: the submission ---------------------------------------------
 
