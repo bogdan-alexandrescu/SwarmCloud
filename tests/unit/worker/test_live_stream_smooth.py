@@ -182,6 +182,10 @@ class Viewer:
                     self._blit(x, y, w, h, self._tight[stream].decompress(data))
             elif enc == -239:
                 await r.readexactly(w * h * 4 + (w + 7) // 8 * h)
+            elif enc == -307:
+                # DesktopName (LIVE-BLANK): a 4-byte length, then the name in UTF-8.
+                (n,) = struct.unpack(">I", await r.readexactly(4))
+                await r.readexactly(n)
             elif enc == -223:
                 self.width, self.height = w, h
                 self.fb = bytearray(w * h * 3)
