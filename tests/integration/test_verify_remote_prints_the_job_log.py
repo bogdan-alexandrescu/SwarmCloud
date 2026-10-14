@@ -601,7 +601,7 @@ def test_the_fake_applies_every_clause_of_the_filter_it_is_given(tmp_path):
     error rather than a clause it quietly ignores."""
     env = _install_fake(tmp_path)
     clauses = {
-        f'resource.type="cloud_run_job"': NOT_A_JOB,
+        'resource.type="cloud_run_job"': NOT_A_JOB,
         f'resource.labels.job_name="{JOB}"': OTHER_JOB,
         f'labels."run.googleapis.com/execution_name"="{EXECUTION}"': OTHER_EXECUTION,
         'logName:"run.googleapis.com%2F"': AUDIT_MARKER,

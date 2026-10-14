@@ -28,7 +28,7 @@ import pytest
 from swarm_api import scheduletypes
 from test_plugin_commands import _READ_ONLY_SURFACES, _allowed, _granted_rules, _reached
 
-from swarm_mcp import schedules, sc, server
+from swarm_mcp import sc, server
 from swarm_mcp.client import SwarmClient, SwarmError
 
 _REPO = Path(__file__).resolve().parents[3]

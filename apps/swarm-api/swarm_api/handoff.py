@@ -71,7 +71,7 @@ from swarm_common.profiles import url_refusal
 from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
 
 from .childkey import AttemptTuple, verify_proof
-from .children import ChildService, _AttemptFields, _lease_is_live, _Strict, parse_body
+from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
 from .codec import event_to_firestore, task_from_dict
 from .errors import ApiError, NotFound, ValidationFailed
 from .gitidentity import is_service_account

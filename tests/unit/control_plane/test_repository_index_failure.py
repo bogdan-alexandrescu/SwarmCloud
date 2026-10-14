@@ -23,7 +23,6 @@ No credentials, no network: the fixtures are the poll suite's.
 from __future__ import annotations
 
 import json
-from datetime import timedelta
 
 import pytest
 

@@ -5453,6 +5453,8 @@ class Worker:
         found_by = f"found by review `{verdict.get('task_id')}`" + (
             f" of workflow `{workflow_id}`" if workflow_id else ""
         )
+        # The lambdas run inside this call, before `del token` below; ruff reads
+        # the `del` as leaving `token` unbound in them (F821).
         result = findings_epic_mod.file_minors(
             minors=minors,
             epic=epic,
@@ -5460,12 +5462,12 @@ class Worker:
             # Reads are retried on an outage; the POST is not, since one whose
             # answer was lost may have made the comment (the dedup finds it).
             list_comments=lambda number: forge_mod.retry_transient(
-                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),
+                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),  # noqa: F821
                 policy=self._forge_retry(),
                 what="the findings epic's comments",
             ),
             post_comment=lambda number, body: forge_mod.create_issue_comment(
-                ref=ref, token=token, number=number, body=body
+                ref=ref, token=token, number=number, body=body  # noqa: F821
             ),
             found_by=found_by,
             clean=lambda text: _neutralise_mentions(str(self._scrub(text))),

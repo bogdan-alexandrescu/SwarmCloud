@@ -51,7 +51,6 @@ from enum import Enum
 from typing import Any, Callable, Collection, Protocol
 
 from .oauth import (
-    Credential,
     CredentialError,
     ReauthRequired,
     TokenEndpoint,
