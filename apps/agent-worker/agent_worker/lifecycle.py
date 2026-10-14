@@ -2908,6 +2908,10 @@ class Worker:
                     # watch an open hand-off's hold. Never raises.
                     with self._heartbeat_meanwhile("hand-off"):
                         ended = self.handoff.tick(ws.work, self.control.fetch_task)
+                        # LB-RETURN: swarm-api decides whether the hold really
+                        # ran out, against a viewer who came as it did.
+                        if ended == handoff_mod.HOLD_EXPIRED and not self.handoff.confirm_expired():
+                            ended = None
                     if ended is not None:
                         return self._park_for_human(child, cause=ended)
 
@@ -5449,6 +5453,8 @@ class Worker:
         found_by = f"found by review `{verdict.get('task_id')}`" + (
             f" of workflow `{workflow_id}`" if workflow_id else ""
         )
+        # The lambdas run inside this call, before `del token` below; ruff reads
+        # the `del` as leaving `token` unbound in them (F821).
         result = findings_epic_mod.file_minors(
             minors=minors,
             epic=epic,
@@ -5456,12 +5462,12 @@ class Worker:
             # Reads are retried on an outage; the POST is not, since one whose
             # answer was lost may have made the comment (the dedup finds it).
             list_comments=lambda number: forge_mod.retry_transient(
-                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),
+                lambda: forge_mod.list_issue_comments(ref=ref, token=token, number=number),  # noqa: F821
                 policy=self._forge_retry(),
                 what="the findings epic's comments",
             ),
             post_comment=lambda number, body: forge_mod.create_issue_comment(
-                ref=ref, token=token, number=number, body=body
+                ref=ref, token=token, number=number, body=body  # noqa: F821
             ),
             found_by=found_by,
             clean=lambda text: _neutralise_mentions(str(self._scrub(text))),
@@ -8215,12 +8221,17 @@ class Worker:
         self._checkpoint("human-wait")
         uploaded = self._upload_outputs().get("artifacts")
         with self._metrics_after_the_record():
-            handoff_mod.park_human_required(
+            park = handoff_mod.park_human_required(
                 self.control,
                 max_resumes=self.handoff.max_resumes,
                 detail={"park_phase": "human_wait", "cause": cause},
                 uploads=uploaded if isinstance(uploaded, list) else None,
             )
+        if park.returned_by is not None:
+            # A person returned control while this attempt parked: re-queued
+            # READY, lease released all the same (LB-RETURN).
+            self.log.info("a person returned control as the hold ended; re-queued")
+            return Outcome(exit_code=ExitCode.PARKED, state=TaskState.READY)
         return Outcome(exit_code=ExitCode.PARKED, state=TaskState.PARKED)
 
     def _park_for_quota(self, decision: QuotaDecision, *, source: str) -> Outcome:

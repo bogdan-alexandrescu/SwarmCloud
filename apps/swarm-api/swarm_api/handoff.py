@@ -15,7 +15,27 @@ Lane LB-L10. Read §4.1 (the agent asks), §4.3 (the bounded wait) and §5.4.1
   * `human_ready` is §4.3 "Promotion is a person's": the ONLY path from
     PARKED(HUMAN_REQUIRED) to READY. No sweep promotes it; the scheduler only
     dead-letters one parked past `human_park_max_seconds`
-    (`scheduler.loop.Scheduler._expire_human_waits`).
+    (`scheduler.loop.Scheduler._expire_human_waits`). A person's Return
+    control on the attempt that parked is the same promotion
+    (`LiveService.return_control`, `ready_writes`).
+
+A PERSON WHO CAME IS NEVER PARKED AWAY (LB-RETURN, part of #1030). MEASURED by
+the live-browser acceptance group on every run from 2026-10-14 00:24Z: the
+hand-off, the take-over and the typing passed, and the task sat
+PARKED(HUMAN_REQUIRED) at the 900 s deadline. The worker judged the unwatched
+minute over on its poll, and the person's view, take and return landed while it
+was parking. Three rules close that window, each in a transaction:
+
+  * the worker's expiry names the deadline it judged (`seen_deadline`), and
+    is answered `REVIVED`, writing nothing, when a viewer or a controller has
+    moved it since, so whichever commits first decides and the worker keeps
+    holding. An answer, not a refusal: the worker is told the hold goes on,
+    and a worker from before this reads it as any 200, as it always did;
+  * a return while the attempt is still RUNNING is written onto the task
+    (`HUMAN_RETURNED_METADATA_KEY`, naming the attempt and generation), and
+    the worker's park reads it in its own fenced transaction and writes READY
+    instead of PARKED (`agent_worker.handoff.park_human_required`);
+  * a return after the park committed is that person's "I'm ready".
 
 WHO MAY CALL THE WORKER ROUTES. Exactly as the child routes (`children.py`):
 the ID token proves the TENANT, and a signature by the attempt key the worker
@@ -51,7 +71,7 @@ from swarm_common.profiles import url_refusal
 from swarm_common.states import EventType, ParkReason, TaskState, assert_transition
 
 from .childkey import AttemptTuple, verify_proof
-from .children import ChildService, _AttemptFields, _lease_is_live, _Strict, parse_body
+from .children import ChildService, _AttemptFields, _lease_is_live, parse_body
 from .codec import event_to_firestore, task_from_dict
 from .errors import ApiError, NotFound, ValidationFailed
 from .gitidentity import is_service_account
@@ -61,6 +81,7 @@ from .store import EVENTS, LEASES, TASKS, WORKFLOWS, Store
 from .validation import (  # noqa: F401 - re-exported: the keys this module writes
     HUMAN_HANDOFFS_METADATA_KEY,
     HUMAN_READY_METADATA_KEY,
+    HUMAN_RETURNED_METADATA_KEY,
     HUMAN_WAIT_RESUMES_METADATA_KEY,
 )
 
@@ -100,6 +121,16 @@ MAX_REASON_CHARS = 200
 #: `end_cause` is None as for every other dead-lettered park. The scheduler
 #: restates it; tests/unit/control_plane/test_handoff_api.py holds them equal.
 HUMAN_WAIT_EXPIRED = "human_wait_expired"
+
+#: LB-RETURN: HUMAN_RETURNED_METADATA_KEY (validation.py) is a person's return
+#: while the attempt was RUNNING: `{attempt_id, generation, by, at}`, written by
+#: `LiveService.return_control`. The worker's park reads it, for its own
+#: attempt and generation only, and re-queues instead of parking; a new request
+#: and `human_ready` drop it, so a return answers only the hand-off it came
+#: during. The worker restates it.
+#: LB-RETURN: `resolve`'s answer to an expiry whose deadline moved after the
+#: worker read it (`{"resolved": "revived"}`). The worker restates it.
+REVIVED = "revived"
 
 
 #: The agent's request id: also its spool file's name (§4.1).
@@ -213,6 +244,9 @@ class HandoffRequest(_AttemptFields):
 class HandoffResolve(_AttemptFields):
     request_id: str = Field(min_length=1, max_length=64)
     outcome: Literal["returned", "expired", "cancelled", "unavailable"]
+    #: The deadline the worker judged expired (LB-RETURN). An expiry naming
+    #: one that has since moved into the future is answered `REVIVED`.
+    seen_deadline: datetime | None = None
 
 
 def handoff_message(method: str, path: str, body: bytes, timestamp: str) -> bytes:
@@ -281,6 +315,7 @@ def resolution_writes(
     by: str | None = None,
     lease_id: str | None = None,
     recorded: list[dict[str, Any]] | None = None,
+    extra: Mapping[str, Any] | None = None,
 ) -> bool:
     """Clear `human_wait` and record why, inside the caller's transaction.
 
@@ -289,7 +324,8 @@ def resolution_writes(
     the caller's, for the event: the wait does not store one. The detail is
     appended to `recorded`, for the caller to `log_funnel` once the
     transaction has committed: logged here, a retried transaction would log
-    one hand-off twice.
+    one hand-off twice. `extra` is more of the caller's own task fields, in
+    the same write.
     """
     wait = task.get("human_wait")
     if not isinstance(wait, dict):
@@ -321,10 +357,92 @@ def resolution_writes(
         generation=wait.get("generation"),
         detail=detail,
     )
-    txn.update(task_ref, {"human_wait": None, "updated_at": now})
+    txn.update(task_ref, {**(extra or {}), "human_wait": None, "updated_at": now})
     txn.set(task_ref.collection(EVENTS).document(event.event_id), event_to_firestore(event))
     _audit(txn, db, task, "handoff_resolved", now=now, email=by, detail=detail)
     return True
+
+
+def returned_mark(task: Mapping[str, Any], session: Mapping[str, Any], *, by: str,
+                  now: datetime) -> dict[str, Any]:
+    """The task's metadata with this return recorded (LB-RETURN): the attempt
+    and generation of the session it was returned on, so the park of exactly
+    that attempt reads it."""
+    metadata = dict(task.get("metadata") or {})
+    metadata[HUMAN_RETURNED_METADATA_KEY] = {
+        "attempt_id": session.get("attempt_id"),
+        "generation": session.get("generation"),
+        "by": by,
+        "at": now.isoformat(),
+    }
+    return metadata
+
+
+def ready_writes(txn: Any, db: Any, data: dict[str, Any], *, email: str, now: datetime,
+                 reason: str = "human_ready") -> dict[str, Any]:
+    """PARKED(HUMAN_REQUIRED) -> READY inside the caller's transaction (§4.3).
+
+    One shape for "I'm ready" (`HandoffService.human_ready`) and a Return
+    control that arrives after the park (`LiveService.return_control`, LB-RETURN).
+    Raises NotWaitingForAPerson, writing nothing, for any other task. Nothing
+    is leased here: the next attempt is admitted all-or-nothing, under a new
+    generation, like any READY task (invariants 1, 2, 5). Returns the task as
+    written.
+    """
+    task_id = data["id"]
+    if (
+        data.get("state") != TaskState.PARKED.value
+        or data.get("park_reason") != ParkReason.HUMAN_REQUIRED.value
+    ):
+        raise NotWaitingForAPerson(
+            "this task is not parked waiting for a person; nothing was changed"
+        )
+    current = task_from_dict(data)
+    if current.cancel_requested:
+        raise NotWaitingForAPerson("a cancel was requested for this task")
+    if current.retries_exhausted():
+        # Admission does not check the cap: READY would lease attempt
+        # N+1 of N. The scheduler's sweep dead-letters it instead.
+        raise NotWaitingForAPerson(
+            f"this task has used its last attempt ({current.attempt_count} of "
+            f"{current.max_attempts}); it cannot be resumed"
+        )
+    assert_transition(TaskState.PARKED, TaskState.READY)
+    metadata = dict(data.get("metadata") or {})
+    # The attempt whose hand-off parked this task, which this `ready`
+    # answers (LB-V6): the Attempts tab files it there. None when no
+    # hand-off was counted -- named as nothing, never guessed.
+    counted = metadata.get(HUMAN_HANDOFFS_METADATA_KEY)
+    answered = counted.get("attempt_id") if isinstance(counted, dict) else None
+    metadata[HUMAN_READY_METADATA_KEY] = {"by": email, "at": now.isoformat()}
+    metadata.pop(HUMAN_RETURNED_METADATA_KEY, None)
+    update = {
+        "state": TaskState.READY.value,
+        "park_reason": None,
+        "next_eligible_at": None,
+        "blocked_by": [],
+        "metadata": metadata,
+        # Nothing is held while parked; a stale wait must not show.
+        "human_wait": None,
+        "updated_at": now,
+    }
+    event = TaskEvent(
+        event_id=new_id("ev"),
+        task_id=task_id,
+        tenant_id=data["tenant_id"],
+        type=EventType.READY,
+        at=now,
+        attempt_id=answered if isinstance(answered, str) else None,
+        detail={
+            "reason": reason,
+            "park_reason": ParkReason.HUMAN_REQUIRED.value,
+            "by": email,
+        },
+    )
+    task_ref = db.collection(TASKS).document(task_id)
+    txn.update(task_ref, update)
+    txn.set(task_ref.collection(EVENTS).document(event.event_id), event_to_firestore(event))
+    return {**data, **update}
 
 
 def _audit(
@@ -568,6 +686,8 @@ class HandoffService:
             # A person already said they are ready: consumed by the request it
             # was waiting for, so a later one does not claim it too.
             person_waiting = metadata.pop(HUMAN_READY_METADATA_KEY, None) is not None
+            # A return from before this request answers nothing it asks (LB-RETURN).
+            metadata.pop(HUMAN_RETURNED_METADATA_KEY, None)
             detail = {
                 "reason": reason,
                 "expect": expect,
@@ -607,7 +727,9 @@ class HandoffService:
         path: str,
         proof: str | None,
         timestamp: str | None,
-    ) -> bool:
+    ) -> bool | str:
+        """Whether the wait was resolved; `REVIVED`, writing nothing, for an
+        expiry someone overtook (LB-RETURN)."""
         if len(raw) > 4096:
             raise ValidationFailed("a hand-off resolution is at most 4096 bytes")
         body: HandoffResolve = parse_body(HandoffResolve, raw)
@@ -620,7 +742,7 @@ class HandoffService:
         resolved: dict[str, Any] = {}
 
         @firestore.transactional
-        def _apply(txn: Any) -> bool:
+        def _apply(txn: Any) -> bool | str:
             recorded.clear()  # a retried transaction starts again
             task_snap = _snapshot(txn.get(task_ref))
             lease_snap = _snapshot(txn.get(lease_ref))
@@ -640,6 +762,18 @@ class HandoffService:
                 or wait.get("attempt_id") != attempt.attempt_id
             ):
                 return False
+            deadline = wait.get("deadline")
+            if (
+                body.outcome == "expired"
+                and body.seen_deadline is not None
+                and body.seen_deadline.tzinfo is not None
+                and isinstance(deadline, datetime)
+                and deadline > body.seen_deadline
+                and deadline > now
+            ):
+                # LB-RETURN: a viewer or a controller moved the deadline after
+                # the worker read it. They came first; the hold goes on.
+                return REVIVED
             return resolution_writes(txn, self._db, task, outcome=body.outcome, now=now,
                                      lease_id=attempt.lease_id, recorded=recorded)
 
@@ -675,56 +809,6 @@ class HandoffService:
             data = snap.to_dict() if snap.exists else None
             if data is None or data.get("tenant_id") != tenant_id:
                 raise NotFound(f"task {task_id!r} not found")
-            if (
-                data.get("state") != TaskState.PARKED.value
-                or data.get("park_reason") != ParkReason.HUMAN_REQUIRED.value
-            ):
-                raise NotWaitingForAPerson(
-                    "this task is not parked waiting for a person; nothing was changed"
-                )
-            current = task_from_dict(data)
-            if current.cancel_requested:
-                raise NotWaitingForAPerson("a cancel was requested for this task")
-            if current.retries_exhausted():
-                # Admission does not check the cap: READY would lease attempt
-                # N+1 of N. The scheduler's sweep dead-letters it instead.
-                raise NotWaitingForAPerson(
-                    f"this task has used its last attempt ({current.attempt_count} of "
-                    f"{current.max_attempts}); it cannot be resumed"
-                )
-            assert_transition(TaskState.PARKED, TaskState.READY)
-            metadata = dict(data.get("metadata") or {})
-            # The attempt whose hand-off parked this task, which this `ready`
-            # answers (LB-V6): the Attempts tab files it there. None when no
-            # hand-off was counted -- named as nothing, never guessed.
-            counted = metadata.get(HUMAN_HANDOFFS_METADATA_KEY)
-            answered = counted.get("attempt_id") if isinstance(counted, dict) else None
-            metadata[HUMAN_READY_METADATA_KEY] = {"by": email, "at": now.isoformat()}
-            update = {
-                "state": TaskState.READY.value,
-                "park_reason": None,
-                "next_eligible_at": None,
-                "blocked_by": [],
-                "metadata": metadata,
-                # Nothing is held while parked; a stale wait must not show.
-                "human_wait": None,
-                "updated_at": now,
-            }
-            event = TaskEvent(
-                event_id=new_id("ev"),
-                task_id=task_id,
-                tenant_id=tenant_id,
-                type=EventType.READY,
-                at=now,
-                attempt_id=answered if isinstance(answered, str) else None,
-                detail={
-                    "reason": "human_ready",
-                    "park_reason": ParkReason.HUMAN_REQUIRED.value,
-                    "by": email,
-                },
-            )
-            txn.update(task_ref, update)
-            txn.set(task_ref.collection(EVENTS).document(event.event_id), event_to_firestore(event))
-            return {**data, **update}
+            return ready_writes(txn, self._db, {**data, "id": task_id}, email=email, now=now)
 
         return task_from_dict(_apply(self._db.transaction()))

@@ -130,6 +130,26 @@ const PRESET_LABEL: Readonly<Record<string, string>> = {
   'ipad-7': 'iPad',
 }
 
+/**
+ * What the Browser tab says over a closed live session (LB-RETURN, part of #1030).
+ *
+ * A hand-off whose hold ran out closes its session with `hold_expired`, and this
+ * said "The live browser has closed (hold_expired)" over a task that one press of
+ * I'm ready resumes -- MEASURED by the live-browser acceptance group, 2026-10-14;
+ * the person read it as over. A park is not an end: it says so, and what to press.
+ */
+export function closedSessionNote(
+  cause: string | null,
+  task: { state: TaskState; park_reason?: string | null },
+): string {
+  if (cause === 'hold_expired') {
+    return task.state === 'PARKED' && task.park_reason === 'HUMAN_REQUIRED'
+      ? 'The hand-off is parked: nobody took control in time, so its browser closed and its capacity went back. Press I’m ready to resume — the agent starts again and asks for you.'
+      : 'The hand-off is parking: nobody took control in time. Once it has parked, press I’m ready to resume.'
+  }
+  return `The live browser has closed${cause ? ` (${cause})` : ''}. The recording is kept for seven days.`
+}
+
 export function presetLabel(name: string): string {
   return PRESET_LABEL[name] ?? name
 }
@@ -643,9 +663,7 @@ export function LiveBrowserPane({
     )
   }
   if (session.state === 'closed') {
-    return note(
-      `The live browser has closed${session.closed_reason ? ` (${session.closed_reason})` : ''}. The recording is kept for seven days.`,
-    )
+    return note(closedSessionNote(session.closed_reason ?? null, task))
   }
 
   const mine = isController(session)

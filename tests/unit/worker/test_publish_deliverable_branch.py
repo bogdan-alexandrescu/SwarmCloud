@@ -46,7 +46,6 @@ from typing import Any
 import pytest
 
 from agent_worker import gitops, lifecycle
-from agent_worker.errors import ExitCode
 from agent_worker.gitops import GitError
 from agent_worker.lifecycle import PATCH_NAME
 from swarm_common.states import EventType, TaskState

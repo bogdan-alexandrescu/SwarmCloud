@@ -35,7 +35,7 @@ from swarm_common.models import utcnow
 
 from .credentials import AccountPool
 from .dispatch import build_router
-from .loop import DrainReport, Scheduler
+from .loop import Scheduler
 from .metrics import SchedulerMetrics
 from .settings import SchedulerSettings
 from .store import SchedulerStore

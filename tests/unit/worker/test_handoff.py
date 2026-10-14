@@ -135,6 +135,10 @@ class FakeLiveRoutes:
         self.calls: list[dict[str, Any]] = []
         # Built at runtime: nothing in this file has a credential's shape.
         self.ticket = "tkt-" + secrets.token_hex(16)
+        #: Called with (task, payload) before a resolve is applied: what a
+        #: person does at swarm-api meanwhile. A dict it returns is swarm-api's
+        #: answer instead, with nothing resolved.
+        self.on_resolve: Any = None
 
     def _verify(self, purpose: str, path: str, body: bytes, headers: dict[str, str]) -> None:
         proof = headers.get(children_mod.PROOF_HEADER)
@@ -174,6 +178,10 @@ class FakeLiveRoutes:
         if path.endswith("/handoff/resolve"):
             self._verify(api_handoff.HANDOFF_PURPOSE, path, body, headers)
             self.trace.append(f"resolve:{payload['outcome']}")
+            if self.on_resolve is not None:
+                answer = self.on_resolve(task, payload)
+                if isinstance(answer, dict):
+                    return 200, answer
             task["human_wait"] = None
             return 200, {"resolved": True}
         raise AssertionError(f"unexpected route {path}")
@@ -793,6 +801,9 @@ def test_the_workers_restatements_match_swarm_api_and_the_command():
     assert handoff_mod.MAX_REASON_CHARS == api_handoff.MAX_REASON_CHARS
     assert handoff_mod.MAX_HANDOFFS_PER_ATTEMPT == api_handoff.MAX_HANDOFFS_PER_ATTEMPT
     assert handoff_mod.HUMAN_WAIT_RESUMES_METADATA_KEY == api_validation.HUMAN_WAIT_RESUMES_METADATA_KEY
+    assert handoff_mod.HUMAN_RETURNED_METADATA_KEY == api_handoff.HUMAN_RETURNED_METADATA_KEY
+    assert handoff_mod.HUMAN_READY_METADATA_KEY == api_handoff.HUMAN_READY_METADATA_KEY
+    assert handoff_mod.REVIVED == api_handoff.REVIVED
     for args in [("POST", "/v1/tasks/t/handoff", b'{"a":1}', "17")]:
         assert handoff_mod.signed_message(handoff_mod.HANDOFF_PURPOSE, *args) == api_handoff.handoff_message(*args)
     assert handoff_mod.LIVE_SESSION_PURPOSE != handoff_mod.HANDOFF_PURPOSE
@@ -932,3 +943,97 @@ def test_the_agents_guide_says_wait_and_do_not_poll_the_browser():
     guide = handoff_mod.AGENT_GUIDE.lower()
     assert "do not poll" in guide
     assert "a minute" in guide  # nobody opening the view parks it fast
+
+
+# --------------------------------------------------------------------------
+# LB-RETURN (part of #1030): the person who came is never parked away
+# --------------------------------------------------------------------------
+#
+# The live-browser acceptance group, every run since 2026-10-14 00:24Z: the
+# hand-off, the take-over and the typing all passed and the task sat PARKED at
+# the 900 s deadline. The worker judged the unwatched minute over, and the
+# person's view, take and return landed while it was parking.
+
+
+def _returned_by(person: str, *, attempt_id: str = "att_1", generation: int = 1):
+    """swarm-api's `LiveService.return_control`, while the worker parks."""
+    def on_resolve(task, payload):
+        task.setdefault("metadata", {})[handoff_mod.HUMAN_RETURNED_METADATA_KEY] = {
+            "attempt_id": attempt_id, "generation": generation, "by": person,
+            "at": utcnow().isoformat()}
+    return on_resolve
+
+
+def test_a_person_who_returned_control_while_the_worker_parked_re_queues_the_task(
+    db, worker_factory, agent, gate, trace, monkeypatch
+):
+    """The park reads the return in its own fenced transaction and writes
+    READY instead of PARKED: the lease is still released, the attempt still
+    refunded, and the next attempt is admitted all-or-nothing under a new
+    generation like any READY task (invariants 2, 4, 5)."""
+    write_plan, records = agent
+    write_plan(REQUEST, WAIT)
+    seed_attempt(db)
+    routes = FakeLiveRoutes(db, trace, hold_seconds=1)
+    routes.on_resolve = _returned_by("alice@saga.xyz")
+    worker = _live_worker(worker_factory, routes, gate, trace, monkeypatch)
+    assert worker.run() == ExitCode.PARKED
+    task = db.doc("tasks/task_1")
+    assert (task["state"], task["park_reason"]) == (TaskState.READY.value, None)
+    assert task["current_lease_id"] is None
+    assert db.doc("leases/lease_1")["released_at"] is not None
+    assert task["latest_checkpoint"]
+    assert task["attempt_count"] == 0
+    assert task["metadata"][handoff_mod.HUMAN_READY_METADATA_KEY]["by"] == "alice@saga.xyz"
+    assert handoff_mod.HUMAN_RETURNED_METADATA_KEY not in task["metadata"]
+    types = [e["type"] for e in db.events("task_1")]
+    ready = [e for e in db.events("task_1") if e["type"] == EventType.READY.value]
+    assert ready and ready[-1]["detail"]["reason"] == "human_returned", types
+    assert EventType.PARKED.value not in types
+
+
+@pytest.mark.parametrize("attempt_id,generation", [("att_0", 1), ("att_1", 2)])
+def test_a_return_recorded_for_another_attempt_does_not_re_queue(
+    db, worker_factory, agent, gate, trace, monkeypatch, attempt_id, generation
+):
+    """The control: a return answers only the attempt and generation it names."""
+    write_plan, records = agent
+    write_plan(REQUEST, WAIT)
+    seed_attempt(db)
+    routes = FakeLiveRoutes(db, trace, hold_seconds=1)
+    routes.on_resolve = _returned_by("alice@saga.xyz", attempt_id=attempt_id, generation=generation)
+    worker = _live_worker(worker_factory, routes, gate, trace, monkeypatch)
+    assert worker.run() == ExitCode.PARKED
+    task = db.doc("tasks/task_1")
+    assert (task["state"], task["park_reason"]) == (TaskState.PARKED.value,
+                                                    ParkReason.HUMAN_REQUIRED.value)
+
+
+def test_a_hold_a_viewer_revived_before_the_expiry_landed_is_not_parked(
+    db, worker_factory, agent, gate, trace, monkeypatch
+):
+    """The worker read the deadline past; a viewer joined and moved it before
+    its resolve landed, so swarm-api answered the expiry "revived".
+    The worker does not park and does not tell the agent "expired": it keeps
+    holding, and the person's return reaches the agent's `wait` as 0."""
+    write_plan, records = agent
+    write_plan(REQUEST, WAIT)
+    seed_attempt(db)
+    routes = FakeLiveRoutes(db, trace, hold_seconds=1)
+    sent: list[dict[str, Any]] = []
+
+    def revived(task, payload):
+        sent.append(payload)
+        # The viewer's extension, then the person's take, type and return.
+        task["human_wait"] = None
+        return {"resolved": handoff_mod.REVIVED}
+
+    routes.on_resolve = revived
+    worker = _live_worker(worker_factory, routes, gate, trace, monkeypatch)
+    assert worker.run() == ExitCode.OK
+    assert "park" not in trace
+    assert db.doc("tasks/task_1")["state"] == TaskState.SUCCEEDED.value
+    (seen,) = records()
+    assert seen["steps"][1]["exit"] == handoff_mod.EXIT_RETURNED, seen["steps"][1]
+    # The worker said which deadline it judged expired, so the refusal is exact.
+    assert sent and sent[0]["outcome"] == "expired" and sent[0].get("seen_deadline")
