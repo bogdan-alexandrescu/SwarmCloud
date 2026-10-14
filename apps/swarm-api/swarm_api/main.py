@@ -50,6 +50,7 @@ from .routes import (
     repositories,
     runs,
     schedule_tick,
+    search,
     strandedprs,
     schedules,
     tasks,
@@ -189,6 +190,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # The runner git tools (docs/runner-git-tools.md, lane G5): worker-only,
     # authenticated as the child routes are, plus the audit's tenant read.
     app.include_router(gittools.router)
+    # The search tool (docs/search-tool.md, lane SEARCH-TOOL): worker-only,
+    # authenticated as the git tools are; a 404 while SEARCH_TOOL_ENABLED is off.
+    app.include_router(search.router)
     # Named browser logins and the workflow carry (docs/design/live-browser.md
     # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
     # routes that authenticate as the child routes do.

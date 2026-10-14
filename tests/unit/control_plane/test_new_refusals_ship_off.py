@@ -199,6 +199,16 @@ NOT_SWITCHABLE_CODES = frozenset({
     "git_tool_unproven",
     "git_fenced",
     "git_tool_refused",
+    # The search tool (SEARCH-TOOL, docs/search-tool.md), as the git tools'
+    # codes above: raised only by the route that change introduces (POST
+    # /v1/attempts/{id}/search), which is a 404 while SEARCH_TOOL_ENABLED is
+    # off, so no existing caller can be refused by them. Continuing past any
+    # of them is the breach itself: an unproven caller spending the
+    # platform's provider key, a stale generation searching past its fence
+    # (invariant 5), or a tenant past the daily cap the owner's budget sets.
+    "search_unproven",
+    "search_fenced",
+    "search_refused",
 })
 
 #: What the guard lets through without a switch.
