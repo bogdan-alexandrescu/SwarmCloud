@@ -1,0 +1,26 @@
+/* SETTINGS › API KEYS (lane KEYS-UI; ProviderKeys.tsx). One card per
+   provider, one row per key: its name and status on one line, then the
+   write-only field with Save/Replace and Remove beside it. The field takes
+   the row's width and the buttons wrap under it on a phone, so a pasted key
+   is never typed into a box narrower than its own label. */
+.pk-page { display: flex; flex-direction: column; gap: var(--ctl-s3); min-width: 0; }
+.pk-lead { margin: 0 0 var(--ctl-s2); color: var(--text-dim); font-size: var(--t-meta); line-height: var(--lh-meta); max-width: 70ch; }
+.pk-uses { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; overflow-wrap: anywhere; }
+.pk-row { display: flex; flex-direction: column; gap: var(--ctl-s2); padding: var(--ctl-s3) 0; border-top: 1px solid var(--line); min-width: 0; }
+.pk-row:first-of-type { margin-top: var(--ctl-s2); }
+.pk-row-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--ctl-s1) var(--ctl-s3); min-width: 0; }
+.pk-row-head h3 { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); font-weight: 600; overflow-wrap: anywhere; }
+.pk-state { font-size: var(--t-micro); color: var(--text-dim); overflow-wrap: anywhere; }
+.pk-state.is-set { color: var(--text); }
+.pk-form { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; }
+.pk-form label, .pk-ask label { font-size: var(--t-micro); color: var(--text-dim); }
+.pk-form-row { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ctl-s2); min-width: 0; }
+.pk-input { flex: 1 1 260px; width: auto; min-width: 0; max-width: 520px; }
+.pk-saved { margin: 0; font-size: var(--t-meta); line-height: var(--lh-meta); color: var(--text); }
+.pk-ask { display: flex; flex-direction: column; gap: var(--ctl-s1); min-width: 0; max-width: 520px; }
+
+@media (max-width: 719px) {
+  .pk-input { flex-basis: 100%; max-width: none; }
+  .pk-form-row > .c-btn { flex: 1 1 auto; }
+  .pk-ask { max-width: none; }
+}

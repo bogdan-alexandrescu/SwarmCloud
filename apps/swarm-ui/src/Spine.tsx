@@ -1555,6 +1555,20 @@ export function SkyShell({
         </span>
         {/* One line each, cut, whole in the title (styles.css `.sk-pfoot`, V054). */}
         {who !== null && <small title={who.principal.email}>{who.principal.email}</small>}
+        {/* SETTINGS › API KEYS (KEYS-UI): the person's own keys, so it sits
+            under their name rather than among the sections (App.tsx SETTINGS). */}
+        <a
+          className={`sk-pset${place.startsWith('/settings/') ? ' is-on' : ''}`}
+          aria-current={place.startsWith('/settings/') ? 'page' : undefined}
+          href={addressToPath('settings/keys')}
+          onClick={(e) => {
+            if (!routedClick(e)) return
+            e.preventDefault()
+            nav('settings/keys')
+          }}
+        >
+          Settings › API keys
+        </a>
         <ThemeToggle />
       </div>
     </nav>
