@@ -59,6 +59,17 @@
 # SWARM_TENANT that is SET, even empty, wins, exactly as Claude Code's `:-`
 # expansion lets it win for the server -- and the workflows it names are the
 # ones the session's tools will act on.
+#
+# AND IT RE-ARMS `/sc watch` (SC-WATCH, owner request 2026-10-14). `/sc watch`
+# schedules a `/sc check` with Claude Code's CronCreate, whose jobs end with
+# the session, and saves "this project watches every N minutes" in
+# `<config dir>/sc-watch/<sha256 of the project>.json` (swarm_mcp.watch). This
+# hook reads that file -- locally, before and without the bridge -- and when
+# it is there the session is told to run `/sc watch <N>m` first: beside the
+# attach in the bridge's context (handed over as SWARM_SC_WATCH_MINUTES), or
+# on its own when nothing runs, the bridge fails, or `auto_attach` is off.
+# The project and the directory are derived exactly as swarm_mcp.watch derives
+# them (tests/unit/mcp/test_sc_watch.py holds the two together).
 set -euo pipefail
 
 trap 'exit 0' ERR
@@ -67,35 +78,85 @@ lower() {
   printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
 }
 
-case "$(lower "${CLAUDE_PLUGIN_OPTION_AUTO_ATTACH:-true}")" in
-  false | 0 | no | off) exit 0 ;;
-esac
+# The minutes `/sc watch` saved for this project, or nothing.
+watch_minutes() {
+  local project top conf key file minutes
+  project="${CLAUDE_PROJECT_DIR:-$PWD}"
+  top="$(git -C "$project" rev-parse --show-toplevel 2>/dev/null)" || top=""
+  [ -n "$top" ] && project="$top"
+  project="$(cd "$project" 2>/dev/null && pwd -P)" || return 0
+  if [ -n "${SWARM_CONFIG_DIR:-}" ]; then
+    conf="$SWARM_CONFIG_DIR"
+  elif [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    conf="$XDG_CONFIG_HOME/swarmcloud"
+  elif [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    conf="${HOME:-}/Library/Application Support/SwarmCloud"
+  else
+    conf="${HOME:-}/.config/swarmcloud"
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    key="$(printf '%s' "$project" | sha256sum | cut -c1-64)" || return 0
+  elif command -v shasum >/dev/null 2>&1; then
+    key="$(printf '%s' "$project" | shasum -a 256 | cut -c1-64)" || return 0
+  else
+    return 0
+  fi
+  file="$conf/sc-watch/$key.json"
+  [ -r "$file" ] || return 0
+  minutes="$(sed -n 's/.*"interval_minutes": *\([0-9][0-9]*\).*/\1/p' "$file" | head -n 1)" || return 0
+  case "$minutes" in
+    '' | *[!0-9]*) return 0 ;;
+  esac
+  [ "$minutes" -ge 5 ] || return 0
+  printf '%s' "$minutes"
+}
+
+# The re-arm notice on its own. Digits only are interpolated, so the JSON
+# needs no escaping.
+print_rearm() {
+  printf '{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"%s"}}\n' \
+    "The sc plugin's watch is on for this project: a \`/sc check\` every $1 minutes. Claude Code's scheduled prompts end with each session, so run \`/sc watch $1m\` now to re-arm it (\`/sc watch off\` turns it off)."
+}
 
 url="${SWARM_PLUGIN_DEPLOYMENT_URL:-${CLAUDE_PLUGIN_OPTION_DEPLOYMENT_URL:-}}"
 [ -n "$url" ] || exit 0
 
+rearm="$(watch_minutes)" || rearm=""
+
+case "$(lower "${CLAUDE_PLUGIN_OPTION_AUTO_ATTACH:-true}")" in
+  false | 0 | no | off)
+    [ -z "$rearm" ] || print_rearm "$rearm"
+    exit 0
+    ;;
+esac
+
+rearm_or_quiet() {
+  [ -z "$rearm" ] || print_rearm "$rearm"
+  exit 0
+}
+
 root="${CLAUDE_PLUGIN_ROOT:-}"
 if [ -z "$root" ]; then
-  root="$(cd "$(dirname "$0")/.." && pwd)" || exit 0
+  root="$(cd "$(dirname "$0")/.." && pwd)" || rearm_or_quiet
 fi
 
 from="${SWARM_MCP_FROM:-}"
 if [ -z "$from" ]; then
   manifest="$root/.claude-plugin/plugin.json"
-  [ -r "$manifest" ] || exit 0
+  [ -r "$manifest" ] || rearm_or_quiet
   # The literal `${SWARM_MCP_FROM:-...}` text in the manifest, not an expansion.
   # shellcheck disable=SC2016
-  from="$(sed -n 's/.*"\${SWARM_MCP_FROM:-\([^}]*\)}".*/\1/p' "$manifest" | head -n 1)" || exit 0
+  from="$(sed -n 's/.*"\${SWARM_MCP_FROM:-\([^}]*\)}".*/\1/p' "$manifest" | head -n 1)" || rearm_or_quiet
 fi
-[ -n "$from" ] || exit 0
-command -v uv >/dev/null 2>&1 || exit 0
+[ -n "$from" ] || rearm_or_quiet
+command -v uv >/dev/null 2>&1 || rearm_or_quiet
 
 limit="${SWARM_SESSION_START_TIMEOUT:-10}"
 case "$limit" in
   '' | *[!0-9]*) limit=10 ;;
 esac
 
-out="$(mktemp "${TMPDIR:-/tmp}/sc-session-start.XXXXXX")" || exit 0
+out="$(mktemp "${TMPDIR:-/tmp}/sc-session-start.XXXXXX")" || rearm_or_quiet
 trap 'rm -f "$out"' EXIT
 
 export SWARM_PLUGIN_DEPLOYMENT_URL="$url"
@@ -108,6 +169,11 @@ for key in OAUTH_CLIENT_ID DEFAULT_TARGET OAUTH_CLIENT_SECRET; do
     export "$wanted=${!given}"
   fi
 done
+
+# The remembered watch, so the bridge's one context names the re-arm too.
+if [ -n "$rearm" ]; then
+  export SWARM_SC_WATCH_MINUTES="$rearm"
+fi
 
 # The tenant under the variable every client reads, unless one is already set.
 if [ -z "${SWARM_TENANT+set}" ] && [ -n "${CLAUDE_PLUGIN_OPTION_TENANT:-}" ]; then
@@ -133,8 +199,8 @@ status=0
 wait "$bridge" 2>/dev/null || status=$?
 kill "$watchdog" 2>/dev/null || true
 
-[ "$status" -eq 0 ] || exit 0
-[ -s "$out" ] || exit 0
-grep -q '"hookSpecificOutput"' "$out" || exit 0
+[ "$status" -eq 0 ] || rearm_or_quiet
+[ -s "$out" ] || rearm_or_quiet
+grep -q '"hookSpecificOutput"' "$out" || rearm_or_quiet
 cat "$out"
 exit 0
