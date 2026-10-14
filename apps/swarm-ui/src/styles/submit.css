@@ -342,3 +342,40 @@
 .sbf-field.has-remove > * { grid-column: 1 / -1; }
 .sbf-field.has-remove > .sbf-key { grid-row: 1; grid-column: 1; }
 .sbf-field.has-remove > .sbf-remove { grid-row: 1; grid-column: 2; justify-self: start; align-self: center; }
+
+/* THE BROWSER TOOL (BSTATUS-SUBMIT, owner decision 2026-10-14). A segmented
+   control of native radios: the radio is hidden visually but keeps the
+   keyboard, the focus and the role; its label is the segment. One row on a
+   desktop; two to a row on a phone, where four segments of
+   "dev-browser"-length text overflow a 390px card. Colours are the theme's
+   tokens only, so both themes read the checked segment the same way. */
+.btp { display: grid; gap: 4px; margin: 0 0 12px; }
+.btp-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.btp-h { font: 600 var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); }
+.btp-seg {
+  display: grid; grid-template-columns: repeat(4, auto); justify-content: start;
+  border: 1px solid var(--ctl-bd); border-radius: var(--r-ctl); overflow: hidden; background: var(--surface);
+}
+.btp-opt {
+  position: relative; display: flex; align-items: center; justify-content: center; min-height: var(--h-ctl);
+  padding: 0 12px; border-right: 1px solid var(--line); cursor: pointer; white-space: nowrap;
+  font: var(--t-micro)/var(--lh-micro) var(--font); color: var(--text-dim); background: var(--surface);
+}
+.btp-opt:last-child { border-right: 0; }
+.btp-opt > input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: inherit; }
+.btp-opt:hover:not(.is-off) { color: var(--text); }
+.btp-opt.is-on { background: var(--sk-acs); color: var(--sk-ac); font-weight: 600; }
+.btp-opt.is-off { opacity: .45; cursor: not-allowed; }
+.btp-opt:focus-within { outline: 2px solid var(--sk-ac); outline-offset: -2px; }
+.btp-hint, .btp-jev-off, .btp-net { margin: 0; font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text-dim); }
+.btp-hint:empty { display: none; }
+.btp-notice {
+  margin: 0; padding: 4px 8px; border-left: 2px solid var(--info); background: var(--surface-2);
+  font-size: var(--t-micro); line-height: var(--lh-micro); color: var(--text);
+}
+
+@media (max-width: 560px) {
+  .btp-seg { grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .btp-opt { min-height: 44px; border-bottom: 1px solid var(--line); }
+  .btp-opt:nth-child(2n) { border-right: 0; }
+}
