@@ -672,6 +672,8 @@ class _Proxy:
             await asyncio.gather(*tasks, return_exceptions=True)
             if self.keys or self.pointers:
                 await self._flush_input()
+            if self.close_code == 1012:
+                await self._settle_on_relay_end()
             try:
                 await self.link.close()
             except Exception:  # the relay already went
@@ -682,6 +684,18 @@ class _Proxy:
                 {"close_code": self.close_code, "keys": self.total_keys,
                  "pointer_events": self.total_pointers},
             )
+
+    async def _settle_on_relay_end(self) -> None:
+        """The relay link ended under this socket -- the gate's tunnel went,
+        as it does when the task ends -- so the session is settled once more
+        by its own id before the socket closes: an attempt that has ended
+        closes it, and an episode still open in it ends with its audit
+        (CONTROL-LAPSE; task c6bf0368..., 2026-10-13). After this the task's
+        current session is gone, and nothing would read this one again."""
+        try:
+            await run_in_threadpool(self.service.status, self.admission)
+        except Exception as exc:  # noqa: BLE001 -- the socket closes either way
+            log.info("live session not settled at the relay's end (%s)", type(exc).__name__)
 
     async def _status(self) -> bool:
         status_ = await run_in_threadpool(self.service.status, self.admission)
@@ -694,13 +708,18 @@ class _Proxy:
             await run_in_threadpool(self.service.close_relay, self.admission.session_id)
             return False
         episode = status_.get("episode_id") if status_["in_control"] else None
+        # Control ended and this person took it again between two polls: the
+        # end's revoke took the relay's grant (CONTROL-LAPSE), so the new
+        # episode's grant is sent again even though `in_control` never read false.
+        regrant = (self.in_control and status_["in_control"] and self.episode is not None
+                   and episode != self.episode)
         if self.in_control and episode != self.episode and (self.keys or self.pointers):
             # The episode ended (a Return press, a lapse, a preemption) with
             # input this socket had not flushed: it is that episode's, and goes
             # on its entries, never into the next one's (LB-POLISH).
             await self._flush_input()
         self.episode = episode
-        if status_["in_control"] != self.in_control:
+        if status_["in_control"] != self.in_control or regrant:
             self.in_control = status_["in_control"]
             ticket = await run_in_threadpool(self.service.control_ticket, self.admission,
                                              self.in_control)

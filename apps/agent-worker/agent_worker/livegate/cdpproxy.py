@@ -38,6 +38,13 @@ CONTROL MODE (`pause` .. `resume`), section 5.4.3:
   agent: it would otherwise wait for a debugger whose commands are held, and
   report to the agent once released.
 
+A REFUSED AGENT IS TOLD WHY (CONTROL-LAPSE; part of #1030). A new agent
+connection while the agent is held is answered 503 with a `Retry-After` and a
+one-line reason (`refusal`): a person is in control, or the agent is held for
+a hand-off, and since when -- so an agent can wait sensibly instead of
+retrying blind. MEASURED 2026-10-13: 72 bare refusals in 54 minutes on one
+task. The reason names no person: the agent's output is logged.
+
 THE FRESH PAGE. `open_fresh_page` creates a browser context on the gate's own
 root session, with no proxy parameters and downloads set to `downloads/`, and
 opens the hand-off's site in it: a document no agent script touched, in a
@@ -140,6 +147,10 @@ ACTION_URL_PARAMS: Mapping[str, str] = {"Page.navigate": "url", "Target.createTa
 #: A logged path is cut here: the relay refuses a value over 2,048 characters,
 #: and what a person reads in the timeline is the site and where on it.
 MAX_ACTION_PATH = 256
+#: How long a refused agent connection is asked to wait before it tries
+#: again (`Retry-After`): long enough not to spin, short next to a hand-off.
+RETRY_AFTER_SECONDS = 5
+
 #: Why the proxy refused an agent method, as the timeline names it: the method
 #: policy (cdppolicy.py), a session the agent's connection does not own, or a
 #: request body from a request made while a person was in control (§5.4.3).
@@ -279,6 +290,12 @@ class CdpProxy:
         self._security: dict[str, str] = {}
         self._security_seen: dict[str, asyncio.Event] = {}
         self._controlled: str | None = None
+        #: Wall times (epoch seconds) the agent was held and a person took
+        #: control, for the reason a refused connection is given (`refusal`).
+        self._paused_at: float | None = None
+        self._controlled_at: float | None = None
+        #: The gate's control lease, said in the refusal when it is set.
+        self.control_lease_seconds: float | None = None
         # Control was granted on about:blank and the page has not navigated
         # since: a state that is not `secure` is checked against the URL.
         self._granted_blank = False
@@ -343,16 +360,44 @@ class CdpProxy:
 
     # ------------------------------------------------------ agent connections
 
+    def refusal(self) -> tuple[str, str]:
+        """Why a new agent connection is refused now: a cause code and the
+        sentence the agent reads. Never a person's name (module docstring)."""
+        now = self._wall()
+        if self._controlled is not None:
+            cause, since = "person_in_control", self._controlled_at
+            what = "a person is in control of this browser"
+            after = ("the agent's browser comes back when they return control or their "
+                     "control lapses")
+            if self.control_lease_seconds:
+                after += (f" (the gate takes it back by itself {int(self.control_lease_seconds)} s "
+                          "after their console stops renewing it)")
+        else:
+            cause, since = "held_for_handoff", self._paused_at
+            what = "the agent is held while the browser is handed to a person"
+            after = "the agent's browser comes back when the hand-off ends"
+        if since is not None:
+            stamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(since))
+            what += f" since {stamp} ({max(0, int(now - since))} s)"
+        return cause, (f"refused by the live gate: {what}; {after}. "
+                       f"Retry in {RETRY_AFTER_SECONDS} s.")
+
+    def _refuse_agent(self) -> None:
+        cause, _ = self.refusal()
+        since = self._controlled_at if self._controlled is not None else self._paused_at
+        held = int(self._wall() - since) if since is not None else None
+        self._record("cdp_connection_refused", {"cause": cause, "held_seconds": held})
+
     async def connect_agent(self, link: AgentLink) -> AgentConnection | None:
-        """A new agent connection, or None while a person is in control."""
+        """A new agent connection, or None while the agent is held (`refusal` says why)."""
         if self._mode != _OPEN:
-            self._record("cdp_connection_refused", {})
+            self._refuse_agent()
             return None
         result = await self.call("Target.attachToBrowserTarget")
         session = result["sessionId"]
         if self._mode != _OPEN:
             await self._post("Target.detachFromTarget", {"sessionId": session}, None)
-            self._record("cdp_connection_refused", {})
+            self._refuse_agent()
             return None
         connection = AgentConnection(link=link, browser_session=session)
         self._owner[session] = connection
@@ -645,6 +690,7 @@ class CdpProxy:
         if self._mode != _OPEN:
             return
         self._mode = _PAUSED
+        self._paused_at = self._wall()
         for session, method, params in self._scripts.removal_commands():
             await self._call_quietly(method, params, session)
 
@@ -702,6 +748,7 @@ class CdpProxy:
             if self._mode != _PAUSED:
                 return self._refuse("not_paused")
             self._controlled = target_id
+            self._controlled_at = self._wall()
             self._granted_blank = True
             return ControlDecision(True)
         if target_id not in self._security:
@@ -717,6 +764,7 @@ class CdpProxy:
         if self._mode != _PAUSED:
             return self._refuse("not_paused")
         self._controlled = target_id
+        self._controlled_at = self._wall()
         self._granted_blank = False
         return ControlDecision(True)
 
@@ -753,6 +801,7 @@ class CdpProxy:
 
     def _end_control(self, cause: str) -> None:
         self._controlled = None
+        self._controlled_at = None
         self._granted_blank = False
         self._record("control_ended", {"cause": cause})
         if self._on_control_ended is not None:
@@ -788,6 +837,8 @@ class CdpProxy:
                     await self._forward(connection, message)
         finally:
             self._mode = _OPEN
+            self._paused_at = None
+            self._controlled_at = None
 
     async def _restore_scripts(self) -> None:
         for session, method, params, agent_identifier in self._scripts.restore_commands():
@@ -977,9 +1028,11 @@ async def _read_message(reader: asyncio.StreamReader, link: _WebSocketLink) -> b
             return b"".join(fragments)
 
 
-def _respond(writer: asyncio.StreamWriter, status: str, body: bytes = b"", content_type: str = "text/plain") -> None:
+def _respond(writer: asyncio.StreamWriter, status: str, body: bytes = b"", content_type: str = "text/plain",
+             headers: Mapping[str, str] | None = None) -> None:
+    extra = "".join(f"{name}: {value}\r\n" for name, value in (headers or {}).items())
     writer.write(
-        f"HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {len(body)}\r\nConnection: close\r\n\r\n".encode()
+        f"HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {len(body)}\r\n{extra}Connection: close\r\n\r\n".encode()
         + body
     )
 
@@ -1039,7 +1092,11 @@ async def _serve_one(proxy: CdpProxy, reader: asyncio.StreamReader, writer: asyn
     link = _WebSocketLink(writer)
     connection = await proxy.connect_agent(link)
     if connection is None:
-        _respond(writer, "503 Service Unavailable", b"a person is in control of the browser")
+        # Playwright puts the status line and the body in its error, so the
+        # agent reads why and for how long (`CdpProxy.refusal`).
+        _, reason = proxy.refusal()
+        _respond(writer, "503 Service Unavailable", reason.encode("utf-8"),
+                 headers={"Retry-After": str(RETRY_AFTER_SECONDS)})
         return
     accept = base64.b64encode(hashlib.sha1((headers["sec-websocket-key"] + _WS_GUID).encode()).digest()).decode()
     writer.write(
