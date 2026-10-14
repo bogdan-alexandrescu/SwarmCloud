@@ -3013,6 +3013,77 @@ run going from **935 s to ~835 s**. By class:
 The first runs after this lands are the measurement: re-read them with the
 same two calls and correct this table.
 
+## Flaky tests and the quarantine
+
+**Owner decision, 2026-10-14: "Fix the known flakes and quarantine new
+ones".** A flake costs a merge a rerun, and with strict up-to-date merging
+every merge behind it waits too. A flake is also invisible in a pull
+request's final state: the rerun went green, and only the run's earlier
+attempt remembers the red job.
+
+### What was measured (2026-10-14)
+
+`scripts/flaky-report.sh --limit 1000` over `application.yml`, the 1,000 runs
+from 2026-10-10 to 2026-10-14: 8 runs failed at a commit and then passed at
+the same commit. By job and cause:
+
+| job | times | test or step | cause | done |
+|---|---:|---|---|---|
+| `unit tests (2/4)` | 2 | `test_live_api.py::test_the_viewer_socket_extends_the_hold_while_it_is_open` (PRs 1267 and 1268) | the test left the socket's `with` as soon as it read the close, but the app still writes its `viewer_left` audit after closing; leaving the `with` makes the TestClient cancel the app's task mid-teardown, which surfaced as `CancelledError` from the portal | fixed: the test waits for the `viewer_left` row inside the session, as do the two other socket tests with the same shape |
+| `unit tests (2/4)` | 1 | `test_forge_token_isolation.py::test_no_agent_process_is_alive_when_the_publish_token_is_used` | `_pid_alive` called only a `Z` process dead: a read while init reaped the killed daemon saw `X (dead)`, or failed with ESRCH and fell back to `kill(pid, 0)`, which succeeds on a zombie -- so a process the reaper had already seen dead read as alive a moment later | fixed: every state after death reads dead |
+| `release workflow wiring (actionlint)` | 2 | the actionlint download | rhysd's download script curls the release tarball with no `-f` and no retry; GitHub's release download answered an error page (92 bytes; 1,812 bytes after 19 s) and `tar` read it as the archive (`gzip: stdin: not in gzip format`) | fixed: the tarball is fetched directly with `-f` and retries, checked against its pinned sha256, and cached |
+| `build images` | 1 | `agent-runtime-base` | a Cloud Build docker step exited 22 (curl's HTTP-error status) | not fixed: a network fetch in the image build |
+| `build changed images without pushing` | 1 | `agent-runtime-indexer` | `proxy.golang.org` reset the stream (`INTERNAL_ERROR`) mid-download | not fixed: a network fetch in the image build |
+| `integration tests (emulator)` | 1 | the emulator install | `gcloud components install cloud-firestore-emulator` failed to download | not fixed: a network fetch in the job's setup |
+
+The last three are downloads, not tests: the remedy for those is a pin, a
+mirror or a retry in the job that fetches, not the quarantine list.
+
+### The quarantine
+
+A test that flakes and whose cause is not known yet is **quarantined**, not
+skipped, while its issue is worked:
+
+* **`tests/flaky.txt`** is the list, checked in. One test per line: its pytest
+  node id from the repository root, its issue (`#N`), and the date it was
+  added. A bare id quarantines every parameter of a test; an id with `[...]`
+  only that case. The operator edits it; **CI never does**, so nothing leaves
+  the gate without a person and an issue behind it.
+* **`tests/unit/conftest.py`** marks every listed test `flaky` at collection
+  (the marker is registered in `pyproject.toml`), through
+  `tests/unit/flaky_quarantine.py`. A malformed list stops collection with its
+  line number rather than quarantine the wrong thing.
+* **The unit job** runs the gating suite with `-m "not flaky"`, then runs the
+  shard's quarantined tests in `quarantined unit tests (report only, never fail
+  the gate)`. That step's failure is a warning annotation and a line in the
+  step summary; it never fails the job. A quarantined test therefore still
+  runs on every pull request, so the day it starts failing every time --
+  a real defect, not a flake -- shows up there.
+* **`tests/unit/scripts/test_flaky_quarantine.py`** holds the parser, the
+  marking, the job's two steps, and that every listed test exists: a renamed
+  test would otherwise leave its entry quarantining nothing while the real
+  flake gates again.
+
+The list covers `tests/unit` only. The UI suite and the integration suite have
+no quarantine; a flake there is fixed at its cause.
+
+### Finding candidates
+
+```bash
+scripts/flaky-report.sh                 # the last 300 application.yml runs
+scripts/flaky-report.sh --limit 1000    # further back
+scripts/flaky-report.sh --no-logs       # jobs only, no log downloads
+```
+
+It reads every earlier attempt of a run that was rerun green (`gh run list`
+shows only a run's latest attempt), and every failed run at a commit where
+another run passed, and prints each failed job with the failing pytest or
+vitest ids its log names. It is read-only. Then:
+
+1. fix the cause if it can be found now -- that is the default;
+2. otherwise file an issue, add the line to `tests/flaky.txt`, and link the
+   issue to the line; the fix removes the line.
+
 ## Merging through the merge queue
 
 **Owner decision, 2026-10-08 (observer proposal G).** Since 2026-10-07, main

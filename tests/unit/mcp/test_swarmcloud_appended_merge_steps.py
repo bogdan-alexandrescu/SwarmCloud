@@ -16,9 +16,13 @@ What these tests hold, all against run.js under node:
   2. A spec that names no `merge`, on a repository whose `merge_policy`
      merges, is accepted the same way -- given as an object, and given as a
      file whose outline the bridge's own `_outline` made.
-  3. Any other step the spec does not have, a wrong `depends_on` on an
-     appended step, or an explicit choice whose steps are missing, is still
-     SUBMITTED_UNVERIFIED with no row started.
+  3. Since SPEED-D5 (owner decision 2026-10-14) the shapes above name the
+     reason in the log and gate nothing: an extra step the prediction did not
+     expect is accepted when it hangs off the spec's steps (or the bridge
+     marked it added -- test_server_added_steps_and_tolerant_rows.py). An
+     extra step tied to no spec step, and an explicit choice whose reply
+     names no step beyond the spec at all, are still SUBMITTED_UNVERIFIED
+     with no row started.
 """
 
 from __future__ import annotations
@@ -169,45 +173,60 @@ def test_a_spec_without_merge_accepts_the_platform_defaults_lone_merge_step(tmp_
     assert _rows(got) == ["implement", "review", "fix", "merge"], _rows(got)
 
 
-def test_an_unexpected_extra_step_is_still_submitted_unverified(tmp_path):
+def test_an_extra_step_tied_to_no_spec_step_is_still_submitted_unverified(tmp_path):
     spec = _spec(merge="on_merge_verdict")
-    deploy = {"step_id": "deploy", "depends_on": ["fix"]}
+    deploy = {"step_id": "deploy", "depends_on": []}
     error = _refused(_run(tmp_path, spec, _answers(_reply(spec, [*_server_appended(spec), deploy]))))
     assert "the reply names a step the spec does not have: deploy" in error, error
 
     # The same extra on a spec that says nothing about merging.
     plain = _spec()
-    error = _refused(_run(tmp_path, plain, _answers(_reply(plain, [deploy]))))
+    error = _refused(_run(tmp_path, plain, _answers(_reply(plain, [{"step_id": "deploy", "depends_on": ["gone"]}]))))
     assert "the reply names a step the spec does not have: deploy" in error, error
 
 
-def test_appended_steps_where_the_spec_cannot_have_them_are_still_refused(tmp_path):
-    """`collect` opens no pull request, so nothing is ever appended to it."""
-    spec = _spec(strategy="collect")
-    error = _refused(_run(tmp_path, spec, _answers(_reply(spec, _server_appended(_spec(merge="on_merge_verdict"))))))
-    assert "the reply names a step the spec does not have: re-review" in error, error
+def test_an_unpredicted_extra_step_on_the_specs_steps_starts_its_row(tmp_path):
+    """SPEED-D5: the prediction is not the gate. A `deploy` on `fix` the
+    script never expected is the server's, and the rows follow it."""
+    spec = _spec(merge="on_merge_verdict")
+    deploy = {"step_id": "deploy", "depends_on": ["fix"]}
+    got = _run(tmp_path, spec, _answers(_reply(spec, [*_server_appended(spec), deploy])))
+    assert "error" not in got, got.get("error")
+    assert "deploy" in _rows(got) and "merge" in _rows(got), _rows(got)
 
-    off = _spec(merge="off")
-    error = _refused(_run(tmp_path, off, _answers(_reply(off, _server_appended(_spec(merge="on_merge_verdict"))))))
-    assert "the reply names a step the spec does not have: merge" in error, error
+
+def test_appended_steps_the_script_did_not_predict_start_their_rows(tmp_path):
+    """`collect` and merge "off" predict nothing appended; what the server
+    appended anyway is what runs, so it is what the rows show (SPEED-D5: the
+    measured 3-step spec came back with 5 and no row started)."""
+    for spec in (_spec(strategy="collect"), _spec(merge="off")):
+        got = _run(tmp_path, spec, _answers(_reply(spec, _server_appended(_spec(merge="on_merge_verdict")))))
+        assert "error" not in got, got.get("error")
+        assert got["result"]["state"] == "SUCCEEDED", got["result"].get("error")
+        assert _rows(got) == ["implement", "review", "fix", "re-review", "merge"], _rows(got)
+        assert "wf_m · SwarmCloud added merge, re-review" in got["logs"], got["logs"]
 
 
-def test_an_appended_step_with_another_dependency_is_refused(tmp_path):
+def test_an_appended_step_with_another_dependency_starts_its_row(tmp_path):
+    """The rows follow the dependencies SwarmCloud served, not the script's copy."""
     spec = _spec(merge="on_merge_verdict")
     rereview, merge = _server_appended(spec)
-    error = _refused(_run(tmp_path, spec, _answers(_reply(spec, [rereview, {**merge, "depends_on": ["fix"]}]))))
-    assert "step merge depends on [fix] in the reply and on [fix, re-review] as SwarmCloud appends it" in error, error
+    got = _run(tmp_path, spec, _answers(_reply(spec, [rereview, {**merge, "depends_on": ["fix"]}])))
+    assert "error" not in got, got.get("error")
+    by_label = {c["label"].rsplit(" · ", 1)[-1]: c["prompt"] for c in got["calls"] if c["agentType"] == "sc:step"}
+    assert "depends_on: fix\n" in by_label["merge"], by_label["merge"]
 
 
 def test_an_explicit_choice_whose_steps_are_missing_is_refused(tmp_path):
     spec = _spec(merge="on_merge_verdict")
     error = _refused(_run(tmp_path, spec, _answers(_reply(spec, []))))
-    assert "step re-review is appended by SwarmCloud for the spec's merge on_merge_verdict and missing from the reply" in error, error
+    assert ("the reply names no step beyond the spec, and SwarmCloud appends re-review, merge for the spec's merge "
+            "on_merge_verdict") in error, error
 
-    # Half the shape is not the shape.
+    # Any step the server added satisfies it: the shape is the server's to decide.
     rereview, _ = _server_appended(spec)
-    error = _refused(_run(tmp_path, spec, _answers(_reply(spec, [rereview]))))
-    assert "re-review" in error, error
+    got = _run(tmp_path, spec, _answers(_reply(spec, [rereview])))
+    assert "error" not in got and got["result"]["state"] == "SUCCEEDED", got.get("error") or got["result"]
 
 
 def test_the_digest_covers_the_merge_choice():
