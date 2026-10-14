@@ -257,12 +257,15 @@ def test_a_row_whose_status_read_names_no_state_stays_an_error_row(tmp_path):
 
 def test_the_step_agent_spells_out_the_exact_object_and_allows_null():
     _, body = _load(_PLUGIN / "agents" / "step.md")
+    flat = " ".join(body.split())
     assert "## The exact object" in body
-    assert '{"state": "<state>", "result": {' in body
-    assert "null is accepted for any field" in body
-    assert "never end without calling `StructuredOutput`" in body
+    assert '{"state": "<state>", "result": {' in flat
+    assert "null is accepted for any field" in flat
+    assert "never end without calling `StructuredOutput`" in flat
 
 
 def test_the_workflow_agent_copies_the_added_mark():
     _, body = _load(_PLUGIN / "agents" / "workflow.md")
-    assert "its `added` (null when that entry has none)" in body
+    flat = " ".join(body.split())
+    assert "its `added` (null when that entry has none)" in flat
+    assert "never drop a step because the spec did not name it" in flat
