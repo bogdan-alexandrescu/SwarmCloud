@@ -31,7 +31,7 @@ from itertools import count
 from pathlib import Path
 from typing import Any
 
-from agent_worker import mergeslot, post_verdict
+from agent_worker import mergeslot, mergetrain, post_verdict
 from agent_worker.errors import FencedError
 from agent_worker.objectstore import LocalObjectStore
 from agent_worker.specverify import UpstreamSpecUnverified
@@ -161,6 +161,13 @@ class MergeWorld:
         #: world's step is alone in its repository unless a test seeds one.
         self.slot_db = FakeFirestore()
         self.slots = mergeslot.FirestoreMergeSlots(
+            self.slot_db, tenant_id=TENANT,
+            run_transaction=FakeTransactionRunner(self.slot_db).run,
+            fence=lambda _txn: None,
+        )
+        #: The merge train's entries (TRAIN-WS), in the same in-memory
+        #: Firestore: read only when the target says `merge_mode: train`.
+        self.trains = mergetrain.FirestoreTrainEntries(
             self.slot_db, tenant_id=TENANT,
             run_transaction=FakeTransactionRunner(self.slot_db).run,
             fence=lambda _txn: None,
@@ -321,5 +328,6 @@ class MergeWorld:
             register_secret=self.log.register_secret,
             read_git_token=read_token, repository_url=self.repository_url,
             merge_slots=self.slots,
+            merge_trains=self.trains,
             find_ci_fix_tasks=find_ci_fixes if self.ci_fixes is not None else None,
         )
