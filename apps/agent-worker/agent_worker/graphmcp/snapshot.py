@@ -7,6 +7,28 @@ files) and `index_shards` format 3's (communities, terms, signatures,
 signature_changes, flows). A format-2 manifest is read with the index layers
 empty, so `search` says it has no term index rather than finding nothing.
 
+LAYERS H AND R (docs/design/context-quality.md §4.2; written by lane CTXQ-H,
+read by `similar_changes` and `rules_for`). Two more `index_shards` layers,
+stored like every other one. Until an index carries them they are absent,
+and the tools answer UNKNOWN, never "no precedent" or "unconstrained". The
+row shapes this reader takes, which CTXQ-H's writer must produce:
+
+  history   by the module of `path` (one `WHOLE` shard is read as well). One
+            row per (file, fact), `kind` one of:
+              change     {path, kind, pr, title, sha, merged_at, fix_round,
+                          files}: a merged PR that touched `path`
+              fix        {path, kind, sha, subject, pr?, test?}: a fix-round
+                          or continuation commit on `path` (or on `test`)
+              co_change  {path, kind, other, support, confidence}: `other`
+                          changes with `path` that often
+  rules     a small table, read whole whatever its keys (`WHOLE` or by
+            module). One row per (glob, rule):
+              {glob, kind, ref, why, evidence, confidence}, `kind` one of
+              cannot_push, guard, doc (any other kind is listed after them).
+            `glob` is repository-relative: `**` crosses directories, `*` and
+            `?` do not, a trailing `/` is the whole directory, and anything
+            else is one exact path. `path` is taken in place of `glob`.
+
 LAZY, SHARD BY SHARD. A question about one symbol reads its module's shard
 and nothing else, so memory stays near the size of the shards touched. Decoded
 shards are kept in a cache bounded by their raw bytes (`CACHE_RAW_BYTES`);
@@ -53,6 +75,8 @@ BLOB_SUFFIX = ".jsonl.gz"
 LAYERS = ("symbols", "callers", "callees", "tests", "files")
 #: Format 3's layers, under `index_shards`.
 INDEX_LAYERS = ("communities", "terms", "signatures", "signature_changes", "flows")
+#: Layers H and R (context-quality.md §4.2), also under `index_shards`.
+CONTEXT_LAYERS = ("history", "rules")
 #: The key of a layer stored as one shard (`repo_graph_shards.WHOLE`).
 WHOLE = "*"
 #: `repo_graph_shards.TERM_BUCKET_CHARS`: the hex characters of a term's bucket.
@@ -213,7 +237,7 @@ class Snapshot:
                         for layer in LAYERS}
         index_shards = (manifest.get("index_shards") or {}) if self.format_version >= 3 else {}
         self._tables.update({layer: dict(index_shards.get(layer) or {})
-                             for layer in INDEX_LAYERS})
+                             for layer in INDEX_LAYERS + CONTEXT_LAYERS})
         self._cache: OrderedDict[tuple[str, str], _Shard] = OrderedDict()
         self._cache_bytes = 0
         self._cache_limit = cache_raw_bytes
@@ -307,6 +331,19 @@ class Snapshot:
                 for member in row.get("files") or []:
                     self._communities[str(member)] = row
         return self._communities.get(path)
+
+    def has_layer(self, layer: str) -> bool:
+        """Whether the manifest names any shard of `layer`."""
+        return bool(self._tables.get(layer))
+
+    def history(self, path: str) -> list[dict]:
+        """Layer H's rows for one file: its module's shard, and a `WHOLE` one."""
+        rows = list(self.shard("history", module_of(path)).by("path").get(path) or [])
+        return rows + list(self.shard("history", WHOLE).by("path").get(path) or [])
+
+    def rules(self) -> list[dict]:
+        """Every row of layer R, in key order: the table is small and read whole."""
+        return [row for key in self.keys("rules") for row in self.shard("rules", key).rows]
 
     @property
     def has_terms(self) -> bool:
