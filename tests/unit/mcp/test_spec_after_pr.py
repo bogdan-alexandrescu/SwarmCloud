@@ -98,3 +98,9 @@ def test_the_wait_is_read_off_the_apis_workflow():
     assert sc.pull_request_wait(workflow) == "waiting for PR #41 to merge"
     assert sc.pull_request_wait({"after_pull_requests": {"state": "merged", "text": "PR #41 merged"}}) is None
     assert sc.pull_request_wait({}) is None
+
+
+def test_the_bridges_bound_is_the_apis():
+    from swarm_api.schemas import MAX_AFTER_PRS
+
+    assert workflows.MAX_AFTER_PRS == MAX_AFTER_PRS
