@@ -38,6 +38,7 @@ from ..deps import AppContext, admin_auth, current_auth, get_context, tenant_sco
 from ..errors import NotFound, ValidationFailed
 from ..provider_keys import (
     TENANT,
+    TYPESAFE,
     USER,
     ProviderKeys,
     check_provider,
@@ -45,6 +46,7 @@ from ..provider_keys import (
     resolve_provider_key,
 )
 from ..schemas import StrictModel
+from .judgment import jev_for
 
 router = APIRouter(prefix="/v1/provider-keys", tags=["provider-keys"])
 
@@ -90,7 +92,7 @@ def get_status(
     present = {s["secret_id"] for s in (user, tenant) if s["set"]}
     chosen = resolve_provider_key(tenant_id, personal, provider, present)
     uses = "none" if chosen is None else (USER if chosen == user["secret_id"] else TENANT)
-    return {
+    body = {
         "provider": provider,
         "user": user,
         "tenant": tenant,
@@ -99,6 +101,11 @@ def get_status(
         # resolution says what one would use, not what anything uses now.
         "consumed_by": [],
     }
+    if provider == TYPESAFE:
+        # Which backend this workspace's Jev judges with (JUDGE-SELECT): a
+        # TypeSafe key is needed only when it is `typesafe`.
+        body["jev"] = jev_for(ctx, auth, tenant_id, typesafe_key=chosen is not None)
+    return body
 
 
 @router.put("/{provider}/user")

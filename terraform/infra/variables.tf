@@ -422,6 +422,23 @@ variable "pr_console_links" {
   default     = false
 }
 
+variable "internal_decision_api_enabled" {
+  description = <<-EOT
+    Whether the cluster's Tailscale egress to Saga's decision API is on
+    (JUDGE-NET: the Tailscale Kubernetes operator in swarm-system with ONE
+    egress Service to decision-api-staging). On, swarm-api and the scheduler
+    get INTERNAL_DECISION_API_URL, the egress Service's in-cluster address,
+    and a workspace's "Internal Jev" / "Internal Laya" judgment backend is
+    available (JUDGE-SELECT).
+
+    OFF BY DEFAULT: the egress needs the operator's OAuth client, which the
+    owner stores as swarm-tailscale-oauth in Secret Manager. Off, an internal
+    choice leaves Jev unavailable rather than sending page text to TypeSafe.
+  EOT
+  type        = bool
+  default     = false
+}
+
 variable "frontend_iap_audiences" {
   description = <<-EOT
     Audiences swarm-api accepts on an IAP assertion, one per backend service:

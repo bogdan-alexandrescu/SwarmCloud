@@ -86,6 +86,7 @@ import re
 import tempfile
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -94,6 +95,7 @@ from swarm_common.models import Lease, Task, Tenant
 from swarm_common.profiles import RESOURCE_CLASSES, RUNNER_PROFILES, Backend, RunnerProfile
 
 from .credentials import AccountPool, CredentialSource, credential_for
+from .judgment import DEFAULT_BACKEND, jev_dispatch, read_backend
 
 log = logging.getLogger(__name__)
 
@@ -1963,10 +1965,15 @@ class GkeJobDispatcher:
     """
 
     def __init__(self, settings: Any, *, target: GkeTarget | None = None,
-                 batch_api: Any | None = None, identity: str = "") -> None:
+                 batch_api: Any | None = None, identity: str = "",
+                 judgment: Callable[[str], str] | None = None) -> None:
         self._settings = settings
         self._target = target
         self._batch_api = batch_api
+        #: tenant id -> the workspace's Jev judgment backend (JUDGE-SELECT;
+        #: `judgment.read_backend` over Firestore in a deployment). None reads
+        #: as the default, internal-jev.
+        self._judgment = judgment
         self._ca_file: str | None = None
         #: WHO THIS DISPATCHER AUTHENTICATES AS, for the failure message. Filled
         #: in by `_api()` from the credentials it resolves, so in a deployment it
@@ -2264,6 +2271,7 @@ class GkeJobDispatcher:
         # is on. Every other pod is returned exactly as built above.
         if getattr(profile, "live_browser", False) and getattr(
                 self._settings, "live_browser_sidecar", False):
+            self._with_judgment(job, tenant)
             job = with_live_display(job, rc=rc)
             # Residential egress (docs/browser-egress.md §10.3): only on a pod
             # that has the display sidecar, so only a browser that exists is
@@ -2273,6 +2281,20 @@ class GkeJobDispatcher:
                 job = with_browser_egress(
                     job, bypass=getattr(self._settings, "browser_egress_bypass", ()))
         return job
+
+    def _with_judgment(self, job: dict[str, Any], tenant: Tenant) -> None:
+        """Where this live-browser pod's Jev judgments go (`judgment`,
+        JUDGE-SELECT): SWARM_JEV_BACKEND always, and for an internal backend
+        with the tailnet egress on, JEV_API_URL and the `swarm-judge:
+        internal` pod label JUDGE-NET's NetworkPolicy opens the decision API
+        to. Only with the live browser: jev-browser attaches to nothing else."""
+        backend = self._judgment(tenant.tenant_id) if self._judgment else DEFAULT_BACKEND
+        env, labels = jev_dispatch(
+            backend, str(getattr(self._settings, "internal_decision_api_url", "") or ""))
+        template = job["spec"]["template"]
+        (worker,) = [c for c in template["spec"]["containers"] if c["name"] == "worker"]
+        worker["env"].extend({"name": k, "value": v} for k, v in env.items())
+        template["metadata"]["labels"].update(labels)
 
     @staticmethod
     def _is_forbidden(exc: BaseException) -> bool:
@@ -2441,7 +2463,8 @@ def _gke_ca_file() -> str:
     return handle.name
 
 
-def build_router(settings: Any, *, pool: AccountPool | None = None) -> BackendRouter:
+def build_router(settings: Any, *, pool: AccountPool | None = None,
+                 db: Any | None = None) -> BackendRouter:
     """The deployment's router. `pool` is the Scheduler's AccountPool.
 
     main.build_scheduler passes it, so the Cloud Run Job's secret mount and
@@ -2464,6 +2487,10 @@ def build_router(settings: Any, *, pool: AccountPool | None = None) -> BackendRo
         )
     return BackendRouter(
         cloud_run=CloudRunJobDispatcher(settings, pool=pool),
-        gke=GkeJobDispatcher(settings, target=target),
+        # `db` for the workspace's Jev judgment backend (JUDGE-SELECT), one
+        # document read per live-browser dispatch; without it, the default.
+        gke=GkeJobDispatcher(
+            settings, target=target,
+            judgment=(lambda tenant_id: read_backend(db, tenant_id)) if db is not None else None),
         settings=settings,
     )
