@@ -126,6 +126,15 @@
 # finish. docs/ci.md, "Saying what a pull request depends on". A check that
 # cannot tell fails the job: fail closed.
 #
+# WITH THE MERGE TRAIN ON, `READY` IS THE TRAIN'S (owner decision 2026-10-14,
+# "A1 Merge train"). vars.MERGE_TRAIN = `on` makes the gate say `train` where
+# it would have said `merge` or `wait`: every refusal still applies, nothing
+# is armed, and .github/workflows/merge-train.yml boards the pull request once
+# it is green at head, tests it with others on main and lands it. With the
+# variable unset (the default) or anything but `on`, this workflow is exactly
+# what it was. docs/runbooks/merge-train.md says when to turn it on.
+# tests/unit/scripts/test_merge_train.py holds both halves.
+#
 # tests/unit/scripts/test_auto_merge_workflow.py holds every point above and
 # runs the enable, requeue, requeue-edited and disable jobs' shells against a
 # fake `gh`;
@@ -358,7 +367,10 @@ jobs:
           HAS_MERGE_APP_KEY: ${{ secrets.MERGE_APP_PRIVATE_KEY != '' }}
           CLOSING_REFUSAL: ${{ steps.closing-references.outputs.refusal }}
           DEPENDENCY_REFUSAL: ${{ steps.dependencies.outputs.refusal }}
-        # Says `decision` = merge, wait or refused; only `merge` runs the
+          # `on` hands a `ready` pull request to the merge train instead of
+          # arming auto-merge (item 5b). Unset or anything else: unchanged.
+          MERGE_TRAIN: ${{ vars.MERGE_TRAIN }}
+        # Says `decision` = merge, wait, train or refused; only `merge` runs the
         # steps after it. A refusal on the label fails the run, as it always
         # has. A refusal on a re-evaluation runs on main's head commit, so it
         # does not fail; it drops `ready` and says `disarm`, for the `disarm`
@@ -560,6 +572,34 @@ jobs:
               ] | unique | join(", ")' "${runs}")"
           if [[ -n "${failing}" ]]; then
             refuse "This check already ran on the head commit and is failing: ${failing}. A failed check holds the merge, required or not."
+          fi
+
+          # 5b. THE MERGE TRAIN HAS IT (owner decision 2026-10-14, "A1 Merge
+          #    train"). With vars.MERGE_TRAIN `on`, .github/workflows/
+          #    merge-train.yml boards `ready` pull requests that are green at
+          #    head, tests them together on main and lands each as its own
+          #    squash; arming native auto-merge as well would merge them one
+          #    at a time, untested together, around it. So after every refusal
+          #    above (a failing check still drops `ready` on a re-evaluation,
+          #    and the train boards none that fails), nothing is armed: said
+          #    once, on the label. A re-evaluation says nothing more. Exactly
+          #    `on`: anything else is the train off, and this gate unchanged.
+          if [[ "${MERGE_TRAIN:-}" == "on" ]]; then
+            echo "decision=train" >>"${GITHUB_OUTPUT}"
+            body="$(mktemp)"
+            {
+              echo "**Left to the merge train.** Auto-merge is not armed: once this pull request is green at its head, \`.github/workflows/merge-train.yml\` boards it with other \`ready\` pull requests, tests them together on main, and squash-merges each under its title. A push drops \`ready\` unless it only merges the base branch in."
+              echo "(.github/workflows/auto-merge.yml; docs/runbooks/merge-train.md)"
+            } >"${body}"
+            if [[ "${reevaluation}" != "true" ]]; then
+              gh pr comment "${PR_NUMBER}" --body-file "${body}"
+            fi
+            {
+              echo "### Left to the merge train"
+              echo
+              cat "${body}"
+            } >>"${GITHUB_STEP_SUMMARY}"
+            exit 0
           fi
 
           # 6. A REQUIRED check still running WAITS (#697). Nothing is armed:

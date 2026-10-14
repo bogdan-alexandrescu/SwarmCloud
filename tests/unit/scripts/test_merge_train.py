@@ -150,6 +150,18 @@ def test_select_judges_against_the_required_list_it_is_given(tmp_path):
     assert "108" in [r[0] for r in _select(tmp_path, required=["ci-gate"])]
 
 
+def test_select_can_board_a_bisection_s_pull_request_github_has_not_rechecked(tmp_path):
+    """Right after a train lands, GitHub recomputes every open pull request's
+    mergeability and reports UNKNOWN meanwhile. A bisection's held-back half is
+    boarded then, by name, and compose finds a real conflict anyway; a
+    CONFLICTING one still stays out."""
+    proc = _run("select", "--prs", str(FIXTURES / "prs.json"),
+                "--required", str(_required_file(tmp_path)), "--allow-unknown-mergeable")
+    assert proc.returncode == 0, proc.stderr
+    numbers = [line.split("\t")[0] for line in proc.stdout.splitlines() if line]
+    assert numbers == ["101", "106", "114", "120"]
+
+
 def test_select_with_no_open_pull_requests_prints_nothing(tmp_path):
     empty = tmp_path / "none.json"
     empty.write_text("[]")
@@ -488,7 +500,10 @@ def test_the_schedule_does_nothing_unless_the_train_is_on(train_workflow):
 
 
 def test_one_train_at_a_time_and_a_running_one_is_never_cancelled(train_workflow):
-    assert train_workflow["concurrency"] == {"group": "merge-train", "cancel-in-progress": False}
+    # On the job: a workflow-level group would let every skipped
+    # `workflow_run` run (any branch's CI finishing) cancel a pending tick.
+    assert "concurrency" not in train_workflow
+    assert train_workflow["jobs"]["tick"]["concurrency"] == {"group": "merge-train", "cancel-in-progress": False}
 
 
 def test_the_train_lands_with_the_merge_app_token_and_never_a_pat(train_workflow):
