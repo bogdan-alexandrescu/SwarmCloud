@@ -101,6 +101,12 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # bash with pipefail: every `echo <sha> <file> | sha256sum -c -` below is a
 # pipe, and a pipe whose first command failed must not pass on the last one's.
+# EVERY DOWNLOAD HERE RETRIES (2026-10-14, PR 1281's flake table): `curl -fsSL
+# --retry 5 --retry-all-errors --retry-connrefused`, 1+2+4+8+16 s of backoff at
+# most. --retry-all-errors is what makes an HTTP error (curl's exit 22, which
+# failed one main build of agent-runtime-base in run 38245452463) retry at all. A
+# file that is really gone still fails, ~31 s later, and every download is
+# still checked against its pinned checksum after it lands.
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # jq, curl and python3 from Debian, with the security updates of the day.
@@ -151,9 +157,9 @@ ARG GKE_PLUGIN_SHA256=c572f6cf9b401820032e8459b2bade792442dfbbce30e53d3b1b0d7be1
 ARG KUBECTL_VERSION=1.36.5
 ARG KUBECTL_SHA256=33bc88a24c3b09cf55bfd59e6ca977881b61fc3f25ab65bc80c65b430248648e
 RUN mkdir -p /tmp/toolbox \
- && curl -fsSL -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/gke-gcloud-auth-plugin.deb \
       "https://packages.cloud.google.com/apt/pool/cloud-sdk/google-cloud-cli-gke-gcloud-auth-plugin_${GCLOUD_VERSION}-0_amd64_${GKE_PLUGIN_POOL_ID}.deb" \
- && curl -fsSL -o /tmp/toolbox/kubectl \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/toolbox/kubectl \
       "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
  && echo "${GKE_PLUGIN_SHA256}  /tmp/toolbox/gke-gcloud-auth-plugin.deb" | sha256sum -c - \
  && echo "${KUBECTL_SHA256}  /tmp/toolbox/kubectl" | sha256sum -c - \

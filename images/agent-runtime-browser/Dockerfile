@@ -193,7 +193,7 @@ COPY --chmod=0555 images/agent-runtime-browser/dev-browser /usr/local/bin/dev-br
 RUN --mount=type=bind,source=build/tool-mirror,target=/tmp/tool-mirror \
     --mount=type=bind,source=images/agent-runtime-browser,target=/tmp/swarm-browser-build \
     mkdir -p /tmp/dev-browser \
- && curl -fsSL -o /tmp/dev-browser/dev-browser-linux-x64 \
+ && curl -fsSL --retry 5 --retry-all-errors --retry-connrefused -o /tmp/dev-browser/dev-browser-linux-x64 \
       "file:///tmp/tool-mirror/github.com/SawyerHood/dev-browser/releases/download/v${DEV_BROWSER_VERSION}/dev-browser-linux-x64" \
  && echo "${DEV_BROWSER_SHA256}  /tmp/dev-browser/dev-browser-linux-x64" | sha256sum -c - \
  && install -d -m 0755 /opt/swarm/dev-browser \

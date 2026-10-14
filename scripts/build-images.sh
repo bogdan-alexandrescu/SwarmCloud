@@ -1200,11 +1200,21 @@ done
 # One build at a time: they share one runner's disk and CPUs, and the derived
 # images wait for the base anyway.
 LOCAL_REPLAY="$(cat <<'PY'
-import json, os, re, subprocess, sys
+import json, os, re, shutil, subprocess, sys
 import yaml
 
 config, repo, target, builder, state, report, why_file = sys.argv[1:8]
 DOCKER = "gcr.io/cloud-builders/docker"
+# BUILD_ONLY_SCAN (C3, owner decision 2026-10-14): a command run as
+# `<command> <oci-layout> <image>` on every image this run builds, as soon as
+# it is built; a non-zero exit fails the build. application.yml's
+# `build-check` passes scripts/scan-image-layout.sh, the scan the release's
+# promotion runs, so a fixable HIGH/CRITICAL finding in a changed image is
+# seen on the pull request rather than at the release. Unset: no scan, and a
+# leaf image is exported nowhere, as before.
+SCAN = os.environ.get("BUILD_ONLY_SCAN", "")
+if SCAN and not os.path.isabs(SCAN):
+    SCAN = os.path.join(repo, SCAN)
 
 
 def fail(msg):
@@ -1368,6 +1378,10 @@ for sid, step, name, args, is_build in parsed:
             section.append(f"- step `{sid}`: `{tag}` was built earlier in this run (its steps are listed there)")
             continue
         out = ["--output", f"type=oci,dest={layout},tar=false", "--metadata-file", meta]
+    elif SCAN and tag:
+        # Scanned below, so exported -- to a layout of its own, removed after the scan.
+        layout = os.path.join(state, safe(tag) + ".scan.oci")
+        out = ["--output", f"type=oci,dest={layout},tar=false"]
     else:
         out = ["--output", "type=cacheonly"]
     cmd = ["docker", "buildx", "build", "--builder", builder, "--progress=plain", "--no-cache",
@@ -1380,6 +1394,15 @@ for sid, step, name, args, is_build in parsed:
     if tag in from_refs:
         with open(meta) as fh:
             exported[tag] = (layout, json.load(fh)["containerimage.digest"])
+    if SCAN and tag:
+        print(f"{tag}: scanning with {SCAN}", flush=True)
+        scan_rc = stream([SCAN, layout, tag], cwd, sid)
+        if tag not in from_refs:
+            shutil.rmtree(layout, ignore_errors=True)
+        if scan_rc != 0:
+            section.append(f"- step `{sid}`: **`{tag}` was refused by the image scan** (exit {scan_rc}); its log says which findings")
+            fail(f"step {sid}: {tag} built, and the image scan refused it (exit {scan_rc}): a release would refuse it too")
+        section.append(f"- step `{sid}`: `{tag}` passed the image scan the release runs")
     shown = os.path.relpath(dockerfile, repo)
     steps_ran = run_steps(dockerfile)
     if steps_ran is None:
