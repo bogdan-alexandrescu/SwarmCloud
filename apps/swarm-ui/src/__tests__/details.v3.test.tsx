@@ -24,7 +24,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { useState } from 'react'
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { HELP } from '../help'
 import type { AgentRun } from '../api'
@@ -153,7 +153,22 @@ async function detailsOfRunning(t: Task, r: AgentRun): Promise<HTMLElement> {
   })
 }
 
+// ONE FROZEN INSTANT FOR THE WHOLE FILE: every fixture (`ago`, `ok`'s
+// fetchedAt) and every clock the panes read. Faking Date in one test was not
+// enough (PR 1184, runs 38552512519 and the one after): `useNow` keeps one
+// clock per cadence in module state, and a `renderToStaticMarkup` render
+// creates that clock without subscribing, so nothing ever deletes it. The
+// static render of an EARLIER test left a clock at its own instant; a later
+// test's fixtures were built from a later Date.now(), so the strip read
+// `59s ago` for a heartbeat built `ago(1)`, and under a per-test frozen
+// instant Elapsed read `0s`. With Date frozen here, before any fixture or
+// render, every clock this file creates holds the same instant. Only Date is
+// faked: waitFor and the panes' intervals keep real timers.
+const FROZEN = new Date('2026-10-14T12:00:00Z')
+
 beforeEach(() => {
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(FROZEN)
   localStorage.clear()
   resetListSnap()
   api.loadAgentRun.mockReturnValue(new Promise(() => {}))
@@ -167,6 +182,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
+  vi.useRealTimers()
   for (const h of hosts.splice(0)) h.remove()
   delete document.documentElement.dataset.agentList
 })
@@ -283,15 +299,6 @@ describe('one stat strip: Elapsed · Attempt · Peak memory · CPU · Cost', () 
   }
 
   it('a running agent: memory with % of its limit, CPU against its cores, cost small and pending', () => {
-    // ONE CLOCK for the fixture and the render. `ago(1)` and the strip's
-    // "so far · 1m ago" each read Date.now(); on a slower runner the two reads
-    // straddled the minute and the sub read `59s ago` (PR 1184, run
-    // 38552512519). Only Date is faked: nothing here waits on a timer.
-    vi.useFakeTimers({ toFake: ['Date'] })
-    vi.setSystemTime(new Date('2026-10-14T12:00:00Z'))
-    onTestFinished(() => {
-      vi.useRealTimers()
-    })
     const a = attempt(1, {
       created_at: ago(15),
       started_at: ago(14),
