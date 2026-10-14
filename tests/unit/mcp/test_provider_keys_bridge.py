@@ -177,7 +177,8 @@ def test_the_set_link_reply_holds_no_secret_shaped_string_but_the_links_own_toke
     token = parse_qs(urlparse(body["url"]).query)["t"][0]
     assert token == api.link_token
     rest = reply.replace(token, "")
-    shaped = re.findall(r"[A-Za-z0-9_\-+/=]{24,}", rest)
+    # URL-safe base64 runs, the shape `secrets.token_urlsafe` and most API keys take.
+    shaped = re.findall(r"[A-Za-z0-9_\-+=]{24,}", rest)
     assert shaped == [], shaped
 
 
