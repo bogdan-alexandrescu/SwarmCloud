@@ -111,9 +111,8 @@ describe('the status, from GET /v1/provider-keys/typesafe', () => {
     render(<ProviderKeysScreen link={null} />)
     await landed()
     const mine = visible(row(/your key/i))
-    expect(mine).toMatch(/\bset\b/i)
-    expect(mine).toContain('alice@example.com')
-    expect(mine).toMatch(/version 3/i)
+    // Set, when, by whom, which version: never a value.
+    expect(mine).toMatch(/set \S+ ago by alice@example\.com · version 3/i)
     expect(within(row(/your key/i)).getByRole('button', { name: /replace/i })).toBeTruthy()
     expect(visible(row(/tenant key/i))).toMatch(/not set/i)
     expect(within(row(/tenant key/i)).getByRole('button', { name: /^save/i })).toBeTruthy()
