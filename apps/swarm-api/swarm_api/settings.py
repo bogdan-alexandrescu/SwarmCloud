@@ -479,10 +479,22 @@ class ApiSettings:
     #: per person per task per minute. In-process, as the API's limiter is.
     live_viewer_tickets_per_minute: int = 30
     live_takes_per_minute: int = 6
-    #: §4.3, Q3 (owner: 10 minutes): how long a pod holds for a person before it
-    #: parks. Read by `swarm_api.handoff`, which carried it as a constant until
-    #: this setting existed.
-    human_hold_seconds: int = 600
+    #: §4.3, HANDOFF-POLICY (owner decision 2026-10-13, replacing Q3's flat 10
+    #: minutes, `human_hold_seconds`): how long a hand-off holds its pod with
+    #: NOBODY watching -- from the request, and past the last moment a viewer
+    #: was seen. 60: 13 of 42 measured hand-offs expired with nobody there,
+    #: each holding a 2-unit lease for 10 minutes. `swarm_api.handoff`.
+    human_unwatched_seconds: int = 60
+    #: The ceiling, from the request, on a hold that viewers and a controller
+    #: keep extending. 1800: 7 of the 42 expired after the person said they
+    #: were ready, so a watched hold outlives 10 minutes -- but not an
+    #: afternoon (invariant 4).
+    human_hold_max_seconds: int = 1800
+    #: How often an open viewer socket tells swarm-api "someone is watching",
+    #: which moves the hold's deadline to now + `human_unwatched_seconds`.
+    #: Must stay well under that, or a watched hold lapses between writes; one
+    #: write per socket per flush, and only while a hand-off is open.
+    live_watch_flush_seconds: float = 15.0
     #: §5.10: hand-off requests per attempt, read by `swarm_api.handoff`.
     max_handoffs_per_attempt: int = 3
 
@@ -665,6 +677,8 @@ class ApiSettings:
             live_input_flush_seconds=float(_int("LIVE_INPUT_FLUSH_SECONDS", 15)),
             live_viewer_tickets_per_minute=_int("LIVE_VIEWER_TICKETS_PER_MINUTE", 30),
             live_takes_per_minute=_int("LIVE_TAKES_PER_MINUTE", 6),
-            human_hold_seconds=_int("HUMAN_HOLD_SECONDS", 600),
+            human_unwatched_seconds=_int("HUMAN_UNWATCHED_SECONDS", 60),
+            human_hold_max_seconds=_int("HUMAN_HOLD_MAX_SECONDS", 1800),
+            live_watch_flush_seconds=float(_int("LIVE_WATCH_FLUSH_SECONDS", 15)),
             max_handoffs_per_attempt=_int("MAX_HANDOFFS_PER_ATTEMPT", 3),
         )

@@ -39,7 +39,7 @@ def _service(ctx: AppContext) -> Notifications:
 
 def _viewer(auth: AuthContext, tenant_id: str) -> Viewer:
     return Viewer(email=auth.email, tenant_id=tenant_id, is_admin=auth.is_admin,
-                  is_owner=auth.is_owner)
+                  is_owner=auth.is_owner, member_scope=bool(auth.member_scope))
 
 
 @router.get("")
