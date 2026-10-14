@@ -259,6 +259,17 @@ SWITCHES: dict[str, Switch] = {
         "expired, minted by someone else or for another scope. On once the console's "
         "settings/keys form (the swarm-ui lane) sends the link token it was opened with",
     ),
+    # Lane TRAIN-WS (docs/merge-trains.md §3.2): a member of a workspace who
+    # is neither its owner nor a platform admin changing its merge settings.
+    # Off, the change goes through and is audited under the caller's name. A
+    # caller who is not a member at all is the established 404 either way.
+    "merge_settings_owner_required": Switch(
+        code="merge_settings_owner_required",
+        why="a member of a workspace who is neither its owner (a personal workspace's "
+        "principal) nor a platform admin is refused 403 when changing its merge settings. "
+        "On once the console's Settings > Workspace > Merging (TRAIN-WS-UI) offers the "
+        "change only to those who may make it, and the log shows no member relying on it",
+    ),
     # The browser tool a submission names (BSTATUS-API, contract request 77):
     # `jev` with no TypeSafe key for the submitter or the tenant, or with no
     # jev in the image. Off, the task runs and its runner falls back to

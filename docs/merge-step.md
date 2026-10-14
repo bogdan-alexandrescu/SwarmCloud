@@ -10,6 +10,12 @@ made by the **worker**, with a credential no agent can reach. The
 frozen-contract half is contract request 33 in
 [contract-change-requests.md](contract-change-requests.md); the example spec is
 in [workflows.md](workflows.md#proposed-a-chain-that-merges-its-own-pull-request).
+
+**Merge trains (TRAIN-WS, 2026-10-14).** A workspace may choose `train` as its
+merge mode. Its merge steps then do everything below up to the merge call, and
+instead register the pull request for the repository's merge train and park.
+See [merge-trains.md](merge-trains.md) for the setting, the coordinator and how
+the step ends.
 **Superseded in part on 2026-10-04: the merge step is built, on the tenant's
 `-git` token -- "Revised 2026-10-04 (owner)" says what changed and why.**
 **Revised again on 2026-10-06: merging becomes its own step that parks while
