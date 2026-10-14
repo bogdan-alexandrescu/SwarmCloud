@@ -37,6 +37,7 @@ from .routes import (
     forgeapp,
     forgeperms,
     gittokens,
+    gittools,
     health,
     issues,
     leases,
@@ -185,6 +186,9 @@ def create_app(ctx: AppContext | None = None, *, forge_app: ForgeApp | None = No
     # authenticate the tenant's worker service account and an attempt proof
     # rather than a person.
     app.include_router(children.router)
+    # The runner git tools (docs/runner-git-tools.md, lane G5): worker-only,
+    # authenticated as the child routes are, plus the audit's tenant read.
+    app.include_router(gittools.router)
     # Named browser logins and the workflow carry (docs/design/live-browser.md
     # §5.5.1, lane LB-L9b): the person's own logins, and two worker-only
     # routes that authenticate as the child routes do.

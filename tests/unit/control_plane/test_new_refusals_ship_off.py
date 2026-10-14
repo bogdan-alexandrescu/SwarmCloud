@@ -189,6 +189,16 @@ NOT_SWITCHABLE_CODES = frozenset({
     "control_not_eligible",
     "control_held",
     "not_controller",
+    # The runner git tools (G5, docs/runner-git-tools.md §1.2-§1.4), as the
+    # live codes above: raised only by the route that change introduces
+    # (POST /v1/attempts/{id}/git/{tool}), so no existing caller can be
+    # refused by them. Continuing past any of them is the breach itself: an
+    # unproven caller handed a tenant's forge token, a stale generation
+    # pushing past its fence (invariant 5), or a push or private read the
+    # signed spec's policy or the tenant's allowlist does not admit.
+    "git_tool_unproven",
+    "git_fenced",
+    "git_tool_refused",
 })
 
 #: What the guard lets through without a switch.
